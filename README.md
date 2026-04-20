@@ -1,8 +1,12 @@
-# AgInTiFlow
+<p align="center">
+  <img src="https://raw.githubusercontent.com/lachlanchen/lachlanchen/main/figs/banner.png" alt="Lachlan Chen banner" width="960" />
+</p>
 
 <p align="center">
   <img src="./references/agintiflow-logo-banner-cropped.png" alt="AgInTiFlow logo" width="960" />
 </p>
+
+# AgInTiFlow
 
 AgInTiFlow is AgInTi's website-control agent for browser automation, persistent chat, resumable runs, and guarded local tools.
 
