@@ -67,7 +67,10 @@ run() {
 
 echo "Installing Docker Engine for Ubuntu ${VERSION_ID:-unknown} (${CODENAME}) on ${ARCHITECTURE}."
 
-mapfile -t INSTALLED_CONFLICTS < <(dpkg-query -W -f='${binary:Package}\n' "${CONFLICTING_PACKAGES[@]}" 2>/dev/null || true)
+mapfile -t INSTALLED_CONFLICTS < <(
+  dpkg-query -W -f='${db:Status-Abbrev} ${binary:Package}\n' "${CONFLICTING_PACKAGES[@]}" 2>/dev/null |
+    awk '$1 ~ /^ii/ { print $2 }'
+)
 if [[ "${#INSTALLED_CONFLICTS[@]}" -gt 0 ]]; then
   run "${SUDO[@]}" apt-get remove -y "${INSTALLED_CONFLICTS[@]}"
 fi
@@ -111,6 +114,10 @@ run "${SUDO[@]}" docker version
 
 if [[ "${RUN_HELLO_WORLD:-1}" == "1" ]]; then
   run "${SUDO[@]}" docker run --rm hello-world
+fi
+
+if [[ -n "${TARGET_USER}" && "${TARGET_USER}" != "root" ]]; then
+  run "${SUDO[@]}" -u "${TARGET_USER}" sg docker -c "docker version >/dev/null"
 fi
 
 echo
