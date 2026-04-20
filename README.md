@@ -1,6 +1,8 @@
 # AgInTiFlow
 
-![AgInTiFlow logo](./references/agintiflow-logo-banner-cropped.png)
+<p align="center">
+  <img src="./references/agintiflow-logo-banner-cropped.png" alt="AgInTiFlow logo" width="960" />
+</p>
 
 AgInTiFlow is AgInTi's website-control agent for browser automation, persistent chat, resumable runs, and guarded local tools.
 
