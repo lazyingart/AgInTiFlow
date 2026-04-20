@@ -6,6 +6,8 @@
   --muted: #5f564a;
   --line: #d9cdbb;
   --accent: #0f766e;
+  --assistant: #f3ede2;
+  --user: #dff4f0;
 }
 
 * {
@@ -23,11 +25,16 @@ body {
 }
 
 .page {
-  width: min(1180px, calc(100% - 32px));
+  width: min(1240px, calc(100% - 32px));
   margin: 32px auto;
   display: grid;
   gap: 20px;
   grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+}
+
+.stack {
+  display: grid;
+  gap: 20px;
 }
 
 .panel {
@@ -117,9 +124,13 @@ button {
   justify-content: space-between;
 }
 
+.session-select {
+  max-width: 340px;
+}
+
 .logs {
-  min-height: 620px;
-  max-height: 72vh;
+  min-height: 360px;
+  max-height: 48vh;
   overflow: auto;
   margin: 0;
   padding: 16px;
@@ -133,12 +144,54 @@ button {
   white-space: pre-wrap;
 }
 
+.chat-thread {
+  min-height: 260px;
+  max-height: 40vh;
+  overflow: auto;
+  display: grid;
+  gap: 12px;
+  padding: 6px 2px;
+}
+
+.chat-item {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 14px;
+}
+
+.chat-item.user {
+  background: var(--user);
+}
+
+.chat-item.assistant {
+  background: var(--assistant);
+}
+
+.chat-meta {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.chat-content {
+  line-height: 1.5;
+}
+
+.chat-form {
+  margin-top: 14px;
+}
+
 @media (max-width: 960px) {
   .page {
     grid-template-columns: 1fr;
   }
 
   .logs {
-    min-height: 420px;
+    min-height: 320px;
+    max-height: 44vh;
+  }
+
+  .chat-thread {
+    max-height: 34vh;
   }
 }

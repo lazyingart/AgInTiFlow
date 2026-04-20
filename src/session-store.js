@@ -46,6 +46,19 @@ export class SessionStore {
     await fs.appendFile(this.eventsPath, `${line}\n`, "utf8");
   }
 
+  async loadEvents() {
+    try {
+      const raw = await fs.readFile(this.eventsPath, "utf8");
+      return raw
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    } catch {
+      return [];
+    }
+  }
+
   async saveSnapshot(step, snapshot) {
     await this.ensure();
     const filename = `step-${String(step).padStart(3, "0")}.snapshot.json`;

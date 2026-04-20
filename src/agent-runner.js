@@ -12,10 +12,11 @@ const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "click", "type", "scroll", "press", "back"]);
 
 function createInitialState(config, sessionId) {
+  const now = new Date().toISOString();
   return {
     sessionId,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    createdAt: now,
+    updatedAt: now,
     provider: config.provider,
     model: config.model,
     goal: config.goal,
@@ -25,6 +26,13 @@ function createInitialState(config, sessionId) {
     meta: {
       lastUrl: "",
     },
+    chat: [
+      {
+        role: "user",
+        content: config.goal,
+        at: now,
+      },
+    ],
     messages: [
       {
         role: "system",
@@ -61,14 +69,10 @@ function createInitialState(config, sessionId) {
 function createObservers(config) {
   return {
     log(message, data = {}) {
-      if (typeof config.onLog === "function") {
-        config.onLog(message, data);
-      }
+      if (typeof config.onLog === "function") config.onLog(message, data);
     },
     event(type, data = {}) {
-      if (typeof config.onEvent === "function") {
-        config.onEvent(type, data);
-      }
+      if (typeof config.onEvent === "function") config.onEvent(type, data);
     },
   };
 }
@@ -81,6 +85,78 @@ function createBrowserState() {
   };
 }
 
+function ensureChatState(state) {
+  if (Array.isArray(state.chat)) return;
+
+  const chat = [];
+  if (state.goal) {
+    chat.push({
+      role: "user",
+      content: state.goal,
+      at: state.createdAt || new Date().toISOString(),
+    });
+  }
+
+  const finishTool = [...(state.messages || [])]
+    .reverse()
+    .find((message) => message.role === "tool" && typeof message.content === "string");
+
+  if (finishTool) {
+    try {
+      const parsed = JSON.parse(finishTool.content);
+      if (parsed.done && parsed.result) {
+        chat.push({
+          role: "assistant",
+          content: parsed.result,
+          at: state.updatedAt || new Date().toISOString(),
+        });
+      }
+    } catch {
+      // Keep derived chat best-effort only.
+    }
+  }
+
+  state.chat = chat;
+}
+
+function appendChatEntry(state, role, content) {
+  ensureChatState(state);
+  state.chat.push({
+    role,
+    content,
+    at: new Date().toISOString(),
+  });
+}
+
+function applyContinuationPrompt(state, config, observers) {
+  if (!config.resume || !config.goal) return;
+
+  ensureChatState(state);
+  state.goal = config.goal;
+  state.provider = config.provider;
+  state.model = config.model;
+  state.startUrl = config.startUrl;
+  state.plan = "";
+  state.stepsCompleted = 0;
+  state.updatedAt = new Date().toISOString();
+  state.messages.push({
+    role: "user",
+    content: [
+      `Continue with this new request: ${config.goal}`,
+      config.startUrl ? `Suggested start URL: ${config.startUrl}` : "",
+      config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
+      config.allowShellTool ? `Shell working directory: ${config.commandCwd}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  });
+  appendChatEntry(state, "user", config.goal);
+  observers.event("conversation.continued", {
+    sessionId: state.sessionId,
+    prompt: config.goal,
+  });
+}
+
 async function saveBrowserState(browserState, store) {
   if (browserState.context) {
     await browserState.context.storageState({ path: store.storageStatePath });
@@ -88,9 +164,7 @@ async function saveBrowserState(browserState, store) {
 }
 
 async function ensureBrowser(browserState, config, store, state, observers) {
-  if (browserState.page) {
-    return browserState;
-  }
+  if (browserState.page) return browserState;
 
   observers.log("browser.starting", { headless: config.headless });
   browserState.browser = await chromium.launch({ headless: config.headless });
@@ -130,7 +204,7 @@ async function runShellCommand(command, config) {
   };
 }
 
-async function captureSyntheticSnapshot(store, step, config, state) {
+async function captureSyntheticSnapshot(store, step, config) {
   const snapshot = {
     title: "No browser page open",
     url: "",
@@ -153,11 +227,11 @@ async function captureSyntheticSnapshot(store, step, config, state) {
   };
 }
 
-async function buildSnapshot(browserState, store, step, config, state) {
+async function buildSnapshot(browserState, store, step, config) {
   if (browserState.page) {
     return captureSnapshot(browserState.page, store, step);
   }
-  return captureSyntheticSnapshot(store, step, config, state);
+  return captureSyntheticSnapshot(store, step, config);
 }
 
 async function executeTool(browserState, toolCall, snapshot, config, store, observers, state) {
@@ -317,7 +391,11 @@ export async function runAgent(config) {
     await store.saveState(state);
   } else {
     await store.appendEvent("session.resumed", { sessionId });
+    applyContinuationPrompt(state, config, observers);
+    await store.saveState(state);
   }
+
+  ensureChatState(state);
 
   observers.log("session.ready", {
     sessionId,
@@ -358,7 +436,7 @@ export async function runAgent(config) {
     }
 
     for (let step = state.stepsCompleted + 1; step <= config.maxSteps; step += 1) {
-      const snapshot = await buildSnapshot(browserState, store, step, config, state);
+      const snapshot = await buildSnapshot(browserState, store, step, config);
       state.meta.lastUrl = snapshot.url || state.meta.lastUrl;
       await saveBrowserState(browserState, store).catch(() => {});
 
@@ -420,6 +498,7 @@ export async function runAgent(config) {
 
       if (toolCalls.length === 0) {
         const fallback = assistantMessage.content?.trim() || "No tool call returned.";
+        appendChatEntry(state, "assistant", fallback);
         await store.appendEvent("session.finished", {
           result: fallback,
           mode: "assistant-content",
@@ -458,6 +537,11 @@ export async function runAgent(config) {
           state.stepsCompleted = step;
           state.updatedAt = new Date().toISOString();
           state.meta.lastUrl = browserState.page?.url() || state.meta.lastUrl;
+          state.messages.push({
+            role: "assistant",
+            content: toolResult.result,
+          });
+          appendChatEntry(state, "assistant", toolResult.result);
           await store.saveState(state);
           await store.appendEvent("session.finished", {
             result: toolResult.result,

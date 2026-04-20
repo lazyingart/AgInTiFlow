@@ -11,7 +11,7 @@
       <section class="panel form-panel">
         <h1>Website Control Agent</h1>
         <p class="subtle">
-          Browser agent with provider selection, resumable runs, and an optional guarded shell tool.
+          Browser agent with provider selection, resumable runs, persisted settings, and an optional guarded shell tool.
         </p>
 
         <form id="run-form">
@@ -25,7 +25,7 @@
 
           <label>
             Model
-            <input id="model" name="model" type="text" value="gpt-5.4-mini" />
+            <input id="model" name="model" type="text" value="deepseek-chat" />
           </label>
 
           <label>
@@ -61,7 +61,7 @@
 
           <div class="checks">
             <label><input id="headless" name="headless" type="checkbox" checked /> Headless browser</label>
-            <label><input id="allowShellTool" name="allowShellTool" type="checkbox" /> Enable shell tool</label>
+            <label><input id="allowShellTool" name="allowShellTool" type="checkbox" checked /> Enable shell tool</label>
             <label><input id="allowPasswords" name="allowPasswords" type="checkbox" /> Allow password typing</label>
             <label><input id="allowDestructive" name="allowDestructive" type="checkbox" /> Allow destructive actions</label>
           </div>
@@ -73,12 +73,37 @@
         </form>
       </section>
 
-      <section class="panel output-panel">
-        <div class="header-row">
-          <h2>Run output</h2>
-          <div id="run-meta" class="subtle"></div>
-        </div>
-        <pre id="logs" class="logs">No run started.</pre>
+      <section class="stack">
+        <section class="panel output-panel">
+          <div class="header-row">
+            <h2>Run output</h2>
+            <div id="run-meta" class="subtle"></div>
+          </div>
+          <pre id="logs" class="logs">No run started.</pre>
+        </section>
+
+        <section class="panel chat-panel">
+          <div class="header-row">
+            <h2>Conversation</h2>
+            <select id="session-select" class="session-select">
+              <option value="">No session selected</option>
+            </select>
+          </div>
+          <div id="chat-thread" class="chat-thread">
+            <div class="subtle">No conversation loaded.</div>
+          </div>
+          <form id="chat-form" class="chat-form">
+            <textarea
+              id="chat-input"
+              rows="4"
+              placeholder="Continue the selected conversation here."
+            ></textarea>
+            <div class="actions">
+              <button type="submit">Send message</button>
+              <span id="chat-status" class="subtle"></span>
+            </div>
+          </form>
+        </section>
       </section>
     </main>
 
