@@ -25,7 +25,7 @@ What it keeps:
 ## Install
 
 ```bash
-cd /home/lachlan/ProjectsLFS/Agent/website-control-agent
+cd /home/lachlan/ProjectsLFS/Agent/AgInTiFlow
 npm install
 npx playwright install chromium
 ```
