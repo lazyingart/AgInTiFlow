@@ -1,6 +1,6 @@
-# Website Control Agent
+# AgInTiFlow
 
-This is a brand-new website-control agent starter that borrows the useful ideas from agent tools like Codex, Claude Code, Copilot SDK, Gemini CLI, and LazyingArtBot without copying their code.
+AgInTiFlow is AgInTi's website-control agent for browser automation, persistent chat, resumable runs, and guarded local tools.
 
 What it keeps:
 
