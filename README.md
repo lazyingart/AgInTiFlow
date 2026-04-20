@@ -53,6 +53,22 @@ Resume an earlier run:
 npm start -- --resume your-session-id
 ```
 
+## Docker Bootstrap
+
+Ubuntu helper script:
+
+```bash
+./scripts/install-docker-ubuntu.sh
+```
+
+If you run it as `root` and want Docker available to a regular user without `sudo`, set the target user explicitly:
+
+```bash
+DOCKER_TARGET_USER=lachlan ./scripts/install-docker-ubuntu.sh
+```
+
+The script installs Docker Engine from Docker's official Ubuntu repository, enables the services, and adds the target user to the `docker` group. After it finishes, open a new login shell or run `newgrp docker` before testing non-root access.
+
 ## Useful Environment Variables
 
 ```bash
