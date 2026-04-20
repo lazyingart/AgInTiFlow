@@ -1,0 +1,17 @@
+{
+  "name": "website-control-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A resumable Playwright website-control agent with OpenAI-compatible tool calling.",
+  "scripts": {
+    "start": "node run.js",
+    "web": "node web.js",
+    "check": "node --check run.js && node --check web.js && node --check src/*.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "openai": "^6.3.0",
+    "playwright": "^1.55.0"
+  }
+}

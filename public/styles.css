@@ -1,0 +1,144 @@
+:root {
+  color-scheme: light;
+  --bg: #f4efe6;
+  --panel: rgba(255, 251, 244, 0.92);
+  --ink: #1d1c1a;
+  --muted: #5f564a;
+  --line: #d9cdbb;
+  --accent: #0f766e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(217, 119, 6, 0.14), transparent 30%),
+    radial-gradient(circle at top right, rgba(15, 118, 110, 0.12), transparent 28%),
+    linear-gradient(180deg, #f8f3eb, var(--bg));
+}
+
+.page {
+  width: min(1180px, calc(100% - 32px));
+  margin: 32px auto;
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 20px;
+  box-shadow: 0 18px 50px rgba(62, 49, 26, 0.08);
+}
+
+h1,
+h2 {
+  margin-top: 0;
+  font-family: "IBM Plex Serif", "Georgia", serif;
+}
+
+.subtle {
+  color: var(--muted);
+}
+
+form,
+.checks {
+  display: grid;
+  gap: 14px;
+}
+
+.grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 1fr 140px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.95rem;
+}
+
+input,
+textarea,
+select,
+button {
+  font: inherit;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: #fffdfa;
+  color: var(--ink);
+  border-radius: 12px;
+  padding: 11px 12px;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.checks {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.checks label {
+  align-items: center;
+  grid-auto-flow: column;
+  justify-content: start;
+  gap: 10px;
+}
+
+button {
+  border: 0;
+  border-radius: 999px;
+  padding: 11px 18px;
+  background: linear-gradient(135deg, var(--accent), #155e75);
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.actions,
+.header-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.logs {
+  min-height: 620px;
+  max-height: 72vh;
+  overflow: auto;
+  margin: 0;
+  padding: 16px;
+  border-radius: 14px;
+  background: #151515;
+  color: #dfdfd8;
+  border: 1px solid #2d2d2d;
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 960px) {
+  .page {
+    grid-template-columns: 1fr;
+  }
+
+  .logs {
+    min-height: 420px;
+  }
+}

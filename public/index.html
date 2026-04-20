@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Website Control Agent</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="panel form-panel">
+        <h1>Website Control Agent</h1>
+        <p class="subtle">
+          Browser agent with provider selection, resumable runs, and an optional guarded shell tool.
+        </p>
+
+        <form id="run-form">
+          <label>
+            Provider
+            <select id="provider" name="provider">
+              <option value="openai">OpenAI</option>
+              <option value="deepseek">DeepSeek</option>
+            </select>
+          </label>
+
+          <label>
+            Model
+            <input id="model" name="model" type="text" value="gpt-5.4-mini" />
+          </label>
+
+          <label>
+            Goal
+            <textarea
+              id="goal"
+              name="goal"
+              rows="5"
+              placeholder="Open a site and summarize it, or use run_command for simple terminal inspection."
+            ></textarea>
+          </label>
+
+          <label>
+            Start URL
+            <input id="startUrl" name="startUrl" type="url" placeholder="https://news.ycombinator.com" />
+          </label>
+
+          <label>
+            Allowed domains
+            <input id="allowedDomains" name="allowedDomains" type="text" placeholder="news.ycombinator.com,github.com" />
+          </label>
+
+          <div class="grid">
+            <label>
+              Working directory
+              <input id="commandCwd" name="commandCwd" type="text" value="/home/lachlan/ProjectsLFS/Agent" />
+            </label>
+            <label>
+              Max steps
+              <input id="maxSteps" name="maxSteps" type="number" min="1" max="50" value="15" />
+            </label>
+          </div>
+
+          <div class="checks">
+            <label><input id="headless" name="headless" type="checkbox" checked /> Headless browser</label>
+            <label><input id="allowShellTool" name="allowShellTool" type="checkbox" /> Enable shell tool</label>
+            <label><input id="allowPasswords" name="allowPasswords" type="checkbox" /> Allow password typing</label>
+            <label><input id="allowDestructive" name="allowDestructive" type="checkbox" /> Allow destructive actions</label>
+          </div>
+
+          <div class="actions">
+            <button type="submit">Start run</button>
+            <span id="key-status" class="subtle"></span>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel output-panel">
+        <div class="header-row">
+          <h2>Run output</h2>
+          <div id="run-meta" class="subtle"></div>
+        </div>
+        <pre id="logs" class="logs">No run started.</pre>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
