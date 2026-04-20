@@ -96,6 +96,12 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
         ? body.commandCwd.trim()
         : current.commandCwd || path.resolve(baseDir, ".."),
     allowShellTool: typeof body.allowShellTool === "boolean" ? body.allowShellTool : Boolean(current.allowShellTool),
+    useDockerSandbox:
+      typeof body.useDockerSandbox === "boolean" ? body.useDockerSandbox : Boolean(current.useDockerSandbox),
+    dockerSandboxImage:
+      typeof body.dockerSandboxImage === "string" && body.dockerSandboxImage.trim()
+        ? body.dockerSandboxImage.trim()
+        : current.dockerSandboxImage || "agintiflow-sandbox:latest",
     allowPasswords: typeof body.allowPasswords === "boolean" ? body.allowPasswords : Boolean(current.allowPasswords),
     allowDestructive:
       typeof body.allowDestructive === "boolean" ? body.allowDestructive : Boolean(current.allowDestructive),
@@ -128,6 +134,8 @@ function buildRunConfig(body, overrides = {}) {
       allowPasswords: merged.allowPasswords,
       allowDestructive: merged.allowDestructive,
       allowShellTool: merged.allowShellTool,
+      useDockerSandbox: merged.useDockerSandbox,
+      dockerSandboxImage: merged.dockerSandboxImage,
       commandCwd: merged.commandCwd,
       baseDir,
       sessionId: overrides.sessionId,

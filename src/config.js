@@ -48,6 +48,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
 
   return {
     ...defaults,
+    baseDir,
     goal: args.goal || "",
     startUrl: args.startUrl || "",
     resume: args.resume || "",
@@ -64,6 +65,8 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     allowPasswords: parseBoolean(overrides.allowPasswords ?? process.env.ALLOW_PASSWORDS, false),
     allowDestructive: parseBoolean(overrides.allowDestructive ?? process.env.ALLOW_DESTRUCTIVE, false),
     allowShellTool: parseBoolean(overrides.allowShellTool ?? process.env.ALLOW_SHELL_TOOL, false),
+    useDockerSandbox: parseBoolean(overrides.useDockerSandbox ?? process.env.USE_DOCKER_SANDBOX, false),
+    dockerSandboxImage: overrides.dockerSandboxImage || process.env.DOCKER_SANDBOX_IMAGE || "agintiflow-sandbox:latest",
     commandCwd: path.resolve(overrides.commandCwd || process.env.COMMAND_CWD || process.cwd()),
     sessionsDir: path.resolve(baseDir, ".sessions"),
     onLog: overrides.onLog,

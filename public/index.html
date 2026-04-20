@@ -11,7 +11,7 @@
       <section class="panel form-panel">
         <h1>Website Control Agent</h1>
         <p class="subtle">
-          Browser agent with provider selection, resumable runs, persisted settings, and an optional guarded shell tool.
+          Browser agent with provider selection, resumable runs, persisted settings, and an optional guarded shell tool with Docker sandbox support.
         </p>
 
         <form id="run-form">
@@ -62,9 +62,21 @@
           <div class="checks">
             <label><input id="headless" name="headless" type="checkbox" checked /> Headless browser</label>
             <label><input id="allowShellTool" name="allowShellTool" type="checkbox" checked /> Enable shell tool</label>
+            <label><input id="useDockerSandbox" name="useDockerSandbox" type="checkbox" /> Use Docker sandbox</label>
             <label><input id="allowPasswords" name="allowPasswords" type="checkbox" /> Allow password typing</label>
             <label><input id="allowDestructive" name="allowDestructive" type="checkbox" /> Allow destructive actions</label>
           </div>
+
+          <label>
+            Docker image
+            <input
+              id="dockerSandboxImage"
+              name="dockerSandboxImage"
+              type="text"
+              value="agintiflow-sandbox:latest"
+              placeholder="agintiflow-sandbox:latest"
+            />
+          </label>
 
           <div class="actions">
             <button type="submit">Start run</button>

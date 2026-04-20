@@ -19,6 +19,7 @@ What it keeps:
 - pre-tool guardrails
 - provider abstraction for OpenAI and DeepSeek
 - optional guarded shell commands for simple terminal inspection
+- optional Docker-backed shell sandboxing
 - lazy browser startup so browser work begins only when the model chooses a browser tool
 
 ## Install
@@ -48,6 +49,14 @@ Web UI:
 ```bash
 npm run web
 ```
+
+Web UI with Docker-backed shell sandbox enabled:
+
+```bash
+npm run web
+```
+
+Then enable `Use Docker sandbox` in the form. This affects `run_command` only. Browser automation still runs on the host Playwright browser.
 
 Start from a URL:
 
@@ -88,6 +97,8 @@ ALLOWED_DOMAINS=news.ycombinator.com,github.com
 ALLOW_PASSWORDS=false
 ALLOW_DESTRUCTIVE=false
 ALLOW_SHELL_TOOL=false
+USE_DOCKER_SANDBOX=false
+DOCKER_SANDBOX_IMAGE=agintiflow-sandbox:latest
 COMMAND_CWD=/home/lachlan/ProjectsLFS/Agent
 ```
 
@@ -104,12 +115,14 @@ The web UI runs at `http://127.0.0.1:3210` by default. It gives you:
 - editable model field
 - goal, start URL, allowed domains, and working directory inputs
 - toggles for shell tool, headless mode, passwords, and destructive actions
+- optional Docker sandbox toggle and image selection for shell commands
 - live run logs via polling
 
 Behavior note:
 
 - `Start URL` is a suggestion, not an automatic navigation
 - if the shell tool can satisfy the prompt, the agent can stay browser-free for the whole run
+- when `Use Docker sandbox` is enabled, `run_command` executes in a local Docker container with no network and the selected working directory mounted at `/workspace`
 - headless mode defaults to `true` in the web UI
 
 ## Session Artifacts

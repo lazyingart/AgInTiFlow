@@ -7,6 +7,7 @@ import { createClient, createPlan, requestNextStep } from "./model-client.js";
 import { SessionStore } from "./session-store.js";
 import { captureSnapshot } from "./snapshot.js";
 import { checkToolUse } from "./guardrails.js";
+import { ensureDockerSandboxReady, runDockerSandboxCommand } from "./docker-sandbox.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "click", "type", "scroll", "press", "back"]);
@@ -46,7 +47,9 @@ function createInitialState(config, sessionId) {
           "Never navigate outside the allowed domains when an allowlist exists.",
           "Avoid destructive actions, purchases, account changes, and sensitive workflows.",
           config.allowShellTool
-            ? "A read-only shell command tool is available for short local inspection tasks."
+            ? config.useDockerSandbox
+              ? "A read-only shell command tool is available inside a Docker sandbox with no network and a mounted working directory."
+              : "A read-only shell command tool is available for short local inspection tasks."
             : "No shell command tool is available.",
           "When done, call finish with a concise result.",
         ].join(" "),
@@ -57,7 +60,11 @@ function createInitialState(config, sessionId) {
           `Goal: ${config.goal}`,
           config.startUrl ? `Suggested start URL: ${config.startUrl}` : "",
           config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
-          config.allowShellTool ? `Shell working directory: ${config.commandCwd}` : "",
+          config.allowShellTool
+            ? config.useDockerSandbox
+              ? `Shell working directory mounted into Docker: ${config.commandCwd}`
+              : `Shell working directory: ${config.commandCwd}`
+            : "",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -145,7 +152,11 @@ function applyContinuationPrompt(state, config, observers) {
       `Continue with this new request: ${config.goal}`,
       config.startUrl ? `Suggested start URL: ${config.startUrl}` : "",
       config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
-      config.allowShellTool ? `Shell working directory: ${config.commandCwd}` : "",
+      config.allowShellTool
+        ? config.useDockerSandbox
+          ? `Shell working directory mounted into Docker: ${config.commandCwd}`
+          : `Shell working directory: ${config.commandCwd}`
+        : "",
     ]
       .filter(Boolean)
       .join("\n"),
@@ -191,6 +202,10 @@ async function closeBrowser(browserState, store) {
 }
 
 async function runShellCommand(command, config) {
+  if (config.useDockerSandbox) {
+    return runDockerSandboxCommand(command, config);
+  }
+
   const result = await exec(command, {
     cwd: config.commandCwd,
     timeout: 5000,
@@ -211,7 +226,11 @@ async function captureSyntheticSnapshot(store, step, config) {
     pageText: [
       "No browser page is currently open.",
       config.startUrl ? `Suggested start URL: ${config.startUrl}` : "",
-      config.allowShellTool ? `Shell tool available in: ${config.commandCwd}` : "Shell tool disabled.",
+      config.allowShellTool
+        ? config.useDockerSandbox
+          ? `Shell tool available in Docker with mounted workspace: ${config.commandCwd}`
+          : `Shell tool available in: ${config.commandCwd}`
+        : "Shell tool disabled.",
       "Use open_url only if the task actually needs the web.",
     ]
       .filter(Boolean)
@@ -319,11 +338,15 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         }
         break;
       case "run_command": {
+        if (config.useDockerSandbox) {
+          await ensureDockerSandboxReady(config, observers);
+        }
         const commandResult = await runShellCommand(String(args.command), config);
         const result = {
           ok: true,
           toolName: "run_command",
           args,
+          sandbox: config.useDockerSandbox ? "docker" : "host",
           ...commandResult,
         };
         await store.appendEvent("tool.completed", result);
@@ -423,6 +446,8 @@ export async function runAgent(config) {
       model: config.model,
       commandCwd: config.commandCwd,
       allowShellTool: config.allowShellTool,
+      shellSandbox: config.useDockerSandbox ? "docker" : "host",
+      dockerSandboxImage: config.useDockerSandbox ? config.dockerSandboxImage : "",
       startUrl: config.startUrl,
     });
 
@@ -463,6 +488,7 @@ export async function runAgent(config) {
           elements: snapshot.elements,
           browserOpen: Boolean(browserState.page),
           shellToolAvailable: config.allowShellTool,
+          shellSandbox: config.useDockerSandbox ? "docker" : "host",
           commandCwd: config.commandCwd,
           suggestedStartUrl: config.startUrl || "",
         })}`,

@@ -12,6 +12,8 @@ function defaultPreferences(baseDir) {
     allowedDomains: "",
     commandCwd: path.resolve(baseDir, ".."),
     allowShellTool: true,
+    useDockerSandbox: false,
+    dockerSandboxImage: "agintiflow-sandbox:latest",
     allowPasswords: false,
     allowDestructive: false,
   };

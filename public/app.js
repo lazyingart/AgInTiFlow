@@ -29,6 +29,8 @@ function formPayload() {
     maxSteps: Number(document.querySelector("#maxSteps").value) || 15,
     headless: document.querySelector("#headless").checked,
     allowShellTool: document.querySelector("#allowShellTool").checked,
+    useDockerSandbox: document.querySelector("#useDockerSandbox").checked,
+    dockerSandboxImage: document.querySelector("#dockerSandboxImage").value.trim(),
     allowPasswords: document.querySelector("#allowPasswords").checked,
     allowDestructive: document.querySelector("#allowDestructive").checked,
   };
@@ -263,6 +265,8 @@ async function loadConfig() {
   document.querySelector("#headless").checked = prefs.headless ?? data.defaults.headless;
   document.querySelector("#maxSteps").value = prefs.maxSteps ?? data.defaults.maxSteps;
   document.querySelector("#allowShellTool").checked = prefs.allowShellTool ?? true;
+  document.querySelector("#useDockerSandbox").checked = prefs.useDockerSandbox ?? false;
+  document.querySelector("#dockerSandboxImage").value = prefs.dockerSandboxImage || "agintiflow-sandbox:latest";
   document.querySelector("#allowPasswords").checked = prefs.allowPasswords ?? false;
   document.querySelector("#allowDestructive").checked = prefs.allowDestructive ?? false;
 
