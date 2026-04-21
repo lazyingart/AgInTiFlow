@@ -1,0 +1,161 @@
+# LazyingArtBot
+
+path=/home/lachlan/ProjectsLFS/Agent/LazyingArtBot
+timestamp=2026-04-21T17:46:23+08:00
+
+## Top Level
+total 2464
+drwxrwxr-x 28 lachlan lachlan    4096 Apr 20 11:03 .
+drwxrwxr-x 13 lachlan lachlan    4096 Apr 21 17:45 ..
+drwxrwxr-x  3 lachlan lachlan    4096 Apr 20 11:03 .agent
+drwxrwxr-x  4 lachlan lachlan    4096 Apr 20 11:03 .agents
+drwxrwxr-x  3 lachlan lachlan    4096 Apr 20 11:03 .auto-readme-work
+-rw-rw-r--  1 lachlan lachlan    1250 Apr 20 11:03 .detect-secrets.cfg
+-rw-rw-r--  1 lachlan lachlan     849 Apr 20 11:03 .dockerignore
+-rw-rw-r--  1 lachlan lachlan    2663 Apr 20 11:03 .env.example
+drwxrwxr-x  8 lachlan lachlan    4096 Apr 20 11:03 .git
+-rw-rw-r--  1 lachlan lachlan      19 Apr 20 11:03 .gitattributes
+drwxrwxr-x  7 lachlan lachlan    4096 Apr 20 11:03 .github
+-rw-rw-r--  1 lachlan lachlan    1447 Apr 20 11:03 .gitignore
+-rw-rw-r--  1 lachlan lachlan     359 Apr 20 11:03 .gitmodules
+-rw-rw-r--  1 lachlan lachlan     975 Apr 20 11:03 .markdownlint-cli2.jsonc
+-rw-rw-r--  1 lachlan lachlan     139 Apr 20 11:03 .npmrc
+-rw-rw-r--  1 lachlan lachlan     379 Apr 20 11:03 .oxfmtrc.jsonc
+-rw-rw-r--  1 lachlan lachlan     978 Apr 20 11:03 .oxlintrc.json
+drwxrwxr-x  5 lachlan lachlan    4096 Apr 20 11:03 .pi
+-rw-rw-r--  1 lachlan lachlan    3193 Apr 20 11:03 .pre-commit-config.yaml
+-rw-rw-r--  1 lachlan lachlan      36 Apr 20 11:03 .prettierignore
+-rw-rw-r--  1 lachlan lachlan   71447 Apr 20 11:03 .secrets.baseline
+-rw-rw-r--  1 lachlan lachlan     743 Apr 20 11:03 .shellcheckrc
+-rw-rw-r--  1 lachlan lachlan    1054 Apr 20 11:03 .swiftformat
+-rw-rw-r--  1 lachlan lachlan    2837 Apr 20 11:03 .swiftlint.yml
+drwxrwxr-x  2 lachlan lachlan    4096 Apr 20 11:03 .vscode
+-rw-rw-r--  1 lachlan lachlan   17111 Apr 20 11:03 AGENTS.md
+drwxrwxr-x  2 lachlan lachlan    4096 Apr 20 11:03 AgInTi
+-rw-rw-r--  1 lachlan lachlan  156692 Apr 20 11:03 CHANGELOG.md
+lrwxrwxrwx  1 lachlan lachlan      10 Apr 20 11:03 CLAUDE.md -> AGENTS.md
+
+-rw-rw-r--  1 lachlan lachlan    4533 Apr 20 11:03 CONTRIBUTING.md
+-rw-rw-r--  1 lachlan lachlan    1545 Apr 20 11:03 Dockerfile
+-rw-rw-r--  1 lachlan lachlan     373 Apr 20 11:03 Dockerfile.sandbox
+-rw-rw-r--  1 lachlan lachlan     658 Apr 20 11:03 Dockerfile.sandbox-browser
+-rw-rw-r--  1 lachlan lachlan    1074 Apr 20 11:03 LICENSE
+-rw-rw-r--  1 lachlan lachlan 1413716 Apr 20 11:03 README-header.png
+-rw-rw-r--  1 lachlan lachlan   32988 Apr 20 11:03 README.md
+-rw-rw-r--  1 lachlan lachlan  110008 Apr 20 11:03 README_OPENCLAW.md
+-rw-rw-r--  1 lachlan lachlan    3414 Apr 20 11:03 SECURITY.md
+drwxrwxr-x  7 lachlan lachlan    4096 Apr 20 11:03 Swabble
+-rw-rw-r--  1 lachlan lachlan   15156 Apr 20 11:03 appcast.xml
+drwxrwxr-x  6 lachlan lachlan    4096 Apr 20 11:03 apps
+drwxrwxr-x  3 lachlan lachlan    4096 Apr 20 11:03 assets
+-rw-rw-r--  1 lachlan lachlan    1399 Apr 20 11:03 docker-compose.yml
+-rwxrwxr-x  1 lachlan lachlan    6306 Apr 20 11:03 docker-setup.sh
+drwxrwxr-x 29 lachlan lachlan    4096 Apr 20 11:03 docs
+-rw-rw-r--  1 lachlan lachlan    5223 Apr 20 11:03 docs.acp.md
+drwxrwxr-x 37 lachlan lachlan    4096 Apr 20 11:03 extensions
+-rw-rw-r--  1 lachlan lachlan    1166 Apr 20 11:03 fly.private.toml
+-rw-rw-r--  1 lachlan lachlan     773 Apr 20 11:03 fly.toml
+drwxrwxr-x  2 lachlan lachlan    4096 Apr 20 11:03 git-hooks
+drwxrwxr-x  2 lachlan lachlan    4096 Apr 20 11:03 i18n
+-rwxrwxr-x  1 lachlan lachlan     305 Apr 20 11:03 moltbot.mjs
+-rwxrwxr-x  1 lachlan lachlan    1414 Apr 20 11:03 openclaw.mjs
+drwxrwxr-x  8 lachlan lachlan    4096 Apr 20 11:03 orchestral
+-rw-rw-r--  1 lachlan lachlan    9735 Apr 20 11:03 package.json
+drwxrwxr-x  4 lachlan lachlan    4096 Apr 20 11:03 packages
+drwxrwxr-x  2 lachlan lachlan    4096 Apr 20 11:03 patches
+-rw-rw-r--  1 lachlan lachlan  379847 Apr 20 11:03 pnpm-lock.yaml
+-rw-rw-r--  1 lachlan lachlan     274 Apr 20 11:03 pnpm-workspace.yaml
+drwxrwxr-x  2 lachlan lachlan    4096 Apr 20 11:03 references
+-rw-rw-r--  1 lachlan lachlan     480 Apr 20 11:03 render.yaml
+drwxrwxr-x 11 lachlan lachlan    4096 Apr 20 11:03 scripts
+drwxrwxr-x 57 lachlan lachlan    4096 Apr 20 11:03 skills
+drwxrwxr-x 52 lachlan lachlan    4096 Apr 20 11:03 src
+drwxrwxr-x  5 lachlan lachlan    4096 Apr 20 11:03 test
+-rw-rw-r--  1 lachlan lachlan     822 Apr 20 11:03 tsconfig.json
+-rw-rw-r--  1 lachlan lachlan     431 Apr 20 11:03 tsconfig.plugin-sdk.dts.json
+-rw-rw-r--  1 lachlan lachlan     183 Apr 20 11:03 tsconfig.test.json
+-rw-rw-r--  1 lachlan lachlan     801 Apr 20 11:03 tsdown.config.ts
+drwxrwxr-x  4 lachlan lachlan    4096 Apr 20 11:03 ui
+drwxrwxr-x  5 lachlan lachlan    4096 Apr 20 11:03 vendor
+-rw-rw-r--  1 lachlan lachlan    3402 Apr 20 11:03 vitest.config.ts
+-rw-rw-r--  1 lachlan lachlan     670 Apr 20 11:03 vitest.e2e.config.ts
+-rw-rw-r--  1 lachlan lachlan     350 Apr 20 11:03 vitest.extensions.config.ts
+-rw-rw-r--  1 lachlan lachlan     351 Apr 20 11:03 vitest.gateway.config.ts
+-rw-rw-r--  1 lachlan lachlan     410 Apr 20 11:03 vitest.live.config.ts
+-rw-rw-r--  1 lachlan lachlan     513 Apr 20 11:03 vitest.unit.config.ts
+drwxrwxr-x  3 lachlan lachlan    4096 Apr 20 11:03 website
+-rw-rw-r--  1 lachlan lachlan     524 Apr 20 11:03 zizmor.yml
+
+## Selected Files
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/Swabble/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/apps/android/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/apps/ios/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/apps/macos/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/assets/chrome-extension/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/.i18n/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/ja-JP/AGENTS.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/security/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/zh-CN/AGENTS.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/copilot-proxy/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/copilot-proxy/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/diagnostics-otel/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/discord/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/feishu/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/google-antigravity-auth/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/google-antigravity-auth/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/google-gemini-cli-auth/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/google-gemini-cli-auth/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/googlechat/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/imessage/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/irc/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/line/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/matrix/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/mattermost/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/memory-core/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/memory-lancedb/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/minimax-portal-auth/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/minimax-portal-auth/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/msteams/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/nextcloud-talk/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/nostr/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/nostr/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/qwen-portal-auth/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/signal/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/slack/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/telegram/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/tlon/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/tlon/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/twitch/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/twitch/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/whatsapp/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/zalo/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/zalo/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/zalouser/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/zalouser/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/config/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/references/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/scripts/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/packages/clawdbot/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/packages/moltbot/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/references/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/scripts/docs-i18n/go.mod
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/scripts/shell-helpers/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/scripts/web_search_selenium_cli/README.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/skills/local-places/pyproject.toml
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/ui/package.json
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/vendor/a2ui/README.md

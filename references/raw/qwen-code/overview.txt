@@ -1,0 +1,61 @@
+# qwen-code
+
+path=/home/lachlan/ProjectsLFS/Agent/qwen-code
+timestamp=2026-04-21T17:46:23+08:00
+
+## Top Level
+total 964
+drwxrwxr-x 13 lachlan lachlan   4096 Apr 20 13:34 .
+drwxrwxr-x 13 lachlan lachlan   4096 Apr 21 17:45 ..
+-rw-rw-r--  1 lachlan lachlan    213 Apr 20 13:34 .dockerignore
+-rw-rw-r--  1 lachlan lachlan    183 Apr 20 13:34 .editorconfig
+drwxrwxr-x  8 lachlan lachlan   4096 Apr 20 13:34 .git
+-rw-rw-r--  1 lachlan lachlan    650 Apr 20 13:34 .gitattributes
+drwxrwxr-x  6 lachlan lachlan   4096 Apr 20 13:34 .github
+-rw-rw-r--  1 lachlan lachlan   1532 Apr 20 13:34 .gitignore
+drwxrwxr-x  2 lachlan lachlan   4096 Apr 20 13:34 .husky
+-rw-rw-r--  1 lachlan lachlan     36 Apr 20 13:34 .npmrc
+-rw-rw-r--  1 lachlan lachlan      3 Apr 20 13:34 .nvmrc
+-rw-rw-r--  1 lachlan lachlan    345 Apr 20 13:34 .prettierignore
+-rw-rw-r--  1 lachlan lachlan    105 Apr 20 13:34 .prettierrc.json
+drwxrwxr-x  5 lachlan lachlan   4096 Apr 20 13:34 .qwen
+drwxrwxr-x  2 lachlan lachlan   4096 Apr 20 13:34 .vscode
+-rw-rw-r--  1 lachlan lachlan   1621 Apr 20 13:34 .yamllint.yml
+-rw-rw-r--  1 lachlan lachlan   3884 Apr 20 13:34 AGENTS.md
+-rw-rw-r--  1 lachlan lachlan  10468 Apr 20 13:34 CONTRIBUTING.md
+-rw-rw-r--  1 lachlan lachlan   1634 Apr 20 13:34 Dockerfile
+-rw-rw-r--  1 lachlan lachlan  11361 Apr 20 13:34 LICENSE
+-rw-rw-r--  1 lachlan lachlan   1330 Apr 20 13:34 Makefile
+-rw-rw-r--  1 lachlan lachlan  19378 Apr 20 13:34 README.md
+-rw-rw-r--  1 lachlan lachlan    535 Apr 20 13:34 SECURITY.md
+drwxrwxr-x  6 lachlan lachlan   4096 Apr 20 13:34 docs
+drwxrwxr-x  3 lachlan lachlan   4096 Apr 20 13:34 docs-site
+-rw-rw-r--  1 lachlan lachlan   3660 Apr 20 13:34 esbuild.config.js
+drwxrwxr-x  2 lachlan lachlan   4096 Apr 20 13:34 eslint-rules
+-rw-rw-r--  1 lachlan lachlan   9403 Apr 20 13:34 eslint.config.js
+drwxrwxr-x 10 lachlan lachlan   4096 Apr 20 13:34 integration-tests
+-rw-rw-r--  1 lachlan lachlan 801770 Apr 20 13:34 package-lock.json
+-rw-rw-r--  1 lachlan lachlan   6627 Apr 20 13:34 package.json
+drwxrwxr-x 11 lachlan lachlan   4096 Apr 20 13:34 packages
+drwxrwxr-x  4 lachlan lachlan   4096 Apr 20 13:34 scripts
+-rw-rw-r--  1 lachlan lachlan    860 Apr 20 13:34 tsconfig.json
+-rw-rw-r--  1 lachlan lachlan    418 Apr 20 13:34 vitest.config.ts
+
+## Selected Files
+/home/lachlan/ProjectsLFS/Agent/qwen-code/AGENTS.md
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md
+/home/lachlan/ProjectsLFS/Agent/qwen-code/docs-site/README.md
+/home/lachlan/ProjectsLFS/Agent/qwen-code/docs-site/package.json
+/home/lachlan/ProjectsLFS/Agent/qwen-code/integration-tests/concurrent-runner/README.md
+/home/lachlan/ProjectsLFS/Agent/qwen-code/integration-tests/terminal-capture/package.json
+/home/lachlan/ProjectsLFS/Agent/qwen-code/package.json
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/cli/package.json
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/package.json
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/package.json
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/vscode-ide-companion/README.md
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/vscode-ide-companion/package.json
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/web-templates/package.json
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/webui/README.md
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/webui/package.json
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/zed-extension/README.md

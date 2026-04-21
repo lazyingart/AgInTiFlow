@@ -1,0 +1,44 @@
+# claude-code
+
+path=/home/lachlan/ProjectsLFS/Agent/claude-code
+timestamp=2026-04-21T17:46:23+08:00
+
+## Top Level
+total 11052
+drwxrwxr-x 12 lachlan lachlan     4096 Apr 20 10:44 .
+drwxrwxr-x 13 lachlan lachlan     4096 Apr 21 17:45 ..
+drwxrwxr-x  3 lachlan lachlan     4096 Apr 20 10:44 .claude
+drwxrwxr-x  2 lachlan lachlan     4096 Apr 20 10:44 .claude-plugin
+drwxrwxr-x  2 lachlan lachlan     4096 Apr 20 10:44 .devcontainer
+drwxrwxr-x  8 lachlan lachlan     4096 Apr 20 11:02 .git
+-rw-rw-r--  1 lachlan lachlan       35 Apr 20 10:44 .gitattributes
+drwxrwxr-x  4 lachlan lachlan     4096 Apr 20 10:44 .github
+-rw-rw-r--  1 lachlan lachlan       11 Apr 20 10:44 .gitignore
+drwxrwxr-x  2 lachlan lachlan     4096 Apr 20 10:44 .vscode
+-rw-rw-r--  1 lachlan lachlan   239190 Apr 20 10:44 CHANGELOG.md
+-rw-rw-r--  1 lachlan lachlan      150 Apr 20 10:44 LICENSE.md
+-rw-rw-r--  1 lachlan lachlan     2873 Apr 20 10:44 README.md
+-rw-rw-r--  1 lachlan lachlan      693 Apr 20 10:44 SECURITY.md
+drwxrwxr-x  2 lachlan lachlan     4096 Apr 20 10:44 Script
+-rw-rw-r--  1 lachlan lachlan 11002760 Apr 20 10:44 demo.gif
+drwxrwxr-x  5 lachlan lachlan     4096 Apr 20 10:44 examples
+drwxrwxr-x 15 lachlan lachlan     4096 Apr 20 10:44 plugins
+drwxrwxr-x  2 lachlan lachlan     4096 Apr 20 10:44 scripts
+
+## Selected Files
+/home/lachlan/ProjectsLFS/Agent/claude-code/README.md
+/home/lachlan/ProjectsLFS/Agent/claude-code/examples/mdm/README.md
+/home/lachlan/ProjectsLFS/Agent/claude-code/examples/settings/README.md
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/claude-opus-4-5-migration/README.md
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/commit-commands/README.md
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/frontend-design/README.md
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/hookify/README.md
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/ralph-wiggum/README.md

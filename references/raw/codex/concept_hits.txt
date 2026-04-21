@@ -1,0 +1,429 @@
+/home/lachlan/ProjectsLFS/Agent/codex/AGENTS.md:9:  - You operate in a sandbox where `CODEX_SANDBOX_NETWORK_DISABLED=1` will be set whenever you use the `shell` tool. Any existing code that uses `CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR` was authored with this fact in mind. It is often used to early exit out of tests that the author knew you would not be able to run given your sandbox limitations.
+/home/lachlan/ProjectsLFS/Agent/codex/AGENTS.md:10:  - Similarly, when you spawn a process using Seatbelt (`/usr/bin/sandbox-exec`), `CODEX_SANDBOX=seatbelt` will be set on the child process. Integration tests that want to run Seatbelt themselves cannot be run under Seatbelt, so checks for `CODEX_SANDBOX=seatbelt` are also often used to early exit out of tests, as appropriate.
+/home/lachlan/ProjectsLFS/Agent/codex/AGENTS.md:26:- When working with MCP tool calls, prefer using `codex-rs/codex-mcp/src/mcp_connection_manager.rs` to handle mutation of tools and tool calls. Aim to minimize the footprint of changes and leverage existing abstractions rather than plumbing code through multiple levels of function calls.
+/home/lachlan/ProjectsLFS/Agent/codex/AGENTS.md:69:Likewise, when reviewing code, do not hesitate to push back on PRs that would unnecessarily add code to `codex-core`.
+/home/lachlan/ProjectsLFS/Agent/codex/AGENTS.md:79:  - Styled spans: use "text".red(), "text".green(), "text".magenta(), "text".dim(), etc.
+/home/lachlan/ProjectsLFS/Agent/codex/AGENTS.md:112:is easy to review and future diffs stay visual.
+/home/lachlan/ProjectsLFS/Agent/codex/AGENTS.md:120:- Review changes by reading the generated `*.snap.new` files directly in the repo, or preview a specific file:
+/home/lachlan/ProjectsLFS/Agent/codex/AGENTS.md:125:If you don’t have the tool:
+/home/lachlan/ProjectsLFS/Agent/codex/AGENTS.md:147:- `ResponsesRequest` exposes helpers (`body_json`, `input`, `function_call_output`, `custom_tool_call_output`, `call_output`, `header`, `path`, `query_param`) so assertions can target structured payloads instead of manual JSON digging.
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:54:Install the required tooling once:
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:58:rustup toolchain install nightly-2025-09-18 \
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:59:  --component llvm-tools-preview \
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:67:cd tools/argument-comment-lint
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:76:The package is not a full Rust toolchain. Running the prebuilt path still
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:77:requires the pinned nightly toolchain to be installed via `rustup`:
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:80:rustup toolchain install nightly-2025-09-18 \
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:81:  --component llvm-tools-preview \
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:86:The checked-in DotSlash file lives at `tools/argument-comment-lint/argument-comment-lint`.
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:117:It also makes sure the `rustup` shims stay ahead of any direct toolchain
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:125:./tools/argument-comment-lint/run.py -p codex-core
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:133:  $(./tools/argument-comment-lint/list-bazel-targets.sh)
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:134:./tools/argument-comment-lint/run-prebuilt-linter.py -p codex-core
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:143:`tools/argument-comment-lint/list-bazel-targets.sh` to add the internal
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:151:./tools/argument-comment-lint/run-prebuilt-linter.py -p codex-core
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:163:  ./tools/argument-comment-lint/run.py -p codex-core
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md:169:./tools/argument-comment-lint/run-prebuilt-linter.py -p codex-core -- --all-targets
+/home/lachlan/ProjectsLFS/Agent/codex/README.md:2:<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
+/home/lachlan/ProjectsLFS/Agent/codex/README.md:9:</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+/home/lachlan/ProjectsLFS/Agent/codex/third_party/v8/README.md:45:The dedicated publishing workflow is `.github/workflows/rusty-v8-release.yml`.
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/typescript/README.md:3:Embed the Codex agent in your workflows and apps.
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/typescript/README.md:36:`run()` buffers events until the turn finishes. To react to intermediate progress—tool calls, streaming responses, and file change notifications—use `runStreamed()` instead, which returns an async generator of structured events.
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/typescript/README.md:55:The Codex agent can produce a JSON response that conforms to a specified schema. The schema can be provided for each turn as a plain JSON object.
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/typescript/README.md:100:Threads are persisted in `~/.codex/sessions`. If you lose the in-memory `Thread` object, reconstruct it with `resumeThread()` and keep going.
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/typescript/README.md:104:const thread = codex.resumeThread(savedThreadId);
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/typescript/README.md:122:`Codex` client to fully control which variables the CLI receives—useful for sandboxed hosts like Electron apps.
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/typescript/README.md:143:    show_raw_agent_reasoning: true,
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/typescript/README.md:144:    sandbox_workspace_write: { network_access: true },
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/python/README.md:65:## Maintainer workflow
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/python/examples/README.md:67:  - resume a real existing thread (created in-script)
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/python/examples/README.md:74:- `09_async_parity/`
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/python/examples/README.md:75:  - parity-style sync flow (see async parity in other examples)
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/debug-client/README.md:19:You can resume a specific thread:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/debug-client/README.md:29:- `--thread-id <id>`: resume a thread instead of starting a new one.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/debug-client/README.md:32:- `--final-only`: only show completed assistant messages and tool items.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/debug-client/README.md:34:- `--model <name>`: optional model override for thread start/resume.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/debug-client/README.md:35:- `--model-provider <name>`: optional provider override.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/debug-client/README.md:44:- `:resume <thread-id>` resume a thread
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/codex-api/README.md:6:- Owns provider configuration (base URLs, headers, query params), auth header injection, retry tuning, and stream idle settings.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/codex-api/README.md:16:    - `ResponsesApiRequest` for the request body (`model`, `instructions`, `input`, `tools`, `parallel_tool_calls`, reasoning/text controls).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/codex-api/README.md:17:    - `ResponsesOptions` for transport/header concerns (`conversation_id`, `session_source`, `extra_headers`, `compression`, `turn_state`).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server-test-client/README.md:51:  resume-message-v2 <THREAD_ID> "respond with thorough docs on the rust core"
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server-test-client/README.md:57:cargo run --bin codex-app-server-test-client -- thread-resume <THREAD_ID>
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/responses-api-proxy/README.md:16:[model_providers.codex-responses-api-proxy]
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/responses-api-proxy/README.md:22:model_provider = "codex-responses-api-proxy"
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/responses-api-proxy/README.md:35:**IMPORTANT:** `codex-responses-api-proxy` is designed to be run by a privileged user with access to `OPENAI_API_KEY` so that an unprivileged user cannot inspect or tamper with the process. Though if `--http-shutdown` is specified, an unprivileged user _can_ make a `GET` request to `/shutdown` to shutdown the server, as an unprivileged user could not send `SIGTERM` to kill the process.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/responses-api-proxy/README.md:43:A non-privileged user would then run Codex as follows, specifying the `model_provider` dynamically:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/responses-api-proxy/README.md:48:codex exec -c "model_providers.openai-proxy={ name = 'OpenAI Proxy', base_url = '${PROXY_BASE_URL}/v1', wire_api='responses' }" \
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/responses-api-proxy/README.md:49:    -c model_provider="openai-proxy" \
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/responses-api-proxy/README.md:62:- Formats the header value as `Bearer <key>` and attempts to `mlock(2)` the memory holding that header so it is not swapped to disk.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/responses-api-proxy/README.md:88:  --upstream-url "https://YOUR_PROJECT_NAME.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT/responses?api-version=2025-04-01-preview"
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/responses-api-proxy/README.md:98:Care is taken to restrict access/copying to the value of `OPENAI_API_KEY` retained in memory:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/responses-api-proxy/README.md:106:- On UNIX, we `mlock(2)` the memory backing the `&'static str`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:18:- First run with Codex? Start with [`docs/getting-started.md`](../docs/getting-started.md) (links to the walkthrough for prompts, keyboard shortcuts, and session management).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:33:Codex CLI functions as an MCP client that allows the Codex CLI and IDE extension to connect to MCP servers on startup. See the [`configuration documentation`](../docs/config.md#connecting-to-mcp-servers) for details.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:37:Codex can be launched as an MCP _server_ by running `codex mcp-server`. This allows _other_ MCP clients to use Codex as a tool for another agent.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:49:You can enable notifications by configuring a script that is run whenever the agent finishes a turn. The [notify documentation](../docs/config.md#notify) includes a detailed example that explains how to get desktop notifications via [terminal-notifier](https://github.com/julienXX/terminal-notifier) on macOS. When Codex detects that it is running under WSL 2 inside Windows Terminal (`WT_SESSION` is set), the TUI automatically falls back to native Windows toast notifications so approval prompts and completed turns surface even though Windows Terminal does not implement OSC 9.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:54:Use `codex exec --ephemeral ...` to run without persisting session rollout files to disk.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:58:To test to see what happens when a command is run under the sandbox provided by Codex, we provide the following subcommands in Codex CLI:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:62:codex sandbox macos [--full-auto] [--log-denials] [COMMAND]...
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:65:codex sandbox linux [--full-auto] [COMMAND]...
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:68:codex sandbox windows [--full-auto] [COMMAND]...
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:75:### Selecting a sandbox policy via `--sandbox`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:77:The Rust CLI exposes a dedicated `--sandbox` (`-s`) flag that lets you pick the sandbox policy **without** having to reach for the generic `-c/--config` option:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:80:# Run Codex with the default, read-only sandbox
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:81:codex --sandbox read-only
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:83:# Allow the agent to write within the current workspace while still blocking network access
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:84:codex --sandbox workspace-write
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:86:# Danger! Disable sandboxing entirely (only do this if you are already running in a container or other isolated env)
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:87:codex --sandbox danger-full-access
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:90:The same setting can be persisted in `~/.codex/config.toml` via the top-level `sandbox_mode = "MODE"` key, e.g. `sandbox_mode = "workspace-write"`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:91:In `workspace-write`, Codex also includes `~/.codex/memories` in its writable roots so memory maintenance does not require an extra approval.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md:100:- [`cli/`](./cli) CLI multitool that provides the aforementioned CLIs via subcommands.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/chatgpt/README.md:3:This crate pertains to first party ChatGPT APIs and products such as Codex agent.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/execpolicy/README.md:8:- `justification` is an optional human-readable rationale for why a rule exists. It can be provided for any `decision` and may be surfaced in different contexts (for example, in approval prompts or rejection messages). When `decision = "forbidden"` is used, include a recommended alternative in the `justification`, when appropriate (e.g., ``"Use `jj` instead of `git`."``).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/execpolicy/README.md:98:Note: `execpolicy` commands are still in preview. The API may have breaking changes in the future.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:4:Many container runtime tools like `systemd-nspawn`, `docker`,
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:6:orchestration tools (e.g. Kubernetes) to run containers.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:8:These tools are not suitable to give to unprivileged users, because it
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:17:which attempts to allow unprivileged users to use container features.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:41:The maintainers of this tool believe that it does not, even when used
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:53:bubblewrap is a tool for constructing sandbox environments.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:54:bubblewrap is not a complete, ready-made sandbox with a specific security
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:57:Some of bubblewrap's use-cases want a security boundary between the sandbox
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:59:the filesystem for processes inside the sandbox, but do not aim to be a
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:61:As a result, the level of protection between the sandboxed processes and
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:71:Some aspects of sandbox security that require particular care are described
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:77:This program can be shared by all container tools which perform
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:85:clusters.  Having the ability for unprivileged users to use container
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:125:    --new-session \
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:130:illustration.  More often, rather than creating a container using the
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:138:The goal of bubblewrap is to run an application in a sandbox, where it
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:143:exactly what parts of the filesystem should be visible in the sandbox.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:149:sandbox. You can also change what the value of uid/gid should be in the sandbox.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:151:IPC namespaces ([CLONE_NEWIPC](https://linux.die.net/man/2/clone)): The sandbox will get its own copy of all the
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:152:different forms of IPCs, like SysV shared memory and semaphores.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:154:PID namespaces ([CLONE_NEWPID](https://linux.die.net/man/2/clone)): The sandbox will not see any processes outside the sandbox. Additionally, bubblewrap will run a trivial pid1 inside your container to handle the requirements of reaping children in the sandbox. This avoids what is known now as the [Docker pid 1 problem](https://blog.phusion.nl/2015/01/20/docker-and-the-pid-1-zombie-reaping-problem/).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:157:Network namespaces ([CLONE_NEWNET](https://linux.die.net/man/2/clone)): The sandbox will not see the network. Instead it will have its own network namespace with only a loopback device.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:159:UTS namespace ([CLONE_NEWUTS](https://linux.die.net/man/2/clone)): The sandbox will have its own hostname.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:161:Seccomp filters: You can pass in seccomp filters that limit which syscalls can be done in the sandbox. For more information, see [Seccomp](https://en.wikipedia.org/wiki/Seccomp).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:166:As noted in the [Sandbox security](#sandbox-security) section above,
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:167:the level of protection between the sandboxed processes and the host system
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:172:argument `--new-session` is needed to protect against out-of-sandbox
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:174:(see [CVE-2017-5226](https://github.com/containers/bubblewrap/issues/142)).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:176:- Everything mounted into the sandbox can potentially be used to escalate
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:178:For example, if you bind a D-Bus socket into the sandbox, it can be used to
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:183:- Some applications deploy their own sandboxing mechanisms, and these can be
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:184:restricted by the constraints imposed by bubblewrap's sandboxing.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:189:the sandbox, the browser cannot load these rules from this file and cannot
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:197:a setuid tool with a lot of desktop-specific sandboxing features.  For
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:218:namespaces to set up its sandbox, though it could easily be adapted
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:229:[runC](https://github.com/opencontainers/runc) is currently working on
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:230:supporting [rootless containers](https://github.com/opencontainers/runc/pull/774),
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:233:creation, and management of containers. However, the standard mode of
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:235:in that it is tooling intended to be invoked by root.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:238:designed to be made setuid, and are distant from supporting such a mode.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:239:However with rootless containers, runC will be able to fulfill certain usecases
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:244:runC, so inherits all of its design tradeoffs.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:250:tool runs as the parent of the application (so wraps it in some sense) and creates
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/vendor/bubblewrap/README.md:251:a protective layer (the sandbox) around it.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/stdio-to-uds/README.md:8:- The UDS can leverage UNIX file permissions to restrict access.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/shell-escalation/README.md:11:  within the sandboxed shell.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/shell-escalation/README.md:13:  faithfully outside the sandbox. When the process completes, the server forwards the exit code
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server-client/README.md:14:- in-memory request/event transport wiring
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server-client/README.md:50:- caller sends `thread/start` or `thread/resume`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server-client/README.md:52:- richer session metadata may arrive later as a `SessionConfigured`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/README.md:3:This crate implements the business logic for Codex. It is designed to be used by the various Codex UIs written in Rust.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/README.md:11:Expects `/usr/bin/sandbox-exec` to be present.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/README.md:13:When using the workspace-write sandbox policy, the Seatbelt profile allows
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/README.md:25:Expects the binary containing `codex-core` to run the equivalent of `codex sandbox linux` (legacy alias: `codex debug landlock`) when `arg0` is `codex-linux-sandbox`. See the `codex-arg0` crate for details.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/README.md:27:Legacy `SandboxPolicy` / `sandbox_mode` configs are still supported on Linux.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/README.md:29:policy is sandbox-equivalent to the legacy model after `cwd` resolution.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/README.md:38:The Linux sandbox helper prefers the first `bwrap` found on `PATH` outside the
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/README.md:44:path instead of printing directly from the sandbox helper. Codex also surfaces
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/README.md:46:normal Linux bubblewrap path. WSL1 is not supported for bubblewrap sandboxing
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/README.md:48:sandboxed shell commands that would enter the bubblewrap path before invoking
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/README.md:53:Legacy `SandboxPolicy` / `sandbox_mode` configs are still supported on
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/README.md:66:The elevated Windows sandbox also supports:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/README.md:78:New `[permissions]` / split filesystem policies remain supported on Windows
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/exec-server/README.md:14:top-level `codex` binary owns hidden helper dispatch for sandboxed
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/exec-server/README.md:15:filesystem operations and `codex-linux-sandbox`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/exec-server/README.md:275:Each filesystem request accepts an optional `sandbox` object. When `sandbox`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/exec-server/README.md:278:prepared through the shared sandbox transform path. Helper requests and
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/exec-server/README.md:297:- sandbox-denied filesystem operations
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/exec-server/README.md:316:## Example session
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/execpolicy-legacy/README.md:13:(\*) Whether an `execv(3)` call should be considered "safe" often requires additional context beyond the arguments to `execv()` itself. For example, if you trust an autonomous software agent to write files in your source tree, then deciding whether `/bin/cp foo bar` is "safe" depends on `getcwd(3)` for the calling process as well as the `realpath` of `foo` and `bar` when resolved against `getcwd()`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/execpolicy-legacy/README.md:52:Further, "safety" in this system is not a guarantee that the command will execute successfully. As an example, `cat /Users/mbolin/code/codex/README.md` may be considered "safe" if the system has decided the agent is allowed to read anything under `/Users/mbolin/code/codex`, but it will fail at runtime if `README.md` does not exist. (Though this is "safe" in that the agent did not read any files that it was not authorized to read.)
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/execpolicy-legacy/README.md:137:It is also possible to define a rule that, if it matches a command, should flag it as _forbidden_. For example, we do not want agents to be able to run `applied deploy` _ever_, so we define the following rule:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/config_loader/README.md:3:This module is the canonical place to **load and describe Codex configuration layers** (user config, CLI/session overrides, managed config, and MDM-managed preferences) and to produce:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/config_loader/README.md:70:- `overrides.rs`: CLI dotted-path overrides → TOML “session flags” layer.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/process-hardening/README.md:3:This crate provides `pre_main_hardening()`, which is designed to be called pre-`main()` (using `#[ctor::ctor]`) to perform various process hardening steps, such as
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:3:This module runs a startup memory pipeline for eligible sessions.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:15:- The dated snapshot-copy workflow is used in the separate `openai/project/agent_memory/write` harness repo, not here.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:19:The pipeline is triggered when a root session starts, and only if:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:21:- the session is not ephemeral
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:22:- the memory feature is enabled
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:23:- the session is not a sub-agent session
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:30:Phase 1 finds recent eligible rollouts and extracts a structured memory from each one.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:35:- from allowed interactive session sources
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:44:- filters rollout content down to memory-relevant response items
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:47:  - a detailed `raw_memory`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:50:- redacts secrets from the generated memory fields
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:53:Concurrency / coordination:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:55:- Phase 1 runs multiple extraction jobs in parallel (with a fixed concurrency cap) so startup memory generation can process several rollouts at once.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:61:- `succeeded` (memory produced)
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:65:Phase 1 is the stage that turns individual rollouts into DB-backed memory records.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:69:Phase 2 consolidates the latest stage-1 outputs into the filesystem memory artifacts and then runs a dedicated consolidation agent.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:83:- syncs local memory artifacts under the memories root:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:87:- finds old resource files from memory extensions under
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:88:  `memories_extensions/<extension>/resources/` for extension directories that
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:89:  have an `instructions.md`, using the memory module retention window
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:90:- if there are no Phase 1 inputs or old extension resources, marks the job
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:95:- spawns an internal consolidation sub-agent
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:99:- includes old extension resource paths in the prompt diff
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:101:- disables collab for that agent (to prevent recursive delegation)
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:102:- watches the agent status and heartbeats the global job lease while it runs
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:103:- marks the phase-2 job success/failure in the state DB when the agent finishes
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:104:- prunes old extension resource files after the consolidation agent completes
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:120:- before the agent starts, local `rollout_summaries/` and `raw_memories.md`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:133:In practice, this phase is responsible for refreshing the on-disk memory workspace and producing/updating the higher-level consolidated memory outputs.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:137:- Phase 1 scales across many rollouts and produces normalized per-rollout memory records.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/src/memories/README.md:138:- Phase 2 serializes global consolidation so the shared memory artifacts are updated safely and consistently.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/network-proxy/README.md:16:Network settings live under the selected permissions profile. Example config:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/network-proxy/README.md:19:default_permissions = "workspace"
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/network-proxy/README.md:21:[permissions.workspace.network]
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/network-proxy/README.md:53:[permissions.workspace.network.domains]
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/network-proxy/README.md:61:[permissions.workspace.network.unix_sockets]
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/network-proxy/README.md:140:core map exec approvals to network access, e.g. if a user already approved `curl *` for a session,
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/file-search/README.md:3:Fast fuzzy file search tool for Codex.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/README.md:6:  and `codex_otel::provider`).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/README.md:13:Create an OTEL provider from `OtelSettings`. The provider also configures
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/README.md:44:if let Some(provider) = OtelProvider::from(&settings)? {
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/README.md:46:        .with(provider.logger_layer())
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/README.md:47:        .with(provider.tracing_layer());
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/README.md:55:Codex-specific session events. Rich session/business events should go through
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/README.md:71:    session_source,
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/README.md:77:## Metrics (OTLP or in-memory)
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/README.md:82:- In-memory: records via `opentelemetry_sdk::metrics::InMemoryMetricExporter` for tests/assertions; call `shutdown()` to flush.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/README.md:107:metrics.counter("codex.session_started", 1, &[("source", "tui")])?;
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/README.md:111:In-memory (tests):
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/README.md:115:let metrics = MetricsClient::new(MetricsConfig::in_memory(
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/README.md:122:metrics.shutdown()?; // flushes in-memory exporter
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/README.md:127:Trace propagation helpers remain separate from the session event emitter:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/README.md:137:- `SessionTelemetry::shutdown_metrics()` flushes and shuts down the metrics provider.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/apply-patch/tests/fixtures/scenarios/README.md:6:Each test case is one directory, composed of input state (input/), the patch operation (patch.txt), and the expected final state (expected/). This structure is designed to keep tests simple (i.e. test exactly one patch at a time) while still providing enough flexibility to test any given operation across files.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:3:`codex app-server` is the interface Codex uses to power rich interfaces such as the [Codex VS Code extension](https://marketplace.visualstudio.com/items?itemName=openai.chatgpt).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:40:- Loopback websocket listeners (`ws://127.0.0.1:PORT`) remain appropriate for localhost and SSH port-forwarding workflows.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:74:- **Thread**: A conversation between a user and the Codex agent. Each thread contains multiple turns.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:75:- **Turn**: One turn of the conversation, typically starting with a user message and finishing with an agent message. Each turn contains multiple items.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:76:- **Item**: Represents user inputs and agent outputs as part of the turn, persisted and used as the context for future conversations. Example items include user message, agent reasoning, agent message, shell command, file edit, etc.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:83:- Start (or resume) a thread: Call `thread/start` to open a fresh conversation. The response returns the thread object and you’ll also get a `thread/started` notification. If you’re continuing an existing conversation, call `thread/resume` with its ID instead. If you want to branch from an existing conversation, call `thread/fork` to create a new thread id with copied history. Like `thread/start`, `thread/fork` also accepts `ephemeral: true` for an in-memory temporary thread.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:84:  The returned `thread.ephemeral` flag tells you whether the session is intentionally in-memory only; when it is `true`, `thread.path` is `null`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:85:- Begin a turn: To send user input, call `turn/start` with the target `threadId` and the user's input. Optional fields let you override model, cwd, sandbox policy, approval policy, approvals reviewer, etc. This immediately returns the new turn object. The app-server emits `turn/started` when that turn actually begins running.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:86:- Stream events: After `turn/start`, keep reading JSON-RPC notifications on stdout. You’ll see `item/started`, `item/completed`, deltas like `item/agentMessage/delta`, tool progress, etc. These represent streaming model output plus any side effects (commands, tool calls, reasoning notes).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:91:Clients must send a single `initialize` request per transport connection before invoking any other method on that connection, then acknowledge with an `initialized` notification. The server returns the user agent string it will present to upstream services, `codexHome` for the server's Codex home directory, and `platformFamily` and `platformOs` strings describing the app-server runtime target; subsequent requests issued before initialization receive a `"Not initialized"` error, and repeated `initialize` calls on the same connection receive an `"Already initialized"` error.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:101:Example (from OpenAI's official VSCode extension):
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:131:      "optOutNotificationMethods": ["thread/started", "item/agentMessage/delta"]
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:139:- `thread/start` — create a new thread; emits `thread/started` (including the current `thread.status`) and auto-subscribes you to turn/item events for that thread. When the request includes a `cwd` and the resolved sandbox is `workspace-write` or full access, app-server also marks that project as trusted in the user `config.toml`. Pass `sessionStartSource: "clear"` when starting a replacement thread after clearing the current session so `SessionStart` hooks receive `source: "clear"` instead of the default `"startup"`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:140:- `thread/resume` — reopen an existing thread by id so subsequent `turn/start` calls append to it.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:141:- `thread/fork` — fork an existing thread into a new thread id by copying the stored history; if the source thread is currently mid-turn, the fork records the same interruption marker as `turn/interrupt` instead of inheriting an unmarked partial turn suffix. The returned `thread.forkedFromId` points at the source thread when known. Accepts `ephemeral: true` for an in-memory temporary fork, emits `thread/started` (including the current `thread.status`), and auto-subscribes you to turn/item events for the new thread.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:143:- `thread/loaded/list` — list the thread ids currently loaded in memory.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:147:- `thread/memoryMode/set` — experimental; set a thread’s persisted memory eligibility to `"enabled"` or `"disabled"` for either a loaded thread or a stored rollout; returns `{}` on success.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:148:- `memory/reset` — experimental; clear the current `CODEX_HOME/memories` directory and reset persisted memory stage data in sqlite while preserving existing thread memory modes; returns `{}` on success.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:153:- `thread/unarchive` — move an archived rollout file back into the sessions directory; returns the restored `thread` on success and emits `thread/unarchived`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:155:- `thread/shellCommand` — run a user-initiated `!` shell command against a thread; this runs unsandboxed with full access rather than inheriting the thread sandbox policy. Returns `{}` immediately while progress streams through standard turn/item notifications and any active turn receives the formatted output in its message stream.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:157:- `thread/rollback` — drop the last N turns from the agent’s in-memory context and persist a rollback marker in the rollout so future resumes see the pruned history; returns the updated `thread` (with `turns` populated) on success.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:162:- `thread/realtime/start` — start a thread-scoped realtime session (experimental); pass `outputModality: "text"` or `outputModality: "audio"` to choose model output, returns `{}` and streams `thread/realtime/*` notifications. Omit `transport` for the websocket transport, or pass `{ "type": "webrtc", "sdp": "..." }` to create a WebRTC session from a browser-generated SDP offer; the remote answer SDP is emitted as `thread/realtime/sdp`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:163:- `thread/realtime/appendAudio` — append an input audio chunk to the active realtime session (experimental); returns `{}`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:164:- `thread/realtime/appendText` — append text input to the active realtime session (experimental); returns `{}`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:165:- `thread/realtime/stop` — stop the active realtime session for the thread (experimental); returns `{}`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:166:- `review/start` — kick off Codex’s automated reviewer for a thread; responds like `turn/start` and emits `item/started`/`item/completed` notifications with `enteredReviewMode` and `exitedReviewMode` items, plus a final assistant `agentMessage` containing the review.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:167:- `command/exec` — run a single command under the server sandbox without starting a thread/turn (handy for utilities and validation).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:168:- `command/exec/write` — write base64-decoded stdin bytes to a running `command/exec` session or close stdin; returns `{}`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:169:- `command/exec/resize` — resize a running PTY-backed `command/exec` session by `processId`; returns `{}`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:170:- `command/exec/terminate` — terminate a running `command/exec` session by `processId`; returns `{}`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:171:- `command/exec/outputDelta` — notification emitted for base64-encoded stdout/stderr chunks from a streaming `command/exec` session.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:184:- `experimentalFeature/enablement/set` — patch the in-memory process-wide runtime feature enablement for the currently supported feature keys (`apps`, `plugins`). For each feature, precedence is: cloud requirements > --enable <feature_name> > config.toml > experimentalFeature/enablement/set (new) > code default.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:187:- `marketplace/add` — add a remote plugin marketplace from an HTTP(S) Git URL, SSH Git URL, or GitHub `owner/repo` shorthand, then persist it into the user marketplace config. Returns the installed root path plus whether the marketplace was already present.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:188:- `plugin/list` — list discovered plugin marketplaces and plugin state, including effective marketplace install/auth policy metadata, fail-open `marketplaceLoadErrors` entries for marketplace files that could not be parsed or loaded, and best-effort `featuredPluginIds` for the official curated marketplace. `interface.category` uses the marketplace category when present; otherwise it falls back to the plugin manifest category (**under development; do not call from production clients yet**).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:189:- `plugin/read` — read one plugin by `marketplacePath` plus `pluginName`, returning marketplace info, a list-style `summary`, manifest descriptions/interface metadata, and bundled skills/apps/MCP server names. Returned plugin skills include their current `enabled` state after local config filtering. Plugin app summaries also include `needsAuth` when the server can determine connector accessibility (**under development; do not call from production clients yet**).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:193:- `plugin/install` — install a plugin from a discovered marketplace entry, rejecting marketplace entries marked unavailable for install, install MCPs if any, and return the effective plugin auth policy plus any apps that still need auth (**under development; do not call from production clients yet**).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:194:- `plugin/uninstall` — uninstall a plugin by id by removing its cached files and clearing its user-level config entry (**under development; do not call from production clients yet**).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:196:- `tool/requestUserInput` — prompt the user with 1–3 short questions for a tool call and return their answers (experimental).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:198:- `mcpServerStatus/list` — enumerate configured MCP servers with their tools and auth status, plus resources/resource templates for `full` detail; supports cursor+limit pagination. If `detail` is omitted, the server defaults to `full`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:200:- `mcpServer/tool/call` — call a tool on a thread's configured MCP server by `threadId`, `server`, `tool`, optional `arguments`, and optional `_meta`, returning the MCP tool result.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:201:- `windowsSandbox/setupStart` — start Windows sandbox setup for the selected mode (`elevated` or `unelevated`); accepts an optional absolute `cwd` to target setup for a specific workspace, returns `{ started: true }` immediately, and later emits `windowsSandbox/setupCompleted`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:204:- `externalAgentConfig/detect` — detect migratable external-agent artifacts with `includeHome` and optional `cwds`; each detected item includes `cwd` (`null` for home), and plugin migration items may additionally include structured `details` grouping plugin ids under each detected marketplace name.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:205:- `externalAgentConfig/import` — apply selected external-agent migration items by passing explicit `migrationItems` with `cwd` (`null` for home) and any plugin `details` returned by detect. When a request includes plugin imports, the server emits `externalAgentConfig/import/completed` after the full import finishes (immediately after the response when everything completed synchronously, or after background remote imports finish).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:208:- `configRequirements/read` — fetch loaded requirements constraints from `requirements.toml` and/or MDM (or `null` if none are configured), including allow-lists (`allowedApprovalPolicies`, `allowedSandboxModes`, `allowedWebSearchModes`), pinned feature values (`featureRequirements`), `enforceResidency`, and `network` constraints such as canonical domain/socket permissions plus `managedAllowedDomainsOnly`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:210:### Example: Start or resume a thread
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:221:    "sandbox": "workspaceWrite",
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:224:    "sessionStartSource": "startup", // optional: "startup" (default) or "clear"
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:244:        "preview": "",
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:254:To continue a stored session, call `thread/resume` with the `thread.id` you previously recorded. The response shape matches `thread/start`. When the stored session includes persisted token usage, the server emits `thread/tokenUsage/updated` immediately after the response so clients can render restored usage before the next turn starts. You can also pass the same configuration overrides supported by `thread/start`, including `approvalsReviewer`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:256:By default, resume uses the latest persisted `model` and `reasoningEffort` values associated with the thread. Supplying any of `model`, `modelProvider`, `config.model`, or `config.model_reasoning_effort` disables that persisted fallback and uses the explicit overrides plus normal config resolution instead.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:261:{ "method": "thread/resume", "id": 11, "params": {
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:268:To branch from a stored session, call `thread/fork` with the `thread.id`. This creates a new thread id and emits a `thread/started` notification for it. When the source history includes persisted token usage, the server also emits `thread/tokenUsage/updated` for the new thread immediately after the response. If the source thread is actively running, the fork snapshots it as if the current turn had been interrupted first. Pass `ephemeral: true` when the fork should stay in-memory only:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:276:Experimental API: `thread/start`, `thread/resume`, and `thread/fork` accept `persistExtendedHistory: true` to persist a richer subset of ThreadItems for non-lossy history when calling `thread/read`, `thread/resume`, and `thread/fork` later. This does not backfill events that were not persisted previously.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:286:- `modelProviders` — restrict results to specific providers; unset, null, or an empty array will include all providers.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:287:- `sourceKinds` — restrict results to specific sources; omit or pass `[]` for interactive sessions only (`cli`, `vscode`).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:289:- `cwd` — restrict results to threads whose session cwd exactly matches this path. Relative paths are resolved against the app-server process cwd before matching.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:292:- Responses include `agentNickname` and `agentRole` for AgentControl-spawned thread sub-agents when available.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:304:        { "id": "thr_a", "preview": "Create a TUI", "modelProvider": "openai", "createdAt": 1730831111, "updatedAt": 1730831111, "status": { "type": "notLoaded" }, "agentNickname": "Atlas", "agentRole": "explorer" },
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:305:        { "id": "thr_b", "preview": "Fix tests", "modelProvider": "openai", "createdAt": 1730750000, "updatedAt": 1730750000, "status": { "type": "notLoaded" } }
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:316:`thread/loaded/list` returns thread ids currently loaded in memory. This is useful when you want to check which sessions are active without scanning rollouts on disk.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:331:- `thread/start`, `thread/fork`, and detached review threads do not emit a separate initial `thread/status/changed`; their `thread/started` notification already carries the current `thread.status`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:370:Use `thread/read` to fetch a stored thread by id without resuming it. Pass `includeTurns` when you want the full rollout history loaded into `thread.turns`. The returned thread includes `agentNickname` and `agentRole` for AgentControl-spawned thread sub-agents when available.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:431:Experimental: use `thread/memoryMode/set` to change whether a thread remains eligible for future memory generation.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:434:{ "method": "thread/memoryMode/set", "id": 26, "params": {
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:441:Experimental: use `memory/reset` to clear local memory artifacts and sqlite-backed memory stage data for the current Codex home. This preserves existing thread memory modes; use `thread/memoryMode/set` separately when a thread's future memory eligibility should change.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:444:{ "method": "memory/reset", "id": 27 }
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:450:Use `thread/archive` to move the persisted rollout (stored as a JSONL file on disk) into the archived sessions directory.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:462:Use `thread/unarchive` to move an archived rollout back into the sessions directory.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:488:Use `thread/shellCommand` for the TUI `!` workflow. The request returns immediately with `{}`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:489:This API runs unsandboxed with full access; it does not inherit the thread
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:490:sandbox policy.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:524:- `"guardian_subagent"` — route approval requests to a carefully prompted subagent, which gathers relevant context and applies a risk-based decision framework before approving or denying the request.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:533:    "sandboxPolicy": {
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:598:### Example: Start a turn (invoke a plugin)
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:600:Invoke a plugin by including a UI mention token such as `@sample` in the text input and adding a `mention` input item with the exact `plugin://<plugin-name>@<marketplace-name>` path returned by `plugin/list`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:607:        { "type": "mention", "name": "Sample Plugin", "path": "plugin://sample@test" }
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:638:Use `thread/realtime/start` with `transport.type: "webrtc"` when a browser or webview owns the `RTCPeerConnection` and app-server should create the server-side realtime session. The transport `sdp` must be the offer SDP produced by `RTCPeerConnection.createOffer()`, not a hand-written or minimal SDP string.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:658:Then send `offer.sdp` to app-server. Core uses `experimental_realtime_ws_backend_prompt` for the backend instructions and the thread conversation id for the realtime session id. The start response is `{}`; the remote answer SDP arrives later as `thread/realtime/sdp` and should be passed to `setRemoteDescription()`:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:665:    "sessionId": null,
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:676:`prompt: ""` when the session should start without that default backend prompt.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:725:active turn, or the active turn kind does not accept same-turn steering (for example review or
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:728:### Example: Request a code review
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:730:Use `review/start` to run Codex’s reviewer on the currently checked-out project. The request takes the thread id plus a `target` describing what should be reviewed:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:734:- `{"type":"commit","sha":"abc1234","title":"Optional subject"}` — review a specific commit.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:735:- `{"type":"custom","instructions":"Free-form reviewer instructions"}` — fallback prompt equivalent to the legacy manual review request.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:736:- `delivery` (`"inline"` or `"detached"`, default `"inline"`) — where the review runs:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:737:  - `"inline"`: run the review as a new turn on the existing thread. The response’s `reviewThreadId` equals the original `threadId`, and no new `thread/started` notification is emitted.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:738:  - `"detached"`: fork a new review thread from the parent conversation and run the review there. The response’s `reviewThreadId` is the id of this new review thread, and the server emits a `thread/started` notification for it before streaming review items.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:743:{ "method": "review/start", "id": 40, "params": {
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:757:    "reviewThreadId": "thr_123"
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:761:For a detached review, use `"delivery": "detached"`. The response is the same shape, but `reviewThreadId` will be the id of the new review thread (different from the original `threadId`). The server also emits a `thread/started` notification for that new thread before streaming the review turn.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:773:      "review": "current changes"
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:779:When the reviewer finishes, the server emits `item/started` and `item/completed`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:780:containing an `exitedReviewMode` item with the final review text:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:789:      "review": "Looks solid overall...\n\n- Prefer Stylize helpers — app.rs:10-20\n  ..."
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:795:The `review` string is plain text that already bundles the overall explanation plus a bullet list for each structured finding (matching `ThreadItem::ExitedReviewMode` in the generated schema). Use this notification to render the reviewer output in your client.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:799:Run a standalone command (argv vector) in the server’s sandbox without creating a thread or turn:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:808:    "sandboxPolicy": { "type": "workspaceWrite" }, // optional; defaults to user config
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:821:- For clients that are already sandboxed externally, set `sandboxPolicy` to `{"type":"externalSandbox","networkAccess":"enabled"}` (or omit `networkAccess` to keep it restricted). Codex will not enforce its own sandbox in this mode; it tells the model it has full file-system access and passes the `networkAccess` state through `environment_context`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:826:- `sandboxPolicy` accepts the same shape used by `turn/start` (e.g., `dangerFullAccess`, `readOnly`, `workspaceWrite` with flags, `externalSandbox` with `networkAccess` `restricted|enabled`).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:834:- Buffered Windows sandbox execution accepts `processId` for correlation, but `command/exec/write` and `command/exec/terminate` are still unsupported for those requests.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:835:- Buffered Windows sandbox execution also requires the default output cap; custom `outputBytesCap` and `disableOutputCap` are unsupported there.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:843:Streaming stdin/stdout uses base64 so PTY sessions can carry arbitrary bytes:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:890:- `command/exec/resize` is only supported for PTY-backed `command/exec` sessions.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:957:Event notifications are the server-initiated event stream for thread lifecycles, turn lifecycles, and the items within them. After you start or resume a thread, keep reading stdout for `thread/started`, `thread/archived`, `thread/unarchived`, `thread/closed`, `turn/*`, and `item/*` notifications.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:959:Thread realtime uses a separate thread-scoped notification surface. `thread/realtime/*` notifications are ephemeral transport events, not `ThreadItem`s, and are not returned by `thread/read`, `thread/resume`, or `thread/fork`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:963:Generic runtime warnings use the `warning` notification: `{ threadId?, message }`. App-server emits this for non-fatal warnings from the core event stream, including cases where not all enabled skills are included in the model-visible skills list for a session.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:969:- Exact-match only: `item/agentMessage/delta` suppresses only that method.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:977:- Opt out of streamed agent text deltas: `item/agentMessage/delta`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:981:The fuzzy file search session API emits per-query notifications:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:983:- `fuzzyFileSearch/sessionUpdated` — `{ sessionId, query, files }` with the current matching files for the active query.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:984:- `fuzzyFileSearch/sessionCompleted` — `{ sessionId, query }` once indexing/matching for that query has completed.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:988:The thread realtime API emits thread-scoped notifications for session lifecycle and streaming media:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:990:- `thread/realtime/started` — `{ threadId, sessionId }` once realtime starts for the thread (experimental).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1000:### Windows sandbox setup events
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1015:- `turn/plan/updated` — `{ turnId, explanation?, plan }` whenever the agent shares or changes its plan; each `plan` entry is `{ step, status }` with `status` in `pending`, `inProgress`, or `completed`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1025:- `agentMessage` — `{id, text}` containing the accumulated agent reply.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1028:- `commandExecution` — `{id, command, cwd, status, commandActions, aggregatedOutput?, exitCode?, durationMs?}` for sandboxed commands; `status` is `inProgress`, `completed`, `failed`, or `declined`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1030:- `mcpToolCall` — `{id, server, tool, status, arguments, result?, error?}` describing MCP calls; `status` is `inProgress`, `completed`, or `failed`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1031:- `collabToolCall` — `{id, tool, status, senderThreadId, receiverThreadId?, newThreadId?, prompt?, agentStatus?}` describing collab tool calls (`spawn_agent`, `send_input`, `resume_agent`, `wait`, `close_agent`); `status` is `inProgress`, `completed`, or `failed`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1032:- `webSearch` — `{id, query, action?}` for a web search request issued by the agent; `action` mirrors the Responses API web_search action payload (`search`, `open_page`, `find_in_page`) and may be omitted until completion.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1033:- `imageView` — `{id, path}` emitted when the agent invokes the image viewer tool.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1034:- `enteredReviewMode` — `{id, review}` sent when the reviewer starts; `review` is a short user-facing label such as `"current changes"` or the requested target description.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1035:- `exitedReviewMode` — `{id, review}` emitted when the reviewer finishes; `review` is the full plain-text review (usually, overall notes plus bullet point findings).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1042:- `item/completed` — sends the final `item` once that work itself finishes (for example, after a tool call or message completes); treat this as the authoritative execution/result state.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1043:- `item/autoApprovalReview/started` — [UNSTABLE] temporary auto-review notification carrying `{threadId, turnId, targetItemId, review, action}` when approval auto-review begins. This shape is expected to change soon.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1044:- `item/autoApprovalReview/completed` — [UNSTABLE] temporary auto-review notification carrying `{threadId, turnId, targetItemId, review, action}` when approval auto-review resolves. This shape is expected to change soon.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1046:`review` is [UNSTABLE] and currently has `{status, riskLevel?, userAuthorization?, rationale?}`, where `status` is one of `inProgress`, `approved`, `denied`, or `aborted`. `riskLevel` is one of `"low"`, `"medium"`, `"high"`, or `"critical"` when present. `userAuthorization` is one of `"unknown"`, `"low"`, `"medium"`, or `"high"` when present. `action` is a tagged union with `type: "command" | "execve" | "applyPatch" | "networkAccess" | "mcpToolCall"`. Command-like actions include a `source` discriminator (`"shell"` or `"unifiedExec"`). These notifications are separate from the target item's own `item/completed` lifecycle and are intentionally temporary while the auto-review app protocol is still being designed.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1050:#### agentMessage
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1052:- `item/agentMessage/delta` — appends streamed text for the agent message; concatenate `delta` values for the same `itemId` in order to reconstruct the full reply.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1071:- `item/fileChange/outputDelta` - contains the tool call response of the underlying `apply_patch` tool call.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1086:  current active turn was not steerable, for example `/review` or manual `/compact`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1093:When an upstream HTTP status is available (for example, from the Responses API or a provider), it is forwarded in `httpStatusCode` on the relevant `codexErrorInfo` variant.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1097:Certain actions (shell commands or modifying files) may require explicit user approval depending on the user's config. When `turn/start` is used, the app-server drives an approval flow by sending a server-initiated JSON-RPC request to the client. The client must respond to tell Codex whether to proceed. UIs should present these requests inline with the active turn so users can review the proposed command or diff before choosing.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1100:- Respond with a single `{ "decision": ... }` payload. Command approvals support `accept`, `acceptForSession`, `acceptWithExecpolicyAmendment`, `applyNetworkPolicyAmendment`, `decline`, or `cancel`. The server resumes or declines the work and ends the item with `item/completed`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1107:2. `item/commandExecution/requestApproval` (request) — carries the same `itemId`, `threadId`, `turnId`, optionally `approvalId` (for subcommand callbacks), and `reason`. For normal command approvals, it also includes `command`, `cwd`, and `commandActions` for friendly display. When `initialize.params.capabilities.experimentalApi = true`, it may also include experimental `additionalPermissions` describing requested per-command sandbox access; any filesystem paths in that payload are absolute on the wire, and network access is represented as `additionalPermissions.network.enabled`. For network-only approvals, those command fields may be omitted and `networkApprovalContext` is provided instead. Optional persistence hints may also be included via `proposedExecpolicyAmendment` and `proposedNetworkPolicyAmendments`. Clients can prefer `availableDecisions` when present to render the exact set of choices the server wants to expose, while still falling back to the older heuristics if it is omitted.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1117:2. `item/fileChange/requestApproval` (request) — includes `itemId`, `threadId`, `turnId`, an optional `reason`, and may include unstable `grantRoot` when the agent is asking for session-scoped write access under a specific root.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1126:When the client responds to `item/tool/requestUserInput`, the server emits `serverRequest/resolved` with `{ threadId, requestId }`. If the pending request is cleared by turn start, turn completion, or turn interruption before the client answers, the server emits the same notification for that cleanup.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1142:For MCP tool approval elicitations, form request `meta` includes
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1143:`codex_approval_kind: "mcp_tool_call"` and may include `persist: "session"`,
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1144:`persist: "always"`, or `persist: ["session", "always"]` to advertise whether
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1145:the client can offer session-scoped and/or persistent approval choices.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1149:The built-in `request_permissions` tool sends an `item/permissions/requestApproval` JSON-RPC request to the client with the requested permission profile. This v2 payload mirrors the command-execution `additionalPermissions` shape: it can request network access and additional filesystem access.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1153:  "method": "item/permissions/requestApproval",
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1160:    "permissions": {
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1169:The client responds with `result.permissions`, which should be the granted subset of the requested permission profile. It may also set `result.scope` to `"session"` to make the grant persist for later turns in the same session; omitted or `"turn"` keeps the existing turn-scoped behavior:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1175:    "scope": "session",
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1176:    "permissions": {
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1185:Only the granted subset matters on the wire. Any permissions omitted from `result.permissions` are treated as denied. Any permissions not present in the original request are ignored by the server.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1187:Within the same turn, granted permissions are sticky: later shell-like tool calls can automatically reuse the granted subset without reissuing a separate permission request.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1189:If the session approval policy uses `Granular` with `request_permissions: false`, standalone `request_permissions` tool calls are auto-denied and no `item/permissions/requestApproval` prompt is sent. Inline `with_additional_permissions` command requests remain controlled by `sandbox_approval`, and any previously granted permissions remain sticky for later shell-like calls in the same turn.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1191:### Dynamic tool calls (experimental)
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1193:`dynamicTools` on `thread/start` and the corresponding `item/tool/call` request/response flow are experimental APIs. To enable them, set `initialize.params.capabilities.experimentalApi = true`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1195:Each dynamic tool may set `deferLoading`. When omitted, it defaults to `false`. Set it to `true` to keep the tool registered and callable by runtime features such as `js_repl`, while excluding it from the model-facing tool list sent on ordinary turns. When `tool_search` is available, deferred dynamic tools are searchable and can be exposed by a matching search result.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1197:When a dynamic tool is invoked during a turn, the server sends an `item/tool/call` JSON-RPC request to the client:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1201:  "method": "item/tool/call",
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1207:    "tool": "lookup_ticket",
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1215:1. `item/started` with `item.type = "dynamicToolCall"`, `status = "inProgress"`, plus `tool` and `arguments`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1216:2. `item/tool/call` request.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1405:Invoke an app by inserting `$<app-slug>` in the text input. The slug is derived from the app name and lowercased with non-alphanumeric characters replaced by `-` (for example, "Demo App" becomes `$demo-app`). Add a `mention` input item (recommended) so the server uses the exact `app://<connector-id>` path rather than guessing by name. Plugins use the same `mention` item shape, but with `plugin://<plugin-name>@<marketplace-name>` paths from `plugin/list`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1475:- `requiresOpenaiAuth` reflects the active provider; when `false`, Codex can run without OpenAI credentials.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1516:   { "id": 4, "result": { "type": "chatgptDeviceCode", "loginId": "<uuid>", "verificationUrl": "https://auth.openai.com/codex/device", "userCode": "ABCD-1234" } }
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md:1518:2. Show `verificationUrl` and `userCode` to the user; the frontend owns the UX.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:1:# codex-tools
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:3:`codex-tools` is intended to become the home for tool-related code that is
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:7:Today this crate is intentionally small. It currently owns the shared tool
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:8:schema and Responses API tool primitives that no longer need to live in
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:9:`core/src/tools/spec.rs` or `core/src/client_common.rs`:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:26:- MCP resource, `list_dir`, and `test_sync_tool` spec builders
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:27:- local host tool spec builders for shell/exec/request-permissions/view-image
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:28:- collaboration and agent-job `ToolSpec` builders for spawn/send/wait/close,
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:30:- discoverable-tool models, client filtering, and `ToolSpec` builders for
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:31:  `tool_search` and `tool_suggest`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:32:- `parse_tool_input_schema()`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:33:- `parse_dynamic_tool()`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:34:- `parse_mcp_tool()`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:35:- `create_tools_json_for_responses_api()`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:36:- `mcp_call_tool_result_output_schema()`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:37:- `tool_definition_to_responses_api_tool()`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:38:- `dynamic_tool_to_responses_api_tool()`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:39:- `mcp_tool_to_responses_api_tool()`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:40:- `mcp_tool_to_deferred_responses_api_tool()`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:41:- `augment_tool_spec_for_code_mode()`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:42:- `tool_spec_to_code_mode_tool_definition()`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:45:move all of `core/src/tools` into this crate in one shot. Instead, the plan is
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:46:to peel off reusable pieces in reviewable increments while keeping
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:52:Over time, this crate should hold tool-facing primitives that are shared by
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:56:- tool input/output parsing helpers
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:57:- tool metadata and compatibility shims that do not depend on `codex-core`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:72:1. Move low-coupling tool primitives here.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:73:2. Switch non-core consumers to depend on `codex-tools` directly.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:76:4. Only extract higher-level tool infrastructure after the crate boundaries are
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:80:helpers from `codex-tools` during the transition.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md:84:This crate should start with stricter structure than `core/src/tools` so it
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:1:# codex-linux-sandbox
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:5:- a `codex-linux-sandbox` standalone executable for Linux that is bundled with the Node.js version of the Codex CLI
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:7:  - the `codex-exec` CLI can check if its arg0 is `codex-linux-sandbox` and, if so, execute as if it were `codex-linux-sandbox`
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:8:  - this should also be true of the `codex` multitool CLI
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:20:Linux bubblewrap path. WSL1 is not supported for bubblewrap sandboxing because
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:21:it cannot create the required user namespaces, so Codex rejects sandboxed shell
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:25:- Legacy `SandboxPolicy` / `sandbox_mode` configs remain supported.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:26:- Bubblewrap is the default filesystem sandbox.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:34:  printing directly from the sandbox helper.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:36:  instead of waiting for a runtime sandbox failure.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:38:- WSL1 is not supported for bubblewrap sandboxing; Codex rejects sandboxed
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:45:  sandbox-equivalent to the legacy model after `cwd` resolution.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:63:  launching the sandbox and matching files are masked in bubblewrap:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:68:  Failure:  any other rg failure aborts sandbox construction
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:71:  Users can cap the scan depth per permissions profile:
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:74:  [permissions.workspace.filesystem]
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:77:  [permissions.workspace.filesystem.":project_roots"]
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:89:  TCP->UDS->TCP routing bridge so tool traffic reaches only configured proxy
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md:94:  you can skip this in restrictive container environments with `--no-proc`.
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/utils/pty/README.md:18:- `SpawnedProcess` bundles `session`, `stdout_rx`, `stderr_rx`, and `exit_rx` (oneshot exit code).
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/utils/pty/README.md:40:let writer = spawned.session.writer_sender();

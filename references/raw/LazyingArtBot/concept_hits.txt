@@ -1,0 +1,429 @@
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/google-gemini-cli-auth/README.md:1:# Google Gemini CLI Auth (OpenClaw plugin)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/google-gemini-cli-auth/README.md:3:OAuth provider plugin for **Gemini CLI** (Google Code Assist).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/google-gemini-cli-auth/README.md:7:Bundled plugins are disabled by default. Enable this one:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/google-gemini-cli-auth/README.md:10:openclaw plugins enable google-gemini-cli-auth
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/google-gemini-cli-auth/README.md:18:openclaw models auth login --provider google-gemini-cli --set-default
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/minimax-portal-auth/README.md:1:# MiniMax OAuth (OpenClaw plugin)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/minimax-portal-auth/README.md:3:OAuth provider plugin for **MiniMax** (OAuth).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/minimax-portal-auth/README.md:7:Bundled plugins are disabled by default. Enable this one:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/minimax-portal-auth/README.md:10:openclaw plugins enable minimax-portal-auth
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/minimax-portal-auth/README.md:22:openclaw models auth login --provider minimax-portal --set-default
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:3:Official Voice Call plugin for **OpenClaw**.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:12:Docs: `https://docs.openclaw.ai/plugins/voice-call`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:13:Plugin system: `https://docs.openclaw.ai/plugin`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:20:openclaw plugins install @openclaw/voice-call
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:25:### Option B: copy into your global extensions folder (dev)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:28:mkdir -p ~/.openclaw/extensions
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:29:cp -R extensions/voice-call ~/.openclaw/extensions/voice-call
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:30:cd ~/.openclaw/extensions/voice-call && pnpm install
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:35:Put under `plugins.entries.voice-call.config`:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:39:  provider: "twilio", // or "telnyx" | "plivo" | "mock"
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:61:  // tunnel: { provider: "ngrok" },
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:78:- `mock` is a local dev provider (no network calls).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:79:- `tunnel.allowNgrokFreeTierLoopbackBypass: true` allows Twilio webhooks with invalid signatures **only** when `tunnel.provider="ngrok"` and `serve.bind` is loopback (ngrok local agent). Use for local dev only.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:84:streaming speech on calls. You can override it under the plugin config with the
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:90:    provider: "openai",
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:101:- Core TTS is used when Twilio media streaming is enabled; otherwise calls fall back to provider native voices.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/voice-call/README.md:137:- Uses webhook signature verification for Twilio/Telnyx/Plivo.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/twitch/README.md:3:Twitch channel plugin for OpenClaw.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/twitch/README.md:8:openclaw plugins install ./extensions/twitch
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/twitch/README.md:14:openclaw plugins install @openclaw/twitch
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/twitch/README.md:17:Onboarding: select Twitch and confirm the install prompt to fetch the plugin automatically.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/twitch/README.md:34:      allowFrom: ["123456789"], // (recommended) Your Twitch user ID only (Convert your twitch username to ID at https://www.streamweasels.com/tools/convert-twitch-username-%20to-user-id/)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/tlon/README.md:1:# Tlon (OpenClaw plugin)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/tlon/README.md:3:Tlon/Urbit channel plugin for OpenClaw. Supports DMs, group mentions, and thread replies.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:14:[![.agents/skills](https://img.shields.io/badge/.agents%2Fskills-4_workflows-0284c7)](#skills-and-orchestration-surfaces)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:15:[![orchestral/prompt_tools](https://img.shields.io/badge/orchestral%2Fprompt__tools-10_groups-f59e0b)](#skills-and-orchestration-surfaces)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:24:**LazyingArtBot** is my personal AI assistant stack for **lazying.art**, built on top of OpenClaw and adapted for daily workflows: multi-channel chat, local-first control, and email -> calendar/reminder/notes automation.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:51:- [LazyingArt workflow focus](#lazyingart-workflow-focus)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:52:- [Orchestral philosophy](#orchestral-philosophy)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:53:- [Prompt tools in LAB](#prompt-tools-in-lab)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:91:| Primary LAB orchestration       | `orchestral/` + `orchestral/prompt_tools/`                |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:92:| Skill surfaces                  | `skills/` (55 local skills) + `.agents/skills/` workflows |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:102:- 🧰 Tool-enabled automation pipeline (scripts + prompt-tools).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:104:- 🧩 Plugin/extension ecosystem (`extensions/*`) for channels/providers/integrations.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:108:  - maintainer workflow skills in `.agents/skills/`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:116:| Multi-channel assistant runtime | Gateway + agent sessions across channels you enable                                                   |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:118:| Tool-enabled workflows          | Shell + file + automation script execution chains                                                     |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:119:| Email automation pipeline       | Parse mail, classify action type, route to Notes/Reminders/Calendar, log actions for review/debugging |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:121:Pipeline steps preserved from current workflow:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:126:- log every action for review and debugging
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:132:This section is the fast system map for operators. It explicitly highlights `skills/`, `.agents/skills/`, `orchestral/prompt_tools/`, and git submodules (including nested submodules visible in this checkout).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:140:  REPO --> CORE["src/ + extensions/ + ui/ + apps/ + docs/"]
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:142:  REPO --> AGSKILLS[".agents/skills/\n(maintainer workflows)"]
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:147:  ORCH --> ORCH_PROMPTS["prompt_tools/"]
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:193:  CHOICE -->|Maintainer workflow| S2[".agents/skills/"]
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:194:  CHOICE -->|Prompt-tool chain| S3["orchestral/prompt_tools/"]
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:199:  S2 --> S2A["review-pr -> prepare-pr -> merge-pr"]
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:220:├─ extensions/              # optional channel/provider/auth plugins
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:222:├─ .agents/skills/          # maintainer workflow skills + PR_WORKFLOW.md
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:223:├─ orchestral/              # LAB orchestration pipelines + prompt tools
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:234:├─ docker-compose.yml       # gateway + CLI containers
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:241:- `orchestral/prompt_tools` is the canonical location for LAB Codex prompt-tooling.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:243:- `.github/workflows.disabled/` is present in this snapshot; active CI behavior should be verified before relying on workflow assumptions.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:254:| Maintainer workflow skills | `.agents/skills/`          | `.agents/skills/PR_WORKFLOW.md`                         | PR triage/review/prepare/merge flow                |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:256:| Prompt-tool groups         | `orchestral/prompt_tools/` | target group folder (`email`, `notes`, `runtime`, etc.) | Tool contracts and chain composition               |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:263:- Examples: `skills/github`, `skills/discord`, `skills/voice-call`, `skills/session-logs`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:265:### `.agents/skills/` (maintainer workflow skills)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:267:- Current workflow skills:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:268:  - `review-pr`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:273:  - `review-pr` -> `prepare-pr` -> `merge-pr`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:275:### `orchestral/` and `orchestral/prompt_tools/`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:284:- `prompt_tools/` (Codex prompt tooling groups + runtime runners)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:286:`orchestral/prompt_tools/` functional group layout:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:301:- `orchestral/prompt_tools/runtime/codex-json-runner.py`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:302:- `orchestral/prompt_tools/runtime/run_auto_ops.sh`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:315:| `AgInTi/OrganoidAgent`                  | `git@github.com:lachlanchen/OrganoidAgent.git`                      | Organoid research agent project                        | uninitialized (`-` status)                                      |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:352:Runtime and tooling baselines from this repository:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:356:- A configured model provider key (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, etc.)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:357:- Optional: Docker + Docker Compose for containerized gateway/CLI
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:358:- Optional for mobile/mac builds: Apple/Android toolchains depending on target platform
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:404:### Optional Docker workflow
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:415:# set at minimum: OPENCLAW_GATEWAY_TOKEN and your model provider key(s)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:442:# Ask the agent directly
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:443:openclaw agent --message "Create today checklist" --thinking high
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:477:3. Set at least one model provider key (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:491:- Run with least privilege and review logs regularly.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:510:## LazyingArt workflow focus
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:523:- Script references in repo: `references/lab-scripts-and-philosophy.md`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:524:- Dedicated Codex prompt tools: `orchestral/prompt_tools/`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:528:## Orchestral philosophy
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:530:LAB orchestration follows one design rule:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:531:break difficult goals into deterministic execution + focused prompt-tool chains.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:535:- Prompt tools handle adaptive intelligence:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:537:- Every stage emits reusable artifacts so downstream tools can compose stronger final notes/email without starting from zero.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:548:### Orchestral workflow sketch
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:553:  PIPE --> TOOLS["orchestral/prompt_tools/runtime/codex-json-runner.py"]
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:561:## Prompt tools in LAB
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:563:Prompt tools are modular, composable, and orchestration-first.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:564:They can run independently or as linked stages in a larger workflow.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:575:- `orchestral/prompt_tools/`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:579:- `orchestral/prompt_tools/runtime/codex-noninteractive.sh`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:580:- `orchestral/prompt_tools/runtime/codex-email-cli.py`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:581:- `orchestral/prompt_tools/runtime/codex-json-runner.py`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:582:- `orchestral/prompt_tools/runtime/run_auto_ops.sh`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:584:Constraint preserved from `orchestral/prompt_tools/README.md`:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:586:- Top-level compatibility wrappers under `orchestral/prompt_tools/*.sh|*.py` were removed.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:599:### Example: ask agent to process daily planning
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:602:openclaw agent --message "Review today inbox and build a prioritized task plan" --thinking high
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:622:### Example: prompt-tool JSON runner
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:625:python3 orchestral/prompt_tools/runtime/codex-json-runner.py \
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:628:  --schema orchestral/prompt_tools/runtime/email_send_schema.json \
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:696:- If optional native peers are missing, review install logs for `@napi-rs/canvas` / `node-llama-cpp` compatibility.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/README.md:779:This repository tracks personal LAB priorities while inheriting core architecture from OpenClaw.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/zalouser/README.md:3:OpenClaw extension for Zalo Personal Account messaging via [zca-cli](https://zca-cli.dev).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/zalouser/README.md:13:- **Agent Tool**: AI agent integration for automated messaging
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/zalouser/README.md:203:The extension registers a `zalouser` tool for AI agents:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/nostr/README.md:3:Nostr DM channel plugin for OpenClaw using NIP-04 encrypted direct messages.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/nostr/README.md:7:This extension adds Nostr as a messaging channel to OpenClaw. It enables your bot to:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/nostr/README.md:16:openclaw plugins install @openclaw/nostr
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/copilot-proxy/README.md:1:# Copilot Proxy (OpenClaw plugin)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/copilot-proxy/README.md:3:Provider plugin for the **Copilot Proxy** VS Code extension.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/copilot-proxy/README.md:7:Bundled plugins are disabled by default. Enable this one:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/copilot-proxy/README.md:10:openclaw plugins enable copilot-proxy
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/copilot-proxy/README.md:18:openclaw models auth login --provider copilot-proxy --set-default
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/README.md:14:- `orchestral/prompt_tools/` – LAB prompt tools and codex runners
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:22:3. Read `memory/YYYY-MM-DD.md` (today + yesterday) for recent context
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:23:4. **If in MAIN SESSION** (direct chat with your human): Also read `MEMORY.md`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:25:Don't ask permission. Just do it.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:29:You wake up fresh each session. These files are your continuity:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:31:- **Daily notes:** `memory/YYYY-MM-DD.md` (create `memory/` if needed) — raw logs of what happened
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:32:- **Long-term:** `MEMORY.md` — your curated memories, like a human's long-term memory
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:38:- **ONLY load in main session** (direct chats with your human)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:39:- **DO NOT load in shared contexts** (Discord, group chats, sessions with other people)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:41:- You can **read, edit, and update** MEMORY.md freely in main sessions
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:43:- This is your curated memory — the distilled essence, not raw logs
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:44:- Over time, review your daily files and update MEMORY.md with what's worth keeping
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:49:- "Mental notes" don't survive session restarts. Files do.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:50:- When someone says "remember this" → update `memory/YYYY-MM-DD.md` or relevant file
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:78:You have access to your human's stuff. That doesn't mean you _share_ their stuff. In groups, you're a participant — not their voice, not their proxy. Think before you speak.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:94:- It's just casual banter between humans
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:100:**The human rule:** Humans in group chats don't respond to every single message. Neither should you. Quality > quantity. If you wouldn't send it in a real group chat with friends, don't send it.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:125:Skills provide your tools. When you need one, check its `SKILL.md`. Keep local notes (camera names, SSH details, voice preferences) in `TOOLS.md`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:156:- Task needs isolation from main session history
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:159:- Output should deliver directly to a channel without main session involvement
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:168:- **Weather** - Relevant if your human might go out?
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:170:**Track your checks** in `memory/heartbeat-state.json`:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:198:- Read and organize memory files
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:208:1. Read through recent `memory/YYYY-MM-DD.md` files
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/reference/templates/AGENTS.md:213:Think of it like a human reviewing their journal and updating their mental model. Daily files are raw notes; MEMORY.md is curated wisdom.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:1:# LLM Task (plugin)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:3:Adds an **optional** agent tool `llm-task` for running **JSON-only** LLM tasks
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:6:Designed to be called from workflow engines (for example, Lobster via
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:7:`openclaw.invoke --each`) without adding new OpenClaw code per workflow.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:11:1. Enable the plugin:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:15:  "plugins": {
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:23:2. Allowlist the tool (it is registered with `optional: true`):
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:27:  "agents": {
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:31:        "tools": { "allow": ["llm-task"] }
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:42:  "plugins": {
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:60:`allowedModels` is an allowlist of `provider/model` strings. If set, any request
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:70:- `provider` (string, optional)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:84:- The tool is **JSON-only** and instructs the model to output only JSON
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:86:- No tools are exposed to the model for this run.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:87:- Side effects should be handled outside this tool (for example, approvals in
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:88:  Lobster) before calling tools that send messages/emails.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:90:## Bundled extension note
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:92:This extension depends on OpenClaw internal modules (the embedded agent runner).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:93:It is intended to ship as a **bundled** OpenClaw extension (like `lobster`) and
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:94:be enabled via `plugins.entries` + tool allowlists.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:96:It is **not** currently designed to be copied into
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/llm-task/README.md:97:`~/.openclaw/extensions` as a standalone plugin directory.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/qwen-portal-auth/README.md:1:# Qwen OAuth (OpenClaw plugin)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/qwen-portal-auth/README.md:3:OAuth provider plugin for **Qwen** (free-tier OAuth).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/qwen-portal-auth/README.md:7:Bundled plugins are disabled by default. Enable this one:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/qwen-portal-auth/README.md:10:openclaw plugins enable qwen-portal-auth
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/qwen-portal-auth/README.md:18:openclaw models auth login --provider qwen-portal --set-default
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/ja-JP/AGENTS.md:14:- Translation memory: `docs/.i18n/ja-JP.tm.jsonl`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/apps/ios/README.md:15:- Exposes phone services as node commands (camera, location, photos, calendar, reminders, etc; gated by iOS permissions)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/apps/ios/README.md:20:If your Gateway has the `device-pair` plugin installed:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:1:# Lobster (plugin)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:3:Adds the `lobster` agent tool as an **optional** plugin tool.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:7:- Lobster is a standalone workflow shell (typed JSON-first pipelines + approvals/resume).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:8:- This plugin integrates Lobster with OpenClaw _without core changes_.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:12:Because this tool can trigger side effects (via workflows), it is registered with `optional: true`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:14:Enable it in an agent allowlist:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:18:  "agents": {
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:22:        "tools": {
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:24:            "lobster" // plugin id (enables all tools from this plugin)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:33:## Using `openclaw.invoke` (Lobster → OpenClaw tools)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:35:Some Lobster pipelines may include a `openclaw.invoke` step to call back into OpenClaw tools/plugins (for example: `gog` for Google Workspace, `gh` for GitHub, `message.send`, etc.).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:37:For this to work, the OpenClaw Gateway must expose the tool bridge endpoint and the target tool must be allowed by policy:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:39:- OpenClaw provides an HTTP endpoint: `POST /tools/invoke`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:41:- The invoked tool is gated by **tool policy** (global + per-agent + provider + group policy). If the tool is not allowed, OpenClaw returns `404 Tool not available`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:45:To avoid letting workflows call arbitrary tools, set a tight allowlist on the agent that will be used by `openclaw.invoke`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:47:Example (allow only a small set of tools):
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:51:  "agents": {
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:55:        "tools": {
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:67:- If `tools.allow` is omitted or empty, it behaves like "allow everything (except denied)". For a real allowlist, set a **non-empty** `allow`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/lobster/README.md:68:- Tool names depend on which plugins you have installed/enabled.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/references/README.md:15:- `orchestral/references/resource-analysis-tool.md`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:1:# BlueBubbles extension (developer reference)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:3:This directory contains the **BlueBubbles external channel plugin** for OpenClaw.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:5:If you’re looking for **how to use BlueBubbles as an agent/tool user**, see:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:11:- Extension package: `extensions/bluebubbles/` (entry: `index.ts`).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:12:- Channel implementation: `extensions/bluebubbles/src/channel.ts`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:13:- Webhook handling: `extensions/bluebubbles/src/monitor.ts` (register via `api.registerHttpHandler`).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:14:- REST helpers: `extensions/bluebubbles/src/send.ts` + `extensions/bluebubbles/src/probe.ts`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:15:- Runtime bridge: `extensions/bluebubbles/src/runtime.ts` (set via `api.runtime`).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:16:- Catalog entry for onboarding: `src/channels/plugins/catalog.ts`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:20:- `probeBlueBubbles` in `extensions/bluebubbles/src/probe.ts` for health checks.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:21:- `sendMessageBlueBubbles` in `extensions/bluebubbles/src/send.ts` for text delivery.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:22:- `resolveChatGuidForTarget` in `extensions/bluebubbles/src/send.ts` for chat lookup.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:23:- `sendBlueBubblesReaction` in `extensions/bluebubbles/src/reactions.ts` for tapbacks.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:24:- `sendBlueBubblesTyping` + `markBlueBubblesChatRead` in `extensions/bluebubbles/src/chat.ts`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:25:- `downloadBlueBubblesAttachment` in `extensions/bluebubbles/src/attachments.ts` for inbound media.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:26:- `buildBlueBubblesApiUrl` + `blueBubblesFetchWithTimeout` in `extensions/bluebubbles/src/types.ts` for shared REST plumbing.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:33:- Route into core reply pipeline via the plugin runtime (`api.runtime`) and `openclaw/plugin-sdk` helpers.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/bluebubbles/README.md:41:## Message tool notes
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/scripts/README.md:6:  - Dump events from named calendars and ambiguous same-name calendars for manual verification.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/scripts/README.md:22:  - Supports repeatable `--resource-root` and writes markdown outputs for downstream prompt tools.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/zalo/README.md:3:Zalo channel plugin for OpenClaw (Bot API).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/zalo/README.md:8:openclaw plugins install ./extensions/zalo
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/zalo/README.md:14:openclaw plugins install @openclaw/zalo
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/zalo/README.md:17:Onboarding: select Zalo and confirm the install prompt to fetch the plugin automatically.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/zalo/README.md:48:If `webhookPath` is omitted, the plugin uses the webhook URL path.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/google-antigravity-auth/README.md:1:# Google Antigravity Auth (OpenClaw plugin)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/google-antigravity-auth/README.md:3:OAuth provider plugin for **Google Antigravity** (Cloud Code Assist).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/google-antigravity-auth/README.md:7:Bundled plugins are disabled by default. Enable this one:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/google-antigravity-auth/README.md:10:openclaw plugins enable google-antigravity-auth
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/google-antigravity-auth/README.md:18:openclaw models auth login --provider google-antigravity --set-default
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/lib/README.md:22:| `user-memory.prose`    | Cross-project persistent personal memory |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/lib/README.md:23:| `project-memory.prose` | Project-scoped institutional memory      |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/lib/README.md:76:prose run lib/user-memory.prose --backend sqlite+
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/lib/README.md:79:prose run lib/project-memory.prose --backend sqlite+
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/lib/README.md:85:The memory programs use persistent agents to accumulate knowledge:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/lib/README.md:87:**user-memory** (`persist: user`)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/lib/README.md:93:**project-memory** (`persist: project`)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/lib/README.md:95:- Understands this project's architecture and decisions
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/roadmap/README.md:5:They are included to show the direction of the language and gather feedback on the design.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/roadmap/README.md:12:| Named sessions       | Planned | `simple-pipeline.prose`          |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/roadmap/README.md:13:| Parallel execution   | Planned | `parallel-review.prose`          |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/README.md:1:# OpenProse (plugin)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/README.md:7:Bundled plugins are disabled by default. Enable this one:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/README.md:11:  "plugins": {
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/README.md:24:- OpenProse VM semantics (`.prose` programs + multi-agent orchestration)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:3:These examples demonstrate workflows using OpenProse's full feature set.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:11:| `01-hello-world.prose`            | Simplest possible program - a single session |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:13:| `03-code-review.prose`            | Multi-perspective code review pipeline       |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:15:| `05-debug-issue.prose`            | Step-by-step debugging workflow              |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:17:| `07-refactor.prose`               | Systematic refactoring workflow              |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:24:| `09-research-with-agents.prose`     | Custom agents with model selection   |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:25:| `10-code-review-agents.prose`       | Specialized reviewer agents          |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:27:| `12-secure-agent-permissions.prose` | Agent permissions and access control |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:41:| `16-parallel-reviews.prose`          | Basic parallel execution                  |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:78:| `28-gas-town.prose`                   | Multi-agent orchestration ("Kubernetes for agents") with 7 worker roles, patrols, convoys, and GUPP propulsion                                              |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:79:| `29-captains-chair.prose`             | Full captain's chair pattern: coordinating agent dispatches subagents for all work, with parallel research, critic review cycles, and checkpoint validation |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:81:| `31-captains-chair-with-memory.prose` | Captain's chair with retrospective analysis and session-to-session learning                                                                                 |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:87:| `33-pr-review-autofix.prose` | Automated PR review with fix suggestions |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:113:| `44-run-endpoint-ux-test.prose`      | Concurrent agents testing the /run API endpoint                    |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:114:| `45-plugin-release.prose`            | OpenProse plugin release workflow (this repo)                      |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:115:| `46-workflow-crystallizer.prose`     | Reflective: observes thread, extracts workflow, writes .prose      |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:117:| `48-habit-miner.prose`               | Mines AI session logs for patterns, generates .prose automations   |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:121:The architect-by-simulation pattern is for designing systems by "implementing" them through reasoning. Instead of writing code, each phase produces specification documents that the next phase builds upon.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:125:1. **Thinking/deduction framework**: "Implement" means reasoning through design decisions
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:133:agent architect:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:139:let plan = session: architect
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:140:  prompt: "Break feature into design phases"
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:142:# User reviews the plan BEFORE the pipeline runs
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:143:input user_approval: "User reviews plan and approves"
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:147:  let handoff = session: phase-executor
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:152:  resume: architect
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:157:output spec = session: architect
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:165:The captain's chair is an orchestration paradigm where a coordinating agent (the "captain") dispatches specialized subagents for all execution. The captain never writes code directly—only plans, coordinates, and validates.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:169:1. **Context isolation**: Subagents receive targeted context, not everything
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:170:2. **Parallel execution**: Multiple subagents work concurrently where possible
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:171:3. **Continuous criticism**: Critic agents review plans and outputs mid-stream
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:177:agent captain:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:181:agent executor:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:185:agent critic:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:190:let plan = session: captain
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:195:  work = session: executor
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:197:  review = session: critic
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:201:output result = session: captain
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:203:  context: { work, review }
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:230:    output session "Process directly"
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:234:  let chunks = session "Split into logical chunks"
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:241:  output session "Synthesize partial results"
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:258:Run the code review example from the OpenProse examples
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:264:Execute examples/03-code-review.prose
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:273:session "prompt"                    # Simple session
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:274:let x = session "..."               # Variable binding
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:275:const y = session "..."             # Immutable binding
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:281:agent name:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:285:  permissions:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:294:  a = session "A"
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:295:  b = session "B"
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:306:  session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:309:  session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:312:  session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:315:  session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:322:  session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:324:  session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:326:  session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:328:  session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:335:  session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:337:  session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:339:  session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:341:session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:352:  session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:354:  session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:356:  session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:364:    session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:366:    session "..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:373:  session "... {param} ..."
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:381:let x = session "Get value"
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:382:session "Use {x} in prompt"         # Single-line
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/extensions/open-prose/skills/prose/examples/README.md:384:session """                         # Multi-line
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/zh-CN/reference/templates/AGENTS.md:8:  provider: pi
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/zh-CN/reference/templates/AGENTS.md:11:  workflow: 15
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/zh-CN/reference/templates/AGENTS.md:28:3. 阅读 `memory/YYYY-MM-DD.md`（今天 + 昨天）获取近期上下文
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/zh-CN/reference/templates/AGENTS.md:37:- **每日笔记：** `memory/YYYY-MM-DD.md`（如需要请创建 `memory/` 目录）— 发生事件的原始记录
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/zh-CN/reference/templates/AGENTS.md:56:- 当有人说"记住这个" → 更新 `memory/YYYY-MM-DD.md` 或相关文件
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/zh-CN/reference/templates/AGENTS.md:176:**在 `memory/heartbeat-state.json` 中跟踪你的检查记录：**
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/docs/zh-CN/reference/templates/AGENTS.md:214:1. 阅读最近的 `memory/YYYY-MM-DD.md` 文件
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:3:This directory is the dedicated home for LAB Codex prompt-driven tooling.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:14:Top-level wrappers under `orchestral/prompt_tools/*.sh|*.py` have been removed.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:17:## Prompt tool groups
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:19:- `company/` company pipeline stage tools (`prompt_la_market.sh`, `prompt_legal_dept.sh`, `prompt_funding_vc.sh`, etc.)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:20:- `websearch/` web/news/search and playlist tools
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:21:- `email/` incremental email composition tools
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:22:- `notes/` notes read/write/log tools
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:35:- Migration-specific tools: `migration/`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:76:All AutoLife-oriented prompts share `auto_ops_schema.json`, which encodes `summary`, `notes`, optional `calendar_events`, `reminders`, `actions`, and `log_entries`. This keeps outputs composable across tools.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:80:- `runtime/common_tools.md`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:108:## LazyingArt migration prompt tools
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:113:| `migration/prompt_lazyingart_migration_move.sh`   | `migration/lazyingart_migration_move_prompt.md`   | Codex dry-run review + apply/post-check command planning for LazyingArt migration.        |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:115:## Account-calendar migration prompt tools
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:122:These tools explicitly reference the executable migration scripts so Codex reasons from actual automation behavior:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:130:## Lazying.art daily chain tools (AutoLife output)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:137:| `company/prompt_life_reverse_engineering_tool.sh` | `company/life_reverse_engineering_prompt.md` | Fixed-slot life reminder planning (8 horizons) with dedupe-aware apply       |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:143:## Resource analysis tool (company-wide)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:155:The tool is company-agnostic: pass any `--company` and `--resource-root` paths, then wire
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:162:- `orchestral/prompt_tools/company/life_reverse_reminder_apply.py`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:194:python3 orchestral/prompt_tools/runtime/codex-json-runner.py \
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:197:  --schema orchestral/prompt_tools/runtime/email_send_schema.json \
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/orchestral/prompt_tools/README.md:202:- `docs/AUTOLIFE_PHILOSOPHY.md` – AutoLife capture/automation philosophy and folder layout.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/soul-evil/README.md:10:2. Create `SOUL_EVIL.md` next to `SOUL.md` in your agent workspace
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:7:### 💾 session-memory
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:9:Automatically saves session context to memory when you issue `/new`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:12:**What it does**: Creates a dated memory file with LLM-generated slug based on conversation content.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:13:**Output**: `<workspace>/memory/YYYY-MM-DD-slug.md` (defaults to `~/.openclaw/workspace`)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:18:openclaw hooks enable session-memory
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:39:**Events**: `agent:bootstrap`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:41:**Output**: No files written; swaps happen in-memory only.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:55:**What it does**: Executes BOOT.md instructions via the agent runner.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:74:session-memory/
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:97:- **events**: Array of events to listen for (e.g., `["command:new", "session:start"]`)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:126:openclaw hooks info session-memory
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:138:openclaw hooks enable session-memory
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:152:        "session-memory": {
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:172:- **agent:bootstrap**: Before workspace bootstrap files are injected
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:175:More event types coming soon (session lifecycle, agent errors, etc.).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:183:  type: "command" | "session" | "agent" | "gateway";
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/hooks/bundled/README.md:185:  sessionKey: string;
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/references/README.md:3:- `references/lab-scripts-and-philosophy.md`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/references/README.md:4:  - LAB script inventory, usage, and design philosophy.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/references/README.md:5:- `orchestral/prompt_tools/README.md`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/references/README.md:6:  - Dedicated Codex prompt-tools folder and standardized JSON runner contract.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/references/README.md:13:- `references/agent-tutorial-icloud-calendar-autolife.md`
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/references/README.md:14:  - Step-by-step tutorial for agents to create and verify iCloud `AutoLife` calendar.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/src/gateway/server-methods/AGENTS.md:3:- Pi session transcripts are a `parentId` chain/DAG; never append Pi `type: "message"` entries via raw JSONL writes (missing `parentId` can sever the leaf path and break compaction/history). Always write transcript messages via `SessionManager.appendMessage(...)` (or a wrapper that uses it).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/apps/android/README.md:7:- Chat always uses the shared session key **`main`** (same session across iOS/macOS/WebChat/Android).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/scripts/web_search_selenium_cli/README.md:3:Dedicated local toolchain for Selenium-based web search tests.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/scripts/web_search_selenium_cli/README.md:68:orchestral/prompt_tools/websearch/prompt_web_search_batch.sh \
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/scripts/shell-helpers/README.md:10:  - [Container Access](#container-access)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/scripts/shell-helpers/README.md:15:- [Common Workflows](#common-workflows)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/scripts/shell-helpers/README.md:20:  - [Permission Denied](#permission-denied)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/scripts/shell-helpers/README.md:82:| `clawdock-status`  | Check container status          |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/scripts/shell-helpers/README.md:89:| `clawdock-shell`          | Interactive shell inside the gateway container |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/scripts/shell-helpers/README.md:91:| `clawdock-exec <command>` | Execute arbitrary commands in the container    |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/scripts/shell-helpers/README.md:112:| `clawdock-clean`   | Remove all containers and volumes (destructive!) |
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/scripts/shell-helpers/README.md:135:**Check container status:**
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/scripts/shell-helpers/README.md:149:**Shell into the container:**
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/scripts/shell-helpers/README.md:155:**Inside the container, login to WhatsApp:**
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/scripts/shell-helpers/README.md:202:**Ensure Docker is running and you have permission:**
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:8:- Source code: `src/` (CLI wiring in `src/cli`, commands in `src/commands`, web provider in `src/provider-web.ts`, infra in `src/infra`, media pipeline in `src/media`).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:11:- Plugins/extensions: live under `extensions/*` (workspace packages). Keep plugin-only deps in the extension `package.json`; do not add them to the root `package.json` unless core uses them.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:12:- Plugins: install runs `npm install --omit=dev` in plugin dir; runtime deps must live in `dependencies`. Avoid `workspace:*` in `dependencies` (npm install breaks); put `openclaw` in `devDependencies` or `peerDependencies` instead (runtime resolves `openclaw/plugin-sdk` via jiti alias).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:14:- Messaging channels: always consider **all** built-in + extension channels when refactoring shared logic (routing, allowlists, pairing, command gating, onboarding, docs).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:17:  - Extensions (channel plugins): `extensions/*` (e.g. `extensions/msteams`, `extensions/matrix`, `extensions/zalo`, `extensions/zalouser`, `extensions/voice-call`)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:18:- When adding channels/extensions/apps/docs, update `.github/labeler.yml` and create matching GitHub labels (use existing channel/extension label colors).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:36:- Translation memory: `docs/.i18n/zh-CN.tm.jsonl` (generated).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:43:- SSH flaky: use exe.dev web terminal or Shelley (web agent); keep a tmux session for long ops.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:57:- Prefer Bun for TypeScript execution (scripts, dev, tests): `bun <file.ts>` / `bunx <tool>`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:89:- Live tests (real keys): `CLAWDBOT_LIVE_TEST=1 pnpm test:live` (OpenClaw-only) or `LIVE=1 pnpm test:live` (includes provider live tests). Docker: `pnpm test:docker:live-models`, `pnpm test:docker:live-gateway`. Onboarding Docker E2E: `pnpm test:docker:onboard`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:96:**Full maintainer PR workflow:** `.agents/skills/PR_WORKFLOW.md` -- triage order, quality bar, rebase rules, commit/changelog conventions, co-contributor policy, and the 3-step skill pipeline (`review-pr` > `prepare-pr` > `merge-pr`).
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:108:- LAB Codex prompt tooling must stay under `orchestral/prompt_tools/`; do not add new LAB Codex helper scripts at the top level `scripts/`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:112:- Web provider stores creds at `~/.openclaw/credentials/`; rerun `openclaw login` if logged out.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:113:- Pi sessions live under `~/.openclaw/sessions/` by default; the base directory is not configurable.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:125:- Never edit `node_modules` (global/Homebrew/npm/git installs too). Updates overwrite. Skill notes go in `tools.md` or `AGENTS.md`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:135:- Gateway currently runs only as the menubar app; there is no separate LaunchAgent/helper label installed. Restart via the OpenClaw Mac app or `scripts/restart-mac.sh`; to verify/kill use `launchctl print gui/$UID | grep openclaw` rather than assuming a fixed label. **When debugging on macOS, start/stop the gateway via the app, not ad-hoc tmux sessions; kill any temporary tunnels before handoff.**
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:137:- If shared guardrails are available locally, review them; otherwise follow this repo's guidance.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:139:- Connection providers: when adding a new connection, update every UI surface and docs (macOS app, web UI, mobile if applicable, onboarding/overview docs) and add matching status + configuration forms so provider lists and settings stay in sync.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:144:- iOS Team ID lookup: `security find-identity -p codesigning -v` → use Apple Development (…) TEAMID. Fallback: `defaults read com.apple.dt.Xcode IDEProvisioningTeamIdentifiers`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:148:- **Multi-agent safety:** do **not** create/apply/drop `git stash` entries unless explicitly requested (this includes `git pull --rebase --autostash`). Assume other agents may be working; keep unrelated WIP untouched and avoid cross-cutting state changes.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:149:- **Multi-agent safety:** when the user says "push", you may `git pull --rebase` to integrate latest changes (never discard other agents' work). When the user says "commit", scope to your changes only. When the user says "commit all", commit everything in grouped chunks.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:150:- **Multi-agent safety:** do **not** create/remove/modify `git worktree` checkouts (or edit `.worktrees/*`) unless explicitly requested.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:151:- **Multi-agent safety:** do **not** switch branches / check out a different branch unless explicitly requested.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:152:- **Multi-agent safety:** running multiple agents is OK as long as each agent has its own session.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:153:- **Multi-agent safety:** when you see unrecognized files, keep going; focus on your changes and commit only those.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:159:- **Multi-agent safety:** focus reports on your edits; avoid guard-rail disclaimers unless truly blocked; when multiple agents touch the same file, continue if safe; end with a brief “other files present” note only if relevant.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:162:- Tool schema guardrails (google-antigravity): avoid `Type.Union` in tool input schemas; no `anyOf`/`oneOf`/`allOf`. Use `stringEnum`/`optionalStringEnum` (Type.Unsafe enum) for string lists, and `Type.Optional(...)` instead of `... | null`. Keep top-level tool schema as `type: "object"` with `properties`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:163:- Tool schema guardrails: avoid raw `format` property names in tool schemas; some validators treat `format` as a reserved keyword and reject the schema.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:164:- When asked to open a “session” file, open the Pi session logs under `~/.openclaw/agents/<agentId>/sessions/*.jsonl` (use the `agent=<id>` value in the Runtime line of the system prompt; newest unless a specific ID is given), not the default `sessions.json`. If logs are needed from another machine, SSH via Tailscale and read the same path there.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:166:- Never send streaming/partial replies to external messaging surfaces (WhatsApp, Telegram); only final replies should be delivered there. Streaming/tool events may still go to internal UIs/control channel.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:168:  - Command template should stay `openclaw-mac agent --message "${text}" --thinking low`; `VoiceWakeForwarder` already shell-escapes `${text}`. Don’t add extra quotes.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:169:  - launchd PATH is minimal; ensure the app’s launch agent PATH includes standard system paths plus your pnpm bin (typically `$HOME/Library/pnpm`) so `pnpm`/`openclaw` binaries resolve when invoked via `openclaw-mac`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:170:- For manual `openclaw message send` messages that include `!`, use the heredoc pattern noted below to avoid the Bash tool’s escaping.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:171:- Release guardrails: do not change version numbers without operator’s explicit consent; always ask permission before running any npm publish/release step.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:175:- Use the 1password skill; all `op` commands must run inside a fresh tmux session.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/AGENTS.md:180:- Kill the tmux session after publish.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/assets/chrome-extension/README.md:9:3. Install the extension to a stable path:
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/assets/chrome-extension/README.md:12:   openclaw browser extension install
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/assets/chrome-extension/README.md:13:   openclaw browser extension path
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/assets/chrome-extension/README.md:16:4. Chrome → `chrome://extensions` → enable “Developer mode”.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/assets/chrome-extension/README.md:18:6. Pin the extension. Click the icon on a tab to attach/detach.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/apps/macos/README.md:13:scripts/restart-mac.sh --no-sign   # fastest dev; ad-hoc signing (TCC permissions do not stick)
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/apps/macos/README.md:23:Creates `dist/OpenClaw.app` and signs it via `scripts/codesign-mac-app.sh`.
+/home/lachlan/ProjectsLFS/Agent/LazyingArtBot/apps/macos/README.md:61:- `ALLOW_ADHOC_SIGNING=1` (ad-hoc, TCC permissions do not persist)

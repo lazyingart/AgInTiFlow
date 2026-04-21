@@ -1,0 +1,260 @@
+# Clawable Coding Harness Roadmap
+
+## Goal
+
+Turn claw-code into the most **clawable** coding harness:
+- no human-first terminal assumptions
+- no fragile prompt injection timing
+- no opaque session state
+- no hidden plugin or MCP failures
+- no manual babysitting for routine recovery
+
+This roadmap assumes the primary users are **claws wired through hooks, plugins, sessions, and channel events**.
+
+## Definition of "clawable"
+
+A clawable harness is:
+- deterministic to start
+- machine-readable in state and failure modes
+- recoverable without a human watching the terminal
+- branch/test/worktree aware
+- plugin/MCP lifecycle aware
+- event-first, not log-first
+- capable of autonomous next-step execution
+
+## Current Pain Points
+
+### 1. Session boot is fragile
+- trust prompts can block TUI startup
+- prompts can land in the shell instead of the coding agent
+- "session exists" does not mean "session is ready"
+
+### 2. Truth is split across layers
+- tmux state
+- clawhip event stream
+- git/worktree state
+- test state
+- gateway/plugin/MCP runtime state
+
+### 3. Events are too log-shaped
+- claws currently infer too much from noisy text
+- important states are not normalized into machine-readable events
+
+### 4. Recovery loops are too manual
+- restart worker
+- accept trust prompt
+- re-inject prompt
+- detect stale branch
+- retry failed startup
+- classify infra vs code failures manually
+
+### 5. Branch freshness is not enforced enough
+- side branches can miss already-landed main fixes
+- broad test failures can be stale-branch noise instead of real regressions
+
+### 6. Plugin/MCP failures are under-classified
+- startup failures, handshake failures, config errors, partial startup, and degraded mode are not exposed cleanly enough
+
+### 7. Human UX still leaks into claw workflows
+- too much depends on terminal/TUI behavior instead of explicit agent state transitions and control APIs
+
+## Product Principles
+
+1. **State machine first** — every worker has explicit lifecycle states.
+2. **Events over scraped prose** — channel output should be derived from typed events.
+3. **Recovery before escalation** — known failure modes should auto-heal once before asking for help.
+4. **Branch freshness before blame** — detect stale branches before treating red tests as new regressions.
+5. **Partial success is first-class** — e.g. MCP startup can succeed for some servers and fail for others, with structured degraded-mode reporting.
+6. **Terminal is transport, not truth** — tmux/TUI may remain implementation details, but orchestration state must live above them.
+7. **Policy is executable** — merge, retry, rebase, stale cleanup, and escalation rules should be machine-enforced.
+
+## Roadmap
+
+## Phase 1 — Reliable Worker Boot
+
+### 1. Ready-handshake lifecycle for coding workers
+Add explicit states:
+- `spawning`
+- `trust_required`
+- `ready_for_prompt`
+- `prompt_accepted`
+- `running`
+- `blocked`
+- `finished`
+- `failed`
+
+Acceptance:
+- prompts are never sent before `ready_for_prompt`
+- trust prompt state is detectable and emitted
+- shell misdelivery becomes detectable as a first-class failure state
+
+### 1.5. First-prompt acceptance SLA
+After `ready_for_prompt`, expose whether the first task was actually accepted within a bounded window instead of leaving claws in a silent limbo.
+
+Emit typed signals for:
+- `prompt.sent`
+- `prompt.accepted`
+- `prompt.acceptance_delayed`
+- `prompt.acceptance_timeout`
+
+Track at least:
+- time from `ready_for_prompt` -> first prompt send
+- time from first prompt send -> `prompt_accepted`
+- whether acceptance required retry or recovery
+
+Acceptance:
+- clawhip can distinguish `worker is ready but idle` from `prompt was sent but not actually accepted`
+- long silent gaps between ready-state and first-task execution become machine-visible
+- recovery can trigger on acceptance timeout before humans start scraping panes
+
+### 2. Trust prompt resolver
+Add allowlisted auto-trust behavior for known repos/worktrees.
+
+Acceptance:
+- trusted repos auto-clear trust prompts
+- events emitted for `trust_required` and `trust_resolved`
+- non-allowlisted repos remain gated
+
+### 3. Structured session control API
+Provide machine control above tmux:
+- create worker
+- await ready
+- send task
+- fetch state
+- fetch last error
+- restart worker
+- terminate worker
+
+Acceptance:
+- a claw can operate a coding worker without raw send-keys as the primary control plane
+
+### 3.5. Boot preflight / doctor contract
+Before spawning or prompting a worker, run a machine-readable preflight that reports whether the lane is actually safe to start.
+
+Preflight should check and emit typed results for:
+- repo/worktree existence and expected branch
+- branch freshness vs base branch
+- trust-gate likelihood / allowlist status
+- required binaries and control sockets
+- plugin discovery / allowlist / startup eligibility
+- MCP config presence and server reachability expectations
+- last-known failed boot reason, if any
+
+Acceptance:
+- claws can fail fast before launching a doomed worker
+- a blocked start returns a short structured diagnosis instead of forcing pane-scrape triage
+- clawhip can summarize `why this lane did not even start` without inferring from terminal noise
+
+## Phase 2 — Event-Native Clawhip Integration
+
+### 4. Canonical lane event schema
+Define typed events such as:
+- `lane.started`
+- `lane.ready`
+- `lane.prompt_misdelivery`
+- `lane.blocked`
+- `lane.red`
+- `lane.green`
+- `lane.commit.created`
+- `lane.pr.opened`
+- `lane.merge.ready`
+- `lane.finished`
+- `lane.failed`
+- `branch.stale_against_main`
+
+Acceptance:
+- clawhip consumes typed lane events
+- Discord summaries are rendered from structured events instead of pane scraping alone
+
+### 4.5. Session event ordering + terminal-state reconciliation
+When the same session emits contradictory lifecycle events (`idle`, `error`, `completed`, transport/server-down) in close succession, claw-code must expose a deterministic final truth instead of making downstream claws guess.
+
+Required behavior:
+- attach monotonic sequence / causal ordering metadata to session lifecycle events
+- classify which events are terminal vs advisory
+- reconcile duplicate or out-of-order terminal events into one canonical lane outcome
+- distinguish `session terminal state unknown because transport died` from a real `completed`
+
+Acceptance:
+- clawhip can survive `completed -> idle -> error -> completed` noise without double-reporting or trusting the wrong final state
+- server-down after a session event burst surfaces as a typed uncertainty state rather than silently rewriting history
+- downstream automation has one canonical terminal outcome per lane/session
+
+### 4.6. Event provenance / environment labeling
+Every emitted event should say whether it came from a live lane, synthetic test, healthcheck, replay, or system transport layer so claws do not mistake test noise for production truth.
+
+Required fields:
+- event source kind (`live_lane`, `test`, `healthcheck`, `replay`, `transport`)
+- environment / channel label
+- emitter identity
+- confidence / trust level for downstream automation
+
+Acceptance:
+- clawhip can ignore or down-rank test pings without heuristic text matching
+- synthetic/system events do not contaminate lane status or trigger false follow-up automation
+- event streams remain machine-trustworthy even when test traffic shares the same channel
+
+### 4.7. Session identity completeness at creation time
+A newly created session should not surface as `(untitled)` or `(unknown)` for fields that orchestrators need immediately.
+
+Required behavior:
+- emit stable title, workspace/worktree path, and lane/session purpose at creation time
+- if any field is not yet known, emit an explicit typed placeholder reason rather than a bare unknown string
+- reconcile later-enriched metadata back onto the same session identity without creating ambiguity
+
+Acceptance:
+- clawhip can route/triage a brand-new session without waiting for follow-up chatter
+- `(untitled)` / `(unknown)` creation events no longer force humans or bots to guess scope
+- session creation events are immediately actionable for monitoring and ownership decisions
+
+### 4.8. Duplicate terminal-event suppression
+When the same session emits repeated `completed`, `failed`, or other terminal notifications, claw-code should collapse duplicates before they trigger repeated downstream reactions.
+
+Required behavior:
+- attach a canonical terminal-event fingerprint per lane/session outcome
+- suppress or coalesce repeated terminal notifications within a reconciliation window
+- preserve raw event history for audit while exposing only one actionable terminal outcome downstream
+- surface when a later duplicate materially differs from the original terminal payload
+
+Acceptance:
+- clawhip does not double-report or double-close based on repeated terminal notifications
+- duplicate `completed` bursts become one actionable finish event, not repeated noise
+- downstream automation stays idempotent even when the upstream emitter is chatty
+
+### 4.9. Lane ownership / scope binding
+Each session and lane event should declare who owns it and what workflow scope it belongs to, so unrelated external/system work does not pollute claw-code follow-up loops.
+
+Required behavior:
+- attach owner/assignee identity when known
+- attach workflow scope (e.g. `claw-code-dogfood`, `external-git-maintenance`, `infra-health`, `manual-operator`)
+- mark whether the current watcher is expected to act, observe only, or ignore
+- preserve scope through session restarts, resumes, and late terminal events
+
+Acceptance:
+- clawhip can say `out-of-scope external session` without humans adding a prose disclaimer
+- unrelated session churn does not trigger false claw-code follow-up or blocker reporting
+- monitoring views can filter to `actionable for this claw` instead of mixing every session on the host
+
+### 4.10. Nudge acknowledgment / dedupe contract
+Periodic clawhip nudges should carry enough state for claws to know whether the current prompt is new work, a retry, or an already-acknowledged heartbeat.
+
+Required behavior:
+- attach nudge id / cycle id and delivery timestamp
+- expose whether the current claw has already acknowledged or responded for that cycle
+- distinguish `new nudge`, `retry nudge`, and `stale duplicate`
+- allow downstream summaries to bind a reported pinpoint back to the triggering nudge id
+
+Acceptance:
+- claws do not keep manufacturing fresh follow-ups just because the same periodic nudge reappeared
+- clawhip can tell whether silence means `not yet handled` or `already acknowledged in this cycle`
+- recurring dogfood prompts become idempotent and auditable across retries
+
+### 4.11. Stable roadmap-id assignment for newly filed pinpoints
+When a claw records a new pinpoint/follow-up, the roadmap surface should assign or expose a stable tracking id immediately instead of leaving the item as anonymous prose.
+
+Required behavior:
+- assign a canonical roadmap id at filing time
+- expose that id in the structured event/report payload
+- preserve the same id across later edits, reorderings, and summary compression
+- distinguish `new roadmap filing` from `update to existing roadmap item`
+

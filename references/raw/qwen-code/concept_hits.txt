@@ -1,0 +1,262 @@
+/home/lachlan/ProjectsLFS/Agent/qwen-code/AGENTS.md:12:npm run build:all  # Build everything including sandbox container
+/home/lachlan/ProjectsLFS/Agent/qwen-code/AGENTS.md:39:- Running the whole test suite unless necessary (e.g., final PR verification)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/AGENTS.md:52:npm run test:integration:cli:sandbox:none
+/home/lachlan/ProjectsLFS/Agent/qwen-code/AGENTS.md:53:npm run test:integration:interactive:sandbox:none
+/home/lachlan/ProjectsLFS/Agent/qwen-code/AGENTS.md:62:**Gotcha:** In interactive tests, always call `session.idle()` between sends — ANSI output streams asynchronously.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/AGENTS.md:90:- **Bug reproduction & verification**: spawn the `test-engineer` agent. It reads code and docs to understand the bug, then reproduces it via E2E testing (or a test-script fallback). It also handles post-fix verification. It cannot edit source code — only observe and report.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/AGENTS.md:92:- **E2E testing**: the `e2e-testing` skill covers headless mode, interactive (tmux) mode, MCP server testing, and API traffic inspection. The `test-engineer` agent invokes this skill internally — you typically don't need to use it directly.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:46:Creates a new query session with the Qwen Code.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:51:- `options`: `QueryOptions` - Configuration options for the query session.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:57:| `cwd`                    | `string`                                       | `process.cwd()`  | The working directory for the query session. Determines the context in which file operations and commands are executed.                                                                                                                                                                                                                                                                                                                                                               |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:60:| `permissionMode`         | `'default' \| 'plan' \| 'auto-edit' \| 'yolo'` | `'default'`      | Permission mode controlling tool execution approval. See [Permission Modes](#permission-modes) for details.                                                                                                                                                                                                                                                                                                                                                                           |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:61:| `canUseTool`             | `CanUseTool`                                   | -                | Custom permission handler for tool execution approval. Invoked when a tool requires confirmation. Must respond within 60 seconds or the request will be auto-denied. See [Custom Permission Handler](#custom-permission-handler).                                                                                                                                                                                                                                                     |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:63:| `systemPrompt`           | `string \| QuerySystemPromptPreset`            | -                | System prompt configuration for the main session. Use a string to fully override the built-in Qwen Code system prompt, or a preset object to keep the built-in prompt and append extra instructions.                                                                                                                                                                                                                                                                                  |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:65:| `abortController`        | `AbortController`                              | -                | Controller to cancel the query session. Call `abortController.abort()` to terminate the session and cleanup resources.                                                                                                                                                                                                                                                                                                                                                                |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:67:| `maxSessionTurns`        | `number`                                       | `-1` (unlimited) | Maximum number of conversation turns before the session automatically terminates. A turn consists of a user message and an assistant response.                                                                                                                                                                                                                                                                                                                                        |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:68:| `coreTools`              | `string[]`                                     | -                | Equivalent to `permissions.allow` in settings.json as an allowlist. If specified, only these tools will be available to the AI (all other tools are disabled at registry level). Supports tool name aliases and pattern matching. Example: `['Read', 'Edit', 'Bash(git *)']`.                                                                                                                                                                                                         |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:69:| `excludeTools`           | `string[]`                                     | -                | Equivalent to `permissions.deny` in settings.json. Excluded tools return a permission error immediately. Takes highest priority over all other permission settings. Supports tool name aliases and pattern matching: tool name (`'write_file'`), shell command prefix (`'Bash(rm *)'`), or path patterns (`'Read(.env)'`, `'Edit(/src/**)'`).                                                                                                                                         |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:70:| `allowedTools`           | `string[]`                                     | -                | Equivalent to `permissions.allow` in settings.json. Matching tools bypass `canUseTool` callback and execute automatically. Only applies when tool requires confirmation. Supports same pattern matching as `excludeTools`. Example: `['ShellTool(git status)', 'ShellTool(npm test)']`.                                                                                                                                                                                               |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:72:| `agents`                 | `SubagentConfig[]`                             | -                | Configuration for subagents that can be invoked during the session. Subagents are specialized AI agents for specific tasks or domains.                                                                                                                                                                                                                                                                                                                                                |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:74:| `resume`                 | `string`                                       | -                | Resume a previous session by providing its session ID. Equivalent to CLI's `--resume` flag.                                                                                                                                                                                                                                                                                                                                                                                           |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:75:| `sessionId`              | `string`                                       | -                | Specify a session ID for the new session. Ensures SDK and CLI use the same ID without resuming history. Equivalent to CLI's `--session-id` flag.                                                                                                                                                                                                                                                                                                                                      |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:78:> If you need to configure `coreTools`, `excludeTools`, or `allowedTools`, it is **strongly recommended** to read the [permissions configuration documentation](../docs/users/configuration/settings.md#permissions) first, especially the **Tool name aliases** and **Rule syntax examples** sections, to understand the available aliases and pattern matching syntax (e.g., `Bash(git *)`, `Read(.env)`, `Edit(/src/**)`).
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:86:| `canUseTool`     | 1 minute | Maximum time for `canUseTool` callback to respond. If exceeded, the tool request is auto-denied.                             |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:87:| `mcpRequest`     | 1 minute | Maximum time for SDK MCP tool calls to complete.                                                                             |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:96:    canUseTool: 60000, // 60 seconds for permission callback
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:97:    mcpRequest: 600000, // 10 minutes for MCP tool calls
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:133:// Get session ID
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:134:const sessionId = q.getSessionId();
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:142:// Change permission mode mid-session
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:145:// Change model mid-session
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:148:// Close the session
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:154:The SDK supports different permission modes for controlling tool execution:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:156:- **`default`**: Write tools are denied unless approved via `canUseTool` callback or in `allowedTools`. Read-only tools execute without confirmation.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:157:- **`plan`**: Blocks all write tools, instructing AI to present a plan first.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:158:- **`auto-edit`**: Auto-approve edit tools (edit, write_file) while other tools require confirmation.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:159:- **`yolo`**: All tools execute automatically without confirmation.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:167:1. `excludeTools` / `permissions.deny` - Blocks tools completely (returns permission error)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:168:2. `permissions.ask` - Always requires user confirmation
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:169:3. `permissionMode: 'plan'` - Blocks all non-read-only tools
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:170:4. `permissionMode: 'yolo'` - Auto-approves all tools
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:171:5. `allowedTools` / `permissions.allow` - Auto-approves matching tools
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:172:6. `canUseTool` callback - Custom approval logic (if provided, not called for allowed tools)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:173:7. Default behavior - Auto-deny in SDK mode (write tools require explicit approval)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:185:    session_id: 'my-session',
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:187:    parent_tool_use_id: null,
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:193:    session_id: 'my-session',
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:195:    parent_tool_use_id: null,
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:202:    permissionMode: 'auto-edit',
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:216:const canUseTool: CanUseTool = async (toolName, input, { signal }) => {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:218:  if (toolName.startsWith('read_')) {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:223:  const userApproved = await promptUser(`Allow ${toolName}?`);
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:246:  prompt: 'Use the custom tool from my MCP server',
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:291:The SDK provides `tool` and `createSdkMcpServer` to create MCP servers that run in the same process as your SDK application. This is useful when you want to expose custom tools to the AI without running a separate server process.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:293:#### `tool(name, description, inputSchema, handler)`
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:295:Creates a tool definition with Zod schema type inference.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:300:| `description` | `string`                           | Human-readable description of what the tool does                         |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:301:| `inputSchema` | `ZodRawShape`                      | Zod schema object defining the tool's input parameters                   |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:302:| `handler`     | `(args, extra) => Promise<Result>` | Async function that executes the tool and returns MCP content blocks     |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:325:| `tools`   | `SdkMcpToolDefinition[]` | -         | Array of tools created with `tool()` |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:333:import { query, tool, createSdkMcpServer } from '@qwen-code/sdk';
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:335:// Define a tool with Zod schema
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:336:const calculatorTool = tool(
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:348:  tools: [calculatorTool],
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-typescript/README.md:355:    permissionMode: 'yolo',
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/vscode-ide-companion/README.md:5:[![Open VSX Downloads](https://img.shields.io/open-vsx/dt/qwenlm/qwen-code-vscode-ide-companion)](https://open-vsx.org/extension/qwenlm/qwen-code-vscode-ide-companion)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/vscode-ide-companion/README.md:8:Seamlessly integrate [Qwen Code](https://github.com/QwenLM/qwen-code) into Visual Studio Code with native IDE features and an intuitive chat interface. This extension bundles everything you need — no additional installation required.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/vscode-ide-companion/README.md:23:- **Conversation history & multiple sessions**: Access past conversations and run multiple sessions simultaneously
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/vscode-ide-companion/README.md:32:1. **Install** from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=qwenlm.qwen-code-vscode-ide-companion) or [Open VSX Registry](https://open-vsx.org/extension/qwenlm/qwen-code-vscode-ide-companion)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/vscode-ide-companion/README.md:45:| `Qwen Code: Run`                 | Launch a classic terminal session with the bundled CLI |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/vscode-ide-companion/README.md:61:- Building and debugging the extension locally
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/vscode-ide-companion/README.md:66:By installing this extension, you agree to the [Terms of Service](https://qwenlm.github.io/qwen-code-docs/en/users/support/tos-privacy/).
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/cli/src/acp-integration/session/rewrite/README.md:5:> This is a stopgap implementation. We are considering a hook-based approach that would be more decoupled and extensible. Ideas and suggestions for a better design are very welcome.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/cli/src/acp-integration/session/rewrite/README.md:9:When a coding agent is integrated into vertical business scenarios (data analysis, ops, report generation, etc.), the raw output often contains technical details (file paths, tool calls, internal reasoning) that end users don't care about. By configuring a rewrite prompt, the output can be transformed into business-friendly language.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/cli/src/acp-integration/session/rewrite/README.md:14:2. At the end of each turn (before tool calls / at response end), accumulated thought + message chunks are sent to a separate LLM call for rewriting
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/cli/src/acp-integration/session/rewrite/README.md:15:3. Rewritten text is appended as a new `agent_message_chunk` with `_meta.rewritten: true`
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:3:Base infrastructure for building Qwen Code channel adapters. Provides the abstract base class, access control, session routing, and the ACP bridge that communicates with the agent.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:5:If you're building a channel plugin, this is your only dependency.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:33:    // Deliver the agent's response to the platform.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:42:Export a `ChannelPlugin` object so the extension loader can discover it:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:47:export const plugin: ChannelPlugin = {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:56:For a complete working example, see [`@qwen-code/channel-plugin-example`](../plugin-example/).
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:66:            → SessionRouter (resolve or create ACP session)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:68:            → AcpBridge.prompt() → agent
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:84:| `AcpBridge`     | Spawns and communicates with the `qwen-code --acp` agent process |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:86:| `SessionRouter` | Maps senders to ACP sessions with configurable scoping           |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:103:| `SessionTarget` | Maps a session back to its channel/sender/chat |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:118:| `sendMessage()` | `(chatId: string, text: string) => Promise<void>` — Deliver agent response   |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:125:| `handleInbound(envelope)`                         | Route an inbound message through the full pipeline (gate checks, commands, session, prompt). Call this from your message handler. |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:128:| `onToolCall(chatId, event)`                       | Hook called on agent tool invocations — override to show indicators                                                               |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:129:| `onResponseChunk(chatId, chunk, sessionId)`       | Hook called per streaming text chunk — override for progressive display (default: no-op)                                          |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:130:| `onResponseComplete(chatId, fullText, sessionId)` | Hook called when full response is ready — override to customize delivery (default: `sendMessage()`)                               |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:132:**Block streaming:** When `blockStreaming: "on"` is set in the channel config, the base class automatically splits the agent's streaming response into multiple messages at paragraph boundaries. See [Block Streaming](#block-streaming) below.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:138:Manages the `qwen-code --acp` child process and ACP sessions.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:146:| `start()`                           | Spawn the agent process                                                                                           |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:147:| `stop()`                            | Kill the agent process                                                                                            |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:148:| `newSession(cwd)`                   | Create a new ACP session, returns `sessionId`                                                                     |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:149:| `loadSession(sessionId, cwd)`       | Restore an existing session                                                                                       |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:150:| `prompt(sessionId, text, options?)` | Send a message to the agent, returns the full response text. Supports optional `imageBase64` and `imageMimeType`. |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:151:| `isConnected`                       | Whether the agent process is alive                                                                                |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:157:| `textChunk`    | `(sessionId, chunk)`     | Streaming response chunk |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:158:| `toolCall`     | `(event: ToolCallEvent)` | Agent invoked a tool     |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:163:Maps senders to ACP sessions based on the configured scope.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:173:| `user` (default) | `channel:senderId:chatId` | Each user gets their own session per chat |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:174:| `thread`         | `channel:threadId`        | One session per thread                    |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:175:| `single`         | `channel:__single__`      | One shared session for the entire channel |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:179:| `resolve(channelName, senderId, chatId, threadId?, cwd?)` | Get or create a session for the given sender                |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:180:| `removeSession(channelName, senderId, chatId?)`           | Remove session(s) — used by `/clear`                        |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:181:| `restoreSessions()`                                       | Reload sessions from disk after bridge restart              |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:182:| `clearAll()`                                              | Clear all sessions and delete persist file (clean shutdown) |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:249:  threadId?: string; // for thread-scoped sessions
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:268:`handleInbound()` automatically resolves attachments: images with `data` are sent to the model as vision input, files with `filePath` get their path appended to the prompt text so the agent can read them with its tools.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:272:When `blockStreaming: "on"` is set in a channel's config, the agent's response is delivered as multiple separate messages instead of one large wall of text. The `BlockStreamer` accumulates streaming chunks and emits completed blocks based on paragraph boundaries and size heuristics.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:280:| `blockStreamingCoalesce` | `{ idleMs }`             | `{ 1500 }`      | Emit buffered text after this many ms of silence from the agent             |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:284:1. Text accumulates as the agent streams its response
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:287:4. If the agent goes quiet for `idleMs`, the buffer is flushed (as long as it's past `minChars`)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:288:5. When the agent finishes, any remaining text is sent immediately regardless of `minChars`
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:290:Block streaming and `onResponseChunk` work independently — plugins can override `onResponseChunk` for their own purposes while block streaming handles delivery.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:294:- [Channel Plugin Developer Guide](../../docs/developers/channel-plugins.md)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/base/README.md:295:- [`@qwen-code/channel-plugin-example`](../plugin-example/) — working reference implementation
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:1:# @qwen-code/channel-plugin-example
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:3:A reference channel plugin for Qwen Code. It connects to a WebSocket server and routes messages through the full channel pipeline (access control, session routing, agent bridge).
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:7:- **Try out the channel plugin system** — install it as an extension and run it with the built-in mock server
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:8:- **Use it as a starting point** — fork the source to build your own channel adapter (see the [Channel Plugin Developer Guide](../../docs/developers/channel-plugins.md))
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:15:npm install @qwen-code/channel-plugin-example
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:18:### 2. Link it as a Qwen Code extension
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:20:The package ships a `qwen-extension.json` manifest, so it works as an extension out of the box:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:23:qwen extensions link ./node_modules/@qwen-code/channel-plugin-example
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:33:    "my-plugin-test": {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:34:      "type": "plugin-example",
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:37:      "sessionScope": "user",
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:47:npx qwen-channel-plugin-example-server
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:53:HTTP_PORT=8080 WS_PORT=8081 npx qwen-channel-plugin-example-server
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:61:qwen channel start my-plugin-test
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:72:You should get a JSON response with the agent's reply.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:82:      → qwen-code agent → model API
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:94:3. Export a `plugin` object conforming to `ChannelPlugin`
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:95:4. Add a `qwen-extension.json` manifest
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:99:- **Block streaming** — enable `blockStreaming: "on"` in config and the agent's response is automatically split into multiple messages at paragraph boundaries
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:100:- **Attachments** — populate `envelope.attachments` with images/files and `handleInbound()` routes them to the agent (images as vision input, files as paths in the prompt)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:102:- Access control (allowlist, pairing, open), session routing, slash commands, crash recovery
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/channels/plugin-example/README.md:104:Full guide: [Channel Plugin Developer Guide](../../docs/developers/channel-plugins.md)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:3:The ACP Client SDK is a Java Software Development Kit for communicating with AI agents that support the Agent Client Protocol (ACP). It provides a standardized way to interact with AI agents that support the Agent Client Protocol, enabling features like session management, file system operations, terminal commands, and tool calls.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:7:The ACP SDK implements the Agent Client Protocol, allowing client applications to communicate with AI agents. The SDK provides the following core features:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:12:- Tool call handling and permission management
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:23:- **Standardized Protocol**: Implements ACP protocol to ensure interoperability with various ACP-compatible agents
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:25:- **Session Management**: Complete session lifecycle management
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:26:- **Permission Control**: Fine-grained permission management to protect sensitive operations
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:28:- **MCP Integration**: Integration with external MCP servers for extended tooling capabilities
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:54:The following is a simple example showing how to use the ACP SDK to create a client and establish a session:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:64:        // Send a prompt to the agent
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:68:                    public void onAgentMessageChunkSessionUpdate(AgentMessageChunkSessionUpdate sessionUpdate) {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:69:                        logger.info(sessionUpdate.toString());
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:73:                    public void onAvailableCommandsUpdateSessionUpdate(AvailableCommandsUpdateSessionUpdate sessionUpdate) {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:74:                        logger.info(sessionUpdate.toString());
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:78:                    public void onCurrentModeUpdateSessionUpdate(CurrentModeUpdateSessionUpdate sessionUpdate) {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:79:                        logger.info(sessionUpdate.toString());
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:83:                    public void onPlanSessionUpdate(PlanSessionUpdate sessionUpdate) {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:84:                        logger.info(sessionUpdate.toString());
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:88:                    public void onToolCallUpdateSessionUpdate(ToolCallUpdateSessionUpdate sessionUpdate) {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:89:                        logger.info(sessionUpdate.toString());
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:93:                    public void onToolCallSessionUpdate(ToolCallSessionUpdate sessionUpdate) {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:94:                        logger.info(sessionUpdate.toString());
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:108:1. **AcpClient**: Main client class that manages connections to ACP-compatible agents
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:109:2. **Session**: Represents a conversation session with an agent
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:117:- Request/Response types for agent-client communication
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:125:- AI agent integration in enterprise applications
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:129:- Integration with external services and tools
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/client/README.md:155:- Permission handling workflows
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:92:                public void onText(Session session, TextAssistantContent textAssistantContent) {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:97:                public void onThinking(Session session, ThinkingAssistantContent thinkingAssistantContent) {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:102:                public void onToolUse(Session session, ToolUseAssistantContent toolUseContent) {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:104:                            toolUseContent, toolUseContent.getInput());
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:108:                public void onToolResult(Session session, ToolResultAssistantContent toolResultContent) {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:109:                    logger.info("Tool result content received: {}", toolResultContent.getContent());
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:113:                public void onOtherContent(Session session, AssistantContent<?> other) {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:118:                public void onUsage(Session session, AssistantUsage assistantUsage) {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:131:The SDK follows a layered architecture:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:134:- **Session Layer**: Manages communication sessions with the Qwen Code CLI through the `Session` class
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:143:The SDK supports different permission modes for controlling tool execution:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:145:- **`default`**: Write tools are denied unless approved via `canUseTool` callback or in `allowedTools`. Read-only tools execute without confirmation.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:146:- **`plan`**: Blocks all write tools, instructing AI to present a plan first.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:147:- **`auto-edit`**: Auto-approve edit tools (edit, write_file) while other tools require confirmation.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:148:- **`yolo`**: All tools execute automatically without confirmation.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:156:The `SessionEventConsumers` interface provides callbacks for different types of messages during a session:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:166:- `onPermissionRequest`: Handles permission requests (receives Session and CLIControlRequest<CLIControlPermissionRequest>, returns Behavior)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:174:- `onToolUse`: Handles tool use content (receives Session and ToolUseAssistantContent)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:175:- `onToolResult`: Handles tool result content (receives Session and ToolResultAssistantContent)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:178:- `onPermissionRequest`: Handles permission requests (receives Session and CLIControlPermissionRequest, returns Behavior)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:186:- `AssistantContentConsumers` is the **low-level** content processor that handles different types of content within assistant messages (text, tools, thinking, etc.)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:239:- `model`: AI model to use for the session
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:240:- `permissionMode`: Permission mode that controls tool execution
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:242:- `maxSessionTurns`: Limits the number of conversation turns in a session
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:243:- `coreTools`: List of core tools that should be available to the AI
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:244:- `excludeTools`: List of tools to exclude from being available to the AI
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:245:- `allowedTools`: List of tools that are pre-approved for use without additional confirmation
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:246:- `authType`: Authentication type to use for the session
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:250:- `resumeSessionId`: ID of a previous session to resume
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:255:- **Session creation**: Use `QwenCodeCli.newSession()` to create a new session with custom options
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:256:- **Session management**: The `Session` class provides methods to send prompts, handle responses, and manage session state
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:257:- **Session cleanup**: Always close sessions using `session.close()` to properly terminate the CLI process
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:258:- **Session resumption**: Use `setResumeSessionId()` in `TransportOptions` to resume a previous session
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:259:- **Session interruption**: Use `session.interrupt()` to interrupt a currently running prompt
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:260:- **Dynamic model switching**: Use `session.setModel()` to change the model during a session
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:261:- **Dynamic permission mode switching**: Use `session.setPermissionMode()` to change the permission mode during a session
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:279:- `SessionControlException`: Thrown when there's an issue with session control (creation, initialization, etc.)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:281:- `SessionClosedException`: Thrown when attempting to use a closed session
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:293:### Q: Why are some tools not executing?
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:295:A: This is likely due to permission modes. Check your permission mode settings and consider using `allowedTools` to pre-approve certain tools.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:297:### Q: How do I resume a previous session?
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/sdk-java/qwencode/README.md:299:A: Use the `setResumeSessionId()` method in `TransportOptions` to resume a previous session.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/zed-extension/README.md:3:A [Zed](https://zed.dev) extension that integrates [Qwen Code](https://github.com/QwenLM/qwen-code) as an AI agent server using the [Agent Client Protocol (ACP)](https://agentclientprotocol.com).
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/zed-extension/README.md:24:zed --install-extension qwen-code
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/zed-extension/README.md:30:2. Select "Qwen Code" from the agent list
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/zed-extension/README.md:36:- The agent can read, write, and edit files in your workspace
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/zed-extension/README.md:37:- Ask the agent to explain code, suggest improvements, or help with debugging
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/zed-extension/README.md:44:- Node.js >= 20 (for running Qwen Code agent server)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/zed-extension/README.md:50:When running as an agent server, Qwen Code will:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/zed-extension/README.md:60:  "agent_servers": {
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/zed-extension/README.md:79:3. Check logs related to agent server or Node.js
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/zed-extension/README.md:84:If the agent server starts successfully but you experience problems during use:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/zed-extension/README.md:96:- [Qwen Code Zed Extension Issues](https://github.com/QwenLM/qwen-code-zed-extension/issues)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/zed-extension/README.md:101:- [Zed Agent Panel Guide](https://zed.dev/docs/ai/agent-panel)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/zed-extension/README.md:102:- [Agent Client Protocol](https://agentclientprotocol.com)
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/src/core/openaiContentGenerator/provider/README.md:3:This folder contains the different provider implementations for the Qwen Code refactor system.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/src/core/openaiContentGenerator/provider/README.md:7:- `constants.ts` - Common constants used across all providers
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/src/core/openaiContentGenerator/provider/README.md:8:- `types.ts` - Type definitions and interfaces for providers
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/src/core/openaiContentGenerator/provider/README.md:9:- `default.ts` - Default provider for standard OpenAI-compatible APIs
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/src/core/openaiContentGenerator/provider/README.md:10:- `dashscope.ts` - DashScope (Qwen) specific provider implementation
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/src/core/openaiContentGenerator/provider/README.md:11:- `openrouter.ts` - OpenRouter specific provider implementation
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/src/core/openaiContentGenerator/provider/README.md:12:- `index.ts` - Main export file for all providers
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/src/core/openaiContentGenerator/provider/README.md:18:The `DefaultOpenAICompatibleProvider` is the fallback provider for standard OpenAI-compatible APIs. It provides basic functionality without special enhancements and passes through all request parameters.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/src/core/openaiContentGenerator/provider/README.md:30:To add a new provider:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/src/core/openaiContentGenerator/provider/README.md:32:1. Create a new file (e.g., `newprovider.ts`) in this folder
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/src/core/openaiContentGenerator/provider/README.md:34:3. Add a static method to identify if a config belongs to this provider
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/src/core/openaiContentGenerator/provider/README.md:36:5. The main `provider.ts` file will automatically re-export it
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/src/core/openaiContentGenerator/provider/README.md:40:All providers must implement:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/src/core/openaiContentGenerator/provider/README.md:42:- `buildHeaders()` - Build HTTP headers for the provider
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/src/core/openaiContentGenerator/provider/README.md:44:- `buildRequest()` - Transform requests before sending to the provider
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/core/src/core/openaiContentGenerator/provider/README.md:57:    // Logic to identify this provider
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md:10:**An open-source AI agent that lives in your terminal.**
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md:33:Qwen Code is an open-source AI agent for the terminal, optimized for Qwen series models. It helps you understand large codebases, automate tedious work, and ship faster.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md:35:- **Multi-protocol, flexible providers**: use OpenAI / Anthropic / Gemini-compatible APIs, [Alibaba Cloud Coding Plan](https://modelstudio.console.alibabacloud.com/?tab=coding-plan#/efm/coding-plan-index), [OpenRouter](https://openrouter.ai), [Fireworks AI](https://app.fireworks.ai), or bring your own API key.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md:37:- **Agentic workflow, feature-rich**: rich built-in tools (Skills, SubAgents) for a full agentic workflow and a Claude Code-like experience.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md:86:# Then, in the session:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md:113:Copy the prompt below and paste it into your agent:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md:116:Use Qwen Code as a coding agent. First, fetch and read this skill reference:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md:125:- **API Key (recommended)**: use an API key from Alibaba Cloud Model Studio ([Beijing](https://bailian.console.aliyun.com/) / [intl](https://modelstudio.console.alibabacloud.com/)) or any supported provider (OpenAI, Anthropic, Google GenAI, and other compatible endpoints).
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md:132:Use an API key to connect to Alibaba Cloud Model Studio or any supported provider. Supports multiple protocols:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md:134:- **OpenAI-compatible**: Alibaba Cloud ModelStudio, ModelScope, OpenAI, OpenRouter, and other OpenAI-compatible providers
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md:138:The **recommended** way to configure models and providers is by editing `~/.qwen/settings.json` (create it if it doesn't exist). This file lets you define all available models, API keys, and default settings in one place.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md:266:<summary>Multiple providers (OpenAI + Anthropic + Gemini)</summary>
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md:422:As an open-source terminal agent, you can use Qwen Code in four primary ways:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md:468:- `/stats` - Show current session information
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md:488:| `~/.qwen/settings.json` | User (global) | Applies to all your Qwen Code sessions. **Recommended for `modelProviders` and `env`.** |
+/home/lachlan/ProjectsLFS/Agent/qwen-code/README.md:515:- [**AionUi**](https://github.com/iOfficeAI/AionUi) A modern GUI for command-line AI tools including Qwen Code
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/webui/README.md:7:- **Cross-platform support**: Components work seamlessly across VS Code extension, web, and other platforms
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/webui/README.md:9:- **Tailwind CSS**: Shared styling preset for consistent design
+/home/lachlan/ProjectsLFS/Agent/qwen-code/packages/webui/examples/README.md:8:- [`complex-chat-demo.html`](./complex-chat-demo.html) - Demonstrates a complex chat conversation with tool calls, code blocks, and mixed-language interactions
+/home/lachlan/ProjectsLFS/Agent/qwen-code/integration-tests/concurrent-runner/README.md:3:A Python tool for executing multiple Qwen CLI tasks across different models concurrently using isolated git worktrees.
+/home/lachlan/ProjectsLFS/Agent/qwen-code/integration-tests/concurrent-runner/README.md:7:This tool enables you to:
+/home/lachlan/ProjectsLFS/Agent/qwen-code/integration-tests/concurrent-runner/README.md:42:      "id": "code-review",
+/home/lachlan/ProjectsLFS/Agent/qwen-code/integration-tests/concurrent-runner/README.md:94:      "task_id": "code-review",

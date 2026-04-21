@@ -1,0 +1,51 @@
+# copilot
+
+path=/home/lachlan/ProjectsLFS/Agent/copilot
+timestamp=2026-04-21T17:46:23+08:00
+
+## Top Level
+total 148
+drwxrwxr-x 15 lachlan lachlan  4096 Apr 20 10:47 .
+drwxrwxr-x 13 lachlan lachlan  4096 Apr 21 17:45 ..
+drwxrwxr-x  2 lachlan lachlan  4096 Apr 20 10:43 .devcontainer
+drwxrwxr-x  8 lachlan lachlan  4096 Apr 20 11:02 .git
+-rw-rw-r--  1 lachlan lachlan   443 Apr 20 10:43 .gitattributes
+drwxrwxr-x  7 lachlan lachlan  4096 Apr 20 10:43 .github
+-rw-rw-r--  1 lachlan lachlan    63 Apr 20 10:43 .gitignore
+drwxrwxr-x  2 lachlan lachlan  4096 Apr 20 10:43 .vscode
+-rw-rw-r--  1 lachlan lachlan 24965 Apr 20 10:43 CHANGELOG.md
+-rw-rw-r--  1 lachlan lachlan  3232 Apr 20 10:43 CODE_OF_CONDUCT.md
+-rw-rw-r--  1 lachlan lachlan  4575 Apr 20 10:43 CONTRIBUTING.md
+-rw-rw-r--  1 lachlan lachlan  1060 Apr 20 10:43 LICENSE
+-rw-rw-r--  1 lachlan lachlan 11365 Apr 20 10:43 README.md
+-rw-rw-r--  1 lachlan lachlan  1729 Apr 20 10:43 SECURITY.md
+-rw-rw-r--  1 lachlan lachlan   629 Apr 20 10:43 SUPPORT.md
+drwxrwxr-x  2 lachlan lachlan  4096 Apr 20 10:43 assets
+drwxrwxr-x  9 lachlan lachlan  4096 Apr 20 10:43 docs
+drwxrwxr-x  6 lachlan lachlan  4096 Apr 20 10:43 dotnet
+drwxrwxr-x  7 lachlan lachlan  4096 Apr 20 10:43 go
+drwxrwxr-x  2 lachlan lachlan  4096 Apr 20 10:43 java
+-rw-rw-r--  1 lachlan lachlan  8598 Apr 20 10:43 justfile
+drwxrwxr-x  8 lachlan lachlan  4096 Apr 20 10:43 nodejs
+drwxrwxr-x  6 lachlan lachlan  4096 Apr 20 10:43 python
+drwxrwxr-x  5 lachlan lachlan  4096 Apr 20 10:43 scripts
+-rw-rw-r--  1 lachlan lachlan    19 Apr 20 10:43 sdk-protocol-version.json
+drwxrwxr-x  5 lachlan lachlan  4096 Apr 20 10:43 test
+
+## Selected Files
+/home/lachlan/ProjectsLFS/Agent/copilot/README.md
+/home/lachlan/ProjectsLFS/Agent/copilot/dotnet/README.md
+/home/lachlan/ProjectsLFS/Agent/copilot/go/README.md
+/home/lachlan/ProjectsLFS/Agent/copilot/go/go.mod
+/home/lachlan/ProjectsLFS/Agent/copilot/go/samples/go.mod
+/home/lachlan/ProjectsLFS/Agent/copilot/java/README.md
+/home/lachlan/ProjectsLFS/Agent/copilot/nodejs/README.md
+/home/lachlan/ProjectsLFS/Agent/copilot/nodejs/package.json
+/home/lachlan/ProjectsLFS/Agent/copilot/nodejs/samples/package.json
+/home/lachlan/ProjectsLFS/Agent/copilot/python/README.md
+/home/lachlan/ProjectsLFS/Agent/copilot/python/pyproject.toml
+/home/lachlan/ProjectsLFS/Agent/copilot/scripts/codegen/package.json
+/home/lachlan/ProjectsLFS/Agent/copilot/scripts/corrections/package.json
+/home/lachlan/ProjectsLFS/Agent/copilot/scripts/docs-validation/package.json
+/home/lachlan/ProjectsLFS/Agent/copilot/test/harness/package.json
+/home/lachlan/ProjectsLFS/Agent/copilot/test/scenarios/README.md

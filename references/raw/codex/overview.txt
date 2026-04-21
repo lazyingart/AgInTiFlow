@@ -1,0 +1,169 @@
+# codex
+
+path=/home/lachlan/ProjectsLFS/Agent/codex
+timestamp=2026-04-21T17:46:23+08:00
+
+## Top Level
+total 1700
+drwxrwxr-x 15 lachlan lachlan    4096 Apr 20 10:47 .
+drwxrwxr-x 13 lachlan lachlan    4096 Apr 21 17:45 ..
+-rw-rw-r--  1 lachlan lachlan     141 Apr 20 10:47 .bazelignore
+-rw-rw-r--  1 lachlan lachlan    8422 Apr 20 10:47 .bazelrc
+-rw-rw-r--  1 lachlan lachlan       6 Apr 20 10:47 .bazelversion
+-rw-rw-r--  1 lachlan lachlan      26 Apr 20 10:47 .codespellignore
+-rw-rw-r--  1 lachlan lachlan     341 Apr 20 10:47 .codespellrc
+drwxrwxr-x  3 lachlan lachlan    4096 Apr 20 10:47 .codex
+drwxrwxr-x  2 lachlan lachlan    4096 Apr 20 10:47 .devcontainer
+drwxrwxr-x  8 lachlan lachlan    4096 Apr 20 11:02 .git
+drwxrwxr-x  7 lachlan lachlan    4096 Apr 20 10:47 .github
+-rw-rw-r--  1 lachlan lachlan     891 Apr 20 10:47 .gitignore
+-rw-rw-r--  1 lachlan lachlan      78 Apr 20 10:47 .markdownlint-cli2.yaml
+-rw-rw-r--  1 lachlan lachlan     104 Apr 20 10:47 .npmrc
+-rw-rw-r--  1 lachlan lachlan      96 Apr 20 10:47 .prettierignore
+-rw-rw-r--  1 lachlan lachlan     170 Apr 20 10:47 .prettierrc.toml
+drwxrwxr-x  2 lachlan lachlan    4096 Apr 20 10:47 .vscode
+-rw-rw-r--  1 lachlan lachlan   17080 Apr 20 10:47 AGENTS.md
+-rw-rw-r--  1 lachlan lachlan    1166 Apr 20 10:47 BUILD.bazel
+-rw-rw-r--  1 lachlan lachlan      93 Apr 20 10:47 CHANGELOG.md
+-rw-rw-r--  1 lachlan lachlan   10926 Apr 20 10:47 LICENSE
+-rw-rw-r--  1 lachlan lachlan   16542 Apr 20 10:47 MODULE.bazel
+-rw-rw-r--  1 lachlan lachlan 1323718 Apr 20 10:47 MODULE.bazel.lock
+-rw-rw-r--  1 lachlan lachlan     420 Apr 20 10:47 NOTICE
+-rw-rw-r--  1 lachlan lachlan    2627 Apr 20 10:47 README.md
+-rw-rw-r--  1 lachlan lachlan     923 Apr 20 10:47 SECURITY.md
+-rw-rw-r--  1 lachlan lachlan     999 Apr 20 10:47 announcement_tip.toml
+-rw-rw-r--  1 lachlan lachlan    1155 Apr 20 10:47 cliff.toml
+drwxrwxr-x  4 lachlan lachlan    4096 Apr 20 10:47 codex-cli
+drwxrwxr-x 82 lachlan lachlan    4096 Apr 20 10:47 codex-rs
+-rw-rw-r--  1 lachlan lachlan   14915 Apr 20 10:47 defs.bzl
+drwxrwxr-x  2 lachlan lachlan    4096 Apr 20 10:47 docs
+-rw-rw-r--  1 lachlan lachlan    1108 Apr 20 10:47 flake.lock
+-rw-rw-r--  1 lachlan lachlan    2673 Apr 20 10:47 flake.nix
+-rw-rw-r--  1 lachlan lachlan    3639 Apr 20 10:47 justfile
+-rw-rw-r--  1 lachlan lachlan     863 Apr 20 10:47 package.json
+drwxrwxr-x  2 lachlan lachlan    4096 Apr 20 10:47 patches
+-rw-rw-r--  1 lachlan lachlan  169399 Apr 20 10:47 pnpm-lock.yaml
+-rw-rw-r--  1 lachlan lachlan     193 Apr 20 10:47 pnpm-workspace.yaml
+-rw-rw-r--  1 lachlan lachlan    1471 Apr 20 10:47 rbe.bzl
+drwxrwxr-x  3 lachlan lachlan    4096 Apr 20 10:47 scripts
+drwxrwxr-x  5 lachlan lachlan    4096 Apr 20 10:47 sdk
+drwxrwxr-x  5 lachlan lachlan    4096 Apr 20 10:47 third_party
+drwxrwxr-x  3 lachlan lachlan    4096 Apr 20 10:47 tools
+-rw-rw-r--  1 lachlan lachlan    2240 Apr 20 10:47 workspace_root_test_launcher.bat.tpl
+-rw-rw-r--  1 lachlan lachlan    1743 Apr 20 10:47 workspace_root_test_launcher.sh.tpl
+
+## Selected Files
+/home/lachlan/ProjectsLFS/Agent/codex/.devcontainer/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/.github/workflows/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/AGENTS.md
+/home/lachlan/ProjectsLFS/Agent/codex/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-cli/package.json
+/home/lachlan/ProjectsLFS/Agent/codex/codex-cli/scripts/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/analytics/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/ansi-escape/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/ansi-escape/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server-client/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server-client/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server-protocol/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server-test-client/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server-test-client/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/app-server/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/apply-patch/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/arg0/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/async-utils/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/backend-client/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/chatgpt/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/chatgpt/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/cli/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/cloud-requirements/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/cloud-tasks-client/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/cloud-tasks-mock-client/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/cloud-tasks/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/code-mode/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/codex-api/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/codex-api/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/codex-backend-openapi-models/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/codex-client/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/codex-client/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/codex-experimental-api-macros/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/codex-mcp/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/collaboration-mode-templates/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/config/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/connectors/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core-plugins/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core-skills/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/core/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/debug-client/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/debug-client/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/exec-server/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/exec-server/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/exec/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/execpolicy-legacy/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/execpolicy-legacy/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/execpolicy/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/execpolicy/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/features/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/feedback/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/file-search/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/file-search/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/git-utils/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/git-utils/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/hooks/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/install-context/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/instructions/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/keyring-store/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/linux-sandbox/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/lmstudio/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/login/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/mcp-server/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/model-provider-info/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/model-provider/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/models-manager/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/network-proxy/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/network-proxy/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/ollama/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/otel/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/plugin/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/process-hardening/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/process-hardening/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/protocol/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/protocol/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/realtime-webrtc/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/response-debug-context/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/responses-api-proxy/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/responses-api-proxy/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/rmcp-client/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/rollout/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/sandboxing/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/secrets/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/shell-command/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/shell-escalation/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/shell-escalation/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/skills/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/state/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/stdio-to-uds/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/stdio-to-uds/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/terminal-detection/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/test-binary-support/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/thread-store/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tools/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/tui/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/v8-poc/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/codex-rs/windows-sandbox-rs/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/package.json
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/python-runtime/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/python-runtime/pyproject.toml
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/python/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/python/pyproject.toml
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/typescript/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/sdk/typescript/package.json
+/home/lachlan/ProjectsLFS/Agent/codex/third_party/v8/README.md
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/codex/tools/argument-comment-lint/README.md

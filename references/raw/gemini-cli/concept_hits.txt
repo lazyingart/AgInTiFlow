@@ -1,0 +1,108 @@
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:3:Behavioral evaluations (evals) are tests designed to validate the agent's
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:5:for changes to system prompts, tool definitions, and other model-steering
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:6:mechanisms, and as a tool for assessing feature reliability by model, and
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:27:- **Feedback Loop**: They help us understand how changes to prompts or tools
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:29:  - _Did a change to the system prompt make the model less likely to use tool
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:31:  - _Did a new tool definition confuse the model?_
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:40:When designing behavioral evals, aim for scenarios that accurately reflect
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:45:  mirroring how a real agent interacts with a workspace. Remember that the agent
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:49:    the agent to add a specific feature, requiring it to read the file,
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:51:  - _Bad_: An eval that simply asks the agent a trivia question or asks it to
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:64:    string, or verifying that a tool was called with with the right parameters.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:65:  - _Bad_: Only checking for a tool call, which could happen for an unrelated
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:67:- **Fail First**: Have tests that failed before your prompt or tool change. We
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:73:    failure, modifying the prompt/tool, and then verifying the eval passes.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:78:  value is in testing how the agent works in a semi-realistic scenario.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:118:- `log`: An optional boolean that, if set to `true`, will log the tool calls to
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:170:[Evals: Nightly](https://github.com/google-gemini/gemini-cli/actions/workflows/evals-nightly.yml)
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:192:3. **Promotion**: Promotion to `ALWAYS_PASSES` is conducted by the agent after
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:203:  [E2E (Chained)](https://github.com/google-gemini/gemini-cli/actions/workflows/chained_e2e.yml)
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:204:  workflow. These must pass 100% for every PR.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:206:  [Evals: Nightly](https://github.com/google-gemini/gemini-cli/actions/workflows/evals-nightly.yml)
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:207:  workflow. These track the long-term health and stability of model steering.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:211:The nightly workflow executes the full evaluation suite multiple times
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:213:aggregated into a **Nightly Summary** attached to the workflow run.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:234:MODEL_LIST=gemini-3-flash-preview node scripts/run_eval_regression.js
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:241:OUTPUT=$(node scripts/get_trustworthy_evals.js "gemini-3-flash-preview")
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:244:node scripts/run_regression_check.js "gemini-3-flash-preview" "$OUTPUT"
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:268:  a specific test in that workflow instance.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:276:tool definition has made the model's behavior less reliable.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:280:If an evaluation is failing or has a regressed pass rate, ask the agent to
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:281:investigate and fix the issue using the **behavioral-evals skill**. The agent
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:284:1.  **Investigate**: Fetch the latest results from the nightly workflow using
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:285:    the `gh` CLI, identify the failing test, and review test trajectory logs in
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:287:2.  **Fix**: Suggest and apply targeted fixes to the prompt or tool definitions.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:288:    It prioritizes minimal changes to `prompt.ts` and tool instructions,
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:294:When investigating failures manually, you can enable verbose agent logs by
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:299:It's highly recommended to manually review and/or ask the agent to iterate on
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:308:agent to ensure that the 100% success rate requirement is empirically met.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md:310:The agent automates the promotion by:
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:3:[![Gemini CLI CI](https://github.com/google-gemini/gemini-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/google-gemini/gemini-cli/actions/workflows/ci.yml)
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:4:[![Gemini CLI E2E (Chained)](https://github.com/google-gemini/gemini-cli/actions/workflows/chained_e2e.yml/badge.svg)](https://github.com/google-gemini/gemini-cli/actions/workflows/chained_e2e.yml)
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:11:Gemini CLI is an open-source AI agent that brings the power of Gemini directly
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:23:- **🔧 Built-in tools**: Google Search grounding, file operations, shell
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:78:### Preview
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:80:New preview releases will be published each week at UTC 23:59 on Tuesdays. These
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:82:outstanding issues. Please help us test and install with `preview` tag.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:85:npm install -g @google/gemini-cli@preview
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:91:  will be the full promotion of last week's `preview` release + any bug fixes
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:122:- Run non-interactively in scripts for workflow automation
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:129:- Conversation checkpointing to save and resume complex sessions
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:134:Integrate Gemini CLI directly into your GitHub workflows with
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:137:- **Pull Request Reviews**: Automated code review with contextual feedback and
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:143:- **Custom Workflows**: Build automated, scheduled and on-demand workflows
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:241:gemini -p "Explain the architecture of this codebase"
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:248:gemini -p "Explain the architecture of this codebase" --output-format json
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:299:  and resume conversations.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:305:- [**Built-in Tools Overview**](https://www.geminicli.com/docs/reference/tools)
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:306:  - [File System Operations](https://www.geminicli.com/docs/tools/file-system)
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:307:  - [Shell Commands](https://www.geminicli.com/docs/tools/shell)
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:308:  - [Web Fetch & Search](https://www.geminicli.com/docs/tools/web-fetch)
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:309:- [**MCP Server Integration**](https://www.geminicli.com/docs/tools/mcp-server) -
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:310:  Extend with custom tools.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:311:- [**Custom Extensions**](https://geminicli.com/docs/extensions/writing-extensions) -
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:317:  Use Gemini CLI in automated workflows.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:320:- [**Sandboxing & Security**](https://www.geminicli.com/docs/cli/sandbox) - Safe
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:328:- [**Tools reference**](https://www.geminicli.com/docs/reference/tools) -
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:329:  Built-in tools overview.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:331:  Local development tooling.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:344:custom tools:
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:353:[MCP Server Integration guide](https://www.geminicli.com/docs/tools/mcp-server)
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md:364:- Share your MCP servers and extensions.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/ROADMAP.md:6:Gemini CLI is an open-source AI agent that brings the power of Gemini directly
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/ROADMAP.md:36:- **Extensibility:** An adaptable agent to help you with a variety of use cases
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/ROADMAP.md:37:  and environments along with the ability to run these agents anywhere.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/ROADMAP.md:38:- **Intelligent:** Gemini CLI should be reliably ranked among the best agentic
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/ROADMAP.md:39:  tools as measured by benchmarks like SWE Bench, Terminal Bench, and CSAT.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/ROADMAP.md:57:- **Feature Area:** Labels such as `area/model` or `area/tooling` categorize the
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/ROADMAP.md:76:- **Tooling:** Built-in tools and the MCP ecosystem.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/ROADMAP.md:92:community! Whether you're a developer, a designer, or just an enthusiastic user
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/ROADMAP.md:97:- **Roadmap:** Please review and find areas in our
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/perf-tests/README.md:109:These tests are **excluded from `preflight`** and designed for nightly CI:
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/vscode-ide-companion/README.md:3:The Gemini CLI Companion extension pairs with
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/vscode-ide-companion/README.md:4:[Gemini CLI](https://github.com/google-gemini/gemini-cli). This extension is
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/vscode-ide-companion/README.md:20:- Launch Gemini CLI: Quickly start a new Gemini CLI session from the Command
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/vscode-ide-companion/README.md:26:To use this extension, you'll need:
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/vscode-ide-companion/README.md:33:By installing this extension, you agree to the
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/sdk/README.md:4:models and tools.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/sdk/README.md:18:  const agent = new GeminiCliAgent({
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/sdk/README.md:25:  // Stream responses from the agent
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/sdk/README.md:26:  const stream = agent.sendStream('Why is the sky blue?', signal);
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/themes-example/README.md:3:This is an example of a Gemini CLI extension that adds a custom theme.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/themes-example/README.md:7:1.  Link this extension:
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/themes-example/README.md:10:    gemini extensions link packages/cli/src/commands/extensions/examples/themes-example
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/themes-example/README.md:31:    as defined in this extension's `gemini-extension.json` file.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/policies/README.md:1:# Policy engine example extension
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/policies/README.md:3:This extension demonstrates how to contribute security rules and safety checkers
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/policies/README.md:8:The extension uses a `policies/` directory containing `.toml` files to define:
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/policies/README.md:16:- `gemini-extension.json`: The manifest file.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/policies/README.md:21:1.  Link this extension to your local Gemini CLI installation:
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/policies/README.md:24:    gemini extensions link packages/cli/src/commands/extensions/examples/policies
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/policies/README.md:27:2.  Restart your Gemini CLI session.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/policies/README.md:40:configurations contributed by extensions. This ensures that extensions can
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/mcp-server/README.md:4:Gemini CLI extension. It demonstrates how to expose tools and prompts to the
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/mcp-server/README.md:12:- A tool `fetch_posts` that mock-fetches posts.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/mcp-server/README.md:18:- `gemini-extension.json`: The configuration file that tells Gemini CLI how to
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/mcp-server/README.md:19:  use this extension.
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/mcp-server/README.md:27:    cd packages/cli/src/commands/extensions/examples/mcp-server
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/src/commands/extensions/examples/mcp-server/README.md:35:This example is typically used by `gemini extensions new`.

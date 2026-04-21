@@ -1,0 +1,43 @@
+# claw-code
+
+path=/home/lachlan/ProjectsLFS/Agent/claw-code
+timestamp=2026-04-21T17:46:23+08:00
+
+## Top Level
+total 784
+drwxrwxr-x 10 lachlan lachlan   4096 Apr 21 17:43 .
+drwxrwxr-x 13 lachlan lachlan   4096 Apr 21 17:45 ..
+drwxrwxr-x  3 lachlan lachlan   4096 Apr 21 17:43 .claude
+-rw-rw-r--  1 lachlan lachlan     56 Apr 21 17:43 .claude.json
+-rw-rw-r--  1 lachlan lachlan     44 Apr 21 17:43 .claw.json
+drwxrwxr-x  8 lachlan lachlan   4096 Apr 21 17:43 .git
+drwxrwxr-x  4 lachlan lachlan   4096 Apr 21 17:43 .github
+-rw-rw-r--  1 lachlan lachlan    215 Apr 21 17:43 .gitignore
+-rw-rw-r--  1 lachlan lachlan   1093 Apr 21 17:43 CLAUDE.md
+-rw-rw-r--  1 lachlan lachlan    271 Apr 21 17:43 Containerfile
+-rw-rw-r--  1 lachlan lachlan  13571 Apr 21 17:43 PARITY.md
+-rw-rw-r--  1 lachlan lachlan   4053 Apr 21 17:43 PHILOSOPHY.md
+-rw-rw-r--  1 lachlan lachlan   6066 Apr 21 17:43 README.md
+-rw-rw-r--  1 lachlan lachlan 654514 Apr 21 17:43 ROADMAP.md
+-rw-rw-r--  1 lachlan lachlan  16001 Apr 21 17:43 USAGE.md
+drwxrwxr-x  3 lachlan lachlan   4096 Apr 21 17:43 assets
+drwxrwxr-x  2 lachlan lachlan   4096 Apr 21 17:43 docs
+-rwxrwxr-x  1 lachlan lachlan  11351 Apr 21 17:43 install.sh
+-rw-rw-r--  1 lachlan lachlan  20479 Apr 21 17:43 prd.json
+-rw-rw-r--  1 lachlan lachlan   6271 Apr 21 17:43 progress.txt
+drwxrwxr-x  8 lachlan lachlan   4096 Apr 21 17:43 rust
+drwxrwxr-x 32 lachlan lachlan   4096 Apr 21 17:43 src
+drwxrwxr-x  2 lachlan lachlan   4096 Apr 21 17:43 tests
+
+## Selected Files
+/home/lachlan/ProjectsLFS/Agent/claw-code/CLAUDE.md
+/home/lachlan/ProjectsLFS/Agent/claw-code/PARITY.md
+/home/lachlan/ProjectsLFS/Agent/claw-code/PHILOSOPHY.md
+/home/lachlan/ProjectsLFS/Agent/claw-code/README.md
+/home/lachlan/ProjectsLFS/Agent/claw-code/ROADMAP.md
+/home/lachlan/ProjectsLFS/Agent/claw-code/USAGE.md
+/home/lachlan/ProjectsLFS/Agent/claw-code/rust/CLAUDE.md
+/home/lachlan/ProjectsLFS/Agent/claw-code/rust/Cargo.toml
+/home/lachlan/ProjectsLFS/Agent/claw-code/rust/PARITY.md
+/home/lachlan/ProjectsLFS/Agent/claw-code/rust/README.md
+/home/lachlan/ProjectsLFS/Agent/claw-code/rust/USAGE.md

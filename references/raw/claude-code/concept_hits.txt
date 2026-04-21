@@ -1,0 +1,405 @@
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/frontend-design/README.md:26:See the [Frontend Aesthetics Cookbook](https://github.com/anthropics/claude-cookbooks/blob/main/coding/prompting_for_frontend_aesthetics.ipynb) for detailed guidance on prompting for high-quality frontend design.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:3:This plugin combines the unshipped Learning output style with explanatory functionality as a SessionStart hook.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:5:**Note:** This plugin differs from the original unshipped Learning output style by also incorporating all functionality from the [explanatory-output-style plugin](https://github.com/anthropics/claude-code/tree/main/plugins/explanatory-output-style), providing both interactive learning and educational insights.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:7:WARNING: Do not install this plugin unless you are fine with incurring the token cost of this plugin's additional instructions and the interactive nature of learning mode.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:11:When enabled, this plugin automatically adds instructions at the start of each session that encourage Claude to:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:19:2. Focus on business logic and design choices where your input truly matters
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:26:The plugin uses a SessionStart hook to inject additional context into every session. This context instructs Claude to adopt an interactive teaching approach where you actively participate in writing key parts of the code.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:36:- Design patterns and architecture choices
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:48:**Claude:** I've set up the authentication middleware. The session timeout behavior is a security vs. UX trade-off - should sessions auto-extend on activity, or have a hard timeout?
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:52:Consider: auto-extending improves UX but may leave sessions open longer; hard timeouts are more secure but might frustrate active users.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:69:- Trade-offs and design decisions
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:74:Once installed, the plugin activates automatically at the start of every session. No additional configuration is needed.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:78:This plugin combines the unshipped "Learning" output style with the deprecated "Explanatory" output style. It provides an interactive learning experience where you actively contribute code at meaningful decision points, while also receiving educational insights about implementation choices.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:80:If you previously used the explanatory-output-style plugin, this learning plugin includes all of that functionality plus interactive learning features.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:82:This SessionStart hook pattern is roughly equivalent to CLAUDE.md, but it is more flexible and allows for distribution through plugins.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:86:- Disable the plugin - keep the code installed on your device
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:87:- Uninstall the plugin - remove the code from your device
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:88:- Update the plugin - create a local copy of this plugin to personalize it
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:89:  - Hint: Ask Claude to read https://docs.claude.com/en/docs/claude-code/plugins.md and set it up for you!
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/learning-output-style/README.md:93:Learning by doing is more effective than passive observation. This plugin transforms your interaction with Claude from "watch and learn" to "build and understand," ensuring you develop practical skills through hands-on coding of meaningful logic.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:3:Automated code review for pull requests using multiple specialized agents with confidence-based scoring to filter false positives.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:7:The Code Review Plugin automates pull request review by launching multiple agents in parallel to independently audit changes from different perspectives. It uses confidence scoring to filter out false positives, ensuring only high-quality, actionable feedback is posted.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:11:### `/code-review`
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:13:Performs automated code review on a pull request using multiple specialized agents.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:16:1. Checks if review is needed (skips closed, draft, trivial, or already-reviewed PRs)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:19:4. Launches 4 parallel agents to independently review:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:25:7. Outputs review (to terminal by default, or as PR comment with `--comment` flag)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:29:/code-review [--comment]
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:33:- `--comment`: Post the review as a comment on the pull request (default: outputs to terminal only)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:35:**Example workflow:**
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:38:/code-review
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:40:# Post review as PR comment:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:41:/code-review --comment
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:44:# - Launch 4 review agents in parallel
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:51:- Multiple independent agents for comprehensive review
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:53:- CLAUDE.md compliance checking with explicit guideline verification
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:56:- Automatic skipping of closed, draft, or already-reviewed PRs
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:61:## Code review
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:95:This plugin is included in the Claude Code repository. The command is automatically available when using Claude Code.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:99:### Using `/code-review`
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:103:- Review agent findings as a starting point for human review
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:104:- Update CLAUDE.md based on recurring review patterns
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:116:- PRs already reviewed (automatically skipped)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:120:### Standard PR review workflow:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:123:# Run local review (outputs to terminal)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:124:/code-review
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:130:/code-review --comment
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:138:# Use --comment flag to post review comments
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:139:/code-review --comment
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:140:# Skip if review already exists
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:156:- Normal for large changes - agents run in parallel
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:157:- 4 independent agents ensure thoroughness
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:169:### No review comment posted
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:171:**Issue**: `/code-review` runs but no comment appears
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:175:- PR is closed (reviews skipped)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:176:- PR is draft (reviews skipped)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:177:- PR is trivial/automated (reviews skipped)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:178:- PR already has review (reviews skipped)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:205:- **Write specific CLAUDE.md files**: Clear guidelines = better reviews
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:206:- **Include context in PRs**: Helps agents understand intent
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:209:- **Review automatically**: Set up as part of PR workflow
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:216:The default threshold is 80. To adjust, modify the command file at `commands/code-review.md`:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:223:### Customizing review focus
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:225:Edit `commands/code-review.md` to add or modify agent tasks:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:226:- Add security-focused agents
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:227:- Add performance analysis agents
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:228:- Add accessibility checking agents
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:233:### Agent architecture
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:234:- **2x CLAUDE.md compliance agents**: Redundancy for guideline checks
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:241:- Scoring considers evidence strength and verification
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/code-review/README.md:250:- Posting review comments
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:3:A comprehensive, structured workflow for feature development with specialized agents for codebase exploration, architecture design, and quality review.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:7:The Feature Development Plugin provides a systematic 7-phase approach to building new features. Instead of jumping straight into code, it guides you through understanding the codebase, asking clarifying questions, designing architecture, and ensuring quality—resulting in better-designed features that integrate seamlessly with your existing code.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:17:This plugin embeds these practices into a structured workflow that runs automatically when you use the `/feature-dev` command.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:21:Launches a guided feature development workflow with 7 distinct phases.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:61:- Launches 2-3 `code-explorer` agents in parallel
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:62:- Each agent explores different aspects (similar features, architecture, UI patterns)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:69:- "Map the architecture and abstractions for [area]"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:76:- Session management (src/session/): Redis-backed, 24hr expiry
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:102:Before designing the architecture, I need to clarify:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:104:1. OAuth provider: Which OAuth providers? (Google, GitHub, custom?)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:107:4. Sessions: Integrate with existing session management?
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:111:**Critical**: This phase ensures nothing is ambiguous before design begins.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:118:- Launches 2-3 `code-architect` agents with different focuses:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:120:  - **Clean architecture**: Maintainability, elegant abstractions
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:129:I've designed 3 approaches:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:153:excessive refactoring, and fits your existing architecture well.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:165:- Implements following chosen architecture
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:173:- Uses architecture designed in Phase 4
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:181:- Launches 3 `code-reviewer` agents in parallel with different focuses:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:227:- OAuth provider abstraction supporting Google and GitHub
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:229:- Token refresh and session integration
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:234:- Integrated with existing session management
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:245:- Add more OAuth providers (Microsoft, Apple)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:275:**Purpose**: Designs feature architectures and implementation blueprints
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:280:- Component design
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:286:- Can be invoked manually for architecture design
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:291:- Complete component design
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:295:### `code-reviewer`
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:317:### Full workflow (recommended for new features):
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:322:Let the workflow guide you through all 7 phases.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:324:### Manual agent invocation:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:331:**Design architecture:**
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:333:"Launch code-architect to design the caching layer"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:338:"Launch code-reviewer to check my recent changes"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:343:1. **Use the full workflow for complex features**: The 7 phases ensure thorough planning
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:345:3. **Choose architecture deliberately**: Phase 4 gives you options for a reason
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:346:4. **Don't skip code review**: Phase 6 catches issues before they reach production
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:366:- Git repository (for code review)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:367:- Project with existing codebase (workflow assumes existing code to learn from)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:373:**Issue**: Code exploration or architecture agents are slow
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:391:**Issue**: Too many architecture options in Phase 4
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/feature-dev/README.md:402:- **Review agent outputs**: Agents provide valuable insights about your codebase
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:3:A comprehensive collection of specialized agents for thorough pull request review, covering code comments, test coverage, error handling, type design, code quality, and code simplification.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:7:This plugin bundles 6 expert review agents that each focus on a specific aspect of code quality. Use them individually for targeted reviews or together for comprehensive PR analysis.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:23:- When reviewing existing comments
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:64:- When reviewing try/catch blocks
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:74:### 4. type-design-analyzer
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:75:**Focus**: Type design quality and invariants
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:86:- When refactoring type designs
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:90:"Review the UserAccount type design"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:91:"Analyze type design in this PR"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:95:### 5. code-reviewer
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:96:**Focus**: General code review for project guidelines
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:128:- After passing code review
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:138:**Note**: This agent preserves functionality while improving code structure and maintainability.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:144:Simply ask questions that match an agent's focus area, and Claude will automatically trigger the appropriate agent:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:159:For thorough PR review, ask for multiple aspects:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:167:5. General code review"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:170:This will trigger all relevant agents to analyze different aspects of your PR.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:174:Claude may proactively use these agents based on context:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:176:- **After writing code** → code-reviewer
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:178:- **Before creating PR** → Multiple agents as appropriate
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:179:- **After adding types** → type-design-analyzer
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:186:/plugins
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:187:# Find "pr-review-toolkit"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:205:**type-design-analyzer**: Rates 4 dimensions on 1-10 scale
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:207:**code-reviewer**: Scores issues 0-100 (91-100 = critical)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:213:All agents provide structured, actionable output:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:225:- code-reviewer (general quality)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:231:- type-design-analyzer (if added/modified types)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:232:- code-reviewer (final sweep)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:238:- Any agent for specific concerns raised
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:239:- Targeted re-review after fixes
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:243:You can request multiple agents to run in parallel or sequentially:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:252:"First review test coverage, then check code quality"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:257:- **Be specific**: Target specific agents for focused review
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:267:**Issue**: Asked for review but agent didn't run
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:271:- Mention the agent type explicitly
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:276:**Issue**: Agent reviewing too much or wrong files
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:285:This plugin works great with:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:286:- **build-validator**: Run build/tests before review
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:287:- **Project-specific agents**: Combine with your custom agents
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:289:**Recommended workflow:**
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:290:1. Write code → **code-reviewer**
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:299:Found issues or have suggestions? These agents are maintained in:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:300:- User agents: `~/.claude/agents/`
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:301:- Project agents: `.claude/agents/` in claude-cli-internal
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/pr-review-toolkit/README.md:313:**Quick Start**: Just ask for review and the right agent will trigger automatically!
+/home/lachlan/ProjectsLFS/Agent/claude-code/README.md:7:Claude Code is an agentic coding tool that lives in your terminal, understands your codebase, and helps you code faster by executing routine tasks, explaining complex code, and handling git workflows -- all through natural language commands. Use it in your terminal, IDE, or tag @claude on Github.
+/home/lachlan/ProjectsLFS/Agent/claude-code/README.md:50:This repository includes several Claude Code plugins that extend functionality with custom commands and agents. See the [plugins directory](./plugins/README.md) for detailed documentation on available plugins.
+/home/lachlan/ProjectsLFS/Agent/claude-code/README.md:70:We have implemented several safeguards to protect your data, including limited retention periods for sensitive information, restricted access to user session data, and clear policies against using feedback for model training.
+/home/lachlan/ProjectsLFS/Agent/claude-code/README.md:72:For full details, please review our [Commercial Terms of Service](https://www.anthropic.com/legal/commercial-terms) and [Privacy Policy](https://www.anthropic.com/legal/privacy).
+/home/lachlan/ProjectsLFS/Agent/claude-code/examples/mdm/README.md:5:All templates encode the same minimal example (`permissions.disableBypassPermissionsMode`). See the [settings reference](https://code.claude.com/docs/en/settings#available-settings) for the full list of keys, and [`../settings`](../settings) for more complete example configurations.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/ralph-wiggum/README.md:7:Ralph is a development methodology based on continuous AI agent loops. As Geoffrey Huntley describes it: **"Ralph is a Bash loop"** - a simple `while true` that repeatedly feeds an AI agent a prompt file, allowing it to iteratively improve its work until completion.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/ralph-wiggum/README.md:9:The technique is named after Ralph Wiggum from The Simpsons, embodying the philosophy of persistent iteration despite setbacks.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/ralph-wiggum/README.md:13:This plugin implements Ralph using a **Stop hook** that intercepts Claude's exit attempts:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/ralph-wiggum/README.md:27:The loop happens **inside your current session** - you don't need external bash loops. The Stop hook in `hooks/stop-hook.sh` creates the self-referential feedback loop by blocking normal session exit.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/ralph-wiggum/README.md:52:Start a Ralph loop in your current session.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/ralph-wiggum/README.md:158:- Tasks with automatic verification (tests, linters)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/ralph-wiggum/README.md:161:- Tasks requiring human judgment or design decisions
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:3:This directory contains some official Claude Code plugins that extend functionality through custom commands, agents, and workflows. These are examples of what's possible with the Claude Code plugin system—many more plugins are available through community marketplaces.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:7:Claude Code plugins are extensions that enhance Claude Code with custom slash commands, specialized agents, hooks, and MCP servers. Plugins can be shared across projects and teams, providing consistent tooling and workflows.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:9:Learn more in the [official plugins documentation](https://docs.claude.com/en/docs/claude-code/plugins).
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:15:| [agent-sdk-dev](./agent-sdk-dev/) | Development kit for working with the Claude Agent SDK | **Command:** `/new-sdk-app` - Interactive setup for new Agent SDK projects<br>**Agents:** `agent-sdk-verifier-py`, `agent-sdk-verifier-ts` - Validate SDK applications against best practices |
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:17:| [code-review](./code-review/) | Automated PR code review using multiple specialized agents with confidence-based scoring to filter false positives | **Command:** `/code-review` - Automated PR review workflow<br>**Agents:** 5 parallel Sonnet agents for CLAUDE.md compliance, bug detection, historical context, PR history, and code comments |
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:18:| [commit-commands](./commit-commands/) | Git workflow automation for committing, pushing, and creating pull requests | **Commands:** `/commit`, `/commit-push-pr`, `/clean_gone` - Streamlined git operations |
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:19:| [explanatory-output-style](./explanatory-output-style/) | Adds educational insights about implementation choices and codebase patterns (mimics the deprecated Explanatory output style) | **Hook:** SessionStart - Injects educational context at the start of each session |
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:20:| [feature-dev](./feature-dev/) | Comprehensive feature development workflow with a structured 7-phase approach | **Command:** `/feature-dev` - Guided feature development workflow<br>**Agents:** `code-explorer`, `code-architect`, `code-reviewer` - For codebase analysis, architecture design, and quality review |
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:21:| [frontend-design](./frontend-design/) | Create distinctive, production-grade frontend interfaces that avoid generic AI aesthetics | **Skill:** `frontend-design` - Auto-invoked for frontend work, providing guidance on bold design choices, typography, animations, and visual details |
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:24:| [plugin-dev](./plugin-dev/) | Comprehensive toolkit for developing Claude Code plugins with 7 expert skills and AI-assisted creation | **Command:** `/plugin-dev:create-plugin` - 8-phase guided workflow for building plugins<br>**Agents:** `agent-creator`, `plugin-validator`, `skill-reviewer`<br>**Skills:** Hook development, MCP integration, plugin structure, settings, commands, agents, and skill development |
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:25:| [pr-review-toolkit](./pr-review-toolkit/) | Comprehensive PR review agents specializing in comments, tests, error handling, type design, code quality, and code simplification | **Command:** `/pr-review-toolkit:review-pr` - Run with optional review aspects (comments, tests, errors, types, code, simplify, all)<br>**Agents:** `comment-analyzer`, `pr-test-analyzer`, `silent-failure-hunter`, `type-design-analyzer`, `code-reviewer`, `code-simplifier` |
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:31:These plugins are included in the Claude Code repository. To use them in your own projects:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:43:3. Use the `/plugin` command to install plugins from marketplaces, or configure them in your project's `.claude/settings.json`.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:45:For detailed plugin installation and configuration, see the [official documentation](https://docs.claude.com/en/docs/claude-code/plugins).
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:49:Each plugin follows the standard Claude Code plugin structure:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:52:plugin-name/
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:53:├── .claude-plugin/
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:54:│   └── plugin.json          # Plugin metadata
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:56:├── agents/                  # Specialized agents (optional)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:59:├── .mcp.json                # External tool configuration (optional)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:65:When adding new plugins to this directory:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:67:1. Follow the standard plugin structure
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:69:3. Add plugin metadata in `.claude-plugin/plugin.json`
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:70:4. Document all commands and agents
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:76:- [Plugin System Documentation](https://docs.claude.com/en/docs/claude-code/plugins)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/README.md:77:- [Agent SDK Documentation](https://docs.claude.com/en/api/agent-sdk/overview)
+/home/lachlan/ProjectsLFS/Agent/claude-code/examples/settings/README.md:13:| Setting | [`settings-lax.json`](./settings-lax.json) | [`settings-strict.json`](./settings-strict.json) | [`settings-bash-sandbox.json`](./settings-bash-sandbox.json) |
+/home/lachlan/ProjectsLFS/Agent/claude-code/examples/settings/README.md:15:| Disable `--dangerously-skip-permissions` | ✅ | ✅ | |
+/home/lachlan/ProjectsLFS/Agent/claude-code/examples/settings/README.md:16:| Block plugin marketplaces | ✅ | ✅ | |
+/home/lachlan/ProjectsLFS/Agent/claude-code/examples/settings/README.md:17:| Block user and project-defined permission `allow` / `ask` / `deny` | | ✅ | ✅ |
+/home/lachlan/ProjectsLFS/Agent/claude-code/examples/settings/README.md:19:| Deny web fetch and search tools | | ✅ | |
+/home/lachlan/ProjectsLFS/Agent/claude-code/examples/settings/README.md:20:| Bash tool requires approval | | ✅ | |
+/home/lachlan/ProjectsLFS/Agent/claude-code/examples/settings/README.md:21:| Bash tool must run inside of sandbox | | | ✅ |
+/home/lachlan/ProjectsLFS/Agent/claude-code/examples/settings/README.md:27:- The `sandbox` property only applies to the `Bash` tool; it does not apply to other tools (like Read, Write, WebSearch, WebFetch, MCPs), hooks, or internal commands
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:3:This plugin recreates the deprecated Explanatory output style as a SessionStart
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:6:WARNING: Do not install this plugin unless you are fine with incurring the token
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:7:cost of this plugin's additional instructions and output.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:11:When enabled, this plugin automatically adds instructions at the start of each
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:12:session that encourage Claude to:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:20:The plugin uses a SessionStart hook to inject additional context into every
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:21:session. This context instructs Claude to provide brief educational explanations
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:32:Once installed, the plugin activates automatically at the start of every
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:33:session. No additional configuration is needed.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:39:- Trade-offs and design decisions
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:44:This plugin replaces the deprecated "Explanatory" output style setting. If you
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:53:You can now achieve the same behavior by installing this plugin instead.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:56:CLAUDE.md, but it is more flexible and allows for distribution through plugins.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:60:[subagents](https://docs.claude.com/en/docs/claude-code/sub-agents), not as
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:61:SessionStart hooks. Subagents change the system prompt while SessionStart hooks
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:66:- Disable the plugin - keep the code installed on your device
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:67:- Uninstall the plugin - remove the code from your device
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:68:- Update the plugin - create a local copy of this plugin to personalize this
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:69:  plugin
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/explanatory-output-style/README.md:71:    https://docs.claude.com/en/docs/claude-code/plugins.md and set it up for
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/hook-development/scripts/README.md:25:cd my-plugin
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/hook-development/scripts/README.md:96:   vim my-plugin/scripts/my-hook.sh
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/hook-development/scripts/README.md:101:   ./hook-linter.sh my-plugin/scripts/my-hook.sh
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/hook-development/scripts/README.md:112:   ./test-hook.sh -v my-plugin/scripts/my-hook.sh test-input.json
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/hook-development/scripts/README.md:117:   # Edit my-plugin/hooks/hooks.json
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/hook-development/scripts/README.md:122:   ./validate-hook-schema.sh my-plugin/hooks/hooks.json
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/hook-development/scripts/README.md:132:- Always test hooks before deploying to avoid breaking user workflows
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/commit-commands/README.md:3:Streamline your git workflow with simple commands for committing, pushing, and creating pull requests.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/commit-commands/README.md:7:The Commit Commands Plugin automates common git operations, reducing context switching and manual command execution. Instead of running multiple git commands, use a single slash command to handle your entire workflow.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/commit-commands/README.md:28:**Example workflow:**
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/commit-commands/README.md:49:Complete workflow command that commits, pushes, and creates a pull request in one step.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/commit-commands/README.md:63:**Example workflow:**
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/commit-commands/README.md:74:# - Give you the PR URL to review
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/commit-commands/README.md:105:**Example workflow:**
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/commit-commands/README.md:130:This plugin is included in the Claude Code repository. The commands are automatically available when using Claude Code.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/commit-commands/README.md:155:### Quick commit workflow:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/commit-commands/README.md:162:### Feature branch workflow:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/commit-commands/README.md:172:### Maintenance workflow:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/commit-commands/README.md:214:- **Combine with other tools**: Use `/commit` during development, then `/commit-push-pr` when ready
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/commit-commands/README.md:217:- **Review before pushing**: Always review the commit message and changes before pushing
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:3:A comprehensive plugin for creating and verifying Claude Agent SDK applications in Python and TypeScript.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:7:The Agent SDK Development Plugin streamlines the entire lifecycle of building Agent SDK applications, from initial scaffolding to verification against best practices. It helps you quickly start new projects with the latest SDK versions and ensures your applications follow official documentation patterns.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:16:- Asks clarifying questions about your project (language, name, agent type, starting point)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:22:- Automatically verifies the setup using the appropriate verifier agent
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:43:/new-sdk-app customer-support-agent
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:44:# → Creates a new Agent SDK project for a customer support agent
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:50:### Agent: `agent-sdk-verifier-py`
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:69:The agent runs automatically after `/new-sdk-app` creates a Python project, or you can trigger it by asking:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:83:### Agent: `agent-sdk-verifier-ts`
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:103:The agent runs automatically after `/new-sdk-app` creates a TypeScript project, or you can trigger it by asking:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:119:Here's a typical workflow using this plugin:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:123:/new-sdk-app code-reviewer-agent
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:129:Agent type: Coding agent (code review)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:130:Starting point: Basic agent with common features
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:133:3. **Automatic verification:**
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:134:The command automatically runs `agent-sdk-verifier-ts` to ensure everything is correctly set up.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:141:# Run your agent
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:152:This plugin is included in the Claude Code repository. To use it:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:155:2. The plugin commands and agents are automatically available
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:160:- **Verify before deploying**: Run the verifier agent before deploying to production
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:162:- **Follow SDK documentation**: The verifier agents check against official patterns
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:164:- **Test your agents**: Create test cases for your agent's functionality
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:168:- [Agent SDK Overview](https://docs.claude.com/en/api/agent-sdk/overview)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:169:- [TypeScript SDK Reference](https://docs.claude.com/en/api/agent-sdk/typescript)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:170:- [Python SDK Reference](https://docs.claude.com/en/api/agent-sdk/python)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:171:- [Agent SDK Examples](https://docs.claude.com/en/api/agent-sdk/examples)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:186:**Issue**: Cannot import from `claude_agent_sdk`
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:191:- Check that the SDK is installed: `pip show claude-agent-sdk`
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/agent-sdk-dev/README.md:195:**Issue**: Verifier agent reports warnings
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:3:A comprehensive toolkit for developing Claude Code plugins with expert guidance on hooks, MCP integration, plugin structure, and marketplace publishing.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:7:The plugin-dev toolkit provides seven specialized skills to help you build high-quality Claude Code plugins:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:12:4. **Plugin Settings** - Configuration patterns using .claude/plugin-name.local.md files
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:14:6. **Agent Development** - Creating autonomous agents with AI-assisted generation
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:21:### /plugin-dev:create-plugin
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:23:A comprehensive, end-to-end workflow command for creating plugins from scratch, similar to the feature-dev workflow.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:26:1. **Discovery** - Understand plugin purpose and requirements
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:27:2. **Component Planning** - Determine needed skills, commands, agents, hooks, MCP
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:30:5. **Component Implementation** - Create each component using AI-assisted agents
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:31:6. **Validation** - Run plugin-validator and component-specific checks
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:32:7. **Testing** - Verify plugin works in Claude Code
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:38:- Uses agent-creator for AI-assisted agent generation
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:39:- Runs validation utilities (validate-agent.sh, validate-hook-schema.sh, etc.)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:40:- Follows plugin-dev's own proven patterns
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:41:- Guides through testing and verification
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:45:/plugin-dev:create-plugin [optional description]
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:48:/plugin-dev:create-plugin
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:49:/plugin-dev:create-plugin A plugin for managing database migrations
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:52:Use this workflow for structured, high-quality plugin development from concept to completion.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:58:**Trigger phrases:** "create a hook", "add a PreToolUse hook", "validate tool use", "implement prompt-based hooks", "${CLAUDE_PLUGIN_ROOT}", "block dangerous commands"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:63:- All hook events: PreToolUse, PostToolUse, Stop, SubagentStop, SessionStart, SessionEnd, UserPromptSubmit, PreCompact, Notification
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:74:**Use when:** Creating event-driven automation, validating operations, or enforcing policies in your plugin.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:81:- MCP server configuration (.mcp.json vs plugin.json)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:84:- MCP tool naming and usage in commands/agents
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:91:- 3 reference docs: server-types (~3,200w), authentication (~2,800w), tool-usage (~2,600w)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:93:**Use when:** Integrating external services, APIs, databases, or tools into your plugin.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:97:**Trigger phrases:** "plugin structure", "plugin.json manifest", "auto-discovery", "component organization", "plugin directory layout"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:100:- Standard plugin directory structure and auto-discovery
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:101:- plugin.json manifest format and all fields
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:102:- Component organization (commands, agents, skills, hooks)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:105:- Minimal, standard, and advanced plugin patterns
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:112:**Use when:** Starting a new plugin, organizing components, or configuring the plugin manifest.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:116:**Trigger phrases:** "plugin settings", "store plugin configuration", ".local.md files", "plugin state files", "read YAML frontmatter", "per-project plugin settings"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:119:- .claude/plugin-name.local.md pattern for configuration
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:123:- Real-world examples from multi-agent-swarm and ralph-wiggum plugins
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:133:**Use when:** Making plugins configurable, storing per-project state, or implementing user preferences.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:141:- YAML frontmatter fields (description, argument-hint, allowed-tools)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:152:**Use when:** Creating slash commands, defining command arguments, or organizing plugin commands.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:156:**Trigger phrases:** "create an agent", "add an agent", "write a subagent", "agent frontmatter", "when to use description", "agent examples", "autonomous agent"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:160:- All frontmatter fields (name, description, model, color, tools)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:162:- System prompt design patterns (analysis, generation, validation, orchestration)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:163:- AI-assisted agent generation using Claude Code's proven prompt
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:165:- Complete production-ready agent examples
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:169:- 2 examples: agent-creation-prompt (AI-assisted workflow), complete-agent-examples (4 full agents)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:170:- 3 reference docs: agent-creation-system-prompt (from Claude Code), system-prompt-design (~4,000w), triggering-examples (~2,500w)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:171:- 1 utility script: validate-agent.sh
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:173:**Use when:** Creating autonomous agents, defining agent behavior, or implementing AI-assisted agent generation.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:177:**Trigger phrases:** "create a skill", "add a skill to plugin", "write a new skill", "improve skill description", "organize skill content"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:185:- Skill creation workflow
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:186:- Based on skill-creator methodology adapted for Claude Code plugins
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:190:- References: skill-creator methodology, plugin-dev patterns
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:191:- Examples: Study plugin-dev's own skills as templates
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:193:**Use when:** Creating new skills for plugins or improving existing skill quality.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:201:/plugin install plugin-dev@claude-code-marketplace
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:207:cc --plugin-dir /path/to/plugin-dev
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:214:1. **Plan your plugin structure:**
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:215:   - Ask: "What's the best directory structure for a plugin with commands and MCP integration?"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:216:   - The plugin-structure skill will guide you
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:229:The plugin-dev toolkit supports your entire plugin development lifecycle:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:233:│  Design Structure   │  → plugin-structure skill
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:239:│  (commands, agents, │  → All skills provide guidance
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:291:- **Plugin Structure**: 3 plugin layouts (minimal, standard, advanced)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:293:- **Command Development**: 10 complete command examples (review, test, deploy, docs, etc.)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:308:- **Examples**: 12+ working examples (hook scripts, MCP configs, plugin layouts, settings files)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:316:1. "What's the structure for a plugin with MCP integration?"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:317:   → plugin-structure skill provides layout
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:337:   → plugin-structure skill shows best practices
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:347:2. "Use Asana tools in my commands"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:348:   → mcp-integration tool-usage reference
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:350:3. "Structure my plugin with commands and MCP"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:351:   → plugin-structure skill provides patterns
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:381:This plugin is part of the claude-code-marketplace. To contribute improvements:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:384:2. Make changes to plugin-dev/
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:385:3. Test locally with `cc --plugin-dir`
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:390:0.1.0 - Initial release with seven comprehensive skills and three validation agents
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/README.md:402:**Note:** This toolkit is designed to help you build high-quality plugins. The skills load automatically when you ask relevant questions, providing expert guidance exactly when you need it.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:3:Comprehensive guidance on Claude Code plugin architecture, directory layout, and best practices.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:9:- `plugin.json` manifest configuration
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:10:- Component organization (commands, agents, skills, hooks)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:21:- Plugin manifest (plugin.json) fields
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:34:- **manifest-reference.md**: Complete `plugin.json` field reference
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:52:Three complete plugin examples:
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:54:- **minimal-plugin.md**: Simplest possible plugin
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:59:- **standard-plugin.md**: Well-structured production plugin
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:60:  - Multiple components (commands, agents, skills, hooks)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:65:- **advanced-plugin.md**: Enterprise-grade plugin
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:76:- Ask to "create a plugin" or "scaffold a plugin"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:77:- Need to "understand plugin structure"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:78:- Want to "organize plugin components"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:79:- Need to "set up plugin.json"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:81:- Want to "add commands/agents/skills/hooks"
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:83:- Ask about plugin architecture or best practices
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:89:1. **SKILL.md** (~1600 words): Core concepts and workflows
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:98:- **hook-development**: For creating plugin hooks
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/plugin-structure/README.md:100:- **marketplace-publishing**: For publishing plugins (when available)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:15:- Plugin-specific features (${CLAUDE_PLUGIN_ROOT}, plugin patterns)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:16:- Integration with plugin components (agents, skills, hooks)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:40:- Integration with plugin components (agents, skills, hooks)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:53:- **plugin-features-reference.md**: Plugin-specific command features
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:57:  - Integration with plugin agents, skills, and hooks
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:65:  - Code review commands
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:72:- **plugin-commands.md**: 10 plugin-specific command examples
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:73:  - Simple plugin commands with scripts
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:74:  - Multi-script workflows
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:78:  - Multi-component workflows
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:98:1. **SKILL.md** (~2,470 words): Core concepts, common patterns, and plugin features overview
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:101:   - plugin-features-reference.md (~1,800 words)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:103:   - advanced-workflows.md (~1,700 words)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:109:   - plugin-commands.md
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:121:allowed-tools: Read, Bash(git:*)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:134:- **Plugin**: `plugin-name/commands/` (plugin-specific)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:153:| `allowed-tools` | Restrict tool access | `Read, Bash(git:*)` |
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:197:allowed-tools: Bash(git:*)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:209:   - Identify needed tools
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:218:   - Add fields as needed (allowed-tools, etc.)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:238:4. **Minimal tools**: Use most restrictive allowed-tools
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:247:- ✓ Integration patterns (agents, skills, hooks coordination)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:251:- Advanced workflows (multi-step command sequences)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/plugin-dev/skills/command-development/README.md:272:- Ready for plugin-specific pattern additions
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/hookify/README.md:7:The hookify plugin makes it simple to create hooks without editing complex `hooks.json` files. Instead, you create lightweight markdown configuration files that define patterns to watch for and messages to show when those patterns match.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/hookify/README.md:28:**No restart needed!** Rules take effect on the very next tool use.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/hookify/README.md:95:- `block`: Prevents operation from executing (PreToolUse) or stops session (Stop events)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/hookify/README.md:124:- **`bash`**: Triggers on Bash tool commands
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/hookify/README.md:125:- **`file`**: Triggers on Edit, Write, MultiEdit tools
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/hookify/README.md:208:**This blocks Claude from stopping** if no test commands appear in the session transcript. Enable only when you want strict enforcement.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/hookify/README.md:259:- Use general matching on session state
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/hookify/README.md:271:**Or use interactive tool:**
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/hookify/README.md:291:This plugin is part of the Claude Code Marketplace. It should be auto-discovered when the marketplace is installed.
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/hookify/README.md:295:cc --plugin-dir /path/to/hookify
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/hookify/README.md:306:1. Check rule file exists in `.claude/` directory (in project root, not plugin directory)
+/home/lachlan/ProjectsLFS/Agent/claude-code/plugins/hookify/README.md:314:- Check hookify plugin is installed

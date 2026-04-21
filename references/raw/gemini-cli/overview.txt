@@ -1,0 +1,67 @@
+# gemini-cli
+
+path=/home/lachlan/ProjectsLFS/Agent/gemini-cli
+timestamp=2026-04-21T17:46:23+08:00
+
+## Top Level
+total 888
+drwxrwxr-x 19 lachlan lachlan   4096 Apr 20 10:47 .
+drwxrwxr-x 13 lachlan lachlan   4096 Apr 21 17:45 ..
+drwxrwxr-x  2 lachlan lachlan   4096 Apr 20 10:47 .allstar
+-rw-rw-r--  1 lachlan lachlan    183 Apr 20 10:47 .editorconfig
+drwxrwxr-x  2 lachlan lachlan   4096 Apr 20 10:47 .gcp
+drwxrwxr-x  4 lachlan lachlan   4096 Apr 20 10:47 .gemini
+-rw-rw-r--  1 lachlan lachlan     41 Apr 20 10:47 .geminiignore
+drwxrwxr-x  8 lachlan lachlan   4096 Apr 20 11:02 .git
+-rw-rw-r--  1 lachlan lachlan    650 Apr 20 10:47 .gitattributes
+drwxrwxr-x  6 lachlan lachlan   4096 Apr 20 10:47 .github
+-rw-rw-r--  1 lachlan lachlan   1154 Apr 20 10:47 .gitignore
+drwxrwxr-x  2 lachlan lachlan   4096 Apr 20 10:47 .husky
+-rw-rw-r--  1 lachlan lachlan    302 Apr 20 10:47 .lycheeignore
+-rw-rw-r--  1 lachlan lachlan     57 Apr 20 10:47 .npmrc
+-rw-rw-r--  1 lachlan lachlan      3 Apr 20 10:47 .nvmrc
+-rw-rw-r--  1 lachlan lachlan    302 Apr 20 10:47 .prettierignore
+-rw-rw-r--  1 lachlan lachlan    273 Apr 20 10:47 .prettierrc.json
+drwxrwxr-x  2 lachlan lachlan   4096 Apr 20 10:47 .vscode
+-rw-rw-r--  1 lachlan lachlan   1581 Apr 20 10:47 .yamllint.yml
+-rw-rw-r--  1 lachlan lachlan  20380 Apr 20 10:47 CONTRIBUTING.md
+-rw-rw-r--  1 lachlan lachlan   1580 Apr 20 10:47 Dockerfile
+-rw-rw-r--  1 lachlan lachlan   4610 Apr 20 10:47 GEMINI.md
+-rw-rw-r--  1 lachlan lachlan  11357 Apr 20 10:47 LICENSE
+-rw-rw-r--  1 lachlan lachlan   1336 Apr 20 10:47 Makefile
+-rw-rw-r--  1 lachlan lachlan  12855 Apr 20 10:47 README.md
+-rw-rw-r--  1 lachlan lachlan   5748 Apr 20 10:47 ROADMAP.md
+-rw-rw-r--  1 lachlan lachlan    423 Apr 20 10:47 SECURITY.md
+drwxrwxr-x 16 lachlan lachlan   4096 Apr 20 10:47 docs
+-rw-rw-r--  1 lachlan lachlan   4473 Apr 20 10:47 esbuild.config.js
+-rw-rw-r--  1 lachlan lachlan  12844 Apr 20 10:47 eslint.config.js
+drwxrwxr-x  2 lachlan lachlan   4096 Apr 20 10:47 evals
+drwxrwxr-x  3 lachlan lachlan  12288 Apr 20 10:47 integration-tests
+drwxrwxr-x  2 lachlan lachlan   4096 Apr 20 10:47 memory-tests
+-rw-rw-r--  1 lachlan lachlan 664323 Apr 20 10:47 package-lock.json
+-rw-rw-r--  1 lachlan lachlan   7589 Apr 20 10:47 package.json
+drwxrwxr-x  9 lachlan lachlan   4096 Apr 20 10:47 packages
+drwxrwxr-x  2 lachlan lachlan   4096 Apr 20 10:47 perf-tests
+drwxrwxr-x  2 lachlan lachlan   4096 Apr 20 10:47 schemas
+drwxrwxr-x  5 lachlan lachlan   4096 Apr 20 10:47 scripts
+drwxrwxr-x  2 lachlan lachlan   4096 Apr 20 10:47 sea
+drwxrwxr-x  3 lachlan lachlan   4096 Apr 20 10:47 third_party
+-rw-rw-r--  1 lachlan lachlan    860 Apr 20 10:47 tsconfig.json
+
+## Selected Files
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/README.md
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/ROADMAP.md
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/evals/README.md
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/package.json
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/a2a-server/README.md
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/a2a-server/package.json
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/cli/package.json
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/core/package.json
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/devtools/package.json
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/sdk/README.md
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/sdk/package.json
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/test-utils/package.json
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/vscode-ide-companion/README.md
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/packages/vscode-ide-companion/package.json
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/perf-tests/README.md
+/home/lachlan/ProjectsLFS/Agent/gemini-cli/third_party/get-ripgrep/package.json
