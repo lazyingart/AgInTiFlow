@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="./references/agintiflow-logo-banner-cropped.png" alt="AgInTiFlow logo" width="960" />
+  <img src="./logos/agintiflow-logo-banner-cropped.png" alt="AgInTiFlow logo" width="960" />
 </p>
 
 # AgInTiFlow
