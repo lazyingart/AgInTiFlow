@@ -318,6 +318,7 @@ function wireRun(record, config) {
 
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public")));
+app.use("/logos", express.static(path.join(__dirname, "logos")));
 
 app.get("/api/config", (_req, res) => {
   res.json({
