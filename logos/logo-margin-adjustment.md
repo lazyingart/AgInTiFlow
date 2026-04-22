@@ -1,6 +1,6 @@
 # Logo Margin Adjustment
 
-This note documents the margin refinement used for `logo.png`.
+This note documents the margin refinement used for `logo-opaque.png`.
 
 ## Goal
 
@@ -8,9 +8,9 @@ The original logo crop had visibly tighter spacing on the top and right edges th
 
 ## Method
 
-- Source image: committed `logos/logo.png` before this adjustment.
+- Source image: committed `logos/logo-opaque.png` before this adjustment.
 - Processing tool: Node.js with Playwright canvas APIs.
-- Output image: `logos/logo.png`.
+- Output image: `logos/logo-opaque.png`.
 - Canvas operation: create a larger canvas, fill it with a sampled background color, then draw the original logo shifted down.
 
 ## Values Used

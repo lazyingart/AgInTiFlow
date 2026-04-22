@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="./logos/banner.png" alt="AgInTiFlow banner" width="960" />
+  <img src="./logos/banner-opaque.png" alt="AgInTiFlow banner" width="960" />
 </p>
 
 # AgInTiFlow

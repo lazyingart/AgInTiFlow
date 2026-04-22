@@ -1,6 +1,6 @@
 # Banner Margin Adjustment
 
-This note documents the margin refinement used for `banner.png`.
+This note documents the margin refinement used for `banner-opaque.png`.
 
 ## Goal
 
@@ -10,7 +10,7 @@ The previous banner crop had a bottom margin that still looked larger than the t
 
 - Source image: `logos/Gemini_Generated_Image_kuyg34kuyg34kuyg.png`.
 - Processing tool: Node.js with Playwright canvas APIs.
-- Output image: `logos/banner.png`.
+- Output image: `logos/banner-opaque.png`.
 - Canvas operation: crop the original image at full width with a fixed top offset and reduced height.
 
 ## Values Used
