@@ -1,3 +1,5 @@
+[English](README.md) · [العربية](i18n/README.ar.md) · [Español](i18n/README.es.md) · [Français](i18n/README.fr.md) · [日本語](i18n/README.ja.md) · [한국어](i18n/README.ko.md) · [Tiếng Việt](i18n/README.vi.md) · [中文 (简体)](i18n/README.zh-Hans.md) · [中文（繁體）](i18n/README.zh-Hant.md) · [Deutsch](i18n/README.de.md) · [Русский](i18n/README.ru.md)
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/lachlanchen/lachlanchen/main/figs/banner.png" alt="Lachlan Chen banner" width="960" />
 </p>
@@ -8,55 +10,44 @@
 
 # AgInTiFlow
 
-AgInTiFlow is AgInTi's website-control agent for browser automation, persistent chat, resumable runs, and guarded local tools.
+![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)
+![Playwright](https://img.shields.io/badge/Browser-Playwright-2EAD33?logo=playwright&logoColor=white)
+![Express](https://img.shields.io/badge/Web-Express-111827)
+![Models](https://img.shields.io/badge/Models-OpenAI%20%2B%20DeepSeek-0ea5e9)
+![Sandbox](https://img.shields.io/badge/Shell-Docker%20Sandbox-f97316)
+![Status](https://img.shields.io/badge/Status-Prototype-7c3aed)
 
-What it keeps:
+AgInTiFlow is AgInTi's browser and tool-use agent for controlled website automation, persistent conversations, resumable runs, and guarded local commands.
 
-- a small, explicit browser tool surface
-- a planning pass before execution
-- resumable local sessions
-- structured JSONL event logs
-- pre-tool guardrails
-- provider abstraction for OpenAI and DeepSeek
-- optional guarded shell commands for simple terminal inspection
-- optional Docker-backed shell sandboxing
-- lazy browser startup so browser work begins only when the model chooses a browser tool
+It is designed for workflows where an AI agent should act, but every tool, log, and session state should remain inspectable.
 
-## Install
+## Product Snapshot
+
+| Area | Direction |
+| --- | --- |
+| Core loop | Plan -> use tools -> log events -> finish or resume |
+| Browser control | Playwright, lazy browser startup, domain allowlists |
+| Model layer | OpenAI-compatible tool calling with OpenAI and DeepSeek presets |
+| Local tools | Optional guarded shell commands with Docker sandbox support |
+| Memory | Session state, persisted web settings, chat continuation |
+| Operator UX | Web UI with provider selection, run output, and conversation history |
+
+## Quick Start
 
 ```bash
 cd /home/lachlan/ProjectsLFS/Agent/AgInTiFlow
 npm install
 npx playwright install chromium
-```
-
-## Run
-
-CLI, OpenAI:
-
-```bash
-AGENT_PROVIDER=openai npm start -- "Open Hacker News and tell me the top 3 titles"
-```
-
-CLI, DeepSeek:
-
-```bash
-AGENT_PROVIDER=deepseek npm start -- "Open GitHub and summarize the landing page"
-```
-
-Web UI:
-
-```bash
 npm run web
 ```
 
-Web UI with Docker-backed shell sandbox enabled:
+Open `http://127.0.0.1:3210`.
+
+Run a CLI task:
 
 ```bash
-npm run web
+AGENT_PROVIDER=deepseek npm start -- "List this folder and summarize what each project is for"
 ```
-
-Then enable `Use Docker sandbox` in the form. This affects `run_command` only. Browser automation still runs on the host Playwright browser.
 
 Start from a URL:
 
@@ -64,38 +55,45 @@ Start from a URL:
 npm start -- --start-url https://news.ycombinator.com "Summarize this page"
 ```
 
-Resume an earlier run:
+Resume a run:
 
 ```bash
 npm start -- --resume your-session-id
 ```
 
-## Docker Bootstrap
+## Web UI
 
-Ubuntu helper script:
+The web app includes:
+
+- Provider dropdown for OpenAI and DeepSeek.
+- Editable model field, with DeepSeek as a convenient default.
+- Goal, start URL, allowed domains, working directory, and max-step controls.
+- Toggleable shell tool, Docker sandbox, headless browser, password typing, and destructive actions.
+- Live run logs above a persistent conversation panel.
+
+`Start URL` is only a suggestion. The browser opens only when the model chooses a browser tool.
+
+## Safety Model
+
+AgInTiFlow is intentionally conservative:
+
+- Password typing is blocked unless explicitly enabled.
+- Destructive browser actions are blocked unless explicitly enabled.
+- Shell commands are disabled unless the shell tool is enabled.
+- Guarded shell mode only allows a small set of common inspection commands.
+- Docker sandbox mode runs shell commands in a local container with no network.
+- Every tool request and result is written to structured logs.
+
+## Configuration
 
 ```bash
-./scripts/install-docker-ubuntu.sh
-```
-
-If you run it as `root` and want Docker available to a regular user without `sudo`, set the target user explicitly:
-
-```bash
-DOCKER_TARGET_USER=lachlan ./scripts/install-docker-ubuntu.sh
-```
-
-The script installs Docker Engine from Docker's official Ubuntu repository, enables the services, and adds the target user to the `docker` group. After it finishes, open a new login shell or run `newgrp docker` before testing non-root access.
-
-## Useful Environment Variables
-
-```bash
-AGENT_PROVIDER=openai
-LLM_MODEL=gpt-5.4-mini
+AGENT_PROVIDER=deepseek
+LLM_MODEL=deepseek-chat
+OPENAI_API_KEY=...
+DEEPSEEK_API_KEY=...
 MAX_STEPS=15
-HEADLESS=false
+HEADLESS=true
 ALLOWED_DOMAINS=news.ycombinator.com,github.com
-ALLOW_PASSWORDS=false
-ALLOW_DESTRUCTIVE=false
 ALLOW_SHELL_TOOL=false
 USE_DOCKER_SANDBOX=false
 DOCKER_SANDBOX_IMAGE=agintiflow-sandbox:latest
@@ -104,46 +102,70 @@ COMMAND_CWD=/home/lachlan/ProjectsLFS/Agent
 
 Defaults:
 
-- OpenAI: `OPENAI_API_KEY`, `https://api.openai.com/v1`, `gpt-5.4-mini`
-- DeepSeek: `DEEPSEEK_API_KEY`, `https://api.deepseek.com/v1`, `deepseek-chat`
+| Provider | API key | Base URL | Default model |
+| --- | --- | --- | --- |
+| OpenAI | `OPENAI_API_KEY` | `https://api.openai.com/v1` | `gpt-5.4-mini` |
+| DeepSeek | `DEEPSEEK_API_KEY` | `https://api.deepseek.com/v1` | `deepseek-chat` |
 
-## Web UI
+## Docker Bootstrap
 
-The web UI runs at `http://127.0.0.1:3210` by default. It gives you:
+Ubuntu helper:
 
-- provider dropdown: OpenAI or DeepSeek
-- editable model field
-- goal, start URL, allowed domains, and working directory inputs
-- toggles for shell tool, headless mode, passwords, and destructive actions
-- optional Docker sandbox toggle and image selection for shell commands
-- live run logs via polling
+```bash
+./scripts/install-docker-ubuntu.sh
+```
 
-Behavior note:
+If running as `root` and configuring Docker for a regular user:
 
-- `Start URL` is a suggestion, not an automatic navigation
-- if the shell tool can satisfy the prompt, the agent can stay browser-free for the whole run
-- when `Use Docker sandbox` is enabled, `run_command` executes in a local Docker container with no network and the selected working directory mounted at `/workspace`
-- headless mode defaults to `true` in the web UI
+```bash
+DOCKER_TARGET_USER=lachlan ./scripts/install-docker-ubuntu.sh
+```
 
-## Session Artifacts
+Open a new login shell, or run `newgrp docker`, before testing non-root Docker access.
 
-Each run stores state in `.sessions/<session-id>/`:
+## Runtime Artifacts
 
-- `state.json` for resumable conversation state
-- `plan.md` for the execution plan
-- `events.jsonl` for structured logs
-- `storage-state.json` for browser session persistence
-- `artifacts/step-XXX.png` screenshots
-- `artifacts/step-XXX.snapshot.json` DOM snapshots
+Each run stores state under `.sessions/<session-id>/`:
 
-## Safety Model
+| File | Purpose |
+| --- | --- |
+| `state.json` | Resumable model and tool state |
+| `plan.md` | Execution plan |
+| `events.jsonl` | Structured event log |
+| `storage-state.json` | Browser session persistence |
+| `artifacts/step-XXX.png` | Screenshots |
+| `artifacts/step-XXX.snapshot.json` | DOM snapshots |
 
-This agent is intentionally conservative:
+## Project Structure
 
-- optional domain allowlist
-- blocks password typing unless explicitly enabled
-- blocks destructive click targets unless explicitly enabled
-- blocks shell commands outside a small read-only allowlist
-- records every tool request and result
+```text
+AgInTiFlow/
+├── public/                 # Web UI
+├── src/                    # Agent runtime, tools, guardrails, storage
+├── docker/                 # Shell sandbox image
+├── scripts/                # Docker bootstrap helper
+├── logos/                  # Brand assets and crop notes
+├── references/             # Design philosophy and research notes
+├── tools/                  # Reusable project documentation helpers
+├── run.js                  # CLI entrypoint
+└── web.js                  # Express web server
+```
 
-That makes it suitable for internal tools, dashboards, research, and browsing workflows before you move to full computer-use agents.
+## Development
+
+```bash
+npm run check
+```
+
+The check validates JavaScript syntax for the CLI, web server, and runtime modules.
+
+## README Prompt Tool
+
+This repo includes a small prompt helper for repeatable README polishing:
+
+```bash
+node tools/readme_prompt_tool.js agintiflow
+node tools/readme_prompt_tool.js aginti-landing
+```
+
+It captures the documentation style used here: concise overview, full language links, product signals, quick start, safety notes, and localized README targets.
