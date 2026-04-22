@@ -14,16 +14,32 @@
           <img class="brand-logo" src="/logos/logo.png" alt="AgInTiFlow logo" />
           <div>
             <h1>AgInTiFlow</h1>
-            <p class="brand-kicker">AI automation product by AgInTi</p>
+            <p class="brand-kicker" data-i18n="brandKicker">AI automation product by AgInTi Inc.</p>
           </div>
+          <label class="language-switch">
+            <span data-i18n="languageLabel">Language</span>
+            <select id="language" name="language" aria-label="Select language">
+              <option value="en">English</option>
+              <option value="ar">العربية</option>
+              <option value="es">Español</option>
+              <option value="fr">Français</option>
+              <option value="ja">日本語</option>
+              <option value="ko">한국어</option>
+              <option value="vi">Tiếng Việt</option>
+              <option value="zh-Hans">中文 (简体)</option>
+              <option value="zh-Hant">繁體中文</option>
+              <option value="de">Deutsch</option>
+              <option value="ru">Русский</option>
+            </select>
+          </label>
         </div>
-        <p class="subtle">
+        <p class="subtle" data-i18n="intro">
           Browser agent with provider selection, resumable runs, persisted settings, and an optional guarded shell tool with Docker sandbox support.
         </p>
 
         <form id="run-form">
           <label>
-            Provider
+            <span data-i18n="providerLabel">Provider</span>
             <select id="provider" name="provider">
               <option value="openai">OpenAI</option>
               <option value="deepseek">DeepSeek</option>
@@ -31,62 +47,64 @@
           </label>
 
           <label>
-            Model
+            <span data-i18n="modelLabel">Model</span>
             <input id="model" name="model" type="text" value="deepseek-chat" />
           </label>
 
           <label>
-            Goal
+            <span data-i18n="goalLabel">Goal</span>
             <textarea
               id="goal"
               name="goal"
               rows="5"
+              data-i18n-placeholder="goalPlaceholder"
               placeholder="Open a site and summarize it, or use run_command for simple terminal inspection."
             ></textarea>
           </label>
 
           <label>
-            Start URL
-            <input id="startUrl" name="startUrl" type="url" placeholder="https://news.ycombinator.com" />
+            <span data-i18n="startUrlLabel">Start URL</span>
+            <input id="startUrl" name="startUrl" type="url" data-i18n-placeholder="startUrlPlaceholder" placeholder="https://news.ycombinator.com" />
           </label>
 
           <label>
-            Allowed domains
-            <input id="allowedDomains" name="allowedDomains" type="text" placeholder="news.ycombinator.com,github.com" />
+            <span data-i18n="allowedDomainsLabel">Allowed domains</span>
+            <input id="allowedDomains" name="allowedDomains" type="text" data-i18n-placeholder="allowedDomainsPlaceholder" placeholder="news.ycombinator.com,github.com" />
           </label>
 
           <div class="grid">
             <label>
-              Working directory
+              <span data-i18n="commandCwdLabel">Working directory</span>
               <input id="commandCwd" name="commandCwd" type="text" value="/home/lachlan/ProjectsLFS/Agent" />
             </label>
             <label>
-              Max steps
+              <span data-i18n="maxStepsLabel">Max steps</span>
               <input id="maxSteps" name="maxSteps" type="number" min="1" max="50" value="15" />
             </label>
           </div>
 
           <div class="checks">
-            <label><input id="headless" name="headless" type="checkbox" checked /> Headless browser</label>
-            <label><input id="allowShellTool" name="allowShellTool" type="checkbox" checked /> Enable shell tool</label>
-            <label><input id="useDockerSandbox" name="useDockerSandbox" type="checkbox" /> Use Docker sandbox</label>
-            <label><input id="allowPasswords" name="allowPasswords" type="checkbox" /> Allow password typing</label>
-            <label><input id="allowDestructive" name="allowDestructive" type="checkbox" /> Allow destructive actions</label>
+            <label><input id="headless" name="headless" type="checkbox" checked /> <span data-i18n="headlessLabel">Headless browser</span></label>
+            <label><input id="allowShellTool" name="allowShellTool" type="checkbox" checked /> <span data-i18n="shellToolLabel">Enable shell tool</span></label>
+            <label><input id="useDockerSandbox" name="useDockerSandbox" type="checkbox" /> <span data-i18n="dockerSandboxLabel">Use Docker sandbox</span></label>
+            <label><input id="allowPasswords" name="allowPasswords" type="checkbox" /> <span data-i18n="allowPasswordsLabel">Allow password typing</span></label>
+            <label><input id="allowDestructive" name="allowDestructive" type="checkbox" /> <span data-i18n="allowDestructiveLabel">Allow destructive actions</span></label>
           </div>
 
           <label>
-            Docker image
+            <span data-i18n="dockerImageLabel">Docker image</span>
             <input
               id="dockerSandboxImage"
               name="dockerSandboxImage"
               type="text"
               value="agintiflow-sandbox:latest"
+              data-i18n-placeholder="dockerImagePlaceholder"
               placeholder="agintiflow-sandbox:latest"
             />
           </label>
 
           <div class="actions">
-            <button type="submit">Start run</button>
+            <button type="submit" data-i18n="startRunButton">Start run</button>
             <span id="key-status" class="subtle"></span>
           </div>
         </form>
@@ -95,30 +113,31 @@
       <section class="stack">
         <section class="panel output-panel">
           <div class="header-row">
-            <h2>Run output</h2>
+            <h2 data-i18n="runOutputTitle">Run output</h2>
             <div id="run-meta" class="subtle"></div>
           </div>
-          <pre id="logs" class="logs">No run started.</pre>
+          <pre id="logs" class="logs" data-i18n="noRunStarted">No run started.</pre>
         </section>
 
         <section class="panel chat-panel">
           <div class="header-row">
-            <h2>Conversation</h2>
+            <h2 data-i18n="conversationTitle">Conversation</h2>
             <select id="session-select" class="session-select">
-              <option value="">No session selected</option>
+              <option value="" data-i18n="noSessionSelected">No session selected</option>
             </select>
           </div>
           <div id="chat-thread" class="chat-thread">
-            <div class="subtle">No conversation loaded.</div>
+            <div class="subtle" data-i18n="noConversationLoaded">No conversation loaded.</div>
           </div>
           <form id="chat-form" class="chat-form">
             <textarea
               id="chat-input"
               rows="4"
+              data-i18n-placeholder="chatPlaceholder"
               placeholder="Continue the selected conversation here."
             ></textarea>
             <div class="actions">
-              <button type="submit">Send message</button>
+              <button type="submit" data-i18n="sendMessageButton">Send message</button>
               <span id="chat-status" class="subtle"></span>
             </div>
           </form>

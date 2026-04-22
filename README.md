@@ -30,7 +30,7 @@ It is designed for workflows where an AI agent should act, but every tool, log, 
 | Model layer | OpenAI-compatible tool calling with OpenAI and DeepSeek presets |
 | Local tools | Optional guarded shell commands with Docker sandbox support |
 | Memory | Session state, persisted web settings, chat continuation |
-| Operator UX | Web UI with provider selection, run output, and conversation history |
+| Operator UX | Multilingual web UI with provider selection, run output, and conversation history |
 
 ## Quick Start
 
@@ -66,6 +66,7 @@ npm start -- --resume your-session-id
 The web app includes:
 
 - Provider dropdown for OpenAI and DeepSeek.
+- Language dropdown with 11 persisted UI locales.
 - Editable model field, with DeepSeek as a convenient default.
 - Goal, start URL, allowed domains, working directory, and max-step controls.
 - Toggleable shell tool, Docker sandbox, headless browser, password typing, and destructive actions.
@@ -159,13 +160,14 @@ npm run check
 
 The check validates JavaScript syntax for the CLI, web server, and runtime modules.
 
-## README Prompt Tool
+## Prompt Tools
 
-This repo includes a small prompt helper for repeatable README polishing:
+This repo includes small prompt helpers for repeatable documentation and i18n work:
 
 ```bash
 node tools/readme_prompt_tool.js agintiflow
 node tools/readme_prompt_tool.js aginti-landing
+node tools/webapp_i18n_prompt_tool.js
 ```
 
-It captures the documentation style used here: concise overview, full language links, product signals, quick start, safety notes, and localized README targets.
+The README helper captures the documentation style used here: concise overview, full language links, product signals, quick start, safety notes, and localized README targets. The webapp i18n helper captures the full UI translation key contract for future language backfills.

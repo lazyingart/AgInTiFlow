@@ -16,11 +16,29 @@ const app = express();
 const port = Number(process.env.PORT || 3210);
 const runs = new Map();
 const db = new WebDatabase(baseDir);
+const supportedLanguages = new Set([
+  "en",
+  "ar",
+  "es",
+  "fr",
+  "ja",
+  "ko",
+  "vi",
+  "zh-Hans",
+  "zh-Hant",
+  "de",
+  "ru",
+]);
 
 function defaultsFor(provider) {
   return provider === "deepseek"
     ? { provider: "deepseek", model: "deepseek-chat" }
     : { provider: "openai", model: "gpt-5.4-mini" };
+}
+
+function normalizeLanguage(language, fallback = "en") {
+  if (supportedLanguages.has(language)) return language;
+  return supportedLanguages.has(fallback) ? fallback : "en";
 }
 
 function sessionStore(sessionId) {
@@ -105,6 +123,7 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
     allowPasswords: typeof body.allowPasswords === "boolean" ? body.allowPasswords : Boolean(current.allowPasswords),
     allowDestructive:
       typeof body.allowDestructive === "boolean" ? body.allowDestructive : Boolean(current.allowDestructive),
+    language: normalizeLanguage(body.language, current.language),
   };
 }
 

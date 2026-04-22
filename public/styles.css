@@ -57,7 +57,7 @@ h1 {
 
 .brand-header {
   display: grid;
-  grid-template-columns: 92px 1fr;
+  grid-template-columns: 92px minmax(0, 1fr) auto;
   gap: 16px;
   align-items: center;
   margin-bottom: 14px;
@@ -67,9 +67,7 @@ h1 {
   width: 92px;
   aspect-ratio: 1;
   object-fit: contain;
-  border-radius: 20px;
-  background: #f6fcf6;
-  box-shadow: 0 14px 28px rgba(15, 118, 110, 0.12);
+  filter: drop-shadow(0 14px 28px rgba(15, 118, 110, 0.18));
 }
 
 .brand-kicker {
@@ -77,6 +75,19 @@ h1 {
   color: var(--muted);
   font-size: 0.82rem;
   font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.language-switch {
+  align-self: start;
+  min-width: 150px;
+}
+
+.language-switch span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -222,7 +233,11 @@ button {
 
   .brand-logo {
     width: 76px;
-    border-radius: 16px;
+  }
+
+  .language-switch {
+    grid-column: 1 / -1;
+    min-width: 0;
   }
 
   .logs {

@@ -16,6 +16,7 @@ function defaultPreferences(baseDir) {
     dockerSandboxImage: "agintiflow-sandbox:latest",
     allowPasswords: false,
     allowDestructive: false,
+    language: "en",
   };
 }
 
