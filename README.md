@@ -34,6 +34,23 @@ It is designed for workflows where an AI agent should act, but every tool, log, 
 
 ## Quick Start
 
+Install the published CLI:
+
+```bash
+npm install -g @lazyingart/agintiflow
+aginti --list-routes
+aginti --sandbox-status --sandbox-mode docker-readonly --cwd "$PWD"
+```
+
+Launch the local web UI from an installed package:
+
+```bash
+aginti-cli --routing smart --allow-shell "List this folder"
+aginti --sandbox-preflight --sandbox-mode docker-readonly --cwd "$PWD"
+```
+
+Run from a source checkout:
+
 ```bash
 cd /home/lachlan/ProjectsLFS/Agent/AgInTiFlow
 npm install
@@ -70,6 +87,8 @@ Resume a run:
 ```bash
 npm start -- --resume your-session-id
 ```
+
+The package exposes both `aginti` and `aginti-cli`; they run the same CLI entrypoint.
 
 ## Web UI
 
@@ -150,6 +169,37 @@ Current wrappers:
 | Qwen Code | `qwen` | plan approval mode |
 
 Wrapper prompts are capped and filtered for destructive intent unless destructive actions are explicitly enabled.
+
+## npm Release Safety
+
+AgInTiFlow is published as `@lazyingart/agintiflow`.
+
+Preferred release path:
+
+1. Bump `package.json` version.
+2. Run `npm test` and `npm pack --dry-run`.
+3. Create a GitHub Release or run `.github/workflows/npm-publish.yml` manually.
+4. Let npm Trusted Publishing use GitHub Actions OIDC and `npm publish --access public --provenance`.
+
+Trusted Publishing setup on npm:
+
+```bash
+npm install -g npm@^11.5.1
+npm trust github @lazyingart/agintiflow --repo lazyingart/AgInTiFlow --file npm-publish.yml
+```
+
+The npm trust command may require the package to exist first and may require an OTP in the browser/account flow. Do not commit `.npmrc`, `.env`, npm tokens, OTPs, or npm debug logs.
+
+Local token fallback is only for bootstrapping when Trusted Publishing cannot be used:
+
+```bash
+cp .env.example .env
+# Put NPM_TOKEN or NODE_AUTH_TOKEN in .env locally only.
+set -a && source .env && set +a
+npm publish --access public
+```
+
+Never publish with `npm publish` from inside an agent run. The runtime command policy blocks npm publish and npm token commands by design.
 
 ## Docker Bootstrap
 

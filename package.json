@@ -1,17 +1,58 @@
 {
-  "name": "agintiflow",
+  "name": "@lazyingart/agintiflow",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "AgInTiFlow is a resumable Playwright website-control agent with OpenAI-compatible tool calling.",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/lazyingart/AgInTiFlow#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lazyingart/AgInTiFlow.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lazyingart/AgInTiFlow/issues"
+  },
+  "keywords": [
+    "agent",
+    "automation",
+    "browser",
+    "playwright",
+    "deepseek",
+    "sandbox",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "AGENTS.md",
+    "LICENSE",
+    "README.md",
+    "bin/",
+    "docs/",
+    "docker/",
+    "i18n/",
+    "logos/banner-opaque.png",
+    "logos/logo.png",
+    "public/",
+    "scripts/install-docker-ubuntu.sh",
+    "src/",
+    "run.js",
+    "web.js"
+  ],
   "bin": {
-    "aginti": "./bin/aginti-cli.js",
-    "aginti-cli": "./bin/aginti-cli.js"
+    "aginti": "bin/aginti-cli.js",
+    "aginti-cli": "bin/aginti-cli.js"
   },
   "scripts": {
     "start": "node run.js",
     "web": "node web.js",
-    "check": "node --check run.js && node --check web.js && node --check bin/aginti-cli.js && node --check src/*.js"
+    "check": "node --check run.js && node --check web.js && node --check bin/aginti-cli.js && node --check src/*.js",
+    "test": "npm run check",
+    "pack:dry-run": "npm pack --dry-run"
   },
   "dependencies": {
     "express": "^5.1.0",
