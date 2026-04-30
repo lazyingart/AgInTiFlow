@@ -6,6 +6,8 @@ import { runAgent } from "./src/agent-runner.js";
 import { resolveRuntimeConfig } from "./src/config.js";
 import { WebDatabase } from "./src/web-db.js";
 import { SessionStore } from "./src/session-store.js";
+import { getModelPresets, getProviderDefaults, normalizeRoutingMode } from "./src/model-routing.js";
+import { listAgentWrappers } from "./src/tool-wrappers.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,12 +31,6 @@ const supportedLanguages = new Set([
   "de",
   "ru",
 ]);
-
-function defaultsFor(provider) {
-  return provider === "deepseek"
-    ? { provider: "deepseek", model: "deepseek-chat" }
-    : { provider: "openai", model: "gpt-5.4-mini" };
-}
 
 function normalizeLanguage(language, fallback = "en") {
   if (supportedLanguages.has(language)) return language;
@@ -91,19 +87,23 @@ function serializeRun(run) {
 }
 
 function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
+  const modelPresets = getModelPresets();
+  const routingMode = normalizeRoutingMode(body.routingMode || current.routingMode || "smart");
   const provider =
     body.provider === "openai" || body.provider === "deepseek" ? body.provider : current.provider || "deepseek";
-  const providerDefaults = defaultsFor(provider);
+  const providerDefaults = getProviderDefaults(provider);
   const parsedMaxSteps = Number(body.maxSteps);
+  const parsedWrapperTimeoutMs = Number(body.wrapperTimeoutMs);
 
   return {
+    routingMode,
     provider,
     model:
       typeof body.model === "string" && body.model.trim()
         ? body.model.trim()
         : current.provider !== provider
           ? providerDefaults.model
-          : current.model || providerDefaults.model,
+          : current.model || modelPresets.fast.model || providerDefaults.model,
     headless: typeof body.headless === "boolean" ? body.headless : Boolean(current.headless),
     maxSteps: Number.isFinite(parsedMaxSteps) && parsedMaxSteps > 0 ? parsedMaxSteps : Number(current.maxSteps) || 15,
     startUrl: typeof body.startUrl === "string" ? body.startUrl.trim() : current.startUrl || "",
@@ -114,6 +114,12 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
         ? body.commandCwd.trim()
         : current.commandCwd || path.resolve(baseDir, ".."),
     allowShellTool: typeof body.allowShellTool === "boolean" ? body.allowShellTool : Boolean(current.allowShellTool),
+    allowWrapperTools:
+      typeof body.allowWrapperTools === "boolean" ? body.allowWrapperTools : Boolean(current.allowWrapperTools),
+    wrapperTimeoutMs:
+      Number.isFinite(parsedWrapperTimeoutMs) && parsedWrapperTimeoutMs >= 10000
+        ? parsedWrapperTimeoutMs
+        : Number(current.wrapperTimeoutMs) || 120000,
     useDockerSandbox:
       typeof body.useDockerSandbox === "boolean" ? body.useDockerSandbox : Boolean(current.useDockerSandbox),
     dockerSandboxImage:
@@ -124,6 +130,15 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
     allowDestructive:
       typeof body.allowDestructive === "boolean" ? body.allowDestructive : Boolean(current.allowDestructive),
     language: normalizeLanguage(body.language, current.language),
+  };
+}
+
+function publicProviderDefault(provider) {
+  const defaults = getProviderDefaults(provider);
+  return {
+    provider: defaults.provider,
+    model: defaults.model,
+    baseURL: defaults.baseURL,
   };
 }
 
@@ -143,7 +158,8 @@ function buildRunConfig(body, overrides = {}) {
     },
     {
       provider: merged.provider,
-      model: merged.model || defaultsFor(merged.provider).model,
+      model: merged.model || getProviderDefaults(merged.provider).model,
+      routingMode: merged.routingMode,
       headless: merged.headless,
       maxSteps: merged.maxSteps,
       allowedDomains: String(merged.allowedDomains || "")
@@ -153,6 +169,8 @@ function buildRunConfig(body, overrides = {}) {
       allowPasswords: merged.allowPasswords,
       allowDestructive: merged.allowDestructive,
       allowShellTool: merged.allowShellTool,
+      allowWrapperTools: merged.allowWrapperTools,
+      wrapperTimeoutMs: merged.wrapperTimeoutMs,
       useDockerSandbox: merged.useDockerSandbox,
       dockerSandboxImage: merged.dockerSandboxImage,
       commandCwd: merged.commandCwd,
@@ -181,7 +199,7 @@ function deriveSessionRecordFromState(state, existing = null) {
   return {
     sessionId: state.sessionId,
     provider: state.provider || existing?.provider || "deepseek",
-    model: state.model || existing?.model || defaultsFor(state.provider || existing?.provider || "deepseek").model,
+    model: state.model || existing?.model || getProviderDefaults(state.provider || existing?.provider || "deepseek").model,
     goal: state.goal || existing?.goal || "",
     status,
     startedAt: state.createdAt || existing?.startedAt || new Date().toISOString(),
@@ -342,11 +360,16 @@ app.use("/logos", express.static(path.join(__dirname, "logos")));
 app.get("/api/config", (_req, res) => {
   res.json({
     defaults: {
-      openai: defaultsFor("openai"),
-      deepseek: defaultsFor("deepseek"),
+      openai: publicProviderDefault("openai"),
+      deepseek: publicProviderDefault("deepseek"),
       headless: true,
       maxSteps: 15,
     },
+    routing: {
+      modes: ["smart", "fast", "complex", "manual"],
+      presets: getModelPresets(),
+    },
+    wrappers: listAgentWrappers(),
     preferences: db.getPreferences(),
     keyStatus: {
       openai: Boolean(process.env.OPENAI_API_KEY),

@@ -18,7 +18,16 @@ const translations = {
     brandKicker: "AI automation product by AgInTi Inc.",
     languageLabel: "Language",
     intro:
-      "Browser agent with provider selection, resumable runs, persisted settings, and an optional guarded shell tool with Docker sandbox support.",
+      "Web-first agent platform with smart model routing, resumable runs, guarded tools, and optional external agent wrappers.",
+    routingModeLabel: "Routing policy",
+    routingSmartOption: "Smart: fast unless complex",
+    routingFastOption: "DeepSeek v4 flash",
+    routingComplexOption: "DeepSeek v4 pro",
+    routingManualOption: "Manual provider/model",
+    routingHintSmart: "Smart routing uses DeepSeek v4 flash by default and escalates to DeepSeek v4 pro for complex work.",
+    routingHintFast: "Fast route: DeepSeek v4 flash for normal browser, shell, and short coding tasks.",
+    routingHintComplex: "Complex route: DeepSeek v4 pro for deeper implementation, debugging, and design work.",
+    routingHintManual: "Manual route uses the provider and model fields exactly as entered.",
     providerLabel: "Provider",
     modelLabel: "Model",
     goalLabel: "Goal",
@@ -31,6 +40,7 @@ const translations = {
     maxStepsLabel: "Max steps",
     headlessLabel: "Headless browser",
     shellToolLabel: "Enable shell tool",
+    wrapperToolLabel: "Enable agent wrappers",
     dockerSandboxLabel: "Use Docker sandbox",
     allowPasswordsLabel: "Allow password typing",
     allowDestructiveLabel: "Allow destructive actions",
@@ -48,6 +58,7 @@ const translations = {
     assistantLabel: "Assistant",
     youLabel: "You",
     keysLabel: "Keys",
+    wrappersLabel: "Wrappers",
     availableLabel: "available",
     missingLabel: "missing",
     goalRequired: "Goal is required.",
@@ -534,11 +545,14 @@ const translations = {
 
 const form = document.querySelector("#run-form");
 const languageField = document.querySelector("#language");
+const routingModeField = document.querySelector("#routingMode");
 const providerField = document.querySelector("#provider");
 const modelField = document.querySelector("#model");
+const routingHintEl = document.querySelector("#routing-hint");
 const logsEl = document.querySelector("#logs");
 const runMetaEl = document.querySelector("#run-meta");
 const keyStatusEl = document.querySelector("#key-status");
+const wrapperStatusEl = document.querySelector("#wrapper-status");
 const sessionSelectEl = document.querySelector("#session-select");
 const chatThreadEl = document.querySelector("#chat-thread");
 const chatFormEl = document.querySelector("#chat-form");
@@ -549,16 +563,18 @@ const placeholderNodes = [...document.querySelectorAll("[data-i18n-placeholder]"
 
 const defaults = {
   openai: "gpt-5.4-mini",
-  deepseek: "deepseek-chat",
+  deepseek: "deepseek-v4-flash",
 };
 
 let currentLanguage = "en";
+let routingPresets = {};
 let currentSessionId = "";
 let pollTimer = null;
 let saveTimer = null;
 let lastChatEntries = [];
 let lastSessions = [];
 let lastKeyStatus = null;
+let lastWrappers = [];
 
 function normalizeLanguage(language) {
   const lower = String(language || "").toLowerCase();
@@ -584,6 +600,36 @@ function renderKeyStatus(status = lastKeyStatus) {
   } · DeepSeek ${status.deepseek ? t("availableLabel") : t("missingLabel")}`;
 }
 
+function renderWrapperStatus(wrappers = lastWrappers) {
+  lastWrappers = wrappers || [];
+  if (lastWrappers.length === 0) {
+    wrapperStatusEl.textContent = "";
+    return;
+  }
+  wrapperStatusEl.textContent = `${t("wrappersLabel")}: ${lastWrappers
+    .map((wrapper) => `${wrapper.label || wrapper.name} ${wrapper.available ? t("availableLabel") : t("missingLabel")}`)
+    .join(" · ")}`;
+}
+
+function updateRoutingHint() {
+  const mode = routingModeField.value || "smart";
+  const hintKey = {
+    smart: "routingHintSmart",
+    fast: "routingHintFast",
+    complex: "routingHintComplex",
+    manual: "routingHintManual",
+  }[mode];
+  routingHintEl.textContent = t(hintKey);
+
+  if (mode !== "manual") {
+    const preset = mode === "complex" ? routingPresets.complex : routingPresets.fast;
+    if (preset) {
+      providerField.value = preset.provider === "deepseek" ? "deepseek" : providerField.value;
+      modelField.value = preset.model || modelField.value;
+    }
+  }
+}
+
 function applyLanguage(language, { persist = true } = {}) {
   currentLanguage = normalizeLanguage(language);
   document.documentElement.lang = currentLanguage;
@@ -601,6 +647,8 @@ function applyLanguage(language, { persist = true } = {}) {
   }
 
   renderKeyStatus();
+  renderWrapperStatus();
+  updateRoutingHint();
   renderSessions(lastSessions);
   renderChat(lastChatEntries);
   if (persist) schedulePreferenceSave();
@@ -609,6 +657,7 @@ function applyLanguage(language, { persist = true } = {}) {
 function formPayload() {
   return {
     language: languageField.value,
+    routingMode: routingModeField.value,
     provider: providerField.value,
     model: modelField.value.trim(),
     startUrl: document.querySelector("#startUrl").value.trim(),
@@ -617,6 +666,7 @@ function formPayload() {
     maxSteps: Number(document.querySelector("#maxSteps").value) || 15,
     headless: document.querySelector("#headless").checked,
     allowShellTool: document.querySelector("#allowShellTool").checked,
+    allowWrapperTools: document.querySelector("#allowWrapperTools").checked,
     useDockerSandbox: document.querySelector("#useDockerSandbox").checked,
     dockerSandboxImage: document.querySelector("#dockerSandboxImage").value.trim(),
     allowPasswords: document.querySelector("#allowPasswords").checked,
@@ -747,6 +797,11 @@ languageField.addEventListener("change", () => {
   applyLanguage(languageField.value);
 });
 
+routingModeField.addEventListener("change", () => {
+  updateRoutingHint();
+  schedulePreferenceSave();
+});
+
 providerField.addEventListener("change", () => {
   if (!modelField.value.trim() || modelField.value === defaults.openai || modelField.value === defaults.deepseek) {
     modelField.value = defaults[providerField.value] || "";
@@ -856,23 +911,30 @@ async function loadConfig() {
   const response = await fetch("/api/config");
   const data = await response.json();
   const prefs = data.preferences || {};
+  routingPresets = data.routing?.presets || {};
+  defaults.openai = data.defaults?.openai?.model || defaults.openai;
+  defaults.deepseek = routingPresets.fast?.model || data.defaults?.deepseek?.model || defaults.deepseek;
 
   applyLanguage(prefs.language || normalizeLanguage(navigator.language || "en"), { persist: false });
 
+  routingModeField.value = prefs.routingMode || "smart";
   providerField.value = prefs.provider || "deepseek";
-  modelField.value = prefs.model || defaults[providerField.value] || "deepseek-chat";
+  modelField.value = prefs.model || defaults[providerField.value] || "deepseek-v4-flash";
   document.querySelector("#startUrl").value = prefs.startUrl || "";
   document.querySelector("#allowedDomains").value = prefs.allowedDomains || "";
   document.querySelector("#commandCwd").value = prefs.commandCwd || "/home/lachlan/ProjectsLFS/Agent";
   document.querySelector("#headless").checked = prefs.headless ?? data.defaults.headless;
   document.querySelector("#maxSteps").value = prefs.maxSteps ?? data.defaults.maxSteps;
   document.querySelector("#allowShellTool").checked = prefs.allowShellTool ?? true;
+  document.querySelector("#allowWrapperTools").checked = prefs.allowWrapperTools ?? false;
   document.querySelector("#useDockerSandbox").checked = prefs.useDockerSandbox ?? false;
   document.querySelector("#dockerSandboxImage").value = prefs.dockerSandboxImage || "agintiflow-sandbox:latest";
   document.querySelector("#allowPasswords").checked = prefs.allowPasswords ?? false;
   document.querySelector("#allowDestructive").checked = prefs.allowDestructive ?? false;
 
   renderKeyStatus(data.keyStatus);
+  renderWrapperStatus(data.wrappers || []);
+  updateRoutingHint();
 
   renderSessions(data.sessions || []);
   if (data.sessions && data.sessions.length > 0) {

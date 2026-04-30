@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { WRAPPER_NAMES, wrapperStatusText } from "./tool-wrappers.js";
 
 export function createClient(config) {
   return new OpenAI({
@@ -24,6 +25,7 @@ export async function createPlan(client, config, state) {
           state.startUrl ? `Suggested start URL: ${state.startUrl}` : "",
           config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
           config.allowShellTool ? `Shell tool is enabled for short read-only inspection commands in ${config.commandCwd}.` : "",
+          config.allowWrapperTools ? `Agent wrappers are enabled: ${wrapperStatusText()}.` : "",
           "Return a numbered plan only.",
         ]
           .filter(Boolean)
@@ -171,6 +173,26 @@ export async function requestNextStep(client, config, messages) {
             command: { type: "string" },
           },
           required: ["command"],
+          additionalProperties: false,
+        },
+      },
+    });
+  }
+
+  if (config.allowWrapperTools) {
+    tools.splice(-1, 0, {
+      type: "function",
+      function: {
+        name: "delegate_agent",
+        description:
+          "Ask an installed external coding agent wrapper for advisory help. Use for codebase analysis, implementation strategy, or second-opinion review. The wrapper is instructed to avoid modifying files.",
+        parameters: {
+          type: "object",
+          properties: {
+            wrapper: { type: "string", enum: WRAPPER_NAMES },
+            prompt: { type: "string" },
+          },
+          required: ["wrapper", "prompt"],
           additionalProperties: false,
         },
       },

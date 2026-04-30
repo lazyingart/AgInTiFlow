@@ -1,17 +1,22 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { getModelPresets } from "./model-routing.js";
 
 function defaultPreferences(baseDir) {
+  const presets = getModelPresets();
   return {
+    routingMode: "smart",
     provider: "deepseek",
-    model: "deepseek-chat",
+    model: presets.fast.model,
     headless: true,
     maxSteps: 15,
     startUrl: "",
     allowedDomains: "",
     commandCwd: path.resolve(baseDir, ".."),
     allowShellTool: true,
+    allowWrapperTools: false,
+    wrapperTimeoutMs: 120000,
     useDockerSandbox: false,
     dockerSandboxImage: "agintiflow-sandbox:latest",
     allowPasswords: false,

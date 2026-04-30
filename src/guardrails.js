@@ -64,6 +64,20 @@ const DISALLOWED_COMMAND_PARTS = [
   "wget ",
 ];
 
+const KNOWN_WRAPPERS = new Set(["codex", "claude", "gemini", "copilot", "qwen"]);
+const DESTRUCTIVE_PROMPT_HINTS = [
+  "delete",
+  "remove files",
+  "rm -",
+  "git push",
+  "git reset",
+  "git checkout",
+  "install",
+  "sudo",
+  "deploy",
+  "publish",
+];
+
 function normalizeDomain(hostname) {
   return hostname.replace(/^www\./, "").toLowerCase();
 }
@@ -144,6 +158,32 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
         allowed: false,
         reason: `Command is outside the read-only allowlist: ${command}`,
       };
+    }
+
+    return { allowed: true };
+  }
+
+  if (toolName === "delegate_agent") {
+    if (!config.allowWrapperTools) {
+      return { allowed: false, reason: "Agent wrapper tools are disabled for this run." };
+    }
+
+    const wrapper = String(args.wrapper || "");
+    if (!KNOWN_WRAPPERS.has(wrapper)) {
+      return { allowed: false, reason: `Unknown agent wrapper: ${wrapper}` };
+    }
+
+    const prompt = String(args.prompt || "").trim();
+    if (prompt.length < 8) {
+      return { allowed: false, reason: "Agent wrapper prompt is too short." };
+    }
+    if (prompt.length > 4000) {
+      return { allowed: false, reason: "Agent wrapper prompt is too long." };
+    }
+
+    const loweredPrompt = prompt.toLowerCase();
+    if (!config.allowDestructive && DESTRUCTIVE_PROMPT_HINTS.some((hint) => loweredPrompt.includes(hint))) {
+      return { allowed: false, reason: "Agent wrapper prompt appears to request write-capable or destructive work." };
     }
 
     return { allowed: true };

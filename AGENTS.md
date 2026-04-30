@@ -2,13 +2,15 @@
 
 ## Project Structure & Module Organization
 
-`run.js` is the CLI entrypoint and `web.js` serves the local UI. Core runtime logic lives in `src/`: `agent-runner.js` orchestrates the loop, `model-client.js` defines model/tool interactions, `guardrails.js` enforces safety checks, `snapshot.js` captures browser state, and `session-store.js` persists runs under `.sessions/`. Frontend assets for the local UI live in `public/` (`index.html`, `app.js`, `styles.css`).
+`run.js` is the legacy CLI entrypoint, `bin/aginti-cli.js` is the packaged CLI, and `web.js` serves the local UI. Core runtime logic lives in `src/`: `agent-runner.js` orchestrates the loop, `model-client.js` defines model/tool interactions, `model-routing.js` owns routing presets, `tool-wrappers.js` owns external agent wrapper contracts, `guardrails.js` enforces safety checks, `snapshot.js` captures browser state, and `session-store.js` persists runs under `.sessions/`. Frontend assets for the local UI live in `public/` (`index.html`, `app.js`, `styles.css`).
 
 ## Build, Test, and Development Commands
 
 - `npm install`: install dependencies.
 - `npx playwright install chromium`: install the browser runtime used by Playwright.
 - `npm start -- "your task"`: run the CLI agent.
+- `npx aginti-cli --list-routes`: inspect routing presets.
+- `npx aginti-cli --list-wrappers`: inspect installed wrapper availability.
 - `npm run web`: start the local web UI on `http://127.0.0.1:3210`.
 - `npm run check`: run syntax checks for `run.js`, `web.js`, and all files in `src/`.
 
@@ -33,4 +35,4 @@ Commit messages in this repo currently follow short imperative style, for exampl
 
 ## Security & Configuration Tips
 
-Never hard-code API keys. Use environment variables like `OPENAI_API_KEY` and `DEEPSEEK_API_KEY`. Do not weaken guardrails in `src/guardrails.js` without documenting why. Do not commit `.sessions/` artifacts.
+Never hard-code API keys. Use environment variables like `OPENAI_API_KEY` and `DEEPSEEK_API_KEY`. Do not expose provider defaults that include API keys through web APIs. Keep wrapper tools advisory and opt-in; do not remove read-only/planning defaults without documenting the risk. Do not weaken guardrails in `src/guardrails.js` without documenting why. Do not commit `.sessions/` artifacts.

@@ -17,7 +17,7 @@
 ![Sandbox](https://img.shields.io/badge/Shell-Docker%20Sandbox-f97316)
 ![Status](https://img.shields.io/badge/Status-Prototype-7c3aed)
 
-AgInTiFlow is AgInTi's browser and tool-use agent for controlled website automation, persistent conversations, resumable runs, and guarded local commands.
+AgInTiFlow is AgInTi's web-first agent platform for controlled website automation, persistent conversations, resumable runs, guarded local commands, and optional coding-agent wrappers.
 
 It is designed for workflows where an AI agent should act, but every tool, log, and session state should remain inspectable.
 
@@ -27,8 +27,8 @@ It is designed for workflows where an AI agent should act, but every tool, log, 
 | --- | --- |
 | Core loop | Plan -> use tools -> log events -> finish or resume |
 | Browser control | Playwright, lazy browser startup, domain allowlists |
-| Model layer | OpenAI-compatible tool calling with OpenAI and DeepSeek presets |
-| Local tools | Optional guarded shell commands with Docker sandbox support |
+| Model layer | Smart routing over DeepSeek fast/pro presets with manual OpenAI-compatible fallback |
+| Local tools | Optional guarded shell commands, Docker sandbox support, and advisory agent wrappers |
 | Memory | Session state, persisted web settings, chat continuation |
 | Operator UX | Multilingual web UI with provider selection, run output, and conversation history |
 
@@ -49,6 +49,14 @@ Run a CLI task:
 AGENT_PROVIDER=deepseek npm start -- "List this folder and summarize what each project is for"
 ```
 
+Use the dedicated CLI entrypoint:
+
+```bash
+npx aginti-cli --routing smart --allow-shell "List this folder"
+npx aginti-cli --list-routes
+npx aginti-cli --list-wrappers
+```
+
 Start from a URL:
 
 ```bash
@@ -65,11 +73,12 @@ npm start -- --resume your-session-id
 
 The web app includes:
 
-- Provider dropdown for OpenAI and DeepSeek.
+- Routing dropdown for smart, fast, complex, and manual model selection.
+- Provider dropdown for OpenAI and DeepSeek when manual routing is needed.
 - Language dropdown with 11 persisted UI locales.
-- Editable model field, with DeepSeek as a convenient default.
+- Editable model field, with DeepSeek v4 flash as the fast default and DeepSeek v4 pro as the complex route.
 - Goal, start URL, allowed domains, working directory, and max-step controls.
-- Toggleable shell tool, Docker sandbox, headless browser, password typing, and destructive actions.
+- Toggleable shell tool, agent wrappers, Docker sandbox, headless browser, password typing, and destructive actions.
 - Live run logs above a persistent conversation panel.
 
 `Start URL` is only a suggestion. The browser opens only when the model chooses a browser tool.
@@ -103,10 +112,35 @@ COMMAND_CWD=/home/lachlan/ProjectsLFS/Agent
 
 Defaults:
 
-| Provider | API key | Base URL | Default model |
+| Route | Provider | Default model | Override |
 | --- | --- | --- | --- |
-| OpenAI | `OPENAI_API_KEY` | `https://api.openai.com/v1` | `gpt-5.4-mini` |
-| DeepSeek | `DEEPSEEK_API_KEY` | `https://api.deepseek.com/v1` | `deepseek-chat` |
+| `smart` | DeepSeek | Fast for normal tasks, pro for complex tasks | `AGENT_ROUTING_MODE=smart` |
+| `fast` | DeepSeek | `deepseek-v4-flash` | `DEEPSEEK_FAST_MODEL` |
+| `complex` | DeepSeek | `deepseek-v4-pro` | `DEEPSEEK_PRO_MODEL` |
+| `manual` | DeepSeek/OpenAI | user supplied | `AGENT_PROVIDER`, `LLM_MODEL` |
+
+Provider credentials:
+
+| Provider | API key | Base URL |
+| --- | --- | --- |
+| OpenAI | `OPENAI_API_KEY` | `https://api.openai.com/v1` |
+| DeepSeek | `DEEPSEEK_API_KEY` | `https://api.deepseek.com/v1` |
+
+## Agent Wrappers
+
+AgInTiFlow can expose external coding agents as advisory tools when `ALLOW_WRAPPER_TOOLS=true` or the web UI toggle is enabled. Wrappers are not a replacement for the core runner; they are used for second opinions, codebase analysis, or planning when they are installed and authenticated.
+
+Current wrappers:
+
+| Wrapper | Command | Safety mode |
+| --- | --- | --- |
+| Codex | `codex exec` | read-only sandbox, primary `gpt-5.5` medium, spare `gpt-5.4-mini` high |
+| Claude Code | `claude --print` | plan permission mode |
+| Gemini CLI | `gemini` | advisory prompt |
+| GitHub Copilot CLI | `gh copilot` | advisory prompt |
+| Qwen Code | `qwen` | plan approval mode |
+
+Wrapper prompts are capped and filtered for destructive intent unless destructive actions are explicitly enabled.
 
 ## Docker Bootstrap
 
@@ -145,6 +179,7 @@ AgInTiFlow/
 ├── src/                    # Agent runtime, tools, guardrails, storage
 ├── docker/                 # Shell sandbox image
 ├── scripts/                # Docker bootstrap helper
+├── bin/                    # aginti/aginti-cli entrypoint
 ├── logos/                  # Brand assets and crop notes
 ├── references/             # Design philosophy and research notes
 ├── tools/                  # Reusable project documentation helpers

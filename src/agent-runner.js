@@ -8,6 +8,7 @@ import { SessionStore } from "./session-store.js";
 import { captureSnapshot } from "./snapshot.js";
 import { checkToolUse } from "./guardrails.js";
 import { ensureDockerSandboxReady, runDockerSandboxCommand } from "./docker-sandbox.js";
+import { runAgentWrapper, wrapperStatusText } from "./tool-wrappers.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "click", "type", "scroll", "press", "back"]);
@@ -51,6 +52,9 @@ function createInitialState(config, sessionId) {
               ? "A read-only shell command tool is available inside a Docker sandbox with no network and a mounted working directory."
               : "A read-only shell command tool is available for short local inspection tasks."
             : "No shell command tool is available.",
+          config.allowWrapperTools
+            ? `External coding-agent wrappers are available as advisory tools only. Wrapper status: ${wrapperStatusText()}.`
+            : "External coding-agent wrappers are disabled.",
           "When done, call finish with a concise result.",
         ].join(" "),
       },
@@ -65,6 +69,7 @@ function createInitialState(config, sessionId) {
               ? `Shell working directory mounted into Docker: ${config.commandCwd}`
               : `Shell working directory: ${config.commandCwd}`
             : "",
+          config.allowWrapperTools ? `Agent wrappers: ${wrapperStatusText()}` : "",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -157,6 +162,7 @@ function applyContinuationPrompt(state, config, observers) {
           ? `Shell working directory mounted into Docker: ${config.commandCwd}`
           : `Shell working directory: ${config.commandCwd}`
         : "",
+      config.allowWrapperTools ? `Agent wrappers: ${wrapperStatusText()}` : "",
     ]
       .filter(Boolean)
       .join("\n"),
@@ -231,6 +237,7 @@ async function captureSyntheticSnapshot(store, step, config) {
           ? `Shell tool available in Docker with mounted workspace: ${config.commandCwd}`
           : `Shell tool available in: ${config.commandCwd}`
         : "Shell tool disabled.",
+      config.allowWrapperTools ? `Agent wrappers available: ${wrapperStatusText()}` : "Agent wrappers disabled.",
       "Use open_url only if the task actually needs the web.",
     ]
       .filter(Boolean)
@@ -353,6 +360,24 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         observers.event("tool.completed", result);
         return result;
       }
+      case "delegate_agent": {
+        const wrapperResult = await runAgentWrapper(
+          {
+            wrapper: String(args.wrapper || ""),
+            prompt: String(args.prompt || ""),
+          },
+          config
+        );
+        const result = {
+          ok: Boolean(wrapperResult.ok),
+          toolName: "delegate_agent",
+          args,
+          ...wrapperResult,
+        };
+        await store.appendEvent("tool.completed", result);
+        observers.event("tool.completed", result);
+        return result;
+      }
       case "finish":
         return { ok: true, done: true, result: String(args.result || ""), toolName: "finish" };
       default:
@@ -409,6 +434,8 @@ export async function runAgent(config) {
       sessionId,
       provider: config.provider,
       model: config.model,
+      routingMode: config.routingMode,
+      routeReason: config.routeReason,
       goal: config.goal,
     });
     await store.saveState(state);
@@ -424,6 +451,8 @@ export async function runAgent(config) {
     sessionId,
     provider: config.provider,
     model: config.model,
+    routingMode: config.routingMode,
+    routeReason: config.routeReason,
   });
 
   try {
@@ -444,8 +473,12 @@ export async function runAgent(config) {
       sessionId,
       provider: config.provider,
       model: config.model,
+      routingMode: config.routingMode,
+      routeReason: config.routeReason,
       commandCwd: config.commandCwd,
       allowShellTool: config.allowShellTool,
+      allowWrapperTools: config.allowWrapperTools,
+      wrappers: config.allowWrapperTools ? wrapperStatusText() : "",
       shellSandbox: config.useDockerSandbox ? "docker" : "host",
       dockerSandboxImage: config.useDockerSandbox ? config.dockerSandboxImage : "",
       startUrl: config.startUrl,
@@ -454,6 +487,7 @@ export async function runAgent(config) {
     console.log(`Session: ${sessionId}`);
     console.log(`Provider: ${config.provider}`);
     console.log(`Model: ${config.model}`);
+    console.log(`Routing: ${config.routingMode} (${config.routeReason})`);
     if (state.plan) {
       console.log("\nPlan:");
       console.log(state.plan);
@@ -488,6 +522,8 @@ export async function runAgent(config) {
           elements: snapshot.elements,
           browserOpen: Boolean(browserState.page),
           shellToolAvailable: config.allowShellTool,
+          agentWrappersAvailable: config.allowWrapperTools,
+          agentWrappers: config.allowWrapperTools ? wrapperStatusText() : "",
           shellSandbox: config.useDockerSandbox ? "docker" : "host",
           commandCwd: config.commandCwd,
           suggestedStartUrl: config.startUrl || "",
@@ -556,6 +592,17 @@ export async function runAgent(config) {
             command: toolResult.args.command,
             stdout: toolResult.stdout,
             stderr: toolResult.stderr,
+          });
+        }
+
+        if (toolResult.toolName === "delegate_agent") {
+          observers.log("wrapper.output", {
+            wrapper: toolResult.wrapper,
+            ok: toolResult.ok,
+            fallback: Boolean(toolResult.fallback),
+            stdout: toolResult.stdout,
+            stderr: toolResult.stderr,
+            error: toolResult.error,
           });
         }
 
