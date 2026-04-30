@@ -9,6 +9,8 @@ import { captureSnapshot } from "./snapshot.js";
 import { checkToolUse } from "./guardrails.js";
 import { ensureDockerSandboxReady, runDockerSandboxCommand } from "./docker-sandbox.js";
 import { runAgentWrapper, wrapperStatusText } from "./tool-wrappers.js";
+import { evaluateCommandPolicy } from "./command-policy.js";
+import { redactSensitiveText, redactValue } from "./redaction.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "click", "type", "scroll", "press", "back"]);
@@ -49,8 +51,8 @@ function createInitialState(config, sessionId) {
           "Avoid destructive actions, purchases, account changes, and sensitive workflows.",
           config.allowShellTool
             ? config.useDockerSandbox
-              ? "A read-only shell command tool is available inside a Docker sandbox with no network and a mounted working directory."
-              : "A read-only shell command tool is available for short local inspection tasks."
+              ? `A shell command tool is available inside Docker sandbox mode ${config.sandboxMode}. Read-only commands have no network. Package installs or environment setup require approved package policy and Docker workspace-write mode.`
+              : "A read-only host shell command tool is available for short local inspection tasks."
             : "No shell command tool is available.",
           config.allowWrapperTools
             ? `External coding-agent wrappers are available as advisory tools only. Wrapper status: ${wrapperStatusText()}.`
@@ -66,7 +68,7 @@ function createInitialState(config, sessionId) {
           config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
           config.allowShellTool
             ? config.useDockerSandbox
-              ? `Shell working directory mounted into Docker: ${config.commandCwd}`
+              ? `Shell working directory mounted into Docker: ${config.commandCwd}. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
               : `Shell working directory: ${config.commandCwd}`
             : "",
           config.allowWrapperTools ? `Agent wrappers: ${wrapperStatusText()}` : "",
@@ -159,7 +161,7 @@ function applyContinuationPrompt(state, config, observers) {
       config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
       config.allowShellTool
         ? config.useDockerSandbox
-          ? `Shell working directory mounted into Docker: ${config.commandCwd}`
+          ? `Shell working directory mounted into Docker: ${config.commandCwd}. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
           : `Shell working directory: ${config.commandCwd}`
         : "",
       config.allowWrapperTools ? `Agent wrappers: ${wrapperStatusText()}` : "",
@@ -207,9 +209,18 @@ async function closeBrowser(browserState, store) {
   await browserState.browser?.close().catch(() => {});
 }
 
-async function runShellCommand(command, config) {
+function safeExecutionEnv() {
+  return {
+    PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
+    HOME: process.env.HOME || "/tmp",
+    LANG: process.env.LANG || "C.UTF-8",
+    LC_ALL: process.env.LC_ALL || "C.UTF-8",
+  };
+}
+
+async function runShellCommand(command, config, policy = evaluateCommandPolicy(command, config)) {
   if (config.useDockerSandbox) {
-    return runDockerSandboxCommand(command, config);
+    return runDockerSandboxCommand(command, config, policy);
   }
 
   const result = await exec(command, {
@@ -217,11 +228,12 @@ async function runShellCommand(command, config) {
     timeout: 5000,
     maxBuffer: 200 * 1024,
     shell: "/bin/bash",
+    env: safeExecutionEnv(),
   });
 
   return {
-    stdout: result.stdout.trim().slice(0, 8000),
-    stderr: result.stderr.trim().slice(0, 4000),
+    stdout: redactSensitiveText(result.stdout).trim().slice(0, 8000),
+    stderr: redactSensitiveText(result.stderr).trim().slice(0, 4000),
   };
 }
 
@@ -234,7 +246,7 @@ async function captureSyntheticSnapshot(store, step, config) {
       config.startUrl ? `Suggested start URL: ${config.startUrl}` : "",
       config.allowShellTool
         ? config.useDockerSandbox
-          ? `Shell tool available in Docker with mounted workspace: ${config.commandCwd}`
+          ? `Shell tool available in Docker with mounted workspace: ${config.commandCwd}. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
           : `Shell tool available in: ${config.commandCwd}`
         : "Shell tool disabled.",
       config.allowWrapperTools ? `Agent wrappers available: ${wrapperStatusText()}` : "Agent wrappers disabled.",
@@ -262,6 +274,7 @@ async function buildSnapshot(browserState, store, step, config) {
 
 async function executeTool(browserState, toolCall, snapshot, config, store, observers, state) {
   const args = JSON.parse(toolCall.function.arguments || "{}");
+  const safeArgs = redactValue(args);
   const guard = checkToolUse({
     toolName: toolCall.function.name,
     args,
@@ -272,13 +285,17 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
   if (!guard.allowed) {
     await store.appendEvent("tool.blocked", {
       toolName: toolCall.function.name,
-      args,
+      args: safeArgs,
       reason: guard.reason,
+      category: guard.category,
+      needsApproval: guard.needsApproval,
     });
     observers.event("tool.blocked", {
       toolName: toolCall.function.name,
-      args,
+      args: safeArgs,
       reason: guard.reason,
+      category: guard.category,
+      needsApproval: guard.needsApproval,
     });
     return {
       ok: false,
@@ -290,11 +307,11 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
 
   await store.appendEvent("tool.started", {
     toolName: toolCall.function.name,
-    args,
+    args: safeArgs,
   });
   observers.event("tool.started", {
     toolName: toolCall.function.name,
-    args,
+    args: safeArgs,
   });
 
   try {
@@ -345,15 +362,23 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         }
         break;
       case "run_command": {
+        const policy = evaluateCommandPolicy(String(args.command), config);
         if (config.useDockerSandbox) {
           await ensureDockerSandboxReady(config, observers);
         }
-        const commandResult = await runShellCommand(String(args.command), config);
+        const commandResult = await runShellCommand(String(args.command), config, policy);
         const result = {
           ok: true,
           toolName: "run_command",
-          args,
+          args: safeArgs,
           sandbox: config.useDockerSandbox ? "docker" : "host",
+          commandPolicy: {
+            category: policy.category,
+            sandboxMode: policy.sandboxMode,
+            packageInstallPolicy: policy.packageInstallPolicy,
+            needsNetwork: Boolean(policy.needsNetwork),
+            writesWorkspace: Boolean(policy.writesWorkspace),
+          },
           ...commandResult,
         };
         await store.appendEvent("tool.completed", result);
@@ -371,7 +396,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         const result = {
           ok: Boolean(wrapperResult.ok),
           toolName: "delegate_agent",
-          args,
+          args: safeArgs,
           ...wrapperResult,
         };
         await store.appendEvent("tool.completed", result);
@@ -389,7 +414,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
     const result = {
       ok: true,
       toolName: toolCall.function.name,
-      args,
+      args: safeArgs,
       url: browserState.page?.url() || state.meta.lastUrl || "",
     };
 
@@ -400,8 +425,8 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
     const result = {
       ok: false,
       toolName: toolCall.function.name,
-      args,
-      error: error instanceof Error ? error.message : String(error),
+      args: safeArgs,
+      error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
     };
     await store.appendEvent("tool.failed", result);
     observers.event("tool.failed", result);
@@ -480,6 +505,8 @@ export async function runAgent(config) {
       allowWrapperTools: config.allowWrapperTools,
       wrappers: config.allowWrapperTools ? wrapperStatusText() : "",
       shellSandbox: config.useDockerSandbox ? "docker" : "host",
+      sandboxMode: config.sandboxMode,
+      packageInstallPolicy: config.packageInstallPolicy,
       dockerSandboxImage: config.useDockerSandbox ? config.dockerSandboxImage : "",
       startUrl: config.startUrl,
     });
@@ -525,6 +552,8 @@ export async function runAgent(config) {
           agentWrappersAvailable: config.allowWrapperTools,
           agentWrappers: config.allowWrapperTools ? wrapperStatusText() : "",
           shellSandbox: config.useDockerSandbox ? "docker" : "host",
+          sandboxMode: config.sandboxMode,
+          packageInstallPolicy: config.packageInstallPolicy,
           commandCwd: config.commandCwd,
           suggestedStartUrl: config.startUrl || "",
         })}`,
@@ -548,7 +577,7 @@ export async function runAgent(config) {
         toolCalls: (assistantMessage.tool_calls || []).map((call) => ({
           id: call.id,
           name: call.function.name,
-          arguments: call.function.arguments,
+          arguments: redactSensitiveText(call.function.arguments),
         })),
       });
       observers.event("model.responded", {
@@ -589,9 +618,10 @@ export async function runAgent(config) {
 
         if (toolResult.toolName === "run_command") {
           observers.log("command.output", {
-            command: toolResult.args.command,
+            command: redactSensitiveText(toolResult.args.command),
             stdout: toolResult.stdout,
             stderr: toolResult.stderr,
+            commandPolicy: toolResult.commandPolicy,
           });
         }
 

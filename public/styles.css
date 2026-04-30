@@ -168,12 +168,55 @@ button {
   cursor: pointer;
 }
 
+button.secondary {
+  border: 1px solid var(--line);
+  background: #fffdfa;
+  color: var(--ink);
+}
+
 .actions,
 .header-row {
   display: flex;
   gap: 12px;
   align-items: center;
   justify-content: space-between;
+}
+
+.sandbox-card {
+  display: grid;
+  gap: 12px;
+  margin-top: 4px;
+  padding: 14px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 16px;
+  background: rgba(255, 253, 250, 0.7);
+}
+
+.sandbox-card h2 {
+  margin: 0 0 4px;
+  font-size: 1.05rem;
+}
+
+.sandbox-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sandbox-logs {
+  min-height: 96px;
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: #0f172a;
+  color: #dbeafe;
+  border: 1px solid #1e293b;
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
 }
 
 .session-select {

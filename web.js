@@ -8,6 +8,8 @@ import { WebDatabase } from "./src/web-db.js";
 import { SessionStore } from "./src/session-store.js";
 import { getModelPresets, getProviderDefaults, normalizeRoutingMode } from "./src/model-routing.js";
 import { listAgentWrappers } from "./src/tool-wrappers.js";
+import { getDockerSandboxStatus, getSandboxLogs, runDockerPreflight } from "./src/docker-sandbox.js";
+import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./src/command-policy.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -94,6 +96,7 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
   const providerDefaults = getProviderDefaults(provider);
   const parsedMaxSteps = Number(body.maxSteps);
   const parsedWrapperTimeoutMs = Number(body.wrapperTimeoutMs);
+  const sandboxMode = normalizeSandboxMode(body.sandboxMode || current.sandboxMode || "docker-readonly");
 
   return {
     routingMode,
@@ -121,7 +124,15 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
         ? parsedWrapperTimeoutMs
         : Number(current.wrapperTimeoutMs) || 120000,
     useDockerSandbox:
-      typeof body.useDockerSandbox === "boolean" ? body.useDockerSandbox : Boolean(current.useDockerSandbox),
+      sandboxMode !== "host"
+        ? true
+        : typeof body.useDockerSandbox === "boolean"
+          ? body.useDockerSandbox
+          : Boolean(current.useDockerSandbox),
+    sandboxMode,
+    packageInstallPolicy: normalizePackageInstallPolicy(
+      body.packageInstallPolicy || current.packageInstallPolicy || "prompt"
+    ),
     dockerSandboxImage:
       typeof body.dockerSandboxImage === "string" && body.dockerSandboxImage.trim()
         ? body.dockerSandboxImage.trim()
@@ -171,6 +182,8 @@ function buildRunConfig(body, overrides = {}) {
       allowShellTool: merged.allowShellTool,
       allowWrapperTools: merged.allowWrapperTools,
       wrapperTimeoutMs: merged.wrapperTimeoutMs,
+      sandboxMode: merged.sandboxMode,
+      packageInstallPolicy: merged.packageInstallPolicy,
       useDockerSandbox: merged.useDockerSandbox,
       dockerSandboxImage: merged.dockerSandboxImage,
       commandCwd: merged.commandCwd,
@@ -358,6 +371,7 @@ app.use(express.static(path.join(__dirname, "public")));
 app.use("/logos", express.static(path.join(__dirname, "logos")));
 
 app.get("/api/config", (_req, res) => {
+  const preferences = normalizePreferencePayload({}, db.getPreferences());
   res.json({
     defaults: {
       openai: publicProviderDefault("openai"),
@@ -370,13 +384,33 @@ app.get("/api/config", (_req, res) => {
       presets: getModelPresets(),
     },
     wrappers: listAgentWrappers(),
-    preferences: db.getPreferences(),
+    sandbox: {
+      logs: getSandboxLogs(),
+    },
+    preferences,
     keyStatus: {
       openai: Boolean(process.env.OPENAI_API_KEY),
       deepseek: Boolean(process.env.DEEPSEEK_API_KEY),
     },
     sessions: db.listSessions(20),
   });
+});
+
+app.get("/api/sandbox/status", async (_req, res) => {
+  const config = buildRunConfig({ ...db.getPreferences(), goal: "" });
+  const status = await getDockerSandboxStatus(config);
+  res.json({ ok: true, status });
+});
+
+app.post("/api/sandbox/preflight", async (req, res) => {
+  const body = {
+    ...db.getPreferences(),
+    ...(req.body || {}),
+    goal: "",
+  };
+  const config = buildRunConfig(body);
+  const result = await runDockerPreflight(config, { buildImage: Boolean(req.body?.buildImage) });
+  res.json(result);
 });
 
 app.post("/api/preferences", (req, res) => {

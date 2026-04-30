@@ -38,6 +38,14 @@ const translations = {
     allowedDomainsPlaceholder: "news.ycombinator.com,github.com",
     commandCwdLabel: "Working directory",
     maxStepsLabel: "Max steps",
+    sandboxModeLabel: "Sandbox mode",
+    sandboxHostOption: "Host read-only",
+    sandboxDockerReadonlyOption: "Docker read-only",
+    sandboxDockerWorkspaceOption: "Docker workspace-write",
+    packagePolicyLabel: "Package installs",
+    packageBlockOption: "Blocked",
+    packagePromptOption: "Require approval",
+    packageAllowOption: "Approved in Docker",
     headlessLabel: "Headless browser",
     shellToolLabel: "Enable shell tool",
     wrapperToolLabel: "Enable agent wrappers",
@@ -59,6 +67,13 @@ const translations = {
     youLabel: "You",
     keysLabel: "Keys",
     wrappersLabel: "Wrappers",
+    sandboxStatusTitle: "Sandbox status",
+    sandboxStatusEmpty: "Not checked yet.",
+    sandboxLogsEmpty: "No sandbox logs yet.",
+    checkSandboxButton: "Check",
+    preflightSandboxButton: "Preflight",
+    sandboxReadyLabel: "ready",
+    sandboxNotReadyLabel: "not ready",
     availableLabel: "available",
     missingLabel: "missing",
     goalRequired: "Goal is required.",
@@ -549,10 +564,16 @@ const routingModeField = document.querySelector("#routingMode");
 const providerField = document.querySelector("#provider");
 const modelField = document.querySelector("#model");
 const routingHintEl = document.querySelector("#routing-hint");
+const sandboxModeField = document.querySelector("#sandboxMode");
+const packageInstallPolicyField = document.querySelector("#packageInstallPolicy");
 const logsEl = document.querySelector("#logs");
 const runMetaEl = document.querySelector("#run-meta");
 const keyStatusEl = document.querySelector("#key-status");
 const wrapperStatusEl = document.querySelector("#wrapper-status");
+const sandboxStatusEl = document.querySelector("#sandbox-status");
+const sandboxLogsEl = document.querySelector("#sandbox-logs");
+const checkSandboxButton = document.querySelector("#check-sandbox");
+const preflightSandboxButton = document.querySelector("#preflight-sandbox");
 const sessionSelectEl = document.querySelector("#session-select");
 const chatThreadEl = document.querySelector("#chat-thread");
 const chatFormEl = document.querySelector("#chat-form");
@@ -575,6 +596,7 @@ let lastChatEntries = [];
 let lastSessions = [];
 let lastKeyStatus = null;
 let lastWrappers = [];
+let lastSandbox = null;
 
 function normalizeLanguage(language) {
   const lower = String(language || "").toLowerCase();
@@ -609,6 +631,41 @@ function renderWrapperStatus(wrappers = lastWrappers) {
   wrapperStatusEl.textContent = `${t("wrappersLabel")}: ${lastWrappers
     .map((wrapper) => `${wrapper.label || wrapper.name} ${wrapper.available ? t("availableLabel") : t("missingLabel")}`)
     .join(" · ")}`;
+}
+
+function renderSandboxStatus(status = lastSandbox) {
+  lastSandbox = status;
+  if (!status) {
+    sandboxStatusEl.textContent = t("sandboxStatusEmpty");
+    sandboxLogsEl.textContent = t("sandboxLogsEmpty");
+    return;
+  }
+
+  const readiness =
+    status.sandboxMode === "host"
+      ? status.workspaceReadable
+      : status.dockerAvailable && status.imageReady && status.workspaceReadable;
+  const parts = [
+    `${status.sandboxMode} · ${readiness ? t("sandboxReadyLabel") : t("sandboxNotReadyLabel")}`,
+    `image=${status.image}`,
+    `workspace=${status.workspace}`,
+    `package=${status.packageInstallPolicy}`,
+    `docker=${status.dockerAvailable ? t("availableLabel") : t("missingLabel")}`,
+    `imageReady=${status.imageReady}`,
+  ];
+  sandboxStatusEl.textContent = parts.join(" · ");
+  renderSandboxLogs(status.logs || []);
+}
+
+function renderSandboxLogs(logs) {
+  if (!logs || logs.length === 0) {
+    sandboxLogsEl.textContent = t("sandboxLogsEmpty");
+    return;
+  }
+  sandboxLogsEl.textContent = logs
+    .slice(-12)
+    .map((entry) => `[${entry.at}] ${entry.type}\n${JSON.stringify(entry.data || {}, null, 2)}`)
+    .join("\n\n");
 }
 
 function updateRoutingHint() {
@@ -648,6 +705,7 @@ function applyLanguage(language, { persist = true } = {}) {
 
   renderKeyStatus();
   renderWrapperStatus();
+  renderSandboxStatus();
   updateRoutingHint();
   renderSessions(lastSessions);
   renderChat(lastChatEntries);
@@ -664,10 +722,12 @@ function formPayload() {
     allowedDomains: document.querySelector("#allowedDomains").value.trim(),
     commandCwd: document.querySelector("#commandCwd").value.trim(),
     maxSteps: Number(document.querySelector("#maxSteps").value) || 15,
+    sandboxMode: sandboxModeField.value,
+    packageInstallPolicy: packageInstallPolicyField.value,
     headless: document.querySelector("#headless").checked,
     allowShellTool: document.querySelector("#allowShellTool").checked,
     allowWrapperTools: document.querySelector("#allowWrapperTools").checked,
-    useDockerSandbox: document.querySelector("#useDockerSandbox").checked,
+    useDockerSandbox: sandboxModeField.value !== "host",
     dockerSandboxImage: document.querySelector("#dockerSandboxImage").value.trim(),
     allowPasswords: document.querySelector("#allowPasswords").checked,
     allowDestructive: document.querySelector("#allowDestructive").checked,
@@ -786,6 +846,40 @@ async function savePreferences() {
   });
 }
 
+async function refreshSandboxStatus() {
+  await savePreferences();
+  sandboxStatusEl.textContent = "Checking sandbox...";
+  const response = await fetch("/api/sandbox/status");
+  const data = await response.json();
+  if (!response.ok) {
+    sandboxStatusEl.textContent = data.error || "Sandbox status failed.";
+    return;
+  }
+  renderSandboxStatus(data.status);
+}
+
+async function runSandboxPreflight() {
+  await savePreferences();
+  sandboxStatusEl.textContent = "Running preflight...";
+  const response = await fetch("/api/sandbox/preflight", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...formPayload(), buildImage: true }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    sandboxStatusEl.textContent = data.error || "Sandbox preflight failed.";
+    return;
+  }
+  renderSandboxStatus(data.status);
+  const checkLines = (data.checks || [])
+    .map((check) => `${check.ok ? "OK" : "FAIL"} ${check.command}: ${check.stdout || check.stderr || check.error || ""}`)
+    .join("\n");
+  sandboxLogsEl.textContent = [checkLines, JSON.stringify({ manifests: data.manifests || [] }, null, 2)]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function schedulePreferenceSave() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
@@ -800,6 +894,18 @@ languageField.addEventListener("change", () => {
 routingModeField.addEventListener("change", () => {
   updateRoutingHint();
   schedulePreferenceSave();
+});
+
+checkSandboxButton.addEventListener("click", () => {
+  refreshSandboxStatus().catch((error) => {
+    sandboxStatusEl.textContent = String(error);
+  });
+});
+
+preflightSandboxButton.addEventListener("click", () => {
+  runSandboxPreflight().catch((error) => {
+    sandboxStatusEl.textContent = String(error);
+  });
 });
 
 providerField.addEventListener("change", () => {
@@ -925,15 +1031,17 @@ async function loadConfig() {
   document.querySelector("#commandCwd").value = prefs.commandCwd || "/home/lachlan/ProjectsLFS/Agent";
   document.querySelector("#headless").checked = prefs.headless ?? data.defaults.headless;
   document.querySelector("#maxSteps").value = prefs.maxSteps ?? data.defaults.maxSteps;
+  sandboxModeField.value = prefs.sandboxMode || (prefs.useDockerSandbox ? "docker-readonly" : "host");
+  packageInstallPolicyField.value = prefs.packageInstallPolicy || "prompt";
   document.querySelector("#allowShellTool").checked = prefs.allowShellTool ?? true;
   document.querySelector("#allowWrapperTools").checked = prefs.allowWrapperTools ?? false;
-  document.querySelector("#useDockerSandbox").checked = prefs.useDockerSandbox ?? false;
   document.querySelector("#dockerSandboxImage").value = prefs.dockerSandboxImage || "agintiflow-sandbox:latest";
   document.querySelector("#allowPasswords").checked = prefs.allowPasswords ?? false;
   document.querySelector("#allowDestructive").checked = prefs.allowDestructive ?? false;
 
   renderKeyStatus(data.keyStatus);
   renderWrapperStatus(data.wrappers || []);
+  renderSandboxLogs(data.sandbox?.logs || []);
   updateRoutingHint();
 
   renderSessions(data.sessions || []);

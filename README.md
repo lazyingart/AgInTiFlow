@@ -55,6 +55,8 @@ Use the dedicated CLI entrypoint:
 npx aginti-cli --routing smart --allow-shell "List this folder"
 npx aginti-cli --list-routes
 npx aginti-cli --list-wrappers
+npx aginti-cli --sandbox-status --sandbox-mode docker-readonly --cwd /home/lachlan/ProjectsLFS/Agent/AgInTiFlow
+npx aginti-cli --sandbox-preflight --sandbox-mode docker-readonly --cwd /home/lachlan/ProjectsLFS/Agent/AgInTiFlow
 ```
 
 Start from a URL:
@@ -78,7 +80,8 @@ The web app includes:
 - Language dropdown with 11 persisted UI locales.
 - Editable model field, with DeepSeek v4 flash as the fast default and DeepSeek v4 pro as the complex route.
 - Goal, start URL, allowed domains, working directory, and max-step controls.
-- Toggleable shell tool, agent wrappers, Docker sandbox, headless browser, password typing, and destructive actions.
+- Sandbox mode, Docker image/status, package-install approval state, and recent sandbox logs.
+- Toggleable shell tool, agent wrappers, headless browser, password typing, and destructive actions.
 - Live run logs above a persistent conversation panel.
 
 `Start URL` is only a suggestion. The browser opens only when the model chooses a browser tool.
@@ -90,8 +93,12 @@ AgInTiFlow is intentionally conservative:
 - Password typing is blocked unless explicitly enabled.
 - Destructive browser actions are blocked unless explicitly enabled.
 - Shell commands are disabled unless the shell tool is enabled.
-- Guarded shell mode only allows a small set of common inspection commands.
-- Docker sandbox mode runs shell commands in a local container with no network.
+- Guarded shell mode only allows inspection, test/build checks, and approved setup commands.
+- Docker read-only mode mounts the workspace read-only and disables container network access.
+- Docker workspace-write mode is required for approved package or environment setup.
+- Package installs default to `prompt`, so npm/pip/conda/venv setup is blocked until explicitly approved.
+- NPM publishing, npm token commands, sudo, destructive git actions, curl/wget, and shell chaining are blocked.
+- NPM tokens and API keys are redacted from tool logs and API responses.
 - Every tool request and result is written to structured logs.
 
 ## Configuration
@@ -105,7 +112,9 @@ MAX_STEPS=15
 HEADLESS=true
 ALLOWED_DOMAINS=news.ycombinator.com,github.com
 ALLOW_SHELL_TOOL=false
-USE_DOCKER_SANDBOX=false
+SANDBOX_MODE=docker-readonly
+PACKAGE_INSTALL_POLICY=prompt
+USE_DOCKER_SANDBOX=true
 DOCKER_SANDBOX_IMAGE=agintiflow-sandbox:latest
 COMMAND_CWD=/home/lachlan/ProjectsLFS/Agent
 ```
@@ -157,6 +166,33 @@ DOCKER_TARGET_USER=lachlan ./scripts/install-docker-ubuntu.sh
 ```
 
 Open a new login shell, or run `newgrp docker`, before testing non-root Docker access.
+
+## Sandbox Modes
+
+| Mode | Workspace mount | Network | Intended use |
+| --- | --- | --- | --- |
+| `host` | local process | host network | legacy read-only inspection only |
+| `docker-readonly` | read-only `/workspace` | none | default safe coding inspection and tests |
+| `docker-workspace` | writable `/workspace` | none by default, enabled only for approved package installs | environment setup inside the mounted project |
+
+Package policy values:
+
+| Policy | Behavior |
+| --- | --- |
+| `block` | Always block npm/pip/conda/venv setup. |
+| `prompt` | Return a clear approval-required error; the UI can switch to approved. |
+| `allow` | Permit allowlisted setup commands only in `docker-workspace`. |
+
+Safe preflight endpoints:
+
+```bash
+curl http://127.0.0.1:3210/api/sandbox/status
+curl -X POST http://127.0.0.1:3210/api/sandbox/preflight \
+  -H 'Content-Type: application/json' \
+  -d '{"sandboxMode":"docker-readonly","buildImage":true}'
+```
+
+These endpoints report Docker/image/workspace readiness and recent sandbox logs without returning API keys or npm tokens.
 
 ## Runtime Artifacts
 

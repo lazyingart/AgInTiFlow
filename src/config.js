@@ -1,6 +1,7 @@
 import path from "node:path";
 import crypto from "node:crypto";
 import { getProviderDefaults, normalizeRoutingMode, selectModelRoute } from "./model-routing.js";
+import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
 
 function parseBoolean(value, fallback) {
   if (value === undefined) return fallback;
@@ -36,6 +37,10 @@ export function resolveRuntimeConfig(args, overrides = {}) {
 
   const defaults = getProviderDefaults(route.provider);
   const baseDir = path.resolve(overrides.baseDir || process.cwd());
+  const dockerRequested = parseBoolean(overrides.useDockerSandbox ?? args.useDockerSandbox ?? process.env.USE_DOCKER_SANDBOX, false);
+  const requestedSandboxMode =
+    overrides.sandboxMode || args.sandboxMode || process.env.SANDBOX_MODE || (dockerRequested ? "docker-readonly" : "host");
+  const sandboxMode = normalizeSandboxMode(requestedSandboxMode);
 
   return {
     ...defaults,
@@ -66,7 +71,11 @@ export function resolveRuntimeConfig(args, overrides = {}) {
       false
     ),
     wrapperTimeoutMs: parseNumber(overrides.wrapperTimeoutMs ?? process.env.WRAPPER_TIMEOUT_MS, 120000),
-    useDockerSandbox: parseBoolean(overrides.useDockerSandbox ?? args.useDockerSandbox ?? process.env.USE_DOCKER_SANDBOX, false),
+    sandboxMode,
+    packageInstallPolicy: normalizePackageInstallPolicy(
+      overrides.packageInstallPolicy || args.packageInstallPolicy || process.env.PACKAGE_INSTALL_POLICY || "prompt"
+    ),
+    useDockerSandbox: sandboxMode !== "host" || dockerRequested,
     dockerSandboxImage: overrides.dockerSandboxImage || process.env.DOCKER_SANDBOX_IMAGE || "agintiflow-sandbox:latest",
     commandCwd: path.resolve(overrides.commandCwd || args.commandCwd || process.env.COMMAND_CWD || process.cwd()),
     sessionsDir: path.resolve(baseDir, ".sessions"),

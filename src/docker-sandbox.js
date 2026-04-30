@@ -1,11 +1,25 @@
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
+import { evaluateCommandPolicy, normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
+import { redactSensitiveText, redactValue } from "./redaction.js";
 
 const execFile = promisify(execFileCallback);
 const DOCKER_WORKSPACE = "/workspace";
 const READY_IMAGES = new Set();
+const SANDBOX_LOG_LIMIT = 80;
+const sandboxLogs = [];
+
+function recordSandboxLog(type, data = {}) {
+  sandboxLogs.push({
+    at: new Date().toISOString(),
+    type,
+    data: redactValue(data),
+  });
+  while (sandboxLogs.length > SANDBOX_LOG_LIMIT) sandboxLogs.shift();
+}
 
 function shellEscape(value) {
   return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
@@ -16,34 +30,107 @@ function buildDockerInvocation(args) {
 }
 
 async function execDocker(args, options = {}) {
-  return execFile("sg", ["docker", "-c", buildDockerInvocation(args)], {
+  const execOptions = {
     timeout: options.timeout ?? 30000,
     maxBuffer: options.maxBuffer ?? 200 * 1024,
-  });
+  };
+  recordSandboxLog("docker.command", { args });
+
+  try {
+    const result = await execFile("docker", args, execOptions);
+    return {
+      stdout: redactSensitiveText(result.stdout),
+      stderr: redactSensitiveText(result.stderr),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/permission denied|Got permission denied|connect: permission denied/i.test(message)) {
+      throw error;
+    }
+
+    const result = await execFile("sg", ["docker", "-c", buildDockerInvocation(args)], execOptions);
+    return {
+      stdout: redactSensitiveText(result.stdout),
+      stderr: redactSensitiveText(result.stderr),
+    };
+  }
 }
 
-export async function ensureDockerSandboxReady(config, observers) {
-  const image = config.dockerSandboxImage;
-  if (!config.useDockerSandbox || READY_IMAGES.has(image)) return;
+async function dockerAvailable() {
+  try {
+    await execDocker(["version", "--format", "{{.Server.Version}}"], { timeout: 8000, maxBuffer: 16 * 1024 });
+    return true;
+  } catch (error) {
+    recordSandboxLog("docker.unavailable", { error: error instanceof Error ? error.message : String(error) });
+    return false;
+  }
+}
 
-  const dockerfilePath = path.join(config.baseDir, "docker", "sandbox.Dockerfile");
-  await fs.access(dockerfilePath).catch(() => {
-    throw new Error(`Docker sandbox file is missing: ${dockerfilePath}`);
-  });
-
+async function dockerImageExists(image) {
   try {
     await execDocker(["image", "inspect", image], {
       timeout: 10000,
       maxBuffer: 100 * 1024,
     });
     READY_IMAGES.add(image);
-    return;
+    return true;
   } catch {
-    observers?.log?.("docker.building", {
-      image,
-      dockerfilePath,
-    });
+    READY_IMAGES.delete(image);
+    return false;
   }
+}
+
+async function pathAccess(targetPath, mode) {
+  try {
+    await fs.access(targetPath, mode);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function getSandboxLogs(limit = 30) {
+  return sandboxLogs.slice(-limit);
+}
+
+export async function getDockerSandboxStatus(config) {
+  const image = config.dockerSandboxImage;
+  const dockerfilePath = path.join(config.baseDir, "docker", "sandbox.Dockerfile");
+  const workspace = config.commandCwd;
+  const [dockerReady, dockerfileExists, workspaceExists, workspaceReadable, workspaceWritable] = await Promise.all([
+    dockerAvailable(),
+    pathAccess(dockerfilePath, fsConstants.R_OK),
+    pathAccess(workspace, fsConstants.F_OK),
+    pathAccess(workspace, fsConstants.R_OK),
+    pathAccess(workspace, fsConstants.W_OK),
+  ]);
+
+  const imageReady = dockerReady ? await dockerImageExists(image) : false;
+  return {
+    sandboxMode: normalizeSandboxMode(config.sandboxMode),
+    useDockerSandbox: Boolean(config.useDockerSandbox),
+    packageInstallPolicy: normalizePackageInstallPolicy(config.packageInstallPolicy),
+    image,
+    dockerfilePath,
+    dockerAvailable: dockerReady,
+    imageReady,
+    workspace,
+    workspaceExists,
+    workspaceReadable,
+    workspaceWritable,
+    dockerfileExists,
+    logs: getSandboxLogs(),
+  };
+}
+
+async function buildDockerSandboxImage(config, observers) {
+  const image = config.dockerSandboxImage;
+  const dockerfilePath = path.join(config.baseDir, "docker", "sandbox.Dockerfile");
+  observers?.log?.("docker.building", {
+    image,
+    dockerfilePath,
+  });
+  recordSandboxLog("docker.building", { image, dockerfilePath });
 
   await execDocker(["build", "-t", image, "-f", dockerfilePath, config.baseDir], {
     timeout: 10 * 60 * 1000,
@@ -52,46 +139,171 @@ export async function ensureDockerSandboxReady(config, observers) {
 
   READY_IMAGES.add(image);
   observers?.event?.("docker.ready", { image });
+  recordSandboxLog("docker.ready", { image });
 }
 
-export async function runDockerSandboxCommand(command, config) {
+export async function ensureDockerSandboxReady(config, observers, options = {}) {
+  const image = config.dockerSandboxImage;
+  if (!config.useDockerSandbox || (READY_IMAGES.has(image) && !options.forceBuild)) return;
+
+  const dockerfilePath = path.join(config.baseDir, "docker", "sandbox.Dockerfile");
+  await fs.access(dockerfilePath).catch(() => {
+    throw new Error(`Docker sandbox file is missing: ${dockerfilePath}`);
+  });
+
+  if (!options.forceBuild && (await dockerImageExists(image))) return;
+
+  await buildDockerSandboxImage(config, observers);
+}
+
+function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, config)) {
   const uid = typeof process.getuid === "function" ? String(process.getuid()) : "";
   const gid = typeof process.getgid === "function" ? String(process.getgid()) : "";
   const userArgs = uid && gid ? ["--user", `${uid}:${gid}`] : [];
-  const result = await execDocker(
-    [
-      "run",
-      "--rm",
-      "--network",
-      "none",
-      "--cap-drop",
-      "ALL",
-      "--security-opt",
-      "no-new-privileges",
-      "--pids-limit",
-      "256",
-      "--memory",
-      "512m",
-      "--cpus",
-      "1.0",
-      ...userArgs,
-      "-v",
-      `${config.commandCwd}:${DOCKER_WORKSPACE}`,
-      "-w",
-      DOCKER_WORKSPACE,
-      config.dockerSandboxImage,
-      "bash",
-      "-lc",
-      String(command),
-    ],
-    {
-      timeout: 10000,
-      maxBuffer: 200 * 1024,
-    }
-  );
+  const sandboxMode = normalizeSandboxMode(config.sandboxMode);
+  const mountMode = sandboxMode === "docker-workspace" ? "rw" : "ro";
+  const networkMode = policy.needsNetwork ? "bridge" : "none";
+  const readOnlyArgs =
+    mountMode === "ro"
+      ? ["--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m"]
+      : ["--tmpfs", "/tmp:rw,nosuid,nodev,size=256m"];
 
-  return {
-    stdout: result.stdout.trim().slice(0, 8000),
-    stderr: result.stderr.trim().slice(0, 4000),
+  return [
+    "run",
+    "--rm",
+    "--network",
+    networkMode,
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--pids-limit",
+    "256",
+    "--memory",
+    "768m",
+    "--cpus",
+    "1.5",
+    ...readOnlyArgs,
+    ...userArgs,
+    "-e",
+    "HOME=/tmp",
+    "-e",
+    "NPM_CONFIG_USERCONFIG=/tmp/.npmrc",
+    "-e",
+    "PIP_DISABLE_PIP_VERSION_CHECK=1",
+    "-v",
+    `${config.commandCwd}:${DOCKER_WORKSPACE}:${mountMode}`,
+    "-w",
+    DOCKER_WORKSPACE,
+    config.dockerSandboxImage,
+    "bash",
+    "-lc",
+    String(command),
+  ];
+}
+
+export async function runDockerSandboxCommand(command, config, policy = evaluateCommandPolicy(command, config)) {
+  const result = await execDocker(dockerRunArgs(command, config, policy), {
+    timeout: policy.needsNetwork ? 120000 : 15000,
+    maxBuffer: 300 * 1024,
+  });
+
+  const payload = {
+    stdout: result.stdout.trim().slice(0, 12000),
+    stderr: result.stderr.trim().slice(0, 6000),
   };
+  recordSandboxLog("sandbox.command.completed", {
+    command,
+    category: policy.category,
+    sandboxMode: policy.sandboxMode,
+    network: policy.needsNetwork ? "bridge" : "none",
+    stdout: payload.stdout.slice(0, 1200),
+    stderr: payload.stderr.slice(0, 1200),
+  });
+  return payload;
+}
+
+async function detectWorkspaceManifests(workspace) {
+  const candidates = ["package.json", "package-lock.json", "requirements.txt", "pyproject.toml", "environment.yml"];
+  const manifests = [];
+  for (const candidate of candidates) {
+    if (await pathAccess(path.join(workspace, candidate), fsConstants.R_OK)) manifests.push(candidate);
+  }
+  return manifests;
+}
+
+export async function runDockerPreflight(config, options = {}) {
+  const buildImage = Boolean(options.buildImage);
+  const statusBefore = await getDockerSandboxStatus(config);
+  const manifests = await detectWorkspaceManifests(config.commandCwd);
+  let checks = [];
+
+  if (buildImage && statusBefore.dockerAvailable && statusBefore.dockerfileExists && !statusBefore.imageReady) {
+    await ensureDockerSandboxReady(config, {
+      log: (message, data) => recordSandboxLog(message, data),
+      event: (type, data) => recordSandboxLog(type, data),
+    });
+  }
+
+  let status = await getDockerSandboxStatus(config);
+  const runChecks = async () => {
+    const results = [];
+    for (const command of [
+      "node -v",
+      "npm -v",
+      "python3 --version",
+      "python3 -m pip --version",
+      "git --version",
+      "rg --version",
+    ]) {
+      try {
+        const result = await execDocker(dockerRunArgs(command, config, { needsNetwork: false, category: "preflight" }), {
+          timeout: 15000,
+          maxBuffer: 100 * 1024,
+        });
+        results.push({ command, ok: true, stdout: result.stdout.trim(), stderr: result.stderr.trim() });
+      } catch (error) {
+        results.push({
+          command,
+          ok: false,
+          error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+        });
+      }
+    }
+    return results;
+  };
+
+  if (status.imageReady) {
+    checks = await runChecks();
+    if (buildImage && checks.some((check) => !check.ok)) {
+      recordSandboxLog("docker.rebuilding-stale-image", {
+        image: config.dockerSandboxImage,
+        failedChecks: checks.filter((check) => !check.ok).map((check) => check.command),
+      });
+      await ensureDockerSandboxReady(
+        config,
+        {
+          log: (message, data) => recordSandboxLog(message, data),
+          event: (type, data) => recordSandboxLog(type, data),
+        },
+        { forceBuild: true }
+      );
+      status = await getDockerSandboxStatus(config);
+      checks = await runChecks();
+    }
+  }
+
+  const result = {
+    ok: Boolean(status.dockerAvailable && status.workspaceReadable && status.dockerfileExists && status.imageReady),
+    status,
+    manifests,
+    checks,
+    logs: getSandboxLogs(),
+  };
+  recordSandboxLog("sandbox.preflight.completed", {
+    ok: result.ok,
+    manifests,
+    checks: checks.map((check) => ({ command: check.command, ok: check.ok })),
+  });
+  return result;
 }

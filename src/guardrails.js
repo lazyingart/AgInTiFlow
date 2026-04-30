@@ -1,3 +1,5 @@
+import { evaluateCommandPolicy } from "./command-policy.js";
+
 const DESTRUCTIVE_KEYWORDS = [
   "delete",
   "remove",
@@ -10,58 +12,6 @@ const DESTRUCTIVE_KEYWORDS = [
   "sign out",
   "log out",
   "logout",
-];
-
-const SAFE_COMMAND_PATTERNS = [
-  /^pwd$/,
-  /^date$/,
-  /^whoami$/,
-  /^uname(?:\s+-a)?$/,
-  /^ls(?:\s+[-\w./~*]+)*$/,
-  /^find(?:\s+[./~\w-]+)*(?:\s+-maxdepth\s+\d+)?(?:\s+-type\s+[fd])?$/,
-  /^rg(?:\s+.+)?$/,
-  /^cat(?:\s+[-\w./~*]+)+$/,
-  /^head(?:\s+.+)?$/,
-  /^tail(?:\s+.+)?$/,
-  /^wc(?:\s+.+)?$/,
-  /^sed\s+-n\s+['"0-9,:p\s-]+\s+[-\w./~*]+$/,
-  /^git\s+(status|branch|log|diff(?:\s+--stat)?|remote\s+-v)$/,
-  /^node\s+-v$/,
-  /^npm\s+-v$/,
-  /^python(?:3)?\s+--version$/,
-  /^echo(?:\s+.+)?$/,
-];
-
-const DISALLOWED_COMMAND_PARTS = [
-  "&&",
-  "||",
-  ";",
-  "|",
-  ">",
-  "<",
-  "$(",
-  "`",
-  "sudo ",
-  " rm",
-  " mv",
-  " cp",
-  " chmod",
-  " chown",
-  " mkdir",
-  " rmdir",
-  " touch",
-  " tee",
-  "-delete",
-  "git add",
-  "git commit",
-  "git push",
-  "git pull",
-  "git checkout",
-  "git switch",
-  "git reset",
-  "git clean",
-  "curl ",
-  "wget ",
 ];
 
 const KNOWN_WRAPPERS = new Set(["codex", "claude", "gemini", "copilot", "qwen"]);
@@ -138,29 +88,8 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
   }
 
   if (toolName === "run_command") {
-    if (!config.allowShellTool) {
-      return { allowed: false, reason: "Shell tool is disabled for this run." };
-    }
-
     const command = String(args.command || "").trim();
-    const lowered = ` ${command.toLowerCase()} `;
-
-    if (DISALLOWED_COMMAND_PARTS.some((part) => lowered.includes(part))) {
-      return {
-        allowed: false,
-        reason: `Command contains blocked shell syntax or a write-capable token: ${command}`,
-      };
-    }
-
-    const allowed = SAFE_COMMAND_PATTERNS.some((pattern) => pattern.test(command));
-    if (!allowed) {
-      return {
-        allowed: false,
-        reason: `Command is outside the read-only allowlist: ${command}`,
-      };
-    }
-
-    return { allowed: true };
+    return evaluateCommandPolicy(command, config);
   }
 
   if (toolName === "delegate_agent") {

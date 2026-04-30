@@ -2,6 +2,7 @@ import { runAgent } from "./agent-runner.js";
 import { loadConfig } from "./config.js";
 import { listAgentWrappers } from "./tool-wrappers.js";
 import { getModelPresets } from "./model-routing.js";
+import { getDockerSandboxStatus, runDockerPreflight } from "./docker-sandbox.js";
 
 function readOption(argv, index) {
   const value = argv[index + 1];
@@ -19,6 +20,8 @@ export function parseArgs(argv) {
     model: "",
     routingMode: "",
     commandCwd: "",
+    sandboxMode: "",
+    packageInstallPolicy: "",
     allowShellTool: undefined,
     allowWrapperTools: undefined,
     useDockerSandbox: undefined,
@@ -26,6 +29,8 @@ export function parseArgs(argv) {
     maxSteps: undefined,
     listRoutes: false,
     listWrappers: false,
+    sandboxStatus: false,
+    sandboxPreflight: false,
   };
 
   const parts = [];
@@ -66,6 +71,21 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "--sandbox-mode") {
+      result.sandboxMode = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--package-install-policy") {
+      result.packageInstallPolicy = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--approve-package-installs") {
+      result.packageInstallPolicy = "allow";
+      result.sandboxMode = result.sandboxMode || "docker-workspace";
+      continue;
+    }
     if (arg === "--max-steps") {
       result.maxSteps = Number(readOption(argv, i));
       i += 1;
@@ -81,6 +101,7 @@ export function parseArgs(argv) {
     }
     if (arg === "--docker-sandbox") {
       result.useDockerSandbox = true;
+      result.sandboxMode = result.sandboxMode || "docker-readonly";
       continue;
     }
     if (arg === "--headless") {
@@ -93,6 +114,16 @@ export function parseArgs(argv) {
     }
     if (arg === "--list-wrappers") {
       result.listWrappers = true;
+      continue;
+    }
+    if (arg === "--sandbox-status") {
+      result.sandboxStatus = true;
+      continue;
+    }
+    if (arg === "--sandbox-preflight") {
+      result.sandboxPreflight = true;
+      result.useDockerSandbox = true;
+      result.sandboxMode = result.sandboxMode || "docker-readonly";
       continue;
     }
     parts.push(arg);
@@ -129,9 +160,18 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
 
+  if (args.sandboxStatus || args.sandboxPreflight) {
+    const config = loadConfig({ ...args, goal: args.goal || "sandbox preflight" });
+    const result = args.sandboxPreflight
+      ? await runDockerPreflight(config, { buildImage: true })
+      : { ok: true, status: await getDockerSandboxStatus(config) };
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   if (!args.goal && !args.resume) {
     console.error(
-      'Usage: aginti-cli [--routing smart|fast|complex|manual] [--provider deepseek|openai] [--model model] [--allow-shell] [--allow-wrappers] [--start-url https://example.com] [--resume session-id] "your task"'
+      'Usage: aginti-cli [--routing smart|fast|complex|manual] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--allow-shell] [--allow-wrappers] [--sandbox-status|--sandbox-preflight] "your task"'
     );
     process.exit(1);
   }

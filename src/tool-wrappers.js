@@ -1,6 +1,7 @@
 import { execFile as execFileCallback, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { getModelPresets } from "./model-routing.js";
+import { redactSensitiveText } from "./redaction.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -22,7 +23,7 @@ function commandExists(command) {
 }
 
 function cleanOutput(value, limit) {
-  return String(value || "").trim().slice(0, limit);
+  return redactSensitiveText(value).trim().slice(0, limit);
 }
 
 function buildPrompt(prompt) {
@@ -175,8 +176,8 @@ export async function runAgentWrapper({ wrapper, prompt }, config) {
         return {
           ok: false,
           wrapper,
-          error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
-          primaryError: error instanceof Error ? error.message : String(error),
+          error: redactSensitiveText(fallbackError instanceof Error ? fallbackError.message : String(fallbackError)),
+          primaryError: redactSensitiveText(error instanceof Error ? error.message : String(error)),
         };
       }
     }
@@ -184,7 +185,7 @@ export async function runAgentWrapper({ wrapper, prompt }, config) {
     return {
       ok: false,
       wrapper,
-      error: error instanceof Error ? error.message : String(error),
+      error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
       stdout: cleanOutput(error.stdout, 8000),
       stderr: cleanOutput(error.stderr, 4000),
     };

@@ -24,7 +24,9 @@ export async function createPlan(client, config, state) {
           `Goal: ${state.goal}`,
           state.startUrl ? `Suggested start URL: ${state.startUrl}` : "",
           config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
-          config.allowShellTool ? `Shell tool is enabled for short read-only inspection commands in ${config.commandCwd}.` : "",
+          config.allowShellTool
+            ? `Shell tool is enabled in ${config.commandCwd}. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}. For npm/pip/conda/venv setup, explain the need and wait for approval unless policy is allow.`
+            : "",
           config.allowWrapperTools ? `Agent wrappers are enabled: ${wrapperStatusText()}.` : "",
           "Return a numbered plan only.",
         ]
@@ -166,7 +168,7 @@ export async function requestNextStep(client, config, messages) {
       function: {
         name: "run_command",
         description:
-          "Run a short read-only terminal command in the configured working directory. Good for pwd, ls, rg, cat, git status, date, or version checks.",
+          "Run an allowlisted terminal command in the configured working directory. Good for inspection, tests, and approved Docker package/environment setup. NPM publishing, tokens, sudo, arbitrary network commands, and destructive git/file actions are blocked.",
         parameters: {
           type: "object",
           properties: {

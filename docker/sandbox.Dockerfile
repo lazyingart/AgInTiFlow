@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   grep \
   npm \
   nodejs \
+  python3-pip \
+  python3-venv \
   python3 \
   ripgrep \
   sed \

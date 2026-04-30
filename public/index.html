@@ -97,11 +97,29 @@
             </label>
           </div>
 
+          <div class="grid">
+            <label>
+              <span data-i18n="sandboxModeLabel">Sandbox mode</span>
+              <select id="sandboxMode" name="sandboxMode">
+                <option value="host" data-i18n="sandboxHostOption">Host read-only</option>
+                <option value="docker-readonly" data-i18n="sandboxDockerReadonlyOption">Docker read-only</option>
+                <option value="docker-workspace" data-i18n="sandboxDockerWorkspaceOption">Docker workspace-write</option>
+              </select>
+            </label>
+            <label>
+              <span data-i18n="packagePolicyLabel">Package installs</span>
+              <select id="packageInstallPolicy" name="packageInstallPolicy">
+                <option value="block" data-i18n="packageBlockOption">Blocked</option>
+                <option value="prompt" data-i18n="packagePromptOption">Require approval</option>
+                <option value="allow" data-i18n="packageAllowOption">Approved in Docker</option>
+              </select>
+            </label>
+          </div>
+
           <div class="checks">
             <label><input id="headless" name="headless" type="checkbox" checked /> <span data-i18n="headlessLabel">Headless browser</span></label>
             <label><input id="allowShellTool" name="allowShellTool" type="checkbox" checked /> <span data-i18n="shellToolLabel">Enable shell tool</span></label>
             <label><input id="allowWrapperTools" name="allowWrapperTools" type="checkbox" /> <span data-i18n="wrapperToolLabel">Enable agent wrappers</span></label>
-            <label><input id="useDockerSandbox" name="useDockerSandbox" type="checkbox" /> <span data-i18n="dockerSandboxLabel">Use Docker sandbox</span></label>
             <label><input id="allowPasswords" name="allowPasswords" type="checkbox" /> <span data-i18n="allowPasswordsLabel">Allow password typing</span></label>
             <label><input id="allowDestructive" name="allowDestructive" type="checkbox" /> <span data-i18n="allowDestructiveLabel">Allow destructive actions</span></label>
           </div>
@@ -123,6 +141,20 @@
             <span id="key-status" class="subtle"></span>
           </div>
           <p id="wrapper-status" class="subtle wrapper-status"></p>
+
+          <section class="sandbox-card">
+            <div class="header-row">
+              <div>
+                <h2 data-i18n="sandboxStatusTitle">Sandbox status</h2>
+                <p id="sandbox-status" class="subtle route-hint" data-i18n="sandboxStatusEmpty">Not checked yet.</p>
+              </div>
+              <div class="sandbox-actions">
+                <button id="check-sandbox" type="button" class="secondary" data-i18n="checkSandboxButton">Check</button>
+                <button id="preflight-sandbox" type="button" class="secondary" data-i18n="preflightSandboxButton">Preflight</button>
+              </div>
+            </div>
+            <pre id="sandbox-logs" class="sandbox-logs" data-i18n="sandboxLogsEmpty">No sandbox logs yet.</pre>
+          </section>
         </form>
       </section>
 

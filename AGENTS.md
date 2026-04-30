@@ -11,6 +11,8 @@
 - `npm start -- "your task"`: run the CLI agent.
 - `npx aginti-cli --list-routes`: inspect routing presets.
 - `npx aginti-cli --list-wrappers`: inspect installed wrapper availability.
+- `npx aginti-cli --sandbox-status --sandbox-mode docker-readonly`: inspect Docker sandbox readiness.
+- `npx aginti-cli --sandbox-preflight --sandbox-mode docker-readonly`: run safe Docker dependency checks.
 - `npm run web`: start the local web UI on `http://127.0.0.1:3210`.
 - `npm run check`: run syntax checks for `run.js`, `web.js`, and all files in `src/`.
 
@@ -35,4 +37,4 @@ Commit messages in this repo currently follow short imperative style, for exampl
 
 ## Security & Configuration Tips
 
-Never hard-code API keys. Use environment variables like `OPENAI_API_KEY` and `DEEPSEEK_API_KEY`. Do not expose provider defaults that include API keys through web APIs. Keep wrapper tools advisory and opt-in; do not remove read-only/planning defaults without documenting the risk. Do not weaken guardrails in `src/guardrails.js` without documenting why. Do not commit `.sessions/` artifacts.
+Never hard-code API keys. Use environment variables like `OPENAI_API_KEY` and `DEEPSEEK_API_KEY`. Do not expose provider defaults that include API keys through web APIs. Keep wrapper tools advisory and opt-in; do not remove read-only/planning defaults without documenting the risk. Keep npm publish and token commands blocked. Package installs or venv/conda/npm setup must require the package policy and Docker workspace-write mode. Do not weaken guardrails in `src/guardrails.js` or `src/command-policy.js` without documenting why. Do not commit `.sessions/` artifacts.
