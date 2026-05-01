@@ -272,7 +272,10 @@ function printWrapped(prefix, text, { stripCode = "" } = {}) {
 }
 
 function printAgentMessage(text) {
-  printWrapped(rolePrefix("aginti>", ansi.agentBg), text, { stripCode: ansi.agentBg });
+  console.log(rolePrefix("aginti>", ansi.agentBg).trimEnd());
+  const rendered = stripMarkdown(text);
+  const lines = rendered.split("\n");
+  for (const line of lines) console.log(line);
 }
 
 function printSystemLine(text) {
@@ -546,18 +549,47 @@ function clearRenderedPrompt(previous) {
   }
 }
 
-function renderPromptBuffer(buffer, cursor, previous = { lineCount: 0, cursorRow: 0 }) {
-  output.write(ansi.cursorHide);
-  clearRenderedPrompt(previous);
+function moveFromPromptCursorToTop(previous) {
+  if (!previous.lineCount) return;
+  const below = previous.lineCount - 1 - previous.cursorRow;
+  if (below > 0) output.write(`\x1b[${below}B`);
+  const up = previous.lineCount - 1;
+  if (up > 0) output.write(`\x1b[${up}A`);
+  output.write("\r");
+}
+
+function renderPromptBuffer(buffer, cursor, previous = { lineCount: 0, cursorRow: 0, renderedRows: [] }) {
   const layout = buildPromptLayout(buffer, cursor);
-  output.write(layout.renderedRows.join("\n"));
+  const sameShape = previous.lineCount === layout.renderedRows.length && previous.renderedRows?.length === layout.renderedRows.length;
+  const changedRows = sameShape
+    ? layout.renderedRows
+        .map((row, index) => (row === previous.renderedRows[index] ? -1 : index))
+        .filter((index) => index >= 0)
+    : layout.renderedRows.map((_row, index) => index);
+
+  if (!sameShape) {
+    output.write(ansi.cursorHide);
+    clearRenderedPrompt(previous);
+    output.write(layout.renderedRows.join("\n"));
+  } else if (changedRows.length > 0) {
+    output.write(ansi.cursorHide);
+    moveFromPromptCursorToTop(previous);
+    for (let index = 0; index < layout.renderedRows.length; index += 1) {
+      if (changedRows.includes(index)) output.write(`\r${layout.renderedRows[index]}`);
+      if (index < layout.renderedRows.length - 1) output.write("\x1b[1B\r");
+    }
+  } else {
+    moveFromPromptCursorToTop(previous);
+  }
+
   const below = layout.renderedRows.length - 1 - layout.cursorRow;
   if (below > 0) output.write(`\x1b[${below}A`);
   output.write(`\r\x1b[${layout.cursorColumn + 1}G`);
-  output.write(ansi.cursorShow);
+  if (!sameShape || changedRows.length > 0) output.write(ansi.cursorShow);
   return {
     lineCount: layout.renderedRows.length,
     cursorRow: layout.cursorRow,
+    renderedRows: layout.renderedRows,
   };
 }
 

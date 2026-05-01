@@ -111,6 +111,9 @@ try {
   if (!result.stdout.includes("status=running workingOn=") || !result.stdout.includes("status=idle session=")) {
     throw new Error("interactive chat did not print simple run status updates");
   }
+  if (!/aginti>\s+\|\r?\nMock run complete\./.test(result.stdout)) {
+    throw new Error("assistant response did not start on a fresh line after the aginti header");
+  }
 
   const latest = await runCli(["resume"], "/exit\n");
   if (!latest.stdout.includes("session=") || !latest.stdout.includes("Interactive agent chat")) {
@@ -122,7 +125,7 @@ try {
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["markdown-render", "prompt-layout", "aginti-md", "instructions-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest"],
+        checks: ["markdown-render", "prompt-layout", "agent-response-newline", "aginti-md", "instructions-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest"],
       },
       null,
       2
