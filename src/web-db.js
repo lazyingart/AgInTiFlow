@@ -3,7 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getModelPresets } from "./model-routing.js";
 
-const PREFERENCES_SCHEMA_VERSION = 2;
+const PREFERENCES_SCHEMA_VERSION = 3;
 
 function defaultPreferences(baseDir) {
   const presets = getModelPresets();
@@ -16,7 +16,7 @@ function defaultPreferences(baseDir) {
     maxSteps: 15,
     startUrl: "",
     allowedDomains: "",
-    commandCwd: path.resolve(baseDir, ".."),
+    commandCwd: path.resolve(baseDir),
     allowShellTool: true,
     allowFileTools: true,
     allowWrapperTools: false,
@@ -29,6 +29,7 @@ function defaultPreferences(baseDir) {
     allowPasswords: false,
     allowDestructive: false,
     language: "en",
+    taskProfile: "auto",
   };
 }
 
@@ -81,6 +82,9 @@ export class WebDatabase {
       };
       if ((parsed.preferencesSchemaVersion || 1) < PREFERENCES_SCHEMA_VERSION) {
         preferences.preferencesSchemaVersion = PREFERENCES_SCHEMA_VERSION;
+        if (!parsed.commandCwd || parsed.commandCwd === path.resolve(this.baseDir, "..")) {
+          preferences.commandCwd = path.resolve(this.baseDir);
+        }
         if (["host", "docker-readonly"].includes(parsed.sandboxMode || "")) {
           preferences.sandboxMode = "docker-workspace";
           preferences.useDockerSandbox = true;

@@ -3,10 +3,21 @@ import { loadConfig } from "./config.js";
 import { listAgentWrappers } from "./tool-wrappers.js";
 import { getModelPresets } from "./model-routing.js";
 import { getDockerSandboxStatus, runDockerPreflight } from "./docker-sandbox.js";
+import {
+  doctorReport,
+  initProject,
+  listProjectSessions,
+  providerKeyStatus,
+  setProviderKey,
+  showProjectSession,
+} from "./project.js";
+import { listTaskProfiles } from "./task-profiles.js";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
 
 function readOption(argv, index) {
   const value = argv[index + 1];
@@ -30,6 +41,7 @@ export function parseArgs(argv) {
     allowFileTools: undefined,
     allowWrapperTools: undefined,
     preferredWrapper: "",
+    taskProfile: "",
     useDockerSandbox: undefined,
     headless: undefined,
     maxSteps: undefined,
@@ -40,6 +52,7 @@ export function parseArgs(argv) {
     web: false,
     port: "",
     host: "",
+    listProfiles: false,
   };
 
   const parts = [];
@@ -135,6 +148,11 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "--profile" || arg === "--task-profile") {
+      result.taskProfile = readOption(argv, i);
+      i += 1;
+      continue;
+    }
     if (arg === "--docker-sandbox") {
       result.useDockerSandbox = true;
       result.sandboxMode = result.sandboxMode || "docker-readonly";
@@ -150,6 +168,10 @@ export function parseArgs(argv) {
     }
     if (arg === "--list-wrappers") {
       result.listWrappers = true;
+      continue;
+    }
+    if (arg === "--list-profiles") {
+      result.listProfiles = true;
       continue;
     }
     if (arg === "--sandbox-status") {
@@ -183,7 +205,159 @@ function printWrappers() {
   }
 }
 
+function printProfiles() {
+  for (const profile of listTaskProfiles()) {
+    console.log(`${profile.id}: ${profile.label} - ${profile.prompt}`);
+  }
+}
+
+function printInitResult(result) {
+  console.log(`AgInTiFlow project initialized: ${result.projectRoot}`);
+  console.log(`control=${result.controlDir}`);
+  console.log(`sessions=${result.sessionsDir}`);
+  console.log(`created=${result.created.length} updated=${result.updated.length} skipped=${result.skipped.length}`);
+}
+
+function printDoctorReport(report) {
+  console.log(`AgInTiFlow ${report.package.version} (npm latest: ${report.package.npmLatest})`);
+  console.log(`node=${report.node.version} ok=${report.node.ok}`);
+  console.log(`project=${report.project.root}`);
+  console.log(`sessions=${report.project.sessionsDir}`);
+  console.log(`sessionDb=${report.project.sessionDbPath}`);
+  console.log(
+    `keys: deepseek=${report.keys.deepseek ? "available" : "missing"} openai=${
+      report.keys.openai ? "available" : "missing"
+    } mock=available localEnv=${report.project.localEnvPresent}`
+  );
+  console.log(
+    `sandbox=${report.sandbox?.sandboxMode || "unknown"} docker=${
+      report.sandbox?.dockerAvailable ? "available" : "missing"
+    } imageReady=${Boolean(report.sandbox?.imageReady)}`
+  );
+  console.log(
+    `wrappers=${report.wrappers.map((wrapper) => `${wrapper.name}:${wrapper.available ? "ok" : "missing"}`).join(" ")}`
+  );
+  console.log(`sessions=${report.sessions.length}`);
+}
+
+async function readStdin() {
+  let input = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) input += chunk;
+  return input.trim();
+}
+
+async function handleKeyCommand(argv) {
+  const [verb = "status", provider = ""] = argv;
+  if (verb === "status") {
+    const status = providerKeyStatus(process.cwd());
+    console.log(
+      `keys: deepseek=${status.deepseek ? "available" : "missing"} openai=${
+        status.openai ? "available" : "missing"
+      } mock=available localEnv=${status.localEnv}`
+    );
+    console.log("env vars: DeepSeek=DEEPSEEK_API_KEY or LLM_API_KEY; OpenAI=OPENAI_API_KEY or LLM_API_KEY");
+    return;
+  }
+
+  if (verb === "set") {
+    const target = provider || "deepseek";
+    if (!argv.includes("--stdin")) {
+      console.error(`Usage: aginti keys set ${target} --stdin`);
+      process.exit(1);
+    }
+    const key = await readStdin();
+    const result = await setProviderKey(process.cwd(), target, key);
+    console.log(`saved ${result.provider} key to project-local ignored env (${result.keyName})`);
+    return;
+  }
+
+  console.error("Usage: aginti keys status OR aginti keys set deepseek --stdin");
+  process.exit(1);
+}
+
+async function handleSessionsCommand(argv) {
+  const [verb = "list", sessionId = ""] = argv;
+  if (verb === "list") {
+    const sessions = await listProjectSessions(process.cwd(), 80);
+    if (sessions.length === 0) {
+      console.log("No project-local sessions found.");
+      return;
+    }
+    for (const session of sessions) {
+      const goal = session.goal ? ` ${session.goal.slice(0, 90)}` : "";
+      console.log(`${session.sessionId} ${session.provider}/${session.model} ${session.updatedAt}${goal}`);
+    }
+    return;
+  }
+
+  if (verb === "show") {
+    if (!sessionId) {
+      console.error("Usage: aginti sessions show <session-id>");
+      process.exit(1);
+    }
+    const session = await showProjectSession(process.cwd(), sessionId);
+    console.log(JSON.stringify(session, null, 2));
+    return;
+  }
+
+  console.error("Usage: aginti sessions list OR aginti sessions show <session-id>");
+  process.exit(1);
+}
+
 export async function main(argv = process.argv.slice(2)) {
+  if (argv[0] === "init") {
+    printInitResult(await initProject(process.cwd()));
+    return;
+  }
+
+  if (argv[0] === "doctor") {
+    const config = loadConfig({ goal: "doctor" }, { packageDir, baseDir: process.cwd() });
+    const report = await doctorReport(process.cwd(), packageJson.version, config);
+    if (argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
+    else printDoctorReport(report);
+    return;
+  }
+
+  if (argv[0] === "keys/status") {
+    await handleKeyCommand(["status"]);
+    return;
+  }
+
+  if (argv[0] === "keys") {
+    await handleKeyCommand(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "login") {
+    const provider = argv[1] || "deepseek";
+    if (!argv.includes("--stdin") && process.stdin.isTTY) {
+      console.error(`Usage: printf '%s' '<key>' | aginti login ${provider} --stdin`);
+      process.exit(1);
+    }
+    const key = await readStdin();
+    const result = await setProviderKey(process.cwd(), provider, key);
+    console.log(`saved ${result.provider} key to project-local ignored env (${result.keyName})`);
+    return;
+  }
+
+  if (argv[0] === "sessions") {
+    await handleSessionsCommand(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "resume") {
+    const sessionId = argv[1] || "";
+    const prompt = argv.slice(2).join(" ").trim();
+    if (!sessionId || !prompt) {
+      console.error('Usage: aginti resume <session-id> "new prompt"');
+      process.exit(1);
+    }
+    const config = loadConfig({ ...parseArgs([prompt]), resume: sessionId, goal: prompt }, { packageDir });
+    await runAgent(config);
+    return;
+  }
+
   const args = parseArgs(argv);
 
   if (args.web) {
@@ -201,6 +375,11 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (args.listWrappers) {
     printWrappers();
+    return;
+  }
+
+  if (args.listProfiles) {
+    printProfiles();
     return;
   }
 

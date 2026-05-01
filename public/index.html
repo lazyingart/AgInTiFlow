@@ -36,6 +36,39 @@
         <p class="subtle" data-i18n="intro">
           Browser agent with provider selection, resumable runs, persisted settings, and an optional guarded shell tool with Docker sandbox support.
         </p>
+        <section class="project-card">
+          <strong data-i18n="projectStatusTitle">Project folder</strong>
+          <p id="project-status" class="subtle">Loading project context...</p>
+        </section>
+
+        <section id="setup-card" class="setup-card" hidden>
+          <div>
+            <strong data-i18n="setupTitle">Provider setup</strong>
+            <p class="subtle" data-i18n="setupHelp">
+              DeepSeek/OpenAI keys are missing. Use mock mode, export an env var, or save a project-local DeepSeek key.
+            </p>
+            <p class="subtle" data-i18n="setupEnvHelp">
+              Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, or LLM_API_KEY. Mock mode remains available for local tests.
+            </p>
+          </div>
+          <div class="grid">
+            <label>
+              <span data-i18n="setupProviderLabel">Provider</span>
+              <select id="setup-provider">
+                <option value="deepseek">DeepSeek</option>
+                <option value="openai">OpenAI</option>
+              </select>
+            </label>
+            <label>
+              <span data-i18n="setupKeyLabel">API key</span>
+              <input id="setup-api-key" type="password" autocomplete="off" placeholder="Stored in .aginti/.env" />
+            </label>
+          </div>
+          <div class="actions">
+            <button id="save-api-key" type="button" class="secondary" data-i18n="saveKeyButton">Save local key</button>
+            <span id="setup-status" class="subtle"></span>
+          </div>
+        </section>
 
         <form id="run-form">
           <label>
@@ -66,6 +99,13 @@
 
           <p id="routing-hint" class="subtle route-hint"></p>
           <p id="model-route-status" class="subtle route-hint"></p>
+
+          <label>
+            <span data-i18n="taskProfileLabel">Task profile</span>
+            <select id="taskProfile" name="taskProfile">
+              <option value="auto">Auto</option>
+            </select>
+          </label>
 
           <label>
             <span data-i18n="goalLabel">Goal</span>

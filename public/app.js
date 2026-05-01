@@ -19,6 +19,18 @@ const translations = {
     languageLabel: "Language",
     intro:
       "Web-first agent platform with smart model routing, resumable runs, guarded tools, and optional external agent wrappers.",
+    projectStatusTitle: "Project folder",
+    setupTitle: "Provider setup",
+    setupHelp:
+      "DeepSeek/OpenAI keys are missing. Use mock mode, export an env var, or save a project-local DeepSeek key.",
+    setupEnvHelp:
+      "Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, or LLM_API_KEY. Mock mode remains available for local tests.",
+    setupProviderLabel: "Provider",
+    setupKeyLabel: "API key",
+    saveKeyButton: "Save local key",
+    keySavedStatus: "Local key saved. Raw values are never returned by the API.",
+    keySaveFailed: "Failed to save local key.",
+    taskProfileLabel: "Task profile",
     routingModeLabel: "Routing policy",
     routingSmartOption: "Smart: flash/pro/wrappers",
     routingFastOption: "DeepSeek v4 flash",
@@ -617,6 +629,13 @@ const providerField = document.querySelector("#provider");
 const modelField = document.querySelector("#model");
 const routingHintEl = document.querySelector("#routing-hint");
 const modelRouteStatusEl = document.querySelector("#model-route-status");
+const projectStatusEl = document.querySelector("#project-status");
+const setupCardEl = document.querySelector("#setup-card");
+const setupProviderField = document.querySelector("#setup-provider");
+const setupApiKeyField = document.querySelector("#setup-api-key");
+const saveApiKeyButton = document.querySelector("#save-api-key");
+const setupStatusEl = document.querySelector("#setup-status");
+const taskProfileField = document.querySelector("#taskProfile");
 const sandboxModeField = document.querySelector("#sandboxMode");
 const packageInstallPolicyField = document.querySelector("#packageInstallPolicy");
 const packageWarningEl = document.querySelector("#package-warning");
@@ -673,6 +692,8 @@ const defaults = {
 
 let currentLanguage = "en";
 let routingPresets = {};
+let taskProfiles = [];
+let projectInfo = null;
 let currentSessionId = "";
 let pollTimer = null;
 let saveTimer = null;
@@ -713,6 +734,28 @@ function renderKeyStatus(status = lastKeyStatus) {
   } · DeepSeek ${status.deepseek ? t("availableLabel") : t("missingLabel")} · ${t("mockLabel")} ${
     status.mock ? t("availableLabel") : t("missingLabel")
   }`;
+  if (setupCardEl) setupCardEl.hidden = Boolean(status.openai || status.deepseek);
+}
+
+function renderProjectStatus(info = projectInfo) {
+  projectInfo = info;
+  if (!projectStatusEl || !info) return;
+  projectStatusEl.textContent = [
+    `root=${info.root || ""}`,
+    `cwd=${info.commandCwd || ""}`,
+    `sessions=${info.sessionsDir || ""}`,
+    `db=${info.sessionDbPath || ""}`,
+    `shared=${info.sharedSessionFolder ? "yes" : "no"}`,
+  ].join(" · ");
+}
+
+function renderTaskProfiles(selected = "auto") {
+  if (!taskProfileField) return;
+  const profiles = taskProfiles.length ? taskProfiles : [{ id: "auto", label: "Auto" }];
+  taskProfileField.innerHTML = profiles
+    .map((profile) => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.label || profile.id)}</option>`)
+    .join("");
+  taskProfileField.value = profiles.some((profile) => profile.id === selected) ? selected : "auto";
 }
 
 function renderWrapperStatus(wrappers = lastWrappers) {
@@ -893,6 +936,7 @@ function applyLanguage(language, { persist = true } = {}) {
   }
 
   renderKeyStatus();
+  renderProjectStatus();
   renderWrapperStatus();
   renderWorkspacePanel();
   renderSandboxStatus();
@@ -922,6 +966,7 @@ function formPayload() {
     allowFileTools: document.querySelector("#allowFileTools").checked,
     allowWrapperTools: allowWrapperToolsField.checked,
     preferredWrapper: preferredWrapperField.value,
+    taskProfile: taskProfileField?.value || "auto",
     useDockerSandbox: sandboxModeField.value !== "host",
     dockerSandboxImage: document.querySelector("#dockerSandboxImage").value.trim(),
     allowPasswords: document.querySelector("#allowPasswords").checked,
@@ -1673,6 +1718,30 @@ sandboxModeField.addEventListener("change", updatePackageWarning);
 packageInstallPolicyField.addEventListener("change", updatePackageWarning);
 allowWrapperToolsField.addEventListener("change", () => renderWrapperStatus());
 preferredWrapperField.addEventListener("change", () => renderWrapperStatus());
+taskProfileField?.addEventListener("change", schedulePreferenceSave);
+
+saveApiKeyButton?.addEventListener("click", async () => {
+  const provider = setupProviderField.value || "deepseek";
+  const apiKey = setupApiKeyField.value.trim();
+  if (!apiKey) {
+    setupStatusEl.textContent = t("setupKeyLabel");
+    return;
+  }
+  setupStatusEl.textContent = t("sendingStatus");
+  const response = await fetch(`/api/keys/${encodeURIComponent(provider)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiKey }),
+  });
+  const data = await response.json().catch(() => ({}));
+  setupApiKeyField.value = "";
+  if (!response.ok) {
+    setupStatusEl.textContent = data.error || t("keySaveFailed");
+    return;
+  }
+  setupStatusEl.textContent = t("keySavedStatus");
+  renderKeyStatus(data.keyStatus);
+});
 
 form.addEventListener("input", schedulePreferenceSave);
 form.addEventListener("change", schedulePreferenceSave);
@@ -1785,6 +1854,8 @@ async function loadConfig() {
   const data = await response.json();
   const prefs = data.preferences || {};
   routingPresets = data.routing?.presets || {};
+  taskProfiles = data.taskProfiles || [];
+  projectInfo = data.project || null;
   defaults.openai = data.defaults?.openai?.model || defaults.openai;
   defaults.deepseek = routingPresets.fast?.model || data.defaults?.deepseek?.model || defaults.deepseek;
   defaults.mock = data.defaults?.mock?.model || defaults.mock;
@@ -1794,9 +1865,10 @@ async function loadConfig() {
   routingModeField.value = prefs.routingMode || "smart";
   providerField.value = prefs.provider || "deepseek";
   modelField.value = prefs.model || defaults[providerField.value] || "deepseek-v4-flash";
+  renderTaskProfiles(prefs.taskProfile || "auto");
   document.querySelector("#startUrl").value = prefs.startUrl || "";
   document.querySelector("#allowedDomains").value = prefs.allowedDomains || "";
-  document.querySelector("#commandCwd").value = prefs.commandCwd || "/home/lachlan/ProjectsLFS/Agent";
+  document.querySelector("#commandCwd").value = prefs.commandCwd || data.project?.root || "";
   document.querySelector("#headless").checked = prefs.headless ?? data.defaults.headless;
   document.querySelector("#maxSteps").value = prefs.maxSteps ?? data.defaults.maxSteps;
   sandboxModeField.value = prefs.sandboxMode || (prefs.useDockerSandbox ? "docker-workspace" : "host");
@@ -1810,6 +1882,7 @@ async function loadConfig() {
   document.querySelector("#allowDestructive").checked = prefs.allowDestructive ?? false;
 
   renderKeyStatus(data.keyStatus);
+  renderProjectStatus(data.project);
   renderWrapperStatus(data.wrappers || []);
   renderWorkspacePanel(data.workspace, []);
   await refreshWorkspaceChanges();

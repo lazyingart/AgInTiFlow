@@ -17,7 +17,7 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function runMock(goal, sessionId) {
+async function runMock(goal, sessionId, { resume = false } = {}) {
   const config = resolveRuntimeConfig(
     {
       provider: "mock",
@@ -26,6 +26,7 @@ async function runMock(goal, sessionId) {
       goal,
       commandCwd: workspace,
       maxSteps: 5,
+      resume: resume ? sessionId : "",
     },
     {
       baseDir: runtimeDir,
@@ -38,7 +39,7 @@ async function runMock(goal, sessionId) {
       allowFileTools: true,
       sandboxMode: "host",
       packageInstallPolicy: "block",
-      sessionId,
+      sessionId: resume ? "" : sessionId,
     }
   );
 
@@ -78,10 +79,22 @@ try {
     "repaired DeepSeek history retained an orphan stale tool message"
   );
 
-  const writeRun = await runMock("Create file: notes/mock-output.txt with a short coding smoke message.", "coding-write");
-  const written = await fs.readFile(path.join(workspace, "notes/mock-output.txt"), "utf8");
+  const writeRun = await runMock("Create notes/hello.md with a short coding smoke message.", "coding-write");
+  const written = await fs.readFile(path.join(workspace, "notes/hello.md"), "utf8");
   assert(written.includes("Created by AgInTiFlow mock mode."), "mock write did not create expected file");
   assert(writeRun.events.some((event) => event.type === "file.changed"), "write run did not persist file.changed event");
+
+  await runMock("Create notes/resume.md with resumed session content.", "coding-write", { resume: true });
+  const resumed = await fs.readFile(path.join(workspace, "notes/resume.md"), "utf8");
+  assert(resumed.includes("Created by AgInTiFlow mock mode."), "mock resume did not create a new requested file");
+
+  let duplicateFailed = false;
+  try {
+    await runMock("Create notes/hello.md with duplicate content.", "coding-write-duplicate");
+  } catch (error) {
+    duplicateFailed = /File already exists|Mock tool failed/.test(String(error));
+  }
+  assert(duplicateFailed, "duplicate mock write did not fail safely");
 
   await runMock("Create file: /workspace/virtual-output.txt with virtual Docker path support.", "coding-write-virtual");
   const virtualWritten = await fs.readFile(path.join(workspace, "virtual-output.txt"), "utf8");
@@ -123,6 +136,8 @@ try {
         checks: [
           "deepseek_history_repair",
           "write_file",
+          "duplicate_write_failed",
+          "resume_session_write",
           "virtual_workspace_path",
           "apply_patch",
           "block_env",

@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { normalizeWrapperName, wrapperStatusText } from "./tool-wrappers.js";
+import { getTaskProfile } from "./task-profiles.js";
 
 export function createClient(config) {
   if (config.provider === "mock") {
@@ -27,14 +28,19 @@ function mockToolCall(name, args = {}) {
 }
 
 function latestToolPayload(messages) {
-  const toolMessage = [...messages].reverse().find((message) => message.role === "tool" && message.content);
-  if (!toolMessage) return null;
-
-  try {
-    return JSON.parse(toolMessage.content);
-  } catch {
-    return null;
+  for (const message of [...messages].reverse()) {
+    if (message.role === "user" && /^Continue with this new request:|^Goal:/i.test(String(message.content || ""))) {
+      return null;
+    }
+    if (message.role !== "tool" || !message.content) continue;
+    try {
+      const payload = JSON.parse(message.content);
+      return payload?.done ? null : payload;
+    } catch {
+      return null;
+    }
   }
+  return null;
 }
 
 function prepareMessages(config, messages) {
@@ -57,6 +63,10 @@ function mockPathForGoal(goal = "") {
   const text = String(goal);
   const explicit = text.match(/(?:file|path):\s*`?([A-Za-z0-9_./-]+)`?/i)?.[1];
   if (explicit) return explicit;
+  const createPath = text.match(
+    /\b(?:create|write|make|save|generate)\s+(?:a\s+|an\s+|the\s+)?(?:file\s+)?`?((?:\.\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+|[A-Za-z0-9_.-]+\.(?:md|txt|js|ts|json|py|tex|html|css|svg|csv|yml|yaml))`?/i
+  )?.[1];
+  if (createPath) return createPath.replace(/^[`'"]+|[`'",.]+$/g, "");
   if (/\.env/i.test(text)) return ".env";
   if (/outside|escape/i.test(text)) return "../outside-workspace.txt";
   if (/patch/i.test(text)) return "patch-target.txt";
@@ -111,6 +121,7 @@ function mockChatResponse(content, toolCalls = []) {
 }
 
 export async function createPlan(client, config, state) {
+  const taskProfile = getTaskProfile(config.taskProfile);
   if (client.mock) {
     return [
       "1. Inspect the request and prefer the local shell when available.",
@@ -143,6 +154,7 @@ export async function createPlan(client, config, state) {
           config.allowWrapperTools
             ? `Agent wrappers are enabled. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Status: ${wrapperStatusText()}.`
             : "",
+          `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           "A canvas/artifacts tunnel is available through send_to_canvas. Use it when an output should be highlighted visually, such as screenshots, image files, important markdown, diffs, or generated artifact paths. It is optional for ordinary text answers.",
           "When the user asks to draw, plot, graph, chart, diagram, create a figure, or visualize something, include a canvas artifact even if the user does not mention canvas. Prefer a small SVG file or concise markdown figure when file tools are available.",
           "When the user asks for LaTeX, TeX, a paper, manuscript, report, or PDF, plan to create the needed source/assets, compile with the available allowlisted TeX toolchain, and publish the PDF through the canvas tunnel. For subfolder documents, keep outputs beside the source. For generated figures, use pdflatex-compatible formats such as PDF or PNG.",
@@ -445,6 +457,15 @@ export async function requestNextStep(client, config, messages) {
   if (client.mock) {
     const toolPayload = latestToolPayload(messages);
     if (toolPayload) {
+      if (toolPayload.ok === false && !toolPayload.blocked) {
+        return mockChatResponse("Mock mode detected a tool failure and will stop instead of masking it.", [
+          mockToolCall("finish", {
+            result: `Mock run failed because ${toolPayload.toolName || "a tool"} failed: ${
+              toolPayload.error || toolPayload.reason || "unknown error"
+            }`,
+          }),
+        ]);
+      }
       const output = [
         toolPayload.stdout,
         toolPayload.stderr,

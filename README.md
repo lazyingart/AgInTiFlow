@@ -38,8 +38,12 @@ Install the published CLI:
 
 ```bash
 npm install -g @lazyingart/agintiflow
+cd /path/to/your-project
+aginti init
+aginti doctor
 aginti --list-routes
-aginti --sandbox-status --sandbox-mode docker-readonly --cwd "$PWD"
+aginti --list-profiles
+aginti --sandbox-status --sandbox-mode docker-readonly
 ```
 
 Launch the local web UI from an installed package:
@@ -49,10 +53,23 @@ aginti web --port 3210
 # then open http://127.0.0.1:3210
 ```
 
+`aginti web` uses the folder it is launched from as the project root, default working directory, session store, and settings database. CLI and web runs share the same project-local `.sessions/` folder.
+
 Run the installed CLI without a live provider key by using the local mock route:
 
 ```bash
-aginti --provider mock --routing manual --allow-shell --cwd "$PWD" "Report the current directory"
+aginti --provider mock --routing manual --allow-file-tools "Create notes/hello.md with a smoke-test note"
+```
+
+Useful project commands:
+
+```bash
+aginti keys status
+printf '%s' "$DEEPSEEK_API_KEY" | aginti keys set deepseek --stdin
+aginti sessions list
+aginti sessions show <session-id>
+aginti resume <session-id> "continue with a short follow-up"
+aginti --profile code --provider mock --routing manual "Create notes/hello.md"
 ```
 
 Run from a source checkout:
@@ -101,6 +118,9 @@ The package exposes both `aginti` and `aginti-cli`; they run the same CLI entryp
 The web app includes:
 
 - Routing dropdown for smart, fast, complex, and manual model selection.
+- Project folder indicator showing project root, command cwd, session folder, and session database.
+- First-run provider setup panel with mock fallback and project-local DeepSeek/OpenAI key save.
+- Task profile dropdown for code, writing, design docs, Python, shell, Node, AAPS, LaTeX, and system maintenance workflows.
 - Provider dropdown for DeepSeek, OpenAI, and local mock mode when manual routing is needed.
 - Language dropdown with 11 persisted UI locales.
 - Editable model field, with DeepSeek v4 flash as the fast default and DeepSeek v4 pro as the complex route.
@@ -162,6 +182,7 @@ PACKAGE_INSTALL_POLICY=prompt
 USE_DOCKER_SANDBOX=true
 DOCKER_SANDBOX_IMAGE=agintiflow-sandbox:latest
 COMMAND_CWD=/home/lachlan/ProjectsLFS/Agent
+AGINTI_TASK_PROFILE=auto
 ```
 
 Defaults:
@@ -179,6 +200,15 @@ Provider credentials:
 | --- | --- | --- |
 | OpenAI | `OPENAI_API_KEY` | `https://api.openai.com/v1` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `https://api.deepseek.com/v1` |
+
+Project-local credentials can be stored without committing secrets:
+
+```bash
+aginti init
+printf '%s' "$DEEPSEEK_API_KEY" | aginti keys set deepseek --stdin
+```
+
+This writes `.aginti/.env` with `0600` permissions and adds safe `.gitignore` entries. APIs and logs expose only key presence, never raw values.
 
 ## Agent Wrappers
 

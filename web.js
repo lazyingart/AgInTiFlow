@@ -11,6 +11,8 @@ import { listAgentWrappers, normalizeWrapperName } from "./src/tool-wrappers.js"
 import { getDockerSandboxStatus, getSandboxLogs, runDockerPreflight } from "./src/docker-sandbox.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./src/command-policy.js";
 import { summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./src/workspace-tools.js";
+import { listTaskProfiles, normalizeTaskProfile } from "./src/task-profiles.js";
+import { loadProjectEnv, projectPaths, providerKeyStatus, setProviderKey } from "./src/project.js";
 import {
   buildArtifacts,
   countUnreadArtifacts,
@@ -24,6 +26,7 @@ const __dirname = path.dirname(__filename);
 const packageDir = __dirname;
 const baseDir = path.resolve(process.env.AGINTIFLOW_RUNTIME_DIR || process.cwd());
 const sessionsDir = path.join(baseDir, ".sessions");
+loadProjectEnv(baseDir);
 
 const app = express();
 const port = Number(process.env.PORT || 3210);
@@ -132,7 +135,8 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
     commandCwd:
       typeof body.commandCwd === "string" && body.commandCwd.trim()
         ? body.commandCwd.trim()
-        : current.commandCwd || path.resolve(baseDir, ".."),
+        : current.commandCwd || baseDir,
+    taskProfile: normalizeTaskProfile(body.taskProfile || current.taskProfile || "auto"),
     allowShellTool: typeof body.allowShellTool === "boolean" ? body.allowShellTool : Boolean(current.allowShellTool),
     allowFileTools: typeof body.allowFileTools === "boolean" ? body.allowFileTools : current.allowFileTools !== false,
     allowWrapperTools:
@@ -172,6 +176,17 @@ function publicProviderDefault(provider) {
   };
 }
 
+function publicKeyStatus(projectRoot = baseDir) {
+  const status = providerKeyStatus(projectRoot);
+  return {
+    openai: status.openai,
+    deepseek: status.deepseek,
+    mock: true,
+    localEnv: status.localEnv,
+    envVars: status.envVars,
+  };
+}
+
 function buildRunConfig(body, overrides = {}) {
   const preferences = normalizePreferencePayload(body, db.getPreferences());
   const merged = {
@@ -208,6 +223,7 @@ function buildRunConfig(body, overrides = {}) {
       useDockerSandbox: merged.useDockerSandbox,
       dockerSandboxImage: merged.dockerSandboxImage,
       commandCwd: merged.commandCwd,
+      taskProfile: merged.taskProfile,
       baseDir,
       packageDir,
       sessionId: overrides.sessionId,
@@ -485,7 +501,17 @@ app.get("/api/config", async (_req, res) => {
   await syncStoredSessions();
   const preferences = normalizePreferencePayload({}, db.getPreferences());
   const config = buildRunConfig({ ...preferences, goal: "" });
+  const paths = projectPaths(baseDir);
+  const keyStatus = publicKeyStatus(baseDir);
   res.json({
+    project: {
+      root: paths.root,
+      commandCwd: config.commandCwd,
+      sessionsDir,
+      sessionDbPath: paths.sessionDbPath,
+      sharedSessionFolder: path.resolve(config.sessionsDir) === path.resolve(sessionsDir),
+      localEnvPresent: keyStatus.localEnv,
+    },
     defaults: {
       openai: publicProviderDefault("openai"),
       deepseek: publicProviderDefault("deepseek"),
@@ -493,6 +519,7 @@ app.get("/api/config", async (_req, res) => {
       headless: true,
       maxSteps: 15,
     },
+    taskProfiles: listTaskProfiles(),
     routing: {
       modes: ["smart", "fast", "complex", "manual"],
       presets: getModelPresets(),
@@ -503,13 +530,27 @@ app.get("/api/config", async (_req, res) => {
     },
     workspace: summarizeWorkspaceTools(config),
     preferences,
-    keyStatus: {
-      openai: Boolean(process.env.OPENAI_API_KEY),
-      deepseek: Boolean(process.env.DEEPSEEK_API_KEY),
-      mock: true,
-    },
+    keyStatus,
     sessions: db.listSessions(100),
   });
+});
+
+app.get("/api/keys/status", (_req, res) => {
+  res.json({ ok: true, keyStatus: publicKeyStatus(baseDir) });
+});
+
+app.post("/api/keys/:provider", async (req, res) => {
+  try {
+    const result = await setProviderKey(baseDir, req.params.provider, req.body?.apiKey || req.body?.key || "");
+    res.json({
+      ok: true,
+      provider: result.provider,
+      keyName: result.keyName,
+      keyStatus: publicKeyStatus(baseDir),
+    });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.get("/api/sandbox/status", async (_req, res) => {

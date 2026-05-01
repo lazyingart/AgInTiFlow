@@ -3,6 +3,8 @@ import crypto from "node:crypto";
 import { getProviderDefaults, normalizeRoutingMode, selectModelRoute } from "./model-routing.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
 import { normalizeWrapperName } from "./tool-wrappers.js";
+import { loadProjectEnv, resolveProjectRoot } from "./project.js";
+import { normalizeTaskProfile } from "./task-profiles.js";
 
 function parseBoolean(value, fallback) {
   if (value === undefined) return fallback;
@@ -23,6 +25,8 @@ function parseList(value) {
 }
 
 export function resolveRuntimeConfig(args, overrides = {}) {
+  const baseDir = resolveProjectRoot(overrides.baseDir || process.cwd());
+  loadProjectEnv(baseDir);
   const requestedProvider =
     overrides.provider ||
     args.provider ||
@@ -37,7 +41,6 @@ export function resolveRuntimeConfig(args, overrides = {}) {
   });
 
   const defaults = getProviderDefaults(route.provider);
-  const baseDir = path.resolve(overrides.baseDir || process.cwd());
   const packageDir = path.resolve(overrides.packageDir || process.env.AGINTIFLOW_PACKAGE_DIR || baseDir);
   const dockerRequested = parseBoolean(overrides.useDockerSandbox ?? args.useDockerSandbox ?? process.env.USE_DOCKER_SANDBOX, false);
   const requestedSandboxMode =
@@ -53,6 +56,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     resume: args.resume || "",
     sessionId: overrides.sessionId || args.sessionId || process.env.SESSION_ID || `web-agent-${crypto.randomUUID()}`,
     routingMode,
+    taskProfile: normalizeTaskProfile(overrides.taskProfile || args.taskProfile || process.env.AGINTI_TASK_PROFILE || "auto"),
     routeReason: route.reason,
     routeComplexityScore: route.complexityScore,
     requestedProvider,
@@ -84,7 +88,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     ),
     useDockerSandbox: sandboxMode !== "host" || dockerRequested,
     dockerSandboxImage: overrides.dockerSandboxImage || process.env.DOCKER_SANDBOX_IMAGE || "agintiflow-sandbox:latest",
-    commandCwd: path.resolve(overrides.commandCwd || args.commandCwd || process.env.COMMAND_CWD || process.cwd()),
+    commandCwd: path.resolve(overrides.commandCwd || args.commandCwd || process.env.COMMAND_CWD || baseDir),
     sessionsDir: path.resolve(baseDir, ".sessions"),
     onLog: overrides.onLog,
     onEvent: overrides.onEvent,

@@ -2,6 +2,9 @@ node_modules/
 .env
 .env.*
 !.env.example
+.aginti/.env
+.aginti/.env.*
+!.aginti/.env.example
 .npmrc
 .aaps-work/
 .aginti-work/

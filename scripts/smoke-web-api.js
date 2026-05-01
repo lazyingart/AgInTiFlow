@@ -74,6 +74,23 @@ try {
   if (!config.keyStatus?.mock) throw new Error("mock provider is not advertised by /api/config");
   if (!config.workspace?.enabled) throw new Error("workspace file tools are not advertised by /api/config");
   if (config.preferences?.preferredWrapper !== "codex") throw new Error("Codex is not the default preferred wrapper");
+  if (config.project?.root !== runtimeDir) throw new Error("web project root did not default to launch directory");
+  if (config.preferences?.commandCwd !== runtimeDir) throw new Error("commandCwd did not default to project root");
+  if (!Array.isArray(config.taskProfiles) || !config.taskProfiles.some((profile) => profile.id === "latex")) {
+    throw new Error("task profiles are not advertised by /api/config");
+  }
+
+  const keyStatus = await fetchJson("/api/keys/status");
+  if (typeof keyStatus.keyStatus?.deepseek !== "boolean") throw new Error("key status endpoint is invalid");
+  if ("localEnvPath" in keyStatus.keyStatus) throw new Error("key status leaked a local env path");
+  const savedKey = await fetchJson("/api/keys/deepseek", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiKey: "test-deepseek-key-not-real" }),
+  });
+  if (!savedKey.ok || !savedKey.keyStatus?.deepseek || "apiKey" in savedKey || "key" in savedKey) {
+    throw new Error("local key save endpoint returned invalid or sensitive data");
+  }
 
   const status = await fetchJson("/api/sandbox/status");
   if (!status.status?.workspaceReadable) throw new Error("sandbox status did not report a readable workspace");
@@ -110,6 +127,30 @@ try {
   const run = await waitForRun(runStart.sessionId);
   if (run.status !== "finished") throw new Error(`mock run failed: ${run.error || "unknown error"}`);
   if (!/Mock run complete/.test(run.result)) throw new Error("mock run did not return the expected result");
+
+  const fileRunStart = await fetchJson("/api/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      provider: "mock",
+      routingMode: "manual",
+      model: "mock-agent",
+      goal: "Create notes/hello.md with safe web API content.",
+      commandCwd: runtimeDir,
+      sandboxMode: "host",
+      packageInstallPolicy: "block",
+      allowShellTool: false,
+      allowFileTools: true,
+      preferredWrapper: "codex",
+      maxSteps: 4,
+      headless: true,
+      taskProfile: "code",
+    }),
+  });
+  const fileRun = await waitForRun(fileRunStart.sessionId);
+  if (fileRun.status !== "finished") throw new Error(`mock file run failed: ${fileRun.error || "unknown error"}`);
+  const hello = await fs.readFile(path.join(runtimeDir, "notes", "hello.md"), "utf8");
+  if (!hello.includes("Created by AgInTiFlow mock mode.")) throw new Error("mock file run did not create requested path");
 
   const chat = await fetchJson(`/api/sessions/${encodeURIComponent(runStart.sessionId)}/chat`);
   if (!Array.isArray(chat.chat) || chat.chat.length < 2) throw new Error("chat history was not persisted");
@@ -189,6 +230,8 @@ try {
         ok: true,
         endpoints: [
           "/api/config",
+          "/api/keys/status",
+          "POST /api/keys/:provider",
           "/api/sandbox/status",
           "/api/sandbox/preflight",
           "/api/runs",

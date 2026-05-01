@@ -13,6 +13,7 @@ import { evaluateCommandPolicy } from "./command-policy.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
 import { executeWorkspaceTool, summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./workspace-tools.js";
 import { normalizeCanvasPayload } from "./artifact-tunnel.js";
+import { getTaskProfile } from "./task-profiles.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "click", "type", "scroll", "press", "back"]);
@@ -108,6 +109,7 @@ export function repairModelMessageHistory(state, config = {}) {
 
 function createInitialState(config, sessionId) {
   const now = new Date().toISOString();
+  const taskProfile = getTaskProfile(config.taskProfile);
   return {
     sessionId,
     createdAt: now,
@@ -151,6 +153,7 @@ function createInitialState(config, sessionId) {
           config.allowWrapperTools
             ? `External coding-agent wrappers are available as advisory tools only. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Wrapper status: ${wrapperStatusText()}.`
             : "External coding-agent wrappers are disabled.",
+          `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. It is optional and ordinary final text can still go directly to finish.",
           "For visual-output requests such as draw, plot, graph, chart, diagram, figure, image, or visualization, proactively publish a canvas artifact even when the user does not mention canvas. If workspace file tools are enabled, prefer creating a small SVG or markdown artifact and call send_to_canvas with selected=true.",
           "For LaTeX/PDF requests, create the needed source/assets, compile with the available allowlisted TeX toolchain, and publish the resulting PDF through send_to_canvas. For subfolder documents, keep outputs beside the source. Use pdflatex-compatible figure formats such as PDF or PNG.",
@@ -172,6 +175,7 @@ function createInitialState(config, sessionId) {
           config.allowWrapperTools
             ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
             : "",
+          `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           "Canvas/artifacts tunnel: available through send_to_canvas for optional frontend rendering.",
           "Visual-output requests should produce a canvas artifact without requiring the user to ask for canvas explicitly.",
           "LaTeX/PDF requests should produce source artifacts and, when possible, a compiled PDF artifact. For subfolder documents, keep outputs beside the source. For figure-in-document tasks, create PDF/PNG figures that pdflatex can include.",
@@ -248,6 +252,7 @@ function appendChatEntry(state, role, content) {
 function applyContinuationPrompt(state, config, observers) {
   if (!config.resume || !config.goal) return;
 
+  const taskProfile = getTaskProfile(config.taskProfile);
   ensureChatState(state);
   state.goal = config.goal;
   state.provider = config.provider;
@@ -271,6 +276,7 @@ function applyContinuationPrompt(state, config, observers) {
       config.allowWrapperTools
         ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
         : "",
+      `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
     ]
       .filter(Boolean)
       .join("\n"),
@@ -754,6 +760,7 @@ export async function runAgent(config) {
       model: config.model,
       routingMode: config.routingMode,
       routeReason: config.routeReason,
+      taskProfile: config.taskProfile,
       commandCwd: config.commandCwd,
       allowShellTool: config.allowShellTool,
       allowWrapperTools: config.allowWrapperTools,
@@ -817,6 +824,7 @@ export async function runAgent(config) {
           plan: state.plan || "",
           suggestedStartUrl: config.startUrl || "",
           canvasArtifactsAvailable: true,
+          taskProfile: getTaskProfile(config.taskProfile),
         })}`,
       });
 
@@ -897,6 +905,12 @@ export async function runAgent(config) {
             stderr: toolResult.stderr,
             error: toolResult.error,
           });
+        }
+
+        if (config.provider === "mock" && toolResult.ok === false && !toolResult.blocked) {
+          throw new Error(
+            `Mock tool failed: ${toolResult.error || toolResult.reason || `${toolResult.toolName || "tool"} returned ok=false`}`
+          );
         }
 
         if (toolResult.done) {
