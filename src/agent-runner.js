@@ -727,12 +727,16 @@ async function injectQueuedUserMessages(store, state, observers) {
       content: `Additional user message received while this run was active:\n${content}`,
     });
     await store.appendEvent("conversation.queued_input_applied", {
+      id: item.id || "",
       prompt: content,
       source: item.source || "inbox",
+      priority: item.priority || "normal",
     });
     observers.event("conversation.queued_input_applied", {
+      id: item.id || "",
       prompt: content,
       source: item.source || "inbox",
+      priority: item.priority || "normal",
     });
   }
 }

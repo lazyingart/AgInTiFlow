@@ -84,6 +84,17 @@ try {
   if (hugePromptLayout.renderedRows.length > 12 || !hugePromptLayout.renderedRows.some((line) => line.includes("earlier input row"))) {
     throw new Error("terminal prompt layout did not bound redraw size for large prompts");
   }
+  const queuedPromptLayout = buildPromptLayout("follow up", 9, 90, 24, {
+    commandCwd: "/tmp/aginti-project",
+    pendingAsap: [{ content: "apply this to the running task" }],
+    pendingQueued: [{ content: "run this after the current task" }],
+  });
+  const queuedText = queuedPromptLayout.renderedRows
+    .map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""))
+    .join("\n");
+  if (!queuedText.includes("→ apply this") || !queuedText.includes("↳ run this") || !queuedText.includes("cwd   /tmp/aginti-project")) {
+    throw new Error("terminal prompt layout did not render live input queue and cwd footer");
+  }
 
   await runCli(["init"], "");
   const instructions = await fs.readFile(path.join(tempRoot, "AGINTI.md"), "utf8");
@@ -125,7 +136,7 @@ try {
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["markdown-render", "prompt-layout", "agent-response-newline", "aginti-md", "instructions-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest"],
+        checks: ["markdown-render", "prompt-layout", "live-input-layout", "agent-response-newline", "aginti-md", "instructions-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest"],
       },
       null,
       2

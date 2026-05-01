@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 
 export class SessionStore {
   constructor(baseDir, sessionId) {
@@ -63,16 +64,20 @@ export class SessionStore {
   async appendInbox(content, metadata = {}) {
     await this.ensure();
     const text = String(content || "").trim();
-    if (!text) return;
-    const line = JSON.stringify({
+    if (!text) return null;
+    const item = {
+      id: metadata.id || `inbox-${crypto.randomUUID()}`,
       timestamp: new Date().toISOString(),
       content: text,
+      priority: metadata.priority || "normal",
       ...metadata,
-    });
+    };
+    const line = JSON.stringify(item);
     await fs.appendFile(this.inboxPath, `${line}\n`, "utf8");
+    return item;
   }
 
-  async drainInbox() {
+  async loadInbox() {
     await this.ensure();
     let raw = "";
     try {
@@ -80,12 +85,27 @@ export class SessionStore {
     } catch {
       return [];
     }
-    await fs.writeFile(this.inboxPath, "", "utf8");
     return raw
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean)
       .map((line) => JSON.parse(line));
+  }
+
+  async saveInbox(items = []) {
+    await this.ensure();
+    const lines = items.filter(Boolean).map((item) => JSON.stringify(item));
+    await fs.writeFile(this.inboxPath, lines.length > 0 ? `${lines.join("\n")}\n` : "", "utf8");
+  }
+
+  async drainInbox() {
+    await this.ensure();
+    const items = await this.loadInbox();
+    await fs.writeFile(this.inboxPath, "", "utf8");
+    return items.sort((a, b) => {
+      const priority = (item) => (item.priority === "asap" ? 0 : 1);
+      return priority(a) - priority(b) || String(a.timestamp || "").localeCompare(String(b.timestamp || ""));
+    });
   }
 
   async saveSnapshot(step, snapshot) {

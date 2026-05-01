@@ -8,6 +8,7 @@ import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-p
 import { defaultMaxStepsForProfile, normalizeTaskProfile } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 import { promptAndSaveDeepSeekKey, promptHidden, shouldPromptForDeepSeek } from "./auth-onboarding.js";
+import { SessionStore } from "./session-store.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
@@ -56,6 +57,7 @@ const SLASH_COMMANDS = [
   "/exit",
 ];
 const promptHistory = [];
+let activeRunInput = null;
 
 function color(value, ...codes) {
   if (!useColor || codes.length === 0) return String(value);
@@ -68,6 +70,14 @@ function sleep(ms) {
 
 function label(name, bgCode) {
   return color(` ${name} `, bgCode, ansi.bold);
+}
+
+function outputLine(line = "") {
+  if (activeRunInput) {
+    activeRunInput.printLine(String(line));
+    return;
+  }
+  console.log(line);
 }
 
 function terminalWidth() {
@@ -131,6 +141,11 @@ function commandSuggestions(line = "") {
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+function compactLine(value = "", limit = 96) {
+  const text = stripAnsi(String(value || "").replace(/\s+/g, " ").trim());
+  return text.length <= limit ? text : `${text.slice(0, Math.max(limit - 1, 1))}…`;
 }
 
 export function stripMarkdown(text) {
@@ -265,29 +280,29 @@ function printWrapped(prefix, text, { stripCode = "" } = {}) {
   const lines = rendered.split("\n");
   const visible = stripAnsi(prefix).length;
   const gutter = `${" ".repeat(Math.max(visible - 2, 0))}${stripCode ? color("|", stripCode) : "|"} `;
-  console.log(`${prefix}${lines[0] || ""}`);
+  outputLine(`${prefix}${lines[0] || ""}`);
   for (const line of lines.slice(1)) {
-    console.log(`${gutter}${line}`);
+    outputLine(`${gutter}${line}`);
   }
 }
 
 function printAgentMessage(text) {
-  console.log(rolePrefix("aginti>", ansi.agentBg).trimEnd());
+  outputLine(rolePrefix("aginti>", ansi.agentBg).trimEnd());
   const rendered = stripMarkdown(text);
   const lines = rendered.split("\n");
-  for (const line of lines) console.log(line);
+  for (const line of lines) outputLine(line);
 }
 
 function printSystemLine(text) {
   if (!String(text || "").trim()) {
-    console.log("");
+    outputLine("");
     return;
   }
-  console.log(`${label("state", ansi.systemBg)} ${color(text, ansi.dim)}`);
+  outputLine(`${label("state", ansi.systemBg)} ${color(text, ansi.dim)}`);
 }
 
 function printHeading(text) {
-  console.log(color(stripMarkdown(text), ansi.bold, ansi.cyan));
+  outputLine(color(stripMarkdown(text), ansi.bold, ansi.cyan));
 }
 
 function shimmerText(text, frame) {
@@ -364,7 +379,9 @@ function printHelp() {
       "",
       "Type a normal request to run the agent. Example: write a Python CLI app with tests",
       "Type / then Tab to autocomplete commands.",
-      "While a run is active, press Esc or Ctrl+C once to stop gracefully and print a resume command.",
+      "While a run is active, Enter pipes a message into the current run (→), Tab queues it after finish (↳).",
+      "Alt+Up edits the last piped message; Shift+Left edits the last queued message.",
+      "Esc or Ctrl+C stops gracefully and prints a resume command.",
     ].join("\n")
   );
 }
@@ -401,7 +418,7 @@ function promptVisibleWindow(rows, cursorRow, height = terminalHeight()) {
   };
 }
 
-export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth(), height = terminalHeight()) {
+export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth(), height = terminalHeight(), options = {}) {
   const safeBuffer = String(buffer || "");
   const safeCursor = clamp(Number(cursor) || 0, 0, safeBuffer.length);
   const lineWidth = editorWidth(width);
@@ -497,6 +514,17 @@ export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth
   const renderedRows = [];
   let renderedCursorRow = cursorRow - visible.start;
 
+  const pendingAsap = Array.isArray(options.pendingAsap) ? options.pendingAsap : [];
+  const pendingQueued = Array.isArray(options.pendingQueued) ? options.pendingQueued : [];
+  for (const item of pendingAsap.slice(-4)) {
+    renderedRows.push(panelLine(`  → ${compactLine(item.content || item, lineWidth - 6)}`, ansi.systemBg, lineWidth));
+    renderedCursorRow += 1;
+  }
+  for (const item of pendingQueued.slice(-4)) {
+    renderedRows.push(panelLine(`  ↳ ${compactLine(item.content || item, lineWidth - 6)}`, ansi.systemBg, lineWidth));
+    renderedCursorRow += 1;
+  }
+
   if (visible.topHidden > 0) {
     renderedRows.push(panelLine(`  ... ${visible.topHidden} earlier input row${visible.topHidden === 1 ? "" : "s"}`, ansi.systemBg, lineWidth));
     renderedCursorRow += 1;
@@ -513,6 +541,9 @@ export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth
 
   if (suggestions.length > 0) {
     renderedRows.push(panelLine(` hint  ${suggestions.join("  ")}`, ansi.systemBg, lineWidth));
+  }
+  if (options.commandCwd) {
+    renderedRows.push(panelLine(` cwd   ${options.commandCwd}`, ansi.systemBg, lineWidth));
   }
 
   return {
@@ -558,8 +589,8 @@ function moveFromPromptCursorToTop(previous) {
   output.write("\r");
 }
 
-function renderPromptBuffer(buffer, cursor, previous = { lineCount: 0, cursorRow: 0, renderedRows: [] }) {
-  const layout = buildPromptLayout(buffer, cursor);
+function renderPromptBuffer(buffer, cursor, previous = { lineCount: 0, cursorRow: 0, renderedRows: [] }, options = {}) {
+  const layout = buildPromptLayout(buffer, cursor, terminalWidth(), terminalHeight(), options);
   const sameShape = previous.lineCount === layout.renderedRows.length && previous.renderedRows?.length === layout.renderedRows.length;
   const changedRows = sameShape
     ? layout.renderedRows
@@ -637,7 +668,7 @@ function createAbortError(message = "Aborted with Ctrl+C") {
   return error;
 }
 
-function readTtyPrompt() {
+function readTtyPrompt(options = {}) {
   return new Promise((resolve, reject) => {
     emitKeypressEvents(input);
     const wasRaw = Boolean(input.isRaw);
@@ -665,14 +696,14 @@ function readTtyPrompt() {
         clearImmediate(redrawHandle);
         redrawHandle = null;
       }
-      rendered = renderPromptBuffer(buffer, cursor, rendered);
+      rendered = renderPromptBuffer(buffer, cursor, rendered, options);
     };
 
     const redraw = () => {
       if (redrawHandle) return;
       redrawHandle = setImmediate(() => {
         redrawHandle = null;
-        rendered = renderPromptBuffer(buffer, cursor, rendered);
+        rendered = renderPromptBuffer(buffer, cursor, rendered, options);
       });
     };
 
@@ -832,11 +863,292 @@ function readTtyPrompt() {
   });
 }
 
-async function readPromptAnswer(rl) {
+async function readPromptAnswer(rl, state = {}) {
   if (input.isTTY && output.isTTY && typeof input.setRawMode === "function") {
-    return readTtyPrompt();
+    return readTtyPrompt({ commandCwd: state.commandCwd || process.cwd() });
   }
   return rl.question(userPrompt());
+}
+
+class LiveRunInput {
+  constructor({ state, store, controller }) {
+    this.state = state;
+    this.store = store;
+    this.controller = controller;
+    this.buffer = "";
+    this.cursor = 0;
+    this.rendered = { lineCount: 0, cursorRow: 0, renderedRows: [] };
+    this.redrawHandle = null;
+    this.preferredColumn = null;
+    this.pendingAsap = [];
+    this.pendingQueued = [];
+    this.wasRaw = Boolean(input.isRaw);
+    this.started = false;
+    this.handler = this.handleKey.bind(this);
+  }
+
+  get commandCwd() {
+    return this.state.commandCwd || process.cwd();
+  }
+
+  start() {
+    if (!input.isTTY || !output.isTTY || typeof input.setRawMode !== "function") return false;
+    emitKeypressEvents(input);
+    input.resume();
+    input.setRawMode(true);
+    input.on("keypress", this.handler);
+    activeRunInput = this;
+    this.started = true;
+    this.renderNow();
+    return true;
+  }
+
+  async stop() {
+    if (!this.started) return [];
+    if (this.redrawHandle) {
+      clearImmediate(this.redrawHandle);
+      this.redrawHandle = null;
+    }
+    input.off("keypress", this.handler);
+    if (typeof input.setRawMode === "function") input.setRawMode(this.wasRaw);
+    this.clearForExternalOutput();
+    output.write(ansi.cursorShow);
+    if (activeRunInput === this) activeRunInput = null;
+    this.started = false;
+
+    const unappliedAsap = [...this.pendingAsap];
+    if (unappliedAsap.length > 0) {
+      await this.removeInboxItems(unappliedAsap.map((item) => item.id));
+    }
+    return [
+      ...unappliedAsap.map((item) => ({ ...item, kind: "asap" })),
+      ...this.pendingQueued.map((item) => ({ ...item, kind: "queued" })),
+    ];
+  }
+
+  printLine(line = "") {
+    this.clearForExternalOutput();
+    output.write(`${line}\n`);
+    this.renderNow();
+  }
+
+  clearForExternalOutput() {
+    if (!this.rendered.lineCount) return;
+    output.write(ansi.cursorHide);
+    clearRenderedPrompt(this.rendered);
+    this.rendered = { lineCount: 0, cursorRow: 0, renderedRows: [] };
+    output.write(ansi.cursorShow);
+  }
+
+  renderNow() {
+    if (this.redrawHandle) {
+      clearImmediate(this.redrawHandle);
+      this.redrawHandle = null;
+    }
+    this.rendered = renderPromptBuffer(this.buffer, this.cursor, this.rendered, {
+      commandCwd: this.commandCwd,
+      pendingAsap: this.pendingAsap,
+      pendingQueued: this.pendingQueued,
+    });
+  }
+
+  redraw() {
+    if (this.redrawHandle) return;
+    this.redrawHandle = setImmediate(() => {
+      this.redrawHandle = null;
+      this.renderNow();
+    });
+  }
+
+  setBuffer(nextBuffer, nextCursor = nextBuffer.length) {
+    this.buffer = String(nextBuffer || "");
+    this.cursor = clamp(nextCursor, 0, this.buffer.length);
+    this.preferredColumn = null;
+    this.redraw();
+  }
+
+  moveVertical(direction) {
+    const layout = buildPromptLayout(this.buffer, this.cursor, terminalWidth(), terminalHeight(), {
+      commandCwd: this.commandCwd,
+      pendingAsap: this.pendingAsap,
+      pendingQueued: this.pendingQueued,
+    });
+    const location = cursorLocation(layout, this.cursor);
+    const targetRowIndex = location.rowIndex + direction;
+    if (targetRowIndex < 0 || targetRowIndex >= layout.rows.length) return;
+    const currentColumn = this.preferredColumn ?? location.column;
+    const targetRow = layout.rows[targetRowIndex];
+    this.cursor = targetRow.start + Math.min(currentColumn, targetRow.end - targetRow.start);
+    this.preferredColumn = currentColumn;
+    this.redraw();
+  }
+
+  async removeInboxItems(ids = []) {
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    const inbox = await this.store.loadInbox().catch(() => []);
+    await this.store.saveInbox(inbox.filter((item) => !idSet.has(item.id))).catch(() => {});
+  }
+
+  async submitAsap() {
+    const content = this.buffer.trim();
+    if (!content) return;
+    const item = {
+      id: `cli-asap-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      content,
+      priority: "asap",
+      source: "cli-live",
+    };
+    this.pendingAsap.push(item);
+    this.setBuffer("");
+    await this.store.appendInbox(content, item).catch((error) => {
+      this.pendingAsap = this.pendingAsap.filter((pending) => pending.id !== item.id);
+      this.printLine(`${label("error", ansi.systemBg)} failed to pipe message: ${error.message}`);
+    });
+    await this.store.appendEvent("conversation.piped_input", {
+      id: item.id,
+      prompt: content,
+      source: item.source,
+      priority: item.priority,
+    }).catch(() => {});
+    this.redraw();
+  }
+
+  queueAfterFinish() {
+    const content = this.buffer.trim();
+    if (!content) return;
+    this.pendingQueued.push({
+      id: `cli-queued-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      content,
+      priority: "after-finish",
+      source: "cli-live",
+    });
+    this.setBuffer("");
+  }
+
+  editLastQueued() {
+    const item = this.pendingQueued.pop();
+    if (!item) return;
+    this.setBuffer(item.content);
+  }
+
+  editLastAsap() {
+    const item = this.pendingAsap.pop();
+    if (!item) return;
+    void this.removeInboxItems([item.id]);
+    this.setBuffer(item.content);
+  }
+
+  markApplied(data = {}) {
+    const id = data.id || "";
+    const prompt = String(data.prompt || "");
+    if (id) {
+      this.pendingAsap = this.pendingAsap.filter((item) => item.id !== id);
+    } else if (prompt) {
+      const index = this.pendingAsap.findIndex((item) => item.content === prompt);
+      if (index >= 0) this.pendingAsap.splice(index, 1);
+    }
+    this.redraw();
+  }
+
+  handleKey(str = "", key = {}) {
+    if (key.ctrl && key.name === "c") {
+      this.controller.abort(new Error("Interrupted by ctrl-c."));
+      return;
+    }
+    if (key.name === "escape") {
+      this.controller.abort(new Error("Interrupted by escape."));
+      return;
+    }
+    if (key.meta && key.name === "up") {
+      this.editLastAsap();
+      return;
+    }
+    if ((key.shift && key.name === "left") || key.sequence === "\x1b[1;2D") {
+      this.editLastQueued();
+      return;
+    }
+    if ((key.ctrl && key.name === "j") || key.sequence === "\n") {
+      ({ buffer: this.buffer, cursor: this.cursor } = insertAt(this.buffer, this.cursor, "\n"));
+      this.preferredColumn = null;
+      this.redraw();
+      return;
+    }
+    if (key.name === "return" || key.name === "enter" || key.sequence === "\r" || str === "\r") {
+      void this.submitAsap();
+      return;
+    }
+    if (key.name === "tab") {
+      this.queueAfterFinish();
+      return;
+    }
+    if (key.name === "backspace") {
+      ({ buffer: this.buffer, cursor: this.cursor } = removeBefore(this.buffer, this.cursor));
+      this.preferredColumn = null;
+      this.redraw();
+      return;
+    }
+    if (key.name === "delete") {
+      ({ buffer: this.buffer, cursor: this.cursor } = removeAt(this.buffer, this.cursor));
+      this.preferredColumn = null;
+      this.redraw();
+      return;
+    }
+    if (key.name === "left") {
+      this.cursor = Math.max(this.cursor - 1, 0);
+      this.preferredColumn = null;
+      this.redraw();
+      return;
+    }
+    if (key.name === "right") {
+      this.cursor = Math.min(this.cursor + 1, this.buffer.length);
+      this.preferredColumn = null;
+      this.redraw();
+      return;
+    }
+    if (key.name === "up") {
+      this.moveVertical(-1);
+      return;
+    }
+    if (key.name === "down") {
+      this.moveVertical(1);
+      return;
+    }
+    if ((key.ctrl && key.name === "a") || key.name === "home") {
+      this.cursor = lineBounds(this.buffer, this.cursor).start;
+      this.preferredColumn = null;
+      this.redraw();
+      return;
+    }
+    if ((key.ctrl && key.name === "e") || key.name === "end") {
+      this.cursor = lineBounds(this.buffer, this.cursor).end;
+      this.preferredColumn = null;
+      this.redraw();
+      return;
+    }
+    if (key.ctrl && key.name === "u") {
+      const bounds = lineBounds(this.buffer, this.cursor);
+      this.buffer = `${this.buffer.slice(0, bounds.start)}${this.buffer.slice(this.cursor)}`;
+      this.cursor = bounds.start;
+      this.preferredColumn = null;
+      this.redraw();
+      return;
+    }
+    if (key.ctrl && key.name === "k") {
+      const bounds = lineBounds(this.buffer, this.cursor);
+      this.buffer = `${this.buffer.slice(0, this.cursor)}${this.buffer.slice(bounds.end)}`;
+      this.preferredColumn = null;
+      this.redraw();
+      return;
+    }
+    if (key.ctrl || key.meta) return;
+    if (str && !key.sequence?.startsWith("\x1b")) {
+      const text = str.replace(/\r/g, "");
+      ({ buffer: this.buffer, cursor: this.cursor } = insertAt(this.buffer, this.cursor, text));
+      this.preferredColumn = null;
+      this.redraw();
+    }
+  }
 }
 
 function printStatus(state) {
@@ -1253,8 +1565,12 @@ async function runPrompt(prompt, state, packageDir) {
   printSystemLine(`session=${state.sessionId}`);
   printSystemLine(`status=running workingOn=${state.activeGoal}`);
 
-  const detachInterrupts = attachRunInterrupts(controller);
+  const store = new SessionStore(config.sessionsDir, state.sessionId);
+  const liveInput = new LiveRunInput({ state, store, controller });
+  const liveStarted = liveInput.start();
+  const detachInterrupts = liveStarted ? () => {} : attachRunInterrupts(controller);
   let result;
+  let queuedAfterFinish = [];
   try {
     result = await runAgent({
       ...config,
@@ -1267,7 +1583,7 @@ async function runPrompt(prompt, state, packageDir) {
         } else if (options.kind === "heading") {
           printHeading(text);
         } else if (options.error) {
-          console.error(`${label("error", ansi.systemBg)} ${stripMarkdown(text)}`);
+          outputLine(`${label("error", ansi.systemBg)} ${stripMarkdown(text)}`);
         } else {
           printSystemLine(text);
         }
@@ -1284,7 +1600,8 @@ async function runPrompt(prompt, state, packageDir) {
         } else if (type === "loop.guard") {
           printStatusEvent(state, "loop_guard", data.toolName || "");
         } else if (type === "conversation.queued_input_applied") {
-          printStatusEvent(state, "queued_input_applied");
+          liveInput.markApplied(data);
+          printStatusEvent(state, "queued_input_applied", data.priority === "asap" ? "asap" : "");
         } else if (type === "session.finished") {
           printStatusEvent(state, "finished");
         } else if (type === "session.stopped") {
@@ -1296,6 +1613,7 @@ async function runPrompt(prompt, state, packageDir) {
     });
   } finally {
     detachInterrupts();
+    queuedAfterFinish = await liveInput.stop();
   }
   state.sessionId = result.sessionId || state.sessionId;
   state.status = result.stopped ? "stopped" : "idle";
@@ -1303,7 +1621,9 @@ async function runPrompt(prompt, state, packageDir) {
   printSystemLine(`status=${state.status} session=${state.sessionId}`);
   if (result.stopped && result.reason === "user_interrupt") {
     await printResumeHint(state);
+    return [];
   }
+  return queuedAfterFinish;
 }
 
 export async function startInteractiveCli(args = {}, { packageDir, packageVersion } = {}) {
@@ -1328,7 +1648,7 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
     while (true) {
       let answer = "";
       try {
-        answer = await readPromptAnswer(rl);
+        answer = await readPromptAnswer(rl, state);
       } catch (error) {
         if (error?.code === "ERR_USE_AFTER_CLOSE") break;
         if (isAbortError(error)) {
@@ -1346,7 +1666,19 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
       }
 
       try {
-        await runPrompt(line, state, packageDir);
+        const pendingPrompts = [{ content: line }];
+        while (pendingPrompts.length > 0) {
+          const nextPrompt = pendingPrompts.shift();
+          const content = String(nextPrompt.content || "").trim();
+          if (!content) continue;
+          if (content.startsWith("/")) {
+            const keepGoing = await handleCommand(content, state, packageDir);
+            if (!keepGoing) return;
+            continue;
+          }
+          const queued = await runPrompt(content, state, packageDir);
+          pendingPrompts.push(...queued.filter((item) => String(item.content || "").trim()));
+        }
       } catch (error) {
         if (isAbortError(error)) {
           await printResumeHint(state);
