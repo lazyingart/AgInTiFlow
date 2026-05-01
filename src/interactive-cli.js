@@ -30,6 +30,8 @@ const SLASH_COMMANDS = [
   "/status",
   "/login",
   "/auth",
+  "/auxilliary",
+  "/auxiliary",
   "/new",
   "/resume",
   "/sessions",
@@ -206,8 +208,10 @@ function printHelp() {
       "Commands:",
       "  /help                     Show this help.",
       "  /status                   Show active route, workspace, sandbox, and session.",
-      "  /login [deepseek|openai]  Paste and save a project-local API key.",
-      "  /auth [deepseek|openai]   Alias for /login.",
+      "  /login [deepseek|openai|grsai]  Paste and save a project-local API key.",
+      "  /auth [deepseek|openai|grsai]   Alias for /login.",
+      "  /auxilliary [status|grsai|on|off|image]",
+      "                            Manage optional auxiliary skills, including GRS AI image generation.",
       "  /new                      Start a fresh session on the next message.",
       "  /resume <session-id>      Continue a saved session.",
       "  /sessions                 List recent sessions in this project.",
@@ -345,7 +349,7 @@ function printStatus(state) {
   printSystemLine(`provider=${state.provider || "auto"} routing=${state.routingMode} model=${state.model || "auto"}`);
   printSystemLine(`profile=${state.taskProfile} maxSteps=${state.maxSteps}`);
   printSystemLine(
-    `shell=${state.allowShellTool} files=${state.allowFileTools} sandbox=${state.sandboxMode} installs=${state.packageInstallPolicy}`
+    `shell=${state.allowShellTool} files=${state.allowFileTools} auxiliary=${state.allowAuxiliaryTools} sandbox=${state.sandboxMode} installs=${state.packageInstallPolicy}`
   );
   if (state.sandboxMode !== "host") {
     printSystemLine(`dockerWorkspace=/workspace -> ${state.commandCwd || process.cwd()}`);
@@ -429,6 +433,7 @@ function createState(args = {}) {
     packageInstallPolicy: normalizePackageInstallPolicy(args.packageInstallPolicy || "allow"),
     allowShellTool: args.allowShellTool ?? true,
     allowFileTools: args.allowFileTools ?? true,
+    allowAuxiliaryTools: args.allowAuxiliaryTools ?? true,
     allowWrapperTools: args.allowWrapperTools ?? false,
     allowDestructive: args.allowDestructive ?? false,
     preferredWrapper: args.preferredWrapper || "codex",
@@ -463,23 +468,27 @@ async function maybeOnboardDeepSeekKey(state) {
 }
 
 async function promptAndSaveProviderKey(provider = "deepseek", state = null) {
-  const normalized = ["openai", "deepseek"].includes(String(provider || "").toLowerCase())
+  const aliases = { auxiliary: "grsai", auxilliary: "grsai", image: "grsai", imagegen: "grsai" };
+  const candidate = aliases[String(provider || "").toLowerCase()] || String(provider || "").toLowerCase();
+  const normalized = ["openai", "deepseek", "grsai"].includes(candidate)
     ? String(provider || "").toLowerCase()
     : "deepseek";
-  const labelText = normalized === "openai" ? "OpenAI" : "DeepSeek";
+  const canonical = aliases[normalized] || normalized;
+  const labelText = canonical === "openai" ? "OpenAI" : canonical === "grsai" ? "GRSAI" : "DeepSeek";
   const key = await promptHidden(`${labelText} API key/token (paste, Enter to save): `);
   if (!key) {
     printAgentMessage("No key saved.");
     return;
   }
 
-  const result = await setProviderKey(process.cwd(), normalized, key);
+  const result = await setProviderKey(process.cwd(), canonical, key);
   if (state) {
-    state.provider = normalized;
+    if (canonical !== "grsai") state.provider = canonical;
     if (state.routingMode === "manual" && state.model === "mock-agent") {
       state.routingMode = "smart";
       state.model = "";
     }
+    if (canonical === "grsai") state.allowAuxiliaryTools = true;
   }
   printAgentMessage(`Saved ${result.keyName} to project-local ignored env. Raw key was not printed.`);
 }
@@ -496,11 +505,51 @@ async function handleCommand(line, state, packageDir) {
   if (command === "status") {
     printStatus(state);
     const keys = providerKeyStatus(process.cwd());
-    printSystemLine(`keys deepseek=${keys.deepseek ? "available" : "missing"} openai=${keys.openai ? "available" : "missing"}`);
+    printSystemLine(
+      `keys deepseek=${keys.deepseek ? "available" : "missing"} openai=${keys.openai ? "available" : "missing"} grsai=${
+        keys.grsai ? "available" : "missing"
+      }`
+    );
     return true;
   }
   if (command === "login" || command === "auth") {
     await promptAndSaveProviderKey(value || "deepseek", state);
+    return true;
+  }
+  if (command === "auxilliary" || command === "auxiliary") {
+    const action = value || "status";
+    if (action === "status") {
+      const keys = providerKeyStatus(process.cwd());
+      printAgentMessage(
+        [
+          `Auxiliary tools: ${state.allowAuxiliaryTools ? "on" : "off"}`,
+          `Image generation: ${keys.grsai ? "GRSAI key available" : "missing GRSAI key"}`,
+          "Use `/auxilliary grsai` to paste the image key, `/auxilliary image` to switch to the image profile, or `/auxilliary off` to hide auxiliary tools.",
+        ].join("\n")
+      );
+      return true;
+    }
+    if (action === "on") {
+      state.allowAuxiliaryTools = true;
+      printSystemLine("auxiliary=on");
+      return true;
+    }
+    if (action === "off") {
+      state.allowAuxiliaryTools = false;
+      printSystemLine("auxiliary=off");
+      return true;
+    }
+    if (action === "image") {
+      state.allowAuxiliaryTools = true;
+      state.taskProfile = "image";
+      printSystemLine("auxiliary=on profile=image");
+      return true;
+    }
+    if (["grsai", "login", "key", "token"].includes(action)) {
+      await promptAndSaveProviderKey("grsai", state);
+      return true;
+    }
+    printAgentMessage("Usage: /auxilliary [status|grsai|on|off|image]");
     return true;
   }
   if (command === "new") {
@@ -630,6 +679,7 @@ async function runPrompt(prompt, state, packageDir) {
       packageInstallPolicy: state.packageInstallPolicy,
       allowShellTool: state.allowShellTool,
       allowFileTools: state.allowFileTools,
+      allowAuxiliaryTools: state.allowAuxiliaryTools,
       allowWrapperTools: state.allowWrapperTools,
       allowDestructive: state.allowDestructive,
       preferredWrapper: state.preferredWrapper,

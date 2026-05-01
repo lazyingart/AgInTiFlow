@@ -55,6 +55,13 @@ export const TASK_PROFILES = {
       "For website/app tasks, create or inspect real site files, preview with workspace preview tools, add local checks when useful, and use the configured sandbox/package policy for dependencies.",
     tools: ["files", "shell", "canvas", "sandbox"],
   },
+  image: {
+    id: "image",
+    label: "Image generation",
+    prompt:
+      "For raster image, cover, poster, illustration, photo, and logo-concept tasks, write a clear visual prompt, use generate_image when the optional GRS AI key is available, save outputs under artifacts/images, and send the selected image to the canvas. If the key is missing, ask the user to run /auxilliary grsai or aginti login grsai.",
+    tools: ["auxiliary:image_generation", "files", "canvas"],
+  },
   aaps: {
     id: "aaps",
     label: "AAPS",

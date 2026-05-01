@@ -141,6 +141,8 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
     taskProfile: normalizeTaskProfile(body.taskProfile || current.taskProfile || "auto"),
     allowShellTool: typeof body.allowShellTool === "boolean" ? body.allowShellTool : Boolean(current.allowShellTool),
     allowFileTools: typeof body.allowFileTools === "boolean" ? body.allowFileTools : current.allowFileTools !== false,
+    allowAuxiliaryTools:
+      typeof body.allowAuxiliaryTools === "boolean" ? body.allowAuxiliaryTools : current.allowAuxiliaryTools !== false,
     allowWrapperTools:
       typeof body.allowWrapperTools === "boolean" ? body.allowWrapperTools : Boolean(current.allowWrapperTools),
     preferredWrapper: normalizeWrapperName(body.preferredWrapper || current.preferredWrapper || "codex"),
@@ -183,6 +185,7 @@ function publicKeyStatus(projectRoot = baseDir) {
   return {
     openai: status.openai,
     deepseek: status.deepseek,
+    grsai: status.grsai,
     mock: true,
     localEnv: status.localEnv,
     envVars: status.envVars,
@@ -217,6 +220,7 @@ function buildRunConfig(body, overrides = {}) {
       allowDestructive: merged.allowDestructive,
       allowShellTool: merged.allowShellTool,
       allowFileTools: merged.allowFileTools,
+      allowAuxiliaryTools: merged.allowAuxiliaryTools,
       allowWrapperTools: merged.allowWrapperTools,
       preferredWrapper: merged.preferredWrapper,
       wrapperTimeoutMs: merged.wrapperTimeoutMs,

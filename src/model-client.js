@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { normalizeWrapperName, wrapperStatusText } from "./tool-wrappers.js";
 import { getTaskProfile } from "./task-profiles.js";
+import { listAuxiliarySkills } from "./auxiliary-tools.js";
 
 export function createClient(config) {
   if (config.provider === "mock") {
@@ -137,6 +138,18 @@ function mockCanvasToolForGoal(goal = "") {
   });
 }
 
+function mockAuxiliaryToolForGoal(goal = "") {
+  const text = String(goal || "").toLowerCase();
+  if (!/\b(image|picture|photo|illustration|cover|poster|logo|generate art|draw a)\b/.test(text)) return null;
+  return mockToolCall("generate_image", {
+    prompt: `Mock image generation request: ${goal}`,
+    outputDir: "artifacts/images/mock-image",
+    outputStem: "mock-image",
+    aspectRatio: "1:1",
+    dryRun: true,
+  });
+}
+
 function mockChatResponse(content, toolCalls = []) {
   return {
     choices: [
@@ -186,6 +199,11 @@ export async function createPlan(client, config, state) {
           config.allowWrapperTools
             ? `Agent wrappers are enabled. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Status: ${wrapperStatusText()}.`
             : "",
+          config.allowAuxiliaryTools
+            ? `Auxiliary skills are enabled: ${listAuxiliarySkills()
+                .map((skill) => `${skill.id} via ${skill.toolName} (${skill.available ? "key available" : `needs ${skill.keyName}`})`)
+                .join(", ")}. For raster image generation requests, plan to use generate_image when a GRSAI key is available; otherwise ask the user to run /auxilliary grsai or aginti login grsai.`
+            : "Auxiliary skills are disabled for this run.",
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           "A canvas/artifacts tunnel is available through send_to_canvas. Use it when an output should be highlighted visually, such as screenshots, image files, important markdown, diffs, or generated artifact paths. It is optional for ordinary text answers.",
           "Work like a practical coding agent: inspect when useful, edit with file tools, run safe checks when they add confidence, and keep outputs inside the workspace.",
@@ -514,6 +532,35 @@ export async function requestNextStep(client, config, messages) {
     });
   }
 
+  if (config.allowAuxiliaryTools) {
+    tools.splice(-1, 0, {
+      type: "function",
+      function: {
+        name: "generate_image",
+        description:
+          "Generate a raster image artifact through the optional GRS AI Nano Banana image-generation skill. Use for user requests that explicitly need a real image/photo/illustration/cover/poster/logo concept rather than SVG/code-native graphics. Saves prompt, redacted payload, manifest, and downloaded images in the workspace. If the GRSAI key is missing, ask the user to run /auxilliary grsai or aginti login grsai.",
+        parameters: {
+          type: "object",
+          properties: {
+            prompt: { type: "string", description: "Detailed image-generation prompt." },
+            outputDir: { type: "string", description: "Workspace-relative output directory. Defaults to artifacts/images/<timestamp>." },
+            outputStem: { type: "string", description: "Filename stem for downloaded images." },
+            aspectRatio: { type: "string", description: "Aspect ratio such as 1:1, 16:9, 2:3, or 3:2." },
+            imageSize: { type: "string", description: "Image size such as 1K, 2K, or 4K." },
+            model: { type: "string", description: "Image model. Defaults to nano-banana-2." },
+            referenceImages: {
+              type: "array",
+              items: { type: "string" },
+              description: "Optional workspace-relative image paths, HTTPS URLs, or data URLs.",
+            },
+          },
+          required: ["prompt"],
+          additionalProperties: false,
+        },
+      },
+    });
+  }
+
   tools.splice(-1, 0, {
     type: "function",
     function: {
@@ -587,6 +634,13 @@ export async function requestNextStep(client, config, messages) {
       const previewTool = mockPreviewToolForGoal(config.goal);
       if (previewTool) {
         return mockChatResponse("Mock mode will exercise the workspace preview tool.", [previewTool]);
+      }
+    }
+
+    if (config.allowAuxiliaryTools) {
+      const auxiliaryTool = mockAuxiliaryToolForGoal(config.goal);
+      if (auxiliaryTool) {
+        return mockChatResponse("Mock mode will exercise an auxiliary skill tool in dry-run mode.", [auxiliaryTool]);
       }
     }
 

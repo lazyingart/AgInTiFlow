@@ -17,6 +17,7 @@ import { redactSensitiveText, redactValue } from "./redaction.js";
 import { executeWorkspaceTool, resolveWorkspacePath, summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./workspace-tools.js";
 import { normalizeCanvasPayload } from "./artifact-tunnel.js";
 import { getTaskProfile } from "./task-profiles.js";
+import { generateImage, listAuxiliarySkills } from "./auxiliary-tools.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "open_workspace_file", "preview_workspace", "click", "type", "scroll", "press", "back"]);
@@ -276,6 +277,11 @@ function createInitialState(config, sessionId) {
           config.allowWrapperTools
             ? `External coding-agent wrappers are available as advisory tools only. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Wrapper status: ${wrapperStatusText()}.`
             : "External coding-agent wrappers are disabled.",
+          config.allowAuxiliaryTools
+            ? `Auxiliary skills are available: ${listAuxiliarySkills()
+                .map((skill) => `${skill.id} via ${skill.toolName} (${skill.available ? "key available" : `needs ${skill.keyName}`})`)
+                .join(", ")}. Use generate_image for real raster image/photo/illustration/cover/poster/logo requests when appropriate; if the key is missing, ask the user to run /auxilliary grsai or aginti login grsai.`
+            : "Auxiliary skills are disabled for this run.",
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. It is optional and ordinary final text can still go directly to finish.",
           "For visual-output requests such as draw, plot, graph, chart, diagram, figure, image, or visualization, proactively publish a canvas artifact even when the user does not mention canvas. If workspace file tools are enabled, prefer creating a small SVG or markdown artifact and call send_to_canvas with selected=true.",
@@ -308,6 +314,11 @@ function createInitialState(config, sessionId) {
             : "",
           config.allowWrapperTools
             ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
+            : "",
+          config.allowAuxiliaryTools
+            ? `Auxiliary skills: ${listAuxiliarySkills()
+                .map((skill) => `${skill.id}:${skill.available ? "available" : "missing-key"}`)
+                .join(" ")}`
             : "",
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           "Canvas/artifacts tunnel: available through send_to_canvas for optional frontend rendering.",
@@ -502,6 +513,15 @@ function sanitizeToolArgs(toolName, args) {
       patch: typeof args.patch === "string" ? `[${Buffer.byteLength(args.patch, "utf8")} bytes sha256=${hashForLog(args.patch)}]` : safeArgs.patch,
       search: typeof args.search === "string" ? redactSensitiveText(args.search).slice(0, 160) : safeArgs.search,
       replace: typeof args.replace === "string" ? redactSensitiveText(args.replace).slice(0, 160) : safeArgs.replace,
+    };
+  }
+  if (toolName === "generate_image") {
+    return {
+      ...safeArgs,
+      prompt: typeof args.prompt === "string" ? `[${Buffer.byteLength(args.prompt, "utf8")} bytes sha256=${hashForLog(args.prompt)}]` : safeArgs.prompt,
+      referenceImages: Array.isArray(args.referenceImages)
+        ? args.referenceImages.map((item) => (String(item || "").startsWith("data:") ? `[data-uri ${String(item).length} chars]` : redactSensitiveText(item)))
+        : safeArgs.referenceImages,
     };
   }
   return safeArgs;
@@ -872,6 +892,67 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         };
         await store.appendEvent("tool.completed", result);
         observers.event("tool.completed", result);
+        return result;
+      }
+      case "generate_image": {
+        const imageResult = await generateImage(args, config);
+        const result = {
+          ok: Boolean(imageResult.ok),
+          toolName: "generate_image",
+          args: safeArgs,
+          ...imageResult,
+        };
+        const eventResult = sanitizeToolResult(result);
+        await store.appendEvent("tool.completed", eventResult);
+        observers.event("tool.completed", eventResult);
+
+        if (result.ok) {
+          const generated = {
+            path: result.path,
+            imagePaths: result.imagePaths || [],
+            manifestPath: result.manifestPath || "",
+            promptPath: result.promptPath || "",
+            requestPayloadPath: result.requestPayloadPath || "",
+            commandCwd: config.commandCwd,
+          };
+          await store.appendEvent("image.generated", generated);
+          observers.event("image.generated", generated);
+
+          const selectedPath = result.imagePaths?.[0] || result.manifestPath || "";
+          if (selectedPath) {
+            const normalized = normalizeCanvasPayload(
+              {
+                title: result.imagePaths?.length ? "Generated image" : "Image generation payload",
+                kind: result.imagePaths?.length ? "image" : "json",
+                path: selectedPath,
+                note: result.summary || "Generated image artifact.",
+                selected: Boolean(result.imagePaths?.length),
+              },
+              config
+            );
+            if (normalized.ok) {
+              const canvasItem = {
+                ...normalized.payload,
+                toolName: "generate_image",
+                commandCwd: config.commandCwd,
+              };
+              await store.appendEvent("canvas.item", canvasItem);
+              observers.event("canvas.item", canvasItem);
+              if (canvasItem.selected) {
+                await store.appendEvent("canvas.selected", {
+                  artifactId: canvasItem.artifactId,
+                  title: canvasItem.title,
+                  source: "generate_image",
+                });
+                observers.event("canvas.selected", {
+                  artifactId: canvasItem.artifactId,
+                  title: canvasItem.title,
+                  source: "generate_image",
+                });
+              }
+            }
+          }
+        }
         return result;
       }
       case "send_to_canvas": {

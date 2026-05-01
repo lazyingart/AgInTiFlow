@@ -78,6 +78,10 @@ export function resolveRuntimeConfig(args, overrides = {}) {
       overrides.allowWrapperTools ?? args.allowWrapperTools ?? process.env.ALLOW_WRAPPER_TOOLS,
       false
     ),
+    allowAuxiliaryTools: parseBoolean(
+      overrides.allowAuxiliaryTools ?? args.allowAuxiliaryTools ?? process.env.ALLOW_AUXILIARY_TOOLS,
+      true
+    ),
     preferredWrapper: normalizeWrapperName(
       overrides.preferredWrapper ?? args.preferredWrapper ?? process.env.PREFERRED_WRAPPER ?? process.env.AGENT_WRAPPER
     ),

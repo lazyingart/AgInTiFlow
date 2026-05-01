@@ -57,6 +57,7 @@
               <select id="setup-provider">
                 <option value="deepseek">DeepSeek</option>
                 <option value="openai">OpenAI</option>
+                <option value="grsai">GRS AI image</option>
               </select>
             </label>
             <label>
@@ -174,6 +175,11 @@
               <input id="allowFileTools" name="allowFileTools" type="checkbox" checked />
               <span class="switch" aria-hidden="true"></span>
               <span data-i18n="fileToolLabel">Enable file tools</span>
+            </label>
+            <label class="switch-label">
+              <input id="allowAuxiliaryTools" name="allowAuxiliaryTools" type="checkbox" checked />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="auxiliaryToolLabel">Enable auxiliary skills</span>
             </label>
             <label class="switch-label">
               <input id="allowPasswords" name="allowPasswords" type="checkbox" />

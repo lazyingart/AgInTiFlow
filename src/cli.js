@@ -44,6 +44,7 @@ export function parseArgs(argv) {
     allowShellTool: undefined,
     allowFileTools: undefined,
     allowWrapperTools: undefined,
+    allowAuxiliaryTools: undefined,
     allowDestructive: undefined,
     preferredWrapper: "",
     taskProfile: "",
@@ -60,6 +61,7 @@ export function parseArgs(argv) {
     host: "",
     listProfiles: false,
     latex: false,
+    image: false,
   };
 
   const parts = [];
@@ -141,6 +143,12 @@ export function parseArgs(argv) {
       result.maxSteps = result.maxSteps || 30;
       continue;
     }
+    if (arg === "--image" || arg === "--image-gen" || arg === "--image-generation") {
+      result.image = true;
+      result.taskProfile = "image";
+      result.allowAuxiliaryTools = true;
+      continue;
+    }
     if (arg === "--max-steps") {
       result.maxSteps = Number(readOption(argv, i));
       i += 1;
@@ -164,6 +172,14 @@ export function parseArgs(argv) {
     }
     if (arg === "--no-file-tools") {
       result.allowFileTools = false;
+      continue;
+    }
+    if (arg === "--allow-auxiliary-tools" || arg === "--allow-auxiliary") {
+      result.allowAuxiliaryTools = true;
+      continue;
+    }
+    if (arg === "--no-auxiliary-tools" || arg === "--no-auxiliary") {
+      result.allowAuxiliaryTools = false;
       continue;
     }
     if (arg === "--allow-wrappers") {
@@ -220,8 +236,15 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti login deepseek OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-destructive] [--allow-file-tools|--no-file-tools] [--allow-wrappers --wrapper codex] [--sandbox-status|--sandbox-preflight] "your task"'
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti login deepseek|openai|grsai OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-destructive] [--allow-file-tools|--no-file-tools] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex] [--sandbox-status|--sandbox-preflight] "your task"'
   );
+}
+
+function providerLabel(provider) {
+  const normalized = String(provider || "").toLowerCase();
+  if (normalized === "openai") return "OpenAI";
+  if (normalized === "grsai" || normalized === "auxiliary" || normalized === "auxilliary") return "GRSAI";
+  return "DeepSeek";
 }
 
 function agentDefaults(args) {
@@ -229,6 +252,7 @@ function agentDefaults(args) {
     ...args,
     allowShellTool: args.allowShellTool ?? true,
     allowFileTools: args.allowFileTools ?? true,
+    allowAuxiliaryTools: args.allowAuxiliaryTools ?? true,
     sandboxMode: args.sandboxMode || "docker-workspace",
     packageInstallPolicy: args.packageInstallPolicy || "allow",
     useDockerSandbox: args.useDockerSandbox ?? true,
@@ -279,7 +303,7 @@ function printDoctorReport(report) {
   console.log(
     `keys: deepseek=${report.keys.deepseek ? "available" : "missing"} openai=${
       report.keys.openai ? "available" : "missing"
-    } mock=available localEnv=${report.project.localEnvPresent}`
+    } grsai=${report.keys.grsai ? "available" : "missing"} mock=available localEnv=${report.project.localEnvPresent}`
   );
   console.log(
     `sandbox=${report.sandbox?.sandboxMode || "unknown"} docker=${
@@ -321,15 +345,15 @@ async function handleKeyCommand(argv) {
     console.log(
       `keys: deepseek=${status.deepseek ? "available" : "missing"} openai=${
         status.openai ? "available" : "missing"
-      } mock=available localEnv=${status.localEnv}`
+      } grsai=${status.grsai ? "available" : "missing"} mock=available localEnv=${status.localEnv}`
     );
-    console.log("env vars: DeepSeek=DEEPSEEK_API_KEY or LLM_API_KEY; OpenAI=OPENAI_API_KEY or LLM_API_KEY");
+    console.log("env vars: DeepSeek=DEEPSEEK_API_KEY or LLM_API_KEY; OpenAI=OPENAI_API_KEY or LLM_API_KEY; image=GRSAI or GRSAI_API_KEY");
     return;
   }
 
   if (verb === "set") {
     const target = provider || "deepseek";
-    const key = argv.includes("--stdin") ? await readStdin() : await promptHidden(`${target === "openai" ? "OpenAI" : "DeepSeek"} API key: `);
+    const key = argv.includes("--stdin") ? await readStdin() : await promptHidden(`${providerLabel(target)} API key/token: `);
     if (!key) {
       console.error("No key saved.");
       process.exit(1);
@@ -339,7 +363,7 @@ async function handleKeyCommand(argv) {
     return;
   }
 
-  console.error("Usage: aginti keys status OR aginti keys set deepseek [--stdin]");
+  console.error("Usage: aginti keys status OR aginti keys set deepseek|openai|grsai [--stdin]");
   process.exit(1);
 }
 
@@ -460,7 +484,7 @@ export async function main(argv = process.argv.slice(2)) {
     const provider = argv[1] || "deepseek";
     const key = argv.includes("--stdin") || !process.stdin.isTTY
       ? await readStdin()
-      : await promptHidden(`${provider === "openai" ? "OpenAI" : "DeepSeek"} API key: `);
+      : await promptHidden(`${providerLabel(provider)} API key/token: `);
     if (!key) {
       console.error("No key saved.");
       process.exit(1);

@@ -110,8 +110,10 @@ function isSensitivePath(relativePath) {
   const segments = pathSegments(relativePath);
   const basename = segments.at(-1) || "";
   const lowerBase = basename.toLowerCase();
+  const lowerSegments = segments.map((segment) => segment.toLowerCase());
   const lowerPath = normalizeRelative(relativePath).toLowerCase();
   if (segments.includes(".git")) return true;
+  if (lowerSegments.some((segment) => segment === ".env" || segment.startsWith(".env."))) return true;
   if (lowerBase === ".env" || lowerBase.startsWith(".env.")) return true;
   if (SENSITIVE_BASENAMES.has(lowerBase)) return true;
   if (SENSITIVE_EXTENSIONS.has(path.extname(lowerBase))) return true;

@@ -24,7 +24,7 @@ const translations = {
     setupHelp:
       "DeepSeek/OpenAI keys are missing. Use mock mode, export an env var, or save a project-local DeepSeek key.",
     setupEnvHelp:
-      "Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, or LLM_API_KEY. Mock mode remains available for local tests.",
+      "Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, LLM_API_KEY, and optional GRSAI for image generation. Mock mode remains available for local tests.",
     setupProviderLabel: "Provider",
     setupKeyLabel: "API key",
     saveKeyButton: "Save local key",
@@ -68,6 +68,7 @@ const translations = {
     headlessLabel: "Headless browser",
     shellToolLabel: "Enable shell tool",
     fileToolLabel: "Enable file tools",
+    auxiliaryToolLabel: "Enable auxiliary skills",
     wrapperToolLabel: "Enable agent wrappers",
     preferredWrapperLabel: "Preferred wrapper",
     dockerSandboxLabel: "Use Docker sandbox",
@@ -648,6 +649,7 @@ const logsEl = document.querySelector("#logs");
 const runMetaEl = document.querySelector("#run-meta");
 const stopRunButton = document.querySelector("#stop-run");
 const keyStatusEl = document.querySelector("#key-status");
+const allowAuxiliaryToolsField = document.querySelector("#allowAuxiliaryTools");
 const allowWrapperToolsField = document.querySelector("#allowWrapperTools");
 const preferredWrapperField = document.querySelector("#preferredWrapper");
 const wrapperStatusEl = document.querySelector("#wrapper-status");
@@ -744,7 +746,9 @@ function renderKeyStatus(status = lastKeyStatus) {
   if (!status) return;
   keyStatusEl.textContent = `${t("keysLabel")}: OpenAI ${
     status.openai ? t("availableLabel") : t("missingLabel")
-  } · DeepSeek ${status.deepseek ? t("availableLabel") : t("missingLabel")} · ${t("mockLabel")} ${
+  } · DeepSeek ${status.deepseek ? t("availableLabel") : t("missingLabel")} · GRS AI ${
+    status.grsai ? t("availableLabel") : t("missingLabel")
+  } · ${t("mockLabel")} ${
     status.mock ? t("availableLabel") : t("missingLabel")
   }`;
   if (setupCardEl) setupCardEl.hidden = Boolean(status.openai || status.deepseek);
@@ -979,6 +983,7 @@ function formPayload() {
     headless: document.querySelector("#headless").checked,
     allowShellTool: document.querySelector("#allowShellTool").checked,
     allowFileTools: document.querySelector("#allowFileTools").checked,
+    allowAuxiliaryTools: allowAuxiliaryToolsField?.checked ?? true,
     allowWrapperTools: allowWrapperToolsField.checked,
     preferredWrapper: preferredWrapperField.value,
     taskProfile: taskProfileField?.value || "auto",
@@ -2167,6 +2172,7 @@ async function loadConfig() {
   packageInstallPolicyField.value = prefs.packageInstallPolicy || "allow";
   document.querySelector("#allowShellTool").checked = prefs.allowShellTool ?? true;
   document.querySelector("#allowFileTools").checked = prefs.allowFileTools ?? true;
+  if (allowAuxiliaryToolsField) allowAuxiliaryToolsField.checked = prefs.allowAuxiliaryTools ?? true;
   allowWrapperToolsField.checked = prefs.allowWrapperTools ?? false;
   preferredWrapperField.value = prefs.preferredWrapper || "codex";
   document.querySelector("#dockerSandboxImage").value = prefs.dockerSandboxImage || "agintiflow-sandbox:latest";

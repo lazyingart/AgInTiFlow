@@ -53,6 +53,10 @@ aginti login deepseek
 # inside chat, use /login or /auth
 # or non-interactively:
 printf '%s' "$DEEPSEEK_API_KEY" | aginti keys set deepseek --stdin
+
+# optional image-generation auxiliary skill:
+aginti login grsai
+# inside chat, use /auxilliary grsai or /auxiliary grsai
 ```
 
 Start an interactive Codex-style CLI chat from any project folder:
@@ -66,6 +70,8 @@ aginti chat
 Inside chat, type normal requests such as `write a small Python CLI app with tests`. The default is Docker workspace mode with approved package installs, so coding, plotting, and LaTeX tasks can set up project-local tools without touching the host. Use `/help` for commands, `/login` or `/auth` to paste a provider key, `/latex on` for PDF work, `/docker off` only when you intentionally want host mode, `/sessions` to list project runs, and `/resume latest` or `/resume <session-id>` to continue work. Type `/` then Tab for command completion. Esc or Ctrl+C stops the active run cleanly and prints the resume command.
 
 For code edits, AgInTiFlow routes patch/refactor/database-style tasks to DeepSeek v4 pro by default and exposes `apply_patch` as a deterministic workspace tool. It supports exact replacements, Codex-style patch envelopes, and unified diffs, with preflight checks, path guardrails, hashes, and compact per-file diffs. See [docs/patch-tools.md](docs/patch-tools.md).
+
+For raster image work, AgInTiFlow has an optional `image_generation` skill backed by the `generate_image` tool and a local `GRSAI` key. The skill tells DeepSeek when image generation is appropriate; the tool calls GRS AI Nano Banana, saves manifests/images under `artifacts/images`, and sends the result to the canvas. See [docs/auxiliary-image-generation.md](docs/auxiliary-image-generation.md).
 
 Launch the local web UI from an installed package:
 

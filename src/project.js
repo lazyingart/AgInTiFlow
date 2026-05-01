@@ -15,6 +15,8 @@ const LOCAL_ENV_KEYS = new Set([
   "DEEPSEEK_FAST_MODEL",
   "DEEPSEEK_PRO_MODEL",
   "OPENAI_DEFAULT_MODEL",
+  "GRSAI",
+  "GRSAI_API_KEY",
 ]);
 
 export function resolveProjectRoot(input = process.cwd()) {
@@ -27,6 +29,7 @@ export function projectPaths(projectRoot = process.cwd()) {
     root,
     controlDir: path.join(root, ".aginti"),
     envPath: path.join(root, ".aginti", ".env"),
+    rootEnvPath: path.join(root, ".env"),
     envExamplePath: path.join(root, ".aginti", ".env.example"),
     controlReadmePath: path.join(root, ".aginti", "README.md"),
     notesDir: path.join(root, "notes"),
@@ -59,19 +62,24 @@ export function parseEnvText(text = "") {
 
 export function loadProjectEnv(projectRoot = process.cwd(), { override = false } = {}) {
   const paths = projectPaths(projectRoot);
-  let loaded = false;
-  try {
-    const parsed = parseEnvText(fs.readFileSync(paths.envPath, "utf8"));
-    for (const [key, value] of Object.entries(parsed)) {
-      if (override || !process.env[key]) process.env[key] = value;
+  const envPaths = [paths.rootEnvPath, paths.envPath];
+  const loadedPaths = [];
+  for (const envPath of envPaths) {
+    try {
+      const parsed = parseEnvText(fs.readFileSync(envPath, "utf8"));
+      if (Object.keys(parsed).length === 0) continue;
+      for (const [key, value] of Object.entries(parsed)) {
+        if (override || !process.env[key]) process.env[key] = value;
+      }
+      loadedPaths.push(envPath);
+    } catch {
+      // Ignore missing or unreadable optional local env files.
     }
-    loaded = true;
-  } catch {
-    loaded = false;
   }
   return {
-    loaded,
+    loaded: loadedPaths.length > 0,
     path: paths.envPath,
+    paths: loadedPaths,
   };
 }
 
@@ -137,6 +145,7 @@ export async function initProject(projectRoot = process.cwd()) {
       "# Copy values into .aginti/.env. Never commit real secrets.",
       "DEEPSEEK_API_KEY=",
       "OPENAI_API_KEY=",
+      "GRSAI=",
       "DEEPSEEK_FAST_MODEL=deepseek-v4-flash",
       "DEEPSEEK_PRO_MODEL=deepseek-v4-pro",
       "",
@@ -153,6 +162,8 @@ export async function initProject(projectRoot = process.cwd()) {
   );
 
   const gitignore = await ensureLine(paths.gitignorePath, [
+    ".env",
+    ".env.*",
     ".aginti/.env",
     ".aginti/.env.*",
     "!.aginti/.env.example",
@@ -177,21 +188,31 @@ export function providerKeyStatus(projectRoot = process.cwd()) {
   return {
     openai: Boolean(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY),
     deepseek: Boolean(process.env.DEEPSEEK_API_KEY || process.env.LLM_API_KEY),
+    grsai: Boolean(process.env.GRSAI || process.env.GRSAI_API_KEY),
     mock: true,
     localEnv: env.loaded,
     localEnvPath: env.path,
     envVars: {
       openai: ["OPENAI_API_KEY", "LLM_API_KEY"],
       deepseek: ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
+      grsai: ["GRSAI", "GRSAI_API_KEY"],
     },
   };
 }
 
 export async function setProviderKey(projectRoot, provider, value) {
   const normalizedProvider = String(provider || "").toLowerCase();
-  const keyName = normalizedProvider === "openai" ? "OPENAI_API_KEY" : "DEEPSEEK_API_KEY";
-  if (!["deepseek", "openai"].includes(normalizedProvider)) {
-    throw new Error("Provider must be deepseek or openai.");
+  const aliases = {
+    auxiliary: "grsai",
+    auxilliary: "grsai",
+    image: "grsai",
+    imagegen: "grsai",
+  };
+  const canonicalProvider = aliases[normalizedProvider] || normalizedProvider;
+  const keyName =
+    canonicalProvider === "openai" ? "OPENAI_API_KEY" : canonicalProvider === "grsai" ? "GRSAI" : "DEEPSEEK_API_KEY";
+  if (!["deepseek", "openai", "grsai"].includes(canonicalProvider)) {
+    throw new Error("Provider must be deepseek, openai, or grsai.");
   }
 
   const keyValue = String(value || "").trim();
@@ -220,7 +241,7 @@ export async function setProviderKey(projectRoot, provider, value) {
   loadProjectEnv(projectRoot, { override: true });
   return {
     ok: true,
-    provider: normalizedProvider,
+    provider: canonicalProvider,
     keyName,
     path: paths.envPath,
   };
@@ -324,6 +345,7 @@ export async function doctorReport(projectRoot, packageVersion, config) {
     keys: {
       openai: keyStatus.openai,
       deepseek: keyStatus.deepseek,
+      grsai: keyStatus.grsai,
       mock: true,
     },
     sandbox: dockerStatus,

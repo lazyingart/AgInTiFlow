@@ -151,6 +151,21 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
     return { allowed: true };
   }
 
+  if (toolName === "generate_image") {
+    if (!config.allowAuxiliaryTools) {
+      return { allowed: false, reason: "Auxiliary tools are disabled for this run.", category: "auxiliary-tools" };
+    }
+
+    const prompt = String(args.prompt || "").trim();
+    if (!prompt) return { allowed: false, reason: "Image prompt is required.", category: "auxiliary-tools" };
+    if (Buffer.byteLength(prompt, "utf8") > MAX_CANVAS_CONTENT_BYTES) {
+      return { allowed: false, reason: "Image prompt is too large.", category: "auxiliary-tools" };
+    }
+
+    const outputDir = String(args.outputDir || "artifacts/images/generated").trim();
+    return checkWorkspaceToolUse("write_file", { path: `${outputDir.replace(/\/+$/, "")}/task_manifest.json` }, config);
+  }
+
   if (toolName === "send_to_canvas") {
     const title = String(args.title || "").trim();
     if (!title) return { allowed: false, reason: "Canvas title is required." };

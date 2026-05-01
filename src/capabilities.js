@@ -7,6 +7,7 @@ import { getModelPresets } from "./model-routing.js";
 import { listProjectSessions, projectPaths, providerKeyStatus } from "./project.js";
 import { listTaskProfiles } from "./task-profiles.js";
 import { listAgentWrappers } from "./tool-wrappers.js";
+import { listAuxiliarySkills } from "./auxiliary-tools.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -139,6 +140,10 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
     capability("docker", Boolean(dockerStatus?.dockerAvailable), dockerStatus || {}),
     capability("deepseek-key", keyStatus.deepseek, { envVars: keyStatus.envVars.deepseek }),
     capability("openai-key", keyStatus.openai, { envVars: keyStatus.envVars.openai }),
+    capability("grsai-key", keyStatus.grsai, {
+      envVars: keyStatus.envVars.grsai,
+      setup: "Optional for image generation. Run `aginti login grsai` or use `/auxilliary grsai` in chat.",
+    }),
     capability("file-tools", Boolean(config.allowFileTools), { workspace: config.commandCwd }),
     capability("shell-tool", Boolean(config.allowShellTool), {
       sandboxMode: config.sandboxMode,
@@ -178,6 +183,7 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
     keys: {
       deepseek: keyStatus.deepseek,
       openai: keyStatus.openai,
+      grsai: keyStatus.grsai,
       mock: true,
       localEnv: keyStatus.localEnv,
       envVars: keyStatus.envVars,
@@ -193,6 +199,13 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
         id: profile.id,
         label: profile.label,
         tools: profile.tools,
+      })),
+      auxiliarySkills: listAuxiliarySkills().map((skill) => ({
+        id: skill.id,
+        label: skill.label,
+        provider: skill.provider,
+        toolName: skill.toolName,
+        available: skill.available,
       })),
     },
     checks,
@@ -221,7 +234,7 @@ export function printCapabilityReport(report) {
   console.log(
     `keys: deepseek=${report.keys.deepseek ? "available" : "missing"} openai=${
       report.keys.openai ? "available" : "missing"
-    } mock=available localEnv=${report.keys.localEnv}`
+    } grsai=${report.keys.grsai ? "available" : "missing"} mock=available localEnv=${report.keys.localEnv}`
   );
   for (const check of report.checks) {
     const suffix = check.version ? ` ${check.version}` : check.reason ? ` ${check.reason}` : check.hint ? ` ${check.hint}` : "";
