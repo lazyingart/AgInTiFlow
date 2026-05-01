@@ -144,8 +144,8 @@ function createInitialState(config, sessionId) {
           "Avoid destructive actions, purchases, account changes, and sensitive workflows.",
           config.allowShellTool
             ? config.useDockerSandbox
-              ? `A shell command tool is available inside Docker sandbox mode ${config.sandboxMode}. Read-only commands have no network. Package installs or environment setup require approved package policy and Docker workspace-write mode.`
-              : "A read-only host shell command tool is available for short local inspection tasks."
+              ? `A shell command tool is available inside Docker sandbox mode ${config.sandboxMode}. Docker workspace mode with approved package installs supports broader setup and network commands.`
+              : "A host shell command tool is available under the configured trust policy."
             : "No shell command tool is available.",
           config.allowFileTools
             ? `Workspace file tools are available in ${config.commandCwd}: list_files, read_file, search_files, write_file, and apply_patch. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. Secret paths, .git internals, node_modules writes, and huge files are blocked.`
@@ -158,7 +158,7 @@ function createInitialState(config, sessionId) {
           "For visual-output requests such as draw, plot, graph, chart, diagram, figure, image, or visualization, proactively publish a canvas artifact even when the user does not mention canvas. If workspace file tools are enabled, prefer creating a small SVG or markdown artifact and call send_to_canvas with selected=true.",
           "Work like a practical coding agent: inspect when useful, edit with file tools, run safe checks when they add confidence, and keep outputs inside the workspace.",
           "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files.",
-          "For environment or system-maintenance work, prefer project-local dry-run plans/scripts unless the configured policy explicitly allows stronger actions.",
+          "For environment or system-maintenance work, use the configured sandbox and package policy; Docker workspace mode is the preferred place for installs and toolchain setup.",
           "When the requested outcome is complete and a useful check has passed or been honestly skipped, stop and call finish.",
           "When done, call finish with a concise result.",
         ].join(" "),
@@ -182,7 +182,7 @@ function createInitialState(config, sessionId) {
           "Canvas/artifacts tunnel: available through send_to_canvas for optional frontend rendering.",
           "Visual-output requests should produce a canvas artifact without requiring the user to ask for canvas explicitly.",
           "Use file, shell, browser, canvas, and wrapper tools when they are useful; choose the workflow from the user's request.",
-          "Keep environment or system-maintenance actions project-local and reversible unless policy explicitly permits stronger actions.",
+          "Use the configured sandbox and package policy for environment or system-maintenance work.",
         ]
           .filter(Boolean)
           .join("\n"),

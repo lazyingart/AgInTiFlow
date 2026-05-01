@@ -300,7 +300,7 @@ export async function requestNextStep(client, config, messages) {
       function: {
         name: "run_command",
         description:
-          "Run an allowlisted terminal command in the configured working directory. Good for inspection, tests, and approved Docker package/environment setup. NPM publishing, tokens, sudo, arbitrary network commands, and destructive git/file actions are blocked.",
+          "Run a terminal command in the configured working directory under the active shell policy. Secrets and npm publishing are always blocked; Docker workspace mode with approved package installs supports broader network/setup commands, while host destructive or privileged work requires explicit trust.",
         parameters: {
           type: "object",
           properties: {

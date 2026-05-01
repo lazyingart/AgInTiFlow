@@ -168,7 +168,7 @@ export async function ensureDockerSandboxReady(config, observers, options = {}) 
 function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, config)) {
   const uid = typeof process.getuid === "function" ? String(process.getuid()) : "";
   const gid = typeof process.getgid === "function" ? String(process.getgid()) : "";
-  const userArgs = uid && gid ? ["--user", `${uid}:${gid}`] : [];
+  const userArgs = uid && gid && !policy.requiresDockerRoot ? ["--user", `${uid}:${gid}`] : [];
   const sandboxMode = normalizeSandboxMode(config.sandboxMode);
   const mountMode = sandboxMode === "docker-workspace" ? "rw" : "ro";
   const networkMode = policy.needsNetwork ? "bridge" : "none";

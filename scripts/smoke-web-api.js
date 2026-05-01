@@ -90,6 +90,9 @@ try {
   if (!capabilities.checks.some((check) => check.name === "npm-prefix-test-policy")) {
     throw new Error("capability endpoint did not include command policy checks");
   }
+  if (!capabilities.trustedDockerPolicy?.some((check) => check.command.startsWith("apt-get install") && check.allowed)) {
+    throw new Error("capability endpoint did not report trusted Docker package policy");
+  }
   const savedKey = await fetchJson("/api/keys/deepseek", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

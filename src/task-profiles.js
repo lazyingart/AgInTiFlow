@@ -52,7 +52,7 @@ export const TASK_PROFILES = {
     id: "website",
     label: "Website testing",
     prompt:
-      "For website-testing tasks, create or inspect the site, add a simple local test/check file when useful, and run safe checks without installing packages unless approved.",
+      "For website-testing tasks, create or inspect the site, add a local check when useful, and use the configured sandbox/package policy for dependencies.",
     tools: ["files", "shell", "canvas", "sandbox"],
   },
   aaps: {
@@ -73,7 +73,7 @@ export const TASK_PROFILES = {
     id: "maintenance",
     label: "System maintenance",
     prompt:
-      "For system maintenance, diagnose first, prefer reversible project-local plans or dry-run scripts, and avoid privileged/global/destructive actions unless explicitly approved.",
+      "For system maintenance, diagnose first, use Docker for broad installs when available, and follow the configured trust/package policy for host-level changes.",
     tools: ["shell", "sandbox", "files"],
   },
 };

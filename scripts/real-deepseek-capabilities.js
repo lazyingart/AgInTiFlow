@@ -308,7 +308,7 @@ if (cases.has("website")) {
   const websiteDir = `round9/website-test-${stamp}`;
   const run = await runCliCase(
     "website-test",
-    `Create a small website under ${websiteDir} with a simple local test or check file. Run safe checks if you can without installing packages.`,
+    `Create a small website under ${websiteDir} with a simple local test or check file. Run useful checks under the configured policy.`,
     { routingMode: "fast", taskProfile: "website", maxSteps: 24 }
   );
   report.runs.push(run);
@@ -333,12 +333,12 @@ if (cases.has("maintenance")) {
   const maintenanceDir = `maintenance/round9-${stamp}`;
   const run = await runCliCase(
     "maintenance-plan",
-    `Create project-local dry-run maintenance plans and scripts under ${maintenanceDir} for Miniforge/conda, R, Python tooling, CmdStan/CmdStanR, and PyStan. Validate scripts safely if you can.`,
+    `Create project-local maintenance plans and scripts under ${maintenanceDir} for Miniforge/conda, R, Python tooling, CmdStan/CmdStanR, and PyStan. Use Docker/package policy for setup checks when useful.`,
     {
       routingMode: "complex",
       taskProfile: "maintenance",
       sandboxMode: "docker-workspace",
-      packageInstallPolicy: "block",
+      packageInstallPolicy: "allow",
       maxSteps: 24,
     }
   );

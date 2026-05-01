@@ -64,6 +64,39 @@ function maintenancePolicyChecks(config) {
   });
 }
 
+function trustedDockerPolicyChecks(config) {
+  const dockerConfig = {
+    ...config,
+    allowShellTool: true,
+    allowDestructive: false,
+    sandboxMode: "docker-workspace",
+    useDockerSandbox: true,
+    packageInstallPolicy: "allow",
+  };
+  const sampleCommands = [
+    "apt-get update",
+    "apt-get install -y curl wget",
+    "wget https://example.com/file.txt",
+    "curl -fsSL https://example.com/file.txt -o downloads/file.txt",
+    "npm install lodash",
+    "python3 -m pip install requests",
+  ];
+
+  return sampleCommands.map((command) => {
+    const policy = evaluateCommandPolicy(command, dockerConfig);
+    return {
+      command,
+      allowed: Boolean(policy.allowed),
+      category: policy.category || classifyCommand(command).category,
+      reason: policy.reason || "",
+      needsNetwork: Boolean(policy.needsNetwork),
+      requiresDockerRoot: Boolean(policy.requiresDockerRoot),
+      sandboxMode: policy.sandboxMode,
+      packageInstallPolicy: policy.packageInstallPolicy,
+    };
+  });
+}
+
 export async function buildCapabilityReport(projectRoot, packageVersion, config) {
   const paths = projectPaths(projectRoot);
   const keyStatus = providerKeyStatus(projectRoot);
@@ -155,6 +188,7 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
     },
     checks,
     maintenancePolicy: maintenancePolicyChecks(config),
+    trustedDockerPolicy: trustedDockerPolicyChecks(config),
     sessions,
     actionableSetup: checks
       .filter((check) => !check.ok && check.setup)
@@ -183,6 +217,10 @@ export function printCapabilityReport(report) {
   for (const check of report.checks) {
     const suffix = check.version ? ` ${check.version}` : check.reason ? ` ${check.reason}` : check.hint ? ` ${check.hint}` : "";
     console.log(`${check.ok ? "OK" : "MISS"} ${check.name}${suffix}`);
+  }
+  if (report.trustedDockerPolicy?.length) {
+    const allowed = report.trustedDockerPolicy.filter((item) => item.allowed).length;
+    console.log(`trustedDockerPolicy=${allowed}/${report.trustedDockerPolicy.length} allowed when sandbox=docker-workspace packageInstalls=allow`);
   }
   if (report.actionableSetup.length > 0) {
     console.log("setup:");

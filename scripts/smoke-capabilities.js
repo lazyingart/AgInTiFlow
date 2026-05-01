@@ -54,6 +54,14 @@ try {
     capabilities.maintenancePolicy.some((check) => check.command.startsWith("sudo") && !check.allowed),
     "sudo maintenance command was not blocked"
   );
+  assert(
+    capabilities.trustedDockerPolicy.some((check) => check.command.startsWith("apt-get install") && check.allowed),
+    "trusted Docker policy did not allow apt-get install"
+  );
+  assert(
+    capabilities.trustedDockerPolicy.some((check) => check.command.startsWith("wget") && check.allowed),
+    "trusted Docker policy did not allow wget"
+  );
 
   const doctor = JSON.parse(await runCli(["doctor", "--capabilities", "--json"]));
   assert(doctor.project.root === tempRoot, "doctor --capabilities used the wrong project root");
@@ -63,7 +71,7 @@ try {
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["capabilities-cli", "doctor-capabilities", "maintenance-policy"],
+        checks: ["capabilities-cli", "doctor-capabilities", "maintenance-policy", "trusted-docker-policy"],
       },
       null,
       2

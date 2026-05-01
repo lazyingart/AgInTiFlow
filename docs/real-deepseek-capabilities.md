@@ -43,8 +43,8 @@ AGINTIFLOW_REAL_DEEPSEEK=1 AGINTIFLOW_REAL_CASES=flash,pro npm run real:deepseek
 - `flash`: DeepSeek v4 flash creates a dependency-free Node/HTML app with `node:test` tests and runs `npm --prefix <app> test` when safe.
 - `pro`: DeepSeek v4 pro resumes/improves the app and expands tests.
 - `latex`: creates `.tex` source and compiles only if a TeX toolchain is available; otherwise writes an honest setup artifact.
-- `website`: creates a dependency-free website test sample and runs safe tests when dependencies are present.
-- `maintenance`: creates dry-run maintenance scripts/plans under `maintenance/` and validates script syntax; no global installs.
+- `website`: creates a website test sample and runs checks with the configured shell/package policy.
+- `maintenance`: verifies the agent can prepare project-local maintenance work and use Docker/package policy for broader setup commands without exposing secrets.
 - `aaps`: creates a project-local `.aaps` sample and notes for `@lazyingart/aaps` workflows without publishing.
 - `web`: when `AGINTIFLOW_REAL_WEB_BASE_URL` is set, starts a web run and verifies CLI/web session sharing.
 

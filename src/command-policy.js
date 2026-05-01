@@ -40,6 +40,11 @@ const TEST_PATTERNS = [
 
 const SAFE_WORKSPACE_WRITE_PATTERNS = [/^mkdir\s+-p\s+[-\w./]+$/];
 
+const NETWORK_FETCH_PATTERNS = [
+  /^curl\s+(?:-[A-Za-z0-9]*\s+)*https?:\/\/\S+(?:\s+-o\s+[-\w./]+)?$/,
+  /^wget\s+(?:-[A-Za-z0-9]*\s+)*(?:-O\s+[-\w./]+\s+)?https?:\/\/\S+$/,
+];
+
 const TOOLCHAIN_PATTERNS = [
   /^python(?:3)?\s+[-\w./]+\.py(?:\s+[-\w./:=]+)*$/,
   /^latexmk\s+(?=[-\w./=\s]*-pdf\b)(?:(?:-cd|-pdf|-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+)\s+)+[-\w./]+\.tex$/,
@@ -48,12 +53,24 @@ const TOOLCHAIN_PATTERNS = [
 
 const PACKAGE_INSTALL_PATTERNS = [
   /^npm\s+ci$/,
-  /^npm\s+install$/,
+  /^npm\s+install(?:\s+[-@\w./:=]+)*$/,
   /^pnpm\s+install$/,
+  /^pnpm\s+add(?:\s+[-@\w./:=]+)+$/,
   /^yarn\s+install$/,
+  /^yarn\s+add(?:\s+[-@\w./:=]+)+$/,
   /^python(?:3)?\s+-m\s+pip\s+install\s+-r\s+[-\w./]+$/,
+  /^python(?:3)?\s+-m\s+pip\s+install(?:\s+[-@\w./:=]+)+$/,
   /^pip(?:3)?\s+install\s+-r\s+[-\w./]+$/,
+  /^pip(?:3)?\s+install(?:\s+[-@\w./:=]+)+$/,
+  /^uv\s+(sync|pip\s+install)(?:\s+[-@\w./:=]+)*$/,
   /^conda\s+env\s+(create|update)\s+-f\s+[-\w./]+$/,
+  /^conda\s+install(?:\s+[-@\w./:=]+)+$/,
+];
+
+const SYSTEM_PACKAGE_INSTALL_PATTERNS = [
+  /^(?:sudo\s+)?apt(?:-get)?\s+update$/,
+  /^(?:sudo\s+)?apt(?:-get)?\s+install(?:\s+-y)?(?:\s+[-@\w.+:=]+)+$/,
+  /^apk\s+add(?:\s+--no-cache)?(?:\s+[-@\w.+:=]+)+$/,
 ];
 
 const ENV_SETUP_PATTERNS = [
@@ -64,13 +81,10 @@ const ENV_SETUP_PATTERNS = [
 
 const BLOCKED_SHELL_TOKENS = ["&&", "||", ";", "|", ">", "<", "$(", "`"];
 const BLOCKED_WRITE_TOKENS = [
-  "sudo ",
   " rm",
   " mv",
-  " cp",
   " chmod",
   " chown",
-  " mkdir",
   " rmdir",
   " touch",
   " tee",
@@ -83,8 +97,6 @@ const BLOCKED_WRITE_TOKENS = [
   "git switch",
   "git reset",
   "git clean",
-  "curl ",
-  "wget ",
 ];
 
 const ALWAYS_BLOCKED_PATTERNS = [
@@ -96,6 +108,13 @@ const ALWAYS_BLOCKED_PATTERNS = [
   /_authToken\s*=/i,
   /OPENAI_API_KEY\s*=/i,
   /DEEPSEEK_API_KEY\s*=/i,
+];
+
+const SENSITIVE_COMMAND_PATTERNS = [
+  /(^|[\s./])\.env(\s|$|[./])/i,
+  /(^|[\s./])\.npmrc(\s|$|[./])/i,
+  /^(env|printenv)(\s|$)/i,
+  /(api[_-]?key|auth[_-]?token|npm[_-]?token|_authToken|bearer\s+[A-Za-z0-9._-]+)/i,
 ];
 
 function normalizePolicy(value, allowed, fallback) {
@@ -130,10 +149,18 @@ function classifySimpleCommand(normalized) {
   if (ALWAYS_BLOCKED_PATTERNS.some((pattern) => pattern.test(normalized))) {
     return { category: "blocked", reason: "Command is blocked because it may expose secrets or publish packages." };
   }
+  if (SENSITIVE_COMMAND_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return { category: "blocked", reason: "Command is blocked because it references secrets or credential files." };
+  }
 
   const lowered = ` ${normalized.toLowerCase()} `;
   if (BLOCKED_SHELL_TOKENS.some((part) => normalized.includes(part))) {
-    return { category: "blocked", reason: `Command contains blocked shell syntax: ${normalized}` };
+    return {
+      category: "general-shell",
+      needsNetwork: true,
+      writesWorkspace: true,
+      reason: `Command uses general shell syntax: ${normalized}`,
+    };
   }
   if (matchAny(SAFE_WORKSPACE_WRITE_PATTERNS, normalized)) {
     const target = normalized.replace(/^mkdir\s+-p\s+/, "");
@@ -144,7 +171,12 @@ function classifySimpleCommand(normalized) {
     return { category: "workspace-write", needsNetwork: false, writesWorkspace: true, virtualWorkspacePath };
   }
   if (BLOCKED_WRITE_TOKENS.some((part) => lowered.includes(part))) {
-    return { category: "blocked", reason: `Command contains a write-capable or network token: ${normalized}` };
+    return {
+      category: "destructive",
+      needsNetwork: false,
+      writesWorkspace: true,
+      reason: `Command contains a write-capable or destructive token: ${normalized}`,
+    };
   }
 
   if (matchAny(READ_ONLY_PATTERNS, normalized)) {
@@ -156,6 +188,12 @@ function classifySimpleCommand(normalized) {
   if (matchAny(TOOLCHAIN_PATTERNS, normalized)) {
     return { category: "toolchain", needsNetwork: false, writesWorkspace: true };
   }
+  if (matchAny(NETWORK_FETCH_PATTERNS, normalized)) {
+    return { category: "network-fetch", needsNetwork: true, writesWorkspace: /(\s-o\s|\s-O\s)/.test(normalized) };
+  }
+  if (matchAny(SYSTEM_PACKAGE_INSTALL_PATTERNS, normalized)) {
+    return { category: "system-package-install", needsNetwork: true, writesWorkspace: false, requiresDockerRoot: true };
+  }
   if (matchAny(PACKAGE_INSTALL_PATTERNS, normalized)) {
     return { category: "package-install", needsNetwork: true, writesWorkspace: true };
   }
@@ -163,7 +201,12 @@ function classifySimpleCommand(normalized) {
     return { category: "env-setup", needsNetwork: false, writesWorkspace: true };
   }
 
-  return { category: "blocked", reason: `Command is outside the execution allowlist: ${normalized}` };
+  return {
+    category: "general-shell",
+    needsNetwork: false,
+    writesWorkspace: false,
+    reason: `Command is outside the narrow allowlist and requires a trusted shell policy: ${normalized}`,
+  };
 }
 
 function classifyCdCommand(normalized) {
@@ -190,6 +233,10 @@ export function evaluateCommandPolicy(command, config) {
   const classification = classifyCommand(command);
   const sandboxMode = normalizeSandboxMode(config.sandboxMode);
   const packageInstallPolicy = normalizePackageInstallPolicy(config.packageInstallPolicy);
+  const dockerWorkspace = sandboxMode === "docker-workspace";
+  const packageInstallsAllowed = packageInstallPolicy === "allow";
+  const trustedDockerShell = dockerWorkspace && packageInstallsAllowed;
+  const trustedHostShell = sandboxMode === "host" && Boolean(config.allowDestructive);
 
   if (classification.category === "blocked") {
     return { allowed: false, ...classification, sandboxMode, packageInstallPolicy };
@@ -215,7 +262,11 @@ export function evaluateCommandPolicy(command, config) {
     };
   }
 
-  if (classification.category === "package-install" || classification.category === "env-setup") {
+  if (
+    classification.category === "package-install" ||
+    classification.category === "env-setup" ||
+    classification.category === "system-package-install"
+  ) {
     if (packageInstallPolicy !== "allow") {
       return {
         allowed: false,
@@ -230,15 +281,51 @@ export function evaluateCommandPolicy(command, config) {
       };
     }
 
-    if (sandboxMode !== "docker-workspace") {
+    if (classification.category === "system-package-install" && sandboxMode === "host" && !config.allowDestructive) {
       return {
         allowed: false,
         category: classification.category,
-        reason: "Approved package/environment setup must run in Docker workspace-write sandbox mode.",
+        reason: "Host system package installs require Allow destructive actions. Prefer Docker workspace mode.",
         sandboxMode,
         packageInstallPolicy,
       };
     }
+  }
+
+  if (classification.category === "general-shell" && !trustedDockerShell && !trustedHostShell) {
+    return {
+      allowed: false,
+      ...classification,
+      needsApproval: true,
+      reason:
+        sandboxMode === "host"
+          ? "General shell commands on the host require Allow destructive actions. Prefer Docker workspace mode for broad shell access."
+          : "General Docker shell commands require Package installs = allow in docker-workspace mode.",
+      sandboxMode,
+      packageInstallPolicy,
+    };
+  }
+
+  if (classification.category === "destructive" && !config.allowDestructive) {
+    return {
+      allowed: false,
+      ...classification,
+      needsApproval: true,
+      reason: "Destructive shell commands require Allow destructive actions.",
+      sandboxMode,
+      packageInstallPolicy,
+    };
+  }
+
+  if (classification.category === "network-fetch" && config.useDockerSandbox && !trustedDockerShell) {
+    return {
+      allowed: false,
+      ...classification,
+      needsApproval: true,
+      reason: "Docker network commands require docker-workspace mode with Package installs = allow.",
+      sandboxMode,
+      packageInstallPolicy,
+    };
   }
 
   if (classification.writesWorkspace && config.useDockerSandbox && sandboxMode !== "docker-workspace") {
@@ -254,6 +341,7 @@ export function evaluateCommandPolicy(command, config) {
   return {
     allowed: true,
     ...classification,
+    requiresDockerRoot: Boolean(classification.requiresDockerRoot && config.useDockerSandbox),
     sandboxMode,
     packageInstallPolicy,
   };

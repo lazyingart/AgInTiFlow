@@ -72,6 +72,7 @@ aginti sessions list
 aginti sessions show <session-id>
 aginti resume <session-id> "continue with a short follow-up"
 aginti --profile code --provider mock --routing manual "Create notes/hello.md"
+aginti --allow-shell --sandbox-mode docker-workspace --approve-package-installs "set up and test this project"
 ```
 
 Run from a source checkout:
@@ -181,12 +182,12 @@ AgInTiFlow is intentionally conservative:
 - Shell commands are disabled unless the shell tool is enabled.
 - Workspace file tools stay inside `commandCwd` and block `.env`, secret-like paths, `.git`, node_modules writes, absolute escapes, binary files, and huge files.
 - File writes record before/after SHA-256 hashes and compact redacted diffs.
-- Guarded shell mode only allows inspection, test/build checks, and approved setup commands.
+- Guarded shell mode is policy-based: normal inspection/tests are available, Docker workspace mode can run broader setup/network commands when package installs are approved, and host privileged/destructive work requires explicit trust.
 - Docker read-only mode mounts the workspace read-only and disables container network access.
 - Docker workspace-write mode is the web UI default so plot, PDF, and test outputs can be written inside the mounted workspace.
-- Docker workspace-write mode is required for approved package or environment setup.
+- Docker workspace-write mode is the preferred place for approved package or environment setup, including `apt-get`, `npm`, `pip`, `curl`, and `wget` workflows inside the container.
 - Package installs default to `prompt`, so npm/pip/conda/venv setup is blocked until explicitly approved.
-- NPM publishing, npm token commands, sudo, destructive git actions, curl/wget, and shell chaining are blocked.
+- NPM publishing, npm token commands, API-key reads, and credential files stay blocked. Broader shell commands require either Docker workspace mode with package policy `allow`, or explicit host trust.
 - NPM tokens and API keys are redacted from tool logs and API responses.
 - Every tool request and result is written to structured logs.
 
@@ -311,9 +312,9 @@ The setup script idempotently builds `agintiflow-sandbox:latest` from `docker/sa
 
 | Mode | Workspace mount | Network | Intended use |
 | --- | --- | --- | --- |
-| `host` | local process | host network | legacy read-only inspection only |
+| `host` | local process | host network | direct project work; privileged/destructive commands require explicit trust |
 | `docker-readonly` | read-only `/workspace` | none | safe coding inspection and tests that do not write files |
-| `docker-workspace` | writable `/workspace` | none by default, enabled only for approved package installs | web UI default for environment setup, plotting, and LaTeX/PDF compilation inside the mounted project |
+| `docker-workspace` | writable `/workspace` | none by default, enabled for approved package/setup/network commands | web UI default for environment setup, plotting, LaTeX/PDF, dependency installs, and broad toolchain work inside the mounted project |
 
 Package policy values:
 
@@ -321,7 +322,7 @@ Package policy values:
 | --- | --- |
 | `block` | Always block npm/pip/conda/venv setup. |
 | `prompt` | Return a clear approval-required error; the UI can switch to approved. |
-| `allow` | Permit allowlisted setup commands only in `docker-workspace`. |
+| `allow` | Permit package/setup commands. Docker workspace mode also allows broader shell/network commands while keeping secrets and npm publishing blocked. |
 
 Toolchain commands such as `python3 plot.py`, `latexmk -pdf paper.tex`, and `pdflatex -interaction=nonstopmode -halt-on-error paper.tex` are allowlisted only when the shell tool is enabled. In Docker mode they require `docker-workspace` because they write outputs back to `/workspace`. File and canvas tools accept both normal relative paths and Docker virtual paths like `/workspace/report.pdf`, while other absolute host paths remain blocked.
 
