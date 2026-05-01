@@ -1,5 +1,6 @@
 import { evaluateCommandPolicy } from "./command-policy.js";
 import { checkWorkspaceToolUse, WORKSPACE_TOOL_NAMES } from "./workspace-tools.js";
+import { normalizeWrapperName } from "./tool-wrappers.js";
 
 const DESTRUCTIVE_KEYWORDS = [
   "delete",
@@ -105,6 +106,11 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
     const wrapper = String(args.wrapper || "");
     if (!KNOWN_WRAPPERS.has(wrapper)) {
       return { allowed: false, reason: `Unknown agent wrapper: ${wrapper}` };
+    }
+
+    const preferredWrapper = normalizeWrapperName(config.preferredWrapper);
+    if (wrapper !== preferredWrapper) {
+      return { allowed: false, reason: `Only the selected wrapper is enabled for this run: ${preferredWrapper}` };
     }
 
     const prompt = String(args.prompt || "").trim();

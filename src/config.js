@@ -2,6 +2,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { getProviderDefaults, normalizeRoutingMode, selectModelRoute } from "./model-routing.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
+import { normalizeWrapperName } from "./tool-wrappers.js";
 
 function parseBoolean(value, fallback) {
   if (value === undefined) return fallback;
@@ -72,6 +73,9 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     allowWrapperTools: parseBoolean(
       overrides.allowWrapperTools ?? args.allowWrapperTools ?? process.env.ALLOW_WRAPPER_TOOLS,
       false
+    ),
+    preferredWrapper: normalizeWrapperName(
+      overrides.preferredWrapper ?? args.preferredWrapper ?? process.env.PREFERRED_WRAPPER ?? process.env.AGENT_WRAPPER
     ),
     wrapperTimeoutMs: parseNumber(overrides.wrapperTimeoutMs ?? process.env.WRAPPER_TIMEOUT_MS, 120000),
     sandboxMode,

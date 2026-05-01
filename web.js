@@ -7,7 +7,7 @@ import { resolveRuntimeConfig } from "./src/config.js";
 import { WebDatabase } from "./src/web-db.js";
 import { SessionStore } from "./src/session-store.js";
 import { getModelPresets, getProviderDefaults, normalizeRoutingMode } from "./src/model-routing.js";
-import { listAgentWrappers } from "./src/tool-wrappers.js";
+import { listAgentWrappers, normalizeWrapperName } from "./src/tool-wrappers.js";
 import { getDockerSandboxStatus, getSandboxLogs, runDockerPreflight } from "./src/docker-sandbox.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./src/command-policy.js";
 import { summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./src/workspace-tools.js";
@@ -124,6 +124,7 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
     allowFileTools: typeof body.allowFileTools === "boolean" ? body.allowFileTools : current.allowFileTools !== false,
     allowWrapperTools:
       typeof body.allowWrapperTools === "boolean" ? body.allowWrapperTools : Boolean(current.allowWrapperTools),
+    preferredWrapper: normalizeWrapperName(body.preferredWrapper || current.preferredWrapper || "codex"),
     wrapperTimeoutMs:
       Number.isFinite(parsedWrapperTimeoutMs) && parsedWrapperTimeoutMs >= 10000
         ? parsedWrapperTimeoutMs
@@ -187,6 +188,7 @@ function buildRunConfig(body, overrides = {}) {
       allowShellTool: merged.allowShellTool,
       allowFileTools: merged.allowFileTools,
       allowWrapperTools: merged.allowWrapperTools,
+      preferredWrapper: merged.preferredWrapper,
       wrapperTimeoutMs: merged.wrapperTimeoutMs,
       sandboxMode: merged.sandboxMode,
       packageInstallPolicy: merged.packageInstallPolicy,

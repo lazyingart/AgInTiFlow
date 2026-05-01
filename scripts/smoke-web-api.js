@@ -73,6 +73,7 @@ try {
   const config = await fetchJson("/api/config");
   if (!config.keyStatus?.mock) throw new Error("mock provider is not advertised by /api/config");
   if (!config.workspace?.enabled) throw new Error("workspace file tools are not advertised by /api/config");
+  if (config.preferences?.preferredWrapper !== "codex") throw new Error("Codex is not the default preferred wrapper");
 
   const status = await fetchJson("/api/sandbox/status");
   if (!status.status?.workspaceReadable) throw new Error("sandbox status did not report a readable workspace");
@@ -100,6 +101,7 @@ try {
       sandboxMode: "host",
       packageInstallPolicy: "block",
       allowShellTool: true,
+      preferredWrapper: "codex",
       maxSteps: 4,
       headless: true,
     }),

@@ -106,10 +106,10 @@ The web app includes:
 - Editable model field, with DeepSeek v4 flash as the fast default and DeepSeek v4 pro as the complex route.
 - Goal, start URL, allowed domains, working directory, and max-step controls.
 - Sandbox mode, Docker image/status, package-install approval state, safe setup warnings, and recent sandbox logs.
-- Wrapper capability panel showing available Codex, Claude, Gemini, Copilot, and Qwen wrappers.
+- Wrapper capability panel with an opt-in wrapper toggle and a preferred-wrapper selector defaulting to Codex.
 - Workspace Files panel showing file tools, recent file changes, blocked write attempts, hashes, and compact diffs.
 - Toggleable shell tool, agent wrappers, headless browser, password typing, and destructive actions.
-- Live run logs above a persistent conversation panel.
+- Persistent conversation panel above compact runtime logs, so follow-up messages stay close to the top.
 
 `Start URL` is only a suggestion. The browser opens only when the model chooses a browser tool.
 
@@ -179,7 +179,7 @@ Provider credentials:
 
 ## Agent Wrappers
 
-AgInTiFlow can expose external coding agents as advisory tools when `ALLOW_WRAPPER_TOOLS=true` or the web UI toggle is enabled. Wrappers are not a replacement for the core runner; they are used for second opinions, codebase analysis, or planning when they are installed and authenticated.
+AgInTiFlow can expose external coding agents as advisory tools when `ALLOW_WRAPPER_TOOLS=true` or the web UI toggle is enabled. Wrappers are not a replacement for the core runner; they are used for second opinions, codebase analysis, or planning when they are installed and authenticated. The preferred wrapper defaults to Codex and can be changed with `PREFERRED_WRAPPER=codex`, `aginti --allow-wrappers --wrapper codex`, or the web UI dropdown.
 
 Current wrappers:
 

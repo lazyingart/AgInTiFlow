@@ -6,6 +6,7 @@ import { redactSensitiveText } from "./redaction.js";
 const execFile = promisify(execFileCallback);
 
 export const WRAPPER_NAMES = ["codex", "claude", "gemini", "copilot", "qwen"];
+export const DEFAULT_WRAPPER_NAME = "codex";
 
 const BASE_ADVISORY_PROMPT = [
   "You are being called as an advisory wrapper tool inside AgInTiFlow.",
@@ -90,6 +91,11 @@ function wrapperCommand(wrapper, prompt, config, { fallback = false } = {}) {
 
 export function isKnownWrapper(wrapper) {
   return WRAPPER_NAMES.includes(wrapper);
+}
+
+export function normalizeWrapperName(wrapper, fallback = DEFAULT_WRAPPER_NAME) {
+  const candidate = String(wrapper || "").trim().toLowerCase();
+  return isKnownWrapper(candidate) ? candidate : fallback;
 }
 
 export function listAgentWrappers() {

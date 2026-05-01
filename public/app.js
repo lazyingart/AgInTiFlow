@@ -20,11 +20,12 @@ const translations = {
     intro:
       "Web-first agent platform with smart model routing, resumable runs, guarded tools, and optional external agent wrappers.",
     routingModeLabel: "Routing policy",
-    routingSmartOption: "Smart: fast unless complex",
+    routingSmartOption: "Smart: flash/pro/wrappers",
     routingFastOption: "DeepSeek v4 flash",
     routingComplexOption: "DeepSeek v4 pro",
     routingManualOption: "Manual provider/model",
-    routingHintSmart: "Smart routing uses DeepSeek v4 flash by default and escalates to DeepSeek v4 pro for complex work.",
+    routingHintSmart:
+      "Smart routing uses DeepSeek v4 flash for short work, DeepSeek v4 pro for complex tasks, and the selected wrapper only when wrapper tools are enabled.",
     routingHintFast: "Fast route: DeepSeek v4 flash for normal browser, shell, and short coding tasks.",
     routingHintComplex: "Complex route: DeepSeek v4 pro for deeper implementation, debugging, and design work.",
     routingHintManual: "Manual route uses the provider and model fields exactly as entered.",
@@ -56,6 +57,7 @@ const translations = {
     shellToolLabel: "Enable shell tool",
     fileToolLabel: "Enable file tools",
     wrapperToolLabel: "Enable agent wrappers",
+    preferredWrapperLabel: "Preferred wrapper",
     dockerSandboxLabel: "Use Docker sandbox",
     allowPasswordsLabel: "Allow password typing",
     allowDestructiveLabel: "Allow destructive actions",
@@ -74,6 +76,8 @@ const translations = {
     youLabel: "You",
     keysLabel: "Keys",
     wrappersLabel: "Wrappers",
+    selectedWrapperLabel: "Selected",
+    wrappersOffLabel: "wrapper tools off",
     wrapperCapabilityTitle: "Agent wrappers",
     workspaceCapabilityTitle: "Workspace files",
     workspaceToolsLabel: "File tools",
@@ -585,6 +589,8 @@ const packageWarningEl = document.querySelector("#package-warning");
 const logsEl = document.querySelector("#logs");
 const runMetaEl = document.querySelector("#run-meta");
 const keyStatusEl = document.querySelector("#key-status");
+const allowWrapperToolsField = document.querySelector("#allowWrapperTools");
+const preferredWrapperField = document.querySelector("#preferredWrapper");
 const wrapperStatusEl = document.querySelector("#wrapper-status");
 const wrapperGridEl = document.querySelector("#wrapper-grid");
 const workspaceStatusEl = document.querySelector("#workspace-status");
@@ -654,15 +660,19 @@ function renderWrapperStatus(wrappers = lastWrappers) {
     wrapperGridEl.innerHTML = "";
     return;
   }
-  wrapperStatusEl.textContent = `${t("wrappersLabel")}: ${lastWrappers
+  const selectedWrapper = preferredWrapperField?.value || "codex";
+  const selected = lastWrappers.find((wrapper) => wrapper.name === selectedWrapper);
+  const selectedLabel = selected?.label || selectedWrapper;
+  const enabledPrefix = allowWrapperToolsField?.checked ? t("selectedWrapperLabel") : t("wrappersOffLabel");
+  wrapperStatusEl.textContent = `${enabledPrefix}: ${selectedLabel} · ${t("wrappersLabel")}: ${lastWrappers
     .map((wrapper) => `${wrapper.label || wrapper.name} ${wrapper.available ? t("availableLabel") : t("missingLabel")}`)
     .join(" · ")}`;
   wrapperGridEl.innerHTML = lastWrappers
     .map(
       (wrapper) => `
-        <div class="capability-chip" data-ready="${Boolean(wrapper.available)}">
+        <div class="capability-chip" data-ready="${Boolean(wrapper.available)}" data-selected="${wrapper.name === selectedWrapper}">
           <strong>${escapeHtml(wrapper.label || wrapper.name)}</strong>
-          <span>${wrapper.available ? t("availableLabel") : t("missingLabel")}</span>
+          <span>${wrapper.name === selectedWrapper ? `${t("selectedWrapperLabel")} · ` : ""}${wrapper.available ? t("availableLabel") : t("missingLabel")}</span>
         </div>
       `
     )
@@ -842,7 +852,8 @@ function formPayload() {
     headless: document.querySelector("#headless").checked,
     allowShellTool: document.querySelector("#allowShellTool").checked,
     allowFileTools: document.querySelector("#allowFileTools").checked,
-    allowWrapperTools: document.querySelector("#allowWrapperTools").checked,
+    allowWrapperTools: allowWrapperToolsField.checked,
+    preferredWrapper: preferredWrapperField.value,
     useDockerSandbox: sandboxModeField.value !== "host",
     dockerSandboxImage: document.querySelector("#dockerSandboxImage").value.trim(),
     allowPasswords: document.querySelector("#allowPasswords").checked,
@@ -1052,6 +1063,8 @@ providerField.addEventListener("change", () => {
 modelField.addEventListener("input", updateRoutingHint);
 sandboxModeField.addEventListener("change", updatePackageWarning);
 packageInstallPolicyField.addEventListener("change", updatePackageWarning);
+allowWrapperToolsField.addEventListener("change", () => renderWrapperStatus());
+preferredWrapperField.addEventListener("change", () => renderWrapperStatus());
 
 form.addEventListener("input", schedulePreferenceSave);
 form.addEventListener("change", schedulePreferenceSave);
@@ -1176,7 +1189,8 @@ async function loadConfig() {
   packageInstallPolicyField.value = prefs.packageInstallPolicy || "prompt";
   document.querySelector("#allowShellTool").checked = prefs.allowShellTool ?? true;
   document.querySelector("#allowFileTools").checked = prefs.allowFileTools ?? true;
-  document.querySelector("#allowWrapperTools").checked = prefs.allowWrapperTools ?? false;
+  allowWrapperToolsField.checked = prefs.allowWrapperTools ?? false;
+  preferredWrapperField.value = prefs.preferredWrapper || "codex";
   document.querySelector("#dockerSandboxImage").value = prefs.dockerSandboxImage || "agintiflow-sandbox:latest";
   document.querySelector("#allowPasswords").checked = prefs.allowPasswords ?? false;
   document.querySelector("#allowDestructive").checked = prefs.allowDestructive ?? false;

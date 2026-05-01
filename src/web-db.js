@@ -17,6 +17,7 @@ function defaultPreferences(baseDir) {
     allowShellTool: true,
     allowFileTools: true,
     allowWrapperTools: false,
+    preferredWrapper: "codex",
     wrapperTimeoutMs: 120000,
     sandboxMode: "docker-readonly",
     packageInstallPolicy: "prompt",

@@ -8,7 +8,7 @@ import { SessionStore } from "./session-store.js";
 import { captureSnapshot } from "./snapshot.js";
 import { checkToolUse } from "./guardrails.js";
 import { ensureDockerSandboxReady, runDockerSandboxCommand } from "./docker-sandbox.js";
-import { runAgentWrapper, wrapperStatusText } from "./tool-wrappers.js";
+import { normalizeWrapperName, runAgentWrapper, wrapperStatusText } from "./tool-wrappers.js";
 import { evaluateCommandPolicy } from "./command-policy.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
 import { executeWorkspaceTool, summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./workspace-tools.js";
@@ -60,7 +60,7 @@ function createInitialState(config, sessionId) {
             ? `Workspace file tools are available in ${config.commandCwd}: list_files, read_file, search_files, write_file, and apply_patch. Paths must stay inside the workspace. Secret paths, .git internals, node_modules writes, and huge files are blocked.`
             : "No workspace file tools are available.",
           config.allowWrapperTools
-            ? `External coding-agent wrappers are available as advisory tools only. Wrapper status: ${wrapperStatusText()}.`
+            ? `External coding-agent wrappers are available as advisory tools only. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Wrapper status: ${wrapperStatusText()}.`
             : "External coding-agent wrappers are disabled.",
           "When done, call finish with a concise result.",
         ].join(" "),
@@ -77,7 +77,9 @@ function createInitialState(config, sessionId) {
               : `Shell working directory: ${config.commandCwd}`
             : "",
           config.allowFileTools ? `Workspace file tools enabled in: ${config.commandCwd}` : "",
-          config.allowWrapperTools ? `Agent wrappers: ${wrapperStatusText()}` : "",
+          config.allowWrapperTools
+            ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
+            : "",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -171,7 +173,9 @@ function applyContinuationPrompt(state, config, observers) {
           : `Shell working directory: ${config.commandCwd}`
         : "",
       config.allowFileTools ? `Workspace file tools enabled in: ${config.commandCwd}` : "",
-      config.allowWrapperTools ? `Agent wrappers: ${wrapperStatusText()}` : "",
+      config.allowWrapperTools
+        ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
+        : "",
     ]
       .filter(Boolean)
       .join("\n"),
@@ -289,7 +293,9 @@ async function captureSyntheticSnapshot(store, step, config) {
           : `Shell tool available in: ${config.commandCwd}`
         : "Shell tool disabled.",
       config.allowFileTools ? `Workspace file tools available in: ${config.commandCwd}` : "Workspace file tools disabled.",
-      config.allowWrapperTools ? `Agent wrappers available: ${wrapperStatusText()}` : "Agent wrappers disabled.",
+      config.allowWrapperTools
+        ? `Agent wrappers available: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
+        : "Agent wrappers disabled.",
       "Use open_url only if the task actually needs the web.",
     ]
       .filter(Boolean)
@@ -578,6 +584,7 @@ export async function runAgent(config) {
       commandCwd: config.commandCwd,
       allowShellTool: config.allowShellTool,
       allowWrapperTools: config.allowWrapperTools,
+      preferredWrapper: normalizeWrapperName(config.preferredWrapper),
       wrappers: config.allowWrapperTools ? wrapperStatusText() : "",
       workspaceFileTools: summarizeWorkspaceTools(config),
       shellSandbox: config.useDockerSandbox ? "docker" : "host",
@@ -628,6 +635,7 @@ export async function runAgent(config) {
           fileToolsAvailable: config.allowFileTools,
           workspaceFileTools: summarizeWorkspaceTools(config),
           agentWrappersAvailable: config.allowWrapperTools,
+          preferredWrapper: normalizeWrapperName(config.preferredWrapper),
           agentWrappers: config.allowWrapperTools ? wrapperStatusText() : "",
           shellSandbox: config.useDockerSandbox ? "docker" : "host",
           sandboxMode: config.sandboxMode,

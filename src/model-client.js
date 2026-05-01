@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { WRAPPER_NAMES, wrapperStatusText } from "./tool-wrappers.js";
+import { normalizeWrapperName, wrapperStatusText } from "./tool-wrappers.js";
 
 export function createClient(config) {
   if (config.provider === "mock") {
@@ -118,7 +118,9 @@ export async function createPlan(client, config, state) {
           config.allowFileTools
             ? `Workspace file tools are enabled in ${config.commandCwd}: list_files, read_file, search_files, write_file, apply_patch. Keep all paths workspace-relative and avoid secrets.`
             : "",
-          config.allowWrapperTools ? `Agent wrappers are enabled: ${wrapperStatusText()}.` : "",
+          config.allowWrapperTools
+            ? `Agent wrappers are enabled. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Status: ${wrapperStatusText()}.`
+            : "",
           "Return a numbered plan only.",
         ]
           .filter(Boolean)
@@ -369,16 +371,17 @@ export async function requestNextStep(client, config, messages) {
   }
 
   if (config.allowWrapperTools) {
+    const selectedWrapper = normalizeWrapperName(config.preferredWrapper);
     tools.splice(-1, 0, {
       type: "function",
       function: {
         name: "delegate_agent",
         description:
-          "Ask an installed external coding agent wrapper for advisory help. Use for codebase analysis, implementation strategy, or second-opinion review. The wrapper is instructed to avoid modifying files.",
+          `Ask the selected external coding agent wrapper (${selectedWrapper}) for advisory help. Use for codebase analysis, implementation strategy, or second-opinion review. The wrapper is instructed to avoid modifying files.`,
         parameters: {
           type: "object",
           properties: {
-            wrapper: { type: "string", enum: WRAPPER_NAMES },
+            wrapper: { type: "string", enum: [selectedWrapper] },
             prompt: { type: "string" },
           },
           required: ["wrapper", "prompt"],

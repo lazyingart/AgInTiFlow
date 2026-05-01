@@ -123,9 +123,25 @@
             <label><input id="headless" name="headless" type="checkbox" checked /> <span data-i18n="headlessLabel">Headless browser</span></label>
             <label><input id="allowShellTool" name="allowShellTool" type="checkbox" checked /> <span data-i18n="shellToolLabel">Enable shell tool</span></label>
             <label><input id="allowFileTools" name="allowFileTools" type="checkbox" checked /> <span data-i18n="fileToolLabel">Enable file tools</span></label>
-            <label><input id="allowWrapperTools" name="allowWrapperTools" type="checkbox" /> <span data-i18n="wrapperToolLabel">Enable agent wrappers</span></label>
             <label><input id="allowPasswords" name="allowPasswords" type="checkbox" /> <span data-i18n="allowPasswordsLabel">Allow password typing</span></label>
             <label><input id="allowDestructive" name="allowDestructive" type="checkbox" /> <span data-i18n="allowDestructiveLabel">Allow destructive actions</span></label>
+          </div>
+
+          <div class="grid wrapper-controls">
+            <label class="checkbox-card">
+              <input id="allowWrapperTools" name="allowWrapperTools" type="checkbox" />
+              <span data-i18n="wrapperToolLabel">Enable agent wrappers</span>
+            </label>
+            <label>
+              <span data-i18n="preferredWrapperLabel">Preferred wrapper</span>
+              <select id="preferredWrapper" name="preferredWrapper">
+                <option value="codex">Codex</option>
+                <option value="claude">Claude Code</option>
+                <option value="gemini">Gemini CLI</option>
+                <option value="copilot">GitHub Copilot CLI</option>
+                <option value="qwen">Qwen Code</option>
+              </select>
+            </label>
           </div>
 
           <label>
@@ -179,23 +195,12 @@
       </section>
 
       <section class="stack">
-        <section class="panel output-panel">
-          <div class="header-row">
-            <h2 data-i18n="runOutputTitle">Run output</h2>
-            <div id="run-meta" class="subtle"></div>
-          </div>
-          <pre id="logs" class="logs" data-i18n="noRunStarted">No run started.</pre>
-        </section>
-
         <section class="panel chat-panel">
           <div class="header-row">
             <h2 data-i18n="conversationTitle">Conversation</h2>
             <select id="session-select" class="session-select">
               <option value="" data-i18n="noSessionSelected">No session selected</option>
             </select>
-          </div>
-          <div id="chat-thread" class="chat-thread">
-            <div class="subtle" data-i18n="noConversationLoaded">No conversation loaded.</div>
           </div>
           <form id="chat-form" class="chat-form">
             <textarea
@@ -209,6 +214,17 @@
               <span id="chat-status" class="subtle"></span>
             </div>
           </form>
+          <div id="chat-thread" class="chat-thread">
+            <div class="subtle" data-i18n="noConversationLoaded">No conversation loaded.</div>
+          </div>
+        </section>
+
+        <section class="panel output-panel">
+          <div class="header-row">
+            <h2 data-i18n="runOutputTitle">Run output</h2>
+            <div id="run-meta" class="subtle"></div>
+          </div>
+          <pre id="logs" class="logs" data-i18n="noRunStarted">No run started.</pre>
         </section>
       </section>
     </main>
