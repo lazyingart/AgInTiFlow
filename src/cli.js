@@ -15,6 +15,7 @@ import {
   showProjectSession,
 } from "./project.js";
 import { listTaskProfiles } from "./task-profiles.js";
+import { promptAndSaveDeepSeekKey, promptHidden, shouldPromptForDeepSeek } from "./auth-onboarding.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -219,7 +220,7 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-destructive] [--allow-file-tools|--no-file-tools] [--allow-wrappers --wrapper codex] [--sandbox-status|--sandbox-preflight] "your task"'
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti login deepseek OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-destructive] [--allow-file-tools|--no-file-tools] [--allow-wrappers --wrapper codex] [--sandbox-status|--sandbox-preflight] "your task"'
   );
 }
 
@@ -298,6 +299,21 @@ async function readStdin() {
   return input.trim();
 }
 
+async function ensureDeepSeekKeyForOneShot(args) {
+  if (!shouldPromptForDeepSeek(args, process.cwd())) return true;
+  console.log("DeepSeek API key is not configured for this project.");
+  console.log("Paste it once to save it in `.aginti/.env` with 0600 permissions, or press Enter to cancel.");
+  const result = await promptAndSaveDeepSeekKey(process.cwd(), {
+    promptText: "DeepSeek API key: ",
+  });
+  if (result.saved) {
+    console.log(`saved ${result.keyName} to project-local ignored env`);
+    return true;
+  }
+  console.error("No DeepSeek key saved. Run `aginti login deepseek` later, or use `--provider mock` for local tests.");
+  return false;
+}
+
 async function handleKeyCommand(argv) {
   const [verb = "status", provider = ""] = argv;
   if (verb === "status") {
@@ -313,17 +329,17 @@ async function handleKeyCommand(argv) {
 
   if (verb === "set") {
     const target = provider || "deepseek";
-    if (!argv.includes("--stdin")) {
-      console.error(`Usage: aginti keys set ${target} --stdin`);
+    const key = argv.includes("--stdin") ? await readStdin() : await promptHidden(`${target === "openai" ? "OpenAI" : "DeepSeek"} API key: `);
+    if (!key) {
+      console.error("No key saved.");
       process.exit(1);
     }
-    const key = await readStdin();
     const result = await setProviderKey(process.cwd(), target, key);
     console.log(`saved ${result.provider} key to project-local ignored env (${result.keyName})`);
     return;
   }
 
-  console.error("Usage: aginti keys status OR aginti keys set deepseek --stdin");
+  console.error("Usage: aginti keys status OR aginti keys set deepseek [--stdin]");
   process.exit(1);
 }
 
@@ -442,11 +458,13 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (argv[0] === "login") {
     const provider = argv[1] || "deepseek";
-    if (!argv.includes("--stdin") && process.stdin.isTTY) {
-      console.error(`Usage: printf '%s' '<key>' | aginti login ${provider} --stdin`);
+    const key = argv.includes("--stdin") || !process.stdin.isTTY
+      ? await readStdin()
+      : await promptHidden(`${provider === "openai" ? "OpenAI" : "DeepSeek"} API key: `);
+    if (!key) {
+      console.error("No key saved.");
       process.exit(1);
     }
-    const key = await readStdin();
     const result = await setProviderKey(process.cwd(), provider, key);
     console.log(`saved ${result.provider} key to project-local ignored env (${result.keyName})`);
     return;
@@ -478,7 +496,9 @@ export async function main(argv = process.argv.slice(2)) {
       });
       return;
     }
-    const config = loadConfig(agentDefaults({ ...parseArgs([prompt]), resume: sessionId, goal: prompt }), { packageDir });
+    const resumeArgs = agentDefaults({ ...parseArgs([prompt]), resume: sessionId, goal: prompt });
+    if (!(await ensureDeepSeekKeyForOneShot(resumeArgs))) process.exit(1);
+    const config = loadConfig(resumeArgs, { packageDir });
     await runAgent(config);
     return;
   }
@@ -527,6 +547,8 @@ export async function main(argv = process.argv.slice(2)) {
     process.exit(1);
   }
 
-  const config = loadConfig(agentDefaults(args), { packageDir });
+  const finalArgs = agentDefaults(args);
+  if (!(await ensureDeepSeekKeyForOneShot(finalArgs))) process.exit(1);
+  const config = loadConfig(finalArgs, { packageDir });
   await runAgent(config);
 }

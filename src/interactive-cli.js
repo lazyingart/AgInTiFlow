@@ -6,6 +6,7 @@ import { loadConfig } from "./config.js";
 import { initProject, listProjectSessions } from "./project.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
 import { normalizeTaskProfile } from "./task-profiles.js";
+import { promptAndSaveDeepSeekKey, shouldPromptForDeepSeek } from "./auth-onboarding.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && !process.env.NO_COLOR);
 const ansi = {
@@ -223,6 +224,29 @@ function createState(args = {}) {
   };
 }
 
+async function maybeOnboardDeepSeekKey(state) {
+  if (!shouldPromptForDeepSeek(state, process.cwd())) return;
+
+  printAgentMessage(
+    [
+      "DeepSeek API key is not configured for this project.",
+      "Paste it once to save it in `.aginti/.env` with 0600 permissions, or press Enter to continue in mock mode.",
+    ].join("\n")
+  );
+  const result = await promptAndSaveDeepSeekKey(process.cwd(), {
+    promptText: "DeepSeek API key: ",
+  });
+  if (result.saved) {
+    printAgentMessage(`Saved ${result.keyName} to project-local ignored env.`);
+    return;
+  }
+
+  state.provider = "mock";
+  state.routingMode = "manual";
+  state.model = "mock-agent";
+  printAgentMessage("No key saved. Continuing in local mock mode. Use `/provider deepseek` after running `aginti login deepseek`.");
+}
+
 async function handleCommand(line, state, packageDir) {
   const [command, ...rest] = line.slice(1).trim().split(/\s+/);
   const value = rest.join(" ").trim();
@@ -431,6 +455,7 @@ async function runPrompt(prompt, state, packageDir) {
 
 export async function startInteractiveCli(args = {}, { packageDir, packageVersion } = {}) {
   const state = createState(args);
+  await maybeOnboardDeepSeekKey(state);
   const rl = readline.createInterface({ input, output, terminal: Boolean(input.isTTY && output.isTTY) });
 
   console.log(color(` AgInTiFlow ${packageVersion || ""} `, ansi.agentBg, ansi.bold).trimEnd());

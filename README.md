@@ -46,6 +46,14 @@ aginti --list-profiles
 aginti --sandbox-status
 ```
 
+On first interactive use, if no DeepSeek key is detected, `aginti` asks you to paste it and saves it to the project-local ignored file `.aginti/.env` with `0600` permissions. You can also set it explicitly:
+
+```bash
+aginti login deepseek
+# or non-interactively:
+printf '%s' "$DEEPSEEK_API_KEY" | aginti keys set deepseek --stdin
+```
+
 Start an interactive Codex-style CLI chat from any project folder:
 
 ```bash

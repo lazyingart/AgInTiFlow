@@ -199,6 +199,11 @@ export async function setProviderKey(projectRoot, provider, value) {
 
   const paths = projectPaths(projectRoot);
   await fsp.mkdir(paths.controlDir, { recursive: true });
+  await ensureLine(paths.gitignorePath, [
+    ".aginti/.env",
+    ".aginti/.env.*",
+    "!.aginti/.env.example",
+  ]);
   let parsed = {};
   try {
     parsed = parseEnvText(await fsp.readFile(paths.envPath, "utf8"));
