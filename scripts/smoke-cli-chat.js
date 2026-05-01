@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { stripMarkdown } from "../src/interactive-cli.js";
+import { buildPromptLayout, stripMarkdown } from "../src/interactive-cli.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-cli-chat-"));
@@ -70,6 +70,21 @@ try {
     throw new Error("terminal markdown renderer dropped table content");
   }
 
+  const promptLayout = buildPromptLayout(`${"x".repeat(180)}\nsecond line`, 95, 80, 24);
+  const visibleLengths = promptLayout.renderedRows.map((line) =>
+    line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").length
+  );
+  if (promptLayout.rows.length < 4 || Math.max(...visibleLengths) > 79) {
+    throw new Error("terminal prompt layout did not wrap long multiline input safely");
+  }
+  if (promptLayout.cursorRow < 0 || promptLayout.cursorColumn < 0) {
+    throw new Error("terminal prompt layout returned an invalid cursor location");
+  }
+  const hugePromptLayout = buildPromptLayout(Array.from({ length: 30 }, (_unused, index) => `line ${index + 1}`).join("\n"), 120, 80, 20);
+  if (hugePromptLayout.renderedRows.length > 12 || !hugePromptLayout.renderedRows.some((line) => line.includes("earlier input row"))) {
+    throw new Error("terminal prompt layout did not bound redraw size for large prompts");
+  }
+
   const result = await runChat("Create notes/interactive.md with a short CLI chat smoke message\n/exit\n");
   const written = await fs.readFile(path.join(tempRoot, "notes/interactive.md"), "utf8");
   if (!written.includes("Created by AgInTiFlow mock mode.")) {
@@ -92,7 +107,7 @@ try {
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["markdown-render", "interactive-chat", "mock-file-write", "run-status", "resume-latest"],
+        checks: ["markdown-render", "prompt-layout", "interactive-chat", "mock-file-write", "run-status", "resume-latest"],
       },
       null,
       2
