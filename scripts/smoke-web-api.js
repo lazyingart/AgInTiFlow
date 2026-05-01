@@ -131,10 +131,57 @@ try {
   const changes = await fetchJson("/api/workspace/changes");
   if (!Array.isArray(changes.activity)) throw new Error("workspace changes endpoint returned an invalid payload");
 
+  const canvasRunStart = await fetchJson("/api/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      provider: "mock",
+      routingMode: "manual",
+      model: "mock-agent",
+      goal: "Create a canvas artifact preview for this smoke test.",
+      commandCwd: runtimeDir,
+      sandboxMode: "host",
+      packageInstallPolicy: "block",
+      allowShellTool: false,
+      allowFileTools: true,
+      preferredWrapper: "codex",
+      maxSteps: 4,
+      headless: true,
+    }),
+  });
+  const canvasRun = await waitForRun(canvasRunStart.sessionId);
+  if (canvasRun.status !== "finished") throw new Error(`mock canvas run failed: ${canvasRun.error || "unknown error"}`);
+
+  const artifacts = await fetchJson(`/api/sessions/${encodeURIComponent(canvasRunStart.sessionId)}/artifacts`);
+  if (!Array.isArray(artifacts.items) || artifacts.items.length === 0) {
+    throw new Error("artifact endpoint returned no items for a finished mock run");
+  }
+  if (!artifacts.items.some((item) => item.source === "agent-canvas")) {
+    throw new Error("mock run did not publish an agent canvas artifact");
+  }
+  const selectedArtifactId = artifacts.selectedItemId || artifacts.items[0].id;
+  const selected = await fetchJson(`/api/sessions/${encodeURIComponent(canvasRunStart.sessionId)}/artifacts/select`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ artifactId: selectedArtifactId }),
+  });
+  if (!selected.ok) throw new Error("artifact selection endpoint failed");
+  const artifactContent = await fetchJson(
+    `/api/sessions/${encodeURIComponent(canvasRunStart.sessionId)}/artifacts/${encodeURIComponent(selectedArtifactId)}`
+  );
+  if (!artifactContent.text && !artifactContent.dataUrl) {
+    throw new Error("artifact content endpoint did not return renderable content");
+  }
+
   const deleted = await fetchJson(`/api/sessions/${encodeURIComponent(runStart.sessionId)}`, {
     method: "DELETE",
   });
   if (!deleted.ok) throw new Error("session delete failed");
+
+  const canvasDeleted = await fetchJson(`/api/sessions/${encodeURIComponent(canvasRunStart.sessionId)}`, {
+    method: "DELETE",
+  });
+  if (!canvasDeleted.ok) throw new Error("canvas session delete failed");
 
   console.log(
     JSON.stringify(
@@ -150,6 +197,9 @@ try {
           "POST /api/sessions/:id/auto-title",
           "DELETE /api/sessions/:id",
           "/api/workspace/changes",
+          "/api/sessions/:id/artifacts",
+          "/api/sessions/:id/artifacts/:artifactId",
+          "POST /api/sessions/:id/artifacts/select",
         ],
         provider: run.provider,
         model: run.model,

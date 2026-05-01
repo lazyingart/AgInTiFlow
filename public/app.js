@@ -118,6 +118,20 @@ const translations = {
     sessionDeleted: "Conversation deleted.",
     deleteConfirm: "Delete this conversation and its local session history?",
     manageSessionFailed: "Failed to update conversation.",
+    artifactTunnelLabel: "Open canvas and artifacts",
+    artifactTunnelTitle: "Canvas & artifacts",
+    artifactTunnelHelp: "Agent-selected canvas items, generated files, screenshots, diffs, and final answers.",
+    artifactCanvasTab: "Canvas",
+    artifactExplorerTab: "Explorer",
+    artifactNotificationsTab: "Notifications",
+    artifactListTitle: "Artifacts",
+    artifactMarkSeenButton: "Mark seen",
+    artifactEmpty: "No artifacts yet.",
+    artifactViewerEmptyTitle: "Nothing selected",
+    artifactViewerEmpty: "Select an artifact to preview it here.",
+    artifactLoading: "Loading artifact...",
+    artifactLoadFailed: "Failed to load artifact.",
+    artifactSeenUpdated: "Notifications marked as seen.",
   },
   ar: {
     documentTitle: "AgInTiFlow",
@@ -621,6 +635,8 @@ const chatFormEl = document.querySelector("#chat-form");
 const chatInputEl = document.querySelector("#chat-input");
 const chatStatusEl = document.querySelector("#chat-status");
 const manageSessionsButton = document.querySelector("#manage-sessions");
+const openArtifactsButton = document.querySelector("#open-artifacts");
+const artifactBadgeEl = document.querySelector("#artifact-badge");
 const sessionManagerDialog = document.querySelector("#session-manager");
 const closeSessionManagerButton = document.querySelector("#close-session-manager");
 const cancelSessionManagerButton = document.querySelector("#cancel-session-manager");
@@ -630,6 +646,16 @@ const sessionManagerStatusEl = document.querySelector("#session-manager-status")
 const autoRenameSessionButton = document.querySelector("#auto-rename-session");
 const renameSessionButton = document.querySelector("#rename-session");
 const deleteSessionButton = document.querySelector("#delete-session");
+const artifactTunnelDialog = document.querySelector("#artifact-tunnel");
+const closeArtifactTunnelButton = document.querySelector("#close-artifact-tunnel");
+const artifactTabsEl = document.querySelector(".artifact-tabs");
+const artifactListEl = document.querySelector("#artifact-list");
+const artifactViewerTitleEl = document.querySelector("#artifact-viewer-title");
+const artifactViewerMetaEl = document.querySelector("#artifact-viewer-meta");
+const artifactViewerKindEl = document.querySelector("#artifact-viewer-kind");
+const artifactViewerBodyEl = document.querySelector("#artifact-viewer-body");
+const artifactStatusEl = document.querySelector("#artifact-status");
+const markArtifactsSeenButton = document.querySelector("#mark-artifacts-seen");
 const translatableNodes = [...document.querySelectorAll("[data-i18n]")];
 const placeholderNodes = [...document.querySelectorAll("[data-i18n-placeholder]")];
 const ariaLabelNodes = [...document.querySelectorAll("[data-i18n-aria-label]")];
@@ -653,6 +679,10 @@ let lastSandbox = null;
 let lastWorkspace = null;
 let lastWorkspaceActivity = [];
 let managedSessionId = "";
+let artifactItems = [];
+let selectedArtifactId = "";
+let currentArtifactTab = "canvas";
+let artifactUnreadCount = 0;
 
 function normalizeLanguage(language) {
   const lower = String(language || "").toLowerCase();
@@ -866,6 +896,7 @@ function applyLanguage(language, { persist = true } = {}) {
   renderSessions(lastSessions);
   renderSessionManager();
   renderChat(lastChatEntries);
+  renderArtifactShell();
   if (persist) schedulePreferenceSave();
 }
 
@@ -912,7 +943,10 @@ function renderLogs(run) {
 }
 
 function escapeHtml(value) {
-  return String(value || "").replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[ch]));
+  return String(value || "").replace(
+    /[&<>"']/g,
+    (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]
+  );
 }
 
 function renderChat(chatEntries) {
@@ -938,6 +972,174 @@ function renderChat(chatEntries) {
     .join("");
 
   chatThreadEl.scrollTop = chatThreadEl.scrollHeight;
+}
+
+function artifactSeenKey(sessionId = currentSessionId) {
+  return `agintiflow.artifacts.seenAt.${sessionId || "none"}`;
+}
+
+function getArtifactSeenAt(sessionId = currentSessionId) {
+  try {
+    return localStorage.getItem(artifactSeenKey(sessionId)) || "";
+  } catch {
+    return "";
+  }
+}
+
+function setArtifactSeenNow(sessionId = currentSessionId) {
+  if (!sessionId) return;
+  try {
+    localStorage.setItem(artifactSeenKey(sessionId), new Date().toISOString());
+  } catch {
+    // Local storage is optional for notification state.
+  }
+}
+
+function renderArtifactBadge(count = artifactUnreadCount) {
+  artifactUnreadCount = Number(count) || 0;
+  if (!artifactBadgeEl) return;
+  artifactBadgeEl.textContent = artifactUnreadCount > 99 ? "99+" : String(artifactUnreadCount);
+  artifactBadgeEl.hidden = artifactUnreadCount <= 0;
+}
+
+function artifactLabel(item) {
+  const source = item.source ? item.source.replace(/-/g, " ") : "artifact";
+  const when = item.createdAt ? new Date(item.createdAt).toLocaleString() : "";
+  return [item.kind, source, when].filter(Boolean).join(" · ");
+}
+
+function renderArtifactList() {
+  if (!artifactListEl) return;
+  const visible = artifactItems.filter((item) => item.tab === currentArtifactTab);
+
+  document.querySelectorAll(".artifact-tab").forEach((tab) => {
+    tab.dataset.selected = String(tab.dataset.artifactTab === currentArtifactTab);
+  });
+
+  if (!currentSessionId) {
+    artifactListEl.innerHTML = `<p class="subtle">${t("selectSessionFirst")}</p>`;
+    return;
+  }
+
+  if (visible.length === 0) {
+    artifactListEl.innerHTML = `<p class="subtle">${t("artifactEmpty")}</p>`;
+    return;
+  }
+
+  artifactListEl.innerHTML = visible
+    .map(
+      (item) => `
+        <button class="artifact-row" type="button" data-artifact-id="${escapeHtml(item.id)}" data-selected="${item.id === selectedArtifactId}">
+          <span class="artifact-row-top">
+            <strong>${escapeHtml(item.title || item.path || item.kind)}</strong>
+            <span>${escapeHtml(item.kind)}</span>
+          </span>
+          <span class="artifact-row-meta">${escapeHtml(artifactLabel(item))}</span>
+          <span class="artifact-row-preview">${escapeHtml(item.preview || item.path || "")}</span>
+        </button>
+      `
+    )
+    .join("");
+}
+
+function resetArtifactViewer() {
+  artifactViewerTitleEl.textContent = t("artifactViewerEmptyTitle");
+  artifactViewerMetaEl.textContent = "";
+  artifactViewerKindEl.textContent = "";
+  artifactViewerBodyEl.innerHTML = `<p class="subtle">${t("artifactViewerEmpty")}</p>`;
+}
+
+function renderArtifactShell() {
+  renderArtifactBadge();
+  renderArtifactList();
+  if (!selectedArtifactId || !artifactItems.some((item) => item.id === selectedArtifactId)) {
+    resetArtifactViewer();
+  }
+}
+
+function renderArtifactContent(content) {
+  const item = artifactItems.find((candidate) => candidate.id === content.id);
+  artifactViewerTitleEl.textContent = content.title || item?.title || t("artifactViewerEmptyTitle");
+  artifactViewerMetaEl.textContent = [content.path || item?.path, item ? artifactLabel(item) : ""].filter(Boolean).join(" · ");
+  artifactViewerKindEl.textContent = content.kind || item?.kind || "";
+
+  if (content.dataUrl) {
+    artifactViewerBodyEl.innerHTML = `
+      <figure class="artifact-image-frame">
+        <img class="artifact-preview-image" src="${content.dataUrl}" alt="${escapeHtml(content.title || "Artifact image")}" />
+      </figure>
+    `;
+    return;
+  }
+
+  const text = typeof content.text === "string" ? content.text : "";
+  artifactViewerBodyEl.innerHTML = `
+    <textarea class="artifact-editor" readonly spellcheck="false">${escapeHtml(text)}</textarea>
+  `;
+}
+
+async function refreshArtifacts({ loadSelected = false } = {}) {
+  if (!currentSessionId) {
+    artifactItems = [];
+    selectedArtifactId = "";
+    artifactUnreadCount = 0;
+    renderArtifactShell();
+    return;
+  }
+
+  const seenAfter = encodeURIComponent(getArtifactSeenAt());
+  const response = await fetch(`/api/sessions/${encodeURIComponent(currentSessionId)}/artifacts?seenAfter=${seenAfter}`);
+  if (!response.ok) return;
+  const data = await response.json();
+  artifactItems = data.items || [];
+  artifactUnreadCount = data.unreadCount || 0;
+  if (!selectedArtifactId || !artifactItems.some((item) => item.id === selectedArtifactId)) {
+    selectedArtifactId = data.selectedItemId || artifactItems[0]?.id || "";
+  }
+  renderArtifactShell();
+  if (loadSelected && selectedArtifactId) await selectArtifact(selectedArtifactId, { persist: false });
+}
+
+async function selectArtifact(artifactId, { persist = true } = {}) {
+  if (!currentSessionId || !artifactId) return;
+  selectedArtifactId = artifactId;
+  renderArtifactList();
+  artifactStatusEl.textContent = t("artifactLoading");
+
+  if (persist) {
+    await fetch(`/api/sessions/${encodeURIComponent(currentSessionId)}/artifacts/select`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ artifactId }),
+    }).catch(() => {});
+  }
+
+  const response = await fetch(
+    `/api/sessions/${encodeURIComponent(currentSessionId)}/artifacts/${encodeURIComponent(artifactId)}`
+  );
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    artifactStatusEl.textContent = data.error || t("artifactLoadFailed");
+    return;
+  }
+
+  artifactStatusEl.textContent = "";
+  renderArtifactContent(data);
+}
+
+async function openArtifactTunnel() {
+  if (!currentSessionId) {
+    chatStatusEl.textContent = t("selectSessionFirst");
+    return;
+  }
+  artifactStatusEl.textContent = "";
+  artifactTunnelDialog.showModal();
+  await refreshArtifacts({ loadSelected: true });
+}
+
+function closeArtifactTunnel() {
+  artifactTunnelDialog.close();
+  artifactStatusEl.textContent = "";
 }
 
 function renderSessions(sessions) {
@@ -1021,6 +1223,7 @@ async function refreshRun() {
   const run = await response.json();
   runMetaEl.textContent = `${run.status} · ${run.sessionId}`;
   renderLogs(run);
+  await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
 
   if (run.status === "finished" || run.status === "failed") {
     clearInterval(pollTimer);
@@ -1028,6 +1231,7 @@ async function refreshRun() {
     await refreshChat();
     await refreshSessions();
     await refreshWorkspaceChanges();
+    await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
   }
 }
 
@@ -1162,6 +1366,9 @@ async function deleteManagedSession() {
     runMetaEl.textContent = "";
     setLogs(t("noRunSelected"), "empty");
     renderChat([]);
+    artifactItems = [];
+    selectedArtifactId = "";
+    renderArtifactShell();
   }
   managedSessionId = "";
   await refreshSessions();
@@ -1202,11 +1409,45 @@ manageSessionsButton.addEventListener("click", () => {
   });
 });
 
+openArtifactsButton.addEventListener("click", () => {
+  openArtifactTunnel().catch((error) => {
+    chatStatusEl.textContent = String(error);
+  });
+});
+
 closeSessionManagerButton.addEventListener("click", closeSessionManager);
 cancelSessionManagerButton.addEventListener("click", closeSessionManager);
+closeArtifactTunnelButton.addEventListener("click", closeArtifactTunnel);
 
 sessionManagerDialog.addEventListener("click", (event) => {
   if (event.target === sessionManagerDialog) closeSessionManager();
+});
+
+artifactTunnelDialog.addEventListener("click", (event) => {
+  if (event.target === artifactTunnelDialog) closeArtifactTunnel();
+});
+
+artifactTabsEl.addEventListener("click", (event) => {
+  const tab = event.target.closest("[data-artifact-tab]");
+  if (!tab) return;
+  currentArtifactTab = tab.dataset.artifactTab || "canvas";
+  renderArtifactShell();
+});
+
+artifactListEl.addEventListener("click", (event) => {
+  const row = event.target.closest("[data-artifact-id]");
+  if (!row) return;
+  selectArtifact(row.dataset.artifactId || "").catch((error) => {
+    artifactStatusEl.textContent = String(error);
+  });
+});
+
+markArtifactsSeenButton.addEventListener("click", () => {
+  setArtifactSeenNow();
+  artifactUnreadCount = 0;
+  renderArtifactBadge();
+  artifactStatusEl.textContent = t("artifactSeenUpdated");
+  refreshArtifacts({ loadSelected: false }).catch(() => {});
 });
 
 sessionManagerListEl.addEventListener("click", (event) => {
@@ -1296,6 +1537,7 @@ form.addEventListener("submit", async (event) => {
   await refreshSessions();
   await refreshChat();
   await refreshWorkspaceChanges();
+  await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
 
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(refreshRun, 1500);
@@ -1308,10 +1550,14 @@ sessionSelectEl.addEventListener("change", async () => {
     runMetaEl.textContent = "";
     setLogs(t("noRunSelected"), "empty");
     renderChat([]);
+    artifactItems = [];
+    selectedArtifactId = "";
+    renderArtifactShell();
     return;
   }
   await refreshRun();
   await refreshChat();
+  await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
 });
 
 chatFormEl.addEventListener("submit", async (event) => {
@@ -1351,6 +1597,7 @@ chatFormEl.addEventListener("submit", async (event) => {
   await refreshSessions();
   await refreshChat();
   await refreshWorkspaceChanges();
+  await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
 
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(refreshRun, 1500);
@@ -1400,6 +1647,7 @@ async function loadConfig() {
     sessionSelectEl.value = currentSessionId;
     await refreshRun();
     await refreshChat();
+    await refreshArtifacts({ loadSelected: false });
   }
 }
 

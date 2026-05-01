@@ -224,6 +224,16 @@
                 <option value="" data-i18n="noSessionSelected">No session selected</option>
               </select>
               <button
+                id="open-artifacts"
+                class="icon-button artifact-button"
+                type="button"
+                data-i18n-aria-label="artifactTunnelLabel"
+                aria-label="Open canvas and artifacts"
+              >
+                Canvas
+                <span id="artifact-badge" class="artifact-badge" hidden>0</span>
+              </button>
+              <button
                 id="manage-sessions"
                 class="icon-button"
                 type="button"
@@ -282,6 +292,49 @@
           <button id="cancel-session-manager" type="button" class="secondary" data-i18n="cancelButton">Cancel</button>
         </div>
         <p id="session-manager-status" class="subtle modal-status"></p>
+      </section>
+    </dialog>
+
+    <dialog id="artifact-tunnel" class="modal artifact-modal">
+      <section class="modal-card artifact-modal-card" aria-labelledby="artifact-tunnel-title">
+        <div class="modal-header">
+          <div>
+            <h2 id="artifact-tunnel-title" data-i18n="artifactTunnelTitle">Canvas & artifacts</h2>
+            <p class="subtle" data-i18n="artifactTunnelHelp">
+              Agent-selected canvas items, generated files, screenshots, diffs, and final answers.
+            </p>
+          </div>
+          <button id="close-artifact-tunnel" class="icon-button" type="button" data-i18n-aria-label="cancelButton" aria-label="Cancel">x</button>
+        </div>
+        <div class="artifact-tabs" role="tablist" aria-label="Artifact tunnel tabs">
+          <button id="artifact-tab-canvas" class="artifact-tab" type="button" data-artifact-tab="canvas" data-selected="true" data-i18n="artifactCanvasTab">Canvas</button>
+          <button id="artifact-tab-explorer" class="artifact-tab" type="button" data-artifact-tab="explorer" data-i18n="artifactExplorerTab">Explorer</button>
+          <button id="artifact-tab-notifications" class="artifact-tab" type="button" data-artifact-tab="notifications" data-i18n="artifactNotificationsTab">Notifications</button>
+        </div>
+        <div class="artifact-layout">
+          <aside class="artifact-list-panel">
+            <div class="artifact-list-header">
+              <strong data-i18n="artifactListTitle">Artifacts</strong>
+              <button id="mark-artifacts-seen" type="button" class="secondary compact-button" data-i18n="artifactMarkSeenButton">Mark seen</button>
+            </div>
+            <div id="artifact-list" class="artifact-list">
+              <p class="subtle" data-i18n="artifactEmpty">No artifacts yet.</p>
+            </div>
+          </aside>
+          <section class="artifact-viewer">
+            <div class="artifact-viewer-header">
+              <div>
+                <h3 id="artifact-viewer-title" data-i18n="artifactViewerEmptyTitle">Nothing selected</h3>
+                <p id="artifact-viewer-meta" class="subtle"></p>
+              </div>
+              <span id="artifact-viewer-kind" class="artifact-kind-pill"></span>
+            </div>
+            <div id="artifact-viewer-body" class="artifact-viewer-body">
+              <p class="subtle" data-i18n="artifactViewerEmpty">Select an artifact to preview it here.</p>
+            </div>
+            <p id="artifact-status" class="subtle modal-status"></p>
+          </section>
+        </div>
       </section>
     </dialog>
 

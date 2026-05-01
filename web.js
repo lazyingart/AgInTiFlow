@@ -11,6 +11,13 @@ import { listAgentWrappers, normalizeWrapperName } from "./src/tool-wrappers.js"
 import { getDockerSandboxStatus, getSandboxLogs, runDockerPreflight } from "./src/docker-sandbox.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./src/command-policy.js";
 import { summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./src/workspace-tools.js";
+import {
+  buildArtifacts,
+  countUnreadArtifacts,
+  findArtifact,
+  readArtifactContent,
+  serializeArtifacts,
+} from "./src/artifact-tunnel.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -391,6 +398,28 @@ async function collectWorkspaceActivity(limit = 24) {
   return activity.sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, limit);
 }
 
+async function loadArtifactBundle(sessionId) {
+  if (!isSafeSessionId(sessionId)) {
+    return { error: "Invalid session id.", status: 400 };
+  }
+
+  const meta = db.getSession(sessionId);
+  const store = sessionStore(sessionId);
+  const events = await store.loadEvents();
+  if (!meta && events.length === 0) {
+    return { error: "Session not found.", status: 404 };
+  }
+
+  const preferences = normalizePreferencePayload({}, db.getPreferences());
+  const config = buildRunConfig({ ...preferences, goal: "" });
+  const bundle = buildArtifacts({ sessionId, events, store });
+  return {
+    ...bundle,
+    store,
+    config,
+  };
+}
+
 function createRunRecord(config, goal, existingLogs = []) {
   return {
     sessionId: config.sessionId,
@@ -513,6 +542,60 @@ app.get("/api/workspace/changes", async (_req, res) => {
     workspace: summarizeWorkspaceTools(config),
     activity: await collectWorkspaceActivity(),
   });
+});
+
+app.get("/api/sessions/:sessionId/artifacts", async (req, res) => {
+  const bundle = await loadArtifactBundle(req.params.sessionId);
+  if (bundle.error) {
+    res.status(bundle.status || 500).json({ error: bundle.error });
+    return;
+  }
+
+  res.json({
+    ok: true,
+    sessionId: req.params.sessionId,
+    items: serializeArtifacts(bundle.items),
+    selectedItemId: bundle.selectedItemId,
+    unreadCount: countUnreadArtifacts(bundle.items, req.query.seenAfter),
+  });
+});
+
+app.get("/api/sessions/:sessionId/artifacts/:artifactId", async (req, res) => {
+  const bundle = await loadArtifactBundle(req.params.sessionId);
+  if (bundle.error) {
+    res.status(bundle.status || 500).json({ error: bundle.error });
+    return;
+  }
+
+  const artifact = findArtifact(bundle.items, req.params.artifactId);
+  const content = await readArtifactContent(artifact, bundle);
+  if (!content.ok) {
+    res.status(artifact ? 400 : 404).json({ error: content.error || "Artifact not found." });
+    return;
+  }
+  res.json(content);
+});
+
+app.post("/api/sessions/:sessionId/artifacts/select", async (req, res) => {
+  const bundle = await loadArtifactBundle(req.params.sessionId);
+  if (bundle.error) {
+    res.status(bundle.status || 500).json({ error: bundle.error });
+    return;
+  }
+
+  const artifactId = String(req.body?.artifactId || "");
+  const artifact = findArtifact(bundle.items, artifactId);
+  if (!artifact) {
+    res.status(404).json({ error: "Artifact not found." });
+    return;
+  }
+
+  await sessionStore(req.params.sessionId).appendEvent("canvas.selected", {
+    artifactId,
+    title: artifact.title,
+    source: "user",
+  });
+  res.json({ ok: true, artifact: serializeArtifacts([artifact])[0] });
 });
 
 app.get("/api/sessions/:sessionId/chat", async (req, res) => {

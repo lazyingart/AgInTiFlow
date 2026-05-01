@@ -17,6 +17,7 @@ const DESTRUCTIVE_KEYWORDS = [
 ];
 
 const KNOWN_WRAPPERS = new Set(["codex", "claude", "gemini", "copilot", "qwen"]);
+const MAX_CANVAS_CONTENT_BYTES = 120_000;
 const DESTRUCTIVE_PROMPT_HINTS = [
   "delete",
   "remove files",
@@ -124,6 +125,25 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
     const loweredPrompt = prompt.toLowerCase();
     if (!config.allowDestructive && DESTRUCTIVE_PROMPT_HINTS.some((hint) => loweredPrompt.includes(hint))) {
       return { allowed: false, reason: "Agent wrapper prompt appears to request write-capable or destructive work." };
+    }
+
+    return { allowed: true };
+  }
+
+  if (toolName === "send_to_canvas") {
+    const title = String(args.title || "").trim();
+    if (!title) return { allowed: false, reason: "Canvas title is required." };
+    const content = typeof args.content === "string" ? args.content : "";
+    if (Buffer.byteLength(content, "utf8") > MAX_CANVAS_CONTENT_BYTES) {
+      return {
+        allowed: false,
+        reason: "Canvas content is too large. Write it to a workspace file and send the path instead.",
+      };
+    }
+
+    const canvasPath = String(args.path || "").trim();
+    if (canvasPath) {
+      return checkWorkspaceToolUse("read_file", { path: canvasPath }, config);
     }
 
     return { allowed: true };

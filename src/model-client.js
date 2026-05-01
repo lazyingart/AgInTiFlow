@@ -74,6 +74,18 @@ function mockWorkspaceToolForGoal(goal = "") {
   return null;
 }
 
+function mockCanvasToolForGoal(goal = "") {
+  const text = String(goal).toLowerCase();
+  if (!/canvas|artifact|image|figure|visual|preview|render/.test(text)) return null;
+  return mockToolCall("send_to_canvas", {
+    title: "Mock canvas note",
+    kind: "markdown",
+    content: `# Mock canvas artifact\n\nAgInTiFlow can send selected text, diffs, snapshots, and files into the frontend canvas.\n\nGoal: ${String(goal).slice(0, 160)}`,
+    note: "Mock mode exercised the backend-to-frontend artifact tunnel.",
+    selected: true,
+  });
+}
+
 function mockChatResponse(content, toolCalls = []) {
   return {
     choices: [
@@ -121,6 +133,7 @@ export async function createPlan(client, config, state) {
           config.allowWrapperTools
             ? `Agent wrappers are enabled. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Status: ${wrapperStatusText()}.`
             : "",
+          "A canvas/artifacts tunnel is available through send_to_canvas. Use it when an output should be highlighted visually, such as screenshots, image files, important markdown, diffs, or generated artifact paths. It is optional for ordinary text answers.",
           "Return a numbered plan only.",
         ]
           .filter(Boolean)
@@ -391,6 +404,32 @@ export async function requestNextStep(client, config, messages) {
     });
   }
 
+  tools.splice(-1, 0, {
+    type: "function",
+    function: {
+      name: "send_to_canvas",
+      description:
+        "Send an optional artifact notification to the frontend canvas/artifacts tunnel. Use for important markdown/text, generated images, screenshots, figures, diffs, or workspace file paths the user should preview. This does not replace finish.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "Short display title for the canvas item." },
+          kind: {
+            type: "string",
+            enum: ["text", "markdown", "image", "json", "diff", "file"],
+            description: "Renderer hint. Use image/file with path, markdown/text/json/diff with content.",
+          },
+          content: { type: "string", description: "Inline text or markdown content to render." },
+          path: { type: "string", description: "Optional workspace-relative file path to preview." },
+          note: { type: "string", description: "Short notification message for the artifact explorer." },
+          selected: { type: "boolean", description: "Whether the frontend should select this item immediately." },
+        },
+        required: ["title", "kind"],
+        additionalProperties: false,
+      },
+    },
+  });
+
   if (client.mock) {
     const toolPayload = latestToolPayload(messages);
     if (toolPayload) {
@@ -417,6 +456,11 @@ export async function requestNextStep(client, config, messages) {
             .join("\n"),
         }),
       ]);
+    }
+
+    const canvasTool = mockCanvasToolForGoal(config.goal);
+    if (canvasTool) {
+      return mockChatResponse("Mock mode will publish a canvas artifact for the UI tunnel.", [canvasTool]);
     }
 
     if (config.allowFileTools) {

@@ -12,6 +12,7 @@ import { normalizeWrapperName, runAgentWrapper, wrapperStatusText } from "./tool
 import { evaluateCommandPolicy } from "./command-policy.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
 import { executeWorkspaceTool, summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./workspace-tools.js";
+import { normalizeCanvasPayload } from "./artifact-tunnel.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "click", "type", "scroll", "press", "back"]);
@@ -62,6 +63,7 @@ function createInitialState(config, sessionId) {
           config.allowWrapperTools
             ? `External coding-agent wrappers are available as advisory tools only. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Wrapper status: ${wrapperStatusText()}.`
             : "External coding-agent wrappers are disabled.",
+          "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. It is optional and ordinary final text can still go directly to finish.",
           "When done, call finish with a concise result.",
         ].join(" "),
       },
@@ -80,6 +82,7 @@ function createInitialState(config, sessionId) {
           config.allowWrapperTools
             ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
             : "",
+          "Canvas/artifacts tunnel: available through send_to_canvas for optional frontend rendering.",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -241,6 +244,12 @@ function sanitizeToolArgs(toolName, args) {
       content: `[${Buffer.byteLength(args.content, "utf8")} bytes sha256=${hashForLog(args.content)}]`,
     };
   }
+  if (toolName === "send_to_canvas" && typeof args.content === "string") {
+    return {
+      ...safeArgs,
+      content: `[${Buffer.byteLength(args.content, "utf8")} bytes sha256=${hashForLog(args.content)}]`,
+    };
+  }
   if (toolName === "apply_patch") {
     return {
       ...safeArgs,
@@ -296,6 +305,7 @@ async function captureSyntheticSnapshot(store, step, config) {
       config.allowWrapperTools
         ? `Agent wrappers available: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
         : "Agent wrappers disabled.",
+      "Canvas/artifacts tunnel available through send_to_canvas.",
       "Use open_url only if the task actually needs the web.",
     ]
       .filter(Boolean)
@@ -436,6 +446,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           const change = {
             ...result.change,
             toolName: toolCall.function.name,
+            commandCwd: config.commandCwd,
           };
           await store.appendEvent("file.changed", change);
           observers.event("file.changed", change);
@@ -479,6 +490,63 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           toolName: "delegate_agent",
           args: safeArgs,
           ...wrapperResult,
+        };
+        await store.appendEvent("tool.completed", result);
+        observers.event("tool.completed", result);
+        return result;
+      }
+      case "send_to_canvas": {
+        const normalized = normalizeCanvasPayload(args, config);
+        if (!normalized.ok) {
+          await store.appendEvent("tool.blocked", {
+            toolName: "send_to_canvas",
+            args: safeArgs,
+            reason: normalized.reason,
+            category: "canvas",
+          });
+          observers.event("tool.blocked", {
+            toolName: "send_to_canvas",
+            args: safeArgs,
+            reason: normalized.reason,
+            category: "canvas",
+          });
+          return {
+            ok: false,
+            blocked: true,
+            reason: normalized.reason,
+            toolName: "send_to_canvas",
+          };
+        }
+
+        const canvasItem = {
+          ...normalized.payload,
+          toolName: "send_to_canvas",
+          commandCwd: config.commandCwd,
+        };
+        await store.appendEvent("canvas.item", canvasItem);
+        observers.event("canvas.item", canvasItem);
+        if (canvasItem.selected) {
+          await store.appendEvent("canvas.selected", {
+            artifactId: canvasItem.artifactId,
+            title: canvasItem.title,
+            source: "agent",
+          });
+          observers.event("canvas.selected", {
+            artifactId: canvasItem.artifactId,
+            title: canvasItem.title,
+            source: "agent",
+          });
+        }
+
+        const result = {
+          ok: true,
+          toolName: "send_to_canvas",
+          args: safeArgs,
+          artifactId: canvasItem.artifactId,
+          title: canvasItem.title,
+          kind: canvasItem.kind,
+          path: canvasItem.path,
+          selected: canvasItem.selected,
         };
         await store.appendEvent("tool.completed", result);
         observers.event("tool.completed", result);
@@ -642,6 +710,7 @@ export async function runAgent(config) {
           packageInstallPolicy: config.packageInstallPolicy,
           commandCwd: config.commandCwd,
           suggestedStartUrl: config.startUrl || "",
+          canvasArtifactsAvailable: true,
         })}`,
       });
 

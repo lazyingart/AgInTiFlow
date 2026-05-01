@@ -108,6 +108,7 @@ The web app includes:
 - Sandbox mode, Docker image/status, package-install approval state, safe setup warnings, and recent sandbox logs.
 - Wrapper capability panel with an opt-in wrapper toggle and a preferred-wrapper selector defaulting to Codex.
 - Workspace Files panel showing file tools, recent file changes, blocked write attempts, hashes, and compact diffs.
+- Canvas & Artifacts modal with agent-selected renders, screenshot/file explorer, text/image preview, notifications, unread badge, and manual selection.
 - Toggleable shell tool, agent wrappers, headless browser, password typing, and destructive actions.
 - Persistent conversation panel above compact runtime logs, so follow-up messages stay close to the top.
 - Conversation manager modal for auto-renaming, manual renaming, and deleting saved chat history.
@@ -265,9 +266,10 @@ curl -X POST http://127.0.0.1:3210/api/sandbox/preflight \
   -H 'Content-Type: application/json' \
   -d '{"sandboxMode":"docker-readonly","buildImage":true}'
 curl http://127.0.0.1:3210/api/workspace/changes
+curl "http://127.0.0.1:3210/api/sessions/<session-id>/artifacts"
 ```
 
-These endpoints report Docker/image/workspace readiness, recent sandbox logs, and recent file-change provenance without returning API keys or npm tokens.
+These endpoints report Docker/image/workspace readiness, recent sandbox logs, file-change provenance, and renderable artifact metadata without returning API keys or npm tokens. Artifact content is loaded on demand through guarded session/workspace reads.
 
 Credential-free API smoke test:
 
@@ -275,7 +277,7 @@ Credential-free API smoke test:
 npm run smoke:web-api
 ```
 
-The smoke script starts the web server on a random localhost port, checks `/api/config`, `/api/sandbox/status`, `/api/sandbox/preflight`, runs one mock agent task, and verifies persisted chat history.
+The smoke script starts the web server on a random localhost port, checks `/api/config`, `/api/sandbox/status`, `/api/sandbox/preflight`, runs mock agent tasks, verifies persisted chat history, and exercises the canvas/artifacts selection API.
 
 ## Runtime Artifacts
 
@@ -289,6 +291,8 @@ Each run stores state under `.sessions/<session-id>/`:
 | `storage-state.json` | Browser session persistence |
 | `artifacts/step-XXX.png` | Screenshots |
 | `artifacts/step-XXX.snapshot.json` | DOM snapshots |
+
+The web UI derives the Canvas & Artifacts tunnel from `canvas.item`, `canvas.selected`, snapshot, file-change, and final-answer events. Models can call `send_to_canvas` to highlight a text block, diff, image, or workspace file; otherwise the user can manually select any derived artifact in the explorer.
 
 ## Project Structure
 
