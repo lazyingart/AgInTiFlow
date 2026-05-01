@@ -4,6 +4,7 @@ import { listAgentWrappers } from "./tool-wrappers.js";
 import { getModelPresets } from "./model-routing.js";
 import { getDockerSandboxStatus, runDockerPreflight } from "./docker-sandbox.js";
 import { buildCapabilityReport, printCapabilityReport } from "./capabilities.js";
+import { startInteractiveCli } from "./interactive-cli.js";
 import {
   doctorReport,
   initProject,
@@ -52,6 +53,7 @@ export function parseArgs(argv) {
     sandboxStatus: false,
     sandboxPreflight: false,
     web: false,
+    interactive: false,
     port: "",
     host: "",
     listProfiles: false,
@@ -62,6 +64,10 @@ export function parseArgs(argv) {
     const arg = argv[i];
     if (arg === "web" || arg === "--web") {
       result.web = true;
+      continue;
+    }
+    if (arg === "chat" || arg === "interactive" || arg === "--chat" || arg === "--interactive") {
+      result.interactive = true;
       continue;
     }
     if (arg === "--port") {
@@ -133,6 +139,10 @@ export function parseArgs(argv) {
       result.allowShellTool = true;
       continue;
     }
+    if (arg === "--no-shell") {
+      result.allowShellTool = false;
+      continue;
+    }
     if (arg === "--allow-destructive" || arg === "--trusted-host-shell") {
       result.allowDestructive = true;
       continue;
@@ -195,6 +205,12 @@ export function parseArgs(argv) {
 
   result.goal = parts.join(" ").trim();
   return result;
+}
+
+function printUsage() {
+  console.log(
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-destructive] [--allow-file-tools|--no-file-tools] [--allow-wrappers --wrapper codex] [--sandbox-status|--sandbox-preflight] "your task"'
+  );
 }
 
 function printRoutes() {
@@ -312,6 +328,11 @@ async function handleSessionsCommand(argv) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
+  if (argv[0] === "--help" || argv[0] === "help" || argv[0] === "-h") {
+    printUsage();
+    return;
+  }
+
   if (argv[0] === "--version" || argv[0] === "version" || argv[0] === "-v") {
     console.log(packageJson.version);
     return;
@@ -393,12 +414,20 @@ export async function main(argv = process.argv.slice(2)) {
       console.error('Usage: aginti resume <session-id> "new prompt"');
       process.exit(1);
     }
-    const config = loadConfig({ ...parseArgs([prompt]), resume: sessionId, goal: prompt }, { packageDir });
+    const config = loadConfig(
+      { ...parseArgs([prompt]), resume: sessionId, goal: prompt, allowShellTool: true, allowFileTools: true },
+      { packageDir }
+    );
     await runAgent(config);
     return;
   }
 
   const args = parseArgs(argv);
+
+  if (args.interactive || (!args.goal && !args.resume && process.stdin.isTTY)) {
+    await startInteractiveCli(args, { packageDir, packageVersion: packageJson.version });
+    return;
+  }
 
   if (args.web) {
     if (args.port) process.env.PORT = String(args.port);
@@ -433,12 +462,17 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (!args.goal && !args.resume) {
-    console.error(
-      'Usage: aginti-cli web [--port 3210] OR aginti-cli [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell] [--allow-destructive] [--allow-file-tools|--no-file-tools] [--allow-wrappers --wrapper codex] [--sandbox-status|--sandbox-preflight] "your task"'
-    );
+    printUsage();
     process.exit(1);
   }
 
-  const config = loadConfig(args, { packageDir });
+  const config = loadConfig(
+    {
+      ...args,
+      allowShellTool: args.allowShellTool ?? true,
+      allowFileTools: args.allowFileTools ?? true,
+    },
+    { packageDir }
+  );
   await runAgent(config);
 }

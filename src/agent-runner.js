@@ -791,6 +791,16 @@ export async function runAgent(config) {
     console.log(`Provider: ${config.provider}`);
     console.log(`Model: ${config.model}`);
     console.log(`Routing: ${config.routingMode} (${config.routeReason})`);
+    console.log(`Workspace: ${config.commandCwd}`);
+    console.log(`Sessions: ${config.sessionsDir}`);
+    if (config.useDockerSandbox) {
+      console.log(
+        `Docker: image=${config.dockerSandboxImage} mode=${config.sandboxMode} packagePolicy=${config.packageInstallPolicy}`
+      );
+      console.log(`Docker workspace: /workspace -> ${config.commandCwd}`);
+    } else if (config.allowShellTool) {
+      console.log(`Shell: host policy=${config.packageInstallPolicy}`);
+    }
     if (state.plan) {
       console.log("\nPlan:");
       console.log(state.plan);

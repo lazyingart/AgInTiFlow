@@ -46,6 +46,16 @@ aginti --list-profiles
 aginti --sandbox-status --sandbox-mode docker-readonly
 ```
 
+Start an interactive Codex-style CLI chat from any project folder:
+
+```bash
+aginti
+# or explicitly:
+aginti chat
+```
+
+Inside chat, type normal requests such as `write a small Python CLI app with tests`. Use `/help` for commands, `/docker on` to switch to Docker workspace mode with approved package installs, `/sessions` to list project runs, and `/resume <session-id>` to continue work.
+
 Launch the local web UI from an installed package:
 
 ```bash
@@ -71,8 +81,8 @@ aginti doctor --capabilities
 aginti sessions list
 aginti sessions show <session-id>
 aginti resume <session-id> "continue with a short follow-up"
-aginti --profile code --provider mock --routing manual "Create notes/hello.md"
-aginti --allow-shell --sandbox-mode docker-workspace --approve-package-installs "set up and test this project"
+aginti --profile code "write a small Python CLI app with tests"
+aginti --sandbox-mode docker-workspace --approve-package-installs "set up this project and run the tests"
 ```
 
 Run from a source checkout:
@@ -324,7 +334,7 @@ Package policy values:
 | `prompt` | Return a clear approval-required error; the UI can switch to approved. |
 | `allow` | Permit package/setup commands. Docker workspace mode also allows broader shell/network commands while keeping secrets and npm publishing blocked. |
 
-Toolchain commands such as `python3 plot.py`, `latexmk -pdf paper.tex`, and `pdflatex -interaction=nonstopmode -halt-on-error paper.tex` are allowlisted only when the shell tool is enabled. In Docker mode they require `docker-workspace` because they write outputs back to `/workspace`. File and canvas tools accept both normal relative paths and Docker virtual paths like `/workspace/report.pdf`, while other absolute host paths remain blocked.
+Toolchain commands such as `python3 plot.py`, `latexmk -pdf paper.tex`, and `pdflatex -interaction=nonstopmode -halt-on-error paper.tex` are allowlisted only when the shell tool is enabled. In Docker mode the project folder is mounted as `/workspace`; any file written to `/workspace/report.pdf` appears on the host as `<your-project>/report.pdf`. CLI runs print both the host workspace and the Docker mapping before execution. File and canvas tools accept both normal relative paths and Docker virtual paths like `/workspace/report.pdf`, while other absolute host paths remain blocked.
 
 Safe preflight endpoints:
 
