@@ -469,16 +469,16 @@ export async function main(argv = process.argv.slice(2)) {
 
   const args = parseArgs(argv);
 
-  if (args.interactive || (!args.goal && !args.resume && process.stdin.isTTY)) {
-    await startInteractiveCli(agentDefaults(args), { packageDir, packageVersion: packageJson.version });
-    return;
-  }
-
   if (args.web) {
     if (args.port) process.env.PORT = String(args.port);
     if (args.host) process.env.HOST = String(args.host);
     process.env.AGINTIFLOW_PACKAGE_DIR = packageDir;
     await import("../web.js");
+    return;
+  }
+
+  if (args.interactive || (!args.goal && !args.resume && process.stdin.isTTY)) {
+    await startInteractiveCli(agentDefaults(args), { packageDir, packageVersion: packageJson.version });
     return;
   }
 

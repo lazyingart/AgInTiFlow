@@ -9,12 +9,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-api-smoke-"));
 const port = 43000 + Math.floor(Math.random() * 1000);
 const baseUrl = `http://127.0.0.1:${port}`;
-const server = spawn(process.execPath, [path.join(repoRoot, "web.js")], {
+const server = spawn(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), "web", "--port", String(port), "--host", "127.0.0.1"], {
   cwd: runtimeDir,
   env: {
     ...process.env,
-    PORT: String(port),
-    HOST: "127.0.0.1",
     AGINTIFLOW_RUNTIME_DIR: runtimeDir,
   },
   stdio: ["ignore", "pipe", "pipe"],
