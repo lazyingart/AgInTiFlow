@@ -62,6 +62,10 @@ try {
     capabilities.trustedDockerPolicy.some((check) => check.command.startsWith("wget") && check.allowed),
     "trusted Docker policy did not allow wget"
   );
+  assert(
+    capabilities.trustedDockerPolicy.some((check) => check.command.startsWith("chmod") && check.allowed),
+    "trusted Docker policy did not allow chmod"
+  );
 
   const doctor = JSON.parse(await runCli(["doctor", "--capabilities", "--json"]));
   assert(doctor.project.root === tempRoot, "doctor --capabilities used the wrong project root");

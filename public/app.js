@@ -114,7 +114,9 @@ const translations = {
     messageRequired: "Message is required.",
     sendingStatus: "Sending...",
     runningStatus: "Running...",
+    queuedStatus: "Queued for the running agent.",
     failedContinue: "Failed to continue the conversation.",
+    chatShortcutHelp: "Enter sends · Ctrl+J inserts a newline · Tab queues while the agent is running",
     conversationMenuLabel: "Manage conversations",
     manageConversationsTitle: "Manage conversations",
     manageConversationsHelp: "Rename, auto-rename, or delete saved chat history.",
@@ -862,8 +864,9 @@ function renderSandboxStatus(status = lastSandbox) {
     `package=${status.packageInstallPolicy}`,
     `docker=${status.dockerAvailable ? t("availableLabel") : t("missingLabel")}`,
     `imageReady=${status.imageReady}`,
+    status.persistentDocker?.env ? `env=${status.persistentDocker.env}` : "",
   ];
-  sandboxStatusEl.textContent = parts.join(" · ");
+  sandboxStatusEl.textContent = parts.filter(Boolean).join(" · ");
   renderSandboxLogs(status.logs || []);
 }
 
@@ -958,7 +961,7 @@ function formPayload() {
     startUrl: document.querySelector("#startUrl").value.trim(),
     allowedDomains: document.querySelector("#allowedDomains").value.trim(),
     commandCwd: document.querySelector("#commandCwd").value.trim(),
-    maxSteps: Number(document.querySelector("#maxSteps").value) || 15,
+    maxSteps: Number(document.querySelector("#maxSteps").value) || 24,
     sandboxMode: sandboxModeField.value,
     packageInstallPolicy: packageInstallPolicyField.value,
     headless: document.querySelector("#headless").checked,
@@ -1746,6 +1749,28 @@ saveApiKeyButton?.addEventListener("click", async () => {
 form.addEventListener("input", schedulePreferenceSave);
 form.addEventListener("change", schedulePreferenceSave);
 
+chatInputEl.addEventListener("keydown", (event) => {
+  if (event.key === "j" && event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    const start = chatInputEl.selectionStart ?? chatInputEl.value.length;
+    const end = chatInputEl.selectionEnd ?? chatInputEl.value.length;
+    chatInputEl.value = `${chatInputEl.value.slice(0, start)}\n${chatInputEl.value.slice(end)}`;
+    chatInputEl.selectionStart = chatInputEl.selectionEnd = start + 1;
+    return;
+  }
+
+  if (event.key === "Tab") {
+    event.preventDefault();
+    chatFormEl.requestSubmit();
+    return;
+  }
+
+  if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    chatFormEl.requestSubmit();
+  }
+});
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
@@ -1838,9 +1863,19 @@ chatFormEl.addEventListener("submit", async (event) => {
 
   currentSessionId = data.sessionId;
   chatInputEl.value = "";
-  chatStatusEl.textContent = t("runningStatus");
+  chatStatusEl.textContent = data.queued ? t("queuedStatus") : t("runningStatus");
+  if (data.queued) {
+    renderChat([
+      ...lastChatEntries,
+      {
+        role: "user",
+        content,
+        at: new Date().toISOString(),
+      },
+    ]);
+  }
   await refreshSessions();
-  await refreshChat();
+  if (!data.queued) await refreshChat();
   await refreshWorkspaceChanges();
   await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
 
@@ -1872,7 +1907,7 @@ async function loadConfig() {
   document.querySelector("#headless").checked = prefs.headless ?? data.defaults.headless;
   document.querySelector("#maxSteps").value = prefs.maxSteps ?? data.defaults.maxSteps;
   sandboxModeField.value = prefs.sandboxMode || (prefs.useDockerSandbox ? "docker-workspace" : "host");
-  packageInstallPolicyField.value = prefs.packageInstallPolicy || "prompt";
+  packageInstallPolicyField.value = prefs.packageInstallPolicy || "allow";
   document.querySelector("#allowShellTool").checked = prefs.allowShellTool ?? true;
   document.querySelector("#allowFileTools").checked = prefs.allowFileTools ?? true;
   allowWrapperToolsField.checked = prefs.allowWrapperTools ?? false;

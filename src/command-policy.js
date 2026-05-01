@@ -39,6 +39,7 @@ const TEST_PATTERNS = [
 ];
 
 const SAFE_WORKSPACE_WRITE_PATTERNS = [/^mkdir\s+-p\s+[-\w./]+$/];
+const PERMISSION_CHANGE_PATTERNS = [/^(?:sudo\s+)?chmod\s+[-+=,rwxugoXst0-7]+\s+[-\w./]+$/];
 
 const NETWORK_FETCH_PATTERNS = [
   /^curl\s+(?:-[A-Za-z0-9]*\s+)*https?:\/\/\S+(?:\s+-o\s+[-\w./]+)?$/,
@@ -153,15 +154,6 @@ function classifySimpleCommand(normalized) {
     return { category: "blocked", reason: "Command is blocked because it references secrets or credential files." };
   }
 
-  const lowered = ` ${normalized.toLowerCase()} `;
-  if (BLOCKED_SHELL_TOKENS.some((part) => normalized.includes(part))) {
-    return {
-      category: "general-shell",
-      needsNetwork: true,
-      writesWorkspace: true,
-      reason: `Command uses general shell syntax: ${normalized}`,
-    };
-  }
   if (matchAny(SAFE_WORKSPACE_WRITE_PATTERNS, normalized)) {
     const target = normalized.replace(/^mkdir\s+-p\s+/, "");
     const virtualWorkspacePath = isSafeVirtualWorkspaceDir(target);
@@ -170,12 +162,30 @@ function classifySimpleCommand(normalized) {
     }
     return { category: "workspace-write", needsNetwork: false, writesWorkspace: true, virtualWorkspacePath };
   }
+  if (matchAny(PERMISSION_CHANGE_PATTERNS, normalized)) {
+    return {
+      category: "permission-change",
+      needsNetwork: false,
+      writesWorkspace: true,
+      reason: `Command changes workspace file mode: ${normalized}`,
+    };
+  }
+
+  const lowered = ` ${normalized.toLowerCase()} `;
   if (BLOCKED_WRITE_TOKENS.some((part) => lowered.includes(part))) {
     return {
       category: "destructive",
       needsNetwork: false,
       writesWorkspace: true,
       reason: `Command contains a write-capable or destructive token: ${normalized}`,
+    };
+  }
+  if (BLOCKED_SHELL_TOKENS.some((part) => normalized.includes(part))) {
+    return {
+      category: "general-shell",
+      needsNetwork: true,
+      writesWorkspace: true,
+      reason: `Command uses general shell syntax: ${normalized}`,
     };
   }
 
@@ -301,6 +311,20 @@ export function evaluateCommandPolicy(command, config) {
         sandboxMode === "host"
           ? "General shell commands on the host require Allow destructive actions. Prefer Docker workspace mode for broad shell access."
           : "General Docker shell commands require Package installs = allow in docker-workspace mode.",
+      sandboxMode,
+      packageInstallPolicy,
+    };
+  }
+
+  if (classification.category === "permission-change" && !trustedDockerShell && !trustedHostShell) {
+    return {
+      allowed: false,
+      ...classification,
+      needsApproval: true,
+      reason:
+        sandboxMode === "host"
+          ? "Workspace permission changes on the host require Allow destructive actions. Prefer Docker workspace mode."
+          : "Docker permission changes require docker-workspace mode with Package installs = allow.",
       sandboxMode,
       packageInstallPolicy,
     };

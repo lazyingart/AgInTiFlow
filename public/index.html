@@ -135,7 +135,7 @@
             </label>
             <label>
               <span data-i18n="maxStepsLabel">Max steps</span>
-              <input id="maxSteps" name="maxSteps" type="number" min="1" max="50" value="15" />
+              <input id="maxSteps" name="maxSteps" type="number" min="1" max="50" value="24" />
             </label>
           </div>
           <p id="package-warning" class="subtle package-warning"></p>
@@ -291,6 +291,9 @@
               data-i18n-placeholder="chatPlaceholder"
               placeholder="Continue the selected conversation here."
             ></textarea>
+            <p class="chat-shortcuts subtle" data-i18n="chatShortcutHelp">
+              Enter sends · Ctrl+J inserts a newline · Tab queues while the agent is running
+            </p>
             <div class="actions">
               <button type="submit" data-i18n="sendMessageButton">Send message</button>
               <span id="chat-status" class="subtle"></span>

@@ -76,6 +76,9 @@ try {
   if (config.preferences?.preferredWrapper !== "codex") throw new Error("Codex is not the default preferred wrapper");
   if (config.project?.root !== runtimeDir) throw new Error("web project root did not default to launch directory");
   if (config.preferences?.commandCwd !== runtimeDir) throw new Error("commandCwd did not default to project root");
+  if (config.preferences?.sandboxMode !== "docker-workspace") throw new Error("web did not default to docker workspace");
+  if (config.preferences?.packageInstallPolicy !== "allow") throw new Error("web did not default to Docker package installs");
+  if (Number(config.preferences?.maxSteps) < 24) throw new Error("web default max steps is too low");
   if (!Array.isArray(config.taskProfiles) || !config.taskProfiles.some((profile) => profile.id === "latex")) {
     throw new Error("task profiles are not advertised by /api/config");
   }

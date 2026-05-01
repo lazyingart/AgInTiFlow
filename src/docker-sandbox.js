@@ -1,5 +1,6 @@
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -8,6 +9,9 @@ import { redactSensitiveText, redactValue } from "./redaction.js";
 
 const execFile = promisify(execFileCallback);
 const DOCKER_WORKSPACE = "/workspace";
+const DOCKER_HOME = "/aginti-home";
+const DOCKER_CACHE = "/aginti-cache";
+const DOCKER_ENV = "/aginti-env";
 const READY_IMAGES = new Set();
 const SANDBOX_LOG_LIMIT = 80;
 const sandboxLogs = [];
@@ -101,10 +105,31 @@ function sandboxDockerfilePath(config) {
   return path.join(sandboxPackageDir(config), "docker", "sandbox.Dockerfile");
 }
 
+function persistentDockerDirs(config) {
+  const root = path.resolve(
+    config.dockerStateDir || process.env.AGINTIFLOW_DOCKER_STATE_DIR || path.join(os.homedir(), ".agintiflow", "docker")
+  );
+  return {
+    root,
+    home: path.join(root, "home"),
+    cache: path.join(root, "cache"),
+    env: path.join(root, "env"),
+  };
+}
+
+async function ensurePersistentDockerDirs(config) {
+  const dirs = persistentDockerDirs(config);
+  await Promise.all([fs.mkdir(dirs.home, { recursive: true }), fs.mkdir(dirs.cache, { recursive: true }), fs.mkdir(dirs.env, { recursive: true })]);
+  return dirs;
+}
+
 export async function getDockerSandboxStatus(config) {
   const image = config.dockerSandboxImage;
   const dockerfilePath = sandboxDockerfilePath(config);
   const workspace = config.commandCwd;
+  if (config.useDockerSandbox) {
+    await ensurePersistentDockerDirs(config).catch(() => null);
+  }
   const [dockerReady, dockerfileExists, workspaceExists, workspaceReadable, workspaceWritable] = await Promise.all([
     dockerAvailable(),
     pathAccess(dockerfilePath, fsConstants.R_OK),
@@ -114,6 +139,12 @@ export async function getDockerSandboxStatus(config) {
   ]);
 
   const imageReady = dockerReady ? await dockerImageExists(image) : false;
+  const persistentDirs = persistentDockerDirs(config);
+  const [persistentHomeExists, persistentCacheExists, persistentEnvExists] = await Promise.all([
+    pathAccess(persistentDirs.home, fsConstants.F_OK),
+    pathAccess(persistentDirs.cache, fsConstants.F_OK),
+    pathAccess(persistentDirs.env, fsConstants.F_OK),
+  ]);
   return {
     sandboxMode: normalizeSandboxMode(config.sandboxMode),
     useDockerSandbox: Boolean(config.useDockerSandbox),
@@ -127,6 +158,18 @@ export async function getDockerSandboxStatus(config) {
     workspaceReadable,
     workspaceWritable,
     dockerfileExists,
+    persistentDocker: {
+      home: persistentDirs.home,
+      cache: persistentDirs.cache,
+      env: persistentDirs.env,
+      homeExists: persistentHomeExists,
+      cacheExists: persistentCacheExists,
+      envExists: persistentEnvExists,
+      containerHome: DOCKER_HOME,
+      containerCache: DOCKER_CACHE,
+      containerEnv: DOCKER_ENV,
+      pythonVenv: `${DOCKER_ENV}/python`,
+    },
     logs: getSandboxLogs(),
   };
 }
@@ -165,7 +208,30 @@ export async function ensureDockerSandboxReady(config, observers, options = {}) 
   await buildDockerSandboxImage(config, observers);
 }
 
-function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, config)) {
+function dockerCommand(command, policy) {
+  const envLines = [
+    `export HOME=${DOCKER_HOME}`,
+    `export XDG_CACHE_HOME=${DOCKER_CACHE}`,
+    `export PIP_CACHE_DIR=${DOCKER_CACHE}/pip`,
+    `export UV_CACHE_DIR=${DOCKER_CACHE}/uv`,
+    `export NPM_CONFIG_CACHE=${DOCKER_CACHE}/npm`,
+    `export CONDA_PKGS_DIRS=${DOCKER_CACHE}/conda-pkgs`,
+    `export PYTHONUSERBASE=${DOCKER_ENV}/python-user`,
+    `export PATH=${DOCKER_ENV}/python/bin:${DOCKER_ENV}/python-user/bin:${DOCKER_ENV}/miniforge/bin:${DOCKER_ENV}/bin:$PATH`,
+    `cd ${DOCKER_WORKSPACE}`,
+  ];
+
+  if (!policy.requiresDockerRoot) {
+    envLines.push(
+      `if command -v python3 >/dev/null 2>&1 && [ ! -x ${DOCKER_ENV}/python/bin/python ]; then python3 -m venv --system-site-packages ${DOCKER_ENV}/python >/dev/null 2>&1 || true; fi`,
+      `if [ -f ${DOCKER_ENV}/python/bin/activate ]; then . ${DOCKER_ENV}/python/bin/activate; fi`
+    );
+  }
+
+  return [...envLines, String(command)].join("\n");
+}
+
+function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, config), persistentDirs = persistentDockerDirs(config)) {
   const uid = typeof process.getuid === "function" ? String(process.getuid()) : "";
   const gid = typeof process.getgid === "function" ? String(process.getgid()) : "";
   const userArgs = uid && gid && !policy.requiresDockerRoot ? ["--user", `${uid}:${gid}`] : [];
@@ -196,24 +262,29 @@ function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, 
     ...readOnlyArgs,
     ...userArgs,
     "-e",
-    "HOME=/tmp",
-    "-e",
     "NPM_CONFIG_USERCONFIG=/tmp/.npmrc",
     "-e",
     "PIP_DISABLE_PIP_VERSION_CHECK=1",
     "-v",
     `${config.commandCwd}:${DOCKER_WORKSPACE}:${mountMode}`,
+    "-v",
+    `${persistentDirs.home}:${DOCKER_HOME}:rw`,
+    "-v",
+    `${persistentDirs.cache}:${DOCKER_CACHE}:rw`,
+    "-v",
+    `${persistentDirs.env}:${DOCKER_ENV}:rw`,
     "-w",
     DOCKER_WORKSPACE,
     config.dockerSandboxImage,
     "bash",
     "-lc",
-    String(command),
+    dockerCommand(command, policy),
   ];
 }
 
 export async function runDockerSandboxCommand(command, config, policy = evaluateCommandPolicy(command, config)) {
-  const result = await execDocker(dockerRunArgs(command, config, policy), {
+  const persistentDirs = await ensurePersistentDockerDirs(config);
+  const result = await execDocker(dockerRunArgs(command, config, policy, persistentDirs), {
     timeout: policy.needsNetwork ? 120000 : policy.category === "toolchain" ? 90000 : 15000,
     maxBuffer: 300 * 1024,
   });
@@ -227,6 +298,7 @@ export async function runDockerSandboxCommand(command, config, policy = evaluate
     category: policy.category,
     sandboxMode: policy.sandboxMode,
     network: policy.needsNetwork ? "bridge" : "none",
+    persistentDocker: persistentDirs,
     stdout: payload.stdout.slice(0, 1200),
     stderr: payload.stderr.slice(0, 1200),
   });
@@ -274,6 +346,7 @@ export async function runDockerPreflight(config, options = {}) {
 
   let status = await getDockerSandboxStatus(config);
   const runChecks = async () => {
+    const persistentDirs = await ensurePersistentDockerDirs(config);
     const results = [];
     for (const command of [
       "node -v",
@@ -287,7 +360,7 @@ export async function runDockerPreflight(config, options = {}) {
       "rg --version",
     ]) {
       try {
-        const result = await execDocker(dockerRunArgs(command, config, { needsNetwork: false, category: "preflight" }), {
+        const result = await execDocker(dockerRunArgs(command, config, { needsNetwork: false, category: "preflight" }, persistentDirs), {
           timeout: 15000,
           maxBuffer: 100 * 1024,
         });

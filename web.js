@@ -130,7 +130,7 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
           ? providerDefaults.model
           : current.model || modelPresets.fast.model || providerDefaults.model,
     headless: typeof body.headless === "boolean" ? body.headless : Boolean(current.headless),
-    maxSteps: Number.isFinite(parsedMaxSteps) && parsedMaxSteps > 0 ? parsedMaxSteps : Number(current.maxSteps) || 15,
+    maxSteps: Number.isFinite(parsedMaxSteps) && parsedMaxSteps > 0 ? parsedMaxSteps : Number(current.maxSteps) || 24,
     startUrl: typeof body.startUrl === "string" ? body.startUrl.trim() : current.startUrl || "",
     allowedDomains:
       typeof body.allowedDomains === "string" ? body.allowedDomains.trim() : current.allowedDomains || "",
@@ -156,7 +156,7 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
           : Boolean(current.useDockerSandbox),
     sandboxMode,
     packageInstallPolicy: normalizePackageInstallPolicy(
-      body.packageInstallPolicy || current.packageInstallPolicy || "prompt"
+      body.packageInstallPolicy || current.packageInstallPolicy || (sandboxMode === "host" ? "prompt" : "allow")
     ),
     dockerSandboxImage:
       typeof body.dockerSandboxImage === "string" && body.dockerSandboxImage.trim()
@@ -519,7 +519,7 @@ app.get("/api/config", async (_req, res) => {
       deepseek: publicProviderDefault("deepseek"),
       mock: publicProviderDefault("mock"),
       headless: true,
-      maxSteps: 15,
+      maxSteps: 24,
     },
     taskProfiles: listTaskProfiles(),
     routing: {
@@ -765,6 +765,28 @@ app.post("/api/sessions/:sessionId/messages", async (req, res) => {
 
   if (!content) {
     res.status(400).json({ error: "Message content is required." });
+    return;
+  }
+
+  if (!isSafeSessionId(sessionId)) {
+    res.status(400).json({ error: "Invalid session id." });
+    return;
+  }
+
+  const active = runs.get(sessionId);
+  if (active?.status === "running") {
+    const store = sessionStore(sessionId);
+    await store.appendInbox(content, { source: "web" });
+    await store.appendEvent("conversation.queued_input", { prompt: content, source: "web" }).catch(() => {});
+    active.logs.push({
+      at: new Date().toISOString(),
+      kind: "event",
+      message: "conversation.queued_input",
+      data: { prompt: content, source: "web" },
+    });
+    active.updatedAt = new Date().toISOString();
+    db.upsertSession(active);
+    res.json({ sessionId, queued: true });
     return;
   }
 

@@ -43,7 +43,7 @@ aginti init
 aginti doctor
 aginti --list-routes
 aginti --list-profiles
-aginti --sandbox-status --sandbox-mode docker-readonly
+aginti --sandbox-status
 ```
 
 Start an interactive Codex-style CLI chat from any project folder:
@@ -54,7 +54,7 @@ aginti
 aginti chat
 ```
 
-Inside chat, type normal requests such as `write a small Python CLI app with tests`. Use `/help` for commands, `/docker on` to switch to Docker workspace mode with approved package installs, `/sessions` to list project runs, and `/resume <session-id>` to continue work.
+Inside chat, type normal requests such as `write a small Python CLI app with tests`. The default is now Docker workspace mode with approved package installs, so coding, plotting, and LaTeX tasks can set up project-local tools without touching the host. Use `/help` for commands, `/latex on` for PDF work, `/docker off` only when you intentionally want host mode, `/sessions` to list project runs, and `/resume <session-id>` to continue work.
 
 Launch the local web UI from an installed package:
 
@@ -81,8 +81,10 @@ aginti doctor --capabilities
 aginti sessions list
 aginti sessions show <session-id>
 aginti resume <session-id> "continue with a short follow-up"
+aginti queue <session-id> "extra instruction for the running agent"
 aginti --profile code "write a small Python CLI app with tests"
-aginti --sandbox-mode docker-workspace --approve-package-installs "set up this project and run the tests"
+aginti --latex "draw a figure, write a short LaTeX report, and compile the PDF"
+aginti "set up this project and run the tests"
 ```
 
 Run from a source checkout:
@@ -194,9 +196,9 @@ AgInTiFlow is intentionally conservative:
 - File writes record before/after SHA-256 hashes and compact redacted diffs.
 - Guarded shell mode is policy-based: normal inspection/tests are available, Docker workspace mode can run broader setup/network commands when package installs are approved, and host privileged/destructive work requires explicit trust.
 - Docker read-only mode mounts the workspace read-only and disables container network access.
-- Docker workspace-write mode is the web UI default so plot, PDF, and test outputs can be written inside the mounted workspace.
-- Docker workspace-write mode is the preferred place for approved package or environment setup, including `apt-get`, `npm`, `pip`, `curl`, and `wget` workflows inside the container.
-- Package installs default to `prompt`, so npm/pip/conda/venv setup is blocked until explicitly approved.
+- Docker workspace-write mode is the CLI/web default so plot, PDF, and test outputs can be written inside the mounted workspace.
+- Docker workspace-write mode with package policy `allow` is the default for normal agent work. It permits practical setup commands such as `npm`, `pip`, `conda`, `curl`, `wget`, and `chmod` inside Docker while keeping host sudo/global installs blocked.
+- Host mode falls back to `prompt`, so npm/pip/conda/venv setup and privileged/destructive commands require explicit trust.
 - NPM publishing, npm token commands, API-key reads, and credential files stay blocked. Broader shell commands require either Docker workspace mode with package policy `allow`, or explicit host trust.
 - NPM tokens and API keys are redacted from tool logs and API responses.
 - Every tool request and result is written to structured logs.
@@ -316,7 +318,7 @@ Build the companion agent toolchain sandbox:
 npm run smoke:toolchain-docker
 ```
 
-The setup script idempotently builds `agintiflow-sandbox:latest` from `docker/sandbox.Dockerfile` and verifies Node, npm, Python, NumPy, Matplotlib, `latexmk`, and `pdflatex` inside Docker. The smoke script runs Python plot generation, LaTeX PDF compilation, and PDF artifact preview against the same workspace-mounted sandbox path used by the agent.
+The setup script idempotently builds `agintiflow-sandbox:latest` from `docker/sandbox.Dockerfile` and verifies Node, npm, Python, NumPy, Matplotlib, `latexmk`, and `pdflatex` inside Docker. It also creates the persistent companion folders under `~/.agintiflow/docker/`: `home/` maps to `/aginti-home`, `cache/` maps to `/aginti-cache`, and `env/` maps to `/aginti-env`. Python/conda-style toolchains should live under `/aginti-env` so they survive across agent runs. OS package changes from `apt-get` are container-ephemeral unless you rebuild the image.
 
 ## Sandbox Modes
 
@@ -335,6 +337,8 @@ Package policy values:
 | `allow` | Permit package/setup commands. Docker workspace mode also allows broader shell/network commands while keeping secrets and npm publishing blocked. |
 
 Toolchain commands such as `python3 plot.py`, `latexmk -pdf paper.tex`, and `pdflatex -interaction=nonstopmode -halt-on-error paper.tex` are allowlisted only when the shell tool is enabled. In Docker mode the project folder is mounted as `/workspace`; any file written to `/workspace/report.pdf` appears on the host as `<your-project>/report.pdf`. CLI runs print both the host workspace and the Docker mapping before execution. File and canvas tools accept both normal relative paths and Docker virtual paths like `/workspace/report.pdf`, while other absolute host paths remain blocked.
+
+The web chat mirrors the CLI session store. Enter sends, Ctrl+J inserts a newline, and Tab submits/queues the message. Queued input is written to `.sessions/<session-id>/inbox.jsonl`; the running agent drains that pipe between steps and after tool calls.
 
 Safe preflight endpoints:
 

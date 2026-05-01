@@ -144,7 +144,7 @@ function createInitialState(config, sessionId) {
           "Avoid destructive actions, purchases, account changes, and sensitive workflows.",
           config.allowShellTool
             ? config.useDockerSandbox
-              ? `A shell command tool is available inside Docker sandbox mode ${config.sandboxMode}. Docker workspace mode with approved package installs supports broader setup and network commands.`
+              ? `A shell command tool is available inside Docker sandbox mode ${config.sandboxMode}. Docker workspace mode with approved package installs supports broader setup and network commands. The project is mounted at /workspace and the persistent agent toolchain is mounted at /aginti-env with caches under /aginti-cache.`
               : "A host shell command tool is available under the configured trust policy."
             : "No shell command tool is available.",
           config.allowFileTools
@@ -159,6 +159,8 @@ function createInitialState(config, sessionId) {
           "Work like a practical coding agent: inspect when useful, edit with file tools, run safe checks when they add confidence, and keep outputs inside the workspace.",
           "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files.",
           "For environment or system-maintenance work, use the configured sandbox and package policy; Docker workspace mode is the preferred place for installs and toolchain setup.",
+          "Docker language/toolchain installs should prefer /aginti-env or project files so they persist across runs; apt/apk changes are ephemeral unless the image is rebuilt.",
+          "If the run is close to the max-step limit, finish with the best complete artifact and honest limitations instead of starting a new approach.",
           "When the requested outcome is complete and a useful check has passed or been honestly skipped, stop and call finish.",
           "When done, call finish with a concise result.",
         ].join(" "),
@@ -171,7 +173,7 @@ function createInitialState(config, sessionId) {
           config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
           config.allowShellTool
             ? config.useDockerSandbox
-              ? `Shell working directory mounted into Docker as /workspace from ${config.commandCwd}. Use relative paths or /workspace paths, not absolute host temp paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
+              ? `Shell working directory mounted into Docker as /workspace from ${config.commandCwd}. Use relative paths or /workspace paths, not absolute host temp paths. Persistent Docker env: /aginti-env, caches: /aginti-cache. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
               : `Shell working directory: ${config.commandCwd}`
             : "",
           config.allowFileTools ? `Workspace file tools enabled in: ${config.commandCwd}. Use workspace-relative paths.` : "",
@@ -273,7 +275,7 @@ function applyContinuationPrompt(state, config, observers) {
       config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
       config.allowShellTool
         ? config.useDockerSandbox
-          ? `Shell working directory mounted into Docker as /workspace from ${config.commandCwd}. Use relative paths or /workspace paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
+          ? `Shell working directory mounted into Docker as /workspace from ${config.commandCwd}. Use relative paths or /workspace paths. Persistent Docker env: /aginti-env, caches: /aginti-cache. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
           : `Shell working directory: ${config.commandCwd}`
         : "",
       config.allowFileTools ? `Workspace file tools enabled in: ${config.commandCwd}. Use workspace-relative paths.` : "",
@@ -409,7 +411,7 @@ async function captureSyntheticSnapshot(store, step, config) {
       config.startUrl ? `Suggested start URL: ${config.startUrl}` : "",
       config.allowShellTool
         ? config.useDockerSandbox
-          ? `Shell tool available in Docker with mounted workspace /workspace from ${config.commandCwd}. Use relative paths or /workspace paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
+          ? `Shell tool available in Docker with mounted workspace /workspace from ${config.commandCwd}. Use relative paths or /workspace paths. Persistent Docker env: /aginti-env, caches: /aginti-cache. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
           : `Shell tool available in: ${config.commandCwd}`
         : "Shell tool disabled.",
       config.allowFileTools
@@ -441,6 +443,29 @@ async function buildSnapshot(browserState, store, step, config) {
     return captureSnapshot(browserState.page, store, step);
   }
   return captureSyntheticSnapshot(store, step, config);
+}
+
+async function injectQueuedUserMessages(store, state, observers) {
+  const inbox = await store.drainInbox();
+  if (inbox.length === 0) return;
+
+  for (const item of inbox) {
+    const content = String(item.content || "").trim();
+    if (!content) continue;
+    appendChatEntry(state, "user", content);
+    state.messages.push({
+      role: "user",
+      content: `Additional user message received while this run was active:\n${content}`,
+    });
+    await store.appendEvent("conversation.queued_input_applied", {
+      prompt: content,
+      source: item.source || "inbox",
+    });
+    observers.event("conversation.queued_input_applied", {
+      prompt: content,
+      source: item.source || "inbox",
+    });
+  }
 }
 
 async function executeTool(browserState, toolCall, snapshot, config, store, observers, state) {
@@ -798,6 +823,7 @@ export async function runAgent(config) {
         `Docker: image=${config.dockerSandboxImage} mode=${config.sandboxMode} packagePolicy=${config.packageInstallPolicy}`
       );
       console.log(`Docker workspace: /workspace -> ${config.commandCwd}`);
+      console.log("Docker env: /aginti-env persistent toolchain; /aginti-cache persistent caches");
     } else if (config.allowShellTool) {
       console.log(`Shell: host policy=${config.packageInstallPolicy}`);
     }
@@ -808,6 +834,7 @@ export async function runAgent(config) {
     }
 
     for (let step = state.stepsCompleted + 1; step <= config.maxSteps; step += 1) {
+      await injectQueuedUserMessages(store, state, observers);
       const snapshot = await buildSnapshot(browserState, store, step, config);
       state.meta.lastUrl = snapshot.url || state.meta.lastUrl;
       await saveBrowserState(browserState, store).catch(() => {});
@@ -828,7 +855,7 @@ export async function runAgent(config) {
 
       state.messages.push({
         role: "user",
-        content: `Step ${step}/${config.maxSteps}. Latest runtime snapshot:\n${JSON.stringify({
+        content: `Step ${step}/${config.maxSteps} (${config.maxSteps - step} steps remain after this one). Latest runtime snapshot:\n${JSON.stringify({
           title: snapshot.title,
           url: snapshot.url,
           pageText: snapshot.pageText,
@@ -843,6 +870,9 @@ export async function runAgent(config) {
           shellSandbox: config.useDockerSandbox ? "docker" : "host",
           sandboxMode: config.sandboxMode,
           packageInstallPolicy: config.packageInstallPolicy,
+          dockerWorkspace: config.useDockerSandbox ? "/workspace" : "",
+          dockerPersistentEnv: config.useDockerSandbox ? "/aginti-env" : "",
+          dockerPersistentCache: config.useDockerSandbox ? "/aginti-cache" : "",
           commandCwd: config.commandCwd,
           plan: state.plan || "",
           suggestedStartUrl: config.startUrl || "",
@@ -961,6 +991,8 @@ export async function runAgent(config) {
           };
         }
       }
+
+      await injectQueuedUserMessages(store, state, observers);
 
       state.stepsCompleted = step;
       state.updatedAt = new Date().toISOString();

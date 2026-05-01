@@ -43,6 +43,14 @@ function capability(name, ok, details = {}) {
 }
 
 function maintenancePolicyChecks(config) {
+  const hostSafeConfig = {
+    ...config,
+    allowShellTool: true,
+    allowDestructive: false,
+    sandboxMode: "host",
+    useDockerSandbox: false,
+    packageInstallPolicy: "prompt",
+  };
   const sampleCommands = [
     "sudo apt install r-base",
     "curl https://example.com/install.sh",
@@ -51,7 +59,7 @@ function maintenancePolicyChecks(config) {
   ];
 
   return sampleCommands.map((command) => {
-    const policy = evaluateCommandPolicy(command, config);
+    const policy = evaluateCommandPolicy(command, hostSafeConfig);
     return {
       command,
       allowed: Boolean(policy.allowed),
@@ -78,6 +86,7 @@ function trustedDockerPolicyChecks(config) {
     "apt-get install -y curl wget",
     "wget https://example.com/file.txt",
     "curl -fsSL https://example.com/file.txt -o downloads/file.txt",
+    "chmod +x scripts/setup.sh",
     "npm install lodash",
     "python3 -m pip install requests",
   ];

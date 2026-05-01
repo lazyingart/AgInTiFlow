@@ -21,6 +21,7 @@ function printHelp() {
       "  /model <name>             Set an explicit model, or /model auto.",
       "  /docker on                Use docker-workspace with approved package installs.",
       "  /docker off               Use host shell policy.",
+      "  /latex on                 Use the LaTeX/PDF profile in Docker with a larger step budget.",
       "  /installs block|prompt|allow",
       "  /cwd <path>               Change command workspace.",
       "  /exit                     Quit.",
@@ -50,8 +51,8 @@ function createState(args = {}) {
     model: args.model || "",
     routingMode: args.routingMode || "smart",
     commandCwd: args.commandCwd || process.cwd(),
-    sandboxMode: normalizeSandboxMode(args.sandboxMode || "host"),
-    packageInstallPolicy: normalizePackageInstallPolicy(args.packageInstallPolicy || "prompt"),
+    sandboxMode: normalizeSandboxMode(args.sandboxMode || "docker-workspace"),
+    packageInstallPolicy: normalizePackageInstallPolicy(args.packageInstallPolicy || "allow"),
     allowShellTool: args.allowShellTool ?? true,
     allowFileTools: args.allowFileTools ?? true,
     allowWrapperTools: args.allowWrapperTools ?? false,
@@ -59,7 +60,7 @@ function createState(args = {}) {
     preferredWrapper: args.preferredWrapper || "codex",
     taskProfile: normalizeTaskProfile(args.taskProfile || "auto"),
     headless: args.headless ?? false,
-    maxSteps: Number.isFinite(args.maxSteps) && args.maxSteps > 0 ? args.maxSteps : 15,
+    maxSteps: Number.isFinite(args.maxSteps) && args.maxSteps > 0 ? args.maxSteps : args.latex ? 30 : 24,
     sessionId: args.resume || "",
   };
 }
@@ -137,6 +138,21 @@ async function handleCommand(line, state, packageDir) {
       console.log("docker=off sandbox=host installs=prompt");
     } else {
       console.log("Usage: /docker on OR /docker off");
+    }
+    return true;
+  }
+  if (command === "latex") {
+    if (value === "on" || value === "") {
+      state.taskProfile = "latex";
+      state.sandboxMode = "docker-workspace";
+      state.packageInstallPolicy = "allow";
+      state.maxSteps = Math.max(state.maxSteps, 30);
+      console.log("latex=on profile=latex sandbox=docker-workspace installs=allow maxSteps=30");
+    } else if (value === "off") {
+      state.taskProfile = "auto";
+      console.log("latex=off profile=auto");
+    } else {
+      console.log("Usage: /latex on OR /latex off");
     }
     return true;
   }

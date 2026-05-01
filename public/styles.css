@@ -524,6 +524,10 @@ button.danger {
 .chat-panel {
   display: grid;
   gap: 12px;
+  border-color: rgba(15, 118, 110, 0.2);
+  background:
+    linear-gradient(135deg, rgba(255, 253, 250, 0.95), rgba(236, 253, 245, 0.66)),
+    var(--panel);
 }
 
 .chat-thread {
@@ -561,7 +565,25 @@ button.danger {
 }
 
 .chat-form {
+  display: grid;
+  gap: 8px;
   margin: 0;
+  padding: 12px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 16px;
+  background: rgba(255, 253, 250, 0.82);
+}
+
+#chat-input {
+  min-height: 92px;
+  border-color: rgba(15, 118, 110, 0.24);
+  background: white;
+}
+
+.chat-shortcuts {
+  margin: -2px 0 0;
+  font-size: 0.78rem;
+  line-height: 1.35;
 }
 
 .modal {

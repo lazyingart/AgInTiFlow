@@ -10,6 +10,7 @@ export class SessionStore {
     this.statePath = path.join(this.sessionDir, "state.json");
     this.planPath = path.join(this.sessionDir, "plan.md");
     this.eventsPath = path.join(this.sessionDir, "events.jsonl");
+    this.inboxPath = path.join(this.sessionDir, "inbox.jsonl");
     this.storageStatePath = path.join(this.sessionDir, "storage-state.json");
   }
 
@@ -57,6 +58,34 @@ export class SessionStore {
     } catch {
       return [];
     }
+  }
+
+  async appendInbox(content, metadata = {}) {
+    await this.ensure();
+    const text = String(content || "").trim();
+    if (!text) return;
+    const line = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      content: text,
+      ...metadata,
+    });
+    await fs.appendFile(this.inboxPath, `${line}\n`, "utf8");
+  }
+
+  async drainInbox() {
+    await this.ensure();
+    let raw = "";
+    try {
+      raw = await fs.readFile(this.inboxPath, "utf8");
+    } catch {
+      return [];
+    }
+    await fs.writeFile(this.inboxPath, "", "utf8");
+    return raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
   }
 
   async saveSnapshot(step, snapshot) {

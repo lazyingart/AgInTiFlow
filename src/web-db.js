@@ -3,7 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getModelPresets } from "./model-routing.js";
 
-const PREFERENCES_SCHEMA_VERSION = 3;
+const PREFERENCES_SCHEMA_VERSION = 4;
 
 function defaultPreferences(baseDir) {
   const presets = getModelPresets();
@@ -13,7 +13,7 @@ function defaultPreferences(baseDir) {
     provider: "deepseek",
     model: presets.fast.model,
     headless: true,
-    maxSteps: 15,
+    maxSteps: 24,
     startUrl: "",
     allowedDomains: "",
     commandCwd: path.resolve(baseDir),
@@ -23,7 +23,7 @@ function defaultPreferences(baseDir) {
     preferredWrapper: "codex",
     wrapperTimeoutMs: 120000,
     sandboxMode: "docker-workspace",
-    packageInstallPolicy: "prompt",
+    packageInstallPolicy: "allow",
     useDockerSandbox: true,
     dockerSandboxImage: "agintiflow-sandbox:latest",
     allowPasswords: false,
@@ -89,8 +89,11 @@ export class WebDatabase {
           preferences.sandboxMode = "docker-workspace";
           preferences.useDockerSandbox = true;
         }
-        if (parsed.packageInstallPolicy === "block") {
-          preferences.packageInstallPolicy = "prompt";
+        if ((parsed.packageInstallPolicy || "") !== "allow") {
+          preferences.packageInstallPolicy = "allow";
+        }
+        if (!Number.isFinite(Number(parsed.maxSteps)) || Number(parsed.maxSteps) < 24) {
+          preferences.maxSteps = 24;
         }
         this.savePreferences(preferences);
       }

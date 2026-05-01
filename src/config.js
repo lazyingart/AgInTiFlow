@@ -42,9 +42,9 @@ export function resolveRuntimeConfig(args, overrides = {}) {
 
   const defaults = getProviderDefaults(route.provider);
   const packageDir = path.resolve(overrides.packageDir || process.env.AGINTIFLOW_PACKAGE_DIR || baseDir);
-  const dockerRequested = parseBoolean(overrides.useDockerSandbox ?? args.useDockerSandbox ?? process.env.USE_DOCKER_SANDBOX, false);
+  const dockerRequested = parseBoolean(overrides.useDockerSandbox ?? args.useDockerSandbox ?? process.env.USE_DOCKER_SANDBOX, true);
   const requestedSandboxMode =
-    overrides.sandboxMode || args.sandboxMode || process.env.SANDBOX_MODE || (dockerRequested ? "docker-readonly" : "host");
+    overrides.sandboxMode || args.sandboxMode || process.env.SANDBOX_MODE || (dockerRequested ? "docker-workspace" : "host");
   const sandboxMode = normalizeSandboxMode(requestedSandboxMode);
 
   return {
@@ -65,14 +65,14 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     apiKey: overrides.apiKey || defaults.apiKey,
     baseURL: overrides.baseURL || defaults.baseURL,
     model: route.model || defaults.model,
-    maxSteps: parseNumber(overrides.maxSteps ?? args.maxSteps ?? process.env.MAX_STEPS, 15),
+    maxSteps: parseNumber(overrides.maxSteps ?? args.maxSteps ?? process.env.MAX_STEPS, 24),
     headless: parseBoolean(overrides.headless ?? args.headless ?? process.env.HEADLESS, false),
     allowedDomains: Array.isArray(overrides.allowedDomains)
       ? overrides.allowedDomains
       : parseList(process.env.ALLOWED_DOMAINS),
     allowPasswords: parseBoolean(overrides.allowPasswords ?? process.env.ALLOW_PASSWORDS, false),
     allowDestructive: parseBoolean(overrides.allowDestructive ?? args.allowDestructive ?? process.env.ALLOW_DESTRUCTIVE, false),
-    allowShellTool: parseBoolean(overrides.allowShellTool ?? args.allowShellTool ?? process.env.ALLOW_SHELL_TOOL, false),
+    allowShellTool: parseBoolean(overrides.allowShellTool ?? args.allowShellTool ?? process.env.ALLOW_SHELL_TOOL, true),
     allowFileTools: parseBoolean(overrides.allowFileTools ?? args.allowFileTools ?? process.env.ALLOW_FILE_TOOLS, true),
     allowWrapperTools: parseBoolean(
       overrides.allowWrapperTools ?? args.allowWrapperTools ?? process.env.ALLOW_WRAPPER_TOOLS,
@@ -84,9 +84,9 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     wrapperTimeoutMs: parseNumber(overrides.wrapperTimeoutMs ?? process.env.WRAPPER_TIMEOUT_MS, 120000),
     sandboxMode,
     packageInstallPolicy: normalizePackageInstallPolicy(
-      overrides.packageInstallPolicy || args.packageInstallPolicy || process.env.PACKAGE_INSTALL_POLICY || "prompt"
+      overrides.packageInstallPolicy || args.packageInstallPolicy || process.env.PACKAGE_INSTALL_POLICY || (sandboxMode === "host" ? "prompt" : "allow")
     ),
-    useDockerSandbox: sandboxMode !== "host" || dockerRequested,
+    useDockerSandbox: sandboxMode !== "host",
     dockerSandboxImage: overrides.dockerSandboxImage || process.env.DOCKER_SANDBOX_IMAGE || "agintiflow-sandbox:latest",
     commandCwd: path.resolve(overrides.commandCwd || args.commandCwd || process.env.COMMAND_CWD || baseDir),
     sessionsDir: path.resolve(baseDir, ".sessions"),

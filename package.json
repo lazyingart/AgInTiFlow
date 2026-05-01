@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "type": "module",
   "description": "AgInTiFlow is a resumable Playwright website-control agent with OpenAI-compatible tool calling.",
   "license": "Apache-2.0",
@@ -44,6 +44,7 @@
     "scripts/smoke-cli-chat.js",
     "scripts/smoke-coding-tools.js",
     "scripts/smoke-capabilities.js",
+    "scripts/smoke-inbox.js",
     "scripts/smoke-toolchain-docker.js",
     "scripts/smoke-web-api.js",
     "src/",
@@ -62,9 +63,10 @@
     "smoke:coding-tools": "node scripts/smoke-coding-tools.js",
     "smoke:cli-chat": "node scripts/smoke-cli-chat.js",
     "smoke:toolchain-docker": "node scripts/smoke-toolchain-docker.js",
+    "smoke:inbox": "node scripts/smoke-inbox.js",
     "smoke:web-api": "node scripts/smoke-web-api.js",
     "real:deepseek": "node scripts/real-deepseek-capabilities.js",
-    "test": "npm run check && npm run smoke:web-api && npm run smoke:coding-tools && npm run smoke:capabilities && npm run smoke:cli-chat",
+    "test": "npm run check && npm run smoke:web-api && npm run smoke:coding-tools && npm run smoke:capabilities && npm run smoke:cli-chat && npm run smoke:inbox",
     "pack:dry-run": "npm pack --dry-run",
     "smoke:capabilities": "node scripts/smoke-capabilities.js"
   },

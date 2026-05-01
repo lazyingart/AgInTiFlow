@@ -146,7 +146,7 @@ export async function createPlan(client, config, state) {
           state.startUrl ? `Suggested start URL: ${state.startUrl}` : "",
           config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
           config.allowShellTool
-            ? `Shell tool is enabled in ${config.commandCwd}. In Docker, this path is mounted as /workspace. Use relative paths or /workspace paths, not absolute host temp paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}. For npm/pip/conda/venv setup, explain the need and wait for approval unless policy is allow.`
+            ? `Shell tool is enabled in ${config.commandCwd}. In Docker, this path is mounted as /workspace with persistent /aginti-env and /aginti-cache mounts. Use relative paths or /workspace paths, not absolute host temp paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}. For npm/pip/conda/venv setup, explain the need and wait for approval unless policy is allow.`
             : "",
           config.allowFileTools
             ? `Workspace file tools are enabled in ${config.commandCwd}: list_files, read_file, search_files, write_file, apply_patch. Keep all paths workspace-relative, for example plot_fx.svg or docs/report.tex, and avoid secrets.`
@@ -159,6 +159,8 @@ export async function createPlan(client, config, state) {
           "Work like a practical coding agent: inspect when useful, edit with file tools, run safe checks when they add confidence, and keep outputs inside the workspace.",
           "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files.",
           "For environment or system-maintenance work, prefer project-local dry-run plans/scripts unless the configured policy explicitly allows stronger actions.",
+          "Docker language/toolchain installs should prefer /aginti-env or project files so they persist across runs; apt/apk changes are ephemeral unless the image is rebuilt.",
+          "If the run is close to the max-step limit, finish with the best complete artifact and honest limitations instead of starting a new approach.",
           "Plan for a complete result, not endless exploration; finish once the request is satisfied and checks have passed or been honestly skipped.",
           "Return a numbered plan only.",
         ]

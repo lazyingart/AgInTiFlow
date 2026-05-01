@@ -66,7 +66,7 @@ export const TASK_PROFILES = {
     id: "latex",
     label: "LaTeX",
     prompt:
-      "For LaTeX/PDF tasks, create source and figures in a subfolder, compile when a TeX toolchain is available, and send the PDF through the canvas tunnel.",
+      "For LaTeX/PDF tasks, create source and figures in a subfolder, compile when a TeX toolchain is available, and send the PDF through the canvas tunnel. In Docker, use /workspace for project outputs and the persistent Python/conda/tool cache under /aginti-env when setup is needed.",
     tools: ["files", "shell", "canvas", "sandbox"],
   },
   maintenance: {
