@@ -271,7 +271,7 @@ function createInitialState(config, sessionId) {
               : "A host shell command tool is available under the configured trust policy."
             : "No shell command tool is available.",
           config.allowFileTools
-            ? `Workspace file tools are available in ${config.commandCwd}: list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, and preview_workspace. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. Secret paths, .git internals, node_modules writes, and huge files are blocked. For generated local websites/pages, use open_workspace_file or preview_workspace instead of starting a localhost server inside Docker.`
+            ? `Workspace file tools are available in ${config.commandCwd}: list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, and preview_workspace. apply_patch supports exact single-file replacements plus Codex-style/unified multi-file patches; prefer it for source edits after reading/searching the relevant context. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. Secret paths, .git internals, node_modules writes, and huge files are blocked. For generated local websites/pages, use open_workspace_file or preview_workspace instead of starting a localhost server inside Docker.`
             : "No workspace file tools are available.",
           config.allowWrapperTools
             ? `External coding-agent wrappers are available as advisory tools only. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Wrapper status: ${wrapperStatusText()}.`
@@ -279,7 +279,7 @@ function createInitialState(config, sessionId) {
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. It is optional and ordinary final text can still go directly to finish.",
           "For visual-output requests such as draw, plot, graph, chart, diagram, figure, image, or visualization, proactively publish a canvas artifact even when the user does not mention canvas. If workspace file tools are enabled, prefer creating a small SVG or markdown artifact and call send_to_canvas with selected=true.",
-          "Work like a practical coding agent: inspect when useful, edit with file tools, run safe checks when they add confidence, and keep outputs inside the workspace.",
+          "Work like a practical coding agent: inspect when useful, patch code with apply_patch, run safe checks when they add confidence, iterate on failures, and keep outputs inside the workspace.",
           "For large projects, decompose into useful files and milestones, implement a coherent minimal version first, then iterate with checks rather than only describing what you would do.",
           "For website/app/code/LaTeX/Python/C/shell tasks, create or edit real workspace files, run available build/compile/test commands, and surface artifacts through the canvas when useful.",
           "For research or web-search tasks, use browser tools or safe shell network tools when the current policy allows; cite or save useful sources in workspace notes when the task needs traceability.",
@@ -304,7 +304,7 @@ function createInitialState(config, sessionId) {
               : `Shell working directory: ${config.commandCwd}`
             : "",
           config.allowFileTools
-            ? `Workspace file tools enabled in: ${config.commandCwd}. Use workspace-relative paths. Local preview tools available: open_workspace_file and preview_workspace.`
+            ? `Workspace file tools enabled in: ${config.commandCwd}. Use workspace-relative paths. Use apply_patch for code edits; it accepts exact replacements or Codex-style/unified multi-file patches. Local preview tools available: open_workspace_file and preview_workspace.`
             : "",
           config.allowWrapperTools
             ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
@@ -499,6 +499,7 @@ function sanitizeToolArgs(toolName, args) {
   if (toolName === "apply_patch") {
     return {
       ...safeArgs,
+      patch: typeof args.patch === "string" ? `[${Buffer.byteLength(args.patch, "utf8")} bytes sha256=${hashForLog(args.patch)}]` : safeArgs.patch,
       search: typeof args.search === "string" ? redactSensitiveText(args.search).slice(0, 160) : safeArgs.search,
       replace: typeof args.replace === "string" ? redactSensitiveText(args.replace).slice(0, 160) : safeArgs.replace,
     };
@@ -610,7 +611,7 @@ async function captureSyntheticSnapshot(store, step, config) {
           : `Shell tool available in: ${config.commandCwd}`
         : "Shell tool disabled.",
       config.allowFileTools
-        ? `Workspace file tools available in: ${config.commandCwd}. Use workspace-relative paths.`
+        ? `Workspace file tools available in: ${config.commandCwd}. Use workspace-relative paths. Use apply_patch for code edits; it supports exact single-file replacement and multi-file Codex-style/unified patches.`
         : "Workspace file tools disabled.",
       config.allowWrapperTools
         ? `Agent wrappers available: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
@@ -819,9 +820,10 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
 
         await store.appendEvent("tool.completed", eventResult);
         observers.event("tool.completed", eventResult);
-        if (result.change) {
+        const changes = Array.isArray(result.changes) && result.changes.length ? result.changes : result.change ? [result.change] : [];
+        for (const item of changes) {
           const change = {
-            ...result.change,
+            ...item,
             toolName: toolCall.function.name,
             commandCwd: config.commandCwd,
           };

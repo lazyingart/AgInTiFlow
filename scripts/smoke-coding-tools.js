@@ -5,7 +5,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { repairModelMessageHistory, runAgent } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
+import { selectModelRoute } from "../src/model-routing.js";
 import { SessionStore } from "../src/session-store.js";
+import { executeWorkspaceTool } from "../src/workspace-tools.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-coding-tools-"));
@@ -78,6 +80,12 @@ try {
     !staleDeepSeekState.messages.some((message) => message.role === "tool" && message.tool_call_id === "stale-call"),
     "repaired DeepSeek history retained an orphan stale tool message"
   );
+  const patchRoute = selectModelRoute({
+    routingMode: "smart",
+    provider: "deepseek",
+    goal: "patch this large codebase and migrate the database tests",
+  });
+  assert(/pro/i.test(patchRoute.model), "patch/refactor task did not route to DeepSeek pro");
 
   const writeRun = await runMock("Create notes/hello.md with a short coding smoke message.", "coding-write");
   const written = await fs.readFile(path.join(workspace, "notes/hello.md"), "utf8");
@@ -105,6 +113,78 @@ try {
   const patched = await fs.readFile(path.join(workspace, "patch-target.txt"), "utf8");
   assert(patched === "new\n", "mock patch did not update expected file");
   assert(patchRun.events.some((event) => event.type === "file.changed"), "patch run did not persist file.changed event");
+
+  await fs.writeFile(path.join(workspace, "patch-target.txt"), "old\n", "utf8");
+  const multiPatchRun = await runMock("Apply multi-file Codex patch to replace old and add a note.", "coding-patch-multi");
+  const multiPatched = await fs.readFile(path.join(workspace, "patch-target.txt"), "utf8");
+  const patchNote = await fs.readFile(path.join(workspace, "notes/patch-note.md"), "utf8");
+  assert(multiPatched === "new\n", "mock multi-file patch did not update expected file");
+  assert(patchNote.includes("multi-file patch smoke"), "mock multi-file patch did not add expected file");
+  assert(
+    multiPatchRun.events.filter((event) => event.type === "file.changed").length >= 2,
+    "multi-file patch did not persist per-file change events"
+  );
+
+  await fs.writeFile(path.join(workspace, "unified-target.txt"), "alpha\nold\nomega\n", "utf8");
+  const unified = await executeWorkspaceTool(
+    "apply_patch",
+    {
+      patch: [
+        "--- a/unified-target.txt",
+        "+++ b/unified-target.txt",
+        "@@ -1,3 +1,3 @@",
+        " alpha",
+        "-old",
+        "+new",
+        " omega",
+      ].join("\n"),
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  const unifiedText = await fs.readFile(path.join(workspace, "unified-target.txt"), "utf8");
+  assert(unified.ok && unifiedText === "alpha\nnew\nomega\n", "unified apply_patch did not update expected file");
+
+  const blockedPatch = await executeWorkspaceTool(
+    "apply_patch",
+    {
+      patch: ["*** Begin Patch", "*** Add File: .env", "+TOKEN=blocked", "*** End Patch"].join("\n"),
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  assert(blockedPatch.blocked, "patch document to sensitive path was not blocked by guardrail");
+
+  await fs.writeFile(path.join(workspace, "move-source.txt"), "source\n", "utf8");
+  await fs.writeFile(path.join(workspace, "move-target.txt"), "target\n", "utf8");
+  const moveOverResult = await executeWorkspaceTool(
+    "apply_patch",
+    {
+      patch: [
+        "*** Begin Patch",
+        "*** Update File: move-source.txt",
+        "*** Move to: move-target.txt",
+        "@@",
+        "-source",
+        "+moved",
+        "*** End Patch",
+      ].join("\n"),
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  )
+    .then(() => "")
+    .catch((error) => String(error?.message || error));
+  assert(
+    /move over an existing file/.test(moveOverResult),
+    "patch move over an existing file was not rejected"
+  );
 
   const envRun = await runMock("Create file: .env with blocked content.", "coding-block-env");
   await fs
@@ -135,11 +215,16 @@ try {
         workspace,
         checks: [
           "deepseek_history_repair",
+          "deepseek_pro_patch_route",
           "write_file",
           "duplicate_write_failed",
           "resume_session_write",
           "virtual_workspace_path",
           "apply_patch",
+          "multi_file_patch",
+          "unified_patch",
+          "patch_guardrail",
+          "patch_move_no_overwrite",
           "block_env",
           "block_outside",
         ],

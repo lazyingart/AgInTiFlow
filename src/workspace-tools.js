@@ -8,6 +8,7 @@ export const WORKSPACE_WRITE_TOOL_NAMES = ["write_file", "apply_patch"];
 
 const MAX_READ_BYTES = 220_000;
 const MAX_WRITE_BYTES = 220_000;
+const MAX_PATCH_BYTES = 260_000;
 const MAX_LIST_ENTRIES = 360;
 const MAX_SEARCH_RESULTS = 80;
 const DEFAULT_MAX_DEPTH = 4;
@@ -50,6 +51,23 @@ function hashBuffer(value) {
 function compactPreview(value, limit = 180) {
   const text = redactSensitiveText(String(value ?? ""));
   return text.length <= limit ? text : `${text.slice(0, limit)}...`;
+}
+
+function countOccurrences(text, search) {
+  if (!search) return 0;
+  let count = 0;
+  let index = 0;
+  while ((index = text.indexOf(search, index)) !== -1) {
+    count += 1;
+    index += search.length;
+  }
+  return count;
+}
+
+function replaceOnce(text, search, replace) {
+  const index = text.indexOf(search);
+  if (index === -1) return text;
+  return `${text.slice(0, index)}${replace}${text.slice(index + search.length)}`;
 }
 
 function sanitizePathInput(inputPath) {
@@ -130,6 +148,16 @@ export function checkWorkspaceToolUse(toolName, args, config) {
   }
 
   try {
+    if (toolName === "apply_patch" && typeof args.patch === "string" && args.patch.trim()) {
+      for (const operation of parsePatchDocument(args.patch)) {
+        for (const candidate of [operation.path, operation.newPath].filter(Boolean)) {
+          const target = resolveWorkspacePath(config, candidate);
+          const policy = pathPolicy(toolName, target.relativePath);
+          if (!policy.allowed) return policy;
+        }
+      }
+      return { allowed: true };
+    }
     const target = resolveWorkspacePath(config, args.path || ".");
     return pathPolicy(toolName, target.relativePath);
   } catch (error) {
@@ -150,6 +178,7 @@ export function summarizeWorkspaceTools(config) {
     limits: {
       maxReadBytes: MAX_READ_BYTES,
       maxWriteBytes: MAX_WRITE_BYTES,
+      maxPatchBytes: MAX_PATCH_BYTES,
       maxListEntries: MAX_LIST_ENTRIES,
       maxSearchResults: MAX_SEARCH_RESULTS,
     },
@@ -333,7 +362,8 @@ async function writeChange(target, nextContent, action, details = {}) {
     beforeText = before.toString("utf8");
     beforeHash = hashBuffer(before);
     beforeBytes = before.length;
-  } catch {
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
     // Missing files are valid for create/overwrite actions.
   }
 
@@ -353,6 +383,27 @@ async function writeChange(target, nextContent, action, details = {}) {
     created: !existed,
     diff: compactDiff(target.relativePath, beforeText, afterText),
     contentSha256: hashText(content),
+    ...details,
+  };
+}
+
+async function deleteChange(target, action = "delete_file", details = {}) {
+  const before = await fs.readFile(target.absolutePath);
+  if (before.length > MAX_READ_BYTES) throw new Error(`Existing file is too large to delete safely: ${target.relativePath}`);
+  if (before.includes(0)) throw new Error(`Binary files cannot be deleted through this tool: ${target.relativePath}`);
+  const beforeText = before.toString("utf8");
+  const beforeHash = hashBuffer(before);
+  await fs.unlink(target.absolutePath);
+  return {
+    ok: true,
+    action,
+    path: target.relativePath,
+    beforeHash,
+    afterHash: null,
+    beforeBytes: before.length,
+    afterBytes: 0,
+    deleted: true,
+    diff: compactDiff(target.relativePath, beforeText, ""),
     ...details,
   };
 }
@@ -380,8 +431,15 @@ async function writeFile(config, args) {
 }
 
 async function applyPatch(config, args) {
+  if (typeof args.patch === "string" && args.patch.trim()) {
+    return applyPatchDocument(config, args);
+  }
+
   const target = resolveWorkspacePath(config, args.path);
-  const { content: beforeText } = await readTextFile(target);
+  const { content: beforeText, hash } = await readTextFile(target);
+  if (args.baseHash && args.baseHash !== hash) {
+    throw new Error(`Base hash mismatch for ${target.relativePath}; read the file again before patching.`);
+  }
   const search = String(args.search || "");
   const replace = String(args.replace ?? "");
   if (!search) throw new Error("Patch search text is required.");
@@ -406,6 +464,247 @@ async function applyPatch(config, args) {
     toolName: "apply_patch",
     path: target.relativePath,
     change,
+  };
+}
+
+function ensurePatchSize(patch) {
+  const bytes = Buffer.byteLength(String(patch || ""), "utf8");
+  if (bytes > MAX_PATCH_BYTES) throw new Error(`Patch is too large for safe workspace tools (${bytes} bytes).`);
+}
+
+function cleanPatchPath(rawPath) {
+  let value = String(rawPath || "").trim();
+  value = value.replace(/^"|"$/g, "");
+  if (!value || value === "/dev/null") return "";
+  value = value.replace(/^\.[/\\]/, "");
+  value = value.replace(/^[ab]\//, "");
+  return value;
+}
+
+function flushPatchHunk(hunks, oldLines, newLines) {
+  if (!oldLines.length && !newLines.length) return;
+  hunks.push({
+    search: oldLines.join("\n"),
+    replace: newLines.join("\n"),
+  });
+  oldLines.length = 0;
+  newLines.length = 0;
+}
+
+function parsePrefixedHunks(lines) {
+  const hunks = [];
+  const oldLines = [];
+  const newLines = [];
+
+  for (const line of lines) {
+    if (line.startsWith("@@")) {
+      flushPatchHunk(hunks, oldLines, newLines);
+      continue;
+    }
+    if (line.startsWith("\\ No newline")) continue;
+    const marker = line[0];
+    const content = line.slice(1);
+    if (marker === " ") {
+      oldLines.push(content);
+      newLines.push(content);
+    } else if (marker === "-") {
+      oldLines.push(content);
+    } else if (marker === "+") {
+      newLines.push(content);
+    }
+  }
+
+  flushPatchHunk(hunks, oldLines, newLines);
+  return hunks.filter((hunk) => hunk.search !== hunk.replace);
+}
+
+function parseCodexPatchDocument(patch) {
+  const lines = String(patch || "").replace(/\r\n?/g, "\n").split("\n");
+  const operations = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    const add = line.match(/^\*\*\* Add File:\s+(.+)$/);
+    const update = line.match(/^\*\*\* Update File:\s+(.+)$/);
+    const remove = line.match(/^\*\*\* Delete File:\s+(.+)$/);
+
+    if (add) {
+      const filePath = cleanPatchPath(add[1]);
+      const contentLines = [];
+      index += 1;
+      while (index < lines.length && !lines[index].startsWith("*** ")) {
+        contentLines.push(lines[index].startsWith("+") ? lines[index].slice(1) : lines[index]);
+        index += 1;
+      }
+      operations.push({ type: "add", path: filePath, content: contentLines.join("\n") });
+      continue;
+    }
+
+    if (remove) {
+      operations.push({ type: "delete", path: cleanPatchPath(remove[1]) });
+      index += 1;
+      continue;
+    }
+
+    if (update) {
+      const filePath = cleanPatchPath(update[1]);
+      const hunkLines = [];
+      let moveTo = "";
+      index += 1;
+      while (index < lines.length) {
+        const move = lines[index].match(/^\*\*\* Move to:\s+(.+)$/);
+        if (move) {
+          moveTo = cleanPatchPath(move[1]);
+          index += 1;
+          continue;
+        }
+        if (lines[index].startsWith("*** ")) break;
+        hunkLines.push(lines[index]);
+        index += 1;
+      }
+      operations.push({ type: "update", path: filePath, newPath: moveTo, hunks: parsePrefixedHunks(hunkLines) });
+      continue;
+    }
+
+    index += 1;
+  }
+
+  return operations;
+}
+
+function parseUnifiedPatchDocument(patch) {
+  const lines = String(patch || "").replace(/\r\n?/g, "\n").split("\n");
+  const operations = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const oldHeader = lines[index]?.match(/^---\s+(.+)$/);
+    const newHeader = lines[index + 1]?.match(/^\+\+\+\s+(.+)$/);
+    if (!oldHeader || !newHeader) {
+      index += 1;
+      continue;
+    }
+
+    const oldPath = cleanPatchPath(oldHeader[1].split(/\s+/)[0]);
+    const newPath = cleanPatchPath(newHeader[1].split(/\s+/)[0]);
+    const hunkLines = [];
+    index += 2;
+    while (index < lines.length && !/^---\s+/.test(lines[index])) {
+      hunkLines.push(lines[index]);
+      index += 1;
+    }
+
+    if (!oldPath && newPath) {
+      const content = hunkLines
+        .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+        .map((line) => line.slice(1))
+        .join("\n");
+      operations.push({ type: "add", path: newPath, content });
+    } else if (oldPath && !newPath) {
+      operations.push({ type: "delete", path: oldPath });
+    } else {
+      operations.push({ type: "update", path: oldPath, newPath: newPath && newPath !== oldPath ? newPath : "", hunks: parsePrefixedHunks(hunkLines) });
+    }
+  }
+
+  return operations;
+}
+
+function parsePatchDocument(patch) {
+  const text = String(patch || "").trim();
+  if (!text) throw new Error("Patch content is required.");
+  ensurePatchSize(text);
+  const operations = text.includes("*** Begin Patch") ? parseCodexPatchDocument(text) : parseUnifiedPatchDocument(text);
+  if (!operations.length) throw new Error("Patch did not contain any supported file operations.");
+  return operations;
+}
+
+async function applyPatchDocument(config, args) {
+  const operations = parsePatchDocument(args.patch);
+  const planned = [];
+  const seenPaths = new Set();
+
+  for (const operation of operations) {
+    if (!operation.path) throw new Error("Patch operation is missing a file path.");
+    if (seenPaths.has(operation.path)) throw new Error(`Patch contains duplicate file operations for ${operation.path}.`);
+    seenPaths.add(operation.path);
+
+    const target = resolveWorkspacePath(config, operation.path);
+    const policy = pathPolicy("apply_patch", target.relativePath);
+    if (!policy.allowed) throw new Error(policy.reason);
+    const newTarget = operation.newPath ? resolveWorkspacePath(config, operation.newPath) : null;
+    if (newTarget) {
+      const newPolicy = pathPolicy("apply_patch", newTarget.relativePath);
+      if (!newPolicy.allowed) throw new Error(newPolicy.reason);
+      const newTargetExists = await fs
+        .stat(newTarget.absolutePath)
+        .then(() => true)
+        .catch((error) => {
+          if (error?.code === "ENOENT") return false;
+          throw error;
+        });
+      if (newTargetExists) throw new Error(`Patch cannot move over an existing file: ${newTarget.relativePath}`);
+    }
+
+    if (operation.type === "add") {
+      const exists = await fs
+        .stat(target.absolutePath)
+        .then(() => true)
+        .catch((error) => {
+          if (error?.code === "ENOENT") return false;
+          throw error;
+        });
+      if (exists) throw new Error(`Patch cannot add an existing file: ${target.relativePath}`);
+      planned.push({ operation, target, afterText: String(operation.content ?? "") });
+      continue;
+    }
+
+    if (operation.type === "delete") {
+      await readTextFile(target);
+      planned.push({ operation, target, delete: true });
+      continue;
+    }
+
+    const { content: beforeText } = await readTextFile(target);
+    let afterText = beforeText;
+    for (const hunk of operation.hunks || []) {
+      if (!hunk.search) throw new Error(`Patch hunk for ${target.relativePath} has no removable/context lines.`);
+      const matches = countOccurrences(afterText, hunk.search);
+      if (matches !== 1) {
+        throw new Error(`Patch hunk for ${target.relativePath} expected exactly 1 match, found ${matches}. Add more context or read the file again.`);
+      }
+      afterText = replaceOnce(afterText, hunk.search, hunk.replace);
+    }
+    if (afterText === beforeText && !operation.newPath) throw new Error(`Patch made no changes to ${target.relativePath}.`);
+    planned.push({ operation, target, afterText });
+  }
+
+  const changes = [];
+  for (const item of planned) {
+    const { operation, target } = item;
+    if (item.delete) {
+      changes.push(await deleteChange(target, "apply_patch_delete", { patchFormat: "multi-file" }));
+      continue;
+    }
+    if (operation.newPath) {
+      const newTarget = resolveWorkspacePath(config, operation.newPath);
+      const policy = pathPolicy("apply_patch", newTarget.relativePath);
+      if (!policy.allowed) throw new Error(policy.reason);
+      changes.push(await writeChange(newTarget, item.afterText, "apply_patch_move", { fromPath: target.relativePath, patchFormat: "multi-file" }));
+      await fs.unlink(target.absolutePath);
+      continue;
+    }
+    changes.push(await writeChange(target, item.afterText, operation.type === "add" ? "apply_patch_add" : "apply_patch_update", { patchFormat: "multi-file" }));
+  }
+
+  return {
+    ok: true,
+    toolName: "apply_patch",
+    path: changes.length === 1 ? changes[0].path : "",
+    changes,
+    change: changes[0],
+    summary: `${changes.length} file change(s) applied`,
   };
 }
 

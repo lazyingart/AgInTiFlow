@@ -81,6 +81,21 @@ function mockWorkspaceToolForGoal(goal = "") {
   const text = String(goal).toLowerCase();
   const targetPath = mockPathForGoal(goal);
   if (/patch|replace|edit/.test(text)) {
+    if (/multi|codex|unified|several|multiple/i.test(text)) {
+      return mockToolCall("apply_patch", {
+        patch: [
+          "*** Begin Patch",
+          "*** Update File: patch-target.txt",
+          "@@",
+          "-old",
+          "+new",
+          "*** Add File: notes/patch-note.md",
+          "+Created by AgInTiFlow mock mode.",
+          "+Goal: multi-file patch smoke.",
+          "*** End Patch",
+        ].join("\n"),
+      });
+    }
     return mockToolCall("apply_patch", {
       path: targetPath,
       search: "old",
@@ -166,7 +181,7 @@ export async function createPlan(client, config, state) {
             ? `Shell tool is enabled in ${config.commandCwd}. In Docker, this path is mounted as /workspace with persistent /aginti-env and /aginti-cache mounts. Use relative paths or /workspace paths, not absolute host temp paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}. For npm/pip/conda/venv setup, explain the need and wait for approval unless policy is allow.`
             : "",
           config.allowFileTools
-            ? `Workspace file tools are enabled in ${config.commandCwd}: list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, preview_workspace. Keep all paths workspace-relative, for example plot_fx.svg or docs/report.tex, and avoid secrets. For generated local HTML/SVG/PDF/static sites, plan to use open_workspace_file or preview_workspace rather than starting a localhost server inside Docker.`
+            ? `Workspace file tools are enabled in ${config.commandCwd}: list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, preview_workspace. apply_patch supports exact single-file replacements and Codex-style/unified multi-file patches; prefer it for edits after reading relevant context. Keep all paths workspace-relative, for example plot_fx.svg or docs/report.tex, and avoid secrets. For generated local HTML/SVG/PDF/static sites, plan to use open_workspace_file or preview_workspace rather than starting a localhost server inside Docker.`
             : "",
           config.allowWrapperTools
             ? `Agent wrappers are enabled. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Status: ${wrapperStatusText()}.`
@@ -456,16 +471,21 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "apply_patch",
           description:
-            "Apply a deterministic workspace-local search/replace patch to one small UTF-8 file. Provide exact search and replacement text. The runtime records before/after hashes and a compact diff.",
+            "Apply deterministic workspace-local code edits. Either provide path/search/replace for one exact replacement, or provide patch with a Codex-style patch envelope (*** Begin Patch / *** Update File / *** Add File / *** Delete File / *** End Patch) or unified diff. Use this after reading/searching relevant files. It supports multi-file add/update/delete patches, blocks secrets/.git/node_modules/outside-workspace paths, preflights hunks before writing, and records before/after hashes plus compact diffs.",
           parameters: {
             type: "object",
             properties: {
+              patch: {
+                type: "string",
+                description:
+                  "Optional multi-file patch document. Supports Codex-style patch envelope or unified diff. Use workspace-relative paths only.",
+              },
               path: { type: "string", description: "Workspace-relative file path." },
-              search: { type: "string" },
-              replace: { type: "string" },
+              search: { type: "string", description: "Exact text to replace when using single-file patch mode." },
+              replace: { type: "string", description: "Replacement text when using single-file patch mode." },
               expectedReplacements: { type: "integer" },
+              baseHash: { type: "string", description: "Optional sha256 from read_file; rejects if file changed before patching." },
             },
-            required: ["path", "search", "replace"],
             additionalProperties: false,
           },
         },
@@ -538,7 +558,13 @@ export async function requestNextStep(client, config, messages) {
         toolPayload.error,
         toolPayload.reason,
         toolPayload.path ? `Path: ${toolPayload.path}` : "",
-        toolPayload.change?.diff ? `Diff:\n${toolPayload.change.diff}` : "",
+        Array.isArray(toolPayload.changes)
+          ? toolPayload.changes
+              .map((change) => [change.path ? `Path: ${change.path}` : "", change.diff ? `Diff:\n${change.diff}` : ""].filter(Boolean).join("\n"))
+              .filter(Boolean)
+              .join("\n\n")
+          : "",
+        !Array.isArray(toolPayload.changes) && toolPayload.change?.diff ? `Diff:\n${toolPayload.change.diff}` : "",
       ]
         .filter(Boolean)
         .join("\n");
