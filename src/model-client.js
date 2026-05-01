@@ -37,6 +37,16 @@ function latestToolPayload(messages) {
   }
 }
 
+function prepareMessages(config, messages) {
+  if (config.provider === "deepseek") return messages;
+  return messages.map((message) => {
+    const prepared = { ...message };
+    delete prepared.reasoning_content;
+    delete prepared.reasoningContent;
+    return prepared;
+  });
+}
+
 function mockCommandForGoal(goal = "") {
   const text = String(goal).toLowerCase();
   if (/\blist\b|folder contents|directory contents|files?/.test(text)) return "ls -la";
@@ -125,16 +135,17 @@ export async function createPlan(client, config, state) {
           state.startUrl ? `Suggested start URL: ${state.startUrl}` : "",
           config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
           config.allowShellTool
-            ? `Shell tool is enabled in ${config.commandCwd}. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}. For npm/pip/conda/venv setup, explain the need and wait for approval unless policy is allow.`
+            ? `Shell tool is enabled in ${config.commandCwd}. In Docker, this path is mounted as /workspace. Use relative paths or /workspace paths, not absolute host temp paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}. For npm/pip/conda/venv setup, explain the need and wait for approval unless policy is allow.`
             : "",
           config.allowFileTools
-            ? `Workspace file tools are enabled in ${config.commandCwd}: list_files, read_file, search_files, write_file, apply_patch. Keep all paths workspace-relative and avoid secrets.`
+            ? `Workspace file tools are enabled in ${config.commandCwd}: list_files, read_file, search_files, write_file, apply_patch. Keep all paths workspace-relative, for example plot_fx.svg or docs/report.tex, and avoid secrets.`
             : "",
           config.allowWrapperTools
             ? `Agent wrappers are enabled. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Status: ${wrapperStatusText()}.`
             : "",
           "A canvas/artifacts tunnel is available through send_to_canvas. Use it when an output should be highlighted visually, such as screenshots, image files, important markdown, diffs, or generated artifact paths. It is optional for ordinary text answers.",
           "When the user asks to draw, plot, graph, chart, diagram, create a figure, or visualize something, include a canvas artifact even if the user does not mention canvas. Prefer a small SVG file or concise markdown figure when file tools are available.",
+          "When the user asks for LaTeX, TeX, a paper, manuscript, report, or PDF, plan to create a .tex file, compile it when shell toolchain support exists with latexmk -pdf -interaction=nonstopmode -halt-on-error report.tex, and publish the PDF through the canvas tunnel.",
           "Return a numbered plan only.",
         ]
           .filter(Boolean)
@@ -417,7 +428,7 @@ export async function requestNextStep(client, config, messages) {
           title: { type: "string", description: "Short display title for the canvas item." },
           kind: {
             type: "string",
-            enum: ["text", "markdown", "image", "json", "diff", "file"],
+            enum: ["text", "markdown", "image", "json", "diff", "file", "pdf"],
             description: "Renderer hint. Use image/file with path, markdown/text/json/diff with content.",
           },
           content: { type: "string", description: "Inline text or markdown content to render." },
@@ -489,7 +500,7 @@ export async function requestNextStep(client, config, messages) {
     temperature: 0,
     tool_choice: "auto",
     parallel_tool_calls: false,
-    messages,
+    messages: prepareMessages(config, messages),
     tools,
   });
 }

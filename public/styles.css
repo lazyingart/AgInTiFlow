@@ -806,6 +806,14 @@ button.danger {
   box-shadow: 0 20px 48px rgba(29, 28, 26, 0.18);
 }
 
+.artifact-pdf-frame {
+  width: 100%;
+  min-height: 62vh;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: white;
+}
+
 .artifact-editor {
   min-height: 100%;
   height: 100%;

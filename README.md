@@ -79,7 +79,7 @@ npx aginti-cli --routing smart --allow-shell "List this folder"
 npx aginti-cli --list-routes
 npx aginti-cli --list-wrappers
 npx aginti-cli --sandbox-status --sandbox-mode docker-readonly --cwd /home/lachlan/ProjectsLFS/Agent/AgInTiFlow
-npx aginti-cli --sandbox-preflight --sandbox-mode docker-readonly --cwd /home/lachlan/ProjectsLFS/Agent/AgInTiFlow
+npx aginti-cli --sandbox-preflight --sandbox-mode docker-workspace --cwd /home/lachlan/ProjectsLFS/Agent/AgInTiFlow
 ```
 
 Start from a URL:
@@ -138,6 +138,7 @@ AgInTiFlow is intentionally conservative:
 - File writes record before/after SHA-256 hashes and compact redacted diffs.
 - Guarded shell mode only allows inspection, test/build checks, and approved setup commands.
 - Docker read-only mode mounts the workspace read-only and disables container network access.
+- Docker workspace-write mode is the web UI default so plot, PDF, and test outputs can be written inside the mounted workspace.
 - Docker workspace-write mode is required for approved package or environment setup.
 - Package installs default to `prompt`, so npm/pip/conda/venv setup is blocked until explicitly approved.
 - NPM publishing, npm token commands, sudo, destructive git actions, curl/wget, and shell chaining are blocked.
@@ -154,9 +155,9 @@ DEEPSEEK_API_KEY=...
 MAX_STEPS=15
 HEADLESS=true
 ALLOWED_DOMAINS=news.ycombinator.com,github.com
-ALLOW_SHELL_TOOL=false
+ALLOW_SHELL_TOOL=true
 ALLOW_FILE_TOOLS=true
-SANDBOX_MODE=docker-readonly
+SANDBOX_MODE=docker-workspace
 PACKAGE_INSTALL_POLICY=prompt
 USE_DOCKER_SANDBOX=true
 DOCKER_SANDBOX_IMAGE=agintiflow-sandbox:latest
@@ -242,13 +243,22 @@ DOCKER_TARGET_USER=lachlan ./scripts/install-docker-ubuntu.sh
 
 Open a new login shell, or run `newgrp docker`, before testing non-root Docker access.
 
+Build the companion agent toolchain sandbox:
+
+```bash
+./scripts/setup-agent-toolchain-docker.sh
+npm run smoke:toolchain-docker
+```
+
+The setup script idempotently builds `agintiflow-sandbox:latest` from `docker/sandbox.Dockerfile` and verifies Node, npm, Python, NumPy, Matplotlib, `latexmk`, and `pdflatex` inside Docker. The smoke script runs Python plot generation, LaTeX PDF compilation, and PDF artifact preview against the same workspace-mounted sandbox path used by the agent.
+
 ## Sandbox Modes
 
 | Mode | Workspace mount | Network | Intended use |
 | --- | --- | --- | --- |
 | `host` | local process | host network | legacy read-only inspection only |
-| `docker-readonly` | read-only `/workspace` | none | default safe coding inspection and tests |
-| `docker-workspace` | writable `/workspace` | none by default, enabled only for approved package installs | environment setup inside the mounted project |
+| `docker-readonly` | read-only `/workspace` | none | safe coding inspection and tests that do not write files |
+| `docker-workspace` | writable `/workspace` | none by default, enabled only for approved package installs | web UI default for environment setup, plotting, and LaTeX/PDF compilation inside the mounted project |
 
 Package policy values:
 
@@ -258,13 +268,15 @@ Package policy values:
 | `prompt` | Return a clear approval-required error; the UI can switch to approved. |
 | `allow` | Permit allowlisted setup commands only in `docker-workspace`. |
 
+Toolchain commands such as `python3 plot.py`, `latexmk -pdf paper.tex`, and `pdflatex -interaction=nonstopmode -halt-on-error paper.tex` are allowlisted only when the shell tool is enabled. In Docker mode they require `docker-workspace` because they write outputs back to `/workspace`. File and canvas tools accept both normal relative paths and Docker virtual paths like `/workspace/report.pdf`, while other absolute host paths remain blocked.
+
 Safe preflight endpoints:
 
 ```bash
 curl http://127.0.0.1:3210/api/sandbox/status
 curl -X POST http://127.0.0.1:3210/api/sandbox/preflight \
   -H 'Content-Type: application/json' \
-  -d '{"sandboxMode":"docker-readonly","buildImage":true}'
+  -d '{"sandboxMode":"docker-workspace","buildImage":true}'
 curl http://127.0.0.1:3210/api/workspace/changes
 curl "http://127.0.0.1:3210/api/sessions/<session-id>/artifacts"
 ```

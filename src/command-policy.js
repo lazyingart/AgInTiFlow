@@ -5,6 +5,8 @@ const READ_ONLY_PATTERNS = [
   /^pwd$/,
   /^date$/,
   /^whoami$/,
+  /^which\s+[-\w.]+(?:\s+[-\w.]+)*$/,
+  /^command\s+-v\s+[-\w.]+$/,
   /^uname(?:\s+-a)?$/,
   /^ls(?:\s+[-\w./~*]+)*$/,
   /^find(?:\s+[./~\w-]+)*(?:\s+-maxdepth\s+\d+)?(?:\s+-type\s+[fd])?$/,
@@ -29,6 +31,12 @@ const TEST_PATTERNS = [
   /^node\s+--check\s+[-\w./]+$/,
   /^python(?:3)?\s+-m\s+pytest(?:\s+[-\w./:=]+)*$/,
   /^pytest(?:\s+[-\w./:=]+)*$/,
+];
+
+const TOOLCHAIN_PATTERNS = [
+  /^python(?:3)?\s+[-\w./]+\.py(?:\s+[-\w./:=]+)*$/,
+  /^latexmk\s+-pdf(?:\s+-interaction=nonstopmode)?(?:\s+-halt-on-error)?\s+[-\w./]+\.tex$/,
+  /^pdflatex\s+(?:-interaction=nonstopmode\s+)?(?:-halt-on-error\s+)?[-\w./]+\.tex$/,
 ];
 
 const PACKAGE_INSTALL_PATTERNS = [
@@ -121,6 +129,9 @@ export function classifyCommand(command) {
   if (matchAny(TEST_PATTERNS, normalized)) {
     return { category: "test", needsNetwork: false, writesWorkspace: false };
   }
+  if (matchAny(TOOLCHAIN_PATTERNS, normalized)) {
+    return { category: "toolchain", needsNetwork: false, writesWorkspace: true };
+  }
   if (matchAny(PACKAGE_INSTALL_PATTERNS, normalized)) {
     return { category: "package-install", needsNetwork: true, writesWorkspace: true };
   }
@@ -174,6 +185,16 @@ export function evaluateCommandPolicy(command, config) {
         packageInstallPolicy,
       };
     }
+  }
+
+  if (classification.writesWorkspace && config.useDockerSandbox && sandboxMode !== "docker-workspace") {
+    return {
+      allowed: false,
+      category: classification.category,
+      reason: "Workspace-writing toolchain commands must run in Docker workspace-write sandbox mode.",
+      sandboxMode,
+      packageInstallPolicy,
+    };
   }
 
   return {

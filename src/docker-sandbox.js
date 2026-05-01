@@ -172,10 +172,11 @@ function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, 
   const sandboxMode = normalizeSandboxMode(config.sandboxMode);
   const mountMode = sandboxMode === "docker-workspace" ? "rw" : "ro";
   const networkMode = policy.needsNetwork ? "bridge" : "none";
+  const toolchain = policy.category === "toolchain";
   const readOnlyArgs =
     mountMode === "ro"
       ? ["--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m"]
-      : ["--tmpfs", "/tmp:rw,nosuid,nodev,size=256m"];
+      : ["--tmpfs", `/tmp:rw,nosuid,nodev,size=${toolchain ? "512m" : "256m"}`];
 
   return [
     "run",
@@ -189,9 +190,9 @@ function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, 
     "--pids-limit",
     "256",
     "--memory",
-    "768m",
+    toolchain ? "2g" : "768m",
     "--cpus",
-    "1.5",
+    toolchain ? "2" : "1.5",
     ...readOnlyArgs,
     ...userArgs,
     "-e",
@@ -213,7 +214,7 @@ function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, 
 
 export async function runDockerSandboxCommand(command, config, policy = evaluateCommandPolicy(command, config)) {
   const result = await execDocker(dockerRunArgs(command, config, policy), {
-    timeout: policy.needsNetwork ? 120000 : 15000,
+    timeout: policy.needsNetwork ? 120000 : policy.category === "toolchain" ? 90000 : 15000,
     maxBuffer: 300 * 1024,
   });
 
@@ -279,6 +280,9 @@ export async function runDockerPreflight(config, options = {}) {
       "npm -v",
       "python3 --version",
       "python3 -m pip --version",
+      "python3 -c \"import matplotlib, numpy; print(matplotlib.__version__, numpy.__version__)\"",
+      "latexmk -version",
+      "pdflatex --version",
       "git --version",
       "rg --version",
     ]) {

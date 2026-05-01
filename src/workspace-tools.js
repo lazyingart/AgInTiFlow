@@ -59,10 +59,17 @@ function sanitizePathInput(inputPath) {
   return value;
 }
 
+function normalizeWorkspaceInputPath(rawPath) {
+  if (rawPath === "/workspace") return ".";
+  if (rawPath.startsWith("/workspace/")) return rawPath.slice("/workspace/".length) || ".";
+  return rawPath;
+}
+
 export function resolveWorkspacePath(config, inputPath = ".") {
   const root = workspaceRoot(config);
   const rawPath = sanitizePathInput(inputPath);
-  const absolutePath = path.resolve(root, rawPath);
+  const workspacePath = normalizeWorkspaceInputPath(rawPath);
+  const absolutePath = path.resolve(root, workspacePath);
 
   if (!isInside(root, absolutePath)) {
     throw new Error(`Path escapes the configured workspace: ${rawPath}`);

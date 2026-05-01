@@ -15,6 +15,7 @@ const IMAGE_MIME_BY_EXT = new Map([
   [".webp", "image/webp"],
   [".svg", "image/svg+xml"],
 ]);
+const BINARY_RENDER_MIME_BY_EXT = new Map([[".pdf", "application/pdf"]]);
 
 function normalizeDisplayPath(value) {
   return String(value || "")
@@ -40,12 +41,14 @@ function normalizeKind(kind, filePath = "") {
   const candidate = String(kind || "").toLowerCase();
   if (candidate === "file") {
     if (IMAGE_MIME_BY_EXT.has(path.extname(String(filePath || "")).toLowerCase())) return "image";
+    if (BINARY_RENDER_MIME_BY_EXT.has(path.extname(String(filePath || "")).toLowerCase())) return "pdf";
     if (String(filePath || "").toLowerCase().endsWith(".json")) return "json";
     if (String(filePath || "").toLowerCase().endsWith(".md")) return "markdown";
     return "file";
   }
-  if (["image", "markdown", "text", "json", "diff"].includes(candidate)) return candidate;
+  if (["image", "markdown", "text", "json", "diff", "pdf"].includes(candidate)) return candidate;
   if (IMAGE_MIME_BY_EXT.has(path.extname(String(filePath || "")).toLowerCase())) return "image";
+  if (BINARY_RENDER_MIME_BY_EXT.has(path.extname(String(filePath || "")).toLowerCase())) return "pdf";
   if (String(filePath || "").toLowerCase().endsWith(".json")) return "json";
   if (String(filePath || "").toLowerCase().endsWith(".md")) return "markdown";
   return "text";
@@ -53,7 +56,7 @@ function normalizeKind(kind, filePath = "") {
 
 function mimeForPath(filePath) {
   const ext = path.extname(String(filePath || "")).toLowerCase();
-  return IMAGE_MIME_BY_EXT.get(ext) || "text/plain; charset=utf-8";
+  return IMAGE_MIME_BY_EXT.get(ext) || BINARY_RENDER_MIME_BY_EXT.get(ext) || "text/plain; charset=utf-8";
 }
 
 function publicArtifact(item) {
@@ -287,16 +290,16 @@ export async function readArtifactContent(item, { store, config }) {
     const stat = await fs.stat(absolutePath).catch(() => null);
     if (!stat?.isFile()) return { ok: false, error: "Artifact file is missing." };
     const mime = mimeForPath(absolutePath);
-    const isImage = mime.startsWith("image/");
-    const maxBytes = isImage ? MAX_ARTIFACT_IMAGE_BYTES : MAX_ARTIFACT_TEXT_BYTES;
+    const isBinaryRenderable = mime.startsWith("image/") || mime === "application/pdf";
+    const maxBytes = isBinaryRenderable ? MAX_ARTIFACT_IMAGE_BYTES : MAX_ARTIFACT_TEXT_BYTES;
     if (stat.size > maxBytes) return { ok: false, error: "Artifact is too large to preview safely." };
 
     const buffer = await fs.readFile(absolutePath);
-    if (isImage) {
+    if (isBinaryRenderable) {
       return {
         ok: true,
         id: item.id,
-        kind: "image",
+        kind: mime === "application/pdf" ? "pdf" : "image",
         title: item.title,
         path: item.path || "",
         mime,
@@ -328,16 +331,16 @@ export async function readArtifactContent(item, { store, config }) {
     if (!stat?.isFile()) return { ok: false, error: "Workspace file is missing." };
 
     const mime = mimeForPath(target.absolutePath);
-    const isImage = mime.startsWith("image/");
-    const maxBytes = isImage ? MAX_ARTIFACT_IMAGE_BYTES : MAX_ARTIFACT_TEXT_BYTES;
+    const isBinaryRenderable = mime.startsWith("image/") || mime === "application/pdf";
+    const maxBytes = isBinaryRenderable ? MAX_ARTIFACT_IMAGE_BYTES : MAX_ARTIFACT_TEXT_BYTES;
     if (stat.size > maxBytes) return { ok: false, error: "Workspace file is too large to preview safely." };
 
     const buffer = await fs.readFile(target.absolutePath);
-    if (isImage) {
+    if (isBinaryRenderable) {
       return {
         ok: true,
         id: item.id,
-        kind: "image",
+        kind: mime === "application/pdf" ? "pdf" : "image",
         title: item.title,
         path: item.path || "",
         mime,

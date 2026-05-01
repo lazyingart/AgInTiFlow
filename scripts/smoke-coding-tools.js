@@ -56,6 +56,10 @@ try {
   assert(written.includes("Created by AgInTiFlow mock mode."), "mock write did not create expected file");
   assert(writeRun.events.some((event) => event.type === "file.changed"), "write run did not persist file.changed event");
 
+  await runMock("Create file: /workspace/virtual-output.txt with virtual Docker path support.", "coding-write-virtual");
+  const virtualWritten = await fs.readFile(path.join(workspace, "virtual-output.txt"), "utf8");
+  assert(virtualWritten.includes("Created by AgInTiFlow mock mode."), "virtual /workspace path was not mapped safely");
+
   await fs.writeFile(path.join(workspace, "patch-target.txt"), "old\n", "utf8");
   const patchRun = await runMock("Patch file: patch-target.txt replace old with new.", "coding-patch");
   const patched = await fs.readFile(path.join(workspace, "patch-target.txt"), "utf8");
@@ -89,7 +93,7 @@ try {
       {
         ok: true,
         workspace,
-        checks: ["write_file", "apply_patch", "block_env", "block_outside"],
+        checks: ["write_file", "virtual_workspace_path", "apply_patch", "block_env", "block_outside"],
       },
       null,
       2

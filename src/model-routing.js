@@ -17,6 +17,16 @@ const COMPLEXITY_KEYWORDS = [
   "github",
 ];
 
+const COMPLEX_ROUTE_HINTS = [
+  /\blatex\b/i,
+  /\btexlive\b/i,
+  /\bpdflatex\b/i,
+  /\blatexmk\b/i,
+  /\b(manuscript|research paper|white paper|technical report)\b/i,
+  /\bcompile\b.*\bpdf\b/i,
+  /\bwrite\b.*\bpdf\b/i,
+];
+
 export const ROUTING_MODES = ["smart", "fast", "complex", "manual"];
 
 export function getProviderDefaults(provider = "deepseek") {
@@ -93,6 +103,9 @@ export function scoreTaskComplexity(goal = "") {
   let score = text.length > 600 ? 2 : text.length > 240 ? 1 : 0;
   for (const keyword of COMPLEXITY_KEYWORDS) {
     if (text.includes(keyword)) score += 1;
+  }
+  for (const hint of COMPLEX_ROUTE_HINTS) {
+    if (hint.test(goal)) score += 3;
   }
   return score;
 }

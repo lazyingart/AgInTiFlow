@@ -113,7 +113,7 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
   const providerDefaults = getProviderDefaults(provider);
   const parsedMaxSteps = Number(body.maxSteps);
   const parsedWrapperTimeoutMs = Number(body.wrapperTimeoutMs);
-  const sandboxMode = normalizeSandboxMode(body.sandboxMode || current.sandboxMode || "docker-readonly");
+  const sandboxMode = normalizeSandboxMode(body.sandboxMode || current.sandboxMode || "docker-workspace");
 
   return {
     routingMode,

@@ -18,6 +18,21 @@ const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "click", "type", "scroll", "press", "back"]);
 const WORKSPACE_TOOLS = new Set(WORKSPACE_TOOL_NAMES);
 
+function preserveAssistantMessage(message) {
+  const preserved = {
+    role: "assistant",
+    content: message.content || "",
+    tool_calls: message.tool_calls,
+  };
+
+  const reasoningContent = message.reasoning_content || message.reasoningContent;
+  if (reasoningContent) {
+    preserved.reasoning_content = reasoningContent;
+  }
+
+  return preserved;
+}
+
 function createInitialState(config, sessionId) {
   const now = new Date().toISOString();
   return {
@@ -58,13 +73,14 @@ function createInitialState(config, sessionId) {
               : "A read-only host shell command tool is available for short local inspection tasks."
             : "No shell command tool is available.",
           config.allowFileTools
-            ? `Workspace file tools are available in ${config.commandCwd}: list_files, read_file, search_files, write_file, and apply_patch. Paths must stay inside the workspace. Secret paths, .git internals, node_modules writes, and huge files are blocked.`
+            ? `Workspace file tools are available in ${config.commandCwd}: list_files, read_file, search_files, write_file, and apply_patch. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. Secret paths, .git internals, node_modules writes, and huge files are blocked.`
             : "No workspace file tools are available.",
           config.allowWrapperTools
             ? `External coding-agent wrappers are available as advisory tools only. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Wrapper status: ${wrapperStatusText()}.`
             : "External coding-agent wrappers are disabled.",
           "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. It is optional and ordinary final text can still go directly to finish.",
           "For visual-output requests such as draw, plot, graph, chart, diagram, figure, image, or visualization, proactively publish a canvas artifact even when the user does not mention canvas. If workspace file tools are enabled, prefer creating a small SVG or markdown artifact and call send_to_canvas with selected=true.",
+          "For LaTeX/PDF requests, create a .tex file, compile it when shell toolchain support is available with an allowlisted command such as latexmk -pdf -interaction=nonstopmode -halt-on-error report.tex, and publish the resulting PDF through send_to_canvas. Prefer Docker workspace-write mode for compilation.",
           "When done, call finish with a concise result.",
         ].join(" "),
       },
@@ -76,15 +92,16 @@ function createInitialState(config, sessionId) {
           config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
           config.allowShellTool
             ? config.useDockerSandbox
-              ? `Shell working directory mounted into Docker: ${config.commandCwd}. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
+              ? `Shell working directory mounted into Docker as /workspace from ${config.commandCwd}. Use relative paths or /workspace paths, not absolute host temp paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
               : `Shell working directory: ${config.commandCwd}`
             : "",
-          config.allowFileTools ? `Workspace file tools enabled in: ${config.commandCwd}` : "",
+          config.allowFileTools ? `Workspace file tools enabled in: ${config.commandCwd}. Use workspace-relative paths.` : "",
           config.allowWrapperTools
             ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
             : "",
           "Canvas/artifacts tunnel: available through send_to_canvas for optional frontend rendering.",
           "Visual-output requests should produce a canvas artifact without requiring the user to ask for canvas explicitly.",
+          "LaTeX/PDF requests should produce a .tex artifact and, when possible, a compiled PDF artifact using latexmk -pdf -interaction=nonstopmode -halt-on-error report.tex.",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -174,10 +191,10 @@ function applyContinuationPrompt(state, config, observers) {
       config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
       config.allowShellTool
         ? config.useDockerSandbox
-          ? `Shell working directory mounted into Docker: ${config.commandCwd}. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
+          ? `Shell working directory mounted into Docker as /workspace from ${config.commandCwd}. Use relative paths or /workspace paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
           : `Shell working directory: ${config.commandCwd}`
         : "",
-      config.allowFileTools ? `Workspace file tools enabled in: ${config.commandCwd}` : "",
+      config.allowFileTools ? `Workspace file tools enabled in: ${config.commandCwd}. Use workspace-relative paths.` : "",
       config.allowWrapperTools
         ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
         : "",
@@ -300,15 +317,18 @@ async function captureSyntheticSnapshot(store, step, config) {
       config.startUrl ? `Suggested start URL: ${config.startUrl}` : "",
       config.allowShellTool
         ? config.useDockerSandbox
-          ? `Shell tool available in Docker with mounted workspace: ${config.commandCwd}. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
+          ? `Shell tool available in Docker with mounted workspace /workspace from ${config.commandCwd}. Use relative paths or /workspace paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
           : `Shell tool available in: ${config.commandCwd}`
         : "Shell tool disabled.",
-      config.allowFileTools ? `Workspace file tools available in: ${config.commandCwd}` : "Workspace file tools disabled.",
+      config.allowFileTools
+        ? `Workspace file tools available in: ${config.commandCwd}. Use workspace-relative paths.`
+        : "Workspace file tools disabled.",
       config.allowWrapperTools
         ? `Agent wrappers available: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
         : "Agent wrappers disabled.",
       "Canvas/artifacts tunnel available through send_to_canvas.",
       "For draw/plot/graph/chart/diagram/figure requests, publish a canvas artifact proactively.",
+      "For LaTeX/PDF requests, publish the .tex and compiled PDF artifacts when available. Prefer latexmk -pdf -interaction=nonstopmode -halt-on-error report.tex.",
       "Use open_url only if the task actually needs the web.",
     ]
       .filter(Boolean)
@@ -360,7 +380,10 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       ok: false,
       blocked: true,
       reason: guard.reason,
+      category: guard.category,
+      needsApproval: guard.needsApproval,
       toolName: toolCall.function.name,
+      args: safeArgs,
     };
   }
 
@@ -597,6 +620,9 @@ export async function runAgent(config) {
   const observers = createObservers(config);
   const browserState = createBrowserState();
 
+  if (config.allowFileTools || config.allowShellTool) {
+    await fs.mkdir(config.commandCwd, { recursive: true });
+  }
   await store.ensure();
 
   let state = await store.loadState();
@@ -723,11 +749,7 @@ export async function runAgent(config) {
         throw new Error("Model returned no assistant message.");
       }
 
-      state.messages.push({
-        role: "assistant",
-        content: assistantMessage.content || "",
-        tool_calls: assistantMessage.tool_calls,
-      });
+      state.messages.push(preserveAssistantMessage(assistantMessage));
 
       await store.appendEvent("model.responded", {
         step,
@@ -776,10 +798,12 @@ export async function runAgent(config) {
 
         if (toolResult.toolName === "run_command") {
           observers.log("command.output", {
-            command: redactSensitiveText(toolResult.args.command),
-            stdout: toolResult.stdout,
-            stderr: toolResult.stderr,
+            command: redactSensitiveText(toolResult.args?.command || ""),
+            stdout: toolResult.stdout || "",
+            stderr: toolResult.stderr || "",
             commandPolicy: toolResult.commandPolicy,
+            blocked: Boolean(toolResult.blocked),
+            error: toolResult.error || toolResult.reason || "",
           });
         }
 

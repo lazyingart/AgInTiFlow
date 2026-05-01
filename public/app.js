@@ -1089,6 +1089,13 @@ function renderArtifactContent(content) {
   artifactViewerMetaEl.textContent = [content.path || item?.path, item ? artifactLabel(item) : ""].filter(Boolean).join(" · ");
   artifactViewerKindEl.textContent = content.kind || item?.kind || "";
 
+  if (content.dataUrl && (content.kind === "pdf" || content.mime === "application/pdf")) {
+    artifactViewerBodyEl.innerHTML = `
+      <iframe class="artifact-pdf-frame" src="${content.dataUrl}" title="${escapeHtml(content.title || "Artifact PDF")}"></iframe>
+    `;
+    return;
+  }
+
   if (content.dataUrl) {
     artifactViewerBodyEl.innerHTML = `
       <figure class="artifact-image-frame">
@@ -1651,7 +1658,7 @@ async function loadConfig() {
   document.querySelector("#commandCwd").value = prefs.commandCwd || "/home/lachlan/ProjectsLFS/Agent";
   document.querySelector("#headless").checked = prefs.headless ?? data.defaults.headless;
   document.querySelector("#maxSteps").value = prefs.maxSteps ?? data.defaults.maxSteps;
-  sandboxModeField.value = prefs.sandboxMode || (prefs.useDockerSandbox ? "docker-readonly" : "host");
+  sandboxModeField.value = prefs.sandboxMode || (prefs.useDockerSandbox ? "docker-workspace" : "host");
   packageInstallPolicyField.value = prefs.packageInstallPolicy || "prompt";
   document.querySelector("#allowShellTool").checked = prefs.allowShellTool ?? true;
   document.querySelector("#allowFileTools").checked = prefs.allowFileTools ?? true;

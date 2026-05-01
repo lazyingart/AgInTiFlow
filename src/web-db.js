@@ -3,9 +3,12 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getModelPresets } from "./model-routing.js";
 
+const PREFERENCES_SCHEMA_VERSION = 2;
+
 function defaultPreferences(baseDir) {
   const presets = getModelPresets();
   return {
+    preferencesSchemaVersion: PREFERENCES_SCHEMA_VERSION,
     routingMode: "smart",
     provider: "deepseek",
     model: presets.fast.model,
@@ -19,7 +22,7 @@ function defaultPreferences(baseDir) {
     allowWrapperTools: false,
     preferredWrapper: "codex",
     wrapperTimeoutMs: 120000,
-    sandboxMode: "docker-readonly",
+    sandboxMode: "docker-workspace",
     packageInstallPolicy: "prompt",
     useDockerSandbox: true,
     dockerSandboxImage: "agintiflow-sandbox:latest",
@@ -71,10 +74,23 @@ export class WebDatabase {
     if (!row) return defaultPreferences(this.baseDir);
 
     try {
-      return {
+      const parsed = JSON.parse(row.value);
+      const preferences = {
         ...defaultPreferences(this.baseDir),
-        ...JSON.parse(row.value),
+        ...parsed,
       };
+      if ((parsed.preferencesSchemaVersion || 1) < PREFERENCES_SCHEMA_VERSION) {
+        preferences.preferencesSchemaVersion = PREFERENCES_SCHEMA_VERSION;
+        if (["host", "docker-readonly"].includes(parsed.sandboxMode || "")) {
+          preferences.sandboxMode = "docker-workspace";
+          preferences.useDockerSandbox = true;
+        }
+        if (parsed.packageInstallPolicy === "block") {
+          preferences.packageInstallPolicy = "prompt";
+        }
+        this.savePreferences(preferences);
+      }
+      return preferences;
     } catch {
       return defaultPreferences(this.baseDir);
     }
