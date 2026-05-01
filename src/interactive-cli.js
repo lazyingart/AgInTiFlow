@@ -18,6 +18,9 @@ const ansi = {
   green: "\x1b[32m",
   yellow: "\x1b[33m",
   red: "\x1b[31m",
+  blue: "\x1b[34m",
+  magenta: "\x1b[35m",
+  faint: "\x1b[2m",
   clearLine: "\x1b[2K",
   cursorHide: "\x1b[?25l",
   cursorShow: "\x1b[?25h",
@@ -64,6 +67,26 @@ function label(name, bgCode) {
   return color(` ${name} `, bgCode, ansi.bold);
 }
 
+function terminalWidth() {
+  return Math.max(Number(output.columns) || 80, 40);
+}
+
+function visualLength(value) {
+  return stripAnsi(value).length;
+}
+
+function padVisible(value, width) {
+  const padding = Math.max(width - visualLength(value), 0);
+  return `${value}${" ".repeat(padding)}`;
+}
+
+function panelLine(content = "", bgCode = ansi.systemBg) {
+  const width = terminalWidth();
+  if (!useColor) return padVisible(content, width);
+  const padded = padVisible(content, width).replaceAll(ansi.reset, `${ansi.reset}${bgCode}`);
+  return `${bgCode}${padded}${ansi.reset}`;
+}
+
 function userPrompt() {
   return `\n${label("user>", ansi.userBg)} ${color("|", ansi.userBg)} `;
 }
@@ -90,12 +113,13 @@ function commandSuggestions(line = "") {
   return SLASH_COMMANDS.filter((command) => command.startsWith(trimmed)).slice(0, 8);
 }
 
-function stripMarkdown(text) {
+export function stripMarkdown(text) {
   const lines = String(text || "").split(/\r?\n/);
   let inFence = false;
   const rendered = [];
 
-  for (const rawLine of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index];
     let line = rawLine;
     if (/^\s*```/.test(line)) {
       inFence = !inFence;
@@ -119,6 +143,12 @@ function stripMarkdown(text) {
       if (/^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line)) {
         continue;
       }
+      const table = parseMarkdownTable(lines, index);
+      if (table) {
+        rendered.push(...renderMarkdownTable(table));
+        index += table.rawLineCount - 1;
+        continue;
+      }
       line = line.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)");
       line = line.replace(/\*\*([^*]+)\*\*/g, (_, value) => color(value, ansi.bold));
       line = line.replace(/__([^_]+)__/g, (_, value) => color(value, ansi.bold));
@@ -135,6 +165,75 @@ function stripMarkdown(text) {
   }
 
   return rendered.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
+}
+
+function splitMarkdownTableRow(line = "") {
+  const trimmed = String(line || "").trim();
+  if (!trimmed.includes("|")) return null;
+  const normalized = trimmed.replace(/^\|/, "").replace(/\|$/, "");
+  const cells = normalized.split("|").map((cell) => cell.trim());
+  return cells.length >= 2 ? cells : null;
+}
+
+function isMarkdownTableSeparator(line = "") {
+  const cells = splitMarkdownTableRow(line);
+  return Boolean(cells?.length) && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function parseMarkdownTable(lines, startIndex) {
+  const header = splitMarkdownTableRow(lines[startIndex]);
+  if (!header || !isMarkdownTableSeparator(lines[startIndex + 1] || "")) return null;
+  const rows = [];
+  let index = startIndex + 2;
+  while (index < lines.length) {
+    const row = splitMarkdownTableRow(lines[index]);
+    if (!row) break;
+    rows.push(row);
+    index += 1;
+  }
+  return {
+    header,
+    rows,
+    rawLineCount: Math.max(index - startIndex, 2),
+  };
+}
+
+function renderMarkdownTable(table) {
+  const allRows = [table.header, ...table.rows];
+  const columnCount = Math.max(...allRows.map((row) => row.length));
+  const widths = Array.from({ length: columnCount }, (_unused, column) =>
+    Math.min(
+      Math.max(
+        ...allRows.map((row) => visualLength(stripMarkdownInline(row[column] || ""))),
+        3
+      ),
+      36
+    )
+  );
+  const formatRow = (row, header = false) =>
+    widths
+      .map((width, column) => {
+        const value = stripMarkdownInline(row[column] || "");
+        return padVisible(value, width);
+      })
+      .join(color("  │  ", ansi.dim));
+  const separator = widths.map((width) => "─".repeat(width)).join(color("──┼──", ansi.dim));
+  return [
+    color(formatRow(table.header, true), ansi.bold, ansi.cyan),
+    color(separator, ansi.dim),
+    ...table.rows.map((row) => formatRow(row)),
+  ];
+}
+
+function stripMarkdownInline(value = "") {
+  return String(value)
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
+    .replace(/\*\*([^*]+)\*\*/g, (_, text) => color(text, ansi.bold))
+    .replace(/__([^_]+)__/g, (_, text) => color(text, ansi.bold))
+    .replace(/`([^`]+)`/g, (_, text) => color(text, ansi.yellow))
+    .replace(/~~([^~]+)~~/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/_([^_]+)_/g, "$1");
 }
 
 function rolePrefix(name, bgCode) {
@@ -183,7 +282,10 @@ async function renderLaunchHeader(packageVersion = "") {
   const title = "AgInTi Flow";
   const subtitle = "web-first agent workspace";
   const version = packageVersion ? `v${packageVersion}` : "";
-  const line = "+--------------------------------------------------+";
+  const width = Math.min(Math.max(terminalWidth() - 2, 58), 82);
+  const top = `╭${"─".repeat(width)}╮`;
+  const mid = `├${"─".repeat(width)}┤`;
+  const bottom = `╰${"─".repeat(width)}╯`;
 
   if (!useColor || process.env.AGINTIFLOW_NO_ANIMATION === "1") {
     console.log(` AgInTiFlow ${packageVersion || ""}`.trim());
@@ -198,11 +300,15 @@ async function renderLaunchHeader(packageVersion = "") {
   output.write(`\r${ansi.clearLine}`);
   output.write(ansi.cursorShow);
 
-  console.log(color(line, "\x1b[38;5;45m"));
-  console.log(`${color("|", "\x1b[38;5;45m")} ${shimmerText(title, 2)} ${color(version.padStart(36 - title.length), ansi.dim)} ${color("|", "\x1b[38;5;45m")}`);
-  console.log(`${color("|", "\x1b[38;5;45m")} ${color(subtitle.padEnd(48), ansi.dim)} ${color("|", "\x1b[38;5;45m")}`);
-  console.log(`${color("|", "\x1b[38;5;45m")} ${color("browser + shell + files + docker + canvas".padEnd(48), ansi.cyan)} ${color("|", "\x1b[38;5;45m")}`);
-  console.log(color(line, "\x1b[38;5;45m"));
+  const border = "\x1b[38;5;45m";
+  const titleLine = `${shimmerText(title, 2)} ${color(version, ansi.dim)}`;
+  const tagline = "browser + shell + files + docker + web search + scouts";
+  console.log(color(top, border));
+  console.log(`${color("│", border)} ${padVisible(titleLine, width - 2)} ${color("│", border)}`);
+  console.log(`${color("│", border)} ${color(padVisible(subtitle, width - 2), ansi.dim)} ${color("│", border)}`);
+  console.log(color(mid, border));
+  console.log(`${color("│", border)} ${color(padVisible(tagline, width - 2), ansi.cyan)} ${color("│", border)}`);
+  console.log(color(bottom, border));
 }
 
 function printHelp() {
@@ -247,12 +353,17 @@ function renderPromptBuffer(buffer, previousLineCount = 0) {
   const lines = String(buffer || "").split("\n");
   const suggestions = commandSuggestions(lines[0] || "");
   const rendered = [];
-  rendered.push(`${userPrompt().replace(/^\n/, "")}${lines[0] || ""}`);
-  for (const line of lines.slice(1)) {
-    rendered.push(`${promptGutter()}${line}`);
+  const firstPrefix = " user ";
+  const nextPrefix = "  ... ";
+  const emptyHint = color("type a request, /help, Enter to send, Ctrl+J for newline", ansi.faint);
+  const cursor = color("▌", ansi.bold);
+  rendered.push(panelLine(`${firstPrefix}${lines[0] || emptyHint}${lines.length === 1 ? cursor : ""}`, ansi.userBg));
+  for (const [index, line] of lines.slice(1).entries()) {
+    const isLast = index === lines.length - 2;
+    rendered.push(panelLine(`${nextPrefix}${line}${isLast ? cursor : ""}`, ansi.userBg));
   }
   if (suggestions.length > 0) {
-    rendered.push(`${promptGutter()}${color(`suggest: ${suggestions.join("  ")}`, ansi.dim)}`);
+    rendered.push(panelLine(` hint  ${color(suggestions.join("  "), ansi.dim)}`, ansi.systemBg));
   }
   output.write(rendered.join("\n"));
   return rendered.length;
@@ -296,7 +407,7 @@ function readTtyPrompt() {
         reject(createAbortError());
         return;
       }
-      if ((key.ctrl && key.name === "j") || (key.sequence === "\n" && key.name !== "return" && key.name !== "enter")) {
+      if ((key.ctrl && key.name === "j") || key.sequence === "\n") {
         buffer += "\n";
         redraw();
         return;

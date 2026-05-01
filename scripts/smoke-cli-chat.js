@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripMarkdown } from "../src/interactive-cli.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-cli-chat-"));
@@ -52,6 +53,23 @@ function runCli(args, inputText) {
 }
 
 try {
+  const renderedMarkdown = stripMarkdown(
+    [
+      "**Docker status**",
+      "",
+      "| Check | Result |",
+      "| --- | --- |",
+      "| `/.dockerenv` | **Present** |",
+      "| Hostname | `abc123` |",
+    ].join("\n")
+  );
+  if (renderedMarkdown.includes("**") || renderedMarkdown.includes("| --- |")) {
+    throw new Error("terminal markdown renderer left raw markdown syntax");
+  }
+  if (!renderedMarkdown.includes("Check") || !renderedMarkdown.includes("Present")) {
+    throw new Error("terminal markdown renderer dropped table content");
+  }
+
   const result = await runChat("Create notes/interactive.md with a short CLI chat smoke message\n/exit\n");
   const written = await fs.readFile(path.join(tempRoot, "notes/interactive.md"), "utf8");
   if (!written.includes("Created by AgInTiFlow mock mode.")) {
@@ -74,7 +92,7 @@ try {
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["interactive-chat", "mock-file-write", "run-status", "resume-latest"],
+        checks: ["markdown-render", "interactive-chat", "mock-file-write", "run-status", "resume-latest"],
       },
       null,
       2
