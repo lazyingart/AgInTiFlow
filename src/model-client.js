@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { normalizeWrapperName, wrapperStatusText } from "./tool-wrappers.js";
 import { getTaskProfile } from "./task-profiles.js";
 import { listAuxiliarySkills } from "./auxiliary-tools.js";
+import { engineeringGuidanceForTask } from "./engineering-guidance.js";
 
 export function createClient(config) {
   if (config.provider === "mock") {
@@ -173,6 +174,7 @@ function mockChatResponse(content, toolCalls = []) {
 
 export async function createPlan(client, config, state) {
   const taskProfile = getTaskProfile(config.taskProfile);
+  const engineeringGuidance = engineeringGuidanceForTask(state.goal, config.taskProfile);
   if (client.mock) {
     return [
       "1. Inspect the request and prefer the local shell when available.",
@@ -212,6 +214,7 @@ export async function createPlan(client, config, state) {
                 .join(", ")}. For raster image generation requests, plan to use generate_image when a GRSAI key is available; otherwise ask the user to run /auxilliary grsai or aginti login grsai.`
             : "Auxiliary skills are disabled for this run.",
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
+          engineeringGuidance,
           "A canvas/artifacts tunnel is available through send_to_canvas. Use it when an output should be highlighted visually, such as screenshots, image files, important markdown, diffs, or generated artifact paths. It is optional for ordinary text answers.",
           "Work like a practical coding agent: inspect when useful, edit with file tools, run safe checks when they add confidence, and keep outputs inside the workspace.",
           "For large apps, websites, LaTeX documents, Python/C/shell projects, or system tasks, plan a coherent minimal implementation, then use tools to create files, run checks, and publish artifacts.",

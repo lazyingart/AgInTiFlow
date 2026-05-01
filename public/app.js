@@ -775,10 +775,23 @@ function renderTaskProfiles(selected = "auto") {
   taskProfileField.value = profiles.some((profile) => profile.id === selected) ? selected : "auto";
 }
 
-function recommendedMaxStepsForProfile(profile = "auto") {
+const COMPLEX_ENGINEERING_HINT = /\b(large|complex|complicated|monorepo|codebase|repository|repo-wide|multi[- ]file|cross[- ]file|architecture|refactor|migration|regression|root cause|failing tests?|fix build|system bug|debug|performance|security)\b/i;
+
+function recommendedMaxStepsForProfile(profile = "auto", goal = "") {
   if (profile === "large-codebase") return 36;
   if (profile === "latex") return 30;
+  if (COMPLEX_ENGINEERING_HINT.test(goal || "")) return 36;
+  if (/\b(latex|tex|pdflatex|latexmk|pdf|website|app|docker|system|install|setup|debug)\b/i.test(goal || "")) return 30;
   return 24;
+}
+
+function ensureRecommendedMaxStepsForCurrentTask() {
+  const maxStepsField = document.querySelector("#maxSteps");
+  const goalField = document.querySelector("#goal");
+  const recommended = recommendedMaxStepsForProfile(taskProfileField?.value || "auto", goalField?.value || "");
+  if (maxStepsField && Number(maxStepsField.value || 0) < recommended) {
+    maxStepsField.value = String(recommended);
+  }
 }
 
 function renderWrapperStatus(wrappers = lastWrappers) {
@@ -1966,11 +1979,7 @@ packageInstallPolicyField.addEventListener("change", updatePackageWarning);
 allowWrapperToolsField.addEventListener("change", () => renderWrapperStatus());
 preferredWrapperField.addEventListener("change", () => renderWrapperStatus());
 taskProfileField?.addEventListener("change", () => {
-  const maxStepsField = document.querySelector("#maxSteps");
-  const recommended = recommendedMaxStepsForProfile(taskProfileField.value);
-  if (maxStepsField && Number(maxStepsField.value || 0) < recommended) {
-    maxStepsField.value = String(recommended);
-  }
+  ensureRecommendedMaxStepsForCurrentTask();
   schedulePreferenceSave();
 });
 
@@ -2048,6 +2057,7 @@ form.addEventListener("submit", async (event) => {
     setLogs(t("goalRequired"), "empty");
     return;
   }
+  ensureRecommendedMaxStepsForCurrentTask();
 
   const payload = {
     ...formPayload(),

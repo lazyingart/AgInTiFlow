@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { repairModelMessageHistory, runAgent } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
+import { engineeringGuidanceForTask, recommendedMaxStepsForTask } from "../src/engineering-guidance.js";
 import { selectModelRoute } from "../src/model-routing.js";
 import { SessionStore } from "../src/session-store.js";
 import { executeWorkspaceTool } from "../src/workspace-tools.js";
@@ -93,6 +94,24 @@ try {
     taskProfile: "large-codebase",
   });
   assert(/pro/i.test(largeProfileRoute.model), "large-codebase profile did not route to DeepSeek pro");
+  const autoSystemRoute = selectModelRoute({
+    routingMode: "smart",
+    provider: "deepseek",
+    goal: "debug this Python project system bug and fix failing tests",
+    taskProfile: "auto",
+  });
+  assert(/pro/i.test(autoSystemRoute.model), "auto system/code problem did not route to DeepSeek pro");
+  assert(
+    recommendedMaxStepsForTask({
+      goal: "debug this Python project system bug and fix failing tests",
+      taskProfile: "auto",
+      complexityScore: autoSystemRoute.complexityScore,
+    }) >= 36,
+    "auto system/code problem did not get engineering step budget"
+  );
+  const guidance = engineeringGuidanceForTask("debug this Python project system bug and fix failing tests", "auto");
+  assert(guidance.includes("Python:"), "engineering guidance did not include Python stack advice");
+  assert(guidance.includes("System/shell:"), "engineering guidance did not include system stack advice");
 
   await fs.mkdir(path.join(workspace, "src"), { recursive: true });
   await fs.mkdir(path.join(workspace, "test"), { recursive: true });
@@ -264,6 +283,8 @@ try {
           "deepseek_history_repair",
           "deepseek_pro_patch_route",
           "large_profile_pro_route",
+          "auto_system_pro_route",
+          "auto_engineering_guidance",
           "inspect_project",
           "mock_inspect_project",
           "write_file",

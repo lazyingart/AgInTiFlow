@@ -3,7 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getModelPresets } from "./model-routing.js";
 
-const PREFERENCES_SCHEMA_VERSION = 4;
+const PREFERENCES_SCHEMA_VERSION = 5;
 
 function defaultPreferences(baseDir) {
   const presets = getModelPresets();
@@ -94,6 +94,9 @@ export class WebDatabase {
         }
         if (!Number.isFinite(Number(parsed.maxSteps)) || Number(parsed.maxSteps) < 24) {
           preferences.maxSteps = 24;
+        }
+        if ((parsed.preferencesSchemaVersion || 1) < 5) {
+          preferences.taskProfile = "auto";
         }
         this.savePreferences(preferences);
       }

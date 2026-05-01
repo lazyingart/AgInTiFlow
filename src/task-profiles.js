@@ -3,15 +3,15 @@ export const TASK_PROFILES = {
     id: "auto",
     label: "Auto",
     prompt:
-      "Infer the task type from the user request. Prefer the smallest safe tool sequence that actually completes the work, preserve workspace files, run useful checks, and summarize what changed.",
-    tools: ["browser", "shell", "files", "canvas"],
+      "Infer the task type from the user request. For short tasks, use the smallest safe tool sequence that completes the work. For codebase, system, debugging, migration, or multi-language tasks, switch into the engineering loop: inspect, read/search exact context, patch incrementally, run focused checks, repair failures, and summarize changed files plus residual risks.",
+    tools: ["browser", "shell", "files", "canvas", "inspect_project"],
   },
   code: {
     id: "code",
     label: "Code writing",
     prompt:
-      "Act like a coding agent: understand the request, edit workspace files, run useful safe checks, iterate on failures, and report changed files and residual risks.",
-    tools: ["files", "shell", "sandbox"],
+      "Act like a coding agent across languages: inspect project manifests and conventions, edit workspace files with patches, run useful focused checks, iterate on failures, and report changed files and residual risks.",
+    tools: ["inspect_project", "files", "shell", "sandbox"],
   },
   "large-codebase": {
     id: "large-codebase",
@@ -87,8 +87,8 @@ export const TASK_PROFILES = {
     id: "maintenance",
     label: "System maintenance",
     prompt:
-      "For system maintenance, diagnose first, use Docker for broad installs when available, and follow the configured trust/package policy for host-level changes.",
-    tools: ["shell", "sandbox", "files"],
+      "For system maintenance and system bugs, diagnose first with read-only evidence, use Docker for broad installs/toolchains when available, generate reversible project-local scripts, follow the configured trust/package policy for host-level changes, and stop with clear next actions if stronger permission is needed.",
+    tools: ["shell", "sandbox", "files", "inspect_project"],
   },
 };
 

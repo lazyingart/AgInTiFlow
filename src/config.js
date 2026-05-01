@@ -4,7 +4,8 @@ import { getProviderDefaults, normalizeRoutingMode, selectModelRoute } from "./m
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
 import { normalizeWrapperName } from "./tool-wrappers.js";
 import { loadProjectEnv, resolveProjectRoot } from "./project.js";
-import { defaultMaxStepsForProfile, normalizeTaskProfile } from "./task-profiles.js";
+import { normalizeTaskProfile } from "./task-profiles.js";
+import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 
 function parseBoolean(value, fallback) {
   if (value === undefined) return fallback;
@@ -43,6 +44,11 @@ export function resolveRuntimeConfig(args, overrides = {}) {
   });
 
   const defaults = getProviderDefaults(route.provider);
+  const defaultMaxSteps = recommendedMaxStepsForTask({
+    goal: args.goal || "",
+    taskProfile,
+    complexityScore: route.complexityScore,
+  });
   const packageDir = path.resolve(overrides.packageDir || process.env.AGINTIFLOW_PACKAGE_DIR || baseDir);
   const dockerRequested = parseBoolean(overrides.useDockerSandbox ?? args.useDockerSandbox ?? process.env.USE_DOCKER_SANDBOX, true);
   const requestedSandboxMode =
@@ -67,7 +73,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     apiKey: overrides.apiKey || defaults.apiKey,
     baseURL: overrides.baseURL || defaults.baseURL,
     model: route.model || defaults.model,
-    maxSteps: parseNumber(overrides.maxSteps ?? args.maxSteps ?? process.env.MAX_STEPS, defaultMaxStepsForProfile(taskProfile)),
+    maxSteps: parseNumber(overrides.maxSteps ?? args.maxSteps ?? process.env.MAX_STEPS, defaultMaxSteps),
     headless: parseBoolean(overrides.headless ?? args.headless ?? process.env.HEADLESS, false),
     allowedDomains: Array.isArray(overrides.allowedDomains)
       ? overrides.allowedDomains

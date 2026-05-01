@@ -18,6 +18,7 @@ import { executeWorkspaceTool, resolveWorkspacePath, summarizeWorkspaceTools, WO
 import { normalizeCanvasPayload } from "./artifact-tunnel.js";
 import { getTaskProfile } from "./task-profiles.js";
 import { generateImage, listAuxiliarySkills } from "./auxiliary-tools.js";
+import { engineeringGuidanceForTask } from "./engineering-guidance.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "open_workspace_file", "preview_workspace", "click", "type", "scroll", "press", "back"]);
@@ -233,6 +234,7 @@ export function repairModelMessageHistory(state, config = {}) {
 function createInitialState(config, sessionId) {
   const now = new Date().toISOString();
   const taskProfile = getTaskProfile(config.taskProfile);
+  const engineeringGuidance = engineeringGuidanceForTask(config.goal, config.taskProfile);
   return {
     sessionId,
     createdAt: now,
@@ -283,6 +285,7 @@ function createInitialState(config, sessionId) {
                 .join(", ")}. Use generate_image for real raster image/photo/illustration/cover/poster/logo requests when appropriate; if the key is missing, ask the user to run /auxilliary grsai or aginti login grsai.`
             : "Auxiliary skills are disabled for this run.",
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
+          engineeringGuidance,
           "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. It is optional and ordinary final text can still go directly to finish.",
           "For visual-output requests such as draw, plot, graph, chart, diagram, figure, image, or visualization, proactively publish a canvas artifact even when the user does not mention canvas. If workspace file tools are enabled, prefer creating a small SVG or markdown artifact and call send_to_canvas with selected=true.",
           "Work like a practical coding agent: orient with inspect_project/search/read, patch code with apply_patch, run safe checks when they add confidence, iterate on failures, and keep outputs inside the workspace.",
@@ -321,6 +324,7 @@ function createInitialState(config, sessionId) {
                 .join(" ")}`
             : "",
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
+          engineeringGuidance,
           "Canvas/artifacts tunnel: available through send_to_canvas for optional frontend rendering.",
           "Visual-output requests should produce a canvas artifact without requiring the user to ask for canvas explicitly.",
           "Use file, shell, browser, canvas, and wrapper tools when they are useful; choose the workflow from the user's request. For complicated engineering tasks, keep a tight loop: inspect, choose minimal files, patch, run focused checks, repair, then summarize.",
@@ -410,6 +414,7 @@ function applyContinuationPrompt(state, config, observers) {
   if (!config.resume || !config.goal) return;
 
   const taskProfile = getTaskProfile(config.taskProfile);
+  const engineeringGuidance = engineeringGuidanceForTask(config.goal, config.taskProfile);
   ensureChatState(state);
   state.goal = config.goal;
   state.provider = config.provider;
@@ -436,6 +441,7 @@ function applyContinuationPrompt(state, config, observers) {
         ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
         : "",
       `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
+      engineeringGuidance,
     ]
       .filter(Boolean)
       .join("\n"),

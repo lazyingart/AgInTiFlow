@@ -6,6 +6,7 @@ import { loadConfig } from "./config.js";
 import { initProject, listProjectSessions, providerKeyStatus, setProviderKey } from "./project.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
 import { defaultMaxStepsForProfile, normalizeTaskProfile } from "./task-profiles.js";
+import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 import { promptAndSaveDeepSeekKey, promptHidden, shouldPromptForDeepSeek } from "./auth-onboarding.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
@@ -673,6 +674,13 @@ async function handleCommand(line, state, packageDir) {
 
 async function runPrompt(prompt, state, packageDir) {
   const controller = new AbortController();
+  const runMaxSteps = Math.max(
+    state.maxSteps,
+    recommendedMaxStepsForTask({
+      goal: prompt,
+      taskProfile: state.taskProfile,
+    })
+  );
   const config = loadConfig(
     {
       provider: state.provider,
@@ -688,7 +696,7 @@ async function runPrompt(prompt, state, packageDir) {
       allowDestructive: state.allowDestructive,
       preferredWrapper: state.preferredWrapper,
       taskProfile: state.taskProfile,
-      maxSteps: state.maxSteps,
+      maxSteps: runMaxSteps,
       headless: state.headless,
       resume: state.sessionId,
       goal: prompt,
