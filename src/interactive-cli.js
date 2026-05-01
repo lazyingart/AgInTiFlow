@@ -60,7 +60,7 @@ function label(name, bgCode) {
 }
 
 function userPrompt() {
-  return `\n${label("user>", ansi.userBg)} `;
+  return `\n${label("user>", ansi.userBg)} ${color("|", ansi.userBg)} `;
 }
 
 function commandCompleter(line = "") {
@@ -68,6 +68,21 @@ function commandCompleter(line = "") {
   if (!trimmed.startsWith("/")) return [[], trimmed];
   const hits = SLASH_COMMANDS.filter((command) => command.startsWith(trimmed));
   return [hits.length > 0 ? hits : SLASH_COMMANDS, trimmed];
+}
+
+function stripAnsi(value) {
+  return String(value || "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
+function promptGutter() {
+  const visible = stripAnsi(userPrompt()).replace(/^\n/, "").length;
+  return " ".repeat(Math.max(visible - 2, 0)) + `${color("|", ansi.userBg)} `;
+}
+
+function commandSuggestions(line = "") {
+  const trimmed = String(line || "");
+  if (!trimmed.startsWith("/") || /\s/.test(trimmed)) return [];
+  return SLASH_COMMANDS.filter((command) => command.startsWith(trimmed)).slice(0, 8);
 }
 
 function stripMarkdown(text) {
@@ -79,16 +94,26 @@ function stripMarkdown(text) {
     let line = rawLine;
     if (/^\s*```/.test(line)) {
       inFence = !inFence;
-      if (inFence) rendered.push(color("code", ansi.dim));
+      if (inFence) {
+        const language = line.replace(/^\s*```/, "").trim();
+        rendered.push(color(language ? `code ${language}` : "code", ansi.dim));
+      }
       continue;
     }
 
     if (!inFence) {
       if (/^\s*[-*_]{3,}\s*$/.test(line)) {
-        rendered.push("");
+        rendered.push(color("-".repeat(42), ansi.dim));
         continue;
       }
-      line = line.replace(/^\s{0,3}#{1,6}\s+/, "");
+      const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+)$/);
+      if (heading) {
+        rendered.push(color(heading[2].replace(/\s+#*$/, ""), ansi.bold, ansi.cyan));
+        continue;
+      }
+      if (/^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line)) {
+        continue;
+      }
       line = line.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)");
       line = line.replace(/\*\*([^*]+)\*\*/g, (_, value) => color(value, ansi.bold));
       line = line.replace(/__([^_]+)__/g, (_, value) => color(value, ansi.bold));
@@ -96,7 +121,9 @@ function stripMarkdown(text) {
       line = line.replace(/(^|[^\w])_([^_\n]+)_/g, "$1$2");
       line = line.replace(/`([^`]+)`/g, (_, value) => color(value, ansi.yellow));
       line = line.replace(/^(\s*)[-*+]\s+/, "$1- ");
-      line = line.replace(/^\s*>\s?/, "  ");
+      line = line.replace(/^\s*>\s?(.+)$/, (_, value) => color(`| ${value}`, ansi.dim));
+    } else {
+      line = color(`  ${line}`, ansi.yellow);
     }
 
     rendered.push(line);
@@ -105,10 +132,15 @@ function stripMarkdown(text) {
   return rendered.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
 }
 
-function printWrapped(prefix, text) {
+function rolePrefix(name, bgCode) {
+  return `${label(name, bgCode)} ${color("|", bgCode)} `;
+}
+
+function printWrapped(prefix, text, { stripCode = "" } = {}) {
   const rendered = stripMarkdown(text);
   const lines = rendered.split("\n");
-  const gutter = " ".repeat(useColor ? 9 : prefix.length);
+  const visible = stripAnsi(prefix).length;
+  const gutter = `${" ".repeat(Math.max(visible - 2, 0))}${stripCode ? color("|", stripCode) : "|"} `;
   console.log(`${prefix}${lines[0] || ""}`);
   for (const line of lines.slice(1)) {
     console.log(`${gutter}${line}`);
@@ -116,7 +148,7 @@ function printWrapped(prefix, text) {
 }
 
 function printAgentMessage(text) {
-  printWrapped(`${label("aginti>", ansi.agentBg)} `, text);
+  printWrapped(rolePrefix("aginti>", ansi.agentBg), text, { stripCode: ansi.agentBg });
 }
 
 function printSystemLine(text) {
@@ -197,6 +229,113 @@ function printHelp() {
   );
 }
 
+function renderPromptBuffer(buffer, previousLineCount = 0) {
+  for (let index = 0; index < previousLineCount; index += 1) {
+    output.write(`\r${ansi.clearLine}`);
+    if (index < previousLineCount - 1) output.write("\x1b[1A");
+  }
+
+  const lines = String(buffer || "").split("\n");
+  const suggestions = commandSuggestions(lines[0] || "");
+  const rendered = [];
+  rendered.push(`${userPrompt().replace(/^\n/, "")}${lines[0] || ""}`);
+  for (const line of lines.slice(1)) {
+    rendered.push(`${promptGutter()}${line}`);
+  }
+  if (suggestions.length > 0) {
+    rendered.push(`${promptGutter()}${color(`suggest: ${suggestions.join("  ")}`, ansi.dim)}`);
+  }
+  output.write(rendered.join("\n"));
+  return rendered.length;
+}
+
+function createAbortError(message = "Aborted with Ctrl+C") {
+  const error = new Error(message);
+  error.code = "ABORT_ERR";
+  error.name = "AbortError";
+  return error;
+}
+
+function readTtyPrompt() {
+  return new Promise((resolve, reject) => {
+    emitKeypressEvents(input);
+    const wasRaw = Boolean(input.isRaw);
+    let buffer = "";
+    let renderedLines = 0;
+
+    const cleanup = () => {
+      input.off("keypress", handler);
+      if (typeof input.setRawMode === "function") input.setRawMode(wasRaw);
+      input.pause();
+      output.write(ansi.cursorShow);
+    };
+
+    const redraw = () => {
+      renderedLines = renderPromptBuffer(buffer, renderedLines);
+    };
+
+    const submit = () => {
+      cleanup();
+      output.write("\n");
+      resolve(buffer);
+    };
+
+    const handler = (str = "", key = {}) => {
+      if (key.ctrl && key.name === "c") {
+        cleanup();
+        output.write("\n");
+        reject(createAbortError());
+        return;
+      }
+      if ((key.ctrl && key.name === "j") || (key.sequence === "\n" && key.name !== "return" && key.name !== "enter")) {
+        buffer += "\n";
+        redraw();
+        return;
+      }
+      if (key.name === "return" || key.name === "enter" || key.sequence === "\r" || str === "\r") {
+        submit();
+        return;
+      }
+      if (key.name === "backspace") {
+        buffer = buffer.slice(0, -1);
+        redraw();
+        return;
+      }
+      if (key.name === "tab") {
+        const suggestions = commandSuggestions(buffer.split("\n")[0] || "");
+        if (suggestions.length === 1) {
+          buffer = suggestions[0];
+        }
+        redraw();
+        return;
+      }
+      if (key.name === "escape") {
+        buffer = "";
+        redraw();
+        return;
+      }
+      if (key.ctrl || key.meta) return;
+      if (str && !key.sequence?.startsWith("\x1b")) {
+        buffer += str;
+        redraw();
+      }
+    };
+
+    input.resume();
+    input.setRawMode(true);
+    output.write(ansi.cursorHide);
+    input.on("keypress", handler);
+    redraw();
+  });
+}
+
+async function readPromptAnswer(rl) {
+  if (input.isTTY && output.isTTY && typeof input.setRawMode === "function") {
+    return readTtyPrompt();
+  }
+  return rl.question(userPrompt());
+}
+
 function printStatus(state) {
   printSystemLine(`project=${process.cwd()}`);
   printSystemLine(`cwd=${state.commandCwd || process.cwd()}`);
@@ -237,6 +376,7 @@ function attachRunInterrupts(controller) {
 
   emitKeypressEvents(input);
   const wasRaw = Boolean(input.isRaw);
+  input.resume();
   input.setRawMode(true);
   const handler = (_str, key = {}) => {
     const isEscape = key.name === "escape";
@@ -564,12 +704,15 @@ async function runPrompt(prompt, state, packageDir) {
 
 export async function startInteractiveCli(args = {}, { packageDir, packageVersion } = {}) {
   const state = createState(args);
-  const rl = readline.createInterface({
-    input,
-    output,
-    terminal: Boolean(input.isTTY && output.isTTY),
-    completer: commandCompleter,
-  });
+  const rl =
+    input.isTTY && output.isTTY
+      ? null
+      : readline.createInterface({
+          input,
+          output,
+          terminal: false,
+          completer: commandCompleter,
+        });
 
   await renderLaunchHeader(packageVersion);
   printSystemLine(`Project: ${process.cwd()}`);
@@ -581,7 +724,7 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
     while (true) {
       let answer = "";
       try {
-        answer = await rl.question(userPrompt());
+        answer = await readPromptAnswer(rl);
       } catch (error) {
         if (error?.code === "ERR_USE_AFTER_CLOSE") break;
         if (isAbortError(error)) {
@@ -609,6 +752,6 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
       }
     }
   } finally {
-    rl.close();
+    rl?.close();
   }
 }
