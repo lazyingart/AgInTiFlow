@@ -56,6 +56,14 @@ export class WebDatabase {
         error TEXT
       );
     `);
+    this.migrate();
+  }
+
+  migrate() {
+    const sessionColumns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    if (!sessionColumns.some((column) => column.name === "title")) {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT ''");
+    }
   }
 
   getPreferences() {
@@ -89,12 +97,13 @@ export class WebDatabase {
     this.db
       .prepare(
         `INSERT INTO sessions (
-          session_id, provider, model, goal, status, started_at, updated_at, ended_at, result, error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          session_id, provider, model, goal, title, status, started_at, updated_at, ended_at, result, error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET
           provider = excluded.provider,
           model = excluded.model,
           goal = excluded.goal,
+          title = CASE WHEN excluded.title != '' THEN excluded.title ELSE sessions.title END,
           status = excluded.status,
           updated_at = excluded.updated_at,
           ended_at = excluded.ended_at,
@@ -106,6 +115,7 @@ export class WebDatabase {
         session.provider,
         session.model,
         session.goal,
+        session.title || "",
         session.status,
         session.startedAt,
         updatedAt,
@@ -124,6 +134,7 @@ export class WebDatabase {
              provider,
              model,
              goal,
+             title,
              status,
              started_at AS startedAt,
              updated_at AS updatedAt,
@@ -145,6 +156,7 @@ export class WebDatabase {
            provider,
            model,
            goal,
+           title,
            status,
            started_at AS startedAt,
            updated_at AS updatedAt,
@@ -156,5 +168,18 @@ export class WebDatabase {
          LIMIT ?`
       )
       .all(limit);
+  }
+
+  renameSession(sessionId, title) {
+    const updatedAt = new Date().toISOString();
+    const result = this.db
+      .prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE session_id = ?")
+      .run(title, updatedAt, sessionId);
+    return result.changes > 0;
+  }
+
+  deleteSession(sessionId) {
+    const result = this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(sessionId);
+    return result.changes > 0;
   }
 }

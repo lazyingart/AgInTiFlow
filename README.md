@@ -110,6 +110,7 @@ The web app includes:
 - Workspace Files panel showing file tools, recent file changes, blocked write attempts, hashes, and compact diffs.
 - Toggleable shell tool, agent wrappers, headless browser, password typing, and destructive actions.
 - Persistent conversation panel above compact runtime logs, so follow-up messages stay close to the top.
+- Conversation manager modal for auto-renaming, manual renaming, and deleting saved chat history.
 
 `Start URL` is only a suggestion. The browser opens only when the model chooses a browser tool.
 

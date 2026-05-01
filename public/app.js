@@ -103,6 +103,21 @@ const translations = {
     sendingStatus: "Sending...",
     runningStatus: "Running...",
     failedContinue: "Failed to continue the conversation.",
+    conversationMenuLabel: "Manage conversations",
+    manageConversationsTitle: "Manage conversations",
+    manageConversationsHelp: "Rename, auto-rename, or delete saved chat history.",
+    conversationTitleLabel: "Conversation title",
+    conversationTitlePlaceholder: "Short title for this conversation",
+    autoRenameButton: "Auto rename",
+    renameButton: "Rename",
+    deleteButton: "Delete",
+    cancelButton: "Cancel",
+    noSessionsToManage: "No saved conversations yet.",
+    titleRequired: "Title is required.",
+    sessionRenamed: "Conversation renamed.",
+    sessionDeleted: "Conversation deleted.",
+    deleteConfirm: "Delete this conversation and its local session history?",
+    manageSessionFailed: "Failed to update conversation.",
   },
   ar: {
     documentTitle: "AgInTiFlow",
@@ -605,8 +620,19 @@ const chatThreadEl = document.querySelector("#chat-thread");
 const chatFormEl = document.querySelector("#chat-form");
 const chatInputEl = document.querySelector("#chat-input");
 const chatStatusEl = document.querySelector("#chat-status");
+const manageSessionsButton = document.querySelector("#manage-sessions");
+const sessionManagerDialog = document.querySelector("#session-manager");
+const closeSessionManagerButton = document.querySelector("#close-session-manager");
+const cancelSessionManagerButton = document.querySelector("#cancel-session-manager");
+const sessionManagerListEl = document.querySelector("#session-manager-list");
+const sessionTitleInputEl = document.querySelector("#session-title-input");
+const sessionManagerStatusEl = document.querySelector("#session-manager-status");
+const autoRenameSessionButton = document.querySelector("#auto-rename-session");
+const renameSessionButton = document.querySelector("#rename-session");
+const deleteSessionButton = document.querySelector("#delete-session");
 const translatableNodes = [...document.querySelectorAll("[data-i18n]")];
 const placeholderNodes = [...document.querySelectorAll("[data-i18n-placeholder]")];
+const ariaLabelNodes = [...document.querySelectorAll("[data-i18n-aria-label]")];
 
 const defaults = {
   openai: "gpt-5.4-mini",
@@ -626,6 +652,7 @@ let lastWrappers = [];
 let lastSandbox = null;
 let lastWorkspace = null;
 let lastWorkspaceActivity = [];
+let managedSessionId = "";
 
 function normalizeLanguage(language) {
   const lower = String(language || "").toLowerCase();
@@ -826,6 +853,10 @@ function applyLanguage(language, { persist = true } = {}) {
     node.placeholder = t(node.dataset.i18nPlaceholder);
   }
 
+  for (const node of ariaLabelNodes) {
+    node.setAttribute("aria-label", t(node.dataset.i18nAriaLabel));
+  }
+
   renderKeyStatus();
   renderWrapperStatus();
   renderWorkspacePanel();
@@ -833,6 +864,7 @@ function applyLanguage(language, { persist = true } = {}) {
   updateRoutingHint();
   updatePackageWarning();
   renderSessions(lastSessions);
+  renderSessionManager();
   renderChat(lastChatEntries);
   if (persist) schedulePreferenceSave();
 }
@@ -914,8 +946,9 @@ function renderSessions(sessions) {
   const options = [`<option value="">${t("selectRecentSession")}</option>`]
     .concat(
       lastSessions.map((session) => {
-        const goal = escapeHtml(`${session.goal.slice(0, 60)}${session.goal.length > 60 ? "..." : ""}`);
-        const label = `${escapeHtml(session.provider)} · ${goal}`;
+        const rawTitle = session.title || session.goal || session.sessionId;
+        const title = escapeHtml(`${rawTitle.slice(0, 60)}${rawTitle.length > 60 ? "..." : ""}`);
+        const label = `${escapeHtml(session.provider)} · ${title}`;
         return `<option value="${escapeHtml(session.sessionId)}">${label}</option>`;
       })
     )
@@ -927,10 +960,51 @@ function renderSessions(sessions) {
   }
 }
 
+function currentManagedSession() {
+  return lastSessions.find((session) => session.sessionId === managedSessionId) || lastSessions[0] || null;
+}
+
+function renderSessionManager(message = "") {
+  if (!sessionManagerListEl) return;
+  if (!managedSessionId && currentSessionId) managedSessionId = currentSessionId;
+  if (!lastSessions.some((session) => session.sessionId === managedSessionId)) {
+    managedSessionId = lastSessions[0]?.sessionId || "";
+  }
+
+  const selected = currentManagedSession();
+  sessionTitleInputEl.value = selected ? selected.title || selected.goal || "" : "";
+  sessionTitleInputEl.disabled = !selected;
+  autoRenameSessionButton.disabled = !selected;
+  renameSessionButton.disabled = !selected;
+  deleteSessionButton.disabled = !selected;
+  sessionManagerStatusEl.textContent = message;
+
+  if (!lastSessions.length) {
+    sessionManagerListEl.innerHTML = `<p class="subtle">${t("noSessionsToManage")}</p>`;
+    return;
+  }
+
+  sessionManagerListEl.innerHTML = lastSessions
+    .map((session) => {
+      const title = session.title || session.goal || session.sessionId;
+      const meta = [session.status, session.provider, session.updatedAt ? new Date(session.updatedAt).toLocaleString() : ""]
+        .filter(Boolean)
+        .join(" · ");
+      return `
+        <button class="session-row" type="button" data-session-id="${escapeHtml(session.sessionId)}" data-selected="${session.sessionId === managedSessionId}">
+          <strong>${escapeHtml(title)}</strong>
+          <span>${escapeHtml(meta)}</span>
+        </button>
+      `;
+    })
+    .join("");
+}
+
 async function refreshSessions() {
   const response = await fetch("/api/sessions");
   const data = await response.json();
   renderSessions(data.sessions || []);
+  renderSessionManager();
 }
 
 async function refreshWorkspaceChanges() {
@@ -1015,6 +1089,85 @@ async function runSandboxPreflight() {
     .join("\n\n");
 }
 
+async function openSessionManager() {
+  await refreshSessions();
+  managedSessionId = currentSessionId || managedSessionId || lastSessions[0]?.sessionId || "";
+  renderSessionManager();
+  sessionManagerDialog.showModal();
+}
+
+function closeSessionManager() {
+  sessionManagerDialog.close();
+  sessionManagerStatusEl.textContent = "";
+}
+
+async function renameManagedSession() {
+  const selected = currentManagedSession();
+  if (!selected) return;
+
+  const title = sessionTitleInputEl.value.trim();
+  if (!title) {
+    sessionManagerStatusEl.textContent = t("titleRequired");
+    return;
+  }
+
+  const response = await fetch(`/api/sessions/${encodeURIComponent(selected.sessionId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    sessionManagerStatusEl.textContent = data.error || t("manageSessionFailed");
+    return;
+  }
+
+  await refreshSessions();
+  renderSessionManager(t("sessionRenamed"));
+}
+
+async function autoRenameManagedSession() {
+  const selected = currentManagedSession();
+  if (!selected) return;
+
+  const response = await fetch(`/api/sessions/${encodeURIComponent(selected.sessionId)}/auto-title`, {
+    method: "POST",
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    sessionManagerStatusEl.textContent = data.error || t("manageSessionFailed");
+    return;
+  }
+
+  await refreshSessions();
+  renderSessionManager(t("sessionRenamed"));
+}
+
+async function deleteManagedSession() {
+  const selected = currentManagedSession();
+  if (!selected || !confirm(t("deleteConfirm"))) return;
+
+  const response = await fetch(`/api/sessions/${encodeURIComponent(selected.sessionId)}`, {
+    method: "DELETE",
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    sessionManagerStatusEl.textContent = data.error || t("manageSessionFailed");
+    return;
+  }
+
+  if (currentSessionId === selected.sessionId) {
+    currentSessionId = "";
+    sessionSelectEl.value = "";
+    runMetaEl.textContent = "";
+    setLogs(t("noRunSelected"), "empty");
+    renderChat([]);
+  }
+  managedSessionId = "";
+  await refreshSessions();
+  renderSessionManager(t("sessionDeleted"));
+}
+
 function schedulePreferenceSave() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
@@ -1040,6 +1193,44 @@ checkSandboxButton.addEventListener("click", () => {
 preflightSandboxButton.addEventListener("click", () => {
   runSandboxPreflight().catch((error) => {
     sandboxStatusEl.textContent = String(error);
+  });
+});
+
+manageSessionsButton.addEventListener("click", () => {
+  openSessionManager().catch((error) => {
+    chatStatusEl.textContent = String(error);
+  });
+});
+
+closeSessionManagerButton.addEventListener("click", closeSessionManager);
+cancelSessionManagerButton.addEventListener("click", closeSessionManager);
+
+sessionManagerDialog.addEventListener("click", (event) => {
+  if (event.target === sessionManagerDialog) closeSessionManager();
+});
+
+sessionManagerListEl.addEventListener("click", (event) => {
+  const row = event.target.closest("[data-session-id]");
+  if (!row) return;
+  managedSessionId = row.dataset.sessionId || "";
+  renderSessionManager();
+});
+
+renameSessionButton.addEventListener("click", () => {
+  renameManagedSession().catch((error) => {
+    sessionManagerStatusEl.textContent = String(error);
+  });
+});
+
+autoRenameSessionButton.addEventListener("click", () => {
+  autoRenameManagedSession().catch((error) => {
+    sessionManagerStatusEl.textContent = String(error);
+  });
+});
+
+deleteSessionButton.addEventListener("click", () => {
+  deleteManagedSession().catch((error) => {
+    sessionManagerStatusEl.textContent = String(error);
   });
 });
 

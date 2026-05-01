@@ -263,6 +263,21 @@ button.secondary {
   color: var(--ink);
 }
 
+button.danger {
+  background: linear-gradient(135deg, #b42318, #dc6803);
+}
+
+.icon-button {
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: #fffdfa;
+  color: var(--ink);
+  box-shadow: none;
+}
+
 .actions,
 .header-row {
   display: flex;
@@ -410,6 +425,18 @@ button.secondary {
   max-width: 340px;
 }
 
+.session-tools {
+  display: flex;
+  min-width: min(100%, 420px);
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.session-tools .session-select {
+  max-width: none;
+}
+
 .logs {
   min-height: 300px;
   max-height: 42vh;
@@ -468,6 +495,88 @@ button.secondary {
   margin: 0;
 }
 
+.modal {
+  width: min(720px, calc(100% - 28px));
+  padding: 0;
+  border: 0;
+  border-radius: 22px;
+  background: transparent;
+  color: var(--ink);
+}
+
+.modal::backdrop {
+  background: rgba(29, 28, 26, 0.42);
+  backdrop-filter: blur(5px);
+}
+
+.modal-card {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: rgba(255, 251, 244, 0.98);
+  box-shadow: 0 30px 90px rgba(29, 28, 26, 0.24);
+}
+
+.modal-header {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.modal-header h2 {
+  margin: 0 0 4px;
+}
+
+.session-manager-list {
+  display: grid;
+  max-height: 300px;
+  gap: 8px;
+  overflow: auto;
+}
+
+.session-row {
+  display: grid;
+  width: 100%;
+  gap: 4px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fffdfa;
+  color: var(--ink);
+  text-align: left;
+}
+
+.session-row[data-selected="true"] {
+  border-color: rgba(15, 118, 110, 0.62);
+  box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.1);
+}
+
+.session-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-row span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.modal-status {
+  min-height: 20px;
+  margin: 0;
+}
+
 @media (max-width: 960px) {
   .page {
     grid-template-columns: 1fr;
@@ -493,6 +602,15 @@ button.secondary {
 
   .chat-thread {
     max-height: 36vh;
+  }
+
+  .header-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .session-tools {
+    width: 100%;
   }
 
   .wrapper-controls {

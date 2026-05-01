@@ -114,8 +114,27 @@ try {
   const chat = await fetchJson(`/api/sessions/${encodeURIComponent(runStart.sessionId)}/chat`);
   if (!Array.isArray(chat.chat) || chat.chat.length < 2) throw new Error("chat history was not persisted");
 
+  const renamed = await fetchJson(`/api/sessions/${encodeURIComponent(runStart.sessionId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: "Smoke renamed conversation" }),
+  });
+  if (renamed.session?.title !== "Smoke renamed conversation") throw new Error("session rename did not persist");
+
+  const autoRenamed = await fetchJson(`/api/sessions/${encodeURIComponent(runStart.sessionId)}/auto-title`, {
+    method: "POST",
+  });
+  if (!/^Report the current working directory/i.test(autoRenamed.session?.title || "")) {
+    throw new Error("session auto rename did not derive a title from chat history");
+  }
+
   const changes = await fetchJson("/api/workspace/changes");
   if (!Array.isArray(changes.activity)) throw new Error("workspace changes endpoint returned an invalid payload");
+
+  const deleted = await fetchJson(`/api/sessions/${encodeURIComponent(runStart.sessionId)}`, {
+    method: "DELETE",
+  });
+  if (!deleted.ok) throw new Error("session delete failed");
 
   console.log(
     JSON.stringify(
@@ -127,6 +146,9 @@ try {
           "/api/sandbox/preflight",
           "/api/runs",
           "/api/sessions/:id/chat",
+          "PATCH /api/sessions/:id",
+          "POST /api/sessions/:id/auto-title",
+          "DELETE /api/sessions/:id",
           "/api/workspace/changes",
         ],
         provider: run.provider,

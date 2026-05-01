@@ -219,9 +219,20 @@
         <section class="panel chat-panel">
           <div class="header-row">
             <h2 data-i18n="conversationTitle">Conversation</h2>
-            <select id="session-select" class="session-select">
-              <option value="" data-i18n="noSessionSelected">No session selected</option>
-            </select>
+            <div class="session-tools">
+              <select id="session-select" class="session-select">
+                <option value="" data-i18n="noSessionSelected">No session selected</option>
+              </select>
+              <button
+                id="manage-sessions"
+                class="icon-button"
+                type="button"
+                data-i18n-aria-label="conversationMenuLabel"
+                aria-label="Manage conversations"
+              >
+                ...
+              </button>
+            </div>
           </div>
           <form id="chat-form" class="chat-form">
             <textarea
@@ -249,6 +260,30 @@
         </section>
       </section>
     </main>
+
+    <dialog id="session-manager" class="modal">
+      <section class="modal-card" aria-labelledby="session-manager-title">
+        <div class="modal-header">
+          <div>
+            <h2 id="session-manager-title" data-i18n="manageConversationsTitle">Manage conversations</h2>
+            <p class="subtle" data-i18n="manageConversationsHelp">Rename, auto-rename, or delete saved chat history.</p>
+          </div>
+          <button id="close-session-manager" class="icon-button" type="button" data-i18n-aria-label="cancelButton" aria-label="Cancel">x</button>
+        </div>
+        <div id="session-manager-list" class="session-manager-list"></div>
+        <label>
+          <span data-i18n="conversationTitleLabel">Conversation title</span>
+          <input id="session-title-input" type="text" maxlength="90" data-i18n-placeholder="conversationTitlePlaceholder" placeholder="Short title for this conversation" />
+        </label>
+        <div class="modal-actions">
+          <button id="auto-rename-session" type="button" class="secondary" data-i18n="autoRenameButton">Auto rename</button>
+          <button id="rename-session" type="button" data-i18n="renameButton">Rename</button>
+          <button id="delete-session" type="button" class="danger" data-i18n="deleteButton">Delete</button>
+          <button id="cancel-session-manager" type="button" class="secondary" data-i18n="cancelButton">Cancel</button>
+        </div>
+        <p id="session-manager-status" class="subtle modal-status"></p>
+      </section>
+    </dialog>
 
     <script src="/app.js" type="module"></script>
   </body>

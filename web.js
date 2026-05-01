@@ -46,6 +46,10 @@ function sessionStore(sessionId) {
   return new SessionStore(sessionsDir, sessionId);
 }
 
+function isSafeSessionId(sessionId) {
+  return /^[A-Za-z0-9._:-]+$/.test(String(sessionId || "")) && !String(sessionId || "").includes("..");
+}
+
 function mapEventLogs(events) {
   return events.map((event) => ({
     at: event.timestamp,
@@ -68,6 +72,7 @@ async function loadStoredRun(sessionId) {
     provider: meta.provider,
     model: meta.model,
     goal: meta.goal,
+    title: meta.title || "",
     startedAt: meta.startedAt,
     endedAt: meta.endedAt || null,
     result: meta.result || "",
@@ -83,6 +88,7 @@ function serializeRun(run) {
     provider: run.provider,
     model: run.model,
     goal: run.goal,
+    title: run.title || "",
     startedAt: run.startedAt,
     endedAt: run.endedAt || null,
     result: run.result || "",
@@ -223,6 +229,7 @@ function deriveSessionRecordFromState(state, existing = null) {
     provider: state.provider || existing?.provider || "deepseek",
     model: state.model || existing?.model || getProviderDefaults(state.provider || existing?.provider || "deepseek").model,
     goal: state.goal || existing?.goal || "",
+    title: existing?.title || "",
     status,
     startedAt: state.createdAt || existing?.startedAt || new Date().toISOString(),
     updatedAt,
@@ -304,10 +311,33 @@ async function loadChat(sessionId) {
   return {
     sessionId,
     goal: state?.goal || meta?.goal || "",
+    title: meta?.title || "",
     provider: state?.provider || meta?.provider || "",
     model: state?.model || meta?.model || "",
     chat: deriveChatFromState(state, meta),
   };
+}
+
+function normalizeSessionTitle(title) {
+  return String(title || "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 90);
+}
+
+function autoSessionTitleFromChat(data) {
+  const candidate =
+    data?.chat?.find((entry) => entry.role === "user" && String(entry.content || "").trim())?.content ||
+    data?.goal ||
+    "Untitled conversation";
+  const cleaned = normalizeSessionTitle(candidate)
+    .replace(/^please\s+/i, "")
+    .replace(/^could you\s+/i, "")
+    .replace(/^can you\s+/i, "")
+    .replace(/^plz\s+/i, "")
+    .replace(/^i want to\s+/i, "");
+  return normalizeSessionTitle(cleaned.length > 72 ? `${cleaned.slice(0, 69).trim()}...` : cleaned) || "Untitled conversation";
 }
 
 async function ensureNotRunning(sessionId) {
@@ -492,6 +522,75 @@ app.get("/api/sessions/:sessionId/chat", async (req, res) => {
     return;
   }
   res.json(data);
+});
+
+app.patch("/api/sessions/:sessionId", async (req, res) => {
+  const sessionId = req.params.sessionId;
+  if (!isSafeSessionId(sessionId)) {
+    res.status(400).json({ error: "Invalid session id." });
+    return;
+  }
+
+  const meta = db.getSession(sessionId);
+  if (!meta) {
+    res.status(404).json({ error: "Session not found." });
+    return;
+  }
+
+  const title = normalizeSessionTitle(req.body?.title);
+  if (!title) {
+    res.status(400).json({ error: "Title is required." });
+    return;
+  }
+
+  db.renameSession(sessionId, title);
+  await sessionStore(sessionId).appendEvent("session.renamed", { title }).catch(() => {});
+  res.json({ ok: true, session: db.getSession(sessionId) });
+});
+
+app.post("/api/sessions/:sessionId/auto-title", async (req, res) => {
+  const sessionId = req.params.sessionId;
+  if (!isSafeSessionId(sessionId)) {
+    res.status(400).json({ error: "Invalid session id." });
+    return;
+  }
+
+  const data = await loadChat(sessionId);
+  if (!data) {
+    res.status(404).json({ error: "Session not found." });
+    return;
+  }
+
+  const title = autoSessionTitleFromChat(data);
+  db.renameSession(sessionId, title);
+  await sessionStore(sessionId).appendEvent("session.auto_renamed", { title }).catch(() => {});
+  res.json({ ok: true, session: db.getSession(sessionId) });
+});
+
+app.delete("/api/sessions/:sessionId", async (req, res) => {
+  const sessionId = req.params.sessionId;
+  if (!isSafeSessionId(sessionId)) {
+    res.status(400).json({ error: "Invalid session id." });
+    return;
+  }
+
+  try {
+    await ensureNotRunning(sessionId);
+  } catch (error) {
+    res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    return;
+  }
+
+  const meta = db.getSession(sessionId);
+  if (!meta) {
+    res.status(404).json({ error: "Session not found." });
+    return;
+  }
+
+  runs.delete(sessionId);
+  db.deleteSession(sessionId);
+  await sessionStore(sessionId).remove();
+  res.json({ ok: true, sessionId });
 });
 
 app.post("/api/runs", async (req, res) => {

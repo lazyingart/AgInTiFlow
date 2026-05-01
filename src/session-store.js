@@ -70,4 +70,8 @@ export class SessionStore {
   screenshotPath(step) {
     return path.join(this.artifactsDir, `step-${String(step).padStart(3, "0")}.png`);
   }
+
+  async remove() {
+    await fs.rm(this.sessionDir, { recursive: true, force: true });
+  }
 }
