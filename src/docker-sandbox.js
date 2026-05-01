@@ -219,6 +219,7 @@ function dockerCommand(command, policy) {
     `export PYTHONUSERBASE=${DOCKER_ENV}/python-user`,
     `export PATH=${DOCKER_ENV}/python/bin:${DOCKER_ENV}/python-user/bin:${DOCKER_ENV}/miniforge/bin:${DOCKER_ENV}/bin:$PATH`,
     `cd ${DOCKER_WORKSPACE}`,
+    `if ! command -v sudo >/dev/null 2>&1; then sudo() { "$@"; }; export -f sudo; fi`,
   ];
 
   if (!policy.requiresDockerRoot) {

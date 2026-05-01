@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   python3 \
   ripgrep \
   sed \
+  sudo \
   texlive-fonts-recommended \
   texlive-latex-base \
   texlive-latex-extra \
