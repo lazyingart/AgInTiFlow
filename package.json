@@ -4,7 +4,7 @@
   "type": "module",
   "description": "AgInTiFlow is a resumable Playwright website-control agent with OpenAI-compatible tool calling.",
   "license": "Apache-2.0",
-  "homepage": "https://github.com/lazyingart/AgInTiFlow#readme",
+  "homepage": "https://aginti.lazying.art",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lazyingart/AgInTiFlow.git"
