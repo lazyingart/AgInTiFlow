@@ -13,172 +13,190 @@
   </head>
   <body>
     <header class="site-header">
-      <a class="brand" href="#top" aria-label="AgInTiFlow home">
+      <a class="brand" href="#top" aria-label="AgInTiFlow home" data-i18n-aria="brandHomeAria">
         <img src="./assets/brand/logo.png" alt="" />
         <span>AgInTiFlow</span>
       </a>
-      <nav aria-label="Primary navigation">
-        <a href="#screenshots">Screenshots</a>
-        <a href="#platform">Platform</a>
-        <a href="#safety">Safety</a>
-        <a class="nav-pill" href="http://127.0.0.1:3210/">Launch Web UI</a>
-      </nav>
+      <div class="header-actions">
+        <nav aria-label="Primary navigation" data-i18n-aria="primaryNavAria">
+          <a href="#screenshots" data-i18n="navScreenshots">Screenshots</a>
+          <a href="#platform" data-i18n="navPlatform">Platform</a>
+          <a href="#safety" data-i18n="navSafety">Safety</a>
+          <a class="nav-pill" href="http://127.0.0.1:3210/" data-i18n="navLaunch">Launch Web UI</a>
+        </nav>
+        <label class="language-switcher">
+          <span data-i18n="languageLabel">Language</span>
+          <select id="language-select" aria-label="Language" data-i18n-aria="languageLabel">
+            <option value="en">English</option>
+            <option value="ar">العربية</option>
+            <option value="de">Deutsch</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+            <option value="ru">Русский</option>
+            <option value="vi">Tiếng Việt</option>
+            <option value="zh-Hans">简体中文</option>
+            <option value="zh-Hant">繁體中文</option>
+          </select>
+        </label>
+      </div>
     </header>
 
     <main id="top">
       <section class="hero section-shell">
         <div class="hero-copy">
-          <p class="eyebrow">Web agent + CLI for controlled automation</p>
-          <h1>AgInTi Flow -- agents flow in your work</h1>
-          <p class="hero-lede">
+          <p class="eyebrow" data-i18n="heroEyebrow">Web agent + CLI for controlled automation</p>
+          <h1 data-i18n="heroTitle">AgInTi Flow -- agents flow in your work</h1>
+          <p class="hero-lede" data-i18n="heroSubtitle">
             Run browser, shell, sandbox, and coding-agent workflows from one clean control plane.
           </p>
 
-          <div class="install-panel" aria-label="Install AgInTiFlow">
+          <div class="install-panel" aria-label="Install AgInTiFlow" data-i18n-aria="installAria">
             <div class="install-row">
               <span class="prompt">$</span>
               <code id="install-command">npm install -g @lazyingart/agintiflow</code>
-              <button class="copy-button" type="button" data-copy-target="install-command">Copy</button>
+              <button class="copy-button" type="button" data-copy-target="install-command" data-i18n="copyButton">Copy</button>
             </div>
             <div class="install-row secondary">
               <span class="prompt">$</span>
               <code id="launch-command">aginti web --port 3210</code>
-              <button class="copy-button" type="button" data-copy-target="launch-command">Copy</button>
+              <button class="copy-button" type="button" data-copy-target="launch-command" data-i18n="copyButton">Copy</button>
             </div>
             <p id="copy-feedback" class="copy-feedback" role="status" aria-live="polite"></p>
           </div>
 
           <div class="hero-actions">
-            <a class="button primary" href="#screenshots">View real app screenshots</a>
+            <a class="button primary" href="#screenshots" data-i18n="heroScreenshots">View real app screenshots</a>
             <a class="button ghost" href="https://github.com/lazyingart/AgInTiFlow">GitHub</a>
             <a class="button ghost" href="https://www.npmjs.com/package/@lazyingart/agintiflow">npm</a>
           </div>
         </div>
 
-        <div class="hero-card" aria-label="AgInTiFlow capability summary">
+        <div class="hero-card" aria-label="AgInTiFlow capability summary" data-i18n-aria="capabilitySummaryAria">
           <div class="signal-card hot">
-            <span>Default route</span>
-            <strong>DeepSeek v4 flash</strong>
-            <p>Fast planning for browser, shell, and short coding tasks.</p>
+            <span data-i18n="cardDefaultLabel">Default route</span>
+            <strong data-i18n="cardDefaultTitle">DeepSeek v4 flash</strong>
+            <p data-i18n="cardDefaultText">Fast planning for browser, shell, and short coding tasks.</p>
           </div>
           <div class="signal-card cool">
-            <span>Escalation</span>
-            <strong>DeepSeek v4 pro</strong>
-            <p>Complex implementation, debugging, and design decisions.</p>
+            <span data-i18n="cardEscalationLabel">Escalation</span>
+            <strong data-i18n="cardEscalationTitle">DeepSeek v4 pro</strong>
+            <p data-i18n="cardEscalationText">Complex implementation, debugging, and design decisions.</p>
           </div>
           <div class="signal-card bright">
-            <span>Safe execution</span>
-            <strong>Docker + policy</strong>
-            <p>Read-only by default, explicit approval for setup commands.</p>
+            <span data-i18n="cardSafetyLabel">Safe execution</span>
+            <strong data-i18n="cardSafetyTitle">Docker + policy</strong>
+            <p data-i18n="cardSafetyText">Read-only by default, explicit approval for setup commands.</p>
           </div>
         </div>
       </section>
 
       <section id="screenshots" class="screenshots section-shell">
         <div class="section-heading">
-          <p class="eyebrow">Real screenshots from the local app</p>
-          <h2>Daily agent work should feel inspectable, not mysterious.</h2>
-          <p>
+          <p class="eyebrow" data-i18n="screensEyebrow">Real screenshots from the local app</p>
+          <h2 data-i18n="screensTitle">Daily agent work should feel inspectable, not mysterious.</h2>
+          <p data-i18n="screensText">
             The carousel uses screenshots captured from the live AgInTiFlow app running at
             <code>http://127.0.0.1:3210/</code>.
           </p>
         </div>
 
-        <div class="carousel" role="region" aria-label="AgInTiFlow screenshots">
-          <button class="carousel-button previous" type="button" data-carousel-prev aria-label="Previous screenshot">
+        <div class="carousel" role="region" aria-label="AgInTiFlow screenshots" data-i18n-aria="screensCarouselAria">
+          <button class="carousel-button previous" type="button" data-carousel-prev aria-label="Previous screenshot" data-i18n-aria="previousScreenshotAria">
             ‹
           </button>
           <div class="carousel-stage">
             <article class="carousel-slide active">
-              <img src="./assets/screenshots/app-overview.jpg" alt="AgInTiFlow web app showing task controls, run output, and conversation history." />
+              <img src="./assets/screenshots/app-overview.jpg" alt="AgInTiFlow web app showing task controls, run output, and conversation history." data-i18n-alt="slideOverviewAlt" />
               <div>
-                <h3>Agent cockpit</h3>
-                <p>Route controls, mock run output, wrapper status, sandbox controls, and chat history in one page.</p>
+                <h3 data-i18n="slideOverviewTitle">Agent cockpit</h3>
+                <p data-i18n="slideOverviewText">Route controls, mock run output, wrapper status, sandbox controls, and chat history in one page.</p>
               </div>
             </article>
             <article class="carousel-slide">
-              <img src="./assets/screenshots/task-controls.jpg" alt="Task and model route controls in the AgInTiFlow web app." />
+              <img src="./assets/screenshots/task-controls.jpg" alt="Task and model route controls in the AgInTiFlow web app." data-i18n-alt="slideControlsAlt" />
               <div>
-                <h3>Route and task controls</h3>
-                <p>Pick smart routing, manual provider/model, shell access, command cwd, and package-install policy.</p>
+                <h3 data-i18n="slideControlsTitle">Route and task controls</h3>
+                <p data-i18n="slideControlsText">Pick smart routing, manual provider/model, shell access, command cwd, and package-install policy.</p>
               </div>
             </article>
             <article class="carousel-slide">
-              <img src="./assets/screenshots/run-output.jpg" alt="AgInTiFlow run output with structured session logs." />
+              <img src="./assets/screenshots/run-output.jpg" alt="AgInTiFlow run output with structured session logs." data-i18n-alt="slideLogsAlt" />
               <div>
-                <h3>Structured run logs</h3>
-                <p>See every model response, tool call, command result, and final answer as the session runs.</p>
+                <h3 data-i18n="slideLogsTitle">Structured run logs</h3>
+                <p data-i18n="slideLogsText">See every model response, tool call, command result, and final answer as the session runs.</p>
               </div>
             </article>
             <article class="carousel-slide">
-              <img src="./assets/screenshots/conversation-history.jpg" alt="AgInTiFlow conversation history panel after a mock run." />
+              <img src="./assets/screenshots/conversation-history.jpg" alt="AgInTiFlow conversation history panel after a mock run." data-i18n-alt="slideHistoryAlt" />
               <div>
-                <h3>Resume the conversation</h3>
-                <p>Sessions persist chat history so follow-up requests continue from the selected run.</p>
+                <h3 data-i18n="slideHistoryTitle">Resume the conversation</h3>
+                <p data-i18n="slideHistoryText">Sessions persist chat history so follow-up requests continue from the selected run.</p>
               </div>
             </article>
             <article class="carousel-slide">
-              <img src="./assets/screenshots/mobile-overview.jpg" alt="AgInTiFlow responsive mobile layout." />
+              <img src="./assets/screenshots/mobile-overview.jpg" alt="AgInTiFlow responsive mobile layout." data-i18n-alt="slideMobileAlt" />
               <div>
-                <h3>Responsive by default</h3>
-                <p>The same controls remain usable on narrow screens for quick monitoring and setup.</p>
+                <h3 data-i18n="slideMobileTitle">Responsive by default</h3>
+                <p data-i18n="slideMobileText">The same controls remain usable on narrow screens for quick monitoring and setup.</p>
               </div>
             </article>
           </div>
-          <button class="carousel-button next" type="button" data-carousel-next aria-label="Next screenshot">›</button>
-          <div class="carousel-dots" aria-label="Screenshot selector"></div>
+          <button class="carousel-button next" type="button" data-carousel-next aria-label="Next screenshot" data-i18n-aria="nextScreenshotAria">›</button>
+          <div class="carousel-dots" aria-label="Screenshot selector" data-i18n-aria="screenshotSelectorAria"></div>
         </div>
       </section>
 
       <section id="platform" class="platform section-shell">
         <div class="section-heading compact">
-          <p class="eyebrow">Platform shape</p>
-          <h2>One runner, multiple model and tool routes.</h2>
+          <p class="eyebrow" data-i18n="platformEyebrow">Platform shape</p>
+          <h2 data-i18n="platformTitle">One runner, multiple model and tool routes.</h2>
         </div>
         <div class="feature-grid">
           <article>
             <span class="feature-icon">01</span>
-            <h3>Smart routing</h3>
-            <p>DeepSeek v4 flash handles fast work. DeepSeek v4 pro handles complex tasks. Manual OpenAI-compatible routes stay available.</p>
+            <h3 data-i18n="featureRoutingTitle">Smart routing</h3>
+            <p data-i18n="featureRoutingText">DeepSeek v4 flash handles fast work. DeepSeek v4 pro handles complex tasks. Manual OpenAI-compatible routes stay available.</p>
           </article>
           <article>
             <span class="feature-icon">02</span>
-            <h3>Wrapper tools</h3>
-            <p>Codex, Claude, Gemini, Copilot, and Qwen wrappers are optional advisory tools, not hard dependencies.</p>
+            <h3 data-i18n="featureWrappersTitle">Wrapper tools</h3>
+            <p data-i18n="featureWrappersText">Codex, Claude, Gemini, Copilot, and Qwen wrappers are optional advisory tools, not hard dependencies.</p>
           </article>
           <article>
             <span class="feature-icon">03</span>
-            <h3>Safe file tools</h3>
-            <p>List, read, search, write, and patch workspace files with path guardrails, hashes, and compact diffs.</p>
+            <h3 data-i18n="featureFilesTitle">Safe file tools</h3>
+            <p data-i18n="featureFilesText">List, read, search, write, and patch workspace files with path guardrails, hashes, and compact diffs.</p>
           </article>
           <article>
             <span class="feature-icon">04</span>
-            <h3>Mock mode</h3>
-            <p>Local mock routing verifies UI, API, tool execution, and CI smoke paths without DeepSeek or OpenAI credentials.</p>
+            <h3 data-i18n="featureMockTitle">Mock mode</h3>
+            <p data-i18n="featureMockText">Local mock routing verifies UI, API, tool execution, and CI smoke paths without DeepSeek or OpenAI credentials.</p>
           </article>
         </div>
       </section>
 
       <section id="safety" class="safety section-shell">
         <div>
-          <p class="eyebrow">Safety model</p>
-          <h2>Useful automation with explicit boundaries.</h2>
-          <p>
+          <p class="eyebrow" data-i18n="safetyEyebrow">Safety model</p>
+          <h2 data-i18n="safetyTitle">Useful automation with explicit boundaries.</h2>
+          <p data-i18n="safetyText">
             AgInTiFlow keeps local commands guarded by an allowlist, stores resumable run history, and exposes sandbox
             status through APIs that do not leak API keys or npm tokens.
           </p>
         </div>
         <ul class="safety-list">
-          <li>Docker read-only mode for inspection and tests.</li>
-          <li>Docker workspace-write mode only for approved setup commands.</li>
-          <li>Workspace edits stay inside the selected command directory and block secret-like paths.</li>
-          <li>Package installs default to approval-required policy.</li>
-          <li>NPM publish, token commands, sudo, destructive git, and shell chaining are blocked.</li>
+          <li data-i18n="safetyItem1">Docker read-only mode for inspection and tests.</li>
+          <li data-i18n="safetyItem2">Docker workspace-write mode only for approved setup commands.</li>
+          <li data-i18n="safetyItem3">Workspace edits stay inside the selected command directory and block secret-like paths.</li>
+          <li data-i18n="safetyItem4">Package installs default to approval-required policy.</li>
+          <li data-i18n="safetyItem5">NPM publish, token commands, sudo, destructive git, and shell chaining are blocked.</li>
         </ul>
       </section>
 
-      <section class="bottom-statement" aria-label="AgInTiFlow summary">
-        <p>
+      <section class="bottom-statement" aria-label="AgInTiFlow summary" data-i18n-aria="bottomSummaryAria">
+        <p data-i18n="bottomStatement">
           AgInTiFlow routes normal work through DeepSeek v4 flash, escalates complex tasks to DeepSeek v4 pro, edits
           workspace files through guarded tools, and can call Codex, Claude, Gemini, Copilot, and Qwen wrappers when
           they add value.
@@ -187,7 +205,7 @@
     </main>
 
     <footer class="site-footer">
-      <span>AgInTiFlow by AgInTi Inc.</span>
+      <span data-i18n="footerProduct">AgInTiFlow by AgInTi Inc.</span>
       <a href="https://flow.lazying.art">flow.lazying.art</a>
     </footer>
 
