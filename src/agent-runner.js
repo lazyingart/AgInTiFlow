@@ -19,6 +19,8 @@ import { normalizeCanvasPayload } from "./artifact-tunnel.js";
 import { getTaskProfile } from "./task-profiles.js";
 import { generateImage, listAuxiliarySkills } from "./auxiliary-tools.js";
 import { engineeringGuidanceForTask } from "./engineering-guidance.js";
+import { searchWeb } from "./web-search.js";
+import { runParallelScouts, shouldRunParallelScouts } from "./parallel-scouts.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "open_workspace_file", "preview_workspace", "click", "type", "scroll", "press", "back"]);
@@ -284,6 +286,12 @@ function createInitialState(config, sessionId) {
                 .map((skill) => `${skill.id} via ${skill.toolName} (${skill.available ? "key available" : `needs ${skill.keyName}`})`)
                 .join(", ")}. Use generate_image for real raster image/photo/illustration/cover/poster/logo requests when appropriate; if the key is missing, ask the user to run /auxilliary grsai or aginti login grsai.`
             : "Auxiliary skills are disabled for this run.",
+          config.allowWebSearch
+            ? "web_search is available for current information, docs, package/toolchain errors, and source discovery. Prefer web_search over browser search-engine navigation."
+            : "web_search is disabled.",
+          config.allowParallelScouts
+            ? `Parallel DeepSeek scouts may run before complex execution. Scout count: ${config.parallelScoutCount}.`
+            : "Parallel scouts are disabled.",
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           engineeringGuidance,
           "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. It is optional and ordinary final text can still go directly to finish.",
@@ -323,6 +331,8 @@ function createInitialState(config, sessionId) {
                 .map((skill) => `${skill.id}:${skill.available ? "available" : "missing-key"}`)
                 .join(" ")}`
             : "",
+          config.allowWebSearch ? "Web search tool: enabled." : "Web search tool: disabled.",
+          config.allowParallelScouts ? `Parallel scouts: enabled count=${config.parallelScoutCount}.` : "Parallel scouts: disabled.",
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           engineeringGuidance,
           "Canvas/artifacts tunnel: available through send_to_canvas for optional frontend rendering.",
@@ -746,6 +756,13 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       case "open_url":
         await abortable(browserState.page.goto(String(args.url), { waitUntil: "domcontentloaded" }), config.abortSignal);
         break;
+      case "web_search": {
+        const result = await searchWeb(args, config);
+        const eventResult = sanitizeToolResult(result);
+        await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        return result;
+      }
       case "open_workspace_file": {
         const target = resolveWorkspacePath(config, args.path || args.file || ".");
         const stat = await fs.stat(target.absolutePath);
@@ -1111,6 +1128,40 @@ export async function runAgent(config) {
       observers.event("plan.created", { plan });
     }
 
+    if (shouldRunParallelScouts(config, state)) {
+      const scouts = await runParallelScouts(client, config, state);
+      state.meta.parallelScoutsCompleted = true;
+      state.meta.parallelScouts = {
+        model: scouts.model,
+        requested: scouts.requested,
+        completed: scouts.completed,
+      };
+      state.messages.push({
+        role: "user",
+        content: scouts.summary,
+      });
+      await store.appendEvent("parallel_scouts.completed", {
+        model: scouts.model,
+        requested: scouts.requested,
+        completed: scouts.completed,
+        scouts: scouts.scouts.map((scout) => ({
+          name: scout.name,
+          model: scout.model,
+          content: scout.content || "",
+          error: scout.error || "",
+        })),
+      });
+      await store.saveState(state);
+      observers.event("parallel_scouts.completed", {
+        model: scouts.model,
+        requested: scouts.requested,
+        completed: scouts.completed,
+      });
+      emitConsole(config, `Parallel scouts: ${scouts.completed}/${scouts.requested} completed using ${scouts.model}`, {
+        kind: "meta",
+      });
+    }
+
     const repair = repairModelMessageHistory(state, config);
     if (repair.changed) {
       await store.appendEvent("history.repaired", repair);
@@ -1129,6 +1180,9 @@ export async function runAgent(config) {
       allowShellTool: config.allowShellTool,
       allowWrapperTools: config.allowWrapperTools,
       preferredWrapper: normalizeWrapperName(config.preferredWrapper),
+      allowWebSearch: config.allowWebSearch,
+      allowParallelScouts: config.allowParallelScouts,
+      parallelScoutCount: config.parallelScoutCount,
       wrappers: config.allowWrapperTools ? wrapperStatusText() : "",
       workspaceFileTools: summarizeWorkspaceTools(config),
       shellSandbox: config.useDockerSandbox ? "docker" : "host",
@@ -1198,6 +1252,8 @@ export async function runAgent(config) {
           agentWrappersAvailable: config.allowWrapperTools,
           preferredWrapper: normalizeWrapperName(config.preferredWrapper),
           agentWrappers: config.allowWrapperTools ? wrapperStatusText() : "",
+          webSearchAvailable: config.allowWebSearch !== false,
+          parallelScouts: state.meta.parallelScouts || null,
           shellSandbox: config.useDockerSandbox ? "docker" : "host",
           sandboxMode: config.sandboxMode,
           packageInstallPolicy: config.packageInstallPolicy,

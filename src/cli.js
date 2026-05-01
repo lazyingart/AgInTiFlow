@@ -46,6 +46,9 @@ export function parseArgs(argv) {
     allowFileTools: undefined,
     allowWrapperTools: undefined,
     allowAuxiliaryTools: undefined,
+    allowWebSearch: undefined,
+    allowParallelScouts: undefined,
+    parallelScoutCount: undefined,
     allowDestructive: undefined,
     preferredWrapper: "",
     taskProfile: "",
@@ -183,6 +186,27 @@ export function parseArgs(argv) {
       result.allowAuxiliaryTools = false;
       continue;
     }
+    if (arg === "--web-search") {
+      result.allowWebSearch = true;
+      continue;
+    }
+    if (arg === "--no-web-search") {
+      result.allowWebSearch = false;
+      continue;
+    }
+    if (arg === "--parallel-scouts") {
+      result.allowParallelScouts = true;
+      continue;
+    }
+    if (arg === "--no-parallel-scouts") {
+      result.allowParallelScouts = false;
+      continue;
+    }
+    if (arg === "--scout-count") {
+      result.parallelScoutCount = Number(readOption(argv, i));
+      i += 1;
+      continue;
+    }
     if (arg === "--allow-wrappers") {
       result.allowWrapperTools = true;
       continue;
@@ -237,7 +261,7 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti login deepseek|openai|grsai OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-destructive] [--allow-file-tools|--no-file-tools] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex] [--sandbox-status|--sandbox-preflight] "your task"'
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti login deepseek|openai|grsai OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 3] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex] [--sandbox-status|--sandbox-preflight] "your task"'
   );
 }
 
@@ -254,6 +278,9 @@ function agentDefaults(args) {
     allowShellTool: args.allowShellTool ?? true,
     allowFileTools: args.allowFileTools ?? true,
     allowAuxiliaryTools: args.allowAuxiliaryTools ?? true,
+    allowWebSearch: args.allowWebSearch ?? true,
+    allowParallelScouts: args.allowParallelScouts ?? true,
+    parallelScoutCount: args.parallelScoutCount || 3,
     sandboxMode: args.sandboxMode || "docker-workspace",
     packageInstallPolicy: args.packageInstallPolicy || "allow",
     useDockerSandbox: args.useDockerSandbox ?? true,

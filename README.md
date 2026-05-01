@@ -73,6 +73,10 @@ For code edits, AgInTiFlow routes patch/refactor/database-style tasks to DeepSee
 
 For larger repositories, use `--profile large-codebase` or choose **Large codebase engineering** in the web UI. The web default stays **Auto**, and Auto now escalates codebase/system/debugging prompts to the same engineering loop when needed. Complex work routes to DeepSeek v4 pro, starts with `inspect_project`, then uses search/read/patch/check loops inspired by Codex, Copilot SDK, Claude Code, Gemini CLI, Qwen, and Claw Code. See [docs/large-codebase-engineering.md](docs/large-codebase-engineering.md).
 
+AgInTiFlow can also spend cheap DeepSeek calls on parallel scout notes before the main executor starts a complicated task. Scouts run independently for architecture, implementation, review, and research risks, then the main agent uses those notes while still doing the real file/shell/browser work itself. Disable with `--no-parallel-scouts` or set `--scout-count 1..4`.
+
+For current docs, install errors, package/toolchain setup, and source discovery, the agent has a guarded `web_search` tool. It returns compact search results without browser search-engine loops and respects configured domain allowlists. Disable with `--no-web-search`.
+
 For raster image work, AgInTiFlow has an optional `image_generation` skill backed by the `generate_image` tool and a local `GRSAI` key. The skill tells DeepSeek when image generation is appropriate; the tool calls GRS AI Nano Banana, saves manifests/images under `artifacts/images`, and sends the result to the canvas. See [docs/auxiliary-image-generation.md](docs/auxiliary-image-generation.md).
 
 Launch the local web UI from an installed package:

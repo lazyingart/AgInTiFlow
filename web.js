@@ -118,6 +118,7 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
   const providerDefaults = getProviderDefaults(provider);
   const parsedMaxSteps = Number(body.maxSteps);
   const parsedWrapperTimeoutMs = Number(body.wrapperTimeoutMs);
+  const parsedParallelScoutCount = Number(body.parallelScoutCount);
   const sandboxMode = normalizeSandboxMode(body.sandboxMode || current.sandboxMode || "docker-workspace");
 
   return {
@@ -143,6 +144,14 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
     allowFileTools: typeof body.allowFileTools === "boolean" ? body.allowFileTools : current.allowFileTools !== false,
     allowAuxiliaryTools:
       typeof body.allowAuxiliaryTools === "boolean" ? body.allowAuxiliaryTools : current.allowAuxiliaryTools !== false,
+    allowWebSearch:
+      typeof body.allowWebSearch === "boolean" ? body.allowWebSearch : current.allowWebSearch !== false,
+    allowParallelScouts:
+      typeof body.allowParallelScouts === "boolean" ? body.allowParallelScouts : current.allowParallelScouts !== false,
+    parallelScoutCount:
+      Number.isFinite(parsedParallelScoutCount) && parsedParallelScoutCount > 0
+        ? Math.min(Math.max(parsedParallelScoutCount, 1), 4)
+        : Number(current.parallelScoutCount) || 3,
     allowWrapperTools:
       typeof body.allowWrapperTools === "boolean" ? body.allowWrapperTools : Boolean(current.allowWrapperTools),
     preferredWrapper: normalizeWrapperName(body.preferredWrapper || current.preferredWrapper || "codex"),
@@ -221,6 +230,9 @@ function buildRunConfig(body, overrides = {}) {
       allowShellTool: merged.allowShellTool,
       allowFileTools: merged.allowFileTools,
       allowAuxiliaryTools: merged.allowAuxiliaryTools,
+      allowWebSearch: merged.allowWebSearch,
+      allowParallelScouts: merged.allowParallelScouts,
+      parallelScoutCount: merged.parallelScoutCount,
       allowWrapperTools: merged.allowWrapperTools,
       preferredWrapper: merged.preferredWrapper,
       wrapperTimeoutMs: merged.wrapperTimeoutMs,

@@ -3,7 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getModelPresets } from "./model-routing.js";
 
-const PREFERENCES_SCHEMA_VERSION = 5;
+const PREFERENCES_SCHEMA_VERSION = 6;
 
 function defaultPreferences(baseDir) {
   const presets = getModelPresets();
@@ -19,6 +19,10 @@ function defaultPreferences(baseDir) {
     commandCwd: path.resolve(baseDir),
     allowShellTool: true,
     allowFileTools: true,
+    allowAuxiliaryTools: true,
+    allowWebSearch: true,
+    allowParallelScouts: true,
+    parallelScoutCount: 3,
     allowWrapperTools: false,
     preferredWrapper: "codex",
     wrapperTimeoutMs: 120000,
@@ -97,6 +101,11 @@ export class WebDatabase {
         }
         if ((parsed.preferencesSchemaVersion || 1) < 5) {
           preferences.taskProfile = "auto";
+        }
+        if ((parsed.preferencesSchemaVersion || 1) < 6) {
+          preferences.allowWebSearch = true;
+          preferences.allowParallelScouts = true;
+          preferences.parallelScoutCount = 3;
         }
         this.savePreferences(preferences);
       }

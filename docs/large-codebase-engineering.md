@@ -64,6 +64,33 @@ aginti "repair the Docker setup and run the Node tests"
 
 These route to DeepSeek v4 pro when the complexity score is high enough.
 
+## Parallel Scout Mode
+
+DeepSeek calls are cheap enough that complex tasks can use several short advisory calls before the main executor starts. When enabled, AgInTiFlow runs bounded scouts in parallel:
+
+- Architect: decomposes the task and identifies first files/logs/commands.
+- Implementer: predicts patch boundaries and focused checks.
+- Reviewer: looks for missing tests, risks, and instruction-compliance failures.
+- Researcher: suggests `web_search` queries when current information may matter.
+
+Scout output is injected as advisory context only. The main agent still owns execution and must use real tools to inspect, edit, run commands, and finish. CLI flags:
+
+```bash
+aginti --parallel-scouts --scout-count 4 "fix this complicated repo bug"
+aginti --no-parallel-scouts "run a cheap short task"
+```
+
+The web app exposes the same toggle and scout count.
+
+## Web Search
+
+Use `web_search` for current docs, package/toolchain errors, install instructions, and source discovery. It returns compact titles, URLs, and snippets, and should be preferred over opening a search engine in the browser. Specific result pages can still be opened later with `open_url`.
+
+```bash
+aginti --web-search "look up the current pytest config docs and update this project"
+aginti --no-web-search "work fully offline"
+```
+
 ## Cross-Language Playbook
 
 AgInTiFlow gives DeepSeek stack-specific reminders without hardcoding a solution:

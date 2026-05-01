@@ -207,6 +207,11 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
         toolName: skill.toolName,
         available: skill.available,
       })),
+      orchestration: {
+        webSearch: config.allowWebSearch !== false,
+        parallelScouts: config.allowParallelScouts !== false,
+        parallelScoutCount: Number(config.parallelScoutCount) || 3,
+      },
     },
     checks,
     maintenancePolicy: maintenancePolicyChecks(config),

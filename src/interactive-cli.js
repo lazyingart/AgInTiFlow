@@ -37,6 +37,8 @@ const SLASH_COMMANDS = [
   "/resume",
   "/sessions",
   "/profile",
+  "/web-search",
+  "/scouts",
   "/routing",
   "/provider",
   "/model",
@@ -217,6 +219,8 @@ function printHelp() {
       "  /resume <session-id>      Continue a saved session.",
       "  /sessions                 List recent sessions in this project.",
       "  /profile <name>           Set task profile, e.g. code, website, latex, maintenance.",
+      "  /web-search on|off        Enable or disable the web_search tool.",
+      "  /scouts on|off|<1-4>      Enable parallel DeepSeek scouts and set scout count.",
       "  /routing <mode>           Set routing: smart, fast, complex, manual.",
       "  /provider <name>          Set provider: deepseek, openai, mock.",
       "  /model <name>             Set an explicit model, or /model auto.",
@@ -350,7 +354,7 @@ function printStatus(state) {
   printSystemLine(`provider=${state.provider || "auto"} routing=${state.routingMode} model=${state.model || "auto"}`);
   printSystemLine(`profile=${state.taskProfile} maxSteps=${state.maxSteps}`);
   printSystemLine(
-    `shell=${state.allowShellTool} files=${state.allowFileTools} auxiliary=${state.allowAuxiliaryTools} sandbox=${state.sandboxMode} installs=${state.packageInstallPolicy}`
+    `shell=${state.allowShellTool} files=${state.allowFileTools} webSearch=${state.allowWebSearch} scouts=${state.allowParallelScouts}:${state.parallelScoutCount} auxiliary=${state.allowAuxiliaryTools} sandbox=${state.sandboxMode} installs=${state.packageInstallPolicy}`
   );
   if (state.sandboxMode !== "host") {
     printSystemLine(`dockerWorkspace=/workspace -> ${state.commandCwd || process.cwd()}`);
@@ -435,6 +439,9 @@ function createState(args = {}) {
     allowShellTool: args.allowShellTool ?? true,
     allowFileTools: args.allowFileTools ?? true,
     allowAuxiliaryTools: args.allowAuxiliaryTools ?? true,
+    allowWebSearch: args.allowWebSearch ?? true,
+    allowParallelScouts: args.allowParallelScouts ?? true,
+    parallelScoutCount: args.parallelScoutCount || 3,
     allowWrapperTools: args.allowWrapperTools ?? false,
     allowDestructive: args.allowDestructive ?? false,
     preferredWrapper: args.preferredWrapper || "codex",
@@ -597,6 +604,22 @@ async function handleCommand(line, state, packageDir) {
     printSystemLine(`profile=${state.taskProfile}`);
     return true;
   }
+  if (command === "web-search") {
+    state.allowWebSearch = value !== "off";
+    printSystemLine(`webSearch=${state.allowWebSearch ? "on" : "off"}`);
+    return true;
+  }
+  if (command === "scouts") {
+    if (value === "off") {
+      state.allowParallelScouts = false;
+    } else {
+      state.allowParallelScouts = true;
+      const count = Number(value);
+      if (Number.isFinite(count) && count > 0) state.parallelScoutCount = Math.min(Math.max(count, 1), 4);
+    }
+    printSystemLine(`parallelScouts=${state.allowParallelScouts ? "on" : "off"} count=${state.parallelScoutCount}`);
+    return true;
+  }
   if (command === "routing") {
     state.routingMode = value || "smart";
     printSystemLine(`routing=${state.routingMode}`);
@@ -692,6 +715,9 @@ async function runPrompt(prompt, state, packageDir) {
       allowShellTool: state.allowShellTool,
       allowFileTools: state.allowFileTools,
       allowAuxiliaryTools: state.allowAuxiliaryTools,
+      allowWebSearch: state.allowWebSearch,
+      allowParallelScouts: state.allowParallelScouts,
+      parallelScoutCount: state.parallelScoutCount,
       allowWrapperTools: state.allowWrapperTools,
       allowDestructive: state.allowDestructive,
       preferredWrapper: state.preferredWrapper,

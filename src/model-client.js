@@ -122,6 +122,16 @@ function mockWorkspaceToolForGoal(goal = "") {
   return null;
 }
 
+function mockWebSearchToolForGoal(goal = "") {
+  const text = String(goal || "");
+  if (!/\b(web search|search web|search the web|look up|current|latest|recent|docs|documentation|online)\b/i.test(text)) return null;
+  const query = text.replace(/\s+/g, " ").slice(0, 180);
+  return mockToolCall("web_search", {
+    query,
+    maxResults: 3,
+  });
+}
+
 function mockPreviewToolForGoal(goal = "") {
   const text = String(goal).toLowerCase();
   if (!/(open|preview|view|browser|website|web\s*site)/.test(text)) return null;
@@ -213,6 +223,12 @@ export async function createPlan(client, config, state) {
                 .map((skill) => `${skill.id} via ${skill.toolName} (${skill.available ? "key available" : `needs ${skill.keyName}`})`)
                 .join(", ")}. For raster image generation requests, plan to use generate_image when a GRSAI key is available; otherwise ask the user to run /auxilliary grsai or aginti login grsai.`
             : "Auxiliary skills are disabled for this run.",
+          config.allowWebSearch
+            ? "web_search is available for current information, docs, install errors, package/toolchain questions, and source discovery. Prefer web_search over opening a search engine in the browser."
+            : "web_search is disabled for this run.",
+          config.allowParallelScouts
+            ? `Parallel scout notes may be injected before execution for complex tasks. Scout count: ${config.parallelScoutCount}.`
+            : "Parallel scouts are disabled.",
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           engineeringGuidance,
           "A canvas/artifacts tunnel is available through send_to_canvas. Use it when an output should be highlighted visually, such as screenshots, image files, important markdown, diffs, or generated artifact paths. It is optional for ordinary text answers.",
@@ -361,6 +377,26 @@ export async function requestNextStep(client, config, messages) {
       },
     },
   ];
+
+  if (config.allowWebSearch !== false) {
+    tools.splice(-1, 0, {
+      type: "function",
+      function: {
+        name: "web_search",
+        description:
+          "Search the public web for current information, documentation, install errors, package/toolchain guidance, and source discovery. Returns compact result titles, URLs, and snippets. Prefer this over browser search-engine navigation; open specific results only when needed.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Search query. Do not include secrets or tokens." },
+            maxResults: { type: "integer", description: "Number of results, 1 to 10. Defaults to 5." },
+          },
+          required: ["query"],
+          additionalProperties: false,
+        },
+      },
+    });
+  }
 
   if (config.allowFileTools) {
     tools.splice(
@@ -637,6 +673,9 @@ export async function requestNextStep(client, config, messages) {
         Array.isArray(toolPayload.recommendedReads) && toolPayload.recommendedReads.length
           ? `Recommended reads: ${toolPayload.recommendedReads.join(", ")}`
           : "",
+        Array.isArray(toolPayload.results) && toolPayload.results.length
+          ? `Results:\n${toolPayload.results.map((item, index) => `${index + 1}. ${item.title} ${item.url}`).join("\n")}`
+          : "",
         toolPayload.path ? `Path: ${toolPayload.path}` : "",
         Array.isArray(toolPayload.changes)
           ? toolPayload.changes
@@ -674,6 +713,13 @@ export async function requestNextStep(client, config, messages) {
       const auxiliaryTool = mockAuxiliaryToolForGoal(config.goal);
       if (auxiliaryTool) {
         return mockChatResponse("Mock mode will exercise an auxiliary skill tool in dry-run mode.", [auxiliaryTool]);
+      }
+    }
+
+    if (config.allowWebSearch !== false) {
+      const webSearchTool = mockWebSearchToolForGoal(config.goal);
+      if (webSearchTool) {
+        return mockChatResponse("Mock mode will exercise the web search tool.", [webSearchTool]);
       }
     }
 

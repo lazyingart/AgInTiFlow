@@ -182,6 +182,16 @@
               <span data-i18n="auxiliaryToolLabel">Enable auxiliary skills</span>
             </label>
             <label class="switch-label">
+              <input id="allowWebSearch" name="allowWebSearch" type="checkbox" checked />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="webSearchLabel">Enable web search</span>
+            </label>
+            <label class="switch-label">
+              <input id="allowParallelScouts" name="allowParallelScouts" type="checkbox" checked />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="parallelScoutsLabel">Parallel DeepSeek scouts</span>
+            </label>
+            <label class="switch-label">
               <input id="allowPasswords" name="allowPasswords" type="checkbox" />
               <span class="switch" aria-hidden="true"></span>
               <span data-i18n="allowPasswordsLabel">Allow password typing</span>
@@ -192,6 +202,11 @@
               <span data-i18n="allowDestructiveLabel">Allow destructive actions</span>
             </label>
           </div>
+
+          <label>
+            <span data-i18n="parallelScoutCountLabel">Scout count</span>
+            <input id="parallelScoutCount" name="parallelScoutCount" type="number" min="1" max="4" value="3" />
+          </label>
 
           <div class="grid wrapper-controls">
             <label class="switch-label switch-card">

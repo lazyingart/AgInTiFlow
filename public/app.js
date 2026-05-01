@@ -69,6 +69,9 @@ const translations = {
     shellToolLabel: "Enable shell tool",
     fileToolLabel: "Enable file tools",
     auxiliaryToolLabel: "Enable auxiliary skills",
+    webSearchLabel: "Enable web search",
+    parallelScoutsLabel: "Parallel DeepSeek scouts",
+    parallelScoutCountLabel: "Scout count",
     wrapperToolLabel: "Enable agent wrappers",
     preferredWrapperLabel: "Preferred wrapper",
     dockerSandboxLabel: "Use Docker sandbox",
@@ -650,6 +653,9 @@ const runMetaEl = document.querySelector("#run-meta");
 const stopRunButton = document.querySelector("#stop-run");
 const keyStatusEl = document.querySelector("#key-status");
 const allowAuxiliaryToolsField = document.querySelector("#allowAuxiliaryTools");
+const allowWebSearchField = document.querySelector("#allowWebSearch");
+const allowParallelScoutsField = document.querySelector("#allowParallelScouts");
+const parallelScoutCountField = document.querySelector("#parallelScoutCount");
 const allowWrapperToolsField = document.querySelector("#allowWrapperTools");
 const preferredWrapperField = document.querySelector("#preferredWrapper");
 const wrapperStatusEl = document.querySelector("#wrapper-status");
@@ -1003,6 +1009,9 @@ function formPayload() {
     allowShellTool: document.querySelector("#allowShellTool").checked,
     allowFileTools: document.querySelector("#allowFileTools").checked,
     allowAuxiliaryTools: allowAuxiliaryToolsField?.checked ?? true,
+    allowWebSearch: allowWebSearchField?.checked ?? true,
+    allowParallelScouts: allowParallelScoutsField?.checked ?? true,
+    parallelScoutCount: Number(parallelScoutCountField?.value) || 3,
     allowWrapperTools: allowWrapperToolsField.checked,
     preferredWrapper: preferredWrapperField.value,
     taskProfile: taskProfileField?.value || "auto",
@@ -2196,6 +2205,9 @@ async function loadConfig() {
   document.querySelector("#allowShellTool").checked = prefs.allowShellTool ?? true;
   document.querySelector("#allowFileTools").checked = prefs.allowFileTools ?? true;
   if (allowAuxiliaryToolsField) allowAuxiliaryToolsField.checked = prefs.allowAuxiliaryTools ?? true;
+  if (allowWebSearchField) allowWebSearchField.checked = prefs.allowWebSearch ?? true;
+  if (allowParallelScoutsField) allowParallelScoutsField.checked = prefs.allowParallelScouts ?? true;
+  if (parallelScoutCountField) parallelScoutCountField.value = String(prefs.parallelScoutCount || 3);
   allowWrapperToolsField.checked = prefs.allowWrapperTools ?? false;
   preferredWrapperField.value = prefs.preferredWrapper || "codex";
   document.querySelector("#dockerSandboxImage").value = prefs.dockerSandboxImage || "agintiflow-sandbox:latest";

@@ -7,7 +7,9 @@ import { repairModelMessageHistory, runAgent } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { engineeringGuidanceForTask, recommendedMaxStepsForTask } from "../src/engineering-guidance.js";
 import { selectModelRoute } from "../src/model-routing.js";
+import { shouldRunParallelScouts } from "../src/parallel-scouts.js";
 import { SessionStore } from "../src/session-store.js";
+import { searchWeb } from "../src/web-search.js";
 import { executeWorkspaceTool } from "../src/workspace-tools.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -112,6 +114,24 @@ try {
   const guidance = engineeringGuidanceForTask("debug this Python project system bug and fix failing tests", "auto");
   assert(guidance.includes("Python:"), "engineering guidance did not include Python stack advice");
   assert(guidance.includes("System/shell:"), "engineering guidance did not include system stack advice");
+  assert(
+    shouldRunParallelScouts(
+      {
+        provider: "deepseek",
+        allowParallelScouts: true,
+        routeComplexityScore: autoSystemRoute.complexityScore,
+        taskProfile: "auto",
+        goal: "debug this Python project system bug and fix failing tests",
+      },
+      { meta: {}, goal: "debug this Python project system bug and fix failing tests" }
+    ),
+    "parallel scouts did not enable for complex auto task"
+  );
+  const drySearch = await searchWeb(
+    { query: "AgInTiFlow web_search smoke", maxResults: 2 },
+    { allowWebSearch: true, webSearchDryRun: true }
+  );
+  assert(drySearch.ok && drySearch.results.length === 1, "web_search dry-run did not return deterministic result");
 
   await fs.mkdir(path.join(workspace, "src"), { recursive: true });
   await fs.mkdir(path.join(workspace, "test"), { recursive: true });
@@ -285,6 +305,8 @@ try {
           "large_profile_pro_route",
           "auto_system_pro_route",
           "auto_engineering_guidance",
+          "parallel_scout_trigger",
+          "web_search_dry_run",
           "inspect_project",
           "mock_inspect_project",
           "write_file",

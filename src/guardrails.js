@@ -72,6 +72,18 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
     return { allowed: true };
   }
 
+  if (toolName === "web_search") {
+    if (config.allowWebSearch === false) {
+      return { allowed: false, reason: "Web search is disabled for this run.", category: "web-search" };
+    }
+    const query = String(args.query || "").trim();
+    if (!query) return { allowed: false, reason: "Search query is required.", category: "web-search" };
+    if (Buffer.byteLength(query, "utf8") > 500) {
+      return { allowed: false, reason: "Search query is too large.", category: "web-search" };
+    }
+    return { allowed: true };
+  }
+
   if (toolName === "open_workspace_file" || toolName === "preview_workspace") {
     if (!config.allowFileTools) {
       return { allowed: false, reason: "Workspace preview tools require file tools to be enabled.", category: "workspace-tools" };
