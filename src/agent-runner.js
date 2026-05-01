@@ -64,6 +64,7 @@ function createInitialState(config, sessionId) {
             ? `External coding-agent wrappers are available as advisory tools only. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Wrapper status: ${wrapperStatusText()}.`
             : "External coding-agent wrappers are disabled.",
           "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. It is optional and ordinary final text can still go directly to finish.",
+          "For visual-output requests such as draw, plot, graph, chart, diagram, figure, image, or visualization, proactively publish a canvas artifact even when the user does not mention canvas. If workspace file tools are enabled, prefer creating a small SVG or markdown artifact and call send_to_canvas with selected=true.",
           "When done, call finish with a concise result.",
         ].join(" "),
       },
@@ -83,6 +84,7 @@ function createInitialState(config, sessionId) {
             ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
             : "",
           "Canvas/artifacts tunnel: available through send_to_canvas for optional frontend rendering.",
+          "Visual-output requests should produce a canvas artifact without requiring the user to ask for canvas explicitly.",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -306,6 +308,7 @@ async function captureSyntheticSnapshot(store, step, config) {
         ? `Agent wrappers available: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
         : "Agent wrappers disabled.",
       "Canvas/artifacts tunnel available through send_to_canvas.",
+      "For draw/plot/graph/chart/diagram/figure requests, publish a canvas artifact proactively.",
       "Use open_url only if the task actually needs the web.",
     ]
       .filter(Boolean)

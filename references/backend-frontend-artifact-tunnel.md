@@ -80,6 +80,8 @@ Rules:
 
 Use this tool for screenshots, generated images, markdown reports, diffs, and important output files. Do not use it for every ordinary text answer.
 
+Visual-output requests are the main proactive trigger. If the user asks to draw, plot, graph, chart, diagram, create a figure, or visualize something, the agent should infer that the canvas is useful even when the user does not mention canvas. When file tools are enabled, prefer creating a small SVG/markdown artifact and then call `send_to_canvas` with `selected: true`.
+
 ## REST API
 
 List artifacts:

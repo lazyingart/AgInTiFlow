@@ -134,6 +134,7 @@ export async function createPlan(client, config, state) {
             ? `Agent wrappers are enabled. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Status: ${wrapperStatusText()}.`
             : "",
           "A canvas/artifacts tunnel is available through send_to_canvas. Use it when an output should be highlighted visually, such as screenshots, image files, important markdown, diffs, or generated artifact paths. It is optional for ordinary text answers.",
+          "When the user asks to draw, plot, graph, chart, diagram, create a figure, or visualize something, include a canvas artifact even if the user does not mention canvas. Prefer a small SVG file or concise markdown figure when file tools are available.",
           "Return a numbered plan only.",
         ]
           .filter(Boolean)
@@ -409,7 +410,7 @@ export async function requestNextStep(client, config, messages) {
     function: {
       name: "send_to_canvas",
       description:
-        "Send an optional artifact notification to the frontend canvas/artifacts tunnel. Use for important markdown/text, generated images, screenshots, figures, diffs, or workspace file paths the user should preview. This does not replace finish.",
+        "Send an optional artifact notification to the frontend canvas/artifacts tunnel. Use for important markdown/text, generated images, screenshots, figures, diffs, or workspace file paths the user should preview. Proactively use this for draw/plot/graph/chart/diagram/figure requests even when the user did not mention canvas. This does not replace finish.",
       parameters: {
         type: "object",
         properties: {
