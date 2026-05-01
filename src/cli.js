@@ -3,6 +3,10 @@ import { loadConfig } from "./config.js";
 import { listAgentWrappers } from "./tool-wrappers.js";
 import { getModelPresets } from "./model-routing.js";
 import { getDockerSandboxStatus, runDockerPreflight } from "./docker-sandbox.js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function readOption(argv, index) {
   const value = argv[index + 1];
@@ -31,11 +35,28 @@ export function parseArgs(argv) {
     listWrappers: false,
     sandboxStatus: false,
     sandboxPreflight: false,
+    web: false,
+    port: "",
+    host: "",
   };
 
   const parts = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (arg === "web" || arg === "--web") {
+      result.web = true;
+      continue;
+    }
+    if (arg === "--port") {
+      result.port = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--host") {
+      result.host = readOption(argv, i);
+      i += 1;
+      continue;
+    }
     if (arg === "--start-url") {
       result.startUrl = readOption(argv, i);
       i += 1;
@@ -150,6 +171,14 @@ function printWrappers() {
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
 
+  if (args.web) {
+    if (args.port) process.env.PORT = String(args.port);
+    if (args.host) process.env.HOST = String(args.host);
+    process.env.AGINTIFLOW_PACKAGE_DIR = packageDir;
+    await import("../web.js");
+    return;
+  }
+
   if (args.listRoutes) {
     printRoutes();
     return;
@@ -161,7 +190,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (args.sandboxStatus || args.sandboxPreflight) {
-    const config = loadConfig({ ...args, goal: args.goal || "sandbox preflight" });
+    const config = loadConfig({ ...args, goal: args.goal || "sandbox preflight" }, { packageDir });
     const result = args.sandboxPreflight
       ? await runDockerPreflight(config, { buildImage: true })
       : { ok: true, status: await getDockerSandboxStatus(config) };
@@ -171,11 +200,11 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (!args.goal && !args.resume) {
     console.error(
-      'Usage: aginti-cli [--routing smart|fast|complex|manual] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--allow-shell] [--allow-wrappers] [--sandbox-status|--sandbox-preflight] "your task"'
+      'Usage: aginti-cli web [--port 3210] OR aginti-cli [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--allow-shell] [--allow-wrappers] [--sandbox-status|--sandbox-preflight] "your task"'
     );
     process.exit(1);
   }
 
-  const config = loadConfig(args);
+  const config = loadConfig(args, { packageDir });
   await runAgent(config);
 }

@@ -28,7 +28,9 @@ const translations = {
     routingHintFast: "Fast route: DeepSeek v4 flash for normal browser, shell, and short coding tasks.",
     routingHintComplex: "Complex route: DeepSeek v4 pro for deeper implementation, debugging, and design work.",
     routingHintManual: "Manual route uses the provider and model fields exactly as entered.",
+    modelRouteStatus: "Active route",
     providerLabel: "Provider",
+    mockProviderOption: "Mock local",
     modelLabel: "Model",
     goalLabel: "Goal",
     goalPlaceholder: "Open a site and summarize it, or use run_command for simple terminal inspection.",
@@ -46,6 +48,10 @@ const translations = {
     packageBlockOption: "Blocked",
     packagePromptOption: "Require approval",
     packageAllowOption: "Approved in Docker",
+    packageWarningBlock: "Package, conda, venv, and npm setup commands are blocked.",
+    packageWarningPrompt: "Package or environment setup will stop for approval before it can run.",
+    packageWarningAllow: "Package setup is approved only in Docker workspace-write mode.",
+    packageWarningHostAllow: "Host mode cannot run approved package setup; switch to Docker workspace-write.",
     headlessLabel: "Headless browser",
     shellToolLabel: "Enable shell tool",
     wrapperToolLabel: "Enable agent wrappers",
@@ -67,6 +73,8 @@ const translations = {
     youLabel: "You",
     keysLabel: "Keys",
     wrappersLabel: "Wrappers",
+    wrapperCapabilityTitle: "Agent wrappers",
+    mockLabel: "Mock",
     sandboxStatusTitle: "Sandbox status",
     sandboxStatusEmpty: "Not checked yet.",
     sandboxLogsEmpty: "No sandbox logs yet.",
@@ -564,12 +572,15 @@ const routingModeField = document.querySelector("#routingMode");
 const providerField = document.querySelector("#provider");
 const modelField = document.querySelector("#model");
 const routingHintEl = document.querySelector("#routing-hint");
+const modelRouteStatusEl = document.querySelector("#model-route-status");
 const sandboxModeField = document.querySelector("#sandboxMode");
 const packageInstallPolicyField = document.querySelector("#packageInstallPolicy");
+const packageWarningEl = document.querySelector("#package-warning");
 const logsEl = document.querySelector("#logs");
 const runMetaEl = document.querySelector("#run-meta");
 const keyStatusEl = document.querySelector("#key-status");
 const wrapperStatusEl = document.querySelector("#wrapper-status");
+const wrapperGridEl = document.querySelector("#wrapper-grid");
 const sandboxStatusEl = document.querySelector("#sandbox-status");
 const sandboxLogsEl = document.querySelector("#sandbox-logs");
 const checkSandboxButton = document.querySelector("#check-sandbox");
@@ -585,6 +596,7 @@ const placeholderNodes = [...document.querySelectorAll("[data-i18n-placeholder]"
 const defaults = {
   openai: "gpt-5.4-mini",
   deepseek: "deepseek-v4-flash",
+  mock: "mock-agent",
 };
 
 let currentLanguage = "en";
@@ -619,18 +631,31 @@ function renderKeyStatus(status = lastKeyStatus) {
   if (!status) return;
   keyStatusEl.textContent = `${t("keysLabel")}: OpenAI ${
     status.openai ? t("availableLabel") : t("missingLabel")
-  } · DeepSeek ${status.deepseek ? t("availableLabel") : t("missingLabel")}`;
+  } · DeepSeek ${status.deepseek ? t("availableLabel") : t("missingLabel")} · ${t("mockLabel")} ${
+    status.mock ? t("availableLabel") : t("missingLabel")
+  }`;
 }
 
 function renderWrapperStatus(wrappers = lastWrappers) {
   lastWrappers = wrappers || [];
   if (lastWrappers.length === 0) {
     wrapperStatusEl.textContent = "";
+    wrapperGridEl.innerHTML = "";
     return;
   }
   wrapperStatusEl.textContent = `${t("wrappersLabel")}: ${lastWrappers
     .map((wrapper) => `${wrapper.label || wrapper.name} ${wrapper.available ? t("availableLabel") : t("missingLabel")}`)
     .join(" · ")}`;
+  wrapperGridEl.innerHTML = lastWrappers
+    .map(
+      (wrapper) => `
+        <div class="capability-chip" data-ready="${Boolean(wrapper.available)}">
+          <strong>${escapeHtml(wrapper.label || wrapper.name)}</strong>
+          <span>${wrapper.available ? t("availableLabel") : t("missingLabel")}</span>
+        </div>
+      `
+    )
+    .join("");
 }
 
 function renderSandboxStatus(status = lastSandbox) {
@@ -685,6 +710,24 @@ function updateRoutingHint() {
       modelField.value = preset.model || modelField.value;
     }
   }
+
+  modelRouteStatusEl.textContent = `${t("modelRouteStatus")}: ${providerField.value} / ${
+    modelField.value.trim() || defaults[providerField.value] || ""
+  }`;
+}
+
+function updatePackageWarning() {
+  const policy = packageInstallPolicyField.value || "prompt";
+  const sandboxMode = sandboxModeField.value || "host";
+  const key =
+    policy === "allow" && sandboxMode === "host"
+      ? "packageWarningHostAllow"
+      : policy === "allow"
+        ? "packageWarningAllow"
+        : policy === "block"
+          ? "packageWarningBlock"
+          : "packageWarningPrompt";
+  packageWarningEl.textContent = t(key);
 }
 
 function applyLanguage(language, { persist = true } = {}) {
@@ -707,6 +750,7 @@ function applyLanguage(language, { persist = true } = {}) {
   renderWrapperStatus();
   renderSandboxStatus();
   updateRoutingHint();
+  updatePackageWarning();
   renderSessions(lastSessions);
   renderChat(lastChatEntries);
   if (persist) schedulePreferenceSave();
@@ -909,11 +953,25 @@ preflightSandboxButton.addEventListener("click", () => {
 });
 
 providerField.addEventListener("change", () => {
-  if (!modelField.value.trim() || modelField.value === defaults.openai || modelField.value === defaults.deepseek) {
+  if (providerField.value === "mock") {
+    routingModeField.value = "manual";
+  }
+
+  if (
+    !modelField.value.trim() ||
+    modelField.value === defaults.openai ||
+    modelField.value === defaults.deepseek ||
+    modelField.value === defaults.mock
+  ) {
     modelField.value = defaults[providerField.value] || "";
   }
+  updateRoutingHint();
   schedulePreferenceSave();
 });
+
+modelField.addEventListener("input", updateRoutingHint);
+sandboxModeField.addEventListener("change", updatePackageWarning);
+packageInstallPolicyField.addEventListener("change", updatePackageWarning);
 
 form.addEventListener("input", schedulePreferenceSave);
 form.addEventListener("change", schedulePreferenceSave);
@@ -1020,6 +1078,7 @@ async function loadConfig() {
   routingPresets = data.routing?.presets || {};
   defaults.openai = data.defaults?.openai?.model || defaults.openai;
   defaults.deepseek = routingPresets.fast?.model || data.defaults?.deepseek?.model || defaults.deepseek;
+  defaults.mock = data.defaults?.mock?.model || defaults.mock;
 
   applyLanguage(prefs.language || normalizeLanguage(navigator.language || "en"), { persist: false });
 
@@ -1043,6 +1102,7 @@ async function loadConfig() {
   renderWrapperStatus(data.wrappers || []);
   renderSandboxLogs(data.sandbox?.logs || []);
   updateRoutingHint();
+  updatePackageWarning();
 
   renderSessions(data.sessions || []);
   if (data.sessions && data.sessions.length > 0) {

@@ -2,13 +2,70 @@ import OpenAI from "openai";
 import { WRAPPER_NAMES, wrapperStatusText } from "./tool-wrappers.js";
 
 export function createClient(config) {
+  if (config.provider === "mock") {
+    return {
+      mock: true,
+      provider: "mock",
+    };
+  }
+
   return new OpenAI({
     apiKey: config.apiKey,
     baseURL: config.baseURL,
   });
 }
 
+function mockToolCall(name, args = {}) {
+  return {
+    id: `mock-${name}-${Date.now()}`,
+    type: "function",
+    function: {
+      name,
+      arguments: JSON.stringify(args),
+    },
+  };
+}
+
+function latestToolPayload(messages) {
+  const toolMessage = [...messages].reverse().find((message) => message.role === "tool" && message.content);
+  if (!toolMessage) return null;
+
+  try {
+    return JSON.parse(toolMessage.content);
+  } catch {
+    return null;
+  }
+}
+
+function mockCommandForGoal(goal = "") {
+  const text = String(goal).toLowerCase();
+  if (/\blist\b|folder contents|directory contents|files?/.test(text)) return "ls -la";
+  return "pwd";
+}
+
+function mockChatResponse(content, toolCalls = []) {
+  return {
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content,
+          tool_calls: toolCalls,
+        },
+      },
+    ],
+  };
+}
+
 export async function createPlan(client, config, state) {
+  if (client.mock) {
+    return [
+      "1. Inspect the request and prefer the local shell when available.",
+      "2. Use one safe allowlisted command if it answers the task.",
+      "3. Return a concise mock-mode result without using external model credentials.",
+    ].join("\n");
+  }
+
   const response = await client.chat.completions.create({
     model: config.model,
     temperature: 0,
@@ -199,6 +256,37 @@ export async function requestNextStep(client, config, messages) {
         },
       },
     });
+  }
+
+  if (client.mock) {
+    const toolPayload = latestToolPayload(messages);
+    if (toolPayload) {
+      const output = [toolPayload.stdout, toolPayload.stderr, toolPayload.error, toolPayload.reason].filter(Boolean).join("\n");
+      return mockChatResponse("Mock mode finished after receiving the latest tool result.", [
+        mockToolCall("finish", {
+          result: [
+            "Mock run complete.",
+            toolPayload.toolName ? `Tool: ${toolPayload.toolName}` : "",
+            toolPayload.args?.command ? `Command: ${toolPayload.args.command}` : "",
+            output ? `Output:\n${output}` : "No command output was returned.",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        }),
+      ]);
+    }
+
+    if (config.allowShellTool) {
+      return mockChatResponse("Mock mode will use the guarded shell tool for a non-dangerous local inspection.", [
+        mockToolCall("run_command", { command: mockCommandForGoal(config.goal) }),
+      ]);
+    }
+
+    return mockChatResponse("Mock mode can complete without external model credentials.", [
+      mockToolCall("finish", {
+        result: `Mock run complete for: ${config.goal}`,
+      }),
+    ]);
   }
 
   return client.chat.completions.create({

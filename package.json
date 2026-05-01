@@ -39,6 +39,7 @@
     "logos/logo.png",
     "public/",
     "scripts/install-docker-ubuntu.sh",
+    "scripts/smoke-web-api.js",
     "src/",
     "run.js",
     "web.js"
@@ -51,7 +52,8 @@
     "start": "node run.js",
     "web": "node web.js",
     "check": "node --check run.js && node --check web.js && node --check bin/aginti-cli.js && node --check src/*.js",
-    "test": "npm run check",
+    "smoke:web-api": "node scripts/smoke-web-api.js",
+    "test": "npm run check && npm run smoke:web-api",
     "pack:dry-run": "npm pack --dry-run"
   },
   "dependencies": {

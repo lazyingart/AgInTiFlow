@@ -13,11 +13,13 @@ import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./src/comma
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const baseDir = process.cwd();
+const packageDir = __dirname;
+const baseDir = path.resolve(process.env.AGINTIFLOW_RUNTIME_DIR || process.cwd());
 const sessionsDir = path.join(baseDir, ".sessions");
 
 const app = express();
 const port = Number(process.env.PORT || 3210);
+const host = process.env.HOST || "127.0.0.1";
 const runs = new Map();
 const db = new WebDatabase(baseDir);
 const supportedLanguages = new Set([
@@ -90,9 +92,10 @@ function serializeRun(run) {
 
 function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
   const modelPresets = getModelPresets();
-  const routingMode = normalizeRoutingMode(body.routingMode || current.routingMode || "smart");
-  const provider =
-    body.provider === "openai" || body.provider === "deepseek" ? body.provider : current.provider || "deepseek";
+  const providerCandidate = body.provider || current.provider || "deepseek";
+  const provider = ["openai", "deepseek", "mock"].includes(providerCandidate) ? providerCandidate : "deepseek";
+  const routingMode =
+    provider === "mock" ? "manual" : normalizeRoutingMode(body.routingMode || current.routingMode || "smart");
   const providerDefaults = getProviderDefaults(provider);
   const parsedMaxSteps = Number(body.maxSteps);
   const parsedWrapperTimeoutMs = Number(body.wrapperTimeoutMs);
@@ -188,6 +191,7 @@ function buildRunConfig(body, overrides = {}) {
       dockerSandboxImage: merged.dockerSandboxImage,
       commandCwd: merged.commandCwd,
       baseDir,
+      packageDir,
       sessionId: overrides.sessionId,
     }
   );
@@ -376,6 +380,7 @@ app.get("/api/config", (_req, res) => {
     defaults: {
       openai: publicProviderDefault("openai"),
       deepseek: publicProviderDefault("deepseek"),
+      mock: publicProviderDefault("mock"),
       headless: true,
       maxSteps: 15,
     },
@@ -391,6 +396,7 @@ app.get("/api/config", (_req, res) => {
     keyStatus: {
       openai: Boolean(process.env.OPENAI_API_KEY),
       deepseek: Boolean(process.env.DEEPSEEK_API_KEY),
+      mock: true,
     },
     sessions: db.listSessions(20),
   });
@@ -523,8 +529,9 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, port });
 });
 
+await fs.mkdir(sessionsDir, { recursive: true });
 await syncStoredSessions();
 
-app.listen(port, () => {
-  console.log(`Website control agent UI running on http://127.0.0.1:${port}`);
+app.listen(port, host, () => {
+  console.log(`Website control agent UI running on http://${host}:${port}`);
 });

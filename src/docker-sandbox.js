@@ -93,9 +93,17 @@ export function getSandboxLogs(limit = 30) {
   return sandboxLogs.slice(-limit);
 }
 
+function sandboxPackageDir(config) {
+  return path.resolve(config.packageDir || config.baseDir || process.cwd());
+}
+
+function sandboxDockerfilePath(config) {
+  return path.join(sandboxPackageDir(config), "docker", "sandbox.Dockerfile");
+}
+
 export async function getDockerSandboxStatus(config) {
   const image = config.dockerSandboxImage;
-  const dockerfilePath = path.join(config.baseDir, "docker", "sandbox.Dockerfile");
+  const dockerfilePath = sandboxDockerfilePath(config);
   const workspace = config.commandCwd;
   const [dockerReady, dockerfileExists, workspaceExists, workspaceReadable, workspaceWritable] = await Promise.all([
     dockerAvailable(),
@@ -125,14 +133,15 @@ export async function getDockerSandboxStatus(config) {
 
 async function buildDockerSandboxImage(config, observers) {
   const image = config.dockerSandboxImage;
-  const dockerfilePath = path.join(config.baseDir, "docker", "sandbox.Dockerfile");
+  const packageDir = sandboxPackageDir(config);
+  const dockerfilePath = sandboxDockerfilePath(config);
   observers?.log?.("docker.building", {
     image,
     dockerfilePath,
   });
   recordSandboxLog("docker.building", { image, dockerfilePath });
 
-  await execDocker(["build", "-t", image, "-f", dockerfilePath, config.baseDir], {
+  await execDocker(["build", "-t", image, "-f", dockerfilePath, packageDir], {
     timeout: 10 * 60 * 1000,
     maxBuffer: 1024 * 1024,
   });
@@ -146,7 +155,7 @@ export async function ensureDockerSandboxReady(config, observers, options = {}) 
   const image = config.dockerSandboxImage;
   if (!config.useDockerSandbox || (READY_IMAGES.has(image) && !options.forceBuild)) return;
 
-  const dockerfilePath = path.join(config.baseDir, "docker", "sandbox.Dockerfile");
+  const dockerfilePath = sandboxDockerfilePath(config);
   await fs.access(dockerfilePath).catch(() => {
     throw new Error(`Docker sandbox file is missing: ${dockerfilePath}`);
   });
@@ -237,6 +246,23 @@ export async function runDockerPreflight(config, options = {}) {
   const statusBefore = await getDockerSandboxStatus(config);
   const manifests = await detectWorkspaceManifests(config.commandCwd);
   let checks = [];
+
+  if (!config.useDockerSandbox || normalizeSandboxMode(config.sandboxMode) === "host") {
+    const result = {
+      ok: Boolean(statusBefore.workspaceExists && statusBefore.workspaceReadable),
+      status: statusBefore,
+      manifests,
+      checks,
+      logs: getSandboxLogs(),
+    };
+    recordSandboxLog("sandbox.preflight.completed", {
+      ok: result.ok,
+      mode: "host",
+      manifests,
+      checks: [],
+    });
+    return result;
+  }
 
   if (buildImage && statusBefore.dockerAvailable && statusBefore.dockerfileExists && !statusBefore.imageReady) {
     await ensureDockerSandboxReady(config, {

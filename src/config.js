@@ -37,6 +37,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
 
   const defaults = getProviderDefaults(route.provider);
   const baseDir = path.resolve(overrides.baseDir || process.cwd());
+  const packageDir = path.resolve(overrides.packageDir || process.env.AGINTIFLOW_PACKAGE_DIR || baseDir);
   const dockerRequested = parseBoolean(overrides.useDockerSandbox ?? args.useDockerSandbox ?? process.env.USE_DOCKER_SANDBOX, false);
   const requestedSandboxMode =
     overrides.sandboxMode || args.sandboxMode || process.env.SANDBOX_MODE || (dockerRequested ? "docker-readonly" : "host");
@@ -45,6 +46,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
   return {
     ...defaults,
     baseDir,
+    packageDir,
     goal: args.goal || "",
     startUrl: args.startUrl || "",
     resume: args.resume || "",
@@ -84,6 +86,6 @@ export function resolveRuntimeConfig(args, overrides = {}) {
   };
 }
 
-export function loadConfig(args) {
-  return resolveRuntimeConfig(args);
+export function loadConfig(args, overrides = {}) {
+  return resolveRuntimeConfig(args, overrides);
 }

@@ -45,8 +45,14 @@ aginti --sandbox-status --sandbox-mode docker-readonly --cwd "$PWD"
 Launch the local web UI from an installed package:
 
 ```bash
-aginti-cli --routing smart --allow-shell "List this folder"
-aginti --sandbox-preflight --sandbox-mode docker-readonly --cwd "$PWD"
+aginti web --port 3210
+# then open http://127.0.0.1:3210
+```
+
+Run the installed CLI without a live provider key by using the local mock route:
+
+```bash
+aginti --provider mock --routing manual --allow-shell --cwd "$PWD" "Report the current directory"
 ```
 
 Run from a source checkout:
@@ -95,11 +101,12 @@ The package exposes both `aginti` and `aginti-cli`; they run the same CLI entryp
 The web app includes:
 
 - Routing dropdown for smart, fast, complex, and manual model selection.
-- Provider dropdown for OpenAI and DeepSeek when manual routing is needed.
+- Provider dropdown for DeepSeek, OpenAI, and local mock mode when manual routing is needed.
 - Language dropdown with 11 persisted UI locales.
 - Editable model field, with DeepSeek v4 flash as the fast default and DeepSeek v4 pro as the complex route.
 - Goal, start URL, allowed domains, working directory, and max-step controls.
-- Sandbox mode, Docker image/status, package-install approval state, and recent sandbox logs.
+- Sandbox mode, Docker image/status, package-install approval state, safe setup warnings, and recent sandbox logs.
+- Wrapper capability panel showing available Codex, Claude, Gemini, Copilot, and Qwen wrappers.
 - Toggleable shell tool, agent wrappers, headless browser, password typing, and destructive actions.
 - Live run logs above a persistent conversation panel.
 
@@ -244,6 +251,14 @@ curl -X POST http://127.0.0.1:3210/api/sandbox/preflight \
 
 These endpoints report Docker/image/workspace readiness and recent sandbox logs without returning API keys or npm tokens.
 
+Credential-free API smoke test:
+
+```bash
+npm run smoke:web-api
+```
+
+The smoke script starts the web server on a random localhost port, checks `/api/config`, `/api/sandbox/status`, `/api/sandbox/preflight`, runs one mock agent task, and verifies persisted chat history.
+
 ## Runtime Artifacts
 
 Each run stores state under `.sessions/<session-id>/`:
@@ -277,9 +292,11 @@ AgInTiFlow/
 
 ```bash
 npm run check
+npm run smoke:web-api
+npm test
 ```
 
-The check validates JavaScript syntax for the CLI, web server, and runtime modules.
+`npm run check` validates JavaScript syntax for the CLI, web server, and runtime modules. `npm run smoke:web-api` uses the local mock provider, so it does not require DeepSeek or OpenAI credentials.
 
 ## Prompt Tools
 

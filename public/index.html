@@ -54,6 +54,7 @@
             <select id="provider" name="provider">
               <option value="deepseek">DeepSeek</option>
               <option value="openai">OpenAI</option>
+              <option value="mock" data-i18n="mockProviderOption">Mock local</option>
             </select>
             </label>
 
@@ -64,6 +65,7 @@
           </div>
 
           <p id="routing-hint" class="subtle route-hint"></p>
+          <p id="model-route-status" class="subtle route-hint"></p>
 
           <label>
             <span data-i18n="goalLabel">Goal</span>
@@ -96,6 +98,7 @@
               <input id="maxSteps" name="maxSteps" type="number" min="1" max="50" value="15" />
             </label>
           </div>
+          <p id="package-warning" class="subtle package-warning"></p>
 
           <div class="grid">
             <label>
@@ -140,7 +143,14 @@
             <button type="submit" data-i18n="startRunButton">Start run</button>
             <span id="key-status" class="subtle"></span>
           </div>
-          <p id="wrapper-status" class="subtle wrapper-status"></p>
+
+          <section class="capability-card">
+            <div>
+              <h2 data-i18n="wrapperCapabilityTitle">Agent wrappers</h2>
+              <p id="wrapper-status" class="subtle wrapper-status"></p>
+            </div>
+            <div id="wrapper-grid" class="capability-grid"></div>
+          </section>
 
           <section class="sandbox-card">
             <div class="header-row">

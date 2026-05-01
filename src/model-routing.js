@@ -20,6 +20,15 @@ const COMPLEXITY_KEYWORDS = [
 export const ROUTING_MODES = ["smart", "fast", "complex", "manual"];
 
 export function getProviderDefaults(provider = "deepseek") {
+  if (provider === "mock") {
+    return {
+      provider: "mock",
+      apiKey: "mock-local",
+      baseURL: "",
+      model: process.env.MOCK_MODEL || "mock-agent",
+    };
+  }
+
   if (provider === "openai") {
     return {
       provider: "openai",
@@ -52,6 +61,13 @@ export function getModelPresets() {
       provider: "deepseek",
       model: process.env.DEEPSEEK_PRO_MODEL || "deepseek-v4-pro",
       description: "Higher-capacity DeepSeek route for multi-step coding and design tasks.",
+    },
+    mock: {
+      id: "mock",
+      label: "Local mock",
+      provider: "mock",
+      model: process.env.MOCK_MODEL || "mock-agent",
+      description: "Credential-free local route for UI, API, and tool-routing smoke tests.",
     },
     codexPrimary: {
       id: "codexPrimary",
@@ -88,6 +104,17 @@ export function normalizeRoutingMode(value) {
 export function selectModelRoute({ routingMode = "smart", provider = "deepseek", model = "", goal = "" } = {}) {
   const mode = normalizeRoutingMode(routingMode);
   const presets = getModelPresets();
+
+  if (provider === "mock") {
+    const defaults = getProviderDefaults("mock");
+    return {
+      routingMode: "manual",
+      provider: defaults.provider,
+      model: model || defaults.model,
+      reason: "Local mock route selected for smoke tests and offline UI/API checks.",
+      complexityScore: scoreTaskComplexity(goal),
+    };
+  }
 
   if (mode === "manual") {
     const defaults = getProviderDefaults(provider);

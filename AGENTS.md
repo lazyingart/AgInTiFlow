@@ -14,10 +14,12 @@
 - `npx aginti-cli --sandbox-status --sandbox-mode docker-readonly`: inspect Docker sandbox readiness.
 - `npx aginti-cli --sandbox-preflight --sandbox-mode docker-readonly`: run safe Docker dependency checks.
 - `npm run web`: start the local web UI on `http://127.0.0.1:3210`.
+- `npx aginti-cli web --port 3210`: start the packaged web UI path.
 - `npm run check`: run syntax checks for `run.js`, `web.js`, and all files in `src/`.
+- `npm run smoke:web-api`: start a temporary web server and verify config, sandbox, mock run, and persisted chat APIs without live model credentials.
 - `npm pack --dry-run`: inspect npm package contents before release.
 
-Use `AGENT_PROVIDER=openai` or `AGENT_PROVIDER=deepseek` when running locally.
+Use `AGENT_PROVIDER=openai`, `AGENT_PROVIDER=deepseek`, or `AGENT_PROVIDER=mock` when running locally.
 
 ## Coding Style & Naming Conventions
 
@@ -25,7 +27,7 @@ Use ES modules, 2-space indentation, and semicolons, matching the existing JavaS
 
 ## Testing Guidelines
 
-There is no full automated test suite yet. Treat `npm run check` as the minimum required gate before committing. For behavior changes, do one manual smoke test through either the CLI or the web UI. If you add tests later, place them in a dedicated `test/` directory and name them after the module under test, for example `guardrails.test.js`.
+There is no full automated test suite yet. Treat `npm run check` plus `npm run smoke:web-api` as the minimum required gate before committing. For behavior changes, do one manual smoke test through either the CLI or the web UI. If you add tests later, place them in a dedicated `test/` directory and name them after the module under test, for example `guardrails.test.js`.
 
 ## Commit & Pull Request Guidelines
 
