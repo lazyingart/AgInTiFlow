@@ -21,6 +21,7 @@ import { generateImage, listAuxiliarySkills } from "./auxiliary-tools.js";
 import { engineeringGuidanceForTask } from "./engineering-guidance.js";
 import { searchWeb } from "./web-search.js";
 import { runParallelScouts, shouldRunParallelScouts } from "./parallel-scouts.js";
+import { readProjectInstructions } from "./project.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "open_workspace_file", "preview_workspace", "click", "type", "scroll", "press", "back"]);
@@ -39,6 +40,20 @@ function throwIfAborted(config) {
     error.name = error.name || "AbortError";
     throw error;
   }
+}
+
+function formatProjectInstructions(instructions) {
+  if (!instructions?.exists) {
+    return "Project instructions file: AGINTI.md is not present. If the user wants durable project preferences, create or update AGINTI.md in the workspace.";
+  }
+  const suffix = instructions.truncated ? "\n[AGINTI.md was truncated for context. Read the file if more detail is needed.]" : "";
+  return [
+    `Project instructions from AGINTI.md (${instructions.path}):`,
+    redactSensitiveText(instructions.content).trim() || "(empty)",
+    suffix,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function isAbortError(error, config = {}) {
@@ -233,10 +248,12 @@ export function repairModelMessageHistory(state, config = {}) {
   };
 }
 
-function createInitialState(config, sessionId) {
+async function createInitialState(config, sessionId) {
   const now = new Date().toISOString();
   const taskProfile = getTaskProfile(config.taskProfile);
   const engineeringGuidance = engineeringGuidanceForTask(config.goal, config.taskProfile);
+  const projectInstructions = await readProjectInstructions(config.baseDir || config.commandCwd || process.cwd());
+  const projectInstructionContext = formatProjectInstructions(projectInstructions);
   return {
     sessionId,
     createdAt: now,
@@ -249,6 +266,12 @@ function createInitialState(config, sessionId) {
     stepsCompleted: 0,
     meta: {
       lastUrl: "",
+      projectInstructions: {
+        path: projectInstructions.path,
+        exists: projectInstructions.exists,
+        truncated: projectInstructions.truncated,
+        loadedAt: now,
+      },
     },
     chat: [
       {
@@ -270,13 +293,15 @@ function createInitialState(config, sessionId) {
           "Prefer short, deliberate actions over guessing.",
           "Never navigate outside the allowed domains when an allowlist exists.",
           "Avoid destructive actions, purchases, account changes, and sensitive workflows.",
+          projectInstructionContext,
+          "Treat AGINTI.md as durable project memory and operating instructions for this project. The user can edit it manually or ask you in chat to update it; use workspace file tools for that and never store secrets there.",
           config.allowShellTool
             ? config.useDockerSandbox
               ? `A shell command tool is available inside Docker sandbox mode ${config.sandboxMode}. Docker workspace mode with approved package installs supports broader setup and network commands. The project is mounted at /workspace and the persistent agent toolchain is mounted at /aginti-env with caches under /aginti-cache.`
               : "A host shell command tool is available under the configured trust policy."
             : "No shell command tool is available.",
           config.allowFileTools
-            ? `Workspace file tools are available in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, and preview_workspace. For large or unfamiliar repositories, call inspect_project first, then search/read exact files before editing. apply_patch supports exact single-file replacements plus Codex-style/unified multi-file patches; prefer it for source edits after reading/searching the relevant context. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. Secret paths, .git internals, node_modules writes, and huge files are blocked. For generated local websites/pages, use open_workspace_file or preview_workspace instead of starting a localhost server inside Docker.`
+            ? `Workspace file tools are available in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, and preview_workspace. For large or unfamiliar repositories, call inspect_project first, then search/read AGINTI.md/AGENTS.md/README/manifests as relevant before editing. apply_patch supports exact single-file replacements plus Codex-style/unified multi-file patches; prefer it for source edits after reading/searching the relevant context. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. Secret paths, .git internals, node_modules writes, and huge files are blocked. For generated local websites/pages, use open_workspace_file or preview_workspace instead of starting a localhost server inside Docker.`
             : "No workspace file tools are available.",
           config.allowWrapperTools
             ? `External coding-agent wrappers are available as advisory tools only. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Wrapper status: ${wrapperStatusText()}.`
@@ -321,8 +346,9 @@ function createInitialState(config, sessionId) {
               : `Shell working directory: ${config.commandCwd}`
             : "",
           config.allowFileTools
-            ? `Workspace file tools enabled in: ${config.commandCwd}. Use inspect_project first for large/unfamiliar codebases. Use workspace-relative paths. Use apply_patch for code edits; it accepts exact replacements or Codex-style/unified multi-file patches. Local preview tools available: open_workspace_file and preview_workspace.`
+            ? `Workspace file tools enabled in: ${config.commandCwd}. Use inspect_project first for large/unfamiliar codebases. Read AGINTI.md/AGENTS.md/README/manifests when relevant. Use workspace-relative paths. Use apply_patch for code edits; it accepts exact replacements or Codex-style/unified multi-file patches. Local preview tools available: open_workspace_file and preview_workspace.`
             : "",
+          projectInstructions.exists ? "AGINTI.md project instructions are loaded into system context for this run." : "AGINTI.md is not present unless you create it.",
           config.allowWrapperTools
             ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
             : "",
@@ -420,11 +446,19 @@ function appendChatEntry(state, role, content) {
   });
 }
 
-function applyContinuationPrompt(state, config, observers) {
+async function applyContinuationPrompt(state, config, observers) {
   if (!config.resume || !config.goal) return;
 
   const taskProfile = getTaskProfile(config.taskProfile);
   const engineeringGuidance = engineeringGuidanceForTask(config.goal, config.taskProfile);
+  const projectInstructions = await readProjectInstructions(config.baseDir || config.commandCwd || process.cwd());
+  state.meta = state.meta || {};
+  state.meta.projectInstructions = {
+    path: projectInstructions.path,
+    exists: projectInstructions.exists,
+    truncated: projectInstructions.truncated,
+    loadedAt: new Date().toISOString(),
+  };
   ensureChatState(state);
   state.goal = config.goal;
   state.provider = config.provider;
@@ -445,13 +479,15 @@ function applyContinuationPrompt(state, config, observers) {
           : `Shell working directory: ${config.commandCwd}`
         : "",
       config.allowFileTools
-        ? `Workspace file tools enabled in: ${config.commandCwd}. Use inspect_project first for large or unfamiliar codebases, then search/read exact files before editing. Use workspace-relative paths. Use apply_patch for code edits; it accepts exact replacements or Codex-style/unified multi-file patches. For generated local files/sites, use open_workspace_file or preview_workspace.`
+        ? `Workspace file tools enabled in: ${config.commandCwd}. Use inspect_project first for large or unfamiliar codebases, then search/read exact files before editing. Read AGINTI.md/AGENTS.md/README/manifests when relevant. Use workspace-relative paths. Use apply_patch for code edits; it accepts exact replacements or Codex-style/unified multi-file patches. For generated local files/sites, use open_workspace_file or preview_workspace.`
         : "",
       config.allowWrapperTools
         ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
         : "",
       `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
       engineeringGuidance,
+      formatProjectInstructions(projectInstructions),
+      "AGINTI.md is editable project memory. If the user asks to remember a preference or update instructions, patch AGINTI.md rather than hiding that preference in session-only chat.",
     ]
       .filter(Boolean)
       .join("\n"),
@@ -1091,7 +1127,7 @@ export async function runAgent(config) {
   }
 
   if (!state) {
-    state = createInitialState(config, sessionId);
+    state = await createInitialState(config, sessionId);
     await store.appendEvent("session.created", {
       sessionId,
       provider: config.provider,
@@ -1103,7 +1139,7 @@ export async function runAgent(config) {
     await store.saveState(state);
   } else {
     await store.appendEvent("session.resumed", { sessionId });
-    applyContinuationPrompt(state, config, observers);
+    await applyContinuationPrompt(state, config, observers);
     await store.saveState(state);
   }
 
@@ -1263,6 +1299,7 @@ export async function runAgent(config) {
           commandCwd: config.commandCwd,
           plan: state.plan || "",
           suggestedStartUrl: config.startUrl || "",
+          projectInstructions: state.meta.projectInstructions || null,
           canvasArtifactsAvailable: true,
           taskProfile: getTaskProfile(config.taskProfile),
         })}`,

@@ -29,9 +29,12 @@ async function runCli(args) {
 
 try {
   await runCli(["init"]);
+  const agintiMd = await fs.readFile(path.join(tempRoot, "AGINTI.md"), "utf8");
+  assert(agintiMd.includes("Project instructions for AgInTiFlow agents."), "init did not create AGINTI.md");
   const capabilities = JSON.parse(await runCli(["capabilities", "--json"]));
   assert(capabilities.project.root === tempRoot, "capabilities did not use cwd as project root");
   assert(capabilities.project.commandCwd === tempRoot, "capabilities did not default commandCwd to project root");
+  assert(capabilities.project.instructionsPresent, "capabilities did not report AGINTI.md");
   assert(capabilities.project.sharedSessionFolder, "capabilities did not report shared session folder");
   assert(capabilities.keys?.mock === true, "capabilities did not report mock availability");
   assert(
@@ -69,13 +72,14 @@ try {
 
   const doctor = JSON.parse(await runCli(["doctor", "--capabilities", "--json"]));
   assert(doctor.project.root === tempRoot, "doctor --capabilities used the wrong project root");
+  assert(doctor.project.instructionsPresent, "doctor --capabilities did not report AGINTI.md");
 
   console.log(
     JSON.stringify(
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["capabilities-cli", "doctor-capabilities", "maintenance-policy", "trusted-docker-policy"],
+        checks: ["aginti-md-init", "capabilities-cli", "doctor-capabilities", "maintenance-policy", "trusted-docker-policy"],
       },
       null,
       2

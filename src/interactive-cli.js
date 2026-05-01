@@ -3,7 +3,7 @@ import { emitKeypressEvents } from "node:readline";
 import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent-runner.js";
 import { loadConfig } from "./config.js";
-import { initProject, listProjectSessions, providerKeyStatus, setProviderKey } from "./project.js";
+import { initProject, listProjectSessions, providerKeyStatus, readProjectInstructions, setProviderKey } from "./project.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
 import { defaultMaxStepsForProfile, normalizeTaskProfile } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
@@ -34,6 +34,8 @@ const SLASH_COMMANDS = [
   "/status",
   "/login",
   "/auth",
+  "/instructions",
+  "/memory",
   "/auxilliary",
   "/auxiliary",
   "/new",
@@ -337,6 +339,8 @@ function printHelp() {
       "  /status                   Show active route, workspace, sandbox, and session.",
       "  /login [deepseek|openai|grsai]  Paste and save a project-local API key.",
       "  /auth [deepseek|openai|grsai]   Alias for /login.",
+      "  /instructions             Show AGINTI.md project instructions status.",
+      "  /memory                   Alias for /instructions.",
       "  /auxilliary [status|grsai|on|off|image]",
       "                            Manage optional auxiliary skills, including GRS AI image generation.",
       "  /new                      Start a fresh session on the next message.",
@@ -985,6 +989,28 @@ async function handleCommand(line, state, packageDir) {
     await promptAndSaveProviderKey(value || "deepseek", state);
     return true;
   }
+  if (command === "instructions" || command === "memory") {
+    if (value === "init") {
+      const result = await initProject(process.cwd());
+      printAgentMessage(`AGINTI.md ready at ${result.instructionsPath}`);
+      return true;
+    }
+    const instructions = await readProjectInstructions(process.cwd(), { maxBytes: 4000 });
+    if (!instructions.exists) {
+      printAgentMessage("No AGINTI.md found. Run `/init` or `/instructions init` to create editable project instructions.");
+      return true;
+    }
+    printAgentMessage(
+      [
+        `AGINTI.md: ${instructions.path}${instructions.truncated ? " (preview truncated)" : ""}`,
+        "",
+        instructions.content.trim() || "(empty)",
+        "",
+        "To edit it, ask normally: update AGINTI.md to remember that tests use pytest.",
+      ].join("\n")
+    );
+    return true;
+  }
   if (command === "auxilliary" || command === "auxiliary") {
     const action = value || "status";
     if (action === "status") {
@@ -1134,7 +1160,7 @@ async function handleCommand(line, state, packageDir) {
   }
   if (command === "init") {
     const result = await initProject(process.cwd());
-    printAgentMessage(`initialized project=${result.projectRoot}`);
+    printAgentMessage(`initialized project=${result.projectRoot}\nAGINTI.md=${result.instructionsPath}`);
     return true;
   }
   if (command === "web") {

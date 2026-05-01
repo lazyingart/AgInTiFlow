@@ -11,7 +11,7 @@ Local agent references informed the design:
 - Claude/Claw-style safety: project-local status, container-first execution, read-only operations by default, and clear failure recovery.
 - Gemini/Qwen-style extensibility: capability discovery through profiles and tools rather than hardcoding one model behavior.
 - Claw-style `doctor` discipline: check health and environment before treating system symptoms as code bugs.
-- Claude/Codex-style context discipline: read instructions, manifests, entry points, and failing tests before touching broad files.
+- Claude/Codex-style context discipline: read project instructions, manifests, entry points, and failing tests before touching broad files.
 
 ## Skill vs Tool
 
@@ -31,7 +31,7 @@ The `inspect_project` function is a tool: it deterministically scans the workspa
 For complicated tasks, the agent should follow this loop:
 
 1. `inspect_project` to map the repository.
-2. `read_file` on `AGENTS.md`, `README.md`, and manifests.
+2. `read_file` on `AGINTI.md`, `AGENTS.md`, `README.md`, and manifests.
 3. `search_files` for symbols, tests, errors, routes, or config names.
 4. `read_file` only on the files needed for the change.
 5. `apply_patch` in small coherent batches.
@@ -53,6 +53,8 @@ Smart routing sends this profile to DeepSeek v4 pro even when the user prompt is
 ## Auto Profile Behavior
 
 The web app still defaults to **Auto**. Auto does not mean weak. When the prompt mentions a large repo, system bug, failing tests, setup, install, migration, or a known language stack, AgInTiFlow adds engineering guidance and raises the step budget automatically.
+
+Profiles are skill bias, not restrictions. `auto` is the broad general agent; `code`, `latex`, `website`, `maintenance`, and other profiles add stronger habits for that task type while still allowing the agent to use files, shell, browser, web search, canvas, and sandbox tools when they help.
 
 Examples:
 

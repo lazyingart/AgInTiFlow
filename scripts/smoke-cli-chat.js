@@ -85,6 +85,21 @@ try {
     throw new Error("terminal prompt layout did not bound redraw size for large prompts");
   }
 
+  await runCli(["init"], "");
+  const instructions = await fs.readFile(path.join(tempRoot, "AGINTI.md"), "utf8");
+  if (!instructions.includes("Project instructions for AgInTiFlow agents.")) {
+    throw new Error("init did not create AGINTI.md");
+  }
+  const instructionsResult = await runChat("/instructions\n/exit\n");
+  if (!instructionsResult.stdout.includes("AGINTI.md") || !instructionsResult.stdout.includes("Project instructions")) {
+    throw new Error("interactive /instructions did not show AGINTI.md");
+  }
+  await runChat("remember that this project prefers pytest smoke tests in AGINTI.md\n/exit\n");
+  const updatedInstructions = await fs.readFile(path.join(tempRoot, "AGINTI.md"), "utf8");
+  if (!updatedInstructions.includes("pytest smoke tests")) {
+    throw new Error("chat did not update AGINTI.md project instructions in mock mode");
+  }
+
   const result = await runChat("Create notes/interactive.md with a short CLI chat smoke message\n/exit\n");
   const written = await fs.readFile(path.join(tempRoot, "notes/interactive.md"), "utf8");
   if (!written.includes("Created by AgInTiFlow mock mode.")) {
@@ -107,7 +122,7 @@ try {
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["markdown-render", "prompt-layout", "interactive-chat", "mock-file-write", "run-status", "resume-latest"],
+        checks: ["markdown-render", "prompt-layout", "aginti-md", "instructions-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest"],
       },
       null,
       2

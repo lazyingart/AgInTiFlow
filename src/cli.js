@@ -322,6 +322,7 @@ function printProfiles() {
 
 function printInitResult(result) {
   console.log(`AgInTiFlow project initialized: ${result.projectRoot}`);
+  console.log(`instructions=${result.instructionsPath}`);
   console.log(`control=${result.controlDir}`);
   console.log(`sessions=${result.sessionsDir}`);
   console.log(`created=${result.created.length} updated=${result.updated.length} skipped=${result.skipped.length}`);
@@ -331,6 +332,7 @@ function printDoctorReport(report) {
   console.log(`AgInTiFlow ${report.package.version} (npm latest: ${report.package.npmLatest})`);
   console.log(`node=${report.node.version} ok=${report.node.ok}`);
   console.log(`project=${report.project.root}`);
+  console.log(`instructions=${report.project.instructionsPath} present=${report.project.instructionsPresent}`);
   console.log(`sessions=${report.project.sessionsDir}`);
   console.log(`sessionDb=${report.project.sessionDbPath}`);
   console.log(

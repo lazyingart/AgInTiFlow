@@ -27,6 +27,7 @@ export function projectPaths(projectRoot = process.cwd()) {
   const root = resolveProjectRoot(projectRoot);
   return {
     root,
+    agintiInstructionsPath: path.join(root, "AGINTI.md"),
     controlDir: path.join(root, ".aginti"),
     envPath: path.join(root, ".aginti", ".env"),
     rootEnvPath: path.join(root, ".env"),
@@ -38,6 +39,60 @@ export function projectPaths(projectRoot = process.cwd()) {
     sessionDbPath: path.join(root, ".sessions", "web-state.sqlite"),
     gitignorePath: path.join(root, ".gitignore"),
   };
+}
+
+export function defaultAgintiInstructions() {
+  return [
+    "# AGINTI.md",
+    "",
+    "Project instructions for AgInTiFlow agents.",
+    "",
+    "Edit this file directly or ask AgInTiFlow to update it during chat. Keep durable project preferences here; keep secrets in `.aginti/.env` instead.",
+    "",
+    "## Project Goals",
+    "",
+    "- Describe what this project is for.",
+    "- Note the main user-facing workflows the agent should preserve.",
+    "",
+    "## Agent Preferences",
+    "",
+    "- Prefer small, inspectable changes over broad rewrites.",
+    "- Read relevant files before editing.",
+    "- Run focused checks when tools and dependencies are available.",
+    "- Keep generated artifacts in project folders with clear names.",
+    "",
+    "## Useful Commands",
+    "",
+    "- Add build, test, lint, preview, or compile commands here.",
+    "",
+    "## Notes",
+    "",
+    "- Add project-specific terminology, style preferences, and known constraints here.",
+    "",
+  ].join("\n");
+}
+
+export async function readProjectInstructions(projectRoot = process.cwd(), { maxBytes = 24_000 } = {}) {
+  const paths = projectPaths(projectRoot);
+  try {
+    const stat = await fsp.stat(paths.agintiInstructionsPath);
+    if (!stat.isFile()) return { exists: false, path: paths.agintiInstructionsPath, content: "", truncated: false };
+    const handle = await fsp.open(paths.agintiInstructionsPath, "r");
+    try {
+      const buffer = Buffer.alloc(Math.min(stat.size, maxBytes));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      return {
+        exists: true,
+        path: paths.agintiInstructionsPath,
+        content: buffer.subarray(0, bytesRead).toString("utf8"),
+        truncated: stat.size > maxBytes,
+      };
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return { exists: false, path: paths.agintiInstructionsPath, content: "", truncated: false };
+  }
 }
 
 export function parseEnvText(text = "") {
@@ -127,12 +182,17 @@ export async function initProject(projectRoot = process.cwd()) {
   await ensureDir(paths.notesDir);
   await ensureDir(paths.sessionsDir);
   await ensureFile(
+    paths.agintiInstructionsPath,
+    defaultAgintiInstructions()
+  );
+  await ensureFile(
     paths.controlReadmePath,
     [
       "# AgInTi Project Control",
       "",
       "This folder stores project-local AgInTiFlow configuration.",
       "",
+      "- `../AGINTI.md` stores editable project instructions for CLI and web agents.",
       "- `.env` is ignored and can hold local provider keys.",
       "- `.env.example` documents accepted variable names.",
       "- `.sessions/` at the project root stores CLI and web run history.",
@@ -175,6 +235,7 @@ export async function initProject(projectRoot = process.cwd()) {
   return {
     ok: true,
     projectRoot: paths.root,
+    instructionsPath: paths.agintiInstructionsPath,
     controlDir: paths.controlDir,
     sessionsDir: paths.sessionsDir,
     created,
@@ -318,10 +379,11 @@ export async function npmLatestVersion(packageName = "@lazyingart/agintiflow") {
 export async function doctorReport(projectRoot, packageVersion, config) {
   const paths = projectPaths(projectRoot);
   const keyStatus = providerKeyStatus(projectRoot);
-  const [sessions, dockerStatus, latestVersion] = await Promise.all([
+  const [sessions, dockerStatus, latestVersion, instructions] = await Promise.all([
     listProjectSessions(projectRoot, 8),
     getDockerSandboxStatus(config).catch((error) => ({ ok: false, error: error.message })),
     npmLatestVersion(),
+    readProjectInstructions(projectRoot, { maxBytes: 1 }),
   ]);
 
   return {
@@ -337,6 +399,8 @@ export async function doctorReport(projectRoot, packageVersion, config) {
     },
     project: {
       root: paths.root,
+      instructionsPath: paths.agintiInstructionsPath,
+      instructionsPresent: instructions.exists,
       controlDir: paths.controlDir,
       sessionsDir: paths.sessionsDir,
       sessionDbPath: paths.sessionDbPath,

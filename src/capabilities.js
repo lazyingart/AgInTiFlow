@@ -4,7 +4,7 @@ import path from "node:path";
 import { classifyCommand, evaluateCommandPolicy } from "./command-policy.js";
 import { getDockerSandboxStatus } from "./docker-sandbox.js";
 import { getModelPresets } from "./model-routing.js";
-import { listProjectSessions, projectPaths, providerKeyStatus } from "./project.js";
+import { listProjectSessions, projectPaths, providerKeyStatus, readProjectInstructions } from "./project.js";
 import { listTaskProfiles } from "./task-profiles.js";
 import { listAgentWrappers } from "./tool-wrappers.js";
 import { listAuxiliarySkills } from "./auxiliary-tools.js";
@@ -110,7 +110,7 @@ function trustedDockerPolicyChecks(config) {
 export async function buildCapabilityReport(projectRoot, packageVersion, config) {
   const paths = projectPaths(projectRoot);
   const keyStatus = providerKeyStatus(projectRoot);
-  const [node, npm, python, conda, r, pdflatex, latexmk, dockerStatus, sessions] = await Promise.all([
+  const [node, npm, python, conda, r, pdflatex, latexmk, dockerStatus, sessions, instructions] = await Promise.all([
     commandAvailable("node", ["--version"]),
     commandAvailable("npm", ["--version"]),
     commandAvailable("python3", ["--version"]),
@@ -120,6 +120,7 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
     commandAvailable("latexmk", ["--version"]),
     getDockerSandboxStatus(config).catch((error) => ({ ok: false, error: error.message })),
     listProjectSessions(projectRoot, 12),
+    readProjectInstructions(projectRoot, { maxBytes: 1 }),
   ]);
 
   const npmPrefixPolicy = evaluateCommandPolicy("npm --prefix round9-node-app test", config);
@@ -167,6 +168,8 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
     project: {
       root: paths.root,
       commandCwd: path.resolve(config.commandCwd),
+      instructionsPath: paths.agintiInstructionsPath,
+      instructionsPresent: instructions.exists,
       sessionsDir: paths.sessionsDir,
       sessionDbPath: paths.sessionDbPath,
       sharedSessionFolder: path.resolve(config.sessionsDir) === path.resolve(paths.sessionsDir),
@@ -230,6 +233,7 @@ export function printCapabilityReport(report) {
   console.log(`AgInTiFlow capabilities ${report.package.version}`);
   console.log(`project=${report.project.root}`);
   console.log(`cwd=${report.project.commandCwd}`);
+  console.log(`instructions=${report.project.instructionsPath} present=${report.project.instructionsPresent}`);
   console.log(`sessions=${report.project.sessionsDir}`);
   console.log(`sessionDb=${report.project.sessionDbPath}`);
   console.log(`sharedSessions=${report.project.sharedSessionFolder}`);

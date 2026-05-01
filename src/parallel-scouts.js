@@ -67,6 +67,9 @@ function scoutMessages(config, state, scout) {
         `Goal: ${config.goal || state.goal || ""}`,
         `Task profile: ${profile.label}. ${profile.prompt}`,
         guidance,
+        state.meta?.projectInstructions?.exists
+          ? `Project instructions: AGINTI.md loaded from ${state.meta.projectInstructions.path}${state.meta.projectInstructions.truncated ? " (truncated)" : ""}.`
+          : "Project instructions: AGINTI.md not present.",
         `Workspace: ${config.commandCwd}`,
         `Sandbox: ${config.sandboxMode}; package policy: ${config.packageInstallPolicy}`,
         `Current plan:\n${state.plan || "(none yet)"}`,

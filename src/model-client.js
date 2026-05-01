@@ -67,6 +67,7 @@ function mockCommandForGoal(goal = "") {
 
 function mockPathForGoal(goal = "") {
   const text = String(goal);
+  if (/\bAGINTI\.md\b|project instructions|remember (?:that|this)|durable preference/i.test(text)) return "AGINTI.md";
   const explicit = text.match(/(?:file|path):\s*`?([A-Za-z0-9_./-]+)`?/i)?.[1];
   if (explicit) return explicit;
   const createPath = text.match(
@@ -82,6 +83,13 @@ function mockPathForGoal(goal = "") {
 function mockWorkspaceToolForGoal(goal = "") {
   const text = String(goal).toLowerCase();
   const targetPath = mockPathForGoal(goal);
+  if (targetPath === "AGINTI.md" && /update|remember|instruction|preference|aginti\.md/.test(text)) {
+    return mockToolCall("write_file", {
+      path: targetPath,
+      mode: "overwrite",
+      content: `# AGINTI.md\n\nProject instructions for AgInTiFlow agents.\n\n## Notes\n\n- ${String(goal).slice(0, 180)}\n`,
+    });
+  }
   if (/inspect|map|overview|architecture|large codebase|large repo|repository|repo\b|codebase/.test(text)) {
     return mockToolCall("inspect_project", {
       path: ".",
@@ -185,6 +193,7 @@ function mockChatResponse(content, toolCalls = []) {
 export async function createPlan(client, config, state) {
   const taskProfile = getTaskProfile(config.taskProfile);
   const engineeringGuidance = engineeringGuidanceForTask(state.goal, config.taskProfile);
+  const projectInstructions = state.meta?.projectInstructions;
   if (client.mock) {
     return [
       "1. Inspect the request and prefer the local shell when available.",
@@ -213,8 +222,11 @@ export async function createPlan(client, config, state) {
             ? `Shell tool is enabled in ${config.commandCwd}. In Docker, this path is mounted as /workspace with persistent /aginti-env and /aginti-cache mounts. Use relative paths or /workspace paths, not absolute host temp paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}. For npm/pip/conda/venv setup, explain the need and wait for approval unless policy is allow.`
             : "",
           config.allowFileTools
-            ? `Workspace file tools are enabled in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, preview_workspace. For large or unfamiliar repos, plan to call inspect_project first, then search/read exact files. apply_patch supports exact single-file replacements and Codex-style/unified multi-file patches; prefer it for edits after reading relevant context. Keep all paths workspace-relative, for example plot_fx.svg or docs/report.tex, and avoid secrets. For generated local HTML/SVG/PDF/static sites, plan to use open_workspace_file or preview_workspace rather than starting a localhost server inside Docker.`
+            ? `Workspace file tools are enabled in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, preview_workspace. For large or unfamiliar repos, plan to call inspect_project first, then search/read AGINTI.md/AGENTS.md/README/manifests and exact files. apply_patch supports exact single-file replacements and Codex-style/unified multi-file patches; prefer it for edits after reading relevant context. Keep all paths workspace-relative, for example plot_fx.svg or docs/report.tex, and avoid secrets. For generated local HTML/SVG/PDF/static sites, plan to use open_workspace_file or preview_workspace rather than starting a localhost server inside Docker.`
             : "",
+          projectInstructions?.exists
+            ? `Project instructions: AGINTI.md is loaded from ${projectInstructions.path}${projectInstructions.truncated ? " (truncated)" : ""}. Follow it and update it with file tools when the user asks to remember or change project instructions.`
+            : "Project instructions: AGINTI.md is not present unless created by /init or file tools.",
           config.allowWrapperTools
             ? `Agent wrappers are enabled. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Status: ${wrapperStatusText()}.`
             : "",

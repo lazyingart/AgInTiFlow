@@ -53,6 +53,7 @@ const IMPORTANT_MANIFESTS = new Set([
   "compose.yml",
   "README.md",
   "AGENTS.md",
+  "AGINTI.md",
 ]);
 const SOURCE_DIR_NAMES = new Set(["src", "app", "lib", "packages", "apps", "bin", "scripts", "server", "client", "public", "docs"]);
 const TEST_DIR_NAMES = new Set(["test", "tests", "__tests__", "spec", "specs", "e2e"]);
@@ -279,7 +280,7 @@ async function readJsonFileSafe(absolutePath) {
 
 function recommendedReads(summary) {
   const reads = [];
-  for (const name of ["AGENTS.md", "README.md", "package.json", "pyproject.toml", "Cargo.toml", "go.mod"]) {
+  for (const name of ["AGINTI.md", "AGENTS.md", "README.md", "package.json", "pyproject.toml", "Cargo.toml", "go.mod"]) {
     const match = summary.manifestFiles.find((item) => item.path === name || item.path.endsWith(`/${name}`));
     if (match) reads.push(match.path);
   }
@@ -533,7 +534,7 @@ async function inspectProject(config, args) {
     packageScripts,
     recommendedReads: [],
     engineeringHints: [
-      "Read AGENTS/README/manifests before editing.",
+      "Read AGINTI/AGENTS/README/manifests before editing.",
       "Use search_files to locate symbols and tests, then read exact files.",
       "Use apply_patch for source edits and run the smallest relevant check first.",
       "If a change spans modules, patch in small batches and verify after each batch.",
