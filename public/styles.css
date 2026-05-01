@@ -14,6 +14,13 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
@@ -25,20 +32,24 @@ body {
 }
 
 .page {
-  width: min(1240px, calc(100% - 32px));
+  width: min(1240px, 100%);
+  max-width: 100%;
   margin: 32px auto;
+  padding: 0 16px;
   display: grid;
   gap: 20px;
-  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  grid-template-columns: minmax(280px, 400px) minmax(0, 1fr);
 }
 
 .stack {
   display: grid;
+  min-width: 0;
   align-content: start;
   gap: 14px;
 }
 
 .panel {
+  min-width: 0;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -137,6 +148,7 @@ button {
 input,
 textarea,
 select {
+  min-width: 0;
   width: 100%;
   border: 1px solid var(--line);
   background: #fffdfa;
@@ -306,6 +318,8 @@ button.danger {
 .actions,
 .header-row {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: center;
   justify-content: space-between;
@@ -417,6 +431,7 @@ button.danger {
   font-size: 0.72rem;
   line-height: 1.42;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .sandbox-card h2 {
@@ -444,6 +459,7 @@ button.danger {
   font-size: 0.78rem;
   line-height: 1.45;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .session-select {
@@ -452,13 +468,18 @@ button.danger {
 
 .session-tools {
   display: flex;
-  min-width: min(100%, 420px);
+  flex: 1 1 420px;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   justify-content: flex-end;
 }
 
 .session-tools .session-select {
+  flex: 1 1 220px;
+  min-width: 0;
   max-width: none;
 }
 
@@ -476,6 +497,7 @@ button.danger {
   font-size: 0.9rem;
   line-height: 1.5;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .chat-panel {
@@ -514,6 +536,7 @@ button.danger {
 
 .chat-content {
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .chat-form {
@@ -522,6 +545,7 @@ button.danger {
 
 .modal {
   width: min(720px, calc(100% - 28px));
+  max-width: 100%;
   padding: 0;
   border: 0;
   border-radius: 22px;
@@ -604,6 +628,7 @@ button.danger {
 
 .artifact-modal {
   width: min(1120px, calc(100% - 28px));
+  max-width: 100%;
 }
 
 .artifact-modal-card {
@@ -613,6 +638,7 @@ button.danger {
 
 .artifact-tabs {
   display: flex;
+  max-width: 100%;
   flex-wrap: wrap;
   gap: 8px;
   padding: 5px;
@@ -623,7 +649,7 @@ button.danger {
 
 .artifact-tab {
   flex: 1;
-  min-width: 130px;
+  min-width: min(130px, 100%);
   border: 1px solid transparent;
   background: transparent;
   color: var(--muted);
@@ -639,6 +665,7 @@ button.danger {
 .artifact-layout {
   display: grid;
   min-height: 520px;
+  max-width: 100%;
   gap: 14px;
   grid-template-columns: minmax(240px, 340px) minmax(0, 1fr);
   overflow: hidden;
@@ -674,6 +701,7 @@ button.danger {
 .artifact-list {
   display: grid;
   align-content: start;
+  min-width: 0;
   gap: 8px;
   overflow: auto;
   padding: 10px;
@@ -681,7 +709,8 @@ button.danger {
 
 .artifact-row {
   display: grid;
-  gap: 5px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
   width: 100%;
   padding: 11px 12px;
   border: 1px solid var(--line);
@@ -689,6 +718,40 @@ button.danger {
   background: #fffdfa;
   color: var(--ink);
   text-align: left;
+}
+
+.artifact-row-main {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  box-shadow: none;
+  text-align: left;
+}
+
+.artifact-menu-button {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  align-self: start;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 253, 250, 0.9);
+  color: var(--muted);
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  box-shadow: none;
+}
+
+.artifact-menu-button:hover,
+.artifact-menu-button:focus-visible {
+  border-color: rgba(15, 118, 110, 0.34);
+  color: var(--accent);
 }
 
 .artifact-row[data-selected="true"] {
@@ -715,6 +778,7 @@ button.danger {
 .artifact-row-top,
 .artifact-viewer-header {
   display: flex;
+  min-width: 0;
   gap: 10px;
   align-items: flex-start;
   justify-content: space-between;
@@ -722,6 +786,7 @@ button.danger {
 
 .artifact-row-top strong,
 .artifact-viewer-header h3 {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -752,6 +817,7 @@ button.danger {
 .artifact-row-preview {
   display: -webkit-box;
   overflow: hidden;
+  overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
@@ -808,6 +874,7 @@ button.danger {
 
 .artifact-pdf-frame {
   width: 100%;
+  max-width: 100%;
   min-height: 62vh;
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -828,6 +895,8 @@ button.danger {
 
 @media (max-width: 960px) {
   .page {
+    margin: 16px auto;
+    padding: 0 12px;
     grid-template-columns: 1fr;
   }
 
@@ -874,5 +943,25 @@ button.danger {
 
   .artifact-modal-card {
     overflow: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .grid,
+  .checks,
+  .wrapper-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .panel {
+    padding: 15px;
+  }
+
+  .artifact-tabs {
+    border-radius: 18px;
+  }
+
+  .artifact-tab {
+    min-width: 120px;
   }
 }

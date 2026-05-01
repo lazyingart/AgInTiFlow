@@ -122,6 +122,7 @@ const translations = {
     artifactTunnelTitle: "Canvas & artifacts",
     artifactTunnelHelp: "Agent-selected canvas items, generated files, screenshots, diffs, and final answers.",
     artifactCanvasTab: "Canvas",
+    artifactPdfTab: "PDF Reader",
     artifactExplorerTab: "Explorer",
     artifactNotificationsTab: "Notifications",
     artifactListTitle: "Artifacts",
@@ -132,6 +133,10 @@ const translations = {
     artifactLoading: "Loading artifact...",
     artifactLoadFailed: "Failed to load artifact.",
     artifactSeenUpdated: "Notifications marked as seen.",
+    artifactDownloadLabel: "Download artifact",
+    artifactDownloadPreparing: "Preparing download...",
+    artifactDownloadReady: "Download started.",
+    artifactDownloadFailed: "Download failed.",
   },
   ar: {
     documentTitle: "AgInTiFlow",
@@ -1030,9 +1035,28 @@ function artifactLabel(item) {
   return [item.kind, source, when].filter(Boolean).join(" · ");
 }
 
+function isPdfArtifact(item) {
+  return item?.kind === "pdf" || item?.mime === "application/pdf" || /\.pdf$/i.test(item?.path || "");
+}
+
+function artifactVisibleInCurrentTab(item) {
+  if (currentArtifactTab === "pdf") return isPdfArtifact(item);
+  return item.tab === currentArtifactTab;
+}
+
+function preferredArtifactForCurrentTab(fallbackId = "") {
+  const current = artifactItems.find((item) => item.id === selectedArtifactId && artifactVisibleInCurrentTab(item));
+  if (current) return current;
+
+  const fallback = artifactItems.find((item) => item.id === fallbackId && artifactVisibleInCurrentTab(item));
+  if (fallback) return fallback;
+
+  return artifactItems.find(artifactVisibleInCurrentTab) || null;
+}
+
 function renderArtifactList() {
   if (!artifactListEl) return;
-  const visible = artifactItems.filter((item) => item.tab === currentArtifactTab);
+  const visible = artifactItems.filter(artifactVisibleInCurrentTab);
   const readIds = getArtifactReadIds();
 
   document.querySelectorAll(".artifact-tab").forEach((tab) => {
@@ -1054,14 +1078,23 @@ function renderArtifactList() {
       (item) => {
         const read = readIds.has(item.id);
         return `
-        <button class="artifact-row" type="button" data-artifact-id="${escapeHtml(item.id)}" data-selected="${item.id === selectedArtifactId}" data-read="${read}">
-          <span class="artifact-row-top">
-            <strong>${escapeHtml(item.title || item.path || item.kind)}</strong>
-            <span>${read ? escapeHtml(item.kind) : `New · ${escapeHtml(item.kind)}`}</span>
-          </span>
-          <span class="artifact-row-meta">${escapeHtml(artifactLabel(item))}</span>
-          <span class="artifact-row-preview">${escapeHtml(item.preview || item.path || "")}</span>
-        </button>
+        <div class="artifact-row" data-selected="${item.id === selectedArtifactId}" data-read="${read}">
+          <button class="artifact-row-main" type="button" data-artifact-id="${escapeHtml(item.id)}">
+            <span class="artifact-row-top">
+              <strong>${escapeHtml(item.title || item.path || item.kind)}</strong>
+              <span>${read ? escapeHtml(item.kind) : `New · ${escapeHtml(item.kind)}`}</span>
+            </span>
+            <span class="artifact-row-meta">${escapeHtml(artifactLabel(item))}</span>
+            <span class="artifact-row-preview">${escapeHtml(item.preview || item.path || "")}</span>
+          </button>
+          <button
+            class="artifact-menu-button"
+            type="button"
+            data-artifact-download-id="${escapeHtml(item.id)}"
+            aria-label="${escapeHtml(t("artifactDownloadLabel"))}"
+            title="${escapeHtml(t("artifactDownloadLabel"))}"
+          >...</button>
+        </div>
       `;
       }
     )
@@ -1078,7 +1111,8 @@ function resetArtifactViewer() {
 function renderArtifactShell() {
   renderArtifactBadge();
   renderArtifactList();
-  if (!selectedArtifactId || !artifactItems.some((item) => item.id === selectedArtifactId)) {
+  const selected = artifactItems.find((item) => item.id === selectedArtifactId);
+  if (!selected || !artifactVisibleInCurrentTab(selected)) {
     resetArtifactViewer();
   }
 }
@@ -1111,6 +1145,79 @@ function renderArtifactContent(content) {
   `;
 }
 
+function artifactDownloadName(item, content) {
+  const sourceName = content.path || item?.path || content.title || item?.title || `artifact-${content.id || "download"}`;
+  const fallbackExt =
+    content.mime === "application/pdf" || content.kind === "pdf"
+      ? ".pdf"
+      : content.mime?.startsWith("image/png")
+        ? ".png"
+        : content.mime?.startsWith("image/svg")
+          ? ".svg"
+          : content.kind === "json"
+            ? ".json"
+            : content.kind === "diff"
+              ? ".diff"
+              : content.kind === "markdown"
+                ? ".md"
+                : ".txt";
+  const base = sourceName
+    .split("/")
+    .filter(Boolean)
+    .pop()
+    ?.replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const name = base || `artifact-${content.id || Date.now()}`;
+  return /\.[A-Za-z0-9]{1,8}$/.test(name) ? name : `${name}${fallbackExt}`;
+}
+
+function blobFromDataUrl(dataUrl) {
+  const [meta = "", payload = ""] = String(dataUrl || "").split(",", 2);
+  const mime = meta.match(/^data:([^;,]+)/)?.[1] || "application/octet-stream";
+  if (meta.includes(";base64")) {
+    const binary = atob(payload);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return new Blob([bytes], { type: mime });
+  }
+  return new Blob([decodeURIComponent(payload)], { type: mime });
+}
+
+async function downloadArtifact(artifactId) {
+  if (!currentSessionId || !artifactId) return;
+  const item = artifactItems.find((candidate) => candidate.id === artifactId);
+  artifactStatusEl.textContent = t("artifactDownloadPreparing");
+
+  try {
+    const response = await fetch(
+      `/api/sessions/${encodeURIComponent(currentSessionId)}/artifacts/${encodeURIComponent(artifactId)}`
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || t("artifactDownloadFailed"));
+
+    const blob = data.dataUrl
+      ? blobFromDataUrl(data.dataUrl)
+      : new Blob([typeof data.text === "string" ? data.text : JSON.stringify(data, null, 2)], {
+          type: data.mime || "text/plain;charset=utf-8",
+        });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = artifactDownloadName(item, data);
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+
+    markArtifactRead(artifactId);
+    renderArtifactBadge();
+    renderArtifactList();
+    artifactStatusEl.textContent = t("artifactDownloadReady");
+  } catch (error) {
+    artifactStatusEl.textContent = error instanceof Error ? error.message : t("artifactDownloadFailed");
+  }
+}
+
 async function refreshArtifacts({ loadSelected = false } = {}) {
   if (!currentSessionId) {
     artifactItems = [];
@@ -1125,9 +1232,27 @@ async function refreshArtifacts({ loadSelected = false } = {}) {
   const data = await response.json();
   artifactItems = data.items || [];
   artifactUnreadCount = computeUnreadArtifactCount();
+
+  if (loadSelected) {
+    const backendSelected = artifactItems.find((item) => item.id === data.selectedItemId);
+    const pdfCandidate = artifactItems.find((item) => item.id === selectedArtifactId && isPdfArtifact(item))
+      || (backendSelected && isPdfArtifact(backendSelected) ? backendSelected : null)
+      || artifactItems.find(isPdfArtifact);
+    if (pdfCandidate) {
+      currentArtifactTab = "pdf";
+      selectedArtifactId = pdfCandidate.id;
+    }
+  }
+
   if (!selectedArtifactId || !artifactItems.some((item) => item.id === selectedArtifactId)) {
     selectedArtifactId = data.selectedItemId || artifactItems[0]?.id || "";
   }
+
+  const visiblePreferred = preferredArtifactForCurrentTab(data.selectedItemId);
+  if (visiblePreferred) {
+    selectedArtifactId = visiblePreferred.id;
+  }
+
   renderArtifactShell();
   if (loadSelected && selectedArtifactId) await selectArtifact(selectedArtifactId, { persist: false });
 }
@@ -1466,10 +1591,26 @@ artifactTabsEl.addEventListener("click", (event) => {
   const tab = event.target.closest("[data-artifact-tab]");
   if (!tab) return;
   currentArtifactTab = tab.dataset.artifactTab || "canvas";
+  const preferred = preferredArtifactForCurrentTab();
+  if (preferred) selectedArtifactId = preferred.id;
   renderArtifactShell();
+  if (selectedArtifactId) {
+    selectArtifact(selectedArtifactId, { persist: false }).catch((error) => {
+      artifactStatusEl.textContent = String(error);
+    });
+  }
 });
 
 artifactListEl.addEventListener("click", (event) => {
+  const downloadButton = event.target.closest("[data-artifact-download-id]");
+  if (downloadButton) {
+    event.stopPropagation();
+    downloadArtifact(downloadButton.dataset.artifactDownloadId || "").catch((error) => {
+      artifactStatusEl.textContent = String(error);
+    });
+    return;
+  }
+
   const row = event.target.closest("[data-artifact-id]");
   if (!row) return;
   selectArtifact(row.dataset.artifactId || "").catch((error) => {
