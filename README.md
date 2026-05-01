@@ -112,6 +112,18 @@ The web app includes:
 
 `Start URL` is only a suggestion. The browser opens only when the model chooses a browser tool.
 
+## Website
+
+In the source repository, the marketing website lives in `website/`, is published at `https://flow.lazying.art`, and is separate from the app UI in `public/`.
+
+```bash
+python3 -m http.server 4310 --directory website
+node scripts/capture-website-screenshots.js
+```
+
+The screenshot script captures the live app at `http://127.0.0.1:3210/` by default and writes carousel assets to `website/assets/screenshots/`.
+GitHub Pages deploys the `website/` directory through `.github/workflows/pages.yml`; `website/CNAME` sets the custom domain to `flow.lazying.art`.
+
 ## Safety Model
 
 AgInTiFlow is intentionally conservative:
@@ -284,6 +296,7 @@ AgInTiFlow/
 ├── logos/                  # Brand assets and crop notes
 ├── references/             # Design philosophy and research notes
 ├── tools/                  # Reusable project documentation helpers
+├── website/                # Static marketing site and screenshot carousel
 ├── run.js                  # CLI entrypoint
 └── web.js                  # Express web server
 ```
