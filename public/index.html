@@ -120,16 +120,37 @@
           </div>
 
           <div class="checks">
-            <label><input id="headless" name="headless" type="checkbox" checked /> <span data-i18n="headlessLabel">Headless browser</span></label>
-            <label><input id="allowShellTool" name="allowShellTool" type="checkbox" checked /> <span data-i18n="shellToolLabel">Enable shell tool</span></label>
-            <label><input id="allowFileTools" name="allowFileTools" type="checkbox" checked /> <span data-i18n="fileToolLabel">Enable file tools</span></label>
-            <label><input id="allowPasswords" name="allowPasswords" type="checkbox" /> <span data-i18n="allowPasswordsLabel">Allow password typing</span></label>
-            <label><input id="allowDestructive" name="allowDestructive" type="checkbox" /> <span data-i18n="allowDestructiveLabel">Allow destructive actions</span></label>
+            <label class="switch-label">
+              <input id="headless" name="headless" type="checkbox" checked />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="headlessLabel">Headless browser</span>
+            </label>
+            <label class="switch-label">
+              <input id="allowShellTool" name="allowShellTool" type="checkbox" checked />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="shellToolLabel">Enable shell tool</span>
+            </label>
+            <label class="switch-label">
+              <input id="allowFileTools" name="allowFileTools" type="checkbox" checked />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="fileToolLabel">Enable file tools</span>
+            </label>
+            <label class="switch-label">
+              <input id="allowPasswords" name="allowPasswords" type="checkbox" />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="allowPasswordsLabel">Allow password typing</span>
+            </label>
+            <label class="switch-label">
+              <input id="allowDestructive" name="allowDestructive" type="checkbox" />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="allowDestructiveLabel">Allow destructive actions</span>
+            </label>
           </div>
 
           <div class="grid wrapper-controls">
-            <label class="checkbox-card">
+            <label class="switch-label switch-card">
               <input id="allowWrapperTools" name="allowWrapperTools" type="checkbox" />
+              <span class="switch" aria-hidden="true"></span>
               <span data-i18n="wrapperToolLabel">Enable agent wrappers</span>
             </label>
             <label>
