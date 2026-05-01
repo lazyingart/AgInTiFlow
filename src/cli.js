@@ -306,6 +306,11 @@ async function handleSessionsCommand(argv) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
+  if (argv[0] === "--version" || argv[0] === "version" || argv[0] === "-v") {
+    console.log(packageJson.version);
+    return;
+  }
+
   if (argv[0] === "init") {
     printInitResult(await initProject(process.cwd()));
     return;
