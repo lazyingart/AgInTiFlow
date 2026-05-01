@@ -71,6 +71,8 @@ Inside chat, type normal requests such as `write a small Python CLI app with tes
 
 For code edits, AgInTiFlow routes patch/refactor/database-style tasks to DeepSeek v4 pro by default and exposes `apply_patch` as a deterministic workspace tool. It supports exact replacements, Codex-style patch envelopes, and unified diffs, with preflight checks, path guardrails, hashes, and compact per-file diffs. See [docs/patch-tools.md](docs/patch-tools.md).
 
+For larger repositories, use `--profile large-codebase` or choose **Large codebase engineering** in the web UI. This routes to DeepSeek v4 pro, starts with `inspect_project`, then uses search/read/patch/check loops inspired by Codex, Copilot SDK, Claude Code, Gemini CLI, Qwen, and Claw Code. See [docs/large-codebase-engineering.md](docs/large-codebase-engineering.md).
+
 For raster image work, AgInTiFlow has an optional `image_generation` skill backed by the `generate_image` tool and a local `GRSAI` key. The skill tells DeepSeek when image generation is appropriate; the tool calls GRS AI Nano Banana, saves manifests/images under `artifacts/images`, and sends the result to the canvas. See [docs/auxiliary-image-generation.md](docs/auxiliary-image-generation.md).
 
 Launch the local web UI from an installed package:

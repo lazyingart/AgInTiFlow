@@ -86,6 +86,53 @@ try {
     goal: "patch this large codebase and migrate the database tests",
   });
   assert(/pro/i.test(patchRoute.model), "patch/refactor task did not route to DeepSeek pro");
+  const largeProfileRoute = selectModelRoute({
+    routingMode: "smart",
+    provider: "deepseek",
+    goal: "fix this bug",
+    taskProfile: "large-codebase",
+  });
+  assert(/pro/i.test(largeProfileRoute.model), "large-codebase profile did not route to DeepSeek pro");
+
+  await fs.mkdir(path.join(workspace, "src"), { recursive: true });
+  await fs.mkdir(path.join(workspace, "test"), { recursive: true });
+  await fs.writeFile(
+    path.join(workspace, "package.json"),
+    JSON.stringify(
+      {
+        name: "agintiflow-inspect-smoke",
+        scripts: {
+          test: "node --test test/index.test.js",
+          check: "node --check src/index.js",
+        },
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+  await fs.writeFile(path.join(workspace, "src/index.js"), "export function answer() { return 42; }\n", "utf8");
+  await fs.writeFile(path.join(workspace, "test/index.test.js"), "import test from 'node:test';\n", "utf8");
+  const inspected = await executeWorkspaceTool(
+    "inspect_project",
+    { path: ".", maxDepth: 4, limit: 200 },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  assert(inspected.ok, "inspect_project failed");
+  assert(inspected.manifestFiles.some((item) => item.path === "package.json"), "inspect_project did not find package.json");
+  assert(inspected.packageScripts.some((item) => item.name === "test"), "inspect_project did not extract package scripts");
+  assert(inspected.sourceDirs.some((item) => item.path === "src"), "inspect_project did not identify src directory");
+  assert(inspected.testFiles.some((item) => item.path === "test/index.test.js"), "inspect_project did not identify test file");
+  assert(inspected.recommendedReads.includes("package.json"), "inspect_project did not recommend package.json");
+
+  const inspectRun = await runMock("Inspect this large codebase and recommend next reads.", "coding-inspect");
+  assert(
+    inspectRun.events.some((event) => event.type === "tool.completed" && event.data?.toolName === "inspect_project"),
+    "mock large-codebase run did not use inspect_project"
+  );
 
   const writeRun = await runMock("Create notes/hello.md with a short coding smoke message.", "coding-write");
   const written = await fs.readFile(path.join(workspace, "notes/hello.md"), "utf8");
@@ -216,6 +263,9 @@ try {
         checks: [
           "deepseek_history_repair",
           "deepseek_pro_patch_route",
+          "large_profile_pro_route",
+          "inspect_project",
+          "mock_inspect_project",
           "write_file",
           "duplicate_write_failed",
           "resume_session_write",

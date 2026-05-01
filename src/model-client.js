@@ -81,6 +81,13 @@ function mockPathForGoal(goal = "") {
 function mockWorkspaceToolForGoal(goal = "") {
   const text = String(goal).toLowerCase();
   const targetPath = mockPathForGoal(goal);
+  if (/inspect|map|overview|architecture|large codebase|large repo|repository|repo\b|codebase/.test(text)) {
+    return mockToolCall("inspect_project", {
+      path: ".",
+      maxDepth: 6,
+      limit: 400,
+    });
+  }
   if (/patch|replace|edit/.test(text)) {
     if (/multi|codex|unified|several|multiple/i.test(text)) {
       return mockToolCall("apply_patch", {
@@ -194,7 +201,7 @@ export async function createPlan(client, config, state) {
             ? `Shell tool is enabled in ${config.commandCwd}. In Docker, this path is mounted as /workspace with persistent /aginti-env and /aginti-cache mounts. Use relative paths or /workspace paths, not absolute host temp paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}. For npm/pip/conda/venv setup, explain the need and wait for approval unless policy is allow.`
             : "",
           config.allowFileTools
-            ? `Workspace file tools are enabled in ${config.commandCwd}: list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, preview_workspace. apply_patch supports exact single-file replacements and Codex-style/unified multi-file patches; prefer it for edits after reading relevant context. Keep all paths workspace-relative, for example plot_fx.svg or docs/report.tex, and avoid secrets. For generated local HTML/SVG/PDF/static sites, plan to use open_workspace_file or preview_workspace rather than starting a localhost server inside Docker.`
+            ? `Workspace file tools are enabled in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, preview_workspace. For large or unfamiliar repos, plan to call inspect_project first, then search/read exact files. apply_patch supports exact single-file replacements and Codex-style/unified multi-file patches; prefer it for edits after reading relevant context. Keep all paths workspace-relative, for example plot_fx.svg or docs/report.tex, and avoid secrets. For generated local HTML/SVG/PDF/static sites, plan to use open_workspace_file or preview_workspace rather than starting a localhost server inside Docker.`
             : "",
           config.allowWrapperTools
             ? `Agent wrappers are enabled. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Status: ${wrapperStatusText()}.`
@@ -417,6 +424,24 @@ export async function requestNextStep(client, config, messages) {
       {
         type: "function",
         function: {
+          name: "inspect_project",
+          description:
+            "Build a compact, deterministic map of the workspace for large-codebase work. Returns top-level entries, manifests, source/test directories, package scripts, language counts, and recommended files to read next. Use this before editing an unfamiliar or multi-file repository.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Workspace-relative directory to inspect. Defaults to ." },
+              maxDepth: { type: "integer", description: "Recursive depth, 1 to 10. Defaults to 6." },
+              limit: { type: "integer", description: "Maximum filesystem entries to inspect." },
+              includeFiles: { type: "boolean", description: "Include a compact file list when needed. Defaults to false." },
+            },
+            additionalProperties: false,
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
           name: "list_files",
           description:
             "List workspace-local files under the configured working directory. Paths must stay inside the workspace; .git, node_modules, sessions, and sensitive files are skipped.",
@@ -604,6 +629,11 @@ export async function requestNextStep(client, config, messages) {
         toolPayload.stderr,
         toolPayload.error,
         toolPayload.reason,
+        toolPayload.summary ? `Summary: ${toolPayload.summary}` : "",
+        toolPayload.counts ? `Counts: ${JSON.stringify(toolPayload.counts)}` : "",
+        Array.isArray(toolPayload.recommendedReads) && toolPayload.recommendedReads.length
+          ? `Recommended reads: ${toolPayload.recommendedReads.join(", ")}`
+          : "",
         toolPayload.path ? `Path: ${toolPayload.path}` : "",
         Array.isArray(toolPayload.changes)
           ? toolPayload.changes

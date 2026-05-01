@@ -14,7 +14,7 @@ import {
   setProviderKey,
   showProjectSession,
 } from "./project.js";
-import { listTaskProfiles } from "./task-profiles.js";
+import { defaultMaxStepsForProfile, listTaskProfiles } from "./task-profiles.js";
 import { promptAndSaveDeepSeekKey, promptHidden, shouldPromptForDeepSeek } from "./auth-onboarding.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -256,7 +256,7 @@ function agentDefaults(args) {
     sandboxMode: args.sandboxMode || "docker-workspace",
     packageInstallPolicy: args.packageInstallPolicy || "allow",
     useDockerSandbox: args.useDockerSandbox ?? true,
-    maxSteps: args.maxSteps || (args.latex || args.taskProfile === "latex" ? 30 : 24),
+    maxSteps: args.maxSteps || defaultMaxStepsForProfile(args.taskProfile || (args.latex ? "latex" : "auto")),
   };
 
   if (defaults.sandboxMode === "host") {

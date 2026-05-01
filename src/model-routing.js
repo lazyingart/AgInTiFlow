@@ -9,6 +9,16 @@ const COMPLEXITY_KEYWORDS = [
   "apply_patch",
   "edit",
   "large codebase",
+  "codebase",
+  "monorepo",
+  "repository",
+  "cross-file",
+  "multi file",
+  "large repo",
+  "engineering",
+  "entry point",
+  "regression",
+  "root cause",
   "design",
   "review",
   "migrate",
@@ -22,6 +32,9 @@ const COMPLEXITY_KEYWORDS = [
 ];
 
 const COMPLEX_ROUTE_HINTS = [
+  /\b(large|big|complex|complicated)\s+(repo|repository|codebase|project|task)\b/i,
+  /\b(multi[- ]file|cross[- ]file|repo[- ]wide|workspace[- ]wide)\b/i,
+  /\b(root cause|regression|failing tests?|fix the build|make it pass)\b/i,
   /\blatex\b/i,
   /\btexlive\b/i,
   /\bpdflatex\b/i,
@@ -102,9 +115,10 @@ export function getModelPresets() {
   };
 }
 
-export function scoreTaskComplexity(goal = "") {
+export function scoreTaskComplexity(goal = "", taskProfile = "auto") {
   const text = String(goal).toLowerCase();
   let score = text.length > 600 ? 2 : text.length > 240 ? 1 : 0;
+  if (["large-codebase", "engineering", "codebase"].includes(String(taskProfile || "").toLowerCase())) score += 3;
   for (const keyword of COMPLEXITY_KEYWORDS) {
     if (text.includes(keyword)) score += 1;
   }
@@ -118,7 +132,7 @@ export function normalizeRoutingMode(value) {
   return ROUTING_MODES.includes(value) ? value : "smart";
 }
 
-export function selectModelRoute({ routingMode = "smart", provider = "deepseek", model = "", goal = "" } = {}) {
+export function selectModelRoute({ routingMode = "smart", provider = "deepseek", model = "", goal = "", taskProfile = "auto" } = {}) {
   const mode = normalizeRoutingMode(routingMode);
   const presets = getModelPresets();
 
@@ -129,7 +143,7 @@ export function selectModelRoute({ routingMode = "smart", provider = "deepseek",
       provider: defaults.provider,
       model: model || defaults.model,
       reason: "Local mock route selected for smoke tests and offline UI/API checks.",
-      complexityScore: scoreTaskComplexity(goal),
+      complexityScore: scoreTaskComplexity(goal, taskProfile),
     };
   }
 
@@ -140,7 +154,7 @@ export function selectModelRoute({ routingMode = "smart", provider = "deepseek",
       provider: defaults.provider,
       model: model || defaults.model,
       reason: "Manual provider/model selection.",
-      complexityScore: scoreTaskComplexity(goal),
+      complexityScore: scoreTaskComplexity(goal, taskProfile),
     };
   }
 
@@ -150,7 +164,7 @@ export function selectModelRoute({ routingMode = "smart", provider = "deepseek",
       provider: presets.complex.provider,
       model: presets.complex.model,
       reason: "Complex route selected explicitly.",
-      complexityScore: scoreTaskComplexity(goal),
+      complexityScore: scoreTaskComplexity(goal, taskProfile),
     };
   }
 
@@ -160,11 +174,11 @@ export function selectModelRoute({ routingMode = "smart", provider = "deepseek",
       provider: presets.fast.provider,
       model: presets.fast.model,
       reason: "Fast route selected explicitly.",
-      complexityScore: scoreTaskComplexity(goal),
+      complexityScore: scoreTaskComplexity(goal, taskProfile),
     };
   }
 
-  const complexityScore = scoreTaskComplexity(goal);
+  const complexityScore = scoreTaskComplexity(goal, taskProfile);
   const selected = complexityScore >= 3 ? presets.complex : presets.fast;
   return {
     routingMode: mode,

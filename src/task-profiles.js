@@ -13,6 +13,13 @@ export const TASK_PROFILES = {
       "Act like a coding agent: understand the request, edit workspace files, run useful safe checks, iterate on failures, and report changed files and residual risks.",
     tools: ["files", "shell", "sandbox"],
   },
+  "large-codebase": {
+    id: "large-codebase",
+    label: "Large codebase engineering",
+    prompt:
+      "For large or complicated engineering work, behave like a senior coding agent: inspect_project first unless the repo is already known, read AGENTS/README/manifests, locate entry points and tests, make a small explicit change plan, patch in coherent batches, run the narrowest relevant checks first, escalate to broader checks when stable, and summarize files changed, checks, tradeoffs, and remaining risks.",
+    tools: ["inspect_project", "search_files", "read_file", "apply_patch", "shell", "sandbox", "canvas"],
+  },
   writing: {
     id: "writing",
     label: "Book/script writing",
@@ -85,15 +92,32 @@ export const TASK_PROFILES = {
   },
 };
 
+const PROFILE_ALIASES = {
+  large: "large-codebase",
+  codebase: "large-codebase",
+  repo: "large-codebase",
+  repository: "large-codebase",
+  engineering: "large-codebase",
+  engineer: "large-codebase",
+};
+
 export function listTaskProfiles() {
   return Object.values(TASK_PROFILES);
 }
 
 export function normalizeTaskProfile(value = "auto") {
   const key = String(value || "auto").trim().toLowerCase();
+  if (PROFILE_ALIASES[key]) return PROFILE_ALIASES[key];
   return TASK_PROFILES[key] ? key : "auto";
 }
 
 export function getTaskProfile(value = "auto") {
   return TASK_PROFILES[normalizeTaskProfile(value)];
+}
+
+export function defaultMaxStepsForProfile(value = "auto") {
+  const profile = normalizeTaskProfile(value);
+  if (profile === "large-codebase") return 36;
+  if (profile === "latex") return 30;
+  return 24;
 }

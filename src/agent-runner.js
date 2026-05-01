@@ -272,7 +272,7 @@ function createInitialState(config, sessionId) {
               : "A host shell command tool is available under the configured trust policy."
             : "No shell command tool is available.",
           config.allowFileTools
-            ? `Workspace file tools are available in ${config.commandCwd}: list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, and preview_workspace. apply_patch supports exact single-file replacements plus Codex-style/unified multi-file patches; prefer it for source edits after reading/searching the relevant context. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. Secret paths, .git internals, node_modules writes, and huge files are blocked. For generated local websites/pages, use open_workspace_file or preview_workspace instead of starting a localhost server inside Docker.`
+            ? `Workspace file tools are available in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, and preview_workspace. For large or unfamiliar repositories, call inspect_project first, then search/read exact files before editing. apply_patch supports exact single-file replacements plus Codex-style/unified multi-file patches; prefer it for source edits after reading/searching the relevant context. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. Secret paths, .git internals, node_modules writes, and huge files are blocked. For generated local websites/pages, use open_workspace_file or preview_workspace instead of starting a localhost server inside Docker.`
             : "No workspace file tools are available.",
           config.allowWrapperTools
             ? `External coding-agent wrappers are available as advisory tools only. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Wrapper status: ${wrapperStatusText()}.`
@@ -285,8 +285,8 @@ function createInitialState(config, sessionId) {
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. It is optional and ordinary final text can still go directly to finish.",
           "For visual-output requests such as draw, plot, graph, chart, diagram, figure, image, or visualization, proactively publish a canvas artifact even when the user does not mention canvas. If workspace file tools are enabled, prefer creating a small SVG or markdown artifact and call send_to_canvas with selected=true.",
-          "Work like a practical coding agent: inspect when useful, patch code with apply_patch, run safe checks when they add confidence, iterate on failures, and keep outputs inside the workspace.",
-          "For large projects, decompose into useful files and milestones, implement a coherent minimal version first, then iterate with checks rather than only describing what you would do.",
+          "Work like a practical coding agent: orient with inspect_project/search/read, patch code with apply_patch, run safe checks when they add confidence, iterate on failures, and keep outputs inside the workspace.",
+          "For large projects, decompose into useful files and milestones, identify entry points/tests/contracts first, implement a coherent minimal version, then iterate with checks rather than only describing what you would do.",
           "For website/app/code/LaTeX/Python/C/shell tasks, create or edit real workspace files, run available build/compile/test commands, and surface artifacts through the canvas when useful.",
           "For research or web-search tasks, use browser tools or safe shell network tools when the current policy allows; cite or save useful sources in workspace notes when the task needs traceability.",
           "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files.",
@@ -310,7 +310,7 @@ function createInitialState(config, sessionId) {
               : `Shell working directory: ${config.commandCwd}`
             : "",
           config.allowFileTools
-            ? `Workspace file tools enabled in: ${config.commandCwd}. Use workspace-relative paths. Use apply_patch for code edits; it accepts exact replacements or Codex-style/unified multi-file patches. Local preview tools available: open_workspace_file and preview_workspace.`
+            ? `Workspace file tools enabled in: ${config.commandCwd}. Use inspect_project first for large/unfamiliar codebases. Use workspace-relative paths. Use apply_patch for code edits; it accepts exact replacements or Codex-style/unified multi-file patches. Local preview tools available: open_workspace_file and preview_workspace.`
             : "",
           config.allowWrapperTools
             ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
@@ -323,7 +323,7 @@ function createInitialState(config, sessionId) {
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           "Canvas/artifacts tunnel: available through send_to_canvas for optional frontend rendering.",
           "Visual-output requests should produce a canvas artifact without requiring the user to ask for canvas explicitly.",
-          "Use file, shell, browser, canvas, and wrapper tools when they are useful; choose the workflow from the user's request.",
+          "Use file, shell, browser, canvas, and wrapper tools when they are useful; choose the workflow from the user's request. For complicated engineering tasks, keep a tight loop: inspect, choose minimal files, patch, run focused checks, repair, then summarize.",
           "Do not stop at a plan when tools can accomplish the request. Continue through implementation, checks, artifact selection, and finish.",
           "Use the configured sandbox and package policy for environment or system-maintenance work.",
         ]
@@ -430,7 +430,7 @@ function applyContinuationPrompt(state, config, observers) {
           : `Shell working directory: ${config.commandCwd}`
         : "",
       config.allowFileTools
-        ? `Workspace file tools enabled in: ${config.commandCwd}. Use workspace-relative paths. For generated local files/sites, use open_workspace_file or preview_workspace.`
+        ? `Workspace file tools enabled in: ${config.commandCwd}. Use inspect_project first for large or unfamiliar codebases, then search/read exact files before editing. Use workspace-relative paths. Use apply_patch for code edits; it accepts exact replacements or Codex-style/unified multi-file patches. For generated local files/sites, use open_workspace_file or preview_workspace.`
         : "",
       config.allowWrapperTools
         ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
@@ -631,7 +631,7 @@ async function captureSyntheticSnapshot(store, step, config) {
           : `Shell tool available in: ${config.commandCwd}`
         : "Shell tool disabled.",
       config.allowFileTools
-        ? `Workspace file tools available in: ${config.commandCwd}. Use workspace-relative paths. Use apply_patch for code edits; it supports exact single-file replacement and multi-file Codex-style/unified patches.`
+        ? `Workspace file tools available in: ${config.commandCwd}. Use inspect_project first for large or unfamiliar codebases, then search/read exact files before editing. Use workspace-relative paths. Use apply_patch for code edits; it supports exact single-file replacement and multi-file Codex-style/unified patches.`
         : "Workspace file tools disabled.",
       config.allowWrapperTools
         ? `Agent wrappers available: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
@@ -815,6 +815,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           await new Promise((resolve) => setTimeout(resolve, Number.isFinite(args.ms) ? Number(args.ms) : 1000));
         }
         break;
+      case "inspect_project":
       case "list_files":
       case "read_file":
       case "search_files":

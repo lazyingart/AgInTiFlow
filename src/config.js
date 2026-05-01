@@ -4,7 +4,7 @@ import { getProviderDefaults, normalizeRoutingMode, selectModelRoute } from "./m
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
 import { normalizeWrapperName } from "./tool-wrappers.js";
 import { loadProjectEnv, resolveProjectRoot } from "./project.js";
-import { normalizeTaskProfile } from "./task-profiles.js";
+import { defaultMaxStepsForProfile, normalizeTaskProfile } from "./task-profiles.js";
 
 function parseBoolean(value, fallback) {
   if (value === undefined) return fallback;
@@ -33,11 +33,13 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     process.env.AGENT_PROVIDER ||
     (process.env.DEEPSEEK_API_KEY ? "deepseek" : process.env.OPENAI_API_KEY ? "openai" : "deepseek");
   const routingMode = normalizeRoutingMode(overrides.routingMode || args.routingMode || process.env.AGENT_ROUTING_MODE || "smart");
+  const taskProfile = normalizeTaskProfile(overrides.taskProfile || args.taskProfile || process.env.AGINTI_TASK_PROFILE || "auto");
   const route = selectModelRoute({
     routingMode,
     provider: requestedProvider,
     model: overrides.model || args.model || process.env.LLM_MODEL || "",
     goal: args.goal || "",
+    taskProfile,
   });
 
   const defaults = getProviderDefaults(route.provider);
@@ -56,7 +58,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     resume: args.resume || "",
     sessionId: overrides.sessionId || args.sessionId || process.env.SESSION_ID || `web-agent-${crypto.randomUUID()}`,
     routingMode,
-    taskProfile: normalizeTaskProfile(overrides.taskProfile || args.taskProfile || process.env.AGINTI_TASK_PROFILE || "auto"),
+    taskProfile,
     routeReason: route.reason,
     routeComplexityScore: route.complexityScore,
     requestedProvider,
@@ -65,7 +67,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     apiKey: overrides.apiKey || defaults.apiKey,
     baseURL: overrides.baseURL || defaults.baseURL,
     model: route.model || defaults.model,
-    maxSteps: parseNumber(overrides.maxSteps ?? args.maxSteps ?? process.env.MAX_STEPS, 24),
+    maxSteps: parseNumber(overrides.maxSteps ?? args.maxSteps ?? process.env.MAX_STEPS, defaultMaxStepsForProfile(taskProfile)),
     headless: parseBoolean(overrides.headless ?? args.headless ?? process.env.HEADLESS, false),
     allowedDomains: Array.isArray(overrides.allowedDomains)
       ? overrides.allowedDomains

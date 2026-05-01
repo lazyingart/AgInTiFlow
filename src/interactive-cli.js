@@ -5,7 +5,7 @@ import { runAgent } from "./agent-runner.js";
 import { loadConfig } from "./config.js";
 import { initProject, listProjectSessions, providerKeyStatus, setProviderKey } from "./project.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
-import { normalizeTaskProfile } from "./task-profiles.js";
+import { defaultMaxStepsForProfile, normalizeTaskProfile } from "./task-profiles.js";
 import { promptAndSaveDeepSeekKey, promptHidden, shouldPromptForDeepSeek } from "./auth-onboarding.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
@@ -439,7 +439,10 @@ function createState(args = {}) {
     preferredWrapper: args.preferredWrapper || "codex",
     taskProfile: normalizeTaskProfile(args.taskProfile || "auto"),
     headless: args.headless ?? false,
-    maxSteps: Number.isFinite(args.maxSteps) && args.maxSteps > 0 ? args.maxSteps : args.latex ? 30 : 24,
+    maxSteps:
+      Number.isFinite(args.maxSteps) && args.maxSteps > 0
+        ? args.maxSteps
+        : defaultMaxStepsForProfile(args.taskProfile || (args.latex ? "latex" : "auto")),
     sessionId: args.resume || "",
   };
 }
@@ -589,6 +592,7 @@ async function handleCommand(line, state, packageDir) {
   }
   if (command === "profile") {
     state.taskProfile = normalizeTaskProfile(value || "auto");
+    state.maxSteps = Math.max(state.maxSteps, defaultMaxStepsForProfile(state.taskProfile));
     printSystemLine(`profile=${state.taskProfile}`);
     return true;
   }

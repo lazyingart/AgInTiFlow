@@ -775,6 +775,12 @@ function renderTaskProfiles(selected = "auto") {
   taskProfileField.value = profiles.some((profile) => profile.id === selected) ? selected : "auto";
 }
 
+function recommendedMaxStepsForProfile(profile = "auto") {
+  if (profile === "large-codebase") return 36;
+  if (profile === "latex") return 30;
+  return 24;
+}
+
 function renderWrapperStatus(wrappers = lastWrappers) {
   lastWrappers = wrappers || [];
   if (lastWrappers.length === 0) {
@@ -1959,7 +1965,14 @@ sandboxModeField.addEventListener("change", updatePackageWarning);
 packageInstallPolicyField.addEventListener("change", updatePackageWarning);
 allowWrapperToolsField.addEventListener("change", () => renderWrapperStatus());
 preferredWrapperField.addEventListener("change", () => renderWrapperStatus());
-taskProfileField?.addEventListener("change", schedulePreferenceSave);
+taskProfileField?.addEventListener("change", () => {
+  const maxStepsField = document.querySelector("#maxSteps");
+  const recommended = recommendedMaxStepsForProfile(taskProfileField.value);
+  if (maxStepsField && Number(maxStepsField.value || 0) < recommended) {
+    maxStepsField.value = String(recommended);
+  }
+  schedulePreferenceSave();
+});
 
 saveApiKeyButton?.addEventListener("click", async () => {
   const provider = setupProviderField.value || "deepseek";

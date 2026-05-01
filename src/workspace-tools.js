@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { redactSensitiveText } from "./redaction.js";
 
-export const WORKSPACE_TOOL_NAMES = ["list_files", "read_file", "search_files", "write_file", "apply_patch"];
+export const WORKSPACE_TOOL_NAMES = ["inspect_project", "list_files", "read_file", "search_files", "write_file", "apply_patch"];
 export const WORKSPACE_WRITE_TOOL_NAMES = ["write_file", "apply_patch"];
 
 const MAX_READ_BYTES = 220_000;
@@ -11,8 +11,51 @@ const MAX_WRITE_BYTES = 220_000;
 const MAX_PATCH_BYTES = 260_000;
 const MAX_LIST_ENTRIES = 360;
 const MAX_SEARCH_RESULTS = 80;
+const MAX_INSPECT_ENTRIES = 1400;
 const DEFAULT_MAX_DEPTH = 4;
-const SKIP_DIRS = new Set([".git", "node_modules", ".sessions"]);
+const SKIP_DIRS = new Set([
+  ".git",
+  ".sessions",
+  ".aginti",
+  "node_modules",
+  "dist",
+  "build",
+  "coverage",
+  ".next",
+  ".nuxt",
+  ".cache",
+  ".venv",
+  "venv",
+  "__pycache__",
+]);
+const IMPORTANT_MANIFESTS = new Set([
+  "package.json",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "tsconfig.json",
+  "jsconfig.json",
+  "vite.config.js",
+  "vite.config.ts",
+  "next.config.js",
+  "pyproject.toml",
+  "requirements.txt",
+  "requirements-dev.txt",
+  "setup.py",
+  "Pipfile",
+  "Cargo.toml",
+  "go.mod",
+  "pom.xml",
+  "build.gradle",
+  "Makefile",
+  "Dockerfile",
+  "docker-compose.yml",
+  "compose.yml",
+  "README.md",
+  "AGENTS.md",
+]);
+const SOURCE_DIR_NAMES = new Set(["src", "app", "lib", "packages", "apps", "bin", "scripts", "server", "client", "public", "docs"]);
+const TEST_DIR_NAMES = new Set(["test", "tests", "__tests__", "spec", "specs", "e2e"]);
 const SENSITIVE_EXTENSIONS = new Set([".key", ".pem", ".p12", ".pfx", ".crt", ".csr"]);
 const SENSITIVE_BASENAMES = new Set([
   ".env",
@@ -183,8 +226,66 @@ export function summarizeWorkspaceTools(config) {
       maxPatchBytes: MAX_PATCH_BYTES,
       maxListEntries: MAX_LIST_ENTRIES,
       maxSearchResults: MAX_SEARCH_RESULTS,
+      maxInspectEntries: MAX_INSPECT_ENTRIES,
     },
   };
+}
+
+function languageForExtension(ext) {
+  const normalized = String(ext || "").toLowerCase();
+  if ([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"].includes(normalized)) return "javascript";
+  if ([".py", ".pyw"].includes(normalized)) return "python";
+  if ([".rs"].includes(normalized)) return "rust";
+  if ([".go"].includes(normalized)) return "go";
+  if ([".java", ".kt", ".scala"].includes(normalized)) return "jvm";
+  if ([".c", ".cc", ".cpp", ".h", ".hpp"].includes(normalized)) return "c-cpp";
+  if ([".sh", ".bash", ".zsh"].includes(normalized)) return "shell";
+  if ([".md", ".mdx", ".rst"].includes(normalized)) return "docs";
+  if ([".json", ".yaml", ".yml", ".toml", ".ini"].includes(normalized)) return "config";
+  if ([".html", ".css", ".scss", ".svg"].includes(normalized)) return "web";
+  return normalized ? normalized.slice(1) : "no-extension";
+}
+
+function isLikelyTest(relativePath) {
+  const normalized = normalizeRelative(relativePath).toLowerCase();
+  const base = path.basename(normalized);
+  return (
+    normalized.split("/").some((segment) => TEST_DIR_NAMES.has(segment)) ||
+    /\.(test|spec)\.[cm]?[jt]sx?$/.test(base) ||
+    /^test_.*\.py$/.test(base) ||
+    /_test\.go$/.test(base) ||
+    /test.*\.rs$/.test(base)
+  );
+}
+
+function sortCounts(map, limit = 16) {
+  return [...map.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, limit)
+    .map(([name, count]) => ({ name, count }));
+}
+
+async function readJsonFileSafe(absolutePath) {
+  try {
+    const stat = await fs.stat(absolutePath);
+    if (!stat.isFile() || stat.size > 120_000) return null;
+    const buffer = await fs.readFile(absolutePath);
+    if (buffer.includes(0)) return null;
+    return JSON.parse(buffer.toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function recommendedReads(summary) {
+  const reads = [];
+  for (const name of ["AGENTS.md", "README.md", "package.json", "pyproject.toml", "Cargo.toml", "go.mod"]) {
+    const match = summary.manifestFiles.find((item) => item.path === name || item.path.endsWith(`/${name}`));
+    if (match) reads.push(match.path);
+  }
+  for (const dir of summary.sourceDirs.slice(0, 4)) reads.push(dir.path);
+  for (const file of summary.testFiles.slice(0, 4)) reads.push(file.path);
+  return [...new Set(reads)].slice(0, 12);
 }
 
 async function fileInfo(absolutePath, root) {
@@ -314,6 +415,133 @@ async function searchFiles(config, args) {
     results,
     truncated: results.length >= maxResults,
   };
+}
+
+async function inspectProject(config, args) {
+  const target = resolveWorkspacePath(config, args.path || ".");
+  const maxDepth = Math.min(Math.max(Number(args.maxDepth) || 6, 1), 10);
+  const limit = Math.min(Math.max(Number(args.limit) || MAX_INSPECT_ENTRIES, 80), MAX_INSPECT_ENTRIES);
+  const includeFiles = Boolean(args.includeFiles);
+  const files = [];
+  const sourceDirs = [];
+  const testFiles = [];
+  const manifestFiles = [];
+  const extensionCounts = new Map();
+  const languageCounts = new Map();
+  const topLevel = [];
+  let fileCount = 0;
+  let dirCount = 0;
+  let totalBytes = 0;
+  let truncated = false;
+
+  async function visit(currentPath, depth = 0) {
+    if (fileCount + dirCount >= limit) {
+      truncated = true;
+      return;
+    }
+
+    const stat = await fs.stat(currentPath).catch(() => null);
+    if (!stat) return;
+    const relativePath = normalizeRelative(path.relative(target.root, currentPath));
+    const segments = pathSegments(relativePath);
+    const base = path.basename(currentPath);
+
+    if (relativePath !== ".") {
+      const policy = pathPolicy("read_file", relativePath);
+      if (!policy.allowed) return;
+      if (segments.some((segment) => SKIP_DIRS.has(segment))) return;
+    }
+
+    if (stat.isDirectory()) {
+      dirCount += 1;
+      if (depth === 1) topLevel.push({ path: relativePath, type: "directory" });
+      if (SOURCE_DIR_NAMES.has(base) || TEST_DIR_NAMES.has(base)) {
+        sourceDirs.push({ path: relativePath, kind: TEST_DIR_NAMES.has(base) ? "tests" : "source" });
+      }
+      if (depth >= maxDepth) return;
+      const children = await fs.readdir(currentPath, { withFileTypes: true }).catch(() => []);
+      children.sort((a, b) => a.name.localeCompare(b.name));
+      for (const child of children) {
+        if (SKIP_DIRS.has(child.name)) continue;
+        await visit(path.join(currentPath, child.name), depth + 1);
+        if (truncated) break;
+      }
+      return;
+    }
+
+    if (!stat.isFile()) return;
+    fileCount += 1;
+    totalBytes += stat.size;
+    const ext = path.extname(base).toLowerCase() || "(none)";
+    extensionCounts.set(ext, (extensionCounts.get(ext) || 0) + 1);
+    const language = languageForExtension(ext);
+    languageCounts.set(language, (languageCounts.get(language) || 0) + 1);
+
+    const item = {
+      path: relativePath,
+      size: stat.size,
+      modifiedAt: stat.mtime.toISOString(),
+    };
+    if (depth === 1) topLevel.push({ path: relativePath, type: "file", size: stat.size });
+    if (IMPORTANT_MANIFESTS.has(base) || base.endsWith(".config.js") || base.endsWith(".config.ts")) {
+      manifestFiles.push(item);
+    }
+    if (isLikelyTest(relativePath)) testFiles.push(item);
+    if (includeFiles) files.push(item);
+  }
+
+  await visit(target.absolutePath, 0);
+
+  const packageJsonPath = path.join(target.absolutePath, "package.json");
+  const packageJson = await readJsonFileSafe(packageJsonPath);
+  const packageScripts =
+    packageJson && packageJson.scripts && typeof packageJson.scripts === "object"
+      ? Object.entries(packageJson.scripts)
+          .slice(0, 30)
+          .map(([name, command]) => ({ name, command: redactSensitiveText(String(command)).slice(0, 220) }))
+      : [];
+  const packageManagers = [
+    manifestFiles.some((item) => item.path.endsWith("pnpm-lock.yaml")) ? "pnpm" : "",
+    manifestFiles.some((item) => item.path.endsWith("yarn.lock")) ? "yarn" : "",
+    manifestFiles.some((item) => item.path.endsWith("package-lock.json")) ? "npm" : "",
+    manifestFiles.some((item) => item.path.endsWith("pyproject.toml")) ? "python/pyproject" : "",
+    manifestFiles.some((item) => item.path.endsWith("Cargo.toml")) ? "cargo" : "",
+    manifestFiles.some((item) => item.path.endsWith("go.mod")) ? "go" : "",
+  ].filter(Boolean);
+
+  const summary = {
+    ok: true,
+    toolName: "inspect_project",
+    path: target.relativePath,
+    root: target.root,
+    summary: `${fileCount} files, ${dirCount} directories, ${sortCounts(languageCounts, 5)
+      .map((item) => `${item.name}:${item.count}`)
+      .join(" ")}`,
+    counts: {
+      files: fileCount,
+      directories: dirCount,
+      totalBytes,
+    },
+    truncated,
+    topLevel: topLevel.slice(0, 80),
+    manifestFiles: manifestFiles.slice(0, 80),
+    sourceDirs: sourceDirs.slice(0, 60),
+    testFiles: testFiles.slice(0, 80),
+    extensionCounts: sortCounts(extensionCounts),
+    languageCounts: sortCounts(languageCounts),
+    packageManagers,
+    packageScripts,
+    recommendedReads: [],
+    engineeringHints: [
+      "Read AGENTS/README/manifests before editing.",
+      "Use search_files to locate symbols and tests, then read exact files.",
+      "Use apply_patch for source edits and run the smallest relevant check first.",
+      "If a change spans modules, patch in small batches and verify after each batch.",
+    ],
+  };
+  summary.recommendedReads = recommendedReads(summary);
+  if (includeFiles) summary.files = files.slice(0, limit);
+  return summary;
 }
 
 function compactDiff(relativePath, beforeText, afterText) {
@@ -723,6 +951,8 @@ export async function executeWorkspaceTool(toolName, args, config) {
   }
 
   switch (toolName) {
+    case "inspect_project":
+      return inspectProject(config, args);
     case "list_files":
       return listFiles(config, args);
     case "read_file":
