@@ -307,7 +307,10 @@
         <section class="panel output-panel">
           <div class="header-row">
             <h2 data-i18n="runOutputTitle">Run output</h2>
-            <div id="run-meta" class="subtle"></div>
+            <div class="run-header-actions">
+              <button id="stop-run" type="button" class="secondary danger" data-i18n="stopRunButton" hidden>Stop</button>
+              <div id="run-meta" class="subtle"></div>
+            </div>
           </div>
           <pre id="logs" class="logs" data-i18n="noRunStarted">No run started.</pre>
         </section>

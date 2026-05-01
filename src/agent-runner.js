@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
-import { exec as execCallback } from "node:child_process";
+import net from "node:net";
+import path from "node:path";
+import { exec as execCallback, spawn } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { chromium } from "playwright";
 import { createClient, createPlan, requestNextStep } from "./model-client.js";
@@ -11,13 +14,132 @@ import { ensureDockerSandboxReady, runDockerSandboxCommand } from "./docker-sand
 import { normalizeWrapperName, runAgentWrapper, wrapperStatusText } from "./tool-wrappers.js";
 import { evaluateCommandPolicy } from "./command-policy.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
-import { executeWorkspaceTool, summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./workspace-tools.js";
+import { executeWorkspaceTool, resolveWorkspacePath, summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./workspace-tools.js";
 import { normalizeCanvasPayload } from "./artifact-tunnel.js";
 import { getTaskProfile } from "./task-profiles.js";
 
 const exec = promisify(execCallback);
-const BROWSER_TOOLS = new Set(["open_url", "click", "type", "scroll", "press", "back"]);
+const BROWSER_TOOLS = new Set(["open_url", "open_workspace_file", "preview_workspace", "click", "type", "scroll", "press", "back"]);
 const WORKSPACE_TOOLS = new Set(WORKSPACE_TOOL_NAMES);
+const STATIC_PREVIEW_SERVER_PATH = fileURLToPath(new URL("./static-preview-server.js", import.meta.url));
+const previewServers = new Map();
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function throwIfAborted(config) {
+  if (config.abortSignal?.aborted) {
+    const reason = config.abortSignal.reason;
+    const error = reason instanceof Error ? reason : new Error("Run interrupted by user.");
+    error.name = error.name || "AbortError";
+    throw error;
+  }
+}
+
+function isAbortError(error, config = {}) {
+  return Boolean(
+    config.abortSignal?.aborted ||
+      error?.name === "AbortError" ||
+      error?.code === "ABORT_ERR" ||
+      /aborted|interrupted/i.test(String(error?.message || ""))
+  );
+}
+
+function abortable(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) {
+    return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error("Run interrupted by user."));
+  }
+
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error("Run interrupted by user."));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+
+async function isPortAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(false));
+    server.once("listening", () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, "127.0.0.1");
+  });
+}
+
+async function findAvailablePort(preferredPort = 8765) {
+  const preferred = Number(preferredPort);
+  const start = Number.isFinite(preferred) && preferred > 0 ? preferred : 8765;
+  for (let port = start; port < start + 80; port += 1) {
+    if (await isPortAvailable(port)) return port;
+  }
+  throw new Error(`No available preview port found near ${start}.`);
+}
+
+async function waitForPort(port, signal) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Preview interrupted.");
+    const connected = await new Promise((resolve) => {
+      const socket = net.connect({ host: "127.0.0.1", port });
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once("error", () => {
+        socket.destroy();
+        resolve(false);
+      });
+      socket.setTimeout(500, () => {
+        socket.destroy();
+        resolve(false);
+      });
+    });
+    if (connected) return;
+    await sleep(100);
+  }
+  throw new Error(`Preview server did not become ready on port ${port}.`);
+}
+
+async function startPreviewServer(root, preferredPort, signal) {
+  const key = path.resolve(root);
+  const existing = previewServers.get(key);
+  if (existing && existing.child.exitCode === null) {
+    return existing;
+  }
+
+  const port = await findAvailablePort(preferredPort);
+  const child = spawn(process.execPath, [STATIC_PREVIEW_SERVER_PATH, key, String(port)], {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  const server = { root: key, port, child, url: `http://127.0.0.1:${port}/` };
+  previewServers.set(key, server);
+  await waitForPort(port, signal);
+  return server;
+}
+
+function normalizeUrlPath(relativePath) {
+  const normalized = String(relativePath || ".").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!normalized || normalized === ".") return "";
+  return normalized
+    .split("/")
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+}
 
 function preserveAssistantMessage(message) {
   const preserved = {
@@ -148,7 +270,7 @@ function createInitialState(config, sessionId) {
               : "A host shell command tool is available under the configured trust policy."
             : "No shell command tool is available.",
           config.allowFileTools
-            ? `Workspace file tools are available in ${config.commandCwd}: list_files, read_file, search_files, write_file, and apply_patch. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. Secret paths, .git internals, node_modules writes, and huge files are blocked.`
+            ? `Workspace file tools are available in ${config.commandCwd}: list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, and preview_workspace. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. Secret paths, .git internals, node_modules writes, and huge files are blocked. For generated local websites/pages, use open_workspace_file or preview_workspace instead of starting a localhost server inside Docker.`
             : "No workspace file tools are available.",
           config.allowWrapperTools
             ? `External coding-agent wrappers are available as advisory tools only. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Wrapper status: ${wrapperStatusText()}.`
@@ -159,6 +281,7 @@ function createInitialState(config, sessionId) {
           "Work like a practical coding agent: inspect when useful, edit with file tools, run safe checks when they add confidence, and keep outputs inside the workspace.",
           "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files.",
           "For environment or system-maintenance work, use the configured sandbox and package policy; Docker workspace mode is the preferred place for installs and toolchain setup.",
+          "If the user asks to open a generated local website or file, use open_workspace_file for a file or preview_workspace for a static site. Do not keep retrying the same localhost URL when a preview fails.",
           "Docker language/toolchain installs should prefer /aginti-env or project files so they persist across runs; apt/apk changes are ephemeral unless the image is rebuilt.",
           "If the run is close to the max-step limit, finish with the best complete artifact and honest limitations instead of starting a new approach.",
           "When the requested outcome is complete and a useful check has passed or been honestly skipped, stop and call finish.",
@@ -176,7 +299,9 @@ function createInitialState(config, sessionId) {
               ? `Shell working directory mounted into Docker as /workspace from ${config.commandCwd}. Use relative paths or /workspace paths, not absolute host temp paths. Persistent Docker env: /aginti-env, caches: /aginti-cache. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
               : `Shell working directory: ${config.commandCwd}`
             : "",
-          config.allowFileTools ? `Workspace file tools enabled in: ${config.commandCwd}. Use workspace-relative paths.` : "",
+          config.allowFileTools
+            ? `Workspace file tools enabled in: ${config.commandCwd}. Use workspace-relative paths. Local preview tools available: open_workspace_file and preview_workspace.`
+            : "",
           config.allowWrapperTools
             ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
             : "",
@@ -278,7 +403,9 @@ function applyContinuationPrompt(state, config, observers) {
           ? `Shell working directory mounted into Docker as /workspace from ${config.commandCwd}. Use relative paths or /workspace paths. Persistent Docker env: /aginti-env, caches: /aginti-cache. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
           : `Shell working directory: ${config.commandCwd}`
         : "",
-      config.allowFileTools ? `Workspace file tools enabled in: ${config.commandCwd}. Use workspace-relative paths.` : "",
+      config.allowFileTools
+        ? `Workspace file tools enabled in: ${config.commandCwd}. Use workspace-relative paths. For generated local files/sites, use open_workspace_file or preview_workspace.`
+        : "",
       config.allowWrapperTools
         ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
         : "",
@@ -374,16 +501,68 @@ function sanitizeToolResult(result) {
   return safeResult;
 }
 
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function applyToolLoopGuard(state, toolResult, store, observers) {
+  if (!toolResult || toolResult.done || toolResult.ok !== false) return;
+  state.meta.toolLoop = state.meta.toolLoop || { recent: [], warned: [] };
+  const signature = `${toolResult.toolName}:${stableStringify(toolResult.args || {})}`;
+  const entry = {
+    signature,
+    toolName: toolResult.toolName,
+    ok: Boolean(toolResult.ok),
+    blocked: Boolean(toolResult.blocked),
+    error: toolResult.error || toolResult.reason || "",
+    at: new Date().toISOString(),
+  };
+  state.meta.toolLoop.recent.push(entry);
+  state.meta.toolLoop.recent = state.meta.toolLoop.recent.slice(-20);
+
+  const failures = state.meta.toolLoop.recent.filter((item) => item.signature === signature && item.ok === false).length;
+  if (failures < 2 || state.meta.toolLoop.warned.includes(signature)) return;
+
+  state.meta.toolLoop.warned.push(signature);
+  state.meta.toolLoop.warned = state.meta.toolLoop.warned.slice(-20);
+  const message = [
+    `Loop guard: ${toolResult.toolName} with the same arguments has failed or been blocked ${failures} times.`,
+    "Do not repeat that exact call.",
+    "If this is a local workspace preview, use open_workspace_file or preview_workspace instead of repeatedly starting localhost servers or opening the same URL.",
+    "If enough work is complete, call finish with the usable local path or preview URL.",
+  ].join(" ");
+  state.messages.push({ role: "user", content: message });
+  await store.appendEvent("loop.guard", {
+    toolName: toolResult.toolName,
+    failures,
+    message,
+  });
+  observers.event("loop.guard", {
+    toolName: toolResult.toolName,
+    failures,
+    message,
+  });
+}
+
 async function runShellCommand(command, config, policy = evaluateCommandPolicy(command, config)) {
   try {
+    throwIfAborted(config);
     const result = config.useDockerSandbox
-      ? await runDockerSandboxCommand(command, config, policy)
+      ? await runDockerSandboxCommand(command, config, policy, { signal: config.abortSignal })
       : await exec(command, {
           cwd: config.commandCwd,
           timeout: 30000,
           maxBuffer: 200 * 1024,
           shell: "/bin/bash",
           env: safeExecutionEnv(),
+          signal: config.abortSignal,
         });
 
     return {
@@ -393,6 +572,7 @@ async function runShellCommand(command, config, policy = evaluateCommandPolicy(c
       stderr: redactSensitiveText(result.stderr).trim().slice(0, 4000),
     };
   } catch (error) {
+    if (isAbortError(error, config)) throw error;
     return {
       ok: false,
       exitCode: Number.isInteger(error?.code) ? error.code : 1,
@@ -424,6 +604,7 @@ async function captureSyntheticSnapshot(store, step, config) {
       "For draw/plot/graph/chart/diagram/figure requests, publish a canvas artifact proactively.",
       "For LaTeX/PDF requests, publish the source and compiled PDF artifacts when available. Keep subfolder outputs beside their source and use pdflatex-compatible figure formats.",
       "Use open_url only if the task actually needs the web.",
+      "For generated local HTML/SVG/PDF/site output, use open_workspace_file or preview_workspace instead of shelling a transient local server.",
     ]
       .filter(Boolean)
       .join(" "),
@@ -469,6 +650,7 @@ async function injectQueuedUserMessages(store, state, observers) {
 }
 
 async function executeTool(browserState, toolCall, snapshot, config, store, observers, state) {
+  throwIfAborted(config);
   const args = JSON.parse(toolCall.function.arguments || "{}");
   const safeArgs = sanitizeToolArgs(toolCall.function.name, args);
   const guard = checkToolUse({
@@ -520,8 +702,45 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
 
     switch (toolCall.function.name) {
       case "open_url":
-        await browserState.page.goto(String(args.url), { waitUntil: "domcontentloaded" });
+        await abortable(browserState.page.goto(String(args.url), { waitUntil: "domcontentloaded" }), config.abortSignal);
         break;
+      case "open_workspace_file": {
+        const target = resolveWorkspacePath(config, args.path || args.file || ".");
+        const stat = await fs.stat(target.absolutePath);
+        if (!stat.isFile()) throw new Error(`Workspace preview target is not a file: ${target.relativePath}`);
+        const fileUrl = pathToFileURL(target.absolutePath).href;
+        await abortable(browserState.page.goto(fileUrl, { waitUntil: "domcontentloaded" }), config.abortSignal);
+        const result = {
+          ok: true,
+          toolName: "open_workspace_file",
+          args: safeArgs,
+          path: target.relativePath,
+          url: browserState.page.url(),
+        };
+        await store.appendEvent("tool.completed", result);
+        observers.event("tool.completed", result);
+        return result;
+      }
+      case "preview_workspace": {
+        const target = resolveWorkspacePath(config, args.path || args.file || ".");
+        const stat = await fs.stat(target.absolutePath);
+        const server = await startPreviewServer(config.commandCwd, args.port || 8765, config.abortSignal);
+        const urlPath = stat.isDirectory() ? normalizeUrlPath(target.relativePath === "." ? "" : `${target.relativePath}/`) : normalizeUrlPath(target.relativePath);
+        const previewUrl = `${server.url}${urlPath}`;
+        await abortable(browserState.page.goto(previewUrl, { waitUntil: "domcontentloaded" }), config.abortSignal);
+        const result = {
+          ok: true,
+          toolName: "preview_workspace",
+          args: safeArgs,
+          path: target.relativePath,
+          url: browserState.page.url(),
+          port: server.port,
+          root: server.root,
+        };
+        await store.appendEvent("tool.completed", result);
+        observers.event("tool.completed", result);
+        return result;
+      }
       case "click": {
         const locator = browserState.page.locator(`[data-agent-id="${args.id}"]`).first();
         await locator.scrollIntoViewIfNeeded();
@@ -714,6 +933,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
     observers.event("tool.completed", result);
     return result;
   } catch (error) {
+    if (isAbortError(error, config)) throw error;
     const result = {
       ok: false,
       toolName: toolCall.function.name,
@@ -776,6 +996,7 @@ export async function runAgent(config) {
   });
 
   try {
+    throwIfAborted(config);
     if (!state.plan) {
       const plan = await createPlan(client, config, state);
       state.plan = plan;
@@ -834,6 +1055,7 @@ export async function runAgent(config) {
     }
 
     for (let step = state.stepsCompleted + 1; step <= config.maxSteps; step += 1) {
+      throwIfAborted(config);
       await injectQueuedUserMessages(store, state, observers);
       const snapshot = await buildSnapshot(browserState, store, step, config);
       state.meta.lastUrl = snapshot.url || state.meta.lastUrl;
@@ -881,6 +1103,7 @@ export async function runAgent(config) {
         })}`,
       });
 
+      throwIfAborted(config);
       const response = await requestNextStep(client, config, state.messages);
       const assistantMessage = response.choices[0]?.message;
       if (!assistantMessage) {
@@ -927,12 +1150,14 @@ export async function runAgent(config) {
       }
 
       for (const toolCall of toolCalls) {
+        throwIfAborted(config);
         const toolResult = await executeTool(browserState, toolCall, snapshot, config, store, observers, state);
         state.messages.push({
           role: "tool",
           tool_call_id: toolCall.id,
           content: JSON.stringify(toolResult),
         });
+        await applyToolLoopGuard(state, toolResult, store, observers);
 
         if (toolResult.toolName === "run_command") {
           observers.log("command.output", {
@@ -1013,6 +1238,24 @@ export async function runAgent(config) {
       result: "",
       stopped: true,
       reason: "max_steps_reached",
+    };
+  } catch (error) {
+    if (!isAbortError(error, config)) throw error;
+    state.stepsCompleted = state.stepsCompleted || 0;
+    state.updatedAt = new Date().toISOString();
+    await store.saveState(state).catch(() => {});
+    await store.appendEvent("session.stopped", {
+      reason: "user_interrupt",
+    });
+    observers.event("session.stopped", {
+      reason: "user_interrupt",
+      sessionId,
+    });
+    return {
+      sessionId,
+      result: "",
+      stopped: true,
+      reason: "user_interrupt",
     };
   } finally {
     await closeBrowser(browserState, store);

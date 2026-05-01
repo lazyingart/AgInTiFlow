@@ -145,7 +145,7 @@ export function summarizeWorkspaceTools(config) {
   return {
     enabled: Boolean(config.allowFileTools),
     workspace: workspaceRoot(config),
-    tools: WORKSPACE_TOOL_NAMES,
+    tools: [...WORKSPACE_TOOL_NAMES, "open_workspace_file", "preview_workspace"],
     writeTools: WORKSPACE_WRITE_TOOL_NAMES,
     limits: {
       maxReadBytes: MAX_READ_BYTES,

@@ -9,6 +9,10 @@ AgInTiFlow keeps CLI and web runs equivalent by using the project folder as the 
 
 When a run is active, the web chat and `aginti queue <session-id> "..."` append messages to the inbox instead of trying to mutate the running process directly. The runner drains the inbox at safe boundaries: before each model step and after tool execution. This mirrors the event-queue style used by mature agent UIs while keeping the backend decoupled from any specific frontend.
 
+Runs can be stopped without corrupting session state. The CLI listens for Esc or Ctrl+C during an active run, and the web UI exposes a Stop button plus Esc. Both paths send an abort signal, persist `session.stopped`, and leave the session resumable through `aginti resume <session-id>`.
+
 Default execution is Docker workspace mode with package installs approved inside the sandbox. The project is mounted at `/workspace`; persistent agent toolchain folders are mounted at `/aginti-home`, `/aginti-cache`, and `/aginti-env` from `~/.agintiflow/docker/`. Python, conda, and other language-level environments should be installed under `/aginti-env` so they survive across runs. Apt/apk package changes are ephemeral unless the Docker image is rebuilt.
+
+Generated local websites should use `preview_workspace` or `open_workspace_file`. The preview tool serves the host workspace on an automatically selected `127.0.0.1` port and opens it in the browser. AgInTiFlow blocks common transient Docker preview commands such as `python -m http.server` because each shell tool call runs in a short-lived container with no published host port.
 
 The failed `f(f(x)) = f'(x)` LaTeX task exposed three issues: host-mode command policy blocked setup/path commands, a 15-step budget was too small for iterative numerical work plus TeX output, and follow-up input could not be queued while the agent was running. The current runtime defaults and inbox pipe address those without hardcoding that specific math task.

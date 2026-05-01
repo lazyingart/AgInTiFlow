@@ -37,6 +37,7 @@ async function execDocker(args, options = {}) {
   const execOptions = {
     timeout: options.timeout ?? 30000,
     maxBuffer: options.maxBuffer ?? 200 * 1024,
+    signal: options.signal,
   };
   recordSandboxLog("docker.command", { args });
 
@@ -283,11 +284,12 @@ function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, 
   ];
 }
 
-export async function runDockerSandboxCommand(command, config, policy = evaluateCommandPolicy(command, config)) {
+export async function runDockerSandboxCommand(command, config, policy = evaluateCommandPolicy(command, config), options = {}) {
   const persistentDirs = await ensurePersistentDockerDirs(config);
   const result = await execDocker(dockerRunArgs(command, config, policy, persistentDirs), {
     timeout: policy.needsNetwork ? 120000 : policy.category === "toolchain" ? 90000 : 15000,
     maxBuffer: 300 * 1024,
+    signal: options.signal,
   });
 
   const payload = {

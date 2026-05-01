@@ -346,6 +346,15 @@ button.danger {
   justify-content: space-between;
 }
 
+.run-header-actions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
 .sandbox-card {
   display: grid;
   gap: 12px;

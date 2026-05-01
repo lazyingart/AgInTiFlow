@@ -1,4 +1,5 @@
 import readline from "node:readline/promises";
+import { emitKeypressEvents } from "node:readline";
 import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent-runner.js";
 import { loadConfig } from "./config.js";
@@ -27,6 +28,7 @@ function printHelp() {
       "  /exit                     Quit.",
       "",
       "Type a normal request to run the agent. Example: write a Python CLI app with tests",
+      "While a run is active, press Esc or Ctrl+C once to stop gracefully and print a resume command.",
     ].join("\n")
   );
 }
@@ -64,6 +66,30 @@ async function latestSession() {
 function printStatusEvent(state, label, details = "") {
   state.lastEvent = details ? `${label}: ${details}` : label;
   console.log(`status=${state.status || "running"} ${state.lastEvent}`);
+}
+
+function attachRunInterrupts(controller) {
+  if (!input.isTTY || typeof input.setRawMode !== "function") return () => {};
+
+  emitKeypressEvents(input);
+  const wasRaw = Boolean(input.isRaw);
+  input.setRawMode(true);
+  const handler = (_str, key = {}) => {
+    const isEscape = key.name === "escape";
+    const isCtrlC = key.ctrl && key.name === "c";
+    if (!isEscape && !isCtrlC) return;
+    if (controller.signal.aborted) return;
+    const reason = isEscape ? "escape" : "ctrl-c";
+    console.log(`\nstatus=stopping reason=${reason}`);
+    controller.abort(new Error(`Interrupted by ${reason}.`));
+  };
+  input.on("keypress", handler);
+  return () => {
+    input.off("keypress", handler);
+    if (typeof input.setRawMode === "function") {
+      input.setRawMode(wasRaw);
+    }
+  };
 }
 
 async function printResumeHint(state) {
@@ -226,6 +252,7 @@ async function handleCommand(line, state, packageDir) {
 }
 
 async function runPrompt(prompt, state, packageDir) {
+  const controller = new AbortController();
   const config = loadConfig(
     {
       provider: state.provider,
@@ -255,32 +282,44 @@ async function runPrompt(prompt, state, packageDir) {
   console.log(`session=${state.sessionId}`);
   console.log(`status=running workingOn=${state.activeGoal}`);
 
-  const result = await runAgent({
-    ...config,
-    onEvent: (type, data = {}) => {
-      if (type === "plan.created") {
-        printStatusEvent(state, "planned");
-      } else if (type === "tool.started") {
-        printStatusEvent(state, "tool", data.toolName || "unknown");
-      } else if (type === "tool.completed") {
-        printStatusEvent(state, "tool_done", data.toolName || "unknown");
-      } else if (type === "tool.blocked") {
-        printStatusEvent(state, "tool_blocked", data.toolName || data.reason || "unknown");
-      } else if (type === "conversation.queued_input_applied") {
-        printStatusEvent(state, "queued_input_applied");
-      } else if (type === "session.finished") {
-        printStatusEvent(state, "finished");
-      } else if (type === "session.stopped") {
-        printStatusEvent(state, "stopped", data.reason || "");
-      } else if (type === "model.responded") {
-        printStatusEvent(state, "model_responded", data.content ? data.content.slice(0, 80).replace(/\s+/g, " ") : "");
-      }
-    },
-  });
+  const detachInterrupts = attachRunInterrupts(controller);
+  let result;
+  try {
+    result = await runAgent({
+      ...config,
+      abortSignal: controller.signal,
+      onEvent: (type, data = {}) => {
+        if (type === "plan.created") {
+          printStatusEvent(state, "planned");
+        } else if (type === "tool.started") {
+          printStatusEvent(state, "tool", data.toolName || "unknown");
+        } else if (type === "tool.completed") {
+          printStatusEvent(state, "tool_done", data.toolName || "unknown");
+        } else if (type === "tool.blocked") {
+          printStatusEvent(state, "tool_blocked", data.toolName || data.reason || "unknown");
+        } else if (type === "loop.guard") {
+          printStatusEvent(state, "loop_guard", data.toolName || "");
+        } else if (type === "conversation.queued_input_applied") {
+          printStatusEvent(state, "queued_input_applied");
+        } else if (type === "session.finished") {
+          printStatusEvent(state, "finished");
+        } else if (type === "session.stopped") {
+          printStatusEvent(state, "stopped", data.reason || "");
+        } else if (type === "model.responded") {
+          printStatusEvent(state, "model_responded", data.content ? data.content.slice(0, 80).replace(/\s+/g, " ") : "");
+        }
+      },
+    });
+  } finally {
+    detachInterrupts();
+  }
   state.sessionId = result.sessionId || state.sessionId;
   state.status = result.stopped ? "stopped" : "idle";
   state.activeGoal = "";
   console.log(`status=${state.status} session=${state.sessionId}`);
+  if (result.stopped && result.reason === "user_interrupt") {
+    await printResumeHint(state);
+  }
 }
 
 export async function startInteractiveCli(args = {}, { packageDir, packageVersion } = {}) {

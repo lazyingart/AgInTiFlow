@@ -31,6 +31,12 @@ const DESTRUCTIVE_PROMPT_HINTS = [
   "publish",
 ];
 
+function isTransientDockerPreviewCommand(command) {
+  return /\bpython3?\s+-m\s+http\.server\b|\bnpx\s+(?:--yes\s+)?(?:serve|http-server)\b|\bnpm\s+exec\s+(?:serve|http-server)\b|\bphp\s+-S\s+127\.0\.0\.1:/i.test(
+    command
+  );
+}
+
 function normalizeDomain(hostname) {
   return hostname.replace(/^www\./, "").toLowerCase();
 }
@@ -66,6 +72,13 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
     return { allowed: true };
   }
 
+  if (toolName === "open_workspace_file" || toolName === "preview_workspace") {
+    if (!config.allowFileTools) {
+      return { allowed: false, reason: "Workspace preview tools require file tools to be enabled.", category: "workspace-tools" };
+    }
+    return checkWorkspaceToolUse("read_file", { path: args.path || args.file || "." }, config);
+  }
+
   if (toolName === "click") {
     const element = snapshot.elements.find((item) => item.id === String(args.id));
     if (!element) return { allowed: false, reason: `Element ${args.id} is not in the latest snapshot.` };
@@ -96,6 +109,14 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
 
   if (toolName === "run_command") {
     const command = String(args.command || "").trim();
+    if (config.useDockerSandbox && isTransientDockerPreviewCommand(command)) {
+      return {
+        allowed: false,
+        reason:
+          "Transient localhost preview servers inside Docker are not useful because command containers stop and ports are not published. Use preview_workspace/open_workspace_file, or switch to host mode for a persistent dev server.",
+        category: "preview-server",
+      };
+    }
     return evaluateCommandPolicy(command, config);
   }
 

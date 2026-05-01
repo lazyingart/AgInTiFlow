@@ -455,6 +455,8 @@ function createRunRecord(config, goal, existingLogs = []) {
 }
 
 function wireRun(record, config) {
+  const abortController = new AbortController();
+  record.abortController = abortController;
   const push = (kind, message, data = {}) => {
     record.logs.push({
       at: new Date().toISOString(),
@@ -470,6 +472,7 @@ function wireRun(record, config) {
 
   void runAgent({
     ...config,
+    abortSignal: abortController.signal,
     onLog: (message, data = {}) => push("log", message, data),
     onEvent: (type, data = {}) => push("event", type, data),
   })
@@ -844,6 +847,30 @@ app.get("/api/runs/:sessionId", async (req, res) => {
     return;
   }
   res.json(stored);
+});
+
+app.post("/api/runs/:sessionId/stop", async (req, res) => {
+  const run = runs.get(req.params.sessionId);
+  if (!run) {
+    res.status(404).json({ error: "Run not found." });
+    return;
+  }
+  if (run.status !== "running") {
+    res.status(409).json({ error: "Run is not active.", status: run.status });
+    return;
+  }
+
+  run.abortController?.abort(new Error("Stopped from web UI."));
+  run.logs.push({
+    at: new Date().toISOString(),
+    kind: "event",
+    message: "session.stop_requested",
+    data: { source: "web" },
+  });
+  run.updatedAt = new Date().toISOString();
+  db.upsertSession(run);
+  await sessionStore(req.params.sessionId).appendEvent("session.stop_requested", { source: "web" }).catch(() => {});
+  res.json({ ok: true, sessionId: req.params.sessionId });
 });
 
 app.get("/health", (_req, res) => {

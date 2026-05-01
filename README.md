@@ -54,7 +54,7 @@ aginti
 aginti chat
 ```
 
-Inside chat, type normal requests such as `write a small Python CLI app with tests`. The default is now Docker workspace mode with approved package installs, so coding, plotting, and LaTeX tasks can set up project-local tools without touching the host. Use `/help` for commands, `/latex on` for PDF work, `/docker off` only when you intentionally want host mode, `/sessions` to list project runs, and `/resume latest` or `/resume <session-id>` to continue work. Ctrl+C exits cleanly, prints the active resume command when a session exists, and lists recent sessions when no new session has started yet.
+Inside chat, type normal requests such as `write a small Python CLI app with tests`. The default is Docker workspace mode with approved package installs, so coding, plotting, and LaTeX tasks can set up project-local tools without touching the host. Use `/help` for commands, `/latex on` for PDF work, `/docker off` only when you intentionally want host mode, `/sessions` to list project runs, and `/resume latest` or `/resume <session-id>` to continue work. Esc or Ctrl+C stops the active run cleanly and prints the resume command.
 
 Launch the local web UI from an installed package:
 
@@ -340,7 +340,7 @@ Package policy values:
 
 Toolchain commands such as `python3 plot.py`, `latexmk -pdf paper.tex`, and `pdflatex -interaction=nonstopmode -halt-on-error paper.tex` are allowlisted only when the shell tool is enabled. In Docker mode the project folder is mounted as `/workspace`; any file written to `/workspace/report.pdf` appears on the host as `<your-project>/report.pdf`. CLI runs print both the host workspace and the Docker mapping before execution. File and canvas tools accept both normal relative paths and Docker virtual paths like `/workspace/report.pdf`, while other absolute host paths remain blocked.
 
-The web chat mirrors the CLI session store. Enter sends, Ctrl+J inserts a newline, and Tab submits/queues the message. Queued input is written to `.sessions/<session-id>/inbox.jsonl`; the running agent drains that pipe between steps and after tool calls.
+The web chat mirrors the CLI session store. Enter sends, Ctrl+J inserts a newline, Tab submits/queues the message, and Esc stops the active run. Queued input is written to `.sessions/<session-id>/inbox.jsonl`; the running agent drains that pipe between steps and after tool calls. Generated local sites should use the built-in `preview_workspace` or `open_workspace_file` tools; AgInTiFlow avoids transient localhost servers inside Docker because those containers stop between commands and their ports are not host-published.
 
 Safe preflight endpoints:
 

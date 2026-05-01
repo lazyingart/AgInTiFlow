@@ -53,6 +53,10 @@ function prepareMessages(config, messages) {
   });
 }
 
+function requestOptions(config) {
+  return config.abortSignal ? { signal: config.abortSignal } : undefined;
+}
+
 function mockCommandForGoal(goal = "") {
   const text = String(goal).toLowerCase();
   if (/\blist\b|folder contents|directory contents|files?/.test(text)) return "ls -la";
@@ -94,6 +98,18 @@ function mockWorkspaceToolForGoal(goal = "") {
   return null;
 }
 
+function mockPreviewToolForGoal(goal = "") {
+  const text = String(goal).toLowerCase();
+  if (!/(open|preview|view|browser|website|web\s*site)/.test(text)) return null;
+  const targetPath = mockPathForGoal(goal);
+  if (targetPath === "mock-output.txt") return null;
+  if (!/\.(html|htm|svg|png|jpe?g|webp|pdf|txt|md)$/i.test(targetPath)) return null;
+  return mockToolCall("preview_workspace", {
+    path: targetPath,
+    port: 8765,
+  });
+}
+
 function mockCanvasToolForGoal(goal = "") {
   const text = String(goal).toLowerCase();
   if (!/canvas|artifact|image|figure|visual|preview|render/.test(text)) return null;
@@ -130,10 +146,11 @@ export async function createPlan(client, config, state) {
     ].join("\n");
   }
 
-  const response = await client.chat.completions.create({
-    model: config.model,
-    temperature: 0,
-    messages: [
+  const response = await client.chat.completions.create(
+    {
+      model: config.model,
+      temperature: 0,
+      messages: [
       {
         role: "system",
         content:
@@ -149,7 +166,7 @@ export async function createPlan(client, config, state) {
             ? `Shell tool is enabled in ${config.commandCwd}. In Docker, this path is mounted as /workspace with persistent /aginti-env and /aginti-cache mounts. Use relative paths or /workspace paths, not absolute host temp paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}. For npm/pip/conda/venv setup, explain the need and wait for approval unless policy is allow.`
             : "",
           config.allowFileTools
-            ? `Workspace file tools are enabled in ${config.commandCwd}: list_files, read_file, search_files, write_file, apply_patch. Keep all paths workspace-relative, for example plot_fx.svg or docs/report.tex, and avoid secrets.`
+            ? `Workspace file tools are enabled in ${config.commandCwd}: list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, preview_workspace. Keep all paths workspace-relative, for example plot_fx.svg or docs/report.tex, and avoid secrets. For generated local HTML/SVG/PDF/static sites, plan to use open_workspace_file or preview_workspace rather than starting a localhost server inside Docker.`
             : "",
           config.allowWrapperTools
             ? `Agent wrappers are enabled. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Status: ${wrapperStatusText()}.`
@@ -160,6 +177,7 @@ export async function createPlan(client, config, state) {
           "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files.",
           "For environment or system-maintenance work, prefer project-local dry-run plans/scripts unless the configured policy explicitly allows stronger actions.",
           "Docker language/toolchain installs should prefer /aginti-env or project files so they persist across runs; apt/apk changes are ephemeral unless the image is rebuilt.",
+          "If a localhost/browser preview fails, do not loop on the same URL. Switch to open_workspace_file or preview_workspace, or finish with the local path and honest limitation.",
           "If the run is close to the max-step limit, finish with the best complete artifact and honest limitations instead of starting a new approach.",
           "Plan for a complete result, not endless exploration; finish once the request is satisfied and checks have passed or been honestly skipped.",
           "Return a numbered plan only.",
@@ -167,8 +185,10 @@ export async function createPlan(client, config, state) {
           .filter(Boolean)
           .join("\n"),
       },
-    ],
-  });
+      ],
+    },
+    requestOptions(config)
+  );
 
   return response.choices[0]?.message?.content?.trim() || "1. Inspect the page.\n2. Use the smallest safe action.\n3. Finish with a concise answer.";
 }
@@ -179,7 +199,8 @@ export async function requestNextStep(client, config, messages) {
       type: "function",
       function: {
         name: "open_url",
-        description: "Open an absolute http or https URL in the browser.",
+        description:
+          "Open a remote absolute http or https URL in the browser. Do not use this for generated local workspace files or localhost preview loops; use open_workspace_file or preview_workspace when available.",
         parameters: {
           type: "object",
           properties: {
@@ -295,6 +316,45 @@ export async function requestNextStep(client, config, messages) {
       },
     },
   ];
+
+  if (config.allowFileTools) {
+    tools.splice(
+      0,
+      0,
+      {
+        type: "function",
+        function: {
+          name: "open_workspace_file",
+          description:
+            "Open a workspace-local file directly in the browser, such as generated HTML, SVG, PNG, PDF, or text. Prefer this over starting a localhost server when the user asks to open a generated local page.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Workspace-relative file path to open." },
+            },
+            required: ["path"],
+            additionalProperties: false,
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "preview_workspace",
+          description:
+            "Start a persistent host-side static preview server for a workspace file or directory, automatically choosing a free port, then open it in the browser. Use this for generated local websites instead of running python -m http.server inside Docker or repeatedly opening localhost URLs.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Workspace-relative file or directory to preview. Defaults to ." },
+              port: { type: "integer", description: "Preferred localhost port. The runtime chooses another if busy." },
+            },
+            additionalProperties: false,
+          },
+        },
+      }
+    );
+  }
 
   if (config.allowShellTool) {
     tools.splice(-1, 0, {
@@ -495,6 +555,13 @@ export async function requestNextStep(client, config, messages) {
       ]);
     }
 
+    if (config.allowFileTools) {
+      const previewTool = mockPreviewToolForGoal(config.goal);
+      if (previewTool) {
+        return mockChatResponse("Mock mode will exercise the workspace preview tool.", [previewTool]);
+      }
+    }
+
     const canvasTool = mockCanvasToolForGoal(config.goal);
     if (canvasTool) {
       return mockChatResponse("Mock mode will publish a canvas artifact for the UI tunnel.", [canvasTool]);
@@ -520,12 +587,15 @@ export async function requestNextStep(client, config, messages) {
     ]);
   }
 
-  return client.chat.completions.create({
-    model: config.model,
-    temperature: 0,
-    tool_choice: "auto",
-    parallel_tool_calls: false,
-    messages: prepareMessages(config, messages),
-    tools,
-  });
+  return client.chat.completions.create(
+    {
+      model: config.model,
+      temperature: 0,
+      tool_choice: "auto",
+      parallel_tool_calls: false,
+      messages: prepareMessages(config, messages),
+      tools,
+    },
+    requestOptions(config)
+  );
 }

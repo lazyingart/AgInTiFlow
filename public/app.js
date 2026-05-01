@@ -76,6 +76,9 @@ const translations = {
     dockerImageLabel: "Docker image",
     dockerImagePlaceholder: "agintiflow-sandbox:latest",
     startRunButton: "Start run",
+    stopRunButton: "Stop",
+    stoppingRun: "Stopping...",
+    stopRunFailed: "Failed to stop run.",
     runOutputTitle: "Run output",
     noRunStarted: "No run started.",
     conversationTitle: "Conversation",
@@ -643,6 +646,7 @@ const packageInstallPolicyField = document.querySelector("#packageInstallPolicy"
 const packageWarningEl = document.querySelector("#package-warning");
 const logsEl = document.querySelector("#logs");
 const runMetaEl = document.querySelector("#run-meta");
+const stopRunButton = document.querySelector("#stop-run");
 const keyStatusEl = document.querySelector("#key-status");
 const allowWrapperToolsField = document.querySelector("#allowWrapperTools");
 const preferredWrapperField = document.querySelector("#preferredWrapper");
@@ -697,6 +701,7 @@ let routingPresets = {};
 let taskProfiles = [];
 let projectInfo = null;
 let currentSessionId = "";
+let currentRunStatus = "";
 let pollTimer = null;
 let saveTimer = null;
 let lastChatEntries = [];
@@ -726,6 +731,12 @@ function t(key) {
 function setLogs(text, mode = "active") {
   logsEl.dataset.mode = mode;
   logsEl.textContent = text;
+}
+
+function updateStopRunButton() {
+  if (!stopRunButton) return;
+  stopRunButton.hidden = currentRunStatus !== "running";
+  stopRunButton.disabled = currentRunStatus !== "running";
 }
 
 function renderKeyStatus(status = lastKeyStatus) {
@@ -949,6 +960,7 @@ function applyLanguage(language, { persist = true } = {}) {
   renderSessionManager();
   renderChat(lastChatEntries);
   renderArtifactShell();
+  updateStopRunButton();
   if (persist) schedulePreferenceSave();
 }
 
@@ -1429,11 +1441,13 @@ async function refreshRun() {
   const response = await fetch(`/api/runs/${encodeURIComponent(currentSessionId)}`);
   if (!response.ok) return;
   const run = await response.json();
+  currentRunStatus = run.status || "";
+  updateStopRunButton();
   runMetaEl.textContent = `${run.status} · ${run.sessionId}`;
   renderLogs(run);
   await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
 
-  if (run.status === "finished" || run.status === "failed") {
+  if (run.status === "finished" || run.status === "failed" || run.status === "stopped") {
     clearInterval(pollTimer);
     pollTimer = null;
     await refreshChat();
@@ -1441,6 +1455,22 @@ async function refreshRun() {
     await refreshWorkspaceChanges();
     await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
   }
+}
+
+async function stopCurrentRun() {
+  if (!currentSessionId || currentRunStatus !== "running") return;
+  stopRunButton.disabled = true;
+  chatStatusEl.textContent = t("stoppingRun");
+  const response = await fetch(`/api/runs/${encodeURIComponent(currentSessionId)}/stop`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    chatStatusEl.textContent = data.error || t("stopRunFailed");
+    updateStopRunButton();
+    return;
+  }
+  await refreshRun();
 }
 
 async function refreshChat() {
@@ -1771,6 +1801,24 @@ chatInputEl.addEventListener("keydown", (event) => {
   }
 });
 
+stopRunButton?.addEventListener("click", () => {
+  stopCurrentRun().catch((error) => {
+    chatStatusEl.textContent = String(error);
+    updateStopRunButton();
+  });
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || currentRunStatus !== "running") return;
+  const tag = event.target?.tagName?.toLowerCase();
+  if (tag === "select" || tag === "button") return;
+  event.preventDefault();
+  stopCurrentRun().catch((error) => {
+    chatStatusEl.textContent = String(error);
+    updateStopRunButton();
+  });
+});
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
@@ -1802,6 +1850,8 @@ form.addEventListener("submit", async (event) => {
   }
 
   currentSessionId = data.sessionId;
+  currentRunStatus = "running";
+  updateStopRunButton();
   sessionSelectEl.value = currentSessionId;
   runMetaEl.textContent = `${t("runningStatus").replace("...", "")} · ${currentSessionId}`;
   await refreshSessions();
@@ -1817,6 +1867,8 @@ form.addEventListener("submit", async (event) => {
 sessionSelectEl.addEventListener("change", async () => {
   currentSessionId = sessionSelectEl.value;
   if (!currentSessionId) {
+    currentRunStatus = "";
+    updateStopRunButton();
     runMetaEl.textContent = "";
     setLogs(t("noRunSelected"), "empty");
     renderChat([]);
@@ -1862,6 +1914,8 @@ chatFormEl.addEventListener("submit", async (event) => {
   }
 
   currentSessionId = data.sessionId;
+  currentRunStatus = data.queued ? currentRunStatus : "running";
+  updateStopRunButton();
   chatInputEl.value = "";
   chatStatusEl.textContent = data.queued ? t("queuedStatus") : t("runningStatus");
   if (data.queued) {
