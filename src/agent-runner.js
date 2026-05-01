@@ -33,6 +33,79 @@ function preserveAssistantMessage(message) {
   return preserved;
 }
 
+export function repairModelMessageHistory(state, config = {}) {
+  if (config.provider !== "deepseek" || !Array.isArray(state?.messages)) {
+    return { changed: false, droppedAssistantMessages: 0, convertedAssistantMessages: 0, droppedToolMessages: 0 };
+  }
+
+  const repaired = [];
+  const droppedToolCallIds = new Set();
+  let droppedAssistantMessages = 0;
+  let convertedAssistantMessages = 0;
+  let droppedToolMessages = 0;
+
+  for (const message of state.messages) {
+    if (message.role === "assistant") {
+      const hasReasoningContent = Boolean(message.reasoning_content || message.reasoningContent);
+      const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+      const content = String(message.content || "");
+
+      if (!hasReasoningContent) {
+        if (content.startsWith("Execution plan:")) {
+          droppedAssistantMessages += 1;
+          continue;
+        }
+
+        if (toolCalls.length > 0) {
+          for (const call of toolCalls) {
+            if (call?.id) droppedToolCallIds.add(call.id);
+          }
+          droppedAssistantMessages += 1;
+          continue;
+        }
+
+        if (content.trim()) {
+          repaired.push({
+            role: "user",
+            content: `Previous assistant response retained as compacted history for DeepSeek thinking mode:\n${content}`,
+          });
+          convertedAssistantMessages += 1;
+        } else {
+          droppedAssistantMessages += 1;
+        }
+        continue;
+      }
+
+      repaired.push(preserveAssistantMessage(message));
+      continue;
+    }
+
+    if (message.role === "tool" && droppedToolCallIds.has(message.tool_call_id)) {
+      droppedToolMessages += 1;
+      continue;
+    }
+
+    repaired.push(message);
+  }
+
+  const changed =
+    droppedAssistantMessages > 0 ||
+    convertedAssistantMessages > 0 ||
+    droppedToolMessages > 0 ||
+    repaired.length !== state.messages.length;
+
+  if (changed) {
+    state.messages = repaired;
+  }
+
+  return {
+    changed,
+    droppedAssistantMessages,
+    convertedAssistantMessages,
+    droppedToolMessages,
+  };
+}
+
 function createInitialState(config, sessionId) {
   const now = new Date().toISOString();
   return {
@@ -80,7 +153,7 @@ function createInitialState(config, sessionId) {
             : "External coding-agent wrappers are disabled.",
           "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. It is optional and ordinary final text can still go directly to finish.",
           "For visual-output requests such as draw, plot, graph, chart, diagram, figure, image, or visualization, proactively publish a canvas artifact even when the user does not mention canvas. If workspace file tools are enabled, prefer creating a small SVG or markdown artifact and call send_to_canvas with selected=true.",
-          "For LaTeX/PDF requests, create a .tex file, compile it when shell toolchain support is available with an allowlisted command such as latexmk -pdf -interaction=nonstopmode -halt-on-error report.tex, and publish the resulting PDF through send_to_canvas. Prefer Docker workspace-write mode for compilation.",
+          "For LaTeX/PDF requests, create the needed source/assets, compile with the available allowlisted TeX toolchain, and publish the resulting PDF through send_to_canvas. For subfolder documents, keep outputs beside the source. Use pdflatex-compatible figure formats such as PDF or PNG.",
           "When done, call finish with a concise result.",
         ].join(" "),
       },
@@ -101,7 +174,7 @@ function createInitialState(config, sessionId) {
             : "",
           "Canvas/artifacts tunnel: available through send_to_canvas for optional frontend rendering.",
           "Visual-output requests should produce a canvas artifact without requiring the user to ask for canvas explicitly.",
-          "LaTeX/PDF requests should produce a .tex artifact and, when possible, a compiled PDF artifact using latexmk -pdf -interaction=nonstopmode -halt-on-error report.tex.",
+          "LaTeX/PDF requests should produce source artifacts and, when possible, a compiled PDF artifact. For subfolder documents, keep outputs beside the source. For figure-in-document tasks, create PDF/PNG figures that pdflatex can include.",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -328,7 +401,7 @@ async function captureSyntheticSnapshot(store, step, config) {
         : "Agent wrappers disabled.",
       "Canvas/artifacts tunnel available through send_to_canvas.",
       "For draw/plot/graph/chart/diagram/figure requests, publish a canvas artifact proactively.",
-      "For LaTeX/PDF requests, publish the .tex and compiled PDF artifacts when available. Prefer latexmk -pdf -interaction=nonstopmode -halt-on-error report.tex.",
+      "For LaTeX/PDF requests, publish the source and compiled PDF artifacts when available. Keep subfolder outputs beside their source and use pdflatex-compatible figure formats.",
       "Use open_url only if the task actually needs the web.",
     ]
       .filter(Boolean)
@@ -662,14 +735,17 @@ export async function runAgent(config) {
     if (!state.plan) {
       const plan = await createPlan(client, config, state);
       state.plan = plan;
-      state.messages.push({
-        role: "assistant",
-        content: `Execution plan:\n${plan}`,
-      });
       await store.savePlan(plan);
       await store.appendEvent("plan.created", { plan });
       await store.saveState(state);
       observers.event("plan.created", { plan });
+    }
+
+    const repair = repairModelMessageHistory(state, config);
+    if (repair.changed) {
+      await store.appendEvent("history.repaired", repair);
+      observers.event("history.repaired", repair);
+      await store.saveState(state);
     }
 
     observers.log("session.context", {
@@ -738,6 +814,7 @@ export async function runAgent(config) {
           sandboxMode: config.sandboxMode,
           packageInstallPolicy: config.packageInstallPolicy,
           commandCwd: config.commandCwd,
+          plan: state.plan || "",
           suggestedStartUrl: config.startUrl || "",
           canvasArtifactsAvailable: true,
         })}`,
@@ -865,6 +942,8 @@ export async function runAgent(config) {
     return {
       sessionId,
       result: "",
+      stopped: true,
+      reason: "max_steps_reached",
     };
   } finally {
     await closeBrowser(browserState, store);

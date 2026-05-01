@@ -456,11 +456,15 @@ function wireRun(record, config) {
     onEvent: (type, data = {}) => push("event", type, data),
   })
     .then((result) => {
-      record.status = "finished";
+      record.status = result?.stopped ? "stopped" : "finished";
       record.result = result?.result || "";
+      record.error = result?.stopped ? result.reason || "Run stopped before finish." : "";
       record.updatedAt = new Date().toISOString();
       record.endedAt = new Date().toISOString();
-      push("session", "Run finished", { result: record.result });
+      push("session", result?.stopped ? "Run stopped" : "Run finished", {
+        result: record.result,
+        reason: result?.reason || "",
+      });
       db.upsertSession(record);
     })
     .catch((error) => {

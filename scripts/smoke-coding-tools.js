@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runAgent } from "../src/agent-runner.js";
+import { repairModelMessageHistory, runAgent } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { SessionStore } from "../src/session-store.js";
 
@@ -51,6 +51,33 @@ async function runMock(goal, sessionId) {
 }
 
 try {
+  const staleDeepSeekState = {
+    messages: [
+      { role: "system", content: "system" },
+      { role: "user", content: "draw a figure" },
+      { role: "assistant", content: "Execution plan:\n1. stale synthetic plan" },
+      {
+        role: "assistant",
+        content: "I will call a tool.",
+        tool_calls: [{ id: "stale-call", type: "function", function: { name: "list_files", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "stale-call", content: "{\"ok\":true}" },
+      { role: "assistant", content: "Old final answer." },
+    ],
+  };
+  const repair = repairModelMessageHistory(staleDeepSeekState, { provider: "deepseek" });
+  assert(repair.changed, "stale DeepSeek history was not repaired");
+  assert(
+    staleDeepSeekState.messages.every(
+      (message) => message.role !== "assistant" || message.reasoning_content || message.reasoningContent
+    ),
+    "repaired DeepSeek history still has assistant messages without reasoning_content"
+  );
+  assert(
+    !staleDeepSeekState.messages.some((message) => message.role === "tool" && message.tool_call_id === "stale-call"),
+    "repaired DeepSeek history retained an orphan stale tool message"
+  );
+
   const writeRun = await runMock("Create file: notes/mock-output.txt with a short coding smoke message.", "coding-write");
   const written = await fs.readFile(path.join(workspace, "notes/mock-output.txt"), "utf8");
   assert(written.includes("Created by AgInTiFlow mock mode."), "mock write did not create expected file");
@@ -93,7 +120,14 @@ try {
       {
         ok: true,
         workspace,
-        checks: ["write_file", "virtual_workspace_path", "apply_patch", "block_env", "block_outside"],
+        checks: [
+          "deepseek_history_repair",
+          "write_file",
+          "virtual_workspace_path",
+          "apply_patch",
+          "block_env",
+          "block_outside",
+        ],
       },
       null,
       2

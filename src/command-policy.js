@@ -35,8 +35,8 @@ const TEST_PATTERNS = [
 
 const TOOLCHAIN_PATTERNS = [
   /^python(?:3)?\s+[-\w./]+\.py(?:\s+[-\w./:=]+)*$/,
-  /^latexmk\s+-pdf(?:\s+-interaction=nonstopmode)?(?:\s+-halt-on-error)?\s+[-\w./]+\.tex$/,
-  /^pdflatex\s+(?:-interaction=nonstopmode\s+)?(?:-halt-on-error\s+)?[-\w./]+\.tex$/,
+  /^latexmk\s+(?=[-\w./=\s]*-pdf\b)(?:(?:-cd|-pdf|-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+)\s+)+[-\w./]+\.tex$/,
+  /^pdflatex\s+(?:(?:-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+|-jobname\s+[-\w./]+)\s+)*[-\w./]+\.tex$/,
 ];
 
 const PACKAGE_INSTALL_PATTERNS = [

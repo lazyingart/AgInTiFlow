@@ -145,7 +145,7 @@ export async function createPlan(client, config, state) {
             : "",
           "A canvas/artifacts tunnel is available through send_to_canvas. Use it when an output should be highlighted visually, such as screenshots, image files, important markdown, diffs, or generated artifact paths. It is optional for ordinary text answers.",
           "When the user asks to draw, plot, graph, chart, diagram, create a figure, or visualize something, include a canvas artifact even if the user does not mention canvas. Prefer a small SVG file or concise markdown figure when file tools are available.",
-          "When the user asks for LaTeX, TeX, a paper, manuscript, report, or PDF, plan to create a .tex file, compile it when shell toolchain support exists with latexmk -pdf -interaction=nonstopmode -halt-on-error report.tex, and publish the PDF through the canvas tunnel.",
+          "When the user asks for LaTeX, TeX, a paper, manuscript, report, or PDF, plan to create the needed source/assets, compile with the available allowlisted TeX toolchain, and publish the PDF through the canvas tunnel. For subfolder documents, keep outputs beside the source. For generated figures, use pdflatex-compatible formats such as PDF or PNG.",
           "Return a numbered plan only.",
         ]
           .filter(Boolean)

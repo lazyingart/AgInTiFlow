@@ -115,13 +115,65 @@ try {
   assert(pdfPreview.ok && pdfPreview.kind === "pdf", "PDF artifact preview was not renderable");
   assert(/^data:application\/pdf;base64,/.test(pdfPreview.dataUrl || ""), "PDF artifact did not return a PDF data URL");
 
+  await fs.mkdir(path.join(workspace, "figure-note"), { recursive: true });
+  await fs.writeFile(
+    path.join(workspace, "figure-note", "make_figure.py"),
+    [
+      "import math",
+      "import matplotlib",
+      "matplotlib.use('Agg')",
+      "import matplotlib.pyplot as plt",
+      "xs = [x / 20 for x in range(-40, 41)]",
+      "ys = [x + math.exp(x) for x in xs]",
+      "fig, ax = plt.subplots(figsize=(6, 3.5))",
+      "ax.plot(xs, ys, color='#0065c9', linewidth=2.2)",
+      "ax.set_title('f(x)=x+e^x')",
+      "ax.set_xlabel('x')",
+      "ax.set_ylabel('f(x)')",
+      "ax.grid(True, alpha=0.25)",
+      "fig.tight_layout()",
+      "fig.savefig('figure-note/fx_figure.pdf')",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  await runToolchainCommand("python3 figure-note/make_figure.py", config);
+
+  await fs.writeFile(
+    path.join(workspace, "figure-note", "figure_note.tex"),
+    [
+      "\\documentclass{article}",
+      "\\usepackage[T1]{fontenc}",
+      "\\usepackage{amsmath}",
+      "\\usepackage{graphicx}",
+      "\\title{Figure-Included Toolchain Smoke}",
+      "\\author{AgInTiFlow}",
+      "\\date{}",
+      "\\begin{document}",
+      "\\maketitle",
+      "The generated figure below is included from a workspace subfolder.",
+      "\\[ f(x)=x+e^x \\]",
+      "\\begin{figure}[h]",
+      "\\centering",
+      "\\includegraphics[width=0.8\\linewidth]{fx_figure.pdf}",
+      "\\caption{Generated plot of $f(x)=x+e^x$.}",
+      "\\end{figure}",
+      "\\end{document}",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  await runToolchainCommand("latexmk -cd -pdf -interaction=nonstopmode -halt-on-error figure-note/figure_note.tex", config);
+  const figureNotePdf = await fs.stat(path.join(workspace, "figure-note", "figure_note.pdf"));
+  assert(figureNotePdf.size > 1000, "Figure-included LaTeX note did not produce a PDF file");
+
   console.log(
     JSON.stringify(
       {
         ok: true,
         image: config.dockerSandboxImage,
         workspace,
-        outputs: ["plot_fx.svg", "paper.pdf"],
+        outputs: ["plot_fx.svg", "paper.pdf", "figure-note/fx_figure.pdf", "figure-note/figure_note.pdf"],
         artifactKinds: ["image/svg+xml", "application/pdf"],
       },
       null,
