@@ -35,6 +35,8 @@ function printStatus(state) {
   console.log(`project=${process.cwd()}`);
   console.log(`cwd=${state.commandCwd || process.cwd()}`);
   console.log(`session=${state.sessionId || "new"}`);
+  console.log(`status=${state.status || "idle"}${state.activeGoal ? ` workingOn=${state.activeGoal}` : ""}`);
+  if (state.lastEvent) console.log(`last=${state.lastEvent}`);
   console.log(`provider=${state.provider || "auto"} routing=${state.routingMode} model=${state.model || "auto"}`);
   console.log(`profile=${state.taskProfile} maxSteps=${state.maxSteps}`);
   console.log(
@@ -49,7 +51,22 @@ function isAbortError(error) {
   return error?.code === "ABORT_ERR" || error?.name === "AbortError";
 }
 
-function printResumeHint(state) {
+function formatSessionLine(session) {
+  const goal = session.goal ? ` ${session.goal.slice(0, 72)}` : "";
+  return `${session.sessionId} ${session.provider || "unknown"}/${session.model || "unknown"} ${session.updatedAt || ""}${goal}`.trim();
+}
+
+async function latestSession() {
+  const sessions = await listProjectSessions(process.cwd(), 1);
+  return sessions[0] || null;
+}
+
+function printStatusEvent(state, label, details = "") {
+  state.lastEvent = details ? `${label}: ${details}` : label;
+  console.log(`status=${state.status || "running"} ${state.lastEvent}`);
+}
+
+async function printResumeHint(state) {
   const sessionId = state.sessionId || "";
   console.log("");
   if (sessionId) {
@@ -58,7 +75,15 @@ function printResumeHint(state) {
     console.log(`One-shot: aginti resume ${sessionId} "continue"`);
   } else {
     console.log("Interrupted. No active session yet.");
-    console.log("Restart: aginti");
+    const sessions = await listProjectSessions(process.cwd(), 5).catch(() => []);
+    if (sessions.length > 0) {
+      console.log("Recent sessions:");
+      for (const session of sessions) console.log(`  ${formatSessionLine(session)}`);
+      console.log(`Resume latest: aginti resume ${sessions[0].sessionId}`);
+      console.log("List all: aginti sessions list");
+    } else {
+      console.log("Restart: aginti");
+    }
   }
 }
 
@@ -101,8 +126,15 @@ async function handleCommand(line, state, packageDir) {
     return true;
   }
   if (command === "resume") {
-    if (!value) console.log("Usage: /resume <session-id>");
-    else {
+    if (!value || value === "latest") {
+      const latest = await latestSession();
+      if (!latest) {
+        console.log("No project-local sessions found. Use /new or type a request to start one.");
+      } else {
+        state.sessionId = latest.sessionId;
+        console.log(`Resuming latest ${formatSessionLine(latest)}`);
+      }
+    } else {
       state.sessionId = value;
       console.log(`Resuming ${state.sessionId}`);
     }
@@ -216,8 +248,39 @@ async function runPrompt(prompt, state, packageDir) {
     { packageDir, baseDir: process.cwd() }
   );
 
-  const result = await runAgent(config);
+  state.sessionId = config.resume || config.sessionId || state.sessionId;
+  state.status = "running";
+  state.activeGoal = prompt.replace(/\s+/g, " ").slice(0, 120);
+  state.lastEvent = "";
+  console.log(`session=${state.sessionId}`);
+  console.log(`status=running workingOn=${state.activeGoal}`);
+
+  const result = await runAgent({
+    ...config,
+    onEvent: (type, data = {}) => {
+      if (type === "plan.created") {
+        printStatusEvent(state, "planned");
+      } else if (type === "tool.started") {
+        printStatusEvent(state, "tool", data.toolName || "unknown");
+      } else if (type === "tool.completed") {
+        printStatusEvent(state, "tool_done", data.toolName || "unknown");
+      } else if (type === "tool.blocked") {
+        printStatusEvent(state, "tool_blocked", data.toolName || data.reason || "unknown");
+      } else if (type === "conversation.queued_input_applied") {
+        printStatusEvent(state, "queued_input_applied");
+      } else if (type === "session.finished") {
+        printStatusEvent(state, "finished");
+      } else if (type === "session.stopped") {
+        printStatusEvent(state, "stopped", data.reason || "");
+      } else if (type === "model.responded") {
+        printStatusEvent(state, "model_responded", data.content ? data.content.slice(0, 80).replace(/\s+/g, " ") : "");
+      }
+    },
+  });
   state.sessionId = result.sessionId || state.sessionId;
+  state.status = result.stopped ? "stopped" : "idle";
+  state.activeGoal = "";
+  console.log(`status=${state.status} session=${state.sessionId}`);
 }
 
 export async function startInteractiveCli(args = {}, { packageDir, packageVersion } = {}) {
@@ -237,7 +300,7 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
       } catch (error) {
         if (error?.code === "ERR_USE_AFTER_CLOSE") break;
         if (isAbortError(error)) {
-          printResumeHint(state);
+          await printResumeHint(state);
           break;
         }
         throw error;
@@ -254,7 +317,7 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
         await runPrompt(line, state, packageDir);
       } catch (error) {
         if (isAbortError(error)) {
-          printResumeHint(state);
+          await printResumeHint(state);
           break;
         }
         console.error(`error: ${error.message}`);

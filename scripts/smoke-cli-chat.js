@@ -10,19 +10,19 @@ const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-cli-chat-")
 const binPath = path.join(repoRoot, "bin/aginti-cli.js");
 
 function runChat(inputText) {
+  return runCli(["chat", "--provider", "mock", "--routing", "manual", "--profile", "code"], inputText);
+}
+
+function runCli(args, inputText) {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      process.execPath,
-      [binPath, "chat", "--provider", "mock", "--routing", "manual", "--profile", "code"],
-      {
-        cwd: tempRoot,
-        stdio: ["pipe", "pipe", "pipe"],
-        env: {
-          ...process.env,
-          AGINTIFLOW_RUNTIME_DIR: "",
-        },
-      }
-    );
+    const child = spawn(process.execPath, [binPath, ...args], {
+      cwd: tempRoot,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        AGINTIFLOW_RUNTIME_DIR: "",
+      },
+    });
 
     let stdout = "";
     let stderr = "";
@@ -60,12 +60,21 @@ try {
   if (!result.stdout.includes("Interactive agent chat")) {
     throw new Error("interactive chat did not print its banner");
   }
+  if (!result.stdout.includes("status=running workingOn=") || !result.stdout.includes("status=idle session=")) {
+    throw new Error("interactive chat did not print simple run status updates");
+  }
+
+  const latest = await runCli(["resume"], "/exit\n");
+  if (!latest.stdout.includes("session=") || !latest.stdout.includes("Interactive agent chat")) {
+    throw new Error("bare aginti resume did not open the latest session interactively");
+  }
+
   console.log(
     JSON.stringify(
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["interactive-chat", "mock-file-write"],
+        checks: ["interactive-chat", "mock-file-write", "run-status", "resume-latest"],
       },
       null,
       2

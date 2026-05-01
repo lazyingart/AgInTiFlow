@@ -54,7 +54,7 @@ aginti
 aginti chat
 ```
 
-Inside chat, type normal requests such as `write a small Python CLI app with tests`. The default is now Docker workspace mode with approved package installs, so coding, plotting, and LaTeX tasks can set up project-local tools without touching the host. Use `/help` for commands, `/latex on` for PDF work, `/docker off` only when you intentionally want host mode, `/sessions` to list project runs, and `/resume <session-id>` to continue work. Ctrl+C exits cleanly and prints a resume command when a session exists.
+Inside chat, type normal requests such as `write a small Python CLI app with tests`. The default is now Docker workspace mode with approved package installs, so coding, plotting, and LaTeX tasks can set up project-local tools without touching the host. Use `/help` for commands, `/latex on` for PDF work, `/docker off` only when you intentionally want host mode, `/sessions` to list project runs, and `/resume latest` or `/resume <session-id>` to continue work. Ctrl+C exits cleanly, prints the active resume command when a session exists, and lists recent sessions when no new session has started yet.
 
 Launch the local web UI from an installed package:
 
@@ -80,6 +80,8 @@ aginti capabilities
 aginti doctor --capabilities
 aginti sessions list
 aginti sessions show <session-id>
+aginti resume
+aginti resume latest
 aginti resume <session-id> "continue with a short follow-up"
 aginti queue <session-id> "extra instruction for the running agent"
 aginti --profile code "write a small Python CLI app with tests"

@@ -219,7 +219,7 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti resume <session-id> ["prompt"] OR aginti queue <session-id> "message" OR aginti [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-destructive] [--allow-file-tools|--no-file-tools] [--allow-wrappers --wrapper codex] [--sandbox-status|--sandbox-preflight] "your task"'
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-destructive] [--allow-file-tools|--no-file-tools] [--allow-wrappers --wrapper codex] [--sandbox-status|--sandbox-preflight] "your task"'
   );
 }
 
@@ -356,6 +356,13 @@ async function handleSessionsCommand(argv) {
   process.exit(1);
 }
 
+async function resolveResumeSessionId(sessionId) {
+  if (sessionId && sessionId !== "latest") return sessionId;
+  const sessions = await listProjectSessions(process.cwd(), 1);
+  if (sessions[0]?.sessionId) return sessions[0].sessionId;
+  throw new Error("No project-local sessions found. Run `aginti sessions list` to check this folder.");
+}
+
 async function handleQueueCommand(argv) {
   const sessionId = argv[0] || "";
   const content = argv.slice(1).join(" ").trim();
@@ -456,22 +463,20 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (argv[0] === "resume") {
-    const sessionId = argv[1] || "";
+    let sessionId = argv[1] || "";
     const prompt = argv.slice(2).join(" ").trim();
-    if (!sessionId) {
-      console.error('Usage: aginti resume <session-id> ["new prompt"]');
+    try {
+      sessionId = await resolveResumeSessionId(sessionId);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     }
-    if (!prompt && process.stdin.isTTY) {
+    if (!prompt) {
       await startInteractiveCli(agentDefaults({ ...parseArgs([]), resume: sessionId }), {
         packageDir,
         packageVersion: packageJson.version,
       });
       return;
-    }
-    if (!prompt) {
-      console.error('Usage: aginti resume <session-id> "new prompt"');
-      process.exit(1);
     }
     const config = loadConfig(agentDefaults({ ...parseArgs([prompt]), resume: sessionId, goal: prompt }), { packageDir });
     await runAgent(config);
