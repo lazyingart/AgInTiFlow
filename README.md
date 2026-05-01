@@ -28,7 +28,7 @@ It is designed for workflows where an AI agent should act, but every tool, log, 
 | Core loop | Plan -> use tools -> log events -> finish or resume |
 | Browser control | Playwright, lazy browser startup, domain allowlists |
 | Model layer | Smart routing over DeepSeek fast/pro presets with manual OpenAI-compatible fallback |
-| Local tools | Optional guarded shell commands, Docker sandbox support, and advisory agent wrappers |
+| Local tools | Guarded workspace file tools, optional shell commands, Docker sandbox support, and advisory agent wrappers |
 | Memory | Session state, persisted web settings, chat continuation |
 | Operator UX | Multilingual web UI with provider selection, run output, and conversation history |
 
@@ -107,6 +107,7 @@ The web app includes:
 - Goal, start URL, allowed domains, working directory, and max-step controls.
 - Sandbox mode, Docker image/status, package-install approval state, safe setup warnings, and recent sandbox logs.
 - Wrapper capability panel showing available Codex, Claude, Gemini, Copilot, and Qwen wrappers.
+- Workspace Files panel showing file tools, recent file changes, blocked write attempts, hashes, and compact diffs.
 - Toggleable shell tool, agent wrappers, headless browser, password typing, and destructive actions.
 - Live run logs above a persistent conversation panel.
 
@@ -131,6 +132,8 @@ AgInTiFlow is intentionally conservative:
 - Password typing is blocked unless explicitly enabled.
 - Destructive browser actions are blocked unless explicitly enabled.
 - Shell commands are disabled unless the shell tool is enabled.
+- Workspace file tools stay inside `commandCwd` and block `.env`, secret-like paths, `.git`, node_modules writes, absolute escapes, binary files, and huge files.
+- File writes record before/after SHA-256 hashes and compact redacted diffs.
 - Guarded shell mode only allows inspection, test/build checks, and approved setup commands.
 - Docker read-only mode mounts the workspace read-only and disables container network access.
 - Docker workspace-write mode is required for approved package or environment setup.
@@ -150,6 +153,7 @@ MAX_STEPS=15
 HEADLESS=true
 ALLOWED_DOMAINS=news.ycombinator.com,github.com
 ALLOW_SHELL_TOOL=false
+ALLOW_FILE_TOOLS=true
 SANDBOX_MODE=docker-readonly
 PACKAGE_INSTALL_POLICY=prompt
 USE_DOCKER_SANDBOX=true
@@ -259,9 +263,10 @@ curl http://127.0.0.1:3210/api/sandbox/status
 curl -X POST http://127.0.0.1:3210/api/sandbox/preflight \
   -H 'Content-Type: application/json' \
   -d '{"sandboxMode":"docker-readonly","buildImage":true}'
+curl http://127.0.0.1:3210/api/workspace/changes
 ```
 
-These endpoints report Docker/image/workspace readiness and recent sandbox logs without returning API keys or npm tokens.
+These endpoints report Docker/image/workspace readiness, recent sandbox logs, and recent file-change provenance without returning API keys or npm tokens.
 
 Credential-free API smoke test:
 
@@ -306,10 +311,11 @@ AgInTiFlow/
 ```bash
 npm run check
 npm run smoke:web-api
+npm run smoke:coding-tools
 npm test
 ```
 
-`npm run check` validates JavaScript syntax for the CLI, web server, and runtime modules. `npm run smoke:web-api` uses the local mock provider, so it does not require DeepSeek or OpenAI credentials.
+`npm run check` validates JavaScript syntax for the CLI, web server, and runtime modules. The smoke scripts use the local mock provider, so they do not require DeepSeek or OpenAI credentials.
 
 ## Prompt Tools
 

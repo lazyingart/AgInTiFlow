@@ -54,6 +54,7 @@ const translations = {
     packageWarningHostAllow: "Host mode cannot run approved package setup; switch to Docker workspace-write.",
     headlessLabel: "Headless browser",
     shellToolLabel: "Enable shell tool",
+    fileToolLabel: "Enable file tools",
     wrapperToolLabel: "Enable agent wrappers",
     dockerSandboxLabel: "Use Docker sandbox",
     allowPasswordsLabel: "Allow password typing",
@@ -74,6 +75,11 @@ const translations = {
     keysLabel: "Keys",
     wrappersLabel: "Wrappers",
     wrapperCapabilityTitle: "Agent wrappers",
+    workspaceCapabilityTitle: "Workspace files",
+    workspaceToolsLabel: "File tools",
+    workspaceChangesEmpty: "No file changes yet.",
+    changedLabel: "changed",
+    blockedLabel: "blocked",
     mockLabel: "Mock",
     sandboxStatusTitle: "Sandbox status",
     sandboxStatusEmpty: "Not checked yet.",
@@ -581,6 +587,9 @@ const runMetaEl = document.querySelector("#run-meta");
 const keyStatusEl = document.querySelector("#key-status");
 const wrapperStatusEl = document.querySelector("#wrapper-status");
 const wrapperGridEl = document.querySelector("#wrapper-grid");
+const workspaceStatusEl = document.querySelector("#workspace-status");
+const workspaceToolsEl = document.querySelector("#workspace-tools");
+const workspaceChangesEl = document.querySelector("#workspace-changes");
 const sandboxStatusEl = document.querySelector("#sandbox-status");
 const sandboxLogsEl = document.querySelector("#sandbox-logs");
 const checkSandboxButton = document.querySelector("#check-sandbox");
@@ -609,6 +618,8 @@ let lastSessions = [];
 let lastKeyStatus = null;
 let lastWrappers = [];
 let lastSandbox = null;
+let lastWorkspace = null;
+let lastWorkspaceActivity = [];
 
 function normalizeLanguage(language) {
   const lower = String(language || "").toLowerCase();
@@ -655,6 +666,65 @@ function renderWrapperStatus(wrappers = lastWrappers) {
         </div>
       `
     )
+    .join("");
+}
+
+function renderWorkspacePanel(workspace = lastWorkspace, activity = lastWorkspaceActivity) {
+  lastWorkspace = workspace;
+  lastWorkspaceActivity = activity || [];
+
+  if (!workspace) {
+    workspaceStatusEl.textContent = "";
+    workspaceToolsEl.innerHTML = "";
+    workspaceChangesEl.innerHTML = `<p class="subtle">${t("workspaceChangesEmpty")}</p>`;
+    return;
+  }
+
+  workspaceStatusEl.textContent = `${workspace.enabled ? t("availableLabel") : t("missingLabel")} · ${
+    workspace.workspace || ""
+  }`;
+  workspaceToolsEl.innerHTML = (workspace.tools || [])
+    .map(
+      (tool) => `
+        <div class="capability-chip" data-ready="${Boolean(workspace.enabled)}">
+          <strong>${escapeHtml(tool)}</strong>
+          <span>${(workspace.writeTools || []).includes(tool) ? "write guarded" : "read guarded"}</span>
+        </div>
+      `
+    )
+    .join("");
+
+  if (!lastWorkspaceActivity.length) {
+    workspaceChangesEl.innerHTML = `<p class="subtle">${t("workspaceChangesEmpty")}</p>`;
+    return;
+  }
+
+  workspaceChangesEl.innerHTML = lastWorkspaceActivity
+    .slice(0, 6)
+    .map((item) => {
+      const blocked = item.kind === "blocked";
+      const label = blocked ? t("blockedLabel") : t("changedLabel");
+      const path = escapeHtml(item.path || "");
+      const reason = blocked ? `<div class="subtle">${escapeHtml(item.reason || "")}</div>` : "";
+      const diff = item.diff ? `<pre class="change-diff">${escapeHtml(item.diff).slice(0, 1200)}</pre>` : "";
+      const hashes =
+        item.beforeHash || item.afterHash
+          ? `<div class="change-meta"><span>before=${escapeHtml((item.beforeHash || "new").slice(0, 10))}</span><span>after=${escapeHtml((item.afterHash || "").slice(0, 10))}</span></div>`
+          : "";
+      return `
+        <article class="change-item ${blocked ? "blocked" : ""}">
+          <div class="change-meta">
+            <span>${label}</span>
+            <span>${escapeHtml(item.toolName || "")}</span>
+            <span>${item.at ? new Date(item.at).toLocaleString() : ""}</span>
+          </div>
+          <strong class="change-path">${path}</strong>
+          ${reason}
+          ${hashes}
+          ${diff}
+        </article>
+      `;
+    })
     .join("");
 }
 
@@ -748,6 +818,7 @@ function applyLanguage(language, { persist = true } = {}) {
 
   renderKeyStatus();
   renderWrapperStatus();
+  renderWorkspacePanel();
   renderSandboxStatus();
   updateRoutingHint();
   updatePackageWarning();
@@ -770,6 +841,7 @@ function formPayload() {
     packageInstallPolicy: packageInstallPolicyField.value,
     headless: document.querySelector("#headless").checked,
     allowShellTool: document.querySelector("#allowShellTool").checked,
+    allowFileTools: document.querySelector("#allowFileTools").checked,
     allowWrapperTools: document.querySelector("#allowWrapperTools").checked,
     useDockerSandbox: sandboxModeField.value !== "host",
     dockerSandboxImage: document.querySelector("#dockerSandboxImage").value.trim(),
@@ -850,6 +922,13 @@ async function refreshSessions() {
   renderSessions(data.sessions || []);
 }
 
+async function refreshWorkspaceChanges() {
+  const response = await fetch("/api/workspace/changes");
+  if (!response.ok) return;
+  const data = await response.json();
+  renderWorkspacePanel(data.workspace, data.activity || []);
+}
+
 async function refreshRun() {
   if (!currentSessionId) return;
   const response = await fetch(`/api/runs/${encodeURIComponent(currentSessionId)}`);
@@ -863,6 +942,7 @@ async function refreshRun() {
     pollTimer = null;
     await refreshChat();
     await refreshSessions();
+    await refreshWorkspaceChanges();
   }
 }
 
@@ -1011,6 +1091,7 @@ form.addEventListener("submit", async (event) => {
   runMetaEl.textContent = `${t("runningStatus").replace("...", "")} · ${currentSessionId}`;
   await refreshSessions();
   await refreshChat();
+  await refreshWorkspaceChanges();
 
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(refreshRun, 1500);
@@ -1065,6 +1146,7 @@ chatFormEl.addEventListener("submit", async (event) => {
   chatStatusEl.textContent = t("runningStatus");
   await refreshSessions();
   await refreshChat();
+  await refreshWorkspaceChanges();
 
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(refreshRun, 1500);
@@ -1093,6 +1175,7 @@ async function loadConfig() {
   sandboxModeField.value = prefs.sandboxMode || (prefs.useDockerSandbox ? "docker-readonly" : "host");
   packageInstallPolicyField.value = prefs.packageInstallPolicy || "prompt";
   document.querySelector("#allowShellTool").checked = prefs.allowShellTool ?? true;
+  document.querySelector("#allowFileTools").checked = prefs.allowFileTools ?? true;
   document.querySelector("#allowWrapperTools").checked = prefs.allowWrapperTools ?? false;
   document.querySelector("#dockerSandboxImage").value = prefs.dockerSandboxImage || "agintiflow-sandbox:latest";
   document.querySelector("#allowPasswords").checked = prefs.allowPasswords ?? false;
@@ -1100,6 +1183,8 @@ async function loadConfig() {
 
   renderKeyStatus(data.keyStatus);
   renderWrapperStatus(data.wrappers || []);
+  renderWorkspacePanel(data.workspace, []);
+  await refreshWorkspaceChanges();
   renderSandboxLogs(data.sandbox?.logs || []);
   updateRoutingHint();
   updatePackageWarning();

@@ -39,6 +39,7 @@
     "logos/logo.png",
     "public/",
     "scripts/install-docker-ubuntu.sh",
+    "scripts/smoke-coding-tools.js",
     "scripts/smoke-web-api.js",
     "src/",
     "run.js",
@@ -52,8 +53,9 @@
     "start": "node run.js",
     "web": "node web.js",
     "check": "node --check run.js && node --check web.js && node --check bin/aginti-cli.js && node --check src/*.js",
+    "smoke:coding-tools": "node scripts/smoke-coding-tools.js",
     "smoke:web-api": "node scripts/smoke-web-api.js",
-    "test": "npm run check && npm run smoke:web-api",
+    "test": "npm run check && npm run smoke:web-api && npm run smoke:coding-tools",
     "pack:dry-run": "npm pack --dry-run"
   },
   "dependencies": {

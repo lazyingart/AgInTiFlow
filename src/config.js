@@ -68,6 +68,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     allowPasswords: parseBoolean(overrides.allowPasswords ?? process.env.ALLOW_PASSWORDS, false),
     allowDestructive: parseBoolean(overrides.allowDestructive ?? process.env.ALLOW_DESTRUCTIVE, false),
     allowShellTool: parseBoolean(overrides.allowShellTool ?? args.allowShellTool ?? process.env.ALLOW_SHELL_TOOL, false),
+    allowFileTools: parseBoolean(overrides.allowFileTools ?? args.allowFileTools ?? process.env.ALLOW_FILE_TOOLS, true),
     allowWrapperTools: parseBoolean(
       overrides.allowWrapperTools ?? args.allowWrapperTools ?? process.env.ALLOW_WRAPPER_TOOLS,
       false

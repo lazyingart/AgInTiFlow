@@ -15,6 +15,7 @@ function defaultPreferences(baseDir) {
     allowedDomains: "",
     commandCwd: path.resolve(baseDir, ".."),
     allowShellTool: true,
+    allowFileTools: true,
     allowWrapperTools: false,
     wrapperTimeoutMs: 120000,
     sandboxMode: "docker-readonly",

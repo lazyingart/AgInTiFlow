@@ -235,6 +235,57 @@ button.secondary {
   opacity: 0.72;
 }
 
+.workspace-card {
+  border-color: rgba(0, 111, 238, 0.18);
+  background: linear-gradient(135deg, rgba(255, 253, 250, 0.9), rgba(239, 246, 255, 0.72));
+}
+
+.workspace-changes {
+  display: grid;
+  gap: 8px;
+}
+
+.change-item {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 253, 250, 0.82);
+}
+
+.change-item.blocked {
+  border-color: rgba(217, 119, 6, 0.28);
+}
+
+.change-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.change-path {
+  display: block;
+  margin: 4px 0;
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  font-size: 0.82rem;
+}
+
+.change-diff {
+  max-height: 150px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 10px;
+  border-radius: 10px;
+  background: #111827;
+  color: #dbeafe;
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  font-size: 0.72rem;
+  line-height: 1.42;
+  white-space: pre-wrap;
+}
+
 .sandbox-card h2 {
   margin: 0 0 4px;
   font-size: 1.05rem;

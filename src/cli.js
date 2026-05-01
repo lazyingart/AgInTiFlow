@@ -27,6 +27,7 @@ export function parseArgs(argv) {
     sandboxMode: "",
     packageInstallPolicy: "",
     allowShellTool: undefined,
+    allowFileTools: undefined,
     allowWrapperTools: undefined,
     useDockerSandbox: undefined,
     headless: undefined,
@@ -116,6 +117,14 @@ export function parseArgs(argv) {
       result.allowShellTool = true;
       continue;
     }
+    if (arg === "--allow-file-tools") {
+      result.allowFileTools = true;
+      continue;
+    }
+    if (arg === "--no-file-tools") {
+      result.allowFileTools = false;
+      continue;
+    }
     if (arg === "--allow-wrappers") {
       result.allowWrapperTools = true;
       continue;
@@ -200,7 +209,7 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (!args.goal && !args.resume) {
     console.error(
-      'Usage: aginti-cli web [--port 3210] OR aginti-cli [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--allow-shell] [--allow-wrappers] [--sandbox-status|--sandbox-preflight] "your task"'
+      'Usage: aginti-cli web [--port 3210] OR aginti-cli [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--allow-shell] [--allow-file-tools|--no-file-tools] [--allow-wrappers] [--sandbox-status|--sandbox-preflight] "your task"'
     );
     process.exit(1);
   }

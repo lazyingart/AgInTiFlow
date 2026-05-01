@@ -10,6 +10,7 @@ import { getModelPresets, getProviderDefaults, normalizeRoutingMode } from "./sr
 import { listAgentWrappers } from "./src/tool-wrappers.js";
 import { getDockerSandboxStatus, getSandboxLogs, runDockerPreflight } from "./src/docker-sandbox.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./src/command-policy.js";
+import { summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./src/workspace-tools.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -120,6 +121,7 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
         ? body.commandCwd.trim()
         : current.commandCwd || path.resolve(baseDir, ".."),
     allowShellTool: typeof body.allowShellTool === "boolean" ? body.allowShellTool : Boolean(current.allowShellTool),
+    allowFileTools: typeof body.allowFileTools === "boolean" ? body.allowFileTools : current.allowFileTools !== false,
     allowWrapperTools:
       typeof body.allowWrapperTools === "boolean" ? body.allowWrapperTools : Boolean(current.allowWrapperTools),
     wrapperTimeoutMs:
@@ -183,6 +185,7 @@ function buildRunConfig(body, overrides = {}) {
       allowPasswords: merged.allowPasswords,
       allowDestructive: merged.allowDestructive,
       allowShellTool: merged.allowShellTool,
+      allowFileTools: merged.allowFileTools,
       allowWrapperTools: merged.allowWrapperTools,
       wrapperTimeoutMs: merged.wrapperTimeoutMs,
       sandboxMode: merged.sandboxMode,
@@ -317,6 +320,45 @@ async function ensureNotRunning(sessionId) {
   }
 }
 
+async function collectWorkspaceActivity(limit = 24) {
+  const activity = [];
+  const sessions = db.listSessions(30);
+
+  for (const session of sessions) {
+    const store = sessionStore(session.sessionId);
+    const events = await store.loadEvents();
+    for (const event of events) {
+      if (event.type === "file.changed") {
+        activity.push({
+          at: event.timestamp,
+          kind: "changed",
+          sessionId: session.sessionId,
+          goal: session.goal,
+          ...event.data,
+        });
+      }
+
+      if (
+        event.type === "tool.blocked" &&
+        (WORKSPACE_TOOL_NAMES.includes(event.data?.toolName) || WORKSPACE_TOOL_NAMES.includes(event.data?.args?.toolName))
+      ) {
+        activity.push({
+          at: event.timestamp,
+          kind: "blocked",
+          sessionId: session.sessionId,
+          goal: session.goal,
+          toolName: event.data?.toolName || "",
+          path: event.data?.args?.path || "",
+          reason: event.data?.reason || "",
+          category: event.data?.category || "",
+        });
+      }
+    }
+  }
+
+  return activity.sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, limit);
+}
+
 function createRunRecord(config, goal, existingLogs = []) {
   return {
     sessionId: config.sessionId,
@@ -376,6 +418,7 @@ app.use("/logos", express.static(path.join(__dirname, "logos")));
 
 app.get("/api/config", (_req, res) => {
   const preferences = normalizePreferencePayload({}, db.getPreferences());
+  const config = buildRunConfig({ ...preferences, goal: "" });
   res.json({
     defaults: {
       openai: publicProviderDefault("openai"),
@@ -392,6 +435,7 @@ app.get("/api/config", (_req, res) => {
     sandbox: {
       logs: getSandboxLogs(),
     },
+    workspace: summarizeWorkspaceTools(config),
     preferences,
     keyStatus: {
       openai: Boolean(process.env.OPENAI_API_KEY),
@@ -427,6 +471,16 @@ app.post("/api/preferences", (req, res) => {
 
 app.get("/api/sessions", (_req, res) => {
   res.json({ sessions: db.listSessions(20) });
+});
+
+app.get("/api/workspace/changes", async (_req, res) => {
+  const preferences = normalizePreferencePayload({}, db.getPreferences());
+  const config = buildRunConfig({ ...preferences, goal: "" });
+  res.json({
+    ok: true,
+    workspace: summarizeWorkspaceTools(config),
+    activity: await collectWorkspaceActivity(),
+  });
 });
 
 app.get("/api/sessions/:sessionId/chat", async (req, res) => {

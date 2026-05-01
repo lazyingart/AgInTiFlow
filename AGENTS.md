@@ -17,6 +17,7 @@
 - `npx aginti-cli web --port 3210`: start the packaged web UI path.
 - `npm run check`: run syntax checks for `run.js`, `web.js`, and all files in `src/`.
 - `npm run smoke:web-api`: start a temporary web server and verify config, sandbox, mock run, and persisted chat APIs without live model credentials.
+- `npm run smoke:coding-tools`: verify mock workspace writes, patches, and path guardrail blocks.
 - `npm pack --dry-run`: inspect npm package contents before release.
 
 Use `AGENT_PROVIDER=openai`, `AGENT_PROVIDER=deepseek`, or `AGENT_PROVIDER=mock` when running locally.
@@ -27,7 +28,7 @@ Use ES modules, 2-space indentation, and semicolons, matching the existing JavaS
 
 ## Testing Guidelines
 
-There is no full automated test suite yet. Treat `npm run check` plus `npm run smoke:web-api` as the minimum required gate before committing. For behavior changes, do one manual smoke test through either the CLI or the web UI. If you add tests later, place them in a dedicated `test/` directory and name them after the module under test, for example `guardrails.test.js`.
+There is no full automated test suite yet. Treat `npm run check`, `npm run smoke:web-api`, and `npm run smoke:coding-tools` as the minimum required gate before committing. For behavior changes, do one manual smoke test through either the CLI or the web UI. If you add tests later, place them in a dedicated `test/` directory and name them after the module under test, for example `guardrails.test.js`.
 
 ## Commit & Pull Request Guidelines
 
@@ -40,4 +41,4 @@ Commit messages in this repo currently follow short imperative style, for exampl
 
 ## Security & Configuration Tips
 
-Never hard-code API keys. Use environment variables like `OPENAI_API_KEY` and `DEEPSEEK_API_KEY`. Do not expose provider defaults that include API keys through web APIs. Keep wrapper tools advisory and opt-in; do not remove read-only/planning defaults without documenting the risk. Keep npm publish and token commands blocked inside agent runs. Prefer Trusted Publishing through `.github/workflows/npm-publish.yml`; local npm tokens may only live in ignored `.env` or `.npmrc` files and must never be printed or committed. Package installs or venv/conda/npm setup must require the package policy and Docker workspace-write mode. Do not weaken guardrails in `src/guardrails.js` or `src/command-policy.js` without documenting why. Do not commit `.sessions/` artifacts.
+Never hard-code API keys. Use environment variables like `OPENAI_API_KEY` and `DEEPSEEK_API_KEY`. Do not expose provider defaults that include API keys through web APIs. Keep wrapper tools advisory and opt-in; do not remove read-only/planning defaults without documenting the risk. Workspace file tools must stay inside `commandCwd`, block secret-like paths, and preserve before/after hash provenance for writes. Keep npm publish and token commands blocked inside agent runs. Prefer Trusted Publishing through `.github/workflows/npm-publish.yml`; local npm tokens may only live in ignored `.env` or `.npmrc` files and must never be printed or committed. Package installs or venv/conda/npm setup must require the package policy and Docker workspace-write mode. Do not weaken guardrails in `src/guardrails.js`, `src/workspace-tools.js`, or `src/command-policy.js` without documenting why. Do not commit `.sessions/` artifacts.

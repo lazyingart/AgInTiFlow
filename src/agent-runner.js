@@ -11,9 +11,11 @@ import { ensureDockerSandboxReady, runDockerSandboxCommand } from "./docker-sand
 import { runAgentWrapper, wrapperStatusText } from "./tool-wrappers.js";
 import { evaluateCommandPolicy } from "./command-policy.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
+import { executeWorkspaceTool, summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./workspace-tools.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "click", "type", "scroll", "press", "back"]);
+const WORKSPACE_TOOLS = new Set(WORKSPACE_TOOL_NAMES);
 
 function createInitialState(config, sessionId) {
   const now = new Date().toISOString();
@@ -54,6 +56,9 @@ function createInitialState(config, sessionId) {
               ? `A shell command tool is available inside Docker sandbox mode ${config.sandboxMode}. Read-only commands have no network. Package installs or environment setup require approved package policy and Docker workspace-write mode.`
               : "A read-only host shell command tool is available for short local inspection tasks."
             : "No shell command tool is available.",
+          config.allowFileTools
+            ? `Workspace file tools are available in ${config.commandCwd}: list_files, read_file, search_files, write_file, and apply_patch. Paths must stay inside the workspace. Secret paths, .git internals, node_modules writes, and huge files are blocked.`
+            : "No workspace file tools are available.",
           config.allowWrapperTools
             ? `External coding-agent wrappers are available as advisory tools only. Wrapper status: ${wrapperStatusText()}.`
             : "External coding-agent wrappers are disabled.",
@@ -71,6 +76,7 @@ function createInitialState(config, sessionId) {
               ? `Shell working directory mounted into Docker: ${config.commandCwd}. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
               : `Shell working directory: ${config.commandCwd}`
             : "",
+          config.allowFileTools ? `Workspace file tools enabled in: ${config.commandCwd}` : "",
           config.allowWrapperTools ? `Agent wrappers: ${wrapperStatusText()}` : "",
         ]
           .filter(Boolean)
@@ -164,6 +170,7 @@ function applyContinuationPrompt(state, config, observers) {
           ? `Shell working directory mounted into Docker: ${config.commandCwd}. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
           : `Shell working directory: ${config.commandCwd}`
         : "",
+      config.allowFileTools ? `Workspace file tools enabled in: ${config.commandCwd}` : "",
       config.allowWrapperTools ? `Agent wrappers: ${wrapperStatusText()}` : "",
     ]
       .filter(Boolean)
@@ -218,6 +225,38 @@ function safeExecutionEnv() {
   };
 }
 
+function hashForLog(value) {
+  return crypto.createHash("sha256").update(String(value ?? "")).digest("hex");
+}
+
+function sanitizeToolArgs(toolName, args) {
+  const safeArgs = redactValue(args);
+  if (toolName === "write_file" && typeof args.content === "string") {
+    return {
+      ...safeArgs,
+      content: `[${Buffer.byteLength(args.content, "utf8")} bytes sha256=${hashForLog(args.content)}]`,
+    };
+  }
+  if (toolName === "apply_patch") {
+    return {
+      ...safeArgs,
+      search: typeof args.search === "string" ? redactSensitiveText(args.search).slice(0, 160) : safeArgs.search,
+      replace: typeof args.replace === "string" ? redactSensitiveText(args.replace).slice(0, 160) : safeArgs.replace,
+    };
+  }
+  return safeArgs;
+}
+
+function sanitizeToolResult(result) {
+  const safeResult = redactValue(result);
+  if (typeof safeResult.content === "string") {
+    safeResult.contentPreview = safeResult.content.slice(0, 600);
+    safeResult.contentBytes = Buffer.byteLength(safeResult.content, "utf8");
+    delete safeResult.content;
+  }
+  return safeResult;
+}
+
 async function runShellCommand(command, config, policy = evaluateCommandPolicy(command, config)) {
   if (config.useDockerSandbox) {
     return runDockerSandboxCommand(command, config, policy);
@@ -249,6 +288,7 @@ async function captureSyntheticSnapshot(store, step, config) {
           ? `Shell tool available in Docker with mounted workspace: ${config.commandCwd}. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
           : `Shell tool available in: ${config.commandCwd}`
         : "Shell tool disabled.",
+      config.allowFileTools ? `Workspace file tools available in: ${config.commandCwd}` : "Workspace file tools disabled.",
       config.allowWrapperTools ? `Agent wrappers available: ${wrapperStatusText()}` : "Agent wrappers disabled.",
       "Use open_url only if the task actually needs the web.",
     ]
@@ -274,7 +314,7 @@ async function buildSnapshot(browserState, store, step, config) {
 
 async function executeTool(browserState, toolCall, snapshot, config, store, observers, state) {
   const args = JSON.parse(toolCall.function.arguments || "{}");
-  const safeArgs = redactValue(args);
+  const safeArgs = sanitizeToolArgs(toolCall.function.name, args);
   const guard = checkToolUse({
     toolName: toolCall.function.name,
     args,
@@ -361,6 +401,41 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           await new Promise((resolve) => setTimeout(resolve, Number.isFinite(args.ms) ? Number(args.ms) : 1000));
         }
         break;
+      case "list_files":
+      case "read_file":
+      case "search_files":
+      case "write_file":
+      case "apply_patch": {
+        const result = await executeWorkspaceTool(toolCall.function.name, args, config);
+        const eventResult = sanitizeToolResult(result);
+        if (result.blocked) {
+          await store.appendEvent("tool.blocked", {
+            toolName: toolCall.function.name,
+            args: safeArgs,
+            reason: result.reason,
+            category: result.category,
+          });
+          observers.event("tool.blocked", {
+            toolName: toolCall.function.name,
+            args: safeArgs,
+            reason: result.reason,
+            category: result.category,
+          });
+          return result;
+        }
+
+        await store.appendEvent("tool.completed", eventResult);
+        observers.event("tool.completed", eventResult);
+        if (result.change) {
+          const change = {
+            ...result.change,
+            toolName: toolCall.function.name,
+          };
+          await store.appendEvent("file.changed", change);
+          observers.event("file.changed", change);
+        }
+        return result;
+      }
       case "run_command": {
         const policy = evaluateCommandPolicy(String(args.command), config);
         if (config.useDockerSandbox) {
@@ -504,6 +579,7 @@ export async function runAgent(config) {
       allowShellTool: config.allowShellTool,
       allowWrapperTools: config.allowWrapperTools,
       wrappers: config.allowWrapperTools ? wrapperStatusText() : "",
+      workspaceFileTools: summarizeWorkspaceTools(config),
       shellSandbox: config.useDockerSandbox ? "docker" : "host",
       sandboxMode: config.sandboxMode,
       packageInstallPolicy: config.packageInstallPolicy,
@@ -549,6 +625,8 @@ export async function runAgent(config) {
           elements: snapshot.elements,
           browserOpen: Boolean(browserState.page),
           shellToolAvailable: config.allowShellTool,
+          fileToolsAvailable: config.allowFileTools,
+          workspaceFileTools: summarizeWorkspaceTools(config),
           agentWrappersAvailable: config.allowWrapperTools,
           agentWrappers: config.allowWrapperTools ? wrapperStatusText() : "",
           shellSandbox: config.useDockerSandbox ? "docker" : "host",
@@ -623,6 +701,10 @@ export async function runAgent(config) {
             stderr: toolResult.stderr,
             commandPolicy: toolResult.commandPolicy,
           });
+        }
+
+        if (WORKSPACE_TOOLS.has(toolResult.toolName)) {
+          observers.log("workspace.output", sanitizeToolResult(toolResult));
         }
 
         if (toolResult.toolName === "delegate_agent") {

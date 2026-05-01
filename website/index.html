@@ -6,7 +6,7 @@
     <title>AgInTiFlow | Web-first agent platform</title>
     <meta
       name="description"
-      content="AgInTiFlow is a web-first agent platform and CLI with DeepSeek routing, safe command execution, Docker sandboxing, run history, mock mode, and optional agent wrappers."
+      content="AgInTiFlow is a web-first agent platform and CLI with DeepSeek routing, safe workspace file tools, Docker sandboxing, run history, mock mode, and optional agent wrappers."
     />
     <link rel="icon" type="image/png" href="./assets/brand/logo.png" />
     <link rel="stylesheet" href="./styles.css" />
@@ -31,8 +31,9 @@
           <p class="eyebrow">Web agent + CLI for controlled automation</p>
           <h1>Run browser, shell, sandbox, and coding-agent workflows from one clean control plane.</h1>
           <p class="hero-lede">
-            AgInTiFlow routes normal work through DeepSeek v4 flash, escalates complex tasks to DeepSeek v4 pro, and
-            can call Codex, Claude, Gemini, Copilot, and Qwen wrappers when they add value.
+            AgInTiFlow routes normal work through DeepSeek v4 flash, escalates complex tasks to DeepSeek v4 pro, edits
+            workspace files through guarded tools, and can call Codex, Claude, Gemini, Copilot, and Qwen wrappers when
+            they add value.
           </p>
 
           <div class="install-panel" aria-label="Install AgInTiFlow">
@@ -149,8 +150,8 @@
           </article>
           <article>
             <span class="feature-icon">03</span>
-            <h3>Web and CLI</h3>
-            <p>Use the browser UI for control and history, or run <code>aginti</code> / <code>aginti-cli</code> directly from the terminal.</p>
+            <h3>Safe file tools</h3>
+            <p>List, read, search, write, and patch workspace files with path guardrails, hashes, and compact diffs.</p>
           </article>
           <article>
             <span class="feature-icon">04</span>
@@ -172,6 +173,7 @@
         <ul class="safety-list">
           <li>Docker read-only mode for inspection and tests.</li>
           <li>Docker workspace-write mode only for approved setup commands.</li>
+          <li>Workspace edits stay inside the selected command directory and block secret-like paths.</li>
           <li>Package installs default to approval-required policy.</li>
           <li>NPM publish, token commands, sudo, destructive git, and shell chaining are blocked.</li>
         </ul>

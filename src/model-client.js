@@ -43,6 +43,37 @@ function mockCommandForGoal(goal = "") {
   return "pwd";
 }
 
+function mockPathForGoal(goal = "") {
+  const text = String(goal);
+  const explicit = text.match(/(?:file|path):\s*`?([A-Za-z0-9_./-]+)`?/i)?.[1];
+  if (explicit) return explicit;
+  if (/\.env/i.test(text)) return ".env";
+  if (/outside|escape/i.test(text)) return "../outside-workspace.txt";
+  if (/patch/i.test(text)) return "patch-target.txt";
+  return "mock-output.txt";
+}
+
+function mockWorkspaceToolForGoal(goal = "") {
+  const text = String(goal).toLowerCase();
+  const targetPath = mockPathForGoal(goal);
+  if (/patch|replace|edit/.test(text)) {
+    return mockToolCall("apply_patch", {
+      path: targetPath,
+      search: "old",
+      replace: "new",
+      expectedReplacements: 1,
+    });
+  }
+  if (/write|create|file|coding/.test(text)) {
+    return mockToolCall("write_file", {
+      path: targetPath,
+      mode: "create",
+      content: `Created by AgInTiFlow mock mode.\nGoal: ${String(goal).slice(0, 160)}\n`,
+    });
+  }
+  return null;
+}
+
 function mockChatResponse(content, toolCalls = []) {
   return {
     choices: [
@@ -83,6 +114,9 @@ export async function createPlan(client, config, state) {
           config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
           config.allowShellTool
             ? `Shell tool is enabled in ${config.commandCwd}. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}. For npm/pip/conda/venv setup, explain the need and wait for approval unless policy is allow.`
+            : "",
+          config.allowFileTools
+            ? `Workspace file tools are enabled in ${config.commandCwd}: list_files, read_file, search_files, write_file, apply_patch. Keep all paths workspace-relative and avoid secrets.`
             : "",
           config.allowWrapperTools ? `Agent wrappers are enabled: ${wrapperStatusText()}.` : "",
           "Return a numbered plan only.",
@@ -238,6 +272,102 @@ export async function requestNextStep(client, config, messages) {
     });
   }
 
+  if (config.allowFileTools) {
+    tools.splice(
+      -1,
+      0,
+      {
+        type: "function",
+        function: {
+          name: "list_files",
+          description:
+            "List workspace-local files under the configured working directory. Paths must stay inside the workspace; .git, node_modules, sessions, and sensitive files are skipped.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Workspace-relative path to list. Defaults to ." },
+              maxDepth: { type: "integer", description: "Recursive depth, 1 to 8." },
+              limit: { type: "integer", description: "Maximum entries to return." },
+            },
+            additionalProperties: false,
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "read_file",
+          description:
+            "Read a small UTF-8 workspace file. Secret paths, .git internals, files outside the workspace, binary files, and huge files are blocked.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Workspace-relative file path." },
+            },
+            required: ["path"],
+            additionalProperties: false,
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "search_files",
+          description:
+            "Search small UTF-8 workspace files for literal text. Secret paths, .git internals, node_modules, and huge files are skipped.",
+          parameters: {
+            type: "object",
+            properties: {
+              query: { type: "string" },
+              path: { type: "string", description: "Workspace-relative directory or file. Defaults to ." },
+              caseSensitive: { type: "boolean" },
+              maxResults: { type: "integer" },
+            },
+            required: ["query"],
+            additionalProperties: false,
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "write_file",
+          description:
+            "Create or overwrite a small UTF-8 workspace file. Use mode=create for new files and mode=overwrite only after reading/understanding the existing file. Secret paths, .git, node_modules writes, and outside-workspace paths are blocked. The runtime records before/after hashes and a compact diff.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Workspace-relative file path." },
+              content: { type: "string" },
+              mode: { type: "string", enum: ["create", "overwrite"] },
+            },
+            required: ["path", "content"],
+            additionalProperties: false,
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "apply_patch",
+          description:
+            "Apply a deterministic workspace-local search/replace patch to one small UTF-8 file. Provide exact search and replacement text. The runtime records before/after hashes and a compact diff.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Workspace-relative file path." },
+              search: { type: "string" },
+              replace: { type: "string" },
+              expectedReplacements: { type: "integer" },
+            },
+            required: ["path", "search", "replace"],
+            additionalProperties: false,
+          },
+        },
+      }
+    );
+  }
+
   if (config.allowWrapperTools) {
     tools.splice(-1, 0, {
       type: "function",
@@ -261,19 +391,36 @@ export async function requestNextStep(client, config, messages) {
   if (client.mock) {
     const toolPayload = latestToolPayload(messages);
     if (toolPayload) {
-      const output = [toolPayload.stdout, toolPayload.stderr, toolPayload.error, toolPayload.reason].filter(Boolean).join("\n");
+      const output = [
+        toolPayload.stdout,
+        toolPayload.stderr,
+        toolPayload.error,
+        toolPayload.reason,
+        toolPayload.path ? `Path: ${toolPayload.path}` : "",
+        toolPayload.change?.diff ? `Diff:\n${toolPayload.change.diff}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
       return mockChatResponse("Mock mode finished after receiving the latest tool result.", [
         mockToolCall("finish", {
           result: [
             "Mock run complete.",
             toolPayload.toolName ? `Tool: ${toolPayload.toolName}` : "",
             toolPayload.args?.command ? `Command: ${toolPayload.args.command}` : "",
+            toolPayload.blocked ? "Blocked by guardrail." : "",
             output ? `Output:\n${output}` : "No command output was returned.",
           ]
             .filter(Boolean)
             .join("\n"),
         }),
       ]);
+    }
+
+    if (config.allowFileTools) {
+      const workspaceTool = mockWorkspaceToolForGoal(config.goal);
+      if (workspaceTool) {
+        return mockChatResponse("Mock mode will exercise a guarded workspace file tool.", [workspaceTool]);
+      }
     }
 
     if (config.allowShellTool) {

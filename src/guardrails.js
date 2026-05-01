@@ -1,4 +1,5 @@
 import { evaluateCommandPolicy } from "./command-policy.js";
+import { checkWorkspaceToolUse, WORKSPACE_TOOL_NAMES } from "./workspace-tools.js";
 
 const DESTRUCTIVE_KEYWORDS = [
   "delete",
@@ -44,6 +45,10 @@ export function isDomainAllowed(urlString, allowedDomains) {
 }
 
 export function checkToolUse({ toolName, args, snapshot, config }) {
+  if (WORKSPACE_TOOL_NAMES.includes(toolName)) {
+    return checkWorkspaceToolUse(toolName, args, config);
+  }
+
   if (toolName === "open_url") {
     if (!/^https?:\/\//.test(String(args.url || ""))) {
       return { allowed: false, reason: "Only http and https URLs are allowed." };

@@ -122,6 +122,7 @@
           <div class="checks">
             <label><input id="headless" name="headless" type="checkbox" checked /> <span data-i18n="headlessLabel">Headless browser</span></label>
             <label><input id="allowShellTool" name="allowShellTool" type="checkbox" checked /> <span data-i18n="shellToolLabel">Enable shell tool</span></label>
+            <label><input id="allowFileTools" name="allowFileTools" type="checkbox" checked /> <span data-i18n="fileToolLabel">Enable file tools</span></label>
             <label><input id="allowWrapperTools" name="allowWrapperTools" type="checkbox" /> <span data-i18n="wrapperToolLabel">Enable agent wrappers</span></label>
             <label><input id="allowPasswords" name="allowPasswords" type="checkbox" /> <span data-i18n="allowPasswordsLabel">Allow password typing</span></label>
             <label><input id="allowDestructive" name="allowDestructive" type="checkbox" /> <span data-i18n="allowDestructiveLabel">Allow destructive actions</span></label>
@@ -150,6 +151,15 @@
               <p id="wrapper-status" class="subtle wrapper-status"></p>
             </div>
             <div id="wrapper-grid" class="capability-grid"></div>
+          </section>
+
+          <section class="capability-card workspace-card">
+            <div>
+              <h2 data-i18n="workspaceCapabilityTitle">Workspace files</h2>
+              <p id="workspace-status" class="subtle wrapper-status"></p>
+            </div>
+            <div id="workspace-tools" class="capability-grid"></div>
+            <div id="workspace-changes" class="workspace-changes"></div>
           </section>
 
           <section class="sandbox-card">

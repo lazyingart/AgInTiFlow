@@ -72,6 +72,7 @@ try {
 
   const config = await fetchJson("/api/config");
   if (!config.keyStatus?.mock) throw new Error("mock provider is not advertised by /api/config");
+  if (!config.workspace?.enabled) throw new Error("workspace file tools are not advertised by /api/config");
 
   const status = await fetchJson("/api/sandbox/status");
   if (!status.status?.workspaceReadable) throw new Error("sandbox status did not report a readable workspace");
@@ -111,11 +112,21 @@ try {
   const chat = await fetchJson(`/api/sessions/${encodeURIComponent(runStart.sessionId)}/chat`);
   if (!Array.isArray(chat.chat) || chat.chat.length < 2) throw new Error("chat history was not persisted");
 
+  const changes = await fetchJson("/api/workspace/changes");
+  if (!Array.isArray(changes.activity)) throw new Error("workspace changes endpoint returned an invalid payload");
+
   console.log(
     JSON.stringify(
       {
         ok: true,
-        endpoints: ["/api/config", "/api/sandbox/status", "/api/sandbox/preflight", "/api/runs", "/api/sessions/:id/chat"],
+        endpoints: [
+          "/api/config",
+          "/api/sandbox/status",
+          "/api/sandbox/preflight",
+          "/api/runs",
+          "/api/sessions/:id/chat",
+          "/api/workspace/changes",
+        ],
         provider: run.provider,
         model: run.model,
         sessionId: run.sessionId,
