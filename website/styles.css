@@ -99,12 +99,13 @@ nav a:hover,
 }
 
 .hero {
-  min-height: calc(100vh - 76px);
+  width: min(1440px, calc(100% - 32px));
+  min-height: calc(100vh - 68px);
   display: grid;
   grid-template-columns: minmax(0, 1.08fr) minmax(320px, 0.72fr);
-  gap: 42px;
+  gap: 34px;
   align-items: center;
-  padding: 72px 0 56px;
+  padding: 46px 0 36px;
 }
 
 .eyebrow {
@@ -124,10 +125,10 @@ p {
 }
 
 h1 {
-  max-width: 840px;
-  margin-bottom: 20px;
-  font-size: clamp(3rem, 8vw, 6.8rem);
-  line-height: 0.89;
+  max-width: 960px;
+  margin-bottom: 16px;
+  font-size: clamp(3rem, 6.4vw, 6rem);
+  line-height: 0.92;
   letter-spacing: -0.085em;
 }
 
@@ -152,9 +153,14 @@ h3 {
   line-height: 1.6;
 }
 
+.hero-lede {
+  max-width: 640px;
+  font-size: 1.04rem;
+}
+
 .install-panel {
   width: min(720px, 100%);
-  margin: 30px 0 22px;
+  margin: 24px 0 18px;
   padding: 12px;
   border: 1px solid rgba(0, 194, 255, 0.28);
   border-radius: 24px;
@@ -244,13 +250,13 @@ h3 {
 
 .hero-card {
   display: grid;
-  gap: 18px;
+  gap: 14px;
   perspective: 1200px;
 }
 
 .signal-card {
-  min-height: 178px;
-  padding: 24px;
+  min-height: 148px;
+  padding: 20px;
   border: 1px solid rgba(255, 255, 255, 0.68);
   border-radius: 30px;
   box-shadow: var(--shadow);
@@ -289,8 +295,8 @@ h3 {
 
 .signal-card strong {
   display: block;
-  margin-bottom: 10px;
-  font-size: 2rem;
+  margin-bottom: 8px;
+  font-size: 1.72rem;
   line-height: 1;
   letter-spacing: -0.05em;
 }
@@ -482,6 +488,26 @@ h3 {
   background: rgba(255, 255, 255, 0.72);
 }
 
+.bottom-statement {
+  width: 100%;
+  margin: 58px 0 0;
+  padding: 34px 16px;
+  color: white;
+  background:
+    radial-gradient(circle at 18% 20%, rgba(169, 227, 75, 0.36), transparent 28rem),
+    radial-gradient(circle at 82% 12%, rgba(0, 194, 255, 0.32), transparent 28rem),
+    linear-gradient(135deg, #101820, #073b4c 55%, #062f2f);
+}
+
+.bottom-statement p {
+  width: min(1180px, calc(100% - 32px));
+  margin: 0 auto;
+  font-size: clamp(1.45rem, 3.2vw, 3.4rem);
+  font-weight: 900;
+  line-height: 1.03;
+  letter-spacing: -0.055em;
+}
+
 .site-footer {
   display: flex;
   justify-content: space-between;
@@ -512,6 +538,7 @@ h3 {
   }
 
   .hero {
+    min-height: auto;
     padding-top: 48px;
   }
 
