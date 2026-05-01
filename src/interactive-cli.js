@@ -45,6 +45,23 @@ function printStatus(state) {
   }
 }
 
+function isAbortError(error) {
+  return error?.code === "ABORT_ERR" || error?.name === "AbortError";
+}
+
+function printResumeHint(state) {
+  const sessionId = state.sessionId || "";
+  console.log("");
+  if (sessionId) {
+    console.log("Interrupted. Session saved.");
+    console.log(`Resume: aginti resume ${sessionId}`);
+    console.log(`One-shot: aginti resume ${sessionId} "continue"`);
+  } else {
+    console.log("Interrupted. No active session yet.");
+    console.log("Restart: aginti");
+  }
+}
+
 function createState(args = {}) {
   return {
     provider: args.provider || "",
@@ -219,6 +236,10 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
         answer = await rl.question("\naginti> ");
       } catch (error) {
         if (error?.code === "ERR_USE_AFTER_CLOSE") break;
+        if (isAbortError(error)) {
+          printResumeHint(state);
+          break;
+        }
         throw error;
       }
       const line = answer.trim();
@@ -232,6 +253,10 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
       try {
         await runPrompt(line, state, packageDir);
       } catch (error) {
+        if (isAbortError(error)) {
+          printResumeHint(state);
+          break;
+        }
         console.error(`error: ${error.message}`);
       }
     }

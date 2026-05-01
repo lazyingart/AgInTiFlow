@@ -219,7 +219,7 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti queue <session-id> "message" OR aginti [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-destructive] [--allow-file-tools|--no-file-tools] [--allow-wrappers --wrapper codex] [--sandbox-status|--sandbox-preflight] "your task"'
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti resume <session-id> ["prompt"] OR aginti queue <session-id> "message" OR aginti [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-destructive] [--allow-file-tools|--no-file-tools] [--allow-wrappers --wrapper codex] [--sandbox-status|--sandbox-preflight] "your task"'
   );
 }
 
@@ -458,7 +458,18 @@ export async function main(argv = process.argv.slice(2)) {
   if (argv[0] === "resume") {
     const sessionId = argv[1] || "";
     const prompt = argv.slice(2).join(" ").trim();
-    if (!sessionId || !prompt) {
+    if (!sessionId) {
+      console.error('Usage: aginti resume <session-id> ["new prompt"]');
+      process.exit(1);
+    }
+    if (!prompt && process.stdin.isTTY) {
+      await startInteractiveCli(agentDefaults({ ...parseArgs([]), resume: sessionId }), {
+        packageDir,
+        packageVersion: packageJson.version,
+      });
+      return;
+    }
+    if (!prompt) {
       console.error('Usage: aginti resume <session-id> "new prompt"');
       process.exit(1);
     }
