@@ -8,7 +8,7 @@ import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-p
 import { normalizeTaskProfile } from "./task-profiles.js";
 import { promptAndSaveDeepSeekKey, shouldPromptForDeepSeek } from "./auth-onboarding.js";
 
-const useColor = Boolean(input.isTTY && output.isTTY && !process.env.NO_COLOR);
+const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
   reset: "\x1b[0m",
   bold: "\x1b[1m",
@@ -17,14 +17,22 @@ const ansi = {
   green: "\x1b[32m",
   yellow: "\x1b[33m",
   red: "\x1b[31m",
+  clearLine: "\x1b[2K",
+  cursorHide: "\x1b[?25l",
+  cursorShow: "\x1b[?25h",
   userBg: "\x1b[48;5;24m\x1b[38;5;231m",
   agentBg: "\x1b[48;5;29m\x1b[38;5;231m",
   systemBg: "\x1b[48;5;236m\x1b[38;5;245m",
 };
+const brandPalette = ["\x1b[38;5;45m", "\x1b[38;5;81m", "\x1b[38;5;86m", "\x1b[38;5;118m", "\x1b[38;5;226m"];
 
 function color(value, ...codes) {
   if (!useColor || codes.length === 0) return String(value);
   return `${codes.join("")}${value}${ansi.reset}`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function label(name, bgCode) {
@@ -94,6 +102,43 @@ function printSystemLine(text) {
 
 function printHeading(text) {
   console.log(color(stripMarkdown(text), ansi.bold, ansi.cyan));
+}
+
+function shimmerText(text, frame) {
+  if (!useColor) return text;
+  return [...text]
+    .map((char, index) => {
+      if (char === " ") return char;
+      const code = brandPalette[(index + frame) % brandPalette.length];
+      return `${code}${ansi.bold}${char}${ansi.reset}`;
+    })
+    .join("");
+}
+
+async function renderLaunchHeader(packageVersion = "") {
+  const title = "AgInTi Flow";
+  const subtitle = "web-first agent workspace";
+  const version = packageVersion ? `v${packageVersion}` : "";
+  const line = "+--------------------------------------------------+";
+
+  if (!useColor || process.env.AGINTIFLOW_NO_ANIMATION === "1") {
+    console.log(` AgInTiFlow ${packageVersion || ""}`.trim());
+    return;
+  }
+
+  output.write(ansi.cursorHide);
+  for (let frame = 0; frame < 18; frame += 1) {
+    output.write(`\r${ansi.clearLine}${shimmerText(title, frame)} ${color("is starting", ansi.dim)}`);
+    await sleep(32);
+  }
+  output.write(`\r${ansi.clearLine}`);
+  output.write(ansi.cursorShow);
+
+  console.log(color(line, "\x1b[38;5;45m"));
+  console.log(`${color("|", "\x1b[38;5;45m")} ${shimmerText(title, 2)} ${color(version.padStart(36 - title.length), ansi.dim)} ${color("|", "\x1b[38;5;45m")}`);
+  console.log(`${color("|", "\x1b[38;5;45m")} ${color(subtitle.padEnd(48), ansi.dim)} ${color("|", "\x1b[38;5;45m")}`);
+  console.log(`${color("|", "\x1b[38;5;45m")} ${color("browser + shell + files + docker + canvas".padEnd(48), ansi.cyan)} ${color("|", "\x1b[38;5;45m")}`);
+  console.log(color(line, "\x1b[38;5;45m"));
 }
 
 function printHelp() {
@@ -455,11 +500,11 @@ async function runPrompt(prompt, state, packageDir) {
 
 export async function startInteractiveCli(args = {}, { packageDir, packageVersion } = {}) {
   const state = createState(args);
-  await maybeOnboardDeepSeekKey(state);
   const rl = readline.createInterface({ input, output, terminal: Boolean(input.isTTY && output.isTTY) });
 
-  console.log(color(` AgInTiFlow ${packageVersion || ""} `, ansi.agentBg, ansi.bold).trimEnd());
+  await renderLaunchHeader(packageVersion);
   printSystemLine(`Project: ${process.cwd()}`);
+  await maybeOnboardDeepSeekKey(state);
   printAgentMessage("Interactive agent chat. Type /help for commands, /exit to quit.");
   printStatus(state);
 
