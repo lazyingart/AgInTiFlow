@@ -974,28 +974,50 @@ function renderChat(chatEntries) {
   chatThreadEl.scrollTop = chatThreadEl.scrollHeight;
 }
 
-function artifactSeenKey(sessionId = currentSessionId) {
-  return `agintiflow.artifacts.seenAt.${sessionId || "none"}`;
+function artifactReadKey(sessionId = currentSessionId) {
+  return `agintiflow.artifacts.readIds.${sessionId || "none"}`;
 }
 
-function getArtifactSeenAt(sessionId = currentSessionId) {
+function getArtifactReadIds(sessionId = currentSessionId) {
   try {
-    return localStorage.getItem(artifactSeenKey(sessionId)) || "";
+    const raw = localStorage.getItem(artifactReadKey(sessionId)) || "[]";
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed : []);
   } catch {
-    return "";
+    return new Set();
   }
 }
 
-function setArtifactSeenNow(sessionId = currentSessionId) {
+function saveArtifactReadIds(readIds, sessionId = currentSessionId) {
   if (!sessionId) return;
   try {
-    localStorage.setItem(artifactSeenKey(sessionId), new Date().toISOString());
+    localStorage.setItem(artifactReadKey(sessionId), JSON.stringify([...readIds].slice(-800)));
   } catch {
     // Local storage is optional for notification state.
   }
 }
 
-function renderArtifactBadge(count = artifactUnreadCount) {
+function computeUnreadArtifactCount() {
+  const readIds = getArtifactReadIds();
+  return artifactItems.filter((item) => !readIds.has(item.id)).length;
+}
+
+function markArtifactRead(artifactId) {
+  if (!artifactId) return;
+  const readIds = getArtifactReadIds();
+  readIds.add(artifactId);
+  saveArtifactReadIds(readIds);
+  artifactUnreadCount = computeUnreadArtifactCount();
+}
+
+function markAllArtifactsRead() {
+  const readIds = getArtifactReadIds();
+  for (const item of artifactItems) readIds.add(item.id);
+  saveArtifactReadIds(readIds);
+  artifactUnreadCount = 0;
+}
+
+function renderArtifactBadge(count = computeUnreadArtifactCount()) {
   artifactUnreadCount = Number(count) || 0;
   if (!artifactBadgeEl) return;
   artifactBadgeEl.textContent = artifactUnreadCount > 99 ? "99+" : String(artifactUnreadCount);
@@ -1011,6 +1033,7 @@ function artifactLabel(item) {
 function renderArtifactList() {
   if (!artifactListEl) return;
   const visible = artifactItems.filter((item) => item.tab === currentArtifactTab);
+  const readIds = getArtifactReadIds();
 
   document.querySelectorAll(".artifact-tab").forEach((tab) => {
     tab.dataset.selected = String(tab.dataset.artifactTab === currentArtifactTab);
@@ -1028,16 +1051,19 @@ function renderArtifactList() {
 
   artifactListEl.innerHTML = visible
     .map(
-      (item) => `
-        <button class="artifact-row" type="button" data-artifact-id="${escapeHtml(item.id)}" data-selected="${item.id === selectedArtifactId}">
+      (item) => {
+        const read = readIds.has(item.id);
+        return `
+        <button class="artifact-row" type="button" data-artifact-id="${escapeHtml(item.id)}" data-selected="${item.id === selectedArtifactId}" data-read="${read}">
           <span class="artifact-row-top">
             <strong>${escapeHtml(item.title || item.path || item.kind)}</strong>
-            <span>${escapeHtml(item.kind)}</span>
+            <span>${read ? escapeHtml(item.kind) : `New · ${escapeHtml(item.kind)}`}</span>
           </span>
           <span class="artifact-row-meta">${escapeHtml(artifactLabel(item))}</span>
           <span class="artifact-row-preview">${escapeHtml(item.preview || item.path || "")}</span>
         </button>
-      `
+      `;
+      }
     )
     .join("");
 }
@@ -1087,12 +1113,11 @@ async function refreshArtifacts({ loadSelected = false } = {}) {
     return;
   }
 
-  const seenAfter = encodeURIComponent(getArtifactSeenAt());
-  const response = await fetch(`/api/sessions/${encodeURIComponent(currentSessionId)}/artifacts?seenAfter=${seenAfter}`);
+  const response = await fetch(`/api/sessions/${encodeURIComponent(currentSessionId)}/artifacts`);
   if (!response.ok) return;
   const data = await response.json();
   artifactItems = data.items || [];
-  artifactUnreadCount = data.unreadCount || 0;
+  artifactUnreadCount = computeUnreadArtifactCount();
   if (!selectedArtifactId || !artifactItems.some((item) => item.id === selectedArtifactId)) {
     selectedArtifactId = data.selectedItemId || artifactItems[0]?.id || "";
   }
@@ -1124,6 +1149,9 @@ async function selectArtifact(artifactId, { persist = true } = {}) {
   }
 
   artifactStatusEl.textContent = "";
+  markArtifactRead(artifactId);
+  renderArtifactBadge();
+  renderArtifactList();
   renderArtifactContent(data);
 }
 
@@ -1443,9 +1471,9 @@ artifactListEl.addEventListener("click", (event) => {
 });
 
 markArtifactsSeenButton.addEventListener("click", () => {
-  setArtifactSeenNow();
-  artifactUnreadCount = 0;
+  markAllArtifactsRead();
   renderArtifactBadge();
+  renderArtifactList();
   artifactStatusEl.textContent = t("artifactSeenUpdated");
   refreshArtifacts({ loadSelected: false }).catch(() => {});
 });

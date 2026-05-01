@@ -477,7 +477,8 @@ app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/logos", express.static(path.join(__dirname, "logos")));
 
-app.get("/api/config", (_req, res) => {
+app.get("/api/config", async (_req, res) => {
+  await syncStoredSessions();
   const preferences = normalizePreferencePayload({}, db.getPreferences());
   const config = buildRunConfig({ ...preferences, goal: "" });
   res.json({
@@ -503,7 +504,7 @@ app.get("/api/config", (_req, res) => {
       deepseek: Boolean(process.env.DEEPSEEK_API_KEY),
       mock: true,
     },
-    sessions: db.listSessions(20),
+    sessions: db.listSessions(100),
   });
 });
 
@@ -530,8 +531,9 @@ app.post("/api/preferences", (req, res) => {
   res.json({ ok: true, preferences });
 });
 
-app.get("/api/sessions", (_req, res) => {
-  res.json({ sessions: db.listSessions(20) });
+app.get("/api/sessions", async (_req, res) => {
+  await syncStoredSessions();
+  res.json({ sessions: db.listSessions(100) });
 });
 
 app.get("/api/workspace/changes", async (_req, res) => {

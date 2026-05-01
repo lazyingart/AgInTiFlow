@@ -108,7 +108,7 @@ The web app includes:
 - Sandbox mode, Docker image/status, package-install approval state, safe setup warnings, and recent sandbox logs.
 - Wrapper capability panel with an opt-in wrapper toggle and a preferred-wrapper selector defaulting to Codex.
 - Workspace Files panel showing file tools, recent file changes, blocked write attempts, hashes, and compact diffs.
-- Canvas & Artifacts modal with agent-selected renders, screenshot/file explorer, text/image preview, notifications, unread badge, and manual selection.
+- Canvas & Artifacts modal with agent-selected renders, screenshot/file explorer, text/image preview, notifications, unread badge, select-to-read, and manual mark-seen.
 - Toggleable shell tool, agent wrappers, headless browser, password typing, and destructive actions.
 - Persistent conversation panel above compact runtime logs, so follow-up messages stay close to the top.
 - Conversation manager modal for auto-renaming, manual renaming, and deleting saved chat history.

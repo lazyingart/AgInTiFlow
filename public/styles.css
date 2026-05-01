@@ -696,6 +696,22 @@ button.danger {
   box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.1);
 }
 
+.artifact-row[data-read="false"] {
+  border-color: rgba(217, 45, 32, 0.28);
+  background: linear-gradient(135deg, #fffdfa, rgba(254, 242, 242, 0.96));
+}
+
+.artifact-row[data-read="false"] .artifact-row-top strong::before {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: #d92d20;
+  content: "";
+  vertical-align: 1px;
+}
+
 .artifact-row-top,
 .artifact-viewer-header {
   display: flex;
