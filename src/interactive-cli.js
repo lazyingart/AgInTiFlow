@@ -7,8 +7,96 @@ import { initProject, listProjectSessions } from "./project.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
 import { normalizeTaskProfile } from "./task-profiles.js";
 
+const useColor = Boolean(input.isTTY && output.isTTY && !process.env.NO_COLOR);
+const ansi = {
+  reset: "\x1b[0m",
+  bold: "\x1b[1m",
+  dim: "\x1b[2m",
+  cyan: "\x1b[36m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m",
+  red: "\x1b[31m",
+  userBg: "\x1b[48;5;24m\x1b[38;5;231m",
+  agentBg: "\x1b[48;5;29m\x1b[38;5;231m",
+  systemBg: "\x1b[48;5;236m\x1b[38;5;245m",
+};
+
+function color(value, ...codes) {
+  if (!useColor || codes.length === 0) return String(value);
+  return `${codes.join("")}${value}${ansi.reset}`;
+}
+
+function label(name, bgCode) {
+  return color(` ${name} `, bgCode, ansi.bold);
+}
+
+function userPrompt() {
+  return `\n${label("user>", ansi.userBg)} `;
+}
+
+function stripMarkdown(text) {
+  const lines = String(text || "").split(/\r?\n/);
+  let inFence = false;
+  const rendered = [];
+
+  for (const rawLine of lines) {
+    let line = rawLine;
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      if (inFence) rendered.push(color("code", ansi.dim));
+      continue;
+    }
+
+    if (!inFence) {
+      if (/^\s*[-*_]{3,}\s*$/.test(line)) {
+        rendered.push("");
+        continue;
+      }
+      line = line.replace(/^\s{0,3}#{1,6}\s+/, "");
+      line = line.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)");
+      line = line.replace(/\*\*([^*]+)\*\*/g, (_, value) => color(value, ansi.bold));
+      line = line.replace(/__([^_]+)__/g, (_, value) => color(value, ansi.bold));
+      line = line.replace(/(^|[^\w])\*([^*\n]+)\*/g, "$1$2");
+      line = line.replace(/(^|[^\w])_([^_\n]+)_/g, "$1$2");
+      line = line.replace(/`([^`]+)`/g, (_, value) => color(value, ansi.yellow));
+      line = line.replace(/^(\s*)[-*+]\s+/, "$1- ");
+      line = line.replace(/^\s*>\s?/, "  ");
+    }
+
+    rendered.push(line);
+  }
+
+  return rendered.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
+}
+
+function printWrapped(prefix, text) {
+  const rendered = stripMarkdown(text);
+  const lines = rendered.split("\n");
+  const gutter = " ".repeat(useColor ? 9 : prefix.length);
+  console.log(`${prefix}${lines[0] || ""}`);
+  for (const line of lines.slice(1)) {
+    console.log(`${gutter}${line}`);
+  }
+}
+
+function printAgentMessage(text) {
+  printWrapped(`${label("aginti>", ansi.agentBg)} `, text);
+}
+
+function printSystemLine(text) {
+  if (!String(text || "").trim()) {
+    console.log("");
+    return;
+  }
+  console.log(`${label("state", ansi.systemBg)} ${color(text, ansi.dim)}`);
+}
+
+function printHeading(text) {
+  console.log(color(stripMarkdown(text), ansi.bold, ansi.cyan));
+}
+
 function printHelp() {
-  console.log(
+  printAgentMessage(
     [
       "Commands:",
       "  /help                     Show this help.",
@@ -34,18 +122,18 @@ function printHelp() {
 }
 
 function printStatus(state) {
-  console.log(`project=${process.cwd()}`);
-  console.log(`cwd=${state.commandCwd || process.cwd()}`);
-  console.log(`session=${state.sessionId || "new"}`);
-  console.log(`status=${state.status || "idle"}${state.activeGoal ? ` workingOn=${state.activeGoal}` : ""}`);
-  if (state.lastEvent) console.log(`last=${state.lastEvent}`);
-  console.log(`provider=${state.provider || "auto"} routing=${state.routingMode} model=${state.model || "auto"}`);
-  console.log(`profile=${state.taskProfile} maxSteps=${state.maxSteps}`);
-  console.log(
+  printSystemLine(`project=${process.cwd()}`);
+  printSystemLine(`cwd=${state.commandCwd || process.cwd()}`);
+  printSystemLine(`session=${state.sessionId || "new"}`);
+  printSystemLine(`status=${state.status || "idle"}${state.activeGoal ? ` workingOn=${state.activeGoal}` : ""}`);
+  if (state.lastEvent) printSystemLine(`last=${state.lastEvent}`);
+  printSystemLine(`provider=${state.provider || "auto"} routing=${state.routingMode} model=${state.model || "auto"}`);
+  printSystemLine(`profile=${state.taskProfile} maxSteps=${state.maxSteps}`);
+  printSystemLine(
     `shell=${state.allowShellTool} files=${state.allowFileTools} sandbox=${state.sandboxMode} installs=${state.packageInstallPolicy}`
   );
   if (state.sandboxMode !== "host") {
-    console.log(`dockerWorkspace=/workspace -> ${state.commandCwd || process.cwd()}`);
+    printSystemLine(`dockerWorkspace=/workspace -> ${state.commandCwd || process.cwd()}`);
   }
 }
 
@@ -65,7 +153,7 @@ async function latestSession() {
 
 function printStatusEvent(state, label, details = "") {
   state.lastEvent = details ? `${label}: ${details}` : label;
-  console.log(`status=${state.status || "running"} ${state.lastEvent}`);
+  printSystemLine(`status=${state.status || "running"} ${state.lastEvent}`);
 }
 
 function attachRunInterrupts(controller) {
@@ -80,7 +168,7 @@ function attachRunInterrupts(controller) {
     if (!isEscape && !isCtrlC) return;
     if (controller.signal.aborted) return;
     const reason = isEscape ? "escape" : "ctrl-c";
-    console.log(`\nstatus=stopping reason=${reason}`);
+    printSystemLine(`status=stopping reason=${reason}`);
     controller.abort(new Error(`Interrupted by ${reason}.`));
   };
   input.on("keypress", handler);
@@ -96,19 +184,21 @@ async function printResumeHint(state) {
   const sessionId = state.sessionId || "";
   console.log("");
   if (sessionId) {
-    console.log("Interrupted. Session saved.");
-    console.log(`Resume: aginti resume ${sessionId}`);
-    console.log(`One-shot: aginti resume ${sessionId} "continue"`);
+    printAgentMessage(["Interrupted. Session saved.", `Resume: aginti resume ${sessionId}`, `One-shot: aginti resume ${sessionId} "continue"`].join("\n"));
   } else {
-    console.log("Interrupted. No active session yet.");
+    printAgentMessage("Interrupted. No active session yet.");
     const sessions = await listProjectSessions(process.cwd(), 5).catch(() => []);
     if (sessions.length > 0) {
-      console.log("Recent sessions:");
-      for (const session of sessions) console.log(`  ${formatSessionLine(session)}`);
-      console.log(`Resume latest: aginti resume ${sessions[0].sessionId}`);
-      console.log("List all: aginti sessions list");
+      printAgentMessage(
+        [
+          "Recent sessions:",
+          ...sessions.map((session) => `  ${formatSessionLine(session)}`),
+          `Resume latest: aginti resume ${sessions[0].sessionId}`,
+          "List all: aginti sessions list",
+        ].join("\n")
+      );
     } else {
-      console.log("Restart: aginti");
+      printAgentMessage("Restart: aginti");
     }
   }
 }
@@ -148,71 +238,75 @@ async function handleCommand(line, state, packageDir) {
   }
   if (command === "new") {
     state.sessionId = "";
-    console.log("Next message will start a new session.");
+    printAgentMessage("Next message will start a new session.");
     return true;
   }
   if (command === "resume") {
     if (!value || value === "latest") {
       const latest = await latestSession();
       if (!latest) {
-        console.log("No project-local sessions found. Use /new or type a request to start one.");
+        printAgentMessage("No project-local sessions found. Use /new or type a request to start one.");
       } else {
         state.sessionId = latest.sessionId;
-        console.log(`Resuming latest ${formatSessionLine(latest)}`);
+        printAgentMessage(`Resuming latest ${formatSessionLine(latest)}`);
       }
     } else {
       state.sessionId = value;
-      console.log(`Resuming ${state.sessionId}`);
+      printAgentMessage(`Resuming ${state.sessionId}`);
     }
     return true;
   }
   if (command === "sessions") {
     const sessions = await listProjectSessions(process.cwd(), 20);
-    if (sessions.length === 0) console.log("No project-local sessions found.");
+    if (sessions.length === 0) printAgentMessage("No project-local sessions found.");
     else {
-      for (const session of sessions) {
-        const goal = session.goal ? ` ${session.goal.slice(0, 80)}` : "";
-        console.log(`${session.sessionId} ${session.provider}/${session.model} ${session.updatedAt}${goal}`);
-      }
+      printAgentMessage(
+        sessions
+          .map((session) => {
+            const goal = session.goal ? ` ${session.goal.slice(0, 80)}` : "";
+            return `${session.sessionId} ${session.provider}/${session.model} ${session.updatedAt}${goal}`;
+          })
+          .join("\n")
+      );
     }
     return true;
   }
   if (command === "profile") {
     state.taskProfile = normalizeTaskProfile(value || "auto");
-    console.log(`profile=${state.taskProfile}`);
+    printSystemLine(`profile=${state.taskProfile}`);
     return true;
   }
   if (command === "routing") {
     state.routingMode = value || "smart";
-    console.log(`routing=${state.routingMode}`);
+    printSystemLine(`routing=${state.routingMode}`);
     return true;
   }
   if (command === "provider") {
     state.provider = value === "auto" ? "" : value;
-    console.log(`provider=${state.provider || "auto"}`);
+    printSystemLine(`provider=${state.provider || "auto"}`);
     return true;
   }
   if (command === "model") {
     state.model = value === "auto" ? "" : value;
-    console.log(`model=${state.model || "auto"}`);
+    printSystemLine(`model=${state.model || "auto"}`);
     return true;
   }
   if (command === "installs") {
     state.packageInstallPolicy = normalizePackageInstallPolicy(value || "prompt");
-    console.log(`installs=${state.packageInstallPolicy}`);
+    printSystemLine(`installs=${state.packageInstallPolicy}`);
     return true;
   }
   if (command === "docker") {
     if (value === "on") {
       state.sandboxMode = "docker-workspace";
       state.packageInstallPolicy = "allow";
-      console.log(`docker=on /workspace -> ${state.commandCwd || process.cwd()} installs=allow`);
+      printSystemLine(`docker=on /workspace -> ${state.commandCwd || process.cwd()} installs=allow`);
     } else if (value === "off") {
       state.sandboxMode = "host";
       state.packageInstallPolicy = "prompt";
-      console.log("docker=off sandbox=host installs=prompt");
+      printSystemLine("docker=off sandbox=host installs=prompt");
     } else {
-      console.log("Usage: /docker on OR /docker off");
+      printAgentMessage("Usage: /docker on OR /docker off");
     }
     return true;
   }
@@ -222,32 +316,32 @@ async function handleCommand(line, state, packageDir) {
       state.sandboxMode = "docker-workspace";
       state.packageInstallPolicy = "allow";
       state.maxSteps = Math.max(state.maxSteps, 30);
-      console.log("latex=on profile=latex sandbox=docker-workspace installs=allow maxSteps=30");
+      printSystemLine("latex=on profile=latex sandbox=docker-workspace installs=allow maxSteps=30");
     } else if (value === "off") {
       state.taskProfile = "auto";
-      console.log("latex=off profile=auto");
+      printSystemLine("latex=off profile=auto");
     } else {
-      console.log("Usage: /latex on OR /latex off");
+      printAgentMessage("Usage: /latex on OR /latex off");
     }
     return true;
   }
   if (command === "cwd") {
     state.commandCwd = value || process.cwd();
-    console.log(`cwd=${state.commandCwd}`);
+    printSystemLine(`cwd=${state.commandCwd}`);
     return true;
   }
   if (command === "init") {
     const result = await initProject(process.cwd());
-    console.log(`initialized project=${result.projectRoot}`);
+    printAgentMessage(`initialized project=${result.projectRoot}`);
     return true;
   }
   if (command === "web") {
     const port = value || "3220";
-    console.log(`Run in another terminal: aginti web --port ${port}`);
+    printAgentMessage(`Run in another terminal: aginti web --port ${port}`);
     return true;
   }
 
-  console.log(`Unknown command: /${command}. Use /help.`);
+  printAgentMessage(`Unknown command: /${command}. Use /help.`);
   return true;
 }
 
@@ -279,8 +373,8 @@ async function runPrompt(prompt, state, packageDir) {
   state.status = "running";
   state.activeGoal = prompt.replace(/\s+/g, " ").slice(0, 120);
   state.lastEvent = "";
-  console.log(`session=${state.sessionId}`);
-  console.log(`status=running workingOn=${state.activeGoal}`);
+  printSystemLine(`session=${state.sessionId}`);
+  printSystemLine(`status=running workingOn=${state.activeGoal}`);
 
   const detachInterrupts = attachRunInterrupts(controller);
   let result;
@@ -288,6 +382,19 @@ async function runPrompt(prompt, state, packageDir) {
     result = await runAgent({
       ...config,
       abortSignal: controller.signal,
+      onConsole: (text, options = {}) => {
+        if (options.kind === "assistant") {
+          printAgentMessage(text);
+        } else if (options.kind === "plan") {
+          printWrapped(`${label("plan", ansi.systemBg)} `, text);
+        } else if (options.kind === "heading") {
+          printHeading(text);
+        } else if (options.error) {
+          console.error(`${label("error", ansi.systemBg)} ${stripMarkdown(text)}`);
+        } else {
+          printSystemLine(text);
+        }
+      },
       onEvent: (type, data = {}) => {
         if (type === "plan.created") {
           printStatusEvent(state, "planned");
@@ -316,7 +423,7 @@ async function runPrompt(prompt, state, packageDir) {
   state.sessionId = result.sessionId || state.sessionId;
   state.status = result.stopped ? "stopped" : "idle";
   state.activeGoal = "";
-  console.log(`status=${state.status} session=${state.sessionId}`);
+  printSystemLine(`status=${state.status} session=${state.sessionId}`);
   if (result.stopped && result.reason === "user_interrupt") {
     await printResumeHint(state);
   }
@@ -326,16 +433,16 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
   const state = createState(args);
   const rl = readline.createInterface({ input, output, terminal: Boolean(input.isTTY && output.isTTY) });
 
-  console.log(`AgInTiFlow ${packageVersion || ""}`.trim());
-  console.log(`Project: ${process.cwd()}`);
-  console.log("Interactive agent chat. Type /help for commands, /exit to quit.");
+  console.log(color(` AgInTiFlow ${packageVersion || ""} `, ansi.agentBg, ansi.bold).trimEnd());
+  printSystemLine(`Project: ${process.cwd()}`);
+  printAgentMessage("Interactive agent chat. Type /help for commands, /exit to quit.");
   printStatus(state);
 
   try {
     while (true) {
       let answer = "";
       try {
-        answer = await rl.question("\naginti> ");
+        answer = await rl.question(userPrompt());
       } catch (error) {
         if (error?.code === "ERR_USE_AFTER_CLOSE") break;
         if (isAbortError(error)) {
@@ -359,7 +466,7 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
           await printResumeHint(state);
           break;
         }
-        console.error(`error: ${error.message}`);
+        console.error(`${label("error", ansi.systemBg)} ${error.message}`);
       }
     }
   } finally {

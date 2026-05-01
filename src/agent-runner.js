@@ -329,6 +329,16 @@ function createObservers(config) {
   };
 }
 
+function emitConsole(config, value = "", options = {}) {
+  if (typeof config.onConsole === "function") {
+    config.onConsole(String(value), options);
+    return;
+  }
+
+  if (options.error) console.error(value);
+  else console.log(value);
+}
+
 function createBrowserState() {
   return {
     browser: null,
@@ -1033,25 +1043,27 @@ export async function runAgent(config) {
       startUrl: config.startUrl,
     });
 
-    console.log(`Session: ${sessionId}`);
-    console.log(`Provider: ${config.provider}`);
-    console.log(`Model: ${config.model}`);
-    console.log(`Routing: ${config.routingMode} (${config.routeReason})`);
-    console.log(`Workspace: ${config.commandCwd}`);
-    console.log(`Sessions: ${config.sessionsDir}`);
+    emitConsole(config, `Session: ${sessionId}`, { kind: "meta" });
+    emitConsole(config, `Provider: ${config.provider}`, { kind: "meta" });
+    emitConsole(config, `Model: ${config.model}`, { kind: "meta" });
+    emitConsole(config, `Routing: ${config.routingMode} (${config.routeReason})`, { kind: "meta" });
+    emitConsole(config, `Workspace: ${config.commandCwd}`, { kind: "meta" });
+    emitConsole(config, `Sessions: ${config.sessionsDir}`, { kind: "meta" });
     if (config.useDockerSandbox) {
-      console.log(
-        `Docker: image=${config.dockerSandboxImage} mode=${config.sandboxMode} packagePolicy=${config.packageInstallPolicy}`
+      emitConsole(
+        config,
+        `Docker: image=${config.dockerSandboxImage} mode=${config.sandboxMode} packagePolicy=${config.packageInstallPolicy}`,
+        { kind: "meta" }
       );
-      console.log(`Docker workspace: /workspace -> ${config.commandCwd}`);
-      console.log("Docker env: /aginti-env persistent toolchain; /aginti-cache persistent caches");
+      emitConsole(config, `Docker workspace: /workspace -> ${config.commandCwd}`, { kind: "meta" });
+      emitConsole(config, "Docker env: /aginti-env persistent toolchain; /aginti-cache persistent caches", { kind: "meta" });
     } else if (config.allowShellTool) {
-      console.log(`Shell: host policy=${config.packageInstallPolicy}`);
+      emitConsole(config, `Shell: host policy=${config.packageInstallPolicy}`, { kind: "meta" });
     }
     if (state.plan) {
-      console.log("\nPlan:");
-      console.log(state.plan);
-      console.log("");
+      emitConsole(config, "\nPlan:", { kind: "heading" });
+      emitConsole(config, state.plan, { kind: "plan", markdown: true });
+      emitConsole(config, "", { kind: "meta" });
     }
 
     for (let step = state.stepsCompleted + 1; step <= config.maxSteps; step += 1) {
@@ -1139,7 +1151,7 @@ export async function runAgent(config) {
           result: fallback,
           sessionId,
         });
-        console.log(fallback);
+        emitConsole(config, fallback, { kind: "assistant", markdown: true });
         state.stepsCompleted = step;
         state.updatedAt = new Date().toISOString();
         await store.saveState(state);
@@ -1209,7 +1221,7 @@ export async function runAgent(config) {
             result: toolResult.result,
             sessionId,
           });
-          console.log(toolResult.result);
+          emitConsole(config, toolResult.result, { kind: "assistant", markdown: true });
           return {
             sessionId,
             result: toolResult.result,
@@ -1232,7 +1244,7 @@ export async function runAgent(config) {
       reason: "max_steps_reached",
       sessionId,
     });
-    console.error(`Stopped after ${config.maxSteps} steps without finish().`);
+    emitConsole(config, `Stopped after ${config.maxSteps} steps without finish().`, { kind: "error", error: true });
     return {
       sessionId,
       result: "",
