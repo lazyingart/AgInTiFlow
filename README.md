@@ -66,6 +66,8 @@ Useful project commands:
 ```bash
 aginti keys status
 printf '%s' "$DEEPSEEK_API_KEY" | aginti keys set deepseek --stdin
+aginti capabilities
+aginti doctor --capabilities
 aginti sessions list
 aginti sessions show <session-id>
 aginti resume <session-id> "continue with a short follow-up"
@@ -112,6 +114,29 @@ npm start -- --resume your-session-id
 ```
 
 The package exposes both `aginti` and `aginti-cli`; they run the same CLI entrypoint.
+
+## Capability Checks
+
+Use the capability report to verify a project folder before running real agent work:
+
+```bash
+aginti capabilities
+aginti capabilities --json
+aginti doctor --capabilities
+```
+
+The report checks the project root, command cwd, shared `.sessions/`, provider-key presence, DeepSeek routes, guarded file and shell tools, Docker status, wrappers, task profiles, TeX, Node/npm, Python, R, conda, and maintenance command policy. It never prints API key or token values.
+
+Live DeepSeek verification is opt-in because it spends provider credits:
+
+```bash
+AGINTIFLOW_REAL_DEEPSEEK=1 \
+AGINTIFLOW_REAL_WORKSPACE=/home/lachlan/ProjectsLFS/aginti-test \
+AGINTIFLOW_REAL_WEB_BASE_URL=http://127.0.0.1:3220 \
+npm run real:deepseek
+```
+
+The live suite asks DeepSeek v4 flash/pro to create and improve a Node app, generate LaTeX/PDF artifacts when TeX exists, create a website-test sample, write Docker-safe maintenance plans, create an AAPS sample, and verify CLI/web session sharing. See [docs/real-deepseek-capabilities.md](docs/real-deepseek-capabilities.md).
 
 ## Web UI
 

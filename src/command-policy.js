@@ -27,11 +27,18 @@ const READ_ONLY_PATTERNS = [
 
 const TEST_PATTERNS = [
   /^npm\s+(run\s+)?(check|test|build|lint)(?:\s+--\s+[-\w./:=]+)*$/,
+  /^npm\s+--prefix\s+[-\w./]+\s+(run\s+)?(check|test|build|lint)(?:\s+--\s+[-\w./:=]+)*$/,
   /^npm\s+test$/,
   /^node\s+--check\s+[-\w./]+$/,
+  /^node\s+--test(?:\s+[-\w./]+)*$/,
+  /^bash\s+-n\s+[-\w./]+\.sh$/,
+  /^sh\s+-n\s+[-\w./]+\.sh$/,
+  /^python(?:3)?\s+-m\s+py_compile\s+[-\w./]+\.py$/,
   /^python(?:3)?\s+-m\s+pytest(?:\s+[-\w./:=]+)*$/,
   /^pytest(?:\s+[-\w./:=]+)*$/,
 ];
+
+const SAFE_WORKSPACE_WRITE_PATTERNS = [/^mkdir\s+-p\s+[-\w./]+$/];
 
 const TOOLCHAIN_PATTERNS = [
   /^python(?:3)?\s+[-\w./]+\.py(?:\s+[-\w./:=]+)*$/,
@@ -107,10 +114,19 @@ function matchAny(patterns, command) {
   return patterns.some((pattern) => pattern.test(command));
 }
 
-export function classifyCommand(command) {
-  const normalized = String(command || "").trim();
-  if (!normalized) return { category: "blocked", reason: "Command is empty." };
+function isSafeRelativeDir(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized || normalized.startsWith("/") || normalized.startsWith("~")) return false;
+  return normalized.split("/").every((part) => part && part !== "." && part !== "..");
+}
 
+function isSafeVirtualWorkspaceDir(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized.startsWith("/workspace/")) return false;
+  return isSafeRelativeDir(normalized.replace(/^\/workspace\//, ""));
+}
+
+function classifySimpleCommand(normalized) {
   if (ALWAYS_BLOCKED_PATTERNS.some((pattern) => pattern.test(normalized))) {
     return { category: "blocked", reason: "Command is blocked because it may expose secrets or publish packages." };
   }
@@ -118,6 +134,14 @@ export function classifyCommand(command) {
   const lowered = ` ${normalized.toLowerCase()} `;
   if (BLOCKED_SHELL_TOKENS.some((part) => normalized.includes(part))) {
     return { category: "blocked", reason: `Command contains blocked shell syntax: ${normalized}` };
+  }
+  if (matchAny(SAFE_WORKSPACE_WRITE_PATTERNS, normalized)) {
+    const target = normalized.replace(/^mkdir\s+-p\s+/, "");
+    const virtualWorkspacePath = isSafeVirtualWorkspaceDir(target);
+    if (!isSafeRelativeDir(target) && !virtualWorkspacePath) {
+      return { category: "blocked", reason: `mkdir target must be a safe workspace-relative directory: ${target}` };
+    }
+    return { category: "workspace-write", needsNetwork: false, writesWorkspace: true, virtualWorkspacePath };
   }
   if (BLOCKED_WRITE_TOKENS.some((part) => lowered.includes(part))) {
     return { category: "blocked", reason: `Command contains a write-capable or network token: ${normalized}` };
@@ -142,6 +166,26 @@ export function classifyCommand(command) {
   return { category: "blocked", reason: `Command is outside the execution allowlist: ${normalized}` };
 }
 
+function classifyCdCommand(normalized) {
+  const match = normalized.match(/^cd\s+([-\w./]+)\s+&&\s+(.+)$/);
+  if (!match) return null;
+  const [, dir, inner] = match;
+  const virtualWorkspacePath = isSafeVirtualWorkspaceDir(dir);
+  if (!isSafeRelativeDir(dir) && !virtualWorkspacePath) {
+    return { category: "blocked", reason: `cd target must be a safe workspace-relative directory: ${dir}` };
+  }
+  const innerClassification = classifySimpleCommand(inner.trim());
+  if (innerClassification.category === "blocked") return innerClassification;
+  return { ...innerClassification, cdDir: dir, virtualWorkspacePath };
+}
+
+export function classifyCommand(command) {
+  const normalized = String(command || "").trim();
+  if (!normalized) return { category: "blocked", reason: "Command is empty." };
+
+  return classifyCdCommand(normalized) || classifySimpleCommand(normalized);
+}
+
 export function evaluateCommandPolicy(command, config) {
   const classification = classifyCommand(command);
   const sandboxMode = normalizeSandboxMode(config.sandboxMode);
@@ -149,6 +193,16 @@ export function evaluateCommandPolicy(command, config) {
 
   if (classification.category === "blocked") {
     return { allowed: false, ...classification, sandboxMode, packageInstallPolicy };
+  }
+
+  if (classification.virtualWorkspacePath && !config.useDockerSandbox) {
+    return {
+      allowed: false,
+      ...classification,
+      reason: "Virtual /workspace shell paths are allowed only inside Docker sandbox mode.",
+      sandboxMode,
+      packageInstallPolicy,
+    };
   }
 
   if (!config.allowShellTool) {

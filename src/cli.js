@@ -3,6 +3,7 @@ import { loadConfig } from "./config.js";
 import { listAgentWrappers } from "./tool-wrappers.js";
 import { getModelPresets } from "./model-routing.js";
 import { getDockerSandboxStatus, runDockerPreflight } from "./docker-sandbox.js";
+import { buildCapabilityReport, printCapabilityReport } from "./capabilities.js";
 import {
   doctorReport,
   initProject,
@@ -317,10 +318,39 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (argv[0] === "doctor") {
-    const config = loadConfig({ goal: "doctor" }, { packageDir, baseDir: process.cwd() });
-    const report = await doctorReport(process.cwd(), packageJson.version, config);
+    const parsed = parseArgs(argv.slice(1).filter((arg) => arg !== "--json" && arg !== "--capabilities"));
+    const config = loadConfig(
+      {
+        ...parsed,
+        goal: "doctor",
+        allowShellTool: parsed.allowShellTool ?? true,
+        allowFileTools: parsed.allowFileTools ?? true,
+      },
+      { packageDir, baseDir: process.cwd() }
+    );
+    const report = argv.includes("--capabilities")
+      ? await buildCapabilityReport(process.cwd(), packageJson.version, config)
+      : await doctorReport(process.cwd(), packageJson.version, config);
     if (argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
+    else if (argv.includes("--capabilities")) printCapabilityReport(report);
     else printDoctorReport(report);
+    return;
+  }
+
+  if (argv[0] === "capabilities") {
+    const parsed = parseArgs(argv.slice(1).filter((arg) => arg !== "--json"));
+    const config = loadConfig(
+      {
+        ...parsed,
+        goal: "capabilities",
+        allowShellTool: parsed.allowShellTool ?? true,
+        allowFileTools: parsed.allowFileTools ?? true,
+      },
+      { packageDir, baseDir: process.cwd() }
+    );
+    const report = await buildCapabilityReport(process.cwd(), packageJson.version, config);
+    if (argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
+    else printCapabilityReport(report);
     return;
   }
 

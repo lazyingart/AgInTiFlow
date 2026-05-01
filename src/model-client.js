@@ -156,8 +156,10 @@ export async function createPlan(client, config, state) {
             : "",
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           "A canvas/artifacts tunnel is available through send_to_canvas. Use it when an output should be highlighted visually, such as screenshots, image files, important markdown, diffs, or generated artifact paths. It is optional for ordinary text answers.",
-          "When the user asks to draw, plot, graph, chart, diagram, create a figure, or visualize something, include a canvas artifact even if the user does not mention canvas. Prefer a small SVG file or concise markdown figure when file tools are available.",
-          "When the user asks for LaTeX, TeX, a paper, manuscript, report, or PDF, plan to create the needed source/assets, compile with the available allowlisted TeX toolchain, and publish the PDF through the canvas tunnel. For subfolder documents, keep outputs beside the source. For generated figures, use pdflatex-compatible formats such as PDF or PNG.",
+          "Work like a practical coding agent: inspect when useful, edit with file tools, run safe checks when they add confidence, and keep outputs inside the workspace.",
+          "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files.",
+          "For environment or system-maintenance work, prefer project-local dry-run plans/scripts unless the configured policy explicitly allows stronger actions.",
+          "Plan for a complete result, not endless exploration; finish once the request is satisfied and checks have passed or been honestly skipped.",
           "Return a numbered plan only.",
         ]
           .filter(Boolean)

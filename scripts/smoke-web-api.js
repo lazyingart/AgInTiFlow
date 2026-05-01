@@ -83,6 +83,13 @@ try {
   const keyStatus = await fetchJson("/api/keys/status");
   if (typeof keyStatus.keyStatus?.deepseek !== "boolean") throw new Error("key status endpoint is invalid");
   if ("localEnvPath" in keyStatus.keyStatus) throw new Error("key status leaked a local env path");
+  const capabilities = await fetchJson("/api/capabilities");
+  if (capabilities.project?.root !== runtimeDir || !Array.isArray(capabilities.checks)) {
+    throw new Error("capability endpoint returned an invalid project report");
+  }
+  if (!capabilities.checks.some((check) => check.name === "npm-prefix-test-policy")) {
+    throw new Error("capability endpoint did not include command policy checks");
+  }
   const savedKey = await fetchJson("/api/keys/deepseek", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -231,6 +238,7 @@ try {
         endpoints: [
           "/api/config",
           "/api/keys/status",
+          "/api/capabilities",
           "POST /api/keys/:provider",
           "/api/sandbox/status",
           "/api/sandbox/preflight",

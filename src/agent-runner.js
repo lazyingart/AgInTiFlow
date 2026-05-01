@@ -156,7 +156,10 @@ function createInitialState(config, sessionId) {
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. It is optional and ordinary final text can still go directly to finish.",
           "For visual-output requests such as draw, plot, graph, chart, diagram, figure, image, or visualization, proactively publish a canvas artifact even when the user does not mention canvas. If workspace file tools are enabled, prefer creating a small SVG or markdown artifact and call send_to_canvas with selected=true.",
-          "For LaTeX/PDF requests, create the needed source/assets, compile with the available allowlisted TeX toolchain, and publish the resulting PDF through send_to_canvas. For subfolder documents, keep outputs beside the source. Use pdflatex-compatible figure formats such as PDF or PNG.",
+          "Work like a practical coding agent: inspect when useful, edit with file tools, run safe checks when they add confidence, and keep outputs inside the workspace.",
+          "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files.",
+          "For environment or system-maintenance work, prefer project-local dry-run plans/scripts unless the configured policy explicitly allows stronger actions.",
+          "When the requested outcome is complete and a useful check has passed or been honestly skipped, stop and call finish.",
           "When done, call finish with a concise result.",
         ].join(" "),
       },
@@ -178,7 +181,8 @@ function createInitialState(config, sessionId) {
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           "Canvas/artifacts tunnel: available through send_to_canvas for optional frontend rendering.",
           "Visual-output requests should produce a canvas artifact without requiring the user to ask for canvas explicitly.",
-          "LaTeX/PDF requests should produce source artifacts and, when possible, a compiled PDF artifact. For subfolder documents, keep outputs beside the source. For figure-in-document tasks, create PDF/PNG figures that pdflatex can include.",
+          "Use file, shell, browser, canvas, and wrapper tools when they are useful; choose the workflow from the user's request.",
+          "Keep environment or system-maintenance actions project-local and reversible unless policy explicitly permits stronger actions.",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -369,22 +373,31 @@ function sanitizeToolResult(result) {
 }
 
 async function runShellCommand(command, config, policy = evaluateCommandPolicy(command, config)) {
-  if (config.useDockerSandbox) {
-    return runDockerSandboxCommand(command, config, policy);
+  try {
+    const result = config.useDockerSandbox
+      ? await runDockerSandboxCommand(command, config, policy)
+      : await exec(command, {
+          cwd: config.commandCwd,
+          timeout: 30000,
+          maxBuffer: 200 * 1024,
+          shell: "/bin/bash",
+          env: safeExecutionEnv(),
+        });
+
+    return {
+      ok: true,
+      exitCode: 0,
+      stdout: redactSensitiveText(result.stdout).trim().slice(0, 8000),
+      stderr: redactSensitiveText(result.stderr).trim().slice(0, 4000),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      exitCode: Number.isInteger(error?.code) ? error.code : 1,
+      stdout: redactSensitiveText(String(error?.stdout || "")).trim().slice(0, 8000),
+      stderr: redactSensitiveText(String(error?.stderr || error?.message || "")).trim().slice(0, 4000),
+    };
   }
-
-  const result = await exec(command, {
-    cwd: config.commandCwd,
-    timeout: 5000,
-    maxBuffer: 200 * 1024,
-    shell: "/bin/bash",
-    env: safeExecutionEnv(),
-  });
-
-  return {
-    stdout: redactSensitiveText(result.stdout).trim().slice(0, 8000),
-    stderr: redactSensitiveText(result.stderr).trim().slice(0, 4000),
-  };
 }
 
 async function captureSyntheticSnapshot(store, step, config) {
@@ -565,7 +578,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         }
         const commandResult = await runShellCommand(String(args.command), config, policy);
         const result = {
-          ok: true,
+          ok: commandResult.ok !== false,
           toolName: "run_command",
           args: safeArgs,
           sandbox: config.useDockerSandbox ? "docker" : "host",

@@ -13,6 +13,7 @@ import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./src/comma
 import { summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./src/workspace-tools.js";
 import { listTaskProfiles, normalizeTaskProfile } from "./src/task-profiles.js";
 import { loadProjectEnv, projectPaths, providerKeyStatus, setProviderKey } from "./src/project.js";
+import { buildCapabilityReport } from "./src/capabilities.js";
 import {
   buildArtifacts,
   countUnreadArtifacts,
@@ -24,6 +25,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const packageDir = __dirname;
+const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
 const baseDir = path.resolve(process.env.AGINTIFLOW_RUNTIME_DIR || process.cwd());
 const sessionsDir = path.join(baseDir, ".sessions");
 loadProjectEnv(baseDir);
@@ -537,6 +539,18 @@ app.get("/api/config", async (_req, res) => {
 
 app.get("/api/keys/status", (_req, res) => {
   res.json({ ok: true, keyStatus: publicKeyStatus(baseDir) });
+});
+
+app.get("/api/capabilities", async (_req, res) => {
+  const preferences = normalizePreferencePayload({}, db.getPreferences());
+  const config = buildRunConfig({
+    ...preferences,
+    goal: "capabilities",
+    allowShellTool: true,
+    allowFileTools: true,
+  });
+  const report = await buildCapabilityReport(baseDir, packageJson.version, config);
+  res.json(report);
 });
 
 app.post("/api/keys/:provider", async (req, res) => {

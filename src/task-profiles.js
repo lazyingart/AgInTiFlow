@@ -10,7 +10,7 @@ export const TASK_PROFILES = {
     id: "code",
     label: "Code writing",
     prompt:
-      "Act like a coding agent: inspect files first, make targeted workspace-local edits, run relevant checks, and report changed files and residual risks.",
+      "Act like a coding agent: understand the request, edit workspace files, run useful safe checks, and report changed files and residual risks.",
     tools: ["files", "shell", "sandbox"],
   },
   writing: {
@@ -45,14 +45,21 @@ export const TASK_PROFILES = {
     id: "node",
     label: "Node",
     prompt:
-      "For Node.js tasks, inspect package scripts, use npm checks/tests when safe, and keep generated files inside the project workspace.",
+      "For Node.js tasks, use the local project structure, add tests when useful, and run safe npm/node checks when available.",
     tools: ["files", "shell", "sandbox"],
+  },
+  website: {
+    id: "website",
+    label: "Website testing",
+    prompt:
+      "For website-testing tasks, create or inspect the site, add a simple local test/check file when useful, and run safe checks without installing packages unless approved.",
+    tools: ["files", "shell", "canvas", "sandbox"],
   },
   aaps: {
     id: "aaps",
     label: "AAPS",
     prompt:
-      "For AAPS tasks, recognize .aaps folders and @lazyingart/aaps package workflows. Prefer project-local config, safe publish preparation, and explicit secret handling.",
+      "For AAPS tasks, recognize .aaps folders and @lazyingart/aaps workflows, keep work project-local, and avoid secrets or publishing.",
     tools: ["files", "shell", "sandbox"],
   },
   latex: {
@@ -66,7 +73,7 @@ export const TASK_PROFILES = {
     id: "maintenance",
     label: "System maintenance",
     prompt:
-      "For system maintenance, diagnose first, prefer idempotent scripts, ask for approval before privileged or destructive operations, and avoid leaking credentials.",
+      "For system maintenance, diagnose first, prefer reversible project-local plans or dry-run scripts, and avoid privileged/global/destructive actions unless explicitly approved.",
     tools: ["shell", "sandbox", "files"],
   },
 };
