@@ -69,6 +69,22 @@ try {
   if (!renderedMarkdown.includes("Check") || !renderedMarkdown.includes("Present")) {
     throw new Error("terminal markdown renderer dropped table content");
   }
+  if ((renderedMarkdown.match(/Present/g) || []).length !== 1) {
+    throw new Error("terminal markdown renderer duplicated table rows");
+  }
+  const renderedDiff = stripMarkdown(
+    [
+      "Diff:",
+      "--- a/example.txt",
+      "+++ b/example.txt",
+      "@@ line 1 @@",
+      "-old",
+      "+new",
+    ].join("\n")
+  );
+  if (!renderedDiff.includes("-old") || !renderedDiff.includes("+new")) {
+    throw new Error("terminal markdown renderer dropped patch diff lines");
+  }
 
   const promptLayout = buildPromptLayout(`${"x".repeat(180)}\nsecond line`, 95, 80, 24);
   const visibleLengths = promptLayout.renderedRows.map((line) =>
@@ -86,13 +102,14 @@ try {
   }
   const queuedPromptLayout = buildPromptLayout("follow up", 9, 90, 24, {
     commandCwd: "/tmp/aginti-project",
+    statusLine: "running · tool: apply_patch with a very long request that should be compacted in the panel",
     pendingAsap: [{ content: "apply this to the running task" }],
     pendingQueued: [{ content: "run this after the current task" }],
   });
   const queuedText = queuedPromptLayout.renderedRows
     .map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""))
     .join("\n");
-  if (!queuedText.includes("→ apply this") || !queuedText.includes("↳ run this") || !queuedText.includes("cwd   /tmp/aginti-project")) {
+  if (!queuedText.includes("run   running · tool: apply_patch") || !queuedText.includes("→ apply this") || !queuedText.includes("↳ run this") || !queuedText.includes("cwd   /tmp/aginti-project")) {
     throw new Error("terminal prompt layout did not render live input queue and cwd footer");
   }
 
@@ -119,8 +136,8 @@ try {
   if (!result.stdout.includes("Interactive agent chat")) {
     throw new Error("interactive chat did not print its banner");
   }
-  if (!result.stdout.includes("status=running workingOn=") || !result.stdout.includes("status=idle session=")) {
-    throw new Error("interactive chat did not print simple run status updates");
+  if (!result.stdout.includes("status=idle session=")) {
+    throw new Error("interactive chat did not print final run status");
   }
   if (!/aginti>\s*\r?\n\s*\|\s+Mock run complete\./.test(result.stdout)) {
     throw new Error("assistant response did not render with a fresh-line response gutter");
@@ -139,7 +156,7 @@ try {
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["markdown-render", "prompt-layout", "live-input-layout", "agent-response-gutter", "aginti-md", "instructions-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest", "resume-history-preview"],
+        checks: ["markdown-render", "markdown-table-no-duplicate", "patch-diff-render", "prompt-layout", "live-input-status-layout", "agent-response-gutter", "aginti-md", "instructions-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest", "resume-history-preview"],
       },
       null,
       2

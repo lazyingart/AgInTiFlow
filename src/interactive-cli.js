@@ -28,6 +28,7 @@ const ansi = {
   userBg: "\x1b[48;5;24m\x1b[38;5;231m",
   agentBg: "\x1b[48;5;29m\x1b[38;5;231m",
   responseBg: "\x1b[48;5;25m\x1b[38;5;231m",
+  statusBg: "\x1b[48;5;23m\x1b[38;5;231m",
   systemBg: "\x1b[48;5;236m\x1b[38;5;245m",
 };
 const brandPalette = ["\x1b[38;5;45m", "\x1b[38;5;81m", "\x1b[38;5;86m", "\x1b[38;5;118m", "\x1b[38;5;226m"];
@@ -152,6 +153,7 @@ function compactLine(value = "", limit = 96) {
 export function stripMarkdown(text) {
   const lines = String(text || "").split(/\r?\n/);
   let inFence = false;
+  let diffContext = 0;
   const rendered = [];
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -165,6 +167,15 @@ export function stripMarkdown(text) {
       }
       continue;
     }
+
+    if (/^\s*Diff:\s*$/i.test(line)) diffContext = 80;
+    const patchLine = renderPatchLine(line, { active: diffContext > 0 || inFence });
+    if (patchLine) {
+      rendered.push(patchLine);
+      diffContext = 80;
+      continue;
+    }
+    if (diffContext > 0) diffContext -= 1;
 
     if (!inFence) {
       if (/^\s*[-*_]{3,}\s*$/.test(line)) {
@@ -201,6 +212,17 @@ export function stripMarkdown(text) {
   }
 
   return rendered.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
+}
+
+function renderPatchLine(line = "", { active = false } = {}) {
+  const value = String(line || "");
+  if (/^diff --git\s+/.test(value)) return color(value, ansi.bold, ansi.cyan);
+  if (/^@@\s+/.test(value)) return color(value, ansi.cyan);
+  if (/^---\s+a\//.test(value)) return color(value, ansi.red);
+  if (/^\+\+\+\s+b\//.test(value)) return color(value, ansi.green);
+  if (active && /^\+(?!\+\+)/.test(value)) return color(value, ansi.green);
+  if (active && /^-(?!--)/.test(value)) return color(value, ansi.red);
+  return "";
 }
 
 function splitMarkdownTableRow(line = "") {
@@ -518,6 +540,11 @@ export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth
   const visible = promptVisibleWindow(rows, cursorRow, height);
   const renderedRows = [];
   let renderedCursorRow = cursorRow - visible.start;
+
+  if (options.statusLine) {
+    renderedRows.push(panelLine(` run   ${compactLine(options.statusLine, lineWidth - 8)}`, ansi.statusBg, lineWidth));
+    renderedCursorRow += 1;
+  }
 
   const pendingAsap = Array.isArray(options.pendingAsap) ? options.pendingAsap : [];
   const pendingQueued = Array.isArray(options.pendingQueued) ? options.pendingQueued : [];
@@ -887,6 +914,7 @@ class LiveRunInput {
     this.preferredColumn = null;
     this.pendingAsap = [];
     this.pendingQueued = [];
+    this.statusLine = "";
     this.wasRaw = Boolean(input.isRaw);
     this.started = false;
     this.handler = this.handleKey.bind(this);
@@ -952,6 +980,7 @@ class LiveRunInput {
     }
     this.rendered = renderPromptBuffer(this.buffer, this.cursor, this.rendered, {
       commandCwd: this.commandCwd,
+      statusLine: this.statusLine,
       pendingAsap: this.pendingAsap,
       pendingQueued: this.pendingQueued,
     });
@@ -972,9 +1001,17 @@ class LiveRunInput {
     this.redraw();
   }
 
+  setStatus(value = "") {
+    const nextStatus = compactLine(value, Math.max(terminalWidth() - 16, 36));
+    if (this.statusLine === nextStatus) return;
+    this.statusLine = nextStatus;
+    this.redraw();
+  }
+
   moveVertical(direction) {
     const layout = buildPromptLayout(this.buffer, this.cursor, terminalWidth(), terminalHeight(), {
       commandCwd: this.commandCwd,
+      statusLine: this.statusLine,
       pendingAsap: this.pendingAsap,
       pendingQueued: this.pendingQueued,
     });
@@ -1215,8 +1252,14 @@ async function printResumeHistory(state, { limit = 8 } = {}) {
 }
 
 function printStatusEvent(state, label, details = "") {
-  state.lastEvent = details ? `${label}: ${details}` : label;
-  printSystemLine(`status=${state.status || "running"} ${state.lastEvent}`);
+  const safeDetails = compactLine(details, 72);
+  state.lastEvent = safeDetails ? `${label}: ${safeDetails}` : label;
+  const statusText = `${state.status || "running"} · ${state.lastEvent}`;
+  if (activeRunInput) {
+    activeRunInput.setStatus(statusText);
+    return;
+  }
+  printSystemLine(`status=${statusText}`);
 }
 
 function attachRunInterrupts(controller) {
@@ -1595,15 +1638,19 @@ async function runPrompt(prompt, state, packageDir) {
 
   state.sessionId = config.resume || config.sessionId || state.sessionId;
   state.status = "running";
-  state.activeGoal = prompt.replace(/\s+/g, " ").slice(0, 120);
+  state.activeGoal = compactLine(prompt, 84);
   state.lastEvent = "";
-  printSystemLine(`session=${state.sessionId}`);
-  printSystemLine(`status=running workingOn=${state.activeGoal}`);
 
   const store = new SessionStore(config.sessionsDir, state.sessionId);
   const liveInput = new LiveRunInput({ state, store, controller });
   const liveStarted = liveInput.start();
   const detachInterrupts = liveStarted ? () => {} : attachRunInterrupts(controller);
+  if (liveStarted) {
+    liveInput.setStatus(`running · ${state.activeGoal}`);
+  } else {
+    printSystemLine(`session=${state.sessionId}`);
+    printSystemLine(`status=running workingOn=${state.activeGoal}`);
+  }
   let result;
   let queuedAfterFinish = [];
   try {
@@ -1619,6 +1666,9 @@ async function runPrompt(prompt, state, packageDir) {
           printHeading(text);
         } else if (options.error) {
           outputLine(`${label("error", ansi.systemBg)} ${stripMarkdown(text)}`);
+        } else if (options.kind === "meta" && liveStarted) {
+          const trimmed = String(text || "").trim();
+          if (trimmed) liveInput.setStatus(trimmed);
         } else {
           printSystemLine(text);
         }
