@@ -3,14 +3,14 @@ export const TASK_PROFILES = {
     id: "auto",
     label: "Auto",
     prompt:
-      "Infer the task type from the user request. Prefer the smallest safe tool sequence, preserve workspace files, and summarize what changed.",
+      "Infer the task type from the user request. Prefer the smallest safe tool sequence that actually completes the work, preserve workspace files, run useful checks, and summarize what changed.",
     tools: ["browser", "shell", "files", "canvas"],
   },
   code: {
     id: "code",
     label: "Code writing",
     prompt:
-      "Act like a coding agent: understand the request, edit workspace files, run useful safe checks, and report changed files and residual risks.",
+      "Act like a coding agent: understand the request, edit workspace files, run useful safe checks, iterate on failures, and report changed files and residual risks.",
     tools: ["files", "shell", "sandbox"],
   },
   writing: {
@@ -52,7 +52,7 @@ export const TASK_PROFILES = {
     id: "website",
     label: "Website testing",
     prompt:
-      "For website-testing tasks, create or inspect the site, add a local check when useful, and use the configured sandbox/package policy for dependencies.",
+      "For website/app tasks, create or inspect real site files, preview with workspace preview tools, add local checks when useful, and use the configured sandbox/package policy for dependencies.",
     tools: ["files", "shell", "canvas", "sandbox"],
   },
   aaps: {
@@ -66,7 +66,7 @@ export const TASK_PROFILES = {
     id: "latex",
     label: "LaTeX",
     prompt:
-      "For LaTeX/PDF tasks, create source and figures in a subfolder, compile when a TeX toolchain is available, and send the PDF through the canvas tunnel. In Docker, use /workspace for project outputs and the persistent Python/conda/tool cache under /aginti-env when setup is needed.",
+      "For LaTeX/PDF tasks, locate or create source and figures in a subfolder, compile when a TeX toolchain is available, run enough passes for references, and send the PDF through the canvas tunnel. In Docker, use /workspace for project outputs and the persistent Python/conda/tool cache under /aginti-env when setup is needed.",
     tools: ["files", "shell", "canvas", "sandbox"],
   },
   maintenance: {

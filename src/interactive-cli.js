@@ -3,10 +3,10 @@ import { emitKeypressEvents } from "node:readline";
 import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent-runner.js";
 import { loadConfig } from "./config.js";
-import { initProject, listProjectSessions } from "./project.js";
+import { initProject, listProjectSessions, providerKeyStatus, setProviderKey } from "./project.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
 import { normalizeTaskProfile } from "./task-profiles.js";
-import { promptAndSaveDeepSeekKey, shouldPromptForDeepSeek } from "./auth-onboarding.js";
+import { promptAndSaveDeepSeekKey, promptHidden, shouldPromptForDeepSeek } from "./auth-onboarding.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
@@ -25,6 +25,26 @@ const ansi = {
   systemBg: "\x1b[48;5;236m\x1b[38;5;245m",
 };
 const brandPalette = ["\x1b[38;5;45m", "\x1b[38;5;81m", "\x1b[38;5;86m", "\x1b[38;5;118m", "\x1b[38;5;226m"];
+const SLASH_COMMANDS = [
+  "/help",
+  "/status",
+  "/login",
+  "/auth",
+  "/new",
+  "/resume",
+  "/sessions",
+  "/profile",
+  "/routing",
+  "/provider",
+  "/model",
+  "/docker",
+  "/latex",
+  "/installs",
+  "/cwd",
+  "/init",
+  "/web",
+  "/exit",
+];
 
 function color(value, ...codes) {
   if (!useColor || codes.length === 0) return String(value);
@@ -41,6 +61,13 @@ function label(name, bgCode) {
 
 function userPrompt() {
   return `\n${label("user>", ansi.userBg)} `;
+}
+
+function commandCompleter(line = "") {
+  const trimmed = String(line || "");
+  if (!trimmed.startsWith("/")) return [[], trimmed];
+  const hits = SLASH_COMMANDS.filter((command) => command.startsWith(trimmed));
+  return [hits.length > 0 ? hits : SLASH_COMMANDS, trimmed];
 }
 
 function stripMarkdown(text) {
@@ -147,6 +174,8 @@ function printHelp() {
       "Commands:",
       "  /help                     Show this help.",
       "  /status                   Show active route, workspace, sandbox, and session.",
+      "  /login [deepseek|openai]  Paste and save a project-local API key.",
+      "  /auth [deepseek|openai]   Alias for /login.",
       "  /new                      Start a fresh session on the next message.",
       "  /resume <session-id>      Continue a saved session.",
       "  /sessions                 List recent sessions in this project.",
@@ -162,6 +191,7 @@ function printHelp() {
       "  /exit                     Quit.",
       "",
       "Type a normal request to run the agent. Example: write a Python CLI app with tests",
+      "Type / then Tab to autocomplete commands.",
       "While a run is active, press Esc or Ctrl+C once to stop gracefully and print a resume command.",
     ].join("\n")
   );
@@ -292,6 +322,28 @@ async function maybeOnboardDeepSeekKey(state) {
   printAgentMessage("No key saved. Continuing in local mock mode. Use `/provider deepseek` after running `aginti login deepseek`.");
 }
 
+async function promptAndSaveProviderKey(provider = "deepseek", state = null) {
+  const normalized = ["openai", "deepseek"].includes(String(provider || "").toLowerCase())
+    ? String(provider || "").toLowerCase()
+    : "deepseek";
+  const labelText = normalized === "openai" ? "OpenAI" : "DeepSeek";
+  const key = await promptHidden(`${labelText} API key/token (paste, Enter to save): `);
+  if (!key) {
+    printAgentMessage("No key saved.");
+    return;
+  }
+
+  const result = await setProviderKey(process.cwd(), normalized, key);
+  if (state) {
+    state.provider = normalized;
+    if (state.routingMode === "manual" && state.model === "mock-agent") {
+      state.routingMode = "smart";
+      state.model = "";
+    }
+  }
+  printAgentMessage(`Saved ${result.keyName} to project-local ignored env. Raw key was not printed.`);
+}
+
 async function handleCommand(line, state, packageDir) {
   const [command, ...rest] = line.slice(1).trim().split(/\s+/);
   const value = rest.join(" ").trim();
@@ -303,6 +355,12 @@ async function handleCommand(line, state, packageDir) {
   if (command === "exit" || command === "quit" || command === "q") return false;
   if (command === "status") {
     printStatus(state);
+    const keys = providerKeyStatus(process.cwd());
+    printSystemLine(`keys deepseek=${keys.deepseek ? "available" : "missing"} openai=${keys.openai ? "available" : "missing"}`);
+    return true;
+  }
+  if (command === "login" || command === "auth") {
+    await promptAndSaveProviderKey(value || "deepseek", state);
     return true;
   }
   if (command === "new") {
@@ -410,7 +468,13 @@ async function handleCommand(line, state, packageDir) {
     return true;
   }
 
-  printAgentMessage(`Unknown command: /${command}. Use /help.`);
+  const typed = `/${command}`;
+  const suggestions = SLASH_COMMANDS.filter((candidate) => candidate.startsWith(typed));
+  printAgentMessage(
+    suggestions.length > 0
+      ? `Unknown command: /${command}. Did you mean:\n${suggestions.map((item) => `  ${item}`).join("\n")}`
+      : `Unknown command: /${command}. Use /help.`
+  );
   return true;
 }
 
@@ -500,7 +564,12 @@ async function runPrompt(prompt, state, packageDir) {
 
 export async function startInteractiveCli(args = {}, { packageDir, packageVersion } = {}) {
   const state = createState(args);
-  const rl = readline.createInterface({ input, output, terminal: Boolean(input.isTTY && output.isTTY) });
+  const rl = readline.createInterface({
+    input,
+    output,
+    terminal: Boolean(input.isTTY && output.isTTY),
+    completer: commandCompleter,
+  });
 
   await renderLaunchHeader(packageVersion);
   printSystemLine(`Project: ${process.cwd()}`);

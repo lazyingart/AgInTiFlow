@@ -50,6 +50,7 @@ On first interactive use, if no DeepSeek key is detected, `aginti` asks you to p
 
 ```bash
 aginti login deepseek
+# inside chat, use /login or /auth
 # or non-interactively:
 printf '%s' "$DEEPSEEK_API_KEY" | aginti keys set deepseek --stdin
 ```
@@ -62,7 +63,7 @@ aginti
 aginti chat
 ```
 
-Inside chat, type normal requests such as `write a small Python CLI app with tests`. The default is Docker workspace mode with approved package installs, so coding, plotting, and LaTeX tasks can set up project-local tools without touching the host. Use `/help` for commands, `/latex on` for PDF work, `/docker off` only when you intentionally want host mode, `/sessions` to list project runs, and `/resume latest` or `/resume <session-id>` to continue work. Esc or Ctrl+C stops the active run cleanly and prints the resume command.
+Inside chat, type normal requests such as `write a small Python CLI app with tests`. The default is Docker workspace mode with approved package installs, so coding, plotting, and LaTeX tasks can set up project-local tools without touching the host. Use `/help` for commands, `/login` or `/auth` to paste a provider key, `/latex on` for PDF work, `/docker off` only when you intentionally want host mode, `/sessions` to list project runs, and `/resume latest` or `/resume <session-id>` to continue work. Type `/` then Tab for command completion. Esc or Ctrl+C stops the active run cleanly and prints the resume command.
 
 Launch the local web UI from an installed package:
 

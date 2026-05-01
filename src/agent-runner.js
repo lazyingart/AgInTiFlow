@@ -258,6 +258,7 @@ function createInitialState(config, sessionId) {
         content: [
           "You are a careful browser and shell agent with a small tool surface.",
           "Use only the provided tools.",
+          "The execution plan is not the final answer. After planning, actively use tools until the requested task is complete or genuinely blocked.",
           "If the shell tool can satisfy a local task, prefer it before opening a browser.",
           "Do not open a browser page just because a start URL exists. Treat it as a suggestion only.",
           "Only reference element ids from the latest browser snapshot.",
@@ -279,6 +280,9 @@ function createInitialState(config, sessionId) {
           "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. It is optional and ordinary final text can still go directly to finish.",
           "For visual-output requests such as draw, plot, graph, chart, diagram, figure, image, or visualization, proactively publish a canvas artifact even when the user does not mention canvas. If workspace file tools are enabled, prefer creating a small SVG or markdown artifact and call send_to_canvas with selected=true.",
           "Work like a practical coding agent: inspect when useful, edit with file tools, run safe checks when they add confidence, and keep outputs inside the workspace.",
+          "For large projects, decompose into useful files and milestones, implement a coherent minimal version first, then iterate with checks rather than only describing what you would do.",
+          "For website/app/code/LaTeX/Python/C/shell tasks, create or edit real workspace files, run available build/compile/test commands, and surface artifacts through the canvas when useful.",
+          "For research or web-search tasks, use browser tools or safe shell network tools when the current policy allows; cite or save useful sources in workspace notes when the task needs traceability.",
           "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files.",
           "For environment or system-maintenance work, use the configured sandbox and package policy; Docker workspace mode is the preferred place for installs and toolchain setup.",
           "If the user asks to open a generated local website or file, use open_workspace_file for a file or preview_workspace for a static site. Do not keep retrying the same localhost URL when a preview fails.",
@@ -309,6 +313,7 @@ function createInitialState(config, sessionId) {
           "Canvas/artifacts tunnel: available through send_to_canvas for optional frontend rendering.",
           "Visual-output requests should produce a canvas artifact without requiring the user to ask for canvas explicitly.",
           "Use file, shell, browser, canvas, and wrapper tools when they are useful; choose the workflow from the user's request.",
+          "Do not stop at a plan when tools can accomplish the request. Continue through implementation, checks, artifact selection, and finish.",
           "Use the configured sandbox and package policy for environment or system-maintenance work.",
         ]
           .filter(Boolean)
@@ -1078,6 +1083,7 @@ export async function runAgent(config) {
         url: snapshot.url,
         title: snapshot.title,
         screenshotPath: snapshot.screenshotPath,
+        screenshotWarning: snapshot.screenshotWarning || "",
         snapshotPath: snapshot.snapshotPath,
       });
       observers.event("snapshot.captured", {
@@ -1085,6 +1091,7 @@ export async function runAgent(config) {
         url: snapshot.url,
         title: snapshot.title,
         screenshotPath: snapshot.screenshotPath,
+        screenshotWarning: snapshot.screenshotWarning || "",
       });
 
       state.messages.push({
