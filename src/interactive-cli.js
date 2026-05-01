@@ -3,7 +3,7 @@ import { emitKeypressEvents } from "node:readline";
 import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent-runner.js";
 import { loadConfig } from "./config.js";
-import { initProject, listProjectSessions, providerKeyStatus, readProjectInstructions, setProviderKey } from "./project.js";
+import { initProject, listProjectSessions, projectPaths, providerKeyStatus, readProjectInstructions, setProviderKey } from "./project.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
 import { defaultMaxStepsForProfile, normalizeTaskProfile } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
@@ -27,6 +27,7 @@ const ansi = {
   cursorShow: "\x1b[?25h",
   userBg: "\x1b[48;5;24m\x1b[38;5;231m",
   agentBg: "\x1b[48;5;29m\x1b[38;5;231m",
+  responseBg: "\x1b[48;5;25m\x1b[38;5;231m",
   systemBg: "\x1b[48;5;236m\x1b[38;5;245m",
 };
 const brandPalette = ["\x1b[38;5;45m", "\x1b[38;5;81m", "\x1b[38;5;86m", "\x1b[38;5;118m", "\x1b[38;5;226m"];
@@ -275,6 +276,10 @@ function rolePrefix(name, bgCode) {
   return `${label(name, bgCode)} ${color("|", bgCode)} `;
 }
 
+function responsePrefix() {
+  return `${color(" | ", ansi.responseBg)} `;
+}
+
 function printWrapped(prefix, text, { stripCode = "" } = {}) {
   const rendered = stripMarkdown(text);
   const lines = rendered.split("\n");
@@ -287,10 +292,10 @@ function printWrapped(prefix, text, { stripCode = "" } = {}) {
 }
 
 function printAgentMessage(text) {
-  outputLine(rolePrefix("aginti>", ansi.agentBg).trimEnd());
+  outputLine(label("aginti>", ansi.agentBg).trimEnd());
   const rendered = stripMarkdown(text);
   const lines = rendered.split("\n");
-  for (const line of lines) outputLine(line);
+  for (const line of lines) outputLine(`${responsePrefix()}${line}`);
 }
 
 function printSystemLine(text) {
@@ -1181,6 +1186,34 @@ async function latestSession() {
   return sessions[0] || null;
 }
 
+function compactHistoryText(content = "", limit = 170) {
+  const rendered = stripAnsi(stripMarkdown(String(content || "")));
+  return compactLine(rendered.replace(/\s+/g, " "), limit);
+}
+
+function printHistoryEntry(entry) {
+  const role = entry.role === "assistant" ? "aginti" : entry.role === "user" ? "user" : String(entry.role || "note");
+  const bg = role === "aginti" ? ansi.agentBg : role === "user" ? ansi.userBg : ansi.systemBg;
+  const time = entry.at ? new Date(entry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  const suffix = time ? ` ${color(time, ansi.dim)}` : "";
+  outputLine(`${label(role, bg)} ${color("|", bg)} ${compactHistoryText(entry.content)}${suffix}`);
+}
+
+async function printResumeHistory(state, { limit = 8 } = {}) {
+  if (!state.sessionId) return;
+  const store = new SessionStore(projectPaths(process.cwd()).sessionsDir, state.sessionId);
+  const saved = await store.loadState().catch(() => null);
+  const chat = Array.isArray(saved?.chat) ? saved.chat.filter((entry) => entry?.content) : [];
+  if (chat.length === 0) {
+    printSystemLine(`resume history session=${state.sessionId} messages=0`);
+    return;
+  }
+
+  const shown = chat.slice(-limit);
+  printSystemLine(`resume history session=${state.sessionId} showing=${shown.length}/${chat.length}`);
+  for (const entry of shown) printHistoryEntry(entry);
+}
+
 function printStatusEvent(state, label, details = "") {
   state.lastEvent = details ? `${label}: ${details}` : label;
   printSystemLine(`status=${state.status || "running"} ${state.lastEvent}`);
@@ -1404,10 +1437,12 @@ async function handleCommand(line, state, packageDir) {
       } else {
         state.sessionId = latest.sessionId;
         printAgentMessage(`Resuming latest ${formatSessionLine(latest)}`);
+        await printResumeHistory(state);
       }
     } else {
       state.sessionId = value;
       printAgentMessage(`Resuming ${state.sessionId}`);
+      await printResumeHistory(state);
     }
     return true;
   }
@@ -1643,6 +1678,7 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
   await maybeOnboardDeepSeekKey(state);
   printAgentMessage("Interactive agent chat. Type /help for commands, /exit to quit.");
   printStatus(state);
+  await printResumeHistory(state);
 
   try {
     while (true) {

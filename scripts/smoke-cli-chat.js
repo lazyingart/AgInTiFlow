@@ -122,13 +122,16 @@ try {
   if (!result.stdout.includes("status=running workingOn=") || !result.stdout.includes("status=idle session=")) {
     throw new Error("interactive chat did not print simple run status updates");
   }
-  if (!/aginti>\s+\|\r?\nMock run complete\./.test(result.stdout)) {
-    throw new Error("assistant response did not start on a fresh line after the aginti header");
+  if (!/aginti>\s*\r?\n\s*\|\s+Mock run complete\./.test(result.stdout)) {
+    throw new Error("assistant response did not render with a fresh-line response gutter");
   }
 
   const latest = await runCli(["resume"], "/exit\n");
   if (!latest.stdout.includes("session=") || !latest.stdout.includes("Interactive agent chat")) {
     throw new Error("bare aginti resume did not open the latest session interactively");
+  }
+  if (!latest.stdout.includes("resume history") || !latest.stdout.includes("Mock run complete")) {
+    throw new Error("bare aginti resume did not preview saved chat history");
   }
 
   console.log(
@@ -136,7 +139,7 @@ try {
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["markdown-render", "prompt-layout", "live-input-layout", "agent-response-newline", "aginti-md", "instructions-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest"],
+        checks: ["markdown-render", "prompt-layout", "live-input-layout", "agent-response-gutter", "aginti-md", "instructions-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest", "resume-history-preview"],
       },
       null,
       2
