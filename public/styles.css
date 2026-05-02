@@ -290,9 +290,7 @@ h1 {
 
 .project-card,
 .setup-card {
-  display: grid;
   min-width: 0;
-  gap: 10px;
   margin: 14px 0;
   padding: 13px;
   border: 1px solid rgba(15, 118, 110, 0.18);
@@ -300,9 +298,71 @@ h1 {
   background: linear-gradient(135deg, rgba(204, 251, 241, 0.44), rgba(255, 247, 237, 0.9));
 }
 
+.setup-card {
+  display: grid;
+  gap: 10px;
+}
+
+.project-card {
+  display: block;
+}
+
+.project-card summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  list-style: none;
+  cursor: pointer;
+}
+
+.project-card summary::-webkit-details-marker {
+  display: none;
+}
+
+.project-card summary strong {
+  min-width: 0;
+}
+
+.project-card summary:focus-visible {
+  border-radius: 10px;
+  outline: 3px solid rgba(15, 118, 110, 0.22);
+  outline-offset: 4px;
+}
+
+.project-card-toggle {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(15, 118, 110, 0.22);
+  border-radius: 999px;
+  background: rgba(255, 253, 250, 0.78);
+  color: var(--accent);
+  font-size: 0.88rem;
+  font-weight: 900;
+}
+
+.project-card-toggle::before {
+  content: "⌄";
+  transform: rotate(-90deg);
+  transition: transform 160ms ease;
+}
+
+.project-card[open] .project-card-toggle::before {
+  transform: rotate(0deg);
+}
+
 .project-card p,
 .setup-card p {
   overflow-wrap: anywhere;
+}
+
+.project-card p {
+  margin: 10px 0 0;
+  line-height: 1.55;
 }
 
 .setup-card .key-links {

@@ -26,8 +26,30 @@ async function waitForApp() {
 
 async function clickIfChecked(page, selector, shouldBeChecked) {
   const locator = page.locator(selector);
-  const checked = await locator.isChecked();
-  if (checked !== shouldBeChecked) await locator.click();
+  await locator.waitFor({ state: "attached", timeout: 5000 });
+  await locator.evaluate((element, expected) => {
+    if (element.checked === expected) return;
+    element.checked = expected;
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  }, shouldBeChecked);
+}
+
+async function selectIfOptionExists(page, selector, value) {
+  const locator = page.locator(selector);
+  await locator.waitFor({ state: "attached", timeout: 5000 });
+  const hasOption = await locator.locator(`option[value="${value}"]`).count();
+  if (hasOption) await page.selectOption(selector, value);
+}
+
+async function setFieldValue(page, selector, value) {
+  const locator = page.locator(selector);
+  await locator.waitFor({ state: "attached", timeout: 5000 });
+  await locator.evaluate((element, nextValue) => {
+    element.value = nextValue;
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  }, value);
 }
 
 async function screenshot(locator, name, options = {}) {
@@ -50,14 +72,14 @@ async function main() {
     await page.selectOption("#language", "en");
     await page.selectOption("#routingMode", "manual");
     await page.selectOption("#provider", "mock");
-    await page.fill("#model", "mock-agent");
+    await selectIfOptionExists(page, "#model", "mock-agent");
     await page.selectOption("#sandboxMode", "host");
     await page.selectOption("#packageInstallPolicy", "block");
     await clickIfChecked(page, "#headless", true);
     await clickIfChecked(page, "#allowShellTool", true);
     await clickIfChecked(page, "#allowWrapperTools", true);
-    await page.fill("#startUrl", "");
-    await page.fill("#allowedDomains", "github.com,news.ycombinator.com");
+    await setFieldValue(page, "#startUrl", "");
+    await setFieldValue(page, "#allowedDomains", "github.com,news.ycombinator.com");
     await page.fill("#commandCwd", repoRoot);
     await page.fill("#goal", "Report the current working directory using a safe command.");
     await page.click('button[type="submit"]');
