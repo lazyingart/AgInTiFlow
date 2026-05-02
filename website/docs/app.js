@@ -59,7 +59,6 @@ const tocEl = document.querySelector("#page-toc");
 const previousEl = document.querySelector("#previous-page");
 const nextEl = document.querySelector("#next-page");
 const languageSelect = document.querySelector("#language-select");
-const languageLabel = document.querySelector("#language-label");
 const tocTitle = document.querySelector("#toc-title");
 const metaDescription = document.querySelector('meta[name="description"]');
 
@@ -87,7 +86,6 @@ function applyStaticLanguage() {
   document.querySelectorAll("[data-docs-ui]").forEach((node) => {
     node.textContent = translate(node.dataset.docsUi);
   });
-  if (languageLabel) languageLabel.textContent = translate("language");
   if (languageSelect) {
     languageSelect.setAttribute("aria-label", translate("language"));
     languageSelect.value = currentLanguage;
