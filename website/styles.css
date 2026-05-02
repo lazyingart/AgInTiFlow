@@ -266,6 +266,11 @@ h3 {
   gap: 12px;
 }
 
+.hero-card .hero-actions {
+  max-width: 100%;
+  padding: 0 6px;
+}
+
 .button {
   display: inline-flex;
   align-items: center;
@@ -349,16 +354,17 @@ h3 {
 
 .hero-signals {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
   gap: clamp(16px, 2.5vw, 28px);
   align-items: stretch;
+  max-width: min(1180px, calc(100% - 32px));
   padding: 0 0 72px;
   perspective: 1200px;
 }
 
 .signal-card {
-  min-height: 148px;
-  padding: 24px;
+  min-height: 136px;
+  padding: clamp(18px, 2vw, 24px);
   border: 1px solid rgba(255, 255, 255, 0.68);
   border-radius: 30px;
   box-shadow: var(--shadow);
@@ -409,7 +415,7 @@ h3 {
 .signal-card strong {
   display: block;
   margin-bottom: 12px;
-  font-size: 1.72rem;
+  font-size: clamp(1.25rem, 2vw, 1.72rem);
   line-height: 1.08;
   letter-spacing: -0.03em;
 }
@@ -714,11 +720,6 @@ h3 {
     transform: none;
   }
 
-  .hero-signals {
-    grid-template-columns: 1fr;
-    padding-bottom: 64px;
-  }
-
   .signal-card,
   .signal-card.hot,
   .signal-card.cool,
@@ -786,6 +787,17 @@ h3 {
 
   .copy-button {
     grid-column: 1 / -1;
+  }
+
+  .hero-signals {
+    grid-template-columns: repeat(3, minmax(220px, 76vw));
+    overflow-x: auto;
+    padding-bottom: 64px;
+    scroll-snap-type: x proximity;
+  }
+
+  .signal-card {
+    scroll-snap-align: center;
   }
 
   .carousel-stage {
