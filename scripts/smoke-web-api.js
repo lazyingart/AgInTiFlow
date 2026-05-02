@@ -69,6 +69,13 @@ async function waitForRun(sessionId) {
 try {
   await waitForHealth();
 
+  const webAppHtml = await fs.readFile(path.join(repoRoot, "public", "index.html"), "utf8");
+  const chatThreadIndex = webAppHtml.indexOf('id="chat-thread"');
+  const chatPendingIndex = webAppHtml.indexOf('id="chat-pending"');
+  if (chatThreadIndex < 0 || chatPendingIndex < 0 || chatPendingIndex < chatThreadIndex) {
+    throw new Error("pending message panel must render below the chat thread");
+  }
+
   const config = await fetchJson("/api/config");
   if (!config.keyStatus?.mock) throw new Error("mock provider is not advertised by /api/config");
   if (!config.workspace?.enabled) throw new Error("workspace file tools are not advertised by /api/config");
