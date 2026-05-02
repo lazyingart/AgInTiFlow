@@ -4,7 +4,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildLaunchHeaderLines, buildPromptLayout, classifyEscapeAction, formatWorkspaceChange, stripMarkdown } from "../src/interactive-cli.js";
+import {
+  buildLaunchHeaderLines,
+  buildPromptLayout,
+  canonicalSlashPromptBuffer,
+  classifyEscapeAction,
+  formatWorkspaceChange,
+  stripMarkdown,
+} from "../src/interactive-cli.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-cli-chat-"));
@@ -179,6 +186,14 @@ try {
   if (classifyEscapeAction({ active: true, pendingAsap: [] }) !== "abort") {
     throw new Error("active Esc should abort when no ASAP pipe messages are pending");
   }
+  if (
+    canonicalSlashPromptBuffer("/ve") !== "/venice" ||
+    canonicalSlashPromptBuffer("/v") !== "/venice" ||
+    canonicalSlashPromptBuffer("/not-a-command") !== "/not-a-command" ||
+    canonicalSlashPromptBuffer("/venice off") !== "/venice off"
+  ) {
+    throw new Error("slash command prompt canonicalization did not preserve final submitted command correctly");
+  }
 
   await runCli(["init"], "");
   const instructions = await fs.readFile(path.join(tempRoot, "AGINTI.md"), "utf8");
@@ -265,6 +280,7 @@ try {
           "auxiliary-command-spelling",
           "skills-command",
           "slash-prefix-autoselect",
+          "slash-prefix-canonical-history",
           "instructions-chat-edit",
           "interactive-chat",
           "mock-file-write",

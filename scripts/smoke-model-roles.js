@@ -9,6 +9,7 @@ import {
   modelsForProviderGroup,
   selectModelRoute,
 } from "../src/model-routing.js";
+import { parseTextToolCalls } from "../src/model-client.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -109,6 +110,10 @@ assert(fastRoute.model === "deepseek-v4-flash", "fast route did not use route mo
 assert(MODEL_PROVIDER_GROUPS["venice-gpt"].provider === "venice", "venice-gpt group missing");
 assert(modelsForProviderGroup("venice-gemma").some((item) => item.id === "gemma-4-uncensored"), "venice-gemma bucket missing Gemma");
 assert(AUXILIARY_MODEL_CATALOG["venice-image"].some((item) => item.id === "gpt-image-2"), "Venice image catalog missing GPT Image 2");
+const parsedTextToolCalls = parseTextToolCalls('[TOOL_CALLS]list_files[ARGS]call_123[ARGS]{"path":".","maxDepth":1}');
+assert(parsedTextToolCalls.length === 1, "Venice text tool-call parser did not detect encoded tool call");
+assert(parsedTextToolCalls[0].function.name === "list_files", "Venice text tool-call parser returned wrong tool name");
+assert(parsedTextToolCalls[0].function.arguments.includes('"maxDepth":1'), "Venice text tool-call parser returned wrong arguments");
 
 const output = await runCli(["models"]);
 assert(output.includes("/route") && output.includes("/spare") && output.includes("venice-gpt"), "aginti models output missing role details");
@@ -125,7 +130,15 @@ console.log(
   JSON.stringify(
     {
       ok: true,
-      checks: ["role-defaults", "route-overrides", "provider-groups", "auxiliary-catalog", "cli-models-command", "venice-shortcut"],
+      checks: [
+        "role-defaults",
+        "route-overrides",
+        "provider-groups",
+        "auxiliary-catalog",
+        "venice-text-tool-parser",
+        "cli-models-command",
+        "venice-shortcut",
+      ],
     },
     null,
     2

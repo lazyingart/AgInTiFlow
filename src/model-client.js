@@ -73,6 +73,59 @@ function toolChoiceForProvider(config, messages = []) {
   return messages.some((message) => message.role === "tool") ? "auto" : "required";
 }
 
+export function parseTextToolCalls(content = "") {
+  const text = String(content || "");
+  if (!text.includes("[TOOL_CALLS]")) return [];
+
+  const calls = [];
+  const pattern = /\[TOOL_CALLS\]([A-Za-z0-9_-]+)\[ARGS\]([A-Za-z0-9_.:-]+)\[ARGS\]([\s\S]*?)(?=\[TOOL_CALLS\]|$)/g;
+  for (const match of text.matchAll(pattern)) {
+    const name = match[1]?.trim();
+    const id = match[2]?.trim() || `text-tool-${calls.length + 1}`;
+    const rawArgs = match[3]?.trim() || "{}";
+    if (!name) continue;
+    try {
+      JSON.parse(rawArgs);
+    } catch {
+      continue;
+    }
+    calls.push({
+      id,
+      type: "function",
+      function: {
+        name,
+        arguments: rawArgs,
+      },
+    });
+  }
+  return calls;
+}
+
+function normalizeTextToolCallResponse(response) {
+  const message = response?.choices?.[0]?.message;
+  if (!message || Array.isArray(message.tool_calls) && message.tool_calls.length > 0) return response;
+
+  const calls = parseTextToolCalls(message.content || "");
+  if (calls.length === 0) return response;
+
+  const content = String(message.content || "").split("[TOOL_CALLS]")[0].trim();
+  return {
+    ...response,
+    choices: response.choices.map((choice, index) =>
+      index === 0
+        ? {
+            ...choice,
+            message: {
+              ...message,
+              content,
+              tool_calls: calls,
+            },
+          }
+        : choice
+    ),
+  };
+}
+
 function mockCommandForGoal(goal = "") {
   const text = String(goal).toLowerCase();
   if (/\blist\b|folder contents|directory contents|files?/.test(text)) return "ls -la";
@@ -866,7 +919,7 @@ export async function requestNextStep(client, config, messages) {
     ]);
   }
 
-  return client.chat.completions.create(
+  const response = await client.chat.completions.create(
     {
       model: config.model,
       temperature: 0,
@@ -877,4 +930,5 @@ export async function requestNextStep(client, config, messages) {
     },
     requestOptions(config)
   );
+  return normalizeTextToolCallResponse(response);
 }

@@ -194,6 +194,15 @@ function resolveSlashCommand(command = "") {
   return suggestion ? suggestion.slice(1) : raw;
 }
 
+export function canonicalSlashPromptBuffer(value = "") {
+  const text = String(value || "");
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("/") || /\s/.test(trimmed)) return text;
+  const raw = trimmed.slice(1);
+  const resolved = resolveSlashCommand(raw);
+  return resolved === raw ? text : `/${resolved}`;
+}
+
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
@@ -944,6 +953,11 @@ function readTtyPrompt(options = {}) {
     };
 
     const submit = () => {
+      const canonical = canonicalSlashPromptBuffer(buffer);
+      if (canonical !== buffer) {
+        buffer = canonical;
+        cursor = buffer.length;
+      }
       renderNow();
       moveToPromptBottom(rendered);
       cleanup();
@@ -2607,7 +2621,7 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
         }
         throw error;
       }
-      const line = answer.trim();
+      const line = canonicalSlashPromptBuffer(answer).trim();
       if (!line) continue;
       if (line.startsWith("/")) {
         const keepGoing = await handleCommand(line, state, packageDir);
@@ -2619,7 +2633,7 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
         const pendingPrompts = [{ content: line }];
         while (pendingPrompts.length > 0) {
           const nextPrompt = pendingPrompts.shift();
-          const content = String(nextPrompt.content || "").trim();
+          const content = canonicalSlashPromptBuffer(String(nextPrompt.content || "")).trim();
           if (!content) continue;
           if (content.startsWith("/")) {
             const keepGoing = await handleCommand(content, state, packageDir);
