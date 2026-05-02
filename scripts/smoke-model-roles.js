@@ -9,7 +9,7 @@ import {
   modelsForProviderGroup,
   selectModelRoute,
 } from "../src/model-routing.js";
-import { parseTextToolCalls, usesTextToolProtocol } from "../src/model-client.js";
+import { normalizeTextToolCallResponse, parseTextToolCalls, usesTextToolProtocol } from "../src/model-client.js";
 import { modelRoleChoices } from "../src/interactive-cli.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -161,6 +161,33 @@ const multipleRequestedToolCalls = parseTextToolCalls(
 );
 assert(multipleRequestedToolCalls.length === 2, "Requested tools parser did not detect multiple function-call texts");
 assert(multipleRequestedToolCalls[1].function.name === "inspect_project", "Requested tools parser returned wrong second requested tool");
+const malformedRequestedToolResponse = normalizeTextToolCallResponse({
+  choices: [
+    {
+      message: {
+        role: "assistant",
+        content: 'Requested tools: write_file({"path":"story.md","content":"unfinished',
+      },
+    },
+  ],
+});
+const malformedMessage = malformedRequestedToolResponse.choices[0].message;
+assert(malformedMessage.tool_calls?.[0]?.function?.name === "wait", "malformed requested tool text should trigger a safe retry tool");
+assert(!malformedMessage.content.includes("write_file("), "malformed requested tool text should not be surfaced as assistant content");
+const cleanedMalformedSuffix = normalizeTextToolCallResponse({
+  choices: [
+    {
+      message: {
+        role: "assistant",
+        content: 'Here is a normal answer. Requested tools: write_file({"path":"story.md","content":"unfinished',
+      },
+    },
+  ],
+});
+assert(
+  cleanedMalformedSuffix.choices[0].message.content === "Here is a normal answer.",
+  "malformed tool suffix should be stripped from otherwise usable assistant content"
+);
 assert(usesTextToolProtocol({ provider: "venice", model: "gemma-4-uncensored" }), "Venice Gemma should use text tool protocol");
 assert(usesTextToolProtocol({ provider: "venice", model: "e2ee-venice-uncensored-24b-p" }), "Venice 1.1 should use text tool protocol");
 assert(usesTextToolProtocol({ provider: "venice", model: "venice-uncensored" }), "Venice legacy 1.1 should use text tool protocol");
@@ -192,6 +219,7 @@ console.log(
         "shared-model-selectors",
         "venice-text-tool-parser",
         "requested-tools-parser",
+        "malformed-text-tool-retry",
         "cli-models-command",
         "venice-shortcut",
       ],

@@ -107,6 +107,7 @@ function textToolProtocolPrompt(tools = []) {
     'A strict id form is also accepted: [TOOL_CALLS]tool_name[ARGS]call_short_id[ARGS]{"arg":"value"}',
     'A JSON block form is accepted too: TOOL_CALLS: ```json [{"name":"tool_name","arguments":{"arg":"value"}}] ```',
     "Return only one or more TOOL_CALLS blocks when calling tools; do not wrap them in markdown.",
+    "Keep tool-call JSON valid and complete. For long write_file content, prefer a concise complete file or smaller follow-up edits over emitting huge/truncated JSON.",
     "If no tool is needed, answer normally.",
     "Available text tools:",
     ...toolLines,
@@ -140,7 +141,7 @@ function messagesWithTextToolProtocol(config, messages, tools) {
 
 export function parseTextToolCalls(content = "") {
   const text = String(content || "");
-  if (!text.includes("[TOOL_CALLS]") && !/TOOL_CALLS\s*:/i.test(text) && !/Requested tools?\s*:/i.test(text)) return [];
+  if (!hasTextToolCallMarker(text)) return [];
 
   const calls = [];
   for (const call of parseRequestedToolCalls(text)) calls.push(call);
@@ -194,6 +195,11 @@ export function parseTextToolCalls(content = "") {
     });
   }
   return calls;
+}
+
+function hasTextToolCallMarker(content = "") {
+  const text = String(content || "");
+  return text.includes("[TOOL_CALLS]") || /TOOL_CALLS\s*:/i.test(text) || /Requested tools?\s*:/i.test(text);
 }
 
 function findMatchingParen(text = "", openIndex = 0) {
@@ -269,14 +275,30 @@ function textBeforeToolCallMarker(content = "") {
     .trim();
 }
 
-function normalizeTextToolCallResponse(response) {
+export function normalizeTextToolCallResponse(response) {
   const message = response?.choices?.[0]?.message;
   if (!message || Array.isArray(message.tool_calls) && message.tool_calls.length > 0) return response;
 
   const calls = parseTextToolCalls(message.content || "");
   if (calls.length === 0) {
     const cleanedContent = textBeforeToolCallMarker(message.content || "");
-    if (!cleanedContent || cleanedContent === message.content) return response;
+    if (!hasTextToolCallMarker(message.content || "")) return response;
+    if (cleanedContent) {
+      return {
+        ...response,
+        choices: response.choices.map((choice, index) =>
+          index === 0
+            ? {
+                ...choice,
+                message: {
+                  ...message,
+                  content: cleanedContent,
+                },
+              }
+            : choice
+        ),
+      };
+    }
     return {
       ...response,
       choices: response.choices.map((choice, index) =>
@@ -285,7 +307,18 @@ function normalizeTextToolCallResponse(response) {
               ...choice,
               message: {
                 ...message,
-                content: cleanedContent,
+                content:
+                  "The previous text tool request was malformed or truncated and was not executed. Retry with one valid tool call using the configured tool interface. For long files, write a complete concise file or split the work into smaller valid edits; do not show raw tool-call JSON to the user.",
+                tool_calls: [
+                  {
+                    id: "text-tool-retry-1",
+                    type: "function",
+                    function: {
+                      name: "wait",
+                      arguments: JSON.stringify({ ms: 1 }),
+                    },
+                  },
+                ],
               },
             }
           : choice
