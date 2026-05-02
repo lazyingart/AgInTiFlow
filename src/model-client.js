@@ -140,9 +140,10 @@ function messagesWithTextToolProtocol(config, messages, tools) {
 
 export function parseTextToolCalls(content = "") {
   const text = String(content || "");
-  if (!text.includes("[TOOL_CALLS]") && !/TOOL_CALLS\s*:/i.test(text)) return [];
+  if (!text.includes("[TOOL_CALLS]") && !/TOOL_CALLS\s*:/i.test(text) && !/Requested tools?\s*:/i.test(text)) return [];
 
   const calls = [];
+  for (const call of parseRequestedToolCalls(text)) calls.push(call);
   const jsonBlock = text.match(/TOOL_CALLS\s*:\s*```(?:json)?\s*([\s\S]*?)```/i);
   if (jsonBlock?.[1]) {
     try {
@@ -195,10 +196,75 @@ export function parseTextToolCalls(content = "") {
   return calls;
 }
 
+function findMatchingParen(text = "", openIndex = 0) {
+  let depth = 0;
+  let quote = "";
+  let escaped = false;
+  for (let index = openIndex; index < text.length; index += 1) {
+    const char = text[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (char === "\\") escaped = true;
+      else if (char === quote) quote = "";
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "(") depth += 1;
+    if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function parseRequestedToolCalls(content = "") {
+  const marker = String(content || "").match(/Requested tools?\s*:/i);
+  if (!marker) return [];
+
+  const text = String(content).slice(marker.index + marker[0].length);
+  const calls = [];
+  let offset = 0;
+  while (offset < text.length) {
+    const match = text.slice(offset).match(/([A-Za-z0-9_-]+)\s*\(/);
+    if (!match) break;
+
+    const name = match[1]?.trim();
+    const openIndex = offset + match.index + match[0].lastIndexOf("(");
+    const closeIndex = findMatchingParen(text, openIndex);
+    if (!name || closeIndex < 0) break;
+
+    const rawArgs = text.slice(openIndex + 1, closeIndex).trim() || "{}";
+    try {
+      JSON.parse(rawArgs);
+    } catch {
+      offset = closeIndex + 1;
+      continue;
+    }
+    calls.push({
+      id: `text-tool-${calls.length + 1}`,
+      type: "function",
+      function: {
+        name,
+        arguments: rawArgs,
+      },
+    });
+    offset = closeIndex + 1;
+  }
+  return calls;
+}
+
 function textBeforeToolCallMarker(content = "") {
   return String(content || "")
     .split("[TOOL_CALLS]")[0]
     .split("TOOL_CALLS:")[0]
+    .split(/Requested tools?\s*:/i)[0]
     .split("<|tool_call>")[0]
     .trim();
 }

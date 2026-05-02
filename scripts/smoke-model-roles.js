@@ -150,6 +150,17 @@ assert(nativeMarkerText.length === 0, "native marker text should not be treated 
 const jsonBlockToolCalls = parseTextToolCalls('TOOL_CALLS:\n```json\n[{"name":"list_files","arguments":{"path":"/workspace"}}]\n```');
 assert(jsonBlockToolCalls.length === 1, "Venice JSON text tool-call parser did not detect JSON block calls");
 assert(jsonBlockToolCalls[0].function.arguments.includes("/workspace"), "Venice JSON text tool-call parser returned wrong arguments");
+const requestedToolCalls = parseTextToolCalls(
+  'Requested tools: write_file({"path":"story-ja.txt","content":"雨の夜、彼女は「また会える」と笑った。","mode":"create"})'
+);
+assert(requestedToolCalls.length === 1, "Requested tools parser did not detect function-call text");
+assert(requestedToolCalls[0].function.name === "write_file", "Requested tools parser returned wrong tool name");
+assert(requestedToolCalls[0].function.arguments.includes("story-ja.txt"), "Requested tools parser returned wrong arguments");
+const multipleRequestedToolCalls = parseTextToolCalls(
+  'Requested tools: list_files({"path":"."}); inspect_project({"path":".","maxDepth":2})'
+);
+assert(multipleRequestedToolCalls.length === 2, "Requested tools parser did not detect multiple function-call texts");
+assert(multipleRequestedToolCalls[1].function.name === "inspect_project", "Requested tools parser returned wrong second requested tool");
 assert(usesTextToolProtocol({ provider: "venice", model: "gemma-4-uncensored" }), "Venice Gemma should use text tool protocol");
 assert(usesTextToolProtocol({ provider: "venice", model: "e2ee-venice-uncensored-24b-p" }), "Venice 1.1 should use text tool protocol");
 assert(usesTextToolProtocol({ provider: "venice", model: "venice-uncensored" }), "Venice legacy 1.1 should use text tool protocol");
@@ -180,6 +191,7 @@ console.log(
         "auxiliary-catalog",
         "shared-model-selectors",
         "venice-text-tool-parser",
+        "requested-tools-parser",
         "cli-models-command",
         "venice-shortcut",
       ],
