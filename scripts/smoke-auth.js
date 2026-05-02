@@ -10,7 +10,7 @@ import { maskProviderKey, providerKeyPreview, providerKeyStatus, setProviderKey 
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-auth-"));
-const envKeys = ["DEEPSEEK_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "QWEN_API_KEY", "GRSAI", "GRSAI_API_KEY"];
+const envKeys = ["DEEPSEEK_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "QWEN_API_KEY", "VENICE_API_KEY", "GRSAI", "GRSAI_API_KEY"];
 const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
 for (const key of envKeys) delete process.env[key];
 
@@ -56,31 +56,40 @@ async function runCli(args, stdin = "") {
 try {
   assert(normalizeAuthProvider("auxilliary") === "grsai", "auxilliary alias did not normalize to grsai");
   assert(normalizeAuthProvider("qwen") === "qwen", "qwen provider did not normalize");
+  assert(normalizeAuthProvider("venice") === "venice", "venice provider did not normalize");
   assert(authProviderKeyUrl("deepseek") === "https://platform.deepseek.com/api_keys", "DeepSeek key URL is missing");
   assert(authProviderKeyHelp("openai").includes("https://platform.openai.com/api-keys"), "OpenAI key help is missing");
   assert(maskProviderKey("short") === "s…t (5 chars)", "short key mask was not compact");
   assert(maskProviderKey("test-openai-key") === "test…-key (15 chars)", "long key mask did not preserve prefix/suffix");
   const qwenDefaults = getProviderDefaults("qwen");
   assert(qwenDefaults.provider === "qwen" && qwenDefaults.model, "qwen provider defaults are not available");
+  const veniceDefaults = getProviderDefaults("venice");
+  assert(veniceDefaults.provider === "venice" && veniceDefaults.model === "venice-uncensored-1-2", "venice provider defaults are not available");
 
   await setProviderKey(tempRoot, "qwen", "test-qwen-key");
+  await setProviderKey(tempRoot, "venice", "test-venice-key");
   let status = providerKeyStatus(tempRoot);
   assert(status.qwen, "qwen key status was not detected");
+  assert(status.venice, "venice key status was not detected");
   assert(status.envVars.qwen.includes("QWEN_API_KEY"), "qwen env var name was not reported");
+  assert(status.envVars.venice.includes("VENICE_API_KEY"), "venice env var name was not reported");
   const qwenPreview = providerKeyPreview(tempRoot, "qwen");
   assert(qwenPreview.available && qwenPreview.preview === "test…-key (13 chars)", "qwen key preview was not masked correctly");
+  const venicePreview = providerKeyPreview(tempRoot, "venice");
+  assert(venicePreview.available && venicePreview.preview === "test…-key (15 chars)", "venice key preview was not masked correctly");
 
   await runCli(["keys", "set", "openai", "--stdin"], "test-openai-key");
   await runCli(["keys", "set", "grsai", "--stdin"], "test-grsai-key");
   status = providerKeyStatus(tempRoot);
-  assert(status.openai && status.grsai && status.qwen, "stored auth keys were not detected");
+  assert(status.openai && status.grsai && status.qwen && status.venice, "stored auth keys were not detected");
   const openaiPreview = providerKeyPreview(tempRoot, "openai");
   assert(openaiPreview.preview === "test…-key (15 chars)", "openai key preview was not masked correctly");
   assert(openaiPreview.preview !== "test-openai-key", "openai key preview leaked raw key");
 
   const keysOutput = await runCli(["keys", "status"]);
   assert(keysOutput.includes("qwen=available"), "keys status did not include qwen");
-  assert(!keysOutput.includes("test-openai-key") && !keysOutput.includes("test-qwen-key"), "keys status leaked a raw key");
+  assert(keysOutput.includes("venice=available"), "keys status did not include venice");
+  assert(!keysOutput.includes("test-openai-key") && !keysOutput.includes("test-qwen-key") && !keysOutput.includes("test-venice-key"), "keys status leaked a raw key");
 
   console.log(
     JSON.stringify(
@@ -93,7 +102,9 @@ try {
           "provider-key-mask",
           "provider-key-preview",
           "qwen-defaults",
+          "venice-defaults",
           "qwen-key-status",
+          "venice-key-status",
           "cli-key-status-redacted",
         ],
       },

@@ -21,10 +21,13 @@ function assert(condition, message) {
 
 try {
   await setProviderKey(workspace, "grsai", "test-grsai-key");
+  await setProviderKey(workspace, "venice", "test-venice-key");
   const keyStatus = providerKeyStatus(workspace);
   assert(keyStatus.grsai, "GRSAI key status was not detected");
+  assert(keyStatus.venice, "Venice key status was not detected");
   assert(keyStatus.envVars.grsai.includes("GRSAI"), "GRSAI env var name was not reported");
   assert(listAuxiliarySkills().some((skill) => skill.id === "image_generation"), "image_generation skill missing");
+  assert(listAuxiliarySkills().some((skill) => skill.id === "venice_image_generation"), "venice_image_generation skill missing");
 
   const dryRun = await generateImage(
     {
@@ -42,6 +45,20 @@ try {
   await fs.access(path.join(workspace, "artifacts/images/dry-run/task_manifest.json"));
   const payloadText = await fs.readFile(path.join(workspace, "artifacts/images/dry-run/request_payload.redacted.json"), "utf8");
   assert(payloadText.includes("nano-banana-2"), "redacted image payload was not written");
+  const veniceDryRun = await generateImage(
+    {
+      provider: "venice",
+      prompt: "A small cyan robot holding a paintbrush, clean bright product illustration.",
+      outputDir: "artifacts/images/venice-dry-run",
+      outputStem: "robot",
+      dryRun: true,
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  assert(veniceDryRun.ok && veniceDryRun.provider === "venice", "venice generate_image dry run failed");
 
   const blocked = await generateImage(
     {
@@ -84,7 +101,16 @@ try {
       {
         ok: true,
         workspace,
-        checks: ["grsai_key_status", "image_skill_listed", "generate_image_dry_run", "generate_image_guardrail", "mock_agent_image_tool"],
+        checks: [
+          "grsai_key_status",
+          "venice_key_status",
+          "image_skill_listed",
+          "venice_image_skill_listed",
+          "generate_image_dry_run",
+          "venice_generate_image_dry_run",
+          "generate_image_guardrail",
+          "mock_agent_image_tool",
+        ],
       },
       null,
       2

@@ -46,15 +46,17 @@ aginti --list-profiles
 aginti --sandbox-status
 ```
 
-On first interactive use, if no main model key is detected, `aginti` opens an auth wizard. Use Up/Down to choose DeepSeek, OpenAI, or Qwen, paste the key, and press Enter to save it to the project-local ignored file `.aginti/.env` with `0600` permissions. The wizard points to DeepSeek keys at `https://platform.deepseek.com/api_keys` and OpenAI keys at `https://platform.openai.com/api-keys`. It then offers the optional auxiliary image key; press Esc to skip. You can rerun it even when keys already exist:
+On first interactive use, if no main model key is detected, `aginti` opens an auth wizard. Use Up/Down to choose DeepSeek, OpenAI, Qwen, or Venice, paste the key, and press Enter to save it to the project-local ignored file `.aginti/.env` with `0600` permissions. The wizard points to DeepSeek keys at `https://platform.deepseek.com/api_keys`, OpenAI keys at `https://platform.openai.com/api-keys`, and Venice at `https://venice.ai`. It then offers the optional auxiliary image key; press Esc to skip. You can rerun it even when keys already exist:
 
 ```bash
 aginti auth
 aginti auth openai
+aginti auth venice
 # inside chat, use /login or /auth for the same wizard
 # or non-interactively:
 printf '%s' "$DEEPSEEK_API_KEY" | aginti keys set deepseek --stdin
 printf '%s' "$QWEN_API_KEY" | aginti keys set qwen --stdin
+printf '%s' "$VENICE_API_KEY" | aginti keys set venice --stdin
 
 # optional image-generation auxiliary skill:
 aginti login grsai
@@ -83,7 +85,7 @@ The next productive-agent roadmap is tracked in [docs/productive-agent-roadmap.m
 
 For current docs, install errors, package/toolchain setup, and source discovery, the agent has a guarded `web_search` tool. It returns compact search results without browser search-engine loops and respects configured domain allowlists. Disable with `--no-web-search`.
 
-For raster image work, AgInTiFlow has an optional `image_generation` skill backed by the `generate_image` tool and a local `GRSAI` key. The skill tells DeepSeek when image generation is appropriate; the tool calls GRS AI Nano Banana, saves manifests/images under `artifacts/images`, and sends the result to the canvas. See [docs/auxiliary-image-generation.md](docs/auxiliary-image-generation.md).
+For raster image work, AgInTiFlow has optional `image_generation` and `venice_image_generation` skills backed by the `generate_image` tool and local `GRSAI` or `VENICE_API_KEY` credentials. The skill tells the model when image generation is appropriate; the tool saves manifests/images under `artifacts/images` and sends the result to the canvas. See [docs/auxiliary-image-generation.md](docs/auxiliary-image-generation.md) and [references/venice-model-reference.md](references/venice-model-reference.md).
 
 For long-running shell work, AgInTiFlow exposes host-side tmux tools when the shell tool is enabled: `tmux_list_sessions`, `tmux_capture_pane`, `tmux_send_keys`, and `tmux_start_session`. Use normal prompts such as `start this test server in tmux and monitor it` or `check my tmux session`. The agent captures panes before interacting, redacts outputs, blocks secret-like sends, and avoids sending sudo passwords or destructive commands. Tmux is intentionally host-side: Docker `run_command` containers are short-lived, so tmux servers started there cannot persist.
 
@@ -273,7 +275,7 @@ Defaults:
 | `smart` | DeepSeek | Fast for normal tasks, pro for complex tasks | `AGENT_ROUTING_MODE=smart` |
 | `fast` | DeepSeek | `deepseek-v4-flash` | `DEEPSEEK_FAST_MODEL` |
 | `complex` | DeepSeek | `deepseek-v4-pro` | `DEEPSEEK_PRO_MODEL` |
-| `manual` | DeepSeek/OpenAI/Qwen | user supplied | `AGENT_PROVIDER`, `LLM_MODEL` |
+| `manual` | DeepSeek/OpenAI/Qwen/Venice | user supplied | `AGENT_PROVIDER`, `LLM_MODEL` |
 
 Provider credentials:
 
@@ -282,6 +284,7 @@ Provider credentials:
 | OpenAI | `OPENAI_API_KEY` | `https://api.openai.com/v1` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `https://api.deepseek.com/v1` |
 | Qwen | `QWEN_API_KEY` | `QWEN_BASE_URL` or DashScope compatible mode |
+| Venice | `VENICE_API_KEY` | `VENICE_API_BASE` or `https://api.venice.ai/api/v1` |
 
 Project-local credentials can be stored without committing secrets:
 

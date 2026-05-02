@@ -22,9 +22,9 @@ const translations = {
     projectStatusTitle: "Project folder",
     setupTitle: "Provider setup",
     setupHelp:
-      "DeepSeek/OpenAI/Qwen keys are missing. Use mock mode, export an env var, or save a project-local model key.",
+      "DeepSeek/OpenAI/Qwen/Venice keys are missing. Use mock mode, export an env var, or save a project-local model key.",
     setupEnvHelp:
-      "Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, QWEN_API_KEY, LLM_API_KEY, and optional GRSAI for image generation. Mock mode remains available for local tests.",
+      "Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, QWEN_API_KEY, VENICE_API_KEY, LLM_API_KEY, and optional GRSAI for image generation. Mock mode remains available for local tests.",
     setupKeyLinksLabel: "Get keys:",
     deepseekKeyLink: "DeepSeek API keys",
     openaiKeyLink: "OpenAI API keys",
@@ -649,6 +649,9 @@ const languageField = document.querySelector("#language");
 const routingModeField = document.querySelector("#routingMode");
 const providerField = document.querySelector("#provider");
 const modelField = document.querySelector("#model");
+const modelOptionsEl = document.querySelector("#model-options");
+const modelCatalogEl = document.querySelector("#model-catalog");
+const modelRoutePillEl = document.querySelector("#model-route-pill");
 const routingHintEl = document.querySelector("#routing-hint");
 const modelRouteStatusEl = document.querySelector("#model-route-status");
 const projectStatusEl = document.querySelector("#project-status");
@@ -718,11 +721,13 @@ const defaults = {
   openai: "gpt-5.4-mini",
   deepseek: "deepseek-v4-flash",
   qwen: "qwen-plus",
+  venice: "venice-uncensored-1-2",
   mock: "mock-agent",
 };
 
 let currentLanguage = "en";
 let routingPresets = {};
+let modelCatalog = {};
 let taskProfiles = [];
 let projectInfo = null;
 let currentSessionId = "";
@@ -789,12 +794,14 @@ function renderKeyStatus(status = lastKeyStatus) {
     status.openai ? t("availableLabel") : t("missingLabel")
   } · DeepSeek ${status.deepseek ? t("availableLabel") : t("missingLabel")} · Qwen ${
     status.qwen ? t("availableLabel") : t("missingLabel")
+  } · Venice ${
+    status.venice ? t("availableLabel") : t("missingLabel")
   } · GRS AI ${
     status.grsai ? t("availableLabel") : t("missingLabel")
   } · ${t("mockLabel")} ${
     status.mock ? t("availableLabel") : t("missingLabel")
   }`;
-  if (setupCardEl) setupCardEl.hidden = Boolean(status.openai || status.deepseek || status.qwen);
+  if (setupCardEl) setupCardEl.hidden = Boolean(status.openai || status.deepseek || status.qwen || status.venice);
 }
 
 function renderProjectStatus(info = projectInfo) {
@@ -959,6 +966,44 @@ function renderSandboxLogs(logs) {
     .join("\n\n");
 }
 
+function providerModelOptions(provider = providerField.value) {
+  return modelCatalog[provider] || [];
+}
+
+function renderModelOptions() {
+  const provider = providerField.value || "deepseek";
+  const options = providerModelOptions(provider);
+  if (modelOptionsEl) {
+    modelOptionsEl.innerHTML = options
+      .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label || item.id)}</option>`)
+      .join("");
+  }
+  if (modelRoutePillEl) {
+    const mode = routingModeField.value || "smart";
+    const primary = modelField.value.trim() || defaults[provider] || "";
+    const secondary = provider === "deepseek" ? defaults.deepseek : routingPresets.complex?.model || "deepseek-v4-pro";
+    modelRoutePillEl.textContent =
+      mode === "manual"
+        ? `${provider} · ${primary}`
+        : `smart · primary ${primary || "auto"} · secondary ${secondary || "auto"}`;
+  }
+  if (!modelCatalogEl) return;
+  if (options.length === 0) {
+    modelCatalogEl.innerHTML = "";
+    return;
+  }
+  modelCatalogEl.innerHTML = options
+    .map(
+      (item) => `
+        <button class="model-chip" type="button" data-model-id="${escapeHtml(item.id)}" data-active="${item.id === modelField.value.trim()}">
+          <strong>${escapeHtml(item.label || item.id)}</strong>
+          <span>${escapeHtml([item.bucket || item.role, item.context, item.reasoning?.length ? `reasoning ${item.reasoning.join("/")}` : ""].filter(Boolean).join(" · "))}</span>
+        </button>
+      `
+    )
+    .join("");
+}
+
 function updateRoutingHint() {
   const mode = routingModeField.value || "smart";
   const hintKey = {
@@ -969,7 +1014,7 @@ function updateRoutingHint() {
   }[mode];
   routingHintEl.textContent = t(hintKey);
 
-  if (mode !== "manual") {
+  if (mode !== "manual" && providerField.value === "deepseek") {
     const preset = mode === "complex" ? routingPresets.complex : routingPresets.fast;
     if (preset) {
       providerField.value = preset.provider === "deepseek" ? "deepseek" : providerField.value;
@@ -980,6 +1025,7 @@ function updateRoutingHint() {
   modelRouteStatusEl.textContent = `${t("modelRouteStatus")}: ${providerField.value} / ${
     modelField.value.trim() || defaults[providerField.value] || ""
   }`;
+  renderModelOptions();
 }
 
 function updatePackageWarning() {
@@ -2293,7 +2339,7 @@ deleteSessionButton.addEventListener("click", () => {
 });
 
 providerField.addEventListener("change", () => {
-  if (providerField.value === "mock") {
+  if (providerField.value === "mock" || providerField.value === "venice" || providerField.value === "openai" || providerField.value === "qwen") {
     routingModeField.value = "manual";
   }
 
@@ -2302,10 +2348,19 @@ providerField.addEventListener("change", () => {
     modelField.value === defaults.openai ||
     modelField.value === defaults.deepseek ||
     modelField.value === defaults.qwen ||
+    modelField.value === defaults.venice ||
     modelField.value === defaults.mock
   ) {
     modelField.value = defaults[providerField.value] || "";
   }
+  updateRoutingHint();
+  schedulePreferenceSave();
+});
+
+modelCatalogEl?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-model-id]");
+  if (!button) return;
+  modelField.value = button.dataset.modelId || modelField.value;
   updateRoutingHint();
   schedulePreferenceSave();
 });
@@ -2534,10 +2589,12 @@ async function loadConfig() {
   const data = await response.json();
   const prefs = data.preferences || {};
   routingPresets = data.routing?.presets || {};
+  modelCatalog = data.modelCatalog || {};
   taskProfiles = data.taskProfiles || [];
   projectInfo = data.project || null;
   defaults.openai = data.defaults?.openai?.model || defaults.openai;
   defaults.qwen = data.defaults?.qwen?.model || defaults.qwen;
+  defaults.venice = data.defaults?.venice?.model || defaults.venice;
   defaults.deepseek = routingPresets.fast?.model || data.defaults?.deepseek?.model || defaults.deepseek;
   defaults.mock = data.defaults?.mock?.model || defaults.mock;
 

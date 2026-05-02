@@ -267,7 +267,7 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti skills [query] OR aginti auth [deepseek|openai|qwen|grsai] OR aginti login [deepseek|openai|qwen|grsai] OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex] [--list-skills] [--sandbox-status|--sandbox-preflight] "your task"'
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti skills [query] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti login [deepseek|openai|qwen|venice|grsai] OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex] [--list-skills] [--sandbox-status|--sandbox-preflight] "your task"'
   );
 }
 
@@ -275,6 +275,7 @@ function providerLabel(provider) {
   const normalized = String(provider || "").toLowerCase();
   if (normalized === "openai") return "OpenAI";
   if (normalized === "qwen") return "Qwen";
+  if (normalized === "venice") return "Venice";
   if (normalized === "grsai" || normalized === "auxiliary" || normalized === "auxilliary") return "GRSAI";
   return "DeepSeek";
 }
@@ -357,7 +358,9 @@ function printDoctorReport(report) {
   console.log(
     `keys: deepseek=${report.keys.deepseek ? "available" : "missing"} openai=${
       report.keys.openai ? "available" : "missing"
-    } qwen=${report.keys.qwen ? "available" : "missing"} grsai=${
+    } qwen=${report.keys.qwen ? "available" : "missing"} venice=${
+      report.keys.venice ? "available" : "missing"
+    } grsai=${
       report.keys.grsai ? "available" : "missing"
     } mock=available localEnv=${report.project.localEnvPresent}`
   );
@@ -386,7 +389,7 @@ async function readStdin() {
 async function ensureDeepSeekKeyForOneShot(args) {
   if (!shouldPromptForDeepSeek(args, process.cwd())) return true;
   console.log("No main model API key is configured for this project.");
-  console.log("Choose DeepSeek, OpenAI, or Qwen, then paste a key to save in `.aginti/.env` with 0600 permissions.");
+  console.log("Choose DeepSeek, OpenAI, Qwen, or Venice, then paste a key to save in `.aginti/.env` with 0600 permissions.");
   const result = await runAuthWizard(process.cwd(), { provider: args.provider || "" });
   printAuthWizardResult(result);
   if (result.saved.some((item) => item.provider !== "grsai")) {
@@ -403,9 +406,11 @@ async function handleKeyCommand(argv) {
     console.log(
       `keys: deepseek=${status.deepseek ? "available" : "missing"} openai=${
         status.openai ? "available" : "missing"
-      } qwen=${status.qwen ? "available" : "missing"} grsai=${status.grsai ? "available" : "missing"} mock=available localEnv=${status.localEnv}`
+      } qwen=${status.qwen ? "available" : "missing"} venice=${
+        status.venice ? "available" : "missing"
+      } grsai=${status.grsai ? "available" : "missing"} mock=available localEnv=${status.localEnv}`
     );
-    console.log("env vars: DeepSeek=DEEPSEEK_API_KEY or LLM_API_KEY; OpenAI=OPENAI_API_KEY or LLM_API_KEY; Qwen=QWEN_API_KEY; image=GRSAI or GRSAI_API_KEY");
+    console.log("env vars: DeepSeek=DEEPSEEK_API_KEY or LLM_API_KEY; OpenAI=OPENAI_API_KEY or LLM_API_KEY; Qwen=QWEN_API_KEY; Venice=VENICE_API_KEY; image=GRSAI or GRSAI_API_KEY");
     return;
   }
 
@@ -421,7 +426,7 @@ async function handleKeyCommand(argv) {
     return;
   }
 
-  console.error("Usage: aginti keys status OR aginti keys set deepseek|openai|qwen|grsai [--stdin]");
+  console.error("Usage: aginti keys status OR aginti keys set deepseek|openai|qwen|venice|grsai [--stdin]");
   process.exit(1);
 }
 

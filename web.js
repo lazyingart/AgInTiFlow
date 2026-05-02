@@ -6,7 +6,7 @@ import { runAgent } from "./src/agent-runner.js";
 import { resolveRuntimeConfig } from "./src/config.js";
 import { WebDatabase } from "./src/web-db.js";
 import { SessionStore } from "./src/session-store.js";
-import { getModelPresets, getProviderDefaults, normalizeRoutingMode } from "./src/model-routing.js";
+import { PROVIDER_MODEL_CATALOG, getModelPresets, getProviderDefaults, normalizeRoutingMode } from "./src/model-routing.js";
 import { listAgentWrappers, normalizeWrapperName } from "./src/tool-wrappers.js";
 import { getDockerSandboxStatus, getSandboxLogs, runDockerPreflight } from "./src/docker-sandbox.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./src/command-policy.js";
@@ -114,7 +114,7 @@ function serializeRun(run) {
 function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
   const modelPresets = getModelPresets();
   const providerCandidate = body.provider || current.provider || "deepseek";
-  const provider = ["openai", "deepseek", "qwen", "mock"].includes(providerCandidate) ? providerCandidate : "deepseek";
+  const provider = ["openai", "deepseek", "qwen", "venice", "mock"].includes(providerCandidate) ? providerCandidate : "deepseek";
   const routingMode =
     provider === "mock" ? "manual" : normalizeRoutingMode(body.routingMode || current.routingMode || "smart");
   const providerDefaults = getProviderDefaults(provider);
@@ -197,6 +197,7 @@ function publicKeyStatus(projectRoot = baseDir) {
     openai: status.openai,
     deepseek: status.deepseek,
     qwen: status.qwen,
+    venice: status.venice,
     grsai: status.grsai,
     mock: true,
     localEnv: status.localEnv,
@@ -579,10 +580,12 @@ app.get("/api/config", async (_req, res) => {
       openai: publicProviderDefault("openai"),
       deepseek: publicProviderDefault("deepseek"),
       qwen: publicProviderDefault("qwen"),
+      venice: publicProviderDefault("venice"),
       mock: publicProviderDefault("mock"),
       headless: true,
       maxSteps: 24,
     },
+    modelCatalog: PROVIDER_MODEL_CATALOG,
     taskProfiles: listTaskProfiles(),
     skills: listSkills(),
     routing: {

@@ -241,7 +241,7 @@ export async function createPlan(client, config, state) {
           config.allowAuxiliaryTools
             ? `Auxiliary skills are enabled: ${listAuxiliarySkills()
                 .map((skill) => `${skill.id} via ${skill.toolName} (${skill.available ? "key available" : `needs ${skill.keyName}`})`)
-                .join(", ")}. For raster image generation requests, plan to use generate_image when a GRSAI key is available; otherwise ask the user to run /auxilliary grsai or aginti login grsai.`
+                .join(", ")}. For raster image generation requests, plan to use generate_image when a GRSAI or Venice image key is available; otherwise ask the user to run /auxilliary grsai, aginti login grsai, or aginti login venice.`
             : "Auxiliary skills are disabled for this run.",
           config.allowWebSearch
             ? "web_search is available for current information, docs, install errors, package/toolchain questions, and source discovery. Prefer web_search over opening a search engine in the browser."
@@ -703,16 +703,21 @@ export async function requestNextStep(client, config, messages) {
       function: {
         name: "generate_image",
         description:
-          "Generate a raster image artifact through the optional GRS AI Nano Banana image-generation skill. Use for user requests that explicitly need a real image/photo/illustration/cover/poster/logo concept rather than SVG/code-native graphics. Saves prompt, redacted payload, manifest, and downloaded images in the workspace. If the GRSAI key is missing, ask the user to run /auxilliary grsai or aginti login grsai.",
+          "Generate a raster image artifact through optional GRS AI Nano Banana or Venice image-generation skills. Use for user requests that explicitly need a real image/photo/illustration/cover/poster/logo concept rather than SVG/code-native graphics. Saves prompt, redacted payload, manifest, and downloaded images in the workspace. If keys are missing, ask the user to run /auxilliary grsai, aginti login grsai, or aginti login venice.",
         parameters: {
           type: "object",
           properties: {
+            provider: {
+              type: "string",
+              enum: ["grsai", "venice"],
+              description: "Image provider. Defaults to grsai; use venice when the user selects Venice image models.",
+            },
             prompt: { type: "string", description: "Detailed image-generation prompt." },
             outputDir: { type: "string", description: "Workspace-relative output directory. Defaults to artifacts/images/<timestamp>." },
             outputStem: { type: "string", description: "Filename stem for downloaded images." },
             aspectRatio: { type: "string", description: "Aspect ratio such as 1:1, 16:9, 2:3, or 3:2." },
             imageSize: { type: "string", description: "Image size such as 1K, 2K, or 4K." },
-            model: { type: "string", description: "Image model. Defaults to nano-banana-2." },
+            model: { type: "string", description: "Image model. Defaults to nano-banana-2; Venice also supports models such as gpt-image-2, wan-2-7-text-to-image, qwen-image-2, and bria-bg-remover." },
             referenceImages: {
               type: "array",
               items: { type: "string" },

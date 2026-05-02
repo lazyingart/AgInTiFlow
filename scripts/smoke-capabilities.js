@@ -40,6 +40,7 @@ try {
   assert(Array.isArray(capabilities.platform?.setupHints), "capabilities did not report platform setup hints");
   assert(capabilities.keys?.mock === true, "capabilities did not report mock availability");
   assert(typeof capabilities.keys?.qwen === "boolean", "capabilities did not report qwen key status");
+  assert(typeof capabilities.keys?.venice === "boolean", "capabilities did not report venice key status");
   assert(
     capabilities.checks.some((check) => check.name === "npm-prefix-test-policy" && check.ok),
     "npm --prefix test policy is not allowed"

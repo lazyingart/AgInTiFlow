@@ -120,6 +120,74 @@ h1 {
   line-height: 1.45;
 }
 
+.model-catalog-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(236, 253, 245, 0.82), rgba(255, 253, 250, 0.9)),
+    #fffdfa;
+}
+
+.model-catalog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.model-catalog-head strong {
+  max-width: 70%;
+  overflow: hidden;
+  color: var(--accent);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-catalog {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.model-chip {
+  display: grid;
+  gap: 2px;
+  flex: 1 1 148px;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid rgba(15, 118, 110, 0.2);
+  border-radius: 14px;
+  background: rgba(255, 253, 250, 0.82);
+  color: var(--ink);
+  text-align: left;
+  box-shadow: none;
+}
+
+.model-chip strong,
+.model-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-chip span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.model-chip[data-active="true"] {
+  border-color: rgba(15, 118, 110, 0.72);
+  background: rgba(204, 251, 241, 0.52);
+}
+
 .project-card,
 .setup-card {
   display: grid;

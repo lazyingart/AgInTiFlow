@@ -36,7 +36,15 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     overrides.provider ||
     args.provider ||
     process.env.AGENT_PROVIDER ||
-    (process.env.DEEPSEEK_API_KEY ? "deepseek" : process.env.OPENAI_API_KEY ? "openai" : "deepseek");
+    (process.env.DEEPSEEK_API_KEY
+      ? "deepseek"
+      : process.env.OPENAI_API_KEY
+        ? "openai"
+        : process.env.QWEN_API_KEY
+          ? "qwen"
+          : process.env.VENICE_API_KEY
+            ? "venice"
+            : "deepseek");
   const routingMode = normalizeRoutingMode(overrides.routingMode || args.routingMode || process.env.AGENT_ROUTING_MODE || "smart");
   const taskProfile = normalizeTaskProfile(overrides.taskProfile || args.taskProfile || process.env.AGINTI_TASK_PROFILE || "auto");
   const route = selectModelRoute({

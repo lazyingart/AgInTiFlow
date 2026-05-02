@@ -123,6 +123,9 @@ const ALWAYS_BLOCKED_PATTERNS = [
   /_authToken\s*=/i,
   /OPENAI_API_KEY\s*=/i,
   /DEEPSEEK_API_KEY\s*=/i,
+  /QWEN_API_KEY\s*=/i,
+  /VENICE_API_KEY\s*=/i,
+  /GRSAI(?:_API_KEY)?\s*=/i,
 ];
 
 const SENSITIVE_COMMAND_PATTERNS = [

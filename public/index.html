@@ -45,16 +45,18 @@
           <div>
             <strong data-i18n="setupTitle">Provider setup</strong>
             <p class="subtle" data-i18n="setupHelp">
-              DeepSeek/OpenAI keys are missing. Use mock mode, export an env var, or save a project-local DeepSeek key.
+              DeepSeek/OpenAI/Qwen/Venice keys are missing. Use mock mode, export an env var, or save a project-local key.
             </p>
             <p class="subtle" data-i18n="setupEnvHelp">
-              Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, QWEN_API_KEY, or LLM_API_KEY. Mock mode remains available for local tests.
+              Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, QWEN_API_KEY, VENICE_API_KEY, or LLM_API_KEY. Mock mode remains available for local tests.
             </p>
             <p class="subtle key-links">
               <span data-i18n="setupKeyLinksLabel">Get keys:</span>
               <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer" data-i18n="deepseekKeyLink">DeepSeek API keys</a>
               <span aria-hidden="true">·</span>
               <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer" data-i18n="openaiKeyLink">OpenAI API keys</a>
+              <span aria-hidden="true">·</span>
+              <a href="https://venice.ai" target="_blank" rel="noreferrer">Venice API</a>
             </p>
           </div>
           <div class="grid">
@@ -64,6 +66,7 @@
                 <option value="deepseek">DeepSeek</option>
                 <option value="openai">OpenAI</option>
                 <option value="qwen">Qwen</option>
+                <option value="venice">Venice</option>
                 <option value="grsai">GRS AI image</option>
               </select>
             </label>
@@ -96,18 +99,27 @@
               <option value="deepseek">DeepSeek</option>
               <option value="openai">OpenAI</option>
               <option value="qwen">Qwen</option>
+              <option value="venice">Venice</option>
               <option value="mock" data-i18n="mockProviderOption">Mock local</option>
             </select>
             </label>
 
             <label>
               <span data-i18n="modelLabel">Model</span>
-              <input id="model" name="model" type="text" value="deepseek-v4-flash" />
+              <input id="model" name="model" type="text" list="model-options" value="deepseek-v4-flash" />
+              <datalist id="model-options"></datalist>
             </label>
           </div>
 
           <p id="routing-hint" class="subtle route-hint"></p>
           <p id="model-route-status" class="subtle route-hint"></p>
+          <section class="model-catalog-panel" aria-label="Model catalog">
+            <div class="model-catalog-head">
+              <span>Route</span>
+              <strong id="model-route-pill">DeepSeek flash/pro</strong>
+            </div>
+            <div id="model-catalog" class="model-catalog"></div>
+          </section>
 
           <label>
             <span data-i18n="taskProfileLabel">Task profile</span>

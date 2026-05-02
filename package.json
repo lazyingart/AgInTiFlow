@@ -1,8 +1,8 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.17.6",
+  "version": "0.18.0",
   "type": "module",
-  "description": "AgInTiFlow is a resumable Playwright website-control agent with OpenAI-compatible tool calling.",
+  "description": "AgInTiFlow is a web-first coding agent and CLI with DeepSeek routing, sandboxed tools, model providers, canvas artifacts, and optional wrappers.",
   "license": "Apache-2.0",
   "homepage": "https://flow.lazying.art",
   "repository": {
@@ -18,6 +18,9 @@
     "browser",
     "playwright",
     "deepseek",
+    "venice",
+    "openai",
+    "qwen",
     "sandbox",
     "cli"
   ],
@@ -38,6 +41,8 @@
     "logos/banner-opaque.png",
     "logos/logo.png",
     "public/",
+    "references/*.md",
+    "references/run_design_scan.sh",
     "scripts/install-docker-ubuntu.sh",
     "scripts/setup-agent-toolchain-docker.sh",
     "scripts/real-deepseek-capabilities.js",

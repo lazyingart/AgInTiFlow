@@ -17,6 +17,16 @@ const LOCAL_ENV_KEYS = new Set([
   "DEEPSEEK_PRO_MODEL",
   "OPENAI_DEFAULT_MODEL",
   "QWEN_API_KEY",
+  "QWEN_DEFAULT_MODEL",
+  "QWEN_BASE_URL",
+  "VENICE_API_KEY",
+  "VENICE_API_BASE",
+  "VENICE_BASE_URL",
+  "VENICE_MODEL",
+  "VENICE_DEFAULT_MODEL",
+  "VENICE_CHAT_ENDPOINT",
+  "VENICE_TIMEOUT_SECONDS",
+  "VENICE_IMAGE_MODEL",
   "GRSAI",
   "GRSAI_API_KEY",
 ]);
@@ -25,6 +35,7 @@ const PROVIDER_KEY_CANDIDATES = {
   openai: ["OPENAI_API_KEY", "LLM_API_KEY"],
   deepseek: ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
   qwen: ["QWEN_API_KEY"],
+  venice: ["VENICE_API_KEY"],
   grsai: ["GRSAI", "GRSAI_API_KEY"],
 };
 
@@ -216,6 +227,12 @@ export async function initProject(projectRoot = process.cwd()) {
       "# Copy values into .aginti/.env. Never commit real secrets.",
       "DEEPSEEK_API_KEY=",
       "OPENAI_API_KEY=",
+      "QWEN_API_KEY=",
+      "VENICE_API_KEY=",
+      "VENICE_API_BASE=https://api.venice.ai/api/v1",
+      "VENICE_CHAT_ENDPOINT=/chat/completions",
+      "VENICE_MODEL=venice-uncensored-1-2",
+      "VENICE_IMAGE_MODEL=nano-banana-2",
       "GRSAI=",
       "DEEPSEEK_FAST_MODEL=deepseek-v4-flash",
       "DEEPSEEK_PRO_MODEL=deepseek-v4-pro",
@@ -262,6 +279,7 @@ export function providerKeyStatus(projectRoot = process.cwd()) {
     openai: Boolean(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY),
     deepseek: Boolean(process.env.DEEPSEEK_API_KEY || process.env.LLM_API_KEY),
     qwen: Boolean(process.env.QWEN_API_KEY),
+    venice: Boolean(process.env.VENICE_API_KEY),
     grsai: Boolean(process.env.GRSAI || process.env.GRSAI_API_KEY),
     mock: true,
     localEnv: env.loaded,
@@ -270,6 +288,7 @@ export function providerKeyStatus(projectRoot = process.cwd()) {
       openai: ["OPENAI_API_KEY", "LLM_API_KEY"],
       deepseek: ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
       qwen: ["QWEN_API_KEY"],
+      venice: ["VENICE_API_KEY"],
       grsai: ["GRSAI", "GRSAI_API_KEY"],
     },
   };
@@ -290,6 +309,8 @@ export function providerKeyPreview(projectRoot = process.cwd(), provider = "") {
     auxilliary: "grsai",
     image: "grsai",
     imagegen: "grsai",
+    v: "venice",
+    venice: "venice",
   };
   const canonical = aliases[normalized] || normalized;
   const keys = PROVIDER_KEY_CANDIDATES[canonical] || [];
@@ -321,6 +342,8 @@ export async function setProviderKey(projectRoot, provider, value) {
     auxilliary: "grsai",
     image: "grsai",
     imagegen: "grsai",
+    v: "venice",
+    venice: "venice",
   };
   const canonicalProvider = aliases[normalizedProvider] || normalizedProvider;
   const keyName =
@@ -328,11 +351,13 @@ export async function setProviderKey(projectRoot, provider, value) {
       ? "OPENAI_API_KEY"
       : canonicalProvider === "qwen"
         ? "QWEN_API_KEY"
-        : canonicalProvider === "grsai"
-          ? "GRSAI"
-          : "DEEPSEEK_API_KEY";
-  if (!["deepseek", "openai", "qwen", "grsai"].includes(canonicalProvider)) {
-    throw new Error("Provider must be deepseek, openai, qwen, or grsai.");
+        : canonicalProvider === "venice"
+          ? "VENICE_API_KEY"
+          : canonicalProvider === "grsai"
+            ? "GRSAI"
+            : "DEEPSEEK_API_KEY";
+  if (!["deepseek", "openai", "qwen", "venice", "grsai"].includes(canonicalProvider)) {
+    throw new Error("Provider must be deepseek, openai, qwen, venice, or grsai.");
   }
 
   const keyValue = String(value || "").trim();
@@ -475,6 +500,7 @@ export async function doctorReport(projectRoot, packageVersion, config) {
       openai: keyStatus.openai,
       deepseek: keyStatus.deepseek,
       qwen: keyStatus.qwen,
+      venice: keyStatus.venice,
       grsai: keyStatus.grsai,
       mock: true,
     },

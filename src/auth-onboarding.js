@@ -42,6 +42,13 @@ export const MAIN_AUTH_PROVIDERS = [
     keyName: "QWEN_API_KEY",
     description: "Qwen OpenAI-compatible route",
   },
+  {
+    id: "venice",
+    label: "Venice",
+    keyName: "VENICE_API_KEY",
+    description: "Venice OpenAI-compatible text and image routes",
+    keyUrl: "https://venice.ai",
+  },
 ];
 
 const AUXILIARY_AUTH_PROVIDER = {
@@ -62,11 +69,13 @@ const AUTH_ALIASES = {
   ds: "deepseek",
   openai: "openai",
   qwen: "qwen",
+  venice: "venice",
+  v: "venice",
 };
 
 export function normalizeAuthProvider(provider = "", fallback = "deepseek") {
   const normalized = AUTH_ALIASES[String(provider || "").trim().toLowerCase()] || String(provider || "").trim().toLowerCase();
-  return ["deepseek", "openai", "qwen", "grsai"].includes(normalized) ? normalized : fallback;
+  return ["deepseek", "openai", "qwen", "venice", "grsai"].includes(normalized) ? normalized : fallback;
 }
 
 function providerLabel(provider = "") {
@@ -386,11 +395,11 @@ export async function chooseAuthProvider({
 
 export function shouldPromptForDeepSeek(args = {}, projectRoot = process.cwd()) {
   const provider = String(args.provider || "").toLowerCase();
-  if (provider === "mock" || provider === "openai" || provider === "qwen") return false;
+  if (provider === "mock" || provider === "openai" || provider === "qwen" || provider === "venice") return false;
   if (process.env.AGINTIFLOW_NO_AUTH_PROMPT === "1") return false;
   if (!input.isTTY || !output.isTTY) return false;
   const status = providerKeyStatus(projectRoot);
-  return !status.deepseek && !status.openai && !status.qwen;
+  return !status.deepseek && !status.openai && !status.qwen && !status.venice;
 }
 
 export async function promptAndSaveDeepSeekKey(projectRoot = process.cwd(), options = {}) {
@@ -412,7 +421,7 @@ export async function runAuthWizard(projectRoot = process.cwd(), options = {}) {
   const status = providerKeyStatus(projectRoot);
   const initialProvider = normalizeAuthProvider(options.provider || options.initialProvider || "deepseek", "deepseek");
   const directProvider =
-    options.provider && ["deepseek", "openai", "qwen", "grsai"].includes(normalizeAuthProvider(options.provider, ""))
+    options.provider && ["deepseek", "openai", "qwen", "venice", "grsai"].includes(normalizeAuthProvider(options.provider, ""))
       ? normalizeAuthProvider(options.provider)
       : "";
   const mainProvider =

@@ -556,8 +556,8 @@ function printHelp() {
       "Commands:",
       "  /help                     Show this help.",
       "  /status                   Show active route, workspace, sandbox, and session.",
-      "  /login [deepseek|openai|qwen|grsai]  Pick, paste, and save project-local API keys.",
-      "  /auth [deepseek|openai|qwen|grsai]   Alias for /login.",
+      "  /login [deepseek|openai|qwen|venice|grsai]  Pick, paste, and save project-local API keys.",
+      "  /auth [deepseek|openai|qwen|venice|grsai]   Alias for /login.",
       "  /instructions             Show AGINTI.md project instructions status.",
       "  /memory                   Alias for /instructions.",
       "  /auxilliary [status|grsai|on|off|image]",
@@ -570,7 +570,7 @@ function printHelp() {
       "  /web-search on|off        Enable or disable the web_search tool.",
       "  /scouts on|off|<1-10>     Enable parallel DeepSeek scouts and set scout count.",
       "  /routing <mode>           Set routing: smart, fast, complex, manual.",
-      "  /provider <name>          Set provider: deepseek, openai, qwen, mock.",
+      "  /provider <name>          Set provider: deepseek, openai, qwen, venice, mock.",
       "  /model <name>             Set an explicit model, or /model auto.",
       "  /docker on                Use docker-workspace with approved package installs.",
       "  /docker off               Use host shell policy.",
@@ -1509,7 +1509,7 @@ async function maybeOnboardDeepSeekKey(state) {
   state.provider = "mock";
   state.routingMode = "manual";
   state.model = "mock-agent";
-  printAgentMessage("No main key saved. Continuing in local mock mode. Use `/auth` later to save DeepSeek, OpenAI, or Qwen.");
+  printAgentMessage("No main key saved. Continuing in local mock mode. Use `/auth` later to save DeepSeek, OpenAI, Qwen, or Venice.");
 }
 
 function applyAuthWizardResult(result, state = null) {
@@ -1553,7 +1553,7 @@ async function handleCommand(line, state, packageDir) {
     printSystemLine(
       `keys deepseek=${keys.deepseek ? "available" : "missing"} openai=${keys.openai ? "available" : "missing"} grsai=${
         keys.grsai ? "available" : "missing"
-      } qwen=${keys.qwen ? "available" : "missing"}`
+      } qwen=${keys.qwen ? "available" : "missing"} venice=${keys.venice ? "available" : "missing"}`
     );
     return true;
   }

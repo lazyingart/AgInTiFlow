@@ -5,7 +5,9 @@ import { redactSensitiveText } from "./redaction.js";
 import { checkWorkspaceToolUse, resolveWorkspacePath } from "./workspace-tools.js";
 
 const DEFAULT_GRS_HOST = "https://grsaiapi.com";
+const DEFAULT_VENICE_BASE = "https://api.venice.ai/api/v1";
 const DEFAULT_IMAGE_MODEL = "nano-banana-2";
+const DEFAULT_VENICE_IMAGE_MODEL = "nano-banana-2";
 const DEFAULT_ASPECT_RATIO = "1:1";
 const DEFAULT_IMAGE_SIZE = "2K";
 const TRANSIENT_HTTP_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -21,6 +23,15 @@ export const AUXILIARY_SKILLS = [
     toolName: "generate_image",
     description:
       "Generate raster image artifacts through GRS AI Nano Banana, save the manifest and image files in the workspace, then send selected results to the canvas.",
+  },
+  {
+    id: "venice_image_generation",
+    label: "Venice image generation",
+    provider: "venice",
+    keyName: "VENICE_API_KEY",
+    toolName: "generate_image",
+    description:
+      "Generate raster image artifacts through Venice image models, save the manifest and image files in the workspace, then send selected results to the canvas.",
   },
 ];
 
@@ -44,6 +55,17 @@ function normalizeAspectRatio(value) {
 function normalizeImageSize(value) {
   const text = String(value || DEFAULT_IMAGE_SIZE).trim();
   return /^(?:1K|2K|4K|1024x1024|1024x1536|1536x1024)$/i.test(text) ? text : DEFAULT_IMAGE_SIZE;
+}
+
+function dimensionsForImage(aspectRatio, imageSize) {
+  const explicit = String(imageSize || "").match(/^(\d{3,5})x(\d{3,5})$/i);
+  if (explicit) return { width: Number(explicit[1]), height: Number(explicit[2]) };
+  const longSide = String(imageSize || "").toUpperCase() === "4K" ? 4096 : String(imageSize || "").toUpperCase() === "2K" ? 2048 : 1024;
+  const [w = 1, h = 1] = normalizeAspectRatio(aspectRatio)
+    .split(":")
+    .map((part) => Math.max(Number(part) || 1, 1));
+  if (w >= h) return { width: longSide, height: Math.max(256, Math.round((longSide * h) / w)) };
+  return { width: Math.max(256, Math.round((longSide * w) / h)), height: longSide };
 }
 
 function hashBuffer(buffer) {
@@ -96,10 +118,14 @@ function grsaiKey() {
   return String(process.env.GRSAI || process.env.GRSAI_API_KEY || "").trim();
 }
 
+function veniceKey() {
+  return String(process.env.VENICE_API_KEY || "").trim();
+}
+
 export function listAuxiliarySkills() {
   return AUXILIARY_SKILLS.map((skill) => ({
     ...skill,
-    available: skill.provider === "grsai" ? Boolean(grsaiKey()) : false,
+    available: skill.provider === "grsai" ? Boolean(grsaiKey()) : skill.provider === "venice" ? Boolean(veniceKey()) : false,
   }));
 }
 
@@ -193,10 +219,102 @@ async function downloadImage(url, destination) {
   };
 }
 
+async function writeBase64Image(image, destination) {
+  const raw = String(image || "").replace(/^data:image\/[a-z0-9.+-]+;base64,/i, "");
+  const buffer = Buffer.from(raw, "base64");
+  if (buffer.length === 0) throw new Error("Image API returned an empty image payload.");
+  await fs.writeFile(destination, buffer);
+  return {
+    bytes: buffer.length,
+    sha256: hashBuffer(buffer),
+  };
+}
+
 function resultUrls(payload) {
   const data = payload.data || payload;
   const results = Array.isArray(data.results) ? data.results : [];
   return results.map((item) => item?.url).filter(Boolean);
+}
+
+function normalizeImageProvider(value = "") {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["venice", "venice-ai", "veniceai"].includes(normalized)) return "venice";
+  return "grsai";
+}
+
+function veniceBaseUrl(value = "") {
+  return String(value || process.env.VENICE_API_BASE || process.env.VENICE_BASE_URL || DEFAULT_VENICE_BASE)
+    .trim()
+    .replace(/\/+$/, "");
+}
+
+async function generateVeniceImages({ prompt, args, target, outputStem, manifest, manifestPath }) {
+  const apiKey = veniceKey();
+  if (!apiKey) {
+    throw new Error("Missing VENICE_API_KEY. Run `aginti login venice` or `aginti keys set venice --stdin`.");
+  }
+
+  const model = String(args.model || process.env.VENICE_IMAGE_MODEL || DEFAULT_VENICE_IMAGE_MODEL).trim() || DEFAULT_VENICE_IMAGE_MODEL;
+  const format = String(args.format || "png").trim().toLowerCase() === "webp" ? "webp" : "png";
+  const dimensions = dimensionsForImage(args.aspectRatio, normalizeImageSize(args.imageSize));
+  const payload = {
+    model,
+    prompt,
+    width: dimensions.width,
+    height: dimensions.height,
+    format,
+    return_binary: false,
+    variants: 1,
+    safe_mode: args.safeMode !== false,
+  };
+  const requestPath = path.join(target.absolutePath, "request_payload.redacted.json");
+  await writeJson(requestPath, payload);
+
+  const base = veniceBaseUrl(args.host);
+  const resultPayload = await requestJson(`${base}/image/generate`, payload, apiKey, {
+    timeoutMs: Number(args.requestTimeoutMs) || 300000,
+    retries: 2,
+  });
+  await writeJson(path.join(target.absolutePath, "venice_result_response.json"), {
+    id: resultPayload.id || "",
+    images: Array.isArray(resultPayload.images) ? resultPayload.images.map((image) => `<base64 length=${String(image || "").length}>`) : [],
+    timing: resultPayload.timing || {},
+  });
+
+  const images = Array.isArray(resultPayload.images) ? resultPayload.images : [];
+  if (images.length === 0) throw new Error("Venice image API succeeded but returned no images.");
+  const imagePaths = [];
+  const downloads = [];
+  for (let index = 0; index < images.length; index += 1) {
+    const filename = images.length === 1 ? `${outputStem}.${format}` : `${outputStem}_${String(index + 1).padStart(2, "0")}.${format}`;
+    const absolutePath = path.join(target.absolutePath, filename);
+    const info = await writeBase64Image(images[index], absolutePath);
+    const relativePath = path.posix.join(target.relativePath, filename);
+    imagePaths.push(relativePath);
+    downloads.push({ path: relativePath, ...info });
+  }
+
+  manifest.provider = "venice";
+  manifest.host = base;
+  manifest.model = model;
+  manifest.status = "succeeded";
+  manifest.finishedAt = new Date().toISOString();
+  manifest.downloadedFiles = downloads;
+  if (resultPayload.id) manifest.taskId = String(resultPayload.id);
+  await writeJson(manifestPath, manifest);
+
+  return {
+    ok: true,
+    toolName: "generate_image",
+    provider: "venice",
+    path: imagePaths[0] || target.relativePath,
+    imagePaths,
+    manifestPath: path.posix.join(target.relativePath, "task_manifest.json"),
+    promptPath: path.posix.join(target.relativePath, "prompt.txt"),
+    requestPayloadPath: path.posix.join(target.relativePath, "request_payload.redacted.json"),
+    taskId: resultPayload.id ? String(resultPayload.id) : "",
+    summary: `${imagePaths.length} image(s) generated through Venice`,
+  };
 }
 
 export async function generateImage(args = {}, config = {}) {
@@ -225,8 +343,12 @@ export async function generateImage(args = {}, config = {}) {
     if (converted.url) references.push(converted);
   }
 
-  const host = String(args.host || DEFAULT_GRS_HOST).trim().replace(/\/+$/, "") || DEFAULT_GRS_HOST;
-  const model = String(args.model || DEFAULT_IMAGE_MODEL).trim() || DEFAULT_IMAGE_MODEL;
+  const provider = normalizeImageProvider(args.provider || "");
+  const host = provider === "venice" ? veniceBaseUrl(args.host) : String(args.host || DEFAULT_GRS_HOST).trim().replace(/\/+$/, "") || DEFAULT_GRS_HOST;
+  const model =
+    provider === "venice"
+      ? String(args.model || process.env.VENICE_IMAGE_MODEL || DEFAULT_VENICE_IMAGE_MODEL).trim() || DEFAULT_VENICE_IMAGE_MODEL
+      : String(args.model || DEFAULT_IMAGE_MODEL).trim() || DEFAULT_IMAGE_MODEL;
   const outputStem = safeStem(args.outputStem || "image");
   const payload = {
     model,
@@ -248,7 +370,7 @@ export async function generateImage(args = {}, config = {}) {
 
   const manifest = {
     tool: "generate_image",
-    provider: "grsai",
+    provider,
     host,
     model,
     outputDir: target.relativePath,
@@ -264,6 +386,7 @@ export async function generateImage(args = {}, config = {}) {
       ok: true,
       dryRun: true,
       toolName: "generate_image",
+      provider,
       path: target.relativePath,
       manifestPath: path.posix.join(target.relativePath, "task_manifest.json"),
       promptPath: path.posix.join(target.relativePath, "prompt.txt"),
@@ -271,6 +394,10 @@ export async function generateImage(args = {}, config = {}) {
       imagePaths: [],
       summary: "Prepared redacted image-generation payload without calling the provider.",
     };
+  }
+
+  if (provider === "venice") {
+    return generateVeniceImages({ prompt, args, target, outputStem, manifest, manifestPath });
   }
 
   const apiKey = grsaiKey();
