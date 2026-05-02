@@ -227,7 +227,7 @@ export async function createPlan(client, config, state) {
             ? `Shell tool is enabled in ${config.commandCwd}. Host platform: ${platformLabel(platform)}. In Docker, this path is mounted as /workspace with persistent /aginti-env and /aginti-cache mounts. Use relative paths or /workspace paths, not absolute host temp paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}. For npm/pip/conda/venv setup, explain the need and wait for approval unless policy is allow. On native Windows host mode, prefer PowerShell/cmd-compatible commands or WSL/Docker for bash-like toolchains.`
             : "",
           config.allowShellTool
-            ? "Host tmux tools are enabled for long-running sessions. Plan to use tmux_start_session for durable jobs, tmux_capture_pane to monitor, tmux_send_keys to interact after capture, and tmux_list_sessions to discover existing sessions."
+            ? "Host tmux tools are enabled for long-running sessions. Plan to use tmux_start_session for durable jobs, tmux_capture_pane to monitor, tmux_send_keys to interact after capture, and tmux_list_sessions to discover existing sessions. Do not install or run tmux inside Docker run_command containers; those containers are short-lived and cannot preserve tmux servers."
             : "",
           config.allowFileTools
             ? `Workspace file tools are enabled in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, preview_workspace. For large or unfamiliar repos, plan to call inspect_project first, then search/read AGINTI.md/AGENTS.md/README/manifests and exact files. apply_patch supports exact single-file replacements and Codex-style/unified multi-file patches; prefer it for edits after reading relevant context. Keep all paths workspace-relative, for example plot_fx.svg or docs/report.tex, and avoid secrets. For generated local HTML/SVG/PDF/static sites, plan to use open_workspace_file or preview_workspace rather than starting a localhost server inside Docker.`
@@ -468,7 +468,7 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "tmux_list_sessions",
           description:
-            "List host tmux sessions and panes. Use this to discover long-running terminals, agent sessions, dev servers, or jobs before interacting with them. tmux tools run host-side even when command execution is Docker-sandboxed.",
+            "List durable host tmux sessions and panes. Use this to discover long-running terminals, agent sessions, dev servers, or jobs before interacting with them. tmux tools run host-side even when command execution is Docker-sandboxed; do not use run_command to start tmux inside an ephemeral Docker container.",
           parameters: {
             type: "object",
             properties: {
@@ -483,7 +483,7 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "tmux_capture_pane",
           description:
-            "Capture recent text from a host tmux pane by target such as session:0.0. Use this to monitor progress or inspect a long-running job without interrupting it.",
+            "Capture recent text from a durable host tmux pane by target such as session:0.0. Use this to monitor progress or inspect a long-running job without interrupting it.",
           parameters: {
             type: "object",
             properties: {
@@ -500,7 +500,7 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "tmux_send_keys",
           description:
-            "Send literal text and/or safe control keys to a host tmux pane. Use for interacting with known shells or agent sessions after capturing context. Do not send secrets, passwords, sudo passwords, or destructive commands.",
+            "Send literal text and/or safe control keys to a durable host tmux pane. Use for interacting with known shells or agent sessions after capturing context. Do not send secrets, passwords, sudo passwords, or destructive commands.",
           parameters: {
             type: "object",
             properties: {
@@ -526,7 +526,7 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "tmux_start_session",
           description:
-            "Start a detached host tmux session rooted inside the workspace, optionally with a startup command. Use for long-running local jobs that should be monitored with tmux_capture_pane instead of blocking the agent.",
+            "Start a detached durable host tmux session rooted inside the workspace, optionally with a startup command. Use for long-running local jobs that should be monitored with tmux_capture_pane instead of blocking the agent. This is the correct tmux path in Docker mode because run_command containers are ephemeral.",
           parameters: {
             type: "object",
             properties: {

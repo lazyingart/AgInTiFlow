@@ -9,6 +9,7 @@ const translations = {
     primaryNavAria: "Primary navigation",
     navScreenshots: "Screenshots",
     navPlatform: "Platform",
+    navDocs: "Docs",
     navSafety: "Safety",
     navLaunch: "Launch Web UI",
     languageLabel: "Language",
@@ -64,6 +65,10 @@ const translations = {
     featureFilesText: "List, read, search, write, and patch workspace files with path guardrails, hashes, and compact diffs.",
     featureMockTitle: "Mock mode",
     featureMockText: "Local mock routing verifies UI, API, tool execution, and CI smoke paths without DeepSeek or OpenAI credentials.",
+    docsEyebrow: "Runtime documentation",
+    docsTitle: "Choose the right execution mode for the job.",
+    docsText:
+      "AgInTiFlow documents Docker sandboxing, host full-access mode, durable tmux sessions, package installs, and rolling-plan autonomy as first-class product behavior.",
     safetyEyebrow: "Safety model",
     safetyTitle: "Useful automation with explicit boundaries.",
     safetyText:

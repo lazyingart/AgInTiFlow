@@ -308,7 +308,7 @@ async function createInitialState(config, sessionId) {
               : `A host shell command tool is available under the configured trust policy on ${platformLabel(platform)}. On native Windows, prefer PowerShell/cmd-compatible commands or switch to WSL/Docker for bash-like toolchains.`
             : "No shell command tool is available.",
           config.allowShellTool
-            ? "Host tmux tools are available for long-running terminals: list sessions, capture panes, send safe keys/text, and start detached sessions. Prefer tmux for monitoring long installs/tests/dev servers without blocking; capture before sending input and never send secrets or sudo passwords."
+            ? "Host tmux tools are available for long-running terminals: list sessions, capture panes, send safe keys/text, and start detached sessions. Prefer these tools for monitoring long installs/tests/dev servers without blocking; capture before sending input and never send secrets or sudo passwords. Do not start or install tmux inside Docker run_command containers because those containers are short-lived."
             : "",
           config.allowFileTools
             ? `Workspace file tools are available in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, and preview_workspace. For large or unfamiliar repositories, call inspect_project first, then search/read AGINTI.md/AGENTS.md/README/manifests as relevant before editing. apply_patch supports exact single-file replacements plus Codex-style/unified multi-file patches; prefer it for source edits after reading/searching the relevant context. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. Secret paths, .git internals, node_modules writes, and huge files are blocked. For generated local websites/pages, use open_workspace_file or preview_workspace instead of starting a localhost server inside Docker.`
@@ -339,6 +339,7 @@ async function createInitialState(config, sessionId) {
           "For research or web-search tasks, use browser tools or safe shell network tools when the current policy allows; cite or save useful sources in workspace notes when the task needs traceability.",
           "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files.",
           "For environment or system-maintenance work, use the configured sandbox and package policy; Docker workspace mode is the preferred place for installs and toolchain setup.",
+          "For long-running work, create a durable checkpoint or artifact at each completed phase, then continue with the next concrete phase until the requested outcome is actually complete or blocked by a real dependency.",
           "If the user asks to open a generated local website or file, use open_workspace_file for a file or preview_workspace for a static site. Do not keep retrying the same localhost URL when a preview fails.",
           "Docker language/toolchain installs should prefer /aginti-env or project files so they persist across runs; apt/apk changes are ephemeral unless the image is rebuilt.",
           "If the run is close to the max-step limit, finish with the best complete artifact and honest limitations instead of starting a new approach.",
@@ -702,7 +703,7 @@ async function captureSyntheticSnapshot(store, step, config) {
           : `Shell tool available in: ${config.commandCwd} on ${platformLabel(platform)}. Use OS-compatible commands; prefer WSL/Docker for bash-heavy workflows on Windows.`
         : "Shell tool disabled.",
       config.allowShellTool
-        ? "Host tmux tools available: tmux_list_sessions, tmux_capture_pane, tmux_send_keys, tmux_start_session. Use them for long-running jobs and agent terminals; capture before sending input."
+        ? "Host tmux tools available: tmux_list_sessions, tmux_capture_pane, tmux_send_keys, tmux_start_session. Use them for long-running jobs and agent terminals; capture before sending input. Docker run_command containers are ephemeral, so tmux there will not persist."
         : "",
       config.allowFileTools
         ? `Workspace file tools available in: ${config.commandCwd}. Use inspect_project first for large or unfamiliar codebases, then search/read exact files before editing. Use workspace-relative paths. Use apply_patch for code edits; it supports exact single-file replacement and multi-file Codex-style/unified patches.`

@@ -32,6 +32,16 @@ The landing page supports the same languages as the project README set:
 
 Translations live in `app.js` and are applied through `data-i18n`, `data-i18n-aria`, and `data-i18n-alt` attributes in `index.html`. The language dropdown is in the top-right header and stores the user preference in `localStorage`.
 
+## Documentation Section
+
+The landing page includes a docs section linking to the maintained source-of-truth Markdown files in `docs/`, especially:
+
+- `docs/runtime-modes-and-autonomy.md`: Docker, host access, tmux, package persistence, and long-running autonomy.
+- `docs/agent-runtime-pipe.md`: CLI/web shared sessions, inbox messages, queues, and stop/resume behavior.
+- `docs/large-codebase-engineering.md`: codebase maps, scout blackboards, patch loops, and verification.
+
+When runtime behavior changes, update the Markdown doc first, then keep the website section as a concise entry point.
+
 ## Regenerate Screenshots
 
 The screenshots are captured from the live AgInTiFlow app, usually the `agintiflow` tmux session at `http://127.0.0.1:3210/`.

@@ -19,14 +19,16 @@ tools:
 ---
 # Tmux Session Control
 
-Use tmux tools for work that should keep running while the agent remains responsive: installs, builds, tests, dev servers, external agents, and monitored shells.
+Use host tmux tools for work that should keep running while the agent remains responsive: installs, builds, tests, dev servers, external agents, and monitored shells.
+
+Important runtime distinction: `run_command` in Docker mode runs a short-lived `docker run --rm` container. A tmux server created there dies when that command exits. Do not install or start tmux inside Docker command containers for persistent sessions. Use the host-side tmux tools instead.
 
 Workflow:
 
 1. Discover with `tmux_list_sessions` unless the user gave an exact target.
 2. Capture with `tmux_capture_pane` before sending input so context is current.
-3. Use `tmux_start_session` for new durable jobs rooted in the workspace.
+3. Use `tmux_start_session` for new durable host jobs rooted in the workspace.
 4. Use `tmux_send_keys` sparingly and never send secrets, sudo passwords, destructive commands, or unreviewed pasted scripts.
 5. For long commands, capture progress periodically and summarize the latest useful lines instead of flooding the chat.
 
-If a package or sudo install is missing, report the exact command and whether it should run in Docker, host, or a user-owned tmux session.
+If host tmux is unavailable, report that limitation and suggest installing tmux on the host or using a future persistent service-container mode. If a package or sudo install is missing, report the exact command and whether it should run in Docker, host, or a user-owned tmux session.

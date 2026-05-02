@@ -38,6 +38,17 @@ function isTransientDockerPreviewCommand(command) {
   );
 }
 
+function isDockerTmuxProcessCommand(command = "") {
+  return [
+    /^tmux\b/i,
+    /^(?:sudo\s+)?apt(?:-get)?\s+install\b.*\btmux\b/i,
+    /^(?:sudo\s+)?(?:dnf|yum)\s+install\b.*\btmux\b/i,
+    /^apk\s+add\b.*\btmux\b/i,
+    /^brew\s+install\b.*\btmux\b/i,
+    /^(curl|wget)\b.*\btmux\b/i,
+  ].some((pattern) => pattern.test(command));
+}
+
 function normalizeDomain(hostname) {
   return hostname.replace(/^www\./, "").toLowerCase();
 }
@@ -126,6 +137,14 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
 
   if (toolName === "run_command") {
     const command = String(args.command || "").trim();
+    if (config.useDockerSandbox && isDockerTmuxProcessCommand(command)) {
+      return {
+        allowed: false,
+        reason:
+          "Docker run_command containers are short-lived, so tmux started there cannot persist. Use host tmux tools: tmux_start_session, tmux_capture_pane, tmux_send_keys, or tmux_list_sessions.",
+        category: "tmux",
+      };
+    }
     if (config.useDockerSandbox && isTransientDockerPreviewCommand(command)) {
       return {
         allowed: false,

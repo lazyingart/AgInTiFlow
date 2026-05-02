@@ -27,9 +27,24 @@ AgInTiFlow should become a practical coding agent, not only a chat UI around a m
 6. Patch review loop: before finalizing large edits, run a cheap reviewer scout over diffs, risks, and missing tests.
 7. Dependency doctor: detect toolchain gaps and propose Docker/project-local setup before touching host installs.
 8. Release assistant: status, diff, changelog, version bump, pack, publish, push, and rollback notes as a reusable workflow.
+9. Rolling autonomy loop: replan by phase, gate each phase with a check, checkpoint artifacts/diffs, and continue until the requested outcome is complete or genuinely blocked.
+10. Persistent service containers: add a project-scoped long-running container mode for durable tmux/dev-server/language-server processes while preserving Docker isolation.
 
 ## Swarm Design
 
 Scouts must not become noisy subagents. Each scout gets the same bounded context pack generated from the durable codebase map and one role. The coordinator produces a Swarm Board with shared context, execution order, disagreements, must-read files, checks, and stop conditions. The main agent still owns tool use and must re-read exact files before editing.
 
 Use 3 scouts for medium tasks, 5 for large tasks, and up to 10 for complex multi-language or system tasks. More scouts are only useful when their roles cover different failure modes.
+
+## Long-Running Work
+
+The agent should not stop merely because the first plan was exhausted. It should maintain a rolling phase loop:
+
+1. Inspect the current project state.
+2. Pick the next concrete milestone.
+3. Execute with tools.
+4. Run the narrowest useful check.
+5. Save a checkpoint event, artifact, or diff.
+6. Replan from the new state.
+
+The loop ends only when the requested outcome is complete, the user interrupts, or a real dependency blocks progress. This avoids giant brittle plans while still supporting long autonomous work.

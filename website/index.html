@@ -21,6 +21,7 @@
         <nav aria-label="Primary navigation" data-i18n-aria="primaryNavAria">
           <a href="#screenshots" data-i18n="navScreenshots">Screenshots</a>
           <a href="#platform" data-i18n="navPlatform">Platform</a>
+          <a href="#docs" data-i18n="navDocs">Docs</a>
           <a href="#safety" data-i18n="navSafety">Safety</a>
           <a class="nav-pill" href="http://127.0.0.1:3210/" data-i18n="navLaunch">Launch Web UI</a>
         </nav>
@@ -174,6 +175,33 @@
             <h3 data-i18n="featureMockTitle">Mock mode</h3>
             <p data-i18n="featureMockText">Local mock routing verifies UI, API, tool execution, and CI smoke paths without DeepSeek or OpenAI credentials.</p>
           </article>
+        </div>
+      </section>
+
+      <section id="docs" class="docs section-shell">
+        <div class="section-heading compact">
+          <p class="eyebrow" data-i18n="docsEyebrow">Runtime documentation</p>
+          <h2 data-i18n="docsTitle">Choose the right execution mode for the job.</h2>
+          <p data-i18n="docsText">
+            AgInTiFlow documents Docker sandboxing, host full-access mode, durable tmux sessions, package installs, and rolling-plan autonomy as first-class product behavior.
+          </p>
+        </div>
+        <div class="docs-grid">
+          <a href="https://github.com/lazyingart/AgInTiFlow/blob/main/docs/runtime-modes-and-autonomy.md">
+            <span>Mode guide</span>
+            <strong>Docker, host, tmux, and autonomy</strong>
+            <p>When to use read-only, workspace Docker, trusted host access, or future persistent containers.</p>
+          </a>
+          <a href="https://github.com/lazyingart/AgInTiFlow/blob/main/docs/agent-runtime-pipe.md">
+            <span>CLI + web sync</span>
+            <strong>Runtime pipe and queues</strong>
+            <p>How CLI and web share sessions, inbox messages, queued prompts, artifacts, and stop/resume state.</p>
+          </a>
+          <a href="https://github.com/lazyingart/AgInTiFlow/blob/main/docs/large-codebase-engineering.md">
+            <span>Engineering loop</span>
+            <strong>Large codebase strategy</strong>
+            <p>Codebase maps, deterministic patching, scout blackboards, checks, and context discipline.</p>
+          </a>
         </div>
       </section>
 

@@ -17,6 +17,8 @@ Runs can be stopped without corrupting session state. The CLI listens for Ctrl+C
 
 Default execution is Docker workspace mode with package installs approved inside the sandbox. The project is mounted at `/workspace`; persistent agent toolchain folders are mounted at `/aginti-home`, `/aginti-cache`, and `/aginti-env` from `~/.agintiflow/docker/`. Python, conda, and other language-level environments should be installed under `/aginti-env` so they survive across runs. Apt/apk package changes are ephemeral unless the Docker image is rebuilt.
 
+Docker shell commands are process-ephemeral: each `run_command` call starts a new short-lived container. Durable terminals, dev servers, and external agents should use host tmux tools, or a future persistent service-container mode. See [runtime-modes-and-autonomy.md](runtime-modes-and-autonomy.md).
+
 Generated local websites should use `preview_workspace` or `open_workspace_file`. The preview tool serves the host workspace on an automatically selected `127.0.0.1` port and opens it in the browser. AgInTiFlow blocks common transient Docker preview commands such as `python -m http.server` because each shell tool call runs in a short-lived container with no published host port.
 
 The failed `f(f(x)) = f'(x)` LaTeX task exposed three issues: host-mode command policy blocked setup/path commands, a 15-step budget was too small for iterative numerical work plus TeX output, and follow-up input could not be queued while the agent was running. The current runtime defaults and inbox pipe address those without hardcoding that specific math task.

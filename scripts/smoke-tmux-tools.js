@@ -13,6 +13,7 @@ import {
   startTmuxSession,
   tmuxAvailable,
 } from "../src/tmux-tools.js";
+import { checkToolUse } from "../src/guardrails.js";
 
 const execFile = promisify(execFileCallback);
 const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-tmux-"));
@@ -64,13 +65,35 @@ try {
   const destructive = checkTmuxToolUse("tmux_send_keys", { target: start.target, text: "rm -rf /" }, config);
   assert.equal(destructive.allowed, false, "tmux guardrail did not block destructive text");
 
+  const dockerTmuxCommand = checkToolUse({
+    toolName: "run_command",
+    args: { command: "tmux new-session -d -s should-not-run" },
+    config: { ...config, useDockerSandbox: true, sandboxMode: "docker-workspace", packageInstallPolicy: "allow" },
+  });
+  assert.equal(dockerTmuxCommand.allowed, false, "Docker run_command tmux usage should be blocked in favor of host tmux tools");
+  const dockerTmuxSearch = checkToolUse({
+    toolName: "run_command",
+    args: { command: "rg tmux README.md" },
+    config: { ...config, useDockerSandbox: true, sandboxMode: "docker-workspace", packageInstallPolicy: "allow" },
+  });
+  assert.equal(dockerTmuxSearch.allowed, true, "Docker run_command should still allow harmless tmux text searches");
+
   console.log(
     JSON.stringify(
       {
         ok: true,
         session,
         workspace,
-        checks: ["start-session", "send-keys", "capture-pane", "list-sessions", "secret-guardrail", "destructive-guardrail"],
+        checks: [
+          "start-session",
+          "send-keys",
+          "capture-pane",
+          "list-sessions",
+          "secret-guardrail",
+          "destructive-guardrail",
+          "docker-run-command-tmux-guardrail",
+          "docker-run-command-tmux-search-allowed",
+        ],
       },
       null,
       2
