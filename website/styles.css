@@ -261,14 +261,24 @@ h3 {
 }
 
 .hero-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
+  display: grid;
+  justify-items: start;
+  gap: 10px;
 }
 
 .hero-card .hero-actions {
   max-width: 100%;
   padding: 0 6px;
+}
+
+.hero-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.hero-action-row.secondary .button {
+  min-width: 88px;
 }
 
 .button {
