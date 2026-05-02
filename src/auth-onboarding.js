@@ -107,7 +107,7 @@ function boxedLine(content, width) {
 function secretInputDisplay({ value, selectedPreview, placeholder }) {
   if (value) return color(`${"•".repeat(Math.min(value.length, 24))} (${value.length} chars)`, ansi.inputBg);
   if (selectedPreview) return `${color(` ${selectedPreview} `, ansi.selected, ansi.bold)} ${color("selected", ansi.yellow)}`;
-  return color(placeholder || "paste key here", ansi.dim);
+  return color(String(placeholder || "").padEnd(30, " "), ansi.inputBg);
 }
 
 function renderSecretBox({ title, helpText, statusText, currentPreview, value, selected, actionText }) {
@@ -119,7 +119,7 @@ function renderSecretBox({ title, helpText, statusText, currentPreview, value, s
     boxedLine(color(compactLine(title, inner), ansi.bold, ansi.cyan), width),
     helpText ? boxedLine(`${color("key", ansi.muted)}   ${compactLine(helpText, inner - 6)}`, width) : "",
     statusText ? boxedLine(`${color("status", ansi.muted)} ${compactLine(statusText, inner - 8)}`, width) : "",
-    boxedLine(`${color("input", ansi.muted)}  ${secretInputDisplay({ value, selectedPreview, placeholder: "hidden input" })}`, width),
+    boxedLine(`${color("input", ansi.muted)}  ${secretInputDisplay({ value, selectedPreview })}`, width),
     boxedLine(color(compactLine(actionText, inner), ansi.dim), width),
     `${color("╰", ansi.border)}${color("─", ansi.border).repeat(width - 2)}${color("╯", ansi.border)}`,
   ].filter(Boolean);
