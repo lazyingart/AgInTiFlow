@@ -33,6 +33,11 @@ import { fileURLToPath } from "node:url";
 const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
 
+process.stdout.on("error", (error) => {
+  if (error?.code === "EPIPE") process.exit(0);
+  throw error;
+});
+
 function readOption(argv, index) {
   const value = argv[index + 1];
   if (!value || value.startsWith("--")) return "";
@@ -614,7 +619,7 @@ async function handleQueueCommand(argv) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  if (argv[0] === "--help" || argv[0] === "help" || argv[0] === "-h") {
+  if (argv[0] === "help" || argv.includes("--help") || argv.includes("-h")) {
     printUsage();
     return;
   }

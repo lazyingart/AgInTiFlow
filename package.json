@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.9",
+  "version": "0.20.10",
   "type": "module",
   "description": "AgInTiFlow is a web-first coding agent and CLI with DeepSeek routing, sandboxed tools, model providers, canvas artifacts, and optional wrappers.",
   "license": "Apache-2.0",
