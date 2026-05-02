@@ -58,7 +58,19 @@ function prepareMessages(config, messages) {
 }
 
 function requestOptions(config) {
-  return config.abortSignal ? { signal: config.abortSignal } : undefined;
+  const timeout = Number(config.modelTimeoutMs || process.env.AGINTI_MODEL_TIMEOUT_MS || 90000);
+  return {
+    ...(config.abortSignal ? { signal: config.abortSignal } : {}),
+    ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}),
+  };
+}
+
+function toolChoiceForProvider(config, messages = []) {
+  if (config.provider !== "venice") return "auto";
+
+  // Venice accepts OpenAI tool calls but often treats the first "auto" call as plain chat.
+  // Require one tool call to enter the agent loop, then allow normal answer/finish behavior.
+  return messages.some((message) => message.role === "tool") ? "auto" : "required";
 }
 
 function mockCommandForGoal(goal = "") {
@@ -858,7 +870,7 @@ export async function requestNextStep(client, config, messages) {
     {
       model: config.model,
       temperature: 0,
-      tool_choice: "auto",
+      tool_choice: toolChoiceForProvider(config, messages),
       parallel_tool_calls: false,
       messages: prepareMessages(config, messages),
       tools,

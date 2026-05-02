@@ -113,9 +113,13 @@ assert(AUXILIARY_MODEL_CATALOG["venice-image"].some((item) => item.id === "gpt-i
 const output = await runCli(["models"]);
 assert(output.includes("/route") && output.includes("/spare") && output.includes("venice-gpt"), "aginti models output missing role details");
 
-const interactiveOutput = await runInteractive("/venice\n/status\n/exit\n");
+const interactiveOutput = await runInteractive("/venice\n");
+assert(interactiveOutput.includes("venice=on"), "/venice did not enable Venice roles");
 assert(interactiveOutput.includes("route=venice/venice-uncensored-1-2"), "/venice did not set Venice route role");
 assert(interactiveOutput.includes("main=venice/venice-uncensored-1-2"), "/venice did not set Venice main role");
+const interactiveOffOutput = await runInteractive("/venice off\n");
+assert(interactiveOffOutput.includes("venice=off"), "/venice off did not restore DeepSeek roles");
+assert(interactiveOffOutput.includes("route=deepseek/deepseek-v4-flash"), "/venice off did not restore DeepSeek route role");
 
 console.log(
   JSON.stringify(

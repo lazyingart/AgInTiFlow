@@ -202,6 +202,16 @@ try {
   if (abbreviatedSkillsResult.stdout.includes("Unknown command") || !abbreviatedSkillsResult.stdout.includes("website-app")) {
     throw new Error("interactive slash command prefix did not auto-select the first matching command");
   }
+  const abbreviatedVeniceResult = await runChat("/ve\n");
+  const veniceOffResult = await runChat("/venice off\n");
+  if (
+    !abbreviatedVeniceResult.stdout.includes("venice=on") ||
+    !abbreviatedVeniceResult.stdout.includes("route=venice/venice-uncensored-1-2") ||
+    !veniceOffResult.stdout.includes("venice=off") ||
+    !veniceOffResult.stdout.includes("route=deepseek/deepseek-v4-flash")
+  ) {
+    throw new Error("interactive /ve prefix did not toggle Venice roles and restore DeepSeek defaults");
+  }
   await runChat("remember that this project prefers pytest smoke tests in AGINTI.md\n/exit\n");
   const updatedInstructions = await fs.readFile(path.join(tempRoot, "AGINTI.md"), "utf8");
   if (!updatedInstructions.includes("pytest smoke tests")) {

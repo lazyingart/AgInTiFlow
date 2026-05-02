@@ -33,9 +33,12 @@ Interactive commands:
 
 ```text
 /models
+/provider
 /venice
+/venice off
 /route
 /model
+/spare
 /route deepseek/deepseek-v4-flash
 /model deepseek/deepseek-v4-pro
 /spare openai/gpt-5.4 medium
@@ -43,16 +46,23 @@ Interactive commands:
 /auxiliary model grsai/nano-banana-2
 ```
 
-In the interactive CLI, `/route` and `/model` without arguments open a selector. Use Up/Down/Left/Right to move through choices, Enter to confirm, and Esc to cancel. Slash-command hints use the same arrow selection behavior: type a prefix such as `/mo`, use arrows to choose `/model` or `/models`, then press Enter or Tab.
+In the interactive CLI, `/provider`, `/route`, `/model`, `/spare`, and `/auxiliary model` without arguments open selectors. Use Up/Down/Left/Right to move through choices, Enter to confirm, and Esc to cancel. Slash-command hints use the same arrow selection behavior: type a prefix such as `/mo`, use arrows to choose `/model` or `/models`, then press Enter or Tab.
 
-`/venice` is a shortcut for:
+`/venice` is a toggle. When off, it enables:
 
 ```text
 /route venice/venice-uncensored-1-2
 /main venice/venice-uncensored-1-2
 ```
 
-It keeps smart routing enabled, so normal and complex tasks still use the same route/main policy, but both roles resolve to Venice Uncensored 1.2. If the Venice key is missing, run `/auth venice`.
+When already on, `/venice` switches back to the DeepSeek defaults:
+
+```text
+/route deepseek/deepseek-v4-flash
+/model deepseek/deepseek-v4-pro
+```
+
+It keeps smart routing enabled. If the Venice key is missing, run `/auth venice`.
 
 ## Provider Buckets
 
@@ -80,4 +90,4 @@ aginti keys status
 printf '%s' "$VENICE_API_KEY" | aginti keys set venice --stdin
 ```
 
-The web UI mirrors the same roles in its **Model roles** panel. Use the top provider/model fields for manual runs; use the role fields to change how smart routing chooses route, main, spare, wrapper, and auxiliary models.
+The web UI mirrors the same roles with dropdowns. Keep the left panel for daily controls: routing policy, provider/model, profile, goal, workspace, sandbox, and common tools. Use **Advanced settings** for model roles, browser start URL, wrapper/scout settings, Docker image, password/destructive toggles, and auxiliary image models. Runtime logs stay in the right column, followed by wrapper, workspace, and sandbox capability panels.

@@ -44,6 +44,7 @@ body {
 .stack {
   display: grid;
   min-width: 0;
+  grid-auto-rows: min-content;
   align-content: start;
   gap: 14px;
 }
@@ -55,6 +56,13 @@ body {
   border-radius: 18px;
   padding: 20px;
   box-shadow: 0 18px 50px rgba(62, 49, 26, 0.08);
+}
+
+.form-panel,
+.chat-panel,
+.output-panel {
+  min-width: 0;
+  align-self: start;
 }
 
 h1,
@@ -441,6 +449,11 @@ textarea {
   min-height: 100%;
 }
 
+.settings-button {
+  width: 100%;
+  justify-self: stretch;
+}
+
 button {
   border: 0;
   border-radius: 999px;
@@ -514,6 +527,13 @@ button.danger {
   gap: 10px;
   align-items: center;
   justify-content: flex-end;
+}
+
+#run-meta {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .sandbox-card {
@@ -689,6 +709,8 @@ button.danger {
 }
 
 .logs {
+  width: 100%;
+  min-width: 0;
   min-height: 300px;
   max-height: 42vh;
   overflow: auto;
@@ -703,6 +725,12 @@ button.danger {
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.output-panel {
+  display: grid;
+  gap: 12px;
+  overflow: hidden;
 }
 
 .log-line {
@@ -1160,6 +1188,56 @@ button.danger {
   margin: 0;
 }
 
+.settings-modal {
+  width: min(980px, calc(100% - 28px));
+}
+
+.settings-modal-card {
+  max-height: min(860px, calc(100vh - 28px));
+  overflow: auto;
+}
+
+.settings-section {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  border-radius: 18px;
+  background: rgba(255, 253, 250, 0.72);
+}
+
+.settings-section.model-role-editor {
+  margin-top: 0;
+}
+
+.settings-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.settings-section-head strong {
+  color: #0f766e;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.settings-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-wide {
+  grid-column: 1 / -1;
+}
+
+.settings-checks {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .artifact-modal {
   width: min(1120px, calc(100% - 28px));
   max-width: 100%;
@@ -1477,6 +1555,11 @@ button.danger {
 
   .artifact-modal-card {
     overflow: auto;
+  }
+
+  .settings-grid,
+  .settings-checks {
+    grid-template-columns: 1fr;
   }
 }
 

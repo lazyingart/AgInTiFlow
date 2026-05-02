@@ -649,7 +649,6 @@ const languageField = document.querySelector("#language");
 const routingModeField = document.querySelector("#routingMode");
 const providerField = document.querySelector("#provider");
 const modelField = document.querySelector("#model");
-const modelOptionsEl = document.querySelector("#model-options");
 const modelCatalogEl = document.querySelector("#model-catalog");
 const modelRoleGridEl = document.querySelector("#model-role-grid");
 const modelRoutePillEl = document.querySelector("#model-route-pill");
@@ -725,6 +724,10 @@ const artifactViewerKindEl = document.querySelector("#artifact-viewer-kind");
 const artifactViewerBodyEl = document.querySelector("#artifact-viewer-body");
 const artifactStatusEl = document.querySelector("#artifact-status");
 const markArtifactsSeenButton = document.querySelector("#mark-artifacts-seen");
+const settingsDialog = document.querySelector("#settings-modal");
+const openSettingsButton = document.querySelector("#open-settings");
+const closeSettingsButton = document.querySelector("#close-settings");
+const doneSettingsButton = document.querySelector("#done-settings");
 const translatableNodes = [...document.querySelectorAll("[data-i18n]")];
 const placeholderNodes = [...document.querySelectorAll("[data-i18n-placeholder]")];
 const ariaLabelNodes = [...document.querySelectorAll("[data-i18n-aria-label]")];
@@ -981,8 +984,100 @@ function renderSandboxLogs(logs) {
     .join("\n\n");
 }
 
+function fieldValue(field) {
+  return String(field?.value || "").trim();
+}
+
 function providerModelOptions(provider = providerField.value) {
   return modelCatalog[provider] || [];
+}
+
+function mergeModelOptions(...groups) {
+  const seen = new Set();
+  const merged = [];
+  for (const group of groups) {
+    for (const item of group || []) {
+      const id = String(item?.id || item?.model || item || "").trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      merged.push(typeof item === "string" ? { id, label: id } : { ...item, id });
+    }
+  }
+  return merged;
+}
+
+function wrapperModelOptions() {
+  const openai = providerModelOptions("openai").filter((item) => /gpt|codex/i.test(item.id || item.label || ""));
+  return mergeModelOptions(
+    [
+      { id: "gpt-5.5", label: "GPT-5.5", bucket: "Codex wrapper" },
+      { id: "gpt-5.4", label: "GPT-5.4", bucket: "Codex wrapper" },
+      { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", bucket: "Codex wrapper" },
+      { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", bucket: "Codex wrapper" },
+      { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", bucket: "Codex wrapper" },
+      { id: "gpt-5.2", label: "GPT-5.2", bucket: "Codex wrapper" },
+    ],
+    openai
+  );
+}
+
+function auxiliaryModelOptions(provider = auxiliaryProviderField?.value || "grsai") {
+  if (provider === "venice") {
+    return mergeModelOptions(auxiliaryModelCatalog["venice-image"], [
+      { id: "nano-banana-2", label: "Nano Banana 2", bucket: "Venice image" },
+      { id: "gpt-image-2", label: "GPT Image 2", bucket: "Venice image" },
+      { id: "gpt-image-2-edit", label: "GPT Image 2 Edit", bucket: "Venice image" },
+      { id: "bria-bg-remover", label: "Background Remover", bucket: "Venice image" },
+    ]);
+  }
+  return mergeModelOptions(auxiliaryModelCatalog.grsai, [
+    { id: "nano-banana-2", label: "Nano Banana 2", bucket: "GRS AI" },
+    { id: "gpt-image-2", label: "GPT Image 2", bucket: "GRS AI" },
+  ]);
+}
+
+function setSelectOptions(select, options, selectedValue = "", fallbackValue = "") {
+  if (!select) return "";
+  const selected = String(selectedValue || fallbackValue || "").trim();
+  const merged = mergeModelOptions(options);
+  if (selected && !merged.some((item) => item.id === selected)) {
+    merged.unshift({ id: selected, label: `Custom: ${selected}` });
+  }
+  select.innerHTML = merged
+    .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label || item.id)}</option>`)
+    .join("");
+  select.value = selected && merged.some((item) => item.id === selected) ? selected : merged[0]?.id || "";
+  return select.value;
+}
+
+function refreshModelDropdowns() {
+  const provider = providerField?.value || "deepseek";
+  setSelectOptions(modelField, providerModelOptions(provider), fieldValue(modelField), defaults[provider]);
+  setSelectOptions(
+    routeModelField,
+    providerModelOptions(routeProviderField?.value || "deepseek"),
+    fieldValue(routeModelField),
+    modelRoles.route?.model || "deepseek-v4-flash"
+  );
+  setSelectOptions(
+    mainModelField,
+    providerModelOptions(mainProviderField?.value || "deepseek"),
+    fieldValue(mainModelField),
+    modelRoles.main?.model || "deepseek-v4-pro"
+  );
+  setSelectOptions(
+    spareModelField,
+    providerModelOptions(spareProviderField?.value || "openai"),
+    fieldValue(spareModelField),
+    modelRoles.spare?.model || "gpt-5.4"
+  );
+  setSelectOptions(wrapperModelField, wrapperModelOptions(), fieldValue(wrapperModelField), modelRoles.wrapper?.model || "gpt-5.5");
+  setSelectOptions(
+    auxiliaryModelField,
+    auxiliaryModelOptions(auxiliaryProviderField?.value || "grsai"),
+    fieldValue(auxiliaryModelField),
+    modelRoles.auxiliary?.model || "nano-banana-2"
+  );
 }
 
 function renderModelRoles() {
@@ -1032,14 +1127,10 @@ function renderModelRoles() {
 function renderModelOptions() {
   const provider = providerField.value || "deepseek";
   const options = providerModelOptions(provider);
-  if (modelOptionsEl) {
-    modelOptionsEl.innerHTML = options
-      .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label || item.id)}</option>`)
-      .join("");
-  }
+  refreshModelDropdowns();
   if (modelRoutePillEl) {
     const mode = routingModeField.value || "smart";
-    const primary = modelField.value.trim() || defaults[provider] || "";
+    const primary = fieldValue(modelField) || defaults[provider] || "";
     const routeLabel = `${routeProviderField?.value || "deepseek"}/${routeModelField?.value || "deepseek-v4-flash"}`;
     const mainLabel = `${mainProviderField?.value || "deepseek"}/${mainModelField?.value || "deepseek-v4-pro"}`;
     modelRoutePillEl.textContent =
@@ -1055,7 +1146,7 @@ function renderModelOptions() {
   modelCatalogEl.innerHTML = options
     .map(
       (item) => `
-        <button class="model-chip" type="button" data-model-id="${escapeHtml(item.id)}" data-active="${item.id === modelField.value.trim()}">
+        <button class="model-chip" type="button" data-model-id="${escapeHtml(item.id)}" data-active="${item.id === fieldValue(modelField)}">
           <strong>${escapeHtml(item.label || item.id)}</strong>
           <span>${escapeHtml([item.bucket || item.role, item.context, item.reasoning?.length ? `reasoning ${item.reasoning.join("/")}` : ""].filter(Boolean).join(" · "))}</span>
         </button>
@@ -1093,7 +1184,7 @@ function updateRoutingHint() {
   }
 
   modelRouteStatusEl.textContent = `${t("modelRouteStatus")}: ${providerField.value} / ${
-    modelField.value.trim() || defaults[providerField.value] || ""
+    fieldValue(modelField) || defaults[providerField.value] || ""
   }`;
   renderModelOptions();
 }
@@ -1152,18 +1243,18 @@ function formPayload() {
     language: languageField.value,
     routingMode: routingModeField.value,
     provider: providerField.value,
-    model: modelField.value.trim(),
+    model: fieldValue(modelField),
     routeProvider: routeProviderField?.value || "deepseek",
-    routeModel: routeModelField?.value.trim() || "deepseek-v4-flash",
+    routeModel: fieldValue(routeModelField) || "deepseek-v4-flash",
     mainProvider: mainProviderField?.value || "deepseek",
-    mainModel: mainModelField?.value.trim() || "deepseek-v4-pro",
+    mainModel: fieldValue(mainModelField) || "deepseek-v4-pro",
     spareProvider: spareProviderField?.value || "openai",
-    spareModel: spareModelField?.value.trim() || "gpt-5.4",
+    spareModel: fieldValue(spareModelField) || "gpt-5.4",
     spareReasoning: spareReasoningField?.value || "medium",
-    wrapperModel: wrapperModelField?.value.trim() || "gpt-5.5",
+    wrapperModel: fieldValue(wrapperModelField) || "gpt-5.5",
     wrapperReasoning: wrapperReasoningField?.value || "medium",
     auxiliaryProvider: auxiliaryProviderField?.value || "grsai",
-    auxiliaryModel: auxiliaryModelField?.value.trim() || "nano-banana-2",
+    auxiliaryModel: fieldValue(auxiliaryModelField) || "nano-banana-2",
     startUrl: document.querySelector("#startUrl").value.trim(),
     allowedDomains: document.querySelector("#allowedDomains").value.trim(),
     commandCwd: document.querySelector("#commandCwd").value.trim(),
@@ -2343,9 +2434,26 @@ openArtifactsButton.addEventListener("click", () => {
   });
 });
 
+function closeSettings() {
+  settingsDialog?.close();
+  renderModelOptions();
+  schedulePreferenceSave();
+}
+
+openSettingsButton?.addEventListener("click", () => {
+  refreshModelDropdowns();
+  settingsDialog?.showModal();
+});
+
+closeSettingsButton?.addEventListener("click", closeSettings);
+doneSettingsButton?.addEventListener("click", closeSettings);
 closeSessionManagerButton.addEventListener("click", closeSessionManager);
 cancelSessionManagerButton.addEventListener("click", closeSessionManager);
 closeArtifactTunnelButton.addEventListener("click", closeArtifactTunnel);
+
+settingsDialog?.addEventListener("click", (event) => {
+  if (event.target === settingsDialog) closeSettings();
+});
 
 sessionManagerDialog.addEventListener("click", (event) => {
   if (event.target === sessionManagerDialog) closeSessionManager();
@@ -2425,7 +2533,7 @@ providerField.addEventListener("change", () => {
   }
 
   if (
-    !modelField.value.trim() ||
+    !fieldValue(modelField) ||
     modelField.value === defaults.openai ||
     modelField.value === defaults.deepseek ||
     modelField.value === defaults.qwen ||
@@ -2446,16 +2554,20 @@ modelCatalogEl?.addEventListener("click", (event) => {
   schedulePreferenceSave();
 });
 
-modelField.addEventListener("input", updateRoutingHint);
+modelField.addEventListener("change", updateRoutingHint);
 [routeProviderField, routeModelField, mainProviderField, mainModelField, spareProviderField, spareModelField, spareReasoningField, wrapperModelField, wrapperReasoningField, auxiliaryProviderField, auxiliaryModelField]
   .filter(Boolean)
   .forEach((field) => {
     field.addEventListener("input", () => {
+      if (field === routeProviderField || field === mainProviderField || field === spareProviderField || field === auxiliaryProviderField) refreshModelDropdowns();
       renderModelRoles();
+      renderModelOptions();
       schedulePreferenceSave();
     });
     field.addEventListener("change", () => {
+      if (field === routeProviderField || field === mainProviderField || field === spareProviderField || field === auxiliaryProviderField) refreshModelDropdowns();
       renderModelRoles();
+      renderModelOptions();
       schedulePreferenceSave();
     });
   });
@@ -2698,18 +2810,38 @@ async function loadConfig() {
 
   routingModeField.value = prefs.routingMode || "smart";
   providerField.value = prefs.provider || "deepseek";
-  modelField.value = prefs.model || defaults[providerField.value] || "deepseek-v4-flash";
   if (routeProviderField) routeProviderField.value = prefs.routeProvider || modelRoles.route?.provider || "deepseek";
-  if (routeModelField) routeModelField.value = prefs.routeModel || modelRoles.route?.model || "deepseek-v4-flash";
   if (mainProviderField) mainProviderField.value = prefs.mainProvider || modelRoles.main?.provider || "deepseek";
-  if (mainModelField) mainModelField.value = prefs.mainModel || modelRoles.main?.model || "deepseek-v4-pro";
   if (spareProviderField) spareProviderField.value = prefs.spareProvider || modelRoles.spare?.provider || "openai";
-  if (spareModelField) spareModelField.value = prefs.spareModel || modelRoles.spare?.model || "gpt-5.4";
   if (spareReasoningField) spareReasoningField.value = prefs.spareReasoning || modelRoles.spare?.reasoning || "medium";
-  if (wrapperModelField) wrapperModelField.value = prefs.wrapperModel || modelRoles.wrapper?.model || "gpt-5.5";
   if (wrapperReasoningField) wrapperReasoningField.value = prefs.wrapperReasoning || modelRoles.wrapper?.reasoning || "medium";
   if (auxiliaryProviderField) auxiliaryProviderField.value = prefs.auxiliaryProvider || modelRoles.auxiliary?.provider || "grsai";
-  if (auxiliaryModelField) auxiliaryModelField.value = prefs.auxiliaryModel || modelRoles.auxiliary?.model || "nano-banana-2";
+  setSelectOptions(modelField, providerModelOptions(providerField.value), prefs.model || defaults[providerField.value], defaults[providerField.value]);
+  setSelectOptions(
+    routeModelField,
+    providerModelOptions(routeProviderField?.value || "deepseek"),
+    prefs.routeModel || modelRoles.route?.model,
+    "deepseek-v4-flash"
+  );
+  setSelectOptions(
+    mainModelField,
+    providerModelOptions(mainProviderField?.value || "deepseek"),
+    prefs.mainModel || modelRoles.main?.model,
+    "deepseek-v4-pro"
+  );
+  setSelectOptions(
+    spareModelField,
+    providerModelOptions(spareProviderField?.value || "openai"),
+    prefs.spareModel || modelRoles.spare?.model,
+    "gpt-5.4"
+  );
+  setSelectOptions(wrapperModelField, wrapperModelOptions(), prefs.wrapperModel || modelRoles.wrapper?.model, "gpt-5.5");
+  setSelectOptions(
+    auxiliaryModelField,
+    auxiliaryModelOptions(auxiliaryProviderField?.value || "grsai"),
+    prefs.auxiliaryModel || modelRoles.auxiliary?.model,
+    "nano-banana-2"
+  );
   renderTaskProfiles(prefs.taskProfile || "auto");
   document.querySelector("#startUrl").value = prefs.startUrl || "";
   document.querySelector("#allowedDomains").value = prefs.allowedDomains || "";

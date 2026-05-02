@@ -42,15 +42,20 @@ Interactive equivalents:
 
 ```text
 /models
+/provider
 /venice
+/venice off
 /route deepseek/deepseek-v4-flash
 /model deepseek/deepseek-v4-pro
+/spare
 /spare openai/gpt-5.4 medium
 /wrapper codex gpt-5.5 medium
 /auxiliary model grsai/nano-banana-2
 ```
 
-`/venice` keeps smart routing enabled and points both route and main roles at `venice/venice-uncensored-1-2`.
+`/venice` is a toggle: it keeps smart routing enabled and points both route and main roles at `venice/venice-uncensored-1-2`; running it again or using `/venice off` restores `deepseek/deepseek-v4-flash` for route and `deepseek/deepseek-v4-pro` for main.
+
+The web UI should expose model names as dropdowns, not free-text fields. The left panel should stay focused on common daily controls, while model-role editing and less-used switches live in an Advanced settings modal. The terminal-like capability panels belong after the runtime log so the left control panel remains short.
 
 ## OpenAI Model Reference
 

@@ -106,8 +106,9 @@
 
             <label>
               <span data-i18n="modelLabel">Model</span>
-              <input id="model" name="model" type="text" list="model-options" value="deepseek-v4-flash" />
-              <datalist id="model-options"></datalist>
+              <select id="model" name="model">
+                <option value="deepseek-v4-flash">DeepSeek v4 flash</option>
+              </select>
             </label>
           </div>
 
@@ -120,70 +121,6 @@
             </div>
             <div id="model-role-grid" class="model-role-grid"></div>
             <div id="model-catalog" class="model-catalog"></div>
-          </section>
-
-          <section class="model-role-editor" aria-label="Model role settings">
-            <div class="model-role-editor-head">
-              <strong>Model roles</strong>
-              <span>Route, main, spare, wrapper, auxiliary</span>
-            </div>
-            <div class="role-editor-grid">
-              <label>
-                <span>Route</span>
-                <select id="routeProvider" name="routeProvider">
-                  <option value="deepseek">DeepSeek</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="qwen">Qwen</option>
-                  <option value="venice">Venice</option>
-                  <option value="mock">Mock</option>
-                </select>
-                <input id="routeModel" name="routeModel" type="text" placeholder="deepseek-v4-flash" />
-              </label>
-              <label>
-                <span>Main</span>
-                <select id="mainProvider" name="mainProvider">
-                  <option value="deepseek">DeepSeek</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="qwen">Qwen</option>
-                  <option value="venice">Venice</option>
-                </select>
-                <input id="mainModel" name="mainModel" type="text" placeholder="deepseek-v4-pro" />
-              </label>
-              <label>
-                <span>Spare</span>
-                <select id="spareProvider" name="spareProvider">
-                  <option value="openai">OpenAI</option>
-                  <option value="deepseek">DeepSeek</option>
-                  <option value="qwen">Qwen</option>
-                  <option value="venice">Venice</option>
-                </select>
-                <input id="spareModel" name="spareModel" type="text" placeholder="gpt-5.4" />
-                <select id="spareReasoning" name="spareReasoning">
-                  <option value="low">low</option>
-                  <option value="medium">medium</option>
-                  <option value="high">high</option>
-                  <option value="xhigh">xhigh</option>
-                </select>
-              </label>
-              <label>
-                <span>Wrapper</span>
-                <input id="wrapperModel" name="wrapperModel" type="text" placeholder="gpt-5.5" />
-                <select id="wrapperReasoning" name="wrapperReasoning">
-                  <option value="low">low</option>
-                  <option value="medium">medium</option>
-                  <option value="high">high</option>
-                  <option value="xhigh">xhigh</option>
-                </select>
-              </label>
-              <label>
-                <span>Auxiliary</span>
-                <select id="auxiliaryProvider" name="auxiliaryProvider">
-                  <option value="grsai">GRS AI</option>
-                  <option value="venice">Venice image</option>
-                </select>
-                <input id="auxiliaryModel" name="auxiliaryModel" type="text" placeholder="nano-banana-2" />
-              </label>
-            </div>
           </section>
 
           <label>
@@ -202,16 +139,6 @@
               data-i18n-placeholder="goalPlaceholder"
               placeholder="Open a site and summarize it, or use run_command for simple terminal inspection."
             ></textarea>
-          </label>
-
-          <label>
-            <span data-i18n="startUrlLabel">Start URL</span>
-            <input id="startUrl" name="startUrl" type="url" data-i18n-placeholder="startUrlPlaceholder" placeholder="https://news.ycombinator.com" />
-          </label>
-
-          <label>
-            <span data-i18n="allowedDomainsLabel">Allowed domains</span>
-            <input id="allowedDomains" name="allowedDomains" type="text" data-i18n-placeholder="allowedDomainsPlaceholder" placeholder="news.ycombinator.com,github.com" />
           </label>
 
           <div class="grid">
@@ -247,11 +174,6 @@
 
           <div class="checks">
             <label class="switch-label">
-              <input id="headless" name="headless" type="checkbox" checked />
-              <span class="switch" aria-hidden="true"></span>
-              <span data-i18n="headlessLabel">Headless browser</span>
-            </label>
-            <label class="switch-label">
               <input id="allowShellTool" name="allowShellTool" type="checkbox" checked />
               <span class="switch" aria-hidden="true"></span>
               <span data-i18n="shellToolLabel">Enable shell tool</span>
@@ -262,102 +184,18 @@
               <span data-i18n="fileToolLabel">Enable file tools</span>
             </label>
             <label class="switch-label">
-              <input id="allowAuxiliaryTools" name="allowAuxiliaryTools" type="checkbox" checked />
-              <span class="switch" aria-hidden="true"></span>
-              <span data-i18n="auxiliaryToolLabel">Enable auxiliary skills</span>
-            </label>
-            <label class="switch-label">
               <input id="allowWebSearch" name="allowWebSearch" type="checkbox" checked />
               <span class="switch" aria-hidden="true"></span>
               <span data-i18n="webSearchLabel">Enable web search</span>
             </label>
-            <label class="switch-label">
-              <input id="allowParallelScouts" name="allowParallelScouts" type="checkbox" checked />
-              <span class="switch" aria-hidden="true"></span>
-              <span data-i18n="parallelScoutsLabel">Parallel DeepSeek scouts</span>
-            </label>
-            <label class="switch-label">
-              <input id="allowPasswords" name="allowPasswords" type="checkbox" />
-              <span class="switch" aria-hidden="true"></span>
-              <span data-i18n="allowPasswordsLabel">Allow password typing</span>
-            </label>
-            <label class="switch-label">
-              <input id="allowDestructive" name="allowDestructive" type="checkbox" />
-              <span class="switch" aria-hidden="true"></span>
-              <span data-i18n="allowDestructiveLabel">Allow destructive actions</span>
-            </label>
           </div>
 
-          <label>
-            <span data-i18n="parallelScoutCountLabel">Scout count</span>
-            <input id="parallelScoutCount" name="parallelScoutCount" type="number" min="1" max="10" value="3" />
-          </label>
-
-          <div class="grid wrapper-controls">
-            <label class="switch-label switch-card">
-              <input id="allowWrapperTools" name="allowWrapperTools" type="checkbox" />
-              <span class="switch" aria-hidden="true"></span>
-              <span data-i18n="wrapperToolLabel">Enable agent wrappers</span>
-            </label>
-            <label>
-              <span data-i18n="preferredWrapperLabel">Preferred wrapper</span>
-              <select id="preferredWrapper" name="preferredWrapper">
-                <option value="codex">Codex</option>
-                <option value="claude">Claude Code</option>
-                <option value="gemini">Gemini CLI</option>
-                <option value="copilot">GitHub Copilot CLI</option>
-                <option value="qwen">Qwen Code</option>
-              </select>
-            </label>
-          </div>
-
-          <label>
-            <span data-i18n="dockerImageLabel">Docker image</span>
-            <input
-              id="dockerSandboxImage"
-              name="dockerSandboxImage"
-              type="text"
-              value="agintiflow-sandbox:latest"
-              data-i18n-placeholder="dockerImagePlaceholder"
-              placeholder="agintiflow-sandbox:latest"
-            />
-          </label>
+          <button id="open-settings" type="button" class="secondary settings-button">Advanced settings</button>
 
           <div class="actions">
             <button type="submit" data-i18n="startRunButton">Start run</button>
             <span id="key-status" class="subtle"></span>
           </div>
-
-          <section class="capability-card">
-            <div>
-              <h2 data-i18n="wrapperCapabilityTitle">Agent wrappers</h2>
-              <p id="wrapper-status" class="subtle wrapper-status"></p>
-            </div>
-            <div id="wrapper-grid" class="capability-grid"></div>
-          </section>
-
-          <section class="capability-card workspace-card">
-            <div>
-              <h2 data-i18n="workspaceCapabilityTitle">Workspace files</h2>
-              <p id="workspace-status" class="subtle wrapper-status"></p>
-            </div>
-            <div id="workspace-tools" class="capability-grid"></div>
-            <div id="workspace-changes" class="workspace-changes"></div>
-          </section>
-
-          <section class="sandbox-card">
-            <div class="header-row">
-              <div>
-                <h2 data-i18n="sandboxStatusTitle">Sandbox status</h2>
-                <p id="sandbox-status" class="subtle route-hint" data-i18n="sandboxStatusEmpty">Not checked yet.</p>
-              </div>
-              <div class="sandbox-actions">
-                <button id="check-sandbox" type="button" class="secondary" data-i18n="checkSandboxButton">Check</button>
-                <button id="preflight-sandbox" type="button" class="secondary" data-i18n="preflightSandboxButton">Preflight</button>
-              </div>
-            </div>
-            <pre id="sandbox-logs" class="sandbox-logs" data-i18n="sandboxLogsEmpty">No sandbox logs yet.</pre>
-          </section>
         </form>
       </section>
 
@@ -425,8 +263,212 @@
           </div>
           <div id="logs" class="logs" data-i18n="noRunStarted">No run started.</div>
         </section>
+
+        <section class="capability-card">
+          <div>
+            <h2 data-i18n="wrapperCapabilityTitle">Agent wrappers</h2>
+            <p id="wrapper-status" class="subtle wrapper-status"></p>
+          </div>
+          <div id="wrapper-grid" class="capability-grid"></div>
+        </section>
+
+        <section class="capability-card workspace-card">
+          <div>
+            <h2 data-i18n="workspaceCapabilityTitle">Workspace files</h2>
+            <p id="workspace-status" class="subtle wrapper-status"></p>
+          </div>
+          <div id="workspace-tools" class="capability-grid"></div>
+          <div id="workspace-changes" class="workspace-changes"></div>
+        </section>
+
+        <section class="sandbox-card">
+          <div class="header-row">
+            <div>
+              <h2 data-i18n="sandboxStatusTitle">Sandbox status</h2>
+              <p id="sandbox-status" class="subtle route-hint" data-i18n="sandboxStatusEmpty">Not checked yet.</p>
+            </div>
+            <div class="sandbox-actions">
+              <button id="check-sandbox" type="button" class="secondary" data-i18n="checkSandboxButton">Check</button>
+              <button id="preflight-sandbox" type="button" class="secondary" data-i18n="preflightSandboxButton">Preflight</button>
+            </div>
+          </div>
+          <pre id="sandbox-logs" class="sandbox-logs" data-i18n="sandboxLogsEmpty">No sandbox logs yet.</pre>
+        </section>
       </section>
     </main>
+
+    <dialog id="settings-modal" class="modal settings-modal">
+      <section class="modal-card settings-modal-card" aria-labelledby="settings-modal-title">
+        <div class="modal-header">
+          <div>
+            <h2 id="settings-modal-title">Advanced settings</h2>
+            <p class="subtle">Model roles, browser targets, wrappers, scouts, and safety toggles.</p>
+          </div>
+          <button id="close-settings" class="icon-button" type="button" data-i18n-aria-label="cancelButton" aria-label="Cancel">x</button>
+        </div>
+
+        <section class="settings-section model-role-editor" aria-label="Model role settings">
+          <div class="model-role-editor-head">
+            <strong>Model roles</strong>
+            <span>Route, main, spare, wrapper, auxiliary</span>
+          </div>
+          <div class="role-editor-grid">
+            <label>
+              <span>Route</span>
+              <select id="routeProvider" name="routeProvider">
+                <option value="deepseek">DeepSeek</option>
+                <option value="openai">OpenAI</option>
+                <option value="qwen">Qwen</option>
+                <option value="venice">Venice</option>
+                <option value="mock">Mock</option>
+              </select>
+              <select id="routeModel" name="routeModel">
+                <option value="deepseek-v4-flash">DeepSeek v4 flash</option>
+              </select>
+            </label>
+            <label>
+              <span>Main</span>
+              <select id="mainProvider" name="mainProvider">
+                <option value="deepseek">DeepSeek</option>
+                <option value="openai">OpenAI</option>
+                <option value="qwen">Qwen</option>
+                <option value="venice">Venice</option>
+              </select>
+              <select id="mainModel" name="mainModel">
+                <option value="deepseek-v4-pro">DeepSeek v4 pro</option>
+              </select>
+            </label>
+            <label>
+              <span>Spare</span>
+              <select id="spareProvider" name="spareProvider">
+                <option value="openai">OpenAI</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="qwen">Qwen</option>
+                <option value="venice">Venice</option>
+              </select>
+              <select id="spareModel" name="spareModel">
+                <option value="gpt-5.4">GPT-5.4</option>
+              </select>
+              <select id="spareReasoning" name="spareReasoning">
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+              </select>
+            </label>
+            <label>
+              <span>Wrapper</span>
+              <select id="wrapperModel" name="wrapperModel">
+                <option value="gpt-5.5">GPT-5.5</option>
+              </select>
+              <select id="wrapperReasoning" name="wrapperReasoning">
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+              </select>
+            </label>
+            <label>
+              <span>Auxiliary</span>
+              <select id="auxiliaryProvider" name="auxiliaryProvider">
+                <option value="grsai">GRS AI</option>
+                <option value="venice">Venice image</option>
+              </select>
+              <select id="auxiliaryModel" name="auxiliaryModel">
+                <option value="nano-banana-2">Nano Banana 2</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-head">
+            <strong>Browser and target</strong>
+            <span class="subtle">Optional browser start point and allowed domains.</span>
+          </div>
+          <div class="settings-grid">
+            <label>
+              <span data-i18n="startUrlLabel">Start URL</span>
+              <input id="startUrl" name="startUrl" type="url" data-i18n-placeholder="startUrlPlaceholder" placeholder="https://news.ycombinator.com" />
+            </label>
+            <label>
+              <span data-i18n="allowedDomainsLabel">Allowed domains</span>
+              <input id="allowedDomains" name="allowedDomains" type="text" data-i18n-placeholder="allowedDomainsPlaceholder" placeholder="news.ycombinator.com,github.com" />
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-head">
+            <strong>Tools and wrappers</strong>
+            <span class="subtle">Less-used capabilities stay here to keep the daily panel focused.</span>
+          </div>
+          <div class="checks settings-checks">
+            <label class="switch-label">
+              <input id="headless" name="headless" type="checkbox" checked />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="headlessLabel">Headless browser</span>
+            </label>
+            <label class="switch-label">
+              <input id="allowAuxiliaryTools" name="allowAuxiliaryTools" type="checkbox" checked />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="auxiliaryToolLabel">Enable auxiliary skills</span>
+            </label>
+            <label class="switch-label">
+              <input id="allowParallelScouts" name="allowParallelScouts" type="checkbox" checked />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="parallelScoutsLabel">Parallel DeepSeek scouts</span>
+            </label>
+            <label class="switch-label">
+              <input id="allowPasswords" name="allowPasswords" type="checkbox" />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="allowPasswordsLabel">Allow password typing</span>
+            </label>
+            <label class="switch-label">
+              <input id="allowDestructive" name="allowDestructive" type="checkbox" />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="allowDestructiveLabel">Allow destructive actions</span>
+            </label>
+            <label class="switch-label switch-card">
+              <input id="allowWrapperTools" name="allowWrapperTools" type="checkbox" />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="wrapperToolLabel">Enable agent wrappers</span>
+            </label>
+          </div>
+          <div class="settings-grid">
+            <label>
+              <span data-i18n="parallelScoutCountLabel">Scout count</span>
+              <input id="parallelScoutCount" name="parallelScoutCount" type="number" min="1" max="10" value="3" />
+            </label>
+            <label>
+              <span data-i18n="preferredWrapperLabel">Preferred wrapper</span>
+              <select id="preferredWrapper" name="preferredWrapper">
+                <option value="codex">Codex</option>
+                <option value="claude">Claude Code</option>
+                <option value="gemini">Gemini CLI</option>
+                <option value="copilot">GitHub Copilot CLI</option>
+                <option value="qwen">Qwen Code</option>
+              </select>
+            </label>
+            <label class="settings-wide">
+              <span data-i18n="dockerImageLabel">Docker image</span>
+              <input
+                id="dockerSandboxImage"
+                name="dockerSandboxImage"
+                type="text"
+                value="agintiflow-sandbox:latest"
+                data-i18n-placeholder="dockerImagePlaceholder"
+                placeholder="agintiflow-sandbox:latest"
+              />
+            </label>
+          </div>
+        </section>
+
+        <div class="modal-actions">
+          <button id="done-settings" type="button">Done</button>
+        </div>
+      </section>
+    </dialog>
 
     <dialog id="session-manager" class="modal">
       <section class="modal-card" aria-labelledby="session-manager-title">

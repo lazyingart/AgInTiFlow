@@ -584,15 +584,15 @@ function printHelp() {
       "  /instructions             Show AGINTI.md project instructions status.",
       "  /memory                   Alias for /instructions.",
       "  /models                   Show route/main/spare/wrapper/auxiliary model roles.",
-      "  /venice                   Shortcut: use Venice Uncensored 1.2 for route and main roles.",
+      "  /venice [on|off]          Toggle Venice Uncensored 1.2 for route and main roles.",
       "  /route [mode|provider/model]",
       "                            Open route selector, or set routing/fast route model.",
       "  /model [provider/model]   Open main-model selector, or set the active/main model.",
-      "  /spare <provider/model> [reasoning]",
-      "                            Set spare model, e.g. /spare openai/gpt-5.4 medium.",
+      "  /spare [provider/model] [reasoning]",
+      "                            Open spare selector, or set e.g. /spare openai/gpt-5.4 medium.",
       "  /wrapper [on|off|codex model reasoning]",
       "                            Configure optional external wrapper.",
-      "  /auxiliary [status|grsai|venice|model grsai/nano-banana-2|on|off|image]",
+      "  /auxiliary [status|grsai|venice|model [provider/model]|on|off|image]",
       "                            Manage optional auxiliary skills, including image generation.",
       "  /new                      Start a fresh session on the next message.",
       "  /resume <session-id>      Continue a saved session.",
@@ -602,7 +602,7 @@ function printHelp() {
       "  /web-search on|off        Enable or disable the web_search tool.",
       "  /scouts on|off|<1-10>     Enable parallel DeepSeek scouts and set scout count.",
       "  /routing <mode>           Set routing: smart, fast, complex, manual.",
-      "  /provider <name>          Set provider: deepseek, openai, qwen, venice, mock.",
+      "  /provider [name]          Open provider selector, or set deepseek/openai/qwen/venice/mock.",
       "  /docker on                Use docker-workspace with approved package installs.",
       "  /docker off               Use host shell policy.",
       "  /latex on                 Use the LaTeX/PDF profile in Docker with a larger step budget.",
@@ -1268,6 +1268,11 @@ class LiveRunInput {
   async submitAsap() {
     const content = this.buffer.trim();
     if (!content) return;
+    if (content.startsWith("/")) {
+      this.printLine(`${label("warn", ansi.red)} Slash commands are disabled while a run is active. Press Esc/Ctrl+C to stop, or wait until idle.`);
+      this.setStatus(`running · command ${compactLine(content, 24)} not accepted during active run`);
+      return;
+    }
     const item = {
       id: `cli-asap-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       content,
@@ -1292,6 +1297,11 @@ class LiveRunInput {
   queueAfterFinish() {
     const content = this.buffer.trim();
     if (!content) return;
+    if (content.startsWith("/")) {
+      this.printLine(`${label("warn", ansi.red)} Slash commands cannot be queued during a run. Wait until idle, then run ${content}.`);
+      this.setStatus(`running · command ${compactLine(content, 24)} not queued`);
+      return;
+    }
     this.pendingQueued.push({
       id: `cli-queued-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       content,
@@ -1606,6 +1616,35 @@ function parseProviderModel(value, fallbackProvider = "") {
   return { provider: fallbackProvider, model: text };
 }
 
+function useDeepSeekDefaults(state) {
+  state.routingMode = "smart";
+  state.provider = "deepseek";
+  state.model = "";
+  state.routeProvider = "deepseek";
+  state.routeModel = "deepseek-v4-flash";
+  state.mainProvider = "deepseek";
+  state.mainModel = "deepseek-v4-pro";
+}
+
+function useVeniceDefaults(state) {
+  state.routingMode = "smart";
+  state.provider = "deepseek";
+  state.model = "";
+  state.routeProvider = "venice";
+  state.routeModel = "venice-uncensored-1-2";
+  state.mainProvider = "venice";
+  state.mainModel = "venice-uncensored-1-2";
+}
+
+function isVeniceDefaultActive(state) {
+  return (
+    state.routeProvider === "venice" &&
+    state.routeModel === "venice-uncensored-1-2" &&
+    state.mainProvider === "venice" &&
+    state.mainModel === "venice-uncensored-1-2"
+  );
+}
+
 function printModelRoles(state) {
   const roles = getModelRoleDefaults({
     routeProvider: state.routeProvider,
@@ -1679,6 +1718,7 @@ function modelRoleChoices(role = "main") {
       label: "DeepSeek V4 Pro",
       description: "complex coding, debugging, writing, and long tasks",
       main: true,
+      spare: true,
     },
     {
       provider: "venice",
@@ -1687,6 +1727,7 @@ function modelRoleChoices(role = "main") {
       description: "Venice text route; use /auth venice if missing",
       route: true,
       main: true,
+      spare: true,
     },
     {
       provider: "openai",
@@ -1694,6 +1735,7 @@ function modelRoleChoices(role = "main") {
       label: "OpenAI GPT-5.5",
       description: "frontier spare/manual model",
       main: true,
+      spare: true,
     },
     {
       provider: "openai",
@@ -1701,6 +1743,7 @@ function modelRoleChoices(role = "main") {
       label: "OpenAI GPT-5.4",
       description: "strong everyday coding spare",
       main: true,
+      spare: true,
     },
     {
       provider: "openai",
@@ -1708,6 +1751,7 @@ function modelRoleChoices(role = "main") {
       label: "OpenAI GPT-5.4 Mini",
       description: "small fast spare route",
       route: true,
+      spare: true,
     },
     {
       provider: "qwen",
@@ -1722,6 +1766,7 @@ function modelRoleChoices(role = "main") {
       label: "Qwen Max",
       description: "larger Qwen route",
       main: true,
+      spare: true,
     },
     {
       provider: "mock",
@@ -1730,12 +1775,81 @@ function modelRoleChoices(role = "main") {
       description: "local deterministic test route",
       route: true,
       main: true,
+      spare: true,
+    },
+    {
+      provider: "grsai",
+      model: "nano-banana-2",
+      label: "GRS AI Nano Banana",
+      description: "default auxiliary image model",
+      auxiliary: true,
+    },
+    {
+      provider: "venice",
+      model: "gpt-image-2",
+      label: "Venice GPT Image 2",
+      description: "high-quality Venice image generation",
+      auxiliary: true,
+    },
+    {
+      provider: "venice",
+      model: "nano-banana-2",
+      label: "Venice Nano Banana 2",
+      description: "Venice image generation route",
+      auxiliary: true,
     },
   ];
-  const filtered = common.filter((item) => (role === "route" ? item.route : item.main));
-  return role === "route"
-    ? filtered.sort((a, b) => Number(b.model === "deepseek-v4-flash") - Number(a.model === "deepseek-v4-flash"))
-    : filtered.sort((a, b) => Number(b.model === "deepseek-v4-pro") - Number(a.model === "deepseek-v4-pro"));
+  const filtered = common.filter((item) => {
+    if (role === "route") return item.route;
+    if (role === "spare") return item.spare;
+    if (role === "auxiliary") return item.auxiliary;
+    return item.main;
+  });
+  if (role === "route") {
+    return filtered.sort((a, b) => Number(b.model === "deepseek-v4-flash") - Number(a.model === "deepseek-v4-flash"));
+  }
+  if (role === "spare") {
+    return filtered.sort((a, b) => Number(b.model === "gpt-5.4") - Number(a.model === "gpt-5.4"));
+  }
+  if (role === "auxiliary") {
+    return filtered.sort((a, b) => Number(b.provider === "grsai") - Number(a.provider === "grsai"));
+  }
+  return filtered.sort((a, b) => Number(b.model === "deepseek-v4-pro") - Number(a.model === "deepseek-v4-pro"));
+}
+
+function providerChoices() {
+  return [
+    {
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      label: "DeepSeek",
+      description: "default smart route with flash/pro roles",
+    },
+    {
+      provider: "openai",
+      model: "gpt-5.4",
+      label: "OpenAI",
+      description: "manual GPT route; use /model for exact model",
+    },
+    {
+      provider: "venice",
+      model: "venice-uncensored-1-2",
+      label: "Venice",
+      description: "manual Venice route; /venice toggles route+main roles",
+    },
+    {
+      provider: "qwen",
+      model: "qwen-plus",
+      label: "Qwen",
+      description: "manual Qwen route",
+    },
+    {
+      provider: "mock",
+      model: "mock-agent",
+      label: "Mock local",
+      description: "deterministic offline smoke-test provider",
+    },
+  ];
 }
 
 function modelChoiceLine(option) {
@@ -1773,6 +1887,7 @@ function selectModelChoice({ title, subtitle, options, initialIndex = 0 }) {
   return new Promise((resolve) => {
     emitKeypressEvents(input);
     const wasRaw = Boolean(input.isRaw);
+    const startedAt = Date.now();
     let selectedIndex = clamp(initialIndex, 0, Math.max(options.length - 1, 0));
     let lineCount = 0;
     const cleanup = () => {
@@ -1809,6 +1924,7 @@ function selectModelChoice({ title, subtitle, options, initialIndex = 0 }) {
         return;
       }
       if (key.name === "return" || key.name === "enter" || key.sequence === "\r") {
+        if (Date.now() - startedAt < 120) return;
         finish(options[selectedIndex]);
       }
     };
@@ -1822,14 +1938,35 @@ function selectModelChoice({ title, subtitle, options, initialIndex = 0 }) {
 
 async function pickModelRole(role, state) {
   const options = modelRoleChoices(role);
-  const currentProvider = role === "route" ? state.routeProvider || "deepseek" : state.mainProvider || state.provider || "deepseek";
-  const currentModel = role === "route" ? state.routeModel || "deepseek-v4-flash" : state.mainModel || "deepseek-v4-pro";
+  const currentProvider =
+    role === "route"
+      ? state.routeProvider || "deepseek"
+      : role === "spare"
+        ? state.spareProvider || "openai"
+        : role === "auxiliary"
+          ? state.auxiliaryProvider || "grsai"
+          : state.mainProvider || state.provider || "deepseek";
+  const currentModel =
+    role === "route"
+      ? state.routeModel || "deepseek-v4-flash"
+      : role === "spare"
+        ? state.spareModel || "gpt-5.4"
+        : role === "auxiliary"
+          ? state.auxiliaryModel || "nano-banana-2"
+          : state.mainModel || "deepseek-v4-pro";
   const initialIndex = Math.max(
     options.findIndex((item) => item.provider === currentProvider && item.model === currentModel),
     0
   );
   const selected = await selectModelChoice({
-    title: role === "route" ? "Select route model" : "Select main model",
+    title:
+      role === "route"
+        ? "Select route model"
+        : role === "spare"
+          ? "Select spare model"
+          : role === "auxiliary"
+            ? "Select auxiliary model"
+            : "Select main model",
     subtitle: "Up/Down/Left/Right selects, Enter confirms, Esc cancels.",
     options,
     initialIndex,
@@ -1843,11 +1980,43 @@ async function pickModelRole(role, state) {
     state.routeProvider = selected.provider;
     state.routeModel = selected.model;
     printSystemLine(`route=${state.routeProvider}/${state.routeModel}`);
+  } else if (role === "spare") {
+    state.spareProvider = selected.provider;
+    state.spareModel = selected.model;
+    state.spareReasoning = state.spareReasoning || "medium";
+    printSystemLine(`spare=${state.spareProvider}/${state.spareModel} reasoning=${state.spareReasoning}`);
+  } else if (role === "auxiliary") {
+    state.auxiliaryProvider = selected.provider;
+    state.auxiliaryModel = selected.model;
+    state.allowAuxiliaryTools = true;
+    printSystemLine(`auxiliary=${state.auxiliaryProvider}/${state.auxiliaryModel}`);
   } else {
     state.mainProvider = selected.provider;
     state.mainModel = selected.model;
     printSystemLine(`main=${state.mainProvider}/${state.mainModel}`);
   }
+  return true;
+}
+
+async function pickProvider(state) {
+  const options = providerChoices();
+  const currentProvider = state.provider || "deepseek";
+  const initialIndex = Math.max(
+    options.findIndex((item) => item.provider === currentProvider),
+    0
+  );
+  const selected = await selectModelChoice({
+    title: "Select provider",
+    subtitle: "Up/Down/Left/Right selects, Enter confirms, Esc cancels.",
+    options,
+    initialIndex,
+  });
+  if (!selected) return false;
+
+  state.provider = selected.provider;
+  state.model = selected.model;
+  state.routingMode = selected.provider === "deepseek" ? "smart" : "manual";
+  printSystemLine(`provider=${state.provider} model=${state.model} routing=${state.routingMode}`);
   return true;
 }
 
@@ -1976,7 +2145,13 @@ async function handleCommand(line, state, packageDir) {
       return true;
     }
     if (action.startsWith("model")) {
-      const selected = parseProviderModel(action.replace(/^model\s*/, ""), state.auxiliaryProvider || "grsai");
+      const modelValue = action.replace(/^model\s*/, "");
+      if (!modelValue.trim() && input.isTTY && output.isTTY && typeof input.setRawMode === "function") {
+        const changed = await pickModelRole("auxiliary", state);
+        if (!changed) printSystemLine(`auxiliary=${state.auxiliaryProvider || "grsai"}/${state.auxiliaryModel || "nano-banana-2"}`);
+        return true;
+      }
+      const selected = parseProviderModel(modelValue, state.auxiliaryProvider || "grsai");
       state.auxiliaryProvider = selected.provider || "grsai";
       state.auxiliaryModel = selected.model || state.auxiliaryModel || "nano-banana-2";
       printSystemLine(`auxiliary=${state.auxiliaryProvider}/${state.auxiliaryModel}`);
@@ -2077,15 +2252,19 @@ async function handleCommand(line, state, packageDir) {
     return true;
   }
   if (command === "venice") {
-    state.routingMode = "smart";
-    state.provider = "deepseek";
-    state.model = "";
-    state.routeProvider = "venice";
-    state.routeModel = "venice-uncensored-1-2";
-    state.mainProvider = "venice";
-    state.mainModel = "venice-uncensored-1-2";
+    const action = value || (isVeniceDefaultActive(state) ? "off" : "on");
+    if (action === "off" || action === "deepseek" || action === "default") {
+      useDeepSeekDefaults(state);
+      printSystemLine("venice=off routing=smart route=deepseek/deepseek-v4-flash main=deepseek/deepseek-v4-pro");
+      return true;
+    }
+    if (action !== "on" && action !== "venice") {
+      printAgentMessage("Usage: /venice [on|off]. No argument toggles between Venice and DeepSeek defaults.");
+      return true;
+    }
+    useVeniceDefaults(state);
     const keys = providerKeyStatus(process.cwd());
-    printSystemLine("routing=smart route=venice/venice-uncensored-1-2 main=venice/venice-uncensored-1-2");
+    printSystemLine("venice=on routing=smart route=venice/venice-uncensored-1-2 main=venice/venice-uncensored-1-2");
     if (!keys.venice) {
       printAgentMessage("Venice model roles are selected, but no Venice key is configured. Run `/auth venice` to save one.");
     }
@@ -2154,6 +2333,11 @@ async function handleCommand(line, state, packageDir) {
   }
   if (command === "spare") {
     if (!value) {
+      if (input.isTTY && output.isTTY && typeof input.setRawMode === "function") {
+        const changed = await pickModelRole("spare", state);
+        if (!changed) printSystemLine(`spare=${state.spareProvider}/${state.spareModel} reasoning=${state.spareReasoning}`);
+        return true;
+      }
       printAgentMessage(`Spare model: ${state.spareProvider}/${state.spareModel} reasoning=${state.spareReasoning}`);
       return true;
     }
@@ -2192,6 +2376,15 @@ async function handleCommand(line, state, packageDir) {
     return true;
   }
   if (command === "provider") {
+    if (!value) {
+      if (input.isTTY && output.isTTY && typeof input.setRawMode === "function") {
+        const changed = await pickProvider(state);
+        if (!changed) printSystemLine(`provider=${state.provider || "auto"} model=${state.model || "auto"}`);
+        return true;
+      }
+      printAgentMessage(`Provider: ${state.provider || "auto"}\nUse /provider deepseek|openai|qwen|venice|mock.`);
+      return true;
+    }
     state.provider = value === "auto" ? "" : value;
     printSystemLine(`provider=${state.provider || "auto"}`);
     return true;
