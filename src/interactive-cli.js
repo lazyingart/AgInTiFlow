@@ -1583,16 +1583,24 @@ async function printResumeHistory(state, { limit = 0 } = {}) {
   if (!state.sessionId) return;
   const store = new SessionStore(projectPaths(process.cwd()).sessionsDir, state.sessionId);
   const saved = await store.loadState().catch(() => null);
+  const events = await store.loadEvents().catch(() => []);
   const chat = Array.isArray(saved?.chat) ? saved.chat.filter((entry) => entry?.content) : [];
+  const metadata = `chat=${chat.length}${events.length > 0 ? ` events=${events.length}` : ""}`;
   if (chat.length === 0) {
-    printSystemLine(`resume history session=${state.sessionId} messages=0`);
+    printSystemLine(`resume history session=${state.sessionId} ${metadata}`);
+    if (events.length > 0) {
+      printSystemLine("resume note=showing chat transcript only; model/tool/run events are saved in events.jsonl and artifacts/");
+    }
     return;
   }
 
   const shown = limit > 0 ? chat.slice(-limit) : chat;
   printSystemLine(
-    `resume history session=${state.sessionId} messages=${chat.length}${limit > 0 ? ` showing=${shown.length}/${chat.length}` : ""}`
+    `resume history session=${state.sessionId} ${metadata}${limit > 0 ? ` showing=${shown.length}/${chat.length}` : ""}`
   );
+  if (events.length > chat.length) {
+    printSystemLine("resume note=showing chat transcript only; model/tool/run events are saved in events.jsonl and artifacts/");
+  }
   for (const entry of shown) printHistoryEntry(entry);
 }
 

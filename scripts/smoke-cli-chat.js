@@ -303,8 +303,11 @@ try {
   if (!latest.stdout.includes("session=") || !latest.stdout.includes("Interactive agent chat")) {
     throw new Error("bare aginti resume did not open the latest session interactively");
   }
-  if (!latest.stdout.includes("resume history") || !latest.stdout.includes("Mock run complete")) {
+  if (!latest.stdout.includes("resume history") || !latest.stdout.includes("chat=") || !latest.stdout.includes("Mock run complete")) {
     throw new Error("bare aginti resume did not preview saved chat history");
+  }
+  if (!latest.stdout.includes("resume note=showing chat transcript only")) {
+    throw new Error("bare aginti resume did not clarify that tool/run events are separate from chat history");
   }
   if (latest.stdout.includes("showing=") || latest.stdout.includes("…")) {
     throw new Error("resume history should render full saved messages instead of compact previews");
@@ -341,6 +344,7 @@ try {
           "mock-file-write",
           "run-status",
           "resume-latest",
+          "resume-history-metadata",
           "resume-history-full",
         ],
       },
