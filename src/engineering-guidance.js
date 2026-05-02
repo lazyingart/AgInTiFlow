@@ -11,7 +11,7 @@ const LANGUAGE_HINTS = [
     id: "python",
     pattern: /\b(python|pytest|pip|uv|poetry|conda|venv|jupyter|fastapi|django|flask|pandas|numpy)\b/i,
     text:
-      "Python: inspect pyproject/requirements, prefer project-local venv/uv/conda or Docker, run python -m pytest or focused module checks, avoid global package installs on host.",
+      "Python: inspect pyproject/requirements, prefer project-local venv/uv/conda or Docker, run python -m pytest or focused module checks, avoid global package installs on host, and check Python caches recursively with find . -type d -name __pycache__ -o -name '*.pyc' before claiming none exist.",
   },
   {
     id: "rust",
@@ -98,7 +98,10 @@ export function engineeringGuidanceForTask(goal = "", taskProfile = "auto") {
     "Build a compact context pack before major edits: project instructions, manifests/scripts, git status/diff, relevant symbols/search hits, target files, and the narrowest checks. Do not paste whole trees or huge files into model context.",
     "For system repair, act like a doctor: gather evidence first, avoid silent destructive host changes, prefer Docker or project-local scripts for installs, and make every stronger action explicit in logs.",
     "Never send sudo passwords or wait at interactive password prompts. If host-level permission is truly required, stop that path, explain the blocker, and provide a manual command instead of hanging.",
+    "Shell commands already start in the configured workspace. Prefer workspace-relative commands such as python3 scripts/check.py or cd subdir && make; do not prefix commands with absolute host cd paths unless the tool explicitly requires it.",
+    "When you create or fix scripts, reports, tables, generated files, or analysis outputs, inspect the actual output. If it contains obvious duplicates, noisy rows, stale names, broken markdown, or contradictions, patch the source/output and rerun the check rather than merely explaining the defect in the report.",
     "Before claiming a coding task is finished, run git status --short when git is available. Leave the worktree clean, or explicitly report and justify each remaining untracked/unstaged artifact.",
+    "Do not claim there are no transient artifacts unless you checked recursively for the relevant stack, such as find . -type d -name __pycache__ -o -name '*.pyc' for Python. A clean git status means tracked work is clean; ignored caches such as __pycache__ may still exist and should be removed or described accurately if relevant.",
     "For generated screenshots, images, PDFs, reports, archives, and app packages, choose a descriptive non-conflicting workspace path when the user did not specify one. Verify the file still exists after cleanup before claiming it was saved.",
   ];
 

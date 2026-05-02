@@ -1,6 +1,6 @@
 # Supervised Capability Curriculum
 
-AgInTiFlow should be trained and verified by supervising real tasks, not by trusting the agent's final summary. Each curriculum run uses a clean project under `../Supervise-AgInTi-Projects`, runs AgInTiFlow through a persistent tmux session, and verifies artifacts from outside the agent.
+AgInTiFlow should be trained and verified by supervising real tasks, not by trusting the agent's final summary. Each curriculum run uses a clean project under `~/ProjectsLFS/Aginti-Test/`, runs AgInTiFlow through a persistent tmux session, and verifies artifacts from outside the agent.
 
 ## Verification Contract
 
@@ -16,7 +16,7 @@ Every supervised task must end with independent checks:
 
 | Profile | Example supervised task | Required evidence |
 | --- | --- | --- |
-| `auto` | Mixed request: inspect folder, write a note, run a safe command | Correct profile inference, real file, concise final answer |
+| `auto` | Mixed request: inspect a messy folder, infer the purpose, write a report, run checks | Correct profile inference, durable files, useful checks, clean git status |
 | `code` | Add a CLI feature with tests | Patch diff, focused test output, git status |
 | `large-codebase` | Fix a cross-file bug in a generated multi-package repo | Codebase map, targeted reads, focused then broader checks |
 | `app` | Build a small usable app from scratch | Real app files, build/preview/install check, durable screenshot or demo |
@@ -82,3 +82,7 @@ Use this only with explicit workspace boundaries and clear permission mode. The 
 ## Current Lesson From Android Supervision
 
 Canvas preview alone is not proof that an artifact was saved. AgInTiFlow now persists canvas file paths into session artifacts and its Android workflow asks for durable screenshot paths. Supervisors must still verify the workspace file or session artifact exists before reporting success.
+
+## Current Lesson From Auto Supervision
+
+For vague daily tasks, `auto` must borrow specialized habits without being told. The Pocket Greenhouse homework exposed two quality gates: generated output must be inspected and polished, not merely described, and final hygiene claims must use stack-specific recursive checks. AgInTiFlow now explicitly asks the model to fix obvious duplicates/noisy rows/stale summaries and to check Python transient files recursively before claiming none exist.

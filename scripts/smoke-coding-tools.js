@@ -116,6 +116,22 @@ try {
   assert(guidance.includes("Python:"), "engineering guidance did not include Python stack advice");
   assert(guidance.includes("System/shell:"), "engineering guidance did not include system stack advice");
   assert(
+    guidance.includes("workspace-relative commands"),
+    "engineering guidance did not include workspace-relative shell advice"
+  );
+  assert(
+    guidance.includes("obvious duplicates"),
+    "engineering guidance did not include output-polish advice"
+  );
+  assert(
+    guidance.includes("clean git status means tracked work is clean"),
+    "engineering guidance did not distinguish git-clean from transient artifacts"
+  );
+  assert(
+    guidance.includes("find . -type d -name __pycache__"),
+    "engineering guidance did not include recursive Python transient checks"
+  );
+  assert(
     shouldRunParallelScouts(
       {
         provider: "deepseek",

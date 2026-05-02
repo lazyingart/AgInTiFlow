@@ -108,7 +108,9 @@ Completed supervised example:
 - Installed and launched on emulator.
 - Screenshot was first lost because it was temporary; AgInTiFlow was patched to persist canvas file artifacts.
 - A durable screenshot was then saved at `screenshots/tipsplit-screenshot-20260503-063332.png`.
+- Auto Pocket Greenhouse task in `/home/lachlan/ProjectsLFS/Aginti-Test/TASK-Profile-Auto`.
+- AgInTiFlow inferred a messy sensor folder, fixed the Python analysis, generated README/REPORT/CSV outputs, committed the result, corrected duplicated risk rows, and removed transient Python caches after supervisor review.
 
 Next recommended training run:
 
-- `TASK-Profile-Auto`: give a mixed, vague task that requires file creation, shell inspection, markdown/report output, and a small verification step. Grade whether `auto` borrows the right profile habits without being told.
+- `TASK-Profile-Code`: seed a small multi-language repo with misleading names and broken tests. Grade inspect/search/read discipline, patch quality, focused checks, and clean git handling.
