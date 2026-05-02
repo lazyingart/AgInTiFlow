@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { SessionStore } from "../src/session-store.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-api-smoke-"));
@@ -165,6 +166,38 @@ try {
 
   const chat = await fetchJson(`/api/sessions/${encodeURIComponent(runStart.sessionId)}/chat`);
   if (!Array.isArray(chat.chat) || chat.chat.length < 2) throw new Error("chat history was not persisted");
+  if (!Array.isArray(chat.inbox)) throw new Error("chat endpoint did not include shared inbox state");
+
+  const queued = await fetchJson(`/api/sessions/${encodeURIComponent(runStart.sessionId)}/inbox`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content: "continue from web inbox smoke", priority: "asap" }),
+  });
+  if (!queued.item?.id || queued.item.priority !== "asap") throw new Error("inbox queue endpoint did not return an ASAP item");
+
+  const inbox = await fetchJson(`/api/sessions/${encodeURIComponent(runStart.sessionId)}/inbox`);
+  if (!inbox.items?.some((item) => item.id === queued.item.id)) throw new Error("inbox endpoint did not list queued item");
+
+  const edited = await fetchJson(
+    `/api/sessions/${encodeURIComponent(runStart.sessionId)}/inbox/${encodeURIComponent(queued.item.id)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "edited web inbox smoke" }),
+    }
+  );
+  if (!edited.item?.content.includes("edited web inbox smoke")) throw new Error("inbox edit endpoint did not persist content");
+
+  const deletedInbox = await fetchJson(
+    `/api/sessions/${encodeURIComponent(runStart.sessionId)}/inbox/${encodeURIComponent(queued.item.id)}`,
+    {
+      method: "DELETE",
+    }
+  );
+  if (!deletedInbox.ok) throw new Error("inbox delete endpoint failed");
+  const inboxStore = new SessionStore(path.join(runtimeDir, ".sessions"), runStart.sessionId);
+  const remainingInbox = await inboxStore.loadInbox();
+  if (remainingInbox.some((item) => item.id === queued.item.id)) throw new Error("inbox delete endpoint left item on disk");
 
   const renamed = await fetchJson(`/api/sessions/${encodeURIComponent(runStart.sessionId)}`, {
     method: "PATCH",
@@ -248,6 +281,10 @@ try {
           "/api/sandbox/preflight",
           "/api/runs",
           "/api/sessions/:id/chat",
+          "/api/sessions/:id/inbox",
+          "POST /api/sessions/:id/inbox",
+          "PATCH /api/sessions/:id/inbox/:itemId",
+          "DELETE /api/sessions/:id/inbox/:itemId",
           "PATCH /api/sessions/:id",
           "POST /api/sessions/:id/auto-title",
           "DELETE /api/sessions/:id",

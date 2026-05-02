@@ -313,10 +313,15 @@
               placeholder="Continue the selected conversation here."
             ></textarea>
             <p class="chat-shortcuts subtle" data-i18n="chatShortcutHelp">
-              Enter sends · Ctrl+J inserts a newline · Tab queues while the agent is running
+              Enter sends · Shift+Enter adds a newline · use buttons for pipe/queue control
             </p>
+            <div id="chat-pending" class="chat-pending" hidden></div>
             <div class="actions">
               <button type="submit" data-i18n="sendMessageButton">Send message</button>
+              <button id="pipe-message" type="button" class="secondary" data-i18n="pipeMessageButton">Pipe to run</button>
+              <button id="queue-after-finish" type="button" class="secondary" data-i18n="queueAfterFinishButton">
+                Queue after finish
+              </button>
               <span id="chat-status" class="subtle"></span>
             </div>
           </form>

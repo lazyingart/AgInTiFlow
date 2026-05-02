@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.12.7",
+  "version": "0.12.8",
   "type": "module",
   "description": "AgInTiFlow is a resumable Playwright website-control agent with OpenAI-compatible tool calling.",
   "license": "Apache-2.0",

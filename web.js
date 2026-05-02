@@ -349,14 +349,47 @@ async function loadChat(sessionId) {
 
   if (!state && !meta) return null;
 
+  const inbox = await store.loadInbox().catch(() => []);
   return {
     sessionId,
     goal: state?.goal || meta?.goal || "",
     title: meta?.title || "",
     provider: state?.provider || meta?.provider || "",
     model: state?.model || meta?.model || "",
+    status: meta?.status || "",
+    inbox,
     chat: deriveChatFromState(state, meta),
   };
+}
+
+function pushActiveInboxLog(sessionId, message, data = {}) {
+  const active = runs.get(sessionId);
+  if (active?.status !== "running") return;
+  active.logs.push({
+    at: new Date().toISOString(),
+    kind: "event",
+    message,
+    data,
+  });
+  active.updatedAt = new Date().toISOString();
+  db.upsertSession(active);
+}
+
+async function loadInboxSession(sessionId) {
+  if (!isSafeSessionId(sessionId)) {
+    return { error: "Invalid session id.", status: 400 };
+  }
+
+  const data = await loadChat(sessionId);
+  if (!data) {
+    return { error: "Session not found.", status: 404 };
+  }
+
+  return { store: sessionStore(sessionId), data };
+}
+
+function queuedMessagePreview(content) {
+  return String(content || "").replace(/\s+/g, " ").trim().slice(0, 180);
 }
 
 function normalizeSessionTitle(title) {
@@ -687,6 +720,128 @@ app.get("/api/sessions/:sessionId/chat", async (req, res) => {
   res.json(data);
 });
 
+app.get("/api/sessions/:sessionId/inbox", async (req, res) => {
+  const loaded = await loadInboxSession(req.params.sessionId);
+  if (loaded.error) {
+    res.status(loaded.status || 500).json({ error: loaded.error });
+    return;
+  }
+
+  res.json({
+    ok: true,
+    sessionId: req.params.sessionId,
+    items: loaded.data.inbox || [],
+  });
+});
+
+app.post("/api/sessions/:sessionId/inbox", async (req, res) => {
+  const loaded = await loadInboxSession(req.params.sessionId);
+  if (loaded.error) {
+    res.status(loaded.status || 500).json({ error: loaded.error });
+    return;
+  }
+
+  const content = String(req.body?.content || "").trim();
+  if (!content) {
+    res.status(400).json({ error: "Message content is required." });
+    return;
+  }
+
+  const priority = req.body?.priority === "normal" ? "normal" : "asap";
+  const item = await loaded.store.appendInbox(content, { source: "web", priority });
+  await loaded.store
+    .appendEvent("conversation.queued_input", {
+      itemId: item?.id,
+      priority,
+      source: "web",
+      preview: queuedMessagePreview(content),
+    })
+    .catch(() => {});
+  pushActiveInboxLog(req.params.sessionId, "conversation.queued_input", {
+    itemId: item?.id,
+    priority,
+    source: "web",
+    preview: queuedMessagePreview(content),
+  });
+
+  res.json({ ok: true, sessionId: req.params.sessionId, item });
+});
+
+app.patch("/api/sessions/:sessionId/inbox/:itemId", async (req, res) => {
+  const loaded = await loadInboxSession(req.params.sessionId);
+  if (loaded.error) {
+    res.status(loaded.status || 500).json({ error: loaded.error });
+    return;
+  }
+
+  const content = String(req.body?.content || "").trim();
+  if (!content) {
+    res.status(400).json({ error: "Message content is required." });
+    return;
+  }
+
+  const items = await loaded.store.loadInbox();
+  const index = items.findIndex((item) => item.id === req.params.itemId);
+  if (index < 0) {
+    res.status(404).json({ error: "Queued message not found. It may already have been consumed by the agent." });
+    return;
+  }
+
+  const item = {
+    ...items[index],
+    content,
+    updatedAt: new Date().toISOString(),
+    editedBy: "web",
+  };
+  items[index] = item;
+  await loaded.store.saveInbox(items);
+  await loaded.store
+    .appendEvent("conversation.queued_input_edited", {
+      itemId: item.id,
+      source: "web",
+      preview: queuedMessagePreview(content),
+    })
+    .catch(() => {});
+  pushActiveInboxLog(req.params.sessionId, "conversation.queued_input_edited", {
+    itemId: item.id,
+    source: "web",
+    preview: queuedMessagePreview(content),
+  });
+
+  res.json({ ok: true, sessionId: req.params.sessionId, item });
+});
+
+app.delete("/api/sessions/:sessionId/inbox/:itemId", async (req, res) => {
+  const loaded = await loadInboxSession(req.params.sessionId);
+  if (loaded.error) {
+    res.status(loaded.status || 500).json({ error: loaded.error });
+    return;
+  }
+
+  const items = await loaded.store.loadInbox();
+  const item = items.find((candidate) => candidate.id === req.params.itemId);
+  if (!item) {
+    res.status(404).json({ error: "Queued message not found. It may already have been consumed by the agent." });
+    return;
+  }
+
+  await loaded.store.saveInbox(items.filter((candidate) => candidate.id !== req.params.itemId));
+  await loaded.store
+    .appendEvent("conversation.queued_input_removed", {
+      itemId: item.id,
+      source: "web",
+      preview: queuedMessagePreview(item.content),
+    })
+    .catch(() => {});
+  pushActiveInboxLog(req.params.sessionId, "conversation.queued_input_removed", {
+    itemId: item.id,
+    source: "web",
+    preview: queuedMessagePreview(item.content),
+  });
+
+  res.json({ ok: true, sessionId: req.params.sessionId, itemId: item.id });
+});
+
 app.patch("/api/sessions/:sessionId", async (req, res) => {
   const sessionId = req.params.sessionId;
   if (!isSafeSessionId(sessionId)) {
@@ -795,17 +950,24 @@ app.post("/api/sessions/:sessionId/messages", async (req, res) => {
   const active = runs.get(sessionId);
   if (active?.status === "running") {
     const store = sessionStore(sessionId);
-    await store.appendInbox(content, { source: "web" });
-    await store.appendEvent("conversation.queued_input", { prompt: content, source: "web" }).catch(() => {});
+    const item = await store.appendInbox(content, { source: "web", priority: "asap" });
+    await store
+      .appendEvent("conversation.queued_input", {
+        itemId: item?.id,
+        priority: "asap",
+        source: "web",
+        preview: queuedMessagePreview(content),
+      })
+      .catch(() => {});
     active.logs.push({
       at: new Date().toISOString(),
       kind: "event",
       message: "conversation.queued_input",
-      data: { prompt: content, source: "web" },
+      data: { itemId: item?.id, priority: "asap", source: "web", preview: queuedMessagePreview(content) },
     });
     active.updatedAt = new Date().toISOString();
     db.upsertSession(active);
-    res.json({ sessionId, queued: true });
+    res.json({ sessionId, queued: true, item });
     return;
   }
 

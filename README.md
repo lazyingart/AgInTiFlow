@@ -365,7 +365,7 @@ Package policy values:
 
 Toolchain commands such as `python3 plot.py`, `latexmk -pdf paper.tex`, and `pdflatex -interaction=nonstopmode -halt-on-error paper.tex` are allowlisted only when the shell tool is enabled. In Docker mode the project folder is mounted as `/workspace`; any file written to `/workspace/report.pdf` appears on the host as `<your-project>/report.pdf`. CLI runs print both the host workspace and the Docker mapping before execution. File and canvas tools accept both normal relative paths and Docker virtual paths like `/workspace/report.pdf`, while other absolute host paths remain blocked.
 
-The web chat mirrors the CLI session store. Enter sends, Ctrl+J inserts a newline, Tab submits/queues the message, and Esc stops the active run. CLI live input has two pending lanes: ASAP pipe messages (`→`) are written to `.sessions/<session-id>/inbox.jsonl` and drained before normal queued items at safe runner boundaries, while after-finish messages (`↳`) run as the next prompt once the current task fully finishes. Generated local sites should use the built-in `preview_workspace` or `open_workspace_file` tools; AgInTiFlow avoids transient localhost servers inside Docker because those containers stop between commands and their ports are not host-published.
+The web chat mirrors the CLI session store while keeping browser-native controls. Launch `aginti web` from the same project folder and it reads the same `.sessions/` history as `aginti` and `aginti resume`. In the web UI, Enter sends and Shift+Enter adds a newline. `Pipe to run` writes an ASAP message (`→`) to `.sessions/<session-id>/inbox.jsonl` so an active CLI or web agent can consume it at the next safe boundary. `Queue after finish` stores a browser-local next prompt (`↳`) and starts it after the current web run finishes; queued items have Edit and Remove buttons. Esc or Stop stops active web runs. Generated local sites should use the built-in `preview_workspace` or `open_workspace_file` tools; AgInTiFlow avoids transient localhost servers inside Docker because those containers stop between commands and their ports are not host-published.
 
 Safe preflight endpoints:
 
@@ -376,6 +376,7 @@ curl -X POST http://127.0.0.1:3210/api/sandbox/preflight \
   -d '{"sandboxMode":"docker-workspace","buildImage":true}'
 curl http://127.0.0.1:3210/api/workspace/changes
 curl "http://127.0.0.1:3210/api/sessions/<session-id>/artifacts"
+curl "http://127.0.0.1:3210/api/sessions/<session-id>/inbox"
 ```
 
 These endpoints report Docker/image/workspace readiness, recent sandbox logs, file-change provenance, and renderable artifact metadata without returning API keys or npm tokens. Artifact content is loaded on demand through guarded session/workspace reads.

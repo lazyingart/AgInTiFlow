@@ -122,8 +122,18 @@ const translations = {
     sendingStatus: "Sending...",
     runningStatus: "Running...",
     queuedStatus: "Queued for the running agent.",
+    queuedAsapStatus: "Piped into the shared session inbox.",
+    queuedAfterFinishStatus: "Queued for the next web run.",
     failedContinue: "Failed to continue the conversation.",
-    chatShortcutHelp: "Enter sends · Ctrl+J inserts a newline · Tab queues while the agent is running",
+    chatShortcutHelp: "Enter sends · Shift+Enter adds a newline · use buttons for pipe/queue control",
+    pipeMessageButton: "Pipe to run",
+    queueAfterFinishButton: "Queue after finish",
+    pendingMessagesTitle: "Pending messages",
+    asapQueueLabel: "ASAP pipe",
+    afterFinishQueueLabel: "After finish",
+    editQueuedMessage: "Edit",
+    removeQueuedMessage: "Remove",
+    queuedConsumedHint: "ASAP pipe messages are shared with CLI and consumed at the next safe agent boundary.",
     conversationMenuLabel: "Manage conversations",
     manageConversationsTitle: "Manage conversations",
     manageConversationsHelp: "Rename, auto-rename, or delete saved chat history.",
@@ -671,7 +681,10 @@ const sessionSelectEl = document.querySelector("#session-select");
 const chatThreadEl = document.querySelector("#chat-thread");
 const chatFormEl = document.querySelector("#chat-form");
 const chatInputEl = document.querySelector("#chat-input");
+const chatPendingEl = document.querySelector("#chat-pending");
 const chatStatusEl = document.querySelector("#chat-status");
+const pipeMessageButton = document.querySelector("#pipe-message");
+const queueAfterFinishButton = document.querySelector("#queue-after-finish");
 const manageSessionsButton = document.querySelector("#manage-sessions");
 const openArtifactsButton = document.querySelector("#open-artifacts");
 const artifactBadgeEl = document.querySelector("#artifact-badge");
@@ -714,6 +727,9 @@ let pollTimer = null;
 let saveTimer = null;
 let lastChatEntries = [];
 let lastSessions = [];
+let pendingInboxItems = [];
+let pendingAfterFinishItems = [];
+let flushingAfterFinish = false;
 let lastKeyStatus = null;
 let lastWrappers = [];
 let lastSandbox = null;
@@ -1270,6 +1286,233 @@ function renderChat(chatEntries) {
   chatThreadEl.scrollTop = chatThreadEl.scrollHeight;
 }
 
+function afterFinishQueueKey(sessionId = currentSessionId) {
+  return `agintiflow.web.afterFinishQueue.${sessionId || "none"}`;
+}
+
+function loadAfterFinishQueue(sessionId = currentSessionId) {
+  if (!sessionId) return [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(afterFinishQueueKey(sessionId)) || "[]");
+    return Array.isArray(parsed) ? parsed.filter((item) => item?.id && item?.content) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveAfterFinishQueue(sessionId = currentSessionId) {
+  if (!sessionId) return;
+  localStorage.setItem(afterFinishQueueKey(sessionId), JSON.stringify(pendingAfterFinishItems));
+}
+
+function newLocalQueueId() {
+  if (globalThis.crypto?.randomUUID) return `after-${globalThis.crypto.randomUUID()}`;
+  return `after-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function compactMessage(content, limit = 220) {
+  const text = String(content || "").replace(/\s+/g, " ").trim();
+  return text.length > limit ? `${text.slice(0, limit - 1)}...` : text;
+}
+
+function renderPendingMessages() {
+  if (!chatPendingEl) return;
+  const inboxItems = pendingInboxItems || [];
+  const afterItems = pendingAfterFinishItems || [];
+  if (inboxItems.length === 0 && afterItems.length === 0) {
+    chatPendingEl.hidden = true;
+    chatPendingEl.innerHTML = "";
+    return;
+  }
+
+  const section = (label, items, kind) => {
+    if (!items.length) return "";
+    return `
+      <div class="pending-section">
+        <div class="pending-label">${escapeHtml(label)}</div>
+        ${items
+          .map(
+            (item) => `
+              <div class="pending-item">
+                <div class="pending-copy">
+                  <span class="pending-kind ${kind}">${kind === "asap" ? "→" : "↳"}</span>
+                  <span>${escapeHtml(compactMessage(item.content))}</span>
+                </div>
+                <div class="pending-actions">
+                  <button type="button" class="mini-button" data-edit-${kind}="${escapeHtml(item.id)}">${t(
+                    "editQueuedMessage"
+                  )}</button>
+                  <button type="button" class="mini-button danger" data-remove-${kind}="${escapeHtml(item.id)}">${t(
+                    "removeQueuedMessage"
+                  )}</button>
+                </div>
+              </div>
+            `
+          )
+          .join("")}
+      </div>
+    `;
+  };
+
+  chatPendingEl.hidden = false;
+  chatPendingEl.innerHTML = `
+    <div class="pending-header">
+      <strong>${t("pendingMessagesTitle")}</strong>
+      <span>${t("queuedConsumedHint")}</span>
+    </div>
+    ${section(t("asapQueueLabel"), inboxItems, "asap")}
+    ${section(t("afterFinishQueueLabel"), afterItems, "after")}
+  `;
+}
+
+async function refreshInbox() {
+  if (!currentSessionId) {
+    pendingInboxItems = [];
+    pendingAfterFinishItems = [];
+    renderPendingMessages();
+    return;
+  }
+
+  pendingAfterFinishItems = loadAfterFinishQueue(currentSessionId);
+  const response = await fetch(`/api/sessions/${encodeURIComponent(currentSessionId)}/inbox`);
+  if (!response.ok) {
+    pendingInboxItems = [];
+    renderPendingMessages();
+    return;
+  }
+  const data = await response.json();
+  pendingInboxItems = data.items || [];
+  renderPendingMessages();
+}
+
+async function updateInboxItem(itemId, content) {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(currentSessionId)}/inbox/${encodeURIComponent(itemId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || t("failedContinue"));
+  await refreshInbox();
+}
+
+async function removeInboxItem(itemId) {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(currentSessionId)}/inbox/${encodeURIComponent(itemId)}`, {
+    method: "DELETE",
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || t("failedContinue"));
+  await refreshInbox();
+}
+
+function editAfterFinishItem(itemId) {
+  const item = pendingAfterFinishItems.find((candidate) => candidate.id === itemId);
+  if (!item) return;
+  pendingAfterFinishItems = pendingAfterFinishItems.filter((candidate) => candidate.id !== itemId);
+  saveAfterFinishQueue();
+  chatInputEl.value = item.content;
+  chatInputEl.focus();
+  renderPendingMessages();
+}
+
+function removeAfterFinishItem(itemId) {
+  pendingAfterFinishItems = pendingAfterFinishItems.filter((candidate) => candidate.id !== itemId);
+  saveAfterFinishQueue();
+  renderPendingMessages();
+}
+
+function queueAfterFinishFromInput() {
+  if (!currentSessionId) {
+    chatStatusEl.textContent = t("selectSessionFirst");
+    return;
+  }
+  const content = chatInputEl.value.trim();
+  if (!content) {
+    chatStatusEl.textContent = t("messageRequired");
+    return;
+  }
+  pendingAfterFinishItems = [
+    ...pendingAfterFinishItems,
+    {
+      id: newLocalQueueId(),
+      content,
+      timestamp: new Date().toISOString(),
+      source: "web",
+    },
+  ];
+  saveAfterFinishQueue();
+  chatInputEl.value = "";
+  chatStatusEl.textContent = t("queuedAfterFinishStatus");
+  renderPendingMessages();
+}
+
+async function pipeMessageFromInput() {
+  if (!currentSessionId) {
+    chatStatusEl.textContent = t("selectSessionFirst");
+    return;
+  }
+  const content = chatInputEl.value.trim();
+  if (!content) {
+    chatStatusEl.textContent = t("messageRequired");
+    return;
+  }
+
+  chatStatusEl.textContent = t("sendingStatus");
+  const response = await fetch(`/api/sessions/${encodeURIComponent(currentSessionId)}/inbox`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content, priority: "asap" }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    chatStatusEl.textContent = data.error || t("failedContinue");
+    return;
+  }
+  chatInputEl.value = "";
+  chatStatusEl.textContent = t("queuedAsapStatus");
+  pendingInboxItems = data.item ? [...pendingInboxItems, data.item] : pendingInboxItems;
+  renderPendingMessages();
+  await refreshInbox();
+}
+
+async function flushAfterFinishQueue() {
+  if (!currentSessionId || flushingAfterFinish || currentRunStatus === "running" || pendingAfterFinishItems.length === 0) return;
+  flushingAfterFinish = true;
+  const next = pendingAfterFinishItems[0];
+  pendingAfterFinishItems = pendingAfterFinishItems.slice(1);
+  saveAfterFinishQueue();
+  renderPendingMessages();
+
+  try {
+    const response = await fetch(`/api/sessions/${encodeURIComponent(currentSessionId)}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...formPayload(),
+        content: next.content,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || t("failedContinue"));
+    currentSessionId = data.sessionId;
+    currentRunStatus = data.queued ? currentRunStatus : "running";
+    updateStopRunButton();
+    chatStatusEl.textContent = data.queued ? t("queuedStatus") : t("runningStatus");
+    await refreshSessions();
+    await refreshChat();
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(refreshRun, 1500);
+    await refreshRun();
+  } catch (error) {
+    pendingAfterFinishItems = [next, ...pendingAfterFinishItems];
+    saveAfterFinishQueue();
+    renderPendingMessages();
+    chatStatusEl.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    flushingAfterFinish = false;
+  }
+}
+
 function artifactReadKey(sessionId = currentSessionId) {
   return `agintiflow.artifacts.readIds.${sessionId || "none"}`;
 }
@@ -1682,6 +1925,7 @@ async function refreshRun() {
   runMetaEl.textContent = `${run.status} · ${run.sessionId}`;
   renderLogs(run);
   await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
+  await refreshInbox();
 
   if (run.status === "finished" || run.status === "failed" || run.status === "stopped") {
     clearInterval(pollTimer);
@@ -1690,6 +1934,7 @@ async function refreshRun() {
     await refreshSessions();
     await refreshWorkspaceChanges();
     await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
+    if (run.status === "finished") await flushAfterFinishQueue();
   }
 }
 
@@ -1711,6 +1956,9 @@ async function stopCurrentRun() {
 
 async function refreshChat() {
   if (!currentSessionId) {
+    pendingInboxItems = [];
+    pendingAfterFinishItems = [];
+    renderPendingMessages();
     renderChat([]);
     return;
   }
@@ -1722,6 +1970,9 @@ async function refreshChat() {
   }
 
   const data = await response.json();
+  pendingInboxItems = data.inbox || [];
+  pendingAfterFinishItems = loadAfterFinishQueue(currentSessionId);
+  renderPendingMessages();
   renderChat(data.chat || []);
 }
 
@@ -2019,24 +2270,54 @@ form.addEventListener("input", schedulePreferenceSave);
 form.addEventListener("change", schedulePreferenceSave);
 
 chatInputEl.addEventListener("keydown", (event) => {
-  if (event.key === "j" && event.ctrlKey && !event.metaKey && !event.altKey) {
-    event.preventDefault();
-    const start = chatInputEl.selectionStart ?? chatInputEl.value.length;
-    const end = chatInputEl.selectionEnd ?? chatInputEl.value.length;
-    chatInputEl.value = `${chatInputEl.value.slice(0, start)}\n${chatInputEl.value.slice(end)}`;
-    chatInputEl.selectionStart = chatInputEl.selectionEnd = start + 1;
-    return;
-  }
-
-  if (event.key === "Tab") {
-    event.preventDefault();
-    chatFormEl.requestSubmit();
-    return;
-  }
-
   if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
     event.preventDefault();
     chatFormEl.requestSubmit();
+  }
+});
+
+pipeMessageButton?.addEventListener("click", () => {
+  pipeMessageFromInput().catch((error) => {
+    chatStatusEl.textContent = String(error);
+  });
+});
+
+queueAfterFinishButton?.addEventListener("click", queueAfterFinishFromInput);
+
+chatPendingEl?.addEventListener("click", (event) => {
+  const target = event.target.closest("button");
+  if (!target) return;
+
+  const editAsap = target.dataset.editAsap;
+  const removeAsap = target.dataset.removeAsap;
+  const editAfter = target.dataset.editAfter;
+  const removeAfter = target.dataset.removeAfter;
+
+  if (editAsap) {
+    const item = pendingInboxItems.find((candidate) => candidate.id === editAsap);
+    const next = prompt(t("editQueuedMessage"), item?.content || "");
+    if (next !== null) {
+      updateInboxItem(editAsap, next).catch((error) => {
+        chatStatusEl.textContent = String(error);
+      });
+    }
+    return;
+  }
+
+  if (removeAsap) {
+    removeInboxItem(removeAsap).catch((error) => {
+      chatStatusEl.textContent = String(error);
+    });
+    return;
+  }
+
+  if (editAfter) {
+    editAfterFinishItem(editAfter);
+    return;
+  }
+
+  if (removeAfter) {
+    removeAfterFinishItem(removeAfter);
   }
 });
 
@@ -2108,10 +2389,13 @@ sessionSelectEl.addEventListener("change", async () => {
   currentSessionId = sessionSelectEl.value;
   if (!currentSessionId) {
     currentRunStatus = "";
+    pendingInboxItems = [];
+    pendingAfterFinishItems = [];
     updateStopRunButton();
     runMetaEl.textContent = "";
     setLogs(t("noRunSelected"), "empty");
     renderChat([]);
+    renderPendingMessages();
     artifactItems = [];
     selectedArtifactId = "";
     renderArtifactShell();
@@ -2158,18 +2442,8 @@ chatFormEl.addEventListener("submit", async (event) => {
   updateStopRunButton();
   chatInputEl.value = "";
   chatStatusEl.textContent = data.queued ? t("queuedStatus") : t("runningStatus");
-  if (data.queued) {
-    renderChat([
-      ...lastChatEntries,
-      {
-        role: "user",
-        content,
-        at: new Date().toISOString(),
-      },
-    ]);
-  }
   await refreshSessions();
-  if (!data.queued) await refreshChat();
+  await refreshChat();
   await refreshWorkspaceChanges();
   await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
 

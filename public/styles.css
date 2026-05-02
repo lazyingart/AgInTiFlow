@@ -742,6 +742,108 @@ button.danger {
   line-height: 1.35;
 }
 
+.chat-pending {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(240, 253, 250, 0.9), rgba(255, 251, 235, 0.72)),
+    rgba(255, 255, 255, 0.78);
+}
+
+.pending-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: baseline;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.pending-header strong,
+.pending-label {
+  color: var(--ink);
+}
+
+.pending-section {
+  display: grid;
+  gap: 7px;
+}
+
+.pending-label {
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pending-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid rgba(15, 118, 110, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.pending-copy {
+  min-width: 0;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  color: var(--ink);
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.pending-kind {
+  flex: 0 0 auto;
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.pending-kind.asap {
+  color: #075985;
+  background: rgba(14, 165, 233, 0.14);
+}
+
+.pending-kind.after {
+  color: #92400e;
+  background: rgba(245, 158, 11, 0.16);
+}
+
+.pending-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.mini-button {
+  min-height: auto;
+  padding: 5px 8px;
+  border-radius: 9px;
+  font-size: 0.76rem;
+  background: rgba(15, 118, 110, 0.08);
+  color: #0f766e;
+  box-shadow: none;
+}
+
+.mini-button.danger {
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.08);
+}
+
 .modal {
   width: min(720px, calc(100% - 28px));
   max-width: 100%;
@@ -1150,6 +1252,14 @@ button.danger {
   .checks,
   .wrapper-controls {
     grid-template-columns: 1fr;
+  }
+
+  .pending-item {
+    grid-template-columns: 1fr;
+  }
+
+  .pending-actions {
+    justify-content: flex-start;
   }
 
   .panel {

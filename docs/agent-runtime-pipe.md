@@ -7,9 +7,11 @@ AgInTiFlow keeps CLI and web runs equivalent by using the project folder as the 
 - Web settings database: `<project>/.sessions/web-state.sqlite`.
 - Runtime inbox: `<project>/.sessions/<session-id>/inbox.jsonl`.
 
-When a run is active, the web chat and `aginti queue <session-id> "..."` append messages to the inbox instead of trying to mutate the running process directly. The runner drains the inbox at safe boundaries: before each model step and after tool execution. This mirrors the event-queue style used by mature agent UIs while keeping the backend decoupled from any specific frontend.
+When a run is active, the web chat and `aginti queue <session-id> "..."` append messages to the inbox instead of trying to mutate the running process directly. The web API exposes `GET /api/sessions/:id/inbox`, `POST /api/sessions/:id/inbox`, `PATCH /api/sessions/:id/inbox/:itemId`, and `DELETE /api/sessions/:id/inbox/:itemId` so browser users can inspect, edit, or remove pending pipe messages before the runner consumes them. The runner drains the inbox at safe boundaries: before each model step and after tool execution. This mirrors the event-queue style used by mature agent UIs while keeping the backend decoupled from any specific frontend.
 
 The interactive CLI keeps the input panel visible while a run is working. Enter sends the current draft as an ASAP pipe message and displays it as `→`; the runner drains those messages before normal inbox items. Tab stores the draft as an after-finish queue item and displays it as `↳`; those prompts run only after the current run completes. Alt+Up moves the last pending `→` message back into the editor, and Shift+Left moves the last pending `↳` message back into the editor. The current command cwd is rendered below the input panel in both idle and running states.
+
+The web UI uses a related but browser-appropriate pattern. Enter sends and Shift+Enter adds a newline. `Pipe to run` writes an ASAP inbox item shared with CLI. `Queue after finish` keeps a browser-local next prompt and starts it after the current web-owned run finishes. Both lanes render in a pending panel with Edit and Remove buttons instead of terminal-only keybindings.
 
 Runs can be stopped without corrupting session state. The CLI listens for Esc or Ctrl+C during an active run, and the web UI exposes a Stop button plus Esc. Both paths send an abort signal, persist `session.stopped`, and leave the session resumable through `aginti resume <session-id>`.
 
