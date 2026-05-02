@@ -36,6 +36,8 @@ try {
   assert(capabilities.project.commandCwd === tempRoot, "capabilities did not default commandCwd to project root");
   assert(capabilities.project.instructionsPresent, "capabilities did not report AGINTI.md");
   assert(capabilities.project.sharedSessionFolder, "capabilities did not report shared session folder");
+  assert(capabilities.platform?.platform, "capabilities did not report platform");
+  assert(Array.isArray(capabilities.platform?.setupHints), "capabilities did not report platform setup hints");
   assert(capabilities.keys?.mock === true, "capabilities did not report mock availability");
   assert(typeof capabilities.keys?.qwen === "boolean", "capabilities did not report qwen key status");
   assert(

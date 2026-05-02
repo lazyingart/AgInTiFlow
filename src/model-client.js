@@ -4,6 +4,7 @@ import { getTaskProfile } from "./task-profiles.js";
 import { listAuxiliarySkills } from "./auxiliary-tools.js";
 import { engineeringGuidanceForTask } from "./engineering-guidance.js";
 import { formatSkillsForPrompt, selectSkillsForGoal } from "./skill-library.js";
+import { platformInfo, platformLabel } from "./platform.js";
 
 export function createClient(config) {
   if (config.provider === "mock") {
@@ -197,6 +198,7 @@ export async function createPlan(client, config, state) {
   const selectedSkills = selectSkillsForGoal(state.goal, { taskProfile: config.taskProfile, limit: 5 });
   const skillContext = formatSkillsForPrompt(selectedSkills);
   const projectInstructions = state.meta?.projectInstructions;
+  const platform = platformInfo();
   if (client.mock) {
     return [
       "1. Inspect the request and prefer the local shell when available.",
@@ -222,7 +224,7 @@ export async function createPlan(client, config, state) {
           state.startUrl ? `Suggested start URL: ${state.startUrl}` : "",
           config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
           config.allowShellTool
-            ? `Shell tool is enabled in ${config.commandCwd}. In Docker, this path is mounted as /workspace with persistent /aginti-env and /aginti-cache mounts. Use relative paths or /workspace paths, not absolute host temp paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}. For npm/pip/conda/venv setup, explain the need and wait for approval unless policy is allow.`
+            ? `Shell tool is enabled in ${config.commandCwd}. Host platform: ${platformLabel(platform)}. In Docker, this path is mounted as /workspace with persistent /aginti-env and /aginti-cache mounts. Use relative paths or /workspace paths, not absolute host temp paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}. For npm/pip/conda/venv setup, explain the need and wait for approval unless policy is allow. On native Windows host mode, prefer PowerShell/cmd-compatible commands or WSL/Docker for bash-like toolchains.`
             : "",
           config.allowFileTools
             ? `Workspace file tools are enabled in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, preview_workspace. For large or unfamiliar repos, plan to call inspect_project first, then search/read AGINTI.md/AGENTS.md/README/manifests and exact files. apply_patch supports exact single-file replacements and Codex-style/unified multi-file patches; prefer it for edits after reading relevant context. Keep all paths workspace-relative, for example plot_fx.svg or docs/report.tex, and avoid secrets. For generated local HTML/SVG/PDF/static sites, plan to use open_workspace_file or preview_workspace rather than starting a localhost server inside Docker.`
@@ -250,6 +252,7 @@ export async function createPlan(client, config, state) {
           "A canvas/artifacts tunnel is available through send_to_canvas. Use it when an output should be highlighted visually, such as screenshots, image files, important markdown, diffs, or generated artifact paths. It is optional for ordinary text answers.",
           "Work like a practical coding agent: inspect when useful, edit with file tools, run safe checks when they add confidence, and keep outputs inside the workspace.",
           "For large apps, websites, LaTeX documents, Python/C/shell projects, or system tasks, plan a coherent minimal implementation, then use tools to create files, run checks, and publish artifacts.",
+          "For LaTeX/PDF work, first check whether latexmk or pdflatex already exists in the active host/Docker environment; compile with the existing toolchain before installing packages or rebuilding Docker.",
           "For web search or current information tasks, plan to use browser tools or safe shell network tools when allowed, then preserve useful source notes if the output depends on them.",
           "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files.",
           "For environment or system-maintenance work, prefer project-local dry-run plans/scripts unless the configured policy explicitly allows stronger actions.",

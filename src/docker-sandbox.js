@@ -214,6 +214,7 @@ function dockerCommand(command, policy) {
     `export HOME=${DOCKER_HOME}`,
     `export XDG_CACHE_HOME=${DOCKER_CACHE}`,
     `export PIP_CACHE_DIR=${DOCKER_CACHE}/pip`,
+    `export MPLCONFIGDIR=/tmp/matplotlib`,
     `export UV_CACHE_DIR=${DOCKER_CACHE}/uv`,
     `export NPM_CONFIG_CACHE=${DOCKER_CACHE}/npm`,
     `export CONDA_PKGS_DIRS=${DOCKER_CACHE}/conda-pkgs`,
@@ -225,6 +226,7 @@ function dockerCommand(command, policy) {
 
   if (!policy.requiresDockerRoot) {
     envLines.push(
+      `mkdir -p /tmp/matplotlib >/dev/null 2>&1 || true`,
       `if command -v python3 >/dev/null 2>&1 && [ ! -x ${DOCKER_ENV}/python/bin/python ]; then python3 -m venv --system-site-packages ${DOCKER_ENV}/python >/dev/null 2>&1 || true; fi`,
       `if [ -f ${DOCKER_ENV}/python/bin/activate ]; then . ${DOCKER_ENV}/python/bin/activate; fi`
     );

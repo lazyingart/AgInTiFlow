@@ -16,7 +16,11 @@ const BASE_ADVISORY_PROMPT = [
 
 function commandExists(command) {
   try {
-    execFileSync("bash", ["-lc", `command -v ${command}`], { stdio: "ignore" });
+    if (process.platform === "win32") {
+      execFileSync("where", [command], { stdio: "ignore" });
+    } else {
+      execFileSync("sh", ["-lc", `command -v ${command}`], { stdio: "ignore" });
+    }
     return true;
   } catch {
     return false;

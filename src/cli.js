@@ -349,6 +349,7 @@ function printInitResult(result) {
 function printDoctorReport(report) {
   console.log(`AgInTiFlow ${report.package.version} (npm latest: ${report.package.npmLatest})`);
   console.log(`node=${report.node.version} ok=${report.node.ok}`);
+  console.log(`platform=${report.platform.label} family=${report.platform.linuxFamily || report.platform.platform}`);
   console.log(`project=${report.project.root}`);
   console.log(`instructions=${report.project.instructionsPath} present=${report.project.instructionsPresent}`);
   console.log(`sessions=${report.project.sessionsDir}`);
@@ -369,6 +370,10 @@ function printDoctorReport(report) {
     `wrappers=${report.wrappers.map((wrapper) => `${wrapper.name}:${wrapper.available ? "ok" : "missing"}`).join(" ")}`
   );
   console.log(`sessions=${report.sessions.length}`);
+  if (report.platform.setupHints.length > 0) {
+    console.log("platform setup hints:");
+    for (const hint of report.platform.setupHints) console.log(`- ${hint}`);
+  }
 }
 
 async function readStdin() {

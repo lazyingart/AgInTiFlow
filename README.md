@@ -179,7 +179,7 @@ aginti capabilities --json
 aginti doctor --capabilities
 ```
 
-The report checks the project root, command cwd, shared `.sessions/`, provider-key presence, DeepSeek routes, guarded file and shell tools, Docker status, wrappers, task profiles, TeX, Node/npm, Python, R, conda, and maintenance command policy. It never prints API key or token values.
+The report checks the project root, command cwd, shared `.sessions/`, provider-key presence, DeepSeek routes, guarded file and shell tools, OS/platform hints, Docker status, wrappers, task profiles, TeX, Node/npm, Python, R, conda, and maintenance command policy. It never prints API key or token values.
 
 Live DeepSeek verification is opt-in because it spends provider credits:
 
@@ -337,7 +337,20 @@ npm publish --access public
 
 Never publish with `npm publish` from inside an agent run. The runtime command policy blocks npm publish and npm token commands by design.
 
-## Docker Bootstrap
+## Platform And Docker Bootstrap
+
+AgInTiFlow is designed for Linux, macOS, Windows through WSL2, and best-effort native Windows use. The most portable shell/toolchain path is `docker-workspace`; native Windows host shell commands should be treated as best effort unless you run inside WSL2.
+
+Platform notes:
+
+| Platform | Recommended setup |
+| --- | --- |
+| Ubuntu/Debian | Node.js 22+, optional `scripts/install-docker-ubuntu.sh`, Docker workspace mode for broad toolchains. |
+| Red Hat/Fedora/Rocky/Alma | Node.js 22+, Docker/Podman-compatible Docker CLI from `dnf`/vendor docs; do not use the Ubuntu Docker script. |
+| macOS | Node.js 22+ from Homebrew/nvm/fnm, Docker Desktop or Colima, optional MacTeX/BasicTeX for host LaTeX. |
+| Windows | Prefer WSL2 with Docker Desktop WSL integration. Native Windows host mode is best effort; Docker/WSL is recommended for Bash, LaTeX, Python/R/Stan, and package-manager workflows. |
+
+LaTeX support first checks the active environment for `latexmk` or `pdflatex`. If your host already has MacTeX, BasicTeX, TeX Live, or MiKTeX on `PATH`, host-mode LaTeX tasks can compile directly without downloading TeX again. Docker-mode LaTeX uses the companion image; the setup script preflights an existing image and skips rebuilds when the Docker toolchain already has `latexmk` and `pdflatex`.
 
 Ubuntu helper:
 
@@ -353,14 +366,14 @@ DOCKER_TARGET_USER=lachlan ./scripts/install-docker-ubuntu.sh
 
 Open a new login shell, or run `newgrp docker`, before testing non-root Docker access.
 
-Build the companion agent toolchain sandbox:
+Build or verify the companion agent toolchain sandbox:
 
 ```bash
 ./scripts/setup-agent-toolchain-docker.sh
 npm run smoke:toolchain-docker
 ```
 
-The setup script idempotently builds `agintiflow-sandbox:latest` from `docker/sandbox.Dockerfile` and verifies Node, npm, Python, NumPy, Matplotlib, `latexmk`, and `pdflatex` inside Docker. It also creates the persistent companion folders under `~/.agintiflow/docker/`: `home/` maps to `/aginti-home`, `cache/` maps to `/aginti-cache`, and `env/` maps to `/aginti-env`. Python/conda-style toolchains should live under `/aginti-env` so they survive across agent runs. OS package changes from `apt-get` are container-ephemeral unless you rebuild the image.
+The setup script checks whether `agintiflow-sandbox:latest` already exists and runs a Docker preflight before rebuilding. If Node, npm, Python, NumPy, Matplotlib, `latexmk`, and `pdflatex` are already ready inside the image, it exits without redownloading TeX Live. Set `AGINTIFLOW_FORCE_TOOLCHAIN_REBUILD=true` only when you intentionally want a fresh image. The script also creates persistent companion folders under `~/.agintiflow/docker/`: `home/` maps to `/aginti-home`, `cache/` maps to `/aginti-cache`, and `env/` maps to `/aginti-env`. Python/conda-style toolchains should live under `/aginti-env` so they survive across agent runs. OS package changes from `apt-get` are container-ephemeral unless you rebuild the image.
 
 ## Sandbox Modes
 

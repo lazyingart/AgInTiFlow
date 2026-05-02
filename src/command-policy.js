@@ -84,7 +84,12 @@ const PACKAGE_INSTALL_PATTERNS = [
 const SYSTEM_PACKAGE_INSTALL_PATTERNS = [
   /^(?:sudo\s+)?apt(?:-get)?\s+update$/,
   /^(?:sudo\s+)?apt(?:-get)?\s+install(?:\s+-y)?(?:\s+[-@\w.+:=]+)+$/,
+  /^(?:sudo\s+)?(?:dnf|yum)\s+(?:makecache|check-update)(?:\s+[-\w]+)*$/,
+  /^(?:sudo\s+)?(?:dnf|yum)\s+install(?:\s+-y)?(?:\s+[-@\w.+:=]+)+$/,
   /^apk\s+add(?:\s+--no-cache)?(?:\s+[-@\w.+:=]+)+$/,
+  /^brew\s+install(?:\s+[-@\w.+:=/]+)+$/,
+  /^winget\s+install(?:\s+[-@\w.+:=/]+)+$/,
+  /^choco\s+install(?:\s+[-@\w.+:=/]+)+$/,
 ];
 
 const ENV_SETUP_PATTERNS = [

@@ -80,7 +80,7 @@ export const TASK_PROFILES = {
     id: "latex",
     label: "LaTeX",
     prompt:
-      "Bias toward LaTeX/PDF production while still using writing, plotting, code, and web research when needed. Locate or create source and figures in a subfolder, compile when a TeX toolchain is available, run enough passes for references, and send the PDF through the canvas tunnel. In Docker, use /workspace for outputs and /aginti-env for persistent tools when setup is needed.",
+      "Bias toward LaTeX/PDF production while still using writing, plotting, code, and web research when needed. Locate or create source and figures in a subfolder, check existing latexmk/pdflatex before installing or rebuilding toolchains, compile when a TeX toolchain is available, run enough passes for references, and send the PDF through the canvas tunnel. In Docker, use /workspace for outputs and /aginti-env for persistent tools only when setup is actually needed.",
     tools: ["files", "shell", "canvas", "sandbox"],
   },
   maintenance: {

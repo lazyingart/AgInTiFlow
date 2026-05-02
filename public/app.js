@@ -798,6 +798,7 @@ function renderProjectStatus(info = projectInfo) {
   projectInfo = info;
   if (!projectStatusEl || !info) return;
   projectStatusEl.textContent = [
+    info.platform?.label ? `os=${info.platform.label}` : "",
     `root=${info.root || ""}`,
     `cwd=${info.commandCwd || ""}`,
     `sessions=${info.sessionsDir || ""}`,

@@ -10,6 +10,7 @@ import { listAgentWrappers } from "./tool-wrappers.js";
 import { listAuxiliarySkills } from "./auxiliary-tools.js";
 import { readCodebaseMap } from "./codebase-map.js";
 import { listSkills } from "./skill-library.js";
+import { platformInfo, platformLabel, platformSetupHints } from "./platform.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -112,19 +113,28 @@ function trustedDockerPolicyChecks(config) {
 export async function buildCapabilityReport(projectRoot, packageVersion, config) {
   const paths = projectPaths(projectRoot);
   const keyStatus = providerKeyStatus(projectRoot);
-  const [node, npm, python, conda, r, pdflatex, latexmk, dockerStatus, sessions, instructions, codebaseMap] = await Promise.all([
+  const platform = platformInfo();
+  const commandChecks = [
     commandAvailable("node", ["--version"]),
     commandAvailable("npm", ["--version"]),
-    commandAvailable("python3", ["--version"]),
+    commandAvailable(platform.isWindows ? "python" : "python3", ["--version"]),
     commandAvailable("conda", ["--version"]),
     commandAvailable("R", ["--version"]),
     commandAvailable("pdflatex", ["--version"]),
     commandAvailable("latexmk", ["--version"]),
+  ];
+  if (platform.isMac) commandChecks.push(commandAvailable("brew", ["--version"]));
+  if (platform.isWindows) commandChecks.push(commandAvailable("wsl", ["--status"]));
+  const [commands, dockerStatus, sessions, instructions, codebaseMap] = await Promise.all([
+    Promise.all(commandChecks),
     getDockerSandboxStatus(config).catch((error) => ({ ok: false, error: error.message })),
     listProjectSessions(projectRoot, 12),
     readProjectInstructions(projectRoot, { maxBytes: 1 }),
     readCodebaseMap(projectRoot),
   ]);
+  const [node, npm, python, conda, r, pdflatex, latexmk] = commands;
+  const homebrew = platform.isMac ? commands[7] : undefined;
+  const wsl = platform.isWindows ? commands[7] : undefined;
 
   const npmPrefixPolicy = evaluateCommandPolicy("npm --prefix round9-node-app test", config);
   const cdNpmTestPolicy = evaluateCommandPolicy("cd round9-node-app && npm test", config);
@@ -144,6 +154,8 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
     capability("R", r.available, r.available ? r : { ...r, setup: "Optional. Generate a project-local R setup plan; do not install globally from the agent." }),
     capability("pdflatex", pdflatex.available, pdflatex.available ? pdflatex : { ...pdflatex, setup: "LaTeX tasks should create .tex source and an honest setup report when TeX is unavailable." }),
     capability("latexmk", latexmk.available, latexmk.available ? latexmk : { ...latexmk, setup: "latexmk is optional if pdflatex is available." }),
+    ...(platform.isMac ? [capability("homebrew", homebrew?.available, homebrew?.available ? homebrew : { ...homebrew, setup: "Optional on macOS for host-mode tool installs." })] : []),
+    ...(platform.isWindows ? [capability("wsl", wsl?.available, wsl?.available ? wsl : { ...wsl, setup: "Recommended for Windows. Install WSL2 for the most compatible shell and Docker workflow." })] : []),
     capability("docker", Boolean(dockerStatus?.dockerAvailable), dockerStatus || {}),
     capability("deepseek-key", keyStatus.deepseek, { envVars: keyStatus.envVars.deepseek }),
     capability("openai-key", keyStatus.openai, { envVars: keyStatus.envVars.openai }),
@@ -190,6 +202,13 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
         fingerprint: codebaseMap.ok ? codebaseMap.map.fingerprint || "" : "",
         summary: codebaseMap.ok ? codebaseMap.map.inspection?.summary || "" : "",
       },
+    },
+    platform: {
+      ...platform,
+      label: platformLabel(platform),
+      setupHints: platformSetupHints(platform),
+      hostLatexAvailable: Boolean(pdflatex.available || latexmk.available),
+      hostLatexComplete: Boolean(pdflatex.available && latexmk.available),
     },
     routing: {
       active: {
@@ -256,6 +275,7 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
 
 export function printCapabilityReport(report) {
   console.log(`AgInTiFlow capabilities ${report.package.version}`);
+  console.log(`platform=${report.platform.label} family=${report.platform.linuxFamily || report.platform.platform}`);
   console.log(`project=${report.project.root}`);
   console.log(`cwd=${report.project.commandCwd}`);
   console.log(`instructions=${report.project.instructionsPath} present=${report.project.instructionsPresent}`);
@@ -285,5 +305,9 @@ export function printCapabilityReport(report) {
     for (const item of report.actionableSetup) {
       console.log(`- ${item.capability}: ${item.setup}`);
     }
+  }
+  if (report.platform?.setupHints?.length) {
+    console.log("platform setup hints:");
+    for (const hint of report.platform.setupHints) console.log(`- ${hint}`);
   }
 }

@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { listAgentWrappers } from "./tool-wrappers.js";
 import { getDockerSandboxStatus } from "./docker-sandbox.js";
+import { platformInfo, platformLabel, platformSetupHints } from "./platform.js";
 
 const execFileAsync = promisify(execFile);
 const LOCAL_ENV_KEYS = new Set([
@@ -390,6 +391,7 @@ export async function npmLatestVersion(packageName = "@lazyingart/agintiflow") {
 export async function doctorReport(projectRoot, packageVersion, config) {
   const paths = projectPaths(projectRoot);
   const keyStatus = providerKeyStatus(projectRoot);
+  const platform = platformInfo();
   const [sessions, dockerStatus, latestVersion, instructions] = await Promise.all([
     listProjectSessions(projectRoot, 8),
     getDockerSandboxStatus(config).catch((error) => ({ ok: false, error: error.message })),
@@ -407,6 +409,11 @@ export async function doctorReport(projectRoot, packageVersion, config) {
     node: {
       version: process.version,
       ok: Number(process.versions.node.split(".")[0]) >= 22,
+    },
+    platform: {
+      ...platform,
+      label: platformLabel(platform),
+      setupHints: platformSetupHints(platform),
     },
     project: {
       root: paths.root,

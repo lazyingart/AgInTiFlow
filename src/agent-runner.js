@@ -23,6 +23,7 @@ import { searchWeb } from "./web-search.js";
 import { runParallelScouts, shouldRunParallelScouts } from "./parallel-scouts.js";
 import { readProjectInstructions } from "./project.js";
 import { formatSkillsForPrompt, selectSkillsForGoal } from "./skill-library.js";
+import { hostShellOption, platformInfo, platformLabel } from "./platform.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "open_workspace_file", "preview_workspace", "click", "type", "scroll", "press", "back"]);
@@ -257,6 +258,7 @@ async function createInitialState(config, sessionId) {
   const skillContext = formatSkillsForPrompt(selectedSkills);
   const projectInstructions = await readProjectInstructions(config.baseDir || config.commandCwd || process.cwd());
   const projectInstructionContext = formatProjectInstructions(projectInstructions);
+  const platform = platformInfo();
   return {
     sessionId,
     createdAt: now,
@@ -302,7 +304,7 @@ async function createInitialState(config, sessionId) {
           config.allowShellTool
             ? config.useDockerSandbox
               ? `A shell command tool is available inside Docker sandbox mode ${config.sandboxMode}. Docker workspace mode with approved package installs supports broader setup and network commands. The project is mounted at /workspace and the persistent agent toolchain is mounted at /aginti-env with caches under /aginti-cache.`
-              : "A host shell command tool is available under the configured trust policy."
+              : `A host shell command tool is available under the configured trust policy on ${platformLabel(platform)}. On native Windows, prefer PowerShell/cmd-compatible commands or switch to WSL/Docker for bash-like toolchains.`
             : "No shell command tool is available.",
           config.allowFileTools
             ? `Workspace file tools are available in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, and preview_workspace. For large or unfamiliar repositories, call inspect_project first, then search/read AGINTI.md/AGENTS.md/README/manifests as relevant before editing. apply_patch supports exact single-file replacements plus Codex-style/unified multi-file patches; prefer it for source edits after reading/searching the relevant context. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. Secret paths, .git internals, node_modules writes, and huge files are blocked. For generated local websites/pages, use open_workspace_file or preview_workspace instead of starting a localhost server inside Docker.`
@@ -329,6 +331,7 @@ async function createInitialState(config, sessionId) {
           "Work like a practical coding agent: orient with inspect_project/search/read, patch code with apply_patch, run safe checks when they add confidence, iterate on failures, and keep outputs inside the workspace.",
           "For large projects, decompose into useful files and milestones, identify entry points/tests/contracts first, implement a coherent minimal version, then iterate with checks rather than only describing what you would do.",
           "For website/app/code/LaTeX/Python/C/shell tasks, create or edit real workspace files, run available build/compile/test commands, and surface artifacts through the canvas when useful.",
+          "For LaTeX/PDF tasks, check existing latexmk/pdflatex first and compile with the available host or Docker TeX toolchain before installing packages or rebuilding the sandbox.",
           "For research or web-search tasks, use browser tools or safe shell network tools when the current policy allows; cite or save useful sources in workspace notes when the task needs traceability.",
           "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files.",
           "For environment or system-maintenance work, use the configured sandbox and package policy; Docker workspace mode is the preferred place for installs and toolchain setup.",
@@ -476,6 +479,7 @@ async function applyContinuationPrompt(state, config, observers) {
   state.plan = "";
   state.stepsCompleted = 0;
   state.updatedAt = new Date().toISOString();
+  const platform = platformInfo();
   state.messages.push({
     role: "user",
     content: [
@@ -485,7 +489,7 @@ async function applyContinuationPrompt(state, config, observers) {
       config.allowShellTool
         ? config.useDockerSandbox
           ? `Shell working directory mounted into Docker as /workspace from ${config.commandCwd}. Use relative paths or /workspace paths. Persistent Docker env: /aginti-env, caches: /aginti-cache. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
-          : `Shell working directory: ${config.commandCwd}`
+          : `Shell working directory: ${config.commandCwd}. Host platform: ${platformLabel(platform)}. Use OS-compatible commands; prefer WSL/Docker for bash-heavy workflows on Windows.`
         : "",
       config.allowFileTools
         ? `Workspace file tools enabled in: ${config.commandCwd}. Use inspect_project first for large or unfamiliar codebases, then search/read exact files before editing. Read AGINTI.md/AGENTS.md/README/manifests when relevant. Use workspace-relative paths. Use apply_patch for code edits; it accepts exact replacements or Codex-style/unified multi-file patches. For generated local files/sites, use open_workspace_file or preview_workspace.`
@@ -658,7 +662,7 @@ async function runShellCommand(command, config, policy = evaluateCommandPolicy(c
           cwd: config.commandCwd,
           timeout: 30000,
           maxBuffer: 200 * 1024,
-          shell: "/bin/bash",
+          shell: hostShellOption(),
           env: safeExecutionEnv(),
           signal: config.abortSignal,
         });
@@ -681,6 +685,7 @@ async function runShellCommand(command, config, policy = evaluateCommandPolicy(c
 }
 
 async function captureSyntheticSnapshot(store, step, config) {
+  const platform = platformInfo();
   const snapshot = {
     title: "No browser page open",
     url: "",
@@ -690,7 +695,7 @@ async function captureSyntheticSnapshot(store, step, config) {
       config.allowShellTool
         ? config.useDockerSandbox
           ? `Shell tool available in Docker with mounted workspace /workspace from ${config.commandCwd}. Use relative paths or /workspace paths. Persistent Docker env: /aginti-env, caches: /aginti-cache. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
-          : `Shell tool available in: ${config.commandCwd}`
+          : `Shell tool available in: ${config.commandCwd} on ${platformLabel(platform)}. Use OS-compatible commands; prefer WSL/Docker for bash-heavy workflows on Windows.`
         : "Shell tool disabled.",
       config.allowFileTools
         ? `Workspace file tools available in: ${config.commandCwd}. Use inspect_project first for large or unfamiliar codebases, then search/read exact files before editing. Use workspace-relative paths. Use apply_patch for code edits; it supports exact single-file replacement and multi-file Codex-style/unified patches.`
@@ -700,7 +705,7 @@ async function captureSyntheticSnapshot(store, step, config) {
         : "Agent wrappers disabled.",
       "Canvas/artifacts tunnel available through send_to_canvas.",
       "For draw/plot/graph/chart/diagram/figure requests, publish a canvas artifact proactively.",
-      "For LaTeX/PDF requests, publish the source and compiled PDF artifacts when available. Keep subfolder outputs beside their source and use pdflatex-compatible figure formats.",
+      "For LaTeX/PDF requests, check latexmk/pdflatex first, publish the source and compiled PDF artifacts when available, and avoid reinstalling TeX when an existing toolchain works.",
       "Use open_url only if the task actually needs the web.",
       "For generated local HTML/SVG/PDF/site output, use open_workspace_file or preview_workspace instead of shelling a transient local server.",
     ]

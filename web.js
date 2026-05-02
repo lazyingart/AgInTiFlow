@@ -15,6 +15,7 @@ import { listTaskProfiles, normalizeTaskProfile } from "./src/task-profiles.js";
 import { loadProjectEnv, projectPaths, providerKeyStatus, setProviderKey } from "./src/project.js";
 import { buildCapabilityReport } from "./src/capabilities.js";
 import { listSkills } from "./src/skill-library.js";
+import { platformInfo, platformLabel, platformSetupHints } from "./src/platform.js";
 import {
   buildArtifacts,
   countUnreadArtifacts,
@@ -559,6 +560,7 @@ app.get("/api/config", async (_req, res) => {
   const config = buildRunConfig({ ...preferences, goal: "" });
   const paths = projectPaths(baseDir);
   const keyStatus = publicKeyStatus(baseDir);
+  const platform = platformInfo();
   res.json({
     project: {
       root: paths.root,
@@ -567,6 +569,11 @@ app.get("/api/config", async (_req, res) => {
       sessionDbPath: paths.sessionDbPath,
       sharedSessionFolder: path.resolve(config.sessionsDir) === path.resolve(sessionsDir),
       localEnvPresent: keyStatus.localEnv,
+      platform: {
+        ...platform,
+        label: platformLabel(platform),
+        setupHints: platformSetupHints(platform),
+      },
     },
     defaults: {
       openai: publicProviderDefault("openai"),
