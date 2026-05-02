@@ -306,6 +306,9 @@ try {
   if (!latest.stdout.includes("resume history") || !latest.stdout.includes("chat=") || !latest.stdout.includes("Mock run complete")) {
     throw new Error("bare aginti resume did not preview saved chat history");
   }
+  if (!latest.stdout.includes("user>") || !latest.stdout.includes("aginti>")) {
+    throw new Error("resume history should use prompt-style user>/aginti> labels");
+  }
   if (!latest.stdout.includes("resume note=showing chat transcript only")) {
     throw new Error("bare aginti resume did not clarify that tool/run events are separate from chat history");
   }
@@ -345,6 +348,7 @@ try {
           "run-status",
           "resume-latest",
           "resume-history-metadata",
+          "resume-history-prompt-labels",
           "resume-history-full",
         ],
       },

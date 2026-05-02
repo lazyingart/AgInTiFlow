@@ -1573,8 +1573,8 @@ async function latestSession() {
 }
 
 function printHistoryEntry(entry) {
-  const role = entry.role === "assistant" ? "aginti" : entry.role === "user" ? "user" : String(entry.role || "note");
-  const bg = role === "aginti" ? ansi.agentBg : role === "user" ? ansi.userBg : ansi.systemBg;
+  const role = entry.role === "assistant" ? "aginti>" : entry.role === "user" ? "user>" : String(entry.role || "note");
+  const bg = role === "aginti>" ? ansi.agentBg : role === "user>" ? ansi.userBg : ansi.systemBg;
   const time = entry.at ? new Date(entry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
   printHistoryBlock(role, entry.content, { time, bg });
 }
