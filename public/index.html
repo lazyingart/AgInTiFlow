@@ -86,6 +86,22 @@
 
         <form id="run-form">
           <label>
+            <span data-i18n="goalLabel">Goal</span>
+            <textarea
+              id="goal"
+              name="goal"
+              rows="5"
+              data-i18n-placeholder="goalPlaceholder"
+              placeholder="Open a site and summarize it, or use run_command for simple terminal inspection."
+            ></textarea>
+          </label>
+
+          <div class="actions run-start-actions">
+            <button type="submit" data-i18n="startRunButton">Start run</button>
+            <span id="key-status" class="subtle"></span>
+          </div>
+
+          <label>
             <span data-i18n="routingModeLabel">Routing policy</span>
             <select id="routingMode" name="routingMode">
               <option value="smart" data-i18n="routingSmartOption">Smart: fast unless complex</option>
@@ -124,17 +140,6 @@
             <select id="taskProfile" name="taskProfile">
               <option value="auto">Auto</option>
             </select>
-          </label>
-
-          <label>
-            <span data-i18n="goalLabel">Goal</span>
-            <textarea
-              id="goal"
-              name="goal"
-              rows="5"
-              data-i18n-placeholder="goalPlaceholder"
-              placeholder="Open a site and summarize it, or use run_command for simple terminal inspection."
-            ></textarea>
           </label>
 
           <div class="grid">
@@ -187,11 +192,6 @@
           </div>
 
           <button id="open-settings" type="button" class="secondary settings-button">Advanced settings</button>
-
-          <div class="actions">
-            <button type="submit" data-i18n="startRunButton">Start run</button>
-            <span id="key-status" class="subtle"></span>
-          </div>
         </form>
       </section>
 

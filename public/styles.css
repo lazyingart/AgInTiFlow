@@ -596,6 +596,19 @@ button.danger {
   justify-content: space-between;
 }
 
+.run-start-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.run-start-actions button {
+  width: 100%;
+}
+
+.run-start-actions #key-status {
+  min-height: 1.2em;
+}
+
 .run-header-actions {
   display: flex;
   min-width: 0;
