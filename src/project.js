@@ -16,9 +16,17 @@ const LOCAL_ENV_KEYS = new Set([
   "DEEPSEEK_FAST_MODEL",
   "DEEPSEEK_PRO_MODEL",
   "OPENAI_DEFAULT_MODEL",
+  "QWEN_API_KEY",
   "GRSAI",
   "GRSAI_API_KEY",
 ]);
+
+const PROVIDER_KEY_CANDIDATES = {
+  openai: ["OPENAI_API_KEY", "LLM_API_KEY"],
+  deepseek: ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
+  qwen: ["QWEN_API_KEY"],
+  grsai: ["GRSAI", "GRSAI_API_KEY"],
+};
 
 export function resolveProjectRoot(input = process.cwd()) {
   return path.resolve(input || process.cwd());
@@ -264,6 +272,45 @@ export function providerKeyStatus(projectRoot = process.cwd()) {
       qwen: ["QWEN_API_KEY"],
       grsai: ["GRSAI", "GRSAI_API_KEY"],
     },
+  };
+}
+
+export function maskProviderKey(value = "") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.length <= 8) return `${text.slice(0, 1)}…${text.slice(-1)} (${text.length} chars)`;
+  return `${text.slice(0, 4)}…${text.slice(-4)} (${text.length} chars)`;
+}
+
+export function providerKeyPreview(projectRoot = process.cwd(), provider = "") {
+  loadProjectEnv(projectRoot);
+  const normalized = String(provider || "").trim().toLowerCase();
+  const aliases = {
+    auxiliary: "grsai",
+    auxilliary: "grsai",
+    image: "grsai",
+    imagegen: "grsai",
+  };
+  const canonical = aliases[normalized] || normalized;
+  const keys = PROVIDER_KEY_CANDIDATES[canonical] || [];
+  for (const keyName of keys) {
+    const value = process.env[keyName];
+    if (value) {
+      return {
+        available: true,
+        provider: canonical,
+        keyName,
+        preview: maskProviderKey(value),
+        length: String(value).trim().length,
+      };
+    }
+  }
+  return {
+    available: false,
+    provider: canonical,
+    keyName: keys[0] || "",
+    preview: "",
+    length: 0,
   };
 }
 
