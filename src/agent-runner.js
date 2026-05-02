@@ -24,6 +24,7 @@ import { runParallelScouts, shouldRunParallelScouts } from "./parallel-scouts.js
 import { readProjectInstructions } from "./project.js";
 import { formatSkillsForPrompt, selectSkillsForGoal } from "./skill-library.js";
 import { hostShellOption, platformInfo, platformLabel } from "./platform.js";
+import { captureTmuxPane, listTmuxSessions, sendTmuxKeys, startTmuxSession } from "./tmux-tools.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "open_workspace_file", "preview_workspace", "click", "type", "scroll", "press", "back"]);
@@ -306,6 +307,9 @@ async function createInitialState(config, sessionId) {
               ? `A shell command tool is available inside Docker sandbox mode ${config.sandboxMode}. Docker workspace mode with approved package installs supports broader setup and network commands. The project is mounted at /workspace and the persistent agent toolchain is mounted at /aginti-env with caches under /aginti-cache.`
               : `A host shell command tool is available under the configured trust policy on ${platformLabel(platform)}. On native Windows, prefer PowerShell/cmd-compatible commands or switch to WSL/Docker for bash-like toolchains.`
             : "No shell command tool is available.",
+          config.allowShellTool
+            ? "Host tmux tools are available for long-running terminals: list sessions, capture panes, send safe keys/text, and start detached sessions. Prefer tmux for monitoring long installs/tests/dev servers without blocking; capture before sending input and never send secrets or sudo passwords."
+            : "",
           config.allowFileTools
             ? `Workspace file tools are available in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, and preview_workspace. For large or unfamiliar repositories, call inspect_project first, then search/read AGINTI.md/AGENTS.md/README/manifests as relevant before editing. apply_patch supports exact single-file replacements plus Codex-style/unified multi-file patches; prefer it for source edits after reading/searching the relevant context. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. Secret paths, .git internals, node_modules writes, and huge files are blocked. For generated local websites/pages, use open_workspace_file or preview_workspace instead of starting a localhost server inside Docker.`
             : "No workspace file tools are available.",
@@ -697,6 +701,9 @@ async function captureSyntheticSnapshot(store, step, config) {
           ? `Shell tool available in Docker with mounted workspace /workspace from ${config.commandCwd}. Use relative paths or /workspace paths. Persistent Docker env: /aginti-env, caches: /aginti-cache. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
           : `Shell tool available in: ${config.commandCwd} on ${platformLabel(platform)}. Use OS-compatible commands; prefer WSL/Docker for bash-heavy workflows on Windows.`
         : "Shell tool disabled.",
+      config.allowShellTool
+        ? "Host tmux tools available: tmux_list_sessions, tmux_capture_pane, tmux_send_keys, tmux_start_session. Use them for long-running jobs and agent terminals; capture before sending input."
+        : "",
       config.allowFileTools
         ? `Workspace file tools available in: ${config.commandCwd}. Use inspect_project first for large or unfamiliar codebases, then search/read exact files before editing. Use workspace-relative paths. Use apply_patch for code edits; it supports exact single-file replacement and multi-file Codex-style/unified patches.`
         : "Workspace file tools disabled.",
@@ -953,6 +960,34 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         };
         await store.appendEvent("tool.completed", result);
         observers.event("tool.completed", result);
+        return result;
+      }
+      case "tmux_list_sessions": {
+        const result = await listTmuxSessions(args);
+        const eventResult = sanitizeToolResult(result);
+        await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        return result;
+      }
+      case "tmux_capture_pane": {
+        const result = await captureTmuxPane(args);
+        const eventResult = sanitizeToolResult(result);
+        await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        return result;
+      }
+      case "tmux_send_keys": {
+        const result = await sendTmuxKeys(args);
+        const eventResult = sanitizeToolResult(result);
+        await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        return result;
+      }
+      case "tmux_start_session": {
+        const result = await startTmuxSession(args, config);
+        const eventResult = sanitizeToolResult(result);
+        await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
         return result;
       }
       case "delegate_agent": {

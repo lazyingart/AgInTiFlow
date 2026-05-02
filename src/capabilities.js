@@ -122,6 +122,7 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
     commandAvailable("R", ["--version"]),
     commandAvailable("pdflatex", ["--version"]),
     commandAvailable("latexmk", ["--version"]),
+    commandAvailable("tmux", ["-V"]),
   ];
   if (platform.isMac) commandChecks.push(commandAvailable("brew", ["--version"]));
   if (platform.isWindows) commandChecks.push(commandAvailable("wsl", ["--status"]));
@@ -132,9 +133,9 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
     readProjectInstructions(projectRoot, { maxBytes: 1 }),
     readCodebaseMap(projectRoot),
   ]);
-  const [node, npm, python, conda, r, pdflatex, latexmk] = commands;
-  const homebrew = platform.isMac ? commands[7] : undefined;
-  const wsl = platform.isWindows ? commands[7] : undefined;
+  const [node, npm, python, conda, r, pdflatex, latexmk, tmux] = commands;
+  const homebrew = platform.isMac ? commands[8] : undefined;
+  const wsl = platform.isWindows ? commands[8] : undefined;
 
   const npmPrefixPolicy = evaluateCommandPolicy("npm --prefix round9-node-app test", config);
   const cdNpmTestPolicy = evaluateCommandPolicy("cd round9-node-app && npm test", config);
@@ -154,6 +155,7 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
     capability("R", r.available, r.available ? r : { ...r, setup: "Optional. Generate a project-local R setup plan; do not install globally from the agent." }),
     capability("pdflatex", pdflatex.available, pdflatex.available ? pdflatex : { ...pdflatex, setup: "LaTeX tasks should create .tex source and an honest setup report when TeX is unavailable." }),
     capability("latexmk", latexmk.available, latexmk.available ? latexmk : { ...latexmk, setup: "latexmk is optional if pdflatex is available." }),
+    capability("tmux", tmux.available, tmux.available ? tmux : { ...tmux, setup: "Optional for monitoring long-running host sessions. Install tmux or use normal run_command." }),
     ...(platform.isMac ? [capability("homebrew", homebrew?.available, homebrew?.available ? homebrew : { ...homebrew, setup: "Optional on macOS for host-mode tool installs." })] : []),
     ...(platform.isWindows ? [capability("wsl", wsl?.available, wsl?.available ? wsl : { ...wsl, setup: "Recommended for Windows. Install WSL2 for the most compatible shell and Docker workflow." })] : []),
     capability("docker", Boolean(dockerStatus?.dockerAvailable), dockerStatus || {}),

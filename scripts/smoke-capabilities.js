@@ -57,6 +57,10 @@ try {
     "bash -n maintenance script policy is not allowed"
   );
   assert(
+    capabilities.checks.some((check) => check.name === "tmux"),
+    "capabilities did not report tmux availability"
+  );
+  assert(
     capabilities.checks.some((check) => check.name === "git-status-policy" && check.ok),
     "git status policy is not allowed"
   );

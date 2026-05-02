@@ -6,13 +6,13 @@ AgInTiFlow separates **skills** from **tools** so the agent can stay general whi
 
 **Skill**: Markdown guidance stored at `skills/<id>/SKILL.md`. A skill describes when to use a workflow, what to inspect first, which outputs matter, and which tools are usually useful. Skills are prompt context, not executable code.
 
-**Tool**: A deterministic callable capability exposed to the model, such as `inspect_project`, `read_file`, `apply_patch`, `run_command`, `web_search`, `generate_image`, `preview_workspace`, or `send_to_canvas`.
+**Tool**: A deterministic callable capability exposed to the model, such as `inspect_project`, `read_file`, `apply_patch`, `run_command`, `web_search`, `generate_image`, `preview_workspace`, `tmux_capture_pane`, or `send_to_canvas`.
 
 **Profile**: A broad runtime mode such as `auto`, `code`, `latex`, or `maintenance`. Profiles tune routing, max steps, and general behavior. Skills can combine across profiles.
 
 ## Built-In Skills
 
-The package ships built-in skills for code engineering, website/app building, LaTeX manuscripts, books, Microsoft Word documents, image generation, GitHub maintenance, system maintenance, Android, R/Stan, Python, C/C++, shell scripting, AAPS, and novel writing.
+The package ships built-in skills for code engineering, website/app building, LaTeX manuscripts, books, Microsoft Word documents, image generation, GitHub maintenance, system maintenance, tmux session control, Android, R/Stan, Python, C/C++, shell scripting, AAPS, and novel writing.
 
 List them from a project:
 

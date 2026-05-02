@@ -26,6 +26,7 @@ for (const required of [
   "image-generation",
   "latex-manuscript",
   "system-maintenance",
+  "tmux-session",
   "website-app",
   "word-documents",
 ]) {
@@ -37,6 +38,7 @@ assert(selectedIds("write a LaTeX paper and compile a PDF").includes("latex-manu
 assert(selectedIds("edit a Microsoft Word docx and preserve the original").includes("word-documents"), "docx prompt did not select word-documents");
 assert(selectedIds("generate a logo image with grsai nanobanana").includes("image-generation"), "image prompt did not select image-generation");
 assert(selectedIds("git status commit push with gh").includes("github-maintenance"), "git prompt did not select github-maintenance");
+assert(selectedIds("monitor a long running tmux session").includes("tmux-session"), "tmux prompt did not select tmux-session");
 assert(selectedIds("create an .aaps example for @lazyingart/aaps").includes("aaps"), "AAPS prompt did not select aaps");
 assert(selectedIds("debug a C++ CMake build").includes("c-cpp"), "C++ prompt did not select c-cpp");
 assert(selectedIds("set up Stan and CmdStanR reproducibly").includes("r-stan"), "Stan prompt did not select r-stan");

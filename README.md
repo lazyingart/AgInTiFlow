@@ -28,7 +28,7 @@ It is designed for workflows where an AI agent should act, but every tool, log, 
 | Core loop | Plan -> use tools -> log events -> finish or resume |
 | Browser control | Playwright, lazy browser startup, domain allowlists |
 | Model layer | Smart routing over DeepSeek fast/pro presets with manual OpenAI-compatible fallback |
-| Local tools | Guarded workspace file tools, Codex-style patching, optional shell commands, Docker sandbox support, and advisory agent wrappers |
+| Local tools | Guarded workspace file tools, Codex-style patching, optional shell commands, tmux session control, Docker sandbox support, and advisory agent wrappers |
 | Memory | Session state, persisted web settings, chat continuation |
 | Operator UX | Multilingual web UI with provider selection, run output, and conversation history |
 
@@ -84,6 +84,8 @@ The next productive-agent roadmap is tracked in [docs/productive-agent-roadmap.m
 For current docs, install errors, package/toolchain setup, and source discovery, the agent has a guarded `web_search` tool. It returns compact search results without browser search-engine loops and respects configured domain allowlists. Disable with `--no-web-search`.
 
 For raster image work, AgInTiFlow has an optional `image_generation` skill backed by the `generate_image` tool and a local `GRSAI` key. The skill tells DeepSeek when image generation is appropriate; the tool calls GRS AI Nano Banana, saves manifests/images under `artifacts/images`, and sends the result to the canvas. See [docs/auxiliary-image-generation.md](docs/auxiliary-image-generation.md).
+
+For long-running shell work, AgInTiFlow exposes host-side tmux tools when the shell tool is enabled: `tmux_list_sessions`, `tmux_capture_pane`, `tmux_send_keys`, and `tmux_start_session`. Use normal prompts such as `start this test server in tmux and monitor it` or `check my tmux session`. The agent captures panes before interacting, redacts outputs, blocks secret-like sends, and avoids sending sudo passwords or destructive commands.
 
 AgInTiFlow now ships a Markdown skill library in `skills/<id>/SKILL.md`. Skills are prompt playbooks, while tools are deterministic actions such as `apply_patch`, `run_command`, `web_search`, `generate_image`, and `send_to_canvas`. Built-in skills cover code, websites/apps, LaTeX manuscripts, books, Word documents, image generation, GitHub, system maintenance, Android, R/Stan, Python, C/C++, shell, AAPS, and novel writing. See [docs/skills-and-tools.md](docs/skills-and-tools.md).
 

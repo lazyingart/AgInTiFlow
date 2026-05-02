@@ -1,6 +1,7 @@
 import { evaluateCommandPolicy } from "./command-policy.js";
 import { checkWorkspaceToolUse, WORKSPACE_TOOL_NAMES } from "./workspace-tools.js";
 import { normalizeWrapperName } from "./tool-wrappers.js";
+import { checkTmuxToolUse, TMUX_TOOL_NAMES } from "./tmux-tools.js";
 
 const DESTRUCTIVE_KEYWORDS = [
   "delete",
@@ -55,6 +56,10 @@ export function isDomainAllowed(urlString, allowedDomains) {
 export function checkToolUse({ toolName, args, snapshot, config }) {
   if (WORKSPACE_TOOL_NAMES.includes(toolName)) {
     return checkWorkspaceToolUse(toolName, args, config);
+  }
+
+  if (TMUX_TOOL_NAMES.includes(toolName)) {
+    return checkTmuxToolUse(toolName, args, config);
   }
 
   if (toolName === "open_url") {
