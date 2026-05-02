@@ -153,6 +153,15 @@ function commandSuggestions(line = "") {
   return SLASH_COMMANDS.filter((command) => command.startsWith(trimmed)).slice(0, 8);
 }
 
+function resolveSlashCommand(command = "") {
+  const raw = String(command || "").trim();
+  if (!raw) return raw;
+  const slashCommand = `/${raw}`;
+  if (SLASH_COMMANDS.includes(slashCommand)) return raw;
+  const suggestion = SLASH_COMMANDS.find((candidate) => candidate.startsWith(slashCommand));
+  return suggestion ? suggestion.slice(1) : raw;
+}
+
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
@@ -1465,7 +1474,8 @@ async function promptAndSaveProviderKey(provider = "", state = null) {
 }
 
 async function handleCommand(line, state, packageDir) {
-  const [command, ...rest] = line.slice(1).trim().split(/\s+/);
+  const [rawCommand, ...rest] = line.slice(1).trim().split(/\s+/);
+  const command = resolveSlashCommand(rawCommand);
   const value = rest.join(" ").trim();
 
   if (!command || command === "help" || command === "?") {
