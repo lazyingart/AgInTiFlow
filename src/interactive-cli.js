@@ -501,7 +501,7 @@ function printHelp() {
       "Type / then Tab to autocomplete commands.",
       "While a run is active, Enter pipes a message into the current run (→), Tab queues it after finish (↳).",
       "Alt+Up edits the last piped message; Shift+Left edits the last queued message.",
-      "Esc or Ctrl+C stops gracefully and prints a resume command.",
+      "Esc is ignored while idle. During a run, Esc waits for pending → pipe messages or stops if none; Ctrl+C always stops.",
     ].join("\n")
   );
 }
@@ -793,6 +793,11 @@ function createAbortError(message = "Aborted with Ctrl+C") {
   return error;
 }
 
+export function classifyEscapeAction({ active = false, pendingAsap = [] } = {}) {
+  if (!active) return "noop";
+  return Array.isArray(pendingAsap) && pendingAsap.length > 0 ? "wait-for-asap" : "abort";
+}
+
 function readTtyPrompt(options = {}) {
   return new Promise((resolve, reject) => {
     emitKeypressEvents(input);
@@ -966,10 +971,7 @@ function readTtyPrompt(options = {}) {
         return;
       }
       if (key.name === "escape") {
-        buffer = "";
-        cursor = 0;
-        preferredColumn = null;
-        redraw();
+        if (classifyEscapeAction({ active: false }) === "noop") return;
         return;
       }
       if (key.ctrl || key.meta) return;
@@ -1192,6 +1194,13 @@ class LiveRunInput {
       return;
     }
     if (key.name === "escape") {
+      const action = classifyEscapeAction({ active: true, pendingAsap: this.pendingAsap });
+      if (action === "wait-for-asap") {
+        const count = this.pendingAsap.length;
+        this.setStatus(`running · waiting to apply ${count} asap pipe message${count === 1 ? "" : "s"}`);
+        this.redraw();
+        return;
+      }
       this.controller.abort(new Error("Interrupted by escape."));
       return;
     }

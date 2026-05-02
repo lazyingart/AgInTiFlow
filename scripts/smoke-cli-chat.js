@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildPromptLayout, stripMarkdown } from "../src/interactive-cli.js";
+import { buildPromptLayout, classifyEscapeAction, stripMarkdown } from "../src/interactive-cli.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-cli-chat-"));
@@ -112,6 +112,15 @@ try {
   if (!queuedText.includes("run   running · tool: apply_patch") || !queuedText.includes("→ apply this") || !queuedText.includes("↳ run this") || !queuedText.includes("cwd   /tmp/aginti-project")) {
     throw new Error("terminal prompt layout did not render live input queue and cwd footer");
   }
+  if (classifyEscapeAction({ active: false }) !== "noop") {
+    throw new Error("idle Esc should not redraw or clear the prompt");
+  }
+  if (classifyEscapeAction({ active: true, pendingAsap: [{ content: "apply now" }] }) !== "wait-for-asap") {
+    throw new Error("active Esc should wait when ASAP pipe messages are pending");
+  }
+  if (classifyEscapeAction({ active: true, pendingAsap: [] }) !== "abort") {
+    throw new Error("active Esc should abort when no ASAP pipe messages are pending");
+  }
 
   await runCli(["init"], "");
   const instructions = await fs.readFile(path.join(tempRoot, "AGINTI.md"), "utf8");
@@ -163,7 +172,7 @@ try {
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["markdown-render", "markdown-table-no-duplicate", "patch-diff-render", "prompt-layout", "live-input-status-layout", "agent-response-gutter", "aginti-md", "instructions-command", "skills-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest", "resume-history-full"],
+        checks: ["markdown-render", "markdown-table-no-duplicate", "patch-diff-render", "prompt-layout", "escape-policy", "live-input-status-layout", "agent-response-gutter", "aginti-md", "instructions-command", "skills-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest", "resume-history-full"],
       },
       null,
       2
