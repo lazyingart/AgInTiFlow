@@ -15,7 +15,7 @@ import { normalizeWrapperName, runAgentWrapper, wrapperStatusText } from "./tool
 import { evaluateCommandPolicy } from "./command-policy.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
 import { executeWorkspaceTool, resolveWorkspacePath, summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./workspace-tools.js";
-import { normalizeCanvasPayload } from "./artifact-tunnel.js";
+import { normalizeCanvasPayload, persistCanvasPayloadFile } from "./artifact-tunnel.js";
 import { getTaskProfile } from "./task-profiles.js";
 import { generateImage, listAuxiliarySkills } from "./auxiliary-tools.js";
 import { engineeringGuidanceForTask } from "./engineering-guidance.js";
@@ -332,14 +332,14 @@ async function createInitialState(config, sessionId) {
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           skillContext,
           engineeringGuidance,
-          "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. It is optional and ordinary final text can still go directly to finish.",
+          "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. File paths sent to canvas are copied into session artifacts for durable preview, but user-requested outputs should also remain in a clear workspace path unless the user asked only for a temporary preview.",
           "For visual-output requests such as draw, plot, graph, chart, diagram, figure, image, or visualization, proactively publish a canvas artifact even when the user does not mention canvas. If workspace file tools are enabled, prefer creating a small SVG or markdown artifact and call send_to_canvas with selected=true.",
           "Work like a practical coding agent: orient with inspect_project/search/read, patch code with apply_patch, run safe checks when they add confidence, iterate on failures, and keep outputs inside the workspace.",
           "For large projects, decompose into useful files and milestones, identify entry points/tests/contracts first, implement a coherent minimal version, then iterate with checks rather than only describing what you would do.",
           "For website/app/code/LaTeX/Python/C/shell tasks, create or edit real workspace files, run available build/compile/test commands, and surface artifacts through the canvas when useful.",
           "For LaTeX/PDF tasks, check existing latexmk/pdflatex first and compile with the available host or Docker TeX toolchain before installing packages or rebuilding the sandbox.",
           "For research or web-search tasks, use browser tools or safe shell network tools when the current policy allows; cite or save useful sources in workspace notes when the task needs traceability.",
-          "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files.",
+          "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files. When no save path is specified, choose a descriptive non-conflicting workspace path near the working directory and keep it there.",
           "For environment or system-maintenance work, use the configured sandbox and package policy; Docker workspace mode is the preferred place for installs and toolchain setup.",
           "For long-running work, create a durable checkpoint or artifact at each completed phase, then continue with the next concrete phase until the requested outcome is actually complete or blocked by a real dependency.",
           "If the user asks to open a generated local website or file, use open_workspace_file for a file or preview_workspace for a static site. Do not keep retrying the same localhost URL when a preview fails.",
@@ -737,7 +737,7 @@ async function captureSyntheticSnapshot(store, step, config) {
       config.allowWrapperTools
         ? `Agent wrappers available: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
         : "Agent wrappers disabled.",
-      "Canvas/artifacts tunnel available through send_to_canvas.",
+      "Canvas/artifacts tunnel available through send_to_canvas. File paths sent to canvas are persisted into the session artifact store, but final user artifacts should still use clear durable workspace filenames.",
       "For draw/plot/graph/chart/diagram/figure requests, publish a canvas artifact proactively.",
       "For LaTeX/PDF requests, check latexmk/pdflatex first, publish the source and compiled PDF artifacts when available, and avoid reinstalling TeX when an existing toolchain works.",
       "Use open_url only if the task actually needs the web.",
@@ -1097,8 +1097,22 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
               config
             );
             if (normalized.ok) {
+              const persisted = await persistCanvasPayloadFile(normalized.payload, { config, store });
+              if (!persisted.ok) {
+                await store.appendEvent("canvas.persistence_failed", {
+                  toolName: "generate_image",
+                  reason: persisted.reason,
+                  path: normalized.payload.path,
+                });
+                observers.event("canvas.persistence_failed", {
+                  toolName: "generate_image",
+                  reason: persisted.reason,
+                  path: normalized.payload.path,
+                });
+                return result;
+              }
               const canvasItem = {
-                ...normalized.payload,
+                ...persisted.payload,
                 toolName: "generate_image",
                 commandCwd: config.commandCwd,
               };
@@ -1144,8 +1158,30 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           };
         }
 
+        const persisted = await persistCanvasPayloadFile(normalized.payload, { config, store });
+        if (!persisted.ok) {
+          await store.appendEvent("tool.blocked", {
+            toolName: "send_to_canvas",
+            args: safeArgs,
+            reason: persisted.reason,
+            category: "canvas",
+          });
+          observers.event("tool.blocked", {
+            toolName: "send_to_canvas",
+            args: safeArgs,
+            reason: persisted.reason,
+            category: "canvas",
+          });
+          return {
+            ok: false,
+            blocked: true,
+            reason: persisted.reason,
+            toolName: "send_to_canvas",
+          };
+        }
+
         const canvasItem = {
-          ...normalized.payload,
+          ...persisted.payload,
           toolName: "send_to_canvas",
           commandCwd: config.commandCwd,
         };

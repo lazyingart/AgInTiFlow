@@ -1020,7 +1020,7 @@ export async function requestNextStep(client, config, messages) {
     function: {
       name: "send_to_canvas",
       description:
-        "Send an optional artifact notification to the frontend canvas/artifacts tunnel. Use for important markdown/text, generated images, screenshots, figures, diffs, or workspace file paths the user should preview. Proactively use this for draw/plot/graph/chart/diagram/figure requests even when the user did not mention canvas. This does not replace finish.",
+        "Send an optional artifact notification to the frontend canvas/artifacts tunnel. Use for important markdown/text, generated images, screenshots, figures, diffs, or workspace file paths the user should preview. Workspace files sent here are copied into session artifacts for durable preview, but if the user asked to save/capture/generate a file, keep a descriptive non-conflicting copy in the working directory too. Proactively use this for draw/plot/graph/chart/diagram/figure requests even when the user did not mention canvas. This does not replace finish.",
       parameters: {
         type: "object",
         properties: {
@@ -1031,7 +1031,7 @@ export async function requestNextStep(client, config, messages) {
             description: "Renderer hint. Use image/file with path, markdown/text/json/diff with content.",
           },
           content: { type: "string", description: "Inline text or markdown content to render." },
-          path: { type: "string", description: "Optional workspace-relative file path to preview." },
+          path: { type: "string", description: "Optional existing workspace-relative file path to preview and persist into the session artifact store." },
           note: { type: "string", description: "Short notification message for the artifact explorer." },
           selected: { type: "boolean", description: "Whether the frontend should select this item immediately." },
         },

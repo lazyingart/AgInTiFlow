@@ -7,6 +7,7 @@ import { checkWorkspaceToolUse, resolveWorkspacePath } from "./workspace-tools.j
 const MAX_INLINE_TEXT_BYTES = 120_000;
 const MAX_ARTIFACT_TEXT_BYTES = 520_000;
 const MAX_ARTIFACT_IMAGE_BYTES = 4_000_000;
+const MAX_PERSISTED_CANVAS_FILE_BYTES = 50_000_000;
 const IMAGE_MIME_BY_EXT = new Map([
   [".png", "image/png"],
   [".jpg", "image/jpeg"],
@@ -57,6 +58,16 @@ function normalizeKind(kind, filePath = "") {
 function mimeForPath(filePath) {
   const ext = path.extname(String(filePath || "")).toLowerCase();
   return IMAGE_MIME_BY_EXT.get(ext) || BINARY_RENDER_MIME_BY_EXT.get(ext) || "text/plain; charset=utf-8";
+}
+
+function safeCanvasFilename(artifactId, filePath) {
+  const rawBase = path.basename(String(filePath || "artifact"));
+  const safeBase = rawBase
+    .replace(/^\.+/, "")
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 90);
+  return `${String(artifactId || "canvas").replace(/[^A-Za-z0-9._-]+/g, "-")}-${safeBase || "artifact"}`;
 }
 
 function publicArtifact(item) {
@@ -170,10 +181,18 @@ function addWorkspaceArtifacts(items, event, sessionId) {
   });
 }
 
-function addCanvasArtifact(items, event, sessionId) {
+function addCanvasArtifact(items, event, sessionId, store) {
   const data = event.data || {};
   const artifactId = data.artifactId || stableId(sessionId, event.timestamp, "canvas", data.title, data.path);
   const artifactPath = normalizeDisplayPath(data.path || "");
+  const sessionFilePath = typeof data.sessionFilePath === "string" ? path.resolve(data.sessionFilePath) : "";
+  const sessionRef =
+    sessionFilePath && store?.sessionDir && isInside(store.sessionDir, sessionFilePath)
+      ? {
+          type: "session-file",
+          path: sessionFilePath,
+        }
+      : null;
   const text = typeof data.content === "string" ? redactSensitiveText(data.content) : "";
   items.push({
     id: artifactId,
@@ -185,13 +204,15 @@ function addCanvasArtifact(items, event, sessionId) {
     source: "agent-canvas",
     tab: "canvas",
     createdAt: event.timestamp,
-    mime: mimeForPath(artifactPath),
+    mime: mimeForPath(sessionRef?.path || artifactPath),
     ref: text
       ? {
           type: "inline",
           text,
         }
-      : artifactPath
+      : sessionRef
+        ? sessionRef
+        : artifactPath
         ? {
             type: "workspace-file",
             path: artifactPath,
@@ -234,7 +255,7 @@ export function buildArtifacts({ sessionId, events, store }) {
   const selectedId = selectedArtifactId(events);
 
   for (const event of events) {
-    if (event.type === "canvas.item") addCanvasArtifact(items, event, sessionId);
+    if (event.type === "canvas.item") addCanvasArtifact(items, event, sessionId, store);
     if (event.type === "snapshot.captured") addSnapshotArtifacts(items, event, store, sessionId);
     if (event.type === "file.changed") addWorkspaceArtifacts(items, event, sessionId);
     if (event.type === "session.finished") addFinalAnswerArtifact(items, event, sessionId);
@@ -396,6 +417,56 @@ export function normalizeCanvasPayload(args, config) {
       contentBytes: content ? Buffer.byteLength(content, "utf8") : 0,
       note: note ? previewText(note, 500) : "",
       selected: args.selected !== false,
+    },
+  };
+}
+
+export async function persistCanvasPayloadFile(payload, { config, store }) {
+  if (!payload?.path) return { ok: true, payload };
+  if (!store?.artifactsDir || !store?.sessionDir) {
+    return { ok: false, reason: "Canvas session artifact store is unavailable." };
+  }
+
+  let target;
+  try {
+    target = resolveWorkspacePath(config, payload.path);
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+
+  const stat = await fs.stat(target.absolutePath).catch(() => null);
+  if (!stat?.isFile()) {
+    return { ok: false, reason: `Canvas path does not exist or is not a file: ${payload.path}` };
+  }
+
+  if (stat.size > MAX_PERSISTED_CANVAS_FILE_BYTES) {
+    return {
+      ok: true,
+      payload: {
+        ...payload,
+        originalPath: payload.path,
+        artifactPersisted: false,
+        artifactBytes: stat.size,
+        artifactPersistenceWarning: `Canvas file is larger than ${MAX_PERSISTED_CANVAS_FILE_BYTES} bytes; keep the workspace file for preview.`,
+      },
+    };
+  }
+
+  await store.ensure();
+  const canvasDir = path.join(store.artifactsDir, "canvas");
+  await fs.mkdir(canvasDir, { recursive: true });
+  const sessionFilePath = path.join(canvasDir, safeCanvasFilename(payload.artifactId, target.relativePath));
+  await fs.copyFile(target.absolutePath, sessionFilePath);
+
+  return {
+    ok: true,
+    payload: {
+      ...payload,
+      originalPath: payload.path,
+      sessionPath: normalizeDisplayPath(path.relative(store.sessionDir, sessionFilePath)),
+      sessionFilePath,
+      artifactPersisted: true,
+      artifactBytes: stat.size,
     },
   };
 }

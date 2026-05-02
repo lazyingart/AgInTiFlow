@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.25",
+  "version": "0.20.26",
   "type": "module",
   "description": "AgInTiFlow is a web-first coding agent and CLI with DeepSeek routing, sandboxed tools, model providers, canvas artifacts, and optional wrappers.",
   "license": "Apache-2.0",
@@ -49,6 +49,7 @@
     "scripts/real-deepseek-capabilities.js",
     "scripts/smoke-auxiliary-tools.js",
     "scripts/smoke-auth.js",
+    "scripts/smoke-canvas-artifacts.js",
     "scripts/smoke-cli-chat.js",
     "scripts/smoke-coding-tools.js",
     "scripts/smoke-capabilities.js",
@@ -76,6 +77,7 @@
     "smoke:coding-tools": "node scripts/smoke-coding-tools.js",
     "smoke:auxiliary-tools": "node scripts/smoke-auxiliary-tools.js",
     "smoke:auth": "node scripts/smoke-auth.js",
+    "smoke:canvas-artifacts": "node scripts/smoke-canvas-artifacts.js",
     "smoke:cli-chat": "node scripts/smoke-cli-chat.js",
     "smoke:skills": "node scripts/smoke-skills.js",
     "smoke:toolchain-docker": "node scripts/smoke-toolchain-docker.js",
@@ -85,7 +87,7 @@
     "smoke:tmux-tools": "node scripts/smoke-tmux-tools.js",
     "smoke:web-api": "node scripts/smoke-web-api.js",
     "real:deepseek": "node scripts/real-deepseek-capabilities.js",
-    "test": "npm run check && npm run smoke:web-api && npm run smoke:coding-tools && npm run smoke:auxiliary-tools && npm run smoke:auth && npm run smoke:capabilities && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:skills && npm run smoke:tmux-tools && npm run smoke:cli-chat && npm run smoke:inbox",
+    "test": "npm run check && npm run smoke:web-api && npm run smoke:coding-tools && npm run smoke:auxiliary-tools && npm run smoke:auth && npm run smoke:canvas-artifacts && npm run smoke:capabilities && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:skills && npm run smoke:tmux-tools && npm run smoke:cli-chat && npm run smoke:inbox",
     "pack:dry-run": "npm pack --dry-run",
     "smoke:capabilities": "node scripts/smoke-capabilities.js"
   },

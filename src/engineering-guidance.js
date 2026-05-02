@@ -29,7 +29,7 @@ const LANGUAGE_HINTS = [
     id: "android",
     pattern: /\b(android|apk|adb|avd|emulator|gradle wrapper|gradlew|android sdk|kotlin android|jetpack|compose)\b/i,
     text:
-      "Android: inspect git status, Gradle/settings/manifests, ANDROID_HOME/SDK paths, Java/Kotlin versions, adb devices, and emulator/AVD list first. Never start host sudo or host OS package installs; use the existing SDK, a project-local Gradle wrapper, user-writable caches, or return a precise setup report. Build, install with adb, launch with am, verify with logcat/screencap when possible, then commit.",
+      "Android: inspect git status, Gradle/settings/manifests, ANDROID_HOME/SDK paths, Java/Kotlin versions, adb devices, and emulator/AVD list first. Never start host sudo or host OS package installs; use the existing SDK, a project-local Gradle wrapper, user-writable caches, or return a precise setup report. Build, install with adb, launch with am, verify with logcat/screencap when possible, save screenshots under a durable workspace path, then commit.",
   },
   {
     id: "java-jvm",
@@ -93,6 +93,7 @@ export function engineeringGuidanceForTask(goal = "", taskProfile = "auto") {
     "For system repair, act like a doctor: gather evidence first, avoid silent destructive host changes, prefer Docker or project-local scripts for installs, and make every stronger action explicit in logs.",
     "Never send sudo passwords or wait at interactive password prompts. If host-level permission is truly required, stop that path, explain the blocker, and provide a manual command instead of hanging.",
     "Before claiming a coding task is finished, run git status --short when git is available. Leave the worktree clean, or explicitly report and justify each remaining untracked/unstaged artifact.",
+    "For generated screenshots, images, PDFs, reports, archives, and app packages, choose a descriptive non-conflicting workspace path when the user did not specify one. Verify the file still exists after cleanup before claiming it was saved.",
   ];
 
   if (matched.length > 0) {
