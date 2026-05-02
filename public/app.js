@@ -989,7 +989,7 @@ function fieldValue(field) {
 }
 
 function providerModelOptions(provider = providerField.value) {
-  return modelCatalog[provider] || [];
+  return (modelCatalog[provider] || []).filter((item) => !item.hidden);
 }
 
 function mergeModelOptions(...groups) {

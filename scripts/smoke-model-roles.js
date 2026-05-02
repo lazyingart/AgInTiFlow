@@ -109,9 +109,14 @@ const fastRoute = selectModelRoute({
 assert(fastRoute.model === "deepseek-v4-flash", "fast route did not use route model override");
 
 assert(MODEL_PROVIDER_GROUPS["venice-gpt"].provider === "venice", "venice-gpt group missing");
-assert(modelsForProviderGroup("venice-gemma").some((item) => item.id === "gemma-4-uncensored"), "venice-gemma bucket missing Gemma");
-assert(modelsForProviderGroup("venice-uncensored").some((item) => item.id === "e2ee-venice-uncensored-24b-p"), "venice-uncensored bucket missing Venice 1.1");
+assert(modelsForProviderGroup("venice").some((item) => item.id === "venice-uncensored-1-2"), "venice group missing Venice 1.2");
+assert(modelsForProviderGroup("venice-gemma").some((item) => item.id === "google-gemma-4-31b-it"), "venice-gemma bucket missing Gemma 4 instruct");
+assert(!modelsForProviderGroup("venice-gemma").some((item) => item.id === "gemma-4-uncensored"), "venice-gemma bucket should not include Gemma 4 Uncensored shortcut");
+assert(modelsForProviderGroup("venice-gpt").some((item) => item.id === "openai-gpt-54-mini"), "venice-gpt bucket missing GPT-5.4 Mini");
+assert(modelsForProviderGroup("venice-claude").some((item) => item.id === "claude-opus-4-7"), "venice-claude bucket missing Claude Opus 4.7");
+assert(modelsForProviderGroup("venice-qwen").some((item) => item.id === "qwen3-coder-480b-a35b-instruct-turbo"), "venice-qwen bucket missing Qwen Coder");
 assert(AUXILIARY_MODEL_CATALOG["venice-image"].some((item) => item.id === "gpt-image-2"), "Venice image catalog missing GPT Image 2");
+assert(AUXILIARY_MODEL_CATALOG["venice-image"].some((item) => item.id === "wan-2-7-pro-edit"), "Venice image catalog missing Wan edit");
 const routeChoices = modelRoleChoices("route").map((item) => `${item.provider}/${item.model}`);
 const mainChoices = modelRoleChoices("main").map((item) => `${item.provider}/${item.model}`);
 const spareChoices = modelRoleChoices("spare").map((item) => `${item.provider}/${item.model}`);
@@ -123,9 +128,14 @@ for (const expected of [
   "venice/venice-uncensored-1-2",
   "venice/venice-uncensored",
   "venice/gemma-4-uncensored",
+  "venice/google-gemma-4-31b-it",
+  "venice/google-gemma-4-26b-a4b-it",
   "venice/openai-gpt-55",
+  "venice/openai-gpt-54-mini",
   "venice/claude-sonnet-4-6",
+  "venice/claude-opus-4-7",
   "venice/qwen3-6-27b",
+  "venice/qwen3-coder-480b-a35b-instruct-turbo",
   "openai/gpt-5.5",
   "openai/gpt-5.4",
   "openai/gpt-5.4-mini",
@@ -137,7 +147,9 @@ for (const expected of [
   assert(routeChoices.includes(expected), `shared model selector missing ${expected}`);
 }
 assert(!routeChoices.includes("venice/e2ee-venice-uncensored-24b-p"), "shared model selector should hide unstable E2EE Venice 1.1");
+assert(modelRoleChoices("route").some((item) => item.provider === "openai" && item.model === "gpt-5.5" && item.reasoningOptions.includes("xhigh")), "OpenAI selector missing reasoning levels");
 assert(modelRoleChoices("auxiliary").some((item) => item.provider === "grsai"), "auxiliary selector missing GRS AI");
+assert(modelRoleChoices("auxiliary").some((item) => item.provider === "venice" && item.model === "wan-2-7-pro-edit"), "auxiliary selector missing Venice Wan edit");
 const parsedTextToolCalls = parseTextToolCalls('[TOOL_CALLS]list_files[ARGS]call_123[ARGS]{"path":".","maxDepth":1}');
 assert(parsedTextToolCalls.length === 1, "Venice text tool-call parser did not detect encoded tool call");
 assert(parsedTextToolCalls[0].function.name === "list_files", "Venice text tool-call parser returned wrong tool name");

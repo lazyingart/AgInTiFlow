@@ -1651,8 +1651,10 @@ function createState(args = {}) {
     preferredWrapper: args.preferredWrapper || "codex",
     routeProvider: args.routeProvider || "",
     routeModel: args.routeModel || "",
+    routeReasoning: args.routeReasoning || "",
     mainProvider: args.mainProvider || "",
     mainModel: args.mainModel || "",
+    mainReasoning: args.mainReasoning || "",
     spareProvider: args.spareProvider || "openai",
     spareModel: args.spareModel || "gpt-5.4",
     spareReasoning: args.spareReasoning || "medium",
@@ -1694,8 +1696,10 @@ function useDeepSeekDefaults(state) {
   state.model = "";
   state.routeProvider = "deepseek";
   state.routeModel = "deepseek-v4-flash";
+  state.routeReasoning = "";
   state.mainProvider = "deepseek";
   state.mainModel = "deepseek-v4-pro";
+  state.mainReasoning = "";
 }
 
 function veniceTextModelChoices() {
@@ -1766,8 +1770,10 @@ function printModelRoles(state) {
   const roles = getModelRoleDefaults({
     routeProvider: state.routeProvider,
     routeModel: state.routeModel,
+    routeReasoning: state.routeReasoning,
     mainProvider: state.mainProvider,
     mainModel: state.mainModel,
+    mainReasoning: state.mainReasoning,
     spareProvider: state.spareProvider,
     spareModel: state.spareModel,
     spareReasoning: state.spareReasoning,
@@ -1827,13 +1833,17 @@ function compactReasoning(model = {}) {
   return `${preferred} reasoning`;
 }
 
+function isReasoningLevel(value = "") {
+  return ["low", "medium", "high", "xhigh"].includes(String(value || "").toLowerCase());
+}
+
 function modelSelectorGroup(provider, model = {}) {
   if (provider === "deepseek") return "DeepSeek";
   if (provider === "openai") return "OpenAI";
   if (provider === "qwen") return "Qwen";
   if (provider === "mock") return "Mock";
   if (provider === "venice") {
-    if (model.bucket === "venice-uncensored") return "Venice Uncensored";
+    if (model.bucket === "venice") return "Venice";
     if (model.bucket === "venice-gpt") return "Venice GPT";
     if (model.bucket === "venice-claude") return "Venice Claude";
     if (model.bucket === "venice-gemma") return "Venice Gemma";
@@ -1843,25 +1853,96 @@ function modelSelectorGroup(provider, model = {}) {
   return provider;
 }
 
-function textModelRoleChoices() {
-  const providerOrder = ["deepseek", "venice", "openai", "qwen", "mock"];
-  const veniceOrder = [
-    "venice-uncensored-1-2",
-    "venice-uncensored",
-    "gemma-4-uncensored",
-    "openai-gpt-55",
-    "claude-sonnet-4-6",
-    "qwen3-6-27b",
-  ];
+const TEXT_MODEL_GROUPS = [
+  {
+    id: "deepseek",
+    label: "DeepSeek",
+    description: "DeepSeek V4 Flash and Pro defaults.",
+  },
+  {
+    id: "venice",
+    label: "Venice",
+    description: "Venice 1.2, Venice 1.1, and Gemma 4 Uncensored.",
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    description: "GPT and Codex models with selectable reasoning.",
+  },
+  {
+    id: "venice-gpt",
+    label: "Venice GPT",
+    description: "OpenAI/GPT-family text models through Venice.",
+  },
+  {
+    id: "venice-gemma",
+    label: "Venice Gemma",
+    description: "Gemma instruct models through Venice, excluding Gemma 4 Uncensored.",
+  },
+  {
+    id: "venice-claude",
+    label: "Venice Claude",
+    description: "Claude Sonnet and Opus models through Venice.",
+  },
+  {
+    id: "venice-qwen",
+    label: "Venice Qwen",
+    description: "Qwen text and coder models through Venice.",
+  },
+  {
+    id: "qwen",
+    label: "Qwen",
+    description: "DashScope Qwen Plus/Turbo/Max.",
+  },
+  {
+    id: "mock",
+    label: "Mock",
+    description: "Deterministic local test model.",
+  },
+];
+
+function modelGroupForSelection(provider, model = {}) {
+  if (provider === "venice") return model.bucket || "venice";
+  return provider;
+}
+
+function modelGroupChoices() {
+  return TEXT_MODEL_GROUPS.map((group) => ({
+    action: "group",
+    groupId: group.id,
+    label: group.label,
+    description: group.description,
+  }));
+}
+
+function modelsForSelectorGroup(groupId = "") {
+  const group = String(groupId || "");
+  if (group === "deepseek") return (PROVIDER_MODEL_CATALOG.deepseek || []).filter((model) => !model.hidden);
+  if (group === "openai") return (PROVIDER_MODEL_CATALOG.openai || []).filter((model) => !model.hidden);
+  if (group === "qwen") return (PROVIDER_MODEL_CATALOG.qwen || []).filter((model) => !model.hidden);
+  if (group === "mock") return (PROVIDER_MODEL_CATALOG.mock || []).filter((model) => !model.hidden);
+  if (group === "venice") {
+    const order = ["venice-uncensored-1-2", "venice-uncensored", "gemma-4-uncensored"];
+    const byId = new Map((PROVIDER_MODEL_CATALOG.venice || []).filter((model) => !model.hidden).map((model) => [model.id, model]));
+    return order.map((id) => byId.get(id)).filter(Boolean);
+  }
+  if (group.startsWith("venice-")) {
+    return (PROVIDER_MODEL_CATALOG.venice || []).filter((model) => !model.hidden && model.bucket === group);
+  }
+  return [];
+}
+
+function providerForSelectorGroup(groupId = "") {
+  if (String(groupId).startsWith("venice")) return "venice";
+  return groupId;
+}
+
+function textModelRoleChoices(groupId = "") {
+  const groups = groupId ? [groupId] : TEXT_MODEL_GROUPS.map((group) => group.id);
   const choices = [];
-  for (const provider of providerOrder) {
-    let models = PROVIDER_MODEL_CATALOG[provider] || [];
-    if (provider === "venice") {
-      const byId = new Map(models.filter((model) => !model.hidden).map((model) => [model.id, model]));
-      models = veniceOrder.map((id) => byId.get(id)).filter(Boolean);
-    } else {
-      models = models.filter((model) => !model.hidden);
-    }
+  for (const groupIdItem of groups) {
+    const provider = providerForSelectorGroup(groupIdItem);
+    const models = modelsForSelectorGroup(groupIdItem);
     for (const model of models) {
       const group = modelSelectorGroup(provider, model);
       const reasoning = compactReasoning(model);
@@ -1874,6 +1955,7 @@ function textModelRoleChoices() {
         group,
         description: details,
         reasoningDefault: reasoning ? reasoning.split(" ")[0] : "",
+        reasoningOptions: Array.isArray(model.reasoning) ? model.reasoning : [],
       });
     }
   }
@@ -1882,30 +1964,47 @@ function textModelRoleChoices() {
 
 export function modelRoleChoices(role = "main") {
   if (role !== "auxiliary") return textModelRoleChoices();
-  const common = [
+  return auxiliaryModelRoleChoices();
+}
+
+function auxiliaryGroupChoices() {
+  return [
     {
-      provider: "grsai",
-      model: "nano-banana-2",
-      label: "GRS AI Nano Banana",
-      description: "default auxiliary image model",
-      auxiliary: true,
+      action: "group",
+      groupId: "grsai",
+      label: "GRS AI",
+      description: "Nano Banana and GPT image models through GRS AI-compatible keys.",
     },
     {
-      provider: "venice",
-      model: "gpt-image-2",
-      label: "Venice GPT Image 2",
-      description: "high-quality Venice image generation",
-      auxiliary: true,
-    },
-    {
-      provider: "venice",
-      model: "nano-banana-2",
-      label: "Venice Nano Banana 2",
-      description: "Venice image generation route",
-      auxiliary: true,
+      action: "group",
+      groupId: "venice-image",
+      label: "Venice Image",
+      description: "Venice image, edit, background-removal, Qwen, Wan, Grok, Recraft, Flux routes.",
     },
   ];
-  return common.filter((item) => item.auxiliary).sort((a, b) => Number(b.provider === "grsai") - Number(a.provider === "grsai"));
+}
+
+function auxiliaryProviderForGroup(groupId = "") {
+  return groupId === "venice-image" ? "venice" : "grsai";
+}
+
+function auxiliaryModelRoleChoices(groupId = "") {
+  const groups = groupId ? [groupId] : ["grsai", "venice-image"];
+  const choices = [];
+  for (const group of groups) {
+    const provider = auxiliaryProviderForGroup(group);
+    for (const model of AUXILIARY_MODEL_CATALOG[group] || []) {
+      choices.push({
+        provider,
+        model: model.id,
+        label: `${group === "venice-image" ? "Venice Image" : "GRS AI"} · ${model.label || model.id}`,
+        group,
+        description: [model.type, model.price, model.description].filter(Boolean).join("; "),
+        auxiliary: true,
+      });
+    }
+  }
+  return choices;
 }
 
 function providerChoices() {
@@ -1945,6 +2044,7 @@ function providerChoices() {
 
 function modelChoiceLine(option) {
   if (option.action === "disable") return `${option.label}  ${option.description}`;
+  if (option.action === "group" || option.action === "reasoning") return `${option.label}  ${option.description}`;
   return `${option.label}  ${option.provider}/${option.model}  ${option.description}`;
 }
 
@@ -2034,7 +2134,6 @@ function selectModelChoice({ title, subtitle, options, initialIndex = 0 }) {
 }
 
 async function pickModelRole(role, state) {
-  const options = modelRoleChoices(role);
   const currentProvider =
     role === "route"
       ? state.routeProvider || "deepseek"
@@ -2051,6 +2150,32 @@ async function pickModelRole(role, state) {
         : role === "auxiliary"
           ? state.auxiliaryModel || "nano-banana-2"
           : state.mainModel || "deepseek-v4-pro";
+
+  const groupOptions = role === "auxiliary" ? auxiliaryGroupChoices() : modelGroupChoices();
+  const currentModelEntry =
+    role === "auxiliary"
+      ? modelRoleChoices("auxiliary").find((item) => item.provider === currentProvider && item.model === currentModel)
+      : modelRoleChoices(role).find((item) => item.provider === currentProvider && item.model === currentModel);
+  const currentGroup = currentModelEntry?.group || currentProvider;
+  const group = await selectModelChoice({
+    title:
+      role === "route"
+        ? "Select route model family"
+        : role === "spare"
+          ? "Select spare model family"
+          : role === "auxiliary"
+            ? "Select auxiliary provider"
+            : "Select main model family",
+    subtitle: "First choose a provider family. Up/Down/Left/Right selects, Enter confirms, Esc cancels.",
+    options: groupOptions,
+    initialIndex: Math.max(
+      groupOptions.findIndex((item) => item.groupId === currentGroup),
+      0
+    ),
+  });
+  if (!group) return false;
+
+  const options = role === "auxiliary" ? auxiliaryModelRoleChoices(group.groupId) : textModelRoleChoices(group.groupId);
   const initialIndex = Math.max(
     options.findIndex((item) => item.provider === currentProvider && item.model === currentModel),
     0
@@ -2058,17 +2183,48 @@ async function pickModelRole(role, state) {
   const selected = await selectModelChoice({
     title:
       role === "route"
-        ? "Select route model"
+        ? `Select route model: ${group.label}`
         : role === "spare"
-          ? "Select spare model"
+          ? `Select spare model: ${group.label}`
           : role === "auxiliary"
-            ? "Select auxiliary model"
-            : "Select main model",
-    subtitle: "Up/Down/Left/Right selects, Enter confirms, Esc cancels.",
+            ? `Select auxiliary model: ${group.label}`
+            : `Select main model: ${group.label}`,
+    subtitle:
+      role === "auxiliary"
+        ? "Choose the image/edit auxiliary model. Enter confirms, Esc cancels."
+        : "Choose the text model. OpenAI choices ask for reasoning next.",
     options,
     initialIndex,
   });
   if (!selected) return false;
+
+  let selectedReasoning = selected.reasoningDefault || "";
+  if (Array.isArray(selected.reasoningOptions) && selected.reasoningOptions.length > 0) {
+    const currentReasoning =
+      role === "route"
+        ? state.routeReasoning || selectedReasoning || "medium"
+        : role === "spare"
+          ? state.spareReasoning || selectedReasoning || "medium"
+          : state.mainReasoning || selectedReasoning || "medium";
+    const reasoningOptions = selected.reasoningOptions.map((level) => ({
+      action: "reasoning",
+      label: level,
+      value: level,
+      description: `${selected.label} with ${level} reasoning`,
+    }));
+    const reasoning = await selectModelChoice({
+      title: `Select reasoning: ${selected.label}`,
+      subtitle: "Up/Down selects reasoning effort. Enter confirms, Esc cancels.",
+      options: reasoningOptions,
+      initialIndex: Math.max(
+        reasoningOptions.findIndex((item) => item.value === currentReasoning),
+        reasoningOptions.findIndex((item) => item.value === selectedReasoning),
+        0
+      ),
+    });
+    if (!reasoning) return false;
+    selectedReasoning = reasoning.value;
+  }
 
   state.routingMode = "smart";
   state.provider = "deepseek";
@@ -2076,11 +2232,12 @@ async function pickModelRole(role, state) {
   if (role === "route") {
     state.routeProvider = selected.provider;
     state.routeModel = selected.model;
-    printSystemLine(`route=${state.routeProvider}/${state.routeModel}`);
+    state.routeReasoning = selectedReasoning || state.routeReasoning || "";
+    printSystemLine(`route=${state.routeProvider}/${state.routeModel}${state.routeReasoning ? ` reasoning=${state.routeReasoning}` : ""}`);
   } else if (role === "spare") {
     state.spareProvider = selected.provider;
     state.spareModel = selected.model;
-    state.spareReasoning = selected.reasoningDefault || state.spareReasoning || "medium";
+    state.spareReasoning = selectedReasoning || state.spareReasoning || "medium";
     printSystemLine(`spare=${state.spareProvider}/${state.spareModel} reasoning=${state.spareReasoning}`);
   } else if (role === "auxiliary") {
     state.auxiliaryProvider = selected.provider;
@@ -2090,7 +2247,8 @@ async function pickModelRole(role, state) {
   } else {
     state.mainProvider = selected.provider;
     state.mainModel = selected.model;
-    printSystemLine(`main=${state.mainProvider}/${state.mainModel}`);
+    state.mainReasoning = selectedReasoning || state.mainReasoning || "";
+    printSystemLine(`main=${state.mainProvider}/${state.mainModel}${state.mainReasoning ? ` reasoning=${state.mainReasoning}` : ""}`);
   }
   return true;
 }
@@ -2274,9 +2432,14 @@ async function handleCommand(line, state, packageDir) {
           `Image generation: ${keys.grsai ? "GRSAI key available" : "missing GRSAI key"}`,
           `Venice image: ${keys.venice ? "Venice key available" : "missing Venice key"}`,
           `Selected auxiliary: ${state.auxiliaryProvider || "grsai"}/${state.auxiliaryModel || "nano-banana-2"}`,
-          "Use `/auxiliary grsai` or `/auxiliary venice` to paste a key, `/auxiliary model grsai/nano-banana-2`, `/auxiliary image`, or `/auxiliary off`.",
+          "Use `/auxiliary model` for the two-level selector, `/auxiliary grsai` or `/auxiliary venice` to paste a key, `/auxiliary image`, or `/auxiliary off`.",
         ].join("\n")
       );
+      return true;
+    }
+    if (action === "select") {
+      const changed = await pickModelRole("auxiliary", state);
+      if (!changed) printSystemLine(`auxiliary=${state.auxiliaryProvider || "grsai"}/${state.auxiliaryModel || "nano-banana-2"}`);
       return true;
     }
     if (action === "on") {
@@ -2303,7 +2466,7 @@ async function handleCommand(line, state, packageDir) {
         return true;
       }
       const selected = parseProviderModel(modelValue, state.auxiliaryProvider || "grsai");
-      state.auxiliaryProvider = selected.provider || "grsai";
+      state.auxiliaryProvider = selected.provider === "venice-image" ? "venice" : selected.provider || "grsai";
       state.auxiliaryModel = selected.model || state.auxiliaryModel || "nano-banana-2";
       printSystemLine(`auxiliary=${state.auxiliaryProvider}/${state.auxiliaryModel}`);
       return true;
@@ -2312,7 +2475,7 @@ async function handleCommand(line, state, packageDir) {
       await promptAndSaveProviderKey(action === "venice" ? "venice" : "grsai", state);
       return true;
     }
-    printAgentMessage("Usage: /auxiliary [status|grsai|venice|model grsai/nano-banana-2|on|off|image]");
+    printAgentMessage("Usage: /auxiliary [status|select|grsai|venice|model [grsai/nano-banana-2]|on|off|image]");
     return true;
   }
   if (command === "new") {
@@ -2464,10 +2627,12 @@ async function handleCommand(line, state, packageDir) {
       printSystemLine(`routing=${state.routingMode}`);
       return true;
     }
-    const selected = parseProviderModel(value, state.routeProvider || "deepseek");
+    const parts = value.split(/\s+/).filter(Boolean);
+    const selected = parseProviderModel(parts[0] || value, state.routeProvider || "deepseek");
     state.routeProvider = selected.provider || "deepseek";
     state.routeModel = selected.model || state.routeModel || "deepseek-v4-flash";
-    printSystemLine(`route=${state.routeProvider}/${state.routeModel}`);
+    if (isReasoningLevel(parts[1])) state.routeReasoning = parts[1].toLowerCase();
+    printSystemLine(`route=${state.routeProvider}/${state.routeModel}${state.routeReasoning ? ` reasoning=${state.routeReasoning}` : ""}`);
     return true;
   }
   if (command === "main" || command === "model") {
@@ -2486,6 +2651,7 @@ async function handleCommand(line, state, packageDir) {
       if (command === "main") {
         state.mainProvider = "";
         state.mainModel = "";
+        state.mainReasoning = "";
         printSystemLine("main=auto");
       } else {
         state.model = "";
@@ -2493,15 +2659,17 @@ async function handleCommand(line, state, packageDir) {
       }
       return true;
     }
-    const selected = parseProviderModel(value, state.mainProvider || state.provider || "deepseek");
+    const parts = value.split(/\s+/).filter(Boolean);
+    const selected = parseProviderModel(parts[0] || value, state.mainProvider || state.provider || "deepseek");
     if (command === "main" || selected.provider) {
       state.mainProvider = selected.provider || "deepseek";
       state.mainModel = selected.model || "deepseek-v4-pro";
+      if (isReasoningLevel(parts[1])) state.mainReasoning = parts[1].toLowerCase();
       if (command === "model") {
         state.provider = state.mainProvider;
         state.model = state.mainModel;
       }
-      printSystemLine(`main=${state.mainProvider}/${state.mainModel}`);
+      printSystemLine(`main=${state.mainProvider}/${state.mainModel}${state.mainReasoning ? ` reasoning=${state.mainReasoning}` : ""}`);
       return true;
     }
     state.model = value;

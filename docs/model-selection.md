@@ -48,7 +48,25 @@ Interactive commands:
 
 In the interactive CLI, `/provider`, `/route`, `/model`, `/spare`, and `/auxiliary model` without arguments open selectors. Use Up/Down/Left/Right to move through choices, Enter to confirm, and Esc to cancel. Slash-command hints use the same arrow selection behavior: type a prefix such as `/mo`, use arrows to choose `/model` or `/models`, then press Enter or Tab.
 
-`/route`, `/model`, and `/spare` intentionally share the same text-model selector so users do not need to learn three different catalogs. The shared list is grouped as DeepSeek, Venice Uncensored, Venice GPT/Claude/Gemma/Qwen, OpenAI, Qwen, and Mock. OpenAI entries show the recommended default reasoning effort in the description; `/spare` stores that reasoning value when selected.
+`/route`, `/model`, and `/spare` intentionally share the same text-model selector so users do not need to learn three different catalogs. The selector is hierarchical:
+
+1. Choose a provider family.
+2. Choose the model in that family.
+3. For OpenAI models, choose reasoning effort: `low`, `medium`, `high`, or `xhigh`.
+
+Provider families:
+
+| Family | Models |
+| --- | --- |
+| DeepSeek | `deepseek-v4-flash`, `deepseek-v4-pro` |
+| Venice | `venice-uncensored-1-2`, `venice-uncensored`, `gemma-4-uncensored` |
+| OpenAI | `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5.2`; each has low/medium/high/xhigh reasoning |
+| Venice GPT | GPT-family Venice routes such as `openai-gpt-55`, `openai-gpt-54`, `openai-gpt-54-mini`, `openai-gpt-53-codex`, `openai-gpt-52` |
+| Venice Gemma | Gemma instruct routes such as `google-gemma-4-31b-it`, `google-gemma-4-26b-a4b-it`, `google-gemma-3-27b-it` |
+| Venice Claude | Claude Sonnet/Opus routes such as `claude-sonnet-4-6`, `claude-opus-4-7`, `claude-opus-4-6` |
+| Venice Qwen | Qwen routes such as `qwen3-6-27b`, `qwen-3-6-plus`, `qwen3-coder-480b-a35b-instruct-turbo` |
+| Qwen | `qwen-plus`, `qwen-turbo`, `qwen-max` |
+| Mock | `mock-agent` |
 
 `/venice` opens a two-step selector for the Venice route and main models. The current text choices are:
 
@@ -77,13 +95,20 @@ It keeps smart routing enabled. If the Venice key is missing, run `/auth venice`
 | `deepseek` | DeepSeek | Default route/main because V4 Flash and V4 Pro are cheap and strong. |
 | `openai` | OpenAI | Spare/frontier checks, Codex-family work, and explicit manual routes. |
 | `qwen` | Qwen | Chinese and general-purpose OpenAI-compatible tasks. |
-| `venice-uncensored` | Venice | Venice-native uncensored text models. |
+| `venice` | Venice | Venice-native text shortcuts: Venice 1.2, Venice 1.1, and Gemma 4 Uncensored. |
 | `venice-gpt` | Venice | GPT-family models through Venice. |
 | `venice-claude` | Venice | Claude-family models through Venice. |
-| `venice-gemma` | Venice | Gemma-family models through Venice. |
+| `venice-gemma` | Venice | Gemma instruct models through Venice, excluding the Gemma 4 Uncensored shortcut. |
 | `venice-qwen` | Venice | Qwen-family models through Venice. |
 | `venice-image` | Venice | Image generation/editing such as Nano Banana, GPT Image, Wan, Qwen Image. |
 | `grsai` | GRS AI | Auxiliary image generation only. |
+
+`/auxiliary model` uses the same two-level pattern for image tools:
+
+| Family | Models |
+| --- | --- |
+| GRS AI | `nano-banana-2`, `nano-banana-2-edit`, `gpt-image-2`, `gpt-image-2-edit` when the configured GRS AI-compatible endpoint supports them |
+| Venice Image | `wan-2-7-pro-edit`, `nano-banana-2`, `gpt-image-2`, `grok-imagine-image`, `qwen-image-2-pro`, `bria-bg-remover`, `recraft-v4`, `flux-2-pro`, and related image/edit routes |
 
 ## Keys
 
