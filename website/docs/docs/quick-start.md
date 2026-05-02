@@ -1,0 +1,72 @@
+# Quick Start
+
+Install AgInTiFlow globally:
+
+```bash
+npm install -g @lazyingart/agintiflow
+```
+
+Initialize a project folder:
+
+```bash
+mkdir my-agent-project
+cd my-agent-project
+aginti init
+aginti doctor
+```
+
+Start interactive chat:
+
+```bash
+aginti
+```
+
+Start the web UI:
+
+```bash
+aginti web --port 3210
+```
+
+Open `http://127.0.0.1:3210`.
+
+## First Useful Prompts
+
+```text
+list this project and explain what is inside
+write a small Python CLI app with tests
+create a beautiful static website and preview it
+write a LaTeX report with a figure and compile it
+inspect git status and prepare a safe commit summary
+```
+
+## Provider Keys
+
+On first use, AgInTiFlow asks for a main provider key. DeepSeek is the normal default.
+
+```bash
+aginti auth
+aginti auth deepseek
+aginti keys status
+```
+
+Keys are saved to `.aginti/.env` with local file permissions. The CLI and web API report only boolean availability and masked previews.
+
+## Mock Mode
+
+Use mock mode for deterministic tests or demos without model credits:
+
+```bash
+aginti --provider mock --routing manual --allow-file-tools "Create notes/hello.md with a smoke note"
+```
+
+Mock mode exercises the same run/session/tool path without calling DeepSeek or OpenAI.
+
+## Default Runtime
+
+The interactive CLI defaults to Docker workspace mode with package installs allowed inside the container. This is useful for Python, Node, plotting, and LaTeX tasks while keeping host installs separate.
+
+Switch host mode only when you intend to operate directly on the host:
+
+```text
+/docker off
+```

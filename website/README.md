@@ -32,16 +32,40 @@ The landing page supports the same languages as the project README set:
 
 Translations live in `app.js` and are applied through `data-i18n`, `data-i18n-aria`, and `data-i18n-alt` attributes in `index.html`. The language dropdown is in the top-right header and stores the user preference in `localStorage`.
 
-## Documentation Section
+## Documentation Site
 
-The landing page includes a docs section linking to the maintained source-of-truth Markdown files in `docs/`, especially:
+The public website now ships a dedicated documentation app at:
 
-- `docs/runtime-modes-and-autonomy.md`: Docker, host access, tmux, package persistence, and long-running autonomy.
-- `docs/self-development-supervision.md`: protocol for supervised AgInTiFlow-on-AgInTiFlow development.
-- `docs/agent-runtime-pipe.md`: CLI/web shared sessions, inbox messages, queues, and stop/resume behavior.
-- `docs/large-codebase-engineering.md`: codebase maps, scout blackboards, patch loops, and verification.
+```text
+https://flow.lazying.art/docs/
+```
 
-When runtime behavior changes, update the Markdown doc first, then keep the website section as a concise entry point.
+Local preview:
+
+```bash
+python3 -m http.server 4310 --directory website
+open http://127.0.0.1:4310/docs/
+```
+
+Docs app files:
+
+- `docs/index.html`: documentation shell.
+- `docs/styles.css`: docs-specific layout, sidebar, table of contents, and Markdown styles.
+- `docs/app.js`: file explorer, search, Markdown rendering, table of contents, and pager behavior.
+- `docs/docs/*.md`: website-facing documentation pages.
+
+Keep these pages concise enough for the website, but detailed enough to be useful without leaving `flow.lazying.art`.
+
+## Landing Documentation Section
+
+The landing page includes a concise docs section that routes visitors into the dedicated docs app:
+
+- `/docs/#/runtime-modes`: Docker, host access, tmux, package persistence, and long-running autonomy.
+- `/docs/#/self-development`: protocol for supervised AgInTiFlow-on-AgInTiFlow development.
+- `/docs/#/artifacts-and-sessions`: CLI/web shared sessions, inbox messages, queues, and artifacts.
+- `/docs/#/coding-tools`: codebase maps, patch loops, file tools, and verification.
+
+When runtime behavior changes, update the repository Markdown doc first, then update the website docs page if the behavior is user-facing.
 
 ## Regenerate Screenshots
 
@@ -64,6 +88,7 @@ The script creates a safe mock-mode run and writes optimized JPEG assets to `web
 - `index.html`: landing page content and carousel markup.
 - `styles.css`: bright static-site styling, language dropdown, and responsive 3D carousel layout.
 - `app.js`: multilingual copy, copy-to-clipboard behavior, and carousel controls.
+- `docs/`: static documentation app served at `/docs/`.
 - `CNAME`: GitHub Pages custom domain for `flow.lazying.art`.
 - `assets/screenshots/`: real app screenshots used by the carousel.
 - `assets/brand/logo.png`: cropped transparent website logo.

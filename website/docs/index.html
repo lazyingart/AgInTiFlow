@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgInTiFlow Docs | Web-first agent platform</title>
+    <meta
+      name="description"
+      content="AgInTiFlow documentation for installation, CLI, web UI, Docker sandboxing, coding tools, skills, artifacts, and release workflows."
+    />
+    <link rel="icon" type="image/png" href="../assets/brand/logo.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="docs-topbar">
+      <a class="docs-brand" href="../" aria-label="Back to AgInTiFlow landing page">
+        <img src="../assets/brand/logo.png" alt="" />
+        <span>AgInTiFlow</span>
+      </a>
+      <nav class="docs-nav" aria-label="Documentation navigation">
+        <a href="./#/overview">Docs</a>
+        <a href="../">Landing</a>
+        <a href="https://github.com/lazyingart/AgInTiFlow">GitHub</a>
+        <a href="https://www.npmjs.com/package/@lazyingart/agintiflow">npm</a>
+      </nav>
+    </header>
+
+    <div class="docs-shell">
+      <aside class="docs-sidebar" aria-label="Documentation file explorer">
+        <div class="sidebar-header">
+          <span class="eyebrow">Documentation</span>
+          <strong>File Explorer</strong>
+        </div>
+        <label class="search-box">
+          <span>Search docs</span>
+          <input id="docs-search" type="search" placeholder="Search pages..." autocomplete="off" />
+        </label>
+        <nav id="docs-tree" class="docs-tree" aria-label="Documentation pages"></nav>
+      </aside>
+
+      <main class="docs-main">
+        <section class="docs-hero">
+          <div>
+            <p class="eyebrow">AgInTiFlow Docs</p>
+            <h1 id="page-title">Loading...</h1>
+            <p id="page-description">Preparing documentation.</p>
+          </div>
+          <div class="quick-install" aria-label="Install command">
+            <span>$</span>
+            <code id="install-command">npm install -g @lazyingart/agintiflow</code>
+            <button type="button" id="copy-install">Copy</button>
+          </div>
+        </section>
+
+        <div id="docs-content" class="docs-content" aria-live="polite"></div>
+
+        <nav class="pager" aria-label="Previous and next documentation pages">
+          <a id="previous-page" href="#"></a>
+          <a id="next-page" href="#"></a>
+        </nav>
+      </main>
+
+      <aside class="docs-toc" aria-label="On this page">
+        <strong>On This Page</strong>
+        <nav id="page-toc"></nav>
+      </aside>
+    </div>
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>
