@@ -241,7 +241,8 @@ function wrapTextLine(value = "", width = 72) {
 }
 
 export function stripMarkdown(text) {
-  const lines = String(text || "").split(/\r?\n/);
+  const unwrapped = unwrapRenderableMarkdownFence(text);
+  const lines = String(unwrapped || "").split(/\r?\n/);
   let inFence = false;
   let diffContext = 0;
   const rendered = [];
@@ -302,6 +303,13 @@ export function stripMarkdown(text) {
   }
 
   return rendered.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
+}
+
+function unwrapRenderableMarkdownFence(text = "") {
+  const raw = String(text || "");
+  const trimmed = raw.trim();
+  const match = trimmed.match(/^```(?:markdown|md)\s*\n([\s\S]*?)\n```\s*$/i);
+  return match ? match[1] : raw;
 }
 
 function renderPatchLine(line = "", { active = false } = {}) {

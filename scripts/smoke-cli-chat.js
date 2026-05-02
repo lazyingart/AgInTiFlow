@@ -81,6 +81,25 @@ try {
   if ((renderedMarkdown.match(/Present/g) || []).length !== 1) {
     throw new Error("terminal markdown renderer duplicated table rows");
   }
+  const renderedMarkdownFence = stripMarkdown(
+    [
+      "```markdown",
+      "# Saved Story",
+      "",
+      "| File | Status |",
+      "| --- | --- |",
+      "| `story-ja.md` | **saved** |",
+      "```",
+    ].join("\n")
+  );
+  if (
+    renderedMarkdownFence.includes("code markdown") ||
+    renderedMarkdownFence.includes("| --- |") ||
+    !renderedMarkdownFence.includes("Saved Story") ||
+    !renderedMarkdownFence.includes("story-ja.md")
+  ) {
+    throw new Error("terminal markdown renderer did not unwrap full markdown fences");
+  }
   const renderedDiff = stripMarkdown(
     [
       "Diff:",
@@ -291,6 +310,7 @@ try {
         projectRoot: tempRoot,
         checks: [
           "markdown-render",
+          "markdown-fence-render",
           "markdown-table-no-duplicate",
           "patch-diff-render",
           "workspace-patch-event-render",

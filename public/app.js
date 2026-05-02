@@ -1441,8 +1441,15 @@ function isMarkdownBlockStart(line, nextLine = "") {
   );
 }
 
+function unwrapRenderableMarkdownFence(value = "") {
+  const raw = String(value || "");
+  const trimmed = raw.trim();
+  const match = trimmed.match(/^```(?:markdown|md)\s*\n([\s\S]*?)\n```\s*$/i);
+  return match ? match[1] : raw;
+}
+
 function renderMarkdown(value) {
-  const lines = String(value || "").replace(/\r\n?/g, "\n").split("\n");
+  const lines = unwrapRenderableMarkdownFence(value).replace(/\r\n?/g, "\n").split("\n");
   const html = [];
   let paragraph = [];
   let listType = "";

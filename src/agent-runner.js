@@ -313,7 +313,7 @@ async function createInitialState(config, sessionId) {
             ? "Host tmux tools are available for long-running terminals: list sessions, capture panes, send safe keys/text, and start detached sessions. Prefer these tools for monitoring long installs/tests/dev servers without blocking; capture before sending input and never send secrets or sudo passwords. Do not start or install tmux inside Docker run_command containers because those containers are short-lived."
             : "",
           config.allowFileTools
-            ? `Workspace file tools are available in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, and preview_workspace. For large or unfamiliar repositories, call inspect_project first, then search/read AGINTI.md/AGENTS.md/README/manifests as relevant before editing. apply_patch supports exact single-file replacements plus Codex-style/unified multi-file patches; prefer it for source edits after reading/searching the relevant context. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. Secret paths, .git internals, node_modules writes, and huge files are blocked. For generated local websites/pages, use open_workspace_file or preview_workspace instead of starting a localhost server inside Docker.`
+            ? `Workspace file tools are available in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, and preview_workspace. For large or unfamiliar repositories, call inspect_project first, then search/read AGINTI.md/AGENTS.md/README/manifests as relevant before editing. apply_patch supports exact single-file replacements plus Codex-style/unified multi-file patches; prefer it for source edits after reading/searching the relevant context. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. For newly generated standalone prose/docs/stories/assets, choose a descriptive non-conflicting filename from the topic/language and use mode=create; do not overwrite existing files unless the user explicitly asked to update/replace/overwrite that file. Secret paths, .git internals, node_modules writes, and huge files are blocked. For generated local websites/pages, use open_workspace_file or preview_workspace instead of starting a localhost server inside Docker.`
             : "No workspace file tools are available.",
           config.allowWrapperTools
             ? `External coding-agent wrappers are available as advisory tools only. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Wrapper status: ${wrapperStatusText()}.`
@@ -362,7 +362,7 @@ async function createInitialState(config, sessionId) {
               : `Shell working directory: ${config.commandCwd}`
             : "",
           config.allowFileTools
-            ? `Workspace file tools enabled in: ${config.commandCwd}. Use inspect_project first for large/unfamiliar codebases. Read AGINTI.md/AGENTS.md/README/manifests when relevant. Use workspace-relative paths. Use apply_patch for code edits; it accepts exact replacements or Codex-style/unified multi-file patches. Local preview tools available: open_workspace_file and preview_workspace.`
+            ? `Workspace file tools enabled in: ${config.commandCwd}. Use inspect_project first for large/unfamiliar codebases. Read AGINTI.md/AGENTS.md/README/manifests when relevant. Use workspace-relative paths. Use apply_patch for code edits; it accepts exact replacements or Codex-style/unified multi-file patches. For newly generated standalone content, choose descriptive non-conflicting filenames and use mode=create unless the user explicitly asked to overwrite/update. Local preview tools available: open_workspace_file and preview_workspace.`
             : "",
           projectInstructions.exists ? "AGINTI.md project instructions are loaded into system context for this run." : "AGINTI.md is not present unless you create it.",
           config.allowWrapperTools
@@ -500,7 +500,7 @@ async function applyContinuationPrompt(state, config, observers) {
           : `Shell working directory: ${config.commandCwd}. Host platform: ${platformLabel(platform)}. Use OS-compatible commands; prefer WSL/Docker for bash-heavy workflows on Windows.`
         : "",
       config.allowFileTools
-        ? `Workspace file tools enabled in: ${config.commandCwd}. Use inspect_project first for large or unfamiliar codebases, then search/read exact files before editing. Read AGINTI.md/AGENTS.md/README/manifests when relevant. Use workspace-relative paths. Use apply_patch for code edits; it accepts exact replacements or Codex-style/unified multi-file patches. For generated local files/sites, use open_workspace_file or preview_workspace.`
+        ? `Workspace file tools enabled in: ${config.commandCwd}. Use inspect_project first for large or unfamiliar codebases, then search/read exact files before editing. Read AGINTI.md/AGENTS.md/README/manifests when relevant. Use workspace-relative paths. Use apply_patch for code edits; it accepts exact replacements or Codex-style/unified multi-file patches. For generated local files/sites, choose descriptive non-conflicting filenames, use mode=create unless the user explicitly asked to overwrite/update, and use open_workspace_file or preview_workspace.`
         : "",
       config.allowWrapperTools
         ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
@@ -599,6 +599,29 @@ function sanitizeToolArgs(toolName, args) {
     };
   }
   return safeArgs;
+}
+
+function goalClearlyAllowsOverwrite(goal = "") {
+  const text = String(goal || "").toLowerCase();
+  return (
+    /\b(overwrite|replace|update|modify|edit|revise|rewrite|fix|patch|change|append|refresh|regenerate|remember|instruction|instructions|memory|preference|preferences|prefer)\b/i.test(text) ||
+    /覆盖|覆寫|替换|替換|更新|修改|修复|修復|编辑|編輯|改写|改寫|追加|记住|記住|指令|说明|說明|偏好|上書き|置換|修正|編集/.test(text)
+  );
+}
+
+async function implicitOverwriteBlock(toolName, args, config, state) {
+  if (toolName !== "write_file" || args.mode !== "overwrite") return null;
+  if (goalClearlyAllowsOverwrite(state?.goal || config.goal || "")) return null;
+  const target = resolveWorkspacePath(config, args.path || args.file || "");
+  const exists = await fs
+    .stat(target.absolutePath)
+    .then((stat) => stat.isFile())
+    .catch(() => false);
+  if (!exists) return null;
+  return {
+    reason: `Refusing to overwrite existing ${target.relativePath} without an explicit update/replace request. Choose a descriptive new filename or ask the user before replacing it.`,
+    category: "workspace-overwrite",
+  };
 }
 
 function sanitizeToolResult(result) {
@@ -709,7 +732,7 @@ async function captureSyntheticSnapshot(store, step, config) {
         ? "Host tmux tools available: tmux_list_sessions, tmux_capture_pane, tmux_send_keys, tmux_start_session. Use them for long-running jobs and agent terminals; capture before sending input. Docker run_command containers are ephemeral, so tmux there will not persist."
         : "",
       config.allowFileTools
-        ? `Workspace file tools available in: ${config.commandCwd}. Use inspect_project first for large or unfamiliar codebases, then search/read exact files before editing. Use workspace-relative paths. Use apply_patch for code edits; it supports exact single-file replacement and multi-file Codex-style/unified patches.`
+        ? `Workspace file tools available in: ${config.commandCwd}. Use inspect_project first for large or unfamiliar codebases, then search/read exact files before editing. Use workspace-relative paths. Use apply_patch for code edits; it supports exact single-file replacement and multi-file Codex-style/unified patches. For new standalone generated content, pick a descriptive non-conflicting filename and avoid overwriting unless explicitly requested.`
         : "Workspace file tools disabled.",
       config.allowWrapperTools
         ? `Agent wrappers available: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
@@ -800,6 +823,30 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       reason: guard.reason,
       category: guard.category,
       needsApproval: guard.needsApproval,
+      toolName: toolCall.function.name,
+      args: safeArgs,
+    };
+  }
+
+  const overwriteBlock = await implicitOverwriteBlock(toolCall.function.name, args, config, state);
+  if (overwriteBlock) {
+    await store.appendEvent("tool.blocked", {
+      toolName: toolCall.function.name,
+      args: safeArgs,
+      reason: overwriteBlock.reason,
+      category: overwriteBlock.category,
+    });
+    observers.event("tool.blocked", {
+      toolName: toolCall.function.name,
+      args: safeArgs,
+      reason: overwriteBlock.reason,
+      category: overwriteBlock.category,
+    });
+    return {
+      ok: false,
+      blocked: true,
+      reason: overwriteBlock.reason,
+      category: overwriteBlock.category,
       toolName: toolCall.function.name,
       args: safeArgs,
     };

@@ -480,7 +480,7 @@ export async function createPlan(client, config, state) {
             ? "Host tmux tools are enabled for long-running sessions. Plan to use tmux_start_session for durable jobs, tmux_capture_pane to monitor, tmux_send_keys to interact after capture, and tmux_list_sessions to discover existing sessions. Do not install or run tmux inside Docker run_command containers; those containers are short-lived and cannot preserve tmux servers."
             : "",
           config.allowFileTools
-            ? `Workspace file tools are enabled in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, preview_workspace. For large or unfamiliar repos, plan to call inspect_project first, then search/read AGINTI.md/AGENTS.md/README/manifests and exact files. apply_patch supports exact single-file replacements and Codex-style/unified multi-file patches; prefer it for edits after reading relevant context. Keep all paths workspace-relative, for example plot_fx.svg or docs/report.tex, and avoid secrets. For generated local HTML/SVG/PDF/static sites, plan to use open_workspace_file or preview_workspace rather than starting a localhost server inside Docker.`
+            ? `Workspace file tools are enabled in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, preview_workspace. For large or unfamiliar repos, plan to call inspect_project first, then search/read AGINTI.md/AGENTS.md/README/manifests and exact files. apply_patch supports exact single-file replacements and Codex-style/unified multi-file patches; prefer it for edits after reading relevant context. Keep all paths workspace-relative, for example plot_fx.svg or docs/report.tex, and avoid secrets. For newly generated standalone prose/docs/stories/assets, choose a descriptive non-conflicting filename from the topic/language instead of generic names like story.txt or output.txt; do not overwrite existing files unless the user explicitly asked to update/replace/overwrite that file. For generated local HTML/SVG/PDF/static sites, plan to use open_workspace_file or preview_workspace rather than starting a localhost server inside Docker.`
             : "",
           projectInstructions?.exists
             ? `Project instructions: AGINTI.md is loaded from ${projectInstructions.path}${projectInstructions.truncated ? " (truncated)" : ""}. Follow it and update it with file tools when the user asks to remember or change project instructions.`
@@ -504,6 +504,7 @@ export async function createPlan(client, config, state) {
           engineeringGuidance,
           "A canvas/artifacts tunnel is available through send_to_canvas. Use it when an output should be highlighted visually, such as screenshots, image files, important markdown, diffs, or generated artifact paths. It is optional for ordinary text answers.",
           "Work like a practical coding agent: inspect when useful, edit with file tools, run safe checks when they add confidence, and keep outputs inside the workspace.",
+          "When saving new standalone content, think of a specific filename from the request and use mode=create. If that name already exists and the user did not ask to replace it, choose a safe variant such as topic-language-v2.md instead of overwriting.",
           "For large apps, websites, LaTeX documents, Python/C/shell projects, or system tasks, plan a coherent minimal implementation, then use tools to create files, run checks, and publish artifacts.",
           "For LaTeX/PDF work, first check whether latexmk or pdflatex already exists in the active host/Docker environment; compile with the existing toolchain before installing packages or rebuilding Docker.",
           "For web search or current information tasks, plan to use browser tools or safe shell network tools when allowed, then preserve useful source notes if the output depends on them.",
@@ -886,7 +887,7 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "write_file",
           description:
-            "Create or overwrite a small UTF-8 workspace file. Use mode=create for new files and mode=overwrite only after reading/understanding the existing file. Secret paths, .git, node_modules writes, and outside-workspace paths are blocked. The runtime records before/after hashes and a compact diff.",
+            "Create or overwrite a small UTF-8 workspace file. Use mode=create with a descriptive non-conflicting filename for newly generated standalone content. Use mode=overwrite only when the user explicitly asks to replace/update that file, or after reading the file and the task is clearly to modify it. Secret paths, .git, node_modules writes, and outside-workspace paths are blocked. The runtime records before/after hashes and a compact diff.",
           parameters: {
             type: "object",
             properties: {
