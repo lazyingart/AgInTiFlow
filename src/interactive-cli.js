@@ -468,7 +468,7 @@ function printHelp() {
       "  /sessions                 List recent sessions in this project.",
       "  /profile <name>           Set task profile, e.g. code, website, latex, maintenance.",
       "  /web-search on|off        Enable or disable the web_search tool.",
-      "  /scouts on|off|<1-8>      Enable parallel DeepSeek scouts and set scout count.",
+      "  /scouts on|off|<1-10>     Enable parallel DeepSeek scouts and set scout count.",
       "  /routing <mode>           Set routing: smart, fast, complex, manual.",
       "  /provider <name>          Set provider: deepseek, openai, mock.",
       "  /model <name>             Set an explicit model, or /model auto.",
@@ -1596,7 +1596,7 @@ async function handleCommand(line, state, packageDir) {
     } else {
       state.allowParallelScouts = true;
       const count = Number(value);
-      if (Number.isFinite(count) && count > 0) state.parallelScoutCount = Math.min(Math.max(count, 1), 8);
+      if (Number.isFinite(count) && count > 0) state.parallelScoutCount = Math.min(Math.max(count, 1), 10);
     }
     printSystemLine(`parallelScouts=${state.allowParallelScouts ? "on" : "off"} count=${state.parallelScoutCount}`);
     return true;

@@ -1175,6 +1175,7 @@ export async function runAgent(config) {
         model: scouts.model,
         requested: scouts.requested,
         completed: scouts.completed,
+        contextPack: scouts.contextPack ? scouts.contextPack.slice(0, 1200) : "",
         synthesis: scouts.synthesis || "",
       };
       state.messages.push({
@@ -1185,6 +1186,7 @@ export async function runAgent(config) {
         model: scouts.model,
         requested: scouts.requested,
         completed: scouts.completed,
+        contextPack: scouts.contextPack || "",
         synthesis: scouts.synthesis || "",
         scouts: scouts.scouts.map((scout) => ({
           name: scout.name,

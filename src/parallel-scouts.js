@@ -2,6 +2,10 @@ import { engineeringGuidanceForTask } from "./engineering-guidance.js";
 import { getModelPresets } from "./model-routing.js";
 import { getTaskProfile, normalizeTaskProfile } from "./task-profiles.js";
 import { redactSensitiveText } from "./redaction.js";
+import { executeWorkspaceTool } from "./workspace-tools.js";
+
+const MAX_CONTEXT_PACK_CHARS = 3800;
+const MAX_SCOUT_CONTENT_CHARS = 1200;
 
 const SCOUTS = [
   {
@@ -44,7 +48,21 @@ const SCOUTS = [
     prompt:
       "Look across workstreams for conflicts, shared files, ordering constraints, and what each scout might be missing. Keep it execution-focused.",
   },
+  {
+    name: "symbol-tracer",
+    prompt:
+      "Infer likely symbols, APIs, routes, commands, schemas, or config keys that connect the change. Suggest exact searches before editing.",
+  },
+  {
+    name: "dependency-doctor",
+    prompt:
+      "Identify dependency, environment, package-manager, Docker, and generated-artifact risks. Prefer project-local or sandboxed setup and focused verification.",
+  },
 ];
+
+export function listParallelScouts() {
+  return SCOUTS.map((scout) => ({ name: scout.name, prompt: scout.prompt }));
+}
 
 function shouldUseComplexScouts(config, state) {
   const profile = normalizeTaskProfile(config.taskProfile);
@@ -70,20 +88,88 @@ function scoutModel(config) {
   return config.model;
 }
 
-function scoutMessages(config, state, scout) {
+function truncateText(text, limit = MAX_CONTEXT_PACK_CHARS) {
+  const value = String(text || "");
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit - 80)}\n... [truncated ${value.length - limit + 80} chars]`;
+}
+
+function listValues(items, limit, mapper) {
+  const values = Array.isArray(items) ? items.slice(0, limit).map(mapper).filter(Boolean) : [];
+  if (!values.length) return "";
+  const suffix = Array.isArray(items) && items.length > limit ? `, ... +${items.length - limit}` : "";
+  return `${values.join(", ")}${suffix}`;
+}
+
+function packageScriptValues(scripts) {
+  if (!Array.isArray(scripts) || !scripts.length) return "";
+  return listValues(scripts, 14, (item) => `${item.name}: ${item.command}`);
+}
+
+async function buildScoutContextPack(config) {
+  if (!config.allowFileTools) {
+    return "Context pack: workspace file tools are disabled. Scouts should recommend the minimal inspection commands/files instead of assuming repository structure.";
+  }
+
+  try {
+    const inspected = await executeWorkspaceTool(
+      "inspect_project",
+      { path: ".", maxDepth: 4, limit: 1000, includeFiles: false },
+      {
+        ...config,
+        allowFileTools: true,
+      }
+    );
+    if (!inspected?.ok) {
+      return `Context pack: inspect_project unavailable (${inspected?.reason || inspected?.error || "unknown error"}).`;
+    }
+
+    const packageScripts = packageScriptValues(inspected.packageScripts);
+    const sections = [
+      `Context pack for ${config.commandCwd}`,
+      `Summary: ${inspected.summary || "no summary"}`,
+      inspected.counts
+        ? `Counts: files=${inspected.counts.files} dirs=${inspected.counts.directories} bytes=${inspected.counts.totalBytes}`
+        : "",
+      `Top level: ${listValues(inspected.topLevel, 20, (item) => `${item.type}:${item.path}`)}`,
+      `Manifests: ${listValues(inspected.manifestFiles, 18, (item) => item.path)}`,
+      `Source dirs: ${listValues(inspected.sourceDirs, 14, (item) => item.path)}`,
+      `Tests: ${listValues(inspected.testFiles, 18, (item) => item.path)}`,
+      `Package managers: ${listValues(inspected.packageManagers, 8, (item) => item.name || item.path || item)}`,
+      packageScripts ? `Package scripts: ${packageScripts}` : "",
+      `Languages: ${listValues(inspected.languageCounts, 10, (item) => `${item.name}:${item.count}`)}`,
+      inspected.git?.present
+        ? `Git: present; start with ${inspected.git.recommendedCommands?.join(" && ") || "git status --short"}; ${inspected.git.workflow}`
+        : "Git: not detected at workspace root.",
+      `Recommended reads: ${listValues(inspected.recommendedReads, 16, (item) => item)}`,
+      `Engineering hints: ${listValues(inspected.engineeringHints, 8, (item) => item)}`,
+    ].filter(Boolean);
+
+    return truncateText(redactSensitiveText(sections.join("\n")));
+  } catch (error) {
+    return `Context pack: inspect_project failed (${redactSensitiveText(error instanceof Error ? error.message : String(error))}).`;
+  }
+}
+
+function capScoutContent(content) {
+  return truncateText(redactSensitiveText(content || "").trim(), MAX_SCOUT_CONTENT_CHARS);
+}
+
+function scoutMessages(config, state, scout, contextPack) {
   const profile = getTaskProfile(config.taskProfile);
   const guidance = engineeringGuidanceForTask(config.goal || state.goal || "", config.taskProfile);
   return [
     {
       role: "system",
       content:
-        "You are a parallel scout for AgInTiFlow. Your answer is advisory only: do not claim work is done, do not ask questions, do not use tools, and keep under 180 words.",
+        "You are a parallel scout for AgInTiFlow. Your answer is advisory only: do not claim work is done, do not ask questions, do not use tools, and keep under 180 words. Work from the shared context pack and state dependencies on other scout roles when relevant.",
     },
     {
       role: "user",
       content: [
         `Scout role: ${scout.name}`,
         scout.prompt,
+        `Shared context pack:\n${contextPack}`,
         `Goal: ${config.goal || state.goal || ""}`,
         `Task profile: ${profile.label}. ${profile.prompt}`,
         guidance,
@@ -100,7 +186,7 @@ function scoutMessages(config, state, scout) {
   ];
 }
 
-async function synthesizeScouts(client, config, model, scouts) {
+async function synthesizeScouts(client, config, model, scouts, contextPack) {
   const usable = scouts.filter((scout) => scout.content);
   if (usable.length < 2) return "";
   const response = await client.chat.completions.create(
@@ -111,11 +197,13 @@ async function synthesizeScouts(client, config, model, scouts) {
         {
           role: "system",
           content:
-            "You synthesize parallel coding-agent scout notes. Produce a compact execution brief under 220 words. Resolve conflicts, identify shared context, and list stop conditions. Do not claim work is done.",
+            "You synthesize parallel coding-agent scout notes into a Swarm Board. Produce under 320 words with: shared context, execution order, conflicts/unknowns, must-read files/checks, and stop conditions. Prefer concrete paths/commands from the context pack. Do not claim work is done.",
         },
         {
           role: "user",
-          content: usable.map((scout) => `## ${scout.name}\n${scout.content}`).join("\n\n"),
+          content: [`## shared context pack\n${contextPack}`, ...usable.map((scout) => `## ${scout.name}\n${scout.content}`)].join(
+            "\n\n"
+          ),
         },
       ],
     },
@@ -128,20 +216,21 @@ export async function runParallelScouts(client, config, state) {
   const count = Math.min(Math.max(Number(config.parallelScoutCount) || 3, 1), SCOUTS.length);
   const selected = SCOUTS.slice(0, count);
   const model = scoutModel(config);
+  const contextPack = await buildScoutContextPack(config);
   const settled = await Promise.allSettled(
     selected.map(async (scout) => {
       const response = await client.chat.completions.create(
         {
           model,
           temperature: 0,
-          messages: scoutMessages(config, state, scout),
+          messages: scoutMessages(config, state, scout, contextPack),
         },
         config.abortSignal ? { signal: config.abortSignal } : undefined
       );
       return {
         name: scout.name,
         model,
-        content: redactSensitiveText(response.choices[0]?.message?.content || "").trim(),
+        content: capScoutContent(response.choices[0]?.message?.content || ""),
       };
     })
   );
@@ -157,12 +246,13 @@ export async function runParallelScouts(client, config, state) {
   const completed = scouts.filter((scout) => scout.content).length;
   const synthesis =
     completed > 1
-      ? await synthesizeScouts(client, config, model, scouts).catch((error) =>
+      ? await synthesizeScouts(client, config, model, scouts, contextPack).catch((error) =>
           `Synthesis failed: ${redactSensitiveText(error instanceof Error ? error.message : String(error))}`
         )
       : "";
   const summary = [
-    "Parallel scout notes. Treat these as advisory, not completed work.",
+    "Parallel scout swarm notes. Treat these as advisory shared context, not completed work.",
+    `\n## shared context pack\n${contextPack}`,
     synthesis ? `\n## coordinator\n${synthesis}` : "",
     ...scouts.map((scout) =>
       scout.content ? `\n## ${scout.name}\n${scout.content}` : `\n## ${scout.name}\nScout failed: ${scout.error || "unknown error"}`
@@ -177,6 +267,7 @@ export async function runParallelScouts(client, config, state) {
     requested: selected.length,
     completed,
     scouts,
+    contextPack,
     synthesis,
     summary,
   };

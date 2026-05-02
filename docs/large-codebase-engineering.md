@@ -13,6 +13,8 @@ Local agent references informed the design:
 - Claw-style `doctor` discipline: check health and environment before treating system symptoms as code bugs.
 - Claude/Codex-style context discipline: read project instructions, manifests, entry points, and failing tests before touching broad files.
 
+The shared pattern is not “put the whole repo in context.” It is: build a cheap map, choose the next exact evidence, edit with deterministic patches, verify, then compact what changed. AgInTiFlow uses cheap DeepSeek calls to add more independent eyes around that loop, not to replace it.
+
 ## Skill vs Tool
 
 The `large-codebase` profile is a skill: it changes the model’s engineering behavior. It tells DeepSeek v4 pro to orient first, plan minimally, patch incrementally, and verify.
@@ -94,11 +96,15 @@ DeepSeek calls are cheap enough that complex tasks can use several short advisor
 - Tester: finds the narrowest useful checks and setup blockers.
 - Git operator: keeps status/diff/commit/pull/push workflows disciplined.
 - Integrator: looks for cross-stream conflicts and ordering constraints.
+- Symbol tracer: predicts names, APIs, routes, schemas, and searches that connect the change.
+- Dependency doctor: checks package managers, Docker/toolchain setup, generated artifacts, and install risks.
 
-Scout output is synthesized by a coordinator note and injected as advisory context only. The main agent still owns execution and must use real tools to inspect, edit, run commands, and finish. CLI flags:
+Before scouts run, AgInTiFlow builds a bounded shared context pack with `inspect_project`: manifests, top-level files, source/test directories, package scripts, language counts, git status hints, and recommended reads. This avoids the weak pattern of each scout rediscovering the repo differently or flooding the main context with an infinite tree.
+
+Scout output is synthesized by a coordinator Swarm Board and injected as advisory context only. The board records shared context, execution order, conflicts/unknowns, must-read files/checks, and stop conditions. The main agent still owns execution and must use real tools to inspect, edit, run commands, and finish. CLI flags:
 
 ```bash
-aginti --parallel-scouts --scout-count 8 "fix this complicated repo bug"
+aginti --parallel-scouts --scout-count 10 "fix this complicated repo bug"
 aginti --no-parallel-scouts "run a cheap short task"
 ```
 

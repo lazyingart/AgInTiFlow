@@ -102,7 +102,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     parallelScoutCount: clampNumber(
       parseNumber(overrides.parallelScoutCount ?? args.parallelScoutCount ?? process.env.AGINTI_SCOUT_COUNT, 3),
       1,
-      8
+      10
     ),
     preferredWrapper: normalizeWrapperName(
       overrides.preferredWrapper ?? args.preferredWrapper ?? process.env.PREFERRED_WRAPPER ?? process.env.AGENT_WRAPPER

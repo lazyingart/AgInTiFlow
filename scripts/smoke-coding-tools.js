@@ -7,7 +7,7 @@ import { repairModelMessageHistory, runAgent } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { engineeringGuidanceForTask, recommendedMaxStepsForTask } from "../src/engineering-guidance.js";
 import { selectModelRoute } from "../src/model-routing.js";
-import { shouldRunParallelScouts } from "../src/parallel-scouts.js";
+import { listParallelScouts, runParallelScouts, shouldRunParallelScouts } from "../src/parallel-scouts.js";
 import { SessionStore } from "../src/session-store.js";
 import { searchWeb } from "../src/web-search.js";
 import { executeWorkspaceTool } from "../src/workspace-tools.js";
@@ -127,6 +127,16 @@ try {
     ),
     "parallel scouts did not enable for complex auto task"
   );
+  const scoutNames = listParallelScouts().map((scout) => scout.name);
+  assert(scoutNames.length >= 10, "parallel scout roster did not expose 10 scout roles");
+  for (const expectedScout of ["cartographer", "git-operator", "integrator", "symbol-tracer", "dependency-doctor"]) {
+    assert(scoutNames.includes(expectedScout), `parallel scout roster missing ${expectedScout}`);
+  }
+  const scoutConfig = resolveRuntimeConfig(
+    { provider: "mock", parallelScoutCount: 99, commandCwd: workspace },
+    { baseDir: runtimeDir, packageDir: repoRoot, provider: "mock", commandCwd: workspace }
+  );
+  assert(scoutConfig.parallelScoutCount === 10, "parallel scout count did not clamp to 10");
   const drySearch = await searchWeb(
     { query: "AgInTiFlow web_search smoke", maxResults: 2 },
     { allowWebSearch: true, webSearchDryRun: true }
@@ -166,6 +176,53 @@ try {
   assert(inspected.sourceDirs.some((item) => item.path === "src"), "inspect_project did not identify src directory");
   assert(inspected.testFiles.some((item) => item.path === "test/index.test.js"), "inspect_project did not identify test file");
   assert(inspected.recommendedReads.includes("package.json"), "inspect_project did not recommend package.json");
+  const fakeScoutPrompts = [];
+  const fakeScoutClient = {
+    chat: {
+      completions: {
+        create: async ({ messages }) => {
+          const systemContent = messages.find((message) => message.role === "system")?.content || "";
+          const userContent = messages.find((message) => message.role === "user")?.content || "";
+          fakeScoutPrompts.push(userContent);
+          const role = userContent.match(/Scout role: ([^\n]+)/)?.[1] || "coordinator";
+          return {
+            choices: [
+              {
+                message: {
+                  content: systemContent.includes("synthesize")
+                    ? "Swarm Board: read package.json first, inspect src/test, patch narrowly, run npm test, stop on unrelated git changes."
+                    : `Advice from ${role}: use the shared context pack and inspect package.json before editing.`,
+                },
+              },
+            ],
+          };
+        },
+      },
+    },
+  };
+  const scoutRun = await runParallelScouts(
+    fakeScoutClient,
+    {
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      commandCwd: workspace,
+      allowFileTools: true,
+      parallelScoutCount: 10,
+      goal: "fix this complicated repo test bug",
+      taskProfile: "large-codebase",
+      sandboxMode: "host",
+      packageInstallPolicy: "block",
+    },
+    { goal: "fix this complicated repo test bug", meta: {}, plan: "Inspect and patch." }
+  );
+  assert(scoutRun.requested === 10 && scoutRun.completed === 10, "parallel scout fake run did not complete 10 scouts");
+  assert(scoutRun.contextPack.includes("package.json"), "parallel scout context pack did not include manifest evidence");
+  assert(scoutRun.summary.includes("## shared context pack"), "parallel scout summary omitted shared context pack");
+  assert(scoutRun.summary.includes("## coordinator"), "parallel scout summary omitted coordinator synthesis");
+  assert(
+    fakeScoutPrompts.filter((prompt) => /Shared context pack:[\s\S]*package\.json/.test(prompt)).length >= 10,
+    "parallel scouts did not receive the shared context pack"
+  );
 
   const inspectRun = await runMock("Inspect this large codebase and recommend next reads.", "coding-inspect");
   assert(
@@ -306,8 +363,11 @@ try {
           "auto_system_pro_route",
           "auto_engineering_guidance",
           "parallel_scout_trigger",
+          "parallel_scout_roster",
+          "parallel_scout_count_clamp",
           "web_search_dry_run",
           "inspect_project",
+          "parallel_scout_context_pack",
           "mock_inspect_project",
           "write_file",
           "duplicate_write_failed",

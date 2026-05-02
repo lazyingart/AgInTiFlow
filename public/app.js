@@ -1042,7 +1042,7 @@ function formPayload() {
     allowAuxiliaryTools: allowAuxiliaryToolsField?.checked ?? true,
     allowWebSearch: allowWebSearchField?.checked ?? true,
     allowParallelScouts: allowParallelScoutsField?.checked ?? true,
-    parallelScoutCount: Math.min(Math.max(Number(parallelScoutCountField?.value) || 3, 1), 8),
+    parallelScoutCount: Math.min(Math.max(Number(parallelScoutCountField?.value) || 3, 1), 10),
     allowWrapperTools: allowWrapperToolsField.checked,
     preferredWrapper: preferredWrapperField.value,
     taskProfile: taskProfileField?.value || "auto",
