@@ -1136,7 +1136,9 @@ function renderModelOptions() {
     modelRoutePillEl.textContent =
       mode === "manual"
         ? `${provider} · ${primary}`
-        : `${mode} · route ${routeLabel} · main ${mainLabel}`;
+        : `${mode} · ${routeLabel} -> ${mainLabel}`;
+    modelRoutePillEl.title =
+      mode === "manual" ? `Manual route: ${provider}/${primary}` : `Route: ${routeLabel}. Main: ${mainLabel}.`;
   }
   if (!modelCatalogEl) return;
   if (options.length === 0) {

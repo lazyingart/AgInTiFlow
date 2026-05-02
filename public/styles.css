@@ -139,6 +139,22 @@ h1 {
     #fffdfa;
 }
 
+.route-pill {
+  max-width: 100%;
+  overflow: hidden;
+  margin: -2px 0 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  border-radius: 999px;
+  background: rgba(204, 251, 241, 0.42);
+  color: #0f766e;
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .model-catalog-head {
   display: flex;
   align-items: center;
@@ -168,7 +184,7 @@ h1 {
 .model-role-grid {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
 .model-role-card {
@@ -244,7 +260,7 @@ h1 {
 .model-chip {
   display: grid;
   gap: 2px;
-  flex: 1 1 148px;
+  flex: 1 1 180px;
   min-width: 0;
   padding: 9px 11px;
   border: 1px solid rgba(15, 118, 110, 0.2);
