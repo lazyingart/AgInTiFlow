@@ -68,6 +68,20 @@ function dimensionsForImage(aspectRatio, imageSize) {
   return { width: Math.max(256, Math.round((longSide * w) / h)), height: longSide };
 }
 
+function veniceSizingForModel(model, args = {}) {
+  const normalizedModel = String(model || "").toLowerCase();
+  const aspectRatio = normalizeAspectRatio(args.aspectRatio);
+  const imageSize = normalizeImageSize(args.imageSize).toUpperCase();
+  const resolution = /^(?:1K|2K|4K)$/.test(imageSize) ? imageSize : "1K";
+  if (/gpt-image|nano-banana/.test(normalizedModel)) {
+    return { aspect_ratio: aspectRatio, resolution };
+  }
+  if (/qwen-image-2|wan-2-7|seedream|recraft|grok-imagine|flux-2|hunyuan|imagineart|chroma/.test(normalizedModel)) {
+    return { aspect_ratio: aspectRatio };
+  }
+  return dimensionsForImage(aspectRatio, imageSize);
+}
+
 function hashBuffer(buffer) {
   return crypto.createHash("sha256").update(buffer).digest("hex");
 }
@@ -256,12 +270,11 @@ async function generateVeniceImages({ prompt, args, target, outputStem, manifest
 
   const model = String(args.model || process.env.VENICE_IMAGE_MODEL || DEFAULT_VENICE_IMAGE_MODEL).trim() || DEFAULT_VENICE_IMAGE_MODEL;
   const format = String(args.format || "png").trim().toLowerCase() === "webp" ? "webp" : "png";
-  const dimensions = dimensionsForImage(args.aspectRatio, normalizeImageSize(args.imageSize));
+  const sizing = veniceSizingForModel(model, args);
   const payload = {
     model,
     prompt,
-    width: dimensions.width,
-    height: dimensions.height,
+    ...sizing,
     format,
     return_binary: false,
     variants: 1,
