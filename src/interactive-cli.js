@@ -73,8 +73,17 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const ROLE_LABEL_WIDTH = "aginti".length;
+const PROMPT_LABEL_WIDTH = "aginti>".length;
+
+function labelText(name, { prompt = false } = {}) {
+  const raw = String(name || "");
+  const width = prompt || raw.endsWith(">") ? PROMPT_LABEL_WIDTH : ROLE_LABEL_WIDTH;
+  return ` ${raw.padEnd(width, " ")} `;
+}
+
 function label(name, bgCode) {
-  return color(` ${name} `, bgCode, ansi.bold);
+  return color(labelText(name), bgCode, ansi.bold);
 }
 
 function outputLine(line = "") {
@@ -542,8 +551,8 @@ export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth
   const safeBuffer = String(buffer || "");
   const safeCursor = clamp(Number(cursor) || 0, 0, safeBuffer.length);
   const lineWidth = editorWidth(width);
-  const firstPrefix = " user> ";
-  const nextPrefix = "  ... ";
+  const firstPrefix = labelText("user>", { prompt: true });
+  const nextPrefix = labelText("...", { prompt: true });
   const firstInnerWidth = Math.max(lineWidth - firstPrefix.length, 8);
   const nextInnerWidth = Math.max(lineWidth - nextPrefix.length, 8);
   const rows = [];

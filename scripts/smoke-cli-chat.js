@@ -93,6 +93,9 @@ try {
   if (!promptText.includes("user>")) {
     throw new Error("terminal prompt layout did not render the user> label");
   }
+  if (!promptText.includes("user>   ")) {
+    throw new Error("terminal prompt layout did not pad user> to the aginti> label width");
+  }
   const visibleLengths = promptLayout.renderedRows.map((line) =>
     line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").length
   );
