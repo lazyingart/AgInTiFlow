@@ -848,7 +848,10 @@ const COMPLEX_ENGINEERING_HINT = /\b(large|complex|complicated|monorepo|codebase
 
 function recommendedMaxStepsForProfile(profile = "auto", goal = "") {
   if (profile === "large-codebase") return 36;
+  if (profile === "app") return 40;
+  if (profile === "android") return 60;
   if (profile === "latex") return 30;
+  if (["paper", "research", "book", "novel", "c-cpp", "r-stan", "github", "word", "maintenance"].includes(profile)) return 30;
   if (COMPLEX_ENGINEERING_HINT.test(goal || "")) return 36;
   if (/\b(latex|tex|pdflatex|latexmk|pdf|website|app|docker|system|install|setup|debug)\b/i.test(goal || "")) return 30;
   return 24;

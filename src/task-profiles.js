@@ -27,12 +27,47 @@ export const TASK_PROFILES = {
       "Bias toward long-form writing quality without refusing adjacent research, code, or formatting tasks. Create structured drafts with outlines, sections, revision notes, and saved files for durable output. Use web search when current sources matter and canvas for important drafts.",
     tools: ["files", "canvas"],
   },
+  research: {
+    id: "research",
+    label: "Research",
+    prompt:
+      "Bias toward careful research while remaining able to write, code, plot, or format results. Clarify the research question, gather current sources when needed with web_search, distinguish evidence from inference, save durable notes or summaries with citations, and surface important artifacts through canvas.",
+    tools: ["web_search", "files", "canvas", "shell"],
+  },
+  paper: {
+    id: "paper",
+    label: "Academic paper",
+    prompt:
+      "Bias toward academic paper and manuscript production while still handling code, figures, literature, and LaTeX. Build an outline, define claims and contributions, keep sources traceable, create or update durable manuscript files, compile/check outputs when possible, and save PDFs/figures with descriptive paths.",
+    tools: ["files", "shell", "web_search", "canvas", "sandbox"],
+  },
+  book: {
+    id: "book",
+    label: "Book writing",
+    prompt:
+      "Bias toward book-scale structure while staying useful for research, code snippets, figures, and publication tooling. Maintain a chapter map, outline before drafting, write durable chapter files, preserve voice/style notes, and produce revision checklists instead of one-off chat-only prose.",
+    tools: ["files", "web_search", "canvas"],
+  },
+  novel: {
+    id: "novel",
+    label: "Novel writing",
+    prompt:
+      "Bias toward fiction craft while still supporting research and formatting. Track premise, characters, arcs, scenes, continuity, tone, and chapter files; draft in durable files and use canvas for important scenes or outlines.",
+    tools: ["files", "web_search", "canvas"],
+  },
   design: {
     id: "design",
     label: "Design docs",
     prompt:
       "Bias toward clear product/engineering design while remaining able to implement or test when asked. Produce concise design documents with goals, constraints, options, tradeoffs, implementation steps, verification criteria, and decision records.",
     tools: ["files", "canvas"],
+  },
+  app: {
+    id: "app",
+    label: "App builder",
+    prompt:
+      "Bias toward end-to-end app delivery across web, desktop, mobile, and local tools. Inspect the existing stack first, choose the smallest coherent architecture, implement real files, run build/test/preview/install checks when available, save artifacts with good names, and keep git status explicit.",
+    tools: ["inspect_project", "search_files", "read_file", "apply_patch", "shell", "sandbox", "canvas"],
   },
   python: {
     id: "python",
@@ -54,6 +89,20 @@ export const TASK_PROFILES = {
     prompt:
       "Bias toward Node/JavaScript/TypeScript workflows without excluding frontend, backend, docs, or deployment work. Inspect package.json/lockfiles, respect the package manager, add tests when useful, and run safe npm/node checks when available.",
     tools: ["files", "shell", "sandbox"],
+  },
+  "c-cpp": {
+    id: "c-cpp",
+    label: "C/C++",
+    prompt:
+      "Bias toward C and C++ development while still handling docs, scripts, and system setup. Inspect CMake/Make/build files, patch source carefully, prefer out-of-tree builds, run focused compile/test checks, and use sanitizers/debuggers only when available and safe.",
+    tools: ["inspect_project", "search_files", "read_file", "apply_patch", "shell", "sandbox"],
+  },
+  "r-stan": {
+    id: "r-stan",
+    label: "R/Stan",
+    prompt:
+      "Bias toward R, Stan, statistics, reproducible analysis, and research code. Inspect renv/DESCRIPTION/scripts/data layout, keep outputs reproducible, prefer project-local libraries or Docker, run Rscript/CmdStan checks when available, and save plots/reports as durable artifacts.",
+    tools: ["inspect_project", "files", "shell", "web_search", "canvas", "sandbox"],
   },
   android: {
     id: "android",
@@ -83,6 +132,20 @@ export const TASK_PROFILES = {
       "Bias toward AAPS workflows while still handling normal project work. Recognize .aaps folders and @lazyingart/aaps conventions, keep work project-local, document assumptions, and avoid secrets or publishing unless explicitly requested.",
     tools: ["files", "shell", "sandbox"],
   },
+  github: {
+    id: "github",
+    label: "GitHub maintenance",
+    prompt:
+      "Bias toward safe git and GitHub maintenance while still fixing code/docs when asked. Always inspect git status and remotes first, separate unrelated changes, run relevant checks before commits, use gh when available for PR/issues/releases, prefer fast-forward pulls, and stop on conflicts or ambiguous history.",
+    tools: ["shell", "files", "web_search", "inspect_project"],
+  },
+  word: {
+    id: "word",
+    label: "Word documents",
+    prompt:
+      "Bias toward Word/docx/document workflows while still using writing, conversion, LaTeX, or scripts when useful. Preserve originals, create clear output filenames, use available local tools such as pandoc/libreoffice/python packages when present, and verify generated documents exist before reporting success.",
+    tools: ["files", "shell", "canvas", "sandbox"],
+  },
   latex: {
     id: "latex",
     label: "LaTeX",
@@ -100,17 +163,48 @@ export const TASK_PROFILES = {
 };
 
 const PROFILE_ALIASES = {
+  default: "auto",
+  general: "auto",
   large: "large-codebase",
   codebase: "large-codebase",
   repo: "large-codebase",
   repository: "large-codebase",
   engineering: "large-codebase",
   engineer: "large-codebase",
+  application: "app",
+  apps: "app",
   mobile: "android",
   apk: "android",
   gradle: "android",
   kotlin: "android",
   java: "android",
+  frontend: "website",
+  web: "website",
+  site: "website",
+  manuscript: "paper",
+  academic: "paper",
+  article: "paper",
+  report: "paper",
+  literature: "research",
+  sources: "research",
+  chapter: "book",
+  fiction: "novel",
+  story: "novel",
+  cpp: "c-cpp",
+  "c++": "c-cpp",
+  clang: "c-cpp",
+  cmake: "c-cpp",
+  r: "r-stan",
+  stan: "r-stan",
+  statistics: "r-stan",
+  git: "github",
+  gh: "github",
+  release: "github",
+  docx: "word",
+  office: "word",
+  system: "maintenance",
+  sysadmin: "maintenance",
+  computer: "maintenance",
 };
 
 export function listTaskProfiles() {
@@ -130,7 +224,9 @@ export function getTaskProfile(value = "auto") {
 export function defaultMaxStepsForProfile(value = "auto") {
   const profile = normalizeTaskProfile(value);
   if (profile === "large-codebase") return 36;
+  if (profile === "app") return 40;
   if (profile === "android") return 60;
   if (profile === "latex") return 30;
+  if (["paper", "research", "book", "novel", "c-cpp", "r-stan", "github", "word", "maintenance"].includes(profile)) return 30;
   return 24;
 }
