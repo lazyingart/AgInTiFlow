@@ -10,12 +10,14 @@ export const MAIN_AUTH_PROVIDERS = [
     label: "DeepSeek",
     keyName: "DEEPSEEK_API_KEY",
     description: "default fast/pro route",
+    keyUrl: "https://platform.deepseek.com/api_keys",
   },
   {
     id: "openai",
     label: "OpenAI",
     keyName: "OPENAI_API_KEY",
     description: "OpenAI-compatible fallback",
+    keyUrl: "https://platform.openai.com/api-keys",
   },
   {
     id: "qwen",
@@ -53,6 +55,19 @@ export function normalizeAuthProvider(provider = "", fallback = "deepseek") {
 function providerLabel(provider = "") {
   const match = [...MAIN_AUTH_PROVIDERS, AUXILIARY_AUTH_PROVIDER].find((item) => item.id === provider);
   return match?.label || provider;
+}
+
+export function authProviderKeyUrl(provider = "") {
+  const normalized = normalizeAuthProvider(provider, "");
+  const match = [...MAIN_AUTH_PROVIDERS, AUXILIARY_AUTH_PROVIDER].find((item) => item.id === normalized);
+  return match?.keyUrl || "";
+}
+
+export function authProviderKeyHelp(provider = "") {
+  const normalized = normalizeAuthProvider(provider, "");
+  const label = providerLabel(normalized);
+  const url = authProviderKeyUrl(normalized);
+  return url ? `Get ${label} API key: ${url}` : "";
 }
 
 class MutedWritable extends Writable {
@@ -144,17 +159,21 @@ export async function promptHidden(promptText) {
 }
 
 function renderProviderPicker({ providers, selected, title, status }) {
+  const keyLinks = providers
+    .filter((provider) => provider.keyUrl)
+    .map((provider) => `${provider.label}: ${provider.keyUrl}`);
   const lines = [
     `\n${title}`,
     "Use Up/Down to choose, Enter to confirm, Esc to go back/skip.",
     `Current key status: ${status}`,
+    keyLinks.length ? `API key pages: ${keyLinks.join(" · ")}` : "",
     "",
     ...providers.map((provider, index) => {
       const cursor = index === selected ? ">" : " ";
       return `${cursor} ${provider.label.padEnd(10)} ${provider.keyName.padEnd(16)} ${provider.description}`;
     }),
   ];
-  return lines.join("\n");
+  return lines.filter((line, index) => line || index > 2).join("\n");
 }
 
 export async function chooseAuthProvider({
@@ -295,7 +314,8 @@ export async function runAuthWizard(projectRoot = process.cwd(), options = {}) {
 
   if (mainProvider) {
     const current = status[mainProvider] ? "currently available; paste a new key to replace, or Esc to keep existing" : "missing";
-    const prompt = `${providerLabel(mainProvider)} main API key (${current}) [hidden]: `;
+    const keyHelp = authProviderKeyHelp(mainProvider);
+    const prompt = `${keyHelp ? `${keyHelp}\n` : ""}${providerLabel(mainProvider)} main API key (${current}) [hidden]: `;
     const secret = await promptSecret(prompt, { allowEscape: true });
     if (secret.value) {
       const result = await setProviderKey(projectRoot, mainProvider, secret.value);

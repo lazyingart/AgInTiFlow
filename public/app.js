@@ -25,6 +25,9 @@ const translations = {
       "DeepSeek/OpenAI/Qwen keys are missing. Use mock mode, export an env var, or save a project-local model key.",
     setupEnvHelp:
       "Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, QWEN_API_KEY, LLM_API_KEY, and optional GRSAI for image generation. Mock mode remains available for local tests.",
+    setupKeyLinksLabel: "Get keys:",
+    deepseekKeyLink: "DeepSeek API keys",
+    openaiKeyLink: "OpenAI API keys",
     setupProviderLabel: "Provider",
     setupKeyLabel: "API key",
     saveKeyButton: "Save local key",

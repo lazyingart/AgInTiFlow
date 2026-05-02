@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { normalizeAuthProvider } from "../src/auth-onboarding.js";
+import { authProviderKeyHelp, authProviderKeyUrl, normalizeAuthProvider } from "../src/auth-onboarding.js";
 import { getProviderDefaults } from "../src/model-routing.js";
 import { providerKeyStatus, setProviderKey } from "../src/project.js";
 
@@ -53,6 +53,8 @@ async function runCli(args, stdin = "") {
 try {
   assert(normalizeAuthProvider("auxilliary") === "grsai", "auxilliary alias did not normalize to grsai");
   assert(normalizeAuthProvider("qwen") === "qwen", "qwen provider did not normalize");
+  assert(authProviderKeyUrl("deepseek") === "https://platform.deepseek.com/api_keys", "DeepSeek key URL is missing");
+  assert(authProviderKeyHelp("openai").includes("https://platform.openai.com/api-keys"), "OpenAI key help is missing");
   const qwenDefaults = getProviderDefaults("qwen");
   assert(qwenDefaults.provider === "qwen" && qwenDefaults.model, "qwen provider defaults are not available");
 
@@ -75,7 +77,7 @@ try {
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["normalize-auth-provider", "qwen-defaults", "qwen-key-status", "cli-key-status-redacted"],
+        checks: ["normalize-auth-provider", "provider-key-links", "qwen-defaults", "qwen-key-status", "cli-key-status-redacted"],
       },
       null,
       2

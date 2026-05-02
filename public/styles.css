@@ -137,6 +137,23 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+.setup-card .key-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.setup-card .key-links a {
+  color: #075985;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.setup-card .key-links a:hover {
+  text-decoration: underline;
+}
+
 .setup-card[hidden] {
   display: none;
 }

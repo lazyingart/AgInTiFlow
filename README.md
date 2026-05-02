@@ -46,7 +46,7 @@ aginti --list-profiles
 aginti --sandbox-status
 ```
 
-On first interactive use, if no main model key is detected, `aginti` opens an auth wizard. Use Up/Down to choose DeepSeek, OpenAI, or Qwen, paste the key, and press Enter to save it to the project-local ignored file `.aginti/.env` with `0600` permissions. The wizard then offers the optional auxiliary image key; press Esc to skip. You can rerun it even when keys already exist:
+On first interactive use, if no main model key is detected, `aginti` opens an auth wizard. Use Up/Down to choose DeepSeek, OpenAI, or Qwen, paste the key, and press Enter to save it to the project-local ignored file `.aginti/.env` with `0600` permissions. The wizard points to DeepSeek keys at `https://platform.deepseek.com/api_keys` and OpenAI keys at `https://platform.openai.com/api-keys`. It then offers the optional auxiliary image key; press Esc to skip. You can rerun it even when keys already exist:
 
 ```bash
 aginti auth
