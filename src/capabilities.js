@@ -129,6 +129,9 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
   const nodeTestPolicy = evaluateCommandPolicy("node --test round9-node-app/test/app.test.js", config);
   const bashSyntaxPolicy = evaluateCommandPolicy("bash -n maintenance/setup-conda.sh", config);
   const texPolicy = evaluateCommandPolicy("pdflatex -interaction=nonstopmode -halt-on-error docs/note.tex", config);
+  const gitStatusPolicy = evaluateCommandPolicy("git status --short", config);
+  const gitCommitPolicy = evaluateCommandPolicy('git commit -m "test commit"', config);
+  const gitPullPolicy = evaluateCommandPolicy("git pull", config);
 
   const checks = [
     capability("node", node.available, node),
@@ -156,6 +159,9 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
     capability("node-test-policy", Boolean(nodeTestPolicy.allowed), nodeTestPolicy),
     capability("bash-syntax-policy", Boolean(bashSyntaxPolicy.allowed), bashSyntaxPolicy),
     capability("tex-policy", Boolean(texPolicy.allowed), texPolicy),
+    capability("git-status-policy", Boolean(gitStatusPolicy.allowed), gitStatusPolicy),
+    capability("git-commit-policy", Boolean(gitCommitPolicy.allowed), gitCommitPolicy),
+    capability("git-pull-ff-only-policy", !gitPullPolicy.allowed, gitPullPolicy),
   ];
 
   return {

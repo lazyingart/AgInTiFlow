@@ -1175,6 +1175,7 @@ export async function runAgent(config) {
         model: scouts.model,
         requested: scouts.requested,
         completed: scouts.completed,
+        synthesis: scouts.synthesis || "",
       };
       state.messages.push({
         role: "user",
@@ -1184,6 +1185,7 @@ export async function runAgent(config) {
         model: scouts.model,
         requested: scouts.requested,
         completed: scouts.completed,
+        synthesis: scouts.synthesis || "",
         scouts: scouts.scouts.map((scout) => ({
           name: scout.name,
           model: scout.model,

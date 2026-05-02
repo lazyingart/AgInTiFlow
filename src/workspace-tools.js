@@ -509,6 +509,10 @@ async function inspectProject(config, args) {
     manifestFiles.some((item) => item.path.endsWith("Cargo.toml")) ? "cargo" : "",
     manifestFiles.some((item) => item.path.endsWith("go.mod")) ? "go" : "",
   ].filter(Boolean);
+  const gitPresent = await fs
+    .stat(path.join(target.absolutePath, ".git"))
+    .then(() => true)
+    .catch(() => false);
 
   const summary = {
     ok: true,
@@ -532,13 +536,21 @@ async function inspectProject(config, args) {
     languageCounts: sortCounts(languageCounts),
     packageManagers,
     packageScripts,
+    git: {
+      present: gitPresent,
+      recommendedCommands: gitPresent ? ["git status --short", "git diff --stat"] : [],
+      workflow: gitPresent
+        ? "Before commit/push: inspect git status and diff, avoid unrelated files, prefer git pull --ff-only, and stop on conflicts or divergence."
+        : "",
+    },
     recommendedReads: [],
     engineeringHints: [
       "Read AGINTI/AGENTS/README/manifests before editing.",
       "Use search_files to locate symbols and tests, then read exact files.",
       "Use apply_patch for source edits and run the smallest relevant check first.",
       "If a change spans modules, patch in small batches and verify after each batch.",
-    ],
+      gitPresent ? "For git tasks, run status/diff first; commit only intended changes and stop on conflicts/divergence." : "",
+    ].filter(Boolean),
   };
   summary.recommendedReads = recommendedReads(summary);
   if (includeFiles) summary.files = files.slice(0, limit);

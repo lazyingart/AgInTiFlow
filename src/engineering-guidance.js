@@ -44,6 +44,12 @@ const LANGUAGE_HINTS = [
       "System/shell: diagnose first with read-only commands, capture versions/logs, make reversible scripts, use Docker for installs/toolchains, and only use host-level changes when policy explicitly allows them.",
   },
   {
+    id: "git",
+    pattern: /\b(git|commit|push|pull|merge|rebase|branch|remote|status|diff)\b/i,
+    text:
+      "Git: always run git status --short and git diff --stat before commit/push. Commit only requested changes, use a clear message, run git fetch before push when remote state matters, prefer git pull --ff-only, and stop to ask if there are conflicts, unrelated dirty files, divergent branches, or ambiguous merge choices.",
+  },
+  {
     id: "r-stats",
     pattern: /\b(rstats|r language|cmdstanr|stan|renv|tidyverse|shiny)\b/i,
     text:
@@ -77,6 +83,7 @@ export function engineeringGuidanceForTask(goal = "", taskProfile = "auto") {
     "Use the proven coding-agent loop: inspect_project, read instructions/manifests, search exact symbols/errors, patch small coherent batches, run focused checks, repair failures, then summarize changed files and residual risks.",
     "Keep CLI and web behavior equivalent: use the same workspace, sessions, profiles, file tools, shell policy, Docker mounts, and canvas artifacts.",
     "For large repositories, preserve context by reading fewer but more relevant files; prefer deterministic tools and diffs over long model memory.",
+    "Build a compact context pack before major edits: project instructions, manifests/scripts, git status/diff, relevant symbols/search hits, target files, and the narrowest checks. Do not paste whole trees or huge files into model context.",
     "For system repair, act like a doctor: gather evidence first, avoid silent destructive host changes, prefer Docker or project-local scripts for installs, and make every stronger action explicit in logs.",
   ];
 

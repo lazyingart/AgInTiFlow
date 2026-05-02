@@ -261,7 +261,7 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti login deepseek|openai|grsai OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 3] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex] [--sandbox-status|--sandbox-preflight] "your task"'
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti login deepseek|openai|grsai OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..8] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex] [--sandbox-status|--sandbox-preflight] "your task"'
   );
 }
 

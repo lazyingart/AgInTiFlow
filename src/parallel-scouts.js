@@ -24,6 +24,26 @@ const SCOUTS = [
     prompt:
       "If current external information may matter, suggest exact web_search queries and source types. Otherwise say no web search needed.",
   },
+  {
+    name: "cartographer",
+    prompt:
+      "Design a compact context map: key instructions, manifests, entry points, tests, symbols, and files the executor should read. Avoid dumping a full tree.",
+  },
+  {
+    name: "tester",
+    prompt:
+      "Identify the narrowest checks to run first, then broader checks. Include likely setup blockers and how to validate without wasting steps.",
+  },
+  {
+    name: "git-operator",
+    prompt:
+      "If git is relevant, outline the safe git sequence: status/diff first, commit boundaries, fetch/pull --ff-only, push, and stop conditions.",
+  },
+  {
+    name: "integrator",
+    prompt:
+      "Look across workstreams for conflicts, shared files, ordering constraints, and what each scout might be missing. Keep it execution-focused.",
+  },
 ];
 
 function shouldUseComplexScouts(config, state) {
@@ -80,6 +100,30 @@ function scoutMessages(config, state, scout) {
   ];
 }
 
+async function synthesizeScouts(client, config, model, scouts) {
+  const usable = scouts.filter((scout) => scout.content);
+  if (usable.length < 2) return "";
+  const response = await client.chat.completions.create(
+    {
+      model,
+      temperature: 0,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You synthesize parallel coding-agent scout notes. Produce a compact execution brief under 220 words. Resolve conflicts, identify shared context, and list stop conditions. Do not claim work is done.",
+        },
+        {
+          role: "user",
+          content: usable.map((scout) => `## ${scout.name}\n${scout.content}`).join("\n\n"),
+        },
+      ],
+    },
+    config.abortSignal ? { signal: config.abortSignal } : undefined
+  );
+  return redactSensitiveText(response.choices[0]?.message?.content || "").trim();
+}
+
 export async function runParallelScouts(client, config, state) {
   const count = Math.min(Math.max(Number(config.parallelScoutCount) || 3, 1), SCOUTS.length);
   const selected = SCOUTS.slice(0, count);
@@ -111,12 +155,21 @@ export async function runParallelScouts(client, config, state) {
     };
   });
   const completed = scouts.filter((scout) => scout.content).length;
+  const synthesis =
+    completed > 1
+      ? await synthesizeScouts(client, config, model, scouts).catch((error) =>
+          `Synthesis failed: ${redactSensitiveText(error instanceof Error ? error.message : String(error))}`
+        )
+      : "";
   const summary = [
     "Parallel scout notes. Treat these as advisory, not completed work.",
+    synthesis ? `\n## coordinator\n${synthesis}` : "",
     ...scouts.map((scout) =>
       scout.content ? `\n## ${scout.name}\n${scout.content}` : `\n## ${scout.name}\nScout failed: ${scout.error || "unknown error"}`
     ),
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   return {
     ok: completed > 0,
@@ -124,6 +177,7 @@ export async function runParallelScouts(client, config, state) {
     requested: selected.length,
     completed,
     scouts,
+    synthesis,
     summary,
   };
 }

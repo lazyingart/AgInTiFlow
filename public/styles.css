@@ -530,6 +530,64 @@ button.danger {
   overflow-wrap: anywhere;
 }
 
+.log-line {
+  margin: 0 0 10px;
+}
+
+.log-line.error {
+  color: #fecaca;
+}
+
+.log-json,
+.log-command pre {
+  margin: 8px 0 12px;
+  padding: 10px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.78);
+  color: #e5e7eb;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  white-space: pre-wrap;
+  overflow: auto;
+}
+
+.log-command {
+  margin: 0 0 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.log-command summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  cursor: pointer;
+  padding: 10px 12px;
+  color: #dbeafe;
+  white-space: normal;
+}
+
+.log-command summary code {
+  color: #fef3c7;
+  overflow-wrap: anywhere;
+}
+
+.log-command summary small,
+.log-stream-title,
+.log-fold-note {
+  color: #94a3b8;
+  font-size: 0.78rem;
+}
+
+.log-command[open] {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.log-stream-title,
+.log-fold-note {
+  padding: 0 12px 8px;
+}
+
 .chat-panel {
   display: grid;
   gap: 12px;

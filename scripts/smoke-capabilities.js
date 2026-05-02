@@ -54,6 +54,18 @@ try {
     "bash -n maintenance script policy is not allowed"
   );
   assert(
+    capabilities.checks.some((check) => check.name === "git-status-policy" && check.ok),
+    "git status policy is not allowed"
+  );
+  assert(
+    capabilities.checks.some((check) => check.name === "git-commit-policy" && check.ok),
+    "git commit policy is not allowed"
+  );
+  assert(
+    capabilities.checks.some((check) => check.name === "git-pull-ff-only-policy" && check.ok),
+    "unsafe git pull policy was not blocked"
+  );
+  assert(
     capabilities.maintenancePolicy.some((check) => check.command.startsWith("sudo") && !check.allowed),
     "sudo maintenance command was not blocked"
   );
@@ -79,7 +91,7 @@ try {
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["aginti-md-init", "capabilities-cli", "doctor-capabilities", "maintenance-policy", "trusted-docker-policy"],
+        checks: ["aginti-md-init", "capabilities-cli", "doctor-capabilities", "maintenance-policy", "trusted-docker-policy", "git-policy"],
       },
       null,
       2

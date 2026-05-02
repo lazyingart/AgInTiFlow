@@ -38,6 +38,22 @@ For complicated tasks, the agent should follow this loop:
 6. `run_command` for the narrowest relevant check first.
 7. Broaden checks only after the focused check passes.
 
+## Context Budgeting
+
+Mature coding agents avoid keeping an entire growing project in the prompt. AgInTiFlow uses a layered context pack:
+
+- Stable memory: `AGINTI.md`, `AGENTS.md`, README files, manifests, and package scripts.
+- Project map: `inspect_project` summaries, language counts, source/test directories, and recommended reads.
+- Active evidence: exact search hits, selected files, failing command output, and compact git status/diff.
+- Patch context: only the nearby code needed for `apply_patch`, plus before/after hashes and compact diffs.
+- Scout synthesis: cheap parallel DeepSeek scouts produce bounded advice, then a coordinator summary is injected instead of every long transcript becoming permanent context.
+
+This keeps the main executor sober: it knows where it is in the repo, but it still re-reads exact files before editing and validates with commands rather than trusting stale memory.
+
+## Git Discipline
+
+When asked to commit, pull, merge, or push, the agent should run `git status --short` and `git diff --stat` first. It should commit only intended changes, use `git fetch` and `git pull --ff-only` when remote state matters, and stop for the user on conflicts, divergence, unrelated dirty files, or any merge/rebase/reset choice. Web and CLI logs fold long command output but keep full command summaries visible.
+
 ## CLI And Web Parity
 
 Both CLI and web use the same task profile registry and the same model/tool schemas. Use either:
@@ -74,11 +90,15 @@ DeepSeek calls are cheap enough that complex tasks can use several short advisor
 - Implementer: predicts patch boundaries and focused checks.
 - Reviewer: looks for missing tests, risks, and instruction-compliance failures.
 - Researcher: suggests `web_search` queries when current information may matter.
+- Cartographer: builds a compact context map instead of dumping the whole tree.
+- Tester: finds the narrowest useful checks and setup blockers.
+- Git operator: keeps status/diff/commit/pull/push workflows disciplined.
+- Integrator: looks for cross-stream conflicts and ordering constraints.
 
-Scout output is injected as advisory context only. The main agent still owns execution and must use real tools to inspect, edit, run commands, and finish. CLI flags:
+Scout output is synthesized by a coordinator note and injected as advisory context only. The main agent still owns execution and must use real tools to inspect, edit, run commands, and finish. CLI flags:
 
 ```bash
-aginti --parallel-scouts --scout-count 4 "fix this complicated repo bug"
+aginti --parallel-scouts --scout-count 8 "fix this complicated repo bug"
 aginti --no-parallel-scouts "run a cheap short task"
 ```
 

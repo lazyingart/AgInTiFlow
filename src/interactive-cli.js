@@ -150,6 +150,21 @@ function compactLine(value = "", limit = 96) {
   return text.length <= limit ? text : `${text.slice(0, Math.max(limit - 1, 1))}…`;
 }
 
+function wrapTextLine(value = "", width = 72) {
+  const text = stripAnsi(String(value || ""));
+  if (text.length <= width) return [text];
+  const chunks = [];
+  let remaining = text;
+  while (remaining.length > width) {
+    let splitAt = remaining.lastIndexOf(" ", width);
+    if (splitAt < Math.floor(width * 0.45)) splitAt = width;
+    chunks.push(remaining.slice(0, splitAt).trimEnd());
+    remaining = remaining.slice(splitAt).trimStart();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
 export function stripMarkdown(text) {
   const lines = String(text || "").split(/\r?\n/);
   let inFence = false;
@@ -320,12 +335,72 @@ function printAgentMessage(text) {
   for (const line of lines) outputLine(`${responsePrefix()}${line}`);
 }
 
+function printPreviewBlock(role, text, { time = "", bg = ansi.systemBg, maxLines = 5 } = {}) {
+  const header = [label(role, bg).trimEnd(), time ? color(time, ansi.dim) : ""].filter(Boolean).join(" ");
+  outputLine(header);
+  const width = Math.max(terminalWidth() - 8, 38);
+  const rendered = stripMarkdown(text)
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line, index, all) => line.trim() || (index > 0 && index < all.length - 1));
+  const wrapped = rendered.flatMap((line) => wrapTextLine(line || " ", width)).slice(0, maxLines);
+  const truncated = rendered.flatMap((line) => wrapTextLine(line || " ", width)).length > maxLines;
+  for (const [index, line] of (wrapped.length ? wrapped : ["(empty)"]).entries()) {
+    const suffix = truncated && index === wrapped.length - 1 ? " …" : "";
+    outputLine(`${color(" | ", bg)} ${line}${suffix}`);
+  }
+}
+
 function printSystemLine(text) {
   if (!String(text || "").trim()) {
     outputLine("");
     return;
   }
   outputLine(`${label("state", ansi.systemBg)} ${color(text, ansi.dim)}`);
+}
+
+function outputStats(value = "") {
+  const text = String(value || "");
+  return {
+    bytes: Buffer.byteLength(text, "utf8"),
+    lines: text ? text.split(/\r?\n/).length : 0,
+  };
+}
+
+function outputPreview(value = "", maxLines = 12) {
+  const lines = String(value || "")
+    .split(/\r?\n/)
+    .filter((line, index, all) => line.trim() || index < all.length - 1);
+  const shown = lines.slice(0, maxLines);
+  const hidden = Math.max(lines.length - shown.length, 0);
+  return { shown, hidden, total: lines.length };
+}
+
+function printCommandOutputLog(data = {}) {
+  const command = String(data.command || "").trim();
+  const stdout = String(data.stdout || "");
+  const stderr = String(data.stderr || "");
+  const isGit = /^git\b/.test(command);
+  const failed = Boolean(data.error || stderr || data.blocked);
+  if (!isGit && !failed) return;
+
+  const stdoutStats = outputStats(stdout);
+  const stderrStats = outputStats(stderr);
+  const policy = data.commandPolicy?.category ? ` ${data.commandPolicy.category}` : "";
+  outputLine(
+    `${label("shell", ansi.systemBg)} ${compactLine(command || "(command)", 86)}${policy} stdout=${stdoutStats.lines} stderr=${stderrStats.lines}`
+  );
+
+  for (const [name, value] of [
+    ["stdout", stdout],
+    ["stderr", stderr],
+  ]) {
+    if (!value) continue;
+    const preview = outputPreview(value, 12);
+    outputLine(`${color(" | ", ansi.systemBg)} ${name}`);
+    for (const line of preview.shown) outputLine(`${color(" | ", ansi.systemBg)} ${line}`);
+    if (preview.hidden > 0) outputLine(`${color(" | ", ansi.systemBg)} ... ${preview.hidden} more line(s) folded`);
+  }
 }
 
 function printHeading(text) {
@@ -393,7 +468,7 @@ function printHelp() {
       "  /sessions                 List recent sessions in this project.",
       "  /profile <name>           Set task profile, e.g. code, website, latex, maintenance.",
       "  /web-search on|off        Enable or disable the web_search tool.",
-      "  /scouts on|off|<1-4>      Enable parallel DeepSeek scouts and set scout count.",
+      "  /scouts on|off|<1-8>      Enable parallel DeepSeek scouts and set scout count.",
       "  /routing <mode>           Set routing: smart, fast, complex, manual.",
       "  /provider <name>          Set provider: deepseek, openai, mock.",
       "  /model <name>             Set an explicit model, or /model auto.",
@@ -1232,8 +1307,8 @@ function printHistoryEntry(entry) {
   const role = entry.role === "assistant" ? "aginti" : entry.role === "user" ? "user" : String(entry.role || "note");
   const bg = role === "aginti" ? ansi.agentBg : role === "user" ? ansi.userBg : ansi.systemBg;
   const time = entry.at ? new Date(entry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-  const suffix = time ? ` ${color(time, ansi.dim)}` : "";
-  outputLine(`${label(role, bg)} ${color("|", bg)} ${compactHistoryText(entry.content)}${suffix}`);
+  const maxLines = role === "aginti" ? 4 : 3;
+  printPreviewBlock(role, compactHistoryText(entry.content, 520), { time, bg, maxLines });
 }
 
 async function printResumeHistory(state, { limit = 8 } = {}) {
@@ -1521,7 +1596,7 @@ async function handleCommand(line, state, packageDir) {
     } else {
       state.allowParallelScouts = true;
       const count = Number(value);
-      if (Number.isFinite(count) && count > 0) state.parallelScoutCount = Math.min(Math.max(count, 1), 4);
+      if (Number.isFinite(count) && count > 0) state.parallelScoutCount = Math.min(Math.max(count, 1), 8);
     }
     printSystemLine(`parallelScouts=${state.allowParallelScouts ? "on" : "off"} count=${state.parallelScoutCount}`);
     return true;
@@ -1672,6 +1747,9 @@ async function runPrompt(prompt, state, packageDir) {
         } else {
           printSystemLine(text);
         }
+      },
+      onLog: (message, data = {}) => {
+        if (message === "command.output") printCommandOutputLog(data);
       },
       onEvent: (type, data = {}) => {
         if (type === "plan.created") {

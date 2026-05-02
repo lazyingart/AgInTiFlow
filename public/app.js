@@ -757,6 +757,21 @@ function setLogs(text, mode = "active") {
   logsEl.textContent = text;
 }
 
+function outputLineCount(value = "") {
+  const text = String(value || "");
+  return text ? text.split(/\r?\n/).length : 0;
+}
+
+function outputPreviewText(value = "", maxLines = 18) {
+  const lines = String(value || "").split(/\r?\n/);
+  const shown = lines.slice(0, maxLines);
+  return {
+    text: shown.join("\n"),
+    hidden: Math.max(lines.length - shown.length, 0),
+    total: value ? lines.length : 0,
+  };
+}
+
 function updateStopRunButton() {
   if (!stopRunButton) return;
   stopRunButton.hidden = currentRunStatus !== "running";
@@ -1027,7 +1042,7 @@ function formPayload() {
     allowAuxiliaryTools: allowAuxiliaryToolsField?.checked ?? true,
     allowWebSearch: allowWebSearchField?.checked ?? true,
     allowParallelScouts: allowParallelScoutsField?.checked ?? true,
-    parallelScoutCount: Number(parallelScoutCountField?.value) || 3,
+    parallelScoutCount: Math.min(Math.max(Number(parallelScoutCountField?.value) || 3, 1), 8),
     allowWrapperTools: allowWrapperToolsField.checked,
     preferredWrapper: preferredWrapperField.value,
     taskProfile: taskProfileField?.value || "auto",
@@ -1038,22 +1053,60 @@ function formPayload() {
   };
 }
 
+function renderCommandOutputLog(entry) {
+  const data = entry.data || {};
+  const command = data.command || "";
+  const stdout = data.stdout || "";
+  const stderr = data.stderr || "";
+  const stdoutPreview = outputPreviewText(stdout);
+  const stderrPreview = outputPreviewText(stderr);
+  const totalLines = outputLineCount(stdout) + outputLineCount(stderr);
+  const large = totalLines > 18 || stdout.length + stderr.length > 2600;
+  const policy = data.commandPolicy?.category ? ` · ${data.commandPolicy.category}` : "";
+  const status = data.blocked ? "blocked" : data.error ? "error" : "ok";
+  const details = [
+    stdout ? `<div class="log-stream-title">stdout</div><pre>${escapeHtml(stdoutPreview.text)}</pre>` : "",
+    stdoutPreview.hidden > 0 ? `<div class="log-fold-note">... ${stdoutPreview.hidden} more stdout line(s) folded</div>` : "",
+    stderr ? `<div class="log-stream-title">stderr</div><pre>${escapeHtml(stderrPreview.text)}</pre>` : "",
+    stderrPreview.hidden > 0 ? `<div class="log-fold-note">... ${stderrPreview.hidden} more stderr line(s) folded</div>` : "",
+    data.error ? `<div class="log-fold-note">${escapeHtml(data.error)}</div>` : "",
+  ]
+    .filter(Boolean)
+    .join("");
+
+  return `
+    <details class="log-command" ${large ? "" : "open"}>
+      <summary>
+        <span>${escapeHtml(`[${entry.at}] command ${status}${policy}`)}</span>
+        <code>${escapeHtml(command)}</code>
+        <small>stdout=${outputLineCount(stdout)} stderr=${outputLineCount(stderr)}${large ? " · folded" : ""}</small>
+      </summary>
+      ${details || `<div class="log-fold-note">No command output.</div>`}
+    </details>
+  `;
+}
+
 function renderLogs(run) {
-  const lines = [];
-  lines.push(`status=${run.status} session=${run.sessionId} provider=${run.provider} model=${run.model}`);
-  if (run.result) lines.push(`result=${run.result}`);
-  if (run.error) lines.push(`error=${run.error}`);
-  lines.push("");
+  logsEl.dataset.mode = "active";
+  const parts = [
+    `<div class="log-line">${escapeHtml(`status=${run.status} session=${run.sessionId} provider=${run.provider} model=${run.model}`)}</div>`,
+    run.result ? `<div class="log-line">${escapeHtml(`result=${run.result}`)}</div>` : "",
+    run.error ? `<div class="log-line error">${escapeHtml(`error=${run.error}`)}</div>` : "",
+  ];
 
   for (const entry of run.logs || []) {
-    lines.push(`[${entry.at}] ${entry.kind}: ${entry.message}`);
-    if (entry.data && Object.keys(entry.data).length > 0) {
-      lines.push(JSON.stringify(entry.data, null, 2));
+    if (entry.message === "command.output") {
+      parts.push(renderCommandOutputLog(entry));
+      continue;
     }
-    lines.push("");
+    parts.push(`<div class="log-line">${escapeHtml(`[${entry.at}] ${entry.kind}: ${entry.message}`)}</div>`);
+    if (entry.data && Object.keys(entry.data).length > 0) {
+      parts.push(`<pre class="log-json">${escapeHtml(JSON.stringify(entry.data, null, 2))}</pre>`);
+    }
   }
 
-  setLogs(lines.join("\n"));
+  logsEl.innerHTML = parts.filter(Boolean).join("");
+  logsEl.scrollTop = logsEl.scrollHeight;
 }
 
 function escapeHtml(value) {

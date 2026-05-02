@@ -46,6 +46,19 @@ const NETWORK_FETCH_PATTERNS = [
   /^wget\s+(?:-[A-Za-z0-9]*\s+)*(?:-O\s+[-\w./]+\s+)?https?:\/\/\S+$/,
 ];
 
+const GIT_WORKFLOW_PATTERNS = [
+  /^git\s+add(?:\s+[-\w./*]+)+$/,
+  /^git\s+commit\s+(?:-a\s+)?-m\s+(['"])[^'"\n]{1,220}\1$/,
+  /^git\s+fetch(?:\s+[-\w./:=]+)*$/,
+  /^git\s+pull\s+--ff-only(?:\s+[-\w./:=]+)*$/,
+  /^git\s+push(?:\s+[-\w./:=]+)*$/,
+];
+
+const UNSAFE_GIT_PATTERNS = [
+  /^git\s+pull\b(?!\s+--ff-only(?:\s|$))/,
+  /^git\s+(merge|rebase|reset|checkout|switch|clean)\b/,
+];
+
 const TOOLCHAIN_PATTERNS = [
   /^python(?:3)?\s+[-\w./]+\.py(?:\s+[-\w./:=]+)*$/,
   /^latexmk\s+(?=[-\w./=\s]*-pdf\b)(?:(?:-cd|-pdf|-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+)\s+)+[-\w./]+\.tex$/,
@@ -90,10 +103,6 @@ const BLOCKED_WRITE_TOKENS = [
   " touch",
   " tee",
   "-delete",
-  "git add",
-  "git commit",
-  "git push",
-  "git pull",
   "git checkout",
   "git switch",
   "git reset",
@@ -153,6 +162,14 @@ function classifySimpleCommand(normalized) {
   if (SENSITIVE_COMMAND_PATTERNS.some((pattern) => pattern.test(normalized))) {
     return { category: "blocked", reason: "Command is blocked because it references secrets or credential files." };
   }
+  if (matchAny(UNSAFE_GIT_PATTERNS, normalized)) {
+    return {
+      category: "destructive",
+      needsApproval: true,
+      reason:
+        "Git merge/rebase/reset/checkout/switch/clean, and non-ff-only pulls, can rewrite or conflict with local work. Inspect status/diff first and ask the user when the repository is divergent or conflicted.",
+    };
+  }
 
   if (matchAny(SAFE_WORKSPACE_WRITE_PATTERNS, normalized)) {
     const target = normalized.replace(/^mkdir\s+-p\s+/, "");
@@ -168,6 +185,16 @@ function classifySimpleCommand(normalized) {
       needsNetwork: false,
       writesWorkspace: true,
       reason: `Command changes workspace file mode: ${normalized}`,
+    };
+  }
+  if (matchAny(GIT_WORKFLOW_PATTERNS, normalized)) {
+    const remote = /^git\s+(fetch|pull|push)\b/.test(normalized);
+    const writesWorkspace = /^git\s+(add|commit|pull)\b/.test(normalized);
+    return {
+      category: remote ? "git-remote" : "git-workflow",
+      needsNetwork: remote,
+      writesWorkspace,
+      reason: "Git workflow command. Agent should run git status/diff first and stop on conflicts or divergence.",
     };
   }
 
@@ -341,7 +368,7 @@ export function evaluateCommandPolicy(command, config) {
     };
   }
 
-  if (classification.category === "network-fetch" && config.useDockerSandbox && !trustedDockerShell) {
+  if (classification.needsNetwork && config.useDockerSandbox && !trustedDockerShell) {
     return {
       allowed: false,
       ...classification,

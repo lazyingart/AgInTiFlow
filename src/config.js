@@ -17,6 +17,10 @@ function parseNumber(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function clampNumber(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
 function parseList(value) {
   if (!value) return [];
   return String(value)
@@ -95,7 +99,11 @@ export function resolveRuntimeConfig(args, overrides = {}) {
       overrides.allowParallelScouts ?? args.allowParallelScouts ?? process.env.AGINTI_PARALLEL_SCOUTS,
       true
     ),
-    parallelScoutCount: parseNumber(overrides.parallelScoutCount ?? args.parallelScoutCount ?? process.env.AGINTI_SCOUT_COUNT, 3),
+    parallelScoutCount: clampNumber(
+      parseNumber(overrides.parallelScoutCount ?? args.parallelScoutCount ?? process.env.AGINTI_SCOUT_COUNT, 3),
+      1,
+      8
+    ),
     preferredWrapper: normalizeWrapperName(
       overrides.preferredWrapper ?? args.preferredWrapper ?? process.env.PREFERRED_WRAPPER ?? process.env.AGENT_WRAPPER
     ),
