@@ -174,6 +174,19 @@ h2 {
   letter-spacing: -0.044em;
 }
 
+.hero-title {
+  max-width: 900px;
+  margin-bottom: 22px;
+}
+
+.hero-title span {
+  display: block;
+}
+
+.hero-title-sub {
+  color: #1f3b45;
+}
+
 h3 {
   margin-bottom: 8px;
   font-size: 1.18rem;
@@ -785,7 +798,8 @@ h3 {
     max-width: min(220px, 58vw);
   }
 
-  h1 {
+  h1,
+  .hero-title {
     font-size: clamp(2.6rem, 15vw, 4.4rem);
     line-height: 1.05;
     letter-spacing: -0.048em;

@@ -861,6 +861,17 @@ function applyText(selector, attribute, keyAttribute) {
   });
 }
 
+function applySplitTitles() {
+  document.querySelectorAll("[data-i18n-split-title]").forEach((element) => {
+    const value = t(element.dataset.i18nSplitTitle);
+    const [main, ...rest] = value.split(/\s+--\s+/);
+    const mainElement = element.querySelector(".hero-title-main");
+    const subElement = element.querySelector(".hero-title-sub");
+    if (mainElement) mainElement.textContent = main || "";
+    if (subElement) subElement.textContent = rest.join(" -- ") || "";
+  });
+}
+
 function applyLanguage(language, { persist = true } = {}) {
   currentLanguage = normalizeLanguage(language);
   const isRtl = currentLanguage === "ar";
@@ -873,6 +884,7 @@ function applyLanguage(language, { persist = true } = {}) {
     const value = t(element.dataset.i18n);
     if (value) element.textContent = value;
   });
+  applySplitTitles();
   applyText("[data-i18n-aria]", "aria-label", "i18nAria");
   applyText("[data-i18n-alt]", "alt", "i18nAlt");
   if (languageSelect) languageSelect.value = currentLanguage;
