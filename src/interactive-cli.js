@@ -593,7 +593,7 @@ function printHelp() {
       "  /instructions             Show AGINTI.md project instructions status.",
       "  /memory                   Alias for /instructions.",
       "  /models                   Show route/main/spare/wrapper/auxiliary model roles.",
-      "  /venice [on|off]          Toggle Venice Uncensored 1.2 for route and main roles.",
+      "  /venice [off|model]       Pick Venice route/main models, or restore DeepSeek defaults.",
       "  /route [mode|provider/model]",
       "                            Open route selector, or set routing/fast route model.",
       "  /model [provider/model]   Open main-model selector, or set the active/main model.",
@@ -1640,23 +1640,59 @@ function useDeepSeekDefaults(state) {
   state.mainModel = "deepseek-v4-pro";
 }
 
-function useVeniceDefaults(state) {
+function veniceTextModelChoices() {
+  return [
+    {
+      provider: "venice",
+      model: "venice-uncensored-1-2",
+      label: "Venice 1.2",
+      description: "default Venice text model; 128K context",
+    },
+    {
+      provider: "venice",
+      model: "e2ee-venice-uncensored-24b-p",
+      label: "Venice 1.1",
+      description: "E2EE Venice text model; 32K context",
+    },
+    {
+      provider: "venice",
+      model: "gemma-4-uncensored",
+      label: "Gemma 4",
+      description: "Gemma-family Venice text model; 256K context",
+    },
+  ];
+}
+
+function resolveVeniceTextModel(value = "") {
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized || normalized === "on" || normalized === "venice" || normalized === "1.2" || normalized === "venice-1.2") {
+    return "venice-uncensored-1-2";
+  }
+  if (
+    normalized === "1.1" ||
+    normalized === "venice-1.1" ||
+    normalized === "e2ee-venice-uncensored-24b-p"
+  ) {
+    return "e2ee-venice-uncensored-24b-p";
+  }
+  if (normalized === "legacy" || normalized === "venice-uncensored") {
+    return "venice-uncensored";
+  }
+  if (normalized === "gemma" || normalized === "gemma4" || normalized === "gemma-4" || normalized === "gemma-4-uncensored") {
+    return "gemma-4-uncensored";
+  }
+  const exact = veniceTextModelChoices().find((item) => item.model.toLowerCase() === normalized);
+  return exact?.model || "";
+}
+
+function useVeniceModels(state, routeModel = "venice-uncensored-1-2", mainModel = routeModel) {
   state.routingMode = "smart";
   state.provider = "deepseek";
   state.model = "";
   state.routeProvider = "venice";
-  state.routeModel = "venice-uncensored-1-2";
+  state.routeModel = routeModel;
   state.mainProvider = "venice";
-  state.mainModel = "venice-uncensored-1-2";
-}
-
-function isVeniceDefaultActive(state) {
-  return (
-    state.routeProvider === "venice" &&
-    state.routeModel === "venice-uncensored-1-2" &&
-    state.mainProvider === "venice" &&
-    state.mainModel === "venice-uncensored-1-2"
-  );
+  state.mainModel = mainModel;
 }
 
 function printModelRoles(state) {
@@ -1737,8 +1773,26 @@ function modelRoleChoices(role = "main") {
     {
       provider: "venice",
       model: "venice-uncensored-1-2",
-      label: "Venice Uncensored 1.2",
+      label: "Venice 1.2",
       description: "Venice text route; use /auth venice if missing",
+      route: true,
+      main: true,
+      spare: true,
+    },
+    {
+      provider: "venice",
+      model: "e2ee-venice-uncensored-24b-p",
+      label: "Venice 1.1",
+      description: "E2EE Venice text route; use /auth venice if missing",
+      route: true,
+      main: true,
+      spare: true,
+    },
+    {
+      provider: "venice",
+      model: "gemma-4-uncensored",
+      label: "Gemma 4",
+      description: "Gemma-family Venice route; use /auth venice if missing",
       route: true,
       main: true,
       spare: true,
@@ -1849,7 +1903,7 @@ function providerChoices() {
       provider: "venice",
       model: "venice-uncensored-1-2",
       label: "Venice",
-      description: "manual Venice route; /venice toggles route+main roles",
+      description: "manual Venice route; /venice picks route+main roles",
     },
     {
       provider: "qwen",
@@ -1880,10 +1934,12 @@ function renderSelector({ title, subtitle, options, selectedIndex, lineCount = 0
   if (lineCount > 0) clearSelector(lineCount);
   const width = Math.min(Math.max(terminalWidth() - 2, 60), 110);
   const bodyWidth = width - 4;
+  const safeTitle = compactLine(title, bodyWidth);
+  const safeSubtitle = compactLine(subtitle, bodyWidth);
   const rows = [
     `╭${"─".repeat(width - 2)}╮`,
-    `│ ${padVisible(title, bodyWidth)} │`,
-    `│ ${padVisible(subtitle, bodyWidth)} │`,
+    `│ ${padVisible(safeTitle, bodyWidth)} │`,
+    `│ ${padVisible(safeSubtitle, bodyWidth)} │`,
     `├${"─".repeat(width - 2)}┤`,
     ...options.map((option, index) => {
       const marker = index === selectedIndex ? ">" : " ";
@@ -2009,6 +2065,38 @@ async function pickModelRole(role, state) {
     state.mainModel = selected.model;
     printSystemLine(`main=${state.mainProvider}/${state.mainModel}`);
   }
+  return true;
+}
+
+async function pickVeniceRouteAndMain(state) {
+  const options = veniceTextModelChoices();
+  const routeIndex = Math.max(
+    options.findIndex((item) => item.provider === state.routeProvider && item.model === state.routeModel),
+    0
+  );
+  const route = await selectModelChoice({
+    title: "Select Venice route model",
+    subtitle: "Route handles planning and short turns. Up/Down selects, Enter confirms, Esc cancels.",
+    options,
+    initialIndex: routeIndex,
+  });
+  if (!route) return false;
+
+  const mainIndex = Math.max(
+    options.findIndex((item) => item.provider === state.mainProvider && item.model === state.mainModel),
+    options.findIndex((item) => item.model === route.model),
+    0
+  );
+  const main = await selectModelChoice({
+    title: "Select Venice main model",
+    subtitle: "Main handles complex work. Up/Down selects, Enter confirms, Esc cancels.",
+    options,
+    initialIndex: mainIndex,
+  });
+  if (!main) return false;
+
+  useVeniceModels(state, route.model, main.model);
+  printSystemLine(`venice=on routing=smart route=venice/${state.routeModel} main=venice/${state.mainModel}`);
   return true;
 }
 
@@ -2266,19 +2354,45 @@ async function handleCommand(line, state, packageDir) {
     return true;
   }
   if (command === "venice") {
-    const action = value || (isVeniceDefaultActive(state) ? "off" : "on");
+    const canUseSelector = input.isTTY && output.isTTY && typeof input.setRawMode === "function";
+    const action = value || (canUseSelector ? "select" : "on");
     if (action === "off" || action === "deepseek" || action === "default") {
       useDeepSeekDefaults(state);
       printSystemLine("venice=off routing=smart route=deepseek/deepseek-v4-flash main=deepseek/deepseek-v4-pro");
       return true;
     }
-    if (action !== "on" && action !== "venice") {
-      printAgentMessage("Usage: /venice [on|off]. No argument toggles between Venice and DeepSeek defaults.");
+    if (action === "select" && canUseSelector) {
+      const changed = await pickVeniceRouteAndMain(state);
+      if (!changed) {
+        printSystemLine(`route=${state.routeProvider || "deepseek"}/${state.routeModel || "deepseek-v4-flash"} main=${state.mainProvider || "deepseek"}/${state.mainModel || "deepseek-v4-pro"}`);
+        return true;
+      }
+      const keys = providerKeyStatus(process.cwd());
+      if (!keys.venice) {
+        printAgentMessage("Venice model roles are selected, but no Venice key is configured. Run `/auth venice` to save one.");
+      }
       return true;
     }
-    useVeniceDefaults(state);
+
+    const parts = action.split(/\s+/).filter(Boolean);
+    const routeModel = resolveVeniceTextModel(parts[0] || "on");
+    const mainModel = resolveVeniceTextModel(parts.slice(1).join(" ") || parts[0] || "on");
+    if (!routeModel || !mainModel) {
+      printAgentMessage(
+        [
+          "Usage: /venice [off|1.2|1.1|gemma] [main-model]",
+          "Examples:",
+          "  /venice",
+          "  /venice gemma",
+          "  /venice 1.2 gemma",
+          "  /venice off",
+        ].join("\n")
+      );
+      return true;
+    }
+    useVeniceModels(state, routeModel, mainModel);
     const keys = providerKeyStatus(process.cwd());
-    printSystemLine("venice=on routing=smart route=venice/venice-uncensored-1-2 main=venice/venice-uncensored-1-2");
+    printSystemLine(`venice=on routing=smart route=venice/${state.routeModel} main=venice/${state.mainModel}`);
     if (!keys.venice) {
       printAgentMessage("Venice model roles are selected, but no Venice key is configured. Run `/auth venice` to save one.");
     }

@@ -216,11 +216,18 @@ export const PROVIDER_MODEL_CATALOG = {
       description: "Current Venice uncensored text route.",
     },
     {
-      id: "venice-uncensored",
-      label: "Venice Uncensored",
+      id: "e2ee-venice-uncensored-24b-p",
+      label: "Venice Uncensored 1.1",
       bucket: "venice-uncensored",
       context: "32K",
-      description: "Legacy Venice uncensored text route.",
+      description: "E2EE Venice uncensored 1.1 text route.",
+    },
+    {
+      id: "venice-uncensored",
+      label: "Venice Uncensored Legacy",
+      bucket: "venice-uncensored",
+      context: "32K",
+      description: "Deprecated legacy Venice uncensored text route.",
     },
     {
       id: "venice-uncensored-role-play",

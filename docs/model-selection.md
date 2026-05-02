@@ -48,14 +48,17 @@ Interactive commands:
 
 In the interactive CLI, `/provider`, `/route`, `/model`, `/spare`, and `/auxiliary model` without arguments open selectors. Use Up/Down/Left/Right to move through choices, Enter to confirm, and Esc to cancel. Slash-command hints use the same arrow selection behavior: type a prefix such as `/mo`, use arrows to choose `/model` or `/models`, then press Enter or Tab.
 
-`/venice` is a toggle. When off, it enables:
+`/venice` opens a two-step selector for the Venice route and main models. The current text choices are:
 
 ```text
-/route venice/venice-uncensored-1-2
-/main venice/venice-uncensored-1-2
+venice/venice-uncensored-1-2
+venice/e2ee-venice-uncensored-24b-p
+venice/gemma-4-uncensored
 ```
 
-When already on, `/venice` switches back to the DeepSeek defaults:
+For scripts or non-interactive terminals, `/venice` uses Venice 1.2 for both roles. You can also set both roles directly with `/venice 1.2`, `/venice 1.1`, or `/venice gemma`. Use two values to set route and main separately, for example `/venice 1.2 gemma`.
+
+Use `/venice off` to switch back to the DeepSeek defaults:
 
 ```text
 /route deepseek/deepseek-v4-flash

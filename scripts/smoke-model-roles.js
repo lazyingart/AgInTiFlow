@@ -109,6 +109,7 @@ assert(fastRoute.model === "deepseek-v4-flash", "fast route did not use route mo
 
 assert(MODEL_PROVIDER_GROUPS["venice-gpt"].provider === "venice", "venice-gpt group missing");
 assert(modelsForProviderGroup("venice-gemma").some((item) => item.id === "gemma-4-uncensored"), "venice-gemma bucket missing Gemma");
+assert(modelsForProviderGroup("venice-uncensored").some((item) => item.id === "e2ee-venice-uncensored-24b-p"), "venice-uncensored bucket missing Venice 1.1");
 assert(AUXILIARY_MODEL_CATALOG["venice-image"].some((item) => item.id === "gpt-image-2"), "Venice image catalog missing GPT Image 2");
 const parsedTextToolCalls = parseTextToolCalls('[TOOL_CALLS]list_files[ARGS]call_123[ARGS]{"path":".","maxDepth":1}');
 assert(parsedTextToolCalls.length === 1, "Venice text tool-call parser did not detect encoded tool call");
@@ -122,6 +123,9 @@ const interactiveOutput = await runInteractive("/venice\n");
 assert(interactiveOutput.includes("venice=on"), "/venice did not enable Venice roles");
 assert(interactiveOutput.includes("route=venice/venice-uncensored-1-2"), "/venice did not set Venice route role");
 assert(interactiveOutput.includes("main=venice/venice-uncensored-1-2"), "/venice did not set Venice main role");
+const interactiveGemmaOutput = await runInteractive("/venice 1.1 gemma\n");
+assert(interactiveGemmaOutput.includes("route=venice/e2ee-venice-uncensored-24b-p"), "/venice 1.1 did not set Venice 1.1 route role");
+assert(interactiveGemmaOutput.includes("main=venice/gemma-4-uncensored"), "/venice gemma did not set Gemma 4 main role");
 const interactiveOffOutput = await runInteractive("/venice off\n");
 assert(interactiveOffOutput.includes("venice=off"), "/venice off did not restore DeepSeek roles");
 assert(interactiveOffOutput.includes("route=deepseek/deepseek-v4-flash"), "/venice off did not restore DeepSeek route role");

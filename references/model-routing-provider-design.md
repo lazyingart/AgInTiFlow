@@ -53,7 +53,7 @@ Interactive equivalents:
 /auxiliary model grsai/nano-banana-2
 ```
 
-`/venice` is a toggle: it keeps smart routing enabled and points both route and main roles at `venice/venice-uncensored-1-2`; running it again or using `/venice off` restores `deepseek/deepseek-v4-flash` for route and `deepseek/deepseek-v4-pro` for main.
+`/venice` opens a route/main selector for Venice text models. The selector includes `venice/venice-uncensored-1-2` (Venice 1.2), `venice/e2ee-venice-uncensored-24b-p` (Venice 1.1), and `venice/gemma-4-uncensored` (Gemma 4). In non-interactive shells, `/venice` keeps script compatibility by selecting `venice/venice-uncensored-1-2` for both roles. `/venice 1.2 gemma` sets route to Venice 1.2 and main to Gemma 4; `/venice off` restores `deepseek/deepseek-v4-flash` for route and `deepseek/deepseek-v4-pro` for main.
 
 The web UI should expose model names as dropdowns, not free-text fields. The left panel should stay focused on common daily controls, while model-role editing and less-used switches live in an Advanced settings modal. The terminal-like capability panels belong after the runtime log so the left control panel remains short.
 
@@ -74,7 +74,7 @@ Codex wrapper defaults stay separate from native OpenAI API settings: GPT-5.5 me
 
 | UI bucket | Concrete default | Notes |
 |---|---|---|
-| `venice-uncensored` | `venice-uncensored-1-2` | Venice-native text |
+| `venice-uncensored` | `venice-uncensored-1-2` | Venice-native text; `/venice` also exposes `e2ee-venice-uncensored-24b-p` as Venice 1.1 |
 | `venice-qwen` | `qwen3-6-27b` | Qwen-family text/code |
 | `venice-gpt` | `openai-gpt-55` | OpenAI-family through Venice |
 | `venice-claude` | `claude-sonnet-4-6` | Claude-family through Venice |

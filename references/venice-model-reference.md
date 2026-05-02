@@ -19,7 +19,7 @@ Store `VENICE_API_KEY` only in ignored local files such as `.aginti/.env` or a s
 
 | Bucket | Primary model | Other useful models | Use |
 |---|---|---|---|
-| `venice-uncensored` | `venice-uncensored-1-2` | `venice-uncensored`, `venice-uncensored-role-play` | Private/uncensored Venice-native text route |
+| `venice-uncensored` | `venice-uncensored-1-2` | `e2ee-venice-uncensored-24b-p`, `venice-uncensored-role-play`, `venice-uncensored` legacy | Private/uncensored Venice-native text route |
 | `venice-gemma` | `gemma-4-uncensored` | `google-gemma-4-31b-it`, `google-gemma-4-26b-a4b-it` | Low-cost open-model writing and experimentation |
 | `venice-qwen` | `qwen3-6-27b` | `qwen-3-6-plus`, `qwen3-coder-480b-a35b-instruct-turbo`, `qwen3-vl-235b-a22b` | Chinese/open coding and general tasks |
 | `venice-gpt` | `openai-gpt-55` | `openai-gpt-54`, `openai-gpt-54-mini`, `openai-gpt-53-codex`, `openai-gpt-53-codex-spark` | OpenAI-family routes through Venice |
@@ -44,12 +44,15 @@ Store `VENICE_API_KEY` only in ignored local files such as `.aginti/.env` or a s
 | `google-gemma-4-26b-a4b-it` | 256K | Google Gemma 4 26B A4B Instruct |
 | `venice-uncensored-1-2` | 128K | Venice Uncensored 1.2 |
 | `openai-gpt-54-mini` | 400K | GPT-5.4 Mini |
+| `e2ee-venice-uncensored-24b-p` | 32K | Venice Uncensored 1.1 E2EE |
 | `venice-uncensored-role-play` | 128K | Venice Role Play Uncensored |
 | `gemini-3-1-pro-preview` | 1.0M | Gemini 3.1 Pro Preview |
 | `claude-sonnet-4-6` | 1.0M | Claude Sonnet 4.6 |
 | `openai-gpt-53-codex` | 400K | GPT-5.3 Codex |
 | `openai-gpt-52` | 256K | GPT-5.2 |
-| `venice-uncensored` | 32K | Venice Uncensored legacy |
+| `venice-uncensored` | 32K | Venice Uncensored legacy / deprecated |
+
+AgInTiFlow exposes the primary Venice text choices through `/venice`: Venice 1.2 (`venice-uncensored-1-2`), Venice 1.1 (`e2ee-venice-uncensored-24b-p`), and Gemma 4 (`gemma-4-uncensored`). The command can select route and main independently, so a fast Venice route can be paired with a larger Gemma main model when useful. The older `venice-uncensored` ID is retained only as a legacy alias.
 
 ## Image And Edit Models
 
