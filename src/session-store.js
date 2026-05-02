@@ -38,6 +38,15 @@ export class SessionStore {
     await fs.writeFile(this.planPath, `${planText.trim()}\n`, "utf8");
   }
 
+  async saveJsonArtifact(filename, data) {
+    await this.ensure();
+    const safeName = path.basename(String(filename || "artifact.json"));
+    const outputName = safeName.endsWith(".json") ? safeName : `${safeName}.json`;
+    const filePath = path.join(this.artifactsDir, outputName);
+    await fs.writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+    return filePath;
+  }
+
   async appendEvent(type, data = {}) {
     await this.ensure();
     const line = JSON.stringify({

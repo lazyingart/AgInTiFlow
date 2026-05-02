@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { repairModelMessageHistory, runAgent } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
+import { readCodebaseMap } from "../src/codebase-map.js";
 import { engineeringGuidanceForTask, recommendedMaxStepsForTask } from "../src/engineering-guidance.js";
 import { selectModelRoute } from "../src/model-routing.js";
 import { listParallelScouts, runParallelScouts, shouldRunParallelScouts } from "../src/parallel-scouts.js";
@@ -219,10 +220,19 @@ try {
   assert(scoutRun.contextPack.includes("package.json"), "parallel scout context pack did not include manifest evidence");
   assert(scoutRun.summary.includes("## shared context pack"), "parallel scout summary omitted shared context pack");
   assert(scoutRun.summary.includes("## coordinator"), "parallel scout summary omitted coordinator synthesis");
+  assert(scoutRun.codebaseMap?.fingerprint, "parallel scout run did not return durable codebase map metadata");
+  assert(scoutRun.blackboard?.lanes?.length === 10, "parallel scout blackboard did not include all scout lanes");
+  assert(scoutRun.blackboard?.coordinator.includes("Swarm Board"), "parallel scout blackboard did not retain coordinator synthesis");
   assert(
     fakeScoutPrompts.filter((prompt) => /Shared context pack:[\s\S]*package\.json/.test(prompt)).length >= 10,
     "parallel scouts did not receive the shared context pack"
   );
+  const codebaseMap = await readCodebaseMap(workspace);
+  assert(codebaseMap.ok && codebaseMap.map.fingerprint === scoutRun.codebaseMap.fingerprint, "durable codebase map was not persisted");
+  const blackboardStore = new SessionStore(runtimeDir, "blackboard-smoke");
+  const blackboardPath = await blackboardStore.saveJsonArtifact("scout-blackboard.json", scoutRun.blackboard);
+  const blackboardJson = JSON.parse(await fs.readFile(blackboardPath, "utf8"));
+  assert(blackboardJson.lanes.length === 10, "scout blackboard artifact did not persist lanes");
 
   const inspectRun = await runMock("Inspect this large codebase and recommend next reads.", "coding-inspect");
   assert(
@@ -368,6 +378,8 @@ try {
           "web_search_dry_run",
           "inspect_project",
           "parallel_scout_context_pack",
+          "durable_codebase_map",
+          "scout_blackboard",
           "mock_inspect_project",
           "write_file",
           "duplicate_write_failed",

@@ -2,7 +2,7 @@ import { engineeringGuidanceForTask } from "./engineering-guidance.js";
 import { getModelPresets } from "./model-routing.js";
 import { getTaskProfile, normalizeTaskProfile } from "./task-profiles.js";
 import { redactSensitiveText } from "./redaction.js";
-import { executeWorkspaceTool } from "./workspace-tools.js";
+import { refreshCodebaseMap } from "./codebase-map.js";
 
 const MAX_CONTEXT_PACK_CHARS = 3800;
 const MAX_SCOUT_CONTENT_CHARS = 1200;
@@ -94,60 +94,36 @@ function truncateText(text, limit = MAX_CONTEXT_PACK_CHARS) {
   return `${value.slice(0, limit - 80)}\n... [truncated ${value.length - limit + 80} chars]`;
 }
 
-function listValues(items, limit, mapper) {
-  const values = Array.isArray(items) ? items.slice(0, limit).map(mapper).filter(Boolean) : [];
-  if (!values.length) return "";
-  const suffix = Array.isArray(items) && items.length > limit ? `, ... +${items.length - limit}` : "";
-  return `${values.join(", ")}${suffix}`;
-}
-
-function packageScriptValues(scripts) {
-  if (!Array.isArray(scripts) || !scripts.length) return "";
-  return listValues(scripts, 14, (item) => `${item.name}: ${item.command}`);
-}
-
 async function buildScoutContextPack(config) {
   if (!config.allowFileTools) {
-    return "Context pack: workspace file tools are disabled. Scouts should recommend the minimal inspection commands/files instead of assuming repository structure.";
+    return {
+      text: "Context pack: workspace file tools are disabled. Scouts should recommend the minimal inspection commands/files instead of assuming repository structure.",
+      codebaseMap: null,
+    };
   }
 
   try {
-    const inspected = await executeWorkspaceTool(
-      "inspect_project",
-      { path: ".", maxDepth: 4, limit: 1000, includeFiles: false },
-      {
-        ...config,
-        allowFileTools: true,
-      }
-    );
-    if (!inspected?.ok) {
-      return `Context pack: inspect_project unavailable (${inspected?.reason || inspected?.error || "unknown error"}).`;
+    const refreshed = await refreshCodebaseMap(config, { maxDepth: 4, limit: 1000, includeFiles: false });
+    if (!refreshed?.ok) {
+      return {
+        text: `Context pack: inspect_project unavailable (${refreshed?.reason || refreshed?.error || "unknown error"}).`,
+        codebaseMap: null,
+      };
     }
-
-    const packageScripts = packageScriptValues(inspected.packageScripts);
-    const sections = [
-      `Context pack for ${config.commandCwd}`,
-      `Summary: ${inspected.summary || "no summary"}`,
-      inspected.counts
-        ? `Counts: files=${inspected.counts.files} dirs=${inspected.counts.directories} bytes=${inspected.counts.totalBytes}`
-        : "",
-      `Top level: ${listValues(inspected.topLevel, 20, (item) => `${item.type}:${item.path}`)}`,
-      `Manifests: ${listValues(inspected.manifestFiles, 18, (item) => item.path)}`,
-      `Source dirs: ${listValues(inspected.sourceDirs, 14, (item) => item.path)}`,
-      `Tests: ${listValues(inspected.testFiles, 18, (item) => item.path)}`,
-      `Package managers: ${listValues(inspected.packageManagers, 8, (item) => item.name || item.path || item)}`,
-      packageScripts ? `Package scripts: ${packageScripts}` : "",
-      `Languages: ${listValues(inspected.languageCounts, 10, (item) => `${item.name}:${item.count}`)}`,
-      inspected.git?.present
-        ? `Git: present; start with ${inspected.git.recommendedCommands?.join(" && ") || "git status --short"}; ${inspected.git.workflow}`
-        : "Git: not detected at workspace root.",
-      `Recommended reads: ${listValues(inspected.recommendedReads, 16, (item) => item)}`,
-      `Engineering hints: ${listValues(inspected.engineeringHints, 8, (item) => item)}`,
-    ].filter(Boolean);
-
-    return truncateText(redactSensitiveText(sections.join("\n")));
+    return {
+      text: truncateText(redactSensitiveText(refreshed.contextPack || "")),
+      codebaseMap: {
+        path: refreshed.path,
+        generatedAt: refreshed.map.generatedAt,
+        fingerprint: refreshed.map.fingerprint,
+        summary: refreshed.map.inspection?.summary || "",
+      },
+    };
   } catch (error) {
-    return `Context pack: inspect_project failed (${redactSensitiveText(error instanceof Error ? error.message : String(error))}).`;
+    return {
+      text: `Context pack: inspect_project failed (${redactSensitiveText(error instanceof Error ? error.message : String(error))}).`,
+      codebaseMap: null,
+    };
   }
 }
 
@@ -212,11 +188,44 @@ async function synthesizeScouts(client, config, model, scouts, contextPack) {
   return redactSensitiveText(response.choices[0]?.message?.content || "").trim();
 }
 
+function extractFindings(content) {
+  return String(content || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/^[-*]\s+/, "").replace(/^\d+\.\s+/, ""))
+    .filter((line) => line && line.length > 8)
+    .slice(0, 6);
+}
+
+function buildScoutBlackboard({ config, state, model, requested, completed, scouts, contextPack, codebaseMap, synthesis }) {
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    goal: config.goal || state.goal || "",
+    model,
+    requested,
+    completed,
+    codebaseMap,
+    contextPack,
+    coordinator: synthesis || "",
+    lanes: scouts.map((scout) => ({
+      role: scout.name,
+      model: scout.model || model,
+      status: scout.content ? "completed" : "failed",
+      findings: scout.content ? extractFindings(scout.content) : [],
+      content: scout.content || "",
+      error: scout.error || "",
+    })),
+    handoff:
+      "Use this blackboard as advisory shared context. The executor must still inspect exact files, patch deterministically, run focused checks, and stop on conflicts or unrelated dirty work.",
+  };
+}
+
 export async function runParallelScouts(client, config, state) {
   const count = Math.min(Math.max(Number(config.parallelScoutCount) || 3, 1), SCOUTS.length);
   const selected = SCOUTS.slice(0, count);
   const model = scoutModel(config);
-  const contextPack = await buildScoutContextPack(config);
+  const context = await buildScoutContextPack(config);
+  const contextPack = context.text;
   const settled = await Promise.allSettled(
     selected.map(async (scout) => {
       const response = await client.chat.completions.create(
@@ -260,6 +269,17 @@ export async function runParallelScouts(client, config, state) {
   ]
     .filter(Boolean)
     .join("\n");
+  const blackboard = buildScoutBlackboard({
+    config,
+    state,
+    model,
+    requested: selected.length,
+    completed,
+    scouts,
+    contextPack,
+    codebaseMap: context.codebaseMap,
+    synthesis,
+  });
 
   return {
     ok: completed > 0,
@@ -268,6 +288,8 @@ export async function runParallelScouts(client, config, state) {
     completed,
     scouts,
     contextPack,
+    codebaseMap: context.codebaseMap,
+    blackboard,
     synthesis,
     summary,
   };

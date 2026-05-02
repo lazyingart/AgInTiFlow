@@ -19,8 +19,8 @@ AgInTiFlow should become a practical coding agent, not only a chat UI around a m
 
 ## Missing Productive-Agent Pieces
 
-1. Durable codebase map: cache `inspect_project`, symbol locations, test commands, package scripts, and recently changed files per project.
-2. Scout blackboard: let scouts write short structured findings to a shared board, then run a coordinator pass that resolves conflicts before execution.
+1. Durable codebase map: cache `inspect_project`, symbol locations, test commands, package scripts, and recently changed files per project. Initial slice implemented as `.aginti/codebase-map.json` with manifests, source/test dirs, package scripts, languages, git hints, and recommended reads.
+2. Scout blackboard: let scouts write short structured findings to a shared board, then run a coordinator pass that resolves conflicts before execution. Initial slice implemented as per-session `artifacts/scout-blackboard.json` with role lanes, findings, coordinator handoff, and codebase-map metadata.
 3. Long-run checkpoints: save phase state after inspect, patch, test, repair, and commit so a long task can recover after interruption.
 4. Symbol/LSP tools: add find-definition, references, diagnostics, and document-symbols for JS/TS, Python, Rust, Go, and C/C++ where available.
 5. Test triage: parse common test failures into file, symbol, command, and likely cause so repair loops stay narrow.
@@ -30,6 +30,6 @@ AgInTiFlow should become a practical coding agent, not only a chat UI around a m
 
 ## Swarm Design
 
-Scouts must not become noisy subagents. Each scout gets the same bounded context pack and one role. The coordinator produces a Swarm Board with shared context, execution order, disagreements, must-read files, checks, and stop conditions. The main agent still owns tool use and must re-read exact files before editing.
+Scouts must not become noisy subagents. Each scout gets the same bounded context pack generated from the durable codebase map and one role. The coordinator produces a Swarm Board with shared context, execution order, disagreements, must-read files, checks, and stop conditions. The main agent still owns tool use and must re-read exact files before editing.
 
 Use 3 scouts for medium tasks, 5 for large tasks, and up to 10 for complex multi-language or system tasks. More scouts are only useful when their roles cover different failure modes.

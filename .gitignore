@@ -5,6 +5,7 @@ node_modules/
 .aginti/.env
 .aginti/.env.*
 !.aginti/.env.example
+.aginti/codebase-map.json
 .npmrc
 .aaps-work/
 .aginti-work/

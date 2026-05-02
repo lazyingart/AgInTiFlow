@@ -1170,11 +1170,16 @@ export async function runAgent(config) {
 
     if (shouldRunParallelScouts(config, state)) {
       const scouts = await runParallelScouts(client, config, state);
+      const blackboardPath = scouts.blackboard
+        ? await store.saveJsonArtifact("scout-blackboard.json", scouts.blackboard).catch(() => "")
+        : "";
       state.meta.parallelScoutsCompleted = true;
       state.meta.parallelScouts = {
         model: scouts.model,
         requested: scouts.requested,
         completed: scouts.completed,
+        codebaseMap: scouts.codebaseMap || null,
+        blackboardPath,
         contextPack: scouts.contextPack ? scouts.contextPack.slice(0, 1200) : "",
         synthesis: scouts.synthesis || "",
       };
@@ -1186,8 +1191,11 @@ export async function runAgent(config) {
         model: scouts.model,
         requested: scouts.requested,
         completed: scouts.completed,
+        codebaseMap: scouts.codebaseMap || null,
+        blackboardPath,
         contextPack: scouts.contextPack || "",
         synthesis: scouts.synthesis || "",
+        blackboard: scouts.blackboard || null,
         scouts: scouts.scouts.map((scout) => ({
           name: scout.name,
           model: scout.model,
@@ -1200,6 +1208,7 @@ export async function runAgent(config) {
         model: scouts.model,
         requested: scouts.requested,
         completed: scouts.completed,
+        blackboardPath,
       });
       emitConsole(config, `Parallel scouts: ${scouts.completed}/${scouts.requested} completed using ${scouts.model}`, {
         kind: "meta",

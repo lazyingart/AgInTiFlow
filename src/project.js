@@ -33,6 +33,7 @@ export function projectPaths(projectRoot = process.cwd()) {
     rootEnvPath: path.join(root, ".env"),
     envExamplePath: path.join(root, ".aginti", ".env.example"),
     controlReadmePath: path.join(root, ".aginti", "README.md"),
+    codebaseMapPath: path.join(root, ".aginti", "codebase-map.json"),
     notesDir: path.join(root, "notes"),
     notesReadmePath: path.join(root, "notes", "README.md"),
     sessionsDir: path.join(root, ".sessions"),
@@ -195,6 +196,7 @@ export async function initProject(projectRoot = process.cwd()) {
       "- `../AGINTI.md` stores editable project instructions for CLI and web agents.",
       "- `.env` is ignored and can hold local provider keys.",
       "- `.env.example` documents accepted variable names.",
+      "- `codebase-map.json` is a generated, ignored project-intelligence cache.",
       "- `.sessions/` at the project root stores CLI and web run history.",
       "",
     ].join("\n")
@@ -227,6 +229,7 @@ export async function initProject(projectRoot = process.cwd()) {
     ".aginti/.env",
     ".aginti/.env.*",
     "!.aginti/.env.example",
+    ".aginti/codebase-map.json",
     ".sessions/",
   ]);
   if (gitignore.changed) updated.push(paths.gitignorePath);

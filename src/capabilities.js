@@ -8,6 +8,7 @@ import { listProjectSessions, projectPaths, providerKeyStatus, readProjectInstru
 import { listTaskProfiles } from "./task-profiles.js";
 import { listAgentWrappers } from "./tool-wrappers.js";
 import { listAuxiliarySkills } from "./auxiliary-tools.js";
+import { readCodebaseMap } from "./codebase-map.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -110,7 +111,7 @@ function trustedDockerPolicyChecks(config) {
 export async function buildCapabilityReport(projectRoot, packageVersion, config) {
   const paths = projectPaths(projectRoot);
   const keyStatus = providerKeyStatus(projectRoot);
-  const [node, npm, python, conda, r, pdflatex, latexmk, dockerStatus, sessions, instructions] = await Promise.all([
+  const [node, npm, python, conda, r, pdflatex, latexmk, dockerStatus, sessions, instructions, codebaseMap] = await Promise.all([
     commandAvailable("node", ["--version"]),
     commandAvailable("npm", ["--version"]),
     commandAvailable("python3", ["--version"]),
@@ -121,6 +122,7 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
     getDockerSandboxStatus(config).catch((error) => ({ ok: false, error: error.message })),
     listProjectSessions(projectRoot, 12),
     readProjectInstructions(projectRoot, { maxBytes: 1 }),
+    readCodebaseMap(projectRoot),
   ]);
 
   const npmPrefixPolicy = evaluateCommandPolicy("npm --prefix round9-node-app test", config);
@@ -179,6 +181,13 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
       sessionsDir: paths.sessionsDir,
       sessionDbPath: paths.sessionDbPath,
       sharedSessionFolder: path.resolve(config.sessionsDir) === path.resolve(paths.sessionsDir),
+      codebaseMap: {
+        present: Boolean(codebaseMap.ok),
+        path: paths.codebaseMapPath,
+        generatedAt: codebaseMap.ok ? codebaseMap.map.generatedAt || "" : "",
+        fingerprint: codebaseMap.ok ? codebaseMap.map.fingerprint || "" : "",
+        summary: codebaseMap.ok ? codebaseMap.map.inspection?.summary || "" : "",
+      },
     },
     routing: {
       active: {
