@@ -481,6 +481,20 @@ button.danger {
   overflow-wrap: anywhere;
 }
 
+.change-diff .diff-add,
+.change-diff .diff-file-add {
+  color: #86efac;
+}
+
+.change-diff .diff-del,
+.change-diff .diff-file-del {
+  color: #fca5a5;
+}
+
+.change-diff .diff-hunk {
+  color: #67e8f9;
+}
+
 .sandbox-card h2 {
   margin: 0 0 4px;
   font-size: 1.05rem;

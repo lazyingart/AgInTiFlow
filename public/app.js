@@ -901,7 +901,7 @@ function renderWorkspacePanel(workspace = lastWorkspace, activity = lastWorkspac
       const label = blocked ? t("blockedLabel") : t("changedLabel");
       const path = escapeHtml(item.path || "");
       const reason = blocked ? `<div class="subtle">${escapeHtml(item.reason || "")}</div>` : "";
-      const diff = item.diff ? `<pre class="change-diff">${escapeHtml(item.diff).slice(0, 1200)}</pre>` : "";
+      const diff = item.diff ? `<pre class="change-diff">${renderDiffHtml(item.diff, 1200)}</pre>` : "";
       const hashes =
         item.beforeHash || item.afterHash
           ? `<div class="change-meta"><span>before=${escapeHtml((item.beforeHash || "new").slice(0, 10))}</span><span>after=${escapeHtml((item.afterHash || "").slice(0, 10))}</span></div>`
@@ -1121,6 +1121,22 @@ function escapeHtml(value) {
     /[&<>"']/g,
     (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]
   );
+}
+
+function renderDiffHtml(value, maxChars = 1200) {
+  return String(value || "")
+    .slice(0, maxChars)
+    .split(/\r?\n/)
+    .map((line) => {
+      const escaped = escapeHtml(line);
+      if (/^\+(?!\+\+)/.test(line)) return `<span class="diff-add">${escaped}</span>`;
+      if (/^-(?!--)/.test(line)) return `<span class="diff-del">${escaped}</span>`;
+      if (/^\+\+\+/.test(line)) return `<span class="diff-file-add">${escaped}</span>`;
+      if (/^---/.test(line)) return `<span class="diff-file-del">${escaped}</span>`;
+      if (/^@@/.test(line)) return `<span class="diff-hunk">${escaped}</span>`;
+      return escaped;
+    })
+    .join("\n");
 }
 
 function safeLinkHref(value) {

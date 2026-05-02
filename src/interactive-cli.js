@@ -356,6 +356,36 @@ function printAgentMessage(text) {
   for (const line of lines) outputLine(`${responsePrefix()}${line}`);
 }
 
+export function formatWorkspaceChange(change = {}) {
+  const toolName = String(change.toolName || change.action || "change");
+  const path = String(change.path || "");
+  const summary = [
+    toolName,
+    path,
+    change.created ? "created" : "",
+    change.beforeHash ? `before=${String(change.beforeHash).slice(0, 8)}` : "before=new",
+    change.afterHash ? `after=${String(change.afterHash).slice(0, 8)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const diff = String(change.diff || "").trim();
+  const renderedDiff = diff ? stripMarkdown(`Diff:\n${diff}`).split("\n") : [];
+  return {
+    label: toolName === "apply_patch" || toolName.startsWith("apply_patch") ? "patch" : "write",
+    summary,
+    lines: renderedDiff,
+  };
+}
+
+function printWorkspaceChange(change = {}) {
+  if (!change?.diff) return;
+  const formatted = formatWorkspaceChange(change);
+  const bg = formatted.label === "patch" ? ansi.magenta : ansi.systemBg;
+  outputLine(`${label(formatted.label, bg)} ${compactLine(formatted.summary, 92)}`);
+  const gutter = `${color(" | ", bg)} `;
+  for (const line of formatted.lines) outputLine(`${gutter}${line}`);
+}
+
 function printPreviewBlock(role, text, { time = "", bg = ansi.systemBg, maxLines = 5 } = {}) {
   const header = [label(role, bg).trimEnd(), time ? color(time, ansi.dim) : ""].filter(Boolean).join(" ");
   outputLine(header);
@@ -1795,6 +1825,8 @@ async function runPrompt(prompt, state, packageDir) {
           printStatusEvent(state, "tool", data.toolName || "unknown");
         } else if (type === "tool.completed") {
           printStatusEvent(state, "tool_done", data.toolName || "unknown");
+        } else if (type === "file.changed") {
+          printWorkspaceChange(data);
         } else if (type === "tool.blocked") {
           printStatusEvent(state, "tool_blocked", data.toolName || data.reason || "unknown");
         } else if (type === "loop.guard") {

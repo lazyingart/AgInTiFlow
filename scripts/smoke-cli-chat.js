@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildPromptLayout, classifyEscapeAction, stripMarkdown } from "../src/interactive-cli.js";
+import { buildPromptLayout, classifyEscapeAction, formatWorkspaceChange, stripMarkdown } from "../src/interactive-cli.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-cli-chat-"));
@@ -84,6 +84,21 @@ try {
   );
   if (!renderedDiff.includes("-old") || !renderedDiff.includes("+new")) {
     throw new Error("terminal markdown renderer dropped patch diff lines");
+  }
+  const renderedPatchEvent = formatWorkspaceChange({
+    toolName: "apply_patch",
+    path: "test_cli.py",
+    beforeHash: "aaaaaaaa11111111",
+    afterHash: "bbbbbbbb22222222",
+    diff: ["--- a/test_cli.py", "+++ b/test_cli.py", "@@ line 10 @@", "-old line", "+new line"].join("\n"),
+  });
+  if (
+    renderedPatchEvent.label !== "patch" ||
+    !renderedPatchEvent.summary.includes("test_cli.py") ||
+    !renderedPatchEvent.lines.join("\n").includes("-old line") ||
+    !renderedPatchEvent.lines.join("\n").includes("+new line")
+  ) {
+    throw new Error("workspace patch event formatter did not preserve red/green diff content");
   }
 
   const promptLayout = buildPromptLayout(`${"x".repeat(180)}\nsecond line`, 95, 80, 24);
@@ -185,7 +200,27 @@ try {
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["markdown-render", "markdown-table-no-duplicate", "patch-diff-render", "prompt-layout", "user-prompt-label", "escape-policy", "live-input-status-layout", "agent-response-gutter", "aginti-md", "instructions-command", "skills-command", "slash-prefix-autoselect", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest", "resume-history-full"],
+        checks: [
+          "markdown-render",
+          "markdown-table-no-duplicate",
+          "patch-diff-render",
+          "workspace-patch-event-render",
+          "prompt-layout",
+          "user-prompt-label",
+          "escape-policy",
+          "live-input-status-layout",
+          "agent-response-gutter",
+          "aginti-md",
+          "instructions-command",
+          "skills-command",
+          "slash-prefix-autoselect",
+          "instructions-chat-edit",
+          "interactive-chat",
+          "mock-file-write",
+          "run-status",
+          "resume-latest",
+          "resume-history-full",
+        ],
       },
       null,
       2
