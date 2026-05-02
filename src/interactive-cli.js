@@ -542,7 +542,7 @@ export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth
   const safeBuffer = String(buffer || "");
   const safeCursor = clamp(Number(cursor) || 0, 0, safeBuffer.length);
   const lineWidth = editorWidth(width);
-  const firstPrefix = " user ";
+  const firstPrefix = " user> ";
   const nextPrefix = "  ... ";
   const firstInnerWidth = Math.max(lineWidth - firstPrefix.length, 8);
   const nextInnerWidth = Math.max(lineWidth - nextPrefix.length, 8);
@@ -705,43 +705,16 @@ function clearRenderedPrompt(previous) {
   }
 }
 
-function moveFromPromptCursorToTop(previous) {
-  if (!previous.lineCount) return;
-  const below = previous.lineCount - 1 - previous.cursorRow;
-  if (below > 0) output.write(`\x1b[${below}B`);
-  const up = previous.lineCount - 1;
-  if (up > 0) output.write(`\x1b[${up}A`);
-  output.write("\r");
-}
-
 function renderPromptBuffer(buffer, cursor, previous = { lineCount: 0, cursorRow: 0, renderedRows: [] }, options = {}) {
   const layout = buildPromptLayout(buffer, cursor, terminalWidth(), terminalHeight(), options);
-  const sameShape = previous.lineCount === layout.renderedRows.length && previous.renderedRows?.length === layout.renderedRows.length;
-  const changedRows = sameShape
-    ? layout.renderedRows
-        .map((row, index) => (row === previous.renderedRows[index] ? -1 : index))
-        .filter((index) => index >= 0)
-    : layout.renderedRows.map((_row, index) => index);
-
-  if (!sameShape) {
-    output.write(ansi.cursorHide);
-    clearRenderedPrompt(previous);
-    output.write(layout.renderedRows.join("\n"));
-  } else if (changedRows.length > 0) {
-    output.write(ansi.cursorHide);
-    moveFromPromptCursorToTop(previous);
-    for (let index = 0; index < layout.renderedRows.length; index += 1) {
-      if (changedRows.includes(index)) output.write(`\r${layout.renderedRows[index]}`);
-      if (index < layout.renderedRows.length - 1) output.write("\x1b[1B\r");
-    }
-  } else {
-    moveFromPromptCursorToTop(previous);
-  }
+  output.write(ansi.cursorHide);
+  clearRenderedPrompt(previous);
+  output.write(layout.renderedRows.join("\n"));
 
   const below = layout.renderedRows.length - 1 - layout.cursorRow;
   if (below > 0) output.write(`\x1b[${below}A`);
   output.write(`\r\x1b[${layout.cursorColumn + 1}G`);
-  if (!sameShape || changedRows.length > 0) output.write(ansi.cursorShow);
+  output.write(ansi.cursorShow);
   return {
     lineCount: layout.renderedRows.length,
     cursorRow: layout.cursorRow,

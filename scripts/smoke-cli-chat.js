@@ -87,6 +87,12 @@ try {
   }
 
   const promptLayout = buildPromptLayout(`${"x".repeat(180)}\nsecond line`, 95, 80, 24);
+  const promptText = promptLayout.renderedRows
+    .map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""))
+    .join("\n");
+  if (!promptText.includes("user>")) {
+    throw new Error("terminal prompt layout did not render the user> label");
+  }
   const visibleLengths = promptLayout.renderedRows.map((line) =>
     line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").length
   );
@@ -172,7 +178,7 @@ try {
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["markdown-render", "markdown-table-no-duplicate", "patch-diff-render", "prompt-layout", "escape-policy", "live-input-status-layout", "agent-response-gutter", "aginti-md", "instructions-command", "skills-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest", "resume-history-full"],
+        checks: ["markdown-render", "markdown-table-no-duplicate", "patch-diff-render", "prompt-layout", "user-prompt-label", "escape-policy", "live-input-status-layout", "agent-response-gutter", "aginti-md", "instructions-command", "skills-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest", "resume-history-full"],
       },
       null,
       2
