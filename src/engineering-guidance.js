@@ -92,6 +92,7 @@ export function engineeringGuidanceForTask(goal = "", taskProfile = "auto") {
     "Build a compact context pack before major edits: project instructions, manifests/scripts, git status/diff, relevant symbols/search hits, target files, and the narrowest checks. Do not paste whole trees or huge files into model context.",
     "For system repair, act like a doctor: gather evidence first, avoid silent destructive host changes, prefer Docker or project-local scripts for installs, and make every stronger action explicit in logs.",
     "Never send sudo passwords or wait at interactive password prompts. If host-level permission is truly required, stop that path, explain the blocker, and provide a manual command instead of hanging.",
+    "Before claiming a coding task is finished, run git status --short when git is available. Leave the worktree clean, or explicitly report and justify each remaining untracked/unstaged artifact.",
   ];
 
   if (matched.length > 0) {
