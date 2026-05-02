@@ -86,6 +86,10 @@ try {
     "capabilities did not report Android task profile"
   );
   assert(
+    capabilities.tools?.taskProfiles?.some((profile) => profile.id === "supervision"),
+    "capabilities did not report supervision task profile"
+  );
+  assert(
     capabilities.trustedDockerPolicy.some((check) => check.command.startsWith("apt-get install") && check.allowed),
     "trusted Docker policy did not allow apt-get install"
   );
@@ -108,6 +112,10 @@ try {
   assert(
     capabilities.tools?.skills?.some((skill) => skill.id === "android"),
     "capabilities did not report built-in Android skill"
+  );
+  assert(
+    capabilities.tools?.skills?.some((skill) => skill.id === "supervision-student"),
+    "capabilities did not report built-in supervision skill"
   );
 
   const doctor = JSON.parse(await runCli(["doctor", "--capabilities", "--json"]));

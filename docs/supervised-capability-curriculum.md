@@ -49,6 +49,36 @@ Every supervised task must end with independent checks:
 5. Publish/install the updated AgInTiFlow build when possible, resume the same session, and ask it to continue.
 6. Record the result, missing capability, fix, and verification evidence.
 
+## Workspace Layout
+
+Future supervised homework should live under `~/ProjectsLFS/Aginti-Test/`:
+
+```text
+~/ProjectsLFS/Aginti-Test/
+  HOMEWORK.md
+  TASK-Profile-Auto/
+  TASK-Profile-Code/
+  TASK-Profile-Large-Codebase/
+  TASK-Profile-App/
+  TASK-Profile-Website/
+  TASK-Profile-Paper/
+  TASK-Profile-Research/
+  TASK-Profile-Supervision/
+```
+
+Durable example records should be copied into the AgInTiFlow repo under `aginti-work-examples/`.
+
+## Recursive Supervision
+
+The `supervision` profile and `supervision-student` skill are for training AgInTiFlow to be a better supervisor, not only a better worker. In recursive supervision:
+
+1. A student AgInTiFlow session performs a real task.
+2. A supervisor AgInTiFlow session monitors the student, verifies artifacts, and records flaws.
+3. Codex supervises the supervisor, checking whether it used evidence rather than belief.
+4. Repeated misses become AgInTiFlow upgrades.
+
+Use this only with explicit workspace boundaries and clear permission mode. The supervisor may request code/tool/profile improvements, but should not silently mutate unrelated projects.
+
 ## Current Lesson From Android Supervision
 
 Canvas preview alone is not proof that an artifact was saved. AgInTiFlow now persists canvas file paths into session artifacts and its Android workflow asks for durable screenshot paths. Supervisors must still verify the workspace file or session artifact exists before reporting success.

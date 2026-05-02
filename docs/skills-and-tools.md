@@ -12,7 +12,7 @@ AgInTiFlow separates **skills** from **tools** so the agent can stay general whi
 
 ## Built-In Skills
 
-The package ships built-in skills for code engineering, website/app building, LaTeX manuscripts, books, Microsoft Word documents, image generation, GitHub maintenance, system maintenance, tmux session control, Android, R/Stan, Python, C/C++, shell scripting, AAPS, and novel writing.
+The package ships built-in skills for code engineering, website/app building, LaTeX manuscripts, books, Microsoft Word documents, image generation, GitHub maintenance, system maintenance, tmux session control, Android, R/Stan, Python, C/C++, shell scripting, AAPS, novel writing, and supervision/student-agent training.
 
 List them from a project:
 

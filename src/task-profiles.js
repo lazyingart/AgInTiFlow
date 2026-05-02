@@ -62,6 +62,13 @@ export const TASK_PROFILES = {
       "Bias toward clear product/engineering design while remaining able to implement or test when asked. Produce concise design documents with goals, constraints, options, tradeoffs, implementation steps, verification criteria, and decision records.",
     tools: ["files", "canvas"],
   },
+  supervision: {
+    id: "supervision",
+    label: "Supervision",
+    prompt:
+      "Bias toward supervising another agent or long-running task instead of doing the target work directly. Define acceptance criteria, give the student agent normal user-level prompts, monitor progress through tmux/session logs/artifacts, independently verify claims, record evidence, and convert repeated failures into reusable AgInTiFlow skills, tools, policies, tests, or profile improvements.",
+    tools: ["shell", "files", "canvas", "inspect_project", "tmux"],
+  },
   app: {
     id: "app",
     label: "App builder",
@@ -190,6 +197,14 @@ const PROFILE_ALIASES = {
   chapter: "book",
   fiction: "novel",
   story: "novel",
+  supervise: "supervision",
+  supervisor: "supervision",
+  student: "supervision",
+  training: "supervision",
+  homework: "supervision",
+  curriculum: "supervision",
+  selfsupervision: "supervision",
+  "self-supervision": "supervision",
   cpp: "c-cpp",
   "c++": "c-cpp",
   clang: "c-cpp",
@@ -227,6 +242,7 @@ export function defaultMaxStepsForProfile(value = "auto") {
   if (profile === "app") return 40;
   if (profile === "android") return 60;
   if (profile === "latex") return 30;
+  if (profile === "supervision") return 40;
   if (["paper", "research", "book", "novel", "c-cpp", "r-stan", "github", "word", "maintenance"].includes(profile)) return 30;
   return 24;
 }

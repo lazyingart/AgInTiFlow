@@ -56,6 +56,12 @@ const LANGUAGE_HINTS = [
       "Git: always run git status --short and git diff --stat before commit/push. Commit only requested changes, use a clear message, run git fetch before push when remote state matters, prefer git pull --ff-only, and stop to ask if there are conflicts, unrelated dirty files, divergent branches, or ambiguous merge choices.",
   },
   {
+    id: "supervision",
+    pattern: /\b(supervise|supervisor|student agent|homework|curriculum|self[- ]?supervision|train the agent|agent training|monitor tmux)\b/i,
+    text:
+      "Supervision: do not simply believe the student agent. Define acceptance criteria, give normal user-level prompts, monitor tmux/session logs, verify artifacts and git state externally, record evidence, and turn repeated failures into durable profile, skill, tool, policy, or test improvements.",
+  },
+  {
     id: "r-stats",
     pattern: /\b(rstats|r language|cmdstanr|stan|renv|tidyverse|shiny)\b/i,
     text:

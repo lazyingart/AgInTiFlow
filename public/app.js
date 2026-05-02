@@ -850,6 +850,7 @@ function recommendedMaxStepsForProfile(profile = "auto", goal = "") {
   if (profile === "large-codebase") return 36;
   if (profile === "app") return 40;
   if (profile === "android") return 60;
+  if (profile === "supervision") return 40;
   if (profile === "latex") return 30;
   if (["paper", "research", "book", "novel", "c-cpp", "r-stan", "github", "word", "maintenance"].includes(profile)) return 30;
   if (COMPLEX_ENGINEERING_HINT.test(goal || "")) return 36;

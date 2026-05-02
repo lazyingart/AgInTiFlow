@@ -26,6 +26,7 @@ for (const required of [
   "image-generation",
   "latex-manuscript",
   "system-maintenance",
+  "supervision-student",
   "tmux-session",
   "website-app",
   "word-documents",
@@ -42,6 +43,7 @@ assert(selectedIds("monitor a long running tmux session").includes("tmux-session
 assert(selectedIds("create an .aaps example for @lazyingart/aaps").includes("aaps"), "AAPS prompt did not select aaps");
 assert(selectedIds("debug a C++ CMake build").includes("c-cpp"), "C++ prompt did not select c-cpp");
 assert(selectedIds("set up Stan and CmdStanR reproducibly").includes("r-stan"), "Stan prompt did not select r-stan");
+assert(selectedIds("supervise a student agent in tmux and verify its artifacts", "supervision").includes("supervision-student"), "supervision prompt did not select supervision-student");
 
 const prompt = formatSkillsForPrompt(selectSkillsForGoal("write latex manuscript with figures", { taskProfile: "latex", limit: 3 }));
 assert(prompt.includes("A skill is Markdown guidance"), "skill prompt does not explain skill semantics");
