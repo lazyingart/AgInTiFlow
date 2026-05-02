@@ -37,6 +37,7 @@ Translations live in `app.js` and are applied through `data-i18n`, `data-i18n-ar
 The landing page includes a docs section linking to the maintained source-of-truth Markdown files in `docs/`, especially:
 
 - `docs/runtime-modes-and-autonomy.md`: Docker, host access, tmux, package persistence, and long-running autonomy.
+- `docs/self-development-supervision.md`: protocol for supervised AgInTiFlow-on-AgInTiFlow development.
 - `docs/agent-runtime-pipe.md`: CLI/web shared sessions, inbox messages, queues, and stop/resume behavior.
 - `docs/large-codebase-engineering.md`: codebase maps, scout blackboards, patch loops, and verification.
 
