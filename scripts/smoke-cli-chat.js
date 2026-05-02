@@ -124,6 +124,17 @@ try {
   if (promptLayout.cursorRow < 0 || promptLayout.cursorColumn < 0) {
     throw new Error("terminal prompt layout returned an invalid cursor location");
   }
+  const paddedPromptLayout = buildPromptLayout("hello", 5, 80, 24, { commandCwd: "/tmp/aginti-project" });
+  const paddedRows = paddedPromptLayout.renderedRows.map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""));
+  if (
+    paddedPromptLayout.cursorRow !== 1 ||
+    paddedRows[0].trim() !== "" ||
+    !paddedRows[1].includes("user>   hello") ||
+    paddedRows[2].trim() !== "" ||
+    !paddedRows[3].includes("cwd     /tmp/aginti-project")
+  ) {
+    throw new Error("terminal prompt layout did not render visual-only input padding safely");
+  }
   const hugePromptLayout = buildPromptLayout(Array.from({ length: 30 }, (_unused, index) => `line ${index + 1}`).join("\n"), 120, 80, 20);
   if (hugePromptLayout.renderedRows.length > 12 || !hugePromptLayout.renderedRows.some((line) => line.includes("earlier input row"))) {
     throw new Error("terminal prompt layout did not bound redraw size for large prompts");

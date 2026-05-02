@@ -749,6 +749,7 @@ export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth
   const visible = promptVisibleWindow(rows, cursorRow, height);
   const renderedRows = [];
   let renderedCursorRow = cursorRow - visible.start;
+  const useInputPadding = options.inputPadding !== false && height >= 10;
 
   if (options.statusLine) {
     renderedRows.push(panelLine(`${labelText("run", { prompt: true })}${compactLine(options.statusLine, lineWidth - 10)}`, ansi.statusBg, lineWidth));
@@ -771,9 +772,18 @@ export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth
     renderedCursorRow += 1;
   }
 
+  if (useInputPadding) {
+    renderedRows.push(panelLine("", ansi.userBg, lineWidth));
+    renderedCursorRow += 1;
+  }
+
   for (const row of rows.slice(visible.start, visible.end)) {
     const content = safeBuffer ? `${row.prefix}${row.text}` : `${row.prefix}${emptyHint}`;
     renderedRows.push(panelLine(content, ansi.userBg, lineWidth));
+  }
+
+  if (useInputPadding) {
+    renderedRows.push(panelLine("", ansi.userBg, lineWidth));
   }
 
   if (visible.bottomHidden > 0) {
