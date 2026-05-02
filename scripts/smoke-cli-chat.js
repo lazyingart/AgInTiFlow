@@ -141,8 +141,8 @@ try {
   if (!promptText.includes("user>")) {
     throw new Error("terminal prompt layout did not render the user> label");
   }
-  if (!promptText.includes("user>   ")) {
-    throw new Error("terminal prompt layout did not pad user> to the aginti> label width");
+  if (!promptText.includes("  user> ") || promptText.includes("user>   ")) {
+    throw new Error("terminal prompt layout did not right-align user> to the aginti> label width");
   }
   const visibleLengths = promptLayout.renderedRows.map((line) =>
     line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").length
@@ -168,7 +168,7 @@ try {
   if (
     paddedPromptLayout.cursorRow !== 1 ||
     paddedRows[0].trim() !== "" ||
-    !paddedRows[1].includes("user>   hello") ||
+    !paddedRows[1].includes("  user> hello") ||
     paddedRows[2].trim() !== "" ||
     !paddedRows[3].includes("cwd     /tmp/aginti-project")
   ) {
@@ -177,7 +177,7 @@ try {
   const committedUserText = formatCommittedUserPromptLines("list files", 90)
     .map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""))
     .join("\n");
-  if (!committedUserText.includes("user>   list files") || committedUserText.includes("cwd")) {
+  if (!committedUserText.includes("  user> list files") || committedUserText.includes("cwd")) {
     throw new Error("committed user history should not include the live cwd footer");
   }
   const zhPromptLayout = buildPromptLayout("", 0, 90, 24, { language: "zh-Hans", commandCwd: "/tmp/aginti-project" });
@@ -214,7 +214,7 @@ try {
   const hintText = hintPromptLayout.renderedRows
     .map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""))
     .join("\n");
-  if (!hintText.includes("user>   /mo") || !hintText.includes("hint    /models  >/model")) {
+  if (!hintText.includes("  user> /mo") || !hintText.includes("hint    /models  >/model")) {
     throw new Error("terminal prompt layout did not align user and hint text columns");
   }
   const exactHintLayout = buildPromptLayout("/model", 6, 90, 24);
@@ -306,7 +306,7 @@ try {
   if (!latest.stdout.includes("resume history") || !latest.stdout.includes("chat=") || !latest.stdout.includes("Mock run complete")) {
     throw new Error("bare aginti resume did not preview saved chat history");
   }
-  if (!latest.stdout.includes("user>") || !latest.stdout.includes("aginti>")) {
+  if (!latest.stdout.includes("  user>") || !latest.stdout.includes("aginti>") || latest.stdout.includes("user>   ")) {
     throw new Error("resume history should use prompt-style user>/aginti> labels");
   }
   if (!latest.stdout.includes("resume note=showing chat transcript only")) {

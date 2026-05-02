@@ -113,7 +113,8 @@ const PROMPT_LABEL_WIDTH = "aginti>".length;
 function labelText(name, { prompt = false } = {}) {
   const raw = String(name || "");
   const width = prompt || raw.endsWith(">") ? PROMPT_LABEL_WIDTH : ROLE_LABEL_WIDTH;
-  return ` ${raw.padEnd(width, " ")} `;
+  const aligned = raw.endsWith(">") ? raw.padStart(width, " ") : raw.padEnd(width, " ");
+  return ` ${aligned} `;
 }
 
 function label(name, bgCode) {
