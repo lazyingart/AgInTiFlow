@@ -25,6 +25,7 @@ import { listTaskProfiles } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 import { normalizeAuthProvider, promptHidden, runAuthWizard, shouldPromptForDeepSeek } from "./auth-onboarding.js";
 import { listSkills, selectSkillsForGoal } from "./skill-library.js";
+import { languageLabel, resolveLanguage } from "./i18n.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,6 +88,7 @@ export function parseArgs(argv) {
     listSkills: false,
     latex: false,
     image: false,
+    language: "",
   };
 
   const parts = [];
@@ -108,6 +110,18 @@ export function parseArgs(argv) {
     if (arg === "--host") {
       result.host = readOption(argv, i);
       i += 1;
+      continue;
+    }
+    if (arg === "--language" || arg === "--lang" || arg === "-L") {
+      const first = readOption(argv, i);
+      const second = argv[i + 2] && !String(argv[i + 2]).startsWith("--") ? argv[i + 2] : "";
+      if (["cn", "zh"].includes(String(first || "").toLowerCase()) && ["s", "t"].includes(String(second || "").toLowerCase())) {
+        result.language = `${first}-${second}`;
+        i += 2;
+      } else {
+        result.language = first;
+        i += 1;
+      }
       continue;
     }
     if (arg === "--start-url") {
@@ -345,8 +359,9 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti models OR aginti skills [query] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti models OR aginti skills [query] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
+  console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
 }
 
 function providerLabel(provider) {
@@ -361,6 +376,7 @@ function providerLabel(provider) {
 function agentDefaults(args) {
   const defaults = {
     ...args,
+    language: resolveLanguage(args.language || process.env.AGINTI_LANGUAGE || ""),
     allowShellTool: args.allowShellTool ?? true,
     allowFileTools: args.allowFileTools ?? true,
     allowAuxiliaryTools: args.allowAuxiliaryTools ?? true,
@@ -728,6 +744,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (args.web) {
     if (args.port) process.env.PORT = String(args.port);
     if (args.host) process.env.HOST = String(args.host);
+    if (args.language) process.env.AGINTI_LANGUAGE = resolveLanguage(args.language);
     process.env.AGINTIFLOW_PACKAGE_DIR = packageDir;
     await import("../web.js");
     return;

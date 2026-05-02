@@ -25,6 +25,7 @@ import { readProjectInstructions } from "./project.js";
 import { formatSkillsForPrompt, selectSkillsForGoal } from "./skill-library.js";
 import { hostShellOption, platformInfo, platformLabel } from "./platform.js";
 import { captureTmuxPane, listTmuxSessions, sendTmuxKeys, startTmuxSession } from "./tmux-tools.js";
+import { languageInstruction } from "./i18n.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "open_workspace_file", "preview_workspace", "click", "type", "scroll", "press", "back"]);
@@ -300,6 +301,7 @@ async function createInitialState(config, sessionId) {
           "Prefer short, deliberate actions over guessing.",
           "Never navigate outside the allowed domains when an allowlist exists.",
           "Avoid destructive actions, purchases, account changes, and sensitive workflows.",
+          languageInstruction(config.language || "en"),
           projectInstructionContext,
           "Treat AGINTI.md as durable project memory and operating instructions for this project. The user can edit it manually or ask you in chat to update it; use workspace file tools for that and never store secrets there.",
           config.allowShellTool
@@ -351,6 +353,7 @@ async function createInitialState(config, sessionId) {
         role: "user",
         content: [
           `Goal: ${config.goal}`,
+          languageInstruction(config.language || "en"),
           config.startUrl ? `Suggested start URL: ${config.startUrl}` : "",
           config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
           config.allowShellTool

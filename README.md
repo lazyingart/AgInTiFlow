@@ -69,9 +69,14 @@ Start an interactive Codex-style CLI chat from any project folder:
 aginti
 # or explicitly:
 aginti chat
+# choose a UI language, or omit it to follow your system locale:
+aginti --language ja
+aginti --language zh-Hans
 ```
 
 Inside chat, type normal requests such as `write a small Python CLI app with tests`. The default is Docker workspace mode with approved package installs, so coding, plotting, and LaTeX tasks can set up project-local tools without touching the host. Use `/help` for commands, `/login` or `/auth` to paste a provider key, `/instructions` to inspect `AGINTI.md`, `/latex on` for PDF work, `/docker off` only when you intentionally want host mode, `/sessions` to list project runs, and `/resume latest` or `/resume <session-id>` to continue work. Type `/` then Tab for command completion. `Ctrl+J` inserts a new line in the colored input panel, Enter sends, arrow keys move through wrapped multiline input, and `Ctrl+A`/`Ctrl+E` jump to the current line start/end. During an active run, Enter sends the draft as an ASAP pipe message (`→`) and Tab queues it for after the run (`↳`); ASAP messages are consumed before after-finish queued prompts, Alt+Up edits the last piped message, and Shift+Left edits the last after-finish queued message. Idle Esc is ignored so it does not disturb the input panel; during a run, Esc waits when `→` messages are pending and otherwise stops the run cleanly. Ctrl+C always stops and prints the resume command. The input panel always shows the current `cwd` footer and a single live status row, so long goals and tool updates are compacted instead of flooding the transcript. Assistant responses start on a fresh line after the `aginti>` header with a colored response gutter and render common Markdown, including headings, inline code, bold text, lists, quotes, code fences, tables, and red/green patch diff lines. Resuming a session prints the full saved chat history with wrapped messages before the prompt.
+
+CLI and app language can follow the system locale or be set with `--language`, `--lang`, `-L`, or the interactive `/language` command. Supported codes are `en`, `ja`, `zh-Hans`, `zh-Hant`, `ko`, `fr`, `es`, `ar`, `vi`, `de`, and `ru`; longer names plus old `jp` and `cn-*` aliases still work. See [docs/cli-i18n.md](docs/cli-i18n.md).
 
 `aginti init` creates `AGINTI.md` at the project root. This is the editable project-instruction file for both CLI and web runs, similar to `AGENTS.md` or project memory in other agents. Keep durable preferences, commands, and constraints there, but never secrets. You can edit it manually or ask in chat, for example: `update AGINTI.md to remember that this project uses pytest and npm run check`.
 

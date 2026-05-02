@@ -6,6 +6,7 @@ import { normalizeWrapperName } from "./tool-wrappers.js";
 import { loadProjectEnv, resolveProjectRoot } from "./project.js";
 import { normalizeTaskProfile } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
+import { resolveLanguage } from "./i18n.js";
 
 function parseBoolean(value, fallback) {
   if (value === undefined) return fallback;
@@ -47,6 +48,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
             : "deepseek");
   const routingMode = normalizeRoutingMode(overrides.routingMode || args.routingMode || process.env.AGENT_ROUTING_MODE || "smart");
   const taskProfile = normalizeTaskProfile(overrides.taskProfile || args.taskProfile || process.env.AGINTI_TASK_PROFILE || "auto");
+  const language = resolveLanguage(overrides.language || args.language || process.env.AGINTI_LANGUAGE || "");
   const route = selectModelRoute({
     routingMode,
     provider: requestedProvider,
@@ -94,6 +96,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     sessionId: overrides.sessionId || args.sessionId || process.env.SESSION_ID || `web-agent-${crypto.randomUUID()}`,
     routingMode,
     taskProfile,
+    language,
     routeReason: route.reason,
     routeComplexityScore: route.complexityScore,
     modelRoles,

@@ -24,6 +24,7 @@ import { loadProjectEnv, projectPaths, providerKeyStatus, setProviderKey } from 
 import { buildCapabilityReport } from "./src/capabilities.js";
 import { listSkills } from "./src/skill-library.js";
 import { platformInfo, platformLabel, platformSetupHints } from "./src/platform.js";
+import { normalizeLanguage } from "./src/i18n.js";
 import {
   buildArtifacts,
   countUnreadArtifacts,
@@ -45,24 +46,6 @@ const port = Number(process.env.PORT || 3210);
 const host = process.env.HOST || "127.0.0.1";
 const runs = new Map();
 const db = new WebDatabase(baseDir);
-const supportedLanguages = new Set([
-  "en",
-  "ar",
-  "es",
-  "fr",
-  "ja",
-  "ko",
-  "vi",
-  "zh-Hans",
-  "zh-Hant",
-  "de",
-  "ru",
-]);
-
-function normalizeLanguage(language, fallback = "en") {
-  if (supportedLanguages.has(language)) return language;
-  return supportedLanguages.has(fallback) ? fallback : "en";
-}
 
 function sessionStore(sessionId) {
   return new SessionStore(sessionsDir, sessionId);
@@ -231,7 +214,7 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
     allowPasswords: typeof body.allowPasswords === "boolean" ? body.allowPasswords : Boolean(current.allowPasswords),
     allowDestructive:
       typeof body.allowDestructive === "boolean" ? body.allowDestructive : Boolean(current.allowDestructive),
-    language: normalizeLanguage(body.language, current.language),
+    language: normalizeLanguage(body.language || process.env.AGINTI_LANGUAGE || current.language, current.language || "en"),
   };
 }
 
@@ -310,6 +293,7 @@ function buildRunConfig(body, overrides = {}) {
       dockerSandboxImage: merged.dockerSandboxImage,
       commandCwd: merged.commandCwd,
       taskProfile: merged.taskProfile,
+      language: merged.language,
       baseDir,
       packageDir,
       sessionId: overrides.sessionId,

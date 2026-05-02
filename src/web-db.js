@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getModelPresets, getModelRoleDefaults } from "./model-routing.js";
+import { resolveLanguage } from "./i18n.js";
 
 const PREFERENCES_SCHEMA_VERSION = 7;
 
@@ -44,7 +45,7 @@ function defaultPreferences(baseDir) {
     dockerSandboxImage: "agintiflow-sandbox:latest",
     allowPasswords: false,
     allowDestructive: false,
-    language: "en",
+    language: resolveLanguage(process.env.AGINTI_LANGUAGE || ""),
     taskProfile: "auto",
   };
 }

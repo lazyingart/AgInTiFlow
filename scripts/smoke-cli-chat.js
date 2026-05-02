@@ -30,6 +30,7 @@ function runCli(args, inputText) {
       env: {
         ...process.env,
         AGINTIFLOW_RUNTIME_DIR: "",
+        AGINTI_LANGUAGE: "en",
       },
     });
 
@@ -153,6 +154,15 @@ try {
   ) {
     throw new Error("terminal prompt layout did not render visual-only input padding safely");
   }
+  const zhPromptLayout = buildPromptLayout("", 0, 90, 24, { language: "zh-Hans", commandCwd: "/tmp/aginti-project" });
+  const zhPromptText = zhPromptLayout.renderedRows.map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")).join("\n");
+  if (!zhPromptText.includes("输入任务")) {
+    throw new Error("terminal prompt layout did not localize the empty input hint");
+  }
+  const jaLaunchHeader = buildLaunchHeaderLines({ width: 120, packageVersion: "0.0.0", animated: false, language: "ja" }).join("\n");
+  if (!jaLaunchHeader.includes("Web ファースト")) {
+    throw new Error("launch header did not localize by language option");
+  }
   const hugePromptLayout = buildPromptLayout(Array.from({ length: 30 }, (_unused, index) => `line ${index + 1}`).join("\n"), 120, 80, 20);
   if (hugePromptLayout.renderedRows.length > 12 || !hugePromptLayout.renderedRows.some((line) => line.includes("earlier input row"))) {
     throw new Error("terminal prompt layout did not bound redraw size for large prompts");
@@ -220,6 +230,10 @@ try {
   if (!helpResult.stdout.includes("/auxiliary") || helpResult.stdout.includes(misspelledAuxiliary)) {
     throw new Error("interactive help did not expose only the correctly spelled /auxiliary command");
   }
+  const zhHelpResult = await runCli(["chat", "--language", "zh-Hans"], "/help\n/exit\n");
+  if (!zhHelpResult.stdout.includes("命令:") || !zhHelpResult.stdout.includes("输入普通任务")) {
+    throw new Error("interactive --language zh-Hans did not localize CLI help");
+  }
   const skillsResult = await runChat("/skills website\n/exit\n");
   if (!skillsResult.stdout.includes("website-app") || !skillsResult.stdout.includes("Website And App Builder")) {
     throw new Error("interactive /skills did not show matching built-in skills");
@@ -283,6 +297,7 @@ try {
           "large-launch-header",
           "prompt-layout",
           "prompt-redraw-fast-path",
+          "cli-i18n",
           "user-prompt-label",
           "escape-policy",
           "live-input-status-layout",

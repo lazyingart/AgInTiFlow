@@ -17,6 +17,7 @@ import {
   getModelRoleDefaults,
   modelsForProviderGroup,
 } from "./model-routing.js";
+import { languageLabel, resolveLanguage, t } from "./i18n.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
@@ -74,6 +75,8 @@ const SLASH_COMMANDS = [
   "/routing",
   "/provider",
   "/model",
+  "/language",
+  "/lang",
   "/docker",
   "/latex",
   "/installs",
@@ -84,6 +87,16 @@ const SLASH_COMMANDS = [
 ];
 const promptHistory = [];
 let activeRunInput = null;
+let cliLanguage = resolveLanguage();
+
+function setCliLanguage(language = "") {
+  cliLanguage = resolveLanguage(language || "");
+  return cliLanguage;
+}
+
+function tr(key, values = {}) {
+  return t(key, cliLanguage, values);
+}
 
 function color(value, ...codes) {
   if (!useColor || codes.length === 0) return String(value);
@@ -534,9 +547,9 @@ function launchTitleLines(contentWidth) {
   return largeWidth <= contentWidth ? LARGE_LAUNCH_TITLE : COMPACT_LAUNCH_TITLE;
 }
 
-export function buildLaunchHeaderLines({ packageVersion = "", frame = 2, width = terminalWidth(), animated = true } = {}) {
-  const subtitle = "web-first agent workspace";
-  const tagline = "browser + shell + files + docker + web search + scouts";
+export function buildLaunchHeaderLines({ packageVersion = "", frame = 2, width = terminalWidth(), animated = true, language = cliLanguage } = {}) {
+  const subtitle = t("launchSubtitle", language);
+  const tagline = t("launchTagline", language);
   const version = packageVersion ? `v${packageVersion}` : "";
   const terminalColumns = Math.max(Number(width) || 80, 50);
   const contentWidth = Math.min(Math.max(terminalColumns - 8, 58), 112);
@@ -561,9 +574,9 @@ export function buildLaunchHeaderLines({ packageVersion = "", frame = 2, width =
   return boxLines.map((line) => `${indent}${line}`);
 }
 
-async function renderLaunchHeader(packageVersion = "") {
+async function renderLaunchHeader(packageVersion = "", language = cliLanguage) {
   if (!useColor || process.env.AGINTIFLOW_NO_ANIMATION === "1") {
-    console.log(buildLaunchHeaderLines({ packageVersion, animated: false }).join("\n"));
+    console.log(buildLaunchHeaderLines({ packageVersion, animated: false, language }).join("\n"));
     return;
   }
 
@@ -572,7 +585,7 @@ async function renderLaunchHeader(packageVersion = "") {
   let previousLineCount = 0;
   output.write(ansi.cursorHide);
   for (let frame = 0; frame < 18; frame += 1) {
-    const lines = [...paddingLines, ...buildLaunchHeaderLines({ packageVersion, frame, animated: true })];
+    const lines = [...paddingLines, ...buildLaunchHeaderLines({ packageVersion, frame, animated: true, language })];
     if (previousLineCount > 0) output.write(`\x1b[${previousLineCount}A`);
     output.write(lines.map((line) => `\r${ansi.clearLine}${line}`).join("\n"));
     output.write("\n");
@@ -583,47 +596,45 @@ async function renderLaunchHeader(packageVersion = "") {
 }
 
 function printHelp() {
+  const command = (name, detail, key) => `${name.padEnd(28)} ${tr(key) || detail}`;
   printAgentMessage(
     [
-      "Commands:",
-      "  /help                     Show this help.",
-      "  /status                   Show active route, workspace, sandbox, and session.",
-      "  /login [deepseek|openai|qwen|venice|grsai]  Pick, paste, and save project-local API keys.",
-      "  /auth [deepseek|openai|qwen|venice|grsai]   Alias for /login.",
-      "  /instructions             Show AGINTI.md project instructions status.",
-      "  /memory                   Alias for /instructions.",
-      "  /models                   Show route/main/spare/wrapper/auxiliary model roles.",
-      "  /venice [off|model]       Pick Venice route/main models, or restore DeepSeek defaults.",
-      "  /route [mode|provider/model]",
-      "                            Open route selector, or set routing/fast route model.",
-      "  /model [provider/model]   Open main-model selector, or set the active/main model.",
-      "  /spare [provider/model] [reasoning]",
-      "                            Open spare selector, or set e.g. /spare openai/gpt-5.4 medium.",
-      "  /wrapper [on|off|codex model reasoning]",
-      "                            Configure optional external wrapper.",
-      "  /auxiliary [status|grsai|venice|model [provider/model]|on|off|image]",
-      "                            Manage optional auxiliary skills, including image generation.",
-      "  /new                      Start a fresh session on the next message.",
-      "  /resume <session-id>      Continue a saved session.",
-      "  /sessions                 List recent sessions in this project.",
-      "  /skills [query]           List Markdown skills selected for a topic.",
-      "  /profile <name>           Set task profile, e.g. code, website, latex, maintenance.",
-      "  /web-search on|off        Enable or disable the web_search tool.",
-      "  /scouts on|off|<1-10>     Enable parallel DeepSeek scouts and set scout count.",
-      "  /routing <mode>           Set routing: smart, fast, complex, manual.",
-      "  /provider [name]          Open provider selector, or set deepseek/openai/qwen/venice/mock.",
-      "  /docker on                Use docker-workspace with approved package installs.",
-      "  /docker off               Use host shell policy.",
-      "  /latex on                 Use the LaTeX/PDF profile in Docker with a larger step budget.",
-      "  /installs block|prompt|allow",
-      "  /cwd <path>               Change command workspace.",
-      "  /exit                     Quit.",
+      tr("helpTitle"),
+      `  ${command("/help", "Show this help.", "helpHelp")}`,
+      `  ${command("/status", "Show active route, workspace, sandbox, and session.", "helpStatus")}`,
+      `  ${command("/login [deepseek|openai|qwen|venice|grsai]", "Pick, paste, and save project-local API keys.", "helpLogin")}`,
+      `  ${command("/auth [deepseek|openai|qwen|venice|grsai]", "Alias for /login.", "helpLogin")}`,
+      `  ${command("/instructions", "Show AGINTI.md project instructions status.", "helpInstructions")}`,
+      `  ${command("/memory", "Alias for /instructions.", "helpInstructions")}`,
+      `  ${command("/models", "Show route/main/spare/wrapper/auxiliary model roles.", "helpModels")}`,
+      `  ${command("/venice [off|model]", "Pick Venice route/main models, or restore DeepSeek defaults.", "helpVenice")}`,
+      `  ${command("/route [mode|provider/model]", "Open route selector, or set routing/fast route model.", "helpRoute")}`,
+      `  ${command("/model [provider/model]", "Open main-model selector, or set the active/main model.", "helpModel")}`,
+      `  ${command("/spare [provider/model] [reasoning]", "Open spare selector, or set e.g. /spare openai/gpt-5.4 medium.", "helpSpare")}`,
+      `  ${command("/wrapper [on|off|codex model reasoning]", "Configure optional external wrapper.", "helpWrapper")}`,
+      `  ${command("/auxiliary [status|grsai|venice|model [provider/model]|on|off|image]", "Manage optional auxiliary skills, including image generation.", "helpAuxiliary")}`,
+      `  ${command("/new", "Start a fresh session on the next message.", "helpNew")}`,
+      `  ${command("/resume <session-id>", "Continue a saved session.", "helpResume")}`,
+      `  ${command("/sessions", "List recent sessions in this project.", "helpSessions")}`,
+      `  ${command("/skills [query]", "List Markdown skills selected for a topic.", "helpSkills")}`,
+      `  ${command("/profile <name>", "Set task profile, e.g. code, website, latex, maintenance.", "helpProfile")}`,
+      `  ${command("/web-search on|off", "Enable or disable the web_search tool.", "helpWebSearch")}`,
+      `  ${command("/scouts on|off|<1-10>", "Enable parallel DeepSeek scouts and set scout count.", "helpScouts")}`,
+      `  ${command("/routing <mode>", "Set routing: smart, fast, complex, manual.", "helpRouting")}`,
+      `  ${command("/provider [name]", "Open provider selector, or set deepseek/openai/qwen/venice/mock.", "helpProvider")}`,
+      `  ${command("/docker on", "Use docker-workspace with approved package installs.", "helpDockerOn")}`,
+      `  ${command("/docker off", "Use host shell policy.", "helpDockerOff")}`,
+      `  ${command("/latex on", "Use the LaTeX/PDF profile in Docker with a larger step budget.", "helpLatex")}`,
+      `  ${command("/installs block|prompt|allow", "Set package install policy.", "helpInstalls")}`,
+      `  ${command("/cwd <path>", "Change command workspace.", "helpCwd")}`,
+      `  ${command("/language [auto|en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru]", "Set CLI language.", "helpLanguage")}`,
+      `  ${command("/exit", "Quit.", "helpExit")}`,
       "",
-      "Type a normal request to run the agent. Example: write a Python CLI app with tests",
-      "Type / then Tab to autocomplete commands.",
-      "While a run is active, Enter pipes a message into the current run (→), Tab queues it after finish (↳).",
-      "Alt+Up edits the last piped message; Shift+Left edits the last queued message.",
-      "Esc is ignored while idle. During a run, Esc waits for pending → pipe messages or stops if none; Ctrl+C always stops.",
+      tr("helpNormalRequest"),
+      tr("helpAutocomplete"),
+      tr("helpQueue"),
+      tr("helpEditQueue"),
+      tr("helpEsc"),
     ].join("\n")
   );
 }
@@ -754,7 +765,7 @@ export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth
     ? options.suggestions
     : commandSuggestions(safeBuffer.split("\n")[0] || "");
   const suggestionIndex = clamp(Number(options.suggestionIndex) || 0, 0, Math.max(suggestions.length - 1, 0));
-  const emptyHint = "type a request, /help, Enter to send, Ctrl+J for newline";
+  const emptyHint = t("promptEmpty", options.language || cliLanguage);
   const visible = promptVisibleWindow(rows, cursorRow, height);
   const renderedRows = [];
   let renderedCursorRow = cursorRow - visible.start;
@@ -973,6 +984,7 @@ function readTtyPrompt(options = {}) {
       const suggestions = commandSuggestions(suggestionAnchor || buffer.split("\n")[0] || "");
       rendered = renderPromptBuffer(buffer, cursor, rendered, {
         ...options,
+        language: options.language || cliLanguage,
         suggestions,
         suggestionIndex,
       });
@@ -1178,7 +1190,7 @@ function readTtyPrompt(options = {}) {
 
 async function readPromptAnswer(rl, state = {}) {
   if (input.isTTY && output.isTTY && typeof input.setRawMode === "function") {
-    return readTtyPrompt({ commandCwd: state.commandCwd || process.cwd() });
+    return readTtyPrompt({ commandCwd: state.commandCwd || process.cwd(), language: state.language || cliLanguage });
   }
   return rl.question(userPrompt());
 }
@@ -1261,6 +1273,7 @@ class LiveRunInput {
     }
     this.rendered = renderPromptBuffer(this.buffer, this.cursor, this.rendered, {
       commandCwd: this.commandCwd,
+      language: this.state.language || cliLanguage,
       statusLine: this.statusLine,
       pendingAsap: this.pendingAsap,
       pendingQueued: this.pendingQueued,
@@ -1292,6 +1305,7 @@ class LiveRunInput {
   moveVertical(direction) {
     const layout = buildPromptLayout(this.buffer, this.cursor, terminalWidth(), terminalHeight(), {
       commandCwd: this.commandCwd,
+      language: this.state.language || cliLanguage,
       statusLine: this.statusLine,
       pendingAsap: this.pendingAsap,
       pendingQueued: this.pendingQueued,
@@ -1496,6 +1510,7 @@ function printStatus(state) {
   printSystemLine(`cwd=${state.commandCwd || process.cwd()}`);
   printSystemLine(`session=${state.sessionId || "new"}`);
   printSystemLine(`status=${state.status || "idle"}${state.activeGoal ? ` workingOn=${state.activeGoal}` : ""}`);
+  printSystemLine(`language=${state.language || cliLanguage} (${languageLabel(state.language || cliLanguage)})`);
   if (state.lastEvent) printSystemLine(`last=${state.lastEvent}`);
   printSystemLine(`provider=${state.provider || "auto"} routing=${state.routingMode} model=${state.model || "auto"}`);
   printSystemLine(
@@ -1638,6 +1653,7 @@ function createState(args = {}) {
     auxiliaryProvider: args.auxiliaryProvider || "grsai",
     auxiliaryModel: args.auxiliaryModel || "nano-banana-2",
     taskProfile: normalizeTaskProfile(args.taskProfile || "auto"),
+    language: resolveLanguage(args.language || process.env.AGINTI_LANGUAGE || ""),
     headless: args.headless ?? false,
     maxSteps:
       Number.isFinite(args.maxSteps) && args.maxSteps > 0
@@ -2202,6 +2218,18 @@ async function handleCommand(line, state, packageDir) {
     );
     return true;
   }
+  if (command === "language" || command === "lang") {
+    if (!value) {
+      printSystemLine(tr("languageSet", { language: state.language || cliLanguage, label: languageLabel(state.language || cliLanguage) }));
+      printAgentMessage(tr("languageUsage"));
+      return true;
+    }
+    const nextLanguage = resolveLanguage(value);
+    state.language = nextLanguage;
+    setCliLanguage(nextLanguage);
+    printSystemLine(tr("languageSet", { language: nextLanguage, label: languageLabel(nextLanguage) }));
+    return true;
+  }
   if (command === "login" || command === "auth") {
     await promptAndSaveProviderKey(value || "deepseek", state);
     return true;
@@ -2628,6 +2656,7 @@ async function runPrompt(prompt, state, packageDir) {
       auxiliaryProvider: state.auxiliaryProvider,
       auxiliaryModel: state.auxiliaryModel,
       taskProfile: state.taskProfile,
+      language: state.language || cliLanguage,
       maxSteps: runMaxSteps,
       headless: state.headless,
       resume: state.sessionId,
@@ -2729,6 +2758,7 @@ async function runPrompt(prompt, state, packageDir) {
 
 export async function startInteractiveCli(args = {}, { packageDir, packageVersion } = {}) {
   const state = createState(args);
+  setCliLanguage(state.language);
   const rl =
     input.isTTY && output.isTTY
       ? null
@@ -2739,10 +2769,10 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
           completer: commandCompleter,
         });
 
-  await renderLaunchHeader(packageVersion);
-  printSystemLine(`Project: ${process.cwd()}`);
+  await renderLaunchHeader(packageVersion, state.language);
+  printSystemLine(`${tr("project")}: ${process.cwd()}`);
   await maybeOnboardDeepSeekKey(state);
-  printAgentMessage("Interactive agent chat. Type /help for commands, /exit to quit.");
+  printAgentMessage(tr("interactiveIntro"));
   printStatus(state);
   await printResumeHistory(state);
 
