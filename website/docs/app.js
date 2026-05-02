@@ -1,6 +1,8 @@
+import { docsContent, docsNav, languageMeta, languages, normalizeLanguage, t } from "./i18n.js";
+
 const pages = [
   {
-    group: "Start Here",
+    groupIndex: 0,
     items: [
       ["overview", "Overview", "docs/overview.md", "product architecture sessions workspace"],
       ["quick-start", "Quick Start", "docs/quick-start.md", "install npm aginti web mock"],
@@ -8,7 +10,7 @@ const pages = [
     ],
   },
   {
-    group: "Daily Use",
+    groupIndex: 1,
     items: [
       ["cli", "Interactive CLI", "docs/cli.md", "terminal chat slash commands patch diff resume"],
       ["web-ui", "Web UI", "docs/web-ui.md", "browser panels settings controls run output"],
@@ -17,7 +19,7 @@ const pages = [
     ],
   },
   {
-    group: "Agent Capabilities",
+    groupIndex: 2,
     items: [
       ["coding-tools", "Coding Tools", "docs/coding-tools.md", "apply_patch codebase tests diff files"],
       ["runtime-modes", "Runtime Modes", "docs/runtime-modes.md", "docker sandbox host tmux package installs"],
@@ -26,7 +28,7 @@ const pages = [
     ],
   },
   {
-    group: "Operations",
+    groupIndex: 3,
     items: [
       ["self-development", "Self Development", "docs/self-development.md", "supervise self edit tmux checks"],
       ["release", "Release and Publishing", "docs/release.md", "npm publish version trusted publishing"],
@@ -41,9 +43,12 @@ const flatPages = pages.flatMap((group) =>
     title,
     file,
     keywords,
-    group: group.group,
+    groupIndex: group.groupIndex,
   }))
 );
+
+const languageStorageKey = "agintiflow-docs-language";
+let currentLanguage = normalizeLanguage(window.localStorage.getItem(languageStorageKey) || navigator.language || "en");
 
 const treeEl = document.querySelector("#docs-tree");
 const searchEl = document.querySelector("#docs-search");
@@ -53,6 +58,44 @@ const descriptionEl = document.querySelector("#page-description");
 const tocEl = document.querySelector("#page-toc");
 const previousEl = document.querySelector("#previous-page");
 const nextEl = document.querySelector("#next-page");
+const languageSelect = document.querySelector("#language-select");
+const languageLabel = document.querySelector("#language-label");
+const tocTitle = document.querySelector("#toc-title");
+const metaDescription = document.querySelector('meta[name="description"]');
+
+function currentNav() {
+  return docsNav[currentLanguage] || docsNav.en;
+}
+
+function groupLabel(groupOrPage) {
+  return currentNav().groups[groupOrPage.groupIndex] || docsNav.en.groups[groupOrPage.groupIndex] || "";
+}
+
+function pageTitle(page) {
+  return currentNav().pages[page.id] || page.title;
+}
+
+function translate(key, params = {}) {
+  return t(currentLanguage, key, params);
+}
+
+function applyStaticLanguage() {
+  const meta = languageMeta(currentLanguage);
+  document.documentElement.lang = meta.code;
+  document.documentElement.dir = meta.dir;
+  if (metaDescription) metaDescription.content = translate("metaDescription");
+  document.querySelectorAll("[data-docs-ui]").forEach((node) => {
+    node.textContent = translate(node.dataset.docsUi);
+  });
+  if (languageLabel) languageLabel.textContent = translate("language");
+  if (languageSelect) {
+    languageSelect.setAttribute("aria-label", translate("language"));
+    languageSelect.value = currentLanguage;
+  }
+  if (searchEl) searchEl.placeholder = translate("searchPlaceholder");
+  if (tocTitle) tocTitle.textContent = translate("onThisPage");
+  document.querySelector("#copy-install").textContent = translate("copy");
+}
 
 function currentId() {
   return window.location.hash.replace(/^#\/?/, "").split("/")[0] || "overview";
@@ -73,16 +116,20 @@ function renderTree(filter = "") {
     .map((group) => {
       const items = group.items
         .map(([id, title, file, keywords = ""]) => ({ id, title, file, keywords }))
-        .filter((item) => !needle || `${item.title} ${item.file} ${item.keywords} ${group.group}`.toLowerCase().includes(needle));
+        .filter(
+          (item) =>
+            !needle ||
+            `${pageTitle(item)} ${item.title} ${item.file} ${item.keywords} ${groupLabel(group)}`.toLowerCase().includes(needle)
+        );
       if (!items.length) return "";
       return `
         <section class="tree-group">
-          <div class="tree-label">${escapeHtml(group.group)}</div>
+          <div class="tree-label">${escapeHtml(groupLabel(group))}</div>
           ${items
             .map(
               (item) => `
                 <a class="tree-link ${item.id === active ? "active" : ""}" href="#/${item.id}">
-                  <span>${escapeHtml(item.title)}</span>
+                  <span>${escapeHtml(pageTitle(item))}</span>
                   <code>${escapeHtml(item.file)}</code>
                 </a>
               `
@@ -94,27 +141,34 @@ function renderTree(filter = "") {
     .join("");
 
   if (!treeEl.innerHTML.trim()) {
-    treeEl.innerHTML = `<div class="empty-state">No matching docs pages.</div>`;
+    treeEl.innerHTML = `<div class="empty-state">${escapeHtml(translate("noMatches"))}</div>`;
   }
+}
+
+async function loadMarkdown(page) {
+  const localized = currentLanguage === "en" ? "" : docsContent[currentLanguage]?.[page.id];
+  if (localized) return localized;
+  const response = await fetch(page.file, { cache: "no-store" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.text();
 }
 
 async function loadPage() {
   const page = pageById(currentId());
+  const title = pageTitle(page);
   renderTree(searchEl.value || "");
-  titleEl.textContent = page.title;
-  descriptionEl.textContent = `${page.group} / ${page.file}`;
-  contentEl.innerHTML = `<div class="empty-state">Loading ${escapeHtml(page.title)}...</div>`;
+  titleEl.textContent = title;
+  descriptionEl.textContent = translate("description", { group: groupLabel(page), file: page.file });
+  contentEl.innerHTML = `<div class="empty-state">${escapeHtml(translate("loading", { title }))}</div>`;
 
   try {
-    const response = await fetch(page.file, { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const markdown = await response.text();
+    const markdown = await loadMarkdown(page);
     const html = renderMarkdown(markdown);
     contentEl.innerHTML = html;
     enhanceHeadings();
     renderToc(page);
     renderPager(page);
-    document.title = `${page.title} | AgInTiFlow Docs`;
+    document.title = `${title} | ${translate("titleSuffix")}`;
     const anchor = currentAnchor();
     if (anchor) {
       requestAnimationFrame(() => document.getElementById(anchor)?.scrollIntoView({ behavior: "smooth", block: "start" }));
@@ -122,7 +176,7 @@ async function loadPage() {
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
   } catch (error) {
-    contentEl.innerHTML = `<div class="empty-state">Could not load ${escapeHtml(page.file)}: ${escapeHtml(error.message)}</div>`;
+    contentEl.innerHTML = `<div class="empty-state">${escapeHtml(translate("loadError", { file: page.file, error: error.message }))}</div>`;
     tocEl.innerHTML = "";
   }
 }
@@ -132,9 +186,9 @@ function renderPager(page) {
   const previous = flatPages[index - 1];
   const next = flatPages[index + 1];
   previousEl.href = previous ? `#/${previous.id}` : "#";
-  previousEl.innerHTML = previous ? `<span>Previous</span><br />${escapeHtml(previous.title)}` : "";
+  previousEl.innerHTML = previous ? `<span>${escapeHtml(translate("previous"))}</span><br />${escapeHtml(pageTitle(previous))}` : "";
   nextEl.href = next ? `#/${next.id}` : "#";
-  nextEl.innerHTML = next ? `<span>Next</span><br />${escapeHtml(next.title)}` : "";
+  nextEl.innerHTML = next ? `<span>${escapeHtml(translate("next"))}</span><br />${escapeHtml(pageTitle(next))}` : "";
 }
 
 function renderToc(page) {
@@ -161,12 +215,12 @@ function enhanceHeadings() {
       button.className = "anchor-copy";
       button.type = "button";
       button.textContent = "#";
-      button.title = "Copy section link";
+      button.title = translate("copySection");
       button.addEventListener("click", async () => {
         const page = pageById(currentId());
         const url = `${window.location.origin}${window.location.pathname}#/${page.id}/${id}`;
         await navigator.clipboard?.writeText(url).catch(() => {});
-        button.textContent = "copied";
+        button.textContent = translate("copiedSection");
         setTimeout(() => {
           button.textContent = "#";
         }, 900);
@@ -304,7 +358,7 @@ function slugify(value = "") {
   return String(value)
     .toLowerCase()
     .replace(/<[^>]+>/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/[^\p{Letter}\p{Number}]+/gu, "-")
     .replace(/^-|-$/g, "");
 }
 
@@ -312,11 +366,24 @@ function escapeHtml(value = "") {
   return String(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
 }
 
+languageSelect.innerHTML = languages.map((language) => `<option value="${escapeHtml(language.code)}">${escapeHtml(language.label)}</option>`).join("");
+applyStaticLanguage();
+
 searchEl.addEventListener("input", () => renderTree(searchEl.value));
+languageSelect.addEventListener("change", () => {
+  currentLanguage = normalizeLanguage(languageSelect.value);
+  window.localStorage.setItem(languageStorageKey, currentLanguage);
+  applyStaticLanguage();
+  loadPage();
+});
 window.addEventListener("hashchange", loadPage);
 document.querySelector("#copy-install").addEventListener("click", async () => {
   const command = document.querySelector("#install-command").textContent;
   await navigator.clipboard?.writeText(command).catch(() => {});
+  document.querySelector("#copy-install").textContent = translate("copied");
+  setTimeout(() => {
+    document.querySelector("#copy-install").textContent = translate("copy");
+  }, 900);
 });
 
 renderTree();

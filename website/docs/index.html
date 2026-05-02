@@ -17,22 +17,28 @@
         <img src="../assets/brand/logo.png" alt="" />
         <span>AgInTiFlow</span>
       </a>
-      <nav class="docs-nav" aria-label="Documentation navigation">
-        <a href="./#/overview">Docs</a>
-        <a href="../">Landing</a>
-        <a href="https://github.com/lazyingart/AgInTiFlow">GitHub</a>
-        <a href="https://www.npmjs.com/package/@lazyingart/agintiflow">npm</a>
-      </nav>
+      <div class="docs-actions">
+        <nav class="docs-nav" aria-label="Documentation navigation">
+          <a href="./#/overview" data-docs-ui="navDocs">Docs</a>
+          <a href="../" data-docs-ui="navLanding">Landing</a>
+          <a href="https://github.com/lazyingart/AgInTiFlow">GitHub</a>
+          <a href="https://www.npmjs.com/package/@lazyingart/agintiflow">npm</a>
+        </nav>
+        <label class="docs-language-switcher">
+          <span id="language-label">Language</span>
+          <select id="language-select" aria-label="Language"></select>
+        </label>
+      </div>
     </header>
 
     <div class="docs-shell">
       <aside class="docs-sidebar" aria-label="Documentation file explorer">
         <div class="sidebar-header">
-          <span class="eyebrow">Documentation</span>
-          <strong>File Explorer</strong>
+          <span class="eyebrow" data-docs-ui="sidebarEyebrow">Documentation</span>
+          <strong data-docs-ui="fileExplorer">File Explorer</strong>
         </div>
         <label class="search-box">
-          <span>Search docs</span>
+          <span data-docs-ui="searchDocs">Search docs</span>
           <input id="docs-search" type="search" placeholder="Search pages..." autocomplete="off" />
         </label>
         <nav id="docs-tree" class="docs-tree" aria-label="Documentation pages"></nav>
@@ -41,7 +47,7 @@
       <main class="docs-main">
         <section class="docs-hero">
           <div>
-            <p class="eyebrow">AgInTiFlow Docs</p>
+            <p class="eyebrow" data-docs-ui="heroEyebrow">AgInTiFlow Docs</p>
             <h1 id="page-title">Loading...</h1>
             <p id="page-description">Preparing documentation.</p>
           </div>
@@ -61,7 +67,7 @@
       </main>
 
       <aside class="docs-toc" aria-label="On this page">
-        <strong>On This Page</strong>
+        <strong id="toc-title">On This Page</strong>
         <nav id="page-toc"></nav>
       </aside>
     </div>

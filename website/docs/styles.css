@@ -55,6 +55,14 @@ pre {
   backdrop-filter: blur(18px);
 }
 
+.docs-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-left: auto;
+}
+
 .docs-brand {
   display: inline-flex;
   align-items: center;
@@ -89,6 +97,36 @@ pre {
 .docs-nav a:hover {
   color: var(--ink);
   background: rgba(0, 194, 255, 0.13);
+}
+
+.docs-language-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px 7px 12px;
+  border: 1px solid rgba(0, 194, 255, 0.22);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.86);
+  font-size: 0.82rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.docs-language-switcher select {
+  min-width: 148px;
+  border: 0;
+  border-radius: 999px;
+  padding: 8px 28px 8px 10px;
+  color: var(--ink);
+  background: rgba(0, 194, 255, 0.1);
+  font: inherit;
+  outline: none;
+}
+
+.docs-language-switcher:focus-within {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 4px rgba(0, 194, 255, 0.12);
 }
 
 .docs-shell {
@@ -375,7 +413,7 @@ pre {
 .docs-content td {
   padding: 12px;
   border-bottom: 1px solid var(--line);
-  text-align: left;
+  text-align: start;
   vertical-align: top;
 }
 
@@ -451,6 +489,34 @@ h3:hover .anchor-copy {
   background: rgba(255, 255, 255, 0.72);
 }
 
+html[dir="rtl"] .docs-actions {
+  margin-right: auto;
+  margin-left: 0;
+}
+
+html[dir="rtl"] .docs-toc a {
+  padding-right: 12px;
+  padding-left: 0;
+  border-right: 2px solid var(--line);
+  border-left: 0;
+}
+
+html[dir="rtl"] .docs-toc a:hover {
+  border-right-color: var(--cyan);
+}
+
+html[dir="rtl"] .docs-content ul,
+html[dir="rtl"] .docs-content ol {
+  padding-right: 1.4rem;
+  padding-left: 0;
+}
+
+html[dir="rtl"] .docs-content blockquote {
+  border-right: 4px solid var(--cyan);
+  border-left: 0;
+  border-radius: 16px 0 0 16px;
+}
+
 @media (max-width: 1180px) {
   .docs-shell {
     grid-template-columns: 280px minmax(0, 1fr);
@@ -466,6 +532,14 @@ h3:hover .anchor-copy {
     position: static;
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .docs-actions {
+    width: 100%;
+    align-items: flex-start;
+    justify-content: flex-start;
+    flex-direction: column-reverse;
+    margin-left: 0;
   }
 
   .docs-nav {

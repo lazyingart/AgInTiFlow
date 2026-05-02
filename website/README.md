@@ -52,9 +52,12 @@ Docs app files:
 - `docs/index.html`: documentation shell.
 - `docs/styles.css`: docs-specific layout, sidebar, table of contents, and Markdown styles.
 - `docs/app.js`: file explorer, search, Markdown rendering, table of contents, and pager behavior.
+- `docs/i18n.js`: docs language packs, translated navigation, translated page content, and RTL metadata.
 - `docs/docs/*.md`: website-facing documentation pages.
 
 Keep these pages concise enough for the website, but detailed enough to be useful without leaving `flow.lazying.art`.
+
+The docs app supports the same 11 languages as the landing page: English, العربية, Deutsch, Español, Français, 日本語, 한국어, Русский, Tiếng Việt, 简体中文, and 繁體中文. The dropdown in the top-right header persists the selected language in `localStorage`; English Markdown remains the source fallback, while translated docs content is maintained in `docs/i18n.js`.
 
 ## Landing Documentation Section
 
