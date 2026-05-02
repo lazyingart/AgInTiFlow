@@ -102,12 +102,26 @@ function scoreSkill(skill, text, taskProfile) {
   if (skill.triggers.includes(taskProfile)) score += 6;
   for (const trigger of skill.triggers) {
     const needle = trigger.toLowerCase();
-    if (needle && text.includes(needle)) score += Math.max(2, Math.min(6, Math.ceil(needle.length / 6)));
+    if (needle && textHasTrigger(text, needle)) score += Math.max(2, Math.min(6, Math.ceil(needle.length / 6)));
   }
   for (const token of skill.description.toLowerCase().split(/[^a-z0-9+#.-]+/).filter((item) => item.length > 3)) {
-    if (text.includes(token)) score += 0.25;
+    if (textHasTrigger(text, token)) score += 0.25;
   }
   return score;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function textHasTrigger(text, needle) {
+  if (!needle) return false;
+  if (/^[a-z0-9]+(?:[\s_-]+[a-z0-9]+)*$/.test(needle)) {
+    const parts = needle.split(/[\s_-]+/).filter(Boolean).map(escapeRegExp);
+    if (parts.length === 0) return false;
+    return new RegExp(`(^|[^a-z0-9])${parts.join("[^a-z0-9]+")}([^a-z0-9]|$)`).test(text);
+  }
+  return text.includes(needle);
 }
 
 export function selectSkillsForGoal(goal = "", { taskProfile = "auto", limit = 6, includeBody = true } = {}) {

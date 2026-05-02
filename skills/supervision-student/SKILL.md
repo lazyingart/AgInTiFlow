@@ -3,6 +3,7 @@ id: supervision-student
 label: Supervision Student Loop
 description: Supervise another AgInTiFlow/student agent through tmux or session logs, verify its work independently, and convert failures into durable capability improvements.
 triggers:
+  - supervision
   - supervise
   - supervisor
   - student agent

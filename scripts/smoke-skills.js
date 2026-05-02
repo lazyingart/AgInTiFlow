@@ -44,6 +44,8 @@ assert(selectedIds("create an .aaps example for @lazyingart/aaps").includes("aap
 assert(selectedIds("debug a C++ CMake build").includes("c-cpp"), "C++ prompt did not select c-cpp");
 assert(selectedIds("set up Stan and CmdStanR reproducibly").includes("r-stan"), "Stan prompt did not select r-stan");
 assert(selectedIds("supervise a student agent in tmux and verify its artifacts", "supervision").includes("supervision-student"), "supervision prompt did not select supervision-student");
+assert(selectedIds("supervision").includes("supervision-student"), "single-word supervision prompt did not select supervision-student");
+assert(!selectedIds("supervision").includes("r-stan"), "single-word supervision prompt incorrectly selected r-stan");
 
 const prompt = formatSkillsForPrompt(selectSkillsForGoal("write latex manuscript with figures", { taskProfile: "latex", limit: 3 }));
 assert(prompt.includes("A skill is Markdown guidance"), "skill prompt does not explain skill semantics");
@@ -60,6 +62,18 @@ const cli = await execFileAsync(process.execPath, [path.join(repoRoot, "bin/agin
   },
 });
 assert(cli.stdout.includes("website-app"), "aginti skills website did not print website-app");
+
+const supervisionCli = await execFileAsync(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), "skills", "supervision"], {
+  cwd: repoRoot,
+  timeout: 10000,
+  maxBuffer: 512 * 1024,
+  env: {
+    ...process.env,
+    AGINTIFLOW_RUNTIME_DIR: "",
+  },
+});
+assert(supervisionCli.stdout.includes("supervision-student"), "aginti skills supervision did not print supervision-student");
+assert(!supervisionCli.stdout.includes("r-stan:"), "aginti skills supervision incorrectly printed r-stan");
 
 console.log(
   JSON.stringify(
