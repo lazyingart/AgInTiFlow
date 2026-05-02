@@ -832,24 +832,58 @@ function cursorLocation(layout, cursor) {
 
 function clearRenderedPrompt(previous) {
   if (!previous.lineCount) return;
+  let sequence = ansi.cursorHide;
   const below = previous.lineCount - 1 - previous.cursorRow;
-  if (below > 0) output.write(`\x1b[${below}B`);
-  output.write(`\r${ansi.clearLine}`);
+  if (below > 0) sequence += `\x1b[${below}B`;
+  sequence += `\r${ansi.clearLine}`;
   for (let index = 1; index < previous.lineCount; index += 1) {
-    output.write(`\x1b[1A\r${ansi.clearLine}`);
+    sequence += `\x1b[1A\r${ansi.clearLine}`;
   }
+  sequence += ansi.cursorShow;
+  output.write(sequence);
+}
+
+function renderedRowsEqual(left = [], right = []) {
+  if (left.length !== right.length) return false;
+  return left.every((line, index) => line === right[index]);
+}
+
+export function buildPromptRenderSequence(layout, previous = { lineCount: 0, cursorRow: 0, renderedRows: [] }) {
+  const previousRows = Array.isArray(previous.renderedRows) ? previous.renderedRows : [];
+  const previousLineCount = Number(previous.lineCount) || 0;
+  const previousCursorRow = Number(previous.cursorRow) || 0;
+  const nextRows = layout.renderedRows || [];
+
+  if (previousLineCount > 0 && renderedRowsEqual(previousRows, nextRows)) {
+    const rowDelta = layout.cursorRow - previousCursorRow;
+    return `${rowDelta > 0 ? `\x1b[${rowDelta}B` : rowDelta < 0 ? `\x1b[${Math.abs(rowDelta)}A` : ""}\r\x1b[${
+      layout.cursorColumn + 1
+    }G`;
+  }
+
+  let sequence = ansi.cursorHide;
+  if (previousLineCount > 0) {
+    const below = Math.max(previousLineCount - 1 - previousCursorRow, 0);
+    if (below > 0) sequence += `\x1b[${below}B`;
+    sequence += "\r";
+    if (previousLineCount > 1) sequence += `\x1b[${previousLineCount - 1}A`;
+  }
+
+  const lineCount = Math.max(previousLineCount, nextRows.length);
+  for (let index = 0; index < lineCount; index += 1) {
+    sequence += `\r${ansi.clearLine}${nextRows[index] || ""}`;
+    if (index < lineCount - 1) sequence += "\n";
+  }
+
+  const cursorUp = Math.max(lineCount - 1 - layout.cursorRow, 0);
+  if (cursorUp > 0) sequence += `\x1b[${cursorUp}A`;
+  sequence += `\r\x1b[${layout.cursorColumn + 1}G${ansi.cursorShow}`;
+  return sequence;
 }
 
 function renderPromptBuffer(buffer, cursor, previous = { lineCount: 0, cursorRow: 0, renderedRows: [] }, options = {}) {
   const layout = buildPromptLayout(buffer, cursor, terminalWidth(), terminalHeight(), options);
-  output.write(ansi.cursorHide);
-  clearRenderedPrompt(previous);
-  output.write(layout.renderedRows.join("\n"));
-
-  const below = layout.renderedRows.length - 1 - layout.cursorRow;
-  if (below > 0) output.write(`\x1b[${below}A`);
-  output.write(`\r\x1b[${layout.cursorColumn + 1}G`);
-  output.write(ansi.cursorShow);
+  output.write(buildPromptRenderSequence(layout, previous));
   return {
     lineCount: layout.renderedRows.length,
     cursorRow: layout.cursorRow,

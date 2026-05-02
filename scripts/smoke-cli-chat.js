@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   buildLaunchHeaderLines,
   buildPromptLayout,
+  buildPromptRenderSequence,
   canonicalSlashPromptBuffer,
   classifyEscapeAction,
   formatWorkspaceChange,
@@ -130,6 +131,16 @@ try {
   }
   if (promptLayout.cursorRow < 0 || promptLayout.cursorColumn < 0) {
     throw new Error("terminal prompt layout returned an invalid cursor location");
+  }
+  const promptCursorMoveBefore = buildPromptLayout("smooth typing", 13, 90, 24, { commandCwd: "/tmp/aginti-project" });
+  const promptCursorMoveAfter = buildPromptLayout("smooth typing", 4, 90, 24, { commandCwd: "/tmp/aginti-project" });
+  const cursorOnlySequence = buildPromptRenderSequence(promptCursorMoveAfter, {
+    lineCount: promptCursorMoveBefore.renderedRows.length,
+    cursorRow: promptCursorMoveBefore.cursorRow,
+    renderedRows: promptCursorMoveBefore.renderedRows,
+  });
+  if (cursorOnlySequence.includes("\x1b[2K") || cursorOnlySequence.includes("\x1b[?25l")) {
+    throw new Error("cursor-only prompt moves should not clear/redraw the input panel");
   }
   const paddedPromptLayout = buildPromptLayout("hello", 5, 80, 24, { commandCwd: "/tmp/aginti-project" });
   const paddedRows = paddedPromptLayout.renderedRows.map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""));
@@ -271,6 +282,7 @@ try {
           "workspace-patch-event-render",
           "large-launch-header",
           "prompt-layout",
+          "prompt-redraw-fast-path",
           "user-prompt-label",
           "escape-policy",
           "live-input-status-layout",
