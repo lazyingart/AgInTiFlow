@@ -33,6 +33,15 @@ const ansi = {
   systemBg: "\x1b[48;5;236m\x1b[38;5;245m",
 };
 const brandPalette = ["\x1b[38;5;45m", "\x1b[38;5;81m", "\x1b[38;5;86m", "\x1b[38;5;118m", "\x1b[38;5;226m"];
+const LARGE_LAUNCH_TITLE = [
+  " █████╗  ██████╗ ██╗███╗   ██╗████████╗██╗    ███████╗██╗      ██████╗ ██╗    ██╗",
+  "██╔══██╗██╔════╝ ██║████╗  ██║╚══██╔══╝██║    ██╔════╝██║     ██╔═══██╗██║    ██║",
+  "███████║██║  ███╗██║██╔██╗ ██║   ██║   ██║    █████╗  ██║     ██║   ██║██║ █╗ ██║",
+  "██╔══██║██║   ██║██║██║╚██╗██║   ██║   ██║    ██╔══╝  ██║     ██║   ██║██║███╗██║",
+  "██║  ██║╚██████╔╝██║██║ ╚████║   ██║   ██║    ██║     ███████╗╚██████╔╝╚███╔███╔╝",
+  "╚═╝  ╚═╝ ╚═════╝ ╚═╝╚═╝  ╚═══╝   ╚═╝   ╚═╝    ╚═╝     ╚══════╝ ╚═════╝  ╚══╝╚══╝ ",
+];
+const COMPACT_LAUNCH_TITLE = ["AgInTi Flow"];
 const SLASH_COMMANDS = [
   "/help",
   "/status",
@@ -483,37 +492,62 @@ function shimmerText(text, frame) {
     .join("");
 }
 
-async function renderLaunchHeader(packageVersion = "") {
-  const title = "AgInTi Flow";
-  const subtitle = "web-first agent workspace";
-  const version = packageVersion ? `v${packageVersion}` : "";
-  const width = Math.min(Math.max(terminalWidth() - 2, 58), 82);
-  const top = `╭${"─".repeat(width)}╮`;
-  const mid = `├${"─".repeat(width)}┤`;
-  const bottom = `╰${"─".repeat(width)}╯`;
+function centerLine(value, width) {
+  const text = String(value || "");
+  return `${" ".repeat(Math.max(Math.floor((width - visualLength(text)) / 2), 0))}${text}`;
+}
 
+function launchTitleLines(contentWidth) {
+  const largeWidth = Math.max(...LARGE_LAUNCH_TITLE.map((line) => visualLength(line)));
+  return largeWidth <= contentWidth ? LARGE_LAUNCH_TITLE : COMPACT_LAUNCH_TITLE;
+}
+
+export function buildLaunchHeaderLines({ packageVersion = "", frame = 2, width = terminalWidth(), animated = true } = {}) {
+  const subtitle = "web-first agent workspace";
+  const tagline = "browser + shell + files + docker + web search + scouts";
+  const version = packageVersion ? `v${packageVersion}` : "";
+  const terminalColumns = Math.max(Number(width) || 80, 50);
+  const contentWidth = Math.min(Math.max(terminalColumns - 8, 58), 112);
+  const titleLines = launchTitleLines(contentWidth).map((line, index) => centerLine(animated ? shimmerText(line, frame + index) : line, contentWidth));
+  const borderWidth = contentWidth + 2;
+  const border = "\x1b[38;5;45m";
+  const top = color(`╭${"─".repeat(borderWidth)}╮`, border);
+  const mid = color(`├${"─".repeat(borderWidth)}┤`, border);
+  const bottom = color(`╰${"─".repeat(borderWidth)}╯`, border);
+  const row = (content = "", code = "") => `${color("│", border)} ${code ? color(padVisible(content, contentWidth), code) : padVisible(content, contentWidth)} ${color("│", border)}`;
+  const versionLine = version ? centerLine(color(version, ansi.dim), contentWidth) : "";
+  const boxLines = [
+    top,
+    ...titleLines.map((line) => row(line)),
+    versionLine ? row(versionLine) : "",
+    row(centerLine(subtitle, contentWidth), ansi.dim),
+    mid,
+    row(centerLine(tagline, contentWidth), ansi.cyan),
+    bottom,
+  ].filter(Boolean);
+  const indent = " ".repeat(Math.max(Math.floor((terminalColumns - Math.max(...boxLines.map((line) => visualLength(line)))) / 2), 0));
+  return boxLines.map((line) => `${indent}${line}`);
+}
+
+async function renderLaunchHeader(packageVersion = "") {
   if (!useColor || process.env.AGINTIFLOW_NO_ANIMATION === "1") {
-    console.log(` AgInTiFlow ${packageVersion || ""}`.trim());
+    console.log(buildLaunchHeaderLines({ packageVersion, animated: false }).join("\n"));
     return;
   }
 
+  const topPadding = Math.min(Math.max(Math.floor((terminalHeight() - 28) / 8), 0), 2);
+  const paddingLines = Array.from({ length: topPadding }, () => "");
+  let previousLineCount = 0;
   output.write(ansi.cursorHide);
   for (let frame = 0; frame < 18; frame += 1) {
-    output.write(`\r${ansi.clearLine}${shimmerText(title, frame)} ${color("is starting", ansi.dim)}`);
+    const lines = [...paddingLines, ...buildLaunchHeaderLines({ packageVersion, frame, animated: true })];
+    if (previousLineCount > 0) output.write(`\x1b[${previousLineCount}A`);
+    output.write(lines.map((line) => `\r${ansi.clearLine}${line}`).join("\n"));
+    output.write("\n");
+    previousLineCount = lines.length;
     await sleep(32);
   }
-  output.write(`\r${ansi.clearLine}`);
   output.write(ansi.cursorShow);
-
-  const border = "\x1b[38;5;45m";
-  const titleLine = `${shimmerText(title, 2)} ${color(version, ansi.dim)}`;
-  const tagline = "browser + shell + files + docker + web search + scouts";
-  console.log(color(top, border));
-  console.log(`${color("│", border)} ${padVisible(titleLine, width - 2)} ${color("│", border)}`);
-  console.log(`${color("│", border)} ${color(padVisible(subtitle, width - 2), ansi.dim)} ${color("│", border)}`);
-  console.log(color(mid, border));
-  console.log(`${color("│", border)} ${color(padVisible(tagline, width - 2), ansi.cyan)} ${color("│", border)}`);
-  console.log(color(bottom, border));
 }
 
 function printHelp() {

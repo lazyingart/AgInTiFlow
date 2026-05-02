@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildPromptLayout, classifyEscapeAction, formatWorkspaceChange, stripMarkdown } from "../src/interactive-cli.js";
+import { buildLaunchHeaderLines, buildPromptLayout, classifyEscapeAction, formatWorkspaceChange, stripMarkdown } from "../src/interactive-cli.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-cli-chat-"));
@@ -99,6 +99,10 @@ try {
     !renderedPatchEvent.lines.join("\n").includes("+new line")
   ) {
     throw new Error("workspace patch event formatter did not preserve red/green diff content");
+  }
+  const launchHeader = buildLaunchHeaderLines({ width: 120, packageVersion: "0.0.0", animated: false }).join("\n");
+  if (!launchHeader.includes("█████") || !launchHeader.includes("v0.0.0") || launchHeader.split("\n").length < 9) {
+    throw new Error("large launch header did not render a centered multi-line title");
   }
 
   const promptLayout = buildPromptLayout(`${"x".repeat(180)}\nsecond line`, 95, 80, 24);
@@ -205,6 +209,7 @@ try {
           "markdown-table-no-duplicate",
           "patch-diff-render",
           "workspace-patch-event-render",
+          "large-launch-header",
           "prompt-layout",
           "user-prompt-label",
           "escape-policy",
