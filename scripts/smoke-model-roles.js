@@ -47,6 +47,43 @@ function runCli(args) {
   });
 }
 
+function runInteractive(input) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), "chat"], {
+      cwd: repoRoot,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY || "test-deepseek-key-not-real",
+        VENICE_API_KEY: process.env.VENICE_API_KEY || "test-venice-key-not-real",
+        AGINTIFLOW_NO_COLOR: "1",
+      },
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error("model role interactive smoke timed out"));
+    }, 12000);
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(stdout);
+      else reject(new Error(`model role interactive smoke failed ${code}\n${stdout}\n${stderr}`));
+    });
+    child.stdin.end(input);
+  });
+}
+
 const roles = getModelRoleDefaults();
 assert(roles.route.provider === "deepseek", "route provider default should be deepseek");
 assert(roles.route.model === "deepseek-v4-flash", "route model default should be deepseek-v4-flash");
@@ -76,11 +113,15 @@ assert(AUXILIARY_MODEL_CATALOG["venice-image"].some((item) => item.id === "gpt-i
 const output = await runCli(["models"]);
 assert(output.includes("/route") && output.includes("/spare") && output.includes("venice-gpt"), "aginti models output missing role details");
 
+const interactiveOutput = await runInteractive("/venice\n/status\n/exit\n");
+assert(interactiveOutput.includes("route=venice/venice-uncensored-1-2"), "/venice did not set Venice route role");
+assert(interactiveOutput.includes("main=venice/venice-uncensored-1-2"), "/venice did not set Venice main role");
+
 console.log(
   JSON.stringify(
     {
       ok: true,
-      checks: ["role-defaults", "route-overrides", "provider-groups", "auxiliary-catalog", "cli-models-command"],
+      checks: ["role-defaults", "route-overrides", "provider-groups", "auxiliary-catalog", "cli-models-command", "venice-shortcut"],
     },
     null,
     2

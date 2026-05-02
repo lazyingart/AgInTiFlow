@@ -42,12 +42,15 @@ Interactive equivalents:
 
 ```text
 /models
+/venice
 /route deepseek/deepseek-v4-flash
 /model deepseek/deepseek-v4-pro
 /spare openai/gpt-5.4 medium
 /wrapper codex gpt-5.5 medium
 /auxilliary model grsai/nano-banana-2
 ```
+
+`/venice` keeps smart routing enabled and points both route and main roles at `venice/venice-uncensored-1-2`.
 
 ## OpenAI Model Reference
 

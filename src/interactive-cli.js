@@ -67,6 +67,7 @@ const SLASH_COMMANDS = [
   "/web-search",
   "/scouts",
   "/models",
+  "/venice",
   "/route",
   "/main",
   "/spare",
@@ -573,6 +574,7 @@ function printHelp() {
       "  /instructions             Show AGINTI.md project instructions status.",
       "  /memory                   Alias for /instructions.",
       "  /models                   Show route/main/spare/wrapper/auxiliary model roles.",
+      "  /venice                   Shortcut: use Venice Uncensored 1.2 for route and main roles.",
       "  /route <mode|provider/model>",
       "                            Set routing mode or fast route model, e.g. /route deepseek/deepseek-v4-flash.",
       "  /model <provider/model>   Set the active/main model, e.g. /model deepseek/deepseek-v4-pro.",
@@ -1823,6 +1825,21 @@ async function handleCommand(line, state, packageDir) {
   }
   if (command === "models") {
     printModelRoles(state);
+    return true;
+  }
+  if (command === "venice") {
+    state.routingMode = "smart";
+    state.provider = "deepseek";
+    state.model = "";
+    state.routeProvider = "venice";
+    state.routeModel = "venice-uncensored-1-2";
+    state.mainProvider = "venice";
+    state.mainModel = "venice-uncensored-1-2";
+    const keys = providerKeyStatus(process.cwd());
+    printSystemLine("routing=smart route=venice/venice-uncensored-1-2 main=venice/venice-uncensored-1-2");
+    if (!keys.venice) {
+      printAgentMessage("Venice model roles are selected, but no Venice key is configured. Run `/auth venice` to save one.");
+    }
     return true;
   }
   if (command === "route") {

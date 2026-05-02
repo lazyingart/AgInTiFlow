@@ -33,12 +33,22 @@ Interactive commands:
 
 ```text
 /models
+/venice
 /route deepseek/deepseek-v4-flash
 /model deepseek/deepseek-v4-pro
 /spare openai/gpt-5.4 medium
 /wrapper codex gpt-5.5 medium
 /auxilliary model grsai/nano-banana-2
 ```
+
+`/venice` is a shortcut for:
+
+```text
+/route venice/venice-uncensored-1-2
+/main venice/venice-uncensored-1-2
+```
+
+It keeps smart routing enabled, so normal and complex tasks still use the same route/main policy, but both roles resolve to Venice Uncensored 1.2. If the Venice key is missing, run `/auth venice`.
 
 ## Provider Buckets
 
@@ -67,4 +77,3 @@ printf '%s' "$VENICE_API_KEY" | aginti keys set venice --stdin
 ```
 
 The web UI mirrors the same roles in its **Model roles** panel. Use the top provider/model fields for manual runs; use the role fields to change how smart routing chooses route, main, spare, wrapper, and auxiliary models.
-
