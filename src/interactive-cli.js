@@ -910,10 +910,30 @@ function renderPromptBuffer(buffer, cursor, previous = { lineCount: 0, cursorRow
   };
 }
 
-function moveToPromptBottom(rendered) {
-  const below = Math.max((rendered?.lineCount || 1) - 1 - (rendered?.cursorRow || 0), 0);
-  if (below > 0) output.write(`\x1b[${below}B`);
-  output.write("\r");
+export function formatCommittedUserPromptLines(text = "", width = terminalWidth()) {
+  const safeText = String(text || "");
+  const lineWidth = editorWidth(width);
+  const firstPrefix = labelText("user>", { prompt: true });
+  const nextPrefix = labelText("...", { prompt: true });
+  const rows = [];
+  const sourceLines = safeText.split(/\r?\n/);
+
+  for (const [lineIndex, sourceLine] of sourceLines.entries()) {
+    const prefix = lineIndex === 0 ? firstPrefix : nextPrefix;
+    const innerWidth = Math.max(lineWidth - prefix.length, 8);
+    const wrapped = wrapTextLine(sourceLine, innerWidth);
+    const chunks = wrapped.length > 0 ? wrapped : [""];
+    for (const [chunkIndex, chunk] of chunks.entries()) {
+      const rowPrefix = lineIndex === 0 && chunkIndex === 0 ? firstPrefix : nextPrefix;
+      rows.push(panelLine(`${rowPrefix}${chunk}`, ansi.userBg, lineWidth));
+    }
+  }
+
+  return rows.length > 0 ? rows : [panelLine(firstPrefix, ansi.userBg, lineWidth)];
+}
+
+function printCommittedUserInput(text = "") {
+  for (const line of formatCommittedUserPromptLines(text)) outputLine(line);
 }
 
 function lineBounds(buffer, cursor) {
@@ -973,6 +993,12 @@ function readTtyPrompt(options = {}) {
     let suggestionAnchor = "";
     let suggestionIndex = 0;
 
+    const clearPromptPanel = () => {
+      if (!rendered.lineCount) return;
+      clearRenderedPrompt(rendered);
+      rendered = { lineCount: 0, cursorRow: 0, renderedRows: [] };
+    };
+
     const cleanup = () => {
       if (redrawHandle) {
         clearImmediate(redrawHandle);
@@ -1012,10 +1038,9 @@ function readTtyPrompt(options = {}) {
         buffer = canonical;
         cursor = buffer.length;
       }
-      renderNow();
-      moveToPromptBottom(rendered);
+      clearPromptPanel();
       cleanup();
-      output.write("\n");
+      printCommittedUserInput(buffer);
       const saved = buffer.trim();
       if (saved && promptHistory[promptHistory.length - 1] !== buffer) promptHistory.push(buffer);
       resolve(buffer);
@@ -1078,10 +1103,8 @@ function readTtyPrompt(options = {}) {
 
     const handler = (str = "", key = {}) => {
       if (key.ctrl && key.name === "c") {
-        renderNow();
-        moveToPromptBottom(rendered);
+        clearPromptPanel();
         cleanup();
-        output.write("\n");
         reject(createAbortError());
         return;
       }

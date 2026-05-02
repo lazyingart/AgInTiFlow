@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildLaunchHeaderLines,
+  formatCommittedUserPromptLines,
   buildPromptLayout,
   buildPromptRenderSequence,
   canonicalSlashPromptBuffer,
@@ -173,6 +174,12 @@ try {
   ) {
     throw new Error("terminal prompt layout did not render visual-only input padding safely");
   }
+  const committedUserText = formatCommittedUserPromptLines("list files", 90)
+    .map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""))
+    .join("\n");
+  if (!committedUserText.includes("user>   list files") || committedUserText.includes("cwd")) {
+    throw new Error("committed user history should not include the live cwd footer");
+  }
   const zhPromptLayout = buildPromptLayout("", 0, 90, 24, { language: "zh-Hans", commandCwd: "/tmp/aginti-project" });
   const zhPromptText = zhPromptLayout.renderedRows.map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")).join("\n");
   if (!zhPromptText.includes("输入任务")) {
@@ -317,6 +324,7 @@ try {
           "large-launch-header",
           "prompt-layout",
           "prompt-redraw-fast-path",
+          "committed-user-no-cwd-footer",
           "cli-i18n",
           "user-prompt-label",
           "escape-policy",
