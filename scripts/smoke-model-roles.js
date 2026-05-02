@@ -1,0 +1,88 @@
+#!/usr/bin/env node
+import { spawn } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  AUXILIARY_MODEL_CATALOG,
+  MODEL_PROVIDER_GROUPS,
+  getModelRoleDefaults,
+  modelsForProviderGroup,
+  selectModelRoute,
+} from "../src/model-routing.js";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function runCli(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), ...args], {
+      cwd: repoRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env },
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error("model role CLI smoke timed out"));
+    }, 12000);
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(stdout);
+      else reject(new Error(`model role CLI smoke failed ${code}\n${stdout}\n${stderr}`));
+    });
+  });
+}
+
+const roles = getModelRoleDefaults();
+assert(roles.route.provider === "deepseek", "route provider default should be deepseek");
+assert(roles.route.model === "deepseek-v4-flash", "route model default should be deepseek-v4-flash");
+assert(roles.main.model === "deepseek-v4-pro", "main model default should be deepseek-v4-pro");
+assert(roles.spare.provider === "openai" && roles.spare.model === "gpt-5.4", "spare model default should be OpenAI GPT-5.4");
+assert(roles.wrapper.provider === "codex" && roles.wrapper.model === "gpt-5.5", "wrapper default should be Codex GPT-5.5");
+assert(roles.auxiliary.provider === "grsai" && roles.auxiliary.model === "nano-banana-2", "auxiliary default should be GRS AI Nano Banana");
+
+const complexRoute = selectModelRoute({
+  routingMode: "complex",
+  provider: "deepseek",
+  mainModel: "deepseek-v4-pro",
+});
+assert(complexRoute.model === "deepseek-v4-pro", "complex route did not use main model override");
+
+const fastRoute = selectModelRoute({
+  routingMode: "fast",
+  provider: "deepseek",
+  routeModel: "deepseek-v4-flash",
+});
+assert(fastRoute.model === "deepseek-v4-flash", "fast route did not use route model override");
+
+assert(MODEL_PROVIDER_GROUPS["venice-gpt"].provider === "venice", "venice-gpt group missing");
+assert(modelsForProviderGroup("venice-gemma").some((item) => item.id === "gemma-4-uncensored"), "venice-gemma bucket missing Gemma");
+assert(AUXILIARY_MODEL_CATALOG["venice-image"].some((item) => item.id === "gpt-image-2"), "Venice image catalog missing GPT Image 2");
+
+const output = await runCli(["models"]);
+assert(output.includes("/route") && output.includes("/spare") && output.includes("venice-gpt"), "aginti models output missing role details");
+
+console.log(
+  JSON.stringify(
+    {
+      ok: true,
+      checks: ["role-defaults", "route-overrides", "provider-groups", "auxiliary-catalog", "cli-models-command"],
+    },
+    null,
+    2
+  )
+);

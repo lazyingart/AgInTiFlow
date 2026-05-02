@@ -6,7 +6,15 @@ import { runAgent } from "./src/agent-runner.js";
 import { resolveRuntimeConfig } from "./src/config.js";
 import { WebDatabase } from "./src/web-db.js";
 import { SessionStore } from "./src/session-store.js";
-import { PROVIDER_MODEL_CATALOG, getModelPresets, getProviderDefaults, normalizeRoutingMode } from "./src/model-routing.js";
+import {
+  AUXILIARY_MODEL_CATALOG,
+  MODEL_PROVIDER_GROUPS,
+  PROVIDER_MODEL_CATALOG,
+  getModelPresets,
+  getModelRoleDefaults,
+  getProviderDefaults,
+  normalizeRoutingMode,
+} from "./src/model-routing.js";
 import { listAgentWrappers, normalizeWrapperName } from "./src/tool-wrappers.js";
 import { getDockerSandboxStatus, getSandboxLogs, runDockerPreflight } from "./src/docker-sandbox.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./src/command-policy.js";
@@ -113,6 +121,7 @@ function serializeRun(run) {
 
 function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
   const modelPresets = getModelPresets();
+  const modelRoles = getModelRoleDefaults();
   const providerCandidate = body.provider || current.provider || "deepseek";
   const provider = ["openai", "deepseek", "qwen", "venice", "mock"].includes(providerCandidate) ? providerCandidate : "deepseek";
   const routingMode =
@@ -132,6 +141,50 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
         : current.provider !== provider
           ? providerDefaults.model
           : current.model || modelPresets.fast.model || providerDefaults.model,
+    routeProvider:
+      typeof body.routeProvider === "string" && body.routeProvider.trim()
+        ? body.routeProvider.trim()
+        : current.routeProvider || modelRoles.route.provider,
+    routeModel:
+      typeof body.routeModel === "string" && body.routeModel.trim()
+        ? body.routeModel.trim()
+        : current.routeModel || modelRoles.route.model,
+    mainProvider:
+      typeof body.mainProvider === "string" && body.mainProvider.trim()
+        ? body.mainProvider.trim()
+        : current.mainProvider || modelRoles.main.provider,
+    mainModel:
+      typeof body.mainModel === "string" && body.mainModel.trim()
+        ? body.mainModel.trim()
+        : current.mainModel || modelRoles.main.model,
+    spareProvider:
+      typeof body.spareProvider === "string" && body.spareProvider.trim()
+        ? body.spareProvider.trim()
+        : current.spareProvider || modelRoles.spare.provider,
+    spareModel:
+      typeof body.spareModel === "string" && body.spareModel.trim()
+        ? body.spareModel.trim()
+        : current.spareModel || modelRoles.spare.model,
+    spareReasoning:
+      typeof body.spareReasoning === "string" && body.spareReasoning.trim()
+        ? body.spareReasoning.trim()
+        : current.spareReasoning || modelRoles.spare.reasoning,
+    wrapperModel:
+      typeof body.wrapperModel === "string" && body.wrapperModel.trim()
+        ? body.wrapperModel.trim()
+        : current.wrapperModel || modelRoles.wrapper.model,
+    wrapperReasoning:
+      typeof body.wrapperReasoning === "string" && body.wrapperReasoning.trim()
+        ? body.wrapperReasoning.trim()
+        : current.wrapperReasoning || modelRoles.wrapper.reasoning,
+    auxiliaryProvider:
+      typeof body.auxiliaryProvider === "string" && body.auxiliaryProvider.trim()
+        ? body.auxiliaryProvider.trim()
+        : current.auxiliaryProvider || modelRoles.auxiliary.provider,
+    auxiliaryModel:
+      typeof body.auxiliaryModel === "string" && body.auxiliaryModel.trim()
+        ? body.auxiliaryModel.trim()
+        : current.auxiliaryModel || modelRoles.auxiliary.model,
     headless: typeof body.headless === "boolean" ? body.headless : Boolean(current.headless),
     maxSteps: Number.isFinite(parsedMaxSteps) && parsedMaxSteps > 0 ? parsedMaxSteps : Number(current.maxSteps) || 24,
     startUrl: typeof body.startUrl === "string" ? body.startUrl.trim() : current.startUrl || "",
@@ -223,6 +276,17 @@ function buildRunConfig(body, overrides = {}) {
       provider: merged.provider,
       model: merged.model || getProviderDefaults(merged.provider).model,
       routingMode: merged.routingMode,
+      routeProvider: merged.routeProvider,
+      routeModel: merged.routeModel,
+      mainProvider: merged.mainProvider,
+      mainModel: merged.mainModel,
+      spareProvider: merged.spareProvider,
+      spareModel: merged.spareModel,
+      spareReasoning: merged.spareReasoning,
+      wrapperModel: merged.wrapperModel,
+      wrapperReasoning: merged.wrapperReasoning,
+      auxiliaryProvider: merged.auxiliaryProvider,
+      auxiliaryModel: merged.auxiliaryModel,
       headless: merged.headless,
       maxSteps: merged.maxSteps,
       allowedDomains: String(merged.allowedDomains || "")
@@ -586,6 +650,9 @@ app.get("/api/config", async (_req, res) => {
       maxSteps: 24,
     },
     modelCatalog: PROVIDER_MODEL_CATALOG,
+    modelGroups: MODEL_PROVIDER_GROUPS,
+    auxiliaryModelCatalog: AUXILIARY_MODEL_CATALOG,
+    modelRoles: getModelRoleDefaults(preferences),
     taskProfiles: listTaskProfiles(),
     skills: listSkills(),
     routing: {

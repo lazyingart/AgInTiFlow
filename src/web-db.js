@@ -1,17 +1,29 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { getModelPresets } from "./model-routing.js";
+import { getModelPresets, getModelRoleDefaults } from "./model-routing.js";
 
-const PREFERENCES_SCHEMA_VERSION = 6;
+const PREFERENCES_SCHEMA_VERSION = 7;
 
 function defaultPreferences(baseDir) {
   const presets = getModelPresets();
+  const roles = getModelRoleDefaults();
   return {
     preferencesSchemaVersion: PREFERENCES_SCHEMA_VERSION,
     routingMode: "smart",
     provider: "deepseek",
     model: presets.fast.model,
+    routeProvider: roles.route.provider,
+    routeModel: roles.route.model,
+    mainProvider: roles.main.provider,
+    mainModel: roles.main.model,
+    spareProvider: roles.spare.provider,
+    spareModel: roles.spare.model,
+    spareReasoning: roles.spare.reasoning,
+    wrapperModel: roles.wrapper.model,
+    wrapperReasoning: roles.wrapper.reasoning,
+    auxiliaryProvider: roles.auxiliary.provider,
+    auxiliaryModel: roles.auxiliary.model,
     headless: true,
     maxSteps: 24,
     startUrl: "",
@@ -106,6 +118,20 @@ export class WebDatabase {
           preferences.allowWebSearch = true;
           preferences.allowParallelScouts = true;
           preferences.parallelScoutCount = 3;
+        }
+        if ((parsed.preferencesSchemaVersion || 1) < 7) {
+          const roles = getModelRoleDefaults();
+          preferences.routeProvider = preferences.routeProvider || roles.route.provider;
+          preferences.routeModel = preferences.routeModel || roles.route.model;
+          preferences.mainProvider = preferences.mainProvider || roles.main.provider;
+          preferences.mainModel = preferences.mainModel || roles.main.model;
+          preferences.spareProvider = preferences.spareProvider || roles.spare.provider;
+          preferences.spareModel = preferences.spareModel || roles.spare.model;
+          preferences.spareReasoning = preferences.spareReasoning || roles.spare.reasoning;
+          preferences.wrapperModel = preferences.wrapperModel || roles.wrapper.model;
+          preferences.wrapperReasoning = preferences.wrapperReasoning || roles.wrapper.reasoning;
+          preferences.auxiliaryProvider = preferences.auxiliaryProvider || roles.auxiliary.provider;
+          preferences.auxiliaryModel = preferences.auxiliaryModel || roles.auxiliary.model;
         }
         this.savePreferences(preferences);
       }

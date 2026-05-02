@@ -651,7 +651,19 @@ const providerField = document.querySelector("#provider");
 const modelField = document.querySelector("#model");
 const modelOptionsEl = document.querySelector("#model-options");
 const modelCatalogEl = document.querySelector("#model-catalog");
+const modelRoleGridEl = document.querySelector("#model-role-grid");
 const modelRoutePillEl = document.querySelector("#model-route-pill");
+const routeProviderField = document.querySelector("#routeProvider");
+const routeModelField = document.querySelector("#routeModel");
+const mainProviderField = document.querySelector("#mainProvider");
+const mainModelField = document.querySelector("#mainModel");
+const spareProviderField = document.querySelector("#spareProvider");
+const spareModelField = document.querySelector("#spareModel");
+const spareReasoningField = document.querySelector("#spareReasoning");
+const wrapperModelField = document.querySelector("#wrapperModel");
+const wrapperReasoningField = document.querySelector("#wrapperReasoning");
+const auxiliaryProviderField = document.querySelector("#auxiliaryProvider");
+const auxiliaryModelField = document.querySelector("#auxiliaryModel");
 const routingHintEl = document.querySelector("#routing-hint");
 const modelRouteStatusEl = document.querySelector("#model-route-status");
 const projectStatusEl = document.querySelector("#project-status");
@@ -728,6 +740,9 @@ const defaults = {
 let currentLanguage = "en";
 let routingPresets = {};
 let modelCatalog = {};
+let modelRoles = {};
+let modelGroups = {};
+let auxiliaryModelCatalog = {};
 let taskProfiles = [];
 let projectInfo = null;
 let currentSessionId = "";
@@ -970,6 +985,50 @@ function providerModelOptions(provider = providerField.value) {
   return modelCatalog[provider] || [];
 }
 
+function renderModelRoles() {
+  if (!modelRoleGridEl) return;
+  const roles = {
+    route: {
+      ...(modelRoles.route || {}),
+      provider: routeProviderField?.value || modelRoles.route?.provider || "deepseek",
+      model: routeModelField?.value || modelRoles.route?.model || "deepseek-v4-flash",
+    },
+    main: {
+      ...(modelRoles.main || {}),
+      provider: mainProviderField?.value || modelRoles.main?.provider || "deepseek",
+      model: mainModelField?.value || modelRoles.main?.model || "deepseek-v4-pro",
+    },
+    spare: {
+      ...(modelRoles.spare || {}),
+      provider: spareProviderField?.value || modelRoles.spare?.provider || "openai",
+      model: spareModelField?.value || modelRoles.spare?.model || "gpt-5.4",
+      reasoning: spareReasoningField?.value || modelRoles.spare?.reasoning || "medium",
+    },
+    wrapper: {
+      ...(modelRoles.wrapper || {}),
+      provider: preferredWrapperField?.value || modelRoles.wrapper?.provider || "codex",
+      model: wrapperModelField?.value || modelRoles.wrapper?.model || "gpt-5.5",
+      reasoning: wrapperReasoningField?.value || modelRoles.wrapper?.reasoning || "medium",
+    },
+    auxiliary: {
+      ...(modelRoles.auxiliary || {}),
+      provider: auxiliaryProviderField?.value || modelRoles.auxiliary?.provider || "grsai",
+      model: auxiliaryModelField?.value || modelRoles.auxiliary?.model || "nano-banana-2",
+    },
+  };
+  modelRoleGridEl.innerHTML = Object.values(roles)
+    .map((role) => {
+      const reasoning = role.reasoning ? ` · ${role.reasoning}` : "";
+      return `
+        <div class="model-role-card">
+          <strong>${escapeHtml(role.label || role.id)}</strong>
+          <span>${escapeHtml(`${role.provider}/${role.model}${reasoning}`)}</span>
+        </div>
+      `;
+    })
+    .join("");
+}
+
 function renderModelOptions() {
   const provider = providerField.value || "deepseek";
   const options = providerModelOptions(provider);
@@ -981,11 +1040,12 @@ function renderModelOptions() {
   if (modelRoutePillEl) {
     const mode = routingModeField.value || "smart";
     const primary = modelField.value.trim() || defaults[provider] || "";
-    const secondary = provider === "deepseek" ? defaults.deepseek : routingPresets.complex?.model || "deepseek-v4-pro";
+    const routeLabel = `${routeProviderField?.value || "deepseek"}/${routeModelField?.value || "deepseek-v4-flash"}`;
+    const mainLabel = `${mainProviderField?.value || "deepseek"}/${mainModelField?.value || "deepseek-v4-pro"}`;
     modelRoutePillEl.textContent =
       mode === "manual"
         ? `${provider} · ${primary}`
-        : `smart · primary ${primary || "auto"} · secondary ${secondary || "auto"}`;
+        : `${mode} · route ${routeLabel} · main ${mainLabel}`;
   }
   if (!modelCatalogEl) return;
   if (options.length === 0) {
@@ -1002,6 +1062,7 @@ function renderModelOptions() {
       `
     )
     .join("");
+  renderModelRoles();
 }
 
 function updateRoutingHint() {
@@ -1015,7 +1076,16 @@ function updateRoutingHint() {
   routingHintEl.textContent = t(hintKey);
 
   if (mode !== "manual" && providerField.value === "deepseek") {
-    const preset = mode === "complex" ? routingPresets.complex : routingPresets.fast;
+    const preset =
+      mode === "complex"
+        ? {
+            provider: mainProviderField?.value || routingPresets.complex?.provider,
+            model: mainModelField?.value || routingPresets.complex?.model,
+          }
+        : {
+            provider: routeProviderField?.value || routingPresets.fast?.provider,
+            model: routeModelField?.value || routingPresets.fast?.model,
+          };
     if (preset) {
       providerField.value = preset.provider === "deepseek" ? "deepseek" : providerField.value;
       modelField.value = preset.model || modelField.value;
@@ -1083,6 +1153,17 @@ function formPayload() {
     routingMode: routingModeField.value,
     provider: providerField.value,
     model: modelField.value.trim(),
+    routeProvider: routeProviderField?.value || "deepseek",
+    routeModel: routeModelField?.value.trim() || "deepseek-v4-flash",
+    mainProvider: mainProviderField?.value || "deepseek",
+    mainModel: mainModelField?.value.trim() || "deepseek-v4-pro",
+    spareProvider: spareProviderField?.value || "openai",
+    spareModel: spareModelField?.value.trim() || "gpt-5.4",
+    spareReasoning: spareReasoningField?.value || "medium",
+    wrapperModel: wrapperModelField?.value.trim() || "gpt-5.5",
+    wrapperReasoning: wrapperReasoningField?.value || "medium",
+    auxiliaryProvider: auxiliaryProviderField?.value || "grsai",
+    auxiliaryModel: auxiliaryModelField?.value.trim() || "nano-banana-2",
     startUrl: document.querySelector("#startUrl").value.trim(),
     allowedDomains: document.querySelector("#allowedDomains").value.trim(),
     commandCwd: document.querySelector("#commandCwd").value.trim(),
@@ -2366,6 +2447,18 @@ modelCatalogEl?.addEventListener("click", (event) => {
 });
 
 modelField.addEventListener("input", updateRoutingHint);
+[routeProviderField, routeModelField, mainProviderField, mainModelField, spareProviderField, spareModelField, spareReasoningField, wrapperModelField, wrapperReasoningField, auxiliaryProviderField, auxiliaryModelField]
+  .filter(Boolean)
+  .forEach((field) => {
+    field.addEventListener("input", () => {
+      renderModelRoles();
+      schedulePreferenceSave();
+    });
+    field.addEventListener("change", () => {
+      renderModelRoles();
+      schedulePreferenceSave();
+    });
+  });
 sandboxModeField.addEventListener("change", updatePackageWarning);
 packageInstallPolicyField.addEventListener("change", updatePackageWarning);
 allowWrapperToolsField.addEventListener("change", () => renderWrapperStatus());
@@ -2590,6 +2683,9 @@ async function loadConfig() {
   const prefs = data.preferences || {};
   routingPresets = data.routing?.presets || {};
   modelCatalog = data.modelCatalog || {};
+  modelRoles = data.modelRoles || {};
+  modelGroups = data.modelGroups || {};
+  auxiliaryModelCatalog = data.auxiliaryModelCatalog || {};
   taskProfiles = data.taskProfiles || [];
   projectInfo = data.project || null;
   defaults.openai = data.defaults?.openai?.model || defaults.openai;
@@ -2603,6 +2699,17 @@ async function loadConfig() {
   routingModeField.value = prefs.routingMode || "smart";
   providerField.value = prefs.provider || "deepseek";
   modelField.value = prefs.model || defaults[providerField.value] || "deepseek-v4-flash";
+  if (routeProviderField) routeProviderField.value = prefs.routeProvider || modelRoles.route?.provider || "deepseek";
+  if (routeModelField) routeModelField.value = prefs.routeModel || modelRoles.route?.model || "deepseek-v4-flash";
+  if (mainProviderField) mainProviderField.value = prefs.mainProvider || modelRoles.main?.provider || "deepseek";
+  if (mainModelField) mainModelField.value = prefs.mainModel || modelRoles.main?.model || "deepseek-v4-pro";
+  if (spareProviderField) spareProviderField.value = prefs.spareProvider || modelRoles.spare?.provider || "openai";
+  if (spareModelField) spareModelField.value = prefs.spareModel || modelRoles.spare?.model || "gpt-5.4";
+  if (spareReasoningField) spareReasoningField.value = prefs.spareReasoning || modelRoles.spare?.reasoning || "medium";
+  if (wrapperModelField) wrapperModelField.value = prefs.wrapperModel || modelRoles.wrapper?.model || "gpt-5.5";
+  if (wrapperReasoningField) wrapperReasoningField.value = prefs.wrapperReasoning || modelRoles.wrapper?.reasoning || "medium";
+  if (auxiliaryProviderField) auxiliaryProviderField.value = prefs.auxiliaryProvider || modelRoles.auxiliary?.provider || "grsai";
+  if (auxiliaryModelField) auxiliaryModelField.value = prefs.auxiliaryModel || modelRoles.auxiliary?.model || "nano-banana-2";
   renderTaskProfiles(prefs.taskProfile || "auto");
   document.querySelector("#startUrl").value = prefs.startUrl || "";
   document.querySelector("#allowedDomains").value = prefs.allowedDomains || "";

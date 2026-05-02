@@ -1,7 +1,14 @@
 import { runAgent } from "./agent-runner.js";
 import { loadConfig } from "./config.js";
 import { listAgentWrappers } from "./tool-wrappers.js";
-import { getModelPresets } from "./model-routing.js";
+import {
+  AUXILIARY_MODEL_CATALOG,
+  MODEL_PROVIDER_GROUPS,
+  PROVIDER_MODEL_CATALOG,
+  getModelPresets,
+  getModelRoleDefaults,
+  modelsForProviderGroup,
+} from "./model-routing.js";
 import { getDockerSandboxStatus, runDockerPreflight } from "./docker-sandbox.js";
 import { buildCapabilityReport, printCapabilityReport } from "./capabilities.js";
 import { startInteractiveCli } from "./interactive-cli.js";
@@ -39,6 +46,17 @@ export function parseArgs(argv) {
     sessionId: "",
     provider: "",
     model: "",
+    routeProvider: "",
+    routeModel: "",
+    mainProvider: "",
+    mainModel: "",
+    spareProvider: "",
+    spareModel: "",
+    spareReasoning: "",
+    wrapperModel: "",
+    wrapperReasoning: "",
+    auxiliaryProvider: "",
+    auxiliaryModel: "",
     routingMode: "",
     commandCwd: "",
     sandboxMode: "",
@@ -57,6 +75,7 @@ export function parseArgs(argv) {
     headless: undefined,
     maxSteps: undefined,
     listRoutes: false,
+    listModels: false,
     listWrappers: false,
     sandboxStatus: false,
     sandboxPreflight: false,
@@ -113,6 +132,61 @@ export function parseArgs(argv) {
     }
     if (arg === "--model") {
       result.model = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--route-provider") {
+      result.routeProvider = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--route-model") {
+      result.routeModel = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--main-provider") {
+      result.mainProvider = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--main-model") {
+      result.mainModel = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--spare-provider") {
+      result.spareProvider = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--spare-model") {
+      result.spareModel = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--spare-reasoning") {
+      result.spareReasoning = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--wrapper-model") {
+      result.wrapperModel = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--wrapper-reasoning") {
+      result.wrapperReasoning = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--aux-provider" || arg === "--auxiliary-provider") {
+      result.auxiliaryProvider = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--aux-model" || arg === "--auxiliary-model") {
+      result.auxiliaryModel = readOption(argv, i);
       i += 1;
       continue;
     }
@@ -236,6 +310,10 @@ export function parseArgs(argv) {
       result.listRoutes = true;
       continue;
     }
+    if (arg === "--list-models" || arg === "--models") {
+      result.listModels = true;
+      continue;
+    }
     if (arg === "--list-wrappers") {
       result.listWrappers = true;
       continue;
@@ -267,7 +345,7 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti skills [query] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti login [deepseek|openai|qwen|venice|grsai] OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex] [--list-skills] [--sandbox-status|--sandbox-preflight] "your task"'
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti models OR aginti skills [query] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
 }
 
@@ -313,6 +391,33 @@ function printRoutes() {
   for (const preset of Object.values(presets)) {
     const reasoning = preset.reasoning ? ` reasoning=${preset.reasoning}` : "";
     console.log(`${preset.id}: provider=${preset.provider} model=${preset.model}${reasoning} - ${preset.description}`);
+  }
+}
+
+function printModels() {
+  const roles = getModelRoleDefaults();
+  console.log("Model roles:");
+  for (const role of Object.values(roles)) {
+    const reasoning = role.reasoning ? ` reasoning=${role.reasoning}` : "";
+    console.log(`  ${role.command}: ${role.provider}/${role.model}${reasoning} - ${role.description}`);
+  }
+  console.log("");
+  console.log("Provider groups:");
+  for (const [id, group] of Object.entries(MODEL_PROVIDER_GROUPS)) {
+    const models = modelsForProviderGroup(id)
+      .map((item) => item.id)
+      .join(", ");
+    console.log(`  ${id}: provider=${group.provider} role=${group.role} models=${models || "(none)"}`);
+  }
+  console.log("");
+  console.log("Auxiliary image groups:");
+  for (const [id, models] of Object.entries(AUXILIARY_MODEL_CATALOG)) {
+    console.log(`  ${id}: ${models.map((item) => item.id).join(", ")}`);
+  }
+  console.log("");
+  console.log("Direct provider models:");
+  for (const [provider, models] of Object.entries(PROVIDER_MODEL_CATALOG)) {
+    console.log(`  ${provider}: ${models.map((item) => item.id).join(", ")}`);
   }
 }
 
@@ -580,6 +685,11 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
 
+  if (argv[0] === "models" || argv[0] === "model") {
+    printModels();
+    return;
+  }
+
   if (argv[0] === "skills" || argv[0] === "skill") {
     printSkills(argv.slice(1).join(" ").trim());
     return;
@@ -630,6 +740,11 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (args.listRoutes) {
     printRoutes();
+    return;
+  }
+
+  if (args.listModels) {
+    printModels();
     return;
   }
 

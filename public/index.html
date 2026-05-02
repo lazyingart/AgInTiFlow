@@ -118,7 +118,72 @@
               <span>Route</span>
               <strong id="model-route-pill">DeepSeek flash/pro</strong>
             </div>
+            <div id="model-role-grid" class="model-role-grid"></div>
             <div id="model-catalog" class="model-catalog"></div>
+          </section>
+
+          <section class="model-role-editor" aria-label="Model role settings">
+            <div class="model-role-editor-head">
+              <strong>Model roles</strong>
+              <span>Route, main, spare, wrapper, auxiliary</span>
+            </div>
+            <div class="role-editor-grid">
+              <label>
+                <span>Route</span>
+                <select id="routeProvider" name="routeProvider">
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="qwen">Qwen</option>
+                  <option value="venice">Venice</option>
+                  <option value="mock">Mock</option>
+                </select>
+                <input id="routeModel" name="routeModel" type="text" placeholder="deepseek-v4-flash" />
+              </label>
+              <label>
+                <span>Main</span>
+                <select id="mainProvider" name="mainProvider">
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="qwen">Qwen</option>
+                  <option value="venice">Venice</option>
+                </select>
+                <input id="mainModel" name="mainModel" type="text" placeholder="deepseek-v4-pro" />
+              </label>
+              <label>
+                <span>Spare</span>
+                <select id="spareProvider" name="spareProvider">
+                  <option value="openai">OpenAI</option>
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="qwen">Qwen</option>
+                  <option value="venice">Venice</option>
+                </select>
+                <input id="spareModel" name="spareModel" type="text" placeholder="gpt-5.4" />
+                <select id="spareReasoning" name="spareReasoning">
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="xhigh">xhigh</option>
+                </select>
+              </label>
+              <label>
+                <span>Wrapper</span>
+                <input id="wrapperModel" name="wrapperModel" type="text" placeholder="gpt-5.5" />
+                <select id="wrapperReasoning" name="wrapperReasoning">
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="xhigh">xhigh</option>
+                </select>
+              </label>
+              <label>
+                <span>Auxiliary</span>
+                <select id="auxiliaryProvider" name="auxiliaryProvider">
+                  <option value="grsai">GRS AI</option>
+                  <option value="venice">Venice image</option>
+                </select>
+                <input id="auxiliaryModel" name="auxiliaryModel" type="text" placeholder="nano-banana-2" />
+              </label>
+            </div>
           </section>
 
           <label>

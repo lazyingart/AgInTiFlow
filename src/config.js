@@ -1,6 +1,6 @@
 import path from "node:path";
 import crypto from "node:crypto";
-import { getProviderDefaults, normalizeRoutingMode, selectModelRoute } from "./model-routing.js";
+import { getModelRoleDefaults, getProviderDefaults, normalizeRoutingMode, selectModelRoute } from "./model-routing.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
 import { normalizeWrapperName } from "./tool-wrappers.js";
 import { loadProjectEnv, resolveProjectRoot } from "./project.js";
@@ -53,6 +53,23 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     model: overrides.model || args.model || process.env.LLM_MODEL || "",
     goal: args.goal || "",
     taskProfile,
+    routeProvider: overrides.routeProvider || args.routeProvider || process.env.AGINTI_ROUTE_PROVIDER || "",
+    routeModel: overrides.routeModel || args.routeModel || process.env.AGINTI_ROUTE_MODEL || "",
+    mainProvider: overrides.mainProvider || args.mainProvider || process.env.AGINTI_MAIN_PROVIDER || "",
+    mainModel: overrides.mainModel || args.mainModel || process.env.AGINTI_MAIN_MODEL || "",
+  });
+  const modelRoles = getModelRoleDefaults({
+    routeProvider: overrides.routeProvider || args.routeProvider || process.env.AGINTI_ROUTE_PROVIDER || "",
+    routeModel: overrides.routeModel || args.routeModel || process.env.AGINTI_ROUTE_MODEL || "",
+    mainProvider: overrides.mainProvider || args.mainProvider || process.env.AGINTI_MAIN_PROVIDER || "",
+    mainModel: overrides.mainModel || args.mainModel || process.env.AGINTI_MAIN_MODEL || "",
+    spareProvider: overrides.spareProvider || args.spareProvider || process.env.AGINTI_SPARE_PROVIDER || "",
+    spareModel: overrides.spareModel || args.spareModel || process.env.AGINTI_SPARE_MODEL || "",
+    spareReasoning: overrides.spareReasoning || args.spareReasoning || process.env.AGINTI_SPARE_REASONING || "",
+    wrapperModel: overrides.wrapperModel || args.wrapperModel || process.env.AGINTI_WRAPPER_MODEL || "",
+    wrapperReasoning: overrides.wrapperReasoning || args.wrapperReasoning || process.env.AGINTI_WRAPPER_REASONING || "",
+    auxiliaryProvider: overrides.auxiliaryProvider || args.auxiliaryProvider || process.env.AGINTI_AUX_PROVIDER || "",
+    auxiliaryModel: overrides.auxiliaryModel || args.auxiliaryModel || process.env.AGINTI_AUX_MODEL || "",
   });
 
   const defaults = getProviderDefaults(route.provider);
@@ -79,6 +96,18 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     taskProfile,
     routeReason: route.reason,
     routeComplexityScore: route.complexityScore,
+    modelRoles,
+    routeProvider: modelRoles.route.provider,
+    routeModel: modelRoles.route.model,
+    mainProvider: modelRoles.main.provider,
+    mainModel: modelRoles.main.model,
+    spareProvider: modelRoles.spare.provider,
+    spareModel: modelRoles.spare.model,
+    spareReasoning: modelRoles.spare.reasoning,
+    wrapperModel: modelRoles.wrapper.model,
+    wrapperReasoning: modelRoles.wrapper.reasoning,
+    auxiliaryProvider: modelRoles.auxiliary.provider,
+    auxiliaryModel: modelRoles.auxiliary.model,
     requestedProvider,
     requestedModel: overrides.model || args.model || process.env.LLM_MODEL || "",
     provider: route.provider,

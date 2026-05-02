@@ -252,8 +252,14 @@ function resultUrls(payload) {
 
 function normalizeImageProvider(value = "") {
   const normalized = String(value || "").trim().toLowerCase();
-  if (["venice", "venice-ai", "veniceai"].includes(normalized)) return "venice";
+  if (["venice", "venice-image", "venice-ai", "veniceai"].includes(normalized)) return "venice";
   return "grsai";
+}
+
+function defaultImageProvider(config = {}) {
+  return normalizeImageProvider(
+    config.auxiliaryProvider || process.env.AGINTI_AUX_PROVIDER || process.env.VENICE_IMAGE_PROVIDER || process.env.GRSAI_IMAGE_PROVIDER || ""
+  );
 }
 
 function veniceBaseUrl(value = "") {
@@ -268,7 +274,9 @@ async function generateVeniceImages({ prompt, args, target, outputStem, manifest
     throw new Error("Missing VENICE_API_KEY. Run `aginti login venice` or `aginti keys set venice --stdin`.");
   }
 
-  const model = String(args.model || process.env.VENICE_IMAGE_MODEL || DEFAULT_VENICE_IMAGE_MODEL).trim() || DEFAULT_VENICE_IMAGE_MODEL;
+  const model =
+    String(args.model || process.env.AGINTI_AUX_MODEL || process.env.VENICE_IMAGE_MODEL || DEFAULT_VENICE_IMAGE_MODEL).trim() ||
+    DEFAULT_VENICE_IMAGE_MODEL;
   const format = String(args.format || "png").trim().toLowerCase() === "webp" ? "webp" : "png";
   const sizing = veniceSizingForModel(model, args);
   const payload = {
@@ -356,12 +364,13 @@ export async function generateImage(args = {}, config = {}) {
     if (converted.url) references.push(converted);
   }
 
-  const provider = normalizeImageProvider(args.provider || "");
+  const provider = args.provider ? normalizeImageProvider(args.provider) : defaultImageProvider(config);
   const host = provider === "venice" ? veniceBaseUrl(args.host) : String(args.host || DEFAULT_GRS_HOST).trim().replace(/\/+$/, "") || DEFAULT_GRS_HOST;
   const model =
     provider === "venice"
-      ? String(args.model || process.env.VENICE_IMAGE_MODEL || DEFAULT_VENICE_IMAGE_MODEL).trim() || DEFAULT_VENICE_IMAGE_MODEL
-      : String(args.model || DEFAULT_IMAGE_MODEL).trim() || DEFAULT_IMAGE_MODEL;
+      ? String(args.model || config.auxiliaryModel || process.env.AGINTI_AUX_MODEL || process.env.VENICE_IMAGE_MODEL || DEFAULT_VENICE_IMAGE_MODEL).trim() ||
+        DEFAULT_VENICE_IMAGE_MODEL
+      : String(args.model || config.auxiliaryModel || process.env.AGINTI_AUX_MODEL || DEFAULT_IMAGE_MODEL).trim() || DEFAULT_IMAGE_MODEL;
   const outputStem = safeStem(args.outputStem || "image");
   const payload = {
     model,

@@ -157,6 +157,82 @@ h1 {
   gap: 8px;
 }
 
+.model-role-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.model-role-card {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.model-role-card strong,
+.model-role-card span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-role-card strong {
+  color: #0f766e;
+  font-size: 0.84rem;
+}
+
+.model-role-card span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.model-role-editor {
+  display: grid;
+  gap: 10px;
+  margin-top: -2px;
+  padding: 12px;
+  border: 1px solid rgba(29, 78, 216, 0.14);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(219, 234, 254, 0.62), rgba(255, 251, 235, 0.82)),
+    rgba(255, 255, 255, 0.82);
+}
+
+.model-role-editor-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.model-role-editor-head strong {
+  color: #1d4ed8;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.role-editor-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.role-editor-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.role-editor-grid label > span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
 .model-chip {
   display: grid;
   gap: 2px;

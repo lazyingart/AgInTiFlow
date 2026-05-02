@@ -10,6 +10,13 @@ import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 import { normalizeAuthProvider, runAuthWizard, shouldPromptForDeepSeek } from "./auth-onboarding.js";
 import { SessionStore } from "./session-store.js";
 import { listSkills, selectSkillsForGoal } from "./skill-library.js";
+import {
+  AUXILIARY_MODEL_CATALOG,
+  MODEL_PROVIDER_GROUPS,
+  PROVIDER_MODEL_CATALOG,
+  getModelRoleDefaults,
+  modelsForProviderGroup,
+} from "./model-routing.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
@@ -59,6 +66,11 @@ const SLASH_COMMANDS = [
   "/profile",
   "/web-search",
   "/scouts",
+  "/models",
+  "/route",
+  "/main",
+  "/spare",
+  "/wrapper",
   "/routing",
   "/provider",
   "/model",
@@ -560,8 +572,16 @@ function printHelp() {
       "  /auth [deepseek|openai|qwen|venice|grsai]   Alias for /login.",
       "  /instructions             Show AGINTI.md project instructions status.",
       "  /memory                   Alias for /instructions.",
-      "  /auxilliary [status|grsai|on|off|image]",
-      "                            Manage optional auxiliary skills, including GRS AI image generation.",
+      "  /models                   Show route/main/spare/wrapper/auxiliary model roles.",
+      "  /route <mode|provider/model>",
+      "                            Set routing mode or fast route model, e.g. /route deepseek/deepseek-v4-flash.",
+      "  /model <provider/model>   Set the active/main model, e.g. /model deepseek/deepseek-v4-pro.",
+      "  /spare <provider/model> [reasoning]",
+      "                            Set spare model, e.g. /spare openai/gpt-5.4 medium.",
+      "  /wrapper [on|off|codex model reasoning]",
+      "                            Configure optional external wrapper.",
+      "  /auxilliary [status|grsai|venice|model grsai/nano-banana-2|on|off|image]",
+      "                            Manage optional auxiliary skills, including image generation.",
       "  /new                      Start a fresh session on the next message.",
       "  /resume <session-id>      Continue a saved session.",
       "  /sessions                 List recent sessions in this project.",
@@ -571,7 +591,6 @@ function printHelp() {
       "  /scouts on|off|<1-10>     Enable parallel DeepSeek scouts and set scout count.",
       "  /routing <mode>           Set routing: smart, fast, complex, manual.",
       "  /provider <name>          Set provider: deepseek, openai, qwen, venice, mock.",
-      "  /model <name>             Set an explicit model, or /model auto.",
       "  /docker on                Use docker-workspace with approved package installs.",
       "  /docker off               Use host shell policy.",
       "  /latex on                 Use the LaTeX/PDF profile in Docker with a larger step budget.",
@@ -1357,6 +1376,11 @@ function printStatus(state) {
   printSystemLine(`status=${state.status || "idle"}${state.activeGoal ? ` workingOn=${state.activeGoal}` : ""}`);
   if (state.lastEvent) printSystemLine(`last=${state.lastEvent}`);
   printSystemLine(`provider=${state.provider || "auto"} routing=${state.routingMode} model=${state.model || "auto"}`);
+  printSystemLine(
+    `roles route=${state.routeProvider || "deepseek"}/${state.routeModel || "deepseek-v4-flash"} main=${
+      state.mainProvider || "deepseek"
+    }/${state.mainModel || "deepseek-v4-pro"} spare=${state.spareProvider || "openai"}/${state.spareModel || "gpt-5.4"}`
+  );
   printSystemLine(`profile=${state.taskProfile} maxSteps=${state.maxSteps}`);
   printSystemLine(
     `shell=${state.allowShellTool} files=${state.allowFileTools} webSearch=${state.allowWebSearch} scouts=${state.allowParallelScouts}:${state.parallelScoutCount} auxiliary=${state.allowAuxiliaryTools} sandbox=${state.sandboxMode} installs=${state.packageInstallPolicy}`
@@ -1480,6 +1504,17 @@ function createState(args = {}) {
     allowWrapperTools: args.allowWrapperTools ?? false,
     allowDestructive: args.allowDestructive ?? false,
     preferredWrapper: args.preferredWrapper || "codex",
+    routeProvider: args.routeProvider || "",
+    routeModel: args.routeModel || "",
+    mainProvider: args.mainProvider || "",
+    mainModel: args.mainModel || "",
+    spareProvider: args.spareProvider || "openai",
+    spareModel: args.spareModel || "gpt-5.4",
+    spareReasoning: args.spareReasoning || "medium",
+    wrapperModel: args.wrapperModel || "gpt-5.5",
+    wrapperReasoning: args.wrapperReasoning || "medium",
+    auxiliaryProvider: args.auxiliaryProvider || "grsai",
+    auxiliaryModel: args.auxiliaryModel || "nano-banana-2",
     taskProfile: normalizeTaskProfile(args.taskProfile || "auto"),
     headless: args.headless ?? false,
     maxSteps:
@@ -1488,6 +1523,81 @@ function createState(args = {}) {
         : defaultMaxStepsForProfile(args.taskProfile || (args.latex ? "latex" : "auto")),
     sessionId: args.resume || "",
   };
+}
+
+function parseProviderModel(value, fallbackProvider = "") {
+  const text = String(value || "").trim();
+  if (!text) return { provider: fallbackProvider, model: "" };
+  if (text.includes("/")) {
+    const [provider, ...modelParts] = text.split("/");
+    return {
+      provider: provider.trim() || fallbackProvider,
+      model: modelParts.join("/").trim(),
+    };
+  }
+  const parts = text.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2 && ["deepseek", "openai", "qwen", "venice", "mock", "grsai", "venice-image"].includes(parts[0])) {
+    return { provider: parts[0], model: parts.slice(1).join(" ") };
+  }
+  return { provider: fallbackProvider, model: text };
+}
+
+function printModelRoles(state) {
+  const roles = getModelRoleDefaults({
+    routeProvider: state.routeProvider,
+    routeModel: state.routeModel,
+    mainProvider: state.mainProvider,
+    mainModel: state.mainModel,
+    spareProvider: state.spareProvider,
+    spareModel: state.spareModel,
+    spareReasoning: state.spareReasoning,
+    wrapperModel: state.wrapperModel,
+    wrapperReasoning: state.wrapperReasoning,
+    auxiliaryProvider: state.auxiliaryProvider,
+    auxiliaryModel: state.auxiliaryModel,
+  });
+  const roleLines = Object.values(roles).map((role) => {
+    const reasoning = role.reasoning ? ` reasoning=${role.reasoning}` : "";
+    return `${role.command.padEnd(12)} ${role.provider}/${role.model}${reasoning}\n  ${role.description}`;
+  });
+  const groups = Object.entries(MODEL_PROVIDER_GROUPS).map(([id, group]) => {
+    const models = modelsForProviderGroup(id)
+      .map((item) => item.id)
+      .join(", ");
+    return `${id}: ${group.role}${models ? ` (${models})` : ""}`;
+  });
+  const auxiliary = Object.entries(AUXILIARY_MODEL_CATALOG).map(
+    ([id, models]) => `${id}: ${models.map((item) => item.id).join(", ")}`
+  );
+  const directProviders = Object.entries(PROVIDER_MODEL_CATALOG).map(([provider, models]) => {
+    const compact = models
+      .slice(0, 6)
+      .map((item) => item.id)
+      .join(", ");
+    return `${provider}: ${compact}${models.length > 6 ? ", ..." : ""}`;
+  });
+  printAgentMessage(
+    [
+      "Model roles",
+      ...roleLines,
+      "",
+      "Set roles",
+      "/route deepseek/deepseek-v4-flash",
+      "/model deepseek/deepseek-v4-pro",
+      "/spare openai/gpt-5.4 medium",
+      "/wrapper codex gpt-5.5 medium",
+      "/auxilliary model grsai/nano-banana-2",
+      "",
+      "Provider groups",
+      ...groups,
+      "",
+      "Auxiliary image groups",
+      ...auxiliary,
+      "",
+      "Direct provider models",
+      ...directProviders,
+    ].join("\n")
+  );
 }
 
 async function maybeOnboardDeepSeekKey(state) {
@@ -1591,7 +1701,9 @@ async function handleCommand(line, state, packageDir) {
         [
           `Auxiliary tools: ${state.allowAuxiliaryTools ? "on" : "off"}`,
           `Image generation: ${keys.grsai ? "GRSAI key available" : "missing GRSAI key"}`,
-          "Use `/auxilliary grsai` to paste the image key, `/auxilliary image` to switch to the image profile, or `/auxilliary off` to hide auxiliary tools.",
+          `Venice image: ${keys.venice ? "Venice key available" : "missing Venice key"}`,
+          `Selected auxiliary: ${state.auxiliaryProvider || "grsai"}/${state.auxiliaryModel || "nano-banana-2"}`,
+          "Use `/auxilliary grsai` or `/auxilliary venice` to paste a key, `/auxilliary model grsai/nano-banana-2`, `/auxilliary image`, or `/auxilliary off`.",
         ].join("\n")
       );
       return true;
@@ -1612,11 +1724,18 @@ async function handleCommand(line, state, packageDir) {
       printSystemLine("auxiliary=on profile=image");
       return true;
     }
-    if (["grsai", "login", "key", "token"].includes(action)) {
-      await promptAndSaveProviderKey("grsai", state);
+    if (action.startsWith("model")) {
+      const selected = parseProviderModel(action.replace(/^model\s*/, ""), state.auxiliaryProvider || "grsai");
+      state.auxiliaryProvider = selected.provider || "grsai";
+      state.auxiliaryModel = selected.model || state.auxiliaryModel || "nano-banana-2";
+      printSystemLine(`auxiliary=${state.auxiliaryProvider}/${state.auxiliaryModel}`);
       return true;
     }
-    printAgentMessage("Usage: /auxilliary [status|grsai|on|off|image]");
+    if (["grsai", "venice", "login", "key", "token"].includes(action)) {
+      await promptAndSaveProviderKey(action === "venice" ? "venice" : "grsai", state);
+      return true;
+    }
+    printAgentMessage("Usage: /auxilliary [status|grsai|venice|model grsai/nano-banana-2|on|off|image]");
     return true;
   }
   if (command === "new") {
@@ -1702,6 +1821,89 @@ async function handleCommand(line, state, packageDir) {
     printSystemLine(`parallelScouts=${state.allowParallelScouts ? "on" : "off"} count=${state.parallelScoutCount}`);
     return true;
   }
+  if (command === "models") {
+    printModelRoles(state);
+    return true;
+  }
+  if (command === "route") {
+    if (!value) {
+      printAgentMessage(
+        `Route model: ${state.routeProvider || "deepseek"}/${state.routeModel || "deepseek-v4-flash"}\nUse /route deepseek/deepseek-v4-flash or /route fast|smart|complex.`
+      );
+      return true;
+    }
+    if (["smart", "fast", "complex", "manual"].includes(value)) {
+      state.routingMode = value;
+      printSystemLine(`routing=${state.routingMode}`);
+      return true;
+    }
+    const selected = parseProviderModel(value, state.routeProvider || "deepseek");
+    state.routeProvider = selected.provider || "deepseek";
+    state.routeModel = selected.model || state.routeModel || "deepseek-v4-flash";
+    printSystemLine(`route=${state.routeProvider}/${state.routeModel}`);
+    return true;
+  }
+  if (command === "main" || command === "model") {
+    if (!value || value === "auto") {
+      if (command === "main") {
+        state.mainProvider = "";
+        state.mainModel = "";
+        printSystemLine("main=auto");
+      } else {
+        state.model = "";
+        printSystemLine("model=auto");
+      }
+      return true;
+    }
+    const selected = parseProviderModel(value, state.mainProvider || state.provider || "deepseek");
+    if (command === "main" || selected.provider) {
+      state.mainProvider = selected.provider || "deepseek";
+      state.mainModel = selected.model || "deepseek-v4-pro";
+      if (command === "model") {
+        state.provider = state.mainProvider;
+        state.model = state.mainModel;
+      }
+      printSystemLine(`main=${state.mainProvider}/${state.mainModel}`);
+      return true;
+    }
+    state.model = value;
+    printSystemLine(`model=${state.model || "auto"}`);
+    return true;
+  }
+  if (command === "spare") {
+    if (!value) {
+      printAgentMessage(`Spare model: ${state.spareProvider}/${state.spareModel} reasoning=${state.spareReasoning}`);
+      return true;
+    }
+    const parts = value.split(/\s+/).filter(Boolean);
+    const selected = parseProviderModel(parts[0] || "", state.spareProvider || "openai");
+    state.spareProvider = selected.provider || "openai";
+    state.spareModel = selected.model || state.spareModel || "gpt-5.4";
+    if (parts[1]) state.spareReasoning = parts[1];
+    printSystemLine(`spare=${state.spareProvider}/${state.spareModel} reasoning=${state.spareReasoning}`);
+    return true;
+  }
+  if (command === "wrapper") {
+    if (!value) {
+      printAgentMessage(
+        `Wrapper: ${state.preferredWrapper || "codex"} model=${state.wrapperModel || "gpt-5.5"} reasoning=${
+          state.wrapperReasoning || "medium"
+        } tools=${state.allowWrapperTools ? "on" : "off"}`
+      );
+      return true;
+    }
+    const parts = value.split(/\s+/).filter(Boolean);
+    if (parts[0] === "on" || parts[0] === "off") {
+      state.allowWrapperTools = parts[0] === "on";
+      printSystemLine(`wrappers=${state.allowWrapperTools ? "on" : "off"}`);
+      return true;
+    }
+    state.preferredWrapper = parts[0] || state.preferredWrapper || "codex";
+    if (parts[1]) state.wrapperModel = parts[1];
+    if (parts[2]) state.wrapperReasoning = parts[2];
+    printSystemLine(`wrapper=${state.preferredWrapper} model=${state.wrapperModel} reasoning=${state.wrapperReasoning}`);
+    return true;
+  }
   if (command === "routing") {
     state.routingMode = value || "smart";
     printSystemLine(`routing=${state.routingMode}`);
@@ -1710,11 +1912,6 @@ async function handleCommand(line, state, packageDir) {
   if (command === "provider") {
     state.provider = value === "auto" ? "" : value;
     printSystemLine(`provider=${state.provider || "auto"}`);
-    return true;
-  }
-  if (command === "model") {
-    state.model = value === "auto" ? "" : value;
-    printSystemLine(`model=${state.model || "auto"}`);
     return true;
   }
   if (command === "installs") {
@@ -1803,6 +2000,17 @@ async function runPrompt(prompt, state, packageDir) {
       allowWrapperTools: state.allowWrapperTools,
       allowDestructive: state.allowDestructive,
       preferredWrapper: state.preferredWrapper,
+      routeProvider: state.routeProvider,
+      routeModel: state.routeModel,
+      mainProvider: state.mainProvider,
+      mainModel: state.mainModel,
+      spareProvider: state.spareProvider,
+      spareModel: state.spareModel,
+      spareReasoning: state.spareReasoning,
+      wrapperModel: state.wrapperModel,
+      wrapperReasoning: state.wrapperReasoning,
+      auxiliaryProvider: state.auxiliaryProvider,
+      auxiliaryModel: state.auxiliaryModel,
       taskProfile: state.taskProfile,
       maxSteps: runMaxSteps,
       headless: state.headless,

@@ -14,13 +14,40 @@ DeepSeek remains the default smart-route backend:
 
 If the user selects OpenAI, Qwen, or Venice as the provider, AgInTiFlow treats that as the primary manual provider even when the UI still shows a smart policy. This makes provider selection predictable while preserving DeepSeek as the default.
 
-## Provider Sections
+## Role-Based Model Sections
 
-The web UI should show three ideas clearly:
+The UI should be role-first rather than provider-first:
 
-- **Route:** smart, fast, complex, or manual.
-- **Primary:** the provider/model currently used for the next run.
-- **Secondary:** the fallback/escalation route, usually DeepSeek V4 Pro or a wrapper such as Codex.
+- **Route model (`/route`):** fast planner and triage model. Default `deepseek/deepseek-v4-flash`.
+- **Main model (`/model` or `/main`):** complex executor. Default `deepseek/deepseek-v4-pro`.
+- **Spare model (`/spare`):** fallback/cross-check model. Default `openai/gpt-5.4` with `medium` reasoning.
+- **Wrapper (`/wrapper`):** external coding assistant. Default Codex with `gpt-5.5` medium reasoning, disabled unless wrapper tools are enabled.
+- **Auxiliary (`/auxilliary`):** media/image tools. Default `grsai/nano-banana-2`; Venice image models are optional.
+
+This keeps the mental model stable: providers are supply, roles are policy.
+
+## Current Commands
+
+```bash
+aginti models
+aginti --list-models
+aginti --list-routes
+aginti --route-model deepseek-v4-flash --main-model deepseek-v4-pro "fix this project"
+aginti --spare-provider openai --spare-model gpt-5.4 --spare-reasoning medium "review this patch"
+aginti --allow-wrappers --wrapper codex --wrapper-model gpt-5.5 "use Codex as a helper"
+aginti --image --aux-provider venice --aux-model gpt-image-2 "generate an image"
+```
+
+Interactive equivalents:
+
+```text
+/models
+/route deepseek/deepseek-v4-flash
+/model deepseek/deepseek-v4-pro
+/spare openai/gpt-5.4 medium
+/wrapper codex gpt-5.5 medium
+/auxilliary model grsai/nano-banana-2
+```
 
 ## OpenAI Model Reference
 

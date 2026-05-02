@@ -52,7 +52,10 @@ function codexArgs(prompt, config, preset) {
 }
 
 function wrapperCommand(wrapper, prompt, config, { fallback = false } = {}) {
-  const presets = getModelPresets();
+  const presets = getModelPresets({
+    wrapperModel: config.wrapperModel,
+    wrapperReasoning: config.wrapperReasoning,
+  });
   switch (wrapper) {
     case "codex":
       return {

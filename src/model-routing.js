@@ -69,6 +69,83 @@ const COMPLEX_ROUTE_HINTS = [
 
 export const ROUTING_MODES = ["smart", "fast", "complex", "manual"];
 
+export const MODEL_PROVIDER_GROUPS = {
+  deepseek: {
+    label: "DeepSeek",
+    provider: "deepseek",
+    role: "default route/main",
+    description: "Primary low-cost coding route. Flash is used for fast planning; Pro is used for complex execution.",
+  },
+  openai: {
+    label: "OpenAI",
+    provider: "openai",
+    role: "spare/frontier",
+    description: "Optional frontier spare or direct manual route, usually with explicit reasoning effort.",
+  },
+  qwen: {
+    label: "Qwen",
+    provider: "qwen",
+    role: "regional/general",
+    description: "DashScope/OpenAI-compatible Qwen route for Chinese and general work.",
+  },
+  "venice-uncensored": {
+    label: "Venice Uncensored",
+    provider: "venice",
+    role: "alternate text",
+    description: "Venice uncensored text models for optional manual routes.",
+  },
+  "venice-gpt": {
+    label: "Venice GPT",
+    provider: "venice",
+    role: "alternate GPT",
+    description: "GPT-family models routed through Venice.",
+  },
+  "venice-claude": {
+    label: "Venice Claude",
+    provider: "venice",
+    role: "alternate Claude",
+    description: "Claude-family models routed through Venice.",
+  },
+  "venice-gemma": {
+    label: "Venice Gemma",
+    provider: "venice",
+    role: "alternate Gemma",
+    description: "Gemma-family Venice models.",
+  },
+  "venice-qwen": {
+    label: "Venice Qwen",
+    provider: "venice",
+    role: "alternate Qwen",
+    description: "Qwen-family Venice models.",
+  },
+};
+
+export const AUXILIARY_MODEL_CATALOG = {
+  grsai: [
+    {
+      id: "nano-banana-2",
+      label: "Nano Banana 2",
+      type: "image",
+      description: "Default auxiliary image-generation route through GRS AI-compatible APIs.",
+    },
+    {
+      id: "gpt-image-2",
+      label: "GPT Image 2",
+      type: "image",
+      description: "High-quality image generation when available through the configured auxiliary endpoint.",
+    },
+  ],
+  "venice-image": [
+    { id: "nano-banana-2", label: "Nano Banana 2", type: "image", price: "$0.10/image" },
+    { id: "gpt-image-2", label: "GPT Image 2", type: "image", price: "$0.27/image" },
+    { id: "gpt-image-2-edit", label: "GPT Image 2 Edit", type: "inpaint", price: "$0.36/edit" },
+    { id: "wan-2-7-pro-edit", label: "Wan 2.7 Pro Edit", type: "inpaint", price: "$0.09/edit" },
+    { id: "grok-imagine-image", label: "Grok Imagine", type: "image", price: "$0.03/image" },
+    { id: "qwen-image-2-pro", label: "Qwen Image 2 Pro", type: "image", price: "$0.10/image" },
+    { id: "bria-bg-remover", label: "Background Remover", type: "image", price: "$0.03/image" },
+  ],
+};
+
 export const PROVIDER_MODEL_CATALOG = {
   deepseek: [
     {
@@ -250,20 +327,35 @@ export function getProviderDefaults(provider = "deepseek") {
   };
 }
 
-export function getModelPresets() {
+function providerDefaultModel(provider, fallback) {
+  if (provider === "deepseek" && fallback) return fallback;
+  return getProviderDefaults(provider).model || fallback;
+}
+
+export function getModelPresets(overrides = {}) {
+  const routeProvider = overrides.routeProvider || process.env.AGINTI_ROUTE_PROVIDER || "deepseek";
+  const mainProvider = overrides.mainProvider || process.env.AGINTI_MAIN_PROVIDER || "deepseek";
   return {
     fast: {
       id: "fast",
       label: "Fast base",
-      provider: "deepseek",
-      model: process.env.DEEPSEEK_FAST_MODEL || "deepseek-v4-flash",
+      provider: routeProvider,
+      model:
+        overrides.routeModel ||
+        process.env.AGINTI_ROUTE_MODEL ||
+        process.env.DEEPSEEK_FAST_MODEL ||
+        providerDefaultModel(routeProvider, "deepseek-v4-flash"),
       description: "Default fast route for normal browser, shell, and short coding tasks.",
     },
     complex: {
       id: "complex",
       label: "Complex reasoning",
-      provider: "deepseek",
-      model: process.env.DEEPSEEK_PRO_MODEL || "deepseek-v4-pro",
+      provider: mainProvider,
+      model:
+        overrides.mainModel ||
+        process.env.AGINTI_MAIN_MODEL ||
+        process.env.DEEPSEEK_PRO_MODEL ||
+        providerDefaultModel(mainProvider, "deepseek-v4-pro"),
       description: "Higher-capacity DeepSeek route for multi-step coding and design tasks.",
     },
     mock: {
@@ -367,8 +459,9 @@ export function getModelPresets() {
       id: "codexPrimary",
       label: "Codex primary wrapper",
       provider: "codex-wrapper",
-      model: process.env.CODEX_PRIMARY_MODEL || "gpt-5.5",
-      reasoning: process.env.CODEX_PRIMARY_REASONING || "medium",
+      model: overrides.wrapperModel || process.env.AGINTI_WRAPPER_MODEL || process.env.CODEX_PRIMARY_MODEL || "gpt-5.5",
+      reasoning:
+        overrides.wrapperReasoning || process.env.AGINTI_WRAPPER_REASONING || process.env.CODEX_PRIMARY_REASONING || "medium",
       description: "External Codex wrapper route for coding enhancement tasks.",
     },
     codexSpare: {
@@ -380,6 +473,65 @@ export function getModelPresets() {
       description: "Fallback Codex wrapper route when the primary wrapper fails.",
     },
   };
+}
+
+export function getModelRoleDefaults(overrides = {}) {
+  const presets = getModelPresets(overrides);
+  const spareProvider = overrides.spareProvider || process.env.AGINTI_SPARE_PROVIDER || "openai";
+  const spareModel = overrides.spareModel || process.env.AGINTI_SPARE_MODEL || "gpt-5.4";
+  const auxiliaryProvider = overrides.auxiliaryProvider || process.env.AGINTI_AUX_PROVIDER || "grsai";
+  const auxiliaryModel = overrides.auxiliaryModel || process.env.AGINTI_AUX_MODEL || process.env.VENICE_IMAGE_MODEL || "nano-banana-2";
+  return {
+    route: {
+      id: "route",
+      label: "Route model",
+      command: "/route",
+      provider: presets.fast.provider,
+      model: presets.fast.model,
+      description: "Fast planner and triage model. Default: DeepSeek V4 Flash.",
+    },
+    main: {
+      id: "main",
+      label: "Main model",
+      command: "/model",
+      provider: presets.complex.provider,
+      model: presets.complex.model,
+      description: "Complex executor for coding, debugging, writing, and long tasks. Default: DeepSeek V4 Pro.",
+    },
+    spare: {
+      id: "spare",
+      label: "Spare model",
+      command: "/spare",
+      provider: spareProvider,
+      model: spareModel,
+      reasoning: overrides.spareReasoning || process.env.AGINTI_SPARE_REASONING || "medium",
+      description: "Fallback or cross-check model. Default: OpenAI GPT-5.4 medium reasoning.",
+    },
+    wrapper: {
+      id: "wrapper",
+      label: "Wrapper",
+      command: "/wrapper",
+      provider: "codex",
+      model: presets.codexPrimary.model,
+      reasoning: presets.codexPrimary.reasoning,
+      description: "External coding wrapper when enabled. Default: Codex with GPT-5.5 medium reasoning.",
+    },
+    auxiliary: {
+      id: "auxiliary",
+      label: "Auxiliary",
+      command: "/auxilliary",
+      provider: auxiliaryProvider,
+      model: auxiliaryModel,
+      description: "Image/media tools. Default: GRS AI/Nano Banana; Venice image is optional.",
+    },
+  };
+}
+
+export function modelsForProviderGroup(groupId) {
+  const group = MODEL_PROVIDER_GROUPS[groupId];
+  if (!group) return [];
+  if (group.provider !== "venice") return PROVIDER_MODEL_CATALOG[group.provider] || [];
+  return (PROVIDER_MODEL_CATALOG.venice || []).filter((item) => item.bucket === groupId);
 }
 
 export function scoreTaskComplexity(goal = "", taskProfile = "auto") {
@@ -399,10 +551,20 @@ export function normalizeRoutingMode(value) {
   return ROUTING_MODES.includes(value) ? value : "smart";
 }
 
-export function selectModelRoute({ routingMode = "smart", provider = "deepseek", model = "", goal = "", taskProfile = "auto" } = {}) {
+export function selectModelRoute({
+  routingMode = "smart",
+  provider = "deepseek",
+  model = "",
+  goal = "",
+  taskProfile = "auto",
+  routeProvider = "",
+  routeModel = "",
+  mainProvider = "",
+  mainModel = "",
+} = {}) {
   const mode = normalizeRoutingMode(routingMode);
   const requestedProvider = String(provider || "deepseek").toLowerCase();
-  const presets = getModelPresets();
+  const presets = getModelPresets({ routeProvider, routeModel, mainProvider, mainModel });
 
   if (requestedProvider === "mock") {
     const defaults = getProviderDefaults("mock");

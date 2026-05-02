@@ -87,6 +87,12 @@ try {
   if (!config.modelCatalog?.venice?.some((model) => model.id === "venice-uncensored-1-2")) {
     throw new Error("venice model catalog is not advertised by /api/config");
   }
+  if (config.modelRoles?.route?.model !== "deepseek-v4-flash" || config.modelRoles?.main?.model !== "deepseek-v4-pro") {
+    throw new Error("model role defaults are not advertised by /api/config");
+  }
+  if (!config.modelGroups?.["venice-gpt"] || !config.auxiliaryModelCatalog?.["venice-image"]) {
+    throw new Error("model provider groups are not advertised by /api/config");
+  }
 
   const keyStatus = await fetchJson("/api/keys/status");
   if (typeof keyStatus.keyStatus?.deepseek !== "boolean") throw new Error("key status endpoint is invalid");
@@ -149,6 +155,12 @@ try {
       provider: "mock",
       routingMode: "manual",
       model: "mock-agent",
+      routeModel: "deepseek-v4-flash",
+      mainModel: "deepseek-v4-pro",
+      spareProvider: "openai",
+      spareModel: "gpt-5.4",
+      auxiliaryProvider: "grsai",
+      auxiliaryModel: "nano-banana-2",
       goal: "Report the current working directory with a safe command.",
       commandCwd: runtimeDir,
       sandboxMode: "host",
