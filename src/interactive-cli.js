@@ -171,7 +171,18 @@ function promptGutter() {
 function commandSuggestions(line = "") {
   const trimmed = String(line || "");
   if (!trimmed.startsWith("/") || /\s/.test(trimmed)) return [];
+  if (SLASH_COMMANDS.includes(trimmed)) return [trimmed];
   return SLASH_COMMANDS.filter((command) => command.startsWith(trimmed)).slice(0, 8);
+}
+
+function renderSuggestionList(suggestions = [], selectedIndex = 0) {
+  return suggestions
+    .map((suggestion, index) => {
+      const active = index === selectedIndex;
+      if (!active) return suggestion;
+      return useColor ? color(suggestion, ansi.userBg, ansi.bold) : `>${suggestion}`;
+    })
+    .join("  ");
 }
 
 function resolveSlashCommand(command = "") {
@@ -574,9 +585,9 @@ function printHelp() {
       "  /memory                   Alias for /instructions.",
       "  /models                   Show route/main/spare/wrapper/auxiliary model roles.",
       "  /venice                   Shortcut: use Venice Uncensored 1.2 for route and main roles.",
-      "  /route <mode|provider/model>",
-      "                            Set routing mode or fast route model, e.g. /route deepseek/deepseek-v4-flash.",
-      "  /model <provider/model>   Set the active/main model, e.g. /model deepseek/deepseek-v4-pro.",
+      "  /route [mode|provider/model]",
+      "                            Open route selector, or set routing/fast route model.",
+      "  /model [provider/model]   Open main-model selector, or set the active/main model.",
       "  /spare <provider/model> [reasoning]",
       "                            Set spare model, e.g. /spare openai/gpt-5.4 medium.",
       "  /wrapper [on|off|codex model reasoning]",
@@ -730,14 +741,17 @@ export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth
     }
   }
 
-  const suggestions = commandSuggestions(safeBuffer.split("\n")[0] || "");
+  const suggestions = Array.isArray(options.suggestions)
+    ? options.suggestions
+    : commandSuggestions(safeBuffer.split("\n")[0] || "");
+  const suggestionIndex = clamp(Number(options.suggestionIndex) || 0, 0, Math.max(suggestions.length - 1, 0));
   const emptyHint = "type a request, /help, Enter to send, Ctrl+J for newline";
   const visible = promptVisibleWindow(rows, cursorRow, height);
   const renderedRows = [];
   let renderedCursorRow = cursorRow - visible.start;
 
   if (options.statusLine) {
-    renderedRows.push(panelLine(` run   ${compactLine(options.statusLine, lineWidth - 8)}`, ansi.statusBg, lineWidth));
+    renderedRows.push(panelLine(`${labelText("run", { prompt: true })}${compactLine(options.statusLine, lineWidth - 10)}`, ansi.statusBg, lineWidth));
     renderedCursorRow += 1;
   }
 
@@ -767,10 +781,10 @@ export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth
   }
 
   if (suggestions.length > 0) {
-    renderedRows.push(panelLine(` hint  ${suggestions.join("  ")}`, ansi.systemBg, lineWidth));
+    renderedRows.push(panelLine(`${labelText("hint", { prompt: true })}${renderSuggestionList(suggestions, suggestionIndex)}`, ansi.systemBg, lineWidth));
   }
   if (options.commandCwd) {
-    renderedRows.push(panelLine(` cwd   ${options.commandCwd}`, ansi.systemBg, lineWidth));
+    renderedRows.push(panelLine(`${labelText("cwd", { prompt: true })}${options.commandCwd}`, ansi.systemBg, lineWidth));
   }
 
   return {
@@ -884,6 +898,8 @@ function readTtyPrompt(options = {}) {
     let historyIndex = promptHistory.length;
     let draft = "";
     let redrawHandle = null;
+    let suggestionAnchor = "";
+    let suggestionIndex = 0;
 
     const cleanup = () => {
       if (redrawHandle) {
@@ -901,14 +917,19 @@ function readTtyPrompt(options = {}) {
         clearImmediate(redrawHandle);
         redrawHandle = null;
       }
-      rendered = renderPromptBuffer(buffer, cursor, rendered, options);
+      const suggestions = commandSuggestions(suggestionAnchor || buffer.split("\n")[0] || "");
+      rendered = renderPromptBuffer(buffer, cursor, rendered, {
+        ...options,
+        suggestions,
+        suggestionIndex,
+      });
     };
 
     const redraw = () => {
       if (redrawHandle) return;
       redrawHandle = setImmediate(() => {
         redrawHandle = null;
-        rendered = renderPromptBuffer(buffer, cursor, rendered, options);
+        renderNow();
       });
     };
 
@@ -922,12 +943,32 @@ function readTtyPrompt(options = {}) {
       resolve(buffer);
     };
 
-    const setBuffer = (nextBuffer, nextCursor = nextBuffer.length) => {
+    const setBuffer = (nextBuffer, nextCursor = nextBuffer.length, { keepSuggestionAnchor = false } = {}) => {
       buffer = nextBuffer;
       cursor = clamp(nextCursor, 0, buffer.length);
       preferredColumn = null;
+      if (!keepSuggestionAnchor) {
+        suggestionAnchor = "";
+        suggestionIndex = 0;
+      }
       redraw();
     };
+
+    const cycleSuggestion = (delta) => {
+      const firstLine = buffer.split("\n")[0] || "";
+      if (!suggestionAnchor) suggestionAnchor = firstLine;
+      const suggestions = commandSuggestions(suggestionAnchor);
+      if (suggestions.length === 0) {
+        suggestionAnchor = "";
+        suggestionIndex = 0;
+        return false;
+      }
+      suggestionIndex = (suggestionIndex + delta + suggestions.length) % suggestions.length;
+      setBuffer(suggestions[suggestionIndex], suggestions[suggestionIndex].length, { keepSuggestionAnchor: true });
+      return true;
+    };
+
+    const suggestionModeActive = () => commandSuggestions(suggestionAnchor || buffer.split("\n")[0] || "").length > 1;
 
     const moveVertical = (direction) => {
       const layout = buildPromptLayout(buffer, cursor);
@@ -979,32 +1020,40 @@ function readTtyPrompt(options = {}) {
       if (key.name === "backspace") {
         ({ buffer, cursor } = removeBefore(buffer, cursor));
         preferredColumn = null;
+        suggestionAnchor = "";
+        suggestionIndex = 0;
         redraw();
         return;
       }
       if (key.name === "delete") {
         ({ buffer, cursor } = removeAt(buffer, cursor));
         preferredColumn = null;
+        suggestionAnchor = "";
+        suggestionIndex = 0;
         redraw();
         return;
       }
       if (key.name === "left") {
+        if (suggestionModeActive() && cycleSuggestion(-1)) return;
         cursor = Math.max(cursor - 1, 0);
         preferredColumn = null;
         redraw();
         return;
       }
       if (key.name === "right") {
+        if (suggestionModeActive() && cycleSuggestion(1)) return;
         cursor = Math.min(cursor + 1, buffer.length);
         preferredColumn = null;
         redraw();
         return;
       }
       if (key.name === "up") {
+        if (suggestionModeActive() && cycleSuggestion(-1)) return;
         moveVertical(-1);
         return;
       }
       if (key.name === "down") {
+        if (suggestionModeActive() && cycleSuggestion(1)) return;
         moveVertical(1);
         return;
       }
@@ -1036,10 +1085,12 @@ function readTtyPrompt(options = {}) {
         return;
       }
       if (key.name === "tab") {
-        const suggestions = commandSuggestions(buffer.split("\n")[0] || "");
-        if (suggestions.length === 1) {
-          buffer = suggestions[0];
+        const suggestions = commandSuggestions(suggestionAnchor || buffer.split("\n")[0] || "");
+        if (suggestions.length > 0) {
+          buffer = suggestions[clamp(suggestionIndex, 0, suggestions.length - 1)];
           cursor = buffer.length;
+          suggestionAnchor = "";
+          suggestionIndex = 0;
         }
         preferredColumn = null;
         redraw();
@@ -1054,6 +1105,8 @@ function readTtyPrompt(options = {}) {
         const text = str.replace(/\r/g, "");
         ({ buffer, cursor } = insertAt(buffer, cursor, text));
         preferredColumn = null;
+        suggestionAnchor = "";
+        suggestionIndex = 0;
         redraw();
       }
     };
@@ -1601,6 +1654,193 @@ function printModelRoles(state) {
   );
 }
 
+function modelRoleChoices(role = "main") {
+  const common = [
+    {
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      label: "DeepSeek V4 Flash",
+      description: "fast planner, short shell/browser/code work",
+      route: true,
+    },
+    {
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      label: "DeepSeek V4 Pro",
+      description: "complex coding, debugging, writing, and long tasks",
+      main: true,
+    },
+    {
+      provider: "venice",
+      model: "venice-uncensored-1-2",
+      label: "Venice Uncensored 1.2",
+      description: "Venice text route; use /auth venice if missing",
+      route: true,
+      main: true,
+    },
+    {
+      provider: "openai",
+      model: "gpt-5.5",
+      label: "OpenAI GPT-5.5",
+      description: "frontier spare/manual model",
+      main: true,
+    },
+    {
+      provider: "openai",
+      model: "gpt-5.4",
+      label: "OpenAI GPT-5.4",
+      description: "strong everyday coding spare",
+      main: true,
+    },
+    {
+      provider: "openai",
+      model: "gpt-5.4-mini",
+      label: "OpenAI GPT-5.4 Mini",
+      description: "small fast spare route",
+      route: true,
+    },
+    {
+      provider: "qwen",
+      model: "qwen-plus",
+      label: "Qwen Plus",
+      description: "general Qwen route",
+      route: true,
+    },
+    {
+      provider: "qwen",
+      model: "qwen-max",
+      label: "Qwen Max",
+      description: "larger Qwen route",
+      main: true,
+    },
+    {
+      provider: "mock",
+      model: "mock-agent",
+      label: "Mock Agent",
+      description: "local deterministic test route",
+      route: true,
+      main: true,
+    },
+  ];
+  const filtered = common.filter((item) => (role === "route" ? item.route : item.main));
+  return role === "route"
+    ? filtered.sort((a, b) => Number(b.model === "deepseek-v4-flash") - Number(a.model === "deepseek-v4-flash"))
+    : filtered.sort((a, b) => Number(b.model === "deepseek-v4-pro") - Number(a.model === "deepseek-v4-pro"));
+}
+
+function modelChoiceLine(option) {
+  return `${option.label}  ${option.provider}/${option.model}  ${option.description}`;
+}
+
+function clearSelector(lineCount) {
+  for (let index = 0; index < lineCount; index += 1) {
+    output.write("\x1b[1A\r\x1b[2K");
+  }
+}
+
+function renderSelector({ title, subtitle, options, selectedIndex, lineCount = 0 }) {
+  if (lineCount > 0) clearSelector(lineCount);
+  const width = Math.min(Math.max(terminalWidth() - 2, 60), 110);
+  const bodyWidth = width - 4;
+  const rows = [
+    `╭${"─".repeat(width - 2)}╮`,
+    `│ ${padVisible(title, bodyWidth)} │`,
+    `│ ${padVisible(subtitle, bodyWidth)} │`,
+    `├${"─".repeat(width - 2)}┤`,
+    ...options.map((option, index) => {
+      const marker = index === selectedIndex ? ">" : " ";
+      const rendered = `${marker} ${compactLine(modelChoiceLine(option), bodyWidth - 2)}`;
+      return `│ ${padVisible(index === selectedIndex ? color(rendered, ansi.userBg, ansi.bold) : rendered, bodyWidth)} │`;
+    }),
+    `╰${"─".repeat(width - 2)}╯`,
+  ];
+  output.write(`${rows.join("\n")}\n`);
+  return rows.length;
+}
+
+function selectModelChoice({ title, subtitle, options, initialIndex = 0 }) {
+  if (!input.isTTY || !output.isTTY || typeof input.setRawMode !== "function") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    emitKeypressEvents(input);
+    const wasRaw = Boolean(input.isRaw);
+    let selectedIndex = clamp(initialIndex, 0, Math.max(options.length - 1, 0));
+    let lineCount = 0;
+    const cleanup = () => {
+      input.off("keypress", handler);
+      if (typeof input.setRawMode === "function") input.setRawMode(wasRaw);
+      input.pause();
+      output.write(ansi.cursorShow);
+    };
+    const redraw = () => {
+      lineCount = renderSelector({ title, subtitle, options, selectedIndex, lineCount });
+    };
+    const finish = (value) => {
+      if (lineCount > 0) clearSelector(lineCount);
+      cleanup();
+      resolve(value);
+    };
+    const handler = (_str = "", key = {}) => {
+      if (key.ctrl && key.name === "c") {
+        finish(null);
+        return;
+      }
+      if (key.name === "escape") {
+        finish(null);
+        return;
+      }
+      if (key.name === "up" || key.name === "left") {
+        selectedIndex = (selectedIndex - 1 + options.length) % options.length;
+        redraw();
+        return;
+      }
+      if (key.name === "down" || key.name === "right" || key.name === "tab") {
+        selectedIndex = (selectedIndex + 1) % options.length;
+        redraw();
+        return;
+      }
+      if (key.name === "return" || key.name === "enter" || key.sequence === "\r") {
+        finish(options[selectedIndex]);
+      }
+    };
+    input.resume();
+    input.setRawMode(true);
+    input.on("keypress", handler);
+    output.write(ansi.cursorHide);
+    redraw();
+  });
+}
+
+async function pickModelRole(role, state) {
+  const options = modelRoleChoices(role);
+  const currentProvider = role === "route" ? state.routeProvider || "deepseek" : state.mainProvider || state.provider || "deepseek";
+  const currentModel = role === "route" ? state.routeModel || "deepseek-v4-flash" : state.mainModel || "deepseek-v4-pro";
+  const initialIndex = Math.max(
+    options.findIndex((item) => item.provider === currentProvider && item.model === currentModel),
+    0
+  );
+  const selected = await selectModelChoice({
+    title: role === "route" ? "Select route model" : "Select main model",
+    subtitle: "Up/Down/Left/Right selects, Enter confirms, Esc cancels.",
+    options,
+    initialIndex,
+  });
+  if (!selected) return false;
+
+  state.routingMode = "smart";
+  state.provider = "deepseek";
+  state.model = "";
+  if (role === "route") {
+    state.routeProvider = selected.provider;
+    state.routeModel = selected.model;
+    printSystemLine(`route=${state.routeProvider}/${state.routeModel}`);
+  } else {
+    state.mainProvider = selected.provider;
+    state.mainModel = selected.model;
+    printSystemLine(`main=${state.mainProvider}/${state.mainModel}`);
+  }
+  return true;
+}
+
 async function maybeOnboardDeepSeekKey(state) {
   if (!shouldPromptForDeepSeek(state, process.cwd())) return;
 
@@ -1843,6 +2083,11 @@ async function handleCommand(line, state, packageDir) {
   }
   if (command === "route") {
     if (!value) {
+      if (input.isTTY && output.isTTY && typeof input.setRawMode === "function") {
+        const changed = await pickModelRole("route", state);
+        if (!changed) printSystemLine(`route=${state.routeProvider || "deepseek"}/${state.routeModel || "deepseek-v4-flash"}`);
+        return true;
+      }
       printAgentMessage(
         `Route model: ${state.routeProvider || "deepseek"}/${state.routeModel || "deepseek-v4-flash"}\nUse /route deepseek/deepseek-v4-flash or /route fast|smart|complex.`
       );
@@ -1860,7 +2105,18 @@ async function handleCommand(line, state, packageDir) {
     return true;
   }
   if (command === "main" || command === "model") {
-    if (!value || value === "auto") {
+    if (!value) {
+      if (input.isTTY && output.isTTY && typeof input.setRawMode === "function") {
+        const changed = await pickModelRole("main", state);
+        if (!changed) printSystemLine(`main=${state.mainProvider || state.provider || "deepseek"}/${state.mainModel || state.model || "deepseek-v4-pro"}`);
+        return true;
+      }
+      printAgentMessage(
+        `Main model: ${state.mainProvider || state.provider || "deepseek"}/${state.mainModel || state.model || "deepseek-v4-pro"}\nUse /model deepseek/deepseek-v4-pro or /model auto.`
+      );
+      return true;
+    }
+    if (value === "auto") {
       if (command === "main") {
         state.mainProvider = "";
         state.mainModel = "";

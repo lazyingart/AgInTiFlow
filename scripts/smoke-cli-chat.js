@@ -137,8 +137,27 @@ try {
   const queuedText = queuedPromptLayout.renderedRows
     .map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""))
     .join("\n");
-  if (!queuedText.includes("run   running · tool: apply_patch") || !queuedText.includes("→ apply this") || !queuedText.includes("↳ run this") || !queuedText.includes("cwd   /tmp/aginti-project")) {
+  if (
+    !queuedText.includes("run     running · tool: apply_patch") ||
+    !queuedText.includes("→ apply this") ||
+    !queuedText.includes("↳ run this") ||
+    !queuedText.includes("cwd     /tmp/aginti-project")
+  ) {
     throw new Error("terminal prompt layout did not render live input queue and cwd footer");
+  }
+  const hintPromptLayout = buildPromptLayout("/mo", 3, 90, 24, { suggestions: ["/models", "/model"], suggestionIndex: 1 });
+  const hintText = hintPromptLayout.renderedRows
+    .map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""))
+    .join("\n");
+  if (!hintText.includes("user>   /mo") || !hintText.includes("hint    /models  >/model")) {
+    throw new Error("terminal prompt layout did not align user and hint text columns");
+  }
+  const exactHintLayout = buildPromptLayout("/model", 6, 90, 24);
+  const exactHintText = exactHintLayout.renderedRows
+    .map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""))
+    .join("\n");
+  if (!exactHintText.includes("hint    >/model") || exactHintText.includes("/models")) {
+    throw new Error("exact slash commands should not show broader prefix matches");
   }
   if (classifyEscapeAction({ active: false }) !== "noop") {
     throw new Error("idle Esc should not redraw or clear the prompt");

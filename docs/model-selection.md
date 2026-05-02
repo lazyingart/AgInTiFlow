@@ -34,12 +34,16 @@ Interactive commands:
 ```text
 /models
 /venice
+/route
+/model
 /route deepseek/deepseek-v4-flash
 /model deepseek/deepseek-v4-pro
 /spare openai/gpt-5.4 medium
 /wrapper codex gpt-5.5 medium
 /auxiliary model grsai/nano-banana-2
 ```
+
+In the interactive CLI, `/route` and `/model` without arguments open a selector. Use Up/Down/Left/Right to move through choices, Enter to confirm, and Esc to cancel. Slash-command hints use the same arrow selection behavior: type a prefix such as `/mo`, use arrows to choose `/model` or `/models`, then press Enter or Tab.
 
 `/venice` is a shortcut for:
 
