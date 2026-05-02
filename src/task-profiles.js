@@ -130,7 +130,7 @@ export function getTaskProfile(value = "auto") {
 export function defaultMaxStepsForProfile(value = "auto") {
   const profile = normalizeTaskProfile(value);
   if (profile === "large-codebase") return 36;
-  if (profile === "android") return 42;
+  if (profile === "android") return 60;
   if (profile === "latex") return 30;
   return 24;
 }
