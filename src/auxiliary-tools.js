@@ -424,7 +424,7 @@ export async function generateImage(args = {}, config = {}) {
 
   const apiKey = grsaiKey();
   if (!apiKey) {
-    throw new Error("Missing GRSAI key. Run `aginti login grsai`, `aginti keys set grsai --stdin`, or `/auxilliary grsai`.");
+    throw new Error("Missing GRSAI key. Run `aginti login grsai`, `aginti keys set grsai --stdin`, or `/auxiliary grsai`.");
   }
 
   const submitUrl = `${host}/v1/draw/nano-banana`;

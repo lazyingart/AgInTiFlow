@@ -60,7 +60,7 @@ printf '%s' "$VENICE_API_KEY" | aginti keys set venice --stdin
 
 # optional image-generation auxiliary skill:
 aginti login grsai
-# inside chat, use /auxilliary grsai or /auxiliary grsai
+# inside chat, use /auxiliary grsai
 ```
 
 Start an interactive Codex-style CLI chat from any project folder:
@@ -77,7 +77,7 @@ Inside chat, type normal requests such as `write a small Python CLI app with tes
 
 For code edits, AgInTiFlow routes patch/refactor/database-style tasks to DeepSeek v4 pro by default and exposes `apply_patch` as a deterministic workspace tool. It supports exact replacements, Codex-style patch envelopes, and unified diffs, with preflight checks, path guardrails, hashes, and compact per-file diffs. See [docs/patch-tools.md](docs/patch-tools.md).
 
-Model choice is role-based: `/route` defaults to DeepSeek V4 Flash, `/model` or `/main` defaults to DeepSeek V4 Pro, `/spare` defaults to OpenAI GPT-5.4 medium, `/wrapper` defaults to Codex GPT-5.5 medium when enabled, and `/auxilliary` defaults to GRS AI/Nano Banana for image tools. See [docs/model-selection.md](docs/model-selection.md) and run `aginti models`.
+Model choice is role-based: `/route` defaults to DeepSeek V4 Flash, `/model` or `/main` defaults to DeepSeek V4 Pro, `/spare` defaults to OpenAI GPT-5.4 medium, `/wrapper` defaults to Codex GPT-5.5 medium when enabled, and `/auxiliary` defaults to GRS AI/Nano Banana for image tools. See [docs/model-selection.md](docs/model-selection.md) and run `aginti models`.
 
 For larger repositories, use `--profile large-codebase` or choose **Large codebase engineering** in the web UI. The web default stays **Auto**, and Auto now escalates codebase/system/debugging prompts to the same engineering loop when needed. Complex work routes to DeepSeek v4 pro, starts with `inspect_project`, then uses search/read/patch/check loops inspired by Codex, Copilot SDK, Claude Code, Gemini CLI, Qwen, and Claw Code. See [docs/large-codebase-engineering.md](docs/large-codebase-engineering.md).
 

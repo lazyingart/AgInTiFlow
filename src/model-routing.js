@@ -519,7 +519,7 @@ export function getModelRoleDefaults(overrides = {}) {
     auxiliary: {
       id: "auxiliary",
       label: "Auxiliary",
-      command: "/auxilliary",
+      command: "/auxiliary",
       provider: auxiliaryProvider,
       model: auxiliaryModel,
       description: "Image/media tools. Default: GRS AI/Nano Banana; Venice image is optional.",

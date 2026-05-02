@@ -60,7 +60,6 @@ const AUXILIARY_AUTH_PROVIDER = {
 
 const AUTH_ALIASES = {
   auxiliary: "grsai",
-  auxilliary: "grsai",
   image: "grsai",
   imagegen: "grsai",
   grs: "grsai",

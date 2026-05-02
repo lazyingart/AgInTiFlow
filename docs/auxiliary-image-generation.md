@@ -22,7 +22,6 @@ printf '%s' "$VENICE_API_KEY" | aginti keys set venice --stdin
 Inside interactive chat, use either spelling:
 
 ```text
-/auxilliary grsai
 /auxiliary grsai
 ```
 

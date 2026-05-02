@@ -165,7 +165,7 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
     capability("venice-key", keyStatus.venice, { envVars: keyStatus.envVars.venice }),
     capability("grsai-key", keyStatus.grsai, {
       envVars: keyStatus.envVars.grsai,
-      setup: "Optional for image generation. Run `aginti login grsai` or use `/auxilliary grsai` in chat.",
+      setup: "Optional for image generation. Run `aginti login grsai` or use `/auxiliary grsai` in chat.",
     }),
     capability("file-tools", Boolean(config.allowFileTools), { workspace: config.commandCwd }),
     capability("shell-tool", Boolean(config.allowShellTool), {

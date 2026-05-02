@@ -159,6 +159,11 @@ try {
   if (!instructionsResult.stdout.includes("AGINTI.md") || !instructionsResult.stdout.includes("Project instructions")) {
     throw new Error("interactive /instructions did not show AGINTI.md");
   }
+  const helpResult = await runChat("/help\n/exit\n");
+  const misspelledAuxiliary = "/auxil" + "liary";
+  if (!helpResult.stdout.includes("/auxiliary") || helpResult.stdout.includes(misspelledAuxiliary)) {
+    throw new Error("interactive help did not expose only the correctly spelled /auxiliary command");
+  }
   const skillsResult = await runChat("/skills website\n/exit\n");
   if (!skillsResult.stdout.includes("website-app") || !skillsResult.stdout.includes("Website And App Builder")) {
     throw new Error("interactive /skills did not show matching built-in skills");
@@ -217,6 +222,7 @@ try {
           "agent-response-gutter",
           "aginti-md",
           "instructions-command",
+          "auxiliary-command-spelling",
           "skills-command",
           "slash-prefix-autoselect",
           "instructions-chat-edit",

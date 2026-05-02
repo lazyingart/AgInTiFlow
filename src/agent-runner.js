@@ -319,7 +319,7 @@ async function createInitialState(config, sessionId) {
           config.allowAuxiliaryTools
             ? `Auxiliary skills are available: ${listAuxiliarySkills()
                 .map((skill) => `${skill.id} via ${skill.toolName} (${skill.available ? "key available" : `needs ${skill.keyName}`})`)
-                .join(", ")}. Use generate_image for real raster image/photo/illustration/cover/poster/logo requests when appropriate; if image keys are missing, ask the user to run /auxilliary grsai, aginti login grsai, or aginti login venice.`
+                .join(", ")}. Use generate_image for real raster image/photo/illustration/cover/poster/logo requests when appropriate; if image keys are missing, ask the user to run /auxiliary grsai, aginti login grsai, or aginti login venice.`
             : "Auxiliary skills are disabled for this run.",
           config.allowWebSearch
             ? "web_search is available for current information, docs, package/toolchain errors, and source discovery. Prefer web_search over browser search-engine navigation."

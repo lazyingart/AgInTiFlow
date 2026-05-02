@@ -54,7 +54,7 @@ async function runCli(args, stdin = "") {
 }
 
 try {
-  assert(normalizeAuthProvider("auxilliary") === "grsai", "auxilliary alias did not normalize to grsai");
+  assert(normalizeAuthProvider("auxiliary") === "grsai", "auxiliary alias did not normalize to grsai");
   assert(normalizeAuthProvider("qwen") === "qwen", "qwen provider did not normalize");
   assert(normalizeAuthProvider("venice") === "venice", "venice provider did not normalize");
   assert(authProviderKeyUrl("deepseek") === "https://platform.deepseek.com/api_keys", "DeepSeek key URL is missing");

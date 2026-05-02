@@ -10,7 +10,7 @@ AgInTiFlow treats model choice as a role-based control plane. A provider supplie
 | Main | `/model` or `/main` | `deepseek/deepseek-v4-pro` | Complex executor for coding, debugging, writing, and long tasks. |
 | Spare | `/spare` | `openai/gpt-5.4` with `medium` reasoning | Optional fallback or cross-check model. |
 | Wrapper | `/wrapper` | `codex gpt-5.5 medium` | External coding assistant when wrapper tools are enabled. |
-| Auxiliary | `/auxilliary` | `grsai/nano-banana-2` | Image/media tools; Venice image models are optional. |
+| Auxiliary | `/auxiliary` | `grsai/nano-banana-2` | Image/media tools; Venice image models are optional. |
 
 Smart routing still works as before: normal work goes to the route model, and complex work goes to the main model. Manual provider/model selection remains available for one-off runs.
 
@@ -38,7 +38,7 @@ Interactive commands:
 /model deepseek/deepseek-v4-pro
 /spare openai/gpt-5.4 medium
 /wrapper codex gpt-5.5 medium
-/auxilliary model grsai/nano-banana-2
+/auxiliary model grsai/nano-banana-2
 ```
 
 `/venice` is a shortcut for:

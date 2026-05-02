@@ -56,7 +56,6 @@ const SLASH_COMMANDS = [
   "/auth",
   "/instructions",
   "/memory",
-  "/auxilliary",
   "/auxiliary",
   "/new",
   "/resume",
@@ -582,7 +581,7 @@ function printHelp() {
       "                            Set spare model, e.g. /spare openai/gpt-5.4 medium.",
       "  /wrapper [on|off|codex model reasoning]",
       "                            Configure optional external wrapper.",
-      "  /auxilliary [status|grsai|venice|model grsai/nano-banana-2|on|off|image]",
+      "  /auxiliary [status|grsai|venice|model grsai/nano-banana-2|on|off|image]",
       "                            Manage optional auxiliary skills, including image generation.",
       "  /new                      Start a fresh session on the next message.",
       "  /resume <session-id>      Continue a saved session.",
@@ -1588,7 +1587,7 @@ function printModelRoles(state) {
       "/model deepseek/deepseek-v4-pro",
       "/spare openai/gpt-5.4 medium",
       "/wrapper codex gpt-5.5 medium",
-      "/auxilliary model grsai/nano-banana-2",
+      "/auxiliary model grsai/nano-banana-2",
       "",
       "Provider groups",
       ...groups,
@@ -1695,7 +1694,7 @@ async function handleCommand(line, state, packageDir) {
     );
     return true;
   }
-  if (command === "auxilliary" || command === "auxiliary") {
+  if (command === "auxiliary") {
     const action = value || "status";
     if (action === "status") {
       const keys = providerKeyStatus(process.cwd());
@@ -1705,7 +1704,7 @@ async function handleCommand(line, state, packageDir) {
           `Image generation: ${keys.grsai ? "GRSAI key available" : "missing GRSAI key"}`,
           `Venice image: ${keys.venice ? "Venice key available" : "missing Venice key"}`,
           `Selected auxiliary: ${state.auxiliaryProvider || "grsai"}/${state.auxiliaryModel || "nano-banana-2"}`,
-          "Use `/auxilliary grsai` or `/auxilliary venice` to paste a key, `/auxilliary model grsai/nano-banana-2`, `/auxilliary image`, or `/auxilliary off`.",
+          "Use `/auxiliary grsai` or `/auxiliary venice` to paste a key, `/auxiliary model grsai/nano-banana-2`, `/auxiliary image`, or `/auxiliary off`.",
         ].join("\n")
       );
       return true;
@@ -1737,7 +1736,7 @@ async function handleCommand(line, state, packageDir) {
       await promptAndSaveProviderKey(action === "venice" ? "venice" : "grsai", state);
       return true;
     }
-    printAgentMessage("Usage: /auxilliary [status|grsai|venice|model grsai/nano-banana-2|on|off|image]");
+    printAgentMessage("Usage: /auxiliary [status|grsai|venice|model grsai/nano-banana-2|on|off|image]");
     return true;
   }
   if (command === "new") {

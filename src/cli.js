@@ -354,7 +354,7 @@ function providerLabel(provider) {
   if (normalized === "openai") return "OpenAI";
   if (normalized === "qwen") return "Qwen";
   if (normalized === "venice") return "Venice";
-  if (normalized === "grsai" || normalized === "auxiliary" || normalized === "auxilliary") return "GRSAI";
+  if (normalized === "grsai" || normalized === "auxiliary") return "GRSAI";
   return "DeepSeek";
 }
 

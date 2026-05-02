@@ -22,7 +22,7 @@ The UI should be role-first rather than provider-first:
 - **Main model (`/model` or `/main`):** complex executor. Default `deepseek/deepseek-v4-pro`.
 - **Spare model (`/spare`):** fallback/cross-check model. Default `openai/gpt-5.4` with `medium` reasoning.
 - **Wrapper (`/wrapper`):** external coding assistant. Default Codex with `gpt-5.5` medium reasoning, disabled unless wrapper tools are enabled.
-- **Auxiliary (`/auxilliary`):** media/image tools. Default `grsai/nano-banana-2`; Venice image models are optional.
+- **Auxiliary (`/auxiliary`):** media/image tools. Default `grsai/nano-banana-2`; Venice image models are optional.
 
 This keeps the mental model stable: providers are supply, roles are policy.
 
@@ -47,7 +47,7 @@ Interactive equivalents:
 /model deepseek/deepseek-v4-pro
 /spare openai/gpt-5.4 medium
 /wrapper codex gpt-5.5 medium
-/auxilliary model grsai/nano-banana-2
+/auxiliary model grsai/nano-banana-2
 ```
 
 `/venice` keeps smart routing enabled and points both route and main roles at `venice/venice-uncensored-1-2`.

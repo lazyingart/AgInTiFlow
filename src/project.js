@@ -306,7 +306,6 @@ export function providerKeyPreview(projectRoot = process.cwd(), provider = "") {
   const normalized = String(provider || "").trim().toLowerCase();
   const aliases = {
     auxiliary: "grsai",
-    auxilliary: "grsai",
     image: "grsai",
     imagegen: "grsai",
     v: "venice",
@@ -339,7 +338,6 @@ export async function setProviderKey(projectRoot, provider, value) {
   const normalizedProvider = String(provider || "").toLowerCase();
   const aliases = {
     auxiliary: "grsai",
-    auxilliary: "grsai",
     image: "grsai",
     imagegen: "grsai",
     v: "venice",
