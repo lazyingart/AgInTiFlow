@@ -2079,7 +2079,13 @@ function renderSelector({ title, subtitle, options, selectedIndex, lineCount = 0
   return rows.length;
 }
 
-function selectModelChoice({ title, subtitle, options, initialIndex = 0 }) {
+const SELECTOR_BACK = Symbol("selector-back");
+
+function isSelectorBack(value) {
+  return value === SELECTOR_BACK;
+}
+
+function selectModelChoice({ title, subtitle, options, initialIndex = 0, escapeValue = null }) {
   if (!input.isTTY || !output.isTTY || typeof input.setRawMode !== "function") return Promise.resolve(null);
   return new Promise((resolve) => {
     emitKeypressEvents(input);
@@ -2107,7 +2113,7 @@ function selectModelChoice({ title, subtitle, options, initialIndex = 0 }) {
         return;
       }
       if (key.name === "escape") {
-        finish(null);
+        finish(escapeValue);
         return;
       }
       if (key.name === "up" || key.name === "left") {
@@ -2157,73 +2163,95 @@ async function pickModelRole(role, state) {
       ? modelRoleChoices("auxiliary").find((item) => item.provider === currentProvider && item.model === currentModel)
       : modelRoleChoices(role).find((item) => item.provider === currentProvider && item.model === currentModel);
   const currentGroup = currentModelEntry?.group || currentProvider;
-  const group = await selectModelChoice({
-    title:
-      role === "route"
-        ? "Select route model family"
-        : role === "spare"
-          ? "Select spare model family"
-          : role === "auxiliary"
-            ? "Select auxiliary provider"
-            : "Select main model family",
-    subtitle: "First choose a provider family. Up/Down/Left/Right selects, Enter confirms, Esc cancels.",
-    options: groupOptions,
-    initialIndex: Math.max(
-      groupOptions.findIndex((item) => item.groupId === currentGroup),
-      0
-    ),
-  });
-  if (!group) return false;
-
-  const options = role === "auxiliary" ? auxiliaryModelRoleChoices(group.groupId) : textModelRoleChoices(group.groupId);
-  const initialIndex = Math.max(
-    options.findIndex((item) => item.provider === currentProvider && item.model === currentModel),
+  let selected = null;
+  let selectedReasoning = "";
+  let initialGroupIndex = Math.max(
+    groupOptions.findIndex((item) => item.groupId === currentGroup),
     0
   );
-  const selected = await selectModelChoice({
-    title:
-      role === "route"
-        ? `Select route model: ${group.label}`
-        : role === "spare"
-          ? `Select spare model: ${group.label}`
-          : role === "auxiliary"
-            ? `Select auxiliary model: ${group.label}`
-            : `Select main model: ${group.label}`,
-    subtitle:
-      role === "auxiliary"
-        ? "Choose the image/edit auxiliary model. Enter confirms, Esc cancels."
-        : "Choose the text model. OpenAI choices ask for reasoning next.",
-    options,
-    initialIndex,
-  });
-  if (!selected) return false;
 
-  let selectedReasoning = selected.reasoningDefault || "";
-  if (Array.isArray(selected.reasoningOptions) && selected.reasoningOptions.length > 0) {
-    const currentReasoning =
-      role === "route"
-        ? state.routeReasoning || selectedReasoning || "medium"
-        : role === "spare"
-          ? state.spareReasoning || selectedReasoning || "medium"
-          : state.mainReasoning || selectedReasoning || "medium";
-    const reasoningOptions = selected.reasoningOptions.map((level) => ({
-      action: "reasoning",
-      label: level,
-      value: level,
-      description: `${selected.label} with ${level} reasoning`,
-    }));
-    const reasoning = await selectModelChoice({
-      title: `Select reasoning: ${selected.label}`,
-      subtitle: "Up/Down selects reasoning effort. Enter confirms, Esc cancels.",
-      options: reasoningOptions,
-      initialIndex: Math.max(
-        reasoningOptions.findIndex((item) => item.value === currentReasoning),
-        reasoningOptions.findIndex((item) => item.value === selectedReasoning),
-        0
-      ),
+  while (!selected) {
+    const group = await selectModelChoice({
+      title:
+        role === "route"
+          ? "Select route model family"
+          : role === "spare"
+            ? "Select spare model family"
+            : role === "auxiliary"
+              ? "Select auxiliary provider"
+              : "Select main model family",
+      subtitle: "First choose a provider family. Up/Down/Left/Right selects, Enter confirms, Esc cancels.",
+      options: groupOptions,
+      initialIndex: initialGroupIndex,
     });
-    if (!reasoning) return false;
-    selectedReasoning = reasoning.value;
+    if (!group) return false;
+    initialGroupIndex = Math.max(
+      groupOptions.findIndex((item) => item.groupId === group.groupId),
+      0
+    );
+
+    const options = role === "auxiliary" ? auxiliaryModelRoleChoices(group.groupId) : textModelRoleChoices(group.groupId);
+    let initialModelIndex = Math.max(
+      options.findIndex((item) => item.provider === currentProvider && item.model === currentModel),
+      0
+    );
+
+    while (!selected) {
+      const modelSelection = await selectModelChoice({
+        title:
+          role === "route"
+            ? `Select route model: ${group.label}`
+            : role === "spare"
+              ? `Select spare model: ${group.label}`
+              : role === "auxiliary"
+                ? `Select auxiliary model: ${group.label}`
+                : `Select main model: ${group.label}`,
+        subtitle:
+          role === "auxiliary"
+            ? "Choose the image/edit auxiliary model. Enter confirms, Esc goes back."
+            : "Choose the text model. OpenAI choices ask for reasoning next. Esc goes back.",
+        options,
+        initialIndex: initialModelIndex,
+        escapeValue: SELECTOR_BACK,
+      });
+      if (isSelectorBack(modelSelection)) break;
+      if (!modelSelection) return false;
+      initialModelIndex = Math.max(
+        options.findIndex((item) => item.provider === modelSelection.provider && item.model === modelSelection.model),
+        0
+      );
+
+      selectedReasoning = modelSelection.reasoningDefault || "";
+      if (Array.isArray(modelSelection.reasoningOptions) && modelSelection.reasoningOptions.length > 0) {
+        const currentReasoning =
+          role === "route"
+            ? state.routeReasoning || selectedReasoning || "medium"
+            : role === "spare"
+              ? state.spareReasoning || selectedReasoning || "medium"
+              : state.mainReasoning || selectedReasoning || "medium";
+        const reasoningOptions = modelSelection.reasoningOptions.map((level) => ({
+          action: "reasoning",
+          label: level,
+          value: level,
+          description: `${modelSelection.label} with ${level} reasoning`,
+        }));
+        const reasoning = await selectModelChoice({
+          title: `Select reasoning: ${modelSelection.label}`,
+          subtitle: "Up/Down selects reasoning effort. Enter confirms, Esc goes back.",
+          options: reasoningOptions,
+          initialIndex: Math.max(
+            reasoningOptions.findIndex((item) => item.value === currentReasoning),
+            reasoningOptions.findIndex((item) => item.value === selectedReasoning),
+            0
+          ),
+          escapeValue: SELECTOR_BACK,
+        });
+        if (isSelectorBack(reasoning)) continue;
+        if (!reasoning) return false;
+        selectedReasoning = reasoning.value;
+      }
+      selected = modelSelection;
+    }
   }
 
   state.routingMode = "smart";
@@ -2255,44 +2283,52 @@ async function pickModelRole(role, state) {
 
 async function pickVeniceRouteAndMain(state) {
   const options = veniceTextModelChoices();
-  const routeIndex = Math.max(
+  let routeIndex = Math.max(
     options.findIndex((item) => item.provider === state.routeProvider && item.model === state.routeModel),
     0
   );
-  const route = await selectModelChoice({
-    title: "Select Venice route model",
-    subtitle: "Route handles planning and short turns. Up/Down selects, Enter confirms, Esc cancels.",
-    options,
-    initialIndex: routeIndex,
-  });
-  if (!route) return false;
-  if (route.action === "disable") {
-    useDeepSeekDefaults(state);
-    printSystemLine("venice=off routing=smart route=deepseek/deepseek-v4-flash main=deepseek/deepseek-v4-pro");
+  while (true) {
+    const route = await selectModelChoice({
+      title: "Select Venice route model",
+      subtitle: "Route handles planning and short turns. Up/Down selects, Enter confirms, Esc cancels.",
+      options,
+      initialIndex: routeIndex,
+    });
+    if (!route) return false;
+    routeIndex = Math.max(
+      options.findIndex((item) => item.provider === route.provider && item.model === route.model),
+      0
+    );
+    if (route.action === "disable") {
+      useDeepSeekDefaults(state);
+      printSystemLine("venice=off routing=smart route=deepseek/deepseek-v4-flash main=deepseek/deepseek-v4-pro");
+      return true;
+    }
+
+    const mainIndex = Math.max(
+      options.findIndex((item) => item.action !== "disable" && item.provider === state.mainProvider && item.model === state.mainModel),
+      options.findIndex((item) => item.action !== "disable" && item.model === route.model),
+      0
+    );
+    const main = await selectModelChoice({
+      title: "Select Venice main model",
+      subtitle: "Main handles complex work. Up/Down selects, Enter confirms, Esc goes back.",
+      options,
+      initialIndex: mainIndex,
+      escapeValue: SELECTOR_BACK,
+    });
+    if (isSelectorBack(main)) continue;
+    if (!main) return false;
+    if (main.action === "disable") {
+      useDeepSeekDefaults(state);
+      printSystemLine("venice=off routing=smart route=deepseek/deepseek-v4-flash main=deepseek/deepseek-v4-pro");
+      return true;
+    }
+
+    useVeniceModels(state, route.model, main.model);
+    printSystemLine(`venice=on routing=smart route=venice/${state.routeModel} main=venice/${state.mainModel}`);
     return true;
   }
-
-  const mainIndex = Math.max(
-    options.findIndex((item) => item.action !== "disable" && item.provider === state.mainProvider && item.model === state.mainModel),
-    options.findIndex((item) => item.action !== "disable" && item.model === route.model),
-    0
-  );
-  const main = await selectModelChoice({
-    title: "Select Venice main model",
-    subtitle: "Main handles complex work. Up/Down selects, Enter confirms, Esc cancels.",
-    options,
-    initialIndex: mainIndex,
-  });
-  if (!main) return false;
-  if (main.action === "disable") {
-    useDeepSeekDefaults(state);
-    printSystemLine("venice=off routing=smart route=deepseek/deepseek-v4-flash main=deepseek/deepseek-v4-pro");
-    return true;
-  }
-
-  useVeniceModels(state, route.model, main.model);
-  printSystemLine(`venice=on routing=smart route=venice/${state.routeModel} main=venice/${state.mainModel}`);
-  return true;
 }
 
 async function pickProvider(state) {

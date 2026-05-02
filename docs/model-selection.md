@@ -46,7 +46,7 @@ Interactive commands:
 /auxiliary model grsai/nano-banana-2
 ```
 
-In the interactive CLI, `/provider`, `/route`, `/model`, `/spare`, and `/auxiliary model` without arguments open selectors. Use Up/Down/Left/Right to move through choices, Enter to confirm, and Esc to cancel. Slash-command hints use the same arrow selection behavior: type a prefix such as `/mo`, use arrows to choose `/model` or `/models`, then press Enter or Tab.
+In the interactive CLI, `/provider`, `/route`, `/model`, `/spare`, and `/auxiliary model` without arguments open selectors. Use Up/Down/Left/Right to move through choices and Enter to confirm. Esc cancels at the top level; inside multi-level selectors it goes back one level. Slash-command hints use the same arrow selection behavior: type a prefix such as `/mo`, use arrows to choose `/model` or `/models`, then press Enter or Tab.
 
 `/route`, `/model`, and `/spare` intentionally share the same text-model selector so users do not need to learn three different catalogs. The selector is hierarchical:
 

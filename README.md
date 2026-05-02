@@ -21,6 +21,10 @@ AgInTiFlow is AgInTi's web-first agent platform for controlled website automatio
 
 It is designed for workflows where an AI agent should act, but every tool, log, and session state should remain inspectable.
 
+<p align="center">
+  <img src="./demos/agintiflow-cli-launch.jpg" alt="AgInTiFlow interactive CLI launch screen with colorful terminal banner, Docker workspace status, and chat input panel" width="960" />
+</p>
+
 ## Product Snapshot
 
 | Area | Direction |

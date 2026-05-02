@@ -292,6 +292,59 @@ h3 {
   perspective: 1200px;
 }
 
+.hero-preview {
+  position: relative;
+  margin: 0 0 8px;
+  padding: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 194, 255, 0.28);
+  border-radius: 30px;
+  background:
+    linear-gradient(135deg, rgba(16, 24, 32, 0.92), rgba(0, 194, 255, 0.16)),
+    rgba(255, 255, 255, 0.76);
+  box-shadow: 0 30px 90px rgba(16, 24, 32, 0.22);
+  transform: rotateY(-7deg) rotateX(3deg);
+}
+
+.hero-preview::after {
+  position: absolute;
+  inset: auto 18px 18px auto;
+  width: 88px;
+  height: 88px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(169, 227, 75, 0.36), transparent 70%);
+  content: "";
+  pointer-events: none;
+}
+
+.hero-preview img {
+  display: block;
+  width: 100%;
+  border-radius: 22px;
+  aspect-ratio: 2578 / 1632;
+  object-fit: cover;
+}
+
+.hero-preview figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 12px 6px 2px;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.hero-preview strong {
+  color: white;
+  font-size: 1rem;
+}
+
+.hero-preview code {
+  color: var(--lime);
+}
+
 .signal-card {
   min-height: 148px;
   padding: 20px;
@@ -301,11 +354,11 @@ h3 {
   transform: rotateY(-10deg) rotateX(4deg);
 }
 
-.signal-card:nth-child(2) {
+.signal-card.cool {
   transform: translateX(18px) rotateY(-8deg) rotateX(-2deg);
 }
 
-.signal-card:nth-child(3) {
+.signal-card.bright {
   transform: translateX(4px) rotateY(-10deg) rotateX(3deg);
 }
 
@@ -630,8 +683,9 @@ h3 {
   }
 
   .signal-card,
-  .signal-card:nth-child(2),
-  .signal-card:nth-child(3) {
+  .signal-card.cool,
+  .signal-card.bright,
+  .hero-preview {
     transform: none;
   }
 

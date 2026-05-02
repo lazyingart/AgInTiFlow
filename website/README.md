@@ -94,5 +94,6 @@ The script creates a safe mock-mode run and writes optimized JPEG assets to `web
 - `docs/`: static documentation app served at `/docs/`.
 - `CNAME`: GitHub Pages custom domain for `flow.lazying.art`.
 - `assets/screenshots/`: real app screenshots used by the carousel.
+- `assets/screenshots/cli-launch.jpg`: optimized hero preview of the terminal-first CLI.
 - `assets/brand/logo.png`: cropped transparent website logo.
 - `assets/brand/logo-source.png`: original copied logo source used to regenerate the transparent asset.
