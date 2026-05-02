@@ -252,6 +252,7 @@ export function providerKeyStatus(projectRoot = process.cwd()) {
   return {
     openai: Boolean(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY),
     deepseek: Boolean(process.env.DEEPSEEK_API_KEY || process.env.LLM_API_KEY),
+    qwen: Boolean(process.env.QWEN_API_KEY),
     grsai: Boolean(process.env.GRSAI || process.env.GRSAI_API_KEY),
     mock: true,
     localEnv: env.loaded,
@@ -259,6 +260,7 @@ export function providerKeyStatus(projectRoot = process.cwd()) {
     envVars: {
       openai: ["OPENAI_API_KEY", "LLM_API_KEY"],
       deepseek: ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
+      qwen: ["QWEN_API_KEY"],
       grsai: ["GRSAI", "GRSAI_API_KEY"],
     },
   };
@@ -274,9 +276,15 @@ export async function setProviderKey(projectRoot, provider, value) {
   };
   const canonicalProvider = aliases[normalizedProvider] || normalizedProvider;
   const keyName =
-    canonicalProvider === "openai" ? "OPENAI_API_KEY" : canonicalProvider === "grsai" ? "GRSAI" : "DEEPSEEK_API_KEY";
-  if (!["deepseek", "openai", "grsai"].includes(canonicalProvider)) {
-    throw new Error("Provider must be deepseek, openai, or grsai.");
+    canonicalProvider === "openai"
+      ? "OPENAI_API_KEY"
+      : canonicalProvider === "qwen"
+        ? "QWEN_API_KEY"
+        : canonicalProvider === "grsai"
+          ? "GRSAI"
+          : "DEEPSEEK_API_KEY";
+  if (!["deepseek", "openai", "qwen", "grsai"].includes(canonicalProvider)) {
+    throw new Error("Provider must be deepseek, openai, qwen, or grsai.");
   }
 
   const keyValue = String(value || "").trim();
@@ -412,6 +420,7 @@ export async function doctorReport(projectRoot, packageVersion, config) {
     keys: {
       openai: keyStatus.openai,
       deepseek: keyStatus.deepseek,
+      qwen: keyStatus.qwen,
       grsai: keyStatus.grsai,
       mock: true,
     },

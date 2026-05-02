@@ -88,6 +88,15 @@ export function getProviderDefaults(provider = "deepseek") {
     };
   }
 
+  if (provider === "qwen") {
+    return {
+      provider: "qwen",
+      apiKey: process.env.QWEN_API_KEY || "",
+      baseURL: process.env.QWEN_BASE_URL || process.env.LLM_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      model: process.env.QWEN_DEFAULT_MODEL || process.env.LLM_MODEL || "qwen-plus",
+    };
+  }
+
   return {
     provider: "deepseek",
     apiKey: process.env.LLM_API_KEY || process.env.DEEPSEEK_API_KEY || "",

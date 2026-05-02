@@ -48,7 +48,7 @@
               DeepSeek/OpenAI keys are missing. Use mock mode, export an env var, or save a project-local DeepSeek key.
             </p>
             <p class="subtle" data-i18n="setupEnvHelp">
-              Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, or LLM_API_KEY. Mock mode remains available for local tests.
+              Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, QWEN_API_KEY, or LLM_API_KEY. Mock mode remains available for local tests.
             </p>
           </div>
           <div class="grid">
@@ -57,6 +57,7 @@
               <select id="setup-provider">
                 <option value="deepseek">DeepSeek</option>
                 <option value="openai">OpenAI</option>
+                <option value="qwen">Qwen</option>
                 <option value="grsai">GRS AI image</option>
               </select>
             </label>
@@ -88,6 +89,7 @@
             <select id="provider" name="provider">
               <option value="deepseek">DeepSeek</option>
               <option value="openai">OpenAI</option>
+              <option value="qwen">Qwen</option>
               <option value="mock" data-i18n="mockProviderOption">Mock local</option>
             </select>
             </label>

@@ -46,13 +46,15 @@ aginti --list-profiles
 aginti --sandbox-status
 ```
 
-On first interactive use, if no DeepSeek key is detected, `aginti` asks you to paste it and saves it to the project-local ignored file `.aginti/.env` with `0600` permissions. You can also set it explicitly:
+On first interactive use, if no main model key is detected, `aginti` opens an auth wizard. Use Up/Down to choose DeepSeek, OpenAI, or Qwen, paste the key, and press Enter to save it to the project-local ignored file `.aginti/.env` with `0600` permissions. The wizard then offers the optional auxiliary image key; press Esc to skip. You can rerun it even when keys already exist:
 
 ```bash
-aginti login deepseek
-# inside chat, use /login or /auth
+aginti auth
+aginti auth openai
+# inside chat, use /login or /auth for the same wizard
 # or non-interactively:
 printf '%s' "$DEEPSEEK_API_KEY" | aginti keys set deepseek --stdin
+printf '%s' "$QWEN_API_KEY" | aginti keys set qwen --stdin
 
 # optional image-generation auxiliary skill:
 aginti login grsai
@@ -269,7 +271,7 @@ Defaults:
 | `smart` | DeepSeek | Fast for normal tasks, pro for complex tasks | `AGENT_ROUTING_MODE=smart` |
 | `fast` | DeepSeek | `deepseek-v4-flash` | `DEEPSEEK_FAST_MODEL` |
 | `complex` | DeepSeek | `deepseek-v4-pro` | `DEEPSEEK_PRO_MODEL` |
-| `manual` | DeepSeek/OpenAI | user supplied | `AGENT_PROVIDER`, `LLM_MODEL` |
+| `manual` | DeepSeek/OpenAI/Qwen | user supplied | `AGENT_PROVIDER`, `LLM_MODEL` |
 
 Provider credentials:
 
@@ -277,6 +279,7 @@ Provider credentials:
 | --- | --- | --- |
 | OpenAI | `OPENAI_API_KEY` | `https://api.openai.com/v1` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `https://api.deepseek.com/v1` |
+| Qwen | `QWEN_API_KEY` | `QWEN_BASE_URL` or DashScope compatible mode |
 
 Project-local credentials can be stored without committing secrets:
 

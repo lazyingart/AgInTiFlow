@@ -87,6 +87,7 @@ try {
 
   const keyStatus = await fetchJson("/api/keys/status");
   if (typeof keyStatus.keyStatus?.deepseek !== "boolean") throw new Error("key status endpoint is invalid");
+  if (typeof keyStatus.keyStatus?.qwen !== "boolean") throw new Error("qwen key status is missing");
   if ("localEnvPath" in keyStatus.keyStatus) throw new Error("key status leaked a local env path");
   const capabilities = await fetchJson("/api/capabilities");
   if (capabilities.project?.root !== runtimeDir || !Array.isArray(capabilities.checks)) {
@@ -105,6 +106,14 @@ try {
   });
   if (!savedKey.ok || !savedKey.keyStatus?.deepseek || "apiKey" in savedKey || "key" in savedKey) {
     throw new Error("local key save endpoint returned invalid or sensitive data");
+  }
+  const savedQwenKey = await fetchJson("/api/keys/qwen", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiKey: "test-qwen-key-not-real" }),
+  });
+  if (!savedQwenKey.ok || !savedQwenKey.keyStatus?.qwen || "apiKey" in savedQwenKey || "key" in savedQwenKey) {
+    throw new Error("qwen local key save endpoint returned invalid or sensitive data");
   }
 
   const status = await fetchJson("/api/sandbox/status");

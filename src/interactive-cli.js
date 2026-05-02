@@ -3,11 +3,11 @@ import { emitKeypressEvents } from "node:readline";
 import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent-runner.js";
 import { loadConfig } from "./config.js";
-import { initProject, listProjectSessions, projectPaths, providerKeyStatus, readProjectInstructions, setProviderKey } from "./project.js";
+import { initProject, listProjectSessions, projectPaths, providerKeyStatus, readProjectInstructions } from "./project.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
 import { defaultMaxStepsForProfile, normalizeTaskProfile } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
-import { promptAndSaveDeepSeekKey, promptHidden, shouldPromptForDeepSeek } from "./auth-onboarding.js";
+import { normalizeAuthProvider, runAuthWizard, shouldPromptForDeepSeek } from "./auth-onboarding.js";
 import { SessionStore } from "./session-store.js";
 import { listSkills, selectSkillsForGoal } from "./skill-library.js";
 
@@ -474,8 +474,8 @@ function printHelp() {
       "Commands:",
       "  /help                     Show this help.",
       "  /status                   Show active route, workspace, sandbox, and session.",
-      "  /login [deepseek|openai|grsai]  Paste and save a project-local API key.",
-      "  /auth [deepseek|openai|grsai]   Alias for /login.",
+      "  /login [deepseek|openai|qwen|grsai]  Pick, paste, and save project-local API keys.",
+      "  /auth [deepseek|openai|qwen|grsai]   Alias for /login.",
       "  /instructions             Show AGINTI.md project instructions status.",
       "  /memory                   Alias for /instructions.",
       "  /auxilliary [status|grsai|on|off|image]",
@@ -488,7 +488,7 @@ function printHelp() {
       "  /web-search on|off        Enable or disable the web_search tool.",
       "  /scouts on|off|<1-10>     Enable parallel DeepSeek scouts and set scout count.",
       "  /routing <mode>           Set routing: smart, fast, complex, manual.",
-      "  /provider <name>          Set provider: deepseek, openai, mock.",
+      "  /provider <name>          Set provider: deepseek, openai, qwen, mock.",
       "  /model <name>             Set an explicit model, or /model auto.",
       "  /docker on                Use docker-workspace with approved package installs.",
       "  /docker off               Use host shell policy.",
@@ -1440,48 +1440,46 @@ async function maybeOnboardDeepSeekKey(state) {
 
   printAgentMessage(
     [
-      "DeepSeek API key is not configured for this project.",
-      "Paste it once to save it in `.aginti/.env` with 0600 permissions, or press Enter to continue in mock mode.",
+      "No main model API key is configured for this project.",
+      "Choose DeepSeek, OpenAI, or Qwen, then paste a key to save in `.aginti/.env` with 0600 permissions.",
+      "After that, you can optionally paste the auxiliary image key. Press Esc to skip.",
     ].join("\n")
   );
-  const result = await promptAndSaveDeepSeekKey(process.cwd(), {
-    promptText: "DeepSeek API key: ",
-  });
-  if (result.saved) {
-    printAgentMessage(`Saved ${result.keyName} to project-local ignored env.`);
+  const result = await runAuthWizard(process.cwd(), { provider: state.provider || "", includeAuxiliary: true });
+  applyAuthWizardResult(result, state);
+  if (result.saved.some((item) => item.provider !== "grsai")) {
     return;
   }
 
   state.provider = "mock";
   state.routingMode = "manual";
   state.model = "mock-agent";
-  printAgentMessage("No key saved. Continuing in local mock mode. Use `/provider deepseek` after running `aginti login deepseek`.");
+  printAgentMessage("No main key saved. Continuing in local mock mode. Use `/auth` later to save DeepSeek, OpenAI, or Qwen.");
 }
 
-async function promptAndSaveProviderKey(provider = "deepseek", state = null) {
-  const aliases = { auxiliary: "grsai", auxilliary: "grsai", image: "grsai", imagegen: "grsai" };
-  const candidate = aliases[String(provider || "").toLowerCase()] || String(provider || "").toLowerCase();
-  const normalized = ["openai", "deepseek", "grsai"].includes(candidate)
-    ? String(provider || "").toLowerCase()
-    : "deepseek";
-  const canonical = aliases[normalized] || normalized;
-  const labelText = canonical === "openai" ? "OpenAI" : canonical === "grsai" ? "GRSAI" : "DeepSeek";
-  const key = await promptHidden(`${labelText} API key/token (paste, Enter to save): `);
-  if (!key) {
-    printAgentMessage("No key saved.");
-    return;
-  }
-
-  const result = await setProviderKey(process.cwd(), canonical, key);
+function applyAuthWizardResult(result, state = null) {
   if (state) {
-    if (canonical !== "grsai") state.provider = canonical;
+    const main = result.saved.find((item) => item.provider !== "grsai");
+    if (main) state.provider = main.provider;
     if (state.routingMode === "manual" && state.model === "mock-agent") {
       state.routingMode = "smart";
       state.model = "";
     }
-    if (canonical === "grsai") state.allowAuxiliaryTools = true;
+    if (result.saved.some((item) => item.provider === "grsai")) state.allowAuxiliaryTools = true;
   }
-  printAgentMessage(`Saved ${result.keyName} to project-local ignored env. Raw key was not printed.`);
+  if (result.saved.length > 0) {
+    printAgentMessage(
+      result.saved.map((item) => `Saved ${item.keyName} to project-local ignored env. Raw key was not printed.`).join("\n")
+    );
+  } else {
+    printAgentMessage("No key saved.");
+  }
+}
+
+async function promptAndSaveProviderKey(provider = "", state = null) {
+  const canonical = normalizeAuthProvider(provider || "", "");
+  const result = await runAuthWizard(process.cwd(), { provider: canonical, includeAuxiliary: canonical !== "grsai" });
+  applyAuthWizardResult(result, state);
 }
 
 async function handleCommand(line, state, packageDir) {
@@ -1499,7 +1497,7 @@ async function handleCommand(line, state, packageDir) {
     printSystemLine(
       `keys deepseek=${keys.deepseek ? "available" : "missing"} openai=${keys.openai ? "available" : "missing"} grsai=${
         keys.grsai ? "available" : "missing"
-      }`
+      } qwen=${keys.qwen ? "available" : "missing"}`
     );
     return true;
   }

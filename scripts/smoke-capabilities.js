@@ -37,6 +37,7 @@ try {
   assert(capabilities.project.instructionsPresent, "capabilities did not report AGINTI.md");
   assert(capabilities.project.sharedSessionFolder, "capabilities did not report shared session folder");
   assert(capabilities.keys?.mock === true, "capabilities did not report mock availability");
+  assert(typeof capabilities.keys?.qwen === "boolean", "capabilities did not report qwen key status");
   assert(
     capabilities.checks.some((check) => check.name === "npm-prefix-test-policy" && check.ok),
     "npm --prefix test policy is not allowed"

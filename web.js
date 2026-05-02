@@ -113,7 +113,7 @@ function serializeRun(run) {
 function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
   const modelPresets = getModelPresets();
   const providerCandidate = body.provider || current.provider || "deepseek";
-  const provider = ["openai", "deepseek", "mock"].includes(providerCandidate) ? providerCandidate : "deepseek";
+  const provider = ["openai", "deepseek", "qwen", "mock"].includes(providerCandidate) ? providerCandidate : "deepseek";
   const routingMode =
     provider === "mock" ? "manual" : normalizeRoutingMode(body.routingMode || current.routingMode || "smart");
   const providerDefaults = getProviderDefaults(provider);
@@ -195,6 +195,7 @@ function publicKeyStatus(projectRoot = baseDir) {
   return {
     openai: status.openai,
     deepseek: status.deepseek,
+    qwen: status.qwen,
     grsai: status.grsai,
     mock: true,
     localEnv: status.localEnv,
@@ -570,6 +571,7 @@ app.get("/api/config", async (_req, res) => {
     defaults: {
       openai: publicProviderDefault("openai"),
       deepseek: publicProviderDefault("deepseek"),
+      qwen: publicProviderDefault("qwen"),
       mock: publicProviderDefault("mock"),
       headless: true,
       maxSteps: 24,

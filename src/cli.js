@@ -16,7 +16,7 @@ import {
 } from "./project.js";
 import { listTaskProfiles } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
-import { promptAndSaveDeepSeekKey, promptHidden, shouldPromptForDeepSeek } from "./auth-onboarding.js";
+import { normalizeAuthProvider, promptHidden, runAuthWizard, shouldPromptForDeepSeek } from "./auth-onboarding.js";
 import { listSkills, selectSkillsForGoal } from "./skill-library.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -267,13 +267,14 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti skills [query] OR aginti login deepseek|openai|grsai OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex] [--list-skills] [--sandbox-status|--sandbox-preflight] "your task"'
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti skills [query] OR aginti auth [deepseek|openai|qwen|grsai] OR aginti login [deepseek|openai|qwen|grsai] OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex] [--list-skills] [--sandbox-status|--sandbox-preflight] "your task"'
   );
 }
 
 function providerLabel(provider) {
   const normalized = String(provider || "").toLowerCase();
   if (normalized === "openai") return "OpenAI";
+  if (normalized === "qwen") return "Qwen";
   if (normalized === "grsai" || normalized === "auxiliary" || normalized === "auxilliary") return "GRSAI";
   return "DeepSeek";
 }
@@ -355,7 +356,9 @@ function printDoctorReport(report) {
   console.log(
     `keys: deepseek=${report.keys.deepseek ? "available" : "missing"} openai=${
       report.keys.openai ? "available" : "missing"
-    } grsai=${report.keys.grsai ? "available" : "missing"} mock=available localEnv=${report.project.localEnvPresent}`
+    } qwen=${report.keys.qwen ? "available" : "missing"} grsai=${
+      report.keys.grsai ? "available" : "missing"
+    } mock=available localEnv=${report.project.localEnvPresent}`
   );
   console.log(
     `sandbox=${report.sandbox?.sandboxMode || "unknown"} docker=${
@@ -377,16 +380,14 @@ async function readStdin() {
 
 async function ensureDeepSeekKeyForOneShot(args) {
   if (!shouldPromptForDeepSeek(args, process.cwd())) return true;
-  console.log("DeepSeek API key is not configured for this project.");
-  console.log("Paste it once to save it in `.aginti/.env` with 0600 permissions, or press Enter to cancel.");
-  const result = await promptAndSaveDeepSeekKey(process.cwd(), {
-    promptText: "DeepSeek API key: ",
-  });
-  if (result.saved) {
-    console.log(`saved ${result.keyName} to project-local ignored env`);
+  console.log("No main model API key is configured for this project.");
+  console.log("Choose DeepSeek, OpenAI, or Qwen, then paste a key to save in `.aginti/.env` with 0600 permissions.");
+  const result = await runAuthWizard(process.cwd(), { provider: args.provider || "" });
+  printAuthWizardResult(result);
+  if (result.saved.some((item) => item.provider !== "grsai")) {
     return true;
   }
-  console.error("No DeepSeek key saved. Run `aginti login deepseek` later, or use `--provider mock` for local tests.");
+  console.error("No main key saved. Run `aginti auth` later, or use `--provider mock` for local tests.");
   return false;
 }
 
@@ -397,9 +398,9 @@ async function handleKeyCommand(argv) {
     console.log(
       `keys: deepseek=${status.deepseek ? "available" : "missing"} openai=${
         status.openai ? "available" : "missing"
-      } grsai=${status.grsai ? "available" : "missing"} mock=available localEnv=${status.localEnv}`
+      } qwen=${status.qwen ? "available" : "missing"} grsai=${status.grsai ? "available" : "missing"} mock=available localEnv=${status.localEnv}`
     );
-    console.log("env vars: DeepSeek=DEEPSEEK_API_KEY or LLM_API_KEY; OpenAI=OPENAI_API_KEY or LLM_API_KEY; image=GRSAI or GRSAI_API_KEY");
+    console.log("env vars: DeepSeek=DEEPSEEK_API_KEY or LLM_API_KEY; OpenAI=OPENAI_API_KEY or LLM_API_KEY; Qwen=QWEN_API_KEY; image=GRSAI or GRSAI_API_KEY");
     return;
   }
 
@@ -415,8 +416,20 @@ async function handleKeyCommand(argv) {
     return;
   }
 
-  console.error("Usage: aginti keys status OR aginti keys set deepseek|openai|grsai [--stdin]");
+  console.error("Usage: aginti keys status OR aginti keys set deepseek|openai|qwen|grsai [--stdin]");
   process.exit(1);
+}
+
+function printAuthWizardResult(result) {
+  if (result.saved.length > 0) {
+    for (const item of result.saved) {
+      console.log(`saved ${item.provider} key to project-local ignored env (${item.keyName})`);
+    }
+  }
+  if (result.saved.length === 0) console.log("No key saved.");
+  if (result.skipped.length > 0) {
+    console.log(`skipped: ${result.skipped.map((item) => item.provider).join(", ")}`);
+  }
 }
 
 async function handleSessionsCommand(argv) {
@@ -532,16 +545,22 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
 
-  if (argv[0] === "login") {
-    const provider = argv[1] || "deepseek";
+  if (argv[0] === "auth" || argv[0] === "login") {
+    const provider = normalizeAuthProvider(argv[1] || "", "");
+    if (argv[0] === "auth" || (!provider && process.stdin.isTTY)) {
+      const result = await runAuthWizard(process.cwd(), { provider });
+      printAuthWizardResult(result);
+      return;
+    }
+    const target = provider || "deepseek";
     const key = argv.includes("--stdin") || !process.stdin.isTTY
       ? await readStdin()
-      : await promptHidden(`${providerLabel(provider)} API key/token: `);
+      : await promptHidden(`${providerLabel(target)} API key/token: `);
     if (!key) {
       console.error("No key saved.");
       process.exit(1);
     }
-    const result = await setProviderKey(process.cwd(), provider, key);
+    const result = await setProviderKey(process.cwd(), target, key);
     console.log(`saved ${result.provider} key to project-local ignored env (${result.keyName})`);
     return;
   }

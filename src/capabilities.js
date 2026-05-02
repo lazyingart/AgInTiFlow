@@ -147,6 +147,7 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
     capability("docker", Boolean(dockerStatus?.dockerAvailable), dockerStatus || {}),
     capability("deepseek-key", keyStatus.deepseek, { envVars: keyStatus.envVars.deepseek }),
     capability("openai-key", keyStatus.openai, { envVars: keyStatus.envVars.openai }),
+    capability("qwen-key", keyStatus.qwen, { envVars: keyStatus.envVars.qwen }),
     capability("grsai-key", keyStatus.grsai, {
       envVars: keyStatus.envVars.grsai,
       setup: "Optional for image generation. Run `aginti login grsai` or use `/auxilliary grsai` in chat.",
@@ -202,6 +203,7 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
     keys: {
       deepseek: keyStatus.deepseek,
       openai: keyStatus.openai,
+      qwen: keyStatus.qwen,
       grsai: keyStatus.grsai,
       mock: true,
       localEnv: keyStatus.localEnv,
@@ -266,7 +268,9 @@ export function printCapabilityReport(report) {
   console.log(
     `keys: deepseek=${report.keys.deepseek ? "available" : "missing"} openai=${
       report.keys.openai ? "available" : "missing"
-    } grsai=${report.keys.grsai ? "available" : "missing"} mock=available localEnv=${report.keys.localEnv}`
+    } qwen=${report.keys.qwen ? "available" : "missing"} grsai=${
+      report.keys.grsai ? "available" : "missing"
+    } mock=available localEnv=${report.keys.localEnv}`
   );
   for (const check of report.checks) {
     const suffix = check.version ? ` ${check.version}` : check.reason ? ` ${check.reason}` : check.hint ? ` ${check.hint}` : "";

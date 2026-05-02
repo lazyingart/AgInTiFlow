@@ -22,9 +22,9 @@ const translations = {
     projectStatusTitle: "Project folder",
     setupTitle: "Provider setup",
     setupHelp:
-      "DeepSeek/OpenAI keys are missing. Use mock mode, export an env var, or save a project-local DeepSeek key.",
+      "DeepSeek/OpenAI/Qwen keys are missing. Use mock mode, export an env var, or save a project-local model key.",
     setupEnvHelp:
-      "Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, LLM_API_KEY, and optional GRSAI for image generation. Mock mode remains available for local tests.",
+      "Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, QWEN_API_KEY, LLM_API_KEY, and optional GRSAI for image generation. Mock mode remains available for local tests.",
     setupProviderLabel: "Provider",
     setupKeyLabel: "API key",
     saveKeyButton: "Save local key",
@@ -714,6 +714,7 @@ const ariaLabelNodes = [...document.querySelectorAll("[data-i18n-aria-label]")];
 const defaults = {
   openai: "gpt-5.4-mini",
   deepseek: "deepseek-v4-flash",
+  qwen: "qwen-plus",
   mock: "mock-agent",
 };
 
@@ -783,12 +784,14 @@ function renderKeyStatus(status = lastKeyStatus) {
   if (!status) return;
   keyStatusEl.textContent = `${t("keysLabel")}: OpenAI ${
     status.openai ? t("availableLabel") : t("missingLabel")
-  } · DeepSeek ${status.deepseek ? t("availableLabel") : t("missingLabel")} · GRS AI ${
+  } · DeepSeek ${status.deepseek ? t("availableLabel") : t("missingLabel")} · Qwen ${
+    status.qwen ? t("availableLabel") : t("missingLabel")
+  } · GRS AI ${
     status.grsai ? t("availableLabel") : t("missingLabel")
   } · ${t("mockLabel")} ${
     status.mock ? t("availableLabel") : t("missingLabel")
   }`;
-  if (setupCardEl) setupCardEl.hidden = Boolean(status.openai || status.deepseek);
+  if (setupCardEl) setupCardEl.hidden = Boolean(status.openai || status.deepseek || status.qwen);
 }
 
 function renderProjectStatus(info = projectInfo) {
@@ -2278,6 +2281,7 @@ providerField.addEventListener("change", () => {
     !modelField.value.trim() ||
     modelField.value === defaults.openai ||
     modelField.value === defaults.deepseek ||
+    modelField.value === defaults.qwen ||
     modelField.value === defaults.mock
   ) {
     modelField.value = defaults[providerField.value] || "";
@@ -2513,6 +2517,7 @@ async function loadConfig() {
   taskProfiles = data.taskProfiles || [];
   projectInfo = data.project || null;
   defaults.openai = data.defaults?.openai?.model || defaults.openai;
+  defaults.qwen = data.defaults?.qwen?.model || defaults.qwen;
   defaults.deepseek = routingPresets.fast?.model || data.defaults?.deepseek?.model || defaults.deepseek;
   defaults.mock = data.defaults?.mock?.model || defaults.mock;
 
