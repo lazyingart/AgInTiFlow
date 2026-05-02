@@ -351,6 +351,20 @@ function printPreviewBlock(role, text, { time = "", bg = ansi.systemBg, maxLines
   }
 }
 
+function printHistoryBlock(role, text, { time = "", bg = ansi.systemBg } = {}) {
+  const header = [label(role, bg).trimEnd(), time ? color(time, ansi.dim) : ""].filter(Boolean).join(" ");
+  outputLine(header);
+  const width = Math.max(terminalWidth() - 8, 38);
+  const rendered = stripMarkdown(text)
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd());
+  const lines = rendered.length ? rendered : ["(empty)"];
+  for (const line of lines) {
+    const wrapped = wrapTextLine(line || " ", width);
+    for (const wrappedLine of wrapped) outputLine(`${color(" | ", bg)} ${wrappedLine}`);
+  }
+}
+
 function printSystemLine(text) {
   if (!String(text || "").trim()) {
     outputLine("");
@@ -1298,20 +1312,14 @@ async function latestSession() {
   return sessions[0] || null;
 }
 
-function compactHistoryText(content = "", limit = 170) {
-  const rendered = stripAnsi(stripMarkdown(String(content || "")));
-  return compactLine(rendered.replace(/\s+/g, " "), limit);
-}
-
 function printHistoryEntry(entry) {
   const role = entry.role === "assistant" ? "aginti" : entry.role === "user" ? "user" : String(entry.role || "note");
   const bg = role === "aginti" ? ansi.agentBg : role === "user" ? ansi.userBg : ansi.systemBg;
   const time = entry.at ? new Date(entry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-  const maxLines = role === "aginti" ? 4 : 3;
-  printPreviewBlock(role, compactHistoryText(entry.content, 520), { time, bg, maxLines });
+  printHistoryBlock(role, entry.content, { time, bg });
 }
 
-async function printResumeHistory(state, { limit = 8 } = {}) {
+async function printResumeHistory(state, { limit = 0 } = {}) {
   if (!state.sessionId) return;
   const store = new SessionStore(projectPaths(process.cwd()).sessionsDir, state.sessionId);
   const saved = await store.loadState().catch(() => null);
@@ -1321,8 +1329,10 @@ async function printResumeHistory(state, { limit = 8 } = {}) {
     return;
   }
 
-  const shown = chat.slice(-limit);
-  printSystemLine(`resume history session=${state.sessionId} showing=${shown.length}/${chat.length}`);
+  const shown = limit > 0 ? chat.slice(-limit) : chat;
+  printSystemLine(
+    `resume history session=${state.sessionId} messages=${chat.length}${limit > 0 ? ` showing=${shown.length}/${chat.length}` : ""}`
+  );
   for (const entry of shown) printHistoryEntry(entry);
 }
 

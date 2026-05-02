@@ -150,13 +150,16 @@ try {
   if (!latest.stdout.includes("resume history") || !latest.stdout.includes("Mock run complete")) {
     throw new Error("bare aginti resume did not preview saved chat history");
   }
+  if (latest.stdout.includes("showing=") || latest.stdout.includes("…")) {
+    throw new Error("resume history should render full saved messages instead of compact previews");
+  }
 
   console.log(
     JSON.stringify(
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["markdown-render", "markdown-table-no-duplicate", "patch-diff-render", "prompt-layout", "live-input-status-layout", "agent-response-gutter", "aginti-md", "instructions-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest", "resume-history-preview"],
+        checks: ["markdown-render", "markdown-table-no-duplicate", "patch-diff-render", "prompt-layout", "live-input-status-layout", "agent-response-gutter", "aginti-md", "instructions-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest", "resume-history-full"],
       },
       null,
       2
