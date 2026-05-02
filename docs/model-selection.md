@@ -48,12 +48,15 @@ Interactive commands:
 
 In the interactive CLI, `/provider`, `/route`, `/model`, `/spare`, and `/auxiliary model` without arguments open selectors. Use Up/Down/Left/Right to move through choices, Enter to confirm, and Esc to cancel. Slash-command hints use the same arrow selection behavior: type a prefix such as `/mo`, use arrows to choose `/model` or `/models`, then press Enter or Tab.
 
+`/route`, `/model`, and `/spare` intentionally share the same text-model selector so users do not need to learn three different catalogs. The shared list is grouped as DeepSeek, Venice Uncensored, Venice GPT/Claude/Gemma/Qwen, OpenAI, Qwen, and Mock. OpenAI entries show the recommended default reasoning effort in the description; `/spare` stores that reasoning value when selected.
+
 `/venice` opens a two-step selector for the Venice route and main models. The current text choices are:
 
 ```text
 venice/venice-uncensored-1-2
 venice/venice-uncensored
 venice/gemma-4-uncensored
+Disable Venice
 ```
 
 For scripts or non-interactive terminals, `/venice` uses Venice 1.2 for both roles. You can also set both roles directly with `/venice 1.2`, `/venice 1.1`, or `/venice gemma`. Use two values to set route and main separately, for example `/venice 1.2 gemma`.

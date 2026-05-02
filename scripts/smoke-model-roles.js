@@ -10,6 +10,7 @@ import {
   selectModelRoute,
 } from "../src/model-routing.js";
 import { parseTextToolCalls, usesTextToolProtocol } from "../src/model-client.js";
+import { modelRoleChoices } from "../src/interactive-cli.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -111,6 +112,32 @@ assert(MODEL_PROVIDER_GROUPS["venice-gpt"].provider === "venice", "venice-gpt gr
 assert(modelsForProviderGroup("venice-gemma").some((item) => item.id === "gemma-4-uncensored"), "venice-gemma bucket missing Gemma");
 assert(modelsForProviderGroup("venice-uncensored").some((item) => item.id === "e2ee-venice-uncensored-24b-p"), "venice-uncensored bucket missing Venice 1.1");
 assert(AUXILIARY_MODEL_CATALOG["venice-image"].some((item) => item.id === "gpt-image-2"), "Venice image catalog missing GPT Image 2");
+const routeChoices = modelRoleChoices("route").map((item) => `${item.provider}/${item.model}`);
+const mainChoices = modelRoleChoices("main").map((item) => `${item.provider}/${item.model}`);
+const spareChoices = modelRoleChoices("spare").map((item) => `${item.provider}/${item.model}`);
+assert(JSON.stringify(routeChoices) === JSON.stringify(mainChoices), "route and main selectors should share the same text-model list");
+assert(JSON.stringify(routeChoices) === JSON.stringify(spareChoices), "route and spare selectors should share the same text-model list");
+for (const expected of [
+  "deepseek/deepseek-v4-flash",
+  "deepseek/deepseek-v4-pro",
+  "venice/venice-uncensored-1-2",
+  "venice/venice-uncensored",
+  "venice/gemma-4-uncensored",
+  "venice/openai-gpt-55",
+  "venice/claude-sonnet-4-6",
+  "venice/qwen3-6-27b",
+  "openai/gpt-5.5",
+  "openai/gpt-5.4",
+  "openai/gpt-5.4-mini",
+  "openai/gpt-5.3-codex",
+  "openai/gpt-5.3-codex-spark",
+  "qwen/qwen-plus",
+  "mock/mock-agent",
+]) {
+  assert(routeChoices.includes(expected), `shared model selector missing ${expected}`);
+}
+assert(!routeChoices.includes("venice/e2ee-venice-uncensored-24b-p"), "shared model selector should hide unstable E2EE Venice 1.1");
+assert(modelRoleChoices("auxiliary").some((item) => item.provider === "grsai"), "auxiliary selector missing GRS AI");
 const parsedTextToolCalls = parseTextToolCalls('[TOOL_CALLS]list_files[ARGS]call_123[ARGS]{"path":".","maxDepth":1}');
 assert(parsedTextToolCalls.length === 1, "Venice text tool-call parser did not detect encoded tool call");
 assert(parsedTextToolCalls[0].function.name === "list_files", "Venice text tool-call parser returned wrong tool name");
@@ -151,6 +178,7 @@ console.log(
         "route-overrides",
         "provider-groups",
         "auxiliary-catalog",
+        "shared-model-selectors",
         "venice-text-tool-parser",
         "cli-models-command",
         "venice-shortcut",

@@ -1694,6 +1694,13 @@ function veniceTextModelChoices() {
       label: "Gemma 4",
       description: "Gemma-family Venice text model; 256K context",
     },
+    {
+      action: "disable",
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      label: "Disable Venice",
+      description: "restore DeepSeek route/main defaults",
+    },
   ];
 }
 
@@ -1789,98 +1796,69 @@ function printModelRoles(state) {
   );
 }
 
-function modelRoleChoices(role = "main") {
+function compactReasoning(model = {}) {
+  const values = Array.isArray(model.reasoning) ? model.reasoning : [];
+  if (values.length === 0) return "";
+  const preferred = model.id === "gpt-5.4-mini" || model.id === "gpt-5.3-codex-spark" ? "high" : "medium";
+  return `${preferred} reasoning`;
+}
+
+function modelSelectorGroup(provider, model = {}) {
+  if (provider === "deepseek") return "DeepSeek";
+  if (provider === "openai") return "OpenAI";
+  if (provider === "qwen") return "Qwen";
+  if (provider === "mock") return "Mock";
+  if (provider === "venice") {
+    if (model.bucket === "venice-uncensored") return "Venice Uncensored";
+    if (model.bucket === "venice-gpt") return "Venice GPT";
+    if (model.bucket === "venice-claude") return "Venice Claude";
+    if (model.bucket === "venice-gemma") return "Venice Gemma";
+    if (model.bucket === "venice-qwen") return "Venice Qwen";
+    return "Venice";
+  }
+  return provider;
+}
+
+function textModelRoleChoices() {
+  const providerOrder = ["deepseek", "venice", "openai", "qwen", "mock"];
+  const veniceOrder = [
+    "venice-uncensored-1-2",
+    "venice-uncensored",
+    "gemma-4-uncensored",
+    "openai-gpt-55",
+    "claude-sonnet-4-6",
+    "qwen3-6-27b",
+  ];
+  const choices = [];
+  for (const provider of providerOrder) {
+    let models = PROVIDER_MODEL_CATALOG[provider] || [];
+    if (provider === "venice") {
+      const byId = new Map(models.filter((model) => !model.hidden).map((model) => [model.id, model]));
+      models = veniceOrder.map((id) => byId.get(id)).filter(Boolean);
+    } else {
+      models = models.filter((model) => !model.hidden);
+    }
+    for (const model of models) {
+      const group = modelSelectorGroup(provider, model);
+      const reasoning = compactReasoning(model);
+      const context = model.context ? `${model.context} context` : "";
+      const details = [reasoning, context, model.description].filter(Boolean).join("; ");
+      choices.push({
+        provider,
+        model: model.id,
+        label: `${group} · ${model.label}`,
+        group,
+        description: details,
+        reasoningDefault: reasoning ? reasoning.split(" ")[0] : "",
+      });
+    }
+  }
+  return choices;
+}
+
+export function modelRoleChoices(role = "main") {
+  if (role !== "auxiliary") return textModelRoleChoices();
   const common = [
-    {
-      provider: "deepseek",
-      model: "deepseek-v4-flash",
-      label: "DeepSeek V4 Flash",
-      description: "fast planner, short shell/browser/code work",
-      route: true,
-    },
-    {
-      provider: "deepseek",
-      model: "deepseek-v4-pro",
-      label: "DeepSeek V4 Pro",
-      description: "complex coding, debugging, writing, and long tasks",
-      main: true,
-      spare: true,
-    },
-    {
-      provider: "venice",
-      model: "venice-uncensored-1-2",
-      label: "Venice 1.2",
-      description: "Venice text route; use /auth venice if missing",
-      route: true,
-      main: true,
-      spare: true,
-    },
-    {
-      provider: "venice",
-      model: "venice-uncensored",
-      label: "Venice 1.1",
-      description: "legacy Venice text route; use /auth venice if missing",
-      route: true,
-      main: true,
-      spare: true,
-    },
-    {
-      provider: "venice",
-      model: "gemma-4-uncensored",
-      label: "Gemma 4",
-      description: "Gemma-family Venice route; use /auth venice if missing",
-      route: true,
-      main: true,
-      spare: true,
-    },
-    {
-      provider: "openai",
-      model: "gpt-5.5",
-      label: "OpenAI GPT-5.5",
-      description: "frontier spare/manual model",
-      main: true,
-      spare: true,
-    },
-    {
-      provider: "openai",
-      model: "gpt-5.4",
-      label: "OpenAI GPT-5.4",
-      description: "strong everyday coding spare",
-      main: true,
-      spare: true,
-    },
-    {
-      provider: "openai",
-      model: "gpt-5.4-mini",
-      label: "OpenAI GPT-5.4 Mini",
-      description: "small fast spare route",
-      route: true,
-      spare: true,
-    },
-    {
-      provider: "qwen",
-      model: "qwen-plus",
-      label: "Qwen Plus",
-      description: "general Qwen route",
-      route: true,
-    },
-    {
-      provider: "qwen",
-      model: "qwen-max",
-      label: "Qwen Max",
-      description: "larger Qwen route",
-      main: true,
-      spare: true,
-    },
-    {
-      provider: "mock",
-      model: "mock-agent",
-      label: "Mock Agent",
-      description: "local deterministic test route",
-      route: true,
-      main: true,
-      spare: true,
-    },
     {
       provider: "grsai",
       model: "nano-banana-2",
@@ -1903,22 +1881,7 @@ function modelRoleChoices(role = "main") {
       auxiliary: true,
     },
   ];
-  const filtered = common.filter((item) => {
-    if (role === "route") return item.route;
-    if (role === "spare") return item.spare;
-    if (role === "auxiliary") return item.auxiliary;
-    return item.main;
-  });
-  if (role === "route") {
-    return filtered.sort((a, b) => Number(b.model === "deepseek-v4-flash") - Number(a.model === "deepseek-v4-flash"));
-  }
-  if (role === "spare") {
-    return filtered.sort((a, b) => Number(b.model === "gpt-5.4") - Number(a.model === "gpt-5.4"));
-  }
-  if (role === "auxiliary") {
-    return filtered.sort((a, b) => Number(b.provider === "grsai") - Number(a.provider === "grsai"));
-  }
-  return filtered.sort((a, b) => Number(b.model === "deepseek-v4-pro") - Number(a.model === "deepseek-v4-pro"));
+  return common.filter((item) => item.auxiliary).sort((a, b) => Number(b.provider === "grsai") - Number(a.provider === "grsai"));
 }
 
 function providerChoices() {
@@ -1957,6 +1920,7 @@ function providerChoices() {
 }
 
 function modelChoiceLine(option) {
+  if (option.action === "disable") return `${option.label}  ${option.description}`;
   return `${option.label}  ${option.provider}/${option.model}  ${option.description}`;
 }
 
@@ -2092,7 +2056,7 @@ async function pickModelRole(role, state) {
   } else if (role === "spare") {
     state.spareProvider = selected.provider;
     state.spareModel = selected.model;
-    state.spareReasoning = state.spareReasoning || "medium";
+    state.spareReasoning = selected.reasoningDefault || state.spareReasoning || "medium";
     printSystemLine(`spare=${state.spareProvider}/${state.spareModel} reasoning=${state.spareReasoning}`);
   } else if (role === "auxiliary") {
     state.auxiliaryProvider = selected.provider;
@@ -2120,10 +2084,15 @@ async function pickVeniceRouteAndMain(state) {
     initialIndex: routeIndex,
   });
   if (!route) return false;
+  if (route.action === "disable") {
+    useDeepSeekDefaults(state);
+    printSystemLine("venice=off routing=smart route=deepseek/deepseek-v4-flash main=deepseek/deepseek-v4-pro");
+    return true;
+  }
 
   const mainIndex = Math.max(
-    options.findIndex((item) => item.provider === state.mainProvider && item.model === state.mainModel),
-    options.findIndex((item) => item.model === route.model),
+    options.findIndex((item) => item.action !== "disable" && item.provider === state.mainProvider && item.model === state.mainModel),
+    options.findIndex((item) => item.action !== "disable" && item.model === route.model),
     0
   );
   const main = await selectModelChoice({
@@ -2133,6 +2102,11 @@ async function pickVeniceRouteAndMain(state) {
     initialIndex: mainIndex,
   });
   if (!main) return false;
+  if (main.action === "disable") {
+    useDeepSeekDefaults(state);
+    printSystemLine("venice=off routing=smart route=deepseek/deepseek-v4-flash main=deepseek/deepseek-v4-pro");
+    return true;
+  }
 
   useVeniceModels(state, route.model, main.model);
   printSystemLine(`venice=on routing=smart route=venice/${state.routeModel} main=venice/${state.mainModel}`);

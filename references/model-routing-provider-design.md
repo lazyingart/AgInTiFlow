@@ -53,7 +53,9 @@ Interactive equivalents:
 /auxiliary model grsai/nano-banana-2
 ```
 
-`/venice` opens a route/main selector for Venice text models. The selector includes `venice/venice-uncensored-1-2` (Venice 1.2), `venice/venice-uncensored` (Venice 1.1), and `venice/gemma-4-uncensored` (Gemma 4). In non-interactive shells, `/venice` keeps script compatibility by selecting `venice/venice-uncensored-1-2` for both roles. `/venice 1.2 gemma` sets route to Venice 1.2 and main to Gemma 4; `/venice off` restores `deepseek/deepseek-v4-flash` for route and `deepseek/deepseek-v4-pro` for main.
+`/route`, `/model`, and `/spare` share a single text-model selector. The selector is grouped as DeepSeek, Venice Uncensored, Venice GPT/Claude/Gemma/Qwen, OpenAI, Qwen, and Mock so the user sees the same union of route/main/spare-capable models in every role.
+
+`/venice` opens a route/main selector for Venice text models. The selector includes `venice/venice-uncensored-1-2` (Venice 1.2), `venice/venice-uncensored` (Venice 1.1), `venice/gemma-4-uncensored` (Gemma 4), and a Disable Venice option. In non-interactive shells, `/venice` keeps script compatibility by selecting `venice/venice-uncensored-1-2` for both roles. `/venice 1.2 gemma` sets route to Venice 1.2 and main to Gemma 4; `/venice off` or the Disable Venice selector option restores `deepseek/deepseek-v4-flash` for route and `deepseek/deepseek-v4-pro` for main.
 
 The web UI should expose model names as dropdowns, not free-text fields. The left panel should stay focused on common daily controls, while model-role editing and less-used switches live in an Advanced settings modal. The terminal-like capability panels belong after the runtime log so the left control panel remains short.
 
