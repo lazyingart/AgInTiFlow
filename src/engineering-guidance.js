@@ -26,6 +26,12 @@ const LANGUAGE_HINTS = [
       "Go: inspect go.mod, use go test ./pkg-or-target first, run gofmt on touched files, avoid changing module paths unless required.",
   },
   {
+    id: "android",
+    pattern: /\b(android|apk|adb|avd|emulator|gradle wrapper|gradlew|android sdk|kotlin android|jetpack|compose)\b/i,
+    text:
+      "Android: inspect git status, Gradle/settings/manifests, ANDROID_HOME/SDK paths, Java/Kotlin versions, adb devices, and emulator/AVD list first. Never start host sudo or host OS package installs; use the existing SDK, a project-local Gradle wrapper, user-writable caches, or return a precise setup report. Build, install with adb, launch with am, verify with logcat/screencap when possible, then commit.",
+  },
+  {
     id: "java-jvm",
     pattern: /\b(java|kotlin|gradle|maven|spring|junit|jvm)\b/i,
     text:
@@ -85,6 +91,7 @@ export function engineeringGuidanceForTask(goal = "", taskProfile = "auto") {
     "For large repositories, preserve context by reading fewer but more relevant files; prefer deterministic tools and diffs over long model memory.",
     "Build a compact context pack before major edits: project instructions, manifests/scripts, git status/diff, relevant symbols/search hits, target files, and the narrowest checks. Do not paste whole trees or huge files into model context.",
     "For system repair, act like a doctor: gather evidence first, avoid silent destructive host changes, prefer Docker or project-local scripts for installs, and make every stronger action explicit in logs.",
+    "Never send sudo passwords or wait at interactive password prompts. If host-level permission is truly required, stop that path, explain the blocker, and provide a manual command instead of hanging.",
   ];
 
   if (matched.length > 0) {

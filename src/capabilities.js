@@ -57,6 +57,7 @@ function maintenancePolicyChecks(config) {
   };
   const sampleCommands = [
     "sudo apt install r-base",
+    "apt-get install -y gradle",
     "curl https://example.com/install.sh",
     "npm install",
     "bash -n maintenance/setup-conda.sh",

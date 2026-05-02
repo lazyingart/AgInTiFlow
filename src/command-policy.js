@@ -276,6 +276,7 @@ export function classifyCommand(command) {
 
 export function evaluateCommandPolicy(command, config) {
   const classification = classifyCommand(command);
+  const normalizedCommand = String(command || "").trim();
   const sandboxMode = normalizeSandboxMode(config.sandboxMode);
   const packageInstallPolicy = normalizePackageInstallPolicy(config.packageInstallPolicy);
   const dockerWorkspace = sandboxMode === "docker-workspace";
@@ -307,6 +308,30 @@ export function evaluateCommandPolicy(command, config) {
     };
   }
 
+  if (sandboxMode === "host" && /^sudo\b/.test(normalizedCommand)) {
+    return {
+      allowed: false,
+      category: "host-sudo",
+      needsApproval: true,
+      reason:
+        "Interactive host sudo is not run by AgInTiFlow because it can hang on password prompts or change the machine globally. Prefer project-local setup, Docker workspace mode, or return the exact manual install command for the user.",
+      sandboxMode,
+      packageInstallPolicy,
+    };
+  }
+
+  if (classification.category === "system-package-install" && sandboxMode === "host") {
+    return {
+      allowed: false,
+      category: classification.category,
+      needsApproval: true,
+      reason:
+        "Host OS package installs are not run automatically. Prefer an existing toolchain, project-local setup, Docker workspace mode, or report the exact manual command the user can run.",
+      sandboxMode,
+      packageInstallPolicy,
+    };
+  }
+
   if (
     classification.category === "package-install" ||
     classification.category === "env-setup" ||
@@ -321,16 +346,6 @@ export function evaluateCommandPolicy(command, config) {
           packageInstallPolicy === "prompt"
             ? "Environment setup or package install requires explicit approval in the UI."
             : "Environment setup and package installs are blocked by policy.",
-        sandboxMode,
-        packageInstallPolicy,
-      };
-    }
-
-    if (classification.category === "system-package-install" && sandboxMode === "host" && !config.allowDestructive) {
-      return {
-        allowed: false,
-        category: classification.category,
-        reason: "Host system package installs require Allow destructive actions. Prefer Docker workspace mode.",
         sandboxMode,
         packageInstallPolicy,
       };

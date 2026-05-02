@@ -78,6 +78,14 @@ try {
     "sudo maintenance command was not blocked"
   );
   assert(
+    capabilities.maintenancePolicy.some((check) => check.command.startsWith("apt-get install") && !check.allowed),
+    "host OS package install was not blocked"
+  );
+  assert(
+    capabilities.tools?.taskProfiles?.some((profile) => profile.id === "android"),
+    "capabilities did not report Android task profile"
+  );
+  assert(
     capabilities.trustedDockerPolicy.some((check) => check.command.startsWith("apt-get install") && check.allowed),
     "trusted Docker policy did not allow apt-get install"
   );
@@ -96,6 +104,10 @@ try {
   assert(
     capabilities.tools?.skills?.some((skill) => skill.id === "latex-manuscript"),
     "capabilities did not report built-in LaTeX skill"
+  );
+  assert(
+    capabilities.tools?.skills?.some((skill) => skill.id === "android"),
+    "capabilities did not report built-in Android skill"
   );
 
   const doctor = JSON.parse(await runCli(["doctor", "--capabilities", "--json"]));

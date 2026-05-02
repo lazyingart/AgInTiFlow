@@ -55,6 +55,13 @@ export const TASK_PROFILES = {
       "Bias toward Node/JavaScript/TypeScript workflows without excluding frontend, backend, docs, or deployment work. Inspect package.json/lockfiles, respect the package manager, add tests when useful, and run safe npm/node checks when available.",
     tools: ["files", "shell", "sandbox"],
   },
+  android: {
+    id: "android",
+    label: "Android",
+    prompt:
+      "Bias toward end-to-end Android app delivery while still handling normal project work. Inspect git status, existing Gradle files, AndroidManifest, SDK paths, Java/Kotlin versions, adb devices, and emulator/AVD availability before editing. Do not use host sudo, apt, dnf, yum, brew, winget, or global host installs during Android tasks; prefer the existing Android SDK, project-local Gradle wrapper, user-writable caches, or a clear setup report. Create missing wrapper directories before downloads, avoid repeated failing install attempts, build with focused Gradle tasks, install and launch with adb when a device/emulator exists, verify with am/logcat/screencap when possible, and commit the finished app only after checks.",
+    tools: ["inspect_project", "search_files", "read_file", "apply_patch", "shell", "sandbox", "canvas"],
+  },
   website: {
     id: "website",
     label: "Website testing",
@@ -99,6 +106,11 @@ const PROFILE_ALIASES = {
   repository: "large-codebase",
   engineering: "large-codebase",
   engineer: "large-codebase",
+  mobile: "android",
+  apk: "android",
+  gradle: "android",
+  kotlin: "android",
+  java: "android",
 };
 
 export function listTaskProfiles() {
@@ -118,6 +130,7 @@ export function getTaskProfile(value = "auto") {
 export function defaultMaxStepsForProfile(value = "auto") {
   const profile = normalizeTaskProfile(value);
   if (profile === "large-codebase") return 36;
+  if (profile === "android") return 42;
   if (profile === "latex") return 30;
   return 24;
 }
