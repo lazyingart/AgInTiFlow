@@ -1650,9 +1650,9 @@ function veniceTextModelChoices() {
     },
     {
       provider: "venice",
-      model: "e2ee-venice-uncensored-24b-p",
+      model: "venice-uncensored",
       label: "Venice 1.1",
-      description: "E2EE Venice text model; 32K context",
+      description: "legacy Venice text model; 32K context",
     },
     {
       provider: "venice",
@@ -1670,13 +1670,15 @@ function resolveVeniceTextModel(value = "") {
   }
   if (
     normalized === "1.1" ||
-    normalized === "venice-1.1" ||
-    normalized === "e2ee-venice-uncensored-24b-p"
+    normalized === "venice-1.1"
   ) {
-    return "e2ee-venice-uncensored-24b-p";
+    return "venice-uncensored";
   }
   if (normalized === "legacy" || normalized === "venice-uncensored") {
     return "venice-uncensored";
+  }
+  if (normalized === "e2ee" || normalized === "e2ee-venice-uncensored-24b-p") {
+    return "e2ee-venice-uncensored-24b-p";
   }
   if (normalized === "gemma" || normalized === "gemma4" || normalized === "gemma-4" || normalized === "gemma-4-uncensored") {
     return "gemma-4-uncensored";
@@ -1781,9 +1783,9 @@ function modelRoleChoices(role = "main") {
     },
     {
       provider: "venice",
-      model: "e2ee-venice-uncensored-24b-p",
+      model: "venice-uncensored",
       label: "Venice 1.1",
-      description: "E2EE Venice text route; use /auth venice if missing",
+      description: "legacy Venice text route; use /auth venice if missing",
       route: true,
       main: true,
       spare: true,
@@ -1930,8 +1932,11 @@ function clearSelector(lineCount) {
   }
 }
 
+function clearSelectorSequence(lineCount) {
+  return Array.from({ length: Math.max(lineCount, 0) }, () => "\x1b[1A\r\x1b[2K").join("");
+}
+
 function renderSelector({ title, subtitle, options, selectedIndex, lineCount = 0 }) {
-  if (lineCount > 0) clearSelector(lineCount);
   const width = Math.min(Math.max(terminalWidth() - 2, 60), 110);
   const bodyWidth = width - 4;
   const safeTitle = compactLine(title, bodyWidth);
@@ -1948,7 +1953,7 @@ function renderSelector({ title, subtitle, options, selectedIndex, lineCount = 0
     }),
     `╰${"─".repeat(width - 2)}╯`,
   ];
-  output.write(`${rows.join("\n")}\n`);
+  output.write(`${lineCount > 0 ? clearSelectorSequence(lineCount) : ""}${rows.join("\n")}\n`);
   return rows.length;
 }
 
@@ -2639,6 +2644,7 @@ async function runPrompt(prompt, state, packageDir) {
     printSystemLine(`status=running workingOn=${state.activeGoal}`);
   }
   let result;
+  let runError = null;
   let queuedAfterFinish = [];
   try {
     result = await runAgent({
@@ -2666,6 +2672,8 @@ async function runPrompt(prompt, state, packageDir) {
       onEvent: (type, data = {}) => {
         if (type === "plan.created") {
           printStatusEvent(state, "planned");
+        } else if (type === "model.requested") {
+          printStatusEvent(state, "model_wait", `${data.provider || "model"}/${data.model || ""}`);
         } else if (type === "tool.started") {
           printStatusEvent(state, "tool", data.toolName || "unknown");
         } else if (type === "tool.completed") {
@@ -2688,9 +2696,17 @@ async function runPrompt(prompt, state, packageDir) {
         }
       },
     });
+  } catch (error) {
+    runError = error;
   } finally {
     detachInterrupts();
     queuedAfterFinish = await liveInput.stop();
+  }
+  if (runError) {
+    state.status = isAbortError(runError) ? "stopped" : "failed";
+    state.activeGoal = "";
+    printSystemLine(`status=${state.status} session=${state.sessionId}`);
+    throw runError;
   }
   state.sessionId = result.sessionId || state.sessionId;
   state.status = result.stopped ? "stopped" : "idle";

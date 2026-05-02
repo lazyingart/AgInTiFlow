@@ -52,7 +52,7 @@ In the interactive CLI, `/provider`, `/route`, `/model`, `/spare`, and `/auxilia
 
 ```text
 venice/venice-uncensored-1-2
-venice/e2ee-venice-uncensored-24b-p
+venice/venice-uncensored
 venice/gemma-4-uncensored
 ```
 

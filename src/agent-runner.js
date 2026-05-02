@@ -739,7 +739,7 @@ async function buildSnapshot(browserState, store, step, config) {
 
 async function injectQueuedUserMessages(store, state, observers) {
   const inbox = await store.drainInbox();
-  if (inbox.length === 0) return;
+  if (inbox.length === 0) return 0;
 
   for (const item of inbox) {
     const content = String(item.content || "").trim();
@@ -762,6 +762,7 @@ async function injectQueuedUserMessages(store, state, observers) {
       priority: item.priority || "normal",
     });
   }
+  return inbox.length;
 }
 
 async function executeTool(browserState, toolCall, snapshot, config, store, observers, state) {
@@ -1374,6 +1375,16 @@ export async function runAgent(config) {
       });
 
       throwIfAborted(config);
+      await store.appendEvent("model.requested", {
+        step,
+        provider: config.provider,
+        model: config.model,
+      });
+      observers.event("model.requested", {
+        step,
+        provider: config.provider,
+        model: config.model,
+      });
       const response = await requestNextStep(client, config, state.messages);
       const assistantMessage = response.choices[0]?.message;
       if (!assistantMessage) {
@@ -1399,6 +1410,13 @@ export async function runAgent(config) {
       const toolCalls = assistantMessage.tool_calls || [];
 
       if (toolCalls.length === 0) {
+        const queuedCount = await injectQueuedUserMessages(store, state, observers);
+        if (queuedCount > 0) {
+          state.stepsCompleted = step;
+          state.updatedAt = new Date().toISOString();
+          await store.saveState(state);
+          continue;
+        }
         const fallback = assistantMessage.content?.trim() || "No tool call returned.";
         appendChatEntry(state, "assistant", fallback);
         await store.appendEvent("session.finished", {
@@ -1419,6 +1437,7 @@ export async function runAgent(config) {
         };
       }
 
+      let continueForQueuedInput = false;
       for (const toolCall of toolCalls) {
         throwIfAborted(config);
         const toolResult = await executeTool(browserState, toolCall, snapshot, config, store, observers, state);
@@ -1462,6 +1481,14 @@ export async function runAgent(config) {
         }
 
         if (toolResult.done) {
+          const queuedCount = await injectQueuedUserMessages(store, state, observers);
+          if (queuedCount > 0) {
+            state.stepsCompleted = step;
+            state.updatedAt = new Date().toISOString();
+            await store.saveState(state);
+            continueForQueuedInput = true;
+            break;
+          }
           state.stepsCompleted = step;
           state.updatedAt = new Date().toISOString();
           state.meta.lastUrl = browserState.page?.url() || state.meta.lastUrl;
@@ -1486,6 +1513,8 @@ export async function runAgent(config) {
           };
         }
       }
+
+      if (continueForQueuedInput) continue;
 
       await injectQueuedUserMessages(store, state, observers);
 

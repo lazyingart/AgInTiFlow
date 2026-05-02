@@ -9,7 +9,7 @@ import {
   modelsForProviderGroup,
   selectModelRoute,
 } from "../src/model-routing.js";
-import { parseTextToolCalls } from "../src/model-client.js";
+import { parseTextToolCalls, usesTextToolProtocol } from "../src/model-client.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -115,6 +115,18 @@ const parsedTextToolCalls = parseTextToolCalls('[TOOL_CALLS]list_files[ARGS]call
 assert(parsedTextToolCalls.length === 1, "Venice text tool-call parser did not detect encoded tool call");
 assert(parsedTextToolCalls[0].function.name === "list_files", "Venice text tool-call parser returned wrong tool name");
 assert(parsedTextToolCalls[0].function.arguments.includes('"maxDepth":1'), "Venice text tool-call parser returned wrong arguments");
+const looseTextToolCalls = parseTextToolCalls('[TOOL_CALLS]list_files[ARGS]{"path":"."}[TOOL_CALLS]inspect_project[ARGS]{"path":"."}');
+assert(looseTextToolCalls.length === 2, "Venice loose text tool-call parser did not detect multiple calls");
+assert(looseTextToolCalls[1].function.name === "inspect_project", "Venice loose text tool-call parser returned wrong second tool");
+const nativeMarkerText = parseTextToolCalls('Done. <|tool_call>call:finish{result:<|"|>Done<|"|>}');
+assert(nativeMarkerText.length === 0, "native marker text should not be treated as JSON text tool call");
+const jsonBlockToolCalls = parseTextToolCalls('TOOL_CALLS:\n```json\n[{"name":"list_files","arguments":{"path":"/workspace"}}]\n```');
+assert(jsonBlockToolCalls.length === 1, "Venice JSON text tool-call parser did not detect JSON block calls");
+assert(jsonBlockToolCalls[0].function.arguments.includes("/workspace"), "Venice JSON text tool-call parser returned wrong arguments");
+assert(usesTextToolProtocol({ provider: "venice", model: "gemma-4-uncensored" }), "Venice Gemma should use text tool protocol");
+assert(usesTextToolProtocol({ provider: "venice", model: "e2ee-venice-uncensored-24b-p" }), "Venice 1.1 should use text tool protocol");
+assert(usesTextToolProtocol({ provider: "venice", model: "venice-uncensored" }), "Venice legacy 1.1 should use text tool protocol");
+assert(!usesTextToolProtocol({ provider: "venice", model: "venice-uncensored-1-2" }), "Venice 1.2 should keep native tool calls first");
 
 const output = await runCli(["models"]);
 assert(output.includes("/route") && output.includes("/spare") && output.includes("venice-gpt"), "aginti models output missing role details");
@@ -124,7 +136,7 @@ assert(interactiveOutput.includes("venice=on"), "/venice did not enable Venice r
 assert(interactiveOutput.includes("route=venice/venice-uncensored-1-2"), "/venice did not set Venice route role");
 assert(interactiveOutput.includes("main=venice/venice-uncensored-1-2"), "/venice did not set Venice main role");
 const interactiveGemmaOutput = await runInteractive("/venice 1.1 gemma\n");
-assert(interactiveGemmaOutput.includes("route=venice/e2ee-venice-uncensored-24b-p"), "/venice 1.1 did not set Venice 1.1 route role");
+assert(interactiveGemmaOutput.includes("route=venice/venice-uncensored"), "/venice 1.1 did not set Venice 1.1 route role");
 assert(interactiveGemmaOutput.includes("main=venice/gemma-4-uncensored"), "/venice gemma did not set Gemma 4 main role");
 const interactiveOffOutput = await runInteractive("/venice off\n");
 assert(interactiveOffOutput.includes("venice=off"), "/venice off did not restore DeepSeek roles");

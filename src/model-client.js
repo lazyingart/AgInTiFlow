@@ -73,16 +73,110 @@ function toolChoiceForProvider(config, messages = []) {
   return messages.some((message) => message.role === "tool") ? "auto" : "required";
 }
 
+export function usesTextToolProtocol(config = {}) {
+  if (config.provider !== "venice") return false;
+  const model = String(config.model || "").toLowerCase();
+  return model === "gemma-4-uncensored" || model === "e2ee-venice-uncensored-24b-p" || model === "venice-uncensored";
+}
+
+function shouldRetryWithTextToolProtocol(error, config = {}) {
+  if (config.provider !== "venice") return false;
+  const message = [
+    error?.message,
+    error?.error?.message,
+    error?.response?.data?.error?.message,
+    error?.response?.data?.message,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return /invalid request parameters|tool_choice|parallel_tool_calls|tools/i.test(message);
+}
+
+function textToolProtocolPrompt(tools = []) {
+  const toolLines = tools.map((tool) => {
+    const fn = tool.function || {};
+    const properties = fn.parameters?.properties ? Object.keys(fn.parameters.properties).slice(0, 8) : [];
+    const required = Array.isArray(fn.parameters?.required) ? fn.parameters.required : [];
+    const args = properties.length > 0 ? ` args=${properties.join(",")}${required.length ? ` required=${required.join(",")}` : ""}` : "";
+    return `- ${fn.name}: ${String(fn.description || "").slice(0, 180)}${args}`;
+  });
+  return [
+    "This provider/model may not accept native OpenAI function-call parameters.",
+    "Use this text tool protocol when you need a tool:",
+    '[TOOL_CALLS]tool_name[ARGS]{"arg":"value"}',
+    'A strict id form is also accepted: [TOOL_CALLS]tool_name[ARGS]call_short_id[ARGS]{"arg":"value"}',
+    'A JSON block form is accepted too: TOOL_CALLS: ```json [{"name":"tool_name","arguments":{"arg":"value"}}] ```',
+    "Return only one or more TOOL_CALLS blocks when calling tools; do not wrap them in markdown.",
+    "If no tool is needed, answer normally.",
+    "Available text tools:",
+    ...toolLines,
+  ].join("\n");
+}
+
+function messagesWithTextToolProtocol(config, messages, tools) {
+  const prepared = prepareMessages(config, messages).map((message) => {
+    if (message.role === "tool") {
+      return {
+        role: "user",
+        content: `Tool result for ${message.tool_call_id || "previous tool"}:\n${message.content || ""}`,
+      };
+    }
+    if (message.role === "assistant" && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+      return {
+        role: "assistant",
+        content:
+          message.content ||
+          `Requested tools: ${message.tool_calls
+            .map((call) => `${call.function?.name || "tool"}(${call.function?.arguments || "{}"})`)
+            .join("; ")}`,
+      };
+    }
+    return message;
+  });
+  const protocol = { role: "system", content: textToolProtocolPrompt(tools) };
+  if (prepared[0]?.role === "system") return [prepared[0], protocol, ...prepared.slice(1)];
+  return [protocol, ...prepared];
+}
+
 export function parseTextToolCalls(content = "") {
   const text = String(content || "");
-  if (!text.includes("[TOOL_CALLS]")) return [];
+  if (!text.includes("[TOOL_CALLS]") && !/TOOL_CALLS\s*:/i.test(text)) return [];
 
   const calls = [];
-  const pattern = /\[TOOL_CALLS\]([A-Za-z0-9_-]+)\[ARGS\]([A-Za-z0-9_.:-]+)\[ARGS\]([\s\S]*?)(?=\[TOOL_CALLS\]|$)/g;
-  for (const match of text.matchAll(pattern)) {
-    const name = match[1]?.trim();
-    const id = match[2]?.trim() || `text-tool-${calls.length + 1}`;
-    const rawArgs = match[3]?.trim() || "{}";
+  const jsonBlock = text.match(/TOOL_CALLS\s*:\s*```(?:json)?\s*([\s\S]*?)```/i);
+  if (jsonBlock?.[1]) {
+    try {
+      const parsed = JSON.parse(jsonBlock[1].trim());
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          const name = String(item?.name || item?.tool || "").trim();
+          if (!name) continue;
+          const args = item?.arguments && typeof item.arguments === "object" ? item.arguments : {};
+          calls.push({
+            id: String(item?.id || `text-tool-${calls.length + 1}`),
+            type: "function",
+            function: {
+              name,
+              arguments: JSON.stringify(args),
+            },
+          });
+        }
+      }
+    } catch {
+      // Fall through to bracket parser below.
+    }
+  }
+
+  for (const chunk of text.split("[TOOL_CALLS]").slice(1)) {
+    const match = chunk.match(/^([A-Za-z0-9_-]+)\[ARGS\]([\s\S]*?)$/);
+    const name = match?.[1]?.trim();
+    let rawArgs = match?.[2]?.trim() || "{}";
+    let id = `text-tool-${calls.length + 1}`;
+    const strictParts = rawArgs.split("[ARGS]");
+    if (strictParts.length >= 2 && !rawArgs.startsWith("{") && !rawArgs.startsWith("[")) {
+      id = strictParts.shift()?.trim() || id;
+      rawArgs = strictParts.join("[ARGS]").trim() || "{}";
+    }
     if (!name) continue;
     try {
       JSON.parse(rawArgs);
@@ -101,14 +195,39 @@ export function parseTextToolCalls(content = "") {
   return calls;
 }
 
+function textBeforeToolCallMarker(content = "") {
+  return String(content || "")
+    .split("[TOOL_CALLS]")[0]
+    .split("TOOL_CALLS:")[0]
+    .split("<|tool_call>")[0]
+    .trim();
+}
+
 function normalizeTextToolCallResponse(response) {
   const message = response?.choices?.[0]?.message;
   if (!message || Array.isArray(message.tool_calls) && message.tool_calls.length > 0) return response;
 
   const calls = parseTextToolCalls(message.content || "");
-  if (calls.length === 0) return response;
+  if (calls.length === 0) {
+    const cleanedContent = textBeforeToolCallMarker(message.content || "");
+    if (!cleanedContent || cleanedContent === message.content) return response;
+    return {
+      ...response,
+      choices: response.choices.map((choice, index) =>
+        index === 0
+          ? {
+              ...choice,
+              message: {
+                ...message,
+                content: cleanedContent,
+              },
+            }
+          : choice
+      ),
+    };
+  }
 
-  const content = String(message.content || "").split("[TOOL_CALLS]")[0].trim();
+  const content = textBeforeToolCallMarker(message.content || "");
   return {
     ...response,
     choices: response.choices.map((choice, index) =>
@@ -919,16 +1038,33 @@ export async function requestNextStep(client, config, messages) {
     ]);
   }
 
-  const response = await client.chat.completions.create(
-    {
-      model: config.model,
-      temperature: 0,
-      tool_choice: toolChoiceForProvider(config, messages),
-      parallel_tool_calls: false,
-      messages: prepareMessages(config, messages),
-      tools,
-    },
-    requestOptions(config)
-  );
+  const textToolProtocol = usesTextToolProtocol(config);
+  const nativePayload = {
+    model: config.model,
+    temperature: 0,
+    tool_choice: toolChoiceForProvider(config, messages),
+    parallel_tool_calls: false,
+    messages: prepareMessages(config, messages),
+    tools,
+  };
+  const textPayload = {
+    model: config.model,
+    temperature: 0,
+    messages: messagesWithTextToolProtocol(config, messages, tools),
+  };
+
+  let response;
+  try {
+    response = await client.chat.completions.create(
+      textToolProtocol ? textPayload : nativePayload,
+      requestOptions(config)
+    );
+  } catch (error) {
+    if (!textToolProtocol && shouldRetryWithTextToolProtocol(error, config)) {
+      response = await client.chat.completions.create(textPayload, requestOptions(config));
+    } else {
+      throw error;
+    }
+  }
   return normalizeTextToolCallResponse(response);
 }

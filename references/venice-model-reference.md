@@ -52,7 +52,7 @@ Store `VENICE_API_KEY` only in ignored local files such as `.aginti/.env` or a s
 | `openai-gpt-52` | 256K | GPT-5.2 |
 | `venice-uncensored` | 32K | Venice Uncensored legacy / deprecated |
 
-AgInTiFlow exposes the primary Venice text choices through `/venice`: Venice 1.2 (`venice-uncensored-1-2`), Venice 1.1 (`e2ee-venice-uncensored-24b-p`), and Gemma 4 (`gemma-4-uncensored`). The command can select route and main independently, so a fast Venice route can be paired with a larger Gemma main model when useful. The older `venice-uncensored` ID is retained only as a legacy alias.
+AgInTiFlow exposes the primary Venice text choices through `/venice`: Venice 1.2 (`venice-uncensored-1-2`), Venice 1.1 (`venice-uncensored`), and Gemma 4 (`gemma-4-uncensored`). The command can select route and main independently, so a fast Venice route can be paired with a larger Gemma main model when useful. The E2EE 1.1 ID (`e2ee-venice-uncensored-24b-p`) is documented for reference, but the selector uses the working non-E2EE 1.1 route because the E2EE route currently returns an upstream provider error in live tests.
 
 ## Image And Edit Models
 
