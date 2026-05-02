@@ -9,6 +9,7 @@ import { listTaskProfiles } from "./task-profiles.js";
 import { listAgentWrappers } from "./tool-wrappers.js";
 import { listAuxiliarySkills } from "./auxiliary-tools.js";
 import { readCodebaseMap } from "./codebase-map.js";
+import { listSkills } from "./skill-library.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -217,6 +218,13 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
         id: profile.id,
         label: profile.label,
         tools: profile.tools,
+      })),
+      skills: listSkills().map((skill) => ({
+        id: skill.id,
+        label: skill.label,
+        description: skill.description,
+        triggers: skill.triggers,
+        tools: skill.tools,
       })),
       auxiliarySkills: listAuxiliarySkills().map((skill) => ({
         id: skill.id,

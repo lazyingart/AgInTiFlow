@@ -14,6 +14,7 @@ import { summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./src/workspace-t
 import { listTaskProfiles, normalizeTaskProfile } from "./src/task-profiles.js";
 import { loadProjectEnv, projectPaths, providerKeyStatus, setProviderKey } from "./src/project.js";
 import { buildCapabilityReport } from "./src/capabilities.js";
+import { listSkills } from "./src/skill-library.js";
 import {
   buildArtifacts,
   countUnreadArtifacts,
@@ -574,6 +575,7 @@ app.get("/api/config", async (_req, res) => {
       maxSteps: 24,
     },
     taskProfiles: listTaskProfiles(),
+    skills: listSkills(),
     routing: {
       modes: ["smart", "fast", "complex", "manual"],
       presets: getModelPresets(),

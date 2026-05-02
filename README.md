@@ -83,6 +83,16 @@ For current docs, install errors, package/toolchain setup, and source discovery,
 
 For raster image work, AgInTiFlow has an optional `image_generation` skill backed by the `generate_image` tool and a local `GRSAI` key. The skill tells DeepSeek when image generation is appropriate; the tool calls GRS AI Nano Banana, saves manifests/images under `artifacts/images`, and sends the result to the canvas. See [docs/auxiliary-image-generation.md](docs/auxiliary-image-generation.md).
 
+AgInTiFlow now ships a Markdown skill library in `skills/<id>/SKILL.md`. Skills are prompt playbooks, while tools are deterministic actions such as `apply_patch`, `run_command`, `web_search`, `generate_image`, and `send_to_canvas`. Built-in skills cover code, websites/apps, LaTeX manuscripts, books, Word documents, image generation, GitHub, system maintenance, Android, R/Stan, Python, C/C++, shell, AAPS, and novel writing. See [docs/skills-and-tools.md](docs/skills-and-tools.md).
+
+```bash
+aginti skills
+aginti skills website
+aginti --list-skills latex
+# in chat:
+/skills github commit
+```
+
 Launch the local web UI from an installed package:
 
 ```bash

@@ -122,6 +122,10 @@ try {
   if (!instructionsResult.stdout.includes("AGINTI.md") || !instructionsResult.stdout.includes("Project instructions")) {
     throw new Error("interactive /instructions did not show AGINTI.md");
   }
+  const skillsResult = await runChat("/skills website\n/exit\n");
+  if (!skillsResult.stdout.includes("website-app") || !skillsResult.stdout.includes("Website And App Builder")) {
+    throw new Error("interactive /skills did not show matching built-in skills");
+  }
   await runChat("remember that this project prefers pytest smoke tests in AGINTI.md\n/exit\n");
   const updatedInstructions = await fs.readFile(path.join(tempRoot, "AGINTI.md"), "utf8");
   if (!updatedInstructions.includes("pytest smoke tests")) {
@@ -159,7 +163,7 @@ try {
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["markdown-render", "markdown-table-no-duplicate", "patch-diff-render", "prompt-layout", "live-input-status-layout", "agent-response-gutter", "aginti-md", "instructions-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest", "resume-history-full"],
+        checks: ["markdown-render", "markdown-table-no-duplicate", "patch-diff-render", "prompt-layout", "live-input-status-layout", "agent-response-gutter", "aginti-md", "instructions-command", "skills-command", "instructions-chat-edit", "interactive-chat", "mock-file-write", "run-status", "resume-latest", "resume-history-full"],
       },
       null,
       2

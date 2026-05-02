@@ -22,6 +22,7 @@ import { engineeringGuidanceForTask } from "./engineering-guidance.js";
 import { searchWeb } from "./web-search.js";
 import { runParallelScouts, shouldRunParallelScouts } from "./parallel-scouts.js";
 import { readProjectInstructions } from "./project.js";
+import { formatSkillsForPrompt, selectSkillsForGoal } from "./skill-library.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "open_workspace_file", "preview_workspace", "click", "type", "scroll", "press", "back"]);
@@ -252,6 +253,8 @@ async function createInitialState(config, sessionId) {
   const now = new Date().toISOString();
   const taskProfile = getTaskProfile(config.taskProfile);
   const engineeringGuidance = engineeringGuidanceForTask(config.goal, config.taskProfile);
+  const selectedSkills = selectSkillsForGoal(config.goal, { taskProfile: config.taskProfile, limit: 6 });
+  const skillContext = formatSkillsForPrompt(selectedSkills);
   const projectInstructions = await readProjectInstructions(config.baseDir || config.commandCwd || process.cwd());
   const projectInstructionContext = formatProjectInstructions(projectInstructions);
   return {
@@ -272,6 +275,7 @@ async function createInitialState(config, sessionId) {
         truncated: projectInstructions.truncated,
         loadedAt: now,
       },
+      selectedSkills: selectedSkills.map((skill) => skill.id),
     },
     chat: [
       {
@@ -318,6 +322,7 @@ async function createInitialState(config, sessionId) {
             ? `Parallel DeepSeek scouts may run before complex execution. Scout count: ${config.parallelScoutCount}.`
             : "Parallel scouts are disabled.",
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
+          skillContext,
           engineeringGuidance,
           "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. It is optional and ordinary final text can still go directly to finish.",
           "For visual-output requests such as draw, plot, graph, chart, diagram, figure, image, or visualization, proactively publish a canvas artifact even when the user does not mention canvas. If workspace file tools are enabled, prefer creating a small SVG or markdown artifact and call send_to_canvas with selected=true.",
@@ -360,6 +365,7 @@ async function createInitialState(config, sessionId) {
           config.allowWebSearch ? "Web search tool: enabled." : "Web search tool: disabled.",
           config.allowParallelScouts ? `Parallel scouts: enabled count=${config.parallelScoutCount}.` : "Parallel scouts: disabled.",
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
+          skillContext,
           engineeringGuidance,
           "Canvas/artifacts tunnel: available through send_to_canvas for optional frontend rendering.",
           "Visual-output requests should produce a canvas artifact without requiring the user to ask for canvas explicitly.",
@@ -451,6 +457,8 @@ async function applyContinuationPrompt(state, config, observers) {
 
   const taskProfile = getTaskProfile(config.taskProfile);
   const engineeringGuidance = engineeringGuidanceForTask(config.goal, config.taskProfile);
+  const selectedSkills = selectSkillsForGoal(config.goal, { taskProfile: config.taskProfile, limit: 6 });
+  const skillContext = formatSkillsForPrompt(selectedSkills);
   const projectInstructions = await readProjectInstructions(config.baseDir || config.commandCwd || process.cwd());
   state.meta = state.meta || {};
   state.meta.projectInstructions = {
@@ -459,6 +467,7 @@ async function applyContinuationPrompt(state, config, observers) {
     truncated: projectInstructions.truncated,
     loadedAt: new Date().toISOString(),
   };
+  state.meta.selectedSkills = selectedSkills.map((skill) => skill.id);
   ensureChatState(state);
   state.goal = config.goal;
   state.provider = config.provider;
@@ -485,6 +494,7 @@ async function applyContinuationPrompt(state, config, observers) {
         ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
         : "",
       `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
+      skillContext,
       engineeringGuidance,
       formatProjectInstructions(projectInstructions),
       "AGINTI.md is editable project memory. If the user asks to remember a preference or update instructions, patch AGINTI.md rather than hiding that preference in session-only chat.",

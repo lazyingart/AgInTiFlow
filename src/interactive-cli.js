@@ -9,6 +9,7 @@ import { defaultMaxStepsForProfile, normalizeTaskProfile } from "./task-profiles
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 import { promptAndSaveDeepSeekKey, promptHidden, shouldPromptForDeepSeek } from "./auth-onboarding.js";
 import { SessionStore } from "./session-store.js";
+import { listSkills, selectSkillsForGoal } from "./skill-library.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
@@ -44,6 +45,8 @@ const SLASH_COMMANDS = [
   "/new",
   "/resume",
   "/sessions",
+  "/skills",
+  "/skill",
   "/profile",
   "/web-search",
   "/scouts",
@@ -480,6 +483,7 @@ function printHelp() {
       "  /new                      Start a fresh session on the next message.",
       "  /resume <session-id>      Continue a saved session.",
       "  /sessions                 List recent sessions in this project.",
+      "  /skills [query]           List Markdown skills selected for a topic.",
       "  /profile <name>           Set task profile, e.g. code, website, latex, maintenance.",
       "  /web-search on|off        Enable or disable the web_search tool.",
       "  /scouts on|off|<1-10>     Enable parallel DeepSeek scouts and set scout count.",
@@ -1587,6 +1591,30 @@ async function handleCommand(line, state, packageDir) {
           .join("\n")
       );
     }
+    return true;
+  }
+  if (command === "skills" || command === "skill") {
+    const skills = value
+      ? selectSkillsForGoal(value, { taskProfile: state.taskProfile, limit: 12, includeBody: false })
+      : listSkills({ includeBody: false });
+    if (skills.length === 0) {
+      printAgentMessage("No matching skills found.");
+      return true;
+    }
+    printAgentMessage(
+      skills
+        .map((skill) =>
+          [
+            `${skill.id}: ${skill.label}`,
+            `  ${skill.description}`,
+            skill.triggers?.length ? `  triggers: ${skill.triggers.join(", ")}` : "",
+            skill.tools?.length ? `  tools: ${skill.tools.join(", ")}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n")
+        )
+        .join("\n\n")
+    );
     return true;
   }
   if (command === "profile") {

@@ -3,6 +3,7 @@ import { normalizeWrapperName, wrapperStatusText } from "./tool-wrappers.js";
 import { getTaskProfile } from "./task-profiles.js";
 import { listAuxiliarySkills } from "./auxiliary-tools.js";
 import { engineeringGuidanceForTask } from "./engineering-guidance.js";
+import { formatSkillsForPrompt, selectSkillsForGoal } from "./skill-library.js";
 
 export function createClient(config) {
   if (config.provider === "mock") {
@@ -193,6 +194,8 @@ function mockChatResponse(content, toolCalls = []) {
 export async function createPlan(client, config, state) {
   const taskProfile = getTaskProfile(config.taskProfile);
   const engineeringGuidance = engineeringGuidanceForTask(state.goal, config.taskProfile);
+  const selectedSkills = selectSkillsForGoal(state.goal, { taskProfile: config.taskProfile, limit: 5 });
+  const skillContext = formatSkillsForPrompt(selectedSkills);
   const projectInstructions = state.meta?.projectInstructions;
   if (client.mock) {
     return [
@@ -242,6 +245,7 @@ export async function createPlan(client, config, state) {
             ? `Parallel scout notes may be injected before execution for complex tasks. Scout count: ${config.parallelScoutCount}.`
             : "Parallel scouts are disabled.",
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
+          skillContext,
           engineeringGuidance,
           "A canvas/artifacts tunnel is available through send_to_canvas. Use it when an output should be highlighted visually, such as screenshots, image files, important markdown, diffs, or generated artifact paths. It is optional for ordinary text answers.",
           "Work like a practical coding agent: inspect when useful, edit with file tools, run safe checks when they add confidence, and keep outputs inside the workspace.",

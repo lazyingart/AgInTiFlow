@@ -17,6 +17,7 @@ import {
 import { listTaskProfiles } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 import { promptAndSaveDeepSeekKey, promptHidden, shouldPromptForDeepSeek } from "./auth-onboarding.js";
+import { listSkills, selectSkillsForGoal } from "./skill-library.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,6 +65,7 @@ export function parseArgs(argv) {
     port: "",
     host: "",
     listProfiles: false,
+    listSkills: false,
     latex: false,
     image: false,
   };
@@ -242,6 +244,10 @@ export function parseArgs(argv) {
       result.listProfiles = true;
       continue;
     }
+    if (arg === "--list-skills") {
+      result.listSkills = true;
+      continue;
+    }
     if (arg === "--sandbox-status") {
       result.sandboxStatus = true;
       continue;
@@ -261,7 +267,7 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti login deepseek|openai|grsai OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex] [--sandbox-status|--sandbox-preflight] "your task"'
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti skills [query] OR aginti login deepseek|openai|grsai OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|mock] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex] [--list-skills] [--sandbox-status|--sandbox-preflight] "your task"'
   );
 }
 
@@ -317,6 +323,17 @@ function printWrappers() {
 function printProfiles() {
   for (const profile of listTaskProfiles()) {
     console.log(`${profile.id}: ${profile.label} - ${profile.prompt}`);
+  }
+}
+
+function printSkills(query = "") {
+  const skills = query
+    ? selectSkillsForGoal(query, { taskProfile: "auto", limit: 40, includeBody: false })
+    : listSkills({ includeBody: false });
+  for (const skill of skills) {
+    const triggers = skill.triggers?.length ? ` triggers=${skill.triggers.join(",")}` : "";
+    const tools = skill.tools?.length ? ` tools=${skill.tools.join(",")}` : "";
+    console.log(`${skill.id}: ${skill.label} - ${skill.description}${triggers}${tools}`);
   }
 }
 
@@ -534,6 +551,11 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
 
+  if (argv[0] === "skills" || argv[0] === "skill") {
+    printSkills(argv.slice(1).join(" ").trim());
+    return;
+  }
+
   if (argv[0] === "queue") {
     await handleQueueCommand(argv.slice(1));
     return;
@@ -589,6 +611,11 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (args.listProfiles) {
     printProfiles();
+    return;
+  }
+
+  if (args.listSkills) {
+    printSkills(args.goal);
     return;
   }
 

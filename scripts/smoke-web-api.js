@@ -81,6 +81,9 @@ try {
   if (!Array.isArray(config.taskProfiles) || !config.taskProfiles.some((profile) => profile.id === "latex")) {
     throw new Error("task profiles are not advertised by /api/config");
   }
+  if (!Array.isArray(config.skills) || !config.skills.some((skill) => skill.id === "website-app")) {
+    throw new Error("built-in skills are not advertised by /api/config");
+  }
 
   const keyStatus = await fetchJson("/api/keys/status");
   if (typeof keyStatus.keyStatus?.deepseek !== "boolean") throw new Error("key status endpoint is invalid");

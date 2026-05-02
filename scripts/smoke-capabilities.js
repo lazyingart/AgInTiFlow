@@ -81,6 +81,14 @@ try {
     capabilities.trustedDockerPolicy.some((check) => check.command.startsWith("chmod") && check.allowed),
     "trusted Docker policy did not allow chmod"
   );
+  assert(
+    capabilities.tools?.skills?.some((skill) => skill.id === "website-app"),
+    "capabilities did not report built-in website skill"
+  );
+  assert(
+    capabilities.tools?.skills?.some((skill) => skill.id === "latex-manuscript"),
+    "capabilities did not report built-in LaTeX skill"
+  );
 
   const doctor = JSON.parse(await runCli(["doctor", "--capabilities", "--json"]));
   assert(doctor.project.root === tempRoot, "doctor --capabilities used the wrong project root");
@@ -91,7 +99,7 @@ try {
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["aginti-md-init", "capabilities-cli", "doctor-capabilities", "maintenance-policy", "trusted-docker-policy", "git-policy"],
+        checks: ["aginti-md-init", "capabilities-cli", "doctor-capabilities", "maintenance-policy", "trusted-docker-policy", "git-policy", "skills-capability"],
       },
       null,
       2
