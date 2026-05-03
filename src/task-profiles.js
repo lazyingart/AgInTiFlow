@@ -10,7 +10,7 @@ export const TASK_PROFILES = {
     id: "code",
     label: "Code writing",
     prompt:
-      "Bias toward coding-agent behavior across languages, but remain a general assistant when the task needs docs, shell, web, or design work. Inspect project instructions/manifests/conventions, edit workspace files with patches, run useful focused checks, iterate on failures, and report changed files plus residual risks.",
+      "Bias toward coding-agent behavior across languages, but remain a general assistant when the task needs docs, shell, web, or design work. Inspect project instructions/manifests/conventions, edit workspace files with patches, run useful focused checks, iterate on failures, clean or ignore agent/build artifacts appropriately, and report changed files plus residual risks. If optional lint/style cleanup starts to expand beyond the requested fix, prioritize functional checks and explicitly report the remaining style scope instead of exhausting the run.",
     tools: ["inspect_project", "files", "shell", "sandbox"],
   },
   "large-codebase": {
@@ -61,6 +61,62 @@ export const TASK_PROFILES = {
     prompt:
       "Bias toward clear product/engineering design while remaining able to implement or test when asked. Produce concise design documents with goals, constraints, options, tradeoffs, implementation steps, verification criteria, and decision records.",
     tools: ["files", "canvas"],
+  },
+  docs: {
+    id: "docs",
+    label: "Documentation",
+    prompt:
+      "Bias toward documentation work across README, API references, tutorials, changelogs, architecture notes, and user guides while still inspecting code when accuracy depends on it. Read the relevant source/config first, write durable markdown or docs-site files, include runnable examples when useful, verify links/commands where practical, and keep the docs structured for future maintenance.",
+    tools: ["inspect_project", "search_files", "read_file", "write_file", "apply_patch", "shell", "canvas"],
+  },
+  data: {
+    id: "data",
+    label: "Data analysis",
+    prompt:
+      "Bias toward reproducible data analysis, cleanup, ETL, visualization, and report generation while staying able to write scripts or docs. Inspect data shape and schema first, preserve raw inputs, create cleaned outputs with descriptive filenames, run deterministic scripts/notebooks where available, save plots/reports as durable artifacts, and explain assumptions and data quality issues.",
+    tools: ["inspect_project", "files", "shell", "canvas", "sandbox"],
+  },
+  qa: {
+    id: "qa",
+    label: "QA and testing",
+    prompt:
+      "Bias toward quality assurance, failing-test repair, regression reproduction, CI debugging, and test design. Reproduce the failure first, minimize the failing case, patch the smallest cause, add or update tests when useful, run focused checks before broad suites, and report exact commands plus remaining coverage gaps.",
+    tools: ["inspect_project", "search_files", "read_file", "apply_patch", "shell", "sandbox"],
+  },
+  database: {
+    id: "database",
+    label: "Database",
+    prompt:
+      "Bias toward database, SQL, schema, migration, seed data, query, and persistence work while still handling application code. Inspect existing migrations/models/schema first, back up or use disposable fixtures before destructive changes, prefer reversible migrations, run syntax or smoke checks when tools exist, and stop on ambiguous data-loss choices.",
+    tools: ["inspect_project", "search_files", "read_file", "apply_patch", "shell", "sandbox"],
+  },
+  devops: {
+    id: "devops",
+    label: "DevOps and deployment",
+    prompt:
+      "Bias toward Docker, CI/CD, deployment, services, environment setup, logs, ports, and runtime operations. Diagnose with read-only commands first, prefer project-local or containerized changes, make setup scripts idempotent, avoid host sudo unless explicitly approved, verify with build/health/log checks, and provide rollback or manual steps when automation is unsafe.",
+    tools: ["inspect_project", "files", "shell", "web_search", "sandbox"],
+  },
+  security: {
+    id: "security",
+    label: "Security review",
+    prompt:
+      "Bias toward security review, threat modeling, secrets hygiene, dependency risks, auth/session logic, input validation, and safe automation. Gather evidence before changing code, never print secrets, distinguish exploitable risk from style concern, patch minimal high-impact issues, run relevant scanners/tests when available, and stop before destructive or credential-sensitive actions.",
+    tools: ["inspect_project", "search_files", "read_file", "apply_patch", "shell", "web_search", "sandbox"],
+  },
+  slides: {
+    id: "slides",
+    label: "Slides and presentations",
+    prompt:
+      "Bias toward presentation, pitch deck, poster, lecture, and slide-style communication. Clarify audience and purpose from available context, create a durable outline and slide files or markdown deck, keep each slide visually focused, include speaker notes when useful, and export/preview when local tools support it.",
+    tools: ["files", "shell", "canvas", "web_search"],
+  },
+  education: {
+    id: "education",
+    label: "Education and tutorials",
+    prompt:
+      "Bias toward teaching, tutorials, courses, exercises, examples, and explanatory walkthroughs. Identify learner level, build from objectives to examples to checks, create durable lesson files, include exercises/solutions when useful, and verify code/math examples where possible.",
+    tools: ["files", "shell", "web_search", "canvas"],
   },
   supervision: {
     id: "supervision",
@@ -188,6 +244,49 @@ const PROFILE_ALIASES = {
   frontend: "website",
   web: "website",
   site: "website",
+  documentation: "docs",
+  docs: "docs",
+  readme: "docs",
+  tutorial: "docs",
+  changelog: "docs",
+  manual: "docs",
+  data: "data",
+  analysis: "data",
+  analytics: "data",
+  csv: "data",
+  etl: "data",
+  dataframe: "data",
+  qa: "qa",
+  test: "qa",
+  testing: "qa",
+  ci: "qa",
+  regression: "qa",
+  database: "database",
+  db: "database",
+  sql: "database",
+  sqlite: "database",
+  postgres: "database",
+  devops: "devops",
+  deploy: "devops",
+  deployment: "devops",
+  docker: "devops",
+  k8s: "devops",
+  kubernetes: "devops",
+  security: "security",
+  sec: "security",
+  audit: "security",
+  secrets: "security",
+  auth: "security",
+  slides: "slides",
+  slide: "slides",
+  presentation: "slides",
+  deck: "slides",
+  powerpoint: "slides",
+  pptx: "slides",
+  education: "education",
+  teach: "education",
+  course: "education",
+  lesson: "education",
   manuscript: "paper",
   academic: "paper",
   article: "paper",
@@ -238,11 +337,32 @@ export function getTaskProfile(value = "auto") {
 
 export function defaultMaxStepsForProfile(value = "auto") {
   const profile = normalizeTaskProfile(value);
+  if (profile === "code") return 36;
   if (profile === "large-codebase") return 36;
   if (profile === "app") return 40;
   if (profile === "android") return 60;
   if (profile === "latex") return 30;
   if (profile === "supervision") return 40;
-  if (["paper", "research", "book", "novel", "c-cpp", "r-stan", "github", "word", "maintenance"].includes(profile)) return 30;
+  if (["devops", "security"].includes(profile)) return 36;
+  if (
+    [
+      "paper",
+      "research",
+      "book",
+      "novel",
+      "docs",
+      "data",
+      "qa",
+      "database",
+      "slides",
+      "education",
+      "c-cpp",
+      "r-stan",
+      "github",
+      "word",
+      "maintenance",
+    ].includes(profile)
+  )
+    return 30;
   return 24;
 }

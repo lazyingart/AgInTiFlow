@@ -69,7 +69,7 @@ function shouldUseComplexScouts(config, state) {
   const goal = String(config.goal || state.goal || "");
   return (
     Number(config.routeComplexityScore || 0) >= 3 ||
-    ["large-codebase", "maintenance", "code"].includes(profile) ||
+    ["large-codebase", "maintenance", "code", "qa", "database", "devops", "security", "github"].includes(profile) ||
     /\b(large|complex|complicated|debug|bug|failing|system|install|setup|codebase|repo|multi[- ]file|architecture|refactor|migration)\b/i.test(
       goal
     )

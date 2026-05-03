@@ -97,6 +97,30 @@ try {
     taskProfile: "large-codebase",
   });
   assert(/pro/i.test(largeProfileRoute.model), "large-codebase profile did not route to DeepSeek pro");
+  const codeProfileRoute = selectModelRoute({
+    routingMode: "smart",
+    provider: "deepseek",
+    goal: "this repo has some bugs and messy parts. can you make it good and leave it clean?",
+    taskProfile: "code",
+  });
+  assert(/pro/i.test(codeProfileRoute.model), "code profile did not route vague bugfix work to DeepSeek pro");
+  assert(
+    recommendedMaxStepsForTask({
+      goal: "this repo has some bugs and messy parts. can you make it good and leave it clean?",
+      taskProfile: "code",
+      complexityScore: codeProfileRoute.complexityScore,
+    }) >= 36,
+    "code profile did not get enough steps for inspect-fix-test-cleanup"
+  );
+  for (const complexProfile of ["qa", "database", "devops", "security"]) {
+    const route = selectModelRoute({
+      routingMode: "smart",
+      provider: "deepseek",
+      goal: "do the work",
+      taskProfile: complexProfile,
+    });
+    assert(/pro/i.test(route.model), `${complexProfile} profile did not route to DeepSeek pro`);
+  }
   const autoSystemRoute = selectModelRoute({
     routingMode: "smart",
     provider: "deepseek",

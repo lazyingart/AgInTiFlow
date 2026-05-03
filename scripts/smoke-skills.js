@@ -18,18 +18,28 @@ function selectedIds(goal, taskProfile = "auto") {
 
 const skills = listSkills({ includeBody: true });
 const ids = new Set(skills.map((skill) => skill.id));
-assert(skills.length >= 14, "expected built-in skills to load");
+assert(skills.length >= 27, "expected built-in skills to load");
 for (const required of [
   "aaps",
   "code",
+  "code-review",
+  "data-analysis",
+  "database",
+  "devops-deployment",
+  "docs-knowledge",
+  "education-tutorial",
   "github-maintenance",
   "image-generation",
   "latex-manuscript",
+  "presentation-slides",
+  "qa-testing",
+  "security-review",
   "system-maintenance",
   "supervision-student",
   "tmux-session",
   "website-app",
   "word-documents",
+  "writing-editing",
 ]) {
   assert(ids.has(required), `missing required skill ${required}`);
 }
@@ -43,6 +53,16 @@ assert(selectedIds("monitor a long running tmux session").includes("tmux-session
 assert(selectedIds("create an .aaps example for @lazyingart/aaps").includes("aaps"), "AAPS prompt did not select aaps");
 assert(selectedIds("debug a C++ CMake build").includes("c-cpp"), "C++ prompt did not select c-cpp");
 assert(selectedIds("set up Stan and CmdStanR reproducibly").includes("r-stan"), "Stan prompt did not select r-stan");
+assert(selectedIds("clean a CSV dataset and make plots").includes("data-analysis"), "data prompt did not select data-analysis");
+assert(selectedIds("write README API docs and a tutorial").includes("docs-knowledge"), "docs prompt did not select docs-knowledge");
+assert(selectedIds("fix failing tests and add regression coverage").includes("qa-testing"), "QA prompt did not select qa-testing");
+assert(selectedIds("write SQL migrations for sqlite schema").includes("database"), "database prompt did not select database");
+assert(selectedIds("debug Docker deployment logs and port config").includes("devops-deployment"), "devops prompt did not select devops-deployment");
+assert(selectedIds("review auth security and secrets handling").includes("security-review"), "security prompt did not select security-review");
+assert(selectedIds("make a PowerPoint pitch deck").includes("presentation-slides"), "slides prompt did not select presentation-slides");
+assert(selectedIds("edit a markdown screenplay final draft").includes("writing-editing"), "writing prompt did not select writing-editing");
+assert(selectedIds("create a lesson with exercises and quiz").includes("education-tutorial"), "education prompt did not select education-tutorial");
+assert(selectedIds("review this PR architecture without editing").includes("code-review"), "review prompt did not select code-review");
 assert(selectedIds("supervise a student agent in tmux and verify its artifacts", "supervision").includes("supervision-student"), "supervision prompt did not select supervision-student");
 assert(selectedIds("supervision").includes("supervision-student"), "single-word supervision prompt did not select supervision-student");
 assert(!selectedIds("supervision").includes("r-stan"), "single-word supervision prompt incorrectly selected r-stan");

@@ -19,6 +19,12 @@ Every supervised task must end with independent checks:
 | `auto` | Mixed request: inspect a messy folder, infer the purpose, write a report, run checks | Correct profile inference, durable files, useful checks, clean git status |
 | `code` | Add a CLI feature with tests | Patch diff, focused test output, git status |
 | `large-codebase` | Fix a cross-file bug in a generated multi-package repo | Codebase map, targeted reads, focused then broader checks |
+| `qa` | Reproduce and fix failing tests in a seeded repo | failing command, root cause patch, regression check |
+| `database` | Fix a schema/query/migration bug in a local SQLite app | migration/query evidence, no data-loss ambiguity |
+| `devops` | Diagnose a broken Docker/service/CI setup without sudo | read-only evidence, idempotent fix, health/log check |
+| `security` | Review a small app for auth, path, secret, or shell risks | findings, patch or report, no secret leakage |
+| `data` | Clean messy CSV/JSON data and generate a report | raw preserved, cleaned output, validation script |
+| `docs` | Write source-backed README/API/tutorial docs | source reads, docs files, verified commands/examples |
 | `app` | Build a small usable app from scratch | Real app files, build/preview/install check, durable screenshot or demo |
 | `website` | Build a polished landing page or dashboard | Preview works, screenshots/artifacts saved, responsive layout |
 | `node` | Build/test a Node or TypeScript package | package manager detected, script/test output |
@@ -33,6 +39,8 @@ Every supervised task must end with independent checks:
 | `book` | Plan and draft a chapter | Chapter map, chapter file, continuity notes |
 | `novel` | Draft a scene/chapter with character continuity | Story bible or continuity notes, chapter file |
 | `design` | Produce an engineering/product design doc | Options/tradeoffs, decision, verification criteria |
+| `slides` | Create a pitch deck, lecture deck, or poster | outline, slide source, exported/previewable artifact |
+| `education` | Create lesson materials with exercises and answers | learner objective, examples, exercise checks |
 | `image` | Generate an image with GRS AI or Venice | Manifest, generated image path, canvas preview |
 | `word` | Create/convert/edit a `.docx` style document | Input backup, output file, converter/tool evidence |
 | `github` | Commit/push/open PR or fix CI | status/diff first, gh/git output, conflict handling |
@@ -86,3 +94,7 @@ Canvas preview alone is not proof that an artifact was saved. AgInTiFlow now per
 ## Current Lesson From Auto Supervision
 
 For vague daily tasks, `auto` must borrow specialized habits without being told. The Pocket Greenhouse homework exposed two quality gates: generated output must be inspected and polished, not merely described, and final hygiene claims must use stack-specific recursive checks. AgInTiFlow now explicitly asks the model to fix obvious duplicates/noisy rows/stale summaries and to check Python transient files recursively before claiming none exist.
+
+## Current Lesson From Code Supervision
+
+The Pocket Ledger homework exposed that an explicit `code` profile should not be treated as a cheap short-turn route when the prompt asks to repair a repo and leave it clean. AgInTiFlow now routes `code` work to the complex model by default, gives it a larger cleanup budget, and tells it to prioritize functional checks when optional lint expands scope. The run also exposed that one-shot CLI defaults were overriding `SANDBOX_MODE=host`; env sandbox defaults are now covered by smoke tests.

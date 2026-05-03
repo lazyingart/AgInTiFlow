@@ -14,7 +14,7 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function runCli(args) {
+async function runCli(args, envOverrides = {}) {
   const result = await execFileAsync(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), ...args], {
     cwd: tempRoot,
     timeout: 20000,
@@ -22,6 +22,7 @@ async function runCli(args) {
     env: {
       ...process.env,
       AGINTIFLOW_RUNTIME_DIR: "",
+      ...envOverrides,
     },
   });
   return result.stdout;
@@ -89,6 +90,12 @@ try {
     capabilities.tools?.taskProfiles?.some((profile) => profile.id === "supervision"),
     "capabilities did not report supervision task profile"
   );
+  for (const profileId of ["docs", "data", "qa", "database", "devops", "security", "slides", "education"]) {
+    assert(
+      capabilities.tools?.taskProfiles?.some((profile) => profile.id === profileId),
+      `capabilities did not report ${profileId} task profile`
+    );
+  }
   assert(
     capabilities.trustedDockerPolicy.some((check) => check.command.startsWith("apt-get install") && check.allowed),
     "trusted Docker policy did not allow apt-get install"
@@ -117,17 +124,42 @@ try {
     capabilities.tools?.skills?.some((skill) => skill.id === "supervision-student"),
     "capabilities did not report built-in supervision skill"
   );
+  for (const skillId of ["data-analysis", "docs-knowledge", "qa-testing", "database", "devops-deployment", "security-review", "presentation-slides", "writing-editing"]) {
+    assert(
+      capabilities.tools?.skills?.some((skill) => skill.id === skillId),
+      `capabilities did not report built-in ${skillId} skill`
+    );
+  }
 
   const doctor = JSON.parse(await runCli(["doctor", "--capabilities", "--json"]));
   assert(doctor.project.root === tempRoot, "doctor --capabilities used the wrong project root");
   assert(doctor.project.instructionsPresent, "doctor --capabilities did not report AGINTI.md");
+  const envSandboxRun = await runCli(
+    ["--provider", "mock", "--routing", "manual", "--model", "mock-agent", "--max-steps", "1", "env sandbox smoke"],
+    {
+      SANDBOX_MODE: "host",
+      PACKAGE_INSTALL_POLICY: "allow",
+      USE_DOCKER_SANDBOX: "false",
+    }
+  );
+  assert(envSandboxRun.includes("Shell: host policy=allow"), "one-shot CLI did not respect host sandbox env defaults");
+  assert(!envSandboxRun.includes("Docker workspace:"), "one-shot CLI forced Docker despite host sandbox env defaults");
 
   console.log(
     JSON.stringify(
       {
         ok: true,
         projectRoot: tempRoot,
-        checks: ["aginti-md-init", "capabilities-cli", "doctor-capabilities", "maintenance-policy", "trusted-docker-policy", "git-policy", "skills-capability"],
+        checks: [
+          "aginti-md-init",
+          "capabilities-cli",
+          "doctor-capabilities",
+          "maintenance-policy",
+          "trusted-docker-policy",
+          "git-policy",
+          "skills-capability",
+          "env-sandbox-defaults",
+        ],
       },
       null,
       2

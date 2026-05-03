@@ -379,6 +379,9 @@ function providerLabel(provider) {
 }
 
 function agentDefaults(args) {
+  const envSandboxMode = process.env.SANDBOX_MODE || "";
+  const envPackageInstallPolicy = process.env.PACKAGE_INSTALL_POLICY || "";
+  const envUseDockerSandbox = process.env.USE_DOCKER_SANDBOX;
   const defaults = {
     ...args,
     language: resolveLanguage(args.language || process.env.AGINTI_LANGUAGE || ""),
@@ -388,9 +391,11 @@ function agentDefaults(args) {
     allowWebSearch: args.allowWebSearch ?? true,
     allowParallelScouts: args.allowParallelScouts ?? true,
     parallelScoutCount: args.parallelScoutCount || 3,
-    sandboxMode: args.sandboxMode || "docker-workspace",
-    packageInstallPolicy: args.packageInstallPolicy || "allow",
-    useDockerSandbox: args.useDockerSandbox ?? true,
+    sandboxMode: args.sandboxMode || envSandboxMode || "docker-workspace",
+    packageInstallPolicy: args.packageInstallPolicy || envPackageInstallPolicy || "allow",
+    useDockerSandbox:
+      args.useDockerSandbox ??
+      (envUseDockerSandbox === undefined ? true : String(envUseDockerSandbox).toLowerCase() !== "false"),
     maxSteps:
       args.maxSteps ||
       recommendedMaxStepsForTask({
@@ -401,7 +406,7 @@ function agentDefaults(args) {
 
   if (defaults.sandboxMode === "host") {
     defaults.useDockerSandbox = false;
-    defaults.packageInstallPolicy = args.packageInstallPolicy || "prompt";
+    defaults.packageInstallPolicy = args.packageInstallPolicy || envPackageInstallPolicy || "prompt";
   }
 
   return defaults;

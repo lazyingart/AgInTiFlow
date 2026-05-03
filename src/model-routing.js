@@ -776,7 +776,9 @@ export function modelsForProviderGroup(groupId) {
 export function scoreTaskComplexity(goal = "", taskProfile = "auto") {
   const text = String(goal).toLowerCase();
   let score = text.length > 600 ? 2 : text.length > 240 ? 1 : 0;
-  if (["large-codebase", "engineering", "codebase"].includes(String(taskProfile || "").toLowerCase())) score += 3;
+  const profile = String(taskProfile || "").toLowerCase();
+  if (["large-codebase", "engineering", "codebase", "code", "qa", "database", "devops", "security"].includes(profile)) score += 3;
+  if (["app", "data", "paper", "research", "latex", "github", "maintenance", "supervision"].includes(profile)) score += 2;
   for (const keyword of COMPLEXITY_KEYWORDS) {
     if (text.includes(keyword)) score += 1;
   }
