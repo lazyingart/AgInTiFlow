@@ -138,6 +138,8 @@ aginti update
 aginti sessions list
 aginti sessions show <session-id>
 aginti sessions rename <session-id> "friendly title"
+aginti --remove-empty-sessions
+aginti --remove-sessions
 aginti storage migrate
 aginti resume
 aginti resume --all-sessions
@@ -150,6 +152,8 @@ aginti "set up this project and run the tests"
 ```
 
 Bare `aginti resume` lists sessions for the current cwd by default. Use `--all-sessions` to browse the global session index; in the interactive selector, type a number to resume, `q` to quit, `/text` to filter the visible list, or `/` to clear the filter.
+
+Session cleanup is cwd-scoped by default. `aginti --remove-empty-sessions` shows only empty sessions and preselects them; `aginti --remove-sessions` shows all cwd sessions with nothing preselected. The cleanup selector uses Space to select, Up/Down to move, Tab to switch to OK/Cancel, and a second Yes/Cancel confirmation before deleting the project pointer and central `~/.agintiflow/sessions/<session-id>` data.
 
 Run from a source checkout:
 

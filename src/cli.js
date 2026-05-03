@@ -17,8 +17,10 @@ import {
   doctorReport,
   ensureProjectSessionStorage,
   initProject,
+  listProjectSessionRemovalCandidates,
   listProjectSessions,
   renameProjectSession,
+  removeProjectSessions,
   providerKeyStatus,
   setProviderKey,
   showProjectSession,
@@ -34,6 +36,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline/promises";
+import * as readlineRaw from "node:readline";
 
 const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
@@ -378,7 +381,7 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti update OR aginti models OR aginti skills [query] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti update OR aginti models OR aginti skills [query] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
   console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
 }
@@ -600,9 +603,214 @@ function printAuthWizardResult(result) {
   }
 }
 
+const removeSessionAnsi = {
+  reset: "\x1b[0m",
+  bold: "\x1b[1m",
+  dim: "\x1b[2m",
+  inverse: "\x1b[7m",
+};
+
+function removeSessionColor(text, ...codes) {
+  return `${codes.join("")}${text}${removeSessionAnsi.reset}`;
+}
+
+function stripAnsi(text) {
+  return String(text || "").replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+function ellipsize(text, width) {
+  const value = String(text || "").replace(/\s+/g, " ").trim();
+  if (value.length <= width) return value.padEnd(width, " ");
+  return `${value.slice(0, Math.max(0, width - 1))}…`;
+}
+
+function buttonLabel(label, focused, disabled = false) {
+  const text = ` ${label} `;
+  if (disabled) return removeSessionColor(text, removeSessionAnsi.dim);
+  return focused ? removeSessionColor(text, removeSessionAnsi.inverse, removeSessionAnsi.bold) : text;
+}
+
+function renderSessionRemovalWizard(state) {
+  const width = Math.min(Math.max(process.stdout.columns || 100, 80), 128);
+  const rows = process.stdout.rows || 28;
+  const bodyWidth = width - 4;
+  const visibleCount = Math.max(5, Math.min(state.items.length || 1, rows - 11));
+  if (state.cursor < state.scroll) state.scroll = state.cursor;
+  if (state.cursor >= state.scroll + visibleCount) state.scroll = state.cursor - visibleCount + 1;
+  const shown = state.items.slice(state.scroll, state.scroll + visibleCount);
+  const selectedCount = state.selected.size;
+  const border = "─".repeat(width - 2);
+  const line = (content = "") => {
+    const value = String(content || "");
+    const clipped = stripAnsi(value).length > bodyWidth ? ellipsize(stripAnsi(value), bodyWidth) : value;
+    return `│ ${clipped}${" ".repeat(Math.max(0, bodyWidth - stripAnsi(clipped).length))} │`;
+  };
+  const listRows = shown.map((session, offset) => {
+    const index = state.scroll + offset;
+    const checked = state.selected.has(session.sessionId) ? "[x]" : "[ ]";
+    const cursor = index === state.cursor ? ">" : " ";
+    const badge = session.isEmpty ? "empty" : "work";
+    const title = session.title || session.goal || "(no title)";
+    const meta = `${session.provider || "unknown"}/${session.model || "unknown"} chat=${session.chatCount} steps=${session.stepsCompleted} files=${session.artifactFileCount}`;
+    const row = `${cursor} ${checked} ${badge.padEnd(5)} ${session.sessionId} ${meta} ${title}`;
+    const clipped = ellipsize(row, bodyWidth);
+    return state.focus === "list" && index === state.cursor ? line(removeSessionColor(clipped, removeSessionAnsi.inverse)) : line(clipped);
+  });
+  const footer =
+    state.phase === "confirm"
+      ? `Confirm deletion: ${buttonLabel("Yes, delete", state.confirmFocus === "yes")}  ${buttonLabel("Cancel", state.confirmFocus === "cancel")}`
+      : `Actions: ${buttonLabel(`OK delete ${selectedCount}`, state.focus === "ok", selectedCount === 0)}  ${buttonLabel("Cancel", state.focus === "cancel")}`;
+  const guidance =
+    state.phase === "confirm"
+      ? "Left/Right switches choice. Enter confirms. Esc/q cancels."
+      : "Space toggles. Up/Down moves. Tab changes focus. Enter opens confirm. Esc/q cancels.";
+  const lines = [
+    `╭${border}╮`,
+    line(state.title),
+    line(state.subtitle),
+    line(`Showing ${state.items.length === 0 ? 0 : state.scroll + 1}-${Math.min(state.items.length, state.scroll + visibleCount)} of ${state.items.length}; selected ${selectedCount}`),
+    `├${border}┤`,
+    ...listRows,
+    `├${border}┤`,
+    line(footer),
+    line(state.message || guidance),
+    `╰${border}╯`,
+  ];
+  process.stdout.write(`\x1b[H\x1b[2J${lines.join("\n")}`);
+}
+
+async function promptRemoveSessions(candidates, { defaultSelectedIds = [], title = "Remove sessions", subtitle = "" } = {}) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY || typeof process.stdin.setRawMode !== "function") {
+    console.log("Interactive terminal required; no sessions removed.");
+    return null;
+  }
+  const state = {
+    items: candidates,
+    selected: new Set(defaultSelectedIds),
+    cursor: 0,
+    scroll: 0,
+    focus: "list",
+    phase: "select",
+    confirmFocus: "cancel",
+    message: "",
+    title,
+    subtitle,
+  };
+  return await new Promise((resolve) => {
+    const input = process.stdin;
+    const output = process.stdout;
+    const cleanup = (value) => {
+      input.off("keypress", onKeypress);
+      if (input.isTTY) input.setRawMode(false);
+      input.pause();
+      output.write("\x1b[?25h\x1b[?1049l");
+      resolve(value);
+    };
+    const moveCursor = (delta) => {
+      state.focus = "list";
+      state.cursor = Math.min(Math.max(state.cursor + delta, 0), Math.max(0, state.items.length - 1));
+      state.message = "";
+    };
+    const toggleCurrent = () => {
+      const session = state.items[state.cursor];
+      if (!session) return;
+      if (state.selected.has(session.sessionId)) state.selected.delete(session.sessionId);
+      else state.selected.add(session.sessionId);
+      state.message = `${state.selected.size} session(s) selected.`;
+    };
+    const openConfirm = () => {
+      if (state.selected.size === 0) {
+        state.message = "Select at least one session before confirming.";
+        return;
+      }
+      state.phase = "confirm";
+      state.confirmFocus = "cancel";
+      state.message = "Second confirmation required before deleting session data.";
+    };
+    function onKeypress(char, key = {}) {
+      if (key.ctrl && key.name === "c") return cleanup(null);
+      const name = key.name || char;
+      if (name === "escape" || name === "q") return cleanup(null);
+      if (state.phase === "confirm") {
+        if (name === "left" || name === "right" || name === "tab") state.confirmFocus = state.confirmFocus === "yes" ? "cancel" : "yes";
+        else if (name === "return" || name === "enter") return cleanup(state.confirmFocus === "yes" ? [...state.selected] : null);
+        renderSessionRemovalWizard(state);
+        return;
+      }
+      if (name === "up") moveCursor(-1);
+      else if (name === "down") moveCursor(1);
+      else if (name === "pageup") moveCursor(-8);
+      else if (name === "pagedown") moveCursor(8);
+      else if (name === "space") toggleCurrent();
+      else if (name === "tab") state.focus = state.focus === "list" ? "ok" : state.focus === "ok" ? "cancel" : "list";
+      else if (name === "left" || name === "right") state.focus = state.focus === "cancel" ? "ok" : "cancel";
+      else if (name === "return" || name === "enter") {
+        if (state.focus === "cancel") return cleanup(null);
+        openConfirm();
+      }
+      renderSessionRemovalWizard(state);
+    }
+    readlineRaw.emitKeypressEvents(input);
+    input.setRawMode(true);
+    input.resume();
+    output.write("\x1b[?1049h\x1b[?25l");
+    input.on("keypress", onKeypress);
+    renderSessionRemovalWizard(state);
+  });
+}
+
+function printRemovalPreview(candidates) {
+  for (const session of candidates) {
+    const title = session.title || session.goal || "(no title)";
+    const status = session.isEmpty ? "empty" : "work";
+    console.log(`${status.padEnd(5)} ${session.sessionId} ${session.updatedAt || ""} ${title.slice(0, 90)}`);
+  }
+}
+
+async function handleRemoveSessionsCommand({ emptyOnly = false } = {}) {
+  const candidates = await listProjectSessionRemovalCandidates(process.cwd(), {
+    limit: 1000,
+    emptyOnly,
+  });
+  if (candidates.length === 0) {
+    console.log(emptyOnly ? "No empty sessions found for this cwd." : "No sessions found for this cwd.");
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    printRemovalPreview(candidates);
+    console.log("No sessions removed because this command needs an interactive terminal.");
+    return;
+  }
+  const defaultSelectedIds = emptyOnly ? candidates.map((session) => session.sessionId) : [];
+  const selected = await promptRemoveSessions(candidates, {
+    defaultSelectedIds,
+    title: emptyOnly ? "Remove empty AgInTiFlow sessions in this cwd" : "Remove AgInTiFlow sessions in this cwd",
+    subtitle: emptyOnly
+      ? "Only empty sessions are shown and selected by default."
+      : "All cwd sessions are shown; nothing is selected by default.",
+  });
+  if (!selected || selected.length === 0) {
+    console.log("No sessions removed.");
+    return;
+  }
+  const allowedIds = new Set(candidates.map((session) => session.sessionId));
+  const safeSelected = selected.filter((sessionId) => allowedIds.has(sessionId));
+  const result = await removeProjectSessions(process.cwd(), safeSelected);
+  console.log(`Removed ${result.removed.length} session(s) from this cwd:`);
+  for (const item of result.removed) console.log(`- ${item.sessionId}`);
+}
+
 async function handleSessionsCommand(argv) {
   const normalizedArgv = argv[0] === "--all-sessions" ? ["list", ...argv] : argv;
   const [verb = "list", sessionId = "", ...rest] = normalizedArgv;
+  if (verb === "remove-empty" || verb === "delete-empty") {
+    await handleRemoveSessionsCommand({ emptyOnly: true });
+    return;
+  }
+  if (verb === "remove" || verb === "delete") {
+    await handleRemoveSessionsCommand({ emptyOnly: false });
+    return;
+  }
   if (verb === "list") {
     const allSessions = normalizedArgv.includes("--all-sessions");
     const sessions = await listProjectSessions(process.cwd(), { limit: 80, allSessions });
@@ -638,7 +846,7 @@ async function handleSessionsCommand(argv) {
     return;
   }
 
-  console.error('Usage: aginti sessions list OR aginti sessions show <session-id> OR aginti sessions rename <session-id> "title"');
+  console.error('Usage: aginti sessions list OR aginti sessions show <session-id> OR aginti sessions rename <session-id> "title" OR aginti sessions remove-empty OR aginti sessions remove');
   process.exit(1);
 }
 
@@ -787,6 +995,16 @@ export async function main(argv = process.argv.slice(2)) {
     restart: true,
   });
   if (autoUpdateResult.restarted) process.exit(autoUpdateResult.exitCode ?? 0);
+
+  if (argv.includes("--remove-empty-sessions") || argv[0] === "remove-empty-sessions") {
+    await handleRemoveSessionsCommand({ emptyOnly: true });
+    return;
+  }
+
+  if (argv.includes("--remove-sessions") || argv[0] === "remove-sessions") {
+    await handleRemoveSessionsCommand({ emptyOnly: false });
+    return;
+  }
 
   if (argv[0] === "init") {
     printInitResult(await initProject(process.cwd()));

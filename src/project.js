@@ -9,6 +9,7 @@ import { platformInfo, platformLabel, platformSetupHints } from "./platform.js";
 import {
   LEGACY_PROJECT_SESSIONS_DIR_NAME,
   PROJECT_SESSIONS_DIR_NAME,
+  deleteSessionIndex,
   globalSessionPaths,
   isSafeSessionId,
   listSessionIndex,
@@ -559,6 +560,118 @@ export async function listProjectSessions(projectRoot = process.cwd(), limitOrOp
 
   const sessions = [...byId.values()];
   return sessions.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, options.limit);
+}
+
+async function readJsonFile(filePath, fallback = {}) {
+  try {
+    return JSON.parse(await fsp.readFile(filePath, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+
+async function readJsonLines(filePath) {
+  try {
+    const raw = await fsp.readFile(filePath, "utf8");
+    return raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  } catch {
+    return [];
+  }
+}
+
+async function countFilesRecursive(dirPath, limit = 200) {
+  let count = 0;
+  async function walk(current) {
+    if (count >= limit) return;
+    const entries = await fsp.readdir(current, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (count >= limit) return;
+      const child = path.join(current, entry.name);
+      if (entry.isDirectory()) await walk(child);
+      else if (entry.isFile()) count += 1;
+    }
+  }
+  await walk(dirPath);
+  return count;
+}
+
+function isMeaningfulSessionEvent(event = {}) {
+  const type = String(event.type || "");
+  if (!type) return false;
+  return /^(agent|assistant|browser|canvas|conversation|file|image|model|patch|plan|run|shell|tool|workspace|write)[.:_-]/.test(type);
+}
+
+export async function listProjectSessionRemovalCandidates(projectRoot = process.cwd(), options = {}) {
+  const paths = await ensureProjectSessionStorage(projectRoot);
+  const sessions = await listProjectSessions(projectRoot, {
+    limit: options.limit || 1000,
+    commandCwd: options.commandCwd,
+    allSessions: options.allSessions,
+  });
+  const candidates = [];
+  for (const session of sessions) {
+    const safeId = String(session.sessionId || "");
+    if (!isSafeSessionId(safeId)) continue;
+    const pointerPath = path.join(paths.sessionsDir, safeId, "session.json");
+    const pointer = await readJsonFile(pointerPath, {});
+    const sessionDir = session.sessionDir || pointer.sessionDir || path.join(paths.globalSessionsDir, safeId);
+    const state = await readJsonFile(path.join(sessionDir, "state.json"), {});
+    const events = await readJsonLines(path.join(sessionDir, "events.jsonl"));
+    const chat = Array.isArray(state.chat) ? state.chat : [];
+    const goal = String(state.goal || pointer.goal || session.goal || "").trim();
+    const title = String(state.title || pointer.title || session.title || "").trim();
+    const stepsCompleted = Number(state.stepsCompleted || 0);
+    const artifactsDir = state.artifactsDir || pointer.artifactsDir || path.join(sessionDir, "artifacts");
+    const artifactFileCount = await countFilesRecursive(artifactsDir);
+    const meaningfulEventCount = events.filter(isMeaningfulSessionEvent).length;
+    const isEmpty =
+      !goal &&
+      !title &&
+      chat.length === 0 &&
+      stepsCompleted === 0 &&
+      artifactFileCount === 0 &&
+      meaningfulEventCount === 0;
+    candidates.push({
+      ...session,
+      sessionId: safeId,
+      sessionDir,
+      pointerPath,
+      chatCount: chat.length,
+      eventCount: events.length,
+      meaningfulEventCount,
+      artifactFileCount,
+      stepsCompleted,
+      isEmpty,
+    });
+  }
+  return options.emptyOnly ? candidates.filter((session) => session.isEmpty) : candidates;
+}
+
+export async function removeProjectSessions(projectRoot = process.cwd(), sessionIds = []) {
+  const paths = await ensureProjectSessionStorage(projectRoot);
+  const removed = [];
+  for (const rawId of sessionIds) {
+    const safeId = String(rawId || "");
+    if (!isSafeSessionId(safeId)) throw new Error(`Invalid session id: ${rawId}`);
+    const pointerDir = path.join(paths.sessionsDir, safeId);
+    const pointer = await readJsonFile(path.join(pointerDir, "session.json"), {});
+    const sessionDir = pointer.sessionDir || path.join(paths.globalSessionsDir, safeId);
+    const legacyDir = path.join(paths.legacySessionsDir, safeId);
+    await fsp.rm(sessionDir, { recursive: true, force: true });
+    await fsp.rm(pointerDir, { recursive: true, force: true });
+    await fsp.rm(legacyDir, { recursive: true, force: true }).catch(() => {});
+    try {
+      deleteSessionIndex(safeId);
+    } catch {
+      // The on-disk session and pointer are already removed; stale index cleanup can be retried later.
+    }
+    removed.push({ sessionId: safeId, sessionDir, pointerDir });
+  }
+  return { ok: true, removed };
 }
 
 export async function showProjectSession(projectRoot, sessionId) {

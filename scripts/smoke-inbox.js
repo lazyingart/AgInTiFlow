@@ -2,7 +2,13 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { ensureProjectSessionStorage, listProjectSessions, sessionStoreOptions } from "../src/project.js";
+import {
+  ensureProjectSessionStorage,
+  listProjectSessionRemovalCandidates,
+  listProjectSessions,
+  removeProjectSessions,
+  sessionStoreOptions,
+} from "../src/project.js";
 import { SessionStore } from "../src/session-store.js";
 
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-inbox-"));
@@ -77,6 +83,48 @@ try {
   const allSessions = await listProjectSessions(legacyProject, { limit: 10, allSessions: true });
   assert(allSessions.some((session) => session.sessionId === "other-cwd-smoke"), "--all-sessions mode did not include a different cwd session");
 
+  const emptyStore = new SessionStore(paths.globalSessionsDir, "empty-session-smoke", sessionStoreOptions(legacyProject, "empty-session-smoke"));
+  await emptyStore.saveState({
+    sessionId: "empty-session-smoke",
+    createdAt: "2026-01-01T00:04:00.000Z",
+    updatedAt: "2026-01-01T00:04:00.000Z",
+    provider: "mock",
+    model: "mock-agent",
+    projectRoot: legacyProject,
+    commandCwd: legacyProject,
+    chat: [],
+    stepsCompleted: 0,
+  });
+  const nonEmptyStore = new SessionStore(paths.globalSessionsDir, "nonempty-session-smoke", sessionStoreOptions(legacyProject, "nonempty-session-smoke"));
+  await nonEmptyStore.saveState({
+    sessionId: "nonempty-session-smoke",
+    createdAt: "2026-01-01T00:05:00.000Z",
+    updatedAt: "2026-01-01T00:05:00.000Z",
+    provider: "mock",
+    model: "mock-agent",
+    goal: "keep this non-empty session",
+    projectRoot: legacyProject,
+    commandCwd: legacyProject,
+    chat: [{ role: "user", content: "hello" }],
+    stepsCompleted: 1,
+  });
+  const removalCandidates = await listProjectSessionRemovalCandidates(legacyProject, { limit: 20, commandCwd: legacyProject });
+  assert(removalCandidates.find((session) => session.sessionId === "empty-session-smoke")?.isEmpty, "empty session was not detected");
+  assert(removalCandidates.find((session) => session.sessionId === "nonempty-session-smoke")?.isEmpty === false, "non-empty session was classified as empty");
+  const emptyOnly = await listProjectSessionRemovalCandidates(legacyProject, { limit: 20, commandCwd: legacyProject, emptyOnly: true });
+  assert(emptyOnly.some((session) => session.sessionId === "empty-session-smoke"), "empty-only removal list omitted the empty session");
+  assert(!emptyOnly.some((session) => session.sessionId === "nonempty-session-smoke"), "empty-only removal list included a non-empty session");
+  const removed = await removeProjectSessions(legacyProject, ["empty-session-smoke"]);
+  assert(removed.removed.length === 1, "empty session removal did not report one removed session");
+  assert(
+    !(await fs.stat(path.join(paths.globalSessionsDir, "empty-session-smoke", "state.json")).then((stat) => stat.isFile()).catch(() => false)),
+    "empty session global state was not removed"
+  );
+  assert(
+    !(await fs.stat(path.join(paths.sessionsDir, "empty-session-smoke", "session.json")).then((stat) => stat.isFile()).catch(() => false)),
+    "empty session project pointer was not removed"
+  );
+
   console.log(
     JSON.stringify(
       {
@@ -89,6 +137,8 @@ try {
           "global-session-store",
           "cwd-session-filter",
           "all-sessions-list",
+          "empty-session-detection",
+          "empty-session-removal",
         ],
       },
       null,
