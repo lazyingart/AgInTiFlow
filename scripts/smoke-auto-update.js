@@ -6,6 +6,9 @@ import {
   maybeAutoUpdate,
   shouldAutoUpdateCommand,
 } from "../src/auto-update.js";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -47,5 +50,47 @@ const skipped = await maybeAutoUpdate({
 });
 assert(skipped.skipped === "source-checkout", "source checkout update guard failed");
 
-console.log("auto-update smoke ok");
+const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-auto-update-"));
+const previousHome = process.env.AGINTIFLOW_HOME;
+process.env.AGINTIFLOW_HOME = tempHome;
+await fs.mkdir(tempHome, { recursive: true });
+await fs.writeFile(
+  path.join(tempHome, "update-check.json"),
+  `${JSON.stringify({ checkedAt: Date.now(), latest: "0.20.99" })}\n`,
+  "utf8"
+);
+const writes = [];
+const fakeStdout = {
+  isTTY: true,
+  write(value) {
+    writes.push(String(value));
+  },
+};
+const skipVersion = await maybeAutoUpdate({
+  argv: [],
+  packageDir: scopedGlobalPath,
+  packageName: "@lazyingart/agintiflow",
+  packageVersion: "0.20.38",
+  restart: false,
+  stdout: fakeStdout,
+  selectUpdateAction: async () => "skip-version",
+});
+assert(skipVersion.skipped === "skip-version", "skip-version selector choice was not honored");
+const cacheAfterSkip = JSON.parse(await fs.readFile(path.join(tempHome, "update-check.json"), "utf8"));
+assert(cacheAfterSkip.skippedVersion === "0.20.99", "skip-version did not persist skipped version");
+const repeatedSkip = await maybeAutoUpdate({
+  argv: [],
+  packageDir: scopedGlobalPath,
+  packageName: "@lazyingart/agintiflow",
+  packageVersion: "0.20.38",
+  restart: false,
+  stdout: fakeStdout,
+  selectUpdateAction: async () => {
+    throw new Error("selector should not be called after skip-version");
+  },
+});
+assert(repeatedSkip.skipped === "skipped-version", "cached skipped version was not respected");
+if (previousHome === undefined) delete process.env.AGINTIFLOW_HOME;
+else process.env.AGINTIFLOW_HOME = previousHome;
 
+console.log("auto-update smoke ok");
