@@ -50,6 +50,8 @@ aginti --list-profiles
 aginti --sandbox-status
 ```
 
+When AgInTiFlow is installed globally from npm, normal `aginti`, `aginti chat`, `aginti resume`, and `aginti web` startup checks npm for a newer `@lazyingart/agintiflow` release at a throttled interval. If a newer version is found, it runs `npm install -g @lazyingart/agintiflow@latest` and restarts the CLI once. Source checkouts and non-TTY automation skip this behavior. Force a check with `aginti update`, skip one run with `--no-auto-update`, or disable it with `AGINTIFLOW_NO_AUTO_UPDATE=1`.
+
 On first interactive use, if no main model key is detected, `aginti` opens an auth wizard. Use Up/Down to choose DeepSeek, OpenAI, Qwen, or Venice, paste the key, and press Enter to save it to the project-local ignored file `.aginti/.env` with `0600` permissions. The wizard points to DeepSeek keys at `https://platform.deepseek.com/api_keys`, OpenAI keys at `https://platform.openai.com/api-keys`, and Venice at `https://venice.ai`. It then offers the optional auxiliary image key; press Esc to skip. You can rerun it even when keys already exist:
 
 ```bash
@@ -132,6 +134,7 @@ aginti keys status
 printf '%s' "$DEEPSEEK_API_KEY" | aginti keys set deepseek --stdin
 aginti capabilities
 aginti doctor --capabilities
+aginti update
 aginti sessions list
 aginti sessions show <session-id>
 aginti sessions rename <session-id> "friendly title"

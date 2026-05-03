@@ -29,6 +29,7 @@ import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 import { normalizeAuthProvider, promptHidden, runAuthWizard, shouldPromptForDeepSeek } from "./auth-onboarding.js";
 import { listSkills, selectSkillsForGoal } from "./skill-library.js";
 import { languageLabel, resolveLanguage } from "./i18n.js";
+import { maybeAutoUpdate } from "./auto-update.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -98,6 +99,7 @@ export function parseArgs(argv) {
     latex: false,
     image: false,
     language: "",
+    autoUpdate: undefined,
   };
 
   const parts = [];
@@ -131,6 +133,14 @@ export function parseArgs(argv) {
         result.language = first;
         i += 1;
       }
+      continue;
+    }
+    if (arg === "--no-auto-update") {
+      result.autoUpdate = false;
+      continue;
+    }
+    if (arg === "--auto-update") {
+      result.autoUpdate = true;
       continue;
     }
     if (arg === "--start-url") {
@@ -368,7 +378,7 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti models OR aginti skills [query] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti update OR aginti models OR aginti skills [query] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
   console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
 }
@@ -704,6 +714,30 @@ export async function main(argv = process.argv.slice(2)) {
     console.log(packageJson.version);
     return;
   }
+
+  if (argv[0] === "update" || argv[0] === "upgrade") {
+    const updateResult = await maybeAutoUpdate({
+      argv,
+      force: true,
+      manual: true,
+      packageDir,
+      packageName: packageJson.name,
+      packageVersion: packageJson.version,
+      restart: false,
+    });
+    if (updateResult.error) process.exit(1);
+    return;
+  }
+
+  const autoUpdateResult = await maybeAutoUpdate({
+    argv,
+    force: argv.includes("--auto-update"),
+    packageDir,
+    packageName: packageJson.name,
+    packageVersion: packageJson.version,
+    restart: true,
+  });
+  if (autoUpdateResult.restarted) process.exit(autoUpdateResult.exitCode ?? 0);
 
   if (argv[0] === "init") {
     printInitResult(await initProject(process.cwd()));

@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.37",
+  "version": "0.20.38",
   "type": "module",
   "description": "AgInTiFlow is a web-first coding agent and CLI with DeepSeek routing, sandboxed tools, model providers, canvas artifacts, and optional wrappers.",
   "license": "Apache-2.0",
@@ -53,6 +53,7 @@
     "scripts/smoke-cli-chat.js",
     "scripts/smoke-coding-tools.js",
     "scripts/smoke-capabilities.js",
+    "scripts/smoke-auto-update.js",
     "scripts/smoke-inbox.js",
     "scripts/smoke-model-roles.js",
     "scripts/smoke-platform.js",
@@ -86,10 +87,11 @@
     "smoke:platform": "node scripts/smoke-platform.js",
     "smoke:tmux-tools": "node scripts/smoke-tmux-tools.js",
     "smoke:web-api": "node scripts/smoke-web-api.js",
+    "smoke:autoupdate": "node scripts/smoke-auto-update.js",
     "real:deepseek": "node scripts/real-deepseek-capabilities.js",
     "supervision:seed": "node scripts/seed-supervised-homework.js",
     "storage:migrate": "node bin/aginti-cli.js storage migrate",
-    "test": "npm run check && npm run smoke:web-api && npm run smoke:coding-tools && npm run smoke:auxiliary-tools && npm run smoke:auth && npm run smoke:canvas-artifacts && npm run smoke:capabilities && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:skills && npm run smoke:tmux-tools && npm run smoke:cli-chat && npm run smoke:inbox",
+    "test": "npm run check && npm run smoke:autoupdate && npm run smoke:web-api && npm run smoke:coding-tools && npm run smoke:auxiliary-tools && npm run smoke:auth && npm run smoke:canvas-artifacts && npm run smoke:capabilities && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:skills && npm run smoke:tmux-tools && npm run smoke:cli-chat && npm run smoke:inbox",
     "pack:dry-run": "npm pack --dry-run",
     "smoke:capabilities": "node scripts/smoke-capabilities.js"
   },
