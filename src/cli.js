@@ -382,15 +382,27 @@ function agentDefaults(args) {
   const envSandboxMode = process.env.SANDBOX_MODE || "";
   const envPackageInstallPolicy = process.env.PACKAGE_INSTALL_POLICY || "";
   const envUseDockerSandbox = process.env.USE_DOCKER_SANDBOX;
+  const envScoutCount = Number(process.env.AGINTI_SCOUT_COUNT);
+  const taskProfile = args.taskProfile || process.env.AGINTI_TASK_PROFILE || (args.latex ? "latex" : "auto");
   const defaults = {
     ...args,
+    provider: args.provider || process.env.AGENT_PROVIDER || "",
+    routingMode: args.routingMode || process.env.AGENT_ROUTING_MODE || "smart",
+    routeProvider: args.routeProvider || process.env.AGINTI_ROUTE_PROVIDER || "",
+    routeModel: args.routeModel || process.env.AGINTI_ROUTE_MODEL || "",
+    mainProvider: args.mainProvider || process.env.AGINTI_MAIN_PROVIDER || "",
+    mainModel: args.mainModel || process.env.AGINTI_MAIN_MODEL || "",
+    spareProvider: args.spareProvider || process.env.AGINTI_SPARE_PROVIDER || "",
+    spareModel: args.spareModel || process.env.AGINTI_SPARE_MODEL || "",
+    spareReasoning: args.spareReasoning || process.env.AGINTI_SPARE_REASONING || "",
+    taskProfile,
     language: resolveLanguage(args.language || process.env.AGINTI_LANGUAGE || ""),
     allowShellTool: args.allowShellTool ?? true,
     allowFileTools: args.allowFileTools ?? true,
     allowAuxiliaryTools: args.allowAuxiliaryTools ?? true,
     allowWebSearch: args.allowWebSearch ?? true,
     allowParallelScouts: args.allowParallelScouts ?? true,
-    parallelScoutCount: args.parallelScoutCount || 3,
+    parallelScoutCount: args.parallelScoutCount || (Number.isFinite(envScoutCount) && envScoutCount > 0 ? envScoutCount : 3),
     sandboxMode: args.sandboxMode || envSandboxMode || "docker-workspace",
     packageInstallPolicy: args.packageInstallPolicy || envPackageInstallPolicy || "allow",
     useDockerSandbox:
@@ -400,7 +412,7 @@ function agentDefaults(args) {
       args.maxSteps ||
       recommendedMaxStepsForTask({
         goal: args.goal || "",
-        taskProfile: args.taskProfile || (args.latex ? "latex" : "auto"),
+        taskProfile,
       }),
   };
 

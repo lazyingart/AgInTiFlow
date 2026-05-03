@@ -90,7 +90,7 @@ try {
     capabilities.tools?.taskProfiles?.some((profile) => profile.id === "supervision"),
     "capabilities did not report supervision task profile"
   );
-  for (const profileId of ["docs", "data", "qa", "database", "devops", "security", "slides", "education"]) {
+  for (const profileId of ["docs", "data", "qa", "database", "devops", "security", "slides", "education", "java", "ios", "go", "rust", "dotnet", "php", "ruby"]) {
     assert(
       capabilities.tools?.taskProfiles?.some((profile) => profile.id === profileId),
       `capabilities did not report ${profileId} task profile`
@@ -124,7 +124,7 @@ try {
     capabilities.tools?.skills?.some((skill) => skill.id === "supervision-student"),
     "capabilities did not report built-in supervision skill"
   );
-  for (const skillId of ["data-analysis", "docs-knowledge", "qa-testing", "database", "devops-deployment", "security-review", "presentation-slides", "writing-editing"]) {
+  for (const skillId of ["data-analysis", "docs-knowledge", "qa-testing", "database", "devops-deployment", "security-review", "presentation-slides", "writing-editing", "java-jvm", "ios-swift", "go", "rust", "dotnet-csharp", "php", "ruby"]) {
     assert(
       capabilities.tools?.skills?.some((skill) => skill.id === skillId),
       `capabilities did not report built-in ${skillId} skill`

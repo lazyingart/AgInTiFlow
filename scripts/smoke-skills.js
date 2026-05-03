@@ -25,14 +25,21 @@ for (const required of [
   "code-review",
   "data-analysis",
   "database",
+  "dotnet-csharp",
   "devops-deployment",
   "docs-knowledge",
   "education-tutorial",
+  "go",
   "github-maintenance",
   "image-generation",
+  "ios-swift",
+  "java-jvm",
   "latex-manuscript",
   "presentation-slides",
   "qa-testing",
+  "ruby",
+  "rust",
+  "php",
   "security-review",
   "system-maintenance",
   "supervision-student",
@@ -53,6 +60,13 @@ assert(selectedIds("monitor a long running tmux session").includes("tmux-session
 assert(selectedIds("create an .aaps example for @lazyingart/aaps").includes("aaps"), "AAPS prompt did not select aaps");
 assert(selectedIds("debug a C++ CMake build").includes("c-cpp"), "C++ prompt did not select c-cpp");
 assert(selectedIds("set up Stan and CmdStanR reproducibly").includes("r-stan"), "Stan prompt did not select r-stan");
+assert(selectedIds("fix this Java Spring Maven JUnit project").includes("java-jvm"), "Java prompt did not select java-jvm");
+assert(selectedIds("build an iOS SwiftUI app and test it in simulator").includes("ios-swift"), "iOS prompt did not select ios-swift");
+assert(selectedIds("repair this Go module and run go test").includes("go"), "Go prompt did not select go");
+assert(selectedIds("fix a Rust cargo workspace and run cargo test").includes("rust"), "Rust prompt did not select rust");
+assert(selectedIds("debug a C# dotnet web API").includes("dotnet-csharp"), ".NET prompt did not select dotnet-csharp");
+assert(selectedIds("fix a PHP Laravel composer project").includes("php"), "PHP prompt did not select php");
+assert(selectedIds("repair a Ruby Rails app with RSpec").includes("ruby"), "Ruby prompt did not select ruby");
 assert(selectedIds("clean a CSV dataset and make plots").includes("data-analysis"), "data prompt did not select data-analysis");
 assert(selectedIds("write README API docs and a tutorial").includes("docs-knowledge"), "docs prompt did not select docs-knowledge");
 assert(selectedIds("fix failing tests and add regression coverage").includes("qa-testing"), "QA prompt did not select qa-testing");

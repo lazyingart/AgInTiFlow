@@ -41,8 +41,15 @@ and Auto routing cover detailed task families.
 | `website` | landing pages, dashboards, static sites, frontends | intentional visual design, responsive preview, screenshots/artifacts |
 | `app` | web/desktop/mobile/local apps, full-stack prototypes | coherent architecture, build/preview/install check, durable demo |
 | `android` | Android Gradle/Kotlin/Java apps, emulator/device checks | SDK/adb inspection, build/test/install/launch/screenshot |
+| `ios` | iOS, Swift, SwiftUI, Xcode, SPM, simulator work | Xcode/SPM inspection, build/test/simulator evidence or signing blocker |
 | `python` | Python packages, scripts, analysis, CLIs | pyproject/requirements, focused checks, cache hygiene |
 | `node` | JS/TS packages, React/Vite/Next/Express, CLIs | package manager detection, scripts/tests, lockfile discipline |
+| `java` | Java/Kotlin JVM, Maven, Gradle, Spring, JUnit | wrapper/build file inspection, compile/test evidence, no global JDK mutation |
+| `go` | Go modules, CLIs, servers, packages | go.mod inspection, gofmt, focused `go test` |
+| `rust` | Rust crates, Cargo workspaces, CLIs, services | Cargo metadata, fmt/check/test, dependency discipline |
+| `dotnet` | .NET/C#/ASP.NET projects | .sln/.csproj inspection, restore/build/test evidence |
+| `php` | PHP, Composer, Laravel/Symfony, WordPress-style work | composer/framework inspection, php lint/test evidence |
+| `ruby` | Ruby, Rails, Bundler, gems, RSpec/Minitest | Gemfile/routes/migrations inspection, bundle test evidence |
 | `c-cpp` | C/C++/CMake/Make, native debugging | out-of-tree builds, compiler/test output, sanitizer if available |
 | `r-stan` | R, Stan, statistics, reproducible reports | project-local libs, Rscript/CmdStan checks, plots/reports |
 | `word` | docx editing/conversion, Office workflows | preserve originals, converter evidence, verify output exists |
@@ -68,7 +75,7 @@ and Auto routing cover detailed task families.
 | `presentation-slides` | deck/poster structure and export habits |
 | `writing-editing` | long-form and editing workflows |
 | `education-tutorial` | lesson/exercise structure |
-| Domain skills | Android, LaTeX, Word, R/Stan, C/C++, website, image, AAPS, GitHub, shell, tmux, supervision |
+| Domain skills | Android, iOS/Swift, Java/JVM, Go, Rust, .NET/C#, PHP, Ruby, LaTeX, Word, R/Stan, C/C++, website, image, AAPS, GitHub, shell, tmux, supervision |
 
 ## Supervised Homework Strategy
 

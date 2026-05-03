@@ -32,6 +32,13 @@ Every supervised task must end with independent checks:
 | `c-cpp` | Build a small CMake/Make project and fix a compiler error | Compiler output, binary/test result |
 | `r-stan` | Run a reproducible R/Stan/statistics analysis | Rscript/CmdStan evidence, saved plot/report |
 | `android` | Build, install, launch, screenshot an Android app | Gradle build/test, adb install/launch, durable screenshot |
+| `ios` | Build/test a SwiftUI or SwiftPM app/library | swift/xcodebuild evidence or signing/Xcode blocker, durable screenshot if simulator exists |
+| `java` | Repair a Maven/Gradle Java service or library | wrapper/build files inspected, compile/test output |
+| `go` | Fix a Go module with CLI/server tests | gofmt, focused `go test`, binary or smoke output |
+| `rust` | Fix a Cargo crate/workspace bug | cargo fmt/check/test evidence |
+| `dotnet` | Repair a .NET/C# app or library | dotnet restore/build/test evidence |
+| `php` | Fix a Composer/Laravel-style app | php lint/test or framework command output |
+| `ruby` | Fix a Ruby/Rails/gem project | bundle/rake/rspec evidence |
 | `latex` | Write and compile a paper/report | `.tex` source, PDF, compile log/pass evidence |
 | `paper` | Draft a research manuscript with sources and figures | Outline/source notes, manuscript file, figure/PDF when available |
 | `research` | Research a current technical topic | Source list, dated notes, clear evidence/inference split |
@@ -98,3 +105,7 @@ For vague daily tasks, `auto` must borrow specialized habits without being told.
 ## Current Lesson From Code Supervision
 
 The Pocket Ledger homework exposed that an explicit `code` profile should not be treated as a cheap short-turn route when the prompt asks to repair a repo and leave it clean. AgInTiFlow now routes `code` work to the complex model by default, gives it a larger cleanup budget, and tells it to prioritize functional checks when optional lint expands scope. The run also exposed that one-shot CLI defaults were overriding `SANDBOX_MODE=host`; env sandbox defaults are now covered by smoke tests.
+
+## Current Lesson From Large-Codebase Supervision
+
+The Checkout Workspace homework proved the large-codebase profile can repair cross-package failures from a vague prompt, but the first tmux run exposed launch fragility: an old tmux environment selected an inaccessible OpenAI model even though the intended route was DeepSeek. AgInTiFlow now has explicit language/platform profiles and a supervised homework seeder, and CLI defaults respect profile/model-role environment variables more consistently. Supervisors should still verify provider/model at launch before sending the project prompt.
