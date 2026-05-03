@@ -17,6 +17,7 @@ import {
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-cli-chat-"));
+const agintiflowHome = path.join(tempRoot, ".agintiflow-home");
 const binPath = path.join(repoRoot, "bin/aginti-cli.js");
 
 function runChat(inputText) {
@@ -31,6 +32,7 @@ function runCli(args, inputText) {
       env: {
         ...process.env,
         AGINTIFLOW_RUNTIME_DIR: "",
+        AGINTIFLOW_HOME: agintiflowHome,
         AGINTI_LANGUAGE: "en",
       },
     });

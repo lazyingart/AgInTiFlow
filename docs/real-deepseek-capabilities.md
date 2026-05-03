@@ -19,7 +19,7 @@ aginti capabilities --json
 aginti doctor --capabilities
 ```
 
-The report checks project root, command cwd, shared `.sessions/`, provider-key presence, DeepSeek routes, file/shell tools, Docker status, wrappers, task profiles, TeX, Node/npm, Python, R, conda, and maintenance command guardrails.
+The report checks project root, command cwd, project-local `.aginti-sessions/`, global `~/.agintiflow/sessions/`, provider-key presence, DeepSeek routes, file/shell tools, Docker status, wrappers, task profiles, TeX, Node/npm, Python, R, conda, and maintenance command guardrails.
 
 ## Live DeepSeek Suite
 

@@ -117,7 +117,7 @@ aginti web --port 3210
 # then open http://127.0.0.1:3210
 ```
 
-`aginti web` uses the folder it is launched from as the project root, default working directory, session store, and settings database. CLI and web runs share the same project-local `.sessions/` folder.
+`aginti web` uses the folder it is launched from as the project root and default working directory. CLI and web runs share project-local pointers in `.aginti-sessions/`, while canonical session history and artifacts live under `~/.agintiflow/sessions/<session-id>/`.
 
 Run the installed CLI without a live provider key by using the local mock route:
 
@@ -134,6 +134,8 @@ aginti capabilities
 aginti doctor --capabilities
 aginti sessions list
 aginti sessions show <session-id>
+aginti sessions rename <session-id> "friendly title"
+aginti storage migrate
 aginti resume
 aginti resume latest
 aginti resume <session-id> "continue with a short follow-up"
@@ -194,7 +196,7 @@ aginti capabilities --json
 aginti doctor --capabilities
 ```
 
-The report checks the project root, command cwd, shared `.sessions/`, provider-key presence, DeepSeek routes, guarded file and shell tools, OS/platform hints, Docker status, wrappers, task profiles, TeX, Node/npm, Python, R, conda, and maintenance command policy. It never prints API key or token values.
+The report checks the project root, command cwd, shared `.aginti-sessions/` project index, global `~/.agintiflow/sessions/` store, provider-key presence, DeepSeek routes, guarded file and shell tools, OS/platform hints, Docker status, wrappers, task profiles, TeX, Node/npm, Python, R, conda, and maintenance command policy. It never prints API key or token values.
 
 Live DeepSeek verification is opt-in because it spends provider credits:
 
@@ -409,7 +411,7 @@ Package policy values:
 
 Toolchain commands such as `python3 plot.py`, `latexmk -pdf paper.tex`, and `pdflatex -interaction=nonstopmode -halt-on-error paper.tex` are allowlisted only when the shell tool is enabled. In Docker mode the project folder is mounted as `/workspace`; any file written to `/workspace/report.pdf` appears on the host as `<your-project>/report.pdf`. CLI runs print both the host workspace and the Docker mapping before execution. File and canvas tools accept both normal relative paths and Docker virtual paths like `/workspace/report.pdf`, while other absolute host paths remain blocked.
 
-The web chat mirrors the CLI session store while keeping browser-native controls. Launch `aginti web` from the same project folder and it reads the same `.sessions/` history as `aginti` and `aginti resume`. In the web UI, Enter sends and Shift+Enter adds a newline. `Pipe to run` writes an ASAP message (`→`) to `.sessions/<session-id>/inbox.jsonl` so an active CLI or web agent can consume it at the next safe boundary. `Queue after finish` stores a browser-local next prompt (`↳`) and starts it after the current web run finishes; queued items have Edit and Remove buttons. Esc or Stop stops active web runs. Generated local sites should use the built-in `preview_workspace` or `open_workspace_file` tools; AgInTiFlow avoids transient localhost servers inside Docker because those containers stop between commands and their ports are not host-published.
+The web chat mirrors the CLI session store while keeping browser-native controls. Launch `aginti web` from the same project folder and it reads the same `.aginti-sessions/` pointers and `~/.agintiflow/sessions/` history as `aginti` and `aginti resume`. In the web UI, Enter sends and Shift+Enter adds a newline. `Pipe to run` writes an ASAP message (`→`) to `~/.agintiflow/sessions/<session-id>/inbox.jsonl` so an active CLI or web agent can consume it at the next safe boundary. `Queue after finish` stores a browser-local next prompt (`↳`) and starts it after the current web run finishes; queued items have Edit and Remove buttons. Esc or Stop stops active web runs. Generated local sites should use the built-in `preview_workspace` or `open_workspace_file` tools; AgInTiFlow avoids transient localhost servers inside Docker because those containers stop between commands and their ports are not host-published.
 
 Safe preflight endpoints:
 
@@ -435,7 +437,7 @@ The smoke script starts the web server on a random localhost port, checks `/api/
 
 ## Runtime Artifacts
 
-Each run stores state under `.sessions/<session-id>/`:
+Each run stores canonical state under `~/.agintiflow/sessions/<session-id>/`. The project folder keeps `.aginti-sessions/<session-id>/session.json` as a lightweight pointer plus `.aginti-sessions/web-state.sqlite` for web UI preferences and friendly session titles. Legacy `.sessions/` folders are read and copied by `aginti storage migrate`.
 
 | File | Purpose |
 | --- | --- |

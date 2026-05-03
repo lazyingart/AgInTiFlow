@@ -2,7 +2,50 @@
 
 ## Current Logic
 
-AgInTiFlow currently uses project-local storage as the primary source of truth for chat sessions and frontend artifacts.
+AgInTiFlow now uses global canonical session storage plus a project-local pointer/index folder.
+
+Canonical global storage:
+
+```text
+~/.agintiflow/
+  sessions/
+    index.sqlite
+    <session-id>/
+      events.jsonl
+      state.json
+      plan.md
+      inbox.jsonl
+      storage-state.json
+      artifacts/
+        step-XXX.snapshot.json
+        step-XXX.png
+        canvas/
+```
+
+Project-local storage:
+
+```text
+<project>/
+  .aginti/
+    .env
+    codebase-map.json
+  .aginti-sessions/
+    web-state.sqlite
+    <session-id>/
+      session.json
+```
+
+Legacy responsibilities:
+
+- `~/.agintiflow/sessions/<session-id>/` is the canonical source of truth for state, chat, events, inbox, browser state, and artifacts.
+- `~/.agintiflow/sessions/index.sqlite` stores global session metadata: session id, project root, session dir, timestamps, provider/model, goal, title, and status.
+- `<project>/.aginti-sessions/` stores project-local session pointers so `aginti resume` can discover sessions from the working folder.
+- `<project>/.aginti-sessions/web-state.sqlite` stores web UI session metadata, preferences, and friendly titles for the project.
+- Legacy `<project>/.sessions/` folders are copied into the global store by `aginti storage migrate` and remain readable as a fallback.
+
+## Legacy Logic Before Migration
+
+Older AgInTiFlow releases used project-local storage as the primary source of truth for chat sessions and frontend artifacts.
 
 Project root:
 
@@ -36,7 +79,7 @@ Current responsibilities:
 - `.aginti/codebase-map.json` stores project-local codebase map/cache data for large-codebase and scout workflows.
 - `~/.agintiflow/docker/` stores persistent Docker support folders mounted as `/aginti-home`, `/aginti-cache`, and `/aginti-env`.
 
-Current web rendering flow:
+Legacy web rendering flow:
 
 1. The web server is launched from a project root.
 2. `web.js` uses that folder as `baseDir` and sets `sessionsDir = <project>/.sessions`.
@@ -57,67 +100,64 @@ POST /api/sessions/:sessionId/artifacts/select
 
 6. The frontend renders artifacts through the local web API instead of exposing raw filesystem paths directly.
 
-The current design is intentionally portable: copying the project folder can preserve its sessions, session history, canvas artifacts, and web state.
+The legacy design was intentionally portable, but it made active project folders grow quickly.
 
 ## `~/.aginti` Versus `~/.agintiflow`
 
 Current intended split:
 
 - `~/.aginti`: user-facing/global AgInTi configuration home, future global preferences, and possibly global indexes.
-- `~/.agintiflow`: older AgInTiFlow runtime support home, currently important for Docker/toolchain/cache persistence.
+- `~/.agintiflow`: AgInTiFlow runtime home for canonical sessions, global session index, artifacts, and Docker/toolchain/cache persistence.
 
 Current reality:
 
 - Project keys are mainly stored in `<project>/.aginti/.env`, not global home.
-- Project sessions and artifacts are mainly stored in `<project>/.sessions/`, not global home.
+- Project sessions and artifacts are stored in `~/.agintiflow/sessions/<session-id>/`.
+- Project folders keep `.aginti-sessions/` pointers and the web UI database.
 - Docker home/cache/env are stored under `~/.agintiflow/docker/`.
 
 Future cleanup should either consolidate names or document a stable migration policy.
 
-## Problems With Current Project-Local Storage
+## Problems Solved By The Current Migration
 
-- `.sessions/` can become large inside active workspaces.
+- New runs no longer grow `.sessions/` inside active workspaces.
 - Copying binary artifacts into every session can duplicate data.
 - Sensitive projects may not want chat logs or screenshots beside source code.
-- Git tooling must always ignore `.sessions/` and `.aginti/.env`.
-- Deleting a project deletes its local history unless archived first.
-- A web server launched from the wrong folder sees a different session universe.
+- Git tooling ignores `.aginti-sessions/`, legacy `.sessions/`, and `.aginti/.env`.
+- Deleting a project no longer deletes canonical session history immediately.
+- A global index can show where a session came from even when the web server is launched elsewhere.
 
-## Future Option: Central Blob Store With Project Pointers
+## Future Option: Deduplicated Blob Store
 
-A possible future design is to store large artifacts and maybe session indexes in a global home while keeping project-local pointers.
+A possible future design is to deduplicate large artifacts as content-addressed blobs while keeping the current global session folders and project-local pointers.
 
 Proposed layout:
 
 ```text
-~/.aginti/
-  config.toml
-  keys/
+~/.agintiflow/
   sessions/
     index.sqlite
-  artifacts/
-    blobs/
-      sha256/
-    by-project/
-      <project-id>/
-        <session-id>/
+    <session-id>/
+      events.jsonl
+      state.json
+      artifacts/
+        manifest.json
+        blobs/
+          sha256/
 
 <project>/
   .aginti/
     project.json
     .env
-  .sessions/
+  .aginti-sessions/
     <session-id>/
-      events.jsonl
-      state.json
-      artifacts/
-        canvas -> ~/.aginti/artifacts/by-project/<project-id>/<session-id>/canvas
+      session.json
 ```
 
 Two viable variants:
 
-- Pointer metadata: keep `.sessions/<session-id>/artifacts/manifest.json` with global blob references.
-- Symlink bridge: keep `.sessions/<session-id>/artifacts/canvas` as a symlink into `~/.aginti/artifacts/...`.
+- Pointer metadata: keep `~/.agintiflow/sessions/<session-id>/artifacts/manifest.json` with blob references.
+- Symlink bridge: keep selected artifact folders as symlinks into `~/.agintiflow/sessions/<session-id>/artifacts/blobs/...`.
 
 The pointer metadata variant is more portable across Windows, WSL, Docker, and remote filesystems. The symlink variant is simpler on Linux/macOS but needs fallback behavior when symlinks are blocked.
 
@@ -125,10 +165,10 @@ The pointer metadata variant is more portable across Windows, WSL, Docker, and r
 
 Use a hybrid model:
 
-- Keep canonical chat/session metadata project-local by default for portability.
-- Add optional global artifact blob storage for large files.
-- Keep small text artifacts and critical session state in the project session folder.
-- Store large binary canvas artifacts in `~/.aginti/artifacts/blobs/sha256/...`.
+- Keep canonical chat/session metadata in `~/.agintiflow/sessions/<session-id>/`.
+- Add optional content-addressed blobs for large files.
+- Keep small text artifacts and critical session state directly in the session folder.
+- Store large binary canvas artifacts in `~/.agintiflow/sessions/<session-id>/artifacts/blobs/sha256/...`.
 - Store project-local manifests that point to those blobs.
 - Allow `aginti doctor` to validate broken pointers and missing blobs.
 - Add `aginti sessions export` to create a portable archive with dereferenced artifacts.
@@ -181,4 +221,3 @@ aginti storage migrate --artifacts project-local
 - Project export/import must include global artifacts if the user asks for a self-contained archive.
 - Secrets should not be stored in artifact manifests or copied canvas payloads.
 - Web APIs should continue serving artifacts through authenticated/local routes, never by leaking arbitrary absolute paths.
-

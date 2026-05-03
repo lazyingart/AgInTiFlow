@@ -1,11 +1,12 @@
 # Agent Runtime Pipe
 
-AgInTiFlow keeps CLI and web runs equivalent by using the project folder as the source of truth.
+AgInTiFlow keeps CLI and web runs equivalent by using a project-local session index plus a global canonical session store.
 
 - Project root: the folder where `aginti` or `aginti web` is launched.
-- Session store: `<project>/.sessions/`.
-- Web settings database: `<project>/.sessions/web-state.sqlite`.
-- Runtime inbox: `<project>/.sessions/<session-id>/inbox.jsonl`.
+- Project session index: `<project>/.aginti-sessions/`.
+- Web settings database: `<project>/.aginti-sessions/web-state.sqlite`.
+- Canonical session store: `~/.agintiflow/sessions/<session-id>/`.
+- Runtime inbox: `~/.agintiflow/sessions/<session-id>/inbox.jsonl`.
 
 When a run is active, the web chat and `aginti queue <session-id> "..."` append messages to the inbox instead of trying to mutate the running process directly. The web API exposes `GET /api/sessions/:id/inbox`, `POST /api/sessions/:id/inbox`, `PATCH /api/sessions/:id/inbox/:itemId`, and `DELETE /api/sessions/:id/inbox/:itemId` so browser users can inspect, edit, or remove pending pipe messages before the runner consumes them. The runner drains the inbox at safe boundaries: before each model step and after tool execution. This mirrors the event-queue style used by mature agent UIs while keeping the backend decoupled from any specific frontend.
 

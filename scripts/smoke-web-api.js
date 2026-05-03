@@ -5,9 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SessionStore } from "../src/session-store.js";
+import { projectPaths, sessionStoreOptions } from "../src/project.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-api-smoke-"));
+const agintiflowHome = path.join(runtimeDir, ".agintiflow-home");
+process.env.AGINTIFLOW_HOME = agintiflowHome;
 const port = 43000 + Math.floor(Math.random() * 1000);
 const baseUrl = `http://127.0.0.1:${port}`;
 const server = spawn(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), "web", "--port", String(port), "--host", "127.0.0.1"], {
@@ -15,6 +18,7 @@ const server = spawn(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js")
   env: {
     ...process.env,
     AGINTIFLOW_RUNTIME_DIR: runtimeDir,
+    AGINTIFLOW_HOME: agintiflowHome,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -238,7 +242,8 @@ try {
     }
   );
   if (!deletedInbox.ok) throw new Error("inbox delete endpoint failed");
-  const inboxStore = new SessionStore(path.join(runtimeDir, ".sessions"), runStart.sessionId);
+  const paths = projectPaths(runtimeDir);
+  const inboxStore = new SessionStore(paths.globalSessionsDir, runStart.sessionId, sessionStoreOptions(runtimeDir, runStart.sessionId));
   const remainingInbox = await inboxStore.loadInbox();
   if (remainingInbox.some((item) => item.id === queued.item.id)) throw new Error("inbox delete endpoint left item on disk");
 

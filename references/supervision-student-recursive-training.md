@@ -46,7 +46,7 @@ Required checks:
 
 - Inspect `git status --short`.
 - Check expected files with `test -s`, `ls -lh`, `file`, `rg`, or domain-specific validators.
-- Read relevant `.sessions/<session-id>/events.jsonl` entries for tool claims.
+- Read relevant `~/.agintiflow/sessions/<session-id>/events.jsonl` entries for tool claims.
 - Verify screenshots/images/PDFs/APKs/reports exist after cleanup.
 - Record whether build/test/install/preview/research-source checks actually ran.
 - Save evidence in the example ledger.

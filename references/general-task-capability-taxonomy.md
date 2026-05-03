@@ -86,7 +86,7 @@ skills must infer the right workflow.
 1. Seed a project with realistic files, mistakes, and ambiguity.
 2. Start AgInTiFlow in a persistent tmux session from the task folder.
 3. Give a normal prompt, not a full solution recipe.
-4. Monitor pane output and `.sessions/<id>/events.jsonl`.
+4. Monitor pane output and `~/.agintiflow/sessions/<id>/events.jsonl`.
 5. Verify results externally: files, command output, git, screenshots, PDFs,
    plots, docs, app launches, or PR metadata.
 6. If it fails, patch AgInTiFlow's profile, skill, tool, policy, UI, or tests.

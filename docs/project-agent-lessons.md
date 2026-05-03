@@ -35,7 +35,7 @@ Round 8 distilled implementation lessons from local agent projects and applied t
 ## Applied In AgInTiFlow
 
 - `aginti web` now defaults command execution to the folder it was launched from.
-- CLI and web share `.sessions/` in the project root.
+- CLI and web share `.aginti-sessions/` project pointers and `~/.agintiflow/sessions/` canonical history.
 - `aginti init`, `aginti doctor`, `aginti keys`, `aginti sessions`, and `aginti resume` provide basic project lifecycle control.
 - Task profiles wire lightweight skill prompts into CLI/web runs while keeping the LLM responsible for the main plan.
 - Project-local `.aginti/.env` can store provider keys safely with 0600 permissions and ignored git entries.

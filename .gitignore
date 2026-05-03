@@ -14,5 +14,6 @@ yarn-debug.log*
 yarn-error.log*
 *.tgz
 .sessions/
+.aginti-sessions/
 playwright-report/
 test-results/

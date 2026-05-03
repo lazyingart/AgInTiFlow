@@ -20,7 +20,15 @@ import { getDockerSandboxStatus, getSandboxLogs, runDockerPreflight } from "./sr
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./src/command-policy.js";
 import { summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./src/workspace-tools.js";
 import { listTaskProfiles, normalizeTaskProfile } from "./src/task-profiles.js";
-import { loadProjectEnv, projectPaths, providerKeyStatus, setProviderKey } from "./src/project.js";
+import {
+  ensureProjectSessionStorage,
+  listProjectSessions,
+  loadProjectEnv,
+  projectPaths,
+  providerKeyStatus,
+  renameProjectSession,
+  setProviderKey,
+} from "./src/project.js";
 import { buildCapabilityReport } from "./src/capabilities.js";
 import { listSkills } from "./src/skill-library.js";
 import { platformInfo, platformLabel, platformSetupHints } from "./src/platform.js";
@@ -38,8 +46,11 @@ const __dirname = path.dirname(__filename);
 const packageDir = __dirname;
 const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
 const baseDir = path.resolve(process.env.AGINTIFLOW_RUNTIME_DIR || process.cwd());
-const sessionsDir = path.join(baseDir, ".sessions");
+const storagePaths = projectPaths(baseDir);
+const sessionsDir = storagePaths.globalSessionsDir;
+const projectSessionsDir = storagePaths.sessionsDir;
 loadProjectEnv(baseDir);
+await ensureProjectSessionStorage(baseDir);
 
 const app = express();
 const port = Number(process.env.PORT || 3210);
@@ -48,7 +59,11 @@ const runs = new Map();
 const db = new WebDatabase(baseDir);
 
 function sessionStore(sessionId) {
-  return new SessionStore(sessionsDir, sessionId);
+  return new SessionStore(sessionsDir, sessionId, {
+    projectRoot: baseDir,
+    projectSessionsDir,
+    legacySessionDir: path.join(storagePaths.legacySessionsDir, sessionId),
+  });
 }
 
 function isSafeSessionId(sessionId) {
@@ -322,7 +337,8 @@ function deriveSessionRecordFromState(state, existing = null) {
     provider: state.provider || existing?.provider || "deepseek",
     model: state.model || existing?.model || getProviderDefaults(state.provider || existing?.provider || "deepseek").model,
     goal: state.goal || existing?.goal || "",
-    title: existing?.title || "",
+    title: state.title || existing?.title || "",
+    commandCwd: state.commandCwd || existing?.commandCwd || baseDir,
     status,
     startedAt: state.createdAt || existing?.startedAt || new Date().toISOString(),
     updatedAt,
@@ -333,17 +349,19 @@ function deriveSessionRecordFromState(state, existing = null) {
 }
 
 async function syncStoredSessions() {
-  const entries = await fs.readdir(sessionsDir, { withFileTypes: true }).catch(() => []);
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-
-    const store = sessionStore(entry.name);
+  const sessions = await listProjectSessions(baseDir, 500);
+  for (const session of sessions) {
+    const store = sessionStore(session.sessionId);
     const state = await store.loadState();
     if (!state?.sessionId) continue;
 
     const existing = db.getSession(state.sessionId);
-    db.upsertSession(deriveSessionRecordFromState(state, existing));
+    db.upsertSession({
+      ...deriveSessionRecordFromState(state, existing),
+      projectRoot: baseDir,
+      projectSessionsDir,
+      sessionDir: store.sessionDir,
+    });
   }
 }
 
@@ -546,6 +564,10 @@ function createRunRecord(config, goal, existingLogs = []) {
     provider: config.provider,
     model: config.model,
     goal,
+    projectRoot: baseDir,
+    commandCwd: config.commandCwd,
+    projectSessionsDir,
+    sessionDir: path.join(sessionsDir, config.sessionId),
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     endedAt: "",
@@ -615,8 +637,10 @@ app.get("/api/config", async (_req, res) => {
       root: paths.root,
       commandCwd: config.commandCwd,
       sessionsDir,
+      projectSessionsDir,
       sessionDbPath: paths.sessionDbPath,
       sharedSessionFolder: path.resolve(config.sessionsDir) === path.resolve(sessionsDir),
+      globalSessionIndexPath: paths.globalSessionIndexPath,
       localEnvPresent: keyStatus.localEnv,
       platform: {
         ...platform,
@@ -926,6 +950,7 @@ app.patch("/api/sessions/:sessionId", async (req, res) => {
     return;
   }
 
+  await renameProjectSession(baseDir, sessionId, title);
   db.renameSession(sessionId, title);
   await sessionStore(sessionId).appendEvent("session.renamed", { title }).catch(() => {});
   res.json({ ok: true, session: db.getSession(sessionId) });
@@ -945,6 +970,7 @@ app.post("/api/sessions/:sessionId/auto-title", async (req, res) => {
   }
 
   const title = autoSessionTitleFromChat(data);
+  await renameProjectSession(baseDir, sessionId, title);
   db.renameSession(sessionId, title);
   await sessionStore(sessionId).appendEvent("session.auto_renamed", { title }).catch(() => {});
   res.json({ ok: true, session: db.getSession(sessionId) });

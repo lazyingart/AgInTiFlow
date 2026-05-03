@@ -10,6 +10,8 @@ import { defaultMaxStepsForProfile, listTaskProfiles } from "../src/task-profile
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-capabilities-"));
+const agintiflowHome = path.join(tempRoot, ".agintiflow-home");
+process.env.AGINTIFLOW_HOME = agintiflowHome;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -23,6 +25,7 @@ async function runCli(args, envOverrides = {}) {
     env: {
       ...process.env,
       AGINTIFLOW_RUNTIME_DIR: "",
+      AGINTIFLOW_HOME: agintiflowHome,
       ...envOverrides,
     },
   });

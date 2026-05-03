@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { getModelRoleDefaults, getProviderDefaults, normalizeRoutingMode, selectModelRoute } from "./model-routing.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
 import { normalizeWrapperName } from "./tool-wrappers.js";
-import { loadProjectEnv, resolveProjectRoot } from "./project.js";
+import { loadProjectEnv, projectPaths, resolveProjectRoot } from "./project.js";
 import { normalizeTaskProfile } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 import { resolveLanguage } from "./i18n.js";
@@ -32,6 +32,7 @@ function parseList(value) {
 
 export function resolveRuntimeConfig(args, overrides = {}) {
   const baseDir = resolveProjectRoot(overrides.baseDir || process.cwd());
+  const paths = projectPaths(baseDir);
   loadProjectEnv(baseDir);
   const requestedProvider =
     overrides.provider ||
@@ -155,7 +156,10 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     useDockerSandbox: sandboxMode !== "host",
     dockerSandboxImage: overrides.dockerSandboxImage || process.env.DOCKER_SANDBOX_IMAGE || "agintiflow-sandbox:latest",
     commandCwd: path.resolve(overrides.commandCwd || args.commandCwd || process.env.COMMAND_CWD || baseDir),
-    sessionsDir: path.resolve(baseDir, ".sessions"),
+    sessionsDir: paths.globalSessionsDir,
+    projectSessionsDir: paths.sessionsDir,
+    sessionDbPath: paths.sessionDbPath,
+    globalSessionIndexPath: paths.globalSessionIndexPath,
     onLog: overrides.onLog,
     onEvent: overrides.onEvent,
   };

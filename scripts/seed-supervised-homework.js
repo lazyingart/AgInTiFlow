@@ -122,6 +122,7 @@ Run \`node scripts/seed-supervised-homework.js\` from the AgInTiFlow repo to cre
     await writeIfMissing(
       path.join(folder, ".gitignore"),
       `.aginti/
+.aginti-sessions/
 .sessions/
 node_modules/
 vendor/
@@ -171,7 +172,7 @@ The report and pricing behavior are wrong across package boundaries. The student
     `# Project Instructions
 
 - Use \`npm test\` and \`npm run check\` for verification.
-- Keep fixes source-focused; do not commit \`.aginti/\`, \`.sessions/\`, or generated caches.
+- Keep fixes source-focused; do not commit \`.aginti/\`, \`.aginti-sessions/\`, legacy \`.sessions/\`, or generated caches.
 - This is a supervised homework fixture. Do not read external solutions.
 `
   );

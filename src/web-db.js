@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { getModelPresets, getModelRoleDefaults } from "./model-routing.js";
 import { resolveLanguage } from "./i18n.js";
+import { projectPaths } from "./project.js";
+import { deleteSessionIndex, renameSessionIndex, upsertSessionIndex } from "./session-index.js";
+import { loadDatabaseSync } from "./sqlite.js";
 
 const PREFERENCES_SCHEMA_VERSION = 7;
 
@@ -52,10 +54,12 @@ function defaultPreferences(baseDir) {
 
 export class WebDatabase {
   constructor(baseDir) {
-    this.baseDir = baseDir;
-    this.dbDir = path.join(baseDir, ".sessions");
-    this.dbPath = path.join(this.dbDir, "web-state.sqlite");
+    this.baseDir = path.resolve(baseDir);
+    this.paths = projectPaths(this.baseDir);
+    this.dbDir = this.paths.sessionsDir;
+    this.dbPath = this.paths.sessionDbPath;
     fs.mkdirSync(this.dbDir, { recursive: true });
+    const DatabaseSync = loadDatabaseSync();
     this.db = new DatabaseSync(this.dbPath);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS preferences (
@@ -84,6 +88,18 @@ export class WebDatabase {
     const sessionColumns = this.db.prepare("PRAGMA table_info(sessions)").all();
     if (!sessionColumns.some((column) => column.name === "title")) {
       this.db.exec("ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT ''");
+    }
+    if (!sessionColumns.some((column) => column.name === "project_root")) {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN project_root TEXT NOT NULL DEFAULT ''");
+    }
+    if (!sessionColumns.some((column) => column.name === "command_cwd")) {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN command_cwd TEXT NOT NULL DEFAULT ''");
+    }
+    if (!sessionColumns.some((column) => column.name === "project_sessions_dir")) {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN project_sessions_dir TEXT NOT NULL DEFAULT ''");
+    }
+    if (!sessionColumns.some((column) => column.name === "session_dir")) {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN session_dir TEXT NOT NULL DEFAULT ''");
     }
   }
 
@@ -156,12 +172,21 @@ export class WebDatabase {
 
   upsertSession(session) {
     const updatedAt = session.updatedAt || new Date().toISOString();
+    const projectRoot = session.projectRoot || this.baseDir;
+    const commandCwd = session.commandCwd || projectRoot;
+    const projectSessionsDir = session.projectSessionsDir || this.paths.sessionsDir;
+    const sessionDir = session.sessionDir || path.join(this.paths.globalSessionsDir, session.sessionId);
     this.db
       .prepare(
         `INSERT INTO sessions (
-          session_id, provider, model, goal, title, status, started_at, updated_at, ended_at, result, error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          session_id, project_root, command_cwd, project_sessions_dir, session_dir,
+          provider, model, goal, title, status, started_at, updated_at, ended_at, result, error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET
+          project_root = excluded.project_root,
+          command_cwd = excluded.command_cwd,
+          project_sessions_dir = excluded.project_sessions_dir,
+          session_dir = excluded.session_dir,
           provider = excluded.provider,
           model = excluded.model,
           goal = excluded.goal,
@@ -174,6 +199,10 @@ export class WebDatabase {
       )
       .run(
         session.sessionId,
+        projectRoot,
+        commandCwd,
+        projectSessionsDir,
+        sessionDir,
         session.provider,
         session.model,
         session.goal,
@@ -185,6 +214,19 @@ export class WebDatabase {
         session.result || "",
         session.error || ""
       );
+    try {
+      upsertSessionIndex({
+        ...session,
+        projectRoot,
+        commandCwd,
+        projectSessionsDir,
+        sessionDir,
+        createdAt: session.startedAt,
+        updatedAt,
+      });
+    } catch {
+      // The project-local database remains the fallback if the global index cannot be updated.
+    }
   }
 
   getSession(sessionId) {
@@ -193,6 +235,10 @@ export class WebDatabase {
         .prepare(
           `SELECT
              session_id AS sessionId,
+             project_root AS projectRoot,
+             command_cwd AS commandCwd,
+             project_sessions_dir AS projectSessionsDir,
+             session_dir AS sessionDir,
              provider,
              model,
              goal,
@@ -215,6 +261,10 @@ export class WebDatabase {
       .prepare(
         `SELECT
            session_id AS sessionId,
+           project_root AS projectRoot,
+           command_cwd AS commandCwd,
+           project_sessions_dir AS projectSessionsDir,
+           session_dir AS sessionDir,
            provider,
            model,
            goal,
@@ -237,11 +287,13 @@ export class WebDatabase {
     const result = this.db
       .prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE session_id = ?")
       .run(title, updatedAt, sessionId);
+    if (result.changes > 0) renameSessionIndex(sessionId, title);
     return result.changes > 0;
   }
 
   deleteSession(sessionId) {
     const result = this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(sessionId);
+    if (result.changes > 0) deleteSessionIndex(sessionId);
     return result.changes > 0;
   }
 }

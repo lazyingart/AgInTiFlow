@@ -6,6 +6,15 @@ import { promisify } from "node:util";
 import { listAgentWrappers } from "./tool-wrappers.js";
 import { getDockerSandboxStatus } from "./docker-sandbox.js";
 import { platformInfo, platformLabel, platformSetupHints } from "./platform.js";
+import {
+  LEGACY_PROJECT_SESSIONS_DIR_NAME,
+  PROJECT_SESSIONS_DIR_NAME,
+  globalSessionPaths,
+  isSafeSessionId,
+  listSessionIndex,
+  renameSessionIndex,
+  upsertSessionIndex,
+} from "./session-index.js";
 
 const execFileAsync = promisify(execFile);
 const LOCAL_ENV_KEYS = new Set([
@@ -45,6 +54,7 @@ export function resolveProjectRoot(input = process.cwd()) {
 
 export function projectPaths(projectRoot = process.cwd()) {
   const root = resolveProjectRoot(projectRoot);
+  const globalPaths = globalSessionPaths();
   return {
     root,
     agintiInstructionsPath: path.join(root, "AGINTI.md"),
@@ -56,10 +66,89 @@ export function projectPaths(projectRoot = process.cwd()) {
     codebaseMapPath: path.join(root, ".aginti", "codebase-map.json"),
     notesDir: path.join(root, "notes"),
     notesReadmePath: path.join(root, "notes", "README.md"),
-    sessionsDir: path.join(root, ".sessions"),
-    sessionDbPath: path.join(root, ".sessions", "web-state.sqlite"),
+    sessionsDir: path.join(root, PROJECT_SESSIONS_DIR_NAME),
+    legacySessionsDir: path.join(root, LEGACY_PROJECT_SESSIONS_DIR_NAME),
+    sessionDbPath: path.join(root, PROJECT_SESSIONS_DIR_NAME, "web-state.sqlite"),
+    legacySessionDbPath: path.join(root, LEGACY_PROJECT_SESSIONS_DIR_NAME, "web-state.sqlite"),
+    agintiflowHome: globalPaths.home,
+    globalSessionsDir: globalPaths.sessionsDir,
+    globalSessionIndexPath: globalPaths.indexDbPath,
     gitignorePath: path.join(root, ".gitignore"),
   };
+}
+
+export function sessionStoreOptions(projectRoot = process.cwd(), sessionId = "") {
+  const paths = projectPaths(projectRoot);
+  return {
+    projectRoot: paths.root,
+    projectSessionsDir: paths.sessionsDir,
+    legacySessionDir: sessionId ? path.join(paths.legacySessionsDir, sessionId) : "",
+  };
+}
+
+export async function ensureProjectSessionStorage(projectRoot = process.cwd()) {
+  const paths = projectPaths(projectRoot);
+  await fsp.mkdir(paths.sessionsDir, { recursive: true });
+  await fsp.mkdir(paths.globalSessionsDir, { recursive: true });
+
+  const legacyEntries = await fsp.readdir(paths.legacySessionsDir, { withFileTypes: true }).catch(() => []);
+  if (legacyEntries.length > 0) {
+    for (const entry of legacyEntries) {
+      if (!entry.isDirectory() || !isSafeSessionId(entry.name)) continue;
+      const legacyDir = path.join(paths.legacySessionsDir, entry.name);
+      const legacyStatePath = path.join(legacyDir, "state.json");
+      const state = await fsp.readFile(legacyStatePath, "utf8").then(JSON.parse).catch(() => null);
+      if (!state?.sessionId && !state?.createdAt) continue;
+
+      const sessionId = isSafeSessionId(state.sessionId) ? state.sessionId : entry.name;
+      const globalDir = path.join(paths.globalSessionsDir, sessionId);
+      const globalStatePath = path.join(globalDir, "state.json");
+      const hasGlobalState = await fsp.stat(globalStatePath).then((stat) => stat.isFile()).catch(() => false);
+      if (!hasGlobalState) {
+        await fsp.mkdir(path.dirname(globalDir), { recursive: true });
+        await fsp.cp(legacyDir, globalDir, { recursive: true, force: false, errorOnExist: false });
+      }
+
+      const pointerDir = path.join(paths.sessionsDir, sessionId);
+      await fsp.mkdir(pointerDir, { recursive: true });
+      const pointer = {
+        sessionId,
+        projectRoot: paths.root,
+        commandCwd: state.commandCwd || paths.root,
+        sessionDir: globalDir,
+        artifactsDir: path.join(globalDir, "artifacts"),
+        createdAt: state.createdAt || state.startedAt || "",
+        updatedAt: state.updatedAt || state.createdAt || "",
+        title: state.title || "",
+        goal: state.goal || "",
+        provider: state.provider || "",
+        model: state.model || "",
+        migratedFrom: legacyDir,
+      };
+      await fsp.writeFile(path.join(pointerDir, "session.json"), `${JSON.stringify(pointer, null, 2)}\n`, "utf8");
+      try {
+        upsertSessionIndex({
+          ...state,
+          sessionId,
+          projectRoot: paths.root,
+          commandCwd: state.commandCwd || paths.root,
+          projectSessionsDir: paths.sessionsDir,
+          sessionDir: globalDir,
+          status: state.status || "saved",
+        });
+      } catch {
+        // Migration should still leave readable pointers even if the global index is unavailable.
+      }
+    }
+  }
+
+  const hasNewDb = await fsp.stat(paths.sessionDbPath).then((stat) => stat.isFile()).catch(() => false);
+  const hasLegacyDb = await fsp.stat(paths.legacySessionDbPath).then((stat) => stat.isFile()).catch(() => false);
+  if (!hasNewDb && hasLegacyDb) {
+    await fsp.copyFile(paths.legacySessionDbPath, paths.sessionDbPath).catch(() => {});
+  }
+
+  return paths;
 }
 
 export function defaultAgintiInstructions() {
@@ -202,6 +291,7 @@ export async function initProject(projectRoot = process.cwd()) {
   await ensureDir(paths.controlDir);
   await ensureDir(paths.notesDir);
   await ensureDir(paths.sessionsDir);
+  await fsp.mkdir(paths.globalSessionsDir, { recursive: true });
   await ensureFile(
     paths.agintiInstructionsPath,
     defaultAgintiInstructions()
@@ -217,7 +307,8 @@ export async function initProject(projectRoot = process.cwd()) {
       "- `.env` is ignored and can hold local provider keys.",
       "- `.env.example` documents accepted variable names.",
       "- `codebase-map.json` is a generated, ignored project-intelligence cache.",
-      "- `.sessions/` at the project root stores CLI and web run history.",
+      "- `../.aginti-sessions/` stores project-local session pointers and the web UI database.",
+      "- `~/.agintiflow/sessions/<session-id>/` stores canonical session history and artifacts.",
       "",
     ].join("\n")
   );
@@ -256,10 +347,13 @@ export async function initProject(projectRoot = process.cwd()) {
     ".aginti/.env.*",
     "!.aginti/.env.example",
     ".aginti/codebase-map.json",
+    ".aginti-sessions/",
     ".sessions/",
   ]);
   if (gitignore.changed) updated.push(paths.gitignorePath);
   else skipped.push(paths.gitignorePath);
+
+  await ensureProjectSessionStorage(projectRoot);
 
   return {
     ok: true,
@@ -391,37 +485,66 @@ export async function setProviderKey(projectRoot, provider, value) {
 }
 
 export async function listProjectSessions(projectRoot = process.cwd(), limit = 50) {
-  const paths = projectPaths(projectRoot);
-  const entries = await fsp.readdir(paths.sessionsDir, { withFileTypes: true }).catch(() => []);
-  const sessions = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const statePath = path.join(paths.sessionsDir, entry.name, "state.json");
+  const paths = await ensureProjectSessionStorage(projectRoot);
+  const indexed = (() => {
     try {
-      const state = JSON.parse(await fsp.readFile(statePath, "utf8"));
-      sessions.push({
-        sessionId: state.sessionId || entry.name,
-        provider: state.provider || "",
-        model: state.model || "",
-        goal: state.goal || "",
-        createdAt: state.createdAt || "",
-        updatedAt: state.updatedAt || state.createdAt || "",
-        stepsCompleted: state.stepsCompleted || 0,
+      return listSessionIndex({ projectRoot: paths.root, limit: Math.max(limit, 100) });
+    } catch {
+      return [];
+    }
+  })();
+  const byId = new Map();
+  for (const session of indexed) {
+    if (session.sessionId) byId.set(session.sessionId, session);
+  }
+
+  const entries = await fsp.readdir(paths.sessionsDir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !isSafeSessionId(entry.name)) continue;
+    const pointerPath = path.join(paths.sessionsDir, entry.name, "session.json");
+    const pointer = await fsp.readFile(pointerPath, "utf8").then(JSON.parse).catch(() => ({}));
+    const statePath = path.join(pointer.sessionDir || path.join(paths.globalSessionsDir, entry.name), "state.json");
+    const state = await fsp.readFile(statePath, "utf8").then(JSON.parse).catch(() => null);
+    const sessionId = state?.sessionId || pointer.sessionId || entry.name;
+    if (!sessionId) continue;
+    const record = {
+      ...byId.get(sessionId),
+      sessionId,
+      projectRoot: paths.root,
+      commandCwd: state?.commandCwd || pointer.commandCwd || paths.root,
+      sessionDir: pointer.sessionDir || path.join(paths.globalSessionsDir, sessionId),
+      provider: state?.provider || pointer.provider || byId.get(sessionId)?.provider || "",
+      model: state?.model || pointer.model || byId.get(sessionId)?.model || "",
+      goal: state?.goal || pointer.goal || byId.get(sessionId)?.goal || "",
+      title: state?.title || pointer.title || byId.get(sessionId)?.title || "",
+      createdAt: state?.createdAt || pointer.createdAt || byId.get(sessionId)?.createdAt || "",
+      updatedAt: state?.updatedAt || pointer.updatedAt || byId.get(sessionId)?.updatedAt || state?.createdAt || "",
+      stepsCompleted: state?.stepsCompleted || 0,
+    };
+    byId.set(sessionId, record);
+    try {
+      upsertSessionIndex({
+        ...record,
+        projectSessionsDir: paths.sessionsDir,
+        status: record.status || "saved",
       });
     } catch {
-      // Ignore malformed or unrelated session folders.
+      // Project pointer scanning should not fail when the optional global index is unavailable.
     }
   }
+
+  const sessions = [...byId.values()];
   return sessions.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, limit);
 }
 
 export async function showProjectSession(projectRoot, sessionId) {
-  const paths = projectPaths(projectRoot);
+  const paths = await ensureProjectSessionStorage(projectRoot);
   const safeId = String(sessionId || "");
-  if (!/^[A-Za-z0-9._:-]+$/.test(safeId) || safeId.includes("..")) {
+  if (!isSafeSessionId(safeId)) {
     throw new Error("Invalid session id.");
   }
-  const sessionDir = path.join(paths.sessionsDir, safeId);
+  const pointer = await fsp.readFile(path.join(paths.sessionsDir, safeId, "session.json"), "utf8").then(JSON.parse).catch(() => ({}));
+  const sessionDir = pointer.sessionDir || path.join(paths.globalSessionsDir, safeId);
   const state = JSON.parse(await fsp.readFile(path.join(sessionDir, "state.json"), "utf8"));
   let events = [];
   try {
@@ -438,11 +561,66 @@ export async function showProjectSession(projectRoot, sessionId) {
     provider: state.provider || "",
     model: state.model || "",
     goal: state.goal || "",
+    title: state.title || pointer.title || "",
+    commandCwd: state.commandCwd || pointer.commandCwd || paths.root,
     createdAt: state.createdAt || "",
     updatedAt: state.updatedAt || "",
     chat: state.chat || [],
     events: events.slice(-80),
   };
+}
+
+export async function renameProjectSession(projectRoot, sessionId, title) {
+  const paths = await ensureProjectSessionStorage(projectRoot);
+  const safeId = String(sessionId || "");
+  if (!isSafeSessionId(safeId)) throw new Error("Invalid session id.");
+  const cleanTitle = String(title || "").replace(/\s+/g, " ").trim().slice(0, 90);
+  if (!cleanTitle) throw new Error("Title is required.");
+  const pointerPath = path.join(paths.sessionsDir, safeId, "session.json");
+  const pointer = await fsp.readFile(pointerPath, "utf8").then(JSON.parse).catch(() => ({}));
+  const sessionDir = pointer.sessionDir || path.join(paths.globalSessionsDir, safeId);
+  const statePath = path.join(sessionDir, "state.json");
+  const state = await fsp.readFile(statePath, "utf8").then(JSON.parse).catch(() => ({}));
+  const updatedAt = new Date().toISOString();
+  const nextState = {
+    ...state,
+    sessionId: state.sessionId || safeId,
+    title: cleanTitle,
+    updatedAt,
+  };
+  await fsp.mkdir(sessionDir, { recursive: true });
+  await fsp.writeFile(statePath, `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  const nextPointer = {
+    ...pointer,
+    sessionId: safeId,
+    projectRoot: paths.root,
+    commandCwd: nextState.commandCwd || pointer.commandCwd || paths.root,
+    sessionDir,
+    artifactsDir: path.join(sessionDir, "artifacts"),
+    title: cleanTitle,
+    updatedAt,
+    goal: nextState.goal || pointer.goal || "",
+    provider: nextState.provider || pointer.provider || "",
+    model: nextState.model || pointer.model || "",
+  };
+  await fsp.mkdir(path.dirname(pointerPath), { recursive: true });
+  await fsp.writeFile(pointerPath, `${JSON.stringify(nextPointer, null, 2)}\n`, "utf8");
+  try {
+    renameSessionIndex(safeId, cleanTitle);
+    upsertSessionIndex({
+      ...nextState,
+      sessionId: safeId,
+      title: cleanTitle,
+      projectRoot: paths.root,
+      commandCwd: nextState.commandCwd || pointer.commandCwd || paths.root,
+      projectSessionsDir: paths.sessionsDir,
+      sessionDir,
+      status: nextState.status || "saved",
+    });
+  } catch {
+    // The title is still persisted in state.json and the project pointer.
+  }
+  return { ok: true, sessionId: safeId, title: cleanTitle, sessionDir };
 }
 
 export async function npmLatestVersion(packageName = "@lazyingart/agintiflow") {
@@ -492,6 +670,8 @@ export async function doctorReport(projectRoot, packageVersion, config) {
       controlDir: paths.controlDir,
       sessionsDir: paths.sessionsDir,
       sessionDbPath: paths.sessionDbPath,
+      globalSessionsDir: paths.globalSessionsDir,
+      globalSessionIndexPath: paths.globalSessionIndexPath,
       localEnvPresent: keyStatus.localEnv,
     },
     keys: {

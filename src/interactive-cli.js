@@ -3,7 +3,15 @@ import { emitKeypressEvents } from "node:readline";
 import { stdin as input, stdout as output } from "node:process";
 import { runAgent } from "./agent-runner.js";
 import { loadConfig } from "./config.js";
-import { initProject, listProjectSessions, projectPaths, providerKeyStatus, readProjectInstructions } from "./project.js";
+import {
+  initProject,
+  listProjectSessions,
+  projectPaths,
+  providerKeyStatus,
+  readProjectInstructions,
+  renameProjectSession,
+  sessionStoreOptions,
+} from "./project.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
 import { defaultMaxStepsForProfile, normalizeTaskProfile } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
@@ -61,6 +69,7 @@ const SLASH_COMMANDS = [
   "/new",
   "/resume",
   "/sessions",
+  "/rename",
   "/skills",
   "/skill",
   "/profile",
@@ -624,6 +633,7 @@ function printHelp() {
       `  ${command("/auxiliary [status|grsai|venice|model [provider/model]|on|off|image]", "Manage optional auxiliary skills, including image generation.", "helpAuxiliary")}`,
       `  ${command("/new", "Start a fresh session on the next message.", "helpNew")}`,
       `  ${command("/resume <session-id>", "Continue a saved session.", "helpResume")}`,
+      `  ${command("/rename [title|auto]", "Rename the current session.", "helpRename")}`,
       `  ${command("/sessions", "List recent sessions in this project.", "helpSessions")}`,
       `  ${command("/skills [query]", "List Markdown skills selected for a topic.", "helpSkills")}`,
       `  ${command("/profile <name>", "Set task profile, e.g. code, website, latex, maintenance.", "helpProfile")}`,
@@ -1564,8 +1574,17 @@ function isAbortError(error) {
 }
 
 function formatSessionLine(session) {
-  const goal = session.goal ? ` ${session.goal.slice(0, 72)}` : "";
-  return `${session.sessionId} ${session.provider || "unknown"}/${session.model || "unknown"} ${session.updatedAt || ""}${goal}`.trim();
+  const title = session.title || session.goal || "";
+  const preview = title ? ` ${title.slice(0, 72)}` : "";
+  return `${session.sessionId} ${session.provider || "unknown"}/${session.model || "unknown"} ${session.updatedAt || ""}${preview}`.trim();
+}
+
+function autoSessionTitle(state) {
+  const route = `${state.routeProvider || state.provider || "auto"}/${state.routeModel || state.model || "auto"}`;
+  const main = `${state.mainProvider || state.provider || "auto"}/${state.mainModel || state.model || "auto"}`;
+  const goal = String(state.activeGoal || "").replace(/\s+/g, " ").trim();
+  const prefix = state.taskProfile && state.taskProfile !== "auto" ? state.taskProfile : "auto";
+  return [prefix, `route ${route}`, `main ${main}`, goal.slice(0, 36)].filter(Boolean).join(" · ").slice(0, 90);
 }
 
 async function latestSession() {
@@ -1582,7 +1601,8 @@ function printHistoryEntry(entry) {
 
 async function printResumeHistory(state, { limit = 0 } = {}) {
   if (!state.sessionId) return;
-  const store = new SessionStore(projectPaths(process.cwd()).sessionsDir, state.sessionId);
+  const paths = projectPaths(process.cwd());
+  const store = new SessionStore(paths.globalSessionsDir, state.sessionId, sessionStoreOptions(process.cwd(), state.sessionId));
   const saved = await store.loadState().catch(() => null);
   const events = await store.loadEvents().catch(() => []);
   const chat = Array.isArray(saved?.chat) ? saved.chat.filter((entry) => entry?.content) : [];
@@ -2583,6 +2603,20 @@ async function handleCommand(line, state, packageDir) {
     }
     return true;
   }
+  if (command === "rename") {
+    if (!state.sessionId) {
+      printAgentMessage("No active session to rename. Start or resume a session first.");
+      return true;
+    }
+    const title = value === "auto" || !value ? autoSessionTitle(state) : value;
+    try {
+      const result = await renameProjectSession(process.cwd(), state.sessionId, title);
+      printSystemLine(`session=${result.sessionId} title=${result.title}`);
+    } catch (error) {
+      printAgentMessage(error instanceof Error ? error.message : String(error));
+    }
+    return true;
+  }
   if (command === "skills" || command === "skill") {
     const skills = value
       ? selectSkillsForGoal(value, { taskProfile: state.taskProfile, limit: 12, includeBody: false })
@@ -2914,7 +2948,10 @@ async function runPrompt(prompt, state, packageDir) {
   state.activeGoal = compactLine(prompt, 84);
   state.lastEvent = "";
 
-  const store = new SessionStore(config.sessionsDir, state.sessionId);
+  const store = new SessionStore(config.sessionsDir, state.sessionId, {
+    projectRoot: config.baseDir,
+    projectSessionsDir: config.projectSessionsDir,
+  });
   const liveInput = new LiveRunInput({ state, store, controller });
   const liveStarted = liveInput.start();
   const detachInterrupts = liveStarted ? () => {} : attachRunInterrupts(controller);

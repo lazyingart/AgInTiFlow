@@ -11,6 +11,7 @@ import { SessionStore } from "../src/session-store.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-auxiliary-"));
+process.env.AGINTIFLOW_HOME = path.join(tempRoot, ".agintiflow-home");
 const runtimeDir = path.join(tempRoot, "runtime");
 const workspace = path.join(tempRoot, "workspace");
 await fs.mkdir(workspace, { recursive: true });

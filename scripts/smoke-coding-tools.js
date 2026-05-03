@@ -15,6 +15,7 @@ import { executeWorkspaceTool } from "../src/workspace-tools.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-coding-tools-"));
+process.env.AGINTIFLOW_HOME = path.join(tempRoot, ".agintiflow-home");
 const runtimeDir = path.join(tempRoot, "runtime");
 const workspace = path.join(tempRoot, "workspace");
 await fs.mkdir(workspace, { recursive: true });

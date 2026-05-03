@@ -198,7 +198,11 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
       instructionsPresent: instructions.exists,
       sessionsDir: paths.sessionsDir,
       sessionDbPath: paths.sessionDbPath,
-      sharedSessionFolder: path.resolve(config.sessionsDir) === path.resolve(paths.sessionsDir),
+      globalSessionsDir: paths.globalSessionsDir,
+      globalSessionIndexPath: paths.globalSessionIndexPath,
+      sharedSessionFolder:
+        path.resolve(config.sessionsDir) === path.resolve(paths.globalSessionsDir) &&
+        path.resolve(config.projectSessionsDir || paths.sessionsDir) === path.resolve(paths.sessionsDir),
       codebaseMap: {
         present: Boolean(codebaseMap.ok),
         path: paths.codebaseMapPath,
@@ -285,6 +289,7 @@ export function printCapabilityReport(report) {
   console.log(`cwd=${report.project.commandCwd}`);
   console.log(`instructions=${report.project.instructionsPath} present=${report.project.instructionsPresent}`);
   console.log(`sessions=${report.project.sessionsDir}`);
+  console.log(`globalSessions=${report.project.globalSessionsDir}`);
   console.log(`sessionDb=${report.project.sessionDbPath}`);
   console.log(`sharedSessions=${report.project.sharedSessionFolder}`);
   console.log(

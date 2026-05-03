@@ -15,11 +15,14 @@ import { startInteractiveCli } from "./interactive-cli.js";
 import { SessionStore } from "./session-store.js";
 import {
   doctorReport,
+  ensureProjectSessionStorage,
   initProject,
   listProjectSessions,
+  renameProjectSession,
   providerKeyStatus,
   setProviderKey,
   showProjectSession,
+  sessionStoreOptions,
 } from "./project.js";
 import { listTaskProfiles } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
@@ -29,6 +32,7 @@ import { languageLabel, resolveLanguage } from "./i18n.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import readline from "node:readline/promises";
 
 const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
@@ -486,7 +490,7 @@ function printInitResult(result) {
   console.log(`AgInTiFlow project initialized: ${result.projectRoot}`);
   console.log(`instructions=${result.instructionsPath}`);
   console.log(`control=${result.controlDir}`);
-  console.log(`sessions=${result.sessionsDir}`);
+  console.log(`projectSessions=${result.sessionsDir}`);
   console.log(`created=${result.created.length} updated=${result.updated.length} skipped=${result.skipped.length}`);
 }
 
@@ -496,7 +500,8 @@ function printDoctorReport(report) {
   console.log(`platform=${report.platform.label} family=${report.platform.linuxFamily || report.platform.platform}`);
   console.log(`project=${report.project.root}`);
   console.log(`instructions=${report.project.instructionsPath} present=${report.project.instructionsPresent}`);
-  console.log(`sessions=${report.project.sessionsDir}`);
+  console.log(`projectSessions=${report.project.sessionsDir}`);
+  console.log(`globalSessions=${report.project.globalSessionsDir}`);
   console.log(`sessionDb=${report.project.sessionDbPath}`);
   console.log(
     `keys: deepseek=${report.keys.deepseek ? "available" : "missing"} openai=${
@@ -586,7 +591,7 @@ function printAuthWizardResult(result) {
 }
 
 async function handleSessionsCommand(argv) {
-  const [verb = "list", sessionId = ""] = argv;
+  const [verb = "list", sessionId = "", ...rest] = argv;
   if (verb === "list") {
     const sessions = await listProjectSessions(process.cwd(), 80);
     if (sessions.length === 0) {
@@ -610,14 +615,49 @@ async function handleSessionsCommand(argv) {
     return;
   }
 
-  console.error("Usage: aginti sessions list OR aginti sessions show <session-id>");
+  if (verb === "rename") {
+    const title = rest.join(" ").trim();
+    if (!sessionId || !title) {
+      console.error('Usage: aginti sessions rename <session-id> "new title"');
+      process.exit(1);
+    }
+    const result = await renameProjectSession(process.cwd(), sessionId, title);
+    console.log(`renamed ${result.sessionId}: ${result.title}`);
+    return;
+  }
+
+  console.error('Usage: aginti sessions list OR aginti sessions show <session-id> OR aginti sessions rename <session-id> "title"');
   process.exit(1);
+}
+
+async function promptSelectSession(sessions) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return sessions[0]?.sessionId || "";
+  console.log("Select a session to resume:");
+  sessions.slice(0, 20).forEach((session, index) => {
+    const title = session.title || session.goal || "(untitled)";
+    console.log(
+      `${index + 1}. ${session.sessionId} ${session.provider || "unknown"}/${session.model || "unknown"} ${session.updatedAt || ""} ${title.slice(0, 90)}`
+    );
+  });
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question("Session number: ");
+    const index = Number(answer.trim()) - 1;
+    return sessions[index]?.sessionId || "";
+  } finally {
+    rl.close();
+  }
 }
 
 async function resolveResumeSessionId(sessionId) {
   if (sessionId && sessionId !== "latest") return sessionId;
-  const sessions = await listProjectSessions(process.cwd(), 1);
-  if (sessions[0]?.sessionId) return sessions[0].sessionId;
+  const sessions = await listProjectSessions(process.cwd(), 50);
+  if (sessionId === "latest" || sessions.length <= 1 || !process.stdin.isTTY || !process.stdout.isTTY) {
+    if (sessions[0]?.sessionId) return sessions[0].sessionId;
+  } else {
+    const selected = await promptSelectSession(sessions);
+    if (selected) return selected;
+  }
   throw new Error("No project-local sessions found. Run `aginti sessions list` to check this folder.");
 }
 
@@ -629,10 +669,29 @@ async function handleQueueCommand(argv) {
     process.exit(1);
   }
 
-  const store = new SessionStore(path.resolve(process.cwd(), ".sessions"), sessionId);
+  const paths = await ensureProjectSessionStorage(process.cwd());
+  const store = new SessionStore(paths.globalSessionsDir, sessionId, sessionStoreOptions(process.cwd(), sessionId));
   await store.appendInbox(content, { source: "cli" });
   await store.appendEvent("conversation.queued_input", { prompt: content, source: "cli" }).catch(() => {});
   console.log(`queued message for ${sessionId}`);
+}
+
+async function handleStorageCommand(argv) {
+  const [verb = "status", ...rest] = argv;
+  if (verb !== "migrate" && verb !== "status") {
+    console.error("Usage: aginti storage migrate [project-root ...] OR aginti storage status");
+    process.exit(1);
+  }
+
+  const roots = verb === "migrate" && rest.length > 0 ? rest : [process.cwd()];
+  for (const root of roots) {
+    const projectRoot = path.resolve(root);
+    const paths = await ensureProjectSessionStorage(projectRoot);
+    const sessions = await listProjectSessions(projectRoot, 1000);
+    console.log(
+      `${verb === "migrate" ? "migrated" : "storage"} project=${paths.root} projectSessions=${paths.sessionsDir} globalSessions=${paths.globalSessionsDir} sessions=${sessions.length}`
+    );
+  }
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -720,6 +779,11 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (argv[0] === "sessions") {
     await handleSessionsCommand(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "storage") {
+    await handleStorageCommand(argv.slice(1));
     return;
   }
 

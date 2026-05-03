@@ -268,6 +268,8 @@ async function createInitialState(config, sessionId) {
     provider: config.provider,
     model: config.model,
     goal: config.goal,
+    baseDir: config.baseDir,
+    commandCwd: config.commandCwd,
     startUrl: config.startUrl,
     plan: "",
     stepsCompleted: 0,
@@ -1252,7 +1254,10 @@ export async function runAgent(config) {
   }
 
   const sessionId = config.resume || config.sessionId || `web-agent-${crypto.randomUUID()}`;
-  const store = new SessionStore(config.sessionsDir, sessionId);
+  const store = new SessionStore(config.sessionsDir, sessionId, {
+    projectRoot: config.baseDir,
+    projectSessionsDir: config.projectSessionsDir,
+  });
   const client = createClient(config);
   const observers = createObservers(config);
   const browserState = createBrowserState();
@@ -1389,6 +1394,7 @@ export async function runAgent(config) {
     emitConsole(config, `Routing: ${config.routingMode} (${config.routeReason})`, { kind: "meta" });
     emitConsole(config, `Workspace: ${config.commandCwd}`, { kind: "meta" });
     emitConsole(config, `Sessions: ${config.sessionsDir}`, { kind: "meta" });
+    if (config.projectSessionsDir) emitConsole(config, `Project session index: ${config.projectSessionsDir}`, { kind: "meta" });
     if (config.useDockerSandbox) {
       emitConsole(
         config,

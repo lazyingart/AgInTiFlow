@@ -16,6 +16,7 @@ const DEFAULT_MAX_DEPTH = 4;
 const SKIP_DIRS = new Set([
   ".git",
   ".sessions",
+  ".aginti-sessions",
   ".aginti",
   "node_modules",
   "dist",

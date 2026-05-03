@@ -9,13 +9,13 @@ The chat stream is good for conversation, but it is not enough for agent work th
 - Backend agents can optionally call `send_to_canvas` for important outputs.
 - Runtime events automatically expose screenshots, snapshots, file changes, and final answers.
 - The frontend can show unread artifact counts, lists, previews, and manual selection.
-- Users can open selected image/text artifacts without digging through `.sessions/`.
+- Users can open selected image/text artifacts without digging through `~/.agintiflow/sessions/`.
 
 The tunnel is optional. Agents can still answer normally with `finish`; they should use `send_to_canvas` only when an output benefits from visual focus or file-style inspection.
 
 ## Source Of Truth
 
-Session events are the durable backend contract. The tunnel is derived from `.sessions/<session-id>/events.jsonl` rather than a separate artifact database.
+Session events are the durable backend contract. The tunnel is derived from `~/.agintiflow/sessions/<session-id>/events.jsonl` rather than a separate artifact database.
 
 Relevant events:
 
@@ -165,7 +165,7 @@ The tunnel must never become a secret/file exfiltration path.
 Current safeguards:
 
 - Artifact list response exposes display paths, not absolute filesystem paths.
-- Session files must stay inside the owning `.sessions/<session-id>/` directory.
+- Session files must stay inside the owning `~/.agintiflow/sessions/<session-id>/` directory.
 - Workspace file reads reuse `checkWorkspaceToolUse("read_file", ...)`.
 - `.env`, `.npmrc`, keys, secret-like paths, `.git`, huge files, and binary text reads are blocked.
 - Text content is redacted through `redactSensitiveText`.

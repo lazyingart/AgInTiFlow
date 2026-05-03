@@ -8,7 +8,7 @@ Every supervised task must end with independent checks:
 
 - Inspect `git status --short`.
 - Verify output files exist with `test -s`, `ls -lh`, `file`, or a domain-specific checker.
-- Read `.sessions/<session-id>/events.jsonl` for actual tool calls when claims matter.
+- Read `~/.agintiflow/sessions/<session-id>/events.jsonl` for actual tool calls when claims matter.
 - For screenshots, PDFs, images, APKs, reports, and archives, keep a durable workspace path unless the user explicitly requested only a temporary preview.
 - Commit intentional project changes or explicitly report why the worktree is not clean.
 

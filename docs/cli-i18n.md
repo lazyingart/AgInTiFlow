@@ -75,7 +75,7 @@ The web app already has an 11-language dropdown. Launching web with a language s
 aginti web --language de --port 3210
 ```
 
-The web preference is stored in the project-local `.sessions/web-state.sqlite` database, so the CLI and web app can share sessions while each frontend keeps its own UI controls.
+The web preference is stored in the project-local `.aginti-sessions/web-state.sqlite` database, so the CLI and web app can share sessions while each frontend keeps its own UI controls.
 
 ## Notes
 

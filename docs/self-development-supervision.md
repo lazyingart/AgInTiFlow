@@ -32,7 +32,7 @@ aginti --profile large-codebase --parallel-scouts --scout-count 5 \
   "inspect this repo, implement the requested change, run focused checks, and stop before commit"
 ```
 
-Use `aginti web --port 3221` from the same folder if a browser UI is preferred. CLI and web will share `.sessions/`.
+Use `aginti web --port 3221` from the same folder if a browser UI is preferred. CLI and web will share `.aginti-sessions/` project pointers and `~/.agintiflow/sessions/` canonical history.
 
 ## Supervisor Duties
 
@@ -92,4 +92,3 @@ npm test
 npm run pack:dry-run
 git diff --check
 ```
-
