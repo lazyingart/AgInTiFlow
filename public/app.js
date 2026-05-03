@@ -15,7 +15,7 @@ const supportedLanguages = [
 const translations = {
   en: {
     documentTitle: "AgInTiFlow",
-    brandKicker: "AI automation product by AgInTi Inc.",
+    brandKicker: "Developed by AgInTi Lab, LazyingArt LLC",
     languageLabel: "Language",
     intro:
       "Web-first agent platform with smart model routing, resumable runs, guarded tools, and optional external agent wrappers.",
@@ -174,7 +174,7 @@ const translations = {
   },
   ar: {
     documentTitle: "AgInTiFlow",
-    brandKicker: "منتج أتمتة بالذكاء الاصطناعي من AgInTi Inc.",
+    brandKicker: "Developed by AgInTi Lab, LazyingArt LLC",
     languageLabel: "اللغة",
     intro:
       "وكيل متصفح مع اختيار المزوّد، تشغيل قابل للاستئناف، إعدادات محفوظة، وأداة shell محمية اختيارية مع دعم Docker sandbox.",
@@ -221,7 +221,7 @@ const translations = {
   },
   es: {
     documentTitle: "AgInTiFlow",
-    brandKicker: "Producto de automatización IA de AgInTi Inc.",
+    brandKicker: "Developed by AgInTi Lab, LazyingArt LLC",
     languageLabel: "Idioma",
     intro:
       "Agente de navegador con selección de proveedor, ejecuciones reanudables, ajustes persistentes y shell protegido opcional con Docker sandbox.",
@@ -268,7 +268,7 @@ const translations = {
   },
   fr: {
     documentTitle: "AgInTiFlow",
-    brandKicker: "Produit d'automatisation IA par AgInTi Inc.",
+    brandKicker: "Developed by AgInTi Lab, LazyingArt LLC",
     languageLabel: "Langue",
     intro:
       "Agent navigateur avec choix du fournisseur, runs reprenables, réglages persistants et outil shell gardé optionnel avec Docker sandbox.",
@@ -315,7 +315,7 @@ const translations = {
   },
   ja: {
     documentTitle: "AgInTiFlow",
-    brandKicker: "AgInTi Inc. のAI自動化プロダクト",
+    brandKicker: "Developed by AgInTi Lab, LazyingArt LLC",
     languageLabel: "言語",
     intro:
       "プロバイダー選択、再開可能な実行、保存される設定、Docker sandbox対応の保護されたshellツールを備えたブラウザエージェントです。",
@@ -362,7 +362,7 @@ const translations = {
   },
   ko: {
     documentTitle: "AgInTiFlow",
-    brandKicker: "AgInTi Inc.의 AI 자동화 제품",
+    brandKicker: "Developed by AgInTi Lab, LazyingArt LLC",
     languageLabel: "언어",
     intro:
       "제공자 선택, 재개 가능한 실행, 저장되는 설정, Docker sandbox 지원 보호 shell 도구를 갖춘 브라우저 에이전트입니다.",
@@ -409,7 +409,7 @@ const translations = {
   },
   vi: {
     documentTitle: "AgInTiFlow",
-    brandKicker: "Sản phẩm tự động hóa AI của AgInTi Inc.",
+    brandKicker: "Developed by AgInTi Lab, LazyingArt LLC",
     languageLabel: "Ngôn ngữ",
     intro:
       "Agent trình duyệt có chọn provider, phiên chạy tiếp tục được, cài đặt được lưu, và shell tool được bảo vệ tùy chọn với Docker sandbox.",
@@ -456,7 +456,7 @@ const translations = {
   },
   "zh-Hans": {
     documentTitle: "AgInTiFlow",
-    brandKicker: "AgInTi Inc. 的 AI 自动化产品",
+    brandKicker: "Developed by AgInTi Lab, LazyingArt LLC",
     languageLabel: "语言",
     intro:
       "浏览器智能体，支持模型供应商选择、可恢复运行、持久设置，以及可选的受保护 shell 工具和 Docker 沙箱。",
@@ -503,7 +503,7 @@ const translations = {
   },
   "zh-Hant": {
     documentTitle: "AgInTiFlow",
-    brandKicker: "AgInTi Inc. 的 AI 自動化產品",
+    brandKicker: "Developed by AgInTi Lab, LazyingArt LLC",
     languageLabel: "語言",
     intro:
       "瀏覽器智能體，支援模型供應商選擇、可恢復執行、持久設定，以及可選的受保護 shell 工具與 Docker 沙箱。",
@@ -550,7 +550,7 @@ const translations = {
   },
   de: {
     documentTitle: "AgInTiFlow",
-    brandKicker: "KI-Automationsprodukt von AgInTi Inc.",
+    brandKicker: "Developed by AgInTi Lab, LazyingArt LLC",
     languageLabel: "Sprache",
     intro:
       "Browser-Agent mit Provider-Auswahl, fortsetzbaren Läufen, gespeicherten Einstellungen und optional geschütztem Shell-Tool mit Docker-Sandbox.",
@@ -597,7 +597,7 @@ const translations = {
   },
   ru: {
     documentTitle: "AgInTiFlow",
-    brandKicker: "AI-автоматизация от AgInTi Inc.",
+    brandKicker: "Developed by AgInTi Lab, LazyingArt LLC",
     languageLabel: "Язык",
     intro:
       "Браузерный агент с выбором провайдера, возобновляемыми запусками, сохраненными настройками и опциональным защищенным shell tool с Docker sandbox.",

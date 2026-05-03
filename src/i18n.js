@@ -114,6 +114,7 @@ const LANGUAGE_ALIASES = new Map(
 const TRANSLATIONS = {
   en: {
     launchSubtitle: "web-first agent workspace",
+    launchCredit: "Developed by AgInTi Lab, LazyingArt LLC",
     launchTagline: "browser + shell + files + docker + web search + scouts",
     interactiveIntro: "Interactive agent chat. Type /help for commands, /exit to quit.",
     promptEmpty: "type a request, /help, Enter to send, Ctrl+J for newline",

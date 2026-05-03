@@ -68,6 +68,24 @@ code {
   letter-spacing: -0.03em;
 }
 
+.brand-text {
+  display: grid;
+  gap: 1px;
+  line-height: 1.05;
+}
+
+.brand-name {
+  font-weight: 900;
+}
+
+.brand-credit {
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .brand img {
   width: 38px;
   height: 38px;

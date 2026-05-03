@@ -567,6 +567,7 @@ function launchTitleLines(contentWidth) {
 
 export function buildLaunchHeaderLines({ packageVersion = "", frame = 2, width = terminalWidth(), animated = true, language = cliLanguage } = {}) {
   const subtitle = t("launchSubtitle", language);
+  const credit = t("launchCredit", language);
   const tagline = t("launchTagline", language);
   const version = packageVersion ? `v${packageVersion}` : "";
   const terminalColumns = Math.max(Number(width) || 80, 50);
@@ -584,6 +585,7 @@ export function buildLaunchHeaderLines({ packageVersion = "", frame = 2, width =
     ...titleLines.map((line) => row(line)),
     versionLine ? row(versionLine) : "",
     row(centerLine(subtitle, contentWidth), ansi.dim),
+    row(centerLine(credit, contentWidth), ansi.dim),
     mid,
     row(centerLine(tagline, contentWidth), ansi.cyan),
     bottom,
