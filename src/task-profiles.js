@@ -80,7 +80,7 @@ export const TASK_PROFILES = {
     id: "qa",
     label: "QA and testing",
     prompt:
-      "Bias toward quality assurance, failing-test repair, regression reproduction, CI debugging, and test design. Reproduce the failure first, minimize the failing case, patch the smallest cause, add or update tests when useful, run focused checks before broad suites, and report exact commands plus remaining coverage gaps.",
+      "Bias toward quality assurance, failing-test repair, regression reproduction, CI debugging, and test design. When a real failure exists, reproduce it first, minimize the failing case, patch the smallest cause, add or update tests when useful, run focused checks before broad suites, and report exact commands plus remaining coverage gaps. When asked to create a testing project from scratch, produce a clean runnable project with meaningful tests; do not stage fake bugs, misleading tests, or artificial failures unless the user explicitly asks for a bug-reproduction exercise. Before finalizing, remove stale interrupted drafts, generated caches, and contradictory comments or README text.",
     tools: ["inspect_project", "search_files", "read_file", "apply_patch", "shell", "sandbox"],
   },
   database: {
@@ -413,6 +413,7 @@ export function defaultMaxStepsForProfile(value = "auto") {
   const profile = normalizeTaskProfile(value);
   if (profile === "code") return 36;
   if (profile === "large-codebase") return 36;
+  if (profile === "qa") return 40;
   if (profile === "app") return 40;
   if (profile === "android") return 60;
   if (profile === "latex") return 30;
@@ -426,7 +427,6 @@ export function defaultMaxStepsForProfile(value = "auto") {
       "novel",
       "docs",
       "data",
-      "qa",
       "database",
       "slides",
       "education",

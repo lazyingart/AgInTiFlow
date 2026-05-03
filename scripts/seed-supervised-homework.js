@@ -9,7 +9,7 @@ const TASKS = [
   ["Auto", "auto", "Infer a messy sensor-analysis folder, clean it, write a useful report, run checks, and commit only intentional work."],
   ["Code", "code", "Repair a small package from vague bug reports, add focused tests, clean generated artifacts, and commit the fix."],
   ["Large-Codebase", "large-codebase", "Fix a cross-package bug in a multi-package repo with failing tests, using project orientation before edits."],
-  ["QA", "qa", "Reproduce a misleading failing test, find the root cause, add a regression, and show focused then broad checks."],
+  ["QA", "qa", "Build or repair a realistic testing project, reproduce any real failures found, add useful regression coverage, and show focused then broad checks."],
   ["Database", "database", "Fix a SQLite schema/query/migration bug without data loss and verify with local fixtures."],
   ["DevOps", "devops", "Diagnose a broken container/service setup without sudo, make it idempotent, and prove health/log output."],
   ["Security", "security", "Review and patch a tiny app for path traversal, secret leakage, command injection, and weak auth defaults."],
@@ -327,4 +327,3 @@ console.log(
     2
   )
 );
-

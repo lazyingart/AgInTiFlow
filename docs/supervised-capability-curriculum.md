@@ -19,7 +19,7 @@ Every supervised task must end with independent checks:
 | `auto` | Mixed request: inspect a messy folder, infer the purpose, write a report, run checks | Correct profile inference, durable files, useful checks, clean git status |
 | `code` | Add a CLI feature with tests | Patch diff, focused test output, git status |
 | `large-codebase` | Fix a cross-file bug in a generated multi-package repo | Codebase map, targeted reads, focused then broader checks |
-| `qa` | Reproduce and fix failing tests in a seeded repo | failing command, root cause patch, regression check |
+| `qa` | Build or repair a realistic testing project | focused check output, useful regression coverage, clean runnable test suite |
 | `database` | Fix a schema/query/migration bug in a local SQLite app | migration/query evidence, no data-loss ambiguity |
 | `devops` | Diagnose a broken Docker/service/CI setup without sudo | read-only evidence, idempotent fix, health/log check |
 | `security` | Review a small app for auth, path, secret, or shell risks | findings, patch or report, no secret leakage |

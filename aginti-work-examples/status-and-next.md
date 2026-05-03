@@ -53,4 +53,4 @@ The following profiles exist but still need real supervised homework runs:
 
 ## Next Run
 
-Move next to `TASK-Profile-QA`, then language/platform profiles such as `TASK-Profile-Java`, `TASK-Profile-IOS`, `TASK-Profile-Go`, and `TASK-Profile-Rust`. The next stress task should seed a misleading failing-test symptom so the agent must reproduce the failure, find the root cause, add regression evidence, and leave a clean commit.
+Move next to `TASK-Profile-QA`, then language/platform profiles such as `TASK-Profile-Java`, `TASK-Profile-IOS`, `TASK-Profile-Go`, and `TASK-Profile-Rust`. The next QA stress task should use a normal user-level prompt and verify that the agent creates or repairs a clean runnable test project without inventing contrived failures.

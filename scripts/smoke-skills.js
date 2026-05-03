@@ -70,6 +70,8 @@ assert(selectedIds("repair a Ruby Rails app with RSpec").includes("ruby"), "Ruby
 assert(selectedIds("clean a CSV dataset and make plots").includes("data-analysis"), "data prompt did not select data-analysis");
 assert(selectedIds("write README API docs and a tutorial").includes("docs-knowledge"), "docs prompt did not select docs-knowledge");
 assert(selectedIds("fix failing tests and add regression coverage").includes("qa-testing"), "QA prompt did not select qa-testing");
+const qaSkill = skills.find((skill) => skill.id === "qa-testing");
+assert(qaSkill?.body.includes("Do not invent staged bugs"), "QA skill does not guard against fake staged failures");
 assert(selectedIds("write SQL migrations for sqlite schema").includes("database"), "database prompt did not select database");
 assert(selectedIds("debug Docker deployment logs and port config").includes("devops-deployment"), "devops prompt did not select devops-deployment");
 assert(selectedIds("review auth security and secrets handling").includes("security-review"), "security prompt did not select security-review");

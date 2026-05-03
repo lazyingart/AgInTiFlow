@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { defaultMaxStepsForProfile, listTaskProfiles } from "../src/task-profiles.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -96,6 +97,11 @@ try {
       `capabilities did not report ${profileId} task profile`
     );
   }
+  const qaProfile = listTaskProfiles().find((profile) => profile.id === "qa");
+  assert(qaProfile, "QA profile is missing");
+  assert(defaultMaxStepsForProfile("qa") >= 40, "QA profile step budget is too low for verification and cleanup");
+  assert(!/misleading failing test/i.test(qaProfile.prompt), "QA profile still encourages misleading test fixtures");
+  assert(/do not stage fake bugs/i.test(qaProfile.prompt), "QA profile does not discourage fake staged failures");
   assert(
     capabilities.trustedDockerPolicy.some((check) => check.command.startsWith("apt-get install") && check.allowed),
     "trusted Docker policy did not allow apt-get install"

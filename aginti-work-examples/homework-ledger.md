@@ -13,7 +13,7 @@
 
 | Priority | Profile | Homework task | What to stress | Evidence required |
 | --- | --- | --- | --- | --- |
-| 1 | `qa` | Reproduce and fix failing tests with a misleading symptom | root-cause discipline, regression testing | failing command, patch, passing check |
+| 1 | `qa` | Build or repair a realistic testing project from a normal user prompt | test design, regression discipline, cleanup after interrupted work | focused check, patch or created suite, passing broad check, clean git state |
 | 2 | `github` | Simulate pull/merge/rebase/commit/push decisions in a local remote | fast-forward discipline, conflict stop, gh fallback | git logs, branch graph, conflict handling notes |
 | 3 | `java` + `ios` + language profiles | JVM/iOS/common-language projects | toolchain detection, blocker honesty, focused checks | build/test output or exact missing-tool evidence |
 | 4 | `data` | Clean messy CSV/JSON data and generate a report | raw preservation, reproducible script, output validation | clean data, script output, report |
