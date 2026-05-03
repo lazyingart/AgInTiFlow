@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const DEFAULT_PACKAGE_NAME = "@lazyingart/agintiflow";
 const DEFAULT_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_STARTUP_CHECK_INTERVAL_MS = 0;
 const DEFAULT_FAILURE_RETRY_MS = 6 * 60 * 60 * 1000;
 const UPDATE_CHOICES = [
   {
@@ -97,6 +98,13 @@ export function shouldAutoUpdateCommand(argv = []) {
   return true;
 }
 
+function isStartupUpdateCommand(argv = []) {
+  if (!shouldAutoUpdateCommand(argv)) return false;
+  const command = String(argv[0] || "").trim();
+  if (!command) return true;
+  return START_COMMANDS.has(command);
+}
+
 function envDisablesAutoUpdate() {
   const noValues = [process.env.AGINTIFLOW_NO_AUTO_UPDATE, process.env.AGINTI_NO_AUTO_UPDATE].map((value) => String(value || "").toLowerCase());
   if (noValues.some((value) => ["1", "true", "yes", "on"].includes(value))) return true;
@@ -137,6 +145,13 @@ function checkIntervalMs() {
   if (raw === undefined || raw === "") return DEFAULT_CHECK_INTERVAL_MS;
   const value = Number(raw);
   return Number.isFinite(value) && value >= 0 ? value : DEFAULT_CHECK_INTERVAL_MS;
+}
+
+function startupCheckIntervalMs() {
+  const raw = process.env.AGINTIFLOW_AUTO_UPDATE_STARTUP_INTERVAL_MS;
+  if (raw === undefined || raw === "") return DEFAULT_STARTUP_CHECK_INTERVAL_MS;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_STARTUP_CHECK_INTERVAL_MS;
 }
 
 function failureRetryMs() {
@@ -295,7 +310,8 @@ export async function maybeAutoUpdate({
   const cache = await readCache();
   let latest = String(cache.latest || "");
   const checkedAt = Number(cache.checkedAt || 0);
-  const stale = force || currentMs - checkedAt >= checkIntervalMs();
+  const interval = !manual && !force && isStartupUpdateCommand(argv) ? startupCheckIntervalMs() : checkIntervalMs();
+  const stale = force || currentMs - checkedAt >= interval;
 
   if (stale || !latest) {
     try {

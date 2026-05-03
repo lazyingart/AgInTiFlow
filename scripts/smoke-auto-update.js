@@ -52,7 +52,9 @@ assert(skipped.skipped === "source-checkout", "source checkout update guard fail
 
 const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-auto-update-"));
 const previousHome = process.env.AGINTIFLOW_HOME;
+const previousStartupInterval = process.env.AGINTIFLOW_AUTO_UPDATE_STARTUP_INTERVAL_MS;
 process.env.AGINTIFLOW_HOME = tempHome;
+process.env.AGINTIFLOW_AUTO_UPDATE_STARTUP_INTERVAL_MS = String(24 * 60 * 60 * 1000);
 await fs.mkdir(tempHome, { recursive: true });
 await fs.writeFile(
   path.join(tempHome, "update-check.json"),
@@ -92,5 +94,7 @@ const repeatedSkip = await maybeAutoUpdate({
 assert(repeatedSkip.skipped === "skipped-version", "cached skipped version was not respected");
 if (previousHome === undefined) delete process.env.AGINTIFLOW_HOME;
 else process.env.AGINTIFLOW_HOME = previousHome;
+if (previousStartupInterval === undefined) delete process.env.AGINTIFLOW_AUTO_UPDATE_STARTUP_INTERVAL_MS;
+else process.env.AGINTIFLOW_AUTO_UPDATE_STARTUP_INTERVAL_MS = previousStartupInterval;
 
 console.log("auto-update smoke ok");
