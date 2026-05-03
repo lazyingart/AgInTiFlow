@@ -140,6 +140,7 @@ aginti sessions show <session-id>
 aginti sessions rename <session-id> "friendly title"
 aginti storage migrate
 aginti resume
+aginti resume --all-sessions
 aginti resume latest
 aginti resume <session-id> "continue with a short follow-up"
 aginti queue <session-id> "extra instruction for the running agent"
@@ -147,6 +148,8 @@ aginti --profile code "write a small Python CLI app with tests"
 aginti --latex "draw a figure, write a short LaTeX report, and compile the PDF"
 aginti "set up this project and run the tests"
 ```
+
+Bare `aginti resume` lists sessions for the current cwd by default. Use `--all-sessions` to browse the global session index; in the interactive selector, type a number to resume, `q` to quit, `/text` to filter the visible list, or `/` to clear the filter.
 
 Run from a source checkout:
 

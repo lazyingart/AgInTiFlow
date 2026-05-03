@@ -235,6 +235,11 @@ try {
   if (classifyEscapeAction({ active: true, pendingAsap: [] }) !== "abort") {
     throw new Error("active Esc should abort when no ASAP pipe messages are pending");
   }
+  await runChat("/exit\n");
+  const idleSessionEntries = await fs.readdir(path.join(agintiflowHome, "sessions"), { withFileTypes: true }).catch(() => []);
+  if (idleSessionEntries.some((entry) => entry.isDirectory())) {
+    throw new Error("idle interactive chat created a session before any user task");
+  }
   if (
     canonicalSlashPromptBuffer("/ve") !== "/venice" ||
     canonicalSlashPromptBuffer("/v") !== "/venice" ||

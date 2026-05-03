@@ -484,11 +484,34 @@ export async function setProviderKey(projectRoot, provider, value) {
   };
 }
 
-export async function listProjectSessions(projectRoot = process.cwd(), limit = 50) {
+function normalizeSessionListOptions(projectRoot, limitOrOptions = 50) {
+  const options = typeof limitOrOptions === "object" && limitOrOptions !== null ? limitOrOptions : { limit: limitOrOptions };
+  const root = resolveProjectRoot(projectRoot);
+  const commandCwd = options.commandCwd === false ? "" : path.resolve(options.commandCwd || root);
+  return {
+    limit: Math.min(Math.max(Number(options.limit) || 50, 1), 1000),
+    commandCwd,
+    allSessions: Boolean(options.allSessions),
+  };
+}
+
+function sessionMatchesCommandCwd(session, commandCwd = "") {
+  if (!commandCwd) return true;
+  const value = session.commandCwd || session.projectRoot || "";
+  if (!value) return false;
+  return path.resolve(value) === path.resolve(commandCwd);
+}
+
+export async function listProjectSessions(projectRoot = process.cwd(), limitOrOptions = 50) {
+  const options = normalizeSessionListOptions(projectRoot, limitOrOptions);
   const paths = await ensureProjectSessionStorage(projectRoot);
   const indexed = (() => {
     try {
-      return listSessionIndex({ projectRoot: paths.root, limit: Math.max(limit, 100) });
+      return listSessionIndex({
+        projectRoot: options.allSessions ? "" : paths.root,
+        commandCwd: options.allSessions ? "" : options.commandCwd,
+        limit: Math.max(options.limit, 100),
+      });
     } catch {
       return [];
     }
@@ -521,6 +544,7 @@ export async function listProjectSessions(projectRoot = process.cwd(), limit = 5
       updatedAt: state?.updatedAt || pointer.updatedAt || byId.get(sessionId)?.updatedAt || state?.createdAt || "",
       stepsCompleted: state?.stepsCompleted || 0,
     };
+    if (!options.allSessions && !sessionMatchesCommandCwd(record, options.commandCwd)) continue;
     byId.set(sessionId, record);
     try {
       upsertSessionIndex({
@@ -534,7 +558,7 @@ export async function listProjectSessions(projectRoot = process.cwd(), limit = 5
   }
 
   const sessions = [...byId.values()];
-  return sessions.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, limit);
+  return sessions.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, options.limit);
 }
 
 export async function showProjectSession(projectRoot, sessionId) {

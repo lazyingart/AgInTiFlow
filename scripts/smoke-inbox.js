@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { ensureProjectSessionStorage, listProjectSessions } from "../src/project.js";
+import { ensureProjectSessionStorage, listProjectSessions, sessionStoreOptions } from "../src/project.js";
 import { SessionStore } from "../src/session-store.js";
 
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-inbox-"));
@@ -58,6 +58,25 @@ try {
     "project session pointer was not created"
   );
 
+  const nestedCwd = path.join(legacyProject, "nested");
+  await fs.mkdir(nestedCwd, { recursive: true });
+  const otherCwdStore = new SessionStore(paths.globalSessionsDir, "other-cwd-smoke", sessionStoreOptions(legacyProject, "other-cwd-smoke"));
+  await otherCwdStore.saveState({
+    sessionId: "other-cwd-smoke",
+    createdAt: "2026-01-01T00:02:00.000Z",
+    updatedAt: "2026-01-01T00:03:00.000Z",
+    provider: "mock",
+    model: "mock-agent",
+    goal: "nested cwd smoke",
+    projectRoot: legacyProject,
+    commandCwd: nestedCwd,
+    chat: [],
+  });
+  const cwdFiltered = await listProjectSessions(legacyProject, { limit: 10, commandCwd: legacyProject });
+  assert(!cwdFiltered.some((session) => session.sessionId === "other-cwd-smoke"), "default cwd filtering included a different cwd session");
+  const allSessions = await listProjectSessions(legacyProject, { limit: 10, allSessions: true });
+  assert(allSessions.some((session) => session.sessionId === "other-cwd-smoke"), "--all-sessions mode did not include a different cwd session");
+
   console.log(
     JSON.stringify(
       {
@@ -68,6 +87,8 @@ try {
           "session-inbox-asap-priority",
           "legacy-session-migration",
           "global-session-store",
+          "cwd-session-filter",
+          "all-sessions-list",
         ],
       },
       null,

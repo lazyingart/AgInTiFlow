@@ -378,7 +378,7 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti update OR aginti models OR aginti skills [query] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti update OR aginti models OR aginti skills [query] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
   console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
 }
@@ -601,11 +601,13 @@ function printAuthWizardResult(result) {
 }
 
 async function handleSessionsCommand(argv) {
-  const [verb = "list", sessionId = "", ...rest] = argv;
+  const normalizedArgv = argv[0] === "--all-sessions" ? ["list", ...argv] : argv;
+  const [verb = "list", sessionId = "", ...rest] = normalizedArgv;
   if (verb === "list") {
-    const sessions = await listProjectSessions(process.cwd(), 80);
+    const allSessions = normalizedArgv.includes("--all-sessions");
+    const sessions = await listProjectSessions(process.cwd(), { limit: 80, allSessions });
     if (sessions.length === 0) {
-      console.log("No project-local sessions found.");
+      console.log(allSessions ? "No sessions found." : "No sessions found for this cwd.");
       return;
     }
     for (const session of sessions) {
@@ -640,35 +642,82 @@ async function handleSessionsCommand(argv) {
   process.exit(1);
 }
 
-async function promptSelectSession(sessions) {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) return sessions[0]?.sessionId || "";
-  console.log("Select a session to resume:");
-  sessions.slice(0, 20).forEach((session, index) => {
+function sessionSearchText(session) {
+  return [
+    session.sessionId,
+    session.provider,
+    session.model,
+    session.updatedAt,
+    session.title,
+    session.goal,
+    session.projectRoot,
+    session.commandCwd,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function filterSessions(sessions, filterText = "") {
+  const needle = String(filterText || "").trim().toLowerCase();
+  if (!needle) return sessions;
+  return sessions.filter((session) => sessionSearchText(session).includes(needle));
+}
+
+function printSessionChoices(sessions, { filterText = "", allSessions = false, maxShown = 20 } = {}) {
+  const scope = allSessions ? "all sessions" : `cwd ${process.cwd()}`;
+  const shown = sessions.slice(0, maxShown);
+  console.log(`Select a session to resume (${scope}${filterText ? `, filter="${filterText}"` : ""}):`);
+  if (shown.length === 0) {
+    console.log("No matching sessions. Type /text to change the filter, / to clear it, or q to quit.");
+    return;
+  }
+  shown.forEach((session, index) => {
     const title = session.title || session.goal || "(untitled)";
     console.log(
       `${index + 1}. ${session.sessionId} ${session.provider || "unknown"}/${session.model || "unknown"} ${session.updatedAt || ""} ${title.slice(0, 90)}`
     );
   });
+  if (sessions.length > shown.length) console.log(`... ${sessions.length - shown.length} more hidden by display limit; type /text to narrow.`);
+  console.log("Type a number to select, /text to filter, / to clear, or q to quit.");
+}
+
+async function promptSelectSession(sessions, { allSessions = false } = {}) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return sessions[0]?.sessionId || "";
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  let filterText = "";
   try {
-    const answer = await rl.question("Session number: ");
-    const index = Number(answer.trim()) - 1;
-    return sessions[index]?.sessionId || "";
+    while (true) {
+      const filtered = filterSessions(sessions, filterText);
+      printSessionChoices(filtered, { filterText, allSessions });
+      const answer = (await rl.question("Session number/filter: ")).trim();
+      if (!answer || answer.toLowerCase() === "q" || answer.toLowerCase() === "quit") return "";
+      if (answer.startsWith("/")) {
+        filterText = answer.slice(1).trim();
+        continue;
+      }
+      const index = Number(answer) - 1;
+      if (Number.isInteger(index) && index >= 0 && index < Math.min(filtered.length, 20)) {
+        return filtered[index]?.sessionId || "";
+      }
+      console.log("Invalid selection. Type a shown number, /text to filter, or q to quit.");
+    }
   } finally {
     rl.close();
   }
 }
 
-async function resolveResumeSessionId(sessionId) {
+async function resolveResumeSessionId(sessionId, { allSessions = false } = {}) {
   if (sessionId && sessionId !== "latest") return sessionId;
-  const sessions = await listProjectSessions(process.cwd(), 50);
+  const sessions = await listProjectSessions(process.cwd(), { limit: 1000, allSessions });
   if (sessionId === "latest" || sessions.length <= 1 || !process.stdin.isTTY || !process.stdout.isTTY) {
     if (sessions[0]?.sessionId) return sessions[0].sessionId;
   } else {
-    const selected = await promptSelectSession(sessions);
+    const selected = await promptSelectSession(sessions, { allSessions });
     if (selected) return selected;
+    return "";
   }
-  throw new Error("No project-local sessions found. Run `aginti sessions list` to check this folder.");
+  throw new Error(allSessions ? "No sessions found." : "No sessions found for this cwd. Use `aginti resume --all-sessions` to browse all sessions.");
 }
 
 async function handleQueueCommand(argv) {
@@ -837,14 +886,18 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (argv[0] === "resume") {
-    let sessionId = argv[1] || "";
-    const prompt = argv.slice(2).join(" ").trim();
+    const resumeArgv = argv.slice(1);
+    const allSessions = resumeArgv.includes("--all-sessions");
+    const positional = resumeArgv.filter((arg) => arg !== "--all-sessions");
+    let sessionId = positional[0] || "";
+    const prompt = positional.slice(1).join(" ").trim();
     try {
-      sessionId = await resolveResumeSessionId(sessionId);
+      sessionId = await resolveResumeSessionId(sessionId, { allSessions });
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     }
+    if (!sessionId) return;
     if (!prompt) {
       await startInteractiveCli(agentDefaults({ ...parseArgs([]), resume: sessionId }), {
         packageDir,

@@ -120,16 +120,26 @@ export function deleteSessionIndex(sessionId) {
   return result.changes > 0;
 }
 
-export function listSessionIndex({ projectRoot = "", limit = 100 } = {}) {
+export function listSessionIndex({ projectRoot = "", commandCwd = "", limit = 100 } = {}) {
   const db = ensureIndexDb();
   const maxRows = Math.min(Math.max(Number(limit) || 100, 1), 1000);
   const columns = `session_id AS sessionId, project_root AS projectRoot, command_cwd AS commandCwd, project_sessions_dir AS projectSessionsDir,
     session_dir AS sessionDir, provider, model, goal, title, status,
     created_at AS createdAt, updated_at AS updatedAt, ended_at AS endedAt, result, error`;
+  const clauses = [];
+  const params = [];
   if (projectRoot) {
+    clauses.push("project_root = ?");
+    params.push(path.resolve(projectRoot));
+  }
+  if (commandCwd) {
+    clauses.push("command_cwd = ?");
+    params.push(path.resolve(commandCwd));
+  }
+  if (clauses.length > 0) {
     return db
-      .prepare(`SELECT ${columns} FROM sessions WHERE project_root = ? ORDER BY updated_at DESC LIMIT ?`)
-      .all(path.resolve(projectRoot), maxRows);
+      .prepare(`SELECT ${columns} FROM sessions WHERE ${clauses.join(" AND ")} ORDER BY updated_at DESC LIMIT ?`)
+      .all(...params, maxRows);
   }
   return db.prepare(`SELECT ${columns} FROM sessions ORDER BY updated_at DESC LIMIT ?`).all(maxRows);
 }
