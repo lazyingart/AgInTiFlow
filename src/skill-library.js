@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { agintiflowHome } from "./session-index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SKILLS_DIR = path.resolve(__dirname, "..", "skills");
@@ -17,7 +18,7 @@ function parseScalar(value = "") {
   return trimmed;
 }
 
-function parseFrontmatter(text, filePath) {
+export function parseFrontmatter(text, filePath) {
   const match = String(text || "").match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
   if (!match) throw new Error(`${filePath}: missing YAML frontmatter`);
   const meta = {};
@@ -55,7 +56,7 @@ function normalizeList(value) {
     .filter(Boolean);
 }
 
-function loadSkillFile(filePath) {
+export function loadSkillFile(filePath) {
   const text = fs.readFileSync(filePath, "utf8");
   const { meta, body } = parseFrontmatter(text, filePath);
   for (const field of ["id", "label", "description"]) {
@@ -74,7 +75,7 @@ function loadSkillFile(filePath) {
   };
 }
 
-export function listSkills({ includeBody = false, skillsDir = DEFAULT_SKILLS_DIR } = {}) {
+function loadSkillsFromDir({ includeBody = false, skillsDir = DEFAULT_SKILLS_DIR, source = "built-in" } = {}) {
   let dirEntries = [];
   try {
     dirEntries = fs.readdirSync(skillsDir, { withFileTypes: true });
@@ -88,9 +89,71 @@ export function listSkills({ includeBody = false, skillsDir = DEFAULT_SKILLS_DIR
     try {
       const skill = loadSkillFile(skillPath);
       if (!includeBody) delete skill.body;
+      skill.source = source;
       skills.push(skill);
     } catch {
       // Invalid local skill files are skipped so one bad skill does not break the agent.
+    }
+  }
+  return skills;
+}
+
+function skillMeshSkillsDir() {
+  return path.join(agintiflowHome(), "skillmesh", "skills");
+}
+
+function skillMeshEnabled() {
+  try {
+    const configPath = path.join(agintiflowHome(), "skillmesh", "config.json");
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    return String(config.mode || "share") !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function loadEnabledSkillMeshSkills({ includeBody = false } = {}) {
+  if (!skillMeshEnabled()) return [];
+  const skillsDir = skillMeshSkillsDir();
+  let dirEntries = [];
+  try {
+    dirEntries = fs.readdirSync(skillsDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const skills = [];
+  for (const entry of dirEntries) {
+    if (!entry.isDirectory()) continue;
+    const skillDir = path.join(skillsDir, entry.name);
+    const metadataPath = path.join(skillDir, "skillmesh.json");
+    try {
+      const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+      if (!metadata.enabled) continue;
+      const skill = loadSkillFile(path.join(skillDir, "SKILL.md"));
+      if (!includeBody) delete skill.body;
+      skill.source = "skillmesh";
+      skill.skillmesh = {
+        trustLevel: metadata.trustLevel || "community-reviewed",
+        packHash: metadata.packHash || "",
+        sourceFeed: metadata.sourceFeed || "",
+      };
+      skills.push(skill);
+    } catch {
+      // Invalid or unreviewed imported skills stay inert.
+    }
+  }
+  return skills;
+}
+
+export function listSkills({ includeBody = false, skillsDir = DEFAULT_SKILLS_DIR, includeSkillMesh = true } = {}) {
+  const skills = loadSkillsFromDir({ includeBody, skillsDir, source: skillsDir === DEFAULT_SKILLS_DIR ? "built-in" : "local" });
+  if (includeSkillMesh && skillsDir === DEFAULT_SKILLS_DIR) {
+    const existing = new Set(skills.map((skill) => skill.id));
+    for (const skill of loadEnabledSkillMeshSkills({ includeBody })) {
+      if (!existing.has(skill.id)) {
+        existing.add(skill.id);
+        skills.push(skill);
+      }
     }
   }
   return skills.sort((a, b) => a.id.localeCompare(b.id));

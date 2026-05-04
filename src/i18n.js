@@ -134,6 +134,7 @@ const TRANSLATIONS = {
     helpResume: "Continue a saved session.",
     helpSessions: "List recent sessions in this project.",
     helpSkills: "List Markdown skills selected for a topic.",
+    helpSkillMesh: "Manage strict reviewed skill sharing.",
     helpProfile: "Set task profile, e.g. code, website, latex, maintenance.",
     helpWebSearch: "Enable or disable the web_search tool.",
     helpScouts: "Enable parallel DeepSeek scouts and set scout count.",

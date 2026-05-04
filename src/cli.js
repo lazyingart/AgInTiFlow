@@ -33,6 +33,7 @@ import { listSkills, selectSkillsForGoal } from "./skill-library.js";
 import { languageLabel, resolveLanguage } from "./i18n.js";
 import { maybeAutoUpdate } from "./auto-update.js";
 import { readHousekeepingSummary } from "./housekeeping.js";
+import { handleSkillMeshCommand } from "./skillmesh.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -382,7 +383,7 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti update OR aginti models OR aginti skills [query] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti update OR aginti models OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
   console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
 }
@@ -496,7 +497,8 @@ function printSkills(query = "") {
   for (const skill of skills) {
     const triggers = skill.triggers?.length ? ` triggers=${skill.triggers.join(",")}` : "";
     const tools = skill.tools?.length ? ` tools=${skill.tools.join(",")}` : "";
-    console.log(`${skill.id}: ${skill.label} - ${skill.description}${triggers}${tools}`);
+    const source = skill.source && skill.source !== "built-in" ? ` source=${skill.source}` : "";
+    console.log(`${skill.id}: ${skill.label} - ${skill.description}${triggers}${tools}${source}`);
   }
 }
 
@@ -1088,6 +1090,16 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (argv[0] === "housekeeping" || argv[0] === "housekeeper") {
     await printHousekeeping(argv.slice(1));
+    return;
+  }
+
+  if (argv[0] === "skillmesh" || argv[0] === "skillsync" || argv[0] === "skill-sync" || argv[0] === "skill-share") {
+    try {
+      await handleSkillMeshCommand(argv.slice(1));
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
     return;
   }
 

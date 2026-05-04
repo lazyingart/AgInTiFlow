@@ -6,6 +6,14 @@ AgInTiFlow should let different users benefit from skills, tool patterns, comman
 
 The proposed feature name is **Skill Mesh**.
 
+Implementation note as of v0.20.48:
+
+- `aginti skillmesh` and `/skillmesh` exist as the first conservative MVP.
+- The shipped implementation uses signed JSON skill packs first, not tarballs, to avoid archive traversal and executable-file risk.
+- Relay nodes can run without model/API keys via `aginti skillmesh serve`.
+- Community imports install disabled by default and cannot override built-in skills.
+- Sync is explicit and metadata-first; no continuous background polling is enabled yet.
+
 User-facing command:
 
 ```text

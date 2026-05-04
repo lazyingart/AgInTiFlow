@@ -26,6 +26,13 @@ import {
   modelsForProviderGroup,
 } from "./model-routing.js";
 import { languageLabel, resolveLanguage, t } from "./i18n.js";
+import {
+  formatSkillMeshStatus,
+  handleSkillMeshCommand,
+  loadSkillMeshConfig,
+  setSkillMeshMode,
+  skillMeshModeChoices,
+} from "./skillmesh.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
@@ -73,6 +80,8 @@ const SLASH_COMMANDS = [
   "/rename",
   "/skills",
   "/skill",
+  "/skillmesh",
+  "/skillsync",
   "/profile",
   "/web-search",
   "/scouts",
@@ -649,6 +658,7 @@ function printHelp() {
       `  ${command("/rename [title|auto]", "Rename the current session.", "helpRename")}`,
       `  ${command("/sessions", "List recent sessions in this project.", "helpSessions")}`,
       `  ${command("/skills [query]", "List Markdown skills selected for a topic.", "helpSkills")}`,
+      `  ${command("/skillmesh [status|off|record|share|sync]", "Manage strict reviewed skill sharing.", "helpSkillMesh")}`,
       `  ${command("/profile <name>", "Set task profile, e.g. code, website, latex, maintenance.", "helpProfile")}`,
       `  ${command("/web-search on|off", "Enable or disable the web_search tool.", "helpWebSearch")}`,
       `  ${command("/scouts on|off|<1-10>", "Enable parallel DeepSeek scouts and set scout count.", "helpScouts")}`,
@@ -2705,6 +2715,36 @@ async function handleCommand(line, state, packageDir) {
         )
         .join("\n\n")
     );
+    return true;
+  }
+  if (command === "skillmesh" || command === "skillsync") {
+    if (!value && input.isTTY && output.isTTY && typeof input.setRawMode === "function") {
+      const config = await loadSkillMeshConfig();
+      const options = skillMeshModeChoices();
+      const selected = await selectModelChoice({
+        title: "Skill Mesh",
+        subtitle: "Strict skill sharing. Up/Down selects, Enter confirms, Esc cancels.",
+        options,
+        initialIndex: Math.max(
+          options.findIndex((item) => item.value === config.mode),
+          0
+        ),
+        escapeValue: null,
+      });
+      if (!selected) {
+        printSystemLine(`skillmesh=${config.mode}`);
+        return true;
+      }
+      const next = await setSkillMeshMode(selected.value);
+      printSystemLine(`skillmesh=${next.mode}`);
+      printAgentMessage(formatSkillMeshStatus(next));
+      return true;
+    }
+    try {
+      await handleSkillMeshCommand(value ? value.split(/\s+/).filter(Boolean) : ["status"]);
+    } catch (error) {
+      printAgentMessage(error instanceof Error ? error.message : String(error));
+    }
     return true;
   }
   if (command === "profile") {
