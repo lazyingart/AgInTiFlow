@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { deleteSessionIndex, globalSessionPaths, isSafeSessionId, upsertSessionIndex } from "./session-index.js";
+import { enqueueHousekeepingEvent } from "./housekeeping.js";
 
 export class SessionStore {
   constructor(baseDir, sessionId, options = {}) {
@@ -9,6 +10,7 @@ export class SessionStore {
     this.sessionId = sessionId;
     const globalPaths = globalSessionPaths(sessionId);
     this.projectRoot = options.projectRoot ? path.resolve(options.projectRoot) : "";
+    this.commandCwd = options.commandCwd ? path.resolve(options.commandCwd) : this.projectRoot;
     this.projectSessionsDir = options.projectSessionsDir ? path.resolve(options.projectSessionsDir) : "";
     this.legacySessionDir = options.legacySessionDir ? path.resolve(options.legacySessionDir) : "";
     this.sessionDir = path.resolve(options.sessionDir || (baseDir ? path.join(this.baseDir, sessionId) : globalPaths.sessionDir));
@@ -99,12 +101,19 @@ export class SessionStore {
 
   async appendEvent(type, data = {}) {
     await this.ensure();
-    const line = JSON.stringify({
+    const event = {
       timestamp: new Date().toISOString(),
       type,
       data,
-    });
+    };
+    const line = JSON.stringify(event);
     await fs.appendFile(this.eventsPath, `${line}\n`, "utf8");
+    enqueueHousekeepingEvent({
+      sessionId: this.sessionId,
+      projectRoot: this.projectRoot,
+      commandCwd: this.commandCwd,
+      event,
+    });
   }
 
   async loadEvents() {

@@ -26,6 +26,7 @@ import { formatSkillsForPrompt, selectSkillsForGoal } from "./skill-library.js";
 import { hostShellOption, platformInfo, platformLabel } from "./platform.js";
 import { captureTmuxPane, listTmuxSessions, sendTmuxKeys, startTmuxSession } from "./tmux-tools.js";
 import { languageInstruction } from "./i18n.js";
+import { flushHousekeeping } from "./housekeeping.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "open_workspace_file", "preview_workspace", "click", "type", "scroll", "press", "back"]);
@@ -1256,6 +1257,7 @@ export async function runAgent(config) {
   const sessionId = config.resume || config.sessionId || `web-agent-${crypto.randomUUID()}`;
   const store = new SessionStore(config.sessionsDir, sessionId, {
     projectRoot: config.baseDir,
+    commandCwd: config.commandCwd,
     projectSessionsDir: config.projectSessionsDir,
   });
   const client = createClient(config);
@@ -1281,6 +1283,11 @@ export async function runAgent(config) {
       model: config.model,
       routingMode: config.routingMode,
       routeReason: config.routeReason,
+      goal: config.goal,
+    });
+    await store.appendEvent("skills.selected", {
+      taskProfile: config.taskProfile,
+      skills: state.meta.selectedSkills || [],
       goal: config.goal,
     });
     await store.saveState(state);
@@ -1650,5 +1657,6 @@ export async function runAgent(config) {
     };
   } finally {
     await closeBrowser(browserState, store);
+    await flushHousekeeping();
   }
 }

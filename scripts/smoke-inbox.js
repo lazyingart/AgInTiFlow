@@ -10,6 +10,7 @@ import {
   sessionStoreOptions,
 } from "../src/project.js";
 import { SessionStore } from "../src/session-store.js";
+import { flushHousekeeping, readHousekeepingSummary } from "../src/housekeeping.js";
 
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-inbox-"));
 process.env.AGINTIFLOW_HOME = path.join(tempRoot, ".agintiflow-home");
@@ -53,6 +54,8 @@ try {
   );
   await fs.writeFile(path.join(legacyDir, "events.jsonl"), "", "utf8");
   const paths = await ensureProjectSessionStorage(legacyProject);
+  const gitignore = await fs.readFile(path.join(legacyProject, ".gitignore"), "utf8");
+  assert(gitignore.includes(".aginti-sessions/") && gitignore.includes(".sessions/"), "session folders were not protected by .gitignore");
   const migrated = await listProjectSessions(legacyProject, 10);
   assert(migrated.some((session) => session.sessionId === legacySession), "legacy session was not discoverable after migration");
   assert(
@@ -125,6 +128,28 @@ try {
     "empty session project pointer was not removed"
   );
 
+  const housekeepingStore = new SessionStore(paths.globalSessionsDir, "housekeeping-smoke", sessionStoreOptions(legacyProject, "housekeeping-smoke"));
+  await housekeepingStore.appendEvent("skills.selected", {
+    taskProfile: "website",
+    skills: ["website-app", "code-review"],
+    goal: "build a small website with token=secret-value",
+  });
+  await housekeepingStore.appendEvent("model.responded", {
+    step: 1,
+    content: "Use the local project at /tmp/private-project and avoid api_key=abc123456789.",
+    toolCalls: [{ id: "call-secret", name: "run_command", arguments: "{\"command\":\"echo hi\"}" }],
+  });
+  await housekeepingStore.appendEvent("tool.started", {
+    toolName: "run_command",
+    args: { command: "echo token=secret-value" },
+  });
+  await flushHousekeeping();
+  const housekeeping = await readHousekeepingSummary();
+  assert(housekeeping.capabilities?.totals?.skillSelections >= 1, "housekeeping did not aggregate selected skills");
+  assert(housekeeping.capabilities?.tools?.run_command?.count >= 1, "housekeeping did not aggregate tool usage");
+  const housekeepingEvents = await fs.readFile(housekeeping.paths.eventsPath, "utf8");
+  assert(!housekeepingEvents.includes("secret-value") && !housekeepingEvents.includes("abc123456789"), "housekeeping leaked raw secret text");
+
   console.log(
     JSON.stringify(
       {
@@ -139,6 +164,8 @@ try {
           "all-sessions-list",
           "empty-session-detection",
           "empty-session-removal",
+          "session-gitignore-protection",
+          "housekeeping-redacted-learning-log",
         ],
       },
       null,

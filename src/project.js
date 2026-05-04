@@ -82,6 +82,7 @@ export function sessionStoreOptions(projectRoot = process.cwd(), sessionId = "")
   const paths = projectPaths(projectRoot);
   return {
     projectRoot: paths.root,
+    commandCwd: paths.root,
     projectSessionsDir: paths.sessionsDir,
     legacySessionDir: sessionId ? path.join(paths.legacySessionsDir, sessionId) : "",
   };
@@ -91,6 +92,10 @@ export async function ensureProjectSessionStorage(projectRoot = process.cwd()) {
   const paths = projectPaths(projectRoot);
   await fsp.mkdir(paths.sessionsDir, { recursive: true });
   await fsp.mkdir(paths.globalSessionsDir, { recursive: true });
+  await ensureLine(paths.gitignorePath, [
+    ".aginti-sessions/",
+    ".sessions/",
+  ]).catch(() => {});
 
   const legacyEntries = await fsp.readdir(paths.legacySessionsDir, { withFileTypes: true }).catch(() => []);
   if (legacyEntries.length > 0) {

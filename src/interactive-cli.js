@@ -3016,6 +3016,7 @@ async function runPrompt(prompt, state, packageDir) {
 
   const store = new SessionStore(config.sessionsDir, state.sessionId, {
     projectRoot: config.baseDir,
+    commandCwd: config.commandCwd,
     projectSessionsDir: config.projectSessionsDir,
   });
   const liveInput = new LiveRunInput({ state, store, controller });

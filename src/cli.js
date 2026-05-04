@@ -32,6 +32,7 @@ import { normalizeAuthProvider, promptHidden, runAuthWizard, shouldPromptForDeep
 import { listSkills, selectSkillsForGoal } from "./skill-library.js";
 import { languageLabel, resolveLanguage } from "./i18n.js";
 import { maybeAutoUpdate } from "./auto-update.js";
+import { readHousekeepingSummary } from "./housekeeping.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -381,7 +382,7 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti update OR aginti models OR aginti skills [query] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
+    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti update OR aginti models OR aginti skills [query] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
   console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
 }
@@ -497,6 +498,35 @@ function printSkills(query = "") {
     const tools = skill.tools?.length ? ` tools=${skill.tools.join(",")}` : "";
     console.log(`${skill.id}: ${skill.label} - ${skill.description}${triggers}${tools}`);
   }
+}
+
+async function printHousekeeping(argv = []) {
+  const summary = await readHousekeepingSummary();
+  if (argv.includes("--json")) {
+    console.log(JSON.stringify(summary, null, 2));
+    return;
+  }
+  const totals = summary.capabilities?.totals || {};
+  console.log("AgInTiFlow housekeeping");
+  console.log(`root=${summary.paths.root}`);
+  console.log(`events=${summary.paths.eventsPath}`);
+  console.log(`capabilities=${summary.paths.capabilitiesPath}`);
+  console.log(
+    `totals events=${totals.events || 0} modelRequests=${totals.modelRequests || 0} toolEvents=${totals.toolEvents || 0} skillSelections=${totals.skillSelections || 0}`
+  );
+  const tools = Object.entries(summary.capabilities?.tools || {})
+    .sort((a, b) => (b[1].count || 0) - (a[1].count || 0))
+    .slice(0, 8)
+    .map(([name, item]) => `${name}:${item.count || 0}`)
+    .join(" ");
+  const skills = Object.entries(summary.capabilities?.skills || {})
+    .sort((a, b) => (b[1].count || 0) - (a[1].count || 0))
+    .slice(0, 8)
+    .map(([name, item]) => `${name}:${item.count || 0}`)
+    .join(" ");
+  if (tools) console.log(`topTools ${tools}`);
+  if (skills) console.log(`topSkills ${skills}`);
+  console.log("Set AGINTIFLOW_HOUSEKEEPING=0 to disable local sanitized housekeeping logs.");
 }
 
 function printInitResult(result) {
@@ -1053,6 +1083,11 @@ export async function main(argv = process.argv.slice(2)) {
     const report = await buildCapabilityReport(process.cwd(), packageJson.version, config);
     if (argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
     else printCapabilityReport(report);
+    return;
+  }
+
+  if (argv[0] === "housekeeping" || argv[0] === "housekeeper") {
+    await printHousekeeping(argv.slice(1));
     return;
   }
 
