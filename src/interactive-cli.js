@@ -236,6 +236,15 @@ function compactLine(value = "", limit = 96) {
   return text.length <= limit ? text : `${text.slice(0, Math.max(limit - 1, 1))}…`;
 }
 
+export function formatElapsedDuration(ms = 0) {
+  const totalSeconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  const seconds = totalSeconds % 60;
+  const minutes = Math.floor(totalSeconds / 60) % 60;
+  const hours = Math.floor(totalSeconds / 3600);
+  const two = (value) => String(value).padStart(2, "0");
+  return hours > 0 ? `${hours}:${two(minutes)}:${two(seconds)}` : `${two(minutes)}:${two(seconds)}`;
+}
+
 function wrapTextLine(value = "", width = 72) {
   const text = stripAnsi(String(value || ""));
   if (text.length <= width) return [text];
@@ -1254,6 +1263,8 @@ class LiveRunInput {
     this.pendingAsap = [];
     this.pendingQueued = [];
     this.statusLine = "";
+    this.statusStartedAt = 0;
+    this.statusTimer = null;
     this.wasRaw = Boolean(input.isRaw);
     this.started = false;
     this.handler = this.handleKey.bind(this);
@@ -1270,6 +1281,11 @@ class LiveRunInput {
     input.setRawMode(true);
     input.on("keypress", this.handler);
     activeRunInput = this;
+    this.statusStartedAt = Date.now();
+    this.statusTimer = setInterval(() => {
+      if (this.started && this.statusLine) this.renderNow();
+    }, 1000);
+    this.statusTimer.unref?.();
     this.started = true;
     this.renderNow();
     return true;
@@ -1280,6 +1296,10 @@ class LiveRunInput {
     if (this.redrawHandle) {
       clearImmediate(this.redrawHandle);
       this.redrawHandle = null;
+    }
+    if (this.statusTimer) {
+      clearInterval(this.statusTimer);
+      this.statusTimer = null;
     }
     input.off("keypress", this.handler);
     if (typeof input.setRawMode === "function") input.setRawMode(this.wasRaw);
@@ -1312,6 +1332,12 @@ class LiveRunInput {
     output.write(ansi.cursorShow);
   }
 
+  currentStatusLine() {
+    if (!this.statusLine) return "";
+    const elapsed = formatElapsedDuration(Date.now() - (this.statusStartedAt || Date.now()));
+    return compactLine(`${elapsed} · ${this.statusLine}`, Math.max(terminalWidth() - 16, 36));
+  }
+
   renderNow() {
     if (this.redrawHandle) {
       clearImmediate(this.redrawHandle);
@@ -1320,7 +1346,7 @@ class LiveRunInput {
     this.rendered = renderPromptBuffer(this.buffer, this.cursor, this.rendered, {
       commandCwd: this.commandCwd,
       language: this.state.language || cliLanguage,
-      statusLine: this.statusLine,
+      statusLine: this.currentStatusLine(),
       pendingAsap: this.pendingAsap,
       pendingQueued: this.pendingQueued,
     });
@@ -1352,7 +1378,7 @@ class LiveRunInput {
     const layout = buildPromptLayout(this.buffer, this.cursor, terminalWidth(), terminalHeight(), {
       commandCwd: this.commandCwd,
       language: this.state.language || cliLanguage,
-      statusLine: this.statusLine,
+      statusLine: this.currentStatusLine(),
       pendingAsap: this.pendingAsap,
       pendingQueued: this.pendingQueued,
     });
@@ -2469,7 +2495,7 @@ function buildReviewPrompt(focus = "") {
     "3. Use `inspect_project`, `search_files`, and targeted `read_file`; avoid full-tree dumps. Prefer precise symbol/error searches over opening many files.",
     "4. Exclude generated, vendored, binary, cache, and large artifact paths: .git, node_modules, vendor, dist, build, out, target, coverage, .next, .turbo, .venv, __pycache__, .pytest_cache, .aginti-sessions, .sessions, artifacts, images/videos/PDFs unless directly relevant.",
     "5. Context budget: at most two discovery passes; at most 12 primary files read initially; expand only when a concrete risk requires neighboring code.",
-    "6. Check likely validation commands from manifests, but run only focused non-destructive checks when useful. Do not install packages or run long broad suites unless clearly justified.",
+    "6. Check likely validation commands from manifests, but run only focused non-destructive checks when useful. Bound shell checks with `timeout 30s ...` when available, avoid broad watch/dev commands, and do not install packages or run long broad suites unless clearly justified.",
     "7. Stop when you have enough evidence. Do not keep scanning just because more files exist.",
     "",
     "Final answer format:",

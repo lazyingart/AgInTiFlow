@@ -29,6 +29,28 @@ function shellEscape(value) {
   return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
 }
 
+export function dockerPolicyTimeoutMs(policy = {}) {
+  if (policy.needsNetwork) return 120000;
+  if (policy.category === "toolchain") return 90000;
+  return 15000;
+}
+
+function dockerExecTimeoutMs(policy = {}) {
+  return dockerPolicyTimeoutMs(policy) + 5000;
+}
+
+export function dockerUserCommand(command, policy = {}) {
+  const seconds = Math.max(1, Math.ceil(dockerPolicyTimeoutMs(policy) / 1000));
+  const escapedCommand = shellEscape(String(command || ""));
+  return [
+    `if command -v timeout >/dev/null 2>&1; then`,
+    `  timeout -k 5s ${seconds}s bash -lc ${escapedCommand}`,
+    `else`,
+    `  bash -lc ${escapedCommand}`,
+    `fi`,
+  ].join("\n");
+}
+
 function buildDockerInvocation(args) {
   return ["docker", ...args].map(shellEscape).join(" ");
 }
@@ -232,7 +254,7 @@ function dockerCommand(command, policy) {
     );
   }
 
-  return [...envLines, String(command)].join("\n");
+  return [...envLines, dockerUserCommand(command, policy)].join("\n");
 }
 
 function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, config), persistentDirs = persistentDockerDirs(config)) {
@@ -289,7 +311,7 @@ function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, 
 export async function runDockerSandboxCommand(command, config, policy = evaluateCommandPolicy(command, config), options = {}) {
   const persistentDirs = await ensurePersistentDockerDirs(config);
   const result = await execDocker(dockerRunArgs(command, config, policy, persistentDirs), {
-    timeout: policy.needsNetwork ? 120000 : policy.category === "toolchain" ? 90000 : 15000,
+    timeout: dockerExecTimeoutMs(policy),
     maxBuffer: 300 * 1024,
     signal: options.signal,
   });
@@ -366,7 +388,7 @@ export async function runDockerPreflight(config, options = {}) {
     ]) {
       try {
         const result = await execDocker(dockerRunArgs(command, config, { needsNetwork: false, category: "preflight" }, persistentDirs), {
-          timeout: 15000,
+          timeout: dockerExecTimeoutMs({ needsNetwork: false, category: "preflight" }),
           maxBuffer: 100 * 1024,
         });
         results.push({ command, ok: true, stdout: result.stdout.trim(), stderr: result.stderr.trim() });

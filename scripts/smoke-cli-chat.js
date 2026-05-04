@@ -11,9 +11,11 @@ import {
   buildPromptRenderSequence,
   canonicalSlashPromptBuffer,
   classifyEscapeAction,
+  formatElapsedDuration,
   formatWorkspaceChange,
   stripMarkdown,
 } from "../src/interactive-cli.js";
+import { dockerPolicyTimeoutMs, dockerUserCommand } from "../src/docker-sandbox.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-cli-chat-"));
@@ -134,6 +136,24 @@ try {
   const launchHeader = buildLaunchHeaderLines({ width: 120, packageVersion: "0.0.0", animated: false }).join("\n");
   if (!launchHeader.includes("█████") || !launchHeader.includes("v0.0.0") || launchHeader.split("\n").length < 9) {
     throw new Error("large launch header did not render a centered multi-line title");
+  }
+  if (
+    formatElapsedDuration(0) !== "00:00" ||
+    formatElapsedDuration(65_000) !== "01:05" ||
+    formatElapsedDuration(3_665_000) !== "1:01:05"
+  ) {
+    throw new Error("elapsed duration formatter returned an unexpected value");
+  }
+  const wrappedDockerCommand = dockerUserCommand("node --test 2>&1 | tail -30", {
+    category: "general-shell",
+    needsNetwork: false,
+  });
+  if (
+    dockerPolicyTimeoutMs({ needsNetwork: true }) !== 120000 ||
+    !wrappedDockerCommand.includes("timeout -k 5s 15s bash -lc") ||
+    !wrappedDockerCommand.includes("'node --test 2>&1 | tail -30'")
+  ) {
+    throw new Error("docker sandbox command wrapper did not add a bounded inner timeout");
   }
 
   const promptLayout = buildPromptLayout(`${"x".repeat(180)}\nsecond line`, 95, 80, 24);
