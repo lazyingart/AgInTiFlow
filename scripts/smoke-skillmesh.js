@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   buildSkillPackFromMarkdown,
+  buildSkillMeshServiceUnit,
   enableSkillMeshSkill,
   installSkillPack,
   listInstalledSkillMeshSkills,
@@ -63,6 +64,15 @@ assert(!listSkills({ includeBody: false }).some((skill) => skill.id === "mesh-an
 await setSkillMeshMode("share");
 const config = await loadSkillMeshConfig();
 assert(config.mode === "share", "share mode should persist");
+const serviceUnit = buildSkillMeshServiceUnit({
+  dataDir: path.join(tempRoot, "relay-service"),
+  runScript: path.join(tempRoot, "relay-service", "aginti-skill-relay.run.sh"),
+  scope: "system",
+  user: "aginti-test",
+});
+assert(serviceUnit.includes("Restart=on-failure"), "systemd unit should restart relay");
+assert(serviceUnit.includes("WantedBy=multi-user.target"), "systemd unit should start at boot in system scope");
+assert(serviceUnit.includes("ExecStart="), "systemd unit should include ExecStart");
 
 const secretMarkdown = skillMarkdown.replace("mesh-android-screenshot", "mesh-secret-test") + "\nOPENAI_API_KEY=sk-thisShouldBeRejected1234567890\n";
 let rejected = false;
@@ -109,6 +119,7 @@ console.log(
         "relay-node-list",
         "metadata-sync",
         "soft-unreachable-node",
+        "systemd-service-unit",
       ],
     },
     null,

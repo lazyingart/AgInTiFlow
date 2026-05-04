@@ -2,8 +2,11 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import { agintiflowHome } from "./session-index.js";
 import { loadDatabaseSync } from "./sqlite.js";
@@ -16,6 +19,8 @@ const MAX_SKILLS_PER_PACK = 5;
 const MAX_SKILL_BYTES = 80 * 1024;
 const MAX_FEED_PACKS = 200;
 const DEFAULT_NODE_URL = "https://skills.flow.lazying.art";
+const DEFAULT_SERVICE_NAME = "aginti-skill-relay";
+const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SAFE_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{1,80}$/;
 const FORBIDDEN_PATH_PARTS = [
   ".env",
@@ -921,6 +926,195 @@ export async function startSkillMeshRelay({
   };
 }
 
+function expandHome(value = "") {
+  const text = String(value || "");
+  if (text === "~") return os.homedir();
+  if (text.startsWith("~/")) return path.join(os.homedir(), text.slice(2));
+  return text;
+}
+
+function shellQuote(value = "") {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+function currentUserName() {
+  return process.env.SUDO_USER || process.env.USER || os.userInfo().username || "aginti-relay";
+}
+
+function servicePaths({ dataDir = "", name = DEFAULT_SERVICE_NAME } = {}) {
+  const root = path.resolve(expandHome(dataDir || "~/.aginti-skill-relay"));
+  return {
+    dataDir: root,
+    runScript: path.join(root, `${name}.run.sh`),
+    logDir: path.join(root, "logs"),
+  };
+}
+
+function relayServeArgs({ host = "127.0.0.1", port = 7377, dataDir = "", publicUrl = "", role = "major", noUploads = false } = {}) {
+  const args = [
+    process.execPath,
+    path.join(PACKAGE_ROOT, "bin", "aginti-cli.js"),
+    "skillmesh",
+    "serve",
+    "--role",
+    role,
+    "--host",
+    host,
+    "--port",
+    String(port),
+    "--data",
+    path.resolve(expandHome(dataDir || "~/.aginti-skill-relay")),
+  ];
+  if (publicUrl) args.push("--public-url", publicUrl);
+  if (noUploads) args.push("--no-uploads");
+  return args;
+}
+
+export function buildSkillMeshServiceUnit({
+  name = DEFAULT_SERVICE_NAME,
+  user = currentUserName(),
+  dataDir = "",
+  runScript = "",
+  scope = "system",
+} = {}) {
+  const paths = servicePaths({ dataDir, name });
+  const script = runScript || paths.runScript;
+  const lines = [
+    "[Unit]",
+    "Description=AgInTi Skill Mesh Relay",
+    "After=network-online.target",
+    "Wants=network-online.target",
+    "",
+    "[Service]",
+    "Type=simple",
+  ];
+  if (scope === "system") {
+    lines.push(`User=${user}`);
+  }
+  lines.push(
+    `WorkingDirectory=${paths.dataDir}`,
+    "Environment=NODE_ENV=production",
+    `ExecStart=${script}`,
+    "Restart=on-failure",
+    "RestartSec=5",
+    "NoNewPrivileges=true",
+    "PrivateTmp=true",
+    "ProtectSystem=full",
+    `ReadWritePaths=${paths.dataDir}`,
+    "",
+    "[Install]",
+    scope === "system" ? "WantedBy=multi-user.target" : "WantedBy=default.target",
+    ""
+  );
+  return lines.join("\n");
+}
+
+async function writeRelayRunScript(options = {}) {
+  const name = options.name || DEFAULT_SERVICE_NAME;
+  const paths = servicePaths({ dataDir: options.dataDir, name });
+  await fs.mkdir(paths.logDir, { recursive: true });
+  const args = relayServeArgs({ ...options, dataDir: paths.dataDir });
+  const logPath = path.join(paths.logDir, "relay.log");
+  const script = [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    `mkdir -p ${shellQuote(paths.logDir)}`,
+    `exec ${args.map(shellQuote).join(" ")} 2>&1 | tee -a ${shellQuote(logPath)}`,
+    "",
+  ].join("\n");
+  await fs.writeFile(paths.runScript, script, "utf8");
+  await fs.chmod(paths.runScript, 0o755);
+  return { ...paths, runScript: paths.runScript, logPath };
+}
+
+function runCommand(command, args = [], { input = undefined, stdio = "pipe" } = {}) {
+  return execFileSync(command, args, {
+    input,
+    encoding: "utf8",
+    stdio: input === undefined ? stdio : ["pipe", "pipe", "pipe"],
+  });
+}
+
+function runSudo(args = [], { input = undefined } = {}) {
+  return runCommand("sudo", ["-n", ...args], { input });
+}
+
+function systemctl(scope = "system", args = []) {
+  return scope === "user" ? runCommand("systemctl", ["--user", ...args]) : runSudo(["systemctl", ...args]);
+}
+
+function serviceNameFromOptions(options = {}) {
+  const name = String(options.name || DEFAULT_SERVICE_NAME).trim();
+  if (!/^[A-Za-z0-9_.@-]+$/.test(name)) throw new Error(`Invalid service name: ${name}`);
+  return name.endsWith(".service") ? name.slice(0, -8) : name;
+}
+
+export async function installSkillMeshService(options = {}) {
+  if (process.platform !== "linux") {
+    throw new Error("Skill Mesh service install currently supports Linux systemd. Use a process manager on this OS.");
+  }
+  const scope = options.user ? "user" : "system";
+  const name = serviceNameFromOptions(options);
+  const serviceFile = `${name}.service`;
+  const paths = await writeRelayRunScript({ ...options, name });
+  const unit = buildSkillMeshServiceUnit({
+    name,
+    user: options.serviceUser || currentUserName(),
+    dataDir: paths.dataDir,
+    runScript: paths.runScript,
+    scope,
+  });
+  if (scope === "user") {
+    const unitDir = path.join(os.homedir(), ".config", "systemd", "user");
+    const unitPath = path.join(unitDir, serviceFile);
+    await fs.mkdir(unitDir, { recursive: true });
+    await fs.writeFile(unitPath, unit, "utf8");
+    runCommand("systemctl", ["--user", "daemon-reload"]);
+    runCommand("systemctl", ["--user", "enable", "--now", serviceFile]);
+    if (options.linger) {
+      try {
+        runSudo(["loginctl", "enable-linger", currentUserName()]);
+      } catch {
+        // Linger is optional; status output tells the user how to enable boot persistence.
+      }
+    }
+    return { scope, serviceFile, unitPath, ...paths };
+  }
+  const unitPath = `/etc/systemd/system/${serviceFile}`;
+  runSudo(["tee", unitPath], { input: unit });
+  runSudo(["systemctl", "daemon-reload"]);
+  runSudo(["systemctl", "enable", "--now", serviceFile]);
+  return { scope, serviceFile, unitPath, ...paths };
+}
+
+export async function manageSkillMeshService(action = "status", options = {}) {
+  const scope = options.user ? "user" : "system";
+  const name = serviceNameFromOptions(options);
+  const serviceFile = `${name}.service`;
+  if (action === "install") return installSkillMeshService(options);
+  if (action === "uninstall" || action === "remove") {
+    try {
+      systemctl(scope, ["disable", "--now", serviceFile]);
+    } catch {
+      // Continue removing unit files even if the service is already absent.
+    }
+    if (scope === "user") {
+      await fs.rm(path.join(os.homedir(), ".config", "systemd", "user", serviceFile), { force: true });
+      runCommand("systemctl", ["--user", "daemon-reload"]);
+    } else {
+      runSudo(["rm", "-f", `/etc/systemd/system/${serviceFile}`]);
+      runSudo(["systemctl", "daemon-reload"]);
+    }
+    return { scope, serviceFile, removed: true };
+  }
+  if (["start", "stop", "restart", "enable", "disable"].includes(action)) {
+    systemctl(scope, [action, action === "enable" || action === "disable" ? "--now" : "", serviceFile].filter(Boolean));
+    return { scope, serviceFile, action };
+  }
+  const output = systemctl(scope, ["status", "--no-pager", serviceFile]);
+  return { scope, serviceFile, status: output };
+}
+
 function parseCliOptions(argv = []) {
   const options = { _: [] };
   for (let i = 0; i < argv.length; i += 1) {
@@ -993,6 +1187,38 @@ export async function handleSkillMeshCommand(argv = []) {
     }
     throw new Error("Usage: aginti skillmesh node add <name> <url> OR aginti skillmesh node remove <name-or-url>");
   }
+  if (command === "service") {
+    const action = String(options._[0] || "status").toLowerCase();
+    const serviceOptions = {
+      name: options.name || DEFAULT_SERVICE_NAME,
+      user: Boolean(options.user),
+      linger: Boolean(options.linger),
+      serviceUser: options["service-user"] || currentUserName(),
+      host: options.host || "127.0.0.1",
+      port: Number(options.port || 7377),
+      dataDir: options.data || "~/.aginti-skill-relay",
+      publicUrl: options["public-url"] || "",
+      role: options.role || "major",
+      noUploads: Boolean(options["no-uploads"]),
+    };
+    const result = await manageSkillMeshService(action, serviceOptions);
+    if (action === "status") {
+      console.log(result.status || `${result.serviceFile} status unavailable`);
+      return;
+    }
+    if (action === "install") {
+      console.log(`installed ${result.scope} service ${result.serviceFile}`);
+      console.log(`unit=${result.unitPath}`);
+      console.log(`run=${result.runScript}`);
+      console.log(`data=${result.dataDir}`);
+      if (result.scope === "user") {
+        console.log("For reboot persistence of a user service, enable linger: sudo loginctl enable-linger $(whoami)");
+      }
+      return;
+    }
+    console.log(`${action} ${result.scope} service ${result.serviceFile}`);
+    return;
+  }
   if (command === "export") {
     const skillId = options._[0] || "";
     if (!skillId) throw new Error("Usage: aginti skillmesh export <skill-id> [--out file.skillpack.json]");
@@ -1053,6 +1279,6 @@ export async function handleSkillMeshCommand(argv = []) {
     return;
   }
   throw new Error(
-    "Usage: aginti skillmesh [status|off|record|share|nodes|export|import|enable|disable-skill|sync|submit|serve]"
+    "Usage: aginti skillmesh [status|off|record|share|nodes|node|service|export|import|enable|disable-skill|sync|submit|serve]"
   );
 }

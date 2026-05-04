@@ -86,6 +86,49 @@ Endpoints:
 
 The relay stores only validated skill packs and metadata in its data directory. It rejects raw sessions, unsafe paths, secret-like text, unsupported schemas, overlarge packs, unsigned packs, and packs that do not declare the strict privacy contract.
 
+## Service Mode
+
+A relay started in `tmux` or a normal shell will stop after reboot. For a node that should keep listening after reboot, install it as a service.
+
+System service, recommended for public relay nodes:
+
+```bash
+aginti skillmesh service install \
+  --host 0.0.0.0 \
+  --port 7377 \
+  --data ~/.aginti-skill-relay \
+  --public-url http://YOUR_PUBLIC_HOST:7377
+```
+
+This uses `sudo -n` to create and enable `/etc/systemd/system/aginti-skill-relay.service`, so it requires sudo permission. It runs the relay as the current user and restarts on failure and after reboot.
+
+User service, useful when sudo is not available:
+
+```bash
+aginti skillmesh service install --user --linger \
+  --host 0.0.0.0 \
+  --port 7377 \
+  --data ~/.aginti-skill-relay \
+  --public-url http://YOUR_PUBLIC_HOST:7377
+```
+
+A user service can run without sudo, but boot persistence requires lingering:
+
+```bash
+sudo loginctl enable-linger $(whoami)
+```
+
+Service commands:
+
+```bash
+aginti skillmesh service status
+aginti skillmesh service restart
+aginti skillmesh service stop
+aginti skillmesh service uninstall
+```
+
+Use `--user` with those commands for the user-service scope.
+
 ## Storage
 
 Local client storage:
