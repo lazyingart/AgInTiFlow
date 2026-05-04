@@ -34,6 +34,7 @@ import {
   skillMeshModeChoices,
 } from "./skillmesh.js";
 import { normalizeScsMode } from "./scs-controller.js";
+import { formatAapsResult, runAapsAction } from "./aaps-adapter.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
@@ -74,6 +75,7 @@ const SLASH_COMMANDS = [
   "/instructions",
   "/memory",
   "/auxiliary",
+  "/aaps",
   "/new",
   "/resume",
   "/sessions",
@@ -655,6 +657,7 @@ function printHelp() {
       `  ${command("/spare [provider/model] [reasoning]", "Open spare selector, or set e.g. /spare openai/gpt-5.4 medium.", "helpSpare")}`,
       `  ${command("/wrapper [on|off|codex model reasoning]", "Configure optional external wrapper.", "helpWrapper")}`,
       `  ${command("/auxiliary [status|grsai|venice|model [provider/model]|on|off|image]", "Manage optional auxiliary skills, including image generation.", "helpAuxiliary")}`,
+      `  ${command("/aaps [status|init|files|validate|compile|check|run]", "Manage AAPS workflows through the optional @lazyingart/aaps adapter.", "helpAaps")}`,
       `  ${command("/new", "Start a fresh session on the next message.", "helpNew")}`,
       `  ${command("/resume <session-id>", "Continue a saved session.", "helpResume")}`,
       `  ${command("/review [focus]", "Run a bounded repo/diff review with controlled context gathering.", "helpReview")}`,
@@ -2632,6 +2635,35 @@ async function handleCommand(line, state, packageDir) {
       return true;
     }
     printAgentMessage("Usage: /auxiliary [status|select|grsai|venice|model [grsai/nano-banana-2]|on|off|image]");
+    return true;
+  }
+  if (command === "aaps") {
+    const [action = "status", ...aapsArgs] = value.split(/\s+/).filter(Boolean);
+    const normalizedAction = String(action || "status").toLowerCase();
+    if (normalizedAction === "on" || normalizedAction === "auto") {
+      state.taskProfile = "aaps";
+      state.maxSteps = Math.max(state.maxSteps, 36);
+      printSystemLine(`aaps=${normalizedAction} profile=aaps maxSteps=${state.maxSteps}`);
+      printAgentMessage("AAPS mode enabled. Use `/aaps init`, `/aaps validate`, `/aaps compile`, or write normal requests about .aaps workflows.");
+      return true;
+    }
+    if (normalizedAction === "off") {
+      state.taskProfile = "auto";
+      printSystemLine("aaps=off profile=auto");
+      return true;
+    }
+    try {
+      const result = await runAapsAction(normalizedAction, aapsArgs, {
+        cwd: state.commandCwd || process.cwd(),
+        packageDir,
+      });
+      printAgentMessage(formatAapsResult(result));
+      if (result.ok === false && result.error) {
+        printSystemLine(`aaps=failed ${result.error}`);
+      }
+    } catch (error) {
+      printAgentMessage(error instanceof Error ? error.message : String(error));
+    }
     return true;
   }
   if (command === "new") {

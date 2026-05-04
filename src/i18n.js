@@ -130,6 +130,7 @@ const TRANSLATIONS = {
     helpSpare: "Open spare selector, or set e.g. /spare openai/gpt-5.4 medium.",
     helpWrapper: "Configure optional external wrapper.",
     helpAuxiliary: "Manage optional auxiliary skills, including image generation.",
+    helpAaps: "Manage AAPS workflows through the optional @lazyingart/aaps adapter.",
     helpNew: "Start a fresh session on the next message.",
     helpResume: "Continue a saved session.",
     helpSessions: "List recent sessions in this project.",

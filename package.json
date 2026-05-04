@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.49",
+  "version": "0.20.50",
   "type": "module",
   "description": "AgInTiFlow is a web-first coding agent and CLI with DeepSeek routing, sandboxed tools, model providers, canvas artifacts, and optional wrappers.",
   "license": "Apache-2.0",
@@ -49,6 +49,7 @@
     "scripts/real-deepseek-capabilities.js",
     "scripts/smoke-auxiliary-tools.js",
     "scripts/smoke-auth.js",
+    "scripts/smoke-aaps-adapter.js",
     "scripts/smoke-canvas-artifacts.js",
     "scripts/smoke-cli-chat.js",
     "scripts/smoke-coding-tools.js",
@@ -77,6 +78,7 @@
     "check": "node --check run.js && node --check web.js && node --check bin/aginti-cli.js && node --check src/*.js && node --check scripts/seed-supervised-homework.js",
     "setup:toolchain-docker": "scripts/setup-agent-toolchain-docker.sh",
     "smoke:coding-tools": "node scripts/smoke-coding-tools.js",
+    "smoke:aaps-adapter": "node scripts/smoke-aaps-adapter.js",
     "smoke:auxiliary-tools": "node scripts/smoke-auxiliary-tools.js",
     "smoke:auth": "node scripts/smoke-auth.js",
     "smoke:canvas-artifacts": "node scripts/smoke-canvas-artifacts.js",
@@ -93,7 +95,7 @@
     "real:deepseek": "node scripts/real-deepseek-capabilities.js",
     "supervision:seed": "node scripts/seed-supervised-homework.js",
     "storage:migrate": "node bin/aginti-cli.js storage migrate",
-    "test": "npm run check && npm run smoke:autoupdate && npm run smoke:web-api && npm run smoke:coding-tools && npm run smoke:auxiliary-tools && npm run smoke:auth && npm run smoke:canvas-artifacts && npm run smoke:capabilities && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:skills && npm run smoke:skillmesh && npm run smoke:tmux-tools && npm run smoke:cli-chat && npm run smoke:inbox",
+    "test": "npm run check && npm run smoke:autoupdate && npm run smoke:web-api && npm run smoke:coding-tools && npm run smoke:aaps-adapter && npm run smoke:auxiliary-tools && npm run smoke:auth && npm run smoke:canvas-artifacts && npm run smoke:capabilities && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:skills && npm run smoke:skillmesh && npm run smoke:tmux-tools && npm run smoke:cli-chat && npm run smoke:inbox",
     "pack:dry-run": "npm pack --dry-run",
     "smoke:capabilities": "node scripts/smoke-capabilities.js"
   },

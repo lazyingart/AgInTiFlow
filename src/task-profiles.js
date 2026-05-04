@@ -248,7 +248,7 @@ export const TASK_PROFILES = {
     id: "aaps",
     label: "AAPS",
     prompt:
-      "Bias toward AAPS workflows while still handling normal project work. Recognize .aaps folders and @lazyingart/aaps conventions, keep work project-local, document assumptions, and avoid secrets or publishing unless explicitly requested.",
+      "Bias toward AAPS workflows while still handling normal project work. Treat AAPS as a declarative large-workflow control plane and AgInTiFlow as the interactive tool/runtime backend. Prefer the built-in `/aaps` adapter or `aginti aaps ...` commands for status, init, files, validate, parse, compile, check, and dry-run before manually inventing shell commands. Keep paths project-relative, inspect aaps.project.json and active .aaps files first, avoid secrets or publishing unless explicitly requested, and verify generated workflows with `aginti aaps validate` or `aginti aaps compile ... check` before reporting success.",
     tools: ["files", "shell", "sandbox"],
   },
   github: {
@@ -432,6 +432,7 @@ export function defaultMaxStepsForProfile(value = "auto") {
   if (profile === "android") return 60;
   if (profile === "latex") return 30;
   if (profile === "supervision") return 40;
+  if (profile === "aaps") return 36;
   if (["devops", "security"].includes(profile)) return 36;
   if (
     [

@@ -91,6 +91,8 @@ For code edits, AgInTiFlow routes patch/refactor/database-style tasks to DeepSee
 
 Model choice is role-based: `/route` defaults to DeepSeek V4 Flash, `/model` or `/main` defaults to DeepSeek V4 Pro, `/spare` defaults to OpenAI GPT-5.4 medium, `/wrapper` defaults to Codex GPT-5.5 medium when enabled, and `/auxiliary` defaults to GRS AI/Nano Banana for image tools. See [docs/model-selection.md](docs/model-selection.md) and run `aginti models`.
 
+AAPS large-workflow support is available through the optional adapter. Use `aginti aaps status`, `aginti aaps init`, `aginti aaps validate`, or `/aaps` in chat to manage project-local `.aaps` workflows without making AAPS a hard dependency of AgInTiFlow. This lets AAPS describe the top-down pipeline while AgInTiFlow remains the interactive agent/tool backend. See [docs/aaps.md](docs/aaps.md).
+
 For larger repositories, use `--profile large-codebase` or choose **Large codebase engineering** in the web UI. The web default stays **Auto**, and Auto now escalates codebase/system/debugging prompts to the same engineering loop when needed. Complex work routes to DeepSeek v4 pro, starts with `inspect_project`, then uses search/read/patch/check loops inspired by Codex, Copilot SDK, Claude Code, Gemini CLI, Qwen, and Claw Code. See [docs/large-codebase-engineering.md](docs/large-codebase-engineering.md).
 
 AgInTiFlow can also spend cheap DeepSeek calls on parallel scout notes before the main executor starts a complicated task. It first writes a bounded project map to `.aginti/codebase-map.json`, then runs scouts for architecture, implementation, review, research, context mapping, tests, git workflow, integration, symbol tracing, and dependency risks. A coordinator Swarm Board is injected for the main agent and saved as `artifacts/scout-blackboard.json` in the session. The executor still does the real file/shell/browser work itself. Disable with `--no-parallel-scouts` or set `--scout-count 1..10`.
@@ -149,9 +151,13 @@ aginti resume --all-sessions
 aginti resume latest
 aginti resume <session-id> "continue with a short follow-up"
 aginti queue <session-id> "extra instruction for the running agent"
+aginti aaps status
+aginti aaps init "Project Workflow"
+aginti aaps validate
 aginti chat
 # then in chat: /review [focus]
 # then in chat: /enabless auto
+# then in chat: /aaps validate
 aginti --profile code "write a small Python CLI app with tests"
 aginti --enabless auto "fix this complicated project and verify it"
 aginti --latex "draw a figure, write a short LaTeX report, and compile the PDF"

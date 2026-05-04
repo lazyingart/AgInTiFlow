@@ -24,6 +24,7 @@ const pages = [
       ["coding-tools", "Coding Tools", "docs/coding-tools.md", "apply_patch codebase tests diff files"],
       ["runtime-modes", "Runtime Modes", "docs/runtime-modes.md", "docker sandbox host tmux package installs"],
       ["skills", "Skills and Tools", "docs/skills.md", "profiles tools latex website image github"],
+      ["aaps", "AAPS Adapter", "docs/aaps.md", "aaps workflows pipeline script large project"],
       ["web-search-scouts", "Web Search and Scouts", "docs/web-search-scouts.md", "search parallel scouts swarm blackboard"],
     ],
   },
