@@ -26,7 +26,7 @@ Useful aliases can be added later:
 aginti skillsync
 ```
 
-The default should be conservative: local recording only, no sharing unless the user explicitly enables it.
+Product default should be **Record + Share Reviewed Skills**. This sounds active, but the implementation must still be conservative: it records locally by default, shares only reviewed/high-value skill packs, syncs slowly during idle time, and never uploads raw logs or raw sessions.
 
 The sync philosophy should be **slow, strict, and high-signal**. Skill Mesh is not chat, telemetry streaming, or a real-time swarm bus. It should exchange only reviewed, deduplicated, high-value capability packs during idle time.
 
@@ -40,16 +40,28 @@ The selector for `/skillmesh` should have three modes:
 
 2. **Record Locally**
 
-   AgInTiFlow records sanitized local capability metadata into `~/.agintiflow/housekeeping/`. This includes model/tool names, selected skill ids, command categories, outcome hashes, and short redacted previews. It does not upload anything. This should be the default for technical users.
+   AgInTiFlow records sanitized local capability metadata into `~/.agintiflow/housekeeping/`. This includes model/tool names, selected skill ids, command categories, outcome hashes, and short redacted previews. It does not upload anything.
 
 3. **Record + Share Reviewed Packs**
 
-   AgInTiFlow records locally and allows the user to review/export/share **skill packs**. Sharing must never mean uploading raw sessions automatically. It should mean publishing a small reviewed package containing reusable Markdown skills, task profile hints, safe command policy patterns, test snippets, and metadata.
+   AgInTiFlow records locally and allows the user to review/export/share **skill packs**. Sharing must never mean uploading raw sessions automatically. It should mean publishing a small reviewed package containing reusable Markdown skills, task profile hints, safe command policy patterns, test snippets, and metadata. This should be the default mode for the product, with strict text in settings explaining what is and is not shared.
 
 Better label in UI:
 
 ```text
 Record + Share Reviewed Skills
+```
+
+Settings page explanatory text:
+
+```text
+Skill sharing improves AgInTiFlow's skill set across users. Sharing is strict: AgInTiFlow never uploads raw chats, raw session logs, project source files, .env files, keys, browser storage, or artifacts by default. Only reviewed, redacted, high-value skill packs can be shared, and shared skills are deduplicated and verified before they can enter the mesh.
+```
+
+When the user selects **Disabled**, show:
+
+```text
+Skill Mesh is disabled. AgInTiFlow will not record local skill-learning metadata and will not share or receive reviewed skill packs. Enabling Record + Share Reviewed Skills can improve the shared skill set, but sharing remains strict and never uploads raw sessions or secrets.
 ```
 
 Avoid label:
@@ -614,6 +626,103 @@ local node -> major node: verification succeeds
 
 Only verified nodes should be listed as reachable peers.
 
+### Verified Node Admission
+
+A node can join the mesh only after a currently verified node can connect to it and complete the designed verification API.
+
+Default admission authority:
+
+```text
+skills.flow.lazying.art
+```
+
+This means a LAN machine exposed by ngrok or a public `ip:port` is not trusted just because the user typed a URL. The major node must verify it first.
+
+Admission flow:
+
+```text
+candidate node starts local relay
+candidate node sets public URL, for example ngrok URL or https://ip:port
+candidate node asks major node to verify
+major node creates nonce and expected callback challenge
+major node calls candidate /health and /node/verify endpoints
+candidate proves it owns the local node identity key
+major node checks protocol version, TLS/public URL, feed endpoint, upload protection, rate limits, and quarantine
+major node adds candidate to node list as verified
+verified node appears in feed metadata for optional peer sync
+```
+
+Verification API shape:
+
+```http
+POST /nodes/register
+GET  /health?nonce=<nonce>
+POST /node/verify
+GET  /feed.json
+```
+
+Candidate registration payload:
+
+```json
+{
+  "nodeId": "ed25519:key-id",
+  "publicUrl": "https://example.ngrok-free.app",
+  "role": "volunteer",
+  "protocol": 1,
+  "capabilities": ["feed", "metadata-sync"],
+  "signature": "signature over publicUrl + nonce"
+}
+```
+
+Major node checks:
+
+- Public URL is reachable from the major node.
+- Node identity signature verifies.
+- `/health` returns the expected nonce.
+- `/feed.json` is valid and small.
+- Upload endpoint is either disabled or protected.
+- Node advertises idle/slow sync policy.
+- Node does not claim to accept raw sessions.
+- Node version/protocol is compatible.
+
+Node list table:
+
+```sql
+CREATE TABLE verified_nodes (
+  node_id TEXT PRIMARY KEY,
+  public_url TEXT NOT NULL,
+  role TEXT NOT NULL,
+  protocol INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  first_verified_at TEXT NOT NULL,
+  last_verified_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  failure_count INTEGER NOT NULL DEFAULT 0,
+  metadata_json TEXT NOT NULL
+);
+```
+
+Removal policy:
+
+- Recheck verified nodes occasionally, for example every 6-24 hours.
+- If a node fails once, mark `degraded`.
+- If it fails repeatedly, mark `offline`.
+- If it stays offline beyond a threshold, remove it from the public node list.
+- Keep the historical record locally for audit, but do not advertise unavailable nodes.
+
+Suggested thresholds:
+
+```json
+{
+  "nodeVerification": {
+    "recheckIntervalHours": 12,
+    "degradedAfterFailures": 1,
+    "offlineAfterFailures": 3,
+    "removeAfterOfflineDays": 7
+  }
+}
+```
+
 ## ECS Deployment Role
 
 The Alibaba Cloud ECS host can run a Skill Relay node.
@@ -845,9 +954,9 @@ Selector:
 
 ```text
 Skill Mesh
-> Disabled
+> Record + Share Reviewed Skills
   Record Locally
-  Record + Share Reviewed Skills
+  Disabled
 ```
 
 CLI:
@@ -872,7 +981,7 @@ Config:
 
 ```json
 {
-  "mode": "record",
+  "mode": "share",
   "feeds": [],
   "shareRequiresReview": true,
   "autoInstallSharedSkills": false,
@@ -905,8 +1014,8 @@ Hard rules:
 
 Good defaults:
 
-- `Record Locally` for local capability learning.
-- `Record + Share Reviewed Skills` only after explicit user selection.
+- `Record + Share Reviewed Skills` for product default, because it can improve the shared skill set while still requiring strict reviewed-pack sharing.
+- `Record Locally` for users who want learning logs but no network sharing.
 - Shared packs install disabled until enabled.
 - ECS relay accepts uploads only after local pack validation.
 - Sync is idle-only and low-frequency.
@@ -974,6 +1083,7 @@ Stage 3 should include:
 - Add peer allowlists.
 - Add low-frequency node-to-node metadata sync.
 - Keep major node as the default rendezvous and dedupe authority.
+- Remove nodes from the advertised node list when repeated reachability checks fail.
 
 ## Naming Recommendation
 
