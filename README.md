@@ -95,6 +95,8 @@ For larger repositories, use `--profile large-codebase` or choose **Large codeba
 
 AgInTiFlow can also spend cheap DeepSeek calls on parallel scout notes before the main executor starts a complicated task. It first writes a bounded project map to `.aginti/codebase-map.json`, then runs scouts for architecture, implementation, review, research, context mapping, tests, git workflow, integration, symbol tracing, and dependency risks. A coordinator Swarm Board is injected for the main agent and saved as `artifacts/scout-blackboard.json` in the session. The executor still does the real file/shell/browser work itself. Disable with `--no-parallel-scouts` or set `--scout-count 1..10`.
 
+For complicated tasks that need stricter quality control, enable Student-Committee-Supervisor mode with `/enabless`, `--enabless`, or `--enabless auto`. SCS uses the main model for a typed gate: committee drafts the next phase, student approves/monitors/rejects weak evidence, and supervisor executes with the normal guarded tools. It disables duplicate scout advice by default, logs typed `scs.*` events, caps retries to avoid deadlock, and stays off unless you opt in or choose auto mode. See [docs/student-committee-supervisor.md](docs/student-committee-supervisor.md).
+
 The next productive-agent roadmap is tracked in [docs/productive-agent-roadmap.md](docs/productive-agent-roadmap.md): durable codebase maps, stronger scout blackboards, long-run checkpoints, LSP/symbol tools, test triage, and release automation. Runtime choices, Docker persistence, host full-access tradeoffs, tmux sessions, and rolling-plan autonomy are documented in [docs/runtime-modes-and-autonomy.md](docs/runtime-modes-and-autonomy.md). The supervised self-development protocol is in [docs/self-development-supervision.md](docs/self-development-supervision.md).
 
 For current docs, install errors, package/toolchain setup, and source discovery, the agent has a guarded `web_search` tool. It returns compact search results without browser search-engine loops and respects configured domain allowlists. Disable with `--no-web-search`.
@@ -149,7 +151,9 @@ aginti resume <session-id> "continue with a short follow-up"
 aginti queue <session-id> "extra instruction for the running agent"
 aginti chat
 # then in chat: /review [focus]
+# then in chat: /enabless auto
 aginti --profile code "write a small Python CLI app with tests"
+aginti --enabless auto "fix this complicated project and verify it"
 aginti --latex "draw a figure, write a short LaTeX report, and compile the PDF"
 aginti "set up this project and run the tests"
 ```
@@ -159,6 +163,8 @@ Bare `aginti resume` lists sessions for the current cwd by default. Use `--all-s
 Session cleanup is cwd-scoped by default. `aginti --remove-empty-sessions` shows only empty sessions and preselects them; `aginti --remove-sessions` shows all cwd sessions with nothing preselected. The cleanup selector uses Space to select or activate the focused button, Up/Down to move, Tab to switch to Delete/Cancel, and a second Delete/Cancel confirmation before deleting the project pointer and central `~/.agintiflow/sessions/<session-id>` data.
 
 In interactive chat, `/review [focus]` starts a bounded repository review. It begins from git status/diff and project instructions, reads manifests/entry points/tests/changed files first, avoids generated or binary folders, limits discovery passes, and reports findings before any summary.
+
+In interactive chat, `/enabless` turns on SCS for the session, `/enabless auto` activates it only for complex/risky work, `/enabless off` restores the normal fast pipeline, and `/enabless status` explains the current mode.
 
 Run from a source checkout:
 

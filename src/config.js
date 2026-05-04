@@ -7,6 +7,7 @@ import { loadProjectEnv, projectPaths, resolveProjectRoot } from "./project.js";
 import { normalizeTaskProfile } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 import { resolveLanguage } from "./i18n.js";
+import { normalizeScsMode, shouldActivateScs } from "./scs-controller.js";
 
 function parseBoolean(value, fallback) {
   if (value === undefined) return fallback;
@@ -75,7 +76,15 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     auxiliaryModel: overrides.auxiliaryModel || args.auxiliaryModel || process.env.AGINTI_AUX_MODEL || "",
   });
 
-  const defaults = getProviderDefaults(route.provider);
+  const scsMode = normalizeScsMode(overrides.enableScs ?? args.enableScs ?? process.env.AGINTI_SCS_MODE ?? "off");
+  const scsActive = shouldActivateScs(scsMode, {
+    goal: args.goal || "",
+    taskProfile,
+    complexityScore: route.complexityScore,
+  });
+  const activeProvider = scsActive && route.provider !== "mock" ? modelRoles.main.provider : route.provider;
+  const activeModel = scsActive && route.provider !== "mock" ? modelRoles.main.model : route.model;
+  const defaults = getProviderDefaults(activeProvider);
   const defaultMaxSteps = recommendedMaxStepsForTask({
     goal: args.goal || "",
     taskProfile,
@@ -86,6 +95,14 @@ export function resolveRuntimeConfig(args, overrides = {}) {
   const requestedSandboxMode =
     overrides.sandboxMode || args.sandboxMode || process.env.SANDBOX_MODE || (dockerRequested ? "docker-workspace" : "host");
   const sandboxMode = normalizeSandboxMode(requestedSandboxMode);
+  const explicitParallelScouts =
+    overrides.allowParallelScouts !== undefined ||
+    args.allowParallelScouts !== undefined ||
+    process.env.AGINTI_PARALLEL_SCOUTS !== undefined;
+  const allowParallelScouts = parseBoolean(
+    overrides.allowParallelScouts ?? args.allowParallelScouts ?? process.env.AGINTI_PARALLEL_SCOUTS,
+    true
+  );
 
   return {
     ...defaults,
@@ -100,6 +117,9 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     language,
     routeReason: route.reason,
     routeComplexityScore: route.complexityScore,
+    enableScs: scsMode,
+    scsActive,
+    scsModelPolicy: scsActive ? "main" : "route",
     modelRoles,
     routeProvider: modelRoles.route.provider,
     routeModel: modelRoles.route.model,
@@ -114,10 +134,10 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     auxiliaryModel: modelRoles.auxiliary.model,
     requestedProvider,
     requestedModel: overrides.model || args.model || process.env.LLM_MODEL || "",
-    provider: route.provider,
+    provider: activeProvider,
     apiKey: overrides.apiKey || defaults.apiKey,
     baseURL: overrides.baseURL || defaults.baseURL,
-    model: route.model || defaults.model,
+    model: activeModel || defaults.model,
     maxSteps: parseNumber(overrides.maxSteps ?? args.maxSteps ?? process.env.MAX_STEPS, defaultMaxSteps),
     headless: parseBoolean(overrides.headless ?? args.headless ?? process.env.HEADLESS, false),
     allowedDomains: Array.isArray(overrides.allowedDomains)
@@ -136,10 +156,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
       true
     ),
     allowWebSearch: parseBoolean(overrides.allowWebSearch ?? args.allowWebSearch ?? process.env.ALLOW_WEB_SEARCH, true),
-    allowParallelScouts: parseBoolean(
-      overrides.allowParallelScouts ?? args.allowParallelScouts ?? process.env.AGINTI_PARALLEL_SCOUTS,
-      true
-    ),
+    allowParallelScouts: scsActive && !explicitParallelScouts ? false : allowParallelScouts,
     parallelScoutCount: clampNumber(
       parseNumber(overrides.parallelScoutCount ?? args.parallelScoutCount ?? process.env.AGINTI_SCOUT_COUNT, 3),
       1,

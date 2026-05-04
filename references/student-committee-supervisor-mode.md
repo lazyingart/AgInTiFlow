@@ -279,23 +279,27 @@ This is stronger than a pure multi-agent conversation because it turns role beha
 
 ## Implementation Plan
 
+Implemented first slice:
+
+- `src/scs-controller.js` provides mode normalization, auto activation, committee/student JSON calls, evidence packs, supervisor instructions, tool-failure monitoring, periodic progress review, and final finish gates.
+- `src/config.js` adds `enableScs`/`scsActive` and switches active execution to the main model role when SCS is active.
+- `src/interactive-cli.js` adds `/enabless`, `/enabless auto`, `/enabless off`, `/enabless status`, and `/scs` alias.
+- `src/cli.js` adds `--enabless`, `--enabless auto`, `--no-enabless`, and aliases.
+- `src/agent-runner.js` persists typed `scs.*` events, saves `scs-phase-001.json`, injects the approved supervisor phase, reviews failed tools, and gates finish.
+
+Remaining roadmap:
+
 Phase 1: documentation and config
 
-- Add this reference.
-- Add `/enabless` command to CLI state without changing web.
-- Add `enableScs` to config/state/session metadata.
+- Status: implemented for CLI and config.
 
 Phase 2: plan gate
 
-- Implement `src/scs-controller.js`.
-- Replace normal `createPlan()` with committee draft plus student approval when SCS is on.
-- Save SCS events and render compact CLI messages.
+- Status: implemented for the initial phase gate.
 
 Phase 3: execution monitor
 
-- Add evidence-pack generation from recent events.
-- Trigger student review on failures, loop guard, every 3-5 steps, and before finish.
-- Inject approved phase constraints into supervisor messages.
+- Status: implemented for failed/blocked tools, every-four-steps progress review, and finish gate.
 
 Phase 4: web and tests
 
@@ -325,4 +329,3 @@ Start with one-main-model SCS and only gate the initial plan plus final finish. 
 The most valuable first success criterion is this:
 
 > In a complex coding task, AgInTiFlow should not execute a weak initial plan, should not keep repeating a failed action, and should not claim completion until a separate monitor has seen evidence.
-

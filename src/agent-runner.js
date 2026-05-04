@@ -27,6 +27,15 @@ import { hostShellOption, platformInfo, platformLabel } from "./platform.js";
 import { captureTmuxPane, listTmuxSessions, sendTmuxKeys, startTmuxSession } from "./tmux-tools.js";
 import { languageInstruction } from "./i18n.js";
 import { flushHousekeeping } from "./housekeeping.js";
+import {
+  buildSupervisorInstruction,
+  createScsPlan,
+  reviewScsFinish,
+  reviewScsProgress,
+  reviewScsToolResult,
+  shouldReviewScsProgress,
+  shouldReviewToolResult,
+} from "./scs-controller.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "open_workspace_file", "preview_workspace", "click", "type", "scroll", "press", "back"]);
@@ -332,6 +341,9 @@ async function createInitialState(config, sessionId) {
           config.allowParallelScouts
             ? `Parallel DeepSeek scouts may run before complex execution. Scout count: ${config.parallelScoutCount}.`
             : "Parallel scouts are disabled.",
+          config.scsActive
+            ? "Student-Committee-Supervisor mode is active. A committee/student gate will approve a phase plan, and you will execute as the supervisor under the approved phase constraints."
+            : "",
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           skillContext,
           engineeringGuidance,
@@ -378,6 +390,7 @@ async function createInitialState(config, sessionId) {
             : "",
           config.allowWebSearch ? "Web search tool: enabled." : "Web search tool: disabled.",
           config.allowParallelScouts ? `Parallel scouts: enabled count=${config.parallelScoutCount}.` : "Parallel scouts: disabled.",
+          config.scsActive ? "SCS mode: active. Wait for the approved supervisor phase instruction before treating the plan as executable." : "",
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           skillContext,
           engineeringGuidance,
@@ -1283,6 +1296,8 @@ export async function runAgent(config) {
       model: config.model,
       routingMode: config.routingMode,
       routeReason: config.routeReason,
+      scsActive: Boolean(config.scsActive),
+      scsMode: config.enableScs || "off",
       goal: config.goal,
     });
     await store.appendEvent("skills.selected", {
@@ -1305,17 +1320,75 @@ export async function runAgent(config) {
     model: config.model,
     routingMode: config.routingMode,
     routeReason: config.routeReason,
+    scsActive: Boolean(config.scsActive),
+    scsMode: config.enableScs || "off",
   });
 
   try {
     throwIfAborted(config);
     if (!state.plan) {
-      const plan = await createPlan(client, config, state);
-      state.plan = plan;
-      await store.savePlan(plan);
-      await store.appendEvent("plan.created", { plan });
+      if (config.scsActive) {
+        const scsPlan = await createScsPlan(client, config, state, {
+          events: await store.loadEvents(),
+          taskProfile: config.taskProfile,
+          goal: config.goal,
+        });
+        state.plan = scsPlan.plan;
+        state.meta.scs = scsPlan.scs;
+        state.messages.push({
+          role: "user",
+          content: scsPlan.supervisorInstruction,
+        });
+        state.meta.scs.supervisorInstructionInjected = true;
+        await store.saveJsonArtifact("scs-phase-001.json", scsPlan.scs).catch(() => "");
+        await store.appendEvent("scs.enabled", {
+          mode: config.enableScs,
+          model: `${config.provider}/${config.model}`,
+        });
+        await store.appendEvent("scs.committee.plan_drafted", {
+          phase: scsPlan.scs.phase,
+          phaseGoal: scsPlan.scs.phaseGoal,
+          plan: scsPlan.plan,
+          acceptanceCriteria: scsPlan.scs.acceptanceCriteria,
+        });
+        await store.appendEvent(`scs.student.${scsPlan.scs.student.decision}`, scsPlan.scs.student);
+        await store.appendEvent("scs.supervisor.phase_started", {
+          phase: scsPlan.scs.phase,
+          phaseGoal: scsPlan.scs.phaseGoal,
+        });
+        await store.savePlan(scsPlan.plan);
+        await store.appendEvent("plan.created", { plan: scsPlan.plan, scs: true });
+        await store.saveState(state);
+        observers.event("plan.created", { plan: scsPlan.plan, scs: true });
+        observers.event("scs.student.approve_plan", scsPlan.scs.student);
+        emitConsole(config, `SCS: student approved phase plan (${Math.round((scsPlan.scs.student.confidence || 0) * 100)}%).`, {
+          kind: "meta",
+        });
+      } else {
+        const plan = await createPlan(client, config, state);
+        state.plan = plan;
+        await store.savePlan(plan);
+        await store.appendEvent("plan.created", { plan });
+        await store.saveState(state);
+        observers.event("plan.created", { plan });
+      }
+    } else if (config.scsActive && !state.meta?.scs?.supervisorInstructionInjected) {
+      state.meta.scs = state.meta.scs || {
+        enabled: true,
+        mode: config.enableScs || "on",
+        active: true,
+        model: `${config.provider}/${config.model}`,
+        phase: 1,
+        plan: state.plan,
+        finishRejects: 0,
+        monitorReviews: 0,
+      };
+      state.messages.push({
+        role: "user",
+        content: buildSupervisorInstruction(state.meta.scs),
+      });
+      state.meta.scs.supervisorInstructionInjected = true;
       await store.saveState(state);
-      observers.event("plan.created", { plan });
     }
 
     if (shouldRunParallelScouts(config, state)) {
@@ -1379,6 +1452,8 @@ export async function runAgent(config) {
       routingMode: config.routingMode,
       routeReason: config.routeReason,
       taskProfile: config.taskProfile,
+      scsActive: Boolean(config.scsActive),
+      scsMode: config.enableScs || "off",
       commandCwd: config.commandCwd,
       allowShellTool: config.allowShellTool,
       allowWrapperTools: config.allowWrapperTools,
@@ -1399,6 +1474,7 @@ export async function runAgent(config) {
     emitConsole(config, `Provider: ${config.provider}`, { kind: "meta" });
     emitConsole(config, `Model: ${config.model}`, { kind: "meta" });
     emitConsole(config, `Routing: ${config.routingMode} (${config.routeReason})`, { kind: "meta" });
+    if (config.scsActive) emitConsole(config, `SCS: ${config.enableScs || "on"} using main-model policy`, { kind: "meta" });
     emitConsole(config, `Workspace: ${config.commandCwd}`, { kind: "meta" });
     emitConsole(config, `Sessions: ${config.sessionsDir}`, { kind: "meta" });
     if (config.projectSessionsDir) emitConsole(config, `Project session index: ${config.projectSessionsDir}`, { kind: "meta" });
@@ -1517,6 +1593,37 @@ export async function runAgent(config) {
           continue;
         }
         const fallback = assistantMessage.content?.trim() || "No tool call returned.";
+        if (config.scsActive) {
+          const decision = await reviewScsFinish(client, config, state, fallback, {
+            events: await store.loadEvents(),
+            taskProfile: config.taskProfile,
+            goal: config.goal,
+          });
+          state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || "on", active: true };
+          state.meta.scs.lastStudentDecision = decision;
+          await store.appendEvent(`scs.student.${decision.decision}`, decision);
+          observers.event(`scs.student.${decision.decision}`, {
+            decision: decision.decision,
+            reason: decision.reason,
+          });
+          if (decision.decision === "finish_rejected") {
+            state.meta.scs.finishRejects = (state.meta.scs.finishRejects || 0) + 1;
+            state.messages.push({
+              role: "user",
+              content: [
+                "SCS student rejected the proposed finish.",
+                `Reason: ${decision.reason || "Finish lacked enough evidence."}`,
+                "Supervisor: continue with the approved phase, collect concrete evidence, or call finish with a clear blocker.",
+              ].join("\n"),
+            });
+            state.stepsCompleted = step;
+            state.updatedAt = new Date().toISOString();
+            await store.saveState(state);
+            emitConsole(config, `SCS: finish rejected: ${decision.reason || "needs more evidence"}`, { kind: "meta" });
+            continue;
+          }
+          emitConsole(config, `SCS: finish approved (${Math.round((decision.confidence || 0) * 100)}%).`, { kind: "meta" });
+        }
         appendChatEntry(state, "assistant", fallback);
         await store.appendEvent("session.finished", {
           result: fallback,
@@ -1546,6 +1653,43 @@ export async function runAgent(config) {
           content: JSON.stringify(toolResult),
         });
         await applyToolLoopGuard(state, toolResult, store, observers);
+
+        if (config.scsActive && shouldReviewToolResult(toolResult, state)) {
+          const decision = await reviewScsToolResult(client, config, state, toolResult, {
+            events: await store.loadEvents(),
+            taskProfile: config.taskProfile,
+            goal: config.goal,
+          });
+          state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || "on", active: true };
+          state.meta.scs.monitorReviews = (state.meta.scs.monitorReviews || 0) + 1;
+          state.meta.scs.lastStudentDecision = decision;
+          await store.appendEvent(`scs.student.${decision.decision}`, {
+            ...decision,
+            toolName: toolResult.toolName,
+          });
+          observers.event(`scs.student.${decision.decision}`, {
+            decision: decision.decision,
+            reason: decision.reason,
+            toolName: toolResult.toolName,
+          });
+          if (decision.decision === "rethink_plan" || decision.decision === "reject_phase") {
+            state.messages.push({
+              role: "user",
+              content: [
+                "SCS student monitor requested a rethink based on tool evidence.",
+                `Decision: ${decision.decision}`,
+                `Reason: ${decision.reason || "No reason provided."}`,
+                decision.nextRequiredAction ? `Next required action: ${decision.nextRequiredAction}` : "",
+                "Supervisor: do not repeat the same failed call. Adjust within the approved phase or finish with a concrete blocker if the phase is invalidated.",
+              ]
+                .filter(Boolean)
+                .join("\n"),
+            });
+            emitConsole(config, `SCS: ${decision.decision} after ${toolResult.toolName}: ${decision.reason || "reviewed"}`, {
+              kind: "meta",
+            });
+          }
+        }
 
         if (toolResult.toolName === "run_command") {
           observers.log("command.output", {
@@ -1580,6 +1724,37 @@ export async function runAgent(config) {
         }
 
         if (toolResult.done) {
+          if (config.scsActive) {
+            const decision = await reviewScsFinish(client, config, state, toolResult.result, {
+              events: await store.loadEvents(),
+              taskProfile: config.taskProfile,
+              goal: config.goal,
+            });
+            state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || "on", active: true };
+            state.meta.scs.lastStudentDecision = decision;
+            await store.appendEvent(`scs.student.${decision.decision}`, decision);
+            observers.event(`scs.student.${decision.decision}`, {
+              decision: decision.decision,
+              reason: decision.reason,
+            });
+            if (decision.decision === "finish_rejected") {
+              state.meta.scs.finishRejects = (state.meta.scs.finishRejects || 0) + 1;
+              state.messages.push({
+                role: "user",
+                content: [
+                  "SCS student rejected the proposed finish.",
+                  `Reason: ${decision.reason || "Finish lacked enough evidence."}`,
+                  "Supervisor: continue with the approved phase, collect concrete evidence, or call finish with a clear blocker.",
+                ].join("\n"),
+              });
+              state.stepsCompleted = step;
+              state.updatedAt = new Date().toISOString();
+              await store.saveState(state);
+              emitConsole(config, `SCS: finish rejected: ${decision.reason || "needs more evidence"}`, { kind: "meta" });
+              continue;
+            }
+            emitConsole(config, `SCS: finish approved (${Math.round((decision.confidence || 0) * 100)}%).`, { kind: "meta" });
+          }
           const queuedCount = await injectQueuedUserMessages(store, state, observers);
           if (queuedCount > 0) {
             state.stepsCompleted = step;
@@ -1614,6 +1789,42 @@ export async function runAgent(config) {
       }
 
       if (continueForQueuedInput) continue;
+
+      if (config.scsActive && shouldReviewScsProgress(step, state)) {
+        const decision = await reviewScsProgress(client, config, state, {
+          events: await store.loadEvents(),
+          taskProfile: config.taskProfile,
+          goal: config.goal,
+        });
+        state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || "on", active: true };
+        state.meta.scs.monitorReviews = (state.meta.scs.monitorReviews || 0) + 1;
+        state.meta.scs.lastStudentDecision = decision;
+        await store.appendEvent(`scs.student.${decision.decision}`, {
+          ...decision,
+          step,
+          trigger: "periodic",
+        });
+        observers.event(`scs.student.${decision.decision}`, {
+          decision: decision.decision,
+          reason: decision.reason,
+          trigger: "periodic",
+        });
+        if (decision.decision === "rethink_plan" || decision.decision === "reject_phase") {
+          state.messages.push({
+            role: "user",
+            content: [
+              "SCS student requested a periodic rethink.",
+              `Decision: ${decision.decision}`,
+              `Reason: ${decision.reason || "No reason provided."}`,
+              decision.nextRequiredAction ? `Next required action: ${decision.nextRequiredAction}` : "",
+              "Supervisor: adjust the next action within the approved phase, collect stronger evidence, or finish with a concrete blocker if the phase is invalidated.",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          });
+          emitConsole(config, `SCS: periodic ${decision.decision}: ${decision.reason || "reviewed"}`, { kind: "meta" });
+        }
+      }
 
       await injectQueuedUserMessages(store, state, observers);
 

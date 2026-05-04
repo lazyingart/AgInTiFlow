@@ -33,6 +33,7 @@ import {
   setSkillMeshMode,
   skillMeshModeChoices,
 } from "./skillmesh.js";
+import { normalizeScsMode } from "./scs-controller.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
@@ -85,6 +86,8 @@ const SLASH_COMMANDS = [
   "/profile",
   "/web-search",
   "/scouts",
+  "/enabless",
+  "/scs",
   "/models",
   "/venice",
   "/route",
@@ -662,6 +665,7 @@ function printHelp() {
       `  ${command("/profile <name>", "Set task profile, e.g. code, website, latex, maintenance.", "helpProfile")}`,
       `  ${command("/web-search on|off", "Enable or disable the web_search tool.", "helpWebSearch")}`,
       `  ${command("/scouts on|off|<1-10>", "Enable parallel DeepSeek scouts and set scout count.", "helpScouts")}`,
+      `  ${command("/enabless [auto|off|status]", "Enable Student-Committee-Supervisor gated execution.", "helpEnableScs")}`,
       `  ${command("/routing <mode>", "Set routing: smart, fast, complex, manual.", "helpRouting")}`,
       `  ${command("/provider [name]", "Open provider selector, or set deepseek/openai/qwen/venice/mock.", "helpProvider")}`,
       `  ${command("/docker on", "Use docker-workspace with approved package installs.", "helpDockerOn")}`,
@@ -1602,7 +1606,7 @@ function printStatus(state) {
   );
   printSystemLine(`profile=${state.taskProfile} maxSteps=${state.maxSteps}`);
   printSystemLine(
-    `shell=${state.allowShellTool} files=${state.allowFileTools} webSearch=${state.allowWebSearch} scouts=${state.allowParallelScouts}:${state.parallelScoutCount} auxiliary=${state.allowAuxiliaryTools} sandbox=${state.sandboxMode} installs=${state.packageInstallPolicy}`
+    `shell=${state.allowShellTool} files=${state.allowFileTools} webSearch=${state.allowWebSearch} scouts=${state.allowParallelScouts}:${state.parallelScoutCount} scs=${state.enableScs || "off"} auxiliary=${state.allowAuxiliaryTools} sandbox=${state.sandboxMode} installs=${state.packageInstallPolicy}`
   );
   if (state.sandboxMode !== "host") {
     printSystemLine(`dockerWorkspace=/workspace -> ${state.commandCwd || process.cwd()}`);
@@ -1737,6 +1741,7 @@ function createState(args = {}) {
     allowAuxiliaryTools: args.allowAuxiliaryTools ?? true,
     allowWebSearch: args.allowWebSearch ?? true,
     allowParallelScouts: args.allowParallelScouts ?? true,
+    enableScs: normalizeScsMode(args.enableScs || process.env.AGINTI_SCS_MODE || "off"),
     parallelScoutCount: args.parallelScoutCount || 3,
     allowWrapperTools: args.allowWrapperTools ?? false,
     allowDestructive: args.allowDestructive ?? false,
@@ -2769,6 +2774,40 @@ async function handleCommand(line, state, packageDir) {
     printSystemLine(`parallelScouts=${state.allowParallelScouts ? "on" : "off"} count=${state.parallelScoutCount}`);
     return true;
   }
+  if (command === "enabless" || command === "scs") {
+    const rawMode = String(value || "").trim().toLowerCase();
+    const mode = value ? normalizeScsMode(value) : "on";
+    const knownMode =
+      !rawMode ||
+      ["on", "off", "auto", "smart", "status", "?", "true", "false", "yes", "no", "y", "n", "1", "0", "enable", "disable", "enabled", "disabled"].includes(
+        rawMode
+      );
+    if (!knownMode) {
+      printAgentMessage("Usage: /enabless [auto|off|status]. `/enabless` turns SCS on for the session.");
+      return true;
+    }
+    if (value === "status" || value === "?") {
+      printAgentMessage(
+        [
+          `SCS mode: ${state.enableScs || "off"}`,
+          "Student-Committee-Supervisor gates complex work with one main model: committee drafts, student approves/monitors, supervisor executes.",
+          "Use `/enabless` for on, `/enabless auto` for complex-task auto mode, or `/enabless off` for the normal fast pipeline.",
+        ].join("\n")
+      );
+      return true;
+    }
+    state.enableScs = mode;
+    if (mode === "on") {
+      state.allowParallelScouts = false;
+    }
+    printSystemLine(`scs=${state.enableScs}${state.enableScs !== "off" ? ` main=${state.mainProvider || "deepseek"}/${state.mainModel || "deepseek-v4-pro"}` : ""}`);
+    if (state.enableScs === "on") {
+      printAgentMessage("SCS enabled. Next run uses the main model for committee planning, student gates, and supervisor execution.");
+    } else if (state.enableScs === "auto") {
+      printAgentMessage("SCS auto enabled. It activates for complex, risky, or long-running tasks and stays off for simple turns.");
+    }
+    return true;
+  }
   if (command === "models") {
     printModelRoles(state);
     return true;
@@ -3024,6 +3063,7 @@ async function runPrompt(prompt, state, packageDir) {
       allowAuxiliaryTools: state.allowAuxiliaryTools,
       allowWebSearch: state.allowWebSearch,
       allowParallelScouts: state.allowParallelScouts,
+      enableScs: state.enableScs,
       parallelScoutCount: state.parallelScoutCount,
       allowWrapperTools: state.allowWrapperTools,
       allowDestructive: state.allowDestructive,
