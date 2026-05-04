@@ -13,7 +13,7 @@ The project is designed for practical engineering work: write code, patch files,
 | Agent runner | Plans, calls tools, records events, and resumes sessions. |
 | Workspace tools | `inspect_project`, `read_file`, `search_files`, `write_file`, and `apply_patch`. |
 | Runtime modes | Host, Docker read-only, Docker workspace, and tmux for persistent host processes. |
-| Model routing | DeepSeek v4 flash for fast work, DeepSeek v4 pro for complex work, mock mode for tests. |
+| Model routing | Text routing via DeepSeek and Venice, with OpenAI fallback; image routing via GRS AI and Venice, plus mock mode for tests. |
 
 ## Core Principles
 

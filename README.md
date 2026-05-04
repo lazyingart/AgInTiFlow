@@ -13,7 +13,8 @@
 ![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)
 ![Playwright](https://img.shields.io/badge/Browser-Playwright-2EAD33?logo=playwright&logoColor=white)
 ![Express](https://img.shields.io/badge/Web-Express-111827)
-![Models](https://img.shields.io/badge/Models-OpenAI%20%2B%20DeepSeek-0ea5e9)
+![Text Models](https://img.shields.io/badge/Text%20Models-DeepSeek%20%2B%20Venice%20%2B%20OpenAI-0ea5e9)
+![Aux Image Models](https://img.shields.io/badge/Aux%20Image-GRS%20AI%20%2B%20Venice-ec4899)
 ![Sandbox](https://img.shields.io/badge/Shell-Docker%20Sandbox-f97316)
 ![Status](https://img.shields.io/badge/Status-Prototype-7c3aed)
 
@@ -50,7 +51,7 @@ aginti --list-profiles
 aginti --sandbox-status
 ```
 
-When AgInTiFlow is installed globally from npm, normal `aginti`, `aginti chat`, `aginti resume`, and `aginti web` startup revalidates npm for a newer `@lazyingart/agintiflow` release before the session starts. If a newer version is found in an interactive terminal, AgInTiFlow shows an Up/Down selector with `Update now`, `Skip this time`, and `Skip this version`; updating runs `npm install -g @lazyingart/agintiflow@latest` and restarts the CLI once. Source checkouts, non-TTY automation, and utility commands skip this behavior. Force a check with `aginti update`, skip one run with `--no-auto-update`, disable it with `AGINTIFLOW_NO_AUTO_UPDATE=1`, or throttle startup checks with `AGINTIFLOW_AUTO_UPDATE_STARTUP_INTERVAL_MS`.
+When AgInTiFlow is installed globally from npm, normal `aginti`, `aginti chat`, `aginti resume`, and `aginti web` startup revalidates npm for a newer `@lazyingart/agintiflow` release before the session starts. If a newer version is found in an interactive terminal, AgInTiFlow shows an Up/Down selector with `Update now`, `Skip this time`, and `Skip this version`; updating runs `npm install -g @lazyingart/agintiflow@latest` and restarts the CLI once. Source checkouts, non-TTY automation, and utility commands skip this behavior. If you skip or disable auto-update, AgInTiFlow runs as normal using your current version. Force a check with `aginti update`, skip one run with `--no-auto-update`, disable it with `AGINTIFLOW_NO_AUTO_UPDATE=1`, or throttle startup checks with `AGINTIFLOW_AUTO_UPDATE_STARTUP_INTERVAL_MS`.
 
 On first interactive use, if no main model key is detected, `aginti` opens an auth wizard. Use Up/Down to choose DeepSeek, OpenAI, Qwen, or Venice, paste the key, and press Enter to save it to the project-local ignored file `.aginti/.env` with `0600` permissions. The wizard points to DeepSeek keys at `https://platform.deepseek.com/api_keys`, OpenAI keys at `https://platform.openai.com/api-keys`, and Venice at `https://venice.ai`. It then offers the optional auxiliary image key; press Esc to skip. You can rerun it even when keys already exist:
 

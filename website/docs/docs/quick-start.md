@@ -29,6 +29,16 @@ aginti web --port 3210
 
 Open `http://127.0.0.1:3210`.
 
+## Auto-update (optional)
+
+Interactive `aginti`/`aginti web` startup can check for newer package versions.
+If you choose not to update, the feature is fully opt-in: you can skip a run, skip a release, or disable auto-update with `--no-auto-update` or `AGINTIFLOW_NO_AUTO_UPDATE=1`, and AgInTiFlow continues in normal mode.
+
+```bash
+aginti update
+AGINTIFLOW_NO_AUTO_UPDATE=1 aginti
+```
+
 ## First Useful Prompts
 
 ```text
@@ -41,7 +51,7 @@ inspect git status and prepare a safe commit summary
 
 ## Provider Keys
 
-On first use, AgInTiFlow asks for a main provider key. DeepSeek is the normal default.
+On first use, AgInTiFlow asks for a main provider key. DeepSeek is the normal default, with Venice and OpenAI available as alternatives. For image tools, enable GRS AI or Venice image models.
 
 ```bash
 aginti auth
