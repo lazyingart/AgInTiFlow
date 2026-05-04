@@ -607,6 +607,7 @@ const removeSessionAnsi = {
   reset: "\x1b[0m",
   bold: "\x1b[1m",
   dim: "\x1b[2m",
+  red: "\x1b[31m",
   inverse: "\x1b[7m",
 };
 
@@ -624,10 +625,13 @@ function ellipsize(text, width) {
   return `${value.slice(0, Math.max(0, width - 1))}…`;
 }
 
-function buttonLabel(label, focused, disabled = false) {
+function buttonLabel(label, focused, disabled = false, danger = false) {
   const text = ` ${label} `;
   if (disabled) return removeSessionColor(text, removeSessionAnsi.dim);
-  return focused ? removeSessionColor(text, removeSessionAnsi.inverse, removeSessionAnsi.bold) : text;
+  const codes = [];
+  if (danger) codes.push(removeSessionAnsi.red, removeSessionAnsi.bold);
+  if (focused) codes.push(removeSessionAnsi.inverse, removeSessionAnsi.bold);
+  return codes.length > 0 ? removeSessionColor(text, ...codes) : text;
 }
 
 function renderSessionRemovalWizard(state) {
@@ -658,12 +662,12 @@ function renderSessionRemovalWizard(state) {
   });
   const footer =
     state.phase === "confirm"
-      ? `Confirm deletion: ${buttonLabel("Yes, delete", state.confirmFocus === "yes")}  ${buttonLabel("Cancel", state.confirmFocus === "cancel")}`
-      : `Actions: ${buttonLabel(`OK delete ${selectedCount}`, state.focus === "ok", selectedCount === 0)}  ${buttonLabel("Cancel", state.focus === "cancel")}`;
+      ? `Confirm deletion: ${buttonLabel("Delete", state.confirmFocus === "yes", false, true)}  ${buttonLabel("Cancel", state.confirmFocus === "cancel")}`
+      : `Actions: ${buttonLabel(`Delete ${selectedCount}`, state.focus === "ok", selectedCount === 0, true)}  ${buttonLabel("Cancel", state.focus === "cancel")}`;
   const guidance =
     state.phase === "confirm"
-      ? "Left/Right switches choice. Enter confirms. Esc/q cancels."
-      : "Space toggles. Up/Down moves. Tab changes focus. Enter opens confirm. Esc/q cancels.";
+      ? "Left/Right switches choice. Enter/Space confirms. Esc/q cancels."
+      : "Space toggles or activates focused button. Up/Down moves. Tab changes focus. Esc/q cancels.";
   const lines = [
     `╭${border}╮`,
     line(state.title),
@@ -733,7 +737,7 @@ async function promptRemoveSessions(candidates, { defaultSelectedIds = [], title
       if (name === "escape" || name === "q") return cleanup(null);
       if (state.phase === "confirm") {
         if (name === "left" || name === "right" || name === "tab") state.confirmFocus = state.confirmFocus === "yes" ? "cancel" : "yes";
-        else if (name === "return" || name === "enter") return cleanup(state.confirmFocus === "yes" ? [...state.selected] : null);
+        else if (name === "return" || name === "enter" || name === "space") return cleanup(state.confirmFocus === "yes" ? [...state.selected] : null);
         renderSessionRemovalWizard(state);
         return;
       }
@@ -741,7 +745,11 @@ async function promptRemoveSessions(candidates, { defaultSelectedIds = [], title
       else if (name === "down") moveCursor(1);
       else if (name === "pageup") moveCursor(-8);
       else if (name === "pagedown") moveCursor(8);
-      else if (name === "space") toggleCurrent();
+      else if (name === "space") {
+        if (state.focus === "list") toggleCurrent();
+        else if (state.focus === "cancel") return cleanup(null);
+        else openConfirm();
+      }
       else if (name === "tab") state.focus = state.focus === "list" ? "ok" : state.focus === "ok" ? "cancel" : "list";
       else if (name === "left" || name === "right") state.focus = state.focus === "cancel" ? "ok" : "cancel";
       else if (name === "return" || name === "enter") {

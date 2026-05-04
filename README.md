@@ -146,6 +146,8 @@ aginti resume --all-sessions
 aginti resume latest
 aginti resume <session-id> "continue with a short follow-up"
 aginti queue <session-id> "extra instruction for the running agent"
+aginti chat
+# then in chat: /review [focus]
 aginti --profile code "write a small Python CLI app with tests"
 aginti --latex "draw a figure, write a short LaTeX report, and compile the PDF"
 aginti "set up this project and run the tests"
@@ -153,7 +155,9 @@ aginti "set up this project and run the tests"
 
 Bare `aginti resume` lists sessions for the current cwd by default. Use `--all-sessions` to browse the global session index; in the interactive selector, type a number to resume, `q` to quit, `/text` to filter the visible list, or `/` to clear the filter.
 
-Session cleanup is cwd-scoped by default. `aginti --remove-empty-sessions` shows only empty sessions and preselects them; `aginti --remove-sessions` shows all cwd sessions with nothing preselected. The cleanup selector uses Space to select, Up/Down to move, Tab to switch to OK/Cancel, and a second Yes/Cancel confirmation before deleting the project pointer and central `~/.agintiflow/sessions/<session-id>` data.
+Session cleanup is cwd-scoped by default. `aginti --remove-empty-sessions` shows only empty sessions and preselects them; `aginti --remove-sessions` shows all cwd sessions with nothing preselected. The cleanup selector uses Space to select or activate the focused button, Up/Down to move, Tab to switch to Delete/Cancel, and a second Delete/Cancel confirmation before deleting the project pointer and central `~/.agintiflow/sessions/<session-id>` data.
+
+In interactive chat, `/review [focus]` starts a bounded repository review. It begins from git status/diff and project instructions, reads manifests/entry points/tests/changed files first, avoids generated or binary folders, limits discovery passes, and reports findings before any summary.
 
 Run from a source checkout:
 

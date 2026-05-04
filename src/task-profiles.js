@@ -20,6 +20,13 @@ export const TASK_PROFILES = {
       "Bias toward senior large-repo engineering while still answering ordinary side questions. Inspect_project first unless context is already known, read AGINTI/AGENTS/README/manifests, locate entry points and tests, make a small explicit change plan, patch in coherent batches, run the narrowest relevant checks first, escalate to broader checks when stable, and summarize files changed, checks, tradeoffs, and remaining risks.",
     tools: ["inspect_project", "search_files", "read_file", "apply_patch", "shell", "sandbox", "canvas"],
   },
+  review: {
+    id: "review",
+    label: "Code review",
+    prompt:
+      "Bias toward bounded code review rather than implementation. Start with git status/diff and project instructions, then inspect manifests, entry points, tests, changed files, and only the neighboring code needed to prove or disprove concrete risks. Avoid full-tree scans, generated/vendor/cache/binary folders, and infinite context gathering. Do not edit files unless explicitly asked for fixes. Findings must come first, ordered by severity with file/line evidence; if no findings are found, say so and name residual risks and checks not run.",
+    tools: ["inspect_project", "search_files", "read_file", "shell", "web_search"],
+  },
   writing: {
     id: "writing",
     label: "Book/script writing",
@@ -331,6 +338,12 @@ const PROFILE_ALIASES = {
   etl: "data",
   dataframe: "data",
   qa: "qa",
+  review: "review",
+  reviews: "review",
+  "code-review": "review",
+  "code-audit": "review",
+  codereview: "review",
+  codeaudit: "review",
   test: "qa",
   testing: "qa",
   ci: "qa",
@@ -412,6 +425,7 @@ export function getTaskProfile(value = "auto") {
 export function defaultMaxStepsForProfile(value = "auto") {
   const profile = normalizeTaskProfile(value);
   if (profile === "code") return 36;
+  if (profile === "review") return 32;
   if (profile === "large-codebase") return 36;
   if (profile === "qa") return 40;
   if (profile === "app") return 40;

@@ -69,6 +69,7 @@ const SLASH_COMMANDS = [
   "/new",
   "/resume",
   "/sessions",
+  "/review",
   "/rename",
   "/skills",
   "/skill",
@@ -635,6 +636,7 @@ function printHelp() {
       `  ${command("/auxiliary [status|grsai|venice|model [provider/model]|on|off|image]", "Manage optional auxiliary skills, including image generation.", "helpAuxiliary")}`,
       `  ${command("/new", "Start a fresh session on the next message.", "helpNew")}`,
       `  ${command("/resume <session-id>", "Continue a saved session.", "helpResume")}`,
+      `  ${command("/review [focus]", "Run a bounded repo/diff review with controlled context gathering.", "helpReview")}`,
       `  ${command("/rename [title|auto]", "Rename the current session.", "helpRename")}`,
       `  ${command("/sessions", "List recent sessions in this project.", "helpSessions")}`,
       `  ${command("/skills [query]", "List Markdown skills selected for a topic.", "helpSkills")}`,
@@ -2454,6 +2456,29 @@ async function promptAndSaveProviderKey(provider = "", state = null) {
   applyAuthWizardResult(result, state);
 }
 
+function buildReviewPrompt(focus = "") {
+  const target = String(focus || "").trim();
+  return [
+    target ? `Review focus: ${target}` : "Review focus: current repository state, especially local changes if any.",
+    "",
+    "Run a bounded, evidence-based code review of this workspace. Default to read-only review; do not edit files unless the review focus explicitly asks for fixes.",
+    "",
+    "Review operating loop:",
+    "1. Start with `git status --short`, `git diff --stat`, and project metadata. If git is unavailable, say so and continue from manifests.",
+    "2. Read only the highest-signal context first: AGINTI.md/AGENTS.md/README, package/build manifests, entry points, tests, and files changed in git diff.",
+    "3. Use `inspect_project`, `search_files`, and targeted `read_file`; avoid full-tree dumps. Prefer precise symbol/error searches over opening many files.",
+    "4. Exclude generated, vendored, binary, cache, and large artifact paths: .git, node_modules, vendor, dist, build, out, target, coverage, .next, .turbo, .venv, __pycache__, .pytest_cache, .aginti-sessions, .sessions, artifacts, images/videos/PDFs unless directly relevant.",
+    "5. Context budget: at most two discovery passes; at most 12 primary files read initially; expand only when a concrete risk requires neighboring code.",
+    "6. Check likely validation commands from manifests, but run only focused non-destructive checks when useful. Do not install packages or run long broad suites unless clearly justified.",
+    "7. Stop when you have enough evidence. Do not keep scanning just because more files exist.",
+    "",
+    "Final answer format:",
+    "- Findings first, ordered by severity, with file/line references or exact evidence. Focus on bugs, regressions, security issues, data loss, broken UX/API behavior, and missing tests.",
+    "- If no findings, state that clearly and list residual risks or unrun checks.",
+    "- Then include a short `Files inspected` and `Checks run` section. Keep summary secondary and concise.",
+  ].join("\n");
+}
+
 async function handleCommand(line, state, packageDir) {
   const [rawCommand, ...rest] = line.slice(1).trim().split(/\s+/);
   const command = resolveSlashCommand(rawCommand);
@@ -2602,6 +2627,19 @@ async function handleCommand(line, state, packageDir) {
           })
           .join("\n")
       );
+    }
+    return true;
+  }
+  if (command === "review") {
+    const previousProfile = state.taskProfile;
+    const previousMaxSteps = state.maxSteps;
+    try {
+      state.taskProfile = "review";
+      state.maxSteps = Math.max(state.maxSteps, 32);
+      await runPrompt(buildReviewPrompt(value), state, packageDir);
+    } finally {
+      state.taskProfile = previousProfile;
+      state.maxSteps = previousMaxSteps;
     }
     return true;
   }

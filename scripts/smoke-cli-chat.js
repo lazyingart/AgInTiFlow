@@ -260,7 +260,7 @@ try {
   }
   const helpResult = await runChat("/help\n/exit\n");
   const misspelledAuxiliary = "/auxil" + "liary";
-  if (!helpResult.stdout.includes("/auxiliary") || helpResult.stdout.includes(misspelledAuxiliary)) {
+  if (!helpResult.stdout.includes("/auxiliary") || !helpResult.stdout.includes("/review") || helpResult.stdout.includes(misspelledAuxiliary)) {
     throw new Error("interactive help did not expose only the correctly spelled /auxiliary command");
   }
   const zhHelpResult = await runCli(["chat", "--language", "zh-Hans"], "/help\n/exit\n");
@@ -270,6 +270,10 @@ try {
   const skillsResult = await runChat("/skills website\n/exit\n");
   if (!skillsResult.stdout.includes("website-app") || !skillsResult.stdout.includes("Website And App Builder")) {
     throw new Error("interactive /skills did not show matching built-in skills");
+  }
+  const reviewResult = await runChat("/review changed files only\n/exit\n");
+  if (!reviewResult.stdout.includes("Review focus: changed files only") || !reviewResult.stdout.includes("Mock run complete")) {
+    throw new Error("interactive /review did not launch the bounded review workflow");
   }
   const abbreviatedSkillsResult = await runChat("/sk website\n/ex\n");
   if (abbreviatedSkillsResult.stdout.includes("Unknown command") || !abbreviatedSkillsResult.stdout.includes("website-app")) {
@@ -347,6 +351,7 @@ try {
           "instructions-command",
           "auxiliary-command-spelling",
           "skills-command",
+          "review-command",
           "slash-prefix-autoselect",
           "slash-prefix-canonical-history",
           "instructions-chat-edit",
