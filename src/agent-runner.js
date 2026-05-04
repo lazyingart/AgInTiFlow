@@ -190,32 +190,68 @@ function preserveAssistantMessage(message) {
 }
 
 export function repairModelMessageHistory(state, config = {}) {
-  if (config.provider !== "deepseek" || !Array.isArray(state?.messages)) {
-    return { changed: false, droppedAssistantMessages: 0, convertedAssistantMessages: 0, droppedToolMessages: 0 };
+  if (!Array.isArray(state?.messages)) {
+    return {
+      changed: false,
+      droppedAssistantMessages: 0,
+      convertedAssistantMessages: 0,
+      droppedToolMessages: 0,
+      incompleteToolCallMessages: 0,
+    };
   }
 
   const repaired = [];
-  const droppedToolCallIds = new Set();
   let droppedAssistantMessages = 0;
   let convertedAssistantMessages = 0;
   let droppedToolMessages = 0;
+  let incompleteToolCallMessages = 0;
 
-  for (const message of state.messages) {
+  for (let index = 0; index < state.messages.length; index += 1) {
+    const message = state.messages[index];
     if (message.role === "assistant") {
       const hasReasoningContent = Boolean(message.reasoning_content || message.reasoningContent);
       const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
       const content = String(message.content || "");
+      const requiresDeepSeekReasoning = config.provider === "deepseek" && !hasReasoningContent;
 
-      if (!hasReasoningContent) {
-        if (content.startsWith("Execution plan:")) {
+      if (toolCalls.length > 0) {
+        const expectedIds = toolCalls.map((call) => String(call?.id || "")).filter(Boolean);
+        const expected = new Set(expectedIds);
+        const followingToolMessages = [];
+        const duplicateOrUnexpectedToolMessages = [];
+        const seen = new Set();
+        let cursor = index + 1;
+
+        while (cursor < state.messages.length && state.messages[cursor]?.role === "tool") {
+          const toolMessage = state.messages[cursor];
+          const toolCallId = String(toolMessage.tool_call_id || "");
+          if (expected.has(toolCallId) && !seen.has(toolCallId)) {
+            followingToolMessages.push(toolMessage);
+            seen.add(toolCallId);
+          } else {
+            duplicateOrUnexpectedToolMessages.push(toolMessage);
+          }
+          cursor += 1;
+        }
+
+        const completeToolResults = expectedIds.length > 0 && expectedIds.every((id) => seen.has(id));
+        if (requiresDeepSeekReasoning || !completeToolResults) {
           droppedAssistantMessages += 1;
+          droppedToolMessages += followingToolMessages.length + duplicateOrUnexpectedToolMessages.length;
+          if (!completeToolResults) incompleteToolCallMessages += 1;
+          index = cursor - 1;
           continue;
         }
 
-        if (toolCalls.length > 0) {
-          for (const call of toolCalls) {
-            if (call?.id) droppedToolCallIds.add(call.id);
-          }
+        repaired.push(preserveAssistantMessage(message));
+        repaired.push(...followingToolMessages);
+        droppedToolMessages += duplicateOrUnexpectedToolMessages.length;
+        index = cursor - 1;
+        continue;
+      }
+
+      if (requiresDeepSeekReasoning) {
+        if (content.startsWith("Execution plan:")) {
           droppedAssistantMessages += 1;
           continue;
         }
@@ -236,7 +272,7 @@ export function repairModelMessageHistory(state, config = {}) {
       continue;
     }
 
-    if (message.role === "tool" && droppedToolCallIds.has(message.tool_call_id)) {
+    if (message.role === "tool") {
       droppedToolMessages += 1;
       continue;
     }
@@ -259,6 +295,7 @@ export function repairModelMessageHistory(state, config = {}) {
     droppedAssistantMessages,
     convertedAssistantMessages,
     droppedToolMessages,
+    incompleteToolCallMessages,
   };
 }
 
@@ -1313,6 +1350,13 @@ export async function runAgent(config) {
   }
 
   ensureChatState(state);
+
+  const initialRepair = repairModelMessageHistory(state, config);
+  if (initialRepair.changed) {
+    await store.appendEvent("history.repaired", initialRepair);
+    observers.event("history.repaired", initialRepair);
+    await store.saveState(state);
+  }
 
   observers.log("session.ready", {
     sessionId,

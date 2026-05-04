@@ -85,6 +85,52 @@ try {
     !staleDeepSeekState.messages.some((message) => message.role === "tool" && message.tool_call_id === "stale-call"),
     "repaired DeepSeek history retained an orphan stale tool message"
   );
+  const interruptedDeepSeekState = {
+    messages: [
+      { role: "system", content: "system" },
+      { role: "user", content: "old request" },
+      {
+        role: "assistant",
+        content: "Running checks.",
+        reasoning_content: "Need shell evidence.",
+        tool_calls: [
+          { id: "call-a", type: "function", function: { name: "run_command", arguments: "{}" } },
+          { id: "call-b", type: "function", function: { name: "run_command", arguments: "{}" } },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-a", content: "{\"ok\":true}" },
+      { role: "user", content: "Continue with this new request: /review" },
+    ],
+  };
+  const interruptedRepair = repairModelMessageHistory(interruptedDeepSeekState, { provider: "deepseek" });
+  assert(interruptedRepair.changed, "interrupted tool-call history was not repaired");
+  assert(interruptedRepair.incompleteToolCallMessages === 1, "interrupted repair did not count the incomplete tool call");
+  assert(
+    !interruptedDeepSeekState.messages.some((message) => Array.isArray(message.tool_calls) && message.tool_calls.length > 0),
+    "interrupted repair retained incomplete assistant tool calls"
+  );
+  assert(
+    !interruptedDeepSeekState.messages.some((message) => message.role === "tool"),
+    "interrupted repair retained orphan partial tool result"
+  );
+  assert(
+    interruptedDeepSeekState.messages.at(-1)?.content === "Continue with this new request: /review",
+    "interrupted repair dropped the new user request"
+  );
+  const completeToolState = {
+    messages: [
+      { role: "system", content: "system" },
+      {
+        role: "assistant",
+        content: "Using a tool.",
+        tool_calls: [{ id: "call-ok", type: "function", function: { name: "list_files", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "call-ok", content: "{\"ok\":true}" },
+      { role: "user", content: "next" },
+    ],
+  };
+  const completeRepair = repairModelMessageHistory(completeToolState, { provider: "openai" });
+  assert(!completeRepair.changed, "complete OpenAI-format tool history should not be modified");
   const patchRoute = selectModelRoute({
     routingMode: "smart",
     provider: "deepseek",
