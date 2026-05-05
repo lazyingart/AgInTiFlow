@@ -42,6 +42,48 @@ Docker package installs are safe when they match the sandbox contract.
 
 This is why a task can safely install Python packages in Docker, but cannot keep an interactive tmux server alive inside a one-shot Docker command.
 
+## Permission Contract
+
+The runtime must be consistent when an action is not permitted. A blocked action should not become a loop of slight command variants, and a failed setup step should not be reported as success just because a stale folder already exists.
+
+Current contract:
+
+- Workspace file tools may read and write inside the configured project folder when file tools are enabled.
+- Workspace writes outside that folder, secret paths, `.git` internals, and dependency folders such as `node_modules` are blocked.
+- `git clone`, `git fetch`, `git pull --ff-only`, `git push`, `curl`, and `wget` are classified as network operations.
+- Network/setup commands are allowed in `docker-workspace` only when package installs are approved.
+- Host `sudo` and host OS package installs are not automatic. The agent should ask the user to run a manual command or switch to a safer Docker setup.
+- Destructive host shell/git operations need explicit trusted host mode.
+
+When a tool is blocked, the tool result includes `permissionAdvice` with three choices: refuse/stop, approve a safer rerun, or switch to a trusted host run. The model prompt requires the agent to present that blocker and avoid retrying variants until the user approves a path.
+
+The common controlled rerun shape is:
+
+```bash
+aginti --resume <session-id> \
+  --cwd /path/to/project \
+  --sandbox-mode docker-workspace \
+  --package-install-policy allow \
+  --approve-package-installs \
+  --allow-shell \
+  --allow-file-tools \
+  "Continue after approval and verify the output was created in this run."
+```
+
+For host-only work, use the stricter trusted form deliberately:
+
+```bash
+aginti --resume <session-id> \
+  --cwd /path/to/project \
+  --sandbox-mode host \
+  --package-install-policy allow \
+  --approve-package-installs \
+  --allow-shell \
+  --allow-file-tools \
+  --allow-destructive \
+  "Continue after trusted host approval. Inspect first and keep unrelated files untouched."
+```
+
 ## Recommended Defaults
 
 Default daily coding:
@@ -103,4 +145,3 @@ The documentation should be maintained as product code:
 - Add smoke tests when a workflow becomes behavior, not just guidance.
 - Update `AGINTI.md` for project-specific operating memory.
 - Treat docs changes as part of the release checklist before publishing npm.
-

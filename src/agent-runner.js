@@ -27,6 +27,7 @@ import { hostShellOption, platformInfo, platformLabel } from "./platform.js";
 import { captureTmuxPane, listTmuxSessions, sendTmuxKeys, startTmuxSession } from "./tmux-tools.js";
 import { languageInstruction } from "./i18n.js";
 import { flushHousekeeping } from "./housekeeping.js";
+import { buildFailedCommandAdvice, buildPermissionAdvice } from "./permission-advice.js";
 import {
   buildSupervisorInstruction,
   createScsPlan,
@@ -358,6 +359,8 @@ async function createInitialState(config, sessionId) {
               ? `A shell command tool is available inside Docker sandbox mode ${config.sandboxMode}. Docker workspace mode with approved package installs supports broader setup and network commands. The project is mounted at /workspace and the persistent agent toolchain is mounted at /aginti-env with caches under /aginti-cache.`
               : `A host shell command tool is available under the configured trust policy on ${platformLabel(platform)}. On native Windows, prefer PowerShell/cmd-compatible commands or switch to WSL/Docker for bash-like toolchains.`
             : "No shell command tool is available.",
+          "Permission contract: current-workspace file writes are allowed through workspace file tools when enabled. Outside-workspace paths, host sudo, host OS package installs, destructive git/shell actions, and blocked network/setup must not be bypassed by retrying variants. If a tool result includes permissionAdvice or suggestedCommand, stop, explain the blocker, and ask the user to approve/rerun that mode or choose a safer workspace-relative path.",
+          "If an operation fails but a directory, artifact, or file already exists, treat it as pre-existing unless you have evidence this run created or updated it. Verify expected outputs before claiming success.",
           config.allowShellTool
             ? "Host tmux tools are available for long-running terminals: list sessions, capture panes, send safe keys/text, and start detached sessions. Prefer these tools for monitoring long installs/tests/dev servers without blocking; capture before sending input and never send secrets or sudo passwords. Do not start or install tmux inside Docker run_command containers because those containers are short-lived."
             : "",
@@ -856,12 +859,20 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
   });
 
   if (!guard.allowed) {
+    const permissionAdvice = buildPermissionAdvice({
+      toolName: toolCall.function.name,
+      args: safeArgs,
+      guard,
+      config,
+      state,
+    });
     await store.appendEvent("tool.blocked", {
       toolName: toolCall.function.name,
       args: safeArgs,
       reason: guard.reason,
       category: guard.category,
       needsApproval: guard.needsApproval,
+      permissionAdvice,
     });
     observers.event("tool.blocked", {
       toolName: toolCall.function.name,
@@ -869,6 +880,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       reason: guard.reason,
       category: guard.category,
       needsApproval: guard.needsApproval,
+      permissionAdvice,
     });
     return {
       ok: false,
@@ -876,6 +888,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       reason: guard.reason,
       category: guard.category,
       needsApproval: guard.needsApproval,
+      permissionAdvice,
       toolName: toolCall.function.name,
       args: safeArgs,
     };
@@ -1014,17 +1027,27 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         const result = await executeWorkspaceTool(toolCall.function.name, args, config);
         const eventResult = sanitizeToolResult(result);
         if (result.blocked) {
+          const permissionAdvice = buildPermissionAdvice({
+            toolName: toolCall.function.name,
+            args: safeArgs,
+            guard: result,
+            config,
+            state,
+          });
+          result.permissionAdvice = permissionAdvice;
           await store.appendEvent("tool.blocked", {
             toolName: toolCall.function.name,
             args: safeArgs,
             reason: result.reason,
             category: result.category,
+            permissionAdvice,
           });
           observers.event("tool.blocked", {
             toolName: toolCall.function.name,
             args: safeArgs,
             reason: result.reason,
             category: result.category,
+            permissionAdvice,
           });
           return result;
         }
@@ -1049,6 +1072,15 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           await ensureDockerSandboxReady(config, observers);
         }
         const commandResult = await runShellCommand(String(args.command), config, policy);
+        const permissionAdvice = commandResult.ok === false
+          ? buildFailedCommandAdvice({
+              args: safeArgs,
+              commandPolicy: policy,
+              commandResult,
+              config,
+              state,
+            })
+          : null;
         const result = {
           ok: commandResult.ok !== false,
           toolName: "run_command",
@@ -1062,6 +1094,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
             writesWorkspace: Boolean(policy.writesWorkspace),
           },
           ...commandResult,
+          ...(permissionAdvice ? { permissionAdvice } : {}),
         };
         await store.appendEvent("tool.completed", result);
         observers.event("tool.completed", result);
@@ -1743,6 +1776,7 @@ export async function runAgent(config) {
             commandPolicy: toolResult.commandPolicy,
             blocked: Boolean(toolResult.blocked),
             error: toolResult.error || toolResult.reason || "",
+            permissionAdvice: toolResult.permissionAdvice || null,
           });
         }
 

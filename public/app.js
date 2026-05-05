@@ -930,6 +930,14 @@ function renderWorkspacePanel(workspace = lastWorkspace, activity = lastWorkspac
       const label = blocked ? t("blockedLabel") : t("changedLabel");
       const path = escapeHtml(item.path || "");
       const reason = blocked ? `<div class="subtle">${escapeHtml(item.reason || "")}</div>` : "";
+      const advice =
+        blocked && item.permissionAdvice
+          ? `<div class="subtle"><strong>${escapeHtml(item.permissionAdvice.summary || "Permission advice")}</strong>${
+              item.permissionAdvice.suggestedCommand
+                ? `<br /><code>${escapeHtml(item.permissionAdvice.suggestedCommand)}</code>`
+                : ""
+            }</div>`
+          : "";
       const diff = item.diff ? `<pre class="change-diff">${renderDiffHtml(item.diff, 1200)}</pre>` : "";
       const hashes =
         item.beforeHash || item.afterHash
@@ -944,6 +952,7 @@ function renderWorkspacePanel(workspace = lastWorkspace, activity = lastWorkspac
           </div>
           <strong class="change-path">${path}</strong>
           ${reason}
+          ${advice}
           ${hashes}
           ${diff}
         </article>

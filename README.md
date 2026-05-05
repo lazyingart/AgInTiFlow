@@ -133,6 +133,8 @@ aginti --resume <session-id> \
   "Take a fresh screenshot of the running app in the emulator, save it with a durable filename in this project, and keep git status clean."
 ```
 
+Permission behavior is intentionally consistent: writes inside the current project are allowed through file tools, network/setup runs are normal in approved Docker workspace mode, and outside-project or trusted-host actions stop with a clear blocker plus a suggested rerun command. See [runtime modes and autonomy](docs/runtime-modes-and-autonomy.md) for the full contract.
+
 ## Real Screenshots
 
 | CLI launch | Web app overview |

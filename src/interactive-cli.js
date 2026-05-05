@@ -561,6 +561,12 @@ function printCommandOutputLog(data = {}) {
     for (const line of preview.shown) outputLine(`${color(" | ", ansi.systemBg)} ${line}`);
     if (preview.hidden > 0) outputLine(`${color(" | ", ansi.systemBg)} ... ${preview.hidden} more line(s) folded`);
   }
+  if (data.permissionAdvice) {
+    const advice = data.permissionAdvice;
+    outputLine(`${label("perm", ansi.red)} ${compactLine(advice.summary || advice.reason || "Permission advice available.", 104)}`);
+    if (advice.suggestedCommand) outputLine(`${color(" | ", ansi.red)} rerun: ${compactLine(advice.suggestedCommand, 120)}`);
+    if (advice.trustedHostCommand) outputLine(`${color(" | ", ansi.red)} host: ${compactLine(advice.trustedHostCommand, 120)}`);
+  }
 }
 
 function printHeading(text) {
@@ -3199,6 +3205,12 @@ async function runPrompt(prompt, state, packageDir) {
           printWorkspaceChange(data);
         } else if (type === "tool.blocked") {
           printStatusEvent(state, "tool_blocked", data.toolName || data.reason || "unknown");
+          if (data.permissionAdvice) {
+            const advice = data.permissionAdvice;
+            outputLine(`${label("perm", ansi.red)} ${compactLine(advice.summary || advice.reason || "Permission advice available.", 104)}`);
+            if (advice.suggestedCommand) outputLine(`${color(" | ", ansi.red)} rerun: ${compactLine(advice.suggestedCommand, 120)}`);
+            if (advice.trustedHostCommand) outputLine(`${color(" | ", ansi.red)} host: ${compactLine(advice.trustedHostCommand, 120)}`);
+          }
         } else if (type === "loop.guard") {
           printStatusEvent(state, "loop_guard", data.toolName || "");
         } else if (type === "conversation.queued_input_applied") {

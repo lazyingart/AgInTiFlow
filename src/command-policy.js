@@ -42,8 +42,8 @@ const SAFE_WORKSPACE_WRITE_PATTERNS = [/^mkdir\s+-p\s+[-\w./]+$/];
 const PERMISSION_CHANGE_PATTERNS = [/^(?:sudo\s+)?chmod\s+[-+=,rwxugoXst0-7]+\s+[-\w./]+$/];
 
 const NETWORK_FETCH_PATTERNS = [
-  /^curl\s+(?:-[A-Za-z0-9]*\s+)*https?:\/\/\S+(?:\s+-o\s+[-\w./]+)?$/,
-  /^wget\s+(?:-[A-Za-z0-9]*\s+)*(?:-O\s+[-\w./]+\s+)?https?:\/\/\S+$/,
+  /^curl\b(?=[\s\S]*https?:\/\/\S+)[\s\S]*$/,
+  /^wget\b(?=[\s\S]*https?:\/\/\S+)[\s\S]*$/,
 ];
 
 const GIT_WORKFLOW_PATTERNS = [
@@ -163,6 +163,29 @@ function isSafeVirtualWorkspaceDir(value) {
   return isSafeRelativeDir(normalized.replace(/^\/workspace\//, ""));
 }
 
+function classifyGitClone(normalized) {
+  const match = normalized.match(
+    /^git\s+clone(?:\s+--depth\s+\d+)?(?:\s+--branch\s+[-\w./]+)?\s+(https:\/\/\S+)(?:\s+([-\w./]+))?$/
+  );
+  if (!match) return null;
+
+  const target = match[2] || "";
+  if (target && !isSafeRelativeDir(target) && !isSafeVirtualWorkspaceDir(target)) {
+    return {
+      category: "blocked",
+      reason: `git clone target must be a safe workspace-relative directory: ${target}`,
+    };
+  }
+
+  return {
+    category: "git-remote",
+    needsNetwork: true,
+    writesWorkspace: true,
+    virtualWorkspacePath: Boolean(target && isSafeVirtualWorkspaceDir(target)),
+    reason: "Git clone writes into the workspace and requires network access.",
+  };
+}
+
 function classifySimpleCommand(normalized) {
   if (ALWAYS_BLOCKED_PATTERNS.some((pattern) => pattern.test(normalized))) {
     return { category: "blocked", reason: "Command is blocked because it may expose secrets or publish packages." };
@@ -205,6 +228,8 @@ function classifySimpleCommand(normalized) {
       reason: "Git workflow command. Agent should run git status/diff first and stop on conflicts or divergence.",
     };
   }
+  const gitCloneClassification = classifyGitClone(normalized);
+  if (gitCloneClassification) return gitCloneClassification;
 
   const lowered = ` ${normalized.toLowerCase()} `;
   if (BLOCKED_WRITE_TOKENS.some((part) => lowered.includes(part))) {

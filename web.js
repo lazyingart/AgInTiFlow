@@ -527,6 +527,7 @@ async function collectWorkspaceActivity(limit = 24) {
           path: event.data?.args?.path || "",
           reason: event.data?.reason || "",
           category: event.data?.category || "",
+          permissionAdvice: event.data?.permissionAdvice || null,
         });
       }
     }

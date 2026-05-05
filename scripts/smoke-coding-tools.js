@@ -6,9 +6,11 @@ import { fileURLToPath } from "node:url";
 import { repairModelMessageHistory, runAgent } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { readCodebaseMap } from "../src/codebase-map.js";
+import { evaluateCommandPolicy } from "../src/command-policy.js";
 import { engineeringGuidanceForTask, recommendedMaxStepsForTask } from "../src/engineering-guidance.js";
 import { selectModelRoute } from "../src/model-routing.js";
 import { listParallelScouts, runParallelScouts, shouldRunParallelScouts } from "../src/parallel-scouts.js";
+import { buildFailedCommandAdvice, buildPermissionAdvice } from "../src/permission-advice.js";
 import { SessionStore } from "../src/session-store.js";
 import { searchWeb } from "../src/web-search.js";
 import { executeWorkspaceTool } from "../src/workspace-tools.js";
@@ -201,6 +203,48 @@ try {
   assert(
     guidance.includes("find . -type d -name __pycache__"),
     "engineering guidance did not include recursive Python transient checks"
+  );
+  const dockerWorkspacePolicy = {
+    allowShellTool: true,
+    useDockerSandbox: true,
+    sandboxMode: "docker-workspace",
+    packageInstallPolicy: "allow",
+    commandCwd: workspace,
+  };
+  const curlPolicy = evaluateCommandPolicy("curl -s -o /dev/null -w '%{http_code}' https://github.com/lazyingart/AgInTiFlow.git", dockerWorkspacePolicy);
+  assert(curlPolicy.allowed, "curl URL probe with flags should be allowed in docker-workspace allow mode");
+  assert(curlPolicy.needsNetwork, "curl URL probe with flags was not classified as network");
+  const clonePolicy = evaluateCommandPolicy("git clone https://github.com/lazyingart/AgInTiFlow.git", dockerWorkspacePolicy);
+  assert(clonePolicy.allowed, "git clone should be allowed in docker-workspace allow mode");
+  assert(clonePolicy.needsNetwork, "git clone was not classified as network");
+  assert(clonePolicy.writesWorkspace, "git clone was not classified as workspace-writing");
+  const unsafeCloneTarget = evaluateCommandPolicy("git clone https://github.com/lazyingart/AgInTiFlow.git ../AgInTiFlow", dockerWorkspacePolicy);
+  assert(!unsafeCloneTarget.allowed, "git clone outside the workspace should be blocked");
+  const blockedClonePolicy = evaluateCommandPolicy("git clone https://github.com/lazyingart/AgInTiFlow.git", {
+    ...dockerWorkspacePolicy,
+    packageInstallPolicy: "block",
+  });
+  assert(!blockedClonePolicy.allowed, "git clone should be blocked when Docker package/network setup is blocked");
+  const permissionAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: { command: "git clone https://github.com/lazyingart/AgInTiFlow.git" },
+    guard: blockedClonePolicy,
+    config: dockerWorkspacePolicy,
+    state: { sessionId: "coding-policy-smoke" },
+  });
+  assert(permissionAdvice.suggestedCommand.includes("coding-policy-smoke"), "permission advice did not include resume session id");
+  assert(permissionAdvice.suggestedCommand.includes("--sandbox-mode docker-workspace"), "permission advice did not suggest docker-workspace recovery");
+  const failedNetworkAdvice = buildFailedCommandAdvice({
+    args: { command: "git clone https://github.com/lazyingart/AgInTiFlow.git" },
+    commandPolicy: clonePolicy,
+    commandResult: { ok: false, stderr: "fatal: unable to access 'https://github.com/lazyingart/AgInTiFlow.git/': Could not resolve host: github.com" },
+    config: dockerWorkspacePolicy,
+    state: { sessionId: "coding-network-smoke" },
+  });
+  assert(failedNetworkAdvice?.failureKind === "network", "network failure advice was not generated");
+  assert(
+    failedNetworkAdvice.instruction.includes("Stop and present this blocker"),
+    "network failure advice did not tell the model to stop and ask"
   );
   assert(
     shouldRunParallelScouts(
@@ -459,6 +503,8 @@ try {
           "large_profile_pro_route",
           "auto_system_pro_route",
           "auto_engineering_guidance",
+          "command_policy_git_clone_network",
+          "permission_recovery_advice",
           "parallel_scout_trigger",
           "parallel_scout_roster",
           "parallel_scout_count_clamp",
