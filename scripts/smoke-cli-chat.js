@@ -149,9 +149,10 @@ try {
   const behaviorContract = formatBehaviorContractForPrompt();
   if (
     !behaviorContract.includes("name the actual environment used") ||
-    !behaviorContract.includes("Do not claim compatibility across untested runtimes")
+    !behaviorContract.includes("Do not claim compatibility across untested runtimes") ||
+    !behaviorContract.includes("Do not self-invoke AgInTiFlow")
   ) {
-    throw new Error("behavior contract must guard against host/Docker and runtime-version overclaims");
+    throw new Error("behavior contract must guard against host/Docker, runtime-version, and recursive self-invocation overclaims");
   }
   const wrappedDockerCommand = dockerUserCommand("node --test 2>&1 | tail -30", {
     category: "general-shell",

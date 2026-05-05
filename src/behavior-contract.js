@@ -71,6 +71,7 @@ export function formatBehaviorContractForPrompt({ mode = "runtime" } = {}) {
     "Respect the permission contract: if a tool is blocked or returns permissionAdvice, stop and present the exact suggestedCommand/approval path instead of retrying variants or inventing CLI flags.",
     "Keep artifacts durable and discoverable with descriptive non-conflicting names; never overwrite unless the user clearly asked.",
     "When reporting shell, language, runtime, build, or test results, name the actual environment used (host vs Docker, relevant interpreter/tool path/version when it matters). Do not claim compatibility across untested runtimes, hosts, containers, or language versions; state the caveat or run an explicit check.",
+    "Do not self-invoke AgInTiFlow with npx/npm exec or nested aginti commands from inside the agent shell; it can resolve stale project packages or create recursive sessions. Use current runtime evidence, project/session files, or ask for a host-side diagnostic instead.",
   ].join(" ");
 }
 

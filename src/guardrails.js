@@ -49,6 +49,16 @@ function isDockerTmuxProcessCommand(command = "") {
   ].some((pattern) => pattern.test(command));
 }
 
+function isNpxAgintiCommand(command = "") {
+  return /\b(?:npx(?:\s+(?:-y|--yes))?|npm\s+exec|pnpm\s+dlx|yarn\s+dlx)\s+(?:@lazyingart\/agintiflow|aginti)\b/i.test(
+    command
+  );
+}
+
+function isAgintiCliCommand(command = "") {
+  return /(?:^|[\s;&|('"])(?:node\s+[-\w./]*aginti-cli\.js|aginti)(?:\s|$)/i.test(command);
+}
+
 function normalizeDomain(hostname) {
   return hostname.replace(/^www\./, "").toLowerCase();
 }
@@ -137,6 +147,22 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
 
   if (toolName === "run_command") {
     const command = String(args.command || "").trim();
+    if (isNpxAgintiCommand(command)) {
+      return {
+        allowed: false,
+        reason:
+          "`npx aginti`/`npm exec aginti` is blocked inside agent shell tools because it can resolve a stale project-local AgInTiFlow package, install from the network, or start a nested agent session. Use the current runtime status, project/session files, or ask the user to run a host CLI diagnostic.",
+        category: "nested-aginti",
+      };
+    }
+    if (config.useDockerSandbox && isAgintiCliCommand(command)) {
+      return {
+        allowed: false,
+        reason:
+          "Nested AgInTiFlow CLI calls are blocked in Docker run_command because the container may not have the active host CLI and may resolve stale project node_modules. Use current session evidence, workspace files, or ask the user to run host-side `aginti doctor --json`/`aginti capabilities --json`.",
+        category: "nested-aginti",
+      };
+    }
     if (config.useDockerSandbox && isDockerTmuxProcessCommand(command)) {
       return {
         allowed: false,

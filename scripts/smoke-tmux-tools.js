@@ -78,6 +78,22 @@ try {
   });
   assert.equal(dockerTmuxSearch.allowed, true, "Docker run_command should still allow harmless tmux text searches");
 
+  const dockerNpxAginti = checkToolUse({
+    toolName: "run_command",
+    args: { command: "npx aginti doctor --json" },
+    config: { ...config, useDockerSandbox: true, sandboxMode: "docker-workspace", packageInstallPolicy: "allow" },
+  });
+  assert.equal(dockerNpxAginti.allowed, false, "Docker run_command should block npx aginti self-invocation");
+  assert.equal(dockerNpxAginti.category, "nested-aginti", "npx aginti block should be categorized");
+
+  const dockerNestedAginti = checkToolUse({
+    toolName: "run_command",
+    args: { command: "aginti storage status" },
+    config: { ...config, useDockerSandbox: true, sandboxMode: "docker-workspace", packageInstallPolicy: "allow" },
+  });
+  assert.equal(dockerNestedAginti.allowed, false, "Docker run_command should block nested aginti CLI calls");
+  assert.equal(dockerNestedAginti.category, "nested-aginti", "nested aginti block should be categorized");
+
   console.log(
     JSON.stringify(
       {
@@ -93,6 +109,8 @@ try {
           "destructive-guardrail",
           "docker-run-command-tmux-guardrail",
           "docker-run-command-tmux-search-allowed",
+          "docker-run-command-npx-aginti-guardrail",
+          "docker-run-command-nested-aginti-guardrail",
         ],
       },
       null,
