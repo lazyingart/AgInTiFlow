@@ -78,6 +78,31 @@ try {
   };
   const repair = repairModelMessageHistory(staleDeepSeekState, { provider: "deepseek" });
   assert(repair.changed, "stale DeepSeek history was not repaired");
+
+  const interleavedToolState = {
+    messages: [
+      { role: "system", content: "system" },
+      { role: "user", content: "do guarded writes" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          { id: "call-a", type: "function", function: { name: "write_file", arguments: "{\"path\":\".env\",\"content\":\"TOKEN=blocked\"}" } },
+          { id: "call-b", type: "function", function: { name: "write_file", arguments: "{\"path\":\"notes/ok.md\",\"content\":\"ok\"}" } },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-a", content: "{\"ok\":false,\"blocked\":true}" },
+      { role: "user", content: "Loop guard: do not repeat the blocked call." },
+      { role: "tool", tool_call_id: "call-b", content: "{\"ok\":false,\"skipped\":true}" },
+    ],
+  };
+  const interleavedRepair = repairModelMessageHistory(interleavedToolState, { provider: "openai" });
+  assert(interleavedRepair.changed, "interleaved tool-call history repair did not report a change");
+  const roles = interleavedToolState.messages.map((message) => `${message.role}:${message.tool_call_id || ""}`);
+  assert(
+    roles.join("|") === "system:|user:|assistant:|tool:call-a|tool:call-b|user:",
+    `interleaved tool-call history was not repaired into provider-valid order: ${roles.join("|")}`
+  );
   assert(
     staleDeepSeekState.messages.every(
       (message) => message.role !== "assistant" || message.reasoning_content || message.reasoningContent
@@ -596,6 +621,7 @@ try {
         workspace,
         checks: [
           "deepseek_history_repair",
+          "interleaved_tool_history_repair",
           "blocked_tool_batch_short_circuit",
           "deepseek_pro_patch_route",
           "runtime_time_context",

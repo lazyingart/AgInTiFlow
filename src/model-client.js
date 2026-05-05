@@ -6,6 +6,7 @@ import { engineeringGuidanceForTask } from "./engineering-guidance.js";
 import { formatSkillsForPrompt, selectSkillsForGoal } from "./skill-library.js";
 import { platformInfo, platformLabel } from "./platform.js";
 import { formatBehaviorContractForPrompt } from "./behavior-contract.js";
+import { redactSensitiveText } from "./redaction.js";
 
 export function createClient(config) {
   if (config.provider === "mock") {
@@ -558,7 +559,7 @@ export async function createPlan(client, config, state) {
     requestOptions(config)
   );
 
-  return response.choices[0]?.message?.content?.trim() || "1. Inspect the page.\n2. Use the smallest safe action.\n3. Finish with a concise answer.";
+  return redactSensitiveText(response.choices[0]?.message?.content?.trim() || "1. Inspect the page.\n2. Use the smallest safe action.\n3. Finish with a concise answer.");
 }
 
 export async function requestNextStep(client, config, messages) {

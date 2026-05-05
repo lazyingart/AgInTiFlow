@@ -213,14 +213,23 @@ function normalizeUrlPath(relativePath) {
 function preserveAssistantMessage(message) {
   const preserved = {
     role: "assistant",
-    content: message.content || "",
-    tool_calls: message.tool_calls,
+    content: redactSensitiveText(message.content || ""),
+    tool_calls: Array.isArray(message.tool_calls)
+      ? message.tool_calls.map((call) => ({
+          ...call,
+          function: {
+            ...(call.function || {}),
+            arguments:
+              typeof call.function?.arguments === "string"
+                ? redactSensitiveText(call.function.arguments)
+                : call.function?.arguments,
+          },
+        }))
+      : message.tool_calls,
   };
 
   const reasoningContent = message.reasoning_content || message.reasoningContent;
-  if (reasoningContent) {
-    preserved.reasoning_content = reasoningContent;
-  }
+  if (reasoningContent) preserved.reasoning_content = redactSensitiveText(reasoningContent);
 
   return preserved;
 }
@@ -233,6 +242,7 @@ export function repairModelMessageHistory(state, config = {}) {
       convertedAssistantMessages: 0,
       droppedToolMessages: 0,
       incompleteToolCallMessages: 0,
+      reorderedInterleavedMessages: 0,
     };
   }
 
@@ -241,6 +251,7 @@ export function repairModelMessageHistory(state, config = {}) {
   let convertedAssistantMessages = 0;
   let droppedToolMessages = 0;
   let incompleteToolCallMessages = 0;
+  let reorderedInterleavedMessages = 0;
 
   for (let index = 0; index < state.messages.length; index += 1) {
     const message = state.messages[index];
@@ -254,12 +265,21 @@ export function repairModelMessageHistory(state, config = {}) {
         const expectedIds = toolCalls.map((call) => String(call?.id || "")).filter(Boolean);
         const expected = new Set(expectedIds);
         const followingToolMessages = [];
+        const deferredInterleavedMessages = [];
         const duplicateOrUnexpectedToolMessages = [];
         const seen = new Set();
         let cursor = index + 1;
 
-        while (cursor < state.messages.length && state.messages[cursor]?.role === "tool") {
-          const toolMessage = state.messages[cursor];
+        while (cursor < state.messages.length) {
+          const nextMessage = state.messages[cursor];
+          if (nextMessage?.role !== "tool") {
+            const complete = expectedIds.length > 0 && expectedIds.every((id) => seen.has(id));
+            if (complete || nextMessage?.role === "assistant") break;
+            deferredInterleavedMessages.push(nextMessage);
+            cursor += 1;
+            continue;
+          }
+          const toolMessage = nextMessage;
           const toolCallId = String(toolMessage.tool_call_id || "");
           if (expected.has(toolCallId) && !seen.has(toolCallId)) {
             followingToolMessages.push(toolMessage);
@@ -275,12 +295,18 @@ export function repairModelMessageHistory(state, config = {}) {
           droppedAssistantMessages += 1;
           droppedToolMessages += followingToolMessages.length + duplicateOrUnexpectedToolMessages.length;
           if (!completeToolResults) incompleteToolCallMessages += 1;
+          if (deferredInterleavedMessages.length) {
+            repaired.push(...deferredInterleavedMessages);
+            reorderedInterleavedMessages += deferredInterleavedMessages.length;
+          }
           index = cursor - 1;
           continue;
         }
 
         repaired.push(preserveAssistantMessage(message));
         repaired.push(...followingToolMessages);
+        repaired.push(...deferredInterleavedMessages);
+        reorderedInterleavedMessages += deferredInterleavedMessages.length;
         droppedToolMessages += duplicateOrUnexpectedToolMessages.length;
         index = cursor - 1;
         continue;
@@ -320,6 +346,7 @@ export function repairModelMessageHistory(state, config = {}) {
     droppedAssistantMessages > 0 ||
     convertedAssistantMessages > 0 ||
     droppedToolMessages > 0 ||
+    reorderedInterleavedMessages > 0 ||
     repaired.length !== state.messages.length;
 
   if (changed) {
@@ -332,6 +359,7 @@ export function repairModelMessageHistory(state, config = {}) {
     convertedAssistantMessages,
     droppedToolMessages,
     incompleteToolCallMessages,
+    reorderedInterleavedMessages,
   };
 }
 
@@ -1372,7 +1400,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         return result;
       }
       case "finish":
-        return { ok: true, done: true, result: String(args.result || ""), toolName: "finish" };
+        return { ok: true, done: true, result: redactSensitiveText(String(args.result || "")), toolName: "finish" };
       default:
         throw new Error(`Unknown tool: ${toolCall.function.name}`);
     }
@@ -1481,7 +1509,7 @@ export async function runAgent(config) {
           taskProfile: config.taskProfile,
           goal: config.goal,
         });
-        state.plan = scsPlan.plan;
+        state.plan = redactSensitiveText(scsPlan.plan);
         state.meta.scs = scsPlan.scs;
         state.messages.push({
           role: "user",
@@ -1496,7 +1524,7 @@ export async function runAgent(config) {
         await store.appendEvent("scs.committee.plan_drafted", {
           phase: scsPlan.scs.phase,
           phaseGoal: scsPlan.scs.phaseGoal,
-          plan: scsPlan.plan,
+          plan: state.plan,
           acceptanceCriteria: scsPlan.scs.acceptanceCriteria,
         });
         await store.appendEvent(`scs.student.${scsPlan.scs.student.decision}`, scsPlan.scs.student);
@@ -1504,16 +1532,16 @@ export async function runAgent(config) {
           phase: scsPlan.scs.phase,
           phaseGoal: scsPlan.scs.phaseGoal,
         });
-        await store.savePlan(scsPlan.plan);
-        await store.appendEvent("plan.created", { plan: scsPlan.plan, scs: true });
+        await store.savePlan(state.plan);
+        await store.appendEvent("plan.created", { plan: state.plan, scs: true });
         await store.saveState(state);
-        observers.event("plan.created", { plan: scsPlan.plan, scs: true });
+        observers.event("plan.created", { plan: state.plan, scs: true });
         observers.event("scs.student.approve_plan", scsPlan.scs.student);
         emitConsole(config, `SCS: student approved phase plan (${Math.round((scsPlan.scs.student.confidence || 0) * 100)}%).`, {
           kind: "meta",
         });
       } else {
-        const plan = await createPlan(client, config, state);
+        const plan = redactSensitiveText(await createPlan(client, config, state));
         state.plan = plan;
         await store.savePlan(plan);
         await store.appendEvent("plan.created", { plan });
@@ -1718,7 +1746,7 @@ export async function runAgent(config) {
 
       await store.appendEvent("model.responded", {
         step,
-        content: assistantMessage.content || "",
+        content: redactSensitiveText(assistantMessage.content || ""),
         toolCalls: (assistantMessage.tool_calls || []).map((call) => ({
           id: call.id,
           name: call.function.name,
@@ -1727,7 +1755,7 @@ export async function runAgent(config) {
       });
       observers.event("model.responded", {
         step,
-        content: assistantMessage.content || "",
+        content: redactSensitiveText(assistantMessage.content || ""),
       });
 
       const toolCalls = assistantMessage.tool_calls || [];
@@ -1740,7 +1768,7 @@ export async function runAgent(config) {
           await store.saveState(state);
           continue;
         }
-        const fallback = assistantMessage.content?.trim() || "No tool call returned.";
+        const fallback = redactSensitiveText(assistantMessage.content?.trim() || "No tool call returned.");
         if (config.scsActive) {
           const decision = await reviewScsFinish(client, config, state, fallback, {
             events: await store.loadEvents(),
@@ -1792,6 +1820,7 @@ export async function runAgent(config) {
       }
 
       let continueForQueuedInput = false;
+      const postBatchToolResults = [];
       for (let toolIndex = 0; toolIndex < toolCalls.length; toolIndex += 1) {
         const toolCall = toolCalls[toolIndex];
         throwIfAborted(config);
@@ -1801,44 +1830,7 @@ export async function runAgent(config) {
           tool_call_id: toolCall.id,
           content: JSON.stringify(toolResult),
         });
-        await applyToolLoopGuard(state, toolResult, store, observers);
-
-        if (config.scsActive && shouldReviewToolResult(toolResult, state)) {
-          const decision = await reviewScsToolResult(client, config, state, toolResult, {
-            events: await store.loadEvents(),
-            taskProfile: config.taskProfile,
-            goal: config.goal,
-          });
-          state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || "on", active: true };
-          state.meta.scs.monitorReviews = (state.meta.scs.monitorReviews || 0) + 1;
-          state.meta.scs.lastStudentDecision = decision;
-          await store.appendEvent(`scs.student.${decision.decision}`, {
-            ...decision,
-            toolName: toolResult.toolName,
-          });
-          observers.event(`scs.student.${decision.decision}`, {
-            decision: decision.decision,
-            reason: decision.reason,
-            toolName: toolResult.toolName,
-          });
-          if (decision.decision === "rethink_plan" || decision.decision === "reject_phase") {
-            state.messages.push({
-              role: "user",
-              content: [
-                "SCS student monitor requested a rethink based on tool evidence.",
-                `Decision: ${decision.decision}`,
-                `Reason: ${decision.reason || "No reason provided."}`,
-                decision.nextRequiredAction ? `Next required action: ${decision.nextRequiredAction}` : "",
-                "Supervisor: do not repeat the same failed call. Adjust within the approved phase or finish with a concrete blocker if the phase is invalidated.",
-              ]
-                .filter(Boolean)
-                .join("\n"),
-            });
-            emitConsole(config, `SCS: ${decision.decision} after ${toolResult.toolName}: ${decision.reason || "reviewed"}`, {
-              kind: "meta",
-            });
-          }
-        }
+        postBatchToolResults.push(toolResult);
 
         if (toolResult.toolName === "run_command") {
           observers.log("command.output", {
@@ -1953,6 +1945,47 @@ export async function runAgent(config) {
             sessionId,
             result: toolResult.result,
           };
+        }
+      }
+
+      for (const toolResult of postBatchToolResults) {
+        await applyToolLoopGuard(state, toolResult, store, observers);
+
+        if (config.scsActive && shouldReviewToolResult(toolResult, state)) {
+          const decision = await reviewScsToolResult(client, config, state, toolResult, {
+            events: await store.loadEvents(),
+            taskProfile: config.taskProfile,
+            goal: config.goal,
+          });
+          state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || "on", active: true };
+          state.meta.scs.monitorReviews = (state.meta.scs.monitorReviews || 0) + 1;
+          state.meta.scs.lastStudentDecision = decision;
+          await store.appendEvent(`scs.student.${decision.decision}`, {
+            ...decision,
+            toolName: toolResult.toolName,
+          });
+          observers.event(`scs.student.${decision.decision}`, {
+            decision: decision.decision,
+            reason: decision.reason,
+            toolName: toolResult.toolName,
+          });
+          if (decision.decision === "rethink_plan" || decision.decision === "reject_phase") {
+            state.messages.push({
+              role: "user",
+              content: [
+                "SCS student monitor requested a rethink based on tool evidence.",
+                `Decision: ${decision.decision}`,
+                `Reason: ${decision.reason || "No reason provided."}`,
+                decision.nextRequiredAction ? `Next required action: ${decision.nextRequiredAction}` : "",
+                "Supervisor: do not repeat the same failed call. Adjust within the approved phase or finish with a concrete blocker if the phase is invalidated.",
+              ]
+                .filter(Boolean)
+                .join("\n"),
+            });
+            emitConsole(config, `SCS: ${decision.decision} after ${toolResult.toolName}: ${decision.reason || "reviewed"}`, {
+              kind: "meta",
+            });
+          }
         }
       }
 
