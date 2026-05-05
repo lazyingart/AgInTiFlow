@@ -166,7 +166,7 @@ export function buildScsEvidencePack(state = {}, context = {}) {
         return `tool:${parsed.toolName || message.tool_call_id || "unknown"} ok=${parsed.ok !== false} done=${Boolean(parsed.done)} ${compactJson(
           {
             error: parsed.error || parsed.reason || "",
-            stdout: parsed.stdout ? String(parsed.stdout).slice(0, 300) : "",
+            stdout: parsed.stdout ? String(parsed.stdout).slice(0, 1200) : "",
             path: parsed.path || "",
             changes: Array.isArray(parsed.changes) ? parsed.changes.map((change) => change.path).filter(Boolean) : [],
           },
@@ -458,7 +458,7 @@ export async function reviewScsFinish(client, config, state, result = "", contex
       {
         role: "system",
         content:
-          "You are the SCS student final gate. Decide if the supervisor has enough concrete evidence to finish. Emit finish_allowed or finish_rejected only. Be strict for coding/system tasks, but do not demand impossible checks. Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.",
+          "You are the SCS student final gate. Decide if the supervisor has enough concrete evidence to finish. Emit finish_allowed or finish_rejected only. Be strict for coding/system tasks, but do not demand impossible checks. Evaluate both the proposed final result and the evidence pack; tool stdout in recentMessages/recentEvents is raw command evidence and does not need to be duplicated in the final answer. Reject only when neither the final answer nor the evidence pack contains concrete file/tool/check evidence for the acceptance criteria. Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.",
       },
       {
         role: "user",

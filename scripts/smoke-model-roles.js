@@ -11,7 +11,7 @@ import {
 } from "../src/model-routing.js";
 import { normalizeTextToolCallResponse, parseTextToolCalls, usesTextToolProtocol } from "../src/model-client.js";
 import { modelRoleChoices } from "../src/interactive-cli.js";
-import { buildSupervisorInstruction } from "../src/scs-controller.js";
+import { buildScsEvidencePack, buildSupervisorInstruction } from "../src/scs-controller.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -208,6 +208,27 @@ assert(!usesTextToolProtocol({ provider: "venice", model: "venice-uncensored-1-2
 const scsInstruction = buildSupervisorInstruction({ plan: "Create one file.", acceptanceCriteria: ["File exists."] });
 assert(scsInstruction.includes("Student-Committee-Supervisor"), "SCS supervisor instruction should define the acronym");
 assert(!scsInstruction.includes("Syntax-Checker Sentinel"), "SCS supervisor instruction should not allow alternate acronym expansions");
+const longStdout = [
+  "=== Student-Committee-Supervisor present ===",
+  "3:SCS stands for **Student-Committee-Supervisor**",
+  "=== Syntax-Checker Sentinel absent ===",
+  "OK: absent",
+  "=== Residual content ===",
+  "py_compile FOUND",
+  "f-string FOUND",
+  "artifact integrity FOUND",
+].join("\n");
+const scsEvidence = buildScsEvidencePack({
+  goal: "verify SCS artifact",
+  messages: [
+    {
+      role: "tool",
+      content: JSON.stringify({ toolName: "run_command", ok: true, stdout: `${longStdout}\n${"x".repeat(700)}` }),
+    },
+  ],
+});
+assert(scsEvidence.includes("Student-Committee-Supervisor"), "SCS evidence pack should preserve raw verification stdout");
+assert(scsEvidence.includes("Syntax-Checker Sentinel absent"), "SCS evidence pack should keep absence checks visible to the final gate");
 
 const output = await runCli(["models"]);
 assert(output.includes("/route") && output.includes("/spare") && output.includes("venice-gpt"), "aginti models output missing role details");
@@ -237,6 +258,7 @@ console.log(
         "requested-tools-parser",
         "malformed-text-tool-retry",
         "scs-supervisor-identity",
+        "scs-evidence-stdout",
         "cli-models-command",
         "venice-shortcut",
       ],
