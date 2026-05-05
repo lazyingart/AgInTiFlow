@@ -57,6 +57,7 @@ async function runMock(goal, sessionId, { resume = false } = {}) {
   return {
     result,
     events: await store.loadEvents(),
+    state: await store.loadState(),
   };
 }
 
@@ -400,6 +401,12 @@ try {
 
   const inspectRun = await runMock("Inspect this large codebase and recommend next reads.", "coding-inspect");
   assert(
+    inspectRun.state?.messages?.some(
+      (message) => message.role === "system" && /Runtime time context: local=.*utc=/.test(message.content || "")
+    ),
+    "agent prompt did not include local/UTC runtime time context"
+  );
+  assert(
     inspectRun.events.some((event) => event.type === "tool.completed" && event.data?.toolName === "inspect_project"),
     "mock large-codebase run did not use inspect_project"
   );
@@ -534,6 +541,7 @@ try {
           "deepseek_history_repair",
           "blocked_tool_batch_short_circuit",
           "deepseek_pro_patch_route",
+          "runtime_time_context",
           "large_profile_pro_route",
           "auto_system_pro_route",
           "auto_engineering_guidance",

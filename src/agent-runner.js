@@ -72,6 +72,40 @@ function formatProjectInstructions(instructions) {
     .join("\n");
 }
 
+function formatDateTimeInTimeZone(date, timeZone) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).formatToParts(date);
+    const get = (type) => parts.find((part) => part.type === type)?.value || "";
+    return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
+  } catch {
+    return date.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
+  }
+}
+
+function runtimeTemporalContext(date = new Date()) {
+  let timeZone = "";
+  try {
+    timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch {
+    timeZone = "";
+  }
+  const local = formatDateTimeInTimeZone(date, timeZone || "UTC");
+  const utc = date.toISOString().replace(/\.\d{3}Z$/, "Z");
+  return [
+    `Runtime time context: local=${local}${timeZone ? ` timezone=${timeZone}` : ""}; utc=${utc}.`,
+    "Use this context for today/tomorrow/yesterday and date-stamped filenames or reports; if timezone matters, state it explicitly instead of guessing from Docker/UTC output.",
+  ].join(" ");
+}
+
 function isAbortError(error, config = {}) {
   return Boolean(
     config.abortSignal?.aborted ||
@@ -310,6 +344,7 @@ async function createInitialState(config, sessionId) {
   const projectInstructions = await readProjectInstructions(config.baseDir || config.commandCwd || process.cwd());
   const projectInstructionContext = formatProjectInstructions(projectInstructions);
   const platform = platformInfo();
+  const temporalContext = runtimeTemporalContext(new Date(now));
   return {
     sessionId,
     createdAt: now,
@@ -353,6 +388,7 @@ async function createInitialState(config, sessionId) {
           "Never navigate outside the allowed domains when an allowlist exists.",
           "Avoid destructive actions, purchases, account changes, and sensitive workflows.",
           languageInstruction(config.language || "en"),
+          temporalContext,
           projectInstructionContext,
           formatBehaviorContractForPrompt(),
           "Treat AGINTI.md as durable project memory and operating instructions for this project. The user can edit it manually or ask you in chat to update it; use workspace file tools for that and never store secrets there.",
@@ -411,6 +447,7 @@ async function createInitialState(config, sessionId) {
         content: [
           `Goal: ${config.goal}`,
           languageInstruction(config.language || "en"),
+          temporalContext,
           config.startUrl ? `Suggested start URL: ${config.startUrl}` : "",
           config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
           config.allowShellTool

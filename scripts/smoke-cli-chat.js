@@ -18,6 +18,7 @@ import {
 import { parseArgs, parseResumeCommandArgs, splitResumeCommandArgv } from "../src/cli.js";
 import { dockerPolicyTimeoutMs, dockerUserCommand } from "../src/docker-sandbox.js";
 import { formatBehaviorContractForPrompt } from "../src/behavior-contract.js";
+import { SUPPORTED_LANGUAGES, t } from "../src/i18n.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-cli-chat-"));
@@ -107,6 +108,53 @@ function runCli(args, inputText) {
 }
 
 try {
+  const translatedHelpKeys = [
+    "helpHelp",
+    "helpStatus",
+    "helpLogin",
+    "helpInstructions",
+    "helpModels",
+    "helpVenice",
+    "helpRoute",
+    "helpModel",
+    "helpSpare",
+    "helpWrapper",
+    "helpAuxiliary",
+    "helpAaps",
+    "helpNew",
+    "helpResume",
+    "helpReview",
+    "helpRename",
+    "helpSessions",
+    "helpSkills",
+    "helpSkillMesh",
+    "helpProfile",
+    "helpWebSearch",
+    "helpEnableScs",
+    "helpScouts",
+    "helpRouting",
+    "helpProvider",
+    "helpDockerOn",
+    "helpDockerOff",
+    "helpLatex",
+    "helpInstalls",
+    "helpCwd",
+    "helpLanguage",
+    "helpExit",
+    "helpNormalRequest",
+    "helpAutocomplete",
+    "helpQueue",
+    "helpEditQueue",
+    "helpEsc",
+  ];
+  for (const language of SUPPORTED_LANGUAGES.filter((item) => item !== "en")) {
+    for (const key of translatedHelpKeys) {
+      if (t(key, language) === t(key, "en")) {
+        throw new Error(`missing localized help string ${language}.${key}`);
+      }
+    }
+  }
+
   const renderedMarkdown = stripMarkdown(
     [
       "**Docker status**",
