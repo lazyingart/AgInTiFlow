@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { listAgentWrappers } from "./tool-wrappers.js";
 import { getDockerSandboxStatus } from "./docker-sandbox.js";
 import { platformInfo, platformLabel, platformSetupHints } from "./platform.js";
+import { buildAgintiInstructions, normalizeInstructionTemplate } from "./behavior-contract.js";
 import {
   LEGACY_PROJECT_SESSIONS_DIR_NAME,
   PROJECT_SESSIONS_DIR_NAME,
@@ -157,35 +158,8 @@ export async function ensureProjectSessionStorage(projectRoot = process.cwd()) {
   return paths;
 }
 
-export function defaultAgintiInstructions() {
-  return [
-    "# AGINTI.md",
-    "",
-    "Project instructions for AgInTiFlow agents.",
-    "",
-    "Edit this file directly or ask AgInTiFlow to update it during chat. Keep durable project preferences here; keep secrets in `.aginti/.env` instead.",
-    "",
-    "## Project Goals",
-    "",
-    "- Describe what this project is for.",
-    "- Note the main user-facing workflows the agent should preserve.",
-    "",
-    "## Agent Preferences",
-    "",
-    "- Prefer small, inspectable changes over broad rewrites.",
-    "- Read relevant files before editing.",
-    "- Run focused checks when tools and dependencies are available.",
-    "- Keep generated artifacts in project folders with clear names.",
-    "",
-    "## Useful Commands",
-    "",
-    "- Add build, test, lint, preview, or compile commands here.",
-    "",
-    "## Notes",
-    "",
-    "- Add project-specific terminology, style preferences, and known constraints here.",
-    "",
-  ].join("\n");
+export function defaultAgintiInstructions(template = "disciplined") {
+  return buildAgintiInstructions(template);
 }
 
 export async function readProjectInstructions(projectRoot = process.cwd(), { maxBytes = 24_000 } = {}) {
@@ -272,8 +246,9 @@ async function ensureLine(filePath, lines) {
   return { changed: true, path: filePath, added: missing };
 }
 
-export async function initProject(projectRoot = process.cwd()) {
+export async function initProject(projectRoot = process.cwd(), { template = "disciplined" } = {}) {
   const paths = projectPaths(projectRoot);
+  const instructionTemplate = normalizeInstructionTemplate(template);
   const created = [];
   const updated = [];
   const skipped = [];
@@ -300,7 +275,7 @@ export async function initProject(projectRoot = process.cwd()) {
   await fsp.mkdir(paths.globalSessionsDir, { recursive: true });
   await ensureFile(
     paths.agintiInstructionsPath,
-    defaultAgintiInstructions()
+    defaultAgintiInstructions(instructionTemplate)
   );
   await ensureFile(
     paths.controlReadmePath,
@@ -370,6 +345,7 @@ export async function initProject(projectRoot = process.cwd()) {
     created,
     updated,
     skipped,
+    template: instructionTemplate,
   };
 }
 

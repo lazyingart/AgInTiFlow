@@ -15,6 +15,16 @@ aginti init
 aginti doctor
 ```
 
+For serious projects, the default `disciplined` init template is recommended. It teaches the agent to surface ambiguity, keep edits surgical, avoid speculative complexity, verify outcomes, respect permission blockers, and name artifacts clearly. Other templates are available:
+
+```bash
+aginti init --list-templates
+aginti init --template coding
+aginti init --template research
+aginti init --template writing
+aginti init --template design
+```
+
 Start interactive chat:
 
 ```bash

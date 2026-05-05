@@ -47,6 +47,7 @@ Most agent tools are either a chat box with hidden state or an expensive one-mod
 | --- | --- |
 | Cheap intelligence changes the architecture | DeepSeek V4 Flash and Pro make it practical to spend more calls on routing, scouting, review, and recovery instead of forcing one expensive call to do everything. |
 | Inspectable beats mysterious | Plans, tool calls, file diffs, command output, canvas artifacts, and session events are saved and resumable. |
+| Disciplined by default | `AGINTI.md` starts with a behavior contract: surface ambiguity, keep edits surgical, avoid speculative complexity, verify outcomes, and respect permission blockers. |
 | Role-based models | Route, main, spare, wrapper, and auxiliary image roles are separate. You can use cheap route models, stronger main models, optional OpenAI/Qwen/Venice routes, and GRS AI/Venice image tools. |
 | Scouts before big work | Parallel scouts can cheaply map architecture, tests, risks, symbols, and integration points before the main executor edits anything. |
 | SCS for high-risk work | Student-Committee-Supervisor mode adds a typed gate: committee drafts, student approves/monitors, supervisor executes. Use `/scs` or `--scs auto`. |
@@ -62,6 +63,19 @@ npm install -g @lazyingart/agintiflow
 cd /path/to/your-project
 aginti init
 aginti
+```
+
+`aginti init` creates a disciplined `AGINTI.md` by default: project identity, ambiguity protocol, surgical-change policy, verification contract, permission policy, artifact naming, commands, style, and definition of done. For a smaller or domain-specific starting point:
+
+```bash
+aginti init --list-templates
+aginti init --template minimal
+aginti init --template coding
+aginti init --template research
+aginti init --template writing
+aginti init --template design
+aginti init --template aaps
+aginti init --template supervision
 ```
 
 On first interactive use, AgInTiFlow opens an auth wizard if no main model key is found. Pick DeepSeek, OpenAI, Qwen, or Venice, paste the key, and it saves to the ignored project-local `.aginti/.env` file with restricted permissions. You can rerun setup any time:

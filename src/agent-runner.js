@@ -28,6 +28,7 @@ import { captureTmuxPane, listTmuxSessions, sendTmuxKeys, startTmuxSession } fro
 import { languageInstruction } from "./i18n.js";
 import { flushHousekeeping } from "./housekeeping.js";
 import { buildFailedCommandAdvice, buildPermissionAdvice } from "./permission-advice.js";
+import { formatBehaviorContractForPrompt } from "./behavior-contract.js";
 import {
   buildSupervisorInstruction,
   createScsPlan,
@@ -353,6 +354,7 @@ async function createInitialState(config, sessionId) {
           "Avoid destructive actions, purchases, account changes, and sensitive workflows.",
           languageInstruction(config.language || "en"),
           projectInstructionContext,
+          formatBehaviorContractForPrompt(),
           "Treat AGINTI.md as durable project memory and operating instructions for this project. The user can edit it manually or ask you in chat to update it; use workspace file tools for that and never store secrets there.",
           config.allowShellTool
             ? config.useDockerSandbox

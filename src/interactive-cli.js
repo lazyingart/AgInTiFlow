@@ -35,6 +35,7 @@ import {
 } from "./skillmesh.js";
 import { normalizeScsMode } from "./scs-controller.js";
 import { formatAapsResult, runAapsAction } from "./aaps-adapter.js";
+import { formatInstructionTemplateList, normalizeInstructionTemplate } from "./behavior-contract.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
@@ -108,6 +109,12 @@ const SLASH_COMMANDS = [
   "/web",
   "/exit",
 ];
+
+function parseInitTemplateValue(value = "") {
+  const parts = String(value || "").trim().split(/\s+/).filter(Boolean);
+  if (parts[0] === "template" || parts[0] === "--template" || parts[0] === "-t") return normalizeInstructionTemplate(parts[1]);
+  return normalizeInstructionTemplate(parts[0] || "disciplined");
+}
 const promptHistory = [];
 let activeRunInput = null;
 let cliLanguage = resolveLanguage();
@@ -2565,9 +2572,14 @@ async function handleCommand(line, state, packageDir) {
     return true;
   }
   if (command === "instructions" || command === "memory") {
-    if (value === "init") {
-      const result = await initProject(process.cwd());
-      printAgentMessage(`AGINTI.md ready at ${result.instructionsPath}`);
+    if (value === "templates") {
+      printAgentMessage(`Available AGINTI.md templates:\n${formatInstructionTemplateList()}`);
+      return true;
+    }
+    if (value === "init" || value.startsWith("init ")) {
+      const template = parseInitTemplateValue(value.replace(/^init\b\s*/, ""));
+      const result = await initProject(process.cwd(), { template });
+      printAgentMessage(`AGINTI.md ready at ${result.instructionsPath}\ntemplate=${result.template}`);
       return true;
     }
     const instructions = await readProjectInstructions(process.cwd(), { maxBytes: 4000 });
@@ -3079,8 +3091,13 @@ async function handleCommand(line, state, packageDir) {
     return true;
   }
   if (command === "init") {
-    const result = await initProject(process.cwd());
-    printAgentMessage(`initialized project=${result.projectRoot}\nAGINTI.md=${result.instructionsPath}`);
+    if (value === "templates" || value === "list") {
+      printAgentMessage(`Available AGINTI.md templates:\n${formatInstructionTemplateList()}`);
+      return true;
+    }
+    const template = parseInitTemplateValue(value);
+    const result = await initProject(process.cwd(), { template });
+    printAgentMessage(`initialized project=${result.projectRoot}\nAGINTI.md=${result.instructionsPath}\ntemplate=${result.template}`);
     return true;
   }
   if (command === "web") {

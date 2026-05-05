@@ -1,4 +1,5 @@
 import { redactSensitiveText, redactValue } from "./redaction.js";
+import { formatBehaviorContractForPrompt, scsContractCriteria } from "./behavior-contract.js";
 
 export const SCS_MODES = ["off", "on", "auto"];
 
@@ -67,9 +68,10 @@ export function shouldActivateScs(mode = "off", context = {}) {
 function fallbackPlan(goal = "") {
   return [
     "1. Inspect the workspace, project instructions, and relevant manifests before editing.",
-    "2. Make the smallest coherent implementation or research pass that satisfies the request.",
-    "3. Run targeted checks or document why checks are unavailable.",
-    "4. Finish only after concrete evidence supports the result.",
+    "2. State assumptions or ambiguities that could change scope, safety, or implementation.",
+    "3. Make the smallest coherent implementation or research pass that satisfies the request.",
+    "4. Run targeted checks or document why checks are unavailable.",
+    "5. Finish only after concrete evidence supports the result.",
   ].join("\n");
 }
 
@@ -207,6 +209,7 @@ export function buildSupervisorInstruction(scs = {}) {
   return [
     "SCS mode is enabled. You are the supervisor executor.",
     "Execute the approved phase plan. You may choose exact tools and paths, but you may not replace the strategic plan with a new one.",
+    formatBehaviorContractForPrompt(),
     "If tool evidence invalidates the plan, stop repeating the failed path and explain the blocker through finish or wait for student review.",
     "Approved phase plan:",
     scs.plan || fallbackPlan(),
@@ -225,6 +228,7 @@ function normalizeCommitteePlan(parsed, goal = "") {
     phaseGoal: compact(parsed.phase_goal || parsed.phaseGoal || goal || "Complete the requested task.", 260),
     plan,
     acceptanceCriteria: normalizeStringList(parsed.acceptance_criteria || parsed.acceptanceCriteria, [
+      ...scsContractCriteria(),
       "The requested outcome is present in the workspace or answer.",
       "Relevant checks were run or skipped with a concrete reason.",
     ]),
@@ -280,7 +284,7 @@ export async function createScsPlan(client, config, state, context = {}) {
         {
           role: "system",
           content:
-            "You are the SCS committee. Draft one practical next-phase plan only. You cannot approve it and you cannot call tools. Return strict JSON with keys: role, phase_goal, plan, acceptance_criteria, allowed_tools, stop_conditions.",
+            `You are the SCS committee. Draft one practical next-phase plan only. You cannot approve it and you cannot call tools. ${formatBehaviorContractForPrompt({ mode: "plan" })} Return strict JSON with keys: role, phase_goal, plan, acceptance_criteria, allowed_tools, stop_conditions.`,
         },
         {
           role: "user",
@@ -299,7 +303,7 @@ export async function createScsPlan(client, config, state, context = {}) {
         {
           role: "system",
           content:
-            "You are the SCS student monitor. You may approve_plan or veto_plan only. Judge whether the committee phase plan is safe, concrete, and evidence-oriented. Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.",
+            `You are the SCS student monitor. You may approve_plan or veto_plan only. Judge whether the committee phase plan is safe, scoped, minimal, permission-aware, and evidence-oriented. ${formatBehaviorContractForPrompt({ mode: "plan" })} Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.`,
         },
         {
           role: "user",

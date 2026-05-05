@@ -32,10 +32,43 @@ async function runCli(args, envOverrides = {}) {
   return result.stdout;
 }
 
+async function runCliIn(cwd, args, envOverrides = {}) {
+  const result = await execFileAsync(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), ...args], {
+    cwd,
+    timeout: 20000,
+    maxBuffer: 2 * 1024 * 1024,
+    env: {
+      ...process.env,
+      AGINTIFLOW_RUNTIME_DIR: "",
+      AGINTIFLOW_HOME: agintiflowHome,
+      ...envOverrides,
+    },
+  });
+  return result.stdout;
+}
+
 try {
   await runCli(["init"]);
   const agintiMd = await fs.readFile(path.join(tempRoot, "AGINTI.md"), "utf8");
   assert(agintiMd.includes("Project instructions for AgInTiFlow agents."), "init did not create AGINTI.md");
+  assert(agintiMd.includes("## Agent Operating Contract"), "default init did not include the behavior contract");
+  assert(agintiMd.includes("## Verification Contract"), "default init did not include verification contract");
+  assert(agintiMd.includes("## Permission And Safety Contract"), "default init did not include permission contract");
+  assert(agintiMd.includes("## Definition Of Done"), "default init did not include definition of done");
+  const templates = await runCli(["init", "--list-templates"]);
+  assert(templates.includes("disciplined") && templates.includes("supervision"), "init did not list instruction templates");
+  const minimalRoot = path.join(tempRoot, "minimal-template");
+  await fs.mkdir(minimalRoot);
+  const minimalOutput = await runCliIn(minimalRoot, ["init", "--template", "minimal"]);
+  const minimalMd = await fs.readFile(path.join(minimalRoot, "AGINTI.md"), "utf8");
+  assert(minimalOutput.includes("template=minimal"), "minimal init did not report template");
+  assert(minimalMd.includes("## Agent Contract"), "minimal template did not create compact contract");
+  assert(!minimalMd.includes("## Architecture Notes"), "minimal template should stay compact");
+  const codingRoot = path.join(tempRoot, "coding-template");
+  await fs.mkdir(codingRoot);
+  await runCliIn(codingRoot, ["init", "coding"]);
+  const codingMd = await fs.readFile(path.join(codingRoot, "AGINTI.md"), "utf8");
+  assert(codingMd.includes("## Coding Profile Notes"), "coding template did not add coding appendix");
   const capabilities = JSON.parse(await runCli(["capabilities", "--json"]));
   assert(capabilities.project.root === tempRoot, "capabilities did not use cwd as project root");
   assert(capabilities.project.commandCwd === tempRoot, "capabilities did not default commandCwd to project root");
@@ -168,6 +201,7 @@ try {
           "git-policy",
           "skills-capability",
           "env-sandbox-defaults",
+          "aginti-md-contract-templates",
         ],
       },
       null,

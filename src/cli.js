@@ -35,6 +35,7 @@ import { maybeAutoUpdate } from "./auto-update.js";
 import { readHousekeepingSummary } from "./housekeeping.js";
 import { handleSkillMeshCommand } from "./skillmesh.js";
 import { handleAapsCliCommand } from "./aaps-adapter.js";
+import { formatInstructionTemplateList, normalizeInstructionTemplate } from "./behavior-contract.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -404,7 +405,7 @@ export function parseArgs(argv) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti web [--port 3210] OR aginti update OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
+    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti update OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
   console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
 }
@@ -585,9 +586,32 @@ async function printHousekeeping(argv = []) {
 function printInitResult(result) {
   console.log(`AgInTiFlow project initialized: ${result.projectRoot}`);
   console.log(`instructions=${result.instructionsPath}`);
+  if (result.template) console.log(`template=${result.template}`);
   console.log(`control=${result.controlDir}`);
   console.log(`projectSessions=${result.sessionsDir}`);
   console.log(`created=${result.created.length} updated=${result.updated.length} skipped=${result.skipped.length}`);
+}
+
+function parseInitOptions(argv = []) {
+  let template = "disciplined";
+  let list = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--template" || arg === "-t") {
+      template = readOption(argv, index) || template;
+      index += 1;
+      continue;
+    }
+    if (arg === "--list-templates" || arg === "templates" || arg === "list") {
+      list = true;
+      continue;
+    }
+    if (!arg.startsWith("-")) template = arg;
+  }
+  return {
+    template: normalizeInstructionTemplate(template),
+    list,
+  };
 }
 
 function printDoctorReport(report) {
@@ -1101,66 +1125,73 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
 
-  if (argv.includes("--remove-empty-sessions") || argv[0] === "remove-empty-sessions") {
+  if (commandArgv.includes("--remove-empty-sessions") || commandArgv[0] === "remove-empty-sessions") {
     await handleRemoveSessionsCommand({ emptyOnly: true });
     return;
   }
 
-  if (argv.includes("--remove-sessions") || argv[0] === "remove-sessions") {
+  if (commandArgv.includes("--remove-sessions") || commandArgv[0] === "remove-sessions") {
     await handleRemoveSessionsCommand({ emptyOnly: false });
     return;
   }
 
-  if (argv[0] === "init") {
-    printInitResult(await initProject(process.cwd()));
+  if (commandArgv[0] === "init") {
+    const initOptions = parseInitOptions(commandArgv.slice(1));
+    if (initOptions.list) {
+      console.log(formatInstructionTemplateList());
+      return;
+    }
+    printInitResult(await initProject(commandCwd, { template: initOptions.template }));
     return;
   }
 
-  if (argv[0] === "doctor") {
-    const parsed = parseArgs(argv.slice(1).filter((arg) => arg !== "--json" && arg !== "--capabilities"));
+  if (commandArgv[0] === "doctor") {
+    const parsed = parseArgs(commandArgv.slice(1).filter((arg) => arg !== "--json" && arg !== "--capabilities"));
     const config = loadConfig(
       {
         ...parsed,
         goal: "doctor",
+        commandCwd,
         allowShellTool: parsed.allowShellTool ?? true,
         allowFileTools: parsed.allowFileTools ?? true,
       },
-      { packageDir, baseDir: process.cwd() }
+      { packageDir, baseDir: commandCwd }
     );
-    const report = argv.includes("--capabilities")
-      ? await buildCapabilityReport(process.cwd(), packageJson.version, config)
-      : await doctorReport(process.cwd(), packageJson.version, config);
-    if (argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
-    else if (argv.includes("--capabilities")) printCapabilityReport(report);
+    const report = commandArgv.includes("--capabilities")
+      ? await buildCapabilityReport(commandCwd, packageJson.version, config)
+      : await doctorReport(commandCwd, packageJson.version, config);
+    if (commandArgv.includes("--json")) console.log(JSON.stringify(report, null, 2));
+    else if (commandArgv.includes("--capabilities")) printCapabilityReport(report);
     else printDoctorReport(report);
     return;
   }
 
-  if (argv[0] === "capabilities") {
-    const parsed = parseArgs(argv.slice(1).filter((arg) => arg !== "--json"));
+  if (commandArgv[0] === "capabilities") {
+    const parsed = parseArgs(commandArgv.slice(1).filter((arg) => arg !== "--json"));
     const config = loadConfig(
       {
         ...parsed,
         goal: "capabilities",
+        commandCwd,
         allowShellTool: parsed.allowShellTool ?? true,
         allowFileTools: parsed.allowFileTools ?? true,
       },
-      { packageDir, baseDir: process.cwd() }
+      { packageDir, baseDir: commandCwd }
     );
-    const report = await buildCapabilityReport(process.cwd(), packageJson.version, config);
-    if (argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
+    const report = await buildCapabilityReport(commandCwd, packageJson.version, config);
+    if (commandArgv.includes("--json")) console.log(JSON.stringify(report, null, 2));
     else printCapabilityReport(report);
     return;
   }
 
-  if (argv[0] === "housekeeping" || argv[0] === "housekeeper") {
-    await printHousekeeping(argv.slice(1));
+  if (commandArgv[0] === "housekeeping" || commandArgv[0] === "housekeeper") {
+    await printHousekeeping(commandArgv.slice(1));
     return;
   }
 
-  if (argv[0] === "skillmesh" || argv[0] === "skillsync" || argv[0] === "skill-sync" || argv[0] === "skill-share") {
+  if (commandArgv[0] === "skillmesh" || commandArgv[0] === "skillsync" || commandArgv[0] === "skill-sync" || commandArgv[0] === "skill-share") {
     try {
-      await handleSkillMeshCommand(argv.slice(1));
+      await handleSkillMeshCommand(commandArgv.slice(1));
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
@@ -1168,63 +1199,63 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
 
-  if (argv[0] === "keys/status") {
+  if (commandArgv[0] === "keys/status") {
     await handleKeyCommand(["status"]);
     return;
   }
 
-  if (argv[0] === "keys") {
-    await handleKeyCommand(argv.slice(1));
+  if (commandArgv[0] === "keys") {
+    await handleKeyCommand(commandArgv.slice(1));
     return;
   }
 
-  if (argv[0] === "auth" || argv[0] === "login") {
-    const provider = normalizeAuthProvider(argv[1] || "", "");
-    if (argv[0] === "auth" || (!provider && process.stdin.isTTY)) {
-      const result = await runAuthWizard(process.cwd(), { provider });
+  if (commandArgv[0] === "auth" || commandArgv[0] === "login") {
+    const provider = normalizeAuthProvider(commandArgv[1] || "", "");
+    if (commandArgv[0] === "auth" || (!provider && process.stdin.isTTY)) {
+      const result = await runAuthWizard(commandCwd, { provider });
       printAuthWizardResult(result);
       return;
     }
     const target = provider || "deepseek";
-    const key = argv.includes("--stdin") || !process.stdin.isTTY
+    const key = commandArgv.includes("--stdin") || !process.stdin.isTTY
       ? await readStdin()
       : await promptHidden(`${providerLabel(target)} API key/token: `);
     if (!key) {
       console.error("No key saved.");
       process.exit(1);
     }
-    const result = await setProviderKey(process.cwd(), target, key);
+    const result = await setProviderKey(commandCwd, target, key);
     console.log(`saved ${result.provider} key to project-local ignored env (${result.keyName})`);
     return;
   }
 
-  if (argv[0] === "sessions") {
-    await handleSessionsCommand(argv.slice(1));
+  if (commandArgv[0] === "sessions") {
+    await handleSessionsCommand(commandArgv.slice(1));
     return;
   }
 
-  if (argv[0] === "storage") {
-    await handleStorageCommand(argv.slice(1));
+  if (commandArgv[0] === "storage") {
+    await handleStorageCommand(commandArgv.slice(1));
     return;
   }
 
-  if (argv[0] === "models" || argv[0] === "model") {
+  if (commandArgv[0] === "models" || commandArgv[0] === "model") {
     printModels();
     return;
   }
 
-  if (argv[0] === "skills" || argv[0] === "skill") {
-    printSkills(argv.slice(1).join(" ").trim());
+  if (commandArgv[0] === "skills" || commandArgv[0] === "skill") {
+    printSkills(commandArgv.slice(1).join(" ").trim());
     return;
   }
 
-  if (argv[0] === "queue") {
-    await handleQueueCommand(argv.slice(1));
+  if (commandArgv[0] === "queue") {
+    await handleQueueCommand(commandArgv.slice(1));
     return;
   }
 
-  if (argv[0] === "resume") {
-    const resumeArgv = argv.slice(1);
+  if (commandArgv[0] === "resume") {
+    const resumeArgv = commandArgv.slice(1);
     const allSessions = resumeArgv.includes("--all-sessions");
     const positional = resumeArgv.filter((arg) => arg !== "--all-sessions");
     let sessionId = positional[0] || "";
@@ -1237,20 +1268,20 @@ export async function main(argv = process.argv.slice(2)) {
     }
     if (!sessionId) return;
     if (!prompt) {
-      await startInteractiveCli(agentDefaults({ ...parseArgs([]), resume: sessionId }), {
+      await startInteractiveCli(agentDefaults({ ...parseArgs([]), resume: sessionId, commandCwd }), {
         packageDir,
         packageVersion: packageJson.version,
       });
       return;
     }
-    const resumeArgs = agentDefaults({ ...parseArgs([prompt]), resume: sessionId, goal: prompt });
+    const resumeArgs = agentDefaults({ ...parseArgs([prompt]), resume: sessionId, goal: prompt, commandCwd });
     if (!(await ensureDeepSeekKeyForOneShot(resumeArgs))) process.exit(1);
     const config = loadConfig(resumeArgs, { packageDir });
     await runAgent(config);
     return;
   }
 
-  const args = parseArgs(argv);
+  const args = { ...parseArgs(commandArgv), commandCwd };
 
   if (args.web) {
     if (args.port) process.env.PORT = String(args.port);

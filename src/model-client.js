@@ -5,6 +5,7 @@ import { listAuxiliarySkills } from "./auxiliary-tools.js";
 import { engineeringGuidanceForTask } from "./engineering-guidance.js";
 import { formatSkillsForPrompt, selectSkillsForGoal } from "./skill-library.js";
 import { platformInfo, platformLabel } from "./platform.js";
+import { formatBehaviorContractForPrompt } from "./behavior-contract.js";
 
 export function createClient(config) {
   if (config.provider === "mock") {
@@ -498,7 +499,7 @@ export async function createPlan(client, config, state) {
       {
         role: "system",
         content:
-          "You are planning a browser, shell, workspace, and coding-agent task. The plan is only a launchpad: after planning, the runtime will continue with tools until the task is complete or genuinely blocked. Prefer real workspace edits/checks over advice-only answers. If a local shell command can satisfy the goal, prefer that before browser actions. Treat any suggested start URL as optional. Write a concise execution plan with 3 to 6 steps. Mention risks or blockers when relevant. Keep it short and practical.",
+          `You are planning a browser, shell, workspace, and coding-agent task. The plan is only a launchpad: after planning, the runtime will continue with tools until the task is complete or genuinely blocked. Prefer real workspace edits/checks over advice-only answers. If a local shell command can satisfy the goal, prefer that before browser actions. Treat any suggested start URL as optional. ${formatBehaviorContractForPrompt({ mode: "plan" })} Write a concise execution plan with 3 to 6 steps. Mention risks or blockers when relevant. Keep it short and practical.`,
       },
       {
         role: "user",
