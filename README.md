@@ -39,6 +39,10 @@ The short version: run `aginti` inside a project, give it a task, inspect what i
   <img src="./demos/agintiflow-cli-launch.jpg" alt="AgInTiFlow interactive CLI launch screen with colorful terminal banner, Docker workspace status, and chat input panel" width="960" />
 </p>
 
+<p align="center">
+  <img src="./demos/agintiflow-web-console-run-output.jpg" alt="AgInTiFlow web console showing conversation history and structured run output" width="960" />
+</p>
+
 ## Why This Exists
 
 Most agent tools are either a chat box with hidden state or an expensive one-model loop. AgInTiFlow is built around a different philosophy:
@@ -184,13 +188,13 @@ aginti --resume <session-id> \
 
 ## Real Screenshots
 
-| CLI launch | Web app overview |
+| CLI launch | Web console run output |
 | --- | --- |
-| <img src="./demos/agintiflow-cli-launch.jpg" alt="AgInTiFlow CLI launch" width="480" /> | <img src="./website/assets/screenshots/app-overview.jpg" alt="AgInTiFlow web app overview" width="480" /> |
+| <img src="./demos/agintiflow-cli-launch.jpg" alt="AgInTiFlow CLI launch" width="480" /> | <img src="./demos/agintiflow-web-console-run-output.jpg" alt="AgInTiFlow web console conversation and run output" width="480" /> |
 
-| Task controls | Runtime output |
+| Web app overview | Task controls |
 | --- | --- |
-| <img src="./website/assets/screenshots/task-controls.jpg" alt="AgInTiFlow task controls" width="480" /> | <img src="./website/assets/screenshots/run-output.jpg" alt="AgInTiFlow runtime output" width="480" /> |
+| <img src="./website/assets/screenshots/app-overview.jpg" alt="AgInTiFlow web app overview" width="480" /> | <img src="./website/assets/screenshots/task-controls.jpg" alt="AgInTiFlow task controls" width="480" /> |
 
 | Conversation history | Sandbox status |
 | --- | --- |

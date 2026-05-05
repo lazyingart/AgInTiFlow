@@ -22,6 +22,15 @@ const permissionRecipes = (header = "## Permission recipes") =>
     "- Full host computer access: `aginti --sandbox-mode host --package-install-policy allow --approve-package-installs --allow-shell --allow-file-tools --allow-destructive \"perform the trusted host maintenance task\"`"
   );
 
+const cliWebScreenshotRow = (header = "## CLI And Web Together", cliLabel = "CLI launch", webLabel = "Web console run output") =>
+  lines(
+    header,
+    "",
+    `| ${cliLabel} | ${webLabel} |`,
+    "| --- | --- |",
+    "| ![AgInTiFlow CLI launch screen](../assets/screenshots/cli-launch.jpg) | ![AgInTiFlow web console conversation and run output](../assets/screenshots/web-console-conversation-run-output.jpg) |"
+  );
+
 export const languages = [
   { code: "en", label: "English", dir: "ltr" },
   { code: "ar", label: "العربية", dir: "rtl" },
@@ -508,6 +517,8 @@ const docs = {
       "",
       "AgInTiFlow 是一个面向真实问题的低成本、项目感知 Web + CLI 智能体工作区。它把 DeepSeek/Venice/OpenAI 路由、浏览器控制、Shell、工作区文件工具、Docker 沙盒、可见工具调用、持久会话、scouts、SCS 监督、AAPS 工作流和工件放在同一个可检查的控制平面中。",
       "",
+      cliWebScreenshotRow("## CLI 和 Web 一起使用", "CLI 启动画面", "Web 控制台运行输出"),
+      "",
       "## 产品结构",
       "",
       "- CLI：在任何项目目录启动 Codex 风格的交互聊天。",
@@ -610,6 +621,8 @@ const docs = {
       "# 交互式 CLI",
       "",
       "运行 `aginti` 打开项目感知的聊天界面。它支持彩色角色条、Markdown 渲染、多行输入、实时状态、队列和可恢复会话。",
+      "",
+      cliWebScreenshotRow("## CLI 和 Web 一起使用", "CLI 启动画面", "Web 控制台运行输出"),
       "",
       "## 聊天控制",
       "",
@@ -919,6 +932,8 @@ function buildCompactDocs(languageTitles, pageText) {
       "",
       pageText.overview,
       "",
+      cliWebScreenshotRow(pageText.screenshotHeader, pageText.screenshotCliLabel, pageText.screenshotWebLabel),
+      "",
       pageText.product,
       "",
       pageText.principles,
@@ -963,6 +978,8 @@ function buildCompactDocs(languageTitles, pageText) {
       `# ${languageTitles.cli}`,
       "",
       pageText.cli,
+      "",
+      cliWebScreenshotRow(pageText.screenshotHeader, pageText.screenshotCliLabel, pageText.screenshotWebLabel),
       "",
       pageText.cliControls,
       "",

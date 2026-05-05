@@ -8,6 +8,12 @@ aginti
 
 The CLI opens a project-aware chat interface with colored role bands, Markdown rendering, multiline input, live status, queues, and resumable sessions.
 
+## CLI And Web Together
+
+| CLI launch | Web console run output |
+| --- | --- |
+| ![AgInTiFlow CLI launch screen](../assets/screenshots/cli-launch.jpg) | ![AgInTiFlow web console conversation and run output](../assets/screenshots/web-console-conversation-run-output.jpg) |
+
 ## Chat Controls
 
 | Key | Behavior |

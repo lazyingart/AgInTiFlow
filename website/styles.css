@@ -340,6 +340,15 @@ h3 {
   transform: rotateY(-7deg) rotateX(3deg);
 }
 
+.hero-preview-secondary {
+  width: min(88%, 620px);
+  margin: 18px 0 0 auto;
+  background:
+    linear-gradient(135deg, rgba(16, 24, 32, 0.88), rgba(169, 227, 75, 0.14)),
+    rgba(255, 255, 255, 0.72);
+  transform: translateY(-6px) rotateY(-3deg) rotateX(1deg);
+}
+
 .hero-preview::after {
   position: absolute;
   inset: auto 18px 18px auto;
@@ -357,6 +366,10 @@ h3 {
   border-radius: 22px;
   aspect-ratio: 2578 / 1632;
   object-fit: cover;
+}
+
+.hero-preview-secondary img {
+  aspect-ratio: 1800 / 1072;
 }
 
 .hero-preview figcaption {
@@ -744,6 +757,11 @@ h3 {
   }
 
   .hero-preview {
+    transform: none;
+  }
+
+  .hero-preview-secondary {
+    width: 100%;
     transform: none;
   }
 

@@ -4,6 +4,12 @@ AgInTiFlow is a low-cost, project-aware Web and CLI agent workspace for real-lif
 
 The project is designed for practical engineering work: write code, patch files, run checks, compile documents, inspect websites, manage tmux sessions, and keep a durable record of what happened.
 
+## CLI And Web Together
+
+| CLI launch | Web console run output |
+| --- | --- |
+| ![AgInTiFlow CLI launch screen](../assets/screenshots/cli-launch.jpg) | ![AgInTiFlow web console conversation and run output](../assets/screenshots/web-console-conversation-run-output.jpg) |
+
 ## Product Shape
 
 | Layer | Purpose |

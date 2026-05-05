@@ -379,6 +379,16 @@ pre {
   font-weight: 800;
 }
 
+.docs-content img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid rgba(16, 24, 32, 0.12);
+  border-radius: 18px;
+  background: #f4efe6;
+  box-shadow: 0 14px 44px rgba(16, 24, 32, 0.14);
+}
+
 .docs-content ul,
 .docs-content ol {
   padding-left: 1.4rem;
@@ -428,6 +438,10 @@ pre {
 
 .docs-content th {
   background: rgba(0, 194, 255, 0.1);
+}
+
+.docs-content td img {
+  min-width: min(280px, 36vw);
 }
 
 .anchor-copy {

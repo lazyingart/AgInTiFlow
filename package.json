@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.59",
+  "version": "0.20.60",
   "type": "module",
   "description": "Low-cost, project-aware Web and CLI agents with DeepSeek/Venice/OpenAI routing, visible tool calls, durable sessions, scouts, AAPS, SCS, and guarded local execution.",
   "license": "Apache-2.0",
@@ -38,6 +38,7 @@
     "docs/",
     "docker/",
     "demos/agintiflow-cli-launch.jpg",
+    "demos/agintiflow-web-console-run-output.jpg",
     "i18n/",
     "logos/banner-opaque.png",
     "logos/logo.png",
