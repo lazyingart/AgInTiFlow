@@ -474,6 +474,65 @@ async function runDiscoveredAaps(discovery, cliArgs, { timeoutMs = DEFAULT_TIMEO
   }
 }
 
+function relativeIfInside(root, value = "") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const resolved = path.isAbsolute(text) ? path.resolve(text) : path.resolve(root, text);
+  const relative = path.relative(root, resolved);
+  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return "";
+  return toProjectPath(relative);
+}
+
+async function annotateAapsRunResult(result, { action = "", projectDir = "" } = {}) {
+  if (!["run", "dry-run"].includes(action) || !result?.json || typeof result.json !== "object") return result;
+  const json = result.json;
+  const warnings = [];
+  const plan = json.plan || {};
+  const promptOnlySteps = Number(plan.promptOnlySteps || 0);
+  const executableSteps = Number(plan.executableSteps || 0);
+  if (promptOnlySteps > 0) {
+    warnings.push(
+      `workflow has ${promptOnlySteps} prompt-only step(s); AAPS recorded a handoff but did not execute an LLM/backend agent for those steps`
+    );
+  }
+  if (promptOnlySteps > 0 && executableSteps === 0) {
+    warnings.push("workflow has no executable steps; use AgInTiFlow to act on the prompt-only handoff or add executable AAPS actions");
+  }
+
+  const missingDeclaredOutputs = [];
+  if (action === "run" && !json.dryRun) {
+    const outputEntries = Array.isArray(json.outputs)
+      ? json.outputs
+      : Array.isArray(json.executionPlan?.outputs)
+        ? json.executionPlan.outputs
+        : [];
+    const runDir = String(json.runDir || "").trim();
+    const executionPlanPath = runDir ? path.join(runDir, "execution_plan.json") : "";
+    let executionPlan = null;
+    if (executionPlanPath && relativeIfInside(projectDir, executionPlanPath)) {
+      executionPlan = await readJsonIfExists(executionPlanPath);
+    }
+    const outputs = outputEntries.length ? outputEntries : Array.isArray(executionPlan?.outputs) ? executionPlan.outputs : [];
+    for (const output of outputs) {
+      const rawPath = typeof output === "string" ? output : output?.value || output?.path || "";
+      const rel = relativeIfInside(projectDir, rawPath);
+      if (!rel) continue;
+      if (!fsSync.existsSync(path.join(projectDir, rel))) missingDeclaredOutputs.push(rel);
+    }
+    if (missingDeclaredOutputs.length > 0) {
+      warnings.push(`declared output(s) not present after run: ${missingDeclaredOutputs.join(", ")}`);
+    }
+  }
+
+  return {
+    ...result,
+    warnings,
+    promptOnlySteps,
+    executableSteps,
+    missingDeclaredOutputs,
+  };
+}
+
 async function createAapsStarterProject({ cwd = process.cwd(), name = "" } = {}) {
   const projectDir = path.resolve(cwd || process.cwd());
   const projectName = String(name || path.basename(projectDir) || "AgInTiFlow AAPS Project").trim();
@@ -672,8 +731,9 @@ export async function runAapsAction(action = "status", rawArgs = [], { cwd = pro
 
   const built = buildAapsArgs(normalized, commandArgs, { cwd: projectDir });
   const result = await runDiscoveredAaps(discovery, built.cliArgs, { timeoutMs: built.timeoutMs });
+  const annotated = await annotateAapsRunResult(result, { action: built.action, projectDir });
   return {
-    ...result,
+    ...annotated,
     action: built.action,
     projectDir,
     source: discovery.source,
@@ -696,9 +756,19 @@ function summarizeJson(action, json) {
   }
   if (action === "check" || action === "plan" || action === "run" || action === "dry-run") {
     const ok = json.ok ?? json.ready ?? "";
-    const steps = json.plan?.steps?.length ?? json.steps?.length ?? "";
+    const steps = typeof json.plan?.steps === "number" ? json.plan.steps : (json.plan?.steps?.length ?? json.steps?.length ?? "");
+    const executable = json.plan?.executableSteps ?? "";
+    const promptOnly = json.plan?.promptOnlySteps ?? "";
     const runDir = json.runDir || json.runRoot || "";
-    return `ok=${ok} steps=${steps} runDir=${runDir}`;
+    return [
+      `ok=${ok}`,
+      steps !== "" ? `steps=${steps}` : "",
+      executable !== "" ? `executable=${executable}` : "",
+      promptOnly !== "" ? `promptOnly=${promptOnly}` : "",
+      runDir ? `runDir=${runDir}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
   }
   return "";
 }
@@ -750,6 +820,7 @@ export function formatAapsResult(result = {}) {
     `AAPS ${result.action || "command"} ${result.ok ? "ok" : "failed"}`,
     result.command ? `command=${result.command}` : "",
     summary ? `summary=${summary}` : "",
+    result.warnings?.length ? `warnings\n${result.warnings.map((warning) => `- ${warning}`).join("\n")}` : "",
     result.stdout ? `stdout\n${result.stdout.trim()}` : "",
     result.stderr ? `stderr\n${result.stderr.trim()}` : "",
     result.error ? `error=${result.error}` : "",
