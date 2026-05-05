@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { repairModelMessageHistory, runAgent, shouldShortCircuitToolBatch, skippedAfterBlockedToolResult } from "../src/agent-runner.js";
+import { formatBehaviorContractForPrompt } from "../src/behavior-contract.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { readCodebaseMap } from "../src/codebase-map.js";
 import { evaluateCommandPolicy } from "../src/command-policy.js";
@@ -248,6 +249,15 @@ try {
   assert(
     guidance.includes("find . -type d -name __pycache__"),
     "engineering guidance did not include recursive Python transient checks"
+  );
+  const behaviorContract = formatBehaviorContractForPrompt();
+  assert(
+    behaviorContract.includes("For tmux one-shot jobs"),
+    "behavior contract did not include tmux one-shot evidence guidance"
+  );
+  assert(
+    behaviorContract.includes("do not claim stdout, stderr, or exit status"),
+    "behavior contract did not forbid inferring tmux output after capture failure"
   );
   const dockerWorkspacePolicy = {
     allowShellTool: true,

@@ -75,6 +75,7 @@ export function formatBehaviorContractForPrompt({ mode = "runtime" } = {}) {
     "Keep artifacts durable and discoverable with descriptive non-conflicting names; never overwrite unless the user clearly asked.",
     "When reporting shell, language, runtime, build, or test results, name the actual environment used (host vs Docker, relevant interpreter/tool path/version when it matters). Do not claim compatibility across untested runtimes, hosts, containers, or language versions; state the caveat or run an explicit check.",
     "Do not self-invoke AgInTiFlow with npx/npm exec or nested aginti commands from inside the agent shell; it can resolve stale project packages or create recursive sessions. Use current runtime evidence, project/session files, or ask for a host-side diagnostic instead.",
+    "For tmux one-shot jobs, do not claim stdout, stderr, or exit status after the session disappears unless that output was captured or redirected to a durable workspace log. Prefer commands that write `...; echo EXIT:$? > logs/...` or keep the pane open long enough for `tmux_capture_pane`; if capture fails, report tmux evidence unavailable and rely only on separately verified evidence.",
   ].join(" ");
 }
 

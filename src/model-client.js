@@ -769,7 +769,7 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "tmux_capture_pane",
           description:
-            "Capture recent text from a durable host tmux pane by target such as session:0.0. Use this to monitor progress or inspect a long-running job without interrupting it.",
+            "Capture recent text from a durable host tmux pane by target such as session:0.0. Use this to monitor progress or inspect a long-running job without interrupting it. If capture fails because the session ended, do not infer stdout/stderr/exit status; use a durable workspace log or rerun with output redirected to a file.",
           parameters: {
             type: "object",
             properties: {
@@ -812,7 +812,7 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "tmux_start_session",
           description:
-            "Start a detached durable host tmux session rooted inside the workspace, optionally with a startup command. Use for long-running local jobs that should be monitored with tmux_capture_pane instead of blocking the agent. This is the correct tmux path in Docker mode because run_command containers are ephemeral.",
+            "Start a detached durable host tmux session rooted inside the workspace, optionally with a startup command. Use for long-running local jobs that should be monitored with tmux_capture_pane instead of blocking the agent. For one-shot commands, redirect output and exit status to a durable workspace log or keep the shell open so capture can verify; do not claim results from an auto-terminated session. This is the correct tmux path in Docker mode because run_command containers are ephemeral.",
           parameters: {
             type: "object",
             properties: {
