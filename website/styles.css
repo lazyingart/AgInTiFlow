@@ -319,16 +319,32 @@ h3 {
 }
 
 .hero-card {
-  display: grid;
-  gap: 0;
-  padding-right: 0;
+  position: relative;
+  min-height: clamp(520px, 45vw, 700px);
   perspective: 1200px;
   align-self: start;
 }
 
+.hero-carousel {
+  isolation: isolate;
+}
+
+.hero-carousel::before {
+  position: absolute;
+  inset: 9% 2% 13% 7%;
+  z-index: -1;
+  border-radius: 42px;
+  background:
+    radial-gradient(circle at 22% 18%, rgba(169, 227, 75, 0.36), transparent 34%),
+    radial-gradient(circle at 78% 68%, rgba(0, 194, 255, 0.32), transparent 38%),
+    linear-gradient(135deg, rgba(16, 24, 32, 0.14), rgba(255, 255, 255, 0.1));
+  filter: blur(2px);
+  content: "";
+}
+
 .hero-preview {
   position: relative;
-  margin: 0 0 8px;
+  margin: 0;
   padding: 10px;
   overflow: hidden;
   border: 1px solid rgba(0, 194, 255, 0.28);
@@ -337,16 +353,25 @@ h3 {
     linear-gradient(135deg, rgba(16, 24, 32, 0.92), rgba(0, 194, 255, 0.16)),
     rgba(255, 255, 255, 0.76);
   box-shadow: 0 30px 90px rgba(16, 24, 32, 0.22);
-  transform: rotateY(-7deg) rotateX(3deg);
+  transform-style: preserve-3d;
 }
 
-.hero-preview-secondary {
-  width: min(88%, 620px);
-  margin: 18px 0 0 auto;
+.hero-slide {
+  position: absolute;
+  inset: 0;
+  transform-origin: center;
+  will-change: opacity, transform, filter;
+}
+
+.hero-slide-cli {
+  animation: hero-card-front 9s ease-in-out infinite;
+}
+
+.hero-slide-web {
   background:
     linear-gradient(135deg, rgba(16, 24, 32, 0.88), rgba(169, 227, 75, 0.14)),
     rgba(255, 255, 255, 0.72);
-  transform: translateY(-6px) rotateY(-3deg) rotateX(1deg);
+  animation: hero-card-back 9s ease-in-out infinite;
 }
 
 .hero-preview::after {
@@ -364,12 +389,8 @@ h3 {
   display: block;
   width: 100%;
   border-radius: 22px;
-  aspect-ratio: 2578 / 1632;
+  aspect-ratio: 16 / 10;
   object-fit: cover;
-}
-
-.hero-preview-secondary img {
-  aspect-ratio: 1800 / 1072;
 }
 
 .hero-preview figcaption {
@@ -390,6 +411,52 @@ h3 {
 
 .hero-preview code {
   color: var(--lime);
+}
+
+@keyframes hero-card-front {
+  0%,
+  42% {
+    z-index: 3;
+    opacity: 1;
+    filter: saturate(1.06) brightness(1);
+    transform: translate3d(-2%, 2%, 70px) rotateY(-7deg) rotateX(3deg) scale(1);
+  }
+  50%,
+  92% {
+    z-index: 1;
+    opacity: 0.48;
+    filter: saturate(0.72) brightness(0.82);
+    transform: translate3d(10%, -5%, -80px) rotateY(16deg) rotateX(1deg) scale(0.84);
+  }
+  100% {
+    z-index: 3;
+    opacity: 1;
+    filter: saturate(1.06) brightness(1);
+    transform: translate3d(-2%, 2%, 70px) rotateY(-7deg) rotateX(3deg) scale(1);
+  }
+}
+
+@keyframes hero-card-back {
+  0%,
+  42% {
+    z-index: 1;
+    opacity: 0.5;
+    filter: saturate(0.76) brightness(0.84);
+    transform: translate3d(10%, -5%, -80px) rotateY(16deg) rotateX(1deg) scale(0.84);
+  }
+  50%,
+  92% {
+    z-index: 3;
+    opacity: 1;
+    filter: saturate(1.04) brightness(1);
+    transform: translate3d(-2%, 2%, 70px) rotateY(-7deg) rotateX(3deg) scale(1);
+  }
+  100% {
+    z-index: 1;
+    opacity: 0.5;
+    filter: saturate(0.76) brightness(0.84);
+    transform: translate3d(10%, -5%, -80px) rotateY(16deg) rotateX(1deg) scale(0.84);
+  }
 }
 
 .hero-signals {
@@ -760,8 +827,18 @@ h3 {
     transform: none;
   }
 
-  .hero-preview-secondary {
-    width: 100%;
+  .hero-card {
+    display: grid;
+    gap: 18px;
+    min-height: auto;
+  }
+
+  .hero-slide {
+    position: relative;
+    inset: auto;
+    animation: none;
+    opacity: 1;
+    filter: none;
     transform: none;
   }
 
@@ -865,5 +942,26 @@ h3 {
 
   .site-footer {
     flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .hero-card {
+    display: grid;
+    gap: 18px;
+    min-height: auto;
+  }
+
+  .hero-slide {
+    position: relative;
+    inset: auto;
+    animation: none;
+    opacity: 1;
+    filter: none;
+    transform: none;
   }
 }

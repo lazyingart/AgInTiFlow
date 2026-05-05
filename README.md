@@ -35,13 +35,7 @@ The short version: run `aginti` inside a project, give it a task, inspect what i
 | Product positioning | [references/agintiflow-product-positioning.md](references/agintiflow-product-positioning.md) |
 | Full archived README reference | [references/notes/readme-full-reference-2026-05-05.md](references/notes/readme-full-reference-2026-05-05.md) |
 
-<p align="center">
-  <img src="./demos/agintiflow-cli-launch.jpg" alt="AgInTiFlow interactive CLI launch screen with colorful terminal banner, Docker workspace status, and chat input panel" width="960" />
-</p>
-
-<p align="center">
-  <img src="./demos/agintiflow-web-console-run-output.jpg" alt="AgInTiFlow web console showing conversation history and structured run output" width="960" />
-</p>
+Screenshots are kept out of the README body so the start guide stays readable. View them on the website carousel or in [demos/](demos/) and [website/assets/screenshots/](website/assets/screenshots/).
 
 ## Why This Exists
 
@@ -186,25 +180,17 @@ aginti --resume <session-id> \
   "continue with trusted host access"
 ```
 
-## Real Screenshots
+## Screenshots
 
-| CLI launch | Web console run output |
+The website keeps the visual walkthrough in a carousel so this README can stay focused on setup and usage:
+
+| View | Link |
 | --- | --- |
-| <img src="./demos/agintiflow-cli-launch.jpg" alt="AgInTiFlow CLI launch" width="480" /> | <img src="./demos/agintiflow-web-console-run-output.jpg" alt="AgInTiFlow web console conversation and run output" width="480" /> |
-
-| Web app overview | Task controls |
-| --- | --- |
-| <img src="./website/assets/screenshots/app-overview.jpg" alt="AgInTiFlow web app overview" width="480" /> | <img src="./website/assets/screenshots/task-controls.jpg" alt="AgInTiFlow task controls" width="480" /> |
-
-| Conversation history | Sandbox status |
-| --- | --- |
-| <img src="./website/assets/screenshots/conversation-history.jpg" alt="AgInTiFlow conversation history" width="480" /> | <img src="./website/assets/screenshots/sandbox-status.jpg" alt="AgInTiFlow sandbox status" width="480" /> |
-
-| Mobile overview |
-| --- |
-| <img src="./website/assets/screenshots/mobile-overview.jpg" alt="AgInTiFlow mobile overview" width="480" /> |
-
-Older launch screenshots are kept in the source repository under [demos/archive/](https://github.com/lazyingart/AgInTiFlow/tree/main/demos/archive).
+| Website carousel | [https://flow.lazying.art/#screenshots](https://flow.lazying.art/#screenshots) |
+| CLI launch | [demos/agintiflow-cli-launch.jpg](demos/agintiflow-cli-launch.jpg) |
+| Web console run output | [demos/agintiflow-web-console-run-output.jpg](demos/agintiflow-web-console-run-output.jpg) |
+| Web app screenshots | [website/assets/screenshots/](website/assets/screenshots/) |
+| Older launch screenshots | [demos/archive/](https://github.com/lazyingart/AgInTiFlow/tree/main/demos/archive) |
 
 ## Core Capabilities
 
