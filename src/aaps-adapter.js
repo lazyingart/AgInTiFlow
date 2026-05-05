@@ -478,13 +478,21 @@ async function createAapsStarterProject({ cwd = process.cwd(), name = "" } = {})
   const projectDir = path.resolve(cwd || process.cwd());
   const projectName = String(name || path.basename(projectDir) || "AgInTiFlow AAPS Project").trim();
   const workflowDir = path.join(projectDir, "workflows");
+  const agentsDir = path.join(projectDir, "agents");
   const reportsDir = path.join(projectDir, "reports");
   const runsDir = path.join(projectDir, "runs");
   const artifactsDir = path.join(projectDir, "artifacts");
-  await Promise.all([fs.mkdir(workflowDir, { recursive: true }), fs.mkdir(reportsDir, { recursive: true }), fs.mkdir(runsDir, { recursive: true }), fs.mkdir(artifactsDir, { recursive: true })]);
+  await Promise.all([
+    fs.mkdir(workflowDir, { recursive: true }),
+    fs.mkdir(agentsDir, { recursive: true }),
+    fs.mkdir(reportsDir, { recursive: true }),
+    fs.mkdir(runsDir, { recursive: true }),
+    fs.mkdir(artifactsDir, { recursive: true }),
+  ]);
 
   const manifestPath = path.join(projectDir, "aaps.project.json");
   const workflowPath = path.join(workflowDir, "main.aaps");
+  const agentRegistryPath = path.join(agentsDir, "agent_registry.json");
   const created = [];
   if (!fsSync.existsSync(manifestPath)) {
     const now = new Date().toISOString();
@@ -501,6 +509,7 @@ async function createAapsStarterProject({ cwd = process.cwd(), name = "" } = {})
       updated: now,
       paths: {
         workflows: "workflows",
+        agents: "agents",
         blocks: "blocks",
         skills: "skills",
         modules: "modules",
@@ -515,6 +524,7 @@ async function createAapsStarterProject({ cwd = process.cwd(), name = "" } = {})
       runDatabase: "runs/aaps-runs.jsonl",
       tools: ["node", "python3", "git", "aginti"],
       models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+      agents: ["planner"],
       files: {
         workflows: ["workflows/main.aaps"],
         blocks: [],
@@ -529,6 +539,22 @@ async function createAapsStarterProject({ cwd = process.cwd(), name = "" } = {})
     };
     await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     created.push("aaps.project.json");
+  }
+  if (!fsSync.existsSync(agentRegistryPath)) {
+    const registry = {
+      agents: [
+        {
+          name: "planner",
+          purpose: "Plan large project work in small, verifiable phases for the starter AAPS workflow.",
+          invocation: "prompt",
+          supportedTasks: ["planning", "workflow_planning", "compile_prompt"],
+          safety: ["project-local edits only", "ask before risky shell commands", "no secrets in logs"],
+          fallback: "prepare prompt-only handoff",
+        },
+      ],
+    };
+    await fs.writeFile(agentRegistryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf8");
+    created.push("agents/agent_registry.json");
   }
   if (!fsSync.existsSync(workflowPath)) {
     const source = `pipeline "${projectName} Starter" {

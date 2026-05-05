@@ -24,6 +24,7 @@ async function exists(file) {
 const init = await runAapsAction("init", ["Smoke AAPS Project"], { cwd: tempRoot, packageDir: repoRoot });
 assert(init.ok, "AAPS init failed");
 assert(await exists(path.join(tempRoot, "aaps.project.json")), "AAPS init did not write manifest");
+assert(await exists(path.join(tempRoot, "agents", "agent_registry.json")), "AAPS init did not write starter agent registry");
 assert(await exists(path.join(tempRoot, "workflows", "main.aaps")), "AAPS init did not write starter workflow");
 
 const files = await runAapsAction("files", [], { cwd: tempRoot, packageDir: repoRoot });
@@ -43,10 +44,7 @@ if (discovery.found) {
 
   const compile = await runAapsAction("compile", ["check"], { cwd: tempRoot, packageDir: repoRoot });
   assert(compile.json?.phase?.parse === "ok", `AAPS compile check did not return a structured parse-ok report\n${formatAapsResult(compile)}`);
-  assert(
-    compile.json?.status === "missing_components" || compile.json?.ok === true,
-    `AAPS compile check returned an unexpected status\n${formatAapsResult(compile)}`
-  );
+  assert(compile.ok && compile.json?.ok === true, `AAPS starter should compile cleanly after init\n${formatAapsResult(compile)}`);
 } else {
   const validate = await runAapsAction("validate", [], { cwd: tempRoot, packageDir: repoRoot });
   assert(validate.ok === false && validate.error, "AAPS missing path should return a structured error");
