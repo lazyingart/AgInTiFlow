@@ -1,6 +1,6 @@
 # Student-Committee-Supervisor Mode
 
-This note researches the current AgInTiFlow execution pipeline and proposes a standalone `/enabless` mode: Student-Committee-Supervisor, abbreviated `SCS`.
+This note researches the current AgInTiFlow execution pipeline and proposes a standalone `/scs` mode: Student-Committee-Supervisor, abbreviated `SCS`.
 
 The name intentionally keeps the reversed-role joke: the "student" supervises, the "supervisor" executes, and the "committee" drafts but cannot decide.
 
@@ -40,7 +40,7 @@ Relevant implementation files:
 
 ## Proposed SCS Contract
 
-`/enabless` enables a stricter internal workflow for the current interactive session.
+`/scs` enables a stricter internal workflow for the current interactive session.
 
 Roles:
 
@@ -50,7 +50,7 @@ Roles:
 | Committee | Main model | Draft candidate plans and alternatives. | Cannot approve, veto, replan after execution starts, or call tools. |
 | Supervisor | Main model | Execute the approved plan with the existing tool loop. | Cannot draft its own initial plan, cannot approve its own plan, cannot declare strategic replans without student permission. |
 
-The user asked that once `/enabless` is enabled, all SCS work uses the main model. This is sensible for determinism: no route/main mismatch, no cheap planner producing a plan that a stronger executor dislikes, and no confusing cross-model responsibility. It also makes cost predictable because the feature is opt-in.
+The user asked that once `/scs` is enabled, all SCS work uses the main model. This is sensible for determinism: no route/main mismatch, no cheap planner producing a plan that a stronger executor dislikes, and no confusing cross-model responsibility. It also makes cost predictable because the feature is opt-in.
 
 ## Pros
 
@@ -133,7 +133,7 @@ New config/state:
 
 - `AGINTI_SCS_MODE=true`
 - CLI flag: `--enable-scs`
-- interactive command: `/enabless`, `/enabless off`, `/enabless status`
+- interactive command: `/scs`, `/scs on`, `/scs auto`, `/scs off`, `/scs status`
 - state fields:
   - `state.enableScs`
   - `state.scs.phase`
@@ -189,7 +189,7 @@ Recommended modes:
 | `on` | SCS gates all non-trivial work in the session. |
 | `auto` | SCS only activates for complex tasks, write actions, multi-step shell work, GitHub, system maintenance, Android/iOS, LaTeX/PDF, and long-running tasks. |
 
-`/enabless` should toggle `on` in interactive CLI for the joke and speed. `/enabless auto` can be the mature default later.
+`/scs` should toggle SCS on/off in interactive CLI. `/scs auto` keeps the mature complex-task gate for users who want quality control without paying the SCS cost on simple turns.
 
 ## Model Policy
 
@@ -215,10 +215,11 @@ Possible future improvement:
 CLI:
 
 ```text
-/enabless
-/enabless off
-/enabless auto
-/enabless status
+/scs
+/scs on
+/scs off
+/scs auto
+/scs status
 ```
 
 Status output:
@@ -283,8 +284,8 @@ Implemented first slice:
 
 - `src/scs-controller.js` provides mode normalization, auto activation, committee/student JSON calls, evidence packs, supervisor instructions, tool-failure monitoring, periodic progress review, and final finish gates.
 - `src/config.js` adds `enableScs`/`scsActive` and switches active execution to the main model role when SCS is active.
-- `src/interactive-cli.js` adds `/enabless`, `/enabless auto`, `/enabless off`, `/enabless status`, and `/scs` alias.
-- `src/cli.js` adds `--enabless`, `--enabless auto`, `--no-enabless`, and aliases.
+- `src/interactive-cli.js` adds `/scs`, `/scs auto`, `/scs on`, `/scs off`, and `/scs status`. `/enabless` remains a compatibility alias only.
+- `src/cli.js` adds `--scs`, `--scs auto`, and `--no-scs`. The older `--enabless` flags remain compatibility aliases only.
 - `src/agent-runner.js` persists typed `scs.*` events, saves `scs-phase-001.json`, injects the approved supervisor phase, reviews failed tools, and gates finish.
 
 Remaining roadmap:
@@ -317,12 +318,12 @@ Phase 5: auto mode
 - Should SCS approval be required before any write tool, or only before the first phase starts?
 - Should the student be allowed to require specific checks, or only accept/reject evidence?
 - Should committee be one call or multiple candidate calls synthesized into one plan?
-- Should `/enabless` be hidden as a playful alias while `/scs` is the serious public command?
+- Should `/enabless` remain as a hidden compatibility alias now that `/scs` is the serious public command?
 - Should SCS decisions be shared through Skill Mesh as learned supervision skills?
 
 ## Recommendation
 
-Implement `/enabless` as a serious opt-in quality mode with a playful name.
+Implement `/scs` as the serious opt-in quality mode.
 
 Start with one-main-model SCS and only gate the initial plan plus final finish. Then add failure-triggered student monitoring. Avoid per-tool approval in the first version; existing command and file guardrails already protect the dangerous paths, and too many monitor calls will make the product feel slow.
 

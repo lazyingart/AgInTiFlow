@@ -15,6 +15,7 @@ import {
   formatWorkspaceChange,
   stripMarkdown,
 } from "../src/interactive-cli.js";
+import { parseArgs } from "../src/cli.js";
 import { dockerPolicyTimeoutMs, dockerUserCommand } from "../src/docker-sandbox.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -263,10 +264,19 @@ try {
   if (
     canonicalSlashPromptBuffer("/ve") !== "/venice" ||
     canonicalSlashPromptBuffer("/v") !== "/venice" ||
+    canonicalSlashPromptBuffer("/sc") !== "/scs" ||
     canonicalSlashPromptBuffer("/not-a-command") !== "/not-a-command" ||
     canonicalSlashPromptBuffer("/venice off") !== "/venice off"
   ) {
     throw new Error("slash command prompt canonicalization did not preserve final submitted command correctly");
+  }
+  const scsBooleanArgs = parseArgs(["--scs", "fix this project"]);
+  if (scsBooleanArgs.enableScs !== "on" || scsBooleanArgs.goal !== "fix this project") {
+    throw new Error("--scs should behave as a boolean flag when followed by a task");
+  }
+  const scsAutoArgs = parseArgs(["--scs", "auto", "fix this project"]);
+  if (scsAutoArgs.enableScs !== "auto" || scsAutoArgs.goal !== "fix this project") {
+    throw new Error("--scs auto should consume auto and preserve the task");
   }
 
   await runCli(["init"], "");
@@ -280,8 +290,14 @@ try {
   }
   const helpResult = await runChat("/help\n/exit\n");
   const misspelledAuxiliary = "/auxil" + "liary";
-  if (!helpResult.stdout.includes("/auxiliary") || !helpResult.stdout.includes("/review") || helpResult.stdout.includes(misspelledAuxiliary)) {
-    throw new Error("interactive help did not expose only the correctly spelled /auxiliary command");
+  if (
+    !helpResult.stdout.includes("/auxiliary") ||
+    !helpResult.stdout.includes("/review") ||
+    !helpResult.stdout.includes("/scs") ||
+    helpResult.stdout.includes("/enabless") ||
+    helpResult.stdout.includes(misspelledAuxiliary)
+  ) {
+    throw new Error("interactive help did not expose the expected slash commands");
   }
   const zhHelpResult = await runCli(["chat", "--language", "zh-Hans"], "/help\n/exit\n");
   if (!zhHelpResult.stdout.includes("命令:") || !zhHelpResult.stdout.includes("输入普通任务")) {
@@ -294,6 +310,22 @@ try {
   const reviewResult = await runChat("/review changed files only\n/exit\n");
   if (!reviewResult.stdout.includes("Review focus: changed files only") || !reviewResult.stdout.includes("Mock run complete")) {
     throw new Error("interactive /review did not launch the bounded review workflow");
+  }
+  const scsOnResult = await runChat("/scs\n");
+  if (!scsOnResult.stdout.includes("scs=on")) {
+    throw new Error("interactive /scs did not toggle SCS on");
+  }
+  const scsOffResult = await runCli(["chat", "--provider", "mock", "--routing", "manual", "--profile", "code", "--scs"], "/scs\n");
+  if (!scsOffResult.stdout.includes("scs=off")) {
+    throw new Error("interactive /scs did not toggle SCS off");
+  }
+  const scsStatusResult = await runChat("/scs status\n");
+  if (!scsStatusResult.stdout.includes("SCS mode: off")) {
+    throw new Error("interactive /scs status did not show current mode");
+  }
+  const scsAutoResult = await runChat("/scs auto\n");
+  if (!scsAutoResult.stdout.includes("scs=auto")) {
+    throw new Error("interactive /scs auto did not enable auto mode");
   }
   const abbreviatedSkillsResult = await runChat("/sk website\n/ex\n");
   if (abbreviatedSkillsResult.stdout.includes("Unknown command") || !abbreviatedSkillsResult.stdout.includes("website-app")) {
@@ -372,6 +404,7 @@ try {
           "auxiliary-command-spelling",
           "skills-command",
           "review-command",
+          "scs-command-toggle",
           "slash-prefix-autoselect",
           "slash-prefix-canonical-history",
           "instructions-chat-edit",

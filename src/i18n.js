@@ -138,6 +138,7 @@ const TRANSLATIONS = {
     helpSkillMesh: "Manage strict reviewed skill sharing.",
     helpProfile: "Set task profile, e.g. code, website, latex, maintenance.",
     helpWebSearch: "Enable or disable the web_search tool.",
+    helpEnableScs: "Toggle Student-Committee-Supervisor gated execution.",
     helpScouts: "Enable parallel DeepSeek scouts and set scout count.",
     helpRouting: "Set routing: smart, fast, complex, manual.",
     helpProvider: "Open provider selector, or set deepseek/openai/qwen/venice/mock.",

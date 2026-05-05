@@ -7,21 +7,22 @@ It is intentionally separate from the normal fast pipeline. Small requests shoul
 ## Commands
 
 ```bash
-aginti --enabless "fix this complicated project and verify it"
-aginti --enabless auto "migrate this app and run the checks"
-aginti --no-enabless "answer this simple question"
+aginti --scs "fix this complicated project and verify it"
+aginti --scs auto "migrate this app and run the checks"
+aginti --no-scs "answer this simple question"
 ```
 
 Inside interactive chat:
 
 ```text
-/enabless
-/enabless auto
-/enabless off
-/enabless status
+/scs
+/scs auto
+/scs on
+/scs off
+/scs status
 ```
 
-`/scs` is also accepted as a serious alias.
+`/scs` without arguments toggles the feature: off becomes on, and on/auto becomes off. The old `/enabless` spelling is accepted only as a compatibility alias for older sessions and scripts.
 
 ## Role Contract
 
@@ -57,7 +58,7 @@ The current implementation is deliberately bounded:
 
 ## Auto Mode
 
-`/enabless auto` and `--enabless auto` activate SCS for complex, risky, or long-running work. Signals include:
+`/scs auto` and `--scs auto` activate SCS for complex, risky, or long-running work. Signals include:
 
 - high smart-routing complexity score;
 - profiles such as code, app, Android/iOS, large-codebase, GitHub, maintenance, security, LaTeX, research, and supervision;

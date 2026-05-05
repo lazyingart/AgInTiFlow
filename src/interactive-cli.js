@@ -87,9 +87,8 @@ const SLASH_COMMANDS = [
   "/skillsync",
   "/profile",
   "/web-search",
-  "/scouts",
-  "/enabless",
   "/scs",
+  "/scouts",
   "/models",
   "/venice",
   "/route",
@@ -667,8 +666,8 @@ function printHelp() {
       `  ${command("/skillmesh [status|off|record|share|sync]", "Manage strict reviewed skill sharing.", "helpSkillMesh")}`,
       `  ${command("/profile <name>", "Set task profile, e.g. code, website, latex, maintenance.", "helpProfile")}`,
       `  ${command("/web-search on|off", "Enable or disable the web_search tool.", "helpWebSearch")}`,
+      `  ${command("/scs [on|auto|off|status]", "Toggle Student-Committee-Supervisor gated execution.", "helpEnableScs")}`,
       `  ${command("/scouts on|off|<1-10>", "Enable parallel DeepSeek scouts and set scout count.", "helpScouts")}`,
-      `  ${command("/enabless [auto|off|status]", "Enable Student-Committee-Supervisor gated execution.", "helpEnableScs")}`,
       `  ${command("/routing <mode>", "Set routing: smart, fast, complex, manual.", "helpRouting")}`,
       `  ${command("/provider [name]", "Open provider selector, or set deepseek/openai/qwen/venice/mock.", "helpProvider")}`,
       `  ${command("/docker on", "Use docker-workspace with approved package installs.", "helpDockerOn")}`,
@@ -2808,14 +2807,40 @@ async function handleCommand(line, state, packageDir) {
   }
   if (command === "enabless" || command === "scs") {
     const rawMode = String(value || "").trim().toLowerCase();
-    const mode = value ? normalizeScsMode(value) : "on";
+    const currentMode = normalizeScsMode(state.enableScs || "off");
+    const mode =
+      rawMode === "toggle" || !rawMode
+        ? command === "scs"
+          ? currentMode === "off"
+            ? "on"
+            : "off"
+          : "on"
+        : normalizeScsMode(value);
     const knownMode =
       !rawMode ||
-      ["on", "off", "auto", "smart", "status", "?", "true", "false", "yes", "no", "y", "n", "1", "0", "enable", "disable", "enabled", "disabled"].includes(
-        rawMode
-      );
+      [
+        "on",
+        "off",
+        "auto",
+        "smart",
+        "status",
+        "?",
+        "toggle",
+        "true",
+        "false",
+        "yes",
+        "no",
+        "y",
+        "n",
+        "1",
+        "0",
+        "enable",
+        "disable",
+        "enabled",
+        "disabled",
+      ].includes(rawMode);
     if (!knownMode) {
-      printAgentMessage("Usage: /enabless [auto|off|status]. `/enabless` turns SCS on for the session.");
+      printAgentMessage("Usage: /scs [on|auto|off|status]. `/scs` toggles SCS on/off for the session.");
       return true;
     }
     if (value === "status" || value === "?") {
@@ -2823,7 +2848,7 @@ async function handleCommand(line, state, packageDir) {
         [
           `SCS mode: ${state.enableScs || "off"}`,
           "Student-Committee-Supervisor gates complex work with one main model: committee drafts, student approves/monitors, supervisor executes.",
-          "Use `/enabless` for on, `/enabless auto` for complex-task auto mode, or `/enabless off` for the normal fast pipeline.",
+          "Use `/scs` to toggle, `/scs auto` for complex-task auto mode, `/scs on` to force it on, or `/scs off` for the normal fast pipeline.",
         ].join("\n")
       );
       return true;
@@ -2837,6 +2862,8 @@ async function handleCommand(line, state, packageDir) {
       printAgentMessage("SCS enabled. Next run uses the main model for committee planning, student gates, and supervisor execution.");
     } else if (state.enableScs === "auto") {
       printAgentMessage("SCS auto enabled. It activates for complex, risky, or long-running tasks and stays off for simple turns.");
+    } else {
+      printAgentMessage("SCS disabled. Next run uses the normal routing pipeline.");
     }
     return true;
   }
