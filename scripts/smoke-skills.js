@@ -72,6 +72,9 @@ assert(selectedIds("write README API docs and a tutorial").includes("docs-knowle
 assert(selectedIds("fix failing tests and add regression coverage").includes("qa-testing"), "QA prompt did not select qa-testing");
 const qaSkill = skills.find((skill) => skill.id === "qa-testing");
 assert(qaSkill?.body.includes("Do not invent staged bugs"), "QA skill does not guard against fake staged failures");
+const pythonSkill = skills.find((skill) => skill.id === "python");
+assert(pythonSkill?.body.includes("PEP 701 relaxed f-strings"), "Python skill must mention 3.12 f-string compatibility traps");
+assert(pythonSkill?.body.includes("only proves the active interpreter"), "Python skill must guard syntax-check overclaims");
 assert(selectedIds("write SQL migrations for sqlite schema").includes("database"), "database prompt did not select database");
 assert(selectedIds("debug Docker deployment logs and port config").includes("devops-deployment"), "devops prompt did not select devops-deployment");
 assert(selectedIds("review auth security and secrets handling").includes("security-review"), "security prompt did not select security-review");
