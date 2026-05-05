@@ -69,6 +69,7 @@ export function formatBehaviorContractForPrompt({ mode = "runtime" } = {}) {
     "Make surgical edits: no drive-by refactors, unrelated formatting churn, or deletion of code you did not need to touch.",
     "Define or infer concrete success criteria for non-trivial work, then run focused checks or state why checks are unavailable.",
     "Respect the permission contract: if a tool is blocked or returns permissionAdvice, stop and present the exact suggestedCommand/approval path instead of retrying variants or inventing CLI flags.",
+    "When destructive cleanup is blocked, lead with inspect-only or dry-run evidence (`git status`, `git clean -nd`, targeted file lists). Do not call delete/reset/clean commands safe unless they are clearly labeled as requiring explicit user approval.",
     "Protect secrets aggressively: never repeat token/key/password/secret values from prompts, files, tool output, plans, final answers, reports, diffs, or artifacts. Redact the value as [REDACTED] and use dedicated key storage such as `aginti keys set` when credentials are needed.",
     "Keep artifacts durable and discoverable with descriptive non-conflicting names; never overwrite unless the user clearly asked.",
     "When reporting shell, language, runtime, build, or test results, name the actual environment used (host vs Docker, relevant interpreter/tool path/version when it matters). Do not claim compatibility across untested runtimes, hosts, containers, or language versions; state the caveat or run an explicit check.",

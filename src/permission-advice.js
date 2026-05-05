@@ -135,7 +135,40 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
     };
   }
 
-  if (category === "destructive" || category === "permission-change" || category === "general-shell") {
+  if (category === "destructive") {
+    return {
+      ...base,
+      summary:
+        "This command is destructive and was blocked. Do not retry variants. First offer inspect-only or dry-run cleanup evidence; destructive cleanup requires explicit user approval.",
+      options: [
+        "Inspect only: run non-destructive checks such as `git status --short`, `git clean -nd`, `find <path> -maxdepth ... -print`, or targeted file listings.",
+        "Safer cleanup plan: write a report listing exact files that would be removed, then ask the user before deletion.",
+        "Explicit destructive approval: only rerun with --allow-destructive after the user accepts the data-loss risk.",
+      ],
+      suggestedCommand: resumeCommand({
+        config,
+        state,
+        sandboxMode: "docker-workspace",
+        prompt: "Continue with inspect-only or dry-run cleanup evidence. Do not delete, reset, clean, or overwrite anything unless the user explicitly approves destructive actions.",
+      }),
+      destructiveApprovalCommand: resumeCommand({
+        config,
+        state,
+        sandboxMode: "docker-workspace",
+        destructive: true,
+        prompt: "Continue after the user explicitly approved destructive project-local cleanup. Inspect first, delete only the named targets, and verify git status afterwards.",
+      }),
+      trustedHostCommand: resumeCommand({
+        config,
+        state,
+        sandboxMode: "host",
+        destructive: true,
+        prompt: "Continue after the user explicitly approved trusted host destructive execution. Inspect first, avoid unrelated files, and keep git status understandable.",
+      }),
+    };
+  }
+
+  if (category === "permission-change" || category === "general-shell") {
     return {
       ...base,
       summary:

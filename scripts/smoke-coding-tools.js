@@ -279,6 +279,28 @@ try {
   });
   assert(permissionAdvice.suggestedCommand.includes("coding-policy-smoke"), "permission advice did not include resume session id");
   assert(permissionAdvice.suggestedCommand.includes("--sandbox-mode docker-workspace"), "permission advice did not suggest docker-workspace recovery");
+  const destructiveAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: { command: "rm -rf reports && git reset --hard" },
+    guard: { category: "destructive", reason: "Destructive shell commands require Allow destructive actions." },
+    config: dockerWorkspacePolicy,
+    state: { sessionId: "coding-destructive-smoke" },
+  });
+  const destructiveAdviceText = [
+    destructiveAdvice.summary,
+    ...(destructiveAdvice.options || []),
+    destructiveAdvice.suggestedCommand,
+    destructiveAdvice.destructiveApprovalCommand,
+  ].join("\n");
+  assert(/dry-run|inspect-only/i.test(destructiveAdviceText), "destructive advice did not lead with dry-run or inspect-only alternatives");
+  assert(
+    !destructiveAdvice.suggestedCommand.includes("--allow-destructive"),
+    "default destructive advice suggested command should not enable destructive mode"
+  );
+  assert(
+    destructiveAdvice.destructiveApprovalCommand.includes("--allow-destructive"),
+    "destructive advice did not provide an explicit approval command"
+  );
   const failedNetworkAdvice = buildFailedCommandAdvice({
     args: { command: "git clone https://github.com/lazyingart/AgInTiFlow.git" },
     commandPolicy: clonePolicy,
