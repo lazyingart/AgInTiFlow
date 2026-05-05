@@ -512,7 +512,7 @@ export async function createPlan(client, config, state) {
             ? `Shell tool is enabled in ${config.commandCwd}. Host platform: ${platformLabel(platform)}. In Docker, this path is mounted as /workspace with persistent /aginti-env and /aginti-cache mounts. Use relative paths or /workspace paths, not absolute host temp paths. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}. For npm/pip/conda/venv setup, explain the need and wait for approval unless policy is allow. Do not run npx aginti, npm exec aginti, or nested aginti diagnostics from this shell; they may resolve stale project packages or create recursive agent sessions. On native Windows host mode, prefer PowerShell/cmd-compatible commands or WSL/Docker for bash-like toolchains.`
             : "",
           config.allowShellTool
-            ? "Host tmux tools are enabled for long-running sessions. Plan to use tmux_start_session for durable jobs, tmux_capture_pane to monitor, tmux_send_keys to interact after capture, and tmux_list_sessions to discover existing sessions. Do not install or run tmux inside Docker run_command containers; those containers are short-lived and cannot preserve tmux servers."
+            ? "Host tmux tools are enabled for long-running sessions. Plan to use tmux_start_session for durable jobs, tmux_capture_pane to monitor, tmux_send_keys to interact after capture, and tmux_list_sessions to discover existing sessions. Do not install or run tmux inside Docker run_command containers; those containers are short-lived and cannot preserve tmux servers. In Docker sandbox mode, tmux startup/send commands are still workspace-bound: use relative project paths, not absolute host paths outside the workspace. Ask for --sandbox-mode host before whole-host tmux work."
             : "",
           config.allowFileTools
             ? `Workspace file tools are enabled in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, preview_workspace. For large or unfamiliar repos, plan to call inspect_project first, then search/read AGINTI.md/AGENTS.md/README/manifests and exact files. apply_patch supports exact single-file replacements and Codex-style/unified multi-file patches; prefer it for edits after reading relevant context. Keep all paths workspace-relative, for example plot_fx.svg or docs/report.tex, and avoid secrets. For newly generated standalone prose/docs/stories/assets, choose a descriptive non-conflicting filename from the topic/language instead of generic names like story.txt or output.txt; do not overwrite existing files unless the user explicitly asked to update/replace/overwrite that file. For generated local HTML/SVG/PDF/static sites, plan to use open_workspace_file or preview_workspace rather than starting a localhost server inside Docker.`
@@ -786,7 +786,7 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "tmux_send_keys",
           description:
-            "Send literal text and/or safe control keys to a durable host tmux pane. Use for interacting with known shells or agent sessions after capturing context. Do not send secrets, passwords, sudo passwords, or destructive commands.",
+            "Send literal text and/or safe control keys to a durable host tmux pane. Use for interacting with known shells or agent sessions after capturing context. Do not send secrets, passwords, sudo passwords, destructive commands, or absolute host paths outside the workspace unless the run is explicitly in host sandbox mode.",
           parameters: {
             type: "object",
             properties: {
@@ -812,7 +812,7 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "tmux_start_session",
           description:
-            "Start a detached durable host tmux session rooted inside the workspace, optionally with a startup command. Use for long-running local jobs that should be monitored with tmux_capture_pane instead of blocking the agent. For one-shot commands, redirect output and exit status to a durable workspace log or keep the shell open so capture can verify; do not claim results from an auto-terminated session. This is the correct tmux path in Docker mode because run_command containers are ephemeral.",
+            "Start a detached durable host tmux session rooted inside the workspace, optionally with a startup command. Use for long-running local jobs that should be monitored with tmux_capture_pane instead of blocking the agent. For one-shot commands, redirect output and exit status to a durable workspace log or keep the shell open so capture can verify; do not claim results from an auto-terminated session. In Docker sandbox mode, startup commands must stay workspace-bound and must not reference absolute host paths outside the project; ask for --sandbox-mode host for trusted whole-host work.",
           parameters: {
             type: "object",
             properties: {

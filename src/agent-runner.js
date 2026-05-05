@@ -428,7 +428,7 @@ async function createInitialState(config, sessionId) {
           "Permission contract: current-workspace file writes are allowed through workspace file tools when enabled. Outside-workspace paths, host sudo, host OS package installs, destructive git/shell actions, and blocked network/setup must not be bypassed by retrying variants. If a tool result includes permissionAdvice or suggestedCommand, stop, explain the blocker, copy the exact suggestedCommand when giving a rerun path, and ask the user to approve/rerun that mode or choose a safer workspace-relative path. Never invent legacy AgInTi syntax such as `aginti run --sandbox host`; use the exact flags from permissionAdvice.",
           "If an operation fails but a directory, artifact, or file already exists, treat it as pre-existing unless you have evidence this run created or updated it. Verify expected outputs before claiming success.",
           config.allowShellTool
-        ? "Host tmux tools are available for long-running terminals: list sessions, capture panes, send safe keys/text, and start detached sessions. Prefer these tools for monitoring long installs/tests/dev servers without blocking; capture before sending input and never send secrets or sudo passwords. Do not start or install tmux inside Docker run_command containers because those containers are short-lived."
+        ? "Host tmux tools are available for long-running terminals: list sessions, capture panes, send safe keys/text, and start detached sessions. Prefer these tools for monitoring long installs/tests/dev servers without blocking; capture before sending input and never send secrets or sudo passwords. Do not start or install tmux inside Docker run_command containers because those containers are short-lived. In Docker sandbox mode, tmux start/send commands must stay workspace-bound and must not reference absolute host paths outside the project; ask for --sandbox-mode host for trusted whole-host work."
         + " For one-shot tmux commands, redirect stdout/stderr and exit status to a durable workspace log or keep the pane alive for capture; if capture fails because the session ended, do not infer output or exit status."
         : "",
           config.allowFileTools
@@ -894,7 +894,7 @@ async function captureSyntheticSnapshot(store, step, config) {
           : `Shell tool available in: ${config.commandCwd} on ${platformLabel(platform)}. Use OS-compatible commands; prefer WSL/Docker for bash-heavy workflows on Windows.`
         : "Shell tool disabled.",
       config.allowShellTool
-        ? "Host tmux tools available: tmux_list_sessions, tmux_capture_pane, tmux_send_keys, tmux_start_session. Use them for long-running jobs and agent terminals; capture before sending input. Docker run_command containers are ephemeral, so tmux there will not persist. For one-shot tmux commands, redirect output and exit status to a durable workspace log or keep the pane alive for capture; if capture fails because the session ended, do not infer output or exit status."
+        ? "Host tmux tools available: tmux_list_sessions, tmux_capture_pane, tmux_send_keys, tmux_start_session. Use them for long-running jobs and agent terminals; capture before sending input. Docker run_command containers are ephemeral, so tmux there will not persist. In Docker sandbox mode, tmux start/send commands must stay workspace-bound and cannot reference absolute host paths outside the project; use --sandbox-mode host for trusted whole-host work. For one-shot tmux commands, redirect output and exit status to a durable workspace log or keep the pane alive for capture; if capture fails because the session ended, do not infer output or exit status."
         : "",
       config.allowFileTools
         ? `Workspace file tools available in: ${config.commandCwd}. Use inspect_project first for large or unfamiliar codebases, then search/read exact files before editing. Use workspace-relative paths. Use apply_patch for code edits; it supports exact single-file replacement and multi-file Codex-style/unified patches. For new standalone generated content, pick a descriptive non-conflicting filename and avoid overwriting unless explicitly requested.`
@@ -1224,7 +1224,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         return result;
       }
       case "tmux_send_keys": {
-        const result = await sendTmuxKeys(args);
+        const result = await sendTmuxKeys(args, config);
         const eventResult = sanitizeToolResult(result);
         await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
         observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);

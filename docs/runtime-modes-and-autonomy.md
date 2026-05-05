@@ -13,6 +13,8 @@ The failed task was expected under the current Docker design, but the agent shou
 
 The fix is guidance plus guardrails: raw `tmux` shell commands are blocked inside Docker `run_command`, and the model is told to use host tmux tools for durable sessions.
 
+Important boundary: host tmux tools are durable, but they are not a permission escape hatch. In `docker-readonly` and `docker-workspace` modes, `tmux_start_session` and `tmux_send_keys` are still workspace-bound. Startup commands and sent shell text must use relative paths under the project, not absolute host paths outside the project. If a task really needs `/home/...`, `/etc/...`, an emulator outside the project, or whole-host maintenance, rerun explicitly with `--sandbox-mode host`.
+
 ## Execution Modes
 
 | Mode | Similar Codex idea | Best use | What persists | Risk |
@@ -137,7 +139,7 @@ Durable tmux task:
 aginti "start a tmux session named demo, run ls in it, keep it open, and tell me how to attach"
 ```
 
-The agent should use `tmux_start_session`, `tmux_send_keys`, and `tmux_capture_pane`, not Docker `run_command`.
+The agent should use `tmux_start_session`, `tmux_send_keys`, and `tmux_capture_pane`, not Docker `run_command`. In Docker sandbox mode, tmux commands must stay inside the project. For trusted whole-host tmux work, use the host recipe above.
 
 ## Future Persistent Container Mode
 

@@ -157,6 +157,8 @@ aginti --resume <session-id> \
 
 Permission behavior is intentionally consistent: writes inside the current project are allowed through file tools, network/setup runs are normal in approved Docker workspace mode, and outside-project or trusted-host actions stop with a clear blocker plus a suggested rerun command. See [runtime modes and autonomy](docs/runtime-modes-and-autonomy.md) for the full contract.
 
+Tmux follows the same rule. In Docker sandbox mode, `tmux_start_session` and `tmux_send_keys` are durable host tools, but their commands must stay workspace-bound. Use `--sandbox-mode host` when a tmux task needs absolute host paths outside the project.
+
 ## Permission Recipes
 
 Use these when you want explicit control instead of the default interactive policy:

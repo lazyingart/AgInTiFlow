@@ -30,6 +30,8 @@ const ALLOWED_KEYS = new Set([
 const SECRET_PATTERN = /(api[_-]?key|auth[_-]?token|npm[_-]?token|_authToken|password|passwd|secret|bearer\s+[A-Za-z0-9._-]+)/i;
 const DESTRUCTIVE_PATTERN =
   /\b(rm\s+-[^\n;]*[rf][^\n;]*(\/|\*|~|\$HOME)|mkfs(?:\.[a-z0-9]+)?\b|dd\s+if=.*\s+of=\/dev\/|shutdown\b|reboot\b|poweroff\b)/i;
+const ABSOLUTE_PATH_PATTERN = /(^|[\s"'`=(:])((?:\/[A-Za-z0-9._@%+~:-]+)+\/?)/g;
+const ALWAYS_ALLOWED_ABSOLUTE_PATHS = new Set(["/dev/null"]);
 
 export const TMUX_TOOL_NAMES = ["tmux_list_sessions", "tmux_capture_pane", "tmux_send_keys", "tmux_start_session"];
 
@@ -101,6 +103,37 @@ function resolveCwd(config, cwd = ".") {
     return { ok: false, reason: "tmux cwd must stay inside the configured workspace." };
   }
   return { ok: true, cwd: requested };
+}
+
+function isInsideDirectory(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function uniqueAbsolutePaths(text = "") {
+  const paths = new Set();
+  for (const match of String(text || "").matchAll(ABSOLUTE_PATH_PATTERN)) {
+    const candidate = match[2];
+    if (!candidate || candidate.startsWith("//")) continue;
+    paths.add(candidate.replace(/[),.;]+$/g, ""));
+  }
+  return [...paths].filter(Boolean);
+}
+
+function checkWorkspaceBoundTmuxText(text = "", config = {}, label = "tmux text") {
+  if (!config.useDockerSandbox) return { ok: true };
+  const root = path.resolve(config.commandCwd || process.cwd());
+  for (const candidate of uniqueAbsolutePaths(text)) {
+    if (ALWAYS_ALLOWED_ABSOLUTE_PATHS.has(candidate)) continue;
+    const resolved = path.resolve(candidate);
+    if (!isInsideDirectory(root, resolved)) {
+      return {
+        ok: false,
+        reason: `${label} references an absolute host path outside the configured workspace while Docker sandbox mode is active: ${candidate}. Use a workspace-relative path or rerun with --sandbox-mode host for trusted whole-host access.`,
+      };
+    }
+  }
+  return { ok: true };
 }
 
 function parseSessions(stdout = "") {
@@ -186,7 +219,7 @@ export async function captureTmuxPane(args = {}) {
   };
 }
 
-export async function sendTmuxKeys(args = {}) {
+export async function sendTmuxKeys(args = {}, config = {}) {
   const target = validateTarget(args.target);
   if (!target.ok) return { ok: false, toolName: "tmux_send_keys", blocked: true, reason: target.reason };
   const text = String(args.text || "");
@@ -200,6 +233,10 @@ export async function sendTmuxKeys(args = {}) {
   }
   if (DESTRUCTIVE_PATTERN.test(text)) {
     return { ok: false, toolName: "tmux_send_keys", blocked: true, reason: "tmux text appears destructive; ask the user before sending it." };
+  }
+  const workspaceBound = checkWorkspaceBoundTmuxText(text, config, "tmux text");
+  if (!workspaceBound.ok) {
+    return { ok: false, toolName: "tmux_send_keys", blocked: true, reason: workspaceBound.reason };
   }
   for (const key of keys) {
     if (!ALLOWED_KEYS.has(key)) {
@@ -252,6 +289,10 @@ export async function startTmuxSession(args = {}, config = {}) {
       reason: "tmux startup command appears destructive; ask the user before starting it.",
     };
   }
+  const workspaceBound = checkWorkspaceBoundTmuxText(command, config, "tmux startup command");
+  if (!workspaceBound.ok) {
+    return { ok: false, toolName: "tmux_start_session", blocked: true, reason: workspaceBound.reason };
+  }
 
   const tmuxArgs = ["new-session", "-d", "-s", name.name, "-c", cwd.cwd];
   if (command) tmuxArgs.push(command);
@@ -289,6 +330,8 @@ export function checkTmuxToolUse(toolName, args = {}, config = {}) {
     if (DESTRUCTIVE_PATTERN.test(text)) {
       return { allowed: false, reason: "tmux text appears destructive; ask the user before sending it.", category: "tmux" };
     }
+    const workspaceBound = checkWorkspaceBoundTmuxText(text, config, "tmux text");
+    if (!workspaceBound.ok) return { allowed: false, reason: workspaceBound.reason, category: "tmux" };
     for (const key of Array.isArray(args.keys) ? args.keys : []) {
       if (!ALLOWED_KEYS.has(String(key))) return { allowed: false, reason: `Unsupported tmux key: ${key}`, category: "tmux" };
     }
@@ -309,6 +352,8 @@ export function checkTmuxToolUse(toolName, args = {}, config = {}) {
     if (DESTRUCTIVE_PATTERN.test(command)) {
       return { allowed: false, reason: "tmux startup command appears destructive; ask the user before starting it.", category: "tmux" };
     }
+    const workspaceBound = checkWorkspaceBoundTmuxText(command, config, "tmux startup command");
+    if (!workspaceBound.ok) return { allowed: false, reason: workspaceBound.reason, category: "tmux" };
     return { allowed: true, category: "tmux" };
   }
   return { allowed: true, category: "tmux" };
