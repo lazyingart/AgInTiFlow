@@ -142,14 +142,14 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
         "This command is destructive and was blocked. Do not retry variants. First offer inspect-only or dry-run cleanup evidence; destructive cleanup requires explicit user approval.",
       options: [
         "Inspect only: run non-destructive checks such as `git status --short`, `git clean -nd`, `find <path> -maxdepth ... -print`, or targeted file listings.",
-        "Safer cleanup plan: write a report listing exact files that would be removed, then ask the user before deletion.",
-        "Explicit destructive approval: only rerun with --allow-destructive after the user accepts the data-loss risk.",
+        "Safer cleanup plan: write a report listing exact files that would be removed. Do not include executable delete/reset/clean commands in the safe or non-destructive section.",
+        "Explicit destructive approval: only after the user accepts data-loss risk, provide a separate approval path such as a rerun command with --allow-destructive.",
       ],
       suggestedCommand: resumeCommand({
         config,
         state,
         sandboxMode: "docker-workspace",
-        prompt: "Continue with inspect-only or dry-run cleanup evidence. Do not delete, reset, clean, or overwrite anything unless the user explicitly approves destructive actions.",
+        prompt: "Continue with inspect-only or dry-run cleanup evidence. Do not delete, reset, clean, overwrite, or include executable destructive cleanup commands in safe/non-destructive instructions unless the user explicitly approves destructive actions.",
       }),
       destructiveApprovalCommand: resumeCommand({
         config,

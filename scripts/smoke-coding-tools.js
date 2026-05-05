@@ -294,6 +294,10 @@ try {
   ].join("\n");
   assert(/dry-run|inspect-only/i.test(destructiveAdviceText), "destructive advice did not lead with dry-run or inspect-only alternatives");
   assert(
+    /Do not include executable delete\/reset\/clean commands/.test(destructiveAdviceText),
+    "destructive advice did not prohibit destructive commands inside safe cleanup instructions"
+  );
+  assert(
     !destructiveAdvice.suggestedCommand.includes("--allow-destructive"),
     "default destructive advice suggested command should not enable destructive mode"
   );
