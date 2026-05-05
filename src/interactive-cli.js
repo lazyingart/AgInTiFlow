@@ -175,8 +175,62 @@ function promptViewportRows(height = terminalHeight()) {
   return Math.max(Math.min(Math.floor(Number(height) * 0.42), 10), 4);
 }
 
+function stripAnsi(value) {
+  return String(value || "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
+function charCellWidth(char = "") {
+  const code = char.codePointAt(0);
+  if (!code) return 0;
+  if (code < 32 || (code >= 0x7f && code < 0xa0)) return 0;
+  if (
+    (code >= 0x0300 && code <= 0x036f) ||
+    (code >= 0x1ab0 && code <= 0x1aff) ||
+    (code >= 0x1dc0 && code <= 0x1dff) ||
+    (code >= 0x20d0 && code <= 0x20ff) ||
+    (code >= 0xfe20 && code <= 0xfe2f)
+  ) {
+    return 0;
+  }
+  if (
+    code >= 0x1100 &&
+    (code <= 0x115f ||
+      code === 0x2329 ||
+      code === 0x232a ||
+      (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe10 && code <= 0xfe19) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      (code >= 0x1f300 && code <= 0x1f64f) ||
+      (code >= 0x1f900 && code <= 0x1f9ff) ||
+      (code >= 0x20000 && code <= 0x3fffd))
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
+function stringCellWidth(value = "") {
+  return [...String(value || "")].reduce((sum, char) => sum + charCellWidth(char), 0);
+}
+
+function sliceToVisualWidth(value = "", width = 0) {
+  let used = 0;
+  let result = "";
+  for (const char of String(value || "")) {
+    const next = used + charCellWidth(char);
+    if (next > width) break;
+    result += char;
+    used = next;
+  }
+  return result;
+}
+
 function visualLength(value) {
-  return stripAnsi(value).length;
+  return stringCellWidth(stripAnsi(value));
 }
 
 function padVisible(value, width) {
@@ -186,7 +240,7 @@ function padVisible(value, width) {
 
 function panelLine(content = "", bgCode = ansi.systemBg, width = editorWidth()) {
   const raw = String(content || "");
-  const safeContent = visualLength(raw) > width ? stripAnsi(raw).slice(0, width) : raw;
+  const safeContent = visualLength(raw) > width ? sliceToVisualWidth(stripAnsi(raw), width) : raw;
   if (!useColor) return padVisible(safeContent, width);
   const padded = padVisible(safeContent, width).replaceAll(ansi.reset, `${ansi.reset}${bgCode}`);
   return `${bgCode}${padded}${ansi.reset}`;
@@ -201,10 +255,6 @@ function commandCompleter(line = "") {
   if (!trimmed.startsWith("/")) return [[], trimmed];
   const hits = SLASH_COMMANDS.filter((command) => command.startsWith(trimmed));
   return [hits.length > 0 ? hits : SLASH_COMMANDS, trimmed];
-}
-
-function stripAnsi(value) {
-  return String(value || "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
 }
 
 function promptGutter() {
@@ -253,7 +303,7 @@ function clamp(value, min, max) {
 
 function compactLine(value = "", limit = 96) {
   const text = stripAnsi(String(value || "").replace(/\s+/g, " ").trim());
-  return text.length <= limit ? text : `${text.slice(0, Math.max(limit - 1, 1))}…`;
+  return visualLength(text) <= limit ? text : `${sliceToVisualWidth(text, Math.max(limit - 1, 1))}…`;
 }
 
 export function formatElapsedDuration(ms = 0) {

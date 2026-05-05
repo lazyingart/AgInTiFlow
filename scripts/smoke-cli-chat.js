@@ -24,6 +24,44 @@ const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-cli-chat-")
 const agintiflowHome = path.join(tempRoot, ".agintiflow-home");
 const binPath = path.join(repoRoot, "bin/aginti-cli.js");
 
+function charCellWidth(char = "") {
+  const code = char.codePointAt(0);
+  if (!code) return 0;
+  if (code < 32 || (code >= 0x7f && code < 0xa0)) return 0;
+  if (
+    (code >= 0x0300 && code <= 0x036f) ||
+    (code >= 0x1ab0 && code <= 0x1aff) ||
+    (code >= 0x1dc0 && code <= 0x1dff) ||
+    (code >= 0x20d0 && code <= 0x20ff) ||
+    (code >= 0xfe20 && code <= 0xfe2f)
+  ) {
+    return 0;
+  }
+  if (
+    code >= 0x1100 &&
+    (code <= 0x115f ||
+      code === 0x2329 ||
+      code === 0x232a ||
+      (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe10 && code <= 0xfe19) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      (code >= 0x1f300 && code <= 0x1f64f) ||
+      (code >= 0x1f900 && code <= 0x1f9ff) ||
+      (code >= 0x20000 && code <= 0x3fffd))
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
+function cellWidth(value = "") {
+  return [...String(value || "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")].reduce((sum, char) => sum + charCellWidth(char), 0);
+}
+
 function runChat(inputText) {
   return runCli(["chat", "--provider", "mock", "--routing", "manual", "--profile", "code"], inputText);
 }
@@ -220,6 +258,14 @@ try {
   const jaLaunchHeader = buildLaunchHeaderLines({ width: 120, packageVersion: "0.0.0", animated: false, language: "ja" }).join("\n");
   if (!jaLaunchHeader.includes("低コストでプロジェクトを理解するエージェント")) {
     throw new Error("launch header did not localize by language option");
+  }
+  const zhLaunchHeader = buildLaunchHeaderLines({ width: 80, packageVersion: "0.0.0", animated: false, language: "zh-Hans" });
+  if (zhLaunchHeader.some((line) => cellWidth(line) > 80)) {
+    throw new Error("launch header did not account for CJK terminal cell width");
+  }
+  const jaNarrowHeader = buildLaunchHeaderLines({ width: 80, packageVersion: "0.0.0", animated: false, language: "ja" });
+  if (jaNarrowHeader.some((line) => cellWidth(line) > 80)) {
+    throw new Error("Japanese launch header overflowed narrow terminal width");
   }
   const hugePromptLayout = buildPromptLayout(Array.from({ length: 30 }, (_unused, index) => `line ${index + 1}`).join("\n"), 120, 80, 20);
   if (hugePromptLayout.renderedRows.length > 12 || !hugePromptLayout.renderedRows.some((line) => line.includes("earlier input row"))) {
