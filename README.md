@@ -270,7 +270,7 @@ Inside chat:
 /aaps dry-run workflows/main.aaps
 ```
 
-Use AAPS when the task is bigger than a single chat: app development with stages, paper/book workflows, validation gates, recovery steps, artifact production, or top-down agentic scripts. See [docs/aaps.md](docs/aaps.md) and the package [https://www.npmjs.com/package/@lazyingart/aaps](https://www.npmjs.com/package/@lazyingart/aaps).
+Use AAPS when the task is bigger than a single chat: app development with stages, paper/book workflows, validation gates, recovery steps, artifact production, or top-down agentic scripts. The current adapter is intentionally lightweight: prompt-only AAPS tasks are reported as handoffs and do not automatically execute an LLM/backend agent yet, so AgInTiFlow warns when a run has no executable steps or misses a declared output. See [docs/aaps.md](docs/aaps.md) and the package [https://www.npmjs.com/package/@lazyingart/aaps](https://www.npmjs.com/package/@lazyingart/aaps).
 
 ## Local API Quick Reference
 

@@ -42,6 +42,8 @@ The adapter keeps paths project-relative and uses `execFile`, not shell interpol
 
 `compile check` and `validate` are the recommended first checks. `run` can execute commands declared by the `.aaps` workflow, so treat it like any other project execution step and run only workflows you intend to execute.
 
+Current lightweight adapter boundary: prompt-only AAPS tasks are recorded as handoffs. They do not automatically call an LLM/backend agent yet. When a workflow has prompt-only steps, `aginti aaps run` and `aginti aaps dry-run` print `promptOnly=<n>` plus warnings if no executable steps ran or a declared output was not produced.
+
 `aginti aaps install` installs `@lazyingart/aaps` as a project dev dependency only when the current project has `package.json`. Use `aginti aaps install global` only when you intentionally want a global npm install.
 
 ## Project Shape
@@ -56,7 +58,7 @@ runs/
 artifacts/
 ```
 
-The starter workflow is deliberately simple: it defines a planner agent and a `draft_plan` task that writes `reports/aaps-plan.md`. Use it as a safe scaffold, then expand the workflow with blocks, validations, recovery steps, and review gates.
+The starter workflow is deliberately simple: it defines a planner agent and a `draft_plan` task whose declared output is `reports/aaps-plan.md`. With the current lightweight adapter this task is prompt-only, so `run` produces durable run metadata and a handoff warning rather than writing the plan itself. Use AgInTiFlow to act on that handoff, or expand the workflow with executable actions, validations, recovery steps, and review gates.
 
 ## When To Use AAPS
 
