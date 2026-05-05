@@ -246,6 +246,20 @@ try {
     failedNetworkAdvice.instruction.includes("Stop and present this blocker"),
     "network failure advice did not tell the model to stop and ask"
   );
+  const failedOutsidePathAdvice = buildFailedCommandAdvice({
+    args: { command: 'echo "outside permission test" > /home/lachlan/ProjectsLFS/outside.txt' },
+    commandPolicy: evaluateCommandPolicy('echo "outside permission test" > /home/lachlan/ProjectsLFS/outside.txt', dockerWorkspacePolicy),
+    commandResult: {
+      ok: false,
+      stdout: "EXIT: 1",
+      stderr: "bash: line 1: /home/lachlan/ProjectsLFS/outside.txt: No such file or directory",
+    },
+    config: dockerWorkspacePolicy,
+    state: { sessionId: "coding-outside-path-smoke" },
+  });
+  assert(failedOutsidePathAdvice?.failureKind === "workspace-path", "outside host path failure advice was not generated");
+  assert(failedOutsidePathAdvice.suggestedCommand.includes("--sandbox-mode host"), "outside path advice did not suggest host mode");
+  assert(!failedOutsidePathAdvice.suggestedCommand.includes("aginti run --sandbox host"), "outside path advice used legacy sandbox syntax");
   assert(
     shouldRunParallelScouts(
       {

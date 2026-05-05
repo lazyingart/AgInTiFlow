@@ -68,7 +68,7 @@ export function formatBehaviorContractForPrompt({ mode = "runtime" } = {}) {
     "Prefer the smallest coherent change that satisfies the request; do not add speculative features or abstractions.",
     "Make surgical edits: no drive-by refactors, unrelated formatting churn, or deletion of code you did not need to touch.",
     "Define or infer concrete success criteria for non-trivial work, then run focused checks or state why checks are unavailable.",
-    "Respect the permission contract: if a tool is blocked, stop and present the safe rerun/approval path instead of retrying variants.",
+    "Respect the permission contract: if a tool is blocked or returns permissionAdvice, stop and present the exact suggestedCommand/approval path instead of retrying variants or inventing CLI flags.",
     "Keep artifacts durable and discoverable with descriptive non-conflicting names; never overwrite unless the user clearly asked.",
     "When reporting shell, language, runtime, build, or test results, name the actual environment used (host vs Docker, relevant interpreter/tool path/version when it matters). Do not claim compatibility across untested runtimes, hosts, containers, or language versions; state the caveat or run an explicit check.",
   ].join(" ");

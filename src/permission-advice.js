@@ -10,6 +10,13 @@ const NETWORK_FAILURE_PATTERNS = [
   /unable to access ['"].*?:/i,
 ];
 
+const DOCKER_WORKSPACE_PATH_FAILURE_PATTERNS = [
+  /\/home\/[^:\n]+:\s+No such file or directory/i,
+  /\/Users\/[^:\n]+:\s+No such file or directory/i,
+  /[A-Z]:\\[^:\n]+:\s+No such file or directory/i,
+  /cannot statx? ['"][^'"]+['"]:\s+No such file or directory/i,
+];
+
 function quoteShell(value = "") {
   const text = String(value || "");
   return `'${text.replace(/'/g, `'\\''`)}'`;
@@ -183,7 +190,26 @@ export function looksLikeNetworkFailure(result = {}) {
   return NETWORK_FAILURE_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+export function looksLikeDockerWorkspacePathFailure(result = {}, config = {}) {
+  if ((config.sandboxMode || "") !== "docker-workspace") return false;
+  const text = `${result.stdout || ""}\n${result.stderr || ""}`;
+  return DOCKER_WORKSPACE_PATH_FAILURE_PATTERNS.some((pattern) => pattern.test(text));
+}
+
 export function buildFailedCommandAdvice({ args = {}, commandPolicy = {}, commandResult = {}, config = {}, state = {} } = {}) {
+  if (looksLikeDockerWorkspacePathFailure(commandResult, config)) {
+    return {
+      ...adviceForCategory("workspace-path", {
+        toolName: "run_command",
+        args,
+        config,
+        state,
+        reason:
+          "The command referenced a host absolute path that is not mounted inside the Docker workspace. Do not retry shell variants; keep output in the workspace or ask for explicit host-mode approval.",
+      }),
+      failureKind: "workspace-path",
+    };
+  }
   if (!looksLikeNetworkFailure(commandResult)) return null;
   return {
     ...adviceForCategory(commandPolicy.needsNetwork ? "network-fetch" : "general-shell", {
