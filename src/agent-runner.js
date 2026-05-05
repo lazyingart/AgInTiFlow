@@ -780,12 +780,21 @@ async function implicitOverwriteBlock(toolName, args, config, state) {
   };
 }
 
-function sanitizeToolResult(result) {
+const TOOL_RESULT_INLINE_CONTENT_BYTES = 16_000;
+const TOOL_RESULT_CONTENT_PREVIEW_CHARS = 1_200;
+
+export function sanitizeToolResult(result) {
   const safeResult = redactValue(result);
   if (typeof safeResult.content === "string") {
-    safeResult.contentPreview = safeResult.content.slice(0, 600);
-    safeResult.contentBytes = Buffer.byteLength(safeResult.content, "utf8");
-    delete safeResult.content;
+    const contentBytes = Buffer.byteLength(safeResult.content, "utf8");
+    safeResult.contentBytes = contentBytes;
+    if (safeResult.toolName === "read_file" && contentBytes <= TOOL_RESULT_INLINE_CONTENT_BYTES) {
+      safeResult.contentTruncated = false;
+    } else {
+      safeResult.contentPreview = safeResult.content.slice(0, TOOL_RESULT_CONTENT_PREVIEW_CHARS);
+      safeResult.contentTruncated = true;
+      delete safeResult.content;
+    }
   }
   return safeResult;
 }

@@ -887,7 +887,7 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "read_file",
           description:
-            "Read a small UTF-8 workspace file. Secret paths, .git internals, files outside the workspace, binary files, and huge files are blocked.",
+            "Read a small UTF-8 workspace file. Small files return full content; larger files return a truncated preview with contentTruncated=true, so do not quote or reproduce omitted content unless you read it another way. Secret paths, .git internals, files outside the workspace, binary files, and huge files are blocked.",
           parameters: {
             type: "object",
             properties: {

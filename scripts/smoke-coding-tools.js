@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { repairModelMessageHistory, runAgent, shouldShortCircuitToolBatch, skippedAfterBlockedToolResult } from "../src/agent-runner.js";
+import { repairModelMessageHistory, runAgent, sanitizeToolResult, shouldShortCircuitToolBatch, skippedAfterBlockedToolResult } from "../src/agent-runner.js";
 import { formatBehaviorContractForPrompt } from "../src/behavior-contract.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { readCodebaseMap } from "../src/codebase-map.js";
@@ -285,6 +285,17 @@ try {
   const actualDangerAfterQuotePolicy = evaluateCommandPolicy('echo "rm -rf is text" && rm -rf reports', dockerWorkspacePolicy);
   assert(!actualDangerAfterQuotePolicy.allowed, "actual destructive command after quoted text should still be blocked");
   assert(actualDangerAfterQuotePolicy.category === "destructive", "actual destructive command after quoted text was not classified as destructive");
+  const safeChmodAndRunPolicy = evaluateCommandPolicy(
+    'chmod +x /workspace/reports/run_bounded_02079_v2.sh && bash /workspace/reports/run_bounded_02079.sh 2>&1; echo "RUN_COMMAND_EXIT: $?"',
+    dockerWorkspacePolicy
+  );
+  assert(safeChmodAndRunPolicy.allowed, "safe workspace chmod + script run sequence should be allowed in docker-workspace allow mode");
+  const unsafeChmodPolicy = evaluateCommandPolicy("chmod +x /etc/passwd", dockerWorkspacePolicy);
+  assert(!unsafeChmodPolicy.allowed, "chmod outside the workspace should be blocked");
+  const cdWorkspacePolicy = evaluateCommandPolicy("cd /workspace && git status --short 2>&1 | head -20", dockerWorkspacePolicy);
+  assert(cdWorkspacePolicy.allowed, "cd /workspace should be allowed in docker-workspace mode");
+  const gitCleanDryRunPolicy = evaluateCommandPolicy("git clean -nd reports", dockerWorkspacePolicy);
+  assert(gitCleanDryRunPolicy.allowed, "git clean dry-run should be allowed as read-only inspection evidence");
   const unsafeCloneTarget = evaluateCommandPolicy("git clone https://github.com/lazyingart/AgInTiFlow.git ../AgInTiFlow", dockerWorkspacePolicy);
   assert(!unsafeCloneTarget.allowed, "git clone outside the workspace should be blocked");
   const blockedClonePolicy = evaluateCommandPolicy("git clone https://github.com/lazyingart/AgInTiFlow.git", {
@@ -401,6 +412,44 @@ try {
   );
   await fs.writeFile(path.join(workspace, "src/index.js"), "export function answer() { return 42; }\n", "utf8");
   await fs.writeFile(path.join(workspace, "test/index.test.js"), "import test from 'node:test';\n", "utf8");
+  const longSmallFile = [
+    "# Small file read smoke",
+    "line 001",
+    "line 002",
+    "line 003",
+    "line 004",
+    "line 005",
+    "line 006",
+    "line 007",
+    "line 008",
+    "line 009",
+    "line 010",
+    "line 011",
+    "line 012",
+    "line 013",
+    "line 014",
+    "line 015",
+    "line 016",
+    "line 017",
+    "line 018",
+    "line 019",
+    "line 020",
+    "FINAL_SENTINEL_SMALL_FILE_FULL_CONTENT",
+    "",
+  ].join("\n");
+  await fs.writeFile(path.join(workspace, "small-read-smoke.md"), longSmallFile, "utf8");
+  const smallReadResult = await executeWorkspaceTool(
+    "read_file",
+    { path: "small-read-smoke.md" },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  const sanitizedSmallRead = sanitizeToolResult(smallReadResult);
+  assert(sanitizedSmallRead.content === longSmallFile, "small read_file result did not keep full content for the model");
+  assert(sanitizedSmallRead.contentTruncated === false, "small read_file result should not be marked truncated");
+  assert(!("contentPreview" in sanitizedSmallRead), "small read_file result should not replace full content with preview");
   const inspected = await executeWorkspaceTool(
     "inspect_project",
     { path: ".", maxDepth: 4, limit: 200 },
@@ -677,12 +726,16 @@ try {
           "auto_system_pro_route",
           "auto_engineering_guidance",
           "command_policy_git_clone_network",
+          "command_policy_safe_chmod_sequence",
+          "command_policy_cd_workspace",
+          "command_policy_git_clean_dry_run",
           "permission_recovery_advice",
           "parallel_scout_trigger",
           "parallel_scout_roster",
           "parallel_scout_count_clamp",
           "web_search_dry_run",
           "inspect_project",
+          "small_read_file_full_content",
           "parallel_scout_context_pack",
           "durable_codebase_map",
           "scout_blackboard",

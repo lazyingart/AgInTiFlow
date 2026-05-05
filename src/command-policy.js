@@ -190,8 +190,32 @@ function isSafeRelativeDir(value) {
 
 function isSafeVirtualWorkspaceDir(value) {
   const normalized = String(value || "").trim();
+  if (normalized === "/workspace") return true;
   if (!normalized.startsWith("/workspace/")) return false;
   return isSafeRelativeDir(normalized.replace(/^\/workspace\//, ""));
+}
+
+function isSafeVirtualWorkspacePath(value) {
+  const normalized = String(value || "").trim();
+  return normalized.startsWith("/workspace/") && isSafeRelativeDir(normalized.replace(/^\/workspace\//, ""));
+}
+
+function isSafeWorkspacePath(value) {
+  return isSafeRelativeDir(value) || isSafeVirtualWorkspacePath(value);
+}
+
+function classifyGitCleanDryRun(normalized) {
+  const match = normalized.match(/^git\s+clean\b([\s\S]*)$/);
+  if (!match) return null;
+  const args = match[1] || "";
+  if (!/(^|\s)(?:-n\b|--dry-run\b|-[A-Za-z]*n[A-Za-z]*\b)/.test(args)) return null;
+  if (/(^|\s)(?:-f\b|--force\b|-[A-Za-z]*f[A-Za-z]*\b)/.test(args)) return null;
+  return {
+    category: "read-only",
+    needsNetwork: false,
+    writesWorkspace: false,
+    reason: "Git clean dry-run is read-only inspection evidence.",
+  };
 }
 
 function classifyGitClone(normalized) {
@@ -224,6 +248,8 @@ function classifySimpleCommand(normalized) {
   if (SENSITIVE_COMMAND_PATTERNS.some((pattern) => pattern.test(normalized))) {
     return { category: "blocked", reason: "Command is blocked because it references secrets or credential files." };
   }
+  const gitCleanDryRun = classifyGitCleanDryRun(normalized);
+  if (gitCleanDryRun) return gitCleanDryRun;
   if (matchAny(UNSAFE_GIT_PATTERNS, normalized)) {
     return {
       category: "destructive",
@@ -242,10 +268,16 @@ function classifySimpleCommand(normalized) {
     return { category: "workspace-write", needsNetwork: false, writesWorkspace: true, virtualWorkspacePath };
   }
   if (matchAny(PERMISSION_CHANGE_PATTERNS, normalized)) {
+    const target = normalized.split(/\s+/).at(-1) || "";
+    const virtualWorkspacePath = isSafeVirtualWorkspacePath(target);
+    if (!isSafeWorkspacePath(target)) {
+      return { category: "blocked", reason: `chmod target must be a safe workspace-relative path: ${target}` };
+    }
     return {
       category: "permission-change",
       needsNetwork: false,
       writesWorkspace: true,
+      virtualWorkspacePath,
       reason: `Command changes workspace file mode: ${normalized}`,
     };
   }
@@ -311,6 +343,68 @@ function classifySimpleCommand(normalized) {
   };
 }
 
+function splitTopLevelShellSequence(command = "") {
+  const parts = [];
+  let current = "";
+  let quote = "";
+  let escaped = false;
+  let hadSeparator = false;
+  const text = String(command || "");
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      current += char;
+      if (char === quote) quote = "";
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      current += char;
+      quote = char;
+      continue;
+    }
+    if (char === ";" || (char === "&" && text[index + 1] === "&")) {
+      const part = current.trim();
+      if (!part) return null;
+      parts.push(part);
+      current = "";
+      hadSeparator = true;
+      if (char === "&") index += 1;
+      continue;
+    }
+    current += char;
+  }
+  const finalPart = current.trim();
+  if (finalPart) parts.push(finalPart);
+  if (!hadSeparator || parts.length < 2) return null;
+  return parts;
+}
+
+function classifyShellSequence(normalized) {
+  const parts = splitTopLevelShellSequence(normalized);
+  if (!parts) return null;
+  const classifications = parts.map((part) => classifyCdCommand(part) || classifySimpleCommand(part));
+  const blocked = classifications.find((classification) => classification.category === "blocked" || classification.category === "destructive");
+  if (blocked) return blocked;
+  return {
+    category: "general-shell",
+    needsNetwork: classifications.some((classification) => classification.needsNetwork),
+    writesWorkspace: classifications.some((classification) => classification.writesWorkspace),
+    requiresDockerRoot: classifications.some((classification) => classification.requiresDockerRoot),
+    virtualWorkspacePath: classifications.some((classification) => classification.virtualWorkspacePath),
+    reason: `Command sequence uses shell separators with individually classified safe segments: ${normalized}`,
+  };
+}
+
 function classifyCdCommand(normalized) {
   const match = normalized.match(/^cd\s+([-\w./]+)\s+&&\s+(.+)$/);
   if (!match) return null;
@@ -328,7 +422,7 @@ export function classifyCommand(command) {
   const normalized = String(command || "").trim();
   if (!normalized) return { category: "blocked", reason: "Command is empty." };
 
-  return classifyCdCommand(normalized) || classifySimpleCommand(normalized);
+  return classifyCdCommand(normalized) || classifyShellSequence(normalized) || classifySimpleCommand(normalized);
 }
 
 export function evaluateCommandPolicy(command, config) {
