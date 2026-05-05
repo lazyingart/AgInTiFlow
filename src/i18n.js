@@ -133,6 +133,8 @@ const TRANSLATIONS = {
     helpAaps: "Manage AAPS workflows through the optional @lazyingart/aaps adapter.",
     helpNew: "Start a fresh session on the next message.",
     helpResume: "Continue a saved session.",
+    helpReview: "Run a bounded repo/diff review with controlled context gathering.",
+    helpRename: "Rename the current session.",
     helpSessions: "List recent sessions in this project.",
     helpSkills: "List Markdown skills selected for a topic.",
     helpSkillMesh: "Manage strict reviewed skill sharing.",

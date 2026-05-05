@@ -294,6 +294,8 @@ try {
     !helpResult.stdout.includes("/auxiliary") ||
     !helpResult.stdout.includes("/review") ||
     !helpResult.stdout.includes("/scs") ||
+    helpResult.stdout.includes("helpReview") ||
+    helpResult.stdout.includes("helpRename") ||
     helpResult.stdout.includes("/enable" + "ss") ||
     helpResult.stdout.includes(misspelledAuxiliary)
   ) {
