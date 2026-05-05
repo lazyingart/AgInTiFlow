@@ -67,12 +67,12 @@ function currentMode(config = {}) {
 }
 
 function adviceForCategory(category = "", { toolName = "", args = {}, config = {}, state = {}, reason = "" } = {}) {
-  const command = compactLine(args.command || "");
+  const command = compactLine(args.command || args.text || "");
   const base = {
     category: category || "permission",
     reason: compactLine(reason || "The runtime policy blocked this operation."),
     currentMode: currentMode(config),
-    blockedOperation: command ? `run_command: ${command}` : toolName,
+    blockedOperation: command ? `${toolName || "tool"}: ${command}` : toolName,
     instruction:
       "Stop and present this blocker to the user instead of repeatedly trying variants. Continue only after the user approves a safer mode, changes the workspace, or gives a replacement instruction.",
   };

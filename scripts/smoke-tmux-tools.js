@@ -20,10 +20,18 @@ const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-tmux-"));
 const session = `aginti-smoke-${process.pid}`;
 const config = {
   allowShellTool: true,
+  allowDestructive: true,
   commandCwd: workspace,
+  sandboxMode: "host",
+  useDockerSandbox: false,
+};
+const strictHostConfig = {
+  ...config,
+  allowDestructive: false,
 };
 const dockerConfig = {
   ...config,
+  allowDestructive: false,
   useDockerSandbox: true,
   sandboxMode: "docker-workspace",
   packageInstallPolicy: "allow",
@@ -47,7 +55,7 @@ try {
     target: start.target,
     text: "printf 'aginti tmux smoke\\n'; pwd",
     enter: true,
-  });
+  }, config);
   assert.equal(send.ok, true, send.error || send.reason);
   await sleep(500);
 
@@ -114,6 +122,41 @@ try {
   });
   assert.equal(dockerTmuxRelativeStart.allowed, true, "Docker-mode tmux_start_session should allow workspace-relative paths");
 
+  const hostBroadTmuxStart = checkToolUse({
+    toolName: "tmux_start_session",
+    args: { name: `${session}-host-broad`, cwd: ".", command: 'echo "HOST_TMUX_STARTED"; sleep 1' },
+    config: strictHostConfig,
+  });
+  assert.equal(hostBroadTmuxStart.allowed, false, "Host-mode tmux_start_session should not bypass host shell approval");
+  assert.equal(hostBroadTmuxStart.category, "general-shell", "Host tmux broad command should keep shell policy category");
+
+  const hostBroadTmuxSend = checkTmuxToolUse(
+    "tmux_send_keys",
+    { target: start.target, text: 'echo "HOST_TMUX_SEND"; sleep 1' },
+    strictHostConfig
+  );
+  assert.equal(hostBroadTmuxSend.allowed, false, "Host-mode tmux_send_keys should not bypass host shell approval");
+  assert.equal(hostBroadTmuxSend.category, "general-shell", "Host tmux send should keep shell policy category");
+
+  const directHostBroadStart = await startTmuxSession(
+    { name: `${session}-direct-host-broad`, cwd: ".", command: 'echo "HOST_TMUX_STARTED"; sleep 1' },
+    strictHostConfig
+  );
+  assert.equal(directHostBroadStart.ok, false, "tmux_start_session direct path should enforce host shell approval");
+
+  const directHostBroadSend = await sendTmuxKeys(
+    { target: start.target, text: 'echo "HOST_TMUX_SEND"; sleep 1', enter: false },
+    strictHostConfig
+  );
+  assert.equal(directHostBroadSend.ok, false, "tmux_send_keys direct path should enforce host shell approval");
+
+  const hostInterruptKey = checkTmuxToolUse(
+    "tmux_send_keys",
+    { target: start.target, text: "", keys: ["C-c"], enter: false },
+    strictHostConfig
+  );
+  assert.equal(hostInterruptKey.allowed, true, "Host-mode tmux_send_keys should still allow safe control keys");
+
   const dockerTmuxCommand = checkToolUse({
     toolName: "run_command",
     args: { command: "tmux new-session -d -s should-not-run" },
@@ -160,6 +203,9 @@ try {
           "docker-tmux-send-outside-path-guardrail",
           "docker-tmux-start-project-path-allowed",
           "docker-tmux-start-relative-path-allowed",
+          "host-tmux-start-shell-policy-guardrail",
+          "host-tmux-send-shell-policy-guardrail",
+          "host-tmux-control-key-allowed",
           "docker-run-command-tmux-guardrail",
           "docker-run-command-tmux-search-allowed",
           "docker-run-command-npx-aginti-guardrail",

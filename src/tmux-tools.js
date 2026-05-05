@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
+import { evaluateCommandPolicy } from "./command-policy.js";
 import { redactSensitiveText } from "./redaction.js";
 
 const execFile = promisify(execFileCallback);
@@ -136,6 +137,22 @@ function checkWorkspaceBoundTmuxText(text = "", config = {}, label = "tmux text"
   return { ok: true };
 }
 
+function checkHostShellPolicyForTmuxText(text = "", config = {}, label = "tmux text") {
+  const command = String(text || "").trim();
+  if (!command) return { ok: true };
+  if (config.useDockerSandbox || config.sandboxMode !== "host" || config.allowDestructive) {
+    return { ok: true };
+  }
+  const policy = evaluateCommandPolicy(command, config);
+  if (policy.allowed) return { ok: true };
+  return {
+    ok: false,
+    reason: `${label} is blocked by the same host shell policy as run_command: ${policy.reason}`,
+    category: policy.category || "tmux",
+    needsApproval: policy.needsApproval,
+  };
+}
+
 function parseSessions(stdout = "") {
   return String(stdout || "")
     .split(/\r?\n/)
@@ -238,6 +255,17 @@ export async function sendTmuxKeys(args = {}, config = {}) {
   if (!workspaceBound.ok) {
     return { ok: false, toolName: "tmux_send_keys", blocked: true, reason: workspaceBound.reason };
   }
+  const hostPolicy = checkHostShellPolicyForTmuxText(text, config, "tmux text");
+  if (!hostPolicy.ok) {
+    return {
+      ok: false,
+      toolName: "tmux_send_keys",
+      blocked: true,
+      reason: hostPolicy.reason,
+      category: hostPolicy.category,
+      needsApproval: hostPolicy.needsApproval,
+    };
+  }
   for (const key of keys) {
     if (!ALLOWED_KEYS.has(key)) {
       return { ok: false, toolName: "tmux_send_keys", blocked: true, reason: `Unsupported tmux key: ${key}` };
@@ -293,6 +321,17 @@ export async function startTmuxSession(args = {}, config = {}) {
   if (!workspaceBound.ok) {
     return { ok: false, toolName: "tmux_start_session", blocked: true, reason: workspaceBound.reason };
   }
+  const hostPolicy = checkHostShellPolicyForTmuxText(command, config, "tmux startup command");
+  if (!hostPolicy.ok) {
+    return {
+      ok: false,
+      toolName: "tmux_start_session",
+      blocked: true,
+      reason: hostPolicy.reason,
+      category: hostPolicy.category,
+      needsApproval: hostPolicy.needsApproval,
+    };
+  }
 
   const tmuxArgs = ["new-session", "-d", "-s", name.name, "-c", cwd.cwd];
   if (command) tmuxArgs.push(command);
@@ -332,6 +371,15 @@ export function checkTmuxToolUse(toolName, args = {}, config = {}) {
     }
     const workspaceBound = checkWorkspaceBoundTmuxText(text, config, "tmux text");
     if (!workspaceBound.ok) return { allowed: false, reason: workspaceBound.reason, category: "tmux" };
+    const hostPolicy = checkHostShellPolicyForTmuxText(text, config, "tmux text");
+    if (!hostPolicy.ok) {
+      return {
+        allowed: false,
+        reason: hostPolicy.reason,
+        category: hostPolicy.category || "tmux",
+        needsApproval: hostPolicy.needsApproval,
+      };
+    }
     for (const key of Array.isArray(args.keys) ? args.keys : []) {
       if (!ALLOWED_KEYS.has(String(key))) return { allowed: false, reason: `Unsupported tmux key: ${key}`, category: "tmux" };
     }
@@ -354,6 +402,15 @@ export function checkTmuxToolUse(toolName, args = {}, config = {}) {
     }
     const workspaceBound = checkWorkspaceBoundTmuxText(command, config, "tmux startup command");
     if (!workspaceBound.ok) return { allowed: false, reason: workspaceBound.reason, category: "tmux" };
+    const hostPolicy = checkHostShellPolicyForTmuxText(command, config, "tmux startup command");
+    if (!hostPolicy.ok) {
+      return {
+        allowed: false,
+        reason: hostPolicy.reason,
+        category: hostPolicy.category || "tmux",
+        needsApproval: hostPolicy.needsApproval,
+      };
+    }
     return { allowed: true, category: "tmux" };
   }
   return { allowed: true, category: "tmux" };
