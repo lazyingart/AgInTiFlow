@@ -65,6 +65,205 @@ function readOptionalScsMode(argv, index) {
   return { mode: value, consumed: true };
 }
 
+const CLI_VALUE_OPTIONS = new Set([
+  "--port",
+  "--host",
+  "--language",
+  "--lang",
+  "-L",
+  "--start-url",
+  "--resume",
+  "--session-id",
+  "--provider",
+  "--model",
+  "--route-provider",
+  "--route-model",
+  "--main-provider",
+  "--main-model",
+  "--spare-provider",
+  "--spare-model",
+  "--spare-reasoning",
+  "--wrapper-model",
+  "--wrapper-reasoning",
+  "--aux-provider",
+  "--auxiliary-provider",
+  "--aux-model",
+  "--auxiliary-model",
+  "--routing",
+  "--cwd",
+  "--sandbox-mode",
+  "--package-install-policy",
+  "--max-steps",
+  "--scout-count",
+  "--wrapper",
+  "--preferred-wrapper",
+  "--profile",
+  "--task-profile",
+]);
+
+const CLI_FLAG_OPTIONS = new Set([
+  "--web",
+  "--chat",
+  "--interactive",
+  "--no-auto-update",
+  "--auto-update",
+  "--enable-scs",
+  "--disable-scs",
+  "--no-scs",
+  "--approve-package-installs",
+  "--latex",
+  "--image",
+  "--image-gen",
+  "--image-generation",
+  "--allow-shell",
+  "--no-shell",
+  "--allow-destructive",
+  "--trusted-host-shell",
+  "--allow-file-tools",
+  "--no-file-tools",
+  "--allow-auxiliary-tools",
+  "--allow-auxiliary",
+  "--no-auxiliary-tools",
+  "--no-auxiliary",
+  "--web-search",
+  "--no-web-search",
+  "--parallel-scouts",
+  "--no-parallel-scouts",
+  "--allow-wrappers",
+  "--docker-sandbox",
+  "--headless",
+  "--list-routes",
+  "--list-models",
+  "--models",
+  "--list-wrappers",
+  "--list-profiles",
+  "--list-skills",
+  "--sandbox-status",
+  "--sandbox-preflight",
+  "--scs",
+]);
+
+function collectCliOption(argv, index) {
+  const arg = argv[index];
+  if (arg === "--scs" || arg === "--enable-scs") {
+    const { consumed } = readOptionalScsMode(argv, index);
+    return { recognized: true, args: consumed ? [arg, argv[index + 1]] : [arg], nextIndex: index + (consumed ? 2 : 1) };
+  }
+  if (arg === "--language" || arg === "--lang" || arg === "-L") {
+    const first = readOption(argv, index);
+    const second = argv[index + 2] && !String(argv[index + 2]).startsWith("--") ? argv[index + 2] : "";
+    if (["cn", "zh"].includes(String(first || "").toLowerCase()) && ["s", "t"].includes(String(second || "").toLowerCase())) {
+      return { recognized: true, args: [arg, first, second], nextIndex: index + 3 };
+    }
+    return first
+      ? { recognized: true, args: [arg, first], nextIndex: index + 2 }
+      : { recognized: true, args: [arg], nextIndex: index + 1 };
+  }
+  if (CLI_VALUE_OPTIONS.has(arg)) {
+    const value = readOption(argv, index);
+    return value
+      ? { recognized: true, args: [arg, value], nextIndex: index + 2 }
+      : { recognized: true, args: [arg], nextIndex: index + 1 };
+  }
+  if (CLI_FLAG_OPTIONS.has(arg)) {
+    return { recognized: true, args: [arg], nextIndex: index + 1 };
+  }
+  return { recognized: false, args: [], nextIndex: index };
+}
+
+function looksLikeResumeSessionSelector(value) {
+  if (!value) return true;
+  const normalized = String(value);
+  return (
+    normalized === "latest" ||
+    normalized.startsWith("web-agent-") ||
+    normalized.startsWith("round") ||
+    normalized.startsWith("session-") ||
+    normalized.startsWith("aginti-")
+  );
+}
+
+function looksLikeResumeInvocation(resumeArgv = []) {
+  for (let index = 0; index < resumeArgv.length;) {
+    const arg = resumeArgv[index];
+    if (arg === "--" || looksLikeResumeSessionSelector(arg)) return looksLikeResumeSessionSelector(arg);
+    if (arg === "--all-sessions") {
+      index += 1;
+      continue;
+    }
+    const collected = collectCliOption(resumeArgv, index);
+    if (collected.recognized) {
+      index = collected.nextIndex;
+      continue;
+    }
+    return looksLikeResumeSessionSelector(arg);
+  }
+  return true;
+}
+
+export function splitResumeCommandArgv(argv = []) {
+  if (argv[0] === "resume") {
+    return { leadingOptionArgv: [], resumeArgv: argv.slice(1) };
+  }
+
+  const leadingOptionArgv = [];
+  let index = 0;
+  while (index < argv.length) {
+    if (argv[index] === "resume") {
+      const resumeArgv = argv.slice(index + 1);
+      return looksLikeResumeInvocation(resumeArgv) ? { leadingOptionArgv, resumeArgv } : null;
+    }
+    const collected = collectCliOption(argv, index);
+    if (!collected.recognized) return null;
+    leadingOptionArgv.push(...collected.args);
+    index = collected.nextIndex;
+  }
+  return null;
+}
+
+export function parseResumeCommandArgs(resumeArgv = [], leadingOptionArgv = []) {
+  const optionArgv = [...leadingOptionArgv];
+  const positional = [];
+  const promptParts = [];
+  let allSessions = false;
+  let promptMode = false;
+
+  for (let index = 0; index < resumeArgv.length;) {
+    const arg = resumeArgv[index];
+    if (promptMode) {
+      promptParts.push(arg);
+      index += 1;
+      continue;
+    }
+    if (arg === "--") {
+      promptMode = true;
+      index += 1;
+      continue;
+    }
+    if (arg === "--all-sessions") {
+      allSessions = true;
+      index += 1;
+      continue;
+    }
+    const collected = collectCliOption(resumeArgv, index);
+    if (collected.recognized) {
+      optionArgv.push(...collected.args);
+      index = collected.nextIndex;
+      continue;
+    }
+    if (positional.length === 0) positional.push(arg);
+    else promptParts.push(arg);
+    index += 1;
+  }
+
+  return {
+    allSessions,
+    optionArgv,
+    sessionId: positional[0] || "",
+    prompt: promptParts.join(" ").trim(),
+  };
+}
+
 export function parseArgs(argv) {
   const result = {
     goal: "",
@@ -1114,6 +1313,7 @@ export async function main(argv = process.argv.slice(2)) {
   const stripped = stripLeadingGlobalOptions(argv);
   const commandArgv = stripped.argv;
   const commandCwd = stripped.options.commandCwd || process.cwd();
+  const resumeCommand = splitResumeCommandArgv(commandArgv);
 
   if (commandArgv[0] === "aaps") {
     try {
@@ -1254,27 +1454,25 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
 
-  if (commandArgv[0] === "resume") {
-    const resumeArgv = commandArgv.slice(1);
-    const allSessions = resumeArgv.includes("--all-sessions");
-    const positional = resumeArgv.filter((arg) => arg !== "--all-sessions");
-    let sessionId = positional[0] || "";
-    const prompt = positional.slice(1).join(" ").trim();
+  if (resumeCommand) {
+    const resumeOptions = parseResumeCommandArgs(resumeCommand.resumeArgv, resumeCommand.leadingOptionArgv);
+    let sessionId = resumeOptions.sessionId;
+    const prompt = resumeOptions.prompt;
     try {
-      sessionId = await resolveResumeSessionId(sessionId, { allSessions });
+      sessionId = await resolveResumeSessionId(sessionId, { allSessions: resumeOptions.allSessions });
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     }
     if (!sessionId) return;
     if (!prompt) {
-      await startInteractiveCli(agentDefaults({ ...parseArgs([]), resume: sessionId, commandCwd }), {
+      await startInteractiveCli(agentDefaults({ ...parseArgs(resumeOptions.optionArgv), resume: sessionId, commandCwd }), {
         packageDir,
         packageVersion: packageJson.version,
       });
       return;
     }
-    const resumeArgs = agentDefaults({ ...parseArgs([prompt]), resume: sessionId, goal: prompt, commandCwd });
+    const resumeArgs = agentDefaults({ ...parseArgs([...resumeOptions.optionArgv, prompt]), resume: sessionId, goal: prompt, commandCwd });
     if (!(await ensureDeepSeekKeyForOneShot(resumeArgs))) process.exit(1);
     const config = loadConfig(resumeArgs, { packageDir });
     await runAgent(config);

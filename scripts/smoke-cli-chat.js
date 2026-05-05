@@ -15,7 +15,7 @@ import {
   formatWorkspaceChange,
   stripMarkdown,
 } from "../src/interactive-cli.js";
-import { parseArgs } from "../src/cli.js";
+import { parseArgs, parseResumeCommandArgs, splitResumeCommandArgv } from "../src/cli.js";
 import { dockerPolicyTimeoutMs, dockerUserCommand } from "../src/docker-sandbox.js";
 import { formatBehaviorContractForPrompt } from "../src/behavior-contract.js";
 
@@ -286,6 +286,48 @@ try {
   if (scsAutoArgs.enableScs !== "auto" || scsAutoArgs.goal !== "fix this project") {
     throw new Error("--scs auto should consume auto and preserve the task");
   }
+  const resumeAfterOptions = parseResumeCommandArgs([
+    "web-agent-smoke",
+    "--provider",
+    "deepseek",
+    "--routing",
+    "smart",
+    "--sandbox-mode",
+    "host",
+    "--scout-count",
+    "3",
+  ]);
+  const resumeAfterParsed = parseArgs(resumeAfterOptions.optionArgv);
+  if (
+    resumeAfterOptions.sessionId !== "web-agent-smoke" ||
+    resumeAfterOptions.prompt ||
+    resumeAfterParsed.provider !== "deepseek" ||
+    resumeAfterParsed.routingMode !== "smart" ||
+    resumeAfterParsed.sandboxMode !== "host" ||
+    resumeAfterParsed.parallelScoutCount !== 3
+  ) {
+    throw new Error("resume subcommand options after the session id should remain options, not prompt text");
+  }
+  const resumePromptAfterDash = parseResumeCommandArgs(["web-agent-smoke", "--provider", "mock", "--", "--provider should be prompt"]);
+  if (
+    resumePromptAfterDash.sessionId !== "web-agent-smoke" ||
+    resumePromptAfterDash.prompt !== "--provider should be prompt" ||
+    parseArgs(resumePromptAfterDash.optionArgv).provider !== "mock"
+  ) {
+    throw new Error("resume subcommand should preserve explicit prompt text after --");
+  }
+  const leadingResume = splitResumeCommandArgv(["--provider", "mock", "--routing", "manual", "resume", "latest"]);
+  if (
+    !leadingResume ||
+    leadingResume.resumeArgv.join(" ") !== "latest" ||
+    parseArgs(leadingResume.leadingOptionArgv).provider !== "mock" ||
+    parseArgs(leadingResume.leadingOptionArgv).routingMode !== "manual"
+  ) {
+    throw new Error("leading global options before resume should still invoke the resume subcommand");
+  }
+  if (splitResumeCommandArgv(["--provider", "mock", "resume", "a normal task"]) !== null) {
+    throw new Error("leading global options should not turn an ordinary resume-themed prompt into the resume subcommand");
+  }
 
   await runCli(["init"], "");
   const instructions = await fs.readFile(path.join(tempRoot, "AGINTI.md"), "utf8");
@@ -420,6 +462,7 @@ try {
           "skills-command",
           "review-command",
           "scs-command-toggle",
+          "resume-command-options",
           "slash-prefix-autoselect",
           "slash-prefix-canonical-history",
           "instructions-chat-edit",
