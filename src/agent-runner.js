@@ -659,6 +659,35 @@ function sanitizeToolArgs(toolName, args) {
   return safeArgs;
 }
 
+function safeParseToolArgs(toolCall) {
+  try {
+    return JSON.parse(toolCall?.function?.arguments || "{}");
+  } catch {
+    return {};
+  }
+}
+
+export function shouldShortCircuitToolBatch(toolResult) {
+  return Boolean(toolResult?.blocked && toolResult?.permissionAdvice);
+}
+
+export function skippedAfterBlockedToolResult(toolCall, blockedResult) {
+  const toolName = toolCall?.function?.name || "unknown";
+  const args = sanitizeToolArgs(toolName, safeParseToolArgs(toolCall));
+  return {
+    ok: false,
+    blocked: true,
+    skipped: true,
+    toolName,
+    args,
+    category: "blocked-batch",
+    reason:
+      "Skipped because an earlier tool call in the same assistant message returned permissionAdvice. The runtime stops the batch so the agent cannot retry variants before the user/model sees the blocker.",
+    priorBlockedTool: blockedResult?.toolName || "",
+    priorBlockedCategory: blockedResult?.category || "",
+  };
+}
+
 function goalClearlyAllowsOverwrite(goal = "") {
   const text = String(goal || "").toLowerCase();
   return (
@@ -1723,7 +1752,8 @@ export async function runAgent(config) {
       }
 
       let continueForQueuedInput = false;
-      for (const toolCall of toolCalls) {
+      for (let toolIndex = 0; toolIndex < toolCalls.length; toolIndex += 1) {
+        const toolCall = toolCalls[toolIndex];
         throwIfAborted(config);
         const toolResult = await executeTool(browserState, toolCall, snapshot, config, store, observers, state);
         state.messages.push({
@@ -1795,6 +1825,24 @@ export async function runAgent(config) {
             stderr: toolResult.stderr,
             error: toolResult.error,
           });
+        }
+
+        if (shouldShortCircuitToolBatch(toolResult)) {
+          for (const skippedToolCall of toolCalls.slice(toolIndex + 1)) {
+            const skippedResult = skippedAfterBlockedToolResult(skippedToolCall, toolResult);
+            state.messages.push({
+              role: "tool",
+              tool_call_id: skippedToolCall.id,
+              content: JSON.stringify(skippedResult),
+            });
+            await store.appendEvent("tool.skipped", sanitizeToolResult(skippedResult));
+            observers.event("tool.skipped", {
+              toolName: skippedResult.toolName,
+              reason: skippedResult.reason,
+              priorBlockedTool: skippedResult.priorBlockedTool,
+            });
+          }
+          break;
         }
 
         if (config.provider === "mock" && toolResult.ok === false && !toolResult.blocked) {

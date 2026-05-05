@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { repairModelMessageHistory, runAgent } from "../src/agent-runner.js";
+import { repairModelMessageHistory, runAgent, shouldShortCircuitToolBatch, skippedAfterBlockedToolResult } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { readCodebaseMap } from "../src/codebase-map.js";
 import { evaluateCommandPolicy } from "../src/command-policy.js";
@@ -119,6 +119,25 @@ try {
     interruptedDeepSeekState.messages.at(-1)?.content === "Continue with this new request: /review",
     "interrupted repair dropped the new user request"
   );
+  const blockedBatchResult = {
+    ok: false,
+    blocked: true,
+    toolName: "run_command",
+    category: "nested-aginti",
+    permissionAdvice: { category: "nested-aginti", suggestedCommand: "aginti doctor --json" },
+  };
+  assert(shouldShortCircuitToolBatch(blockedBatchResult), "permissionAdvice block did not trigger batch short-circuit");
+  const skippedBatchResult = skippedAfterBlockedToolResult(
+    {
+      id: "call-b",
+      type: "function",
+      function: { name: "run_command", arguments: "{\"command\":\"npx aginti capabilities --json\"}" },
+    },
+    blockedBatchResult
+  );
+  assert(skippedBatchResult.skipped, "skipped tool result did not mark skipped=true");
+  assert(skippedBatchResult.blocked, "skipped tool result did not remain blocked");
+  assert(skippedBatchResult.priorBlockedCategory === "nested-aginti", "skipped tool result did not preserve prior block category");
   const completeToolState = {
     messages: [
       { role: "system", content: "system" },
@@ -513,6 +532,7 @@ try {
         workspace,
         checks: [
           "deepseek_history_repair",
+          "blocked_tool_batch_short_circuit",
           "deepseek_pro_patch_route",
           "large_profile_pro_route",
           "auto_system_pro_route",
