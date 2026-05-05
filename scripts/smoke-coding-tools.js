@@ -416,9 +416,18 @@ try {
   assert(written.includes("Created by AgInTiFlow mock mode."), "mock write did not create expected file");
   assert(writeRun.events.some((event) => event.type === "file.changed"), "write run did not persist file.changed event");
 
-  await runMock("Create notes/resume.md with resumed session content.", "coding-write", { resume: true });
+  const resumedRun = await runMock("Create notes/resume.md with resumed session content.", "coding-write", { resume: true });
   const resumed = await fs.readFile(path.join(workspace, "notes/resume.md"), "utf8");
   assert(resumed.includes("Created by AgInTiFlow mock mode."), "mock resume did not create a new requested file");
+  assert(
+    resumedRun.state?.messages?.some(
+      (message) =>
+        message.role === "user" &&
+        /Continue with this new request/.test(message.content || "") &&
+        /Runtime time context: local=.*utc=/.test(message.content || "")
+    ),
+    "resumed session prompt did not refresh local/UTC runtime time context"
+  );
 
   let duplicateFailed = false;
   try {
@@ -559,6 +568,7 @@ try {
           "write_file",
           "duplicate_write_failed",
           "resume_session_write",
+          "resume_runtime_time_context",
           "virtual_workspace_path",
           "apply_patch",
           "multi_file_patch",

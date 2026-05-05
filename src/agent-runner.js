@@ -583,10 +583,13 @@ async function applyContinuationPrompt(state, config, observers) {
   state.stepsCompleted = 0;
   state.updatedAt = new Date().toISOString();
   const platform = platformInfo();
+  const temporalContext = runtimeTemporalContext(new Date(state.updatedAt));
   state.messages.push({
     role: "user",
     content: [
       `Continue with this new request: ${config.goal}`,
+      languageInstruction(config.language || "en"),
+      temporalContext,
       config.startUrl ? `Suggested start URL: ${config.startUrl}` : "",
       config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
       config.allowShellTool
