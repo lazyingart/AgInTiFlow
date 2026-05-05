@@ -11,6 +11,7 @@ import {
 } from "../src/model-routing.js";
 import { normalizeTextToolCallResponse, parseTextToolCalls, usesTextToolProtocol } from "../src/model-client.js";
 import { modelRoleChoices } from "../src/interactive-cli.js";
+import { buildSupervisorInstruction } from "../src/scs-controller.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -204,6 +205,9 @@ assert(usesTextToolProtocol({ provider: "venice", model: "gemma-4-uncensored" })
 assert(usesTextToolProtocol({ provider: "venice", model: "e2ee-venice-uncensored-24b-p" }), "Venice 1.1 should use text tool protocol");
 assert(usesTextToolProtocol({ provider: "venice", model: "venice-uncensored" }), "Venice legacy 1.1 should use text tool protocol");
 assert(!usesTextToolProtocol({ provider: "venice", model: "venice-uncensored-1-2" }), "Venice 1.2 should keep native tool calls first");
+const scsInstruction = buildSupervisorInstruction({ plan: "Create one file.", acceptanceCriteria: ["File exists."] });
+assert(scsInstruction.includes("Student-Committee-Supervisor"), "SCS supervisor instruction should define the acronym");
+assert(!scsInstruction.includes("Syntax-Checker Sentinel"), "SCS supervisor instruction should not allow alternate acronym expansions");
 
 const output = await runCli(["models"]);
 assert(output.includes("/route") && output.includes("/spare") && output.includes("venice-gpt"), "aginti models output missing role details");
@@ -232,6 +236,7 @@ console.log(
         "venice-text-tool-parser",
         "requested-tools-parser",
         "malformed-text-tool-retry",
+        "scs-supervisor-identity",
         "cli-models-command",
         "venice-shortcut",
       ],

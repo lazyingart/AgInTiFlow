@@ -207,7 +207,8 @@ export function buildSupervisorInstruction(scs = {}) {
   const criteria = normalizeStringList(scs.acceptanceCriteria);
   const stopConditions = normalizeStringList(scs.stopConditions);
   return [
-    "SCS mode is enabled. You are the supervisor executor.",
+    "SCS mode is enabled. SCS means Student-Committee-Supervisor; do not redefine the acronym.",
+    "You are the supervisor executor in that Student-Committee-Supervisor pipeline.",
     "Execute the approved phase plan. You may choose exact tools and paths, but you may not replace the strategic plan with a new one.",
     formatBehaviorContractForPrompt(),
     "If tool evidence invalidates the plan, stop repeating the failed path and explain the blocker through finish or wait for student review.",
