@@ -41,13 +41,14 @@ export const MAIN_AUTH_PROVIDERS = [
     label: "Qwen",
     keyName: "QWEN_API_KEY",
     description: "Qwen OpenAI-compatible route",
+    keyUrl: "https://bailian.console.aliyun.com/",
   },
   {
     id: "venice",
     label: "Venice",
     keyName: "VENICE_API_KEY",
     description: "Venice OpenAI-compatible text and image routes",
-    keyUrl: "https://venice.ai",
+    keyUrl: "https://venice.ai/settings/api",
   },
 ];
 
@@ -56,6 +57,7 @@ const AUXILIARY_AUTH_PROVIDER = {
   label: "GRS AI / Nano Banana",
   keyName: "GRSAI",
   description: "optional image generation",
+  keyUrl: "https://grsai.ai/dashboard/api-keys",
 };
 
 const AUTH_ALIASES = {

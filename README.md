@@ -73,6 +73,16 @@ aginti auth venice
 aginti login grsai
 ```
 
+Provider signup and key pages:
+
+| Provider | Register / key page | API base URL used by AgInTiFlow |
+| --- | --- | --- |
+| DeepSeek | [https://platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) | `https://api.deepseek.com` |
+| Venice | [https://venice.ai/settings/api](https://venice.ai/settings/api) | `https://api.venice.ai/api/v1` |
+| OpenAI | [https://platform.openai.com/api-keys](https://platform.openai.com/api-keys) | `https://api.openai.com/v1` |
+| Qwen / DashScope | [https://bailian.console.aliyun.com/](https://bailian.console.aliyun.com/) | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
+| GRS AI image tools | [https://grsai.ai/dashboard/api-keys](https://grsai.ai/dashboard/api-keys) | Configure with `/auxiliary grsai` or `aginti login grsai` |
+
 Launch the web UI from the same project:
 
 ```bash
@@ -134,6 +144,29 @@ aginti --resume <session-id> \
 ```
 
 Permission behavior is intentionally consistent: writes inside the current project are allowed through file tools, network/setup runs are normal in approved Docker workspace mode, and outside-project or trusted-host actions stop with a clear blocker plus a suggested rerun command. See [runtime modes and autonomy](docs/runtime-modes-and-autonomy.md) for the full contract.
+
+## Permission Recipes
+
+Use these when you want explicit control instead of the default interactive policy:
+
+| Mode | Command | What it permits |
+| --- | --- | --- |
+| Strict inspection | `aginti --sandbox-mode docker-readonly --package-install-policy block --allow-shell --no-file-tools --no-web-search "inspect this project without edits"` | Enforced read-only project inspection through shell commands such as `ls`, `rg`, `cat`, and test commands that do not write. No file-tool writes, web calls, workspace writes, or installs. |
+| Full write in current folder | `aginti --sandbox-mode docker-workspace --package-install-policy allow --approve-package-installs --allow-shell --allow-file-tools "build and test this project"` | Read/write inside the current project folder, run network/setup commands in Docker, keep host safer. |
+| Full host computer access | `aginti --sandbox-mode host --package-install-policy allow --approve-package-installs --allow-shell --allow-file-tools --allow-destructive "perform the trusted host maintenance task"` | Direct host shell and destructive actions. Use only when you trust the task and want whole-host access. |
+
+For resume:
+
+```bash
+aginti --resume <session-id> \
+  --sandbox-mode host \
+  --package-install-policy allow \
+  --approve-package-installs \
+  --allow-shell \
+  --allow-file-tools \
+  --allow-destructive \
+  "continue with trusted host access"
+```
 
 ## Real Screenshots
 

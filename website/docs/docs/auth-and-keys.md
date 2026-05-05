@@ -20,14 +20,17 @@ sk-a...wxyz (48 chars)
 
 The existing key is selected. Type to replace it, press Enter or Esc to keep it.
 
-## Key Sources
+## Provider Key Sources
 
-| Provider | Key Page |
-| --- | --- |
-| DeepSeek | `https://platform.deepseek.com/api_keys` |
-| OpenAI | `https://platform.openai.com/api-keys` |
-| Qwen | Use your Qwen-compatible API key source. |
-| GRS AI | Optional image-generation auxiliary provider. |
+| Provider | Register / key page | API base URL |
+| --- | --- | --- |
+| DeepSeek | [https://platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) | `https://api.deepseek.com` |
+| Venice | [https://venice.ai/settings/api](https://venice.ai/settings/api) | `https://api.venice.ai/api/v1` |
+| OpenAI | [https://platform.openai.com/api-keys](https://platform.openai.com/api-keys) | `https://api.openai.com/v1` |
+| Qwen / DashScope | [https://bailian.console.aliyun.com/](https://bailian.console.aliyun.com/) | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
+| GRS AI image tools | [https://grsai.ai/dashboard/api-keys](https://grsai.ai/dashboard/api-keys) | Configure with `/auxiliary grsai` or `aginti login grsai`. |
+
+DeepSeek is the default low-cost text route. Venice is useful for optional uncensored text routes and Venice image routes. OpenAI is useful as a spare, wrapper, or explicit main provider. GRS AI is auxiliary-only in AgInTiFlow and is mainly used for image generation.
 
 ## Storage
 

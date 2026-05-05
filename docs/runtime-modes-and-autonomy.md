@@ -70,6 +70,35 @@ aginti --resume <session-id> \
   "Continue after approval and verify the output was created in this run."
 ```
 
+Three practical permission recipes:
+
+```bash
+# Strict inspection: enforced read-only shell inspection, no file-tool writes, no web, no installs.
+aginti --sandbox-mode docker-readonly \
+  --package-install-policy block \
+  --allow-shell \
+  --no-file-tools \
+  --no-web-search \
+  "inspect this project without edits"
+
+# Full write in the current project folder, with setup commands isolated in Docker.
+aginti --sandbox-mode docker-workspace \
+  --package-install-policy allow \
+  --approve-package-installs \
+  --allow-shell \
+  --allow-file-tools \
+  "build and test this project"
+
+# Full host computer access for trusted maintenance.
+aginti --sandbox-mode host \
+  --package-install-policy allow \
+  --approve-package-installs \
+  --allow-shell \
+  --allow-file-tools \
+  --allow-destructive \
+  "perform the trusted host maintenance task"
+```
+
 For host-only work, use the stricter trusted form deliberately:
 
 ```bash

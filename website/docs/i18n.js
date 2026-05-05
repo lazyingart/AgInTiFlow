@@ -1,5 +1,27 @@
 const lines = (...items) => items.join("\n");
 
+const providerKeySources = (header = "## Provider key sources") =>
+  lines(
+    header,
+    "",
+    "| Provider | Register / key page | API base URL |",
+    "| --- | --- | --- |",
+    "| DeepSeek | [https://platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) | `https://api.deepseek.com` |",
+    "| Venice | [https://venice.ai/settings/api](https://venice.ai/settings/api) | `https://api.venice.ai/api/v1` |",
+    "| OpenAI | [https://platform.openai.com/api-keys](https://platform.openai.com/api-keys) | `https://api.openai.com/v1` |",
+    "| Qwen / DashScope | [https://bailian.console.aliyun.com/](https://bailian.console.aliyun.com/) | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |",
+    "| GRS AI image tools | [https://grsai.ai/dashboard/api-keys](https://grsai.ai/dashboard/api-keys) | Configure with `/auxiliary grsai` or `aginti login grsai`. |"
+  );
+
+const permissionRecipes = (header = "## Permission recipes") =>
+  lines(
+    header,
+    "",
+    "- Strict inspection: `aginti --sandbox-mode docker-readonly --package-install-policy block --allow-shell --no-file-tools --no-web-search \"inspect this project without edits\"`",
+    "- Full write in current folder: `aginti --sandbox-mode docker-workspace --package-install-policy allow --approve-package-installs --allow-shell --allow-file-tools \"build and test this project\"`",
+    "- Full host computer access: `aginti --sandbox-mode host --package-install-policy allow --approve-package-installs --allow-shell --allow-file-tools --allow-destructive \"perform the trusted host maintenance task\"`"
+  );
+
 export const languages = [
   { code: "en", label: "English", dir: "ltr" },
   { code: "ar", label: "العربية", dir: "rtl" },
@@ -680,12 +702,7 @@ const docs = {
       "",
       "运行 `aginti auth`、`aginti login`、`aginti auth openai`、`aginti auth qwen` 或 `aginti auth grsai`。输入框会显示脱敏预览，例如 `sk-a...wxyz (48 chars)`。直接输入可替换，Enter 或 Esc 可保留。",
       "",
-      "## Key sources",
-      "",
-      "- DeepSeek：`https://platform.deepseek.com/api_keys`",
-      "- OpenAI：`https://platform.openai.com/api-keys`",
-      "- Qwen：使用你的 Qwen-compatible API key 来源。",
-      "- GRS AI：可选图像生成辅助 provider。",
+      providerKeySources("## Provider key sources"),
       "",
       "## Storage",
       "",
@@ -1035,6 +1052,8 @@ function buildCompactDocs(languageTitles, pageText) {
       "",
       pageText.installs,
       "",
+      pageText.permissionRecipes || permissionRecipes(),
+      "",
       pageText.host
     ),
     skills: lines(
@@ -1122,7 +1141,7 @@ docs.ar = buildCompactDocs(titles.ar, {
   canvas: "## Canvas tunnel\n\nيمكن للوكيل إرسال PDF أو صورة أو نص إلى canvas، ويمكن للمستخدم اختيار ملف من explorer.",
   inbox: "## Inbox and queues\n\nأثناء التشغيل، رسائل ASAP تستهلك قبل الرسائل المؤجلة لما بعد الانتهاء.",
   auth: "يدعم AgInTiFlow مفاتيح provider محلية بدون الالتزام بالأسرار.",
-  keySources: "## المصادر\n\nDeepSeek من `https://platform.deepseek.com/api_keys`، OpenAI من `https://platform.openai.com/api-keys`، Qwen من مصدر متوافق، وGRS AI للصور.",
+  keySources: providerKeySources("## مصادر المفاتيح"),
   keyStorage: "## التخزين\n\nتحفظ المفاتيح في `.aginti/.env`، والـ API يعرض availability فقط ولا يطبع المفتاح الخام.",
   coding: "تحرير الكود يتم عبر أدوات deterministic في workspace، لا عبر نص shell فقط.",
   toolLoop: "## الحلقة\n\nافحص التعليمات والملفات، ابحث بدقة، اقرأ الملفات، طبق patch صغيراً، شغل checks، أصلح الفشل، ثم لخص التغييرات.",
@@ -1174,7 +1193,7 @@ docs.de = buildCompactDocs(titles.de, {
   canvas: "## Canvas Tunnel\n\nDer Agent kann PDF, Bild oder Text an Canvas senden; Nutzer können Artefakte manuell auswählen.",
   inbox: "## Inbox und Queues\n\nWährend eines Runs werden ASAP-Nachrichten vor After-Finish-Queues verarbeitet.",
   auth: "Provider-Keys bleiben lokal und werden nicht committed.",
-  keySources: "## Quellen\n\nDeepSeek: `https://platform.deepseek.com/api_keys`; OpenAI: `https://platform.openai.com/api-keys`; Qwen-kompatible Quelle; GRS AI optional für Bilder.",
+  keySources: providerKeySources("## Key-Quellen"),
   keyStorage: "## Speicherung\n\nKeys liegen in `.aginti/.env`; Status zeigt nur Verfügbarkeit oder maskierte Vorschau.",
   coding: "Code wird über deterministische Workspace-Tools editiert, nicht nur über Shell-Text.",
   toolLoop: "## Loop\n\nAnweisungen und Manifeste prüfen, genau suchen, Dateien lesen, kleine Patches anwenden, Checks ausführen, Fehler reparieren, Ergebnis zusammenfassen.",
@@ -1226,7 +1245,7 @@ docs.es = buildCompactDocs(titles.es, {
   canvas: "## Canvas tunnel\n\nEl backend puede enviar PDF, imagen o texto al canvas; el usuario puede elegir artefactos manualmente.",
   inbox: "## Inbox y colas\n\nDurante una sesión, ASAP se consume antes que mensajes after-finish.",
   auth: "AgInTiFlow guarda claves locales sin commitear secretos.",
-  keySources: "## Fuentes\n\nDeepSeek, OpenAI, Qwen compatible y GRS AI opcional para imágenes.",
+  keySources: providerKeySources("## Fuentes de claves"),
   keyStorage: "## Storage\n\nLas claves viven en `.aginti/.env`; el estado solo muestra disponibilidad o preview enmascarado.",
   coding: "El código se edita con tools deterministas del workspace.",
   toolLoop: "## Loop\n\nInspeccionar, buscar símbolos, leer archivos, aplicar patches pequeños, correr checks, reparar fallos y resumir.",
@@ -1278,7 +1297,7 @@ docs.fr = buildCompactDocs(titles.fr, {
   canvas: "## Canvas tunnel\n\nLe backend peut envoyer PDF, image ou texte au canvas; l’utilisateur peut aussi sélectionner un artefact.",
   inbox: "## Inbox et queues\n\nLes messages ASAP sont consommés avant les messages after-finish.",
   auth: "Les clés provider restent locales et ne sont pas commitées.",
-  keySources: "## Sources\n\nDeepSeek, OpenAI, source Qwen-compatible et GRS AI optionnel pour images.",
+  keySources: providerKeySources("## Sources de clés"),
   keyStorage: "## Stockage\n\n`.aginti/.env`; le statut ne montre que disponibilité ou preview masquée.",
   coding: "Le code est modifié via outils déterministes du workspace.",
   toolLoop: "## Boucle\n\nInspecter, chercher, lire, patcher petit, tester, réparer, résumer.",
@@ -1330,7 +1349,7 @@ docs.ja = buildCompactDocs(titles.ja, {
   canvas: "## Canvas tunnel\n\nPDF、画像、テキストを canvas に送り、ユーザーも explorer から選べます。",
   inbox: "## Inbox と Queue\n\nASAP メッセージは after-finish queue より先に消費されます。",
   auth: "Provider key はローカルに保存され、commit されません。",
-  keySources: "## Key sources\n\nDeepSeek、OpenAI、Qwen-compatible、画像用 GRS AI。",
+  keySources: providerKeySources("## Key sources"),
   keyStorage: "## 保存\n\n`.aginti/.env` に保存し、status は可用性と masked preview だけを表示します。",
   coding: "コード編集は Shell テキストだけでなく deterministic workspace tools で行います。",
   toolLoop: "## Loop\n\n指示と manifest を確認し、検索し、読む、小さく patch、check、修復、要約します。",
@@ -1382,7 +1401,7 @@ docs.ko = buildCompactDocs(titles.ko, {
   canvas: "## Canvas tunnel\n\nPDF, 이미지, 텍스트를 canvas로 보낼 수 있고 사용자가 explorer에서 선택할 수도 있습니다.",
   inbox: "## Inbox/queues\n\nASAP 메시지는 after-finish queue보다 먼저 소비됩니다.",
   auth: "Provider key는 local에 저장되고 commit되지 않습니다.",
-  keySources: "## Sources\n\nDeepSeek, OpenAI, Qwen-compatible, 이미지용 GRS AI.",
+  keySources: providerKeySources("## Key sources"),
   keyStorage: "## Storage\n\n`.aginti/.env`; status는 availability와 masked preview만 보여줍니다.",
   coding: "코드는 shell 텍스트만이 아니라 deterministic workspace tools로 편집합니다.",
   toolLoop: "## Loop\n\n지침/manifest 확인, 검색, 파일 읽기, 작은 patch, checks, 실패 수정, 요약.",
@@ -1434,7 +1453,7 @@ docs.ru = buildCompactDocs(titles.ru, {
   canvas: "## Canvas tunnel\n\nBackend может отправить PDF, image или text в canvas; пользователь может выбрать artifact вручную.",
   inbox: "## Inbox/queues\n\nASAP сообщения обрабатываются перед after-finish queue.",
   auth: "Provider keys остаются локальными и не коммитятся.",
-  keySources: "## Sources\n\nDeepSeek, OpenAI, Qwen-compatible, GRS AI для изображений.",
+  keySources: providerKeySources("## Источники ключей"),
   keyStorage: "## Storage\n\n`.aginti/.env`; status показывает только availability или masked preview.",
   coding: "Код редактируется deterministic workspace tools, не только shell text.",
   toolLoop: "## Loop\n\nInspect instructions, search, read, small patch, checks, repair, summarize.",
@@ -1486,7 +1505,7 @@ docs.vi = buildCompactDocs(titles.vi, {
   canvas: "## Canvas tunnel\n\nBackend có thể gửi PDF, image hoặc text vào canvas; user cũng chọn artifact thủ công được.",
   inbox: "## Inbox/queues\n\nASAP message được xử lý trước after-finish queue.",
   auth: "Provider key được lưu local và không commit.",
-  keySources: "## Sources\n\nDeepSeek, OpenAI, Qwen-compatible, GRS AI tùy chọn cho ảnh.",
+  keySources: providerKeySources("## Nguồn khóa"),
   keyStorage: "## Storage\n\n`.aginti/.env`; status chỉ báo available hoặc masked preview.",
   coding: "Code được sửa bằng deterministic workspace tools.",
   toolLoop: "## Loop\n\nInspect, search, read, patch nhỏ, chạy checks, sửa lỗi, tóm tắt.",

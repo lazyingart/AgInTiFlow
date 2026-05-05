@@ -36,6 +36,29 @@ Package install policy can be:
 
 Docker mode can allow practical setup commands such as `pip install`, `npm install`, `apt`, `curl`, and `wget` inside the container. Host mode remains more conservative.
 
+## Permission Recipes
+
+Use explicit runtime flags when the task needs a clear privilege contract.
+
+| Goal | Command | Contract |
+| --- | --- | --- |
+| Strict inspection | `aginti --sandbox-mode docker-readonly --package-install-policy block --allow-shell --no-file-tools --no-web-search "inspect this project without edits"` | Enforced read-only project inspection through shell commands. No file-tool writes, web calls, workspace writes, or installs. |
+| Full write in current folder | `aginti --sandbox-mode docker-workspace --package-install-policy allow --approve-package-installs --allow-shell --allow-file-tools "build and test this project"` | Read/write inside the current project folder, with package setup inside Docker. |
+| Full host computer access | `aginti --sandbox-mode host --package-install-policy allow --approve-package-installs --allow-shell --allow-file-tools --allow-destructive "perform the trusted host maintenance task"` | Direct host shell and destructive actions. Use only for trusted work. |
+
+For a resumed session, keep the same shape and add the session id:
+
+```bash
+aginti --resume <session-id> \
+  --sandbox-mode host \
+  --package-install-policy allow \
+  --approve-package-installs \
+  --allow-shell \
+  --allow-file-tools \
+  --allow-destructive \
+  "continue with trusted host access"
+```
+
 ## Full Host Access
 
 Some system maintenance needs direct host access. The product goal is configurable privilege, not artificial weakness. The safe pattern is:

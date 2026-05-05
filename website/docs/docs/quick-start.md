@@ -61,6 +61,16 @@ aginti keys status
 
 Keys are saved to `.aginti/.env` with local file permissions. The CLI and web API report only boolean availability and masked previews.
 
+Useful registration and API pages:
+
+| Provider | Register / key page | API base URL |
+| --- | --- | --- |
+| DeepSeek | [https://platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) | `https://api.deepseek.com` |
+| Venice | [https://venice.ai/settings/api](https://venice.ai/settings/api) | `https://api.venice.ai/api/v1` |
+| OpenAI | [https://platform.openai.com/api-keys](https://platform.openai.com/api-keys) | `https://api.openai.com/v1` |
+| Qwen / DashScope | [https://bailian.console.aliyun.com/](https://bailian.console.aliyun.com/) | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
+| GRS AI image tools | [https://grsai.ai/dashboard/api-keys](https://grsai.ai/dashboard/api-keys) | Configure with `/auxiliary grsai` or `aginti login grsai`. |
+
 ## Mock Mode
 
 Use mock mode for deterministic tests or demos without model credits:
