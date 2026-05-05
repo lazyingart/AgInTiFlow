@@ -113,9 +113,9 @@ const LANGUAGE_ALIASES = new Map(
 
 const TRANSLATIONS = {
   en: {
-    launchSubtitle: "web-first agent workspace",
+    launchSubtitle: "low-cost project-aware agents",
     launchCredit: "Developed by AgInTi Lab, LazyingArt LLC",
-    launchTagline: "browser + shell + files + docker + web search + scouts",
+    launchTagline: "web + cli + routing + visible tools + durable sessions",
     interactiveIntro: "Interactive agent chat. Type /help for commands, /exit to quit.",
     promptEmpty: "type a request, /help, Enter to send, Ctrl+J for newline",
     helpTitle: "Commands:",
@@ -162,8 +162,8 @@ const TRANSLATIONS = {
     systemLanguage: "system",
   },
   ja: {
-    launchSubtitle: "Web ファーストのエージェント作業環境",
-    launchTagline: "ブラウザ + シェル + ファイル + Docker + Web 検索 + スカウト",
+    launchSubtitle: "低コストでプロジェクトを理解するエージェント",
+    launchTagline: "Web + CLI + ルーティング + 見えるツール + 永続セッション",
     interactiveIntro: "対話型エージェントチャットです。/help でコマンド、/exit で終了します。",
     promptEmpty: "依頼を入力。/help、Enter で送信、Ctrl+J で改行",
     helpTitle: "コマンド:",
@@ -207,8 +207,8 @@ const TRANSLATIONS = {
     systemLanguage: "システム",
   },
   "zh-Hans": {
-    launchSubtitle: "网页优先的智能体工作区",
-    launchTagline: "浏览器 + Shell + 文件 + Docker + 网页搜索 + Scouts",
+    launchSubtitle: "低成本、项目感知智能体",
+    launchTagline: "Web + CLI + 路由 + 可见工具 + 持久会话",
     interactiveIntro: "交互式智能体聊天。输入 /help 查看命令，/exit 退出。",
     promptEmpty: "输入任务，/help 查看帮助，Enter 发送，Ctrl+J 换行",
     helpTitle: "命令:",
@@ -252,8 +252,8 @@ const TRANSLATIONS = {
     systemLanguage: "系统",
   },
   "zh-Hant": {
-    launchSubtitle: "網頁優先的智能體工作區",
-    launchTagline: "瀏覽器 + Shell + 檔案 + Docker + 網頁搜尋 + Scouts",
+    launchSubtitle: "低成本、專案感知智能體",
+    launchTagline: "Web + CLI + 路由 + 可見工具 + 持久會話",
     interactiveIntro: "互動式智能體聊天。輸入 /help 查看命令，/exit 離開。",
     promptEmpty: "輸入任務，/help 查看說明，Enter 送出，Ctrl+J 換行",
     helpTitle: "命令:",
@@ -300,8 +300,8 @@ const TRANSLATIONS = {
 
 const FALLBACKS = {
   ko: {
-    launchSubtitle: "웹 우선 에이전트 작업공간",
-    launchTagline: "브라우저 + 셸 + 파일 + Docker + 웹 검색 + 스카우트",
+    launchSubtitle: "저비용 프로젝트 인식 에이전트",
+    launchTagline: "Web + CLI + 라우팅 + 보이는 도구 + 영구 세션",
     interactiveIntro: "대화형 에이전트 채팅입니다. /help 명령, /exit 종료.",
     promptEmpty: "요청을 입력하세요. /help, Enter 전송, Ctrl+J 줄바꿈",
     helpTitle: "명령:",
@@ -311,8 +311,8 @@ const FALLBACKS = {
     systemLanguage: "시스템",
   },
   fr: {
-    launchSubtitle: "espace agent web-first",
-    launchTagline: "navigateur + shell + fichiers + Docker + recherche web + scouts",
+    launchSubtitle: "agents à faible coût conscients du projet",
+    launchTagline: "Web + CLI + routage + outils visibles + sessions durables",
     interactiveIntro: "Chat agent interactif. Tapez /help pour les commandes, /exit pour quitter.",
     promptEmpty: "tapez une demande, /help, Entrée pour envoyer, Ctrl+J pour une nouvelle ligne",
     helpTitle: "Commandes:",
@@ -322,8 +322,8 @@ const FALLBACKS = {
     systemLanguage: "système",
   },
   es: {
-    launchSubtitle: "espacio de agente centrado en web",
-    launchTagline: "navegador + shell + archivos + Docker + búsqueda web + scouts",
+    launchSubtitle: "agentes de bajo costo conscientes del proyecto",
+    launchTagline: "Web + CLI + routing + herramientas visibles + sesiones durables",
     interactiveIntro: "Chat interactivo del agente. Escribe /help para comandos, /exit para salir.",
     promptEmpty: "escribe una solicitud, /help, Enter para enviar, Ctrl+J para nueva línea",
     helpTitle: "Comandos:",
@@ -333,8 +333,8 @@ const FALLBACKS = {
     systemLanguage: "sistema",
   },
   ar: {
-    launchSubtitle: "مساحة عمل وكيل تعتمد الويب أولاً",
-    launchTagline: "متصفح + صدفة + ملفات + Docker + بحث ويب + كشافة",
+    launchSubtitle: "وكلاء منخفضو التكلفة وواعون بالمشروع",
+    launchTagline: "Web + CLI + توجيه + أدوات مرئية + جلسات دائمة",
     interactiveIntro: "محادثة وكيل تفاعلية. اكتب /help للأوامر و /exit للخروج.",
     promptEmpty: "اكتب طلباً، /help، Enter للإرسال، Ctrl+J لسطر جديد",
     helpTitle: "الأوامر:",
@@ -344,8 +344,8 @@ const FALLBACKS = {
     systemLanguage: "النظام",
   },
   vi: {
-    launchSubtitle: "không gian agent ưu tiên web",
-    launchTagline: "trình duyệt + shell + tệp + Docker + tìm kiếm web + scouts",
+    launchSubtitle: "agent chi phí thấp hiểu dự án",
+    launchTagline: "Web + CLI + routing + tool nhìn thấy được + session bền vững",
     interactiveIntro: "Chat agent tương tác. Gõ /help để xem lệnh, /exit để thoát.",
     promptEmpty: "nhập yêu cầu, /help, Enter để gửi, Ctrl+J xuống dòng",
     helpTitle: "Lệnh:",
@@ -355,8 +355,8 @@ const FALLBACKS = {
     systemLanguage: "hệ thống",
   },
   de: {
-    launchSubtitle: "web-first Agent-Arbeitsbereich",
-    launchTagline: "Browser + Shell + Dateien + Docker + Websuche + Scouts",
+    launchSubtitle: "günstige projektbewusste Agenten",
+    launchTagline: "Web + CLI + Routing + sichtbare Tools + dauerhafte Sessions",
     interactiveIntro: "Interaktiver Agent-Chat. /help für Befehle, /exit zum Beenden.",
     promptEmpty: "Anfrage eingeben, /help, Enter zum Senden, Ctrl+J für neue Zeile",
     helpTitle: "Befehle:",
@@ -366,8 +366,8 @@ const FALLBACKS = {
     systemLanguage: "System",
   },
   ru: {
-    launchSubtitle: "web-first рабочая область агента",
-    launchTagline: "браузер + shell + файлы + Docker + веб-поиск + scouts",
+    launchSubtitle: "недорогие проектно-ориентированные агенты",
+    launchTagline: "Web + CLI + маршрутизация + видимые инструменты + долговечные сессии",
     interactiveIntro: "Интерактивный чат агента. /help для команд, /exit для выхода.",
     promptEmpty: "введите запрос, /help, Enter отправить, Ctrl+J новая строка",
     helpTitle: "Команды:",

@@ -1,6 +1,6 @@
 # Overview
 
-AgInTiFlow is a web-first agent platform and CLI for controlled automation. It combines model routing, browser control, shell execution, workspace file tools, Docker sandboxing, artifacts, and resumable sessions into one inspectable control plane.
+AgInTiFlow is a low-cost, project-aware Web and CLI agent workspace for real-life problems. It combines DeepSeek/Venice/OpenAI routing, browser control, shell execution, workspace file tools, Docker sandboxing, visible tool calls, durable sessions, scouts, SCS supervision, AAPS workflows, and artifacts into one inspectable control plane.
 
 The project is designed for practical engineering work: write code, patch files, run checks, compile documents, inspect websites, manage tmux sessions, and keep a durable record of what happened.
 
@@ -18,7 +18,7 @@ The project is designed for practical engineering work: write code, patch files,
 ## Core Principles
 
 - The project folder is the unit of work.
-- CLI and web share the same `.sessions/` store.
+- CLI and web share durable project sessions.
 - File edits are deterministic, guarded, and diffed.
 - Shell commands are visible in logs and policy checked.
 - Docker can be practical without pretending it is the only runtime.
@@ -39,7 +39,8 @@ The project is designed for practical engineering work: write code, patch files,
 | `AGINTI.md` | Editable project instructions and durable preferences. |
 | `.aginti/.env` | Ignored local provider keys, mode preferences, and safe local config. |
 | `.aginti/codebase-map.json` | Cached project overview for large-codebase tasks. |
-| `.sessions/` | Session state, events, artifacts, inbox, chat history, and web settings. |
+| `.aginti-sessions/` | Project-local session index and compatibility metadata. |
+| `~/.agintiflow/sessions/` | Central session state, events, artifacts, inbox, chat history, and web settings. |
 
 ## Next Pages
 

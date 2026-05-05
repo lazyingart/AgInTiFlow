@@ -18,7 +18,7 @@ const translations = {
     brandKicker: "Developed by AgInTi Lab, LazyingArt LLC",
     languageLabel: "Language",
     intro:
-      "Web-first agent platform with smart model routing, resumable runs, guarded tools, and optional external agent wrappers.",
+      "Low-cost, project-aware Web + CLI agents with DeepSeek/Venice/OpenAI routing, visible tool calls, durable sessions, scouts, SCS, AAPS, and guarded local execution.",
     projectStatusTitle: "Project folder",
     setupTitle: "Provider setup",
     setupHelp:

@@ -18,7 +18,9 @@
 ![Sandbox](https://img.shields.io/badge/Shell-Docker%20Sandbox-f97316)
 ![Status](https://img.shields.io/badge/Status-Prototype-7c3aed)
 
-AgInTiFlow هو مساحة عمل محلية عبر Web و CLI لوكلاء يعملون داخل مجلدات مشاريع حقيقية. يجمع بين توجيه نماذج منخفض التكلفة، استخدام أدوات قابل للفحص، جلسات دائمة، عمليات محمية على الملفات/shell/المتصفح، توليد صور اختياري، وإشراف منظم للمهام الكبيرة.
+**وكلاء منخفضو التكلفة وواعون بالمشروع للمشكلات الواقعية.**
+
+استخدم مساحة عمل الوكيل نفسها من Web أو CLI، مع توجيه DeepSeek/Venice/OpenAI، واستدعاءات أدوات مرئية، وجلسات دائمة، وscouts، وإشراف SCS، وسير عمل AAPS، وتنفيذ محلي محمي.
 
 باختصار: شغّل `aginti` داخل مشروع، أعطه مهمة، افحص خطته، شاهد كل استدعاء أداة، استأنف لاحقاً، واحتفظ بالمخرجات داخل مساحة العمل.
 
@@ -30,6 +32,7 @@ AgInTiFlow هو مساحة عمل محلية عبر Web و CLI لوكلاء يع
 | GitHub | [https://github.com/lazyingart/AgInTiFlow](https://github.com/lazyingart/AgInTiFlow) |
 | npm | [https://www.npmjs.com/package/@lazyingart/agintiflow](https://www.npmjs.com/package/@lazyingart/agintiflow) |
 | AAPS npm | [https://www.npmjs.com/package/@lazyingart/aaps](https://www.npmjs.com/package/@lazyingart/aaps) |
+| تموضع المنتج | [../references/agintiflow-product-positioning.md](../references/agintiflow-product-positioning.md) |
 | مرجع README الكامل المؤرشف | [../references/notes/readme-full-reference-2026-05-05.md](../references/notes/readme-full-reference-2026-05-05.md) |
 
 <p align="center">

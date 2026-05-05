@@ -18,7 +18,9 @@
 ![Sandbox](https://img.shields.io/badge/Shell-Docker%20Sandbox-f97316)
 ![Status](https://img.shields.io/badge/Status-Prototype-7c3aed)
 
-AgInTiFlow es un espacio de trabajo local, web y CLI, para agentes que operan sobre carpetas reales de proyecto. Combina enrutamiento barato de modelos, uso de herramientas inspeccionable, sesiones durables, acciones protegidas de archivos/shell/navegador, generación de imágenes opcional y supervisión estructurada para tareas grandes.
+**Agentes de bajo costo y conscientes del proyecto para problemas reales.**
+
+Usa el mismo workspace de agente desde Web o CLI, con routing DeepSeek/Venice/OpenAI, llamadas de herramientas visibles, sesiones durables, scouts, supervisión SCS, workflows AAPS y ejecución local protegida.
 
 La idea breve: ejecuta `aginti` dentro de un proyecto, dale una tarea, revisa el plan, ve cada llamada de herramienta, reanuda más tarde y conserva las salidas dentro de tu workspace.
 
@@ -30,6 +32,7 @@ La idea breve: ejecuta `aginti` dentro de un proyecto, dale una tarea, revisa el
 | GitHub | [https://github.com/lazyingart/AgInTiFlow](https://github.com/lazyingart/AgInTiFlow) |
 | npm | [https://www.npmjs.com/package/@lazyingart/agintiflow](https://www.npmjs.com/package/@lazyingart/agintiflow) |
 | AAPS npm | [https://www.npmjs.com/package/@lazyingart/aaps](https://www.npmjs.com/package/@lazyingart/aaps) |
+| Posicionamiento del producto | [../references/agintiflow-product-positioning.md](../references/agintiflow-product-positioning.md) |
 | README completo archivado | [../references/notes/readme-full-reference-2026-05-05.md](../references/notes/readme-full-reference-2026-05-05.md) |
 
 <p align="center">

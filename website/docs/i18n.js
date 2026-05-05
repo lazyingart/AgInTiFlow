@@ -484,7 +484,7 @@ const docs = {
     overview: lines(
       "# 概览",
       "",
-      "AgInTiFlow 是一个 web-first 的智能体平台和 CLI，用来把模型路由、浏览器控制、Shell、工作区文件工具、Docker 沙盒、工件和可恢复会话放在同一个可检查的控制平面中。",
+      "AgInTiFlow 是一个面向真实问题的低成本、项目感知 Web + CLI 智能体工作区。它把 DeepSeek/Venice/OpenAI 路由、浏览器控制、Shell、工作区文件工具、Docker 沙盒、可见工具调用、持久会话、scouts、SCS 监督、AAPS 工作流和工件放在同一个可检查的控制平面中。",
       "",
       "## 产品结构",
       "",
@@ -498,7 +498,7 @@ const docs = {
       "## 核心原则",
       "",
       "- 项目目录是工作单元。",
-      "- CLI 和 Web 共用 `.sessions/`。",
+      "- CLI 和 Web 共用持久项目会话。",
       "- 文件编辑必须确定、受保护并显示 diff。",
       "- Shell 命令必须可见并经过策略检查。",
       "- Docker 是实用隔离层，但不是唯一运行模式。",
@@ -1102,10 +1102,10 @@ function buildCompactDocs(languageTitles, pageText) {
 }
 
 docs.ar = buildCompactDocs(titles.ar, {
-  overview: "AgInTiFlow منصة وكيل وواجهة أوامر مبنية حول الويب. تجمع التوجيه بين النماذج، التحكم في المتصفح، أوامر shell، أدوات الملفات، Docker، التحف، والجلسات القابلة للاستئناف في سطح تحكم واحد يمكن فحصه.",
+  overview: "AgInTiFlow مساحة عمل وكيل منخفضة التكلفة وواعية بالمشروع عبر Web و CLI للمشكلات الواقعية. تجمع توجيه DeepSeek/Venice/OpenAI، المتصفح، shell، أدوات الملفات، Docker، استدعاءات الأدوات المرئية، الجلسات الدائمة، scouts، إشراف SCS، سير عمل AAPS والتحف في سطح تحكم قابل للفحص.",
   product: "## شكل المنتج\n\nCLI للمحادثة من مجلد المشروع، Web UI للتحكم المرئي، runner للتخطيط واستدعاء الأدوات، وأدوات workspace للقراءة والبحث والكتابة والتصحيح.",
-  principles: "## المبادئ\n\nمجلد المشروع هو وحدة العمل؛ CLI والويب يتشاركان `.sessions/`؛ كل تعديل ملف حتمي ومحمي وله diff؛ أوامر shell تظهر في السجلات وتخضع للسياسة.",
-  state: "## مكان الحالة\n\n`AGINTI.md` للتعليمات، `.aginti/.env` للمفاتيح المحلية المتجاهلة، `.aginti/codebase-map.json` لخريطة الكود، و`.sessions/` للجلسات والأحداث والتحف.",
+  principles: "## المبادئ\n\nمجلد المشروع هو وحدة العمل؛ CLI والويب يتشاركان جلسات مشروع دائمة؛ كل تعديل ملف حتمي ومحمي وله diff؛ أوامر shell تظهر في السجلات وتخضع للسياسة.",
+  state: "## مكان الحالة\n\n`AGINTI.md` للتعليمات، `.aginti/.env` للمفاتيح المحلية المتجاهلة، `.aginti/codebase-map.json` لخريطة الكود، `.aginti-sessions/` لفهرس المشروع، و`~/.agintiflow/sessions/` للجلسات والأحداث والتحف.",
   quickStart: "ثبت الحزمة، أنشئ مشروعاً، شغل الفحص، ثم استخدم `aginti` أو واجهة الويب المحلية.",
   firstPrompts: "## أمثلة أولى\n\nاطلب فهرسة المشروع، كتابة تطبيق Python مع اختبارات، إنشاء موقع ثابت، تجميع تقرير LaTeX، أو فحص `git status`.",
   defaultRuntime: "## التشغيل الافتراضي\n\nCLI التفاعلي يستخدم Docker workspace افتراضياً، مع السماح بالتثبيت داخل الحاوية. استخدم `/docker off` فقط عندما تريد العمل على المضيف مباشرة.",
@@ -1154,10 +1154,10 @@ docs.ar = buildCompactDocs(titles.ar, {
 });
 
 docs.de = buildCompactDocs(titles.de, {
-  overview: "AgInTiFlow ist eine web-first Agent-Plattform und CLI für kontrollierte Automatisierung. Sie bündelt Modellrouting, Browsersteuerung, Shell, Workspace-Dateitools, Docker-Sandboxing, Artefakte und wiederaufnehmbare Sessions.",
+  overview: "AgInTiFlow ist ein günstiger, projektbewusster Web- und CLI-Agenten-Workspace für reale Probleme. Er bündelt DeepSeek/Venice/OpenAI-Routing, Browser, Shell, Workspace-Dateitools, Docker, sichtbare Tool-Calls, dauerhafte Sessions, Scouts, SCS-Supervision, AAPS-Workflows und Artefakte.",
   product: "## Produktform\n\nCLI für Codex-artigen Chat, Web UI für visuelle Kontrolle, Runner für Planung und Toolaufrufe, Workspace-Tools für Lesen/Suchen/Schreiben/Patching.",
-  principles: "## Prinzipien\n\nDer Projektordner ist die Arbeitseinheit; CLI und Web teilen `.sessions/`; Dateiänderungen sind deterministisch, geschützt und diffbar; Shell-Kommandos sind sichtbar und policy-geprüft.",
-  state: "## State\n\n`AGINTI.md` enthält Projektregeln, `.aginti/.env` lokale ignorierte Keys, `.aginti/codebase-map.json` den Codebase-Überblick und `.sessions/` Events, Artefakte und Chatverlauf.",
+  principles: "## Prinzipien\n\nDer Projektordner ist die Arbeitseinheit; CLI und Web teilen dauerhafte Projektsessions; Dateiänderungen sind deterministisch, geschützt und diffbar; Shell-Kommandos sind sichtbar und policy-geprüft.",
+  state: "## State\n\n`AGINTI.md` enthält Projektregeln, `.aginti/.env` lokale ignorierte Keys, `.aginti/codebase-map.json` den Codebase-Überblick, `.aginti-sessions/` den Projektindex und `~/.agintiflow/sessions/` Events, Artefakte und Chatverlauf.",
   quickStart: "Installieren, Projekt initialisieren, Doctor ausführen und dann CLI oder lokale Web UI starten.",
   firstPrompts: "## Erste Prompts\n\nProjekt erklären lassen, kleine Python-CLI mit Tests schreiben, statische Website erstellen, LaTeX-PDF bauen oder `git status` sicher zusammenfassen.",
   defaultRuntime: "## Default Runtime\n\nDie interaktive CLI nutzt standardmäßig Docker workspace mit Installationen im Container. `/docker off` nur für direkte Host-Arbeit.",
@@ -1206,10 +1206,10 @@ docs.de = buildCompactDocs(titles.de, {
 });
 
 docs.es = buildCompactDocs(titles.es, {
-  overview: "AgInTiFlow es una plataforma de agentes web-first y CLI para automatización controlada. Reúne routing de modelos, navegador, shell, herramientas de archivos, Docker, artefactos y sesiones reanudables.",
+  overview: "AgInTiFlow es un workspace Web y CLI de agentes de bajo costo y conscientes del proyecto para problemas reales. Reúne routing DeepSeek/Venice/OpenAI, navegador, shell, herramientas de archivos, Docker, tool calls visibles, sesiones durables, scouts, supervisión SCS, workflows AAPS y artefactos.",
   product: "## Forma del producto\n\nCLI estilo Codex, Web UI visual, runner que planifica y llama herramientas, y workspace tools para leer, buscar, escribir y aplicar patches.",
-  principles: "## Principios\n\nLa carpeta del proyecto es la unidad de trabajo; CLI y web comparten `.sessions/`; las ediciones son deterministas y con diff; los comandos shell quedan visibles y revisados por policy.",
-  state: "## Estado\n\n`AGINTI.md` guarda instrucciones, `.aginti/.env` claves locales ignoradas, `.aginti/codebase-map.json` contexto de código y `.sessions/` eventos, artefactos e historial.",
+  principles: "## Principios\n\nLa carpeta del proyecto es la unidad de trabajo; CLI y web comparten sesiones durables de proyecto; las ediciones son deterministas y con diff; los comandos shell quedan visibles y revisados por policy.",
+  state: "## Estado\n\n`AGINTI.md` guarda instrucciones, `.aginti/.env` claves locales ignoradas, `.aginti/codebase-map.json` contexto de código, `.aginti-sessions/` el índice del proyecto y `~/.agintiflow/sessions/` eventos, artefactos e historial.",
   quickStart: "Instala el paquete, inicializa una carpeta, ejecuta doctor y abre la CLI o la UI web local.",
   firstPrompts: "## Primeros prompts\n\nPide listar el proyecto, escribir una CLI Python con tests, crear una web estática, compilar LaTeX o preparar un resumen seguro de git.",
   defaultRuntime: "## Runtime por defecto\n\nLa CLI usa Docker workspace con instalaciones dentro del contenedor. Usa `/docker off` solo para trabajar directamente en host.",
@@ -1258,10 +1258,10 @@ docs.es = buildCompactDocs(titles.es, {
 });
 
 docs.fr = buildCompactDocs(titles.fr, {
-  overview: "AgInTiFlow est une plateforme d’agent web-first et un CLI pour l’automatisation contrôlée. Elle regroupe routage de modèles, navigateur, shell, outils de fichiers, Docker, artefacts et sessions reprenables.",
+  overview: "AgInTiFlow est un espace de travail agent Web et CLI à faible coût, conscient du projet, pour des problèmes réels. Il regroupe routage DeepSeek/Venice/OpenAI, navigateur, shell, outils de fichiers, Docker, appels d’outils visibles, sessions durables, scouts, supervision SCS, workflows AAPS et artefacts.",
   product: "## Forme du produit\n\nCLI façon Codex, Web UI visuelle, runner pour plans et outils, et workspace tools pour lire, chercher, écrire et patcher.",
-  principles: "## Principes\n\nLe dossier projet est l’unité de travail; CLI et web partagent `.sessions/`; les edits sont déterministes et diffés; les commandes shell sont visibles et policy-checked.",
-  state: "## État\n\n`AGINTI.md` stocke les règles, `.aginti/.env` les clés ignorées, `.aginti/codebase-map.json` le contexte code, `.sessions/` les événements et artefacts.",
+  principles: "## Principes\n\nLe dossier projet est l’unité de travail; CLI et web partagent des sessions durables de projet; les edits sont déterministes et diffés; les commandes shell sont visibles et policy-checked.",
+  state: "## État\n\n`AGINTI.md` stocke les règles, `.aginti/.env` les clés ignorées, `.aginti/codebase-map.json` le contexte code, `.aginti-sessions/` l’index du projet, et `~/.agintiflow/sessions/` les événements et artefacts.",
   quickStart: "Installe le paquet, initialise un projet, lance doctor, puis utilise le CLI ou la Web UI locale.",
   firstPrompts: "## Premiers prompts\n\nLister le projet, écrire une CLI Python testée, créer un site statique, compiler LaTeX ou préparer un résumé git sûr.",
   defaultRuntime: "## Runtime par défaut\n\nLe CLI interactif utilise Docker workspace; les installations restent dans le conteneur. `/docker off` seulement pour le host direct.",
@@ -1310,10 +1310,10 @@ docs.fr = buildCompactDocs(titles.fr, {
 });
 
 docs.ja = buildCompactDocs(titles.ja, {
-  overview: "AgInTiFlow は、制御可能な自動化のための web-first エージェント基盤と CLI です。モデルルーティング、ブラウザ、Shell、ファイルツール、Docker、成果物、再開可能なセッションを一つの見える制御面にまとめます。",
+  overview: "AgInTiFlow は、実際の問題に向けた低コストでプロジェクトを理解する Web + CLI エージェントワークスペースです。DeepSeek/Venice/OpenAI ルーティング、ブラウザ、Shell、ファイルツール、Docker、見えるツール呼び出し、永続セッション、scouts、SCS 監督、AAPS ワークフロー、成果物を一つの見える制御面にまとめます。",
   product: "## 製品構成\n\nCodex 風 CLI、可視化 Web UI、計画とツール実行を担う runner、読み取り・検索・書き込み・patch 用 workspace tools。",
-  principles: "## 原則\n\nプロジェクトフォルダが作業単位です。CLI と Web は `.sessions/` を共有し、編集は決定的で diff 付き、Shell コマンドはログと policy で確認されます。",
-  state: "## 状態\n\n`AGINTI.md` は指示、`.aginti/.env` はローカル key、`.aginti/codebase-map.json` はコード概要、`.sessions/` はイベントと成果物です。",
+  principles: "## 原則\n\nプロジェクトフォルダが作業単位です。CLI と Web は永続プロジェクトセッションを共有し、編集は決定的で diff 付き、Shell コマンドはログと policy で確認されます。",
+  state: "## 状態\n\n`AGINTI.md` は指示、`.aginti/.env` はローカル key、`.aginti/codebase-map.json` はコード概要、`.aginti-sessions/` はプロジェクト index、`~/.agintiflow/sessions/` はイベントと成果物です。",
   quickStart: "パッケージを入れ、プロジェクトを初期化し、doctor を実行して CLI または Web UI を起動します。",
   firstPrompts: "## 最初の依頼\n\nプロジェクト説明、Python CLI とテスト、静的サイト、LaTeX PDF、git status の安全な要約などを依頼できます。",
   defaultRuntime: "## 既定 Runtime\n\n対話 CLI は Docker workspace を使い、インストールはコンテナ内に閉じます。ホストで直接動かす時だけ `/docker off` を使います。",
@@ -1362,10 +1362,10 @@ docs.ja = buildCompactDocs(titles.ja, {
 });
 
 docs.ko = buildCompactDocs(titles.ko, {
-  overview: "AgInTiFlow는 제어 가능한 자동화를 위한 web-first agent 플랫폼과 CLI입니다. 모델 라우팅, 브라우저, shell, 파일 도구, Docker, artifact, 재개 가능한 session을 하나의 inspectable control plane에 묶습니다.",
+  overview: "AgInTiFlow는 실제 문제를 위한 저비용 프로젝트 인식 Web + CLI 에이전트 작업공간입니다. DeepSeek/Venice/OpenAI 라우팅, 브라우저, shell, 파일 도구, Docker, 보이는 tool call, 영구 session, scouts, SCS 감독, AAPS workflow, artifact를 하나의 inspectable control plane에 묶습니다.",
   product: "## 제품 구조\n\nCodex 스타일 CLI, 시각적 Web UI, plan/tool runner, 읽기/검색/쓰기/patch용 workspace tools.",
-  principles: "## 원칙\n\n프로젝트 폴더가 작업 단위입니다. CLI와 Web은 `.sessions/`를 공유하고, 파일 편집은 deterministic/diffed이며 shell 명령은 로그와 policy로 확인됩니다.",
-  state: "## 상태 위치\n\n`AGINTI.md`는 지침, `.aginti/.env`는 local key, `.aginti/codebase-map.json`는 코드 맵, `.sessions/`는 이벤트와 artifact입니다.",
+  principles: "## 원칙\n\n프로젝트 폴더가 작업 단위입니다. CLI와 Web은 영구 프로젝트 session을 공유하고, 파일 편집은 deterministic/diffed이며 shell 명령은 로그와 policy로 확인됩니다.",
+  state: "## 상태 위치\n\n`AGINTI.md`는 지침, `.aginti/.env`는 local key, `.aginti/codebase-map.json`는 코드 맵, `.aginti-sessions/`는 프로젝트 index, `~/.agintiflow/sessions/`는 이벤트와 artifact입니다.",
   quickStart: "패키지를 설치하고 프로젝트를 초기화한 뒤 doctor를 실행하고 CLI 또는 Web UI를 시작합니다.",
   firstPrompts: "## 첫 프롬프트\n\n프로젝트 설명, Python CLI와 테스트, 정적 웹사이트, LaTeX PDF, 안전한 git 요약 등을 요청할 수 있습니다.",
   defaultRuntime: "## 기본 Runtime\n\n대화형 CLI는 Docker workspace를 사용하며 설치는 컨테이너 내부에 머뭅니다. 직접 host 작업이 필요할 때만 `/docker off`를 사용합니다.",
@@ -1414,10 +1414,10 @@ docs.ko = buildCompactDocs(titles.ko, {
 });
 
 docs.ru = buildCompactDocs(titles.ru, {
-  overview: "AgInTiFlow — web-first платформа агента и CLI для контролируемой автоматизации. Она объединяет маршрутизацию моделей, браузер, shell, файловые инструменты, Docker, артефакты и возобновляемые сессии.",
+  overview: "AgInTiFlow — недорогое проектно-ориентированное агентное рабочее пространство Web и CLI для реальных задач. Оно объединяет маршрутизацию DeepSeek/Venice/OpenAI, браузер, shell, файловые инструменты, Docker, видимые tool calls, долговечные сессии, scouts, SCS-супервизию, AAPS-workflows и артефакты.",
   product: "## Форма продукта\n\nCLI в стиле Codex, визуальный Web UI, runner для планов и tool calls, workspace tools для чтения, поиска, записи и patch.",
-  principles: "## Принципы\n\nПапка проекта — единица работы; CLI и Web делят `.sessions/`; edits детерминированы и имеют diff; shell-команды видимы и проверяются policy.",
-  state: "## State\n\n`AGINTI.md` хранит инструкции, `.aginti/.env` локальные ключи, `.aginti/codebase-map.json` карту кода, `.sessions/` события и артефакты.",
+  principles: "## Принципы\n\nПапка проекта — единица работы; CLI и Web делят долговечные проектные сессии; edits детерминированы и имеют diff; shell-команды видимы и проверяются policy.",
+  state: "## State\n\n`AGINTI.md` хранит инструкции, `.aginti/.env` локальные ключи, `.aginti/codebase-map.json` карту кода, `.aginti-sessions/` индекс проекта, а `~/.agintiflow/sessions/` события и артефакты.",
   quickStart: "Установите пакет, инициализируйте проект, запустите doctor, затем CLI или локальный Web UI.",
   firstPrompts: "## Первые prompts\n\nПопросите объяснить проект, написать Python CLI с тестами, создать статический сайт, собрать LaTeX PDF или безопасно описать git status.",
   defaultRuntime: "## Runtime по умолчанию\n\nИнтерактивный CLI использует Docker workspace; установки остаются в контейнере. `/docker off` только для прямой host-работы.",
@@ -1466,10 +1466,10 @@ docs.ru = buildCompactDocs(titles.ru, {
 });
 
 docs.vi = buildCompactDocs(titles.vi, {
-  overview: "AgInTiFlow là nền tảng agent ưu tiên web và CLI cho tự động hóa có kiểm soát. Nó gom model routing, browser, shell, file tools, Docker, artifacts và session có thể resume vào một control plane dễ kiểm tra.",
+  overview: "AgInTiFlow là workspace agent Web + CLI chi phí thấp, hiểu dự án, cho các vấn đề thực tế. Nó gom routing DeepSeek/Venice/OpenAI, browser, shell, file tools, Docker, tool call nhìn thấy được, session bền vững, scouts, giám sát SCS, workflow AAPS và artifacts vào một control plane dễ kiểm tra.",
   product: "## Hình dạng sản phẩm\n\nCLI kiểu Codex, Web UI trực quan, runner cho plan/tool calls, workspace tools để đọc, tìm, ghi và patch.",
-  principles: "## Nguyên tắc\n\nThư mục project là đơn vị làm việc; CLI và web chia sẻ `.sessions/`; edit có diff và guardrail; lệnh shell hiển thị trong log và policy.",
-  state: "## State\n\n`AGINTI.md` lưu hướng dẫn, `.aginti/.env` lưu key local ignored, `.aginti/codebase-map.json` lưu code map, `.sessions/` lưu events/artifacts.",
+  principles: "## Nguyên tắc\n\nThư mục project là đơn vị làm việc; CLI và web chia sẻ session project bền vững; edit có diff và guardrail; lệnh shell hiển thị trong log và policy.",
+  state: "## State\n\n`AGINTI.md` lưu hướng dẫn, `.aginti/.env` lưu key local ignored, `.aginti/codebase-map.json` lưu code map, `.aginti-sessions/` lưu project index, `~/.agintiflow/sessions/` lưu events/artifacts.",
   quickStart: "Cài package, init project, chạy doctor, rồi mở CLI hoặc Web UI local.",
   firstPrompts: "## Prompt đầu tiên\n\nLiệt kê project, viết Python CLI với test, tạo website tĩnh, compile LaTeX PDF hoặc tóm tắt git status an toàn.",
   defaultRuntime: "## Runtime mặc định\n\nCLI dùng Docker workspace; install nằm trong container. Chỉ dùng `/docker off` khi muốn thao tác trực tiếp host.",

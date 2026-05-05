@@ -18,7 +18,9 @@
 ![Sandbox](https://img.shields.io/badge/Shell-Docker%20Sandbox-f97316)
 ![Status](https://img.shields.io/badge/Status-Prototype-7c3aed)
 
-AgInTiFlow は、実際のプロジェクトフォルダで動くローカル Web + CLI エージェントワークスペースです。低コストなモデルルーティング、検査可能なツール実行、永続セッション、保護されたファイル/shell/ブラウザ操作、任意の画像生成、構造化された大規模タスク監督をまとめて扱います。
+**実際の問題に向けた、低コストでプロジェクトを理解するエージェント。**
+
+Web または CLI から同じエージェントワークスペースを使い、DeepSeek/Venice/OpenAI ルーティング、見えるツール呼び出し、永続セッション、scouts、SCS 監督、AAPS ワークフロー、保護されたローカル実行を扱えます。
 
 要するに、プロジェクト内で `aginti` を実行し、タスクを渡し、計画とツール呼び出しを確認し、後で再開し、成果物をワークスペースに残せます。
 
@@ -30,6 +32,7 @@ AgInTiFlow は、実際のプロジェクトフォルダで動くローカル We
 | GitHub | [https://github.com/lazyingart/AgInTiFlow](https://github.com/lazyingart/AgInTiFlow) |
 | npm | [https://www.npmjs.com/package/@lazyingart/agintiflow](https://www.npmjs.com/package/@lazyingart/agintiflow) |
 | AAPS npm | [https://www.npmjs.com/package/@lazyingart/aaps](https://www.npmjs.com/package/@lazyingart/aaps) |
+| プロダクト定位 | [../references/agintiflow-product-positioning.md](../references/agintiflow-product-positioning.md) |
 | 完全版 README アーカイブ | [../references/notes/readme-full-reference-2026-05-05.md](../references/notes/readme-full-reference-2026-05-05.md) |
 
 <p align="center">

@@ -18,7 +18,9 @@
 ![Sandbox](https://img.shields.io/badge/Shell-Docker%20Sandbox-f97316)
 ![Status](https://img.shields.io/badge/Status-Prototype-7c3aed)
 
-AgInTiFlow là không gian làm việc agent cục bộ trên Web và CLI cho các thư mục dự án thật. Nó kết hợp định tuyến mô hình chi phí thấp, thao tác công cụ có thể kiểm tra, phiên bền vững, hành động file/shell/browser có bảo vệ, tạo ảnh tùy chọn và giám sát có cấu trúc cho tác vụ lớn.
+**Agent chi phí thấp, hiểu dự án, cho các vấn đề thực tế.**
+
+Dùng cùng một workspace agent từ Web hoặc CLI, với routing DeepSeek/Venice/OpenAI, tool call nhìn thấy được, session bền vững, scouts, giám sát SCS, workflow AAPS và thực thi cục bộ có bảo vệ.
 
 Nói ngắn gọn: chạy `aginti` trong một dự án, giao nhiệm vụ, xem kế hoạch, kiểm tra từng tool call, tiếp tục lại sau, và giữ kết quả trong workspace.
 
@@ -30,6 +32,7 @@ Nói ngắn gọn: chạy `aginti` trong một dự án, giao nhiệm vụ, xem 
 | GitHub | [https://github.com/lazyingart/AgInTiFlow](https://github.com/lazyingart/AgInTiFlow) |
 | npm | [https://www.npmjs.com/package/@lazyingart/agintiflow](https://www.npmjs.com/package/@lazyingart/agintiflow) |
 | AAPS npm | [https://www.npmjs.com/package/@lazyingart/aaps](https://www.npmjs.com/package/@lazyingart/aaps) |
+| Định vị sản phẩm | [../references/agintiflow-product-positioning.md](../references/agintiflow-product-positioning.md) |
 | README đầy đủ đã lưu trữ | [../references/notes/readme-full-reference-2026-05-05.md](../references/notes/readme-full-reference-2026-05-05.md) |
 
 <p align="center">
