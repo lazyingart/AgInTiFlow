@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { redactSensitiveText } from "./redaction.js";
+import { hasSensitiveText, redactSensitiveText } from "./redaction.js";
 
 export const WORKSPACE_TOOL_NAMES = ["inspect_project", "list_files", "read_file", "search_files", "write_file", "apply_patch"];
 export const WORKSPACE_WRITE_TOOL_NAMES = ["write_file", "apply_patch"];
@@ -188,6 +188,37 @@ function pathPolicy(toolName, relativePath) {
   return { allowed: true };
 }
 
+function secretContentPolicy(content) {
+  if (!hasSensitiveText(content)) return { allowed: true };
+  return {
+    allowed: false,
+    reason:
+      "Write content appears to contain token-like secret text. Redact secret values as [REDACTED] or use dedicated key storage such as `aginti keys set`; do not write credentials into workspace files.",
+    category: "workspace-content",
+  };
+}
+
+function writeContentPolicy(toolName, args, operations = null) {
+  if (toolName === "write_file") return secretContentPolicy(args.content || "");
+  if (toolName !== "apply_patch") return { allowed: true };
+
+  if (typeof args.patch === "string" && args.patch.trim()) {
+    for (const operation of operations || []) {
+      if (operation.type === "add") {
+        const policy = secretContentPolicy(operation.content || "");
+        if (!policy.allowed) return policy;
+      }
+      for (const hunk of operation.hunks || []) {
+        const policy = secretContentPolicy(hunk.replace || "");
+        if (!policy.allowed) return policy;
+      }
+    }
+    return { allowed: true };
+  }
+
+  return secretContentPolicy(args.replace ?? "");
+}
+
 export function checkWorkspaceToolUse(toolName, args, config) {
   if (!WORKSPACE_TOOL_NAMES.includes(toolName)) return { allowed: true };
   if (!config.allowFileTools) {
@@ -196,17 +227,26 @@ export function checkWorkspaceToolUse(toolName, args, config) {
 
   try {
     if (toolName === "apply_patch" && typeof args.patch === "string" && args.patch.trim()) {
-      for (const operation of parsePatchDocument(args.patch)) {
+      const operations = parsePatchDocument(args.patch);
+      for (const operation of operations) {
         for (const candidate of [operation.path, operation.newPath].filter(Boolean)) {
           const target = resolveWorkspacePath(config, candidate);
           const policy = pathPolicy(toolName, target.relativePath);
           if (!policy.allowed) return policy;
         }
       }
+      const contentPolicy = writeContentPolicy(toolName, args, operations);
+      if (!contentPolicy.allowed) return contentPolicy;
       return { allowed: true };
     }
     const target = resolveWorkspacePath(config, args.path || ".");
-    return pathPolicy(toolName, target.relativePath);
+    const policy = pathPolicy(toolName, target.relativePath);
+    if (!policy.allowed) return policy;
+    if (WORKSPACE_WRITE_TOOL_NAMES.includes(toolName)) {
+      const contentPolicy = writeContentPolicy(toolName, args);
+      if (!contentPolicy.allowed) return contentPolicy;
+    }
+    return { allowed: true };
   } catch (error) {
     return {
       allowed: false,
@@ -591,6 +631,8 @@ async function writeChange(target, nextContent, action, details = {}) {
   if (Buffer.byteLength(content, "utf8") > MAX_WRITE_BYTES) {
     throw new Error(`Write is too large for safe workspace tools: ${target.relativePath}`);
   }
+  const contentPolicy = secretContentPolicy(content);
+  if (!contentPolicy.allowed) throw new Error(contentPolicy.reason);
 
   await fs.mkdir(path.dirname(target.absolutePath), { recursive: true });
   let beforeText = "";

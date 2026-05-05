@@ -530,6 +530,54 @@ try {
     });
   assert(envRun.events.some((event) => event.type === "tool.blocked"), ".env guardrail did not emit tool.blocked");
 
+  const secretContentResult = await executeWorkspaceTool(
+    "write_file",
+    {
+      path: "notes/secret-leak-report.md",
+      content: "Content attempted: DEMO_SECRET_TOKEN=aginti_fake_do_not_use\n",
+      mode: "create",
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  assert(secretContentResult.blocked && secretContentResult.category === "workspace-content", "write_file secret-like content was not blocked");
+  await fs
+    .access(path.join(workspace, "notes/secret-leak-report.md"))
+    .then(() => {
+      throw new Error("secret-like report content was written despite content guardrails");
+    })
+    .catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+
+  const redactedContentResult = await executeWorkspaceTool(
+    "write_file",
+    {
+      path: "notes/redacted-report.md",
+      content: "Content attempted: DEMO_SECRET_TOKEN=[REDACTED]\n",
+      mode: "create",
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  assert(redactedContentResult.ok, "write_file should allow already-redacted secret placeholders");
+
+  const secretPatchResult = await executeWorkspaceTool(
+    "apply_patch",
+    {
+      patch: ["*** Begin Patch", "*** Add File: notes/secret-patch.md", "+DEMO_SECRET_TOKEN=aginti_fake_do_not_use", "*** End Patch"].join("\n"),
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  assert(secretPatchResult.blocked && secretPatchResult.category === "workspace-content", "apply_patch secret-like additions were not blocked");
+
   const outsideRun = await runMock("Create file: ../outside-workspace.txt with blocked content.", "coding-block-outside");
   await fs
     .access(path.join(tempRoot, "outside-workspace.txt"))
@@ -576,6 +624,9 @@ try {
           "patch_guardrail",
           "patch_move_no_overwrite",
           "block_env",
+          "block_secret_write_content",
+          "allow_redacted_write_content",
+          "block_secret_patch_content",
           "block_outside",
         ],
       },

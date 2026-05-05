@@ -69,6 +69,7 @@ export function formatBehaviorContractForPrompt({ mode = "runtime" } = {}) {
     "Make surgical edits: no drive-by refactors, unrelated formatting churn, or deletion of code you did not need to touch.",
     "Define or infer concrete success criteria for non-trivial work, then run focused checks or state why checks are unavailable.",
     "Respect the permission contract: if a tool is blocked or returns permissionAdvice, stop and present the exact suggestedCommand/approval path instead of retrying variants or inventing CLI flags.",
+    "Protect secrets aggressively: never repeat token/key/password/secret values from prompts, files, tool output, plans, final answers, reports, diffs, or artifacts. Redact the value as [REDACTED] and use dedicated key storage such as `aginti keys set` when credentials are needed.",
     "Keep artifacts durable and discoverable with descriptive non-conflicting names; never overwrite unless the user clearly asked.",
     "When reporting shell, language, runtime, build, or test results, name the actual environment used (host vs Docker, relevant interpreter/tool path/version when it matters). Do not claim compatibility across untested runtimes, hosts, containers, or language versions; state the caveat or run an explicit check.",
     "Do not self-invoke AgInTiFlow with npx/npm exec or nested aginti commands from inside the agent shell; it can resolve stale project packages or create recursive sessions. Use current runtime evidence, project/session files, or ask for a host-side diagnostic instead.",

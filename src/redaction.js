@@ -19,6 +19,11 @@ export function redactSensitiveText(value) {
   return text;
 }
 
+export function hasSensitiveText(value) {
+  const text = String(value ?? "");
+  return redactSensitiveText(text) !== text;
+}
+
 export function redactValue(value) {
   if (typeof value === "string") return redactSensitiveText(value);
   if (Array.isArray(value)) return value.map((item) => redactValue(item));
