@@ -9,6 +9,11 @@ The integration is intentionally lightweight. AgInTiFlow does not vendor the AAP
 3. `aaps` on `PATH`.
 4. A sibling development checkout at `~/ProjectsLFS/AAPS/scripts/aaps.js` when present.
 
+There are two useful bridge directions:
+
+- `aginti aaps ...`: AgInTiFlow is the interactive runtime and calls the AAPS CLI to inspect, validate, compile, dry-run, or run project workflows.
+- `aaps prompt "goal" --backend aginti`: AAPS writes a durable backend-agent handoff under `.aaps-work/prompts/` and invokes AgInTiFlow as the implementation agent for the goal.
+
 ## CLI
 
 ```bash
@@ -45,6 +50,16 @@ The adapter keeps paths project-relative and uses `execFile`, not shell interpol
 Current lightweight adapter boundary: prompt-only AAPS tasks are recorded as handoffs. They do not automatically call an LLM/backend agent yet. When a workflow has prompt-only steps, `aginti aaps run` and `aginti aaps dry-run` print `promptOnly=<n>` plus warnings if no executable steps ran or a declared output was not produced.
 
 `aginti aaps install` installs `@lazyingart/aaps` as a project dev dependency only when the current project has `package.json`. Use `aginti aaps install global` only when you intentionally want a global npm install.
+
+If you want AAPS itself to hand a top-level goal to AgInTiFlow, use the AAPS CLI:
+
+```bash
+aaps prompt "Create and validate an executable workflow that writes reports/smoke.md" --project . --backend aginti
+aaps "Create a small AAPS workflow and run it" --project . --backend aginti
+aaps prompt "Prepare the backend prompt only" --project . --backend print --json
+```
+
+The generated AAPS handoff is sandbox-aware: it asks the backend to prefer installed `aaps`, use Docker-safe `npx -y @lazyingart/aaps@<version>` when package installs/network are approved, and use a source checkout only when that path is visible inside the active sandbox.
 
 ## Project Shape
 
