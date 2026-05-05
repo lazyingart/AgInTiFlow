@@ -11,6 +11,7 @@ const READ_ONLY_PATTERNS = [
   /^ls(?:\s+[-\w./~*]+)*$/,
   /^find(?:\s+[./~\w-]+)*(?:\s+-maxdepth\s+\d+)?(?:\s+-type\s+[fd])?$/,
   /^rg(?:\s+.+)?$/,
+  /^grep(?:\s+.+)?$/,
   /^cat(?:\s+[-\w./~*]+)+$/,
   /^head(?:\s+.+)?$/,
   /^tail(?:\s+.+)?$/,
@@ -151,6 +152,36 @@ function matchAny(patterns, command) {
   return patterns.some((pattern) => pattern.test(command));
 }
 
+function stripQuotedSegments(command = "") {
+  let output = "";
+  let quote = "";
+  let escaped = false;
+  for (const char of String(command || "")) {
+    if (escaped) {
+      escaped = false;
+      if (!quote) output += " ";
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      if (!quote) output += char;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = "";
+      output += " ";
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      output += " ";
+      continue;
+    }
+    output += char;
+  }
+  return output;
+}
+
 function isSafeRelativeDir(value) {
   const normalized = String(value || "").trim();
   if (!normalized || normalized.startsWith("/") || normalized.startsWith("~")) return false;
@@ -231,7 +262,8 @@ function classifySimpleCommand(normalized) {
   const gitCloneClassification = classifyGitClone(normalized);
   if (gitCloneClassification) return gitCloneClassification;
 
-  const lowered = ` ${normalized.toLowerCase()} `;
+  const unquoted = stripQuotedSegments(normalized);
+  const lowered = ` ${unquoted.toLowerCase()} `;
   if (BLOCKED_WRITE_TOKENS.some((part) => lowered.includes(part))) {
     return {
       category: "destructive",
@@ -240,7 +272,7 @@ function classifySimpleCommand(normalized) {
       reason: `Command contains a write-capable or destructive token: ${normalized}`,
     };
   }
-  if (BLOCKED_SHELL_TOKENS.some((part) => normalized.includes(part))) {
+  if (BLOCKED_SHELL_TOKENS.some((part) => unquoted.includes(part))) {
     return {
       category: "general-shell",
       needsNetwork: true,

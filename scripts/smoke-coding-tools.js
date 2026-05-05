@@ -263,6 +263,18 @@ try {
   assert(clonePolicy.allowed, "git clone should be allowed in docker-workspace allow mode");
   assert(clonePolicy.needsNetwork, "git clone was not classified as network");
   assert(clonePolicy.writesWorkspace, "git clone was not classified as workspace-writing");
+  const quotedDangerSearchPolicy = evaluateCommandPolicy(
+    'grep -nE "rm -rf|git reset --hard|git clean -fd|find . -delete" reports/destructive-command-policy.md',
+    dockerWorkspacePolicy
+  );
+  assert(quotedDangerSearchPolicy.allowed, "read-only grep for destructive command strings should be allowed");
+  assert(
+    quotedDangerSearchPolicy.category !== "destructive",
+    "quoted destructive strings in grep pattern should not classify as a destructive command"
+  );
+  const actualDangerAfterQuotePolicy = evaluateCommandPolicy('echo "rm -rf is text" && rm -rf reports', dockerWorkspacePolicy);
+  assert(!actualDangerAfterQuotePolicy.allowed, "actual destructive command after quoted text should still be blocked");
+  assert(actualDangerAfterQuotePolicy.category === "destructive", "actual destructive command after quoted text was not classified as destructive");
   const unsafeCloneTarget = evaluateCommandPolicy("git clone https://github.com/lazyingart/AgInTiFlow.git ../AgInTiFlow", dockerWorkspacePolicy);
   assert(!unsafeCloneTarget.allowed, "git clone outside the workspace should be blocked");
   const blockedClonePolicy = evaluateCommandPolicy("git clone https://github.com/lazyingart/AgInTiFlow.git", {
