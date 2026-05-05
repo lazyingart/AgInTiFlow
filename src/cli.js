@@ -159,13 +159,13 @@ export function parseArgs(argv) {
       result.autoUpdate = true;
       continue;
     }
-    if (arg === "--enabless" || arg === "--enable-scs" || arg === "--scs") {
+    if (arg === "--enable-scs" || arg === "--scs") {
       const { mode, consumed } = readOptionalScsMode(argv, i);
       result.enableScs = mode;
       if (consumed) i += 1;
       continue;
     }
-    if (arg === "--no-enabless" || arg === "--disable-scs" || arg === "--no-scs") {
+    if (arg === "--disable-scs" || arg === "--no-scs") {
       result.enableScs = "off";
       continue;
     }

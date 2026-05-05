@@ -22,7 +22,7 @@ Inside interactive chat:
 /scs status
 ```
 
-`/scs` without arguments toggles the feature: off becomes on, and on/auto becomes off. The old `/enabless` spelling is accepted only as a compatibility alias for older sessions and scripts.
+`/scs` without arguments toggles the feature: off becomes on, and on/auto becomes off.
 
 ## Role Contract
 

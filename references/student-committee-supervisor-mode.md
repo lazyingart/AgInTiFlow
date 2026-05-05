@@ -284,8 +284,8 @@ Implemented first slice:
 
 - `src/scs-controller.js` provides mode normalization, auto activation, committee/student JSON calls, evidence packs, supervisor instructions, tool-failure monitoring, periodic progress review, and final finish gates.
 - `src/config.js` adds `enableScs`/`scsActive` and switches active execution to the main model role when SCS is active.
-- `src/interactive-cli.js` adds `/scs`, `/scs auto`, `/scs on`, `/scs off`, and `/scs status`. `/enabless` remains a compatibility alias only.
-- `src/cli.js` adds `--scs`, `--scs auto`, and `--no-scs`. The older `--enabless` flags remain compatibility aliases only.
+- `src/interactive-cli.js` adds `/scs`, `/scs auto`, `/scs on`, `/scs off`, and `/scs status`. Legacy SCS slash aliases have been removed so there is only one interactive command.
+- `src/cli.js` adds `--scs`, `--scs auto`, and `--no-scs`. Older SCS flags have been removed so scripts use the same public SCS vocabulary.
 - `src/agent-runner.js` persists typed `scs.*` events, saves `scs-phase-001.json`, injects the approved supervisor phase, reviews failed tools, and gates finish.
 
 Remaining roadmap:
@@ -318,7 +318,7 @@ Phase 5: auto mode
 - Should SCS approval be required before any write tool, or only before the first phase starts?
 - Should the student be allowed to require specific checks, or only accept/reject evidence?
 - Should committee be one call or multiple candidate calls synthesized into one plan?
-- Should `/enabless` remain as a hidden compatibility alias now that `/scs` is the serious public command?
+- Should any future legacy SCS aliases be rejected with a migration hint, or stay as plain unknown commands?
 - Should SCS decisions be shared through Skill Mesh as learned supervision skills?
 
 ## Recommendation

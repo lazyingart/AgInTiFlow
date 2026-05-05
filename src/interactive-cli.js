@@ -2805,17 +2805,10 @@ async function handleCommand(line, state, packageDir) {
     printSystemLine(`parallelScouts=${state.allowParallelScouts ? "on" : "off"} count=${state.parallelScoutCount}`);
     return true;
   }
-  if (command === "enabless" || command === "scs") {
+  if (command === "scs") {
     const rawMode = String(value || "").trim().toLowerCase();
     const currentMode = normalizeScsMode(state.enableScs || "off");
-    const mode =
-      rawMode === "toggle" || !rawMode
-        ? command === "scs"
-          ? currentMode === "off"
-            ? "on"
-            : "off"
-          : "on"
-        : normalizeScsMode(value);
+    const mode = rawMode === "toggle" || !rawMode ? (currentMode === "off" ? "on" : "off") : normalizeScsMode(value);
     const knownMode =
       !rawMode ||
       [

@@ -209,7 +209,7 @@ try {
     throw new Error("terminal prompt layout did not localize the empty input hint");
   }
   const jaLaunchHeader = buildLaunchHeaderLines({ width: 120, packageVersion: "0.0.0", animated: false, language: "ja" }).join("\n");
-  if (!jaLaunchHeader.includes("Web ファースト")) {
+  if (!jaLaunchHeader.includes("低コストでプロジェクトを理解するエージェント")) {
     throw new Error("launch header did not localize by language option");
   }
   const hugePromptLayout = buildPromptLayout(Array.from({ length: 30 }, (_unused, index) => `line ${index + 1}`).join("\n"), 120, 80, 20);
@@ -294,7 +294,7 @@ try {
     !helpResult.stdout.includes("/auxiliary") ||
     !helpResult.stdout.includes("/review") ||
     !helpResult.stdout.includes("/scs") ||
-    helpResult.stdout.includes("/enabless") ||
+    helpResult.stdout.includes("/enable" + "ss") ||
     helpResult.stdout.includes(misspelledAuxiliary)
   ) {
     throw new Error("interactive help did not expose the expected slash commands");
@@ -314,6 +314,11 @@ try {
   const scsOnResult = await runChat("/scs\n");
   if (!scsOnResult.stdout.includes("scs=on")) {
     throw new Error("interactive /scs did not toggle SCS on");
+  }
+  const legacyScsAlias = "/enable" + "ss";
+  const oldScsAliasResult = await runChat(`${legacyScsAlias}\n/exit\n`);
+  if (!oldScsAliasResult.stdout.includes(`Unknown command: ${legacyScsAlias}`) || oldScsAliasResult.stdout.includes("scs=on")) {
+    throw new Error(`legacy ${legacyScsAlias} alias should be removed and must not toggle SCS`);
   }
   const scsOffResult = await runCli(["chat", "--provider", "mock", "--routing", "manual", "--profile", "code", "--scs"], "/scs\n");
   if (!scsOffResult.stdout.includes("scs=off")) {
