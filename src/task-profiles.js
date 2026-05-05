@@ -143,7 +143,7 @@ export const TASK_PROFILES = {
     id: "python",
     label: "Python",
     prompt:
-      "Bias toward Python best practices without ignoring non-Python project context. Inspect pyproject/requirements, create scripts/packages/tests as files, prefer project-local venv/conda/uv or Docker for setup, and run focused smoke checks when shell is enabled.",
+      "Bias toward Python best practices without ignoring non-Python project context. Inspect pyproject/requirements, create scripts/packages/tests as files, prefer project-local venv/conda/uv or Docker for setup, and run focused smoke checks when shell is enabled. For syntax, lint, test, or runtime claims, capture the actual interpreter path/version and sandbox/host environment; never claim support for untested Python versions or host interpreters just because a Docker/venv check passed.",
     tools: ["files", "shell", "sandbox"],
   },
   shell: {

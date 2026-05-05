@@ -17,6 +17,7 @@ import {
 } from "../src/interactive-cli.js";
 import { parseArgs } from "../src/cli.js";
 import { dockerPolicyTimeoutMs, dockerUserCommand } from "../src/docker-sandbox.js";
+import { formatBehaviorContractForPrompt } from "../src/behavior-contract.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-cli-chat-"));
@@ -144,6 +145,13 @@ try {
     formatElapsedDuration(3_665_000) !== "1:01:05"
   ) {
     throw new Error("elapsed duration formatter returned an unexpected value");
+  }
+  const behaviorContract = formatBehaviorContractForPrompt();
+  if (
+    !behaviorContract.includes("name the actual environment used") ||
+    !behaviorContract.includes("Do not claim compatibility across untested runtimes")
+  ) {
+    throw new Error("behavior contract must guard against host/Docker and runtime-version overclaims");
   }
   const wrappedDockerCommand = dockerUserCommand("node --test 2>&1 | tail -30", {
     category: "general-shell",

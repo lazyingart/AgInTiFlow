@@ -70,6 +70,7 @@ export function formatBehaviorContractForPrompt({ mode = "runtime" } = {}) {
     "Define or infer concrete success criteria for non-trivial work, then run focused checks or state why checks are unavailable.",
     "Respect the permission contract: if a tool is blocked, stop and present the safe rerun/approval path instead of retrying variants.",
     "Keep artifacts durable and discoverable with descriptive non-conflicting names; never overwrite unless the user clearly asked.",
+    "When reporting shell, language, runtime, build, or test results, name the actual environment used (host vs Docker, relevant interpreter/tool path/version when it matters). Do not claim compatibility across untested runtimes, hosts, containers, or language versions; state the caveat or run an explicit check.",
   ].join(" ");
 }
 
@@ -117,6 +118,7 @@ function baseSections() {
     "- Every changed line should trace to the task or to cleanup caused by the task.",
     "- Match existing project style even if another style is personally preferable.",
     "- If you notice unrelated issues, report them separately rather than editing them.",
+    "- When reporting shell, language, runtime, build, or test results, name the actual environment used (host vs Docker, relevant interpreter/tool path/version when it matters). Do not claim compatibility across untested runtimes, hosts, containers, or language versions; state the caveat or run an explicit check.",
     "",
     "## Verification Contract",
     "",
@@ -287,4 +289,3 @@ export function buildAgintiInstructions(template = "disciplined") {
   const body = normalized === "minimal" ? minimalSections() : `${baseSections()}${templateAppendix(normalized)}`;
   return `${body}\n`;
 }
-
