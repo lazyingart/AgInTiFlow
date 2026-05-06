@@ -317,6 +317,12 @@ try {
   );
   assert(readonlyVersionPipelinePolicy.allowed, "read-only version probe pipelines should not require package-install-policy=allow");
   assert(readonlyVersionPipelinePolicy.category === "read-only", "read-only version probe pipelines should be classified as read-only");
+  const nodeNpmTestPolicy = evaluateCommandPolicy(
+    'cd /workspace && node --version && npm test 2>&1; echo "EXIT:$?"',
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(nodeNpmTestPolicy.allowed, "node --version plus npm test should not require package-install-policy=allow");
+  assert(nodeNpmTestPolicy.category === "test", "node --version plus npm test should be classified as test");
   const readonlyTestEchoPolicy = evaluateCommandPolicy(
     'test -f /usr/bin/pdflatex && echo "pdflatex: FOUND" || echo "pdflatex: NOT FOUND"; test -f /usr/bin/latexmk && echo "latexmk: FOUND" || echo "latexmk: NOT FOUND"; python3 --version 2>&1',
     dockerWorkspaceNoInstallsPolicy

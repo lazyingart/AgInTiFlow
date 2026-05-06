@@ -80,20 +80,36 @@ function outputTextFromResponse(response) {
   return chunks.join("\n").trim();
 }
 
-function firstJsonObject(text = "") {
+function parseModelJsonObject(candidate = "") {
+  const text = String(candidate || "").replace(/^\uFEFF/, "").trim();
+  if (!text) return null;
+  const variants = [
+    text,
+    // Hosted model wrappers occasionally produce near-JSON with trailing
+    // commas. Keep the repair narrow so malformed structure still fails.
+    text.replace(/,\s*([}\]])/g, "$1"),
+  ];
+  for (const variant of uniqueList(variants)) {
+    try {
+      const parsed = JSON.parse(variant);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {
+      // Try the next narrow repair variant.
+    }
+  }
+  return null;
+}
+
+export function firstJsonObject(text = "") {
   const source = String(text || "").trim();
   if (!source) return null;
-  try {
-    return JSON.parse(source);
-  } catch {
-    const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
-    if (fenced) {
-      try {
-        return JSON.parse(fenced.trim());
-      } catch {
-        // Fall through to balanced-object extraction.
-      }
-    }
+  const direct = parseModelJsonObject(source);
+  if (direct) return direct;
+
+  const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
+  if (fenced) {
+    const parsedFenced = parseModelJsonObject(fenced);
+    if (parsedFenced) return parsedFenced;
   }
 
   const start = source.indexOf("{");
@@ -120,11 +136,7 @@ function firstJsonObject(text = "") {
     if (char === "}") {
       depth -= 1;
       if (depth === 0) {
-        try {
-          return JSON.parse(source.slice(start, index + 1));
-        } catch {
-          return null;
-        }
+        return parseModelJsonObject(source.slice(start, index + 1));
       }
     }
   }

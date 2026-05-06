@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { runAgent } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { checkToolUse } from "../src/guardrails.js";
-import { readImage, researchWrapper, webResearch } from "../src/perception-tools.js";
+import { firstJsonObject, readImage, researchWrapper, webResearch } from "../src/perception-tools.js";
 import { SessionStore } from "../src/session-store.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -37,6 +37,14 @@ async function main() {
     preferredWrapper: "codex",
     webSearchDryRun: true,
   };
+
+  const repairedImageJson = firstJsonObject(
+    '{"summary":"A simple red square is visible.","visibleText":[],"observations":["The shape is a square."],"issues":[],"answer":"A red square.","uncertainty":[],\r\n}'
+  );
+  assert(repairedImageJson?.answer === "A red square.", "read_image did not repair a common trailing-comma near-JSON response");
+
+  const fencedWrapperJson = firstJsonObject('```json\n{"ok":true,"task":"read_image","summary":"done",}\n```');
+  assert(fencedWrapperJson?.summary === "done", "research_wrapper did not repair fenced trailing-comma near-JSON");
 
   const image = await readImage(
     {
