@@ -59,6 +59,7 @@ export async function searchWeb(args = {}, config = {}) {
   }
 
   const maxResults = Math.min(Math.max(Number(args.maxResults) || 5, 1), MAX_RESULTS);
+  const allowedDomains = Array.isArray(args.domains) && args.domains.length ? args.domains : config.allowedDomains || [];
   const searchUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
   if (config.webSearchDryRun) {
     return {
@@ -87,7 +88,7 @@ export async function searchWeb(args = {}, config = {}) {
       },
     });
     const html = await response.text();
-    const results = parseDuckDuckGoHtml(html, maxResults, config.allowedDomains || []);
+    const results = parseDuckDuckGoHtml(html, maxResults, allowedDomains);
     return {
       ok: true,
       toolName: "web_search",

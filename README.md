@@ -53,6 +53,7 @@ Most agent tools are either a chat box with hidden state or an expensive one-mod
 | Inspectable beats mysterious | Plans, tool calls, file diffs, command output, canvas artifacts, and session events are saved and resumable. |
 | Disciplined by default | `AGINTI.md` starts with a behavior contract: surface ambiguity, keep edits surgical, avoid speculative complexity, verify outcomes, and respect permission blockers. |
 | Role-based models | Route, main, spare, wrapper, and auxiliary image roles are separate. You can use cheap route models, stronger main models, optional OpenAI/Qwen/Venice routes, and GRS AI/Venice image tools. |
+| Visual and web evidence | `read_image` reads screenshots/figures with typed perception artifacts, `web_research` saves sourced research artifacts, and `research_wrapper` can ask Codex `gpt-5.4-mini` medium for a strict-JSON second opinion. |
 | Scouts before big work | Parallel scouts can cheaply map architecture, tests, risks, symbols, and integration points before the main executor edits anything. |
 | SCS for high-risk work | Student-Committee-Supervisor mode adds a typed gate: committee drafts, student approves/monitors, supervisor executes. Use `/scs` or `--scs auto`. |
 | AAPS for large workflows | AAPS describes top-down agentic pipeline scripts; AgInTiFlow can act as the interactive backend that validates, compiles, and executes those workflows. |
@@ -137,6 +138,9 @@ aginti --language de
 | Switch permissions | `-s safe`, `-s normal`, `-s danger`, or `/safe`, `/normal`, `/danger` |
 | Enable Venice shortcut | `/venice` |
 | Generate images | `/auxiliary image`, then ask for an image |
+| Read screenshots/images | `/image-read path/to/screenshot.png "what changed?"` |
+| Research with sources | `/web-research latest Android Gradle plugin official docs` |
+| Enable research wrapper | `/research-wrapper gpt-5.4-mini medium` |
 | Resume current project | `aginti resume` |
 | Browse all sessions | `aginti resume --all-sessions` |
 | Queue into a running session | `aginti queue <session-id> "extra instruction"` |
@@ -202,12 +206,13 @@ The website keeps the visual walkthrough in a carousel so this README can stay f
 | --- | --- |
 | CLI agent workspace | Persistent terminal chat with project cwd, session resume, visible model/tool state, and clean command hints. |
 | Local web workspace | Browser UI for sessions, runtime logs, artifacts, model settings, project controls, canvas previews, and sandbox status. |
-| File tools | `inspect_project`, `list_files`, `read_file`, `search_files`, `write_file`, `apply_patch`, `open_workspace_file`, and `preview_workspace`. |
+| File tools | `inspect_project`, `list_files`, `read_file`, `search_files`, `write_file`, `apply_patch`, `open_workspace_file`, `preview_workspace`, and `read_image`. |
 | Shell tools | Guarded host or Docker workspace shell execution with package-install policy and command safety checks. |
 | Browser tools | Playwright browser actions with lazy startup and optional domain allowlists. |
 | Model routing | DeepSeek fast/pro defaults, manual OpenAI/Qwen/Venice/mock routes, spare models, wrapper models, and auxiliary image models. |
 | Patch workflow | Codex-style patch envelopes, unified diffs, exact replacements, hashes, compact diffs, and path guardrails. |
 | Parallel scouts | Optional scout calls for architecture, implementation, review, tests, git flow, research, symbol tracing, and dependency risk. |
+| Image reading and web research | `read_image` uses OpenAI vision for workspace images when `OPENAI_API_KEY` is configured. `web_research` preserves source lists, and optional OpenAI hosted web search or `research_wrapper` can be used for higher-confidence research. |
 | SCS mode | Optional Student-Committee-Supervisor quality gate for complicated or risky tasks. |
 | AAPS adapter | Optional `@lazyingart/aaps` integration for `.aaps` workflow init, validate, parse, compile, dry-run, and run commands. |
 | Image generation | Optional GRS AI and Venice image tools with saved manifests and canvas artifact previews. |
@@ -224,7 +229,7 @@ AgInTiFlow does not treat "the model" as one global setting. It has roles:
 | Route | `deepseek/deepseek-v4-flash` | Cheap planner, triage, short tasks, routing decisions. |
 | Main | `deepseek/deepseek-v4-pro` | Complex coding, debugging, writing, research, long tasks. |
 | Spare | `openai/gpt-5.4` medium | Optional fallback or cross-check route. |
-| Wrapper | `codex/gpt-5.5` medium | Optional external coding-agent advisor. |
+| Wrapper | `codex/gpt-5.5` medium | Optional external coding-agent advisor; `research_wrapper` defaults to `gpt-5.4-mini` medium for image/web second opinions. |
 | Auxiliary | `grsai/nano-banana-2` | Image generation and other non-text helper tools. |
 
 Useful selectors:
@@ -339,6 +344,7 @@ More detail:
 
 - [docs/model-selection.md](docs/model-selection.md)
 - [docs/auxiliary-image-generation.md](docs/auxiliary-image-generation.md)
+- [docs/perception-and-web-research.md](docs/perception-and-web-research.md)
 - [docs/cli-i18n.md](docs/cli-i18n.md)
 - [docs/skillmesh.md](docs/skillmesh.md)
 
@@ -352,6 +358,7 @@ More detail:
 | Large-codebase engineering | [docs/large-codebase-engineering.md](docs/large-codebase-engineering.md) |
 | Runtime modes and autonomy | [docs/runtime-modes-and-autonomy.md](docs/runtime-modes-and-autonomy.md) |
 | Skills and tools | [docs/skills-and-tools.md](docs/skills-and-tools.md) |
+| Image reading and web research | [docs/perception-and-web-research.md](docs/perception-and-web-research.md) |
 | Skill Mesh | [docs/skillmesh.md](docs/skillmesh.md) |
 | Housekeeping logs | [docs/housekeeping.md](docs/housekeeping.md) |
 | npm publishing | [docs/npm-publishing.md](docs/npm-publishing.md) |

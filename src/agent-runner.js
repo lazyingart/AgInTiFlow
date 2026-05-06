@@ -19,6 +19,7 @@ import { normalizeCanvasPayload, persistCanvasPayloadFile } from "./artifact-tun
 import { getTaskProfile } from "./task-profiles.js";
 import { generateImage, listAuxiliarySkills } from "./auxiliary-tools.js";
 import { engineeringGuidanceForTask } from "./engineering-guidance.js";
+import { readImage, researchWrapper, webResearch } from "./perception-tools.js";
 import { searchWeb } from "./web-search.js";
 import { runParallelScouts, shouldRunParallelScouts } from "./parallel-scouts.js";
 import { readProjectInstructions } from "./project.js";
@@ -569,10 +570,10 @@ async function createInitialState(config, sessionId) {
         + " For one-shot tmux commands, redirect stdout/stderr and exit status to a durable workspace log or keep the pane alive for capture; if capture fails because the session ended, do not infer output or exit status."
         : "",
           config.allowFileTools
-            ? `Workspace file tools are available in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, and preview_workspace. For large or unfamiliar repositories, call inspect_project first, then search/read AGINTI.md/AGENTS.md/README/manifests as relevant before editing. apply_patch supports exact single-file replacements plus Codex-style/unified multi-file patches; prefer it for source edits after reading/searching the relevant context. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. For newly generated standalone prose/docs/stories/assets, choose a descriptive non-conflicting filename from the topic/language and use mode=create; do not overwrite existing files unless the user explicitly asked to update/replace/overwrite that file. Secret paths, .git internals, node_modules writes, and huge files are blocked. For generated local websites/pages, use open_workspace_file or preview_workspace instead of starting a localhost server inside Docker.`
+            ? `Workspace file tools are available in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, preview_workspace, and read_image. For large or unfamiliar repositories, call inspect_project first, then search/read AGINTI.md/AGENTS.md/README/manifests as relevant before editing. Use read_image for screenshots, plots, microscopy images, scanned text, and visual debugging; it persists a typed perception artifact and must not be replaced by guessing from filenames. apply_patch supports exact single-file replacements plus Codex-style/unified multi-file patches; prefer it for source edits after reading/searching the relevant context. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. For newly generated standalone prose/docs/stories/assets, choose a descriptive non-conflicting filename from the topic/language and use mode=create; do not overwrite existing files unless the user explicitly asked to update/replace/overwrite that file. Secret paths, .git internals, node_modules writes, and huge files are blocked. For generated local websites/pages, use open_workspace_file or preview_workspace instead of starting a localhost server inside Docker.`
             : "No workspace file tools are available.",
           config.allowWrapperTools
-            ? `External coding-agent wrappers are available as advisory tools only. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Wrapper status: ${wrapperStatusText()}.`
+            ? `External coding-agent wrappers are available as advisory tools only. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Wrapper status: ${wrapperStatusText()}. Use research_wrapper for strict-JSON image/web/research second opinions; it defaults to gpt-5.4-mini medium unless overridden and must be verified against sources/artifacts.`
             : "External coding-agent wrappers are disabled.",
           config.allowAuxiliaryTools
             ? `Auxiliary skills are available: ${listAuxiliarySkills()
@@ -580,7 +581,7 @@ async function createInitialState(config, sessionId) {
                 .join(", ")}. Use generate_image for real raster image/photo/illustration/cover/poster/logo requests when appropriate; if image keys are missing, ask the user to run /auxiliary grsai, aginti login grsai, or aginti login venice.`
             : "Auxiliary skills are disabled for this run.",
           config.allowWebSearch
-            ? "web_search is available for current information, docs, package/toolchain errors, and source discovery. Prefer web_search over browser search-engine navigation."
+            ? "web_search is available for lightweight snippets. web_research is available for sourced, persisted research artifacts; use domains for official-source constraints and mode=openai only when hosted OpenAI web research is needed and configured. Prefer these tools over browser search-engine navigation."
             : "web_search is disabled.",
           config.allowParallelScouts
             ? `Parallel DeepSeek scouts may run before complex execution. Scout count: ${config.parallelScoutCount}.`
@@ -1036,9 +1037,15 @@ async function captureSyntheticSnapshot(store, step, config) {
       config.allowFileTools
         ? `Workspace file tools available in: ${config.commandCwd}. Use inspect_project first for large or unfamiliar codebases, then search/read exact files before editing. Use workspace-relative paths. Use apply_patch for code edits; it supports exact single-file replacement and multi-file Codex-style/unified patches. For new standalone generated content, pick a descriptive non-conflicting filename and avoid overwriting unless explicitly requested.`
         : "Workspace file tools disabled.",
-      config.allowWrapperTools
-        ? `Agent wrappers available: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
-        : "Agent wrappers disabled.",
+          config.allowWrapperTools
+            ? `Agent wrappers available: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}. research_wrapper is available for strict-JSON perception/research second opinions and defaults to gpt-5.4-mini medium when not overridden.`
+            : "Agent wrappers disabled.",
+      config.allowFileTools
+        ? "read_image is available for local screenshots/images and allowed remote image URLs. It persists typed perception artifacts and must not be replaced by guessing from filenames."
+        : "",
+      config.allowWebSearch
+        ? "web_research is available for auditable source lists and dated/current research artifacts; use domains for official-source constraints."
+        : "",
       "Canvas/artifacts tunnel available through send_to_canvas. File paths sent to canvas are persisted into the session artifact store, but final user artifacts should still use clear durable workspace filenames.",
       "For draw/plot/graph/chart/diagram/figure requests, publish a canvas artifact proactively.",
       "For LaTeX/PDF requests, check latexmk/pdflatex first, publish the source and compiled PDF artifacts when available, and avoid reinstalling TeX when an existing toolchain works.",
@@ -1184,6 +1191,20 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         break;
       case "web_search": {
         const result = await searchWeb(args, config);
+        const eventResult = sanitizeToolResult(result);
+        await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        return result;
+      }
+      case "web_research": {
+        const result = await webResearch(args, config, store);
+        const eventResult = sanitizeToolResult(result);
+        await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        return result;
+      }
+      case "read_image": {
+        const result = await readImage(args, config, store);
         const eventResult = sanitizeToolResult(result);
         await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
         observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
@@ -1390,6 +1411,13 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         };
         await store.appendEvent("tool.completed", result);
         observers.event("tool.completed", result);
+        return result;
+      }
+      case "research_wrapper": {
+        const result = await researchWrapper(args, config, store);
+        const eventResult = sanitizeToolResult(result);
+        await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
         return result;
       }
       case "generate_image": {

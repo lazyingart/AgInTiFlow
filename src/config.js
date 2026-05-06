@@ -139,6 +139,13 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     spareReasoning: modelRoles.spare.reasoning,
     wrapperModel: modelRoles.wrapper.model,
     wrapperReasoning: modelRoles.wrapper.reasoning,
+    perceptionModel: overrides.perceptionModel || args.perceptionModel || process.env.AGINTI_PERCEPTION_MODEL || "gpt-5.4-mini",
+    perceptionReasoning: overrides.perceptionReasoning || args.perceptionReasoning || process.env.AGINTI_PERCEPTION_REASONING || "medium",
+    webResearchModel: overrides.webResearchModel || args.webResearchModel || process.env.AGINTI_WEB_RESEARCH_MODEL || "gpt-5.4-mini",
+    webResearchReasoning: overrides.webResearchReasoning || args.webResearchReasoning || process.env.AGINTI_WEB_RESEARCH_REASONING || "medium",
+    researchWrapperModel: overrides.researchWrapperModel || args.researchWrapperModel || process.env.AGINTI_RESEARCH_WRAPPER_MODEL || "gpt-5.4-mini",
+    researchWrapperReasoning:
+      overrides.researchWrapperReasoning || args.researchWrapperReasoning || process.env.AGINTI_RESEARCH_WRAPPER_REASONING || "medium",
     auxiliaryProvider: modelRoles.auxiliary.provider,
     auxiliaryModel: modelRoles.auxiliary.model,
     requestedProvider,

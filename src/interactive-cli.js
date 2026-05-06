@@ -95,6 +95,9 @@ const SLASH_COMMANDS = [
   "/skillsync",
   "/profile",
   "/web-search",
+  "/web-research",
+  "/image-read",
+  "/research-wrapper",
   "/scs",
   "/scouts",
   "/models",
@@ -742,6 +745,9 @@ function printHelp() {
       `  ${command("/skillmesh [status|off|record|share|sync]", "Manage strict reviewed skill sharing.", "helpSkillMesh")}`,
       `  ${command("/profile <name>", "Set task profile, e.g. code, website, latex, maintenance.", "helpProfile")}`,
       `  ${command("/web-search on|off", "Enable or disable the web_search tool.", "helpWebSearch")}`,
+      `  ${command("/web-research <query>", "Run a sourced web_research turn with persisted evidence.", "helpWebSearch")}`,
+      `  ${command("/image-read <path> [question]", "Run read_image on a workspace screenshot/image.", "helpWebSearch")}`,
+      `  ${command("/research-wrapper [on|off|model reasoning]", "Configure strict JSON wrapper research, default gpt-5.4-mini medium.", "helpWrapper")}`,
       `  ${command("/scs [on|auto|off|status]", "Toggle Student-Committee-Supervisor gated execution.", "helpEnableScs")}`,
       `  ${command("/scouts on|off|<1-10>", "Enable parallel DeepSeek scouts and set scout count.", "helpScouts")}`,
       `  ${command("/routing <mode>", "Set routing: smart, fast, complex, manual.", "helpRouting")}`,
@@ -3003,6 +3009,85 @@ async function handleCommand(line, state, packageDir) {
     state.taskProfile = normalizeTaskProfile(value || "auto");
     state.maxSteps = Math.max(state.maxSteps, defaultMaxStepsForProfile(state.taskProfile));
     printSystemLine(`profile=${state.taskProfile}`);
+    return true;
+  }
+  if (command === "image-read") {
+    const [target, ...questionParts] = value.split(/\s+/).filter(Boolean);
+    if (!target) {
+      printAgentMessage("Usage: /image-read <workspace-image-path-or-url> [question]");
+      return true;
+    }
+    const previousProfile = state.taskProfile;
+    const previousMaxSteps = state.maxSteps;
+    try {
+      state.taskProfile = "image";
+      state.maxSteps = Math.max(state.maxSteps, 12);
+      await runPrompt(
+        [
+          `Use the read_image tool on ${target}.`,
+          questionParts.length ? `Question: ${questionParts.join(" ")}` : "Question: describe the image accurately and report visible text, issues, and uncertainty.",
+          "Do not infer from the filename. Report the read_image artifact path.",
+        ].join("\n"),
+        state,
+        packageDir
+      );
+    } finally {
+      state.taskProfile = previousProfile;
+      state.maxSteps = previousMaxSteps;
+    }
+    return true;
+  }
+  if (command === "web-research") {
+    if (!value) {
+      printAgentMessage("Usage: /web-research <query>");
+      return true;
+    }
+    const previousProfile = state.taskProfile;
+    const previousMaxSteps = state.maxSteps;
+    try {
+      state.taskProfile = "research";
+      state.maxSteps = Math.max(state.maxSteps, 18);
+      await runPrompt(
+        [
+          "Use the web_research tool for this query. Prefer mode=snippets unless hosted OpenAI web research is explicitly needed.",
+          `Query: ${value}`,
+          "Return a concise answer with source URLs and the web_research artifact path.",
+        ].join("\n"),
+        state,
+        packageDir
+      );
+    } finally {
+      state.taskProfile = previousProfile;
+      state.maxSteps = previousMaxSteps;
+    }
+    return true;
+  }
+  if (command === "research-wrapper") {
+    const parts = value.split(/\s+/).filter(Boolean);
+    const action = String(parts[0] || "status").toLowerCase();
+    if (action === "off") {
+      state.allowWrapperTools = false;
+      printSystemLine("researchWrapper=off wrappers=off");
+      return true;
+    }
+    if (action === "on" || action === "status") {
+      if (action === "on") state.allowWrapperTools = true;
+      printAgentMessage(
+        [
+          `Research wrapper: ${state.allowWrapperTools ? "on" : "off"}`,
+          `Wrapper: ${state.preferredWrapper || "codex"}`,
+          `Model: ${state.wrapperModel || "gpt-5.4-mini"}`,
+          `Reasoning: ${state.wrapperReasoning || "medium"}`,
+          "Use `/research-wrapper gpt-5.4-mini medium` to set the wrapper model/reasoning, or `/research-wrapper off` to disable wrappers.",
+        ].join("\n")
+      );
+      return true;
+    }
+    state.allowWrapperTools = true;
+    state.preferredWrapper = "codex";
+    state.wrapperModel = parts[0] || "gpt-5.4-mini";
+    state.wrapperReasoning = parts[1] || "medium";
+    printSystemLine(`researchWrapper=on wrapper=codex model=${state.wrapperModel} reasoning=${state.wrapperReasoning}`);
     return true;
   }
   if (command === "web-search") {

@@ -478,9 +478,21 @@ function mockWebSearchToolForGoal(goal = "") {
   const text = String(goal || "");
   if (!/\b(web search|search web|search the web|look up|current|latest|recent|docs|documentation|online)\b/i.test(text)) return null;
   const query = text.replace(/\s+/g, " ").slice(0, 180);
-  return mockToolCall("web_search", {
+  return mockToolCall(/\bresearch\b/i.test(text) ? "web_research" : "web_search", {
     query,
     maxResults: 3,
+  });
+}
+
+function mockImageReadToolForGoal(goal = "") {
+  const text = String(goal || "");
+  if (!/\b(read|inspect|describe|understand|ocr|what.*image|screenshot|vision)\b/i.test(text)) return null;
+  const explicit = text.match(/`?([A-Za-z0-9_./-]+\.(?:png|jpe?g|webp|gif))`?/i)?.[1];
+  if (!explicit) return null;
+  return mockToolCall("read_image", {
+    path: explicit,
+    prompt: text.replace(/\s+/g, " ").slice(0, 240),
+    dryRun: true,
   });
 }
 
@@ -579,7 +591,7 @@ export async function createPlan(client, config, state) {
             ? `Project instructions: AGINTI.md is loaded from ${projectInstructions.path}${projectInstructions.truncated ? " (truncated)" : ""}. Follow it and update it with file tools when the user asks to remember or change project instructions.`
             : "Project instructions: AGINTI.md is not present unless created by /init or file tools.",
           config.allowWrapperTools
-            ? `Agent wrappers are enabled. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Status: ${wrapperStatusText()}.`
+            ? `Agent wrappers are enabled. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Status: ${wrapperStatusText()}. For image/web/research second opinions, prefer research_wrapper with gpt-5.4-mini medium when it is useful, but do not treat wrapper prose as verified evidence without source/artifact checks.`
             : "",
           config.allowAuxiliaryTools
             ? `Auxiliary skills are enabled: ${listAuxiliarySkills()
@@ -587,8 +599,11 @@ export async function createPlan(client, config, state) {
                 .join(", ")}. For raster image generation requests, plan to use generate_image when a GRSAI or Venice image key is available; otherwise ask the user to run /auxiliary grsai, aginti login grsai, or aginti login venice.`
             : "Auxiliary skills are disabled for this run.",
           config.allowWebSearch
-            ? "web_search is available for current information, docs, install errors, package/toolchain questions, and source discovery. Prefer web_search over opening a search engine in the browser."
+            ? "web_search is available for lightweight snippets. web_research is available for auditable sourced research with persisted artifacts; use mode=snippets by default and mode=openai only when hosted OpenAI web research is needed and configured. Prefer these tools over opening a search engine in the browser."
             : "web_search is disabled for this run.",
+          config.allowFileTools
+            ? "read_image is available for workspace-local or allowed remote screenshots/images using OpenAI vision when OPENAI_API_KEY is configured. It returns typed visual observations and persists a perception artifact; if credentials are missing, report the blocker instead of guessing from the filename."
+            : "",
           config.allowParallelScouts
             ? `Parallel scout notes may be injected before execution for complex tasks. Scout count: ${config.parallelScoutCount}.`
             : "Parallel scouts are disabled.",
@@ -763,12 +778,65 @@ export async function requestNextStep(client, config, messages) {
         },
       },
     });
+    tools.splice(-1, 0, {
+      type: "function",
+      function: {
+        name: "web_research",
+        description:
+          "Create a sourced, auditable web-research artifact for current information, official docs, standards, install/toolchain errors, and source discovery. Default mode=snippets uses lightweight search results. Use mode=openai for hosted OpenAI web search when configured. Use domains to restrict to official/primary sources.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Research query. Do not include secrets or tokens." },
+            mode: { type: "string", enum: ["snippets", "openai"], description: "Research backend. Defaults to snippets." },
+            maxResults: { type: "integer", description: "Number of search results, 1 to 10. Defaults to 5." },
+            domains: {
+              type: "array",
+              items: { type: "string" },
+              description: "Optional allowed domains, for example [\"developer.android.com\", \"docs.python.org\"].",
+            },
+            blockedDomains: {
+              type: "array",
+              items: { type: "string" },
+              description: "Optional domains to block when mode=openai supports it.",
+            },
+          },
+          required: ["query"],
+          additionalProperties: false,
+        },
+      },
+    });
   }
 
   if (config.allowFileTools) {
     tools.splice(
       0,
       0,
+      {
+        type: "function",
+        function: {
+          name: "read_image",
+          description:
+            "Read and describe workspace-local screenshots/images or allowed remote image URLs using OpenAI vision. Use for UI screenshots, plots, microscopy images, scanned text, diagrams, and visual debugging. It records hashes and persists a typed perception artifact. Defaults to gpt-5.4-mini with gpt-4o-mini fallback when needed. Requires OPENAI_API_KEY; if unavailable, report that blocker.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Workspace-relative image path or HTTPS image URL." },
+              imagePath: { type: "string", description: "Alias for path." },
+              imagePaths: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional multiple workspace-relative image paths or HTTPS image URLs, maximum 4.",
+              },
+              prompt: { type: "string", description: "Question or reading instruction for the image(s)." },
+              detail: { type: "string", enum: ["low", "high", "auto"], description: "Vision detail level. Defaults to auto." },
+              model: { type: "string", description: "Optional OpenAI vision model. Defaults to AGINTI_PERCEPTION_MODEL or gpt-5.4-mini." },
+              reasoning: { type: "string", enum: ["low", "medium", "high", "xhigh"], description: "Optional reasoning effort. Defaults to medium." },
+            },
+            additionalProperties: false,
+          },
+        },
+      },
       {
         type: "function",
         function: {
@@ -1040,6 +1108,30 @@ export async function requestNextStep(client, config, messages) {
         },
       },
     });
+    tools.splice(-1, 0, {
+      type: "function",
+      function: {
+        name: "research_wrapper",
+        description:
+          `Ask the selected read-only wrapper (${selectedWrapper}) for a strict-JSON second opinion on image reading, web research, or combined perception/research. Defaults to gpt-5.4-mini medium via AGINTI_RESEARCH_WRAPPER_MODEL/REASONING or tool args. Use only as an advisory cross-check; verify sources/artifacts separately.`,
+        parameters: {
+          type: "object",
+          properties: {
+            wrapper: { type: "string", enum: [selectedWrapper] },
+            task: { type: "string", enum: ["image_read", "web_research", "combined", "review"], description: "Wrapper task type." },
+            query: { type: "string", description: "Optional web/research query." },
+            prompt: { type: "string", description: "Optional instruction for the wrapper." },
+            imagePath: { type: "string", description: "Optional workspace-relative image path or HTTPS URL." },
+            imagePaths: { type: "array", items: { type: "string" }, description: "Optional image paths/URLs, maximum 4." },
+            domains: { type: "array", items: { type: "string" }, description: "Optional search domain restrictions." },
+            maxResults: { type: "integer", description: "Search snippets to include for wrapper context, 1 to 8." },
+            model: { type: "string", description: "Optional wrapper model, e.g. gpt-5.4-mini." },
+            reasoning: { type: "string", enum: ["low", "medium", "high", "xhigh"], description: "Optional wrapper reasoning effort." },
+          },
+          additionalProperties: false,
+        },
+      },
+    });
   }
 
   if (config.allowAuxiliaryTools) {
@@ -1154,6 +1246,10 @@ export async function requestNextStep(client, config, messages) {
     }
 
     if (config.allowFileTools) {
+      const imageReadTool = mockImageReadToolForGoal(config.goal);
+      if (imageReadTool) {
+        return mockChatResponse("Mock mode will exercise the image-reading tool in dry-run mode.", [imageReadTool]);
+      }
       const previewTool = mockPreviewToolForGoal(config.goal);
       if (previewTool) {
         return mockChatResponse("Mock mode will exercise the workspace preview tool.", [previewTool]);

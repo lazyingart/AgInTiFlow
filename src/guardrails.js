@@ -110,6 +110,45 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
     return { allowed: true };
   }
 
+  if (toolName === "web_research") {
+    if (config.allowWebSearch === false) {
+      return { allowed: false, reason: "Web research is disabled because web search is disabled for this run.", category: "web-search" };
+    }
+    const query = String(args.query || "").trim();
+    if (!query) return { allowed: false, reason: "Research query is required.", category: "web-search" };
+    if (Buffer.byteLength(query, "utf8") > 1000) {
+      return { allowed: false, reason: "Research query is too large.", category: "web-search" };
+    }
+    return { allowed: true };
+  }
+
+  if (toolName === "read_image") {
+    if (!config.allowFileTools) {
+      return { allowed: false, reason: "Image reading requires workspace file tools to be enabled.", category: "perception-tools" };
+    }
+    const values = []
+      .concat(args.imagePaths || args.images || args.paths || args.imagePath || args.path || args.url || [])
+      .flat()
+      .map((item) => String(item || "").trim())
+      .filter(Boolean);
+    if (values.length === 0) return { allowed: false, reason: "At least one image path or URL is required.", category: "perception-tools" };
+    if (values.length > 4) return { allowed: false, reason: "Too many images. Maximum is 4.", category: "perception-tools" };
+    for (const value of values) {
+      if (/^https?:\/\//i.test(value)) {
+        if (config.allowWebSearch === false) {
+          return { allowed: false, reason: "Remote image reading requires web access to be enabled.", category: "perception-tools" };
+        }
+        if (!isDomainAllowed(value, config.allowedDomains)) {
+          return { allowed: false, reason: `Remote image domain is outside the allowlist: ${value}`, category: "perception-tools" };
+        }
+        continue;
+      }
+      const policy = checkWorkspaceToolUse("read_file", { path: value }, config);
+      if (!policy.allowed) return policy;
+    }
+    return { allowed: true };
+  }
+
   if (toolName === "open_workspace_file" || toolName === "preview_workspace") {
     if (!config.allowFileTools) {
       return { allowed: false, reason: "Workspace preview tools require file tools to be enabled.", category: "workspace-tools" };
@@ -210,6 +249,25 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
       return { allowed: false, reason: "Agent wrapper prompt appears to request write-capable or destructive work." };
     }
 
+    return { allowed: true };
+  }
+
+  if (toolName === "research_wrapper") {
+    if (!config.allowWrapperTools) {
+      return { allowed: false, reason: "Research wrapper tools are disabled for this run.", category: "wrapper-tools" };
+    }
+    const wrapper = String(args.wrapper || config.preferredWrapper || "");
+    if (wrapper && !KNOWN_WRAPPERS.has(wrapper)) {
+      return { allowed: false, reason: `Unknown agent wrapper: ${wrapper}`, category: "wrapper-tools" };
+    }
+    const query = String(args.query || "").trim();
+    const prompt = String(args.prompt || "").trim();
+    if (!query && !prompt && !args.imagePath && !args.imagePaths && !args.images && !args.paths && !args.url) {
+      return { allowed: false, reason: "Research wrapper requires a query, prompt, or image path.", category: "wrapper-tools" };
+    }
+    if (Buffer.byteLength(`${query}\n${prompt}`, "utf8") > 4000) {
+      return { allowed: false, reason: "Research wrapper prompt is too large.", category: "wrapper-tools" };
+    }
     return { allowed: true };
   }
 

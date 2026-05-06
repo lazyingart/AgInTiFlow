@@ -375,6 +375,22 @@ Guardrails:
 
 ## Implementation Roadmap
 
+### Current Implementation Status
+
+Implemented in the first production slice:
+
+- `src/perception-tools.js` with `read_image`, `web_research`, and `research_wrapper`.
+- `read_image` validates workspace/remote image inputs, caps size/count, records MIME/size/sha256, calls OpenAI Responses vision when `OPENAI_API_KEY` is configured, and persists central session artifacts under `artifacts/perception/`.
+- `web_research` wraps the existing lightweight DuckDuckGo snippet search and can use hosted OpenAI web search with `mode=openai`; artifacts are persisted under `artifacts/research/`.
+- `research_wrapper` calls the selected read-only wrapper with a strict JSON contract and defaults to `gpt-5.4-mini` with `medium` reasoning via `AGINTI_RESEARCH_WRAPPER_MODEL` / `AGINTI_RESEARCH_WRAPPER_REASONING`; artifacts are persisted under `artifacts/wrappers/`.
+- Agent tool schemas, guardrails, session events, interactive commands, README/docs, and a smoke test are wired.
+
+Still planned:
+
+- Web UI "Ask about this image" action on artifact previews.
+- Real OCR/screenshot/microscopy regression fixtures when provider keys are available in CI or a local TDV campaign.
+- More structured OpenAI web-search citation extraction if upstream response schemas change.
+
 ### Phase 1: Documentation And Contracts
 
 - Add this design note.

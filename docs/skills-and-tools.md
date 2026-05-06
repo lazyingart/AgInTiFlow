@@ -6,7 +6,7 @@ AgInTiFlow separates **skills** from **tools** so the agent can stay general whi
 
 **Skill**: Markdown guidance stored at `skills/<id>/SKILL.md`. A skill describes when to use a workflow, what to inspect first, which outputs matter, and which tools are usually useful. Skills are prompt context, not executable code.
 
-**Tool**: A deterministic callable capability exposed to the model, such as `inspect_project`, `read_file`, `apply_patch`, `run_command`, `web_search`, `generate_image`, `preview_workspace`, `tmux_capture_pane`, or `send_to_canvas`.
+**Tool**: A deterministic callable capability exposed to the model, such as `inspect_project`, `read_file`, `apply_patch`, `run_command`, `web_search`, `web_research`, `read_image`, `research_wrapper`, `generate_image`, `preview_workspace`, `tmux_capture_pane`, or `send_to_canvas`.
 
 **Profile**: A broad runtime mode such as `auto`, `code`, `latex`, or `maintenance`. Profiles tune routing, max steps, and general behavior. Skills can combine across profiles.
 
@@ -56,3 +56,11 @@ Selected skills are injected into the plan and execution prompts. The LLM still 
 Create `skills/<id>/SKILL.md` with valid YAML frontmatter and a short Markdown body. Keep descriptions strings, not YAML arrays, because loaders expect `id`, `label`, and `description` as scalar strings.
 
 Good skills are small, actionable, and tool-aware. They should say what to inspect, what to create or verify, and what to avoid. They should not hard-code one exact task.
+
+For visual or current-information tasks, prefer:
+
+- `read_image` for screenshots, plots, diagrams, microscopy images, scanned text, and UI debugging.
+- `web_research` for sourced research artifacts with source URLs and optional domain restrictions.
+- `research_wrapper` for strict-JSON second opinions from the selected read-only wrapper, usually Codex `gpt-5.4-mini` medium.
+
+See [Image Reading And Web Research](perception-and-web-research.md).
