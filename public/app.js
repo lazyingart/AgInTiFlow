@@ -18,7 +18,7 @@ const translations = {
     brandKicker: "Developed by AgInTi Lab, LazyingArt LLC",
     languageLabel: "Language",
     intro:
-      "Project-aware, low-cost agents for real-life problems.",
+      "Project-aware, low-cost agent for real problems",
     projectStatusTitle: "Project folder",
     setupTitle: "Provider setup",
     setupHelp:

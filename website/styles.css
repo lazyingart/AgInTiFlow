@@ -320,7 +320,7 @@ h3 {
 
 .hero-card {
   position: relative;
-  min-height: clamp(520px, 45vw, 700px);
+  min-height: clamp(450px, 30vw, 520px);
   perspective: 1200px;
   align-self: start;
 }

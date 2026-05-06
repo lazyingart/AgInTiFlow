@@ -4,7 +4,7 @@ const translations = {
   en: {
     documentTitle: "AgInTiFlow | Project-aware, low-cost agents",
     metaDescription:
-      "A Web, CLI, and API workspace for agents that work across creative, scientific, software, hardware, and industrial projects with guarded tools, durable sessions, SCS supervision, and AAPS workflows.",
+      "AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-aware intelligence, software automation, and industrial workflows.",
     brandHomeAria: "AgInTiFlow home",
     primaryNavAria: "Primary navigation",
     navScreenshots: "Screenshots",
@@ -14,9 +14,9 @@ const translations = {
     navLaunch: "Launch Web UI",
     languageLabel: "Language",
     heroEyebrow: "Web + CLI + API agent workspace",
-    heroTitle: "AgInTi Flow -- project-aware, low-cost agents for real-life problems",
+    heroTitle: "AgInTi Flow -- project-aware, low-cost agents for real problems",
     heroSubtitle:
-      "A Web, CLI, and API workspace for agents that work across creative, scientific, software, hardware, and industrial projects with guarded tools, durable sessions, SCS supervision, and AAPS workflows.",
+      "AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-aware intelligence, software automation, and industrial workflows.",
     installAria: "Install AgInTiFlow",
     copyButton: "Copy",
     copiedPrefix: "Copied: {text}",

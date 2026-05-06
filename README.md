@@ -18,9 +18,9 @@
 ![Sandbox](https://img.shields.io/badge/Shell-Docker%20Sandbox-f97316)
 ![Status](https://img.shields.io/badge/Status-Prototype-7c3aed)
 
-**Project-aware, low-cost agents for real-life problems.**
+**Project-aware, low-cost agents for real problems.**
 
-A Web, CLI, and API workspace for agents that work across creative, scientific, software, hardware, and industrial projects with guarded tools, durable sessions, SCS supervision, and AAPS workflows.
+AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-aware intelligence, software automation, and industrial workflows. From lab planning to data analysis, from hardware control to production scripts, and from microscopy, drones, and robots to reports, it helps agents work through API, Web, or CLI with SCS supervision, AAPS workflows, guarded execution, and durable evidence.
 
 The short version: run `aginti` inside a project, give it a task, inspect what it plans, see every tool call, resume later, and keep the outputs in your workspace.
 
@@ -243,7 +243,7 @@ Venice routes can be used for optional uncensored or less restricted creative wo
 
 ## AAPS And Large Workflows
 
-AAPS uses the slogan "Prompt is all you need": a prompt-native and project-oriented programming language and visual studio for turning ideas into structured, executable, and verifiable pipelines with declared outputs, validation gates, recovery steps, and durable artifacts.
+AAPS uses the slogan "Prompt is All You Need": a prompt-native and project-oriented programming language and visual studio for turning ideas into structured, executable, and verifiable pipelines with declared outputs, validation gates, recovery steps, and durable artifacts.
 
 AgInTiFlow is the interactive agent/tool backend for those workflows.
 

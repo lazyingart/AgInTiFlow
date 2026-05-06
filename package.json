@@ -1,8 +1,8 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.114",
+  "version": "0.20.115",
   "type": "module",
-  "description": "A Web, CLI, and API workspace for project-aware, low-cost agents across creative, scientific, software, hardware, and industrial projects.",
+  "description": "AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-aware intelligence, software automation, and industrial workflows.",
   "license": "Apache-2.0",
   "homepage": "https://flow.lazying.art",
   "repository": {
