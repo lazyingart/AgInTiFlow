@@ -29,6 +29,8 @@ const READ_ONLY_PATTERNS = [
   /^python(?:3)?\s+--version$/,
   /^pip(?:3)?\s+--version$/,
   /^conda\s+--version$/,
+  /^R\s+--version$/,
+  /^Rscript\s+--version$/,
   /^(?:[-/\w.]+\/)?java\s+-version$/,
   /^(?:[-/\w.]+\/)?gradle\s+--version$/,
   /^(?:[-/\w.]+\/)?adb\s+devices(?:\s+-l)?$/,
@@ -114,6 +116,7 @@ const UNSAFE_GIT_PATTERNS = [
 
 const TOOLCHAIN_PATTERNS = [
   /^python(?:3)?\s+[-\w./]+\.py(?:\s+[-\w./:=]+)*$/,
+  /^Rscript\s+[-\w./]+\.R(?:\s+[-\w./:=]+)*$/,
   /^(?:\.\/gradlew|[-\w./]+\/gradlew)\s+(?:-p\s+[-\w./]+\s+)?(?:(?::[-\w]+:)?(?:assembleDebug|assembleRelease|bundleDebug|bundleRelease|compileDebugKotlin|compileReleaseKotlin|testDebugUnitTest|lintDebug|lint|check|build))(?:\s+[-\w./:=]+)*$/,
   /^latexmk\s+(?=[-\w./=\s]*-pdf\b)(?:(?:-cd|-pdf|-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+)\s+)+[-\w./]+\.tex$/,
   /^pdflatex\s+(?:(?:-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+|-jobname\s+[-\w./]+)\s+)*[-\w./]+\.tex$/,

@@ -332,6 +332,18 @@ try {
   const pythonDemoPolicy = evaluateCommandPolicy("python3 demo.py 2>&1", dockerWorkspaceNoInstallsPolicy);
   assert(pythonDemoPolicy.allowed, "workspace-local python demo script should be allowed without package installs");
   assert(pythonDemoPolicy.category === "toolchain", "workspace-local python demo script should be classified as toolchain");
+  const rVersionProbePolicy = evaluateCommandPolicy("R --version 2>&1", dockerWorkspaceNoInstallsPolicy);
+  assert(rVersionProbePolicy.allowed, "R version probe should be allowed without package installs");
+  assert(rVersionProbePolicy.category === "read-only", "R version probe should be classified as read-only");
+  const rscriptVersionProbePolicy = evaluateCommandPolicy("Rscript --version 2>&1", dockerWorkspaceNoInstallsPolicy);
+  assert(rscriptVersionProbePolicy.allowed, "Rscript version probe should be allowed without package installs");
+  assert(rscriptVersionProbePolicy.category === "read-only", "Rscript version probe should be classified as read-only");
+  const rscriptToolchainPolicy = evaluateCommandPolicy(
+    "Rscript scripts/analyze_sales.R --input data/monthly_sales.csv --output reports/r-analysis-20260506 2>&1",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(rscriptToolchainPolicy.allowed, "workspace-local Rscript run should be allowed without package installs");
+  assert(rscriptToolchainPolicy.category === "toolchain", "workspace-local Rscript run should be classified as toolchain");
   const curlPolicy = evaluateCommandPolicy("curl -s -o /dev/null -w '%{http_code}' https://github.com/lazyingart/AgInTiFlow.git", dockerWorkspacePolicy);
   assert(curlPolicy.allowed, "curl URL probe with flags should be allowed in docker-workspace allow mode");
   assert(curlPolicy.needsNetwork, "curl URL probe with flags was not classified as network");
@@ -609,6 +621,12 @@ try {
   assert(
     /__pycache__/.test(pythonProfile.prompt) && /do not claim transient artifacts are absent/i.test(pythonProfile.prompt),
     "python profile does not guard against unverified transient artifact claims"
+  );
+  const rStanProfile = getTaskProfile("r-stan");
+  assert(/Rscript\/CmdStan checks when available/i.test(rStanProfile.prompt), "R/Stan profile does not require runtime checks");
+  assert(
+    /user disallows installs/i.test(rStanProfile.prompt) && /do not present package-install approval as the primary continuation path/i.test(rStanProfile.prompt),
+    "R/Stan profile does not handle missing toolchains under no-install user instructions"
   );
   let planTimeoutError = null;
   const neverCompletesClient = {
@@ -959,6 +977,8 @@ try {
           "command_policy_readonly_probe_sequence_no_installs",
           "command_policy_readonly_version_pipeline_no_installs",
           "command_policy_readonly_test_echo_no_installs",
+          "command_policy_readonly_r_version_probe_no_installs",
+          "command_policy_rscript_toolchain_no_installs",
           "command_policy_pdflatex_compile_no_installs",
           "command_policy_latexmk_compile_no_installs",
           "command_policy_local_git_workflow_no_installs",

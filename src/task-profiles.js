@@ -220,7 +220,7 @@ export const TASK_PROFILES = {
     id: "r-stan",
     label: "R/Stan",
     prompt:
-      "Bias toward R, Stan, statistics, reproducible analysis, and research code. Inspect renv/DESCRIPTION/scripts/data layout, keep outputs reproducible, prefer project-local libraries or Docker, run Rscript/CmdStan checks when available, and save plots/reports as durable artifacts.",
+      "Bias toward R, Stan, statistics, reproducible analysis, and research code. Inspect renv/DESCRIPTION/scripts/data layout, keep outputs reproducible, prefer project-local libraries or Docker, run Rscript/CmdStan checks when available, and save plots/reports as durable artifacts. If R, Rscript, Stan, or CmdStan is missing and the user disallows installs or package installs are blocked, do not present package-install approval as the primary continuation path. Produce a precise blocker report plus ready-to-run scripts/artifacts when useful, and offer either rerun on an environment with the toolchain already installed or a separate explicit setup step that the user can approve.",
     tools: ["inspect_project", "files", "shell", "web_search", "canvas", "sandbox"],
   },
   android: {
