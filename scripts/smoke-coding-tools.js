@@ -15,7 +15,11 @@ import { formatBehaviorContractForPrompt } from "../src/behavior-contract.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { readCodebaseMap } from "../src/codebase-map.js";
 import { evaluateCommandPolicy } from "../src/command-policy.js";
-import { engineeringGuidanceForTask, recommendedMaxStepsForTask } from "../src/engineering-guidance.js";
+import {
+  engineeringGuidanceForTask,
+  recommendedMaxStepsForTask,
+  shouldUseSurgicalContextForTask,
+} from "../src/engineering-guidance.js";
 import { createPlan } from "../src/model-client.js";
 import { selectModelRoute } from "../src/model-routing.js";
 import { listParallelScouts, runParallelScouts, shouldRunParallelScouts } from "../src/parallel-scouts.js";
@@ -258,6 +262,20 @@ try {
   assert(
     guidance.includes("find . -type d -name __pycache__"),
     "engineering guidance did not include recursive Python transient checks"
+  );
+  assert(guidance.includes("Surgical editing contract:"), "engineering guidance did not include surgical editing contract");
+  assert(guidance.includes("Evidence-card template:"), "engineering guidance did not include evidence-card template");
+  assert(
+    shouldUseSurgicalContextForTask({
+      goal: "fix this large repository bug by tracing callers",
+      taskProfile: "auto",
+      complexityScore: 3,
+    }),
+    "surgical context did not trigger for complex repository bug"
+  );
+  assert(
+    !shouldUseSurgicalContextForTask({ goal: "say hello", taskProfile: "auto", complexityScore: 0 }),
+    "surgical context triggered for a trivial non-engineering request"
   );
   const behaviorContract = formatBehaviorContractForPrompt();
   assert(
@@ -781,6 +799,15 @@ try {
     inspectRun.events.some((event) => event.type === "tool.completed" && event.data?.toolName === "inspect_project"),
     "mock large-codebase run did not use inspect_project"
   );
+  assert(
+    inspectRun.events.some((event) => event.type === "surgical_context.prepared" && event.data?.fingerprint),
+    "mock large-codebase run did not prepare surgical context"
+  );
+  assert(inspectRun.state?.meta?.surgicalContext?.fingerprint, "surgical context metadata was not saved on state");
+  assert(
+    inspectRun.state?.messages?.some((message) => /Surgical context pack for this engineering task/.test(message.content || "")),
+    "surgical context message was not injected into model history"
+  );
 
   const writeRun = await runMock("Create notes/hello.md with a short coding smoke message.", "coding-write");
   const written = await fs.readFile(path.join(workspace, "notes/hello.md"), "utf8");
@@ -974,6 +1001,7 @@ try {
           "large_profile_pro_route",
           "auto_system_pro_route",
           "auto_engineering_guidance",
+          "surgical_context_trigger",
           "command_policy_readonly_probe_sequence_no_installs",
           "command_policy_readonly_version_pipeline_no_installs",
           "command_policy_readonly_test_echo_no_installs",
@@ -1001,6 +1029,7 @@ try {
           "parallel_scout_context_pack",
           "durable_codebase_map",
           "scout_blackboard",
+          "surgical_context_pack",
           "mock_inspect_project",
           "write_file",
           "duplicate_write_failed",

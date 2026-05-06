@@ -17,7 +17,7 @@ const SCOUTS = [
   {
     name: "implementer",
     prompt:
-      "Predict the most likely implementation path across languages/toolchains. Suggest patch boundaries and focused checks. Avoid writing full code.",
+      "Predict the most likely implementation path across languages/toolchains. Suggest the smallest safe patch boundary, nearby callers/tests to inspect, and focused checks. Avoid writing full code.",
   },
   {
     name: "reviewer",

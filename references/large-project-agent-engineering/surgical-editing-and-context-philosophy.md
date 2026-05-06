@@ -295,7 +295,7 @@ Updated model client and session code.
 Seems fixed.
 ```
 
-## How AgInTiFlow Should Evolve This
+## How AgInTiFlow Implements This
 
 AgInTiFlow already has the right starting pieces:
 
@@ -306,7 +306,9 @@ AgInTiFlow already has the right starting pieces:
 - Session events and artifacts for durable evidence.
 - AAPS for explicit workflows and declared outputs.
 
-The next mature design is an evidence-card system.
+The current implementation adds a lightweight surgical context pack for complex engineering tasks when parallel scouts are disabled or unavailable. The runtime refreshes `.aginti/codebase-map.json`, saves `surgical-context-pack.json` as a session artifact, injects a bounded overview message into model history, and carries the context handle in step snapshots. The injected contract tells the executor to use the map as orientation, then re-read exact files before editing.
+
+The next mature design is a fuller evidence-card system.
 
 ### Evidence cards
 

@@ -52,6 +52,24 @@ Mature coding agents avoid keeping an entire growing project in the prompt. AgIn
 
 This keeps the main executor sober: it knows where it is in the repo, but it still re-reads exact files before editing and validates with commands rather than trusting stale memory.
 
+## Surgical Context Pack
+
+For complex engineering tasks where parallel scouts are disabled or unavailable, AgInTiFlow now prepares a lightweight surgical context pack before planning/execution:
+
+- refreshes `.aginti/codebase-map.json` with `inspect_project`
+- saves a session artifact named `surgical-context-pack.json`
+- injects a compact repo overview into the model history
+- includes an explicit surgical editing contract and evidence-card template
+- carries the context handle in runtime snapshots so later steps can rehydrate exact files by path/search
+
+This is intentionally not a whole-repo dump. The context pack is an overview handle. The executor must still search and read exact files before patching, state the active boundary, patch the smallest coherent surface, inspect the diff, and run focused checks.
+
+The effective loop is:
+
+```text
+overview map -> active evidence card -> exact file windows -> surgical patch -> focused check -> diff review -> broader check if needed
+```
+
 ## Git Discipline
 
 When asked to commit, pull, merge, or push, the agent should run `git status --short` and `git diff --stat` first. It should commit only intended changes, use `git fetch` and `git pull --ff-only` when remote state matters, and stop for the user on conflicts, divergence, unrelated dirty files, or any merge/rebase/reset choice. Web and CLI logs fold long command output but keep full command summaries visible.

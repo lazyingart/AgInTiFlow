@@ -18,7 +18,13 @@ import { executeWorkspaceTool, resolveWorkspacePath, summarizeWorkspaceTools, WO
 import { normalizeCanvasPayload, persistCanvasPayloadFile } from "./artifact-tunnel.js";
 import { getTaskProfile } from "./task-profiles.js";
 import { generateImage, listAuxiliarySkills } from "./auxiliary-tools.js";
-import { engineeringGuidanceForTask } from "./engineering-guidance.js";
+import {
+  engineeringGuidanceForTask,
+  shouldUseSurgicalContextForTask,
+  surgicalContextContract,
+  surgicalEvidenceCardTemplate,
+} from "./engineering-guidance.js";
+import { refreshCodebaseMap } from "./codebase-map.js";
 import { readImage, researchWrapper, webResearch } from "./perception-tools.js";
 import { searchWeb } from "./web-search.js";
 import { runParallelScouts, shouldRunParallelScouts } from "./parallel-scouts.js";
@@ -256,6 +262,12 @@ function compactJson(value, limit = 1200) {
   } catch {
     return compactSingleLine(value, limit);
   }
+}
+
+function compactMultiline(value = "", limit = 3600) {
+  const text = redactSensitiveText(String(value || ""));
+  if (!limit || text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 80)).trimEnd()}\n... [truncated ${text.length - limit + 80} chars]`;
 }
 
 function safeParseToolContent(content) {
@@ -658,6 +670,109 @@ async function createInitialState(config, sessionId) {
       },
     ],
   };
+}
+
+function surgicalContextMessage({ contextPack = "", mapPath = "", fingerprint = "", artifactPath = "" } = {}) {
+  return [
+    "Surgical context pack for this engineering task.",
+    "This is an overview handle, not proof. Use it to choose where to inspect, then re-read exact files before patching.",
+    fingerprint ? `Map fingerprint: ${fingerprint}` : "",
+    mapPath ? `Durable map: ${mapPath}` : "",
+    artifactPath ? `Session artifact: ${artifactPath}` : "",
+    "",
+    compactMultiline(contextPack, 2800),
+    "",
+    surgicalContextContract(),
+    surgicalEvidenceCardTemplate(),
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+}
+
+async function maybePrepareSurgicalContext(config, state, store, observers) {
+  state.meta = state.meta || {};
+  if (!config.allowFileTools) return false;
+  if (state.meta.surgicalContext?.preparedForGoal === config.goal) return false;
+  if (
+    !shouldUseSurgicalContextForTask({
+      goal: config.goal || state.goal || "",
+      taskProfile: config.taskProfile,
+      complexityScore: config.routeComplexityScore,
+    })
+  ) {
+    return false;
+  }
+
+  const requestedAt = new Date().toISOString();
+  try {
+    const refreshed = await refreshCodebaseMap(config, { maxDepth: 4, limit: 1000, includeFiles: false });
+    if (!refreshed?.ok) {
+      const detail = {
+        requestedAt,
+        reason: redactSensitiveText(refreshed?.reason || refreshed?.error || "refresh failed"),
+      };
+      await store.appendEvent("surgical_context.skipped", detail).catch(() => {});
+      observers.event("surgical_context.skipped", detail);
+      return false;
+    }
+
+    const artifact = {
+      version: 1,
+      generatedAt: requestedAt,
+      goal: config.goal || state.goal || "",
+      taskProfile: config.taskProfile,
+      mapPath: refreshed.path,
+      codebaseMap: {
+        path: refreshed.path,
+        generatedAt: refreshed.map.generatedAt,
+        fingerprint: refreshed.map.fingerprint,
+        summary: refreshed.map.inspection?.summary || "",
+      },
+      contextPack: compactMultiline(refreshed.contextPack || "", 4200),
+      contract: surgicalContextContract(),
+      evidenceCardTemplate: surgicalEvidenceCardTemplate(),
+    };
+    const artifactPath = await store.saveJsonArtifact("surgical-context-pack.json", artifact).catch(() => "");
+    const message = surgicalContextMessage({
+      contextPack: artifact.contextPack,
+      mapPath: refreshed.path,
+      fingerprint: refreshed.map.fingerprint,
+      artifactPath,
+    });
+
+    state.meta.surgicalContext = {
+      preparedForGoal: config.goal || state.goal || "",
+      generatedAt: requestedAt,
+      mapPath: refreshed.path,
+      fingerprint: refreshed.map.fingerprint,
+      artifactPath,
+      summary: refreshed.map.inspection?.summary || "",
+      contextPreview: artifact.contextPack.slice(0, 1400),
+    };
+    state.messages.push({
+      role: "user",
+      content: message,
+    });
+    const detail = {
+      generatedAt: requestedAt,
+      mapPath: refreshed.path,
+      fingerprint: refreshed.map.fingerprint,
+      artifactPath,
+      summary: refreshed.map.inspection?.summary || "",
+    };
+    await store.appendEvent("surgical_context.prepared", detail);
+    observers.event("surgical_context.prepared", detail);
+    await store.saveState(state);
+    return true;
+  } catch (error) {
+    const detail = {
+      requestedAt,
+      error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+    };
+    await store.appendEvent("surgical_context.failed", detail).catch(() => {});
+    observers.event("surgical_context.failed", detail);
+    return false;
+  }
 }
 
 function createObservers(config) {
@@ -1806,6 +1921,10 @@ export async function runAgent(config) {
 
   try {
     throwIfAborted(config);
+    const scoutsWillRun = shouldRunParallelScouts(config, state);
+    if (!scoutsWillRun) {
+      await maybePrepareSurgicalContext(config, state, store, observers);
+    }
     if (!state.plan) {
       if (config.scsActive) {
         const scsPlan = await createScsPlan(client, config, state, {
@@ -1893,7 +2012,7 @@ export async function runAgent(config) {
       await store.saveState(state);
     }
 
-    if (shouldRunParallelScouts(config, state)) {
+    if (scoutsWillRun && shouldRunParallelScouts(config, state)) {
       const scouts = await runParallelScouts(client, config, state);
       const blackboardPath = scouts.blackboard
         ? await store.saveJsonArtifact("scout-blackboard.json", scouts.blackboard).catch(() => "")
@@ -1983,6 +2102,9 @@ export async function runAgent(config) {
     emitConsole(config, `Workspace: ${config.commandCwd}`, { kind: "meta" });
     emitConsole(config, `Sessions: ${config.sessionsDir}`, { kind: "meta" });
     if (config.projectSessionsDir) emitConsole(config, `Project session index: ${config.projectSessionsDir}`, { kind: "meta" });
+    if (state.meta.surgicalContext?.fingerprint) {
+      emitConsole(config, `Surgical context: overview map ${state.meta.surgicalContext.fingerprint}`, { kind: "meta" });
+    }
     if (config.useDockerSandbox) {
       emitConsole(
         config,
@@ -2053,6 +2175,7 @@ export async function runAgent(config) {
           agentWrappers: config.allowWrapperTools ? wrapperStatusText() : "",
           webSearchAvailable: config.allowWebSearch !== false,
           parallelScouts: state.meta.parallelScouts || null,
+          surgicalContext: state.meta.surgicalContext || null,
           shellSandbox: config.useDockerSandbox ? "docker" : "host",
           sandboxMode: config.sandboxMode,
           packageInstallPolicy: config.packageInstallPolicy,

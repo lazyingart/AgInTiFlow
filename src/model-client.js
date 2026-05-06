@@ -590,6 +590,9 @@ export async function createPlan(client, config, state) {
           projectInstructions?.exists
             ? `Project instructions: AGINTI.md is loaded from ${projectInstructions.path}${projectInstructions.truncated ? " (truncated)" : ""}. Follow it and update it with file tools when the user asks to remember or change project instructions.`
             : "Project instructions: AGINTI.md is not present unless created by /init or file tools.",
+          state.meta?.surgicalContext
+            ? `Surgical context pack: ${state.meta.surgicalContext.summary || "prepared"}; map=${state.meta.surgicalContext.mapPath}; artifact=${state.meta.surgicalContext.artifactPath || "(not saved)"}; preview:\n${state.meta.surgicalContext.contextPreview || ""}`
+            : "",
           config.allowWrapperTools
             ? `Agent wrappers are enabled. Use the selected wrapper only: ${normalizeWrapperName(config.preferredWrapper)}. Status: ${wrapperStatusText()}. For image/web/research second opinions, prefer research_wrapper with gpt-5.4-mini medium when it is useful, but do not treat wrapper prose as verified evidence without source/artifact checks.`
             : "",

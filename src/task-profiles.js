@@ -17,7 +17,7 @@ export const TASK_PROFILES = {
     id: "large-codebase",
     label: "Large codebase engineering",
     prompt:
-      "Bias toward senior large-repo engineering while still answering ordinary side questions. Inspect_project first unless context is already known, read AGINTI/AGENTS/README/manifests, locate entry points and tests, make a small explicit change plan, patch in coherent batches, run the narrowest relevant checks first, escalate to broader checks when stable, and summarize files changed, checks, tradeoffs, and remaining risks.",
+      "Bias toward senior large-repo engineering while still answering ordinary side questions. Use the surgical context pack as overview, not proof. Inspect_project first unless context is already known, read AGINTI/AGENTS/README/manifests, locate entry points/tests/callers, state the active patch boundary, patch in coherent batches, inspect the diff, run the narrowest relevant checks first, escalate to broader checks when stable, and summarize files changed, checks, tradeoffs, and remaining risks.",
     tools: ["inspect_project", "search_files", "read_file", "apply_patch", "shell", "sandbox", "canvas"],
   },
   review: {

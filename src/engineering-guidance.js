@@ -78,6 +78,64 @@ const LANGUAGE_HINTS = [
 const COMPLEX_ENGINEERING_PATTERN =
   /\b(large|complex|complicated|monorepo|codebase|repository|repo-wide|multi[- ]file|cross[- ]file|architecture|refactor|migration|regression|root cause|failing tests?|fix build|system bug|debug|performance|security)\b/i;
 
+const SURGICAL_CONTEXT_PROFILES = new Set([
+  "large-codebase",
+  "code",
+  "qa",
+  "security",
+  "database",
+  "devops",
+  "maintenance",
+  "app",
+  "node",
+  "python",
+  "java",
+  "ios",
+  "go",
+  "rust",
+  "dotnet",
+  "php",
+  "ruby",
+  "c-cpp",
+]);
+
+export function shouldUseSurgicalContextForTask({ goal = "", taskProfile = "auto", complexityScore = 0 } = {}) {
+  const normalizedProfile = normalizeTaskProfile(taskProfile);
+  const text = String(goal || "");
+  return (
+    Number(complexityScore || 0) >= 3 ||
+    SURGICAL_CONTEXT_PROFILES.has(normalizedProfile) ||
+    COMPLEX_ENGINEERING_PATTERN.test(text) ||
+    /\b(patch|edit|implement|fix|bug|test|review|trace|caller|callers|symbol|api|route|schema|workflow|dependency)\b/i.test(text)
+  );
+}
+
+export function surgicalContextContract() {
+  return [
+    "Surgical editing contract:",
+    "- Keep overview and details in separate lanes: use the project map for orientation, then re-read exact files before editing.",
+    "- Before patching, state the active boundary: symptom or goal, owner module, files to inspect, invariant to preserve, and focused check.",
+    "- Use search_files for symbols, errors, routes, schemas, tests, and callers before changing cross-file behavior.",
+    "- Patch the smallest coherent boundary. Do not reformat, rename, or refactor unrelated code.",
+    "- After patching, inspect the diff and run the narrowest useful check before broader checks.",
+    "- Treat summaries, scout notes, and context packs as handles, not proof. Rehydrate by path/search/command when exact detail matters.",
+    "- If evidence contradicts the hypothesis, expand the search radius one step at a time instead of rewriting broadly.",
+    "- Finish with evidence: changed files, commands/checks run, unresolved risks, and any skipped validation.",
+  ].join("\n");
+}
+
+export function surgicalEvidenceCardTemplate() {
+  return [
+    "Evidence-card template:",
+    "Symptom/goal: <what user sees or wants>",
+    "Boundary: <module/API/state/tool boundary that owns the behavior>",
+    "Evidence: <search hit, file path, command output, trace, event, or artifact>",
+    "Patch: <smallest coherent files/symbols to touch>",
+    "Check: <focused command or artifact verification>",
+    "Risk: <what remains unknown and when to broaden>",
+  ].join("\n");
+}
+
 export function engineeringGuidanceForTask(goal = "", taskProfile = "auto") {
   const normalizedProfile = normalizeTaskProfile(taskProfile);
   const text = String(goal || "");
@@ -97,6 +155,8 @@ export function engineeringGuidanceForTask(goal = "", taskProfile = "auto") {
     "For large repositories, preserve context by reading fewer but more relevant files; prefer deterministic tools and diffs over long model memory.",
     "Build a compact context pack before major edits: project instructions, manifests/scripts, git status/diff, relevant symbols/search hits, target files, and the narrowest checks. Do not paste whole trees or huge files into model context.",
     "For system repair, act like a doctor: gather evidence first, avoid silent destructive host changes, prefer Docker or project-local scripts for installs, and make every stronger action explicit in logs.",
+    surgicalContextContract(),
+    surgicalEvidenceCardTemplate(),
     "Never send sudo passwords or wait at interactive password prompts. If host-level permission is truly required, stop that path, explain the blocker, and provide a manual command instead of hanging.",
     "Shell commands already start in the configured workspace. Prefer workspace-relative commands such as python3 scripts/check.py or cd subdir && make; do not prefix commands with absolute host cd paths unless the tool explicitly requires it.",
     "When you create or fix scripts, reports, tables, generated files, or analysis outputs, inspect the actual output. If it contains obvious duplicates, noisy rows, stale names, broken markdown, or contradictions, patch the source/output and rerun the check rather than merely explaining the defect in the report.",
