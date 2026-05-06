@@ -24,6 +24,14 @@ Use the same agent workspace from Web or CLI, with DeepSeek/Venice/OpenAI routin
 
 The short version: run `aginti` inside a project, give it a task, inspect what it plans, see every tool call, resume later, and keep the outputs in your workspace.
 
+## Visual Preview
+
+The two screenshots below match the current website hero: terminal-first launch on the left, browser console visibility on the right.
+
+| CLI launch | Web console |
+| --- | --- |
+| <img src="./website/assets/screenshots/cli-launch.jpg" alt="AgInTiFlow CLI launch screen" width="480" /> | <img src="./website/assets/screenshots/web-console-conversation-run-output.jpg" alt="AgInTiFlow web console conversation and run output" width="480" /> |
+
 **Links**
 
 | Resource | URL |
@@ -34,14 +42,6 @@ The short version: run `aginti` inside a project, give it a task, inspect what i
 | AAPS npm | [https://www.npmjs.com/package/@lazyingart/aaps](https://www.npmjs.com/package/@lazyingart/aaps) |
 | Product positioning | [references/agintiflow-product-positioning.md](references/agintiflow-product-positioning.md) |
 | Full archived README reference | [references/notes/readme-full-reference-2026-05-05.md](references/notes/readme-full-reference-2026-05-05.md) |
-
-## Visual Preview
-
-The README keeps only the two high-signal screenshots near the top. The full screenshot set stays in the website carousel and linked gallery below.
-
-| CLI launch | Web console |
-| --- | --- |
-| <img src="./demos/agintiflow-cli-launch.jpg" alt="AgInTiFlow CLI launch screen" width="480" /> | <img src="./demos/agintiflow-web-console-run-output.jpg" alt="AgInTiFlow web console run output" width="480" /> |
 
 ## Why This Exists
 
