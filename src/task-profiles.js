@@ -255,7 +255,7 @@ export const TASK_PROFILES = {
     id: "github",
     label: "GitHub maintenance",
     prompt:
-      "Bias toward safe git and GitHub maintenance while still fixing code/docs when asked. Always inspect git status and remotes first, separate unrelated changes, run relevant checks before commits, use gh when available for PR/issues/releases, prefer fast-forward pulls, and stop on conflicts or ambiguous history.",
+      "Bias toward safe git and GitHub maintenance while still fixing code/docs when asked. Always inspect git status and remotes first, separate unrelated changes, run relevant checks before commits, use gh when available for PR/issues/releases, prefer fast-forward pulls, and stop on conflicts or ambiguous history. For local workflow practice, use a disposable subdirectory, set only local git identity, avoid real remotes unless explicitly requested, and describe fast-forward, non-fast-forward merge, and rebase evidence accurately.",
     tools: ["shell", "files", "web_search", "inspect_project"],
   },
   word: {

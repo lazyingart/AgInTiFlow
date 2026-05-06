@@ -330,6 +330,18 @@ try {
   assert(cdWorkspacePolicy.allowed, "cd /workspace should be allowed in docker-workspace mode");
   const gitCleanDryRunPolicy = evaluateCommandPolicy("git clean -nd reports", dockerWorkspacePolicy);
   assert(gitCleanDryRunPolicy.allowed, "git clean dry-run should be allowed as read-only inspection evidence");
+  const localGitInitPolicy = evaluateCommandPolicy("git init", dockerWorkspaceNoInstallsPolicy);
+  assert(localGitInitPolicy.allowed, "local git init should be allowed without package installs");
+  assert(localGitInitPolicy.category === "git-workflow", "local git init should be classified as git-workflow");
+  const localGitCommitPolicy = evaluateCommandPolicy('git commit -m "Initial local workflow commit"', dockerWorkspaceNoInstallsPolicy);
+  assert(localGitCommitPolicy.allowed, "local git commit should be allowed without package installs");
+  assert(localGitCommitPolicy.category === "git-workflow", "local git commit should be classified as git-workflow");
+  const localGitSwitchPolicy = evaluateCommandPolicy("git switch -c feature-a", dockerWorkspaceNoInstallsPolicy);
+  assert(localGitSwitchPolicy.allowed, "local git switch -c should be allowed without package installs");
+  const localGitMergePolicy = evaluateCommandPolicy("git merge --ff-only feature-a", dockerWorkspaceNoInstallsPolicy);
+  assert(localGitMergePolicy.allowed, "local git fast-forward merge should be allowed without package installs");
+  const unsafeRebasePolicy = evaluateCommandPolicy("git rebase main", dockerWorkspaceNoInstallsPolicy);
+  assert(!unsafeRebasePolicy.allowed, "git rebase should still require stronger permission because it rewrites history");
   const unsafeCloneTarget = evaluateCommandPolicy("git clone https://github.com/lazyingart/AgInTiFlow.git ../AgInTiFlow", dockerWorkspacePolicy);
   assert(!unsafeCloneTarget.allowed, "git clone outside the workspace should be blocked");
   const blockedClonePolicy = evaluateCommandPolicy("git clone https://github.com/lazyingart/AgInTiFlow.git", {
@@ -764,6 +776,8 @@ try {
           "command_policy_readonly_test_echo_no_installs",
           "command_policy_pdflatex_compile_no_installs",
           "command_policy_latexmk_compile_no_installs",
+          "command_policy_local_git_workflow_no_installs",
+          "command_policy_git_rebase_still_guarded",
           "command_policy_git_clone_network",
           "command_policy_safe_chmod_sequence",
           "command_policy_cd_workspace",

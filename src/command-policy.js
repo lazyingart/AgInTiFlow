@@ -71,8 +71,19 @@ const NETWORK_FETCH_PATTERNS = [
 ];
 
 const GIT_WORKFLOW_PATTERNS = [
+  /^git\s+init(?:\s+(?:\.|[-\w./]+))?$/,
+  /^git\s+config(?:\s+--local)?\s+user\.(?:name|email)\s+(['"])[^'"\n]{1,160}\1$/,
+  /^git\s+config(?:\s+--local)?\s+init\.defaultBranch\s+(?:main|master|trunk|develop)$/,
   /^git\s+add(?:\s+[-\w./*]+)+$/,
-  /^git\s+commit\s+(?:-a\s+)?-m\s+(['"])[^'"\n]{1,220}\1$/,
+  /^git\s+add\s+-A$/,
+  /^git\s+commit\s+(?:(?:-a|--allow-empty)\s+)*-m\s+(['"])[^'"\n]{1,220}\1$/,
+  /^git\s+branch\s+-M\s+[A-Za-z0-9][-\w./]*$/,
+  /^git\s+branch\s+[A-Za-z0-9][-\w./]*$/,
+  /^git\s+switch\s+(?:-c\s+)?[A-Za-z0-9][-\w./]*$/,
+  /^git\s+checkout\s+-b\s+[A-Za-z0-9][-\w./]*$/,
+  /^git\s+merge\s+--ff-only\s+[A-Za-z0-9][-\w./]*$/,
+  /^git\s+merge\s+--no-ff\s+--no-edit\s+[A-Za-z0-9][-\w./]*$/,
+  /^git\s+merge\s+[A-Za-z0-9][-\w./]*\s+--no-ff\s+--no-edit$/,
   /^git\s+fetch(?:\s+[-\w./:=]+)*$/,
   /^git\s+pull\s+--ff-only(?:\s+[-\w./:=]+)*$/,
   /^git\s+push(?:\s+[-\w./:=]+)*$/,
@@ -264,6 +275,21 @@ function classifyGitClone(normalized) {
   };
 }
 
+function classifyGitWorkflow(normalized) {
+  if (!matchAny(GIT_WORKFLOW_PATTERNS, normalized)) return null;
+  const remote = /^git\s+(fetch|pull|push)\b/.test(normalized);
+  const writesWorkspace = !/^git\s+fetch\b/.test(normalized);
+  return {
+    category: remote ? "git-remote" : "git-workflow",
+    needsNetwork: remote,
+    writesWorkspace,
+    reason:
+      remote
+        ? "Git remote workflow command. Agent should inspect status/diff first and stop on divergence or conflicts."
+        : "Local git workflow command. Agent should inspect status/diff first and stop on conflicts or unrelated dirty work.",
+  };
+}
+
 function classifySimpleCommand(normalized) {
   const benignRedirectCommand = stripBenignRedirections(normalized);
   if (ALWAYS_BLOCKED_PATTERNS.some((pattern) => pattern.test(normalized))) {
@@ -274,6 +300,8 @@ function classifySimpleCommand(normalized) {
   }
   const gitCleanDryRun = classifyGitCleanDryRun(normalized);
   if (gitCleanDryRun) return gitCleanDryRun;
+  const gitWorkflowClassification = classifyGitWorkflow(normalized);
+  if (gitWorkflowClassification) return gitWorkflowClassification;
   if (matchAny(UNSAFE_GIT_PATTERNS, normalized)) {
     return {
       category: "destructive",
@@ -303,16 +331,6 @@ function classifySimpleCommand(normalized) {
       writesWorkspace: true,
       virtualWorkspacePath,
       reason: `Command changes workspace file mode: ${normalized}`,
-    };
-  }
-  if (matchAny(GIT_WORKFLOW_PATTERNS, normalized)) {
-    const remote = /^git\s+(fetch|pull|push)\b/.test(normalized);
-    const writesWorkspace = /^git\s+(add|commit|pull)\b/.test(normalized);
-    return {
-      category: remote ? "git-remote" : "git-workflow",
-      needsNetwork: remote,
-      writesWorkspace,
-      reason: "Git workflow command. Agent should run git status/diff first and stop on conflicts or divergence.",
     };
   }
   const gitCloneClassification = classifyGitClone(normalized);
