@@ -21,6 +21,7 @@ import { selectModelRoute } from "../src/model-routing.js";
 import { listParallelScouts, runParallelScouts, shouldRunParallelScouts } from "../src/parallel-scouts.js";
 import { buildFailedCommandAdvice, buildPermissionAdvice } from "../src/permission-advice.js";
 import { SessionStore } from "../src/session-store.js";
+import { getTaskProfile } from "../src/task-profiles.js";
 import { searchWeb } from "../src/web-search.js";
 import { executeWorkspaceTool } from "../src/workspace-tools.js";
 
@@ -582,6 +583,10 @@ try {
   assert(inspected.sourceDirs.some((item) => item.path === "src"), "inspect_project did not identify src directory");
   assert(inspected.testFiles.some((item) => item.path === "test/index.test.js"), "inspect_project did not identify test file");
   assert(inspected.recommendedReads.includes("package.json"), "inspect_project did not recommend package.json");
+  const nodeProfile = getTaskProfile("node");
+  assert(/package\.json/.test(nodeProfile.prompt), "node profile does not require package manifest awareness");
+  assert(/bin entry/i.test(nodeProfile.prompt), "node profile does not guide new CLI tools toward bin entries");
+  assert(/scripts for test\/check\/start/i.test(nodeProfile.prompt), "node profile does not guide new Node projects toward package scripts");
   let planTimeoutError = null;
   const neverCompletesClient = {
     chat: {
@@ -969,6 +974,7 @@ try {
           "allow_redacted_write_content",
           "block_secret_patch_content",
           "block_outside",
+          "node_profile_cli_package_manifest",
           "model_timeout_compact_retry_messages",
         ],
       },

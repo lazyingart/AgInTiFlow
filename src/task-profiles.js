@@ -157,7 +157,7 @@ export const TASK_PROFILES = {
     id: "node",
     label: "Node",
     prompt:
-      "Bias toward Node/JavaScript/TypeScript workflows without excluding frontend, backend, docs, or deployment work. Inspect package.json/lockfiles, respect the package manager, add tests when useful, and run safe npm/node checks when available.",
+      "Bias toward Node/JavaScript/TypeScript workflows without excluding frontend, backend, docs, or deployment work. Inspect package.json/lockfiles and respect the package manager. When creating a new CLI/tool/library, include a minimal package.json with name/version/type when appropriate, scripts for test/check/start, and a bin entry for CLI tools. Prefer zero dependencies unless a dependency is clearly justified. Add tests when useful, run safe npm/node checks when available, and record exact commands/results in the report.",
     tools: ["files", "shell", "sandbox"],
   },
   java: {
