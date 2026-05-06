@@ -364,6 +364,12 @@ try {
   );
   assert(androidInlineEnvGradleBuildPolicy.allowed, "Android build with inline safe env assignments should be allowed");
   assert(androidInlineEnvGradleBuildPolicy.category === "toolchain", "Android inline env build should be toolchain");
+  const androidPathGradleBuildPolicy = evaluateCommandPolicy(
+    'ANDROID_HOME=/home/lachlan/Android/Sdk JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 android-app/gradlew -p android-app assembleDebug 2>&1; echo "EXIT:$?"',
+    hostWorkspacePolicy
+  );
+  assert(androidPathGradleBuildPolicy.allowed, "Android path-prefixed Gradle wrapper with -p should be allowed");
+  assert(androidPathGradleBuildPolicy.category === "toolchain", "Android path-prefixed Gradle wrapper should be toolchain");
   const androidUnsafeEnvPolicy = evaluateCommandPolicy("OPENAI_API_KEY=sk-test ./gradlew assembleDebug", hostWorkspacePolicy);
   assert(!androidUnsafeEnvPolicy.allowed, "secret-like inline env assignments must remain blocked");
   const androidOutsideLogPolicy = evaluateCommandPolicy(
