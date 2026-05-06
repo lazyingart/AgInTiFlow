@@ -6,6 +6,8 @@ Install AgInTiFlow globally:
 npm install -g @lazyingart/agintiflow
 ```
 
+AgInTiFlow is a project-aware, low-cost workspace for agents that work through API, Web, or CLI with guarded tools, durable sessions, SCS supervision, and AAPS workflows.
+
 Initialize a project folder:
 
 ```bash

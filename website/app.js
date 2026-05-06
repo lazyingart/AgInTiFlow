@@ -2,9 +2,9 @@ const languageStorageKey = "agintiflow.website.language";
 
 const translations = {
   en: {
-    documentTitle: "AgInTiFlow | Low-cost project-aware agents",
+    documentTitle: "AgInTiFlow | Project-aware low-cost agents",
     metaDescription:
-      "AgInTiFlow is a Web and CLI agent workspace with DeepSeek/Venice/OpenAI routing, visible tool calls, durable sessions, scouts, SCS supervision, AAPS workflows, and guarded local execution.",
+      "AgInTiFlow is a project-aware Web, CLI, and API agent workspace for creative, scientific, software, hardware, and industrial work with SCS, AAPS, guarded tools, and durable evidence.",
     brandHomeAria: "AgInTiFlow home",
     primaryNavAria: "Primary navigation",
     navScreenshots: "Screenshots",
@@ -13,10 +13,10 @@ const translations = {
     navSafety: "Safety",
     navLaunch: "Launch Web UI",
     languageLabel: "Language",
-    heroEyebrow: "Web + CLI agent workspace",
-    heroTitle: "AgInTi Flow -- low-cost, project-aware agents",
+    heroEyebrow: "Web + CLI + API agent workspace",
+    heroTitle: "AgInTi Flow -- project-aware, low-cost agents",
     heroSubtitle:
-      "Use the same agent workspace from Web or CLI, with DeepSeek/Venice/OpenAI routing, visible tool calls, durable sessions, scouts, SCS supervision, AAPS workflows, and guarded local execution.",
+      "Project-aware agents for creative, scientific, software, hardware, and industrial work. Use API, Web, or CLI with SCS supervision, AAPS workflows, guarded execution, and durable evidence.",
     installAria: "Install AgInTiFlow",
     copyButton: "Copy",
     copiedPrefix: "Copied: {text}",
@@ -88,7 +88,7 @@ const translations = {
     safetyItem5: "NPM publish, token commands, sudo, destructive git, and shell chaining are blocked.",
     bottomSummaryAria: "AgInTiFlow summary",
     bottomStatement:
-      "AgInTiFlow keeps real project work cheap and inspectable: route with DeepSeek/Venice/OpenAI, watch every tool call, resume durable sessions, scout before complex edits, gate risky work with SCS, and use AAPS for larger workflows.",
+      "AgInTiFlow keeps real project work cheap and inspectable: creative work, science, software, hardware, and industrial workflows through routed models, visible tools, SCS supervision, AAPS pipelines, and durable evidence.",
     footerProduct: "AgInTiFlow by AgInTi Inc.",
   },
   ar: {

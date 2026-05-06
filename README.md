@@ -18,9 +18,9 @@
 ![Sandbox](https://img.shields.io/badge/Shell-Docker%20Sandbox-f97316)
 ![Status](https://img.shields.io/badge/Status-Prototype-7c3aed)
 
-**Low-cost, project-aware agents for real-life problems.**
+**Project-aware, low-cost agents for creative, scientific, and industrial work.**
 
-Use the same agent workspace from Web or CLI, with DeepSeek/Venice/OpenAI routing, visible tool calls, durable sessions, scouts, SCS supervision, AAPS workflows, and guarded local execution.
+AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-aware intelligence, software automation, and industrial workflows. From lab planning to data analysis, from hardware control to production scripts, and from microscopy, drones, and robots to reports, it helps agents work through API, Web, or CLI with SCS supervision, AAPS workflows, guarded execution, and durable evidence.
 
 The short version: run `aginti` inside a project, give it a task, inspect what it plans, see every tool call, resume later, and keep the outputs in your workspace.
 
@@ -243,7 +243,9 @@ Venice routes can be used for optional uncensored or less restricted creative wo
 
 ## AAPS And Large Workflows
 
-AAPS is the pipeline-script layer; AgInTiFlow is the interactive agent/tool backend.
+AAPS is project-oriented programming for agentic workflows. It is a prompt-native programming language and visual studio for turning prompts into structured, verifiable pipelines with declared outputs, validation gates, recovery steps, and durable artifacts.
+
+AgInTiFlow is the interactive agent/tool backend for those workflows.
 
 ```bash
 aginti aaps status

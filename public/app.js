@@ -18,7 +18,7 @@ const translations = {
     brandKicker: "Developed by AgInTi Lab, LazyingArt LLC",
     languageLabel: "Language",
     intro:
-      "Low-cost, project-aware Web + CLI agents with DeepSeek/Venice/OpenAI routing, visible tool calls, durable sessions, scouts, SCS, AAPS, and guarded local execution.",
+      "Project-aware, low-cost agents for creative, scientific, software, hardware, and industrial work with guarded tools, SCS, AAPS, and durable evidence.",
     projectStatusTitle: "Project folder",
     setupTitle: "Provider setup",
     setupHelp:

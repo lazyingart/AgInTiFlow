@@ -1,8 +1,8 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.110",
+  "version": "0.20.111",
   "type": "module",
-  "description": "Low-cost, project-aware Web and CLI agents with DeepSeek/Venice/OpenAI routing, visible tool calls, durable sessions, scouts, AAPS, SCS, and guarded local execution.",
+  "description": "Project-aware, low-cost Web/CLI/API agents for creative, scientific, software, hardware, and industrial work with SCS, AAPS, guarded tools, and durable sessions.",
   "license": "Apache-2.0",
   "homepage": "https://flow.lazying.art",
   "repository": {

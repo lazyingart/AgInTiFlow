@@ -70,7 +70,7 @@ export const docsUi = {
     loadError: "Could not load {file}: {error}",
     titleSuffix: "AgInTiFlow Docs",
     metaDescription:
-      "AgInTiFlow documentation for installation, CLI, web UI, Docker sandboxing, coding tools, skills, artifacts, and release workflows.",
+      "AgInTiFlow documentation for project-aware Web, CLI, and API agents, SCS supervision, AAPS workflows, guarded tools, durable sessions, artifacts, and release workflows.",
   },
   ar: {
     language: "اللغة",
