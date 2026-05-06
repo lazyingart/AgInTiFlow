@@ -126,6 +126,25 @@ try {
   });
   assert.equal(dockerTmuxRelativeStart.allowed, true, "Docker-mode tmux_start_session should allow workspace-relative paths");
 
+  const dockerTmuxGitFfMergeStart = checkToolUse({
+    toolName: "tmux_start_session",
+    args: {
+      name: `${session}-docker-git-ff`,
+      cwd: ".",
+      command: "git checkout main && git merge --ff-only feature-a",
+    },
+    config: dockerNoInstallsConfig,
+  });
+  assert.equal(dockerTmuxGitFfMergeStart.allowed, true, "Docker-mode tmux should allow explicit local checkout + ff-only merge workflow");
+
+  const dockerTmuxGitPlainMergeStart = checkToolUse({
+    toolName: "tmux_start_session",
+    args: { name: `${session}-docker-git-plain-merge`, cwd: ".", command: "git merge feature-a" },
+    config: dockerNoInstallsConfig,
+  });
+  assert.equal(dockerTmuxGitPlainMergeStart.allowed, false, "Docker-mode tmux should keep plain git merge guarded");
+  assert.equal(dockerTmuxGitPlainMergeStart.category, "destructive", "plain git merge should keep destructive category");
+
   const dockerTmuxRebaseStart = checkToolUse({
     toolName: "tmux_start_session",
     args: { name: `${session}-docker-rebase`, cwd: ".", command: "git rebase main" },
@@ -235,6 +254,8 @@ try {
           "docker-tmux-start-project-path-allowed",
           "docker-tmux-start-relative-path-allowed",
           "docker-tmux-start-command-policy-guardrail",
+          "docker-tmux-start-git-ff-merge-allowed",
+          "docker-tmux-start-plain-git-merge-guarded",
           "docker-tmux-send-command-policy-guardrail",
           "docker-tmux-send-readonly-command-allowed",
           "host-tmux-start-shell-policy-guardrail",

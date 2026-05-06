@@ -338,8 +338,21 @@ try {
   assert(localGitCommitPolicy.category === "git-workflow", "local git commit should be classified as git-workflow");
   const localGitSwitchPolicy = evaluateCommandPolicy("git switch -c feature-a", dockerWorkspaceNoInstallsPolicy);
   assert(localGitSwitchPolicy.allowed, "local git switch -c should be allowed without package installs");
+  const localGitCheckoutExistingPolicy = evaluateCommandPolicy("git checkout main", dockerWorkspaceNoInstallsPolicy);
+  assert(localGitCheckoutExistingPolicy.allowed, "local git checkout existing branch should be allowed without package installs");
   const localGitMergePolicy = evaluateCommandPolicy("git merge --ff-only feature-a", dockerWorkspaceNoInstallsPolicy);
   assert(localGitMergePolicy.allowed, "local git fast-forward merge should be allowed without package installs");
+  const localGitNoFfMergePolicy = evaluateCommandPolicy("git merge --no-ff --no-edit feature-b", dockerWorkspaceNoInstallsPolicy);
+  assert(localGitNoFfMergePolicy.allowed, "local git explicit no-ff merge should be allowed without package installs");
+  const localGitNoFfMergeAltPolicy = evaluateCommandPolicy("git merge --no-ff feature-b --no-edit", dockerWorkspaceNoInstallsPolicy);
+  assert(localGitNoFfMergeAltPolicy.allowed, "local git explicit no-ff merge alternate arg order should be allowed");
+  const localGitWorkflowSequencePolicy = evaluateCommandPolicy(
+    "cd /workspace/git-practice && git checkout main && git merge --ff-only feature-a",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(localGitWorkflowSequencePolicy.allowed, "local git checkout + ff-only merge sequence should be allowed without package installs");
+  const plainGitMergePolicy = evaluateCommandPolicy("git merge feature-a", dockerWorkspaceNoInstallsPolicy);
+  assert(!plainGitMergePolicy.allowed, "plain git merge should stay guarded because it can hang or make an ambiguous merge");
   const unsafeRebasePolicy = evaluateCommandPolicy("git rebase main", dockerWorkspaceNoInstallsPolicy);
   assert(!unsafeRebasePolicy.allowed, "git rebase should still require stronger permission because it rewrites history");
   const unsafeCloneTarget = evaluateCommandPolicy("git clone https://github.com/lazyingart/AgInTiFlow.git ../AgInTiFlow", dockerWorkspacePolicy);
