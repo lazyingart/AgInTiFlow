@@ -230,6 +230,9 @@ try {
   if (!launchHeader.includes("█████") || !launchHeader.includes("v0.0.0") || launchHeader.split("\n").length < 9) {
     throw new Error("large launch header did not render a centered multi-line title");
   }
+  if (launchHeader.includes("launchTagline")) {
+    throw new Error("empty launch tagline should not render the i18n key name");
+  }
   if (
     formatElapsedDuration(0) !== "00:00" ||
     formatElapsedDuration(65_000) !== "01:05" ||

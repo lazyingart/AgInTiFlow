@@ -729,7 +729,8 @@ export function languageLabel(language = "en") {
 
 export function t(key, language = "en", values = {}) {
   const normalized = normalizeLanguage(language);
-  const text = TRANSLATIONS[normalized]?.[key] || TRANSLATIONS.en[key] || key;
+  const localized = TRANSLATIONS[normalized] || {};
+  const text = Object.hasOwn(localized, key) ? localized[key] : Object.hasOwn(TRANSLATIONS.en, key) ? TRANSLATIONS.en[key] : key;
   return Object.entries(values).reduce((result, [name, value]) => result.replaceAll(`{${name}}`, String(value)), text);
 }
 
