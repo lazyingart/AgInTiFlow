@@ -475,11 +475,14 @@ function stripMarkdownInline(value = "") {
   return String(value)
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
     .replace(/\*\*([^*]+)\*\*/g, (_, text) => color(text, ansi.bold))
-    .replace(/__([^_]+)__/g, (_, text) => color(text, ansi.bold))
+    .replace(
+      /(^|[^\w])__([^_\n]+)__($|[^\w])/g,
+      (_, before, text, after) => `${before}${color(text, ansi.bold)}${after}`
+    )
     .replace(/`([^`]+)`/g, (_, text) => color(text, ansi.yellow))
     .replace(/~~([^~]+)~~/g, "$1")
-    .replace(/\*([^*]+)\*/g, "$1")
-    .replace(/_([^_]+)_/g, "$1");
+    .replace(/(^|[^\w])\*([^*\n]+)\*($|[^\w])/g, "$1$2$3")
+    .replace(/(^|[^\w])_([^_\n]+)_($|[^\w])/g, "$1$2$3");
 }
 
 function rolePrefix(name, bgCode) {

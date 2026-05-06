@@ -163,6 +163,7 @@ try {
       "| Check | Result |",
       "| --- | --- |",
       "| `/.dockerenv` | **Present** |",
+      "| `data_helper_report.md` | **Found** |",
       "| Hostname | `abc123` |",
     ].join("\n")
   );
@@ -174,6 +175,9 @@ try {
   }
   if ((renderedMarkdown.match(/Present/g) || []).length !== 1) {
     throw new Error("terminal markdown renderer duplicated table rows");
+  }
+  if (!renderedMarkdown.includes("data_helper_report.md")) {
+    throw new Error("terminal markdown renderer corrupted underscores in table cell literals");
   }
   const renderedMarkdownFence = stripMarkdown(
     [
