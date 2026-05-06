@@ -30,7 +30,7 @@ The two screenshots below match the current website hero: terminal-first launch 
 
 | CLI launch | Web console |
 | --- | --- |
-| <img src="./website/assets/screenshots/cli-launch.jpg" alt="AgInTiFlow CLI launch screen" width="480" /> | <img src="./website/assets/screenshots/web-console-conversation-run-output.jpg" alt="AgInTiFlow web console conversation and run output" width="480" /> |
+| <img src="https://raw.githubusercontent.com/lazyingart/AgInTiFlow/main/website/assets/screenshots/cli-launch.jpg" alt="AgInTiFlow CLI launch screen" width="480" /> | <img src="https://raw.githubusercontent.com/lazyingart/AgInTiFlow/main/website/assets/screenshots/web-console-conversation-run-output.jpg" alt="AgInTiFlow web console conversation and run output" width="480" /> |
 
 **Links**
 
