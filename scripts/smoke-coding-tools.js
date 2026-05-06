@@ -305,6 +305,12 @@ try {
   );
   assert(readonlyTestEchoPolicy.allowed, "read-only test/echo probe sequence should not require package-install-policy=allow");
   assert(readonlyTestEchoPolicy.category === "read-only", "read-only test/echo probe sequence should be classified as read-only");
+  const readonlyFileMetadataPolicy = evaluateCommandPolicy(
+    "ls -lh plot_sales.png && file plot_sales.png && stat plot_sales.png && sha256sum plot_sales.png",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(readonlyFileMetadataPolicy.allowed, "read-only file metadata sequence should not require package-install-policy=allow");
+  assert(readonlyFileMetadataPolicy.category === "read-only", "read-only file metadata sequence should be classified as read-only");
   const pdflatexCompilePolicy = evaluateCommandPolicy(
     'cd profile-latex-20260506 && pdflatex -interaction=nonstopmode -halt-on-error main.tex 2>&1; echo "PDFLATEX_EXIT:$?"',
     dockerWorkspaceNoInstallsPolicy
