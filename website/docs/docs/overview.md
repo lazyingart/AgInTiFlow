@@ -1,6 +1,6 @@
 # Overview
 
-AgInTiFlow is a project-aware, low-cost agent workspace for real project work. It combines Web, CLI, and API entry points with DeepSeek/Venice/OpenAI routing, browser control, shell execution, workspace file tools, Docker sandboxing, visible tool calls, durable sessions, scouts, SCS supervision, AAPS workflows, and artifacts into one inspectable control plane.
+AgInTiFlow is a project-aware, low-cost agent workspace for real-life problems. It combines Web, CLI, and API entry points with DeepSeek/Venice/OpenAI routing, browser control, shell execution, workspace file tools, Docker sandboxing, visible tool calls, durable sessions, scouts, SCS supervision, AAPS workflows, and artifacts into one inspectable control plane.
 
 The project is designed for practical work across lab planning, data analysis, hardware control, production scripts, writing, coding, documents, websites, tmux sessions, and durable evidence.
 

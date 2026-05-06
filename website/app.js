@@ -14,7 +14,7 @@ const translations = {
     navLaunch: "Launch Web UI",
     languageLabel: "Language",
     heroEyebrow: "Web + CLI + API agent workspace",
-    heroTitle: "AgInTi Flow -- project-aware, low-cost agents for real project work",
+    heroTitle: "AgInTi Flow -- project-aware, low-cost agents for real-life problems",
     heroSubtitle:
       "A Web, CLI, and API workspace for agents that work across creative, scientific, software, hardware, and industrial projects with guarded tools, durable sessions, SCS supervision, and AAPS workflows.",
     installAria: "Install AgInTiFlow",
