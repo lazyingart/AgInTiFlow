@@ -265,7 +265,7 @@ function classifyGitClone(normalized) {
 }
 
 function classifySimpleCommand(normalized) {
-  const readOnlyCommand = stripBenignRedirections(normalized);
+  const benignRedirectCommand = stripBenignRedirections(normalized);
   if (ALWAYS_BLOCKED_PATTERNS.some((pattern) => pattern.test(normalized))) {
     return { category: "blocked", reason: "Command is blocked because it may expose secrets or publish packages." };
   }
@@ -318,7 +318,7 @@ function classifySimpleCommand(normalized) {
   const gitCloneClassification = classifyGitClone(normalized);
   if (gitCloneClassification) return gitCloneClassification;
 
-  const unquoted = stripQuotedSegments(readOnlyCommand);
+  const unquoted = stripQuotedSegments(benignRedirectCommand);
   const lowered = ` ${unquoted.toLowerCase()} `;
   if (BLOCKED_WRITE_TOKENS.some((part) => lowered.includes(part))) {
     return {
@@ -337,25 +337,25 @@ function classifySimpleCommand(normalized) {
     };
   }
 
-  if (matchAny(READ_ONLY_PATTERNS, readOnlyCommand) || isReadOnlyFindCommand(normalized)) {
+  if (matchAny(READ_ONLY_PATTERNS, benignRedirectCommand) || isReadOnlyFindCommand(normalized)) {
     return { category: "read-only", needsNetwork: false, writesWorkspace: false };
   }
-  if (matchAny(TEST_PATTERNS, normalized)) {
+  if (matchAny(TEST_PATTERNS, benignRedirectCommand)) {
     return { category: "test", needsNetwork: false, writesWorkspace: false };
   }
-  if (matchAny(TOOLCHAIN_PATTERNS, normalized)) {
+  if (matchAny(TOOLCHAIN_PATTERNS, benignRedirectCommand)) {
     return { category: "toolchain", needsNetwork: false, writesWorkspace: true };
   }
-  if (matchAny(NETWORK_FETCH_PATTERNS, normalized)) {
-    return { category: "network-fetch", needsNetwork: true, writesWorkspace: /(\s-o\s|\s-O\s)/.test(normalized) };
+  if (matchAny(NETWORK_FETCH_PATTERNS, benignRedirectCommand)) {
+    return { category: "network-fetch", needsNetwork: true, writesWorkspace: /(\s-o\s|\s-O\s)/.test(benignRedirectCommand) };
   }
-  if (matchAny(SYSTEM_PACKAGE_INSTALL_PATTERNS, normalized)) {
+  if (matchAny(SYSTEM_PACKAGE_INSTALL_PATTERNS, benignRedirectCommand)) {
     return { category: "system-package-install", needsNetwork: true, writesWorkspace: false, requiresDockerRoot: true };
   }
-  if (matchAny(PACKAGE_INSTALL_PATTERNS, normalized)) {
+  if (matchAny(PACKAGE_INSTALL_PATTERNS, benignRedirectCommand)) {
     return { category: "package-install", needsNetwork: true, writesWorkspace: true };
   }
-  if (matchAny(ENV_SETUP_PATTERNS, normalized)) {
+  if (matchAny(ENV_SETUP_PATTERNS, benignRedirectCommand)) {
     return { category: "env-setup", needsNetwork: false, writesWorkspace: true };
   }
 

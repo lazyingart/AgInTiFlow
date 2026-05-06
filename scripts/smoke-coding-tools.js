@@ -288,6 +288,18 @@ try {
   );
   assert(readonlyTestEchoPolicy.allowed, "read-only test/echo probe sequence should not require package-install-policy=allow");
   assert(readonlyTestEchoPolicy.category === "read-only", "read-only test/echo probe sequence should be classified as read-only");
+  const pdflatexCompilePolicy = evaluateCommandPolicy(
+    'cd profile-latex-20260506 && pdflatex -interaction=nonstopmode -halt-on-error main.tex 2>&1; echo "PDFLATEX_EXIT:$?"',
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(pdflatexCompilePolicy.allowed, "workspace-local pdflatex compile should be allowed without package installs");
+  assert(pdflatexCompilePolicy.category === "toolchain", "workspace-local pdflatex compile should be classified as toolchain");
+  const latexmkCompilePolicy = evaluateCommandPolicy(
+    'cd profile-latex-20260506 && latexmk -pdf main.tex 2>&1; echo "LATEXMK_EXIT:$?"',
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(latexmkCompilePolicy.allowed, "workspace-local latexmk compile should be allowed without package installs");
+  assert(latexmkCompilePolicy.category === "toolchain", "workspace-local latexmk compile should be classified as toolchain");
   const curlPolicy = evaluateCommandPolicy("curl -s -o /dev/null -w '%{http_code}' https://github.com/lazyingart/AgInTiFlow.git", dockerWorkspacePolicy);
   assert(curlPolicy.allowed, "curl URL probe with flags should be allowed in docker-workspace allow mode");
   assert(curlPolicy.needsNetwork, "curl URL probe with flags was not classified as network");
@@ -750,6 +762,8 @@ try {
           "command_policy_readonly_probe_sequence_no_installs",
           "command_policy_readonly_version_pipeline_no_installs",
           "command_policy_readonly_test_echo_no_installs",
+          "command_policy_pdflatex_compile_no_installs",
+          "command_policy_latexmk_compile_no_installs",
           "command_policy_git_clone_network",
           "command_policy_safe_chmod_sequence",
           "command_policy_cd_workspace",
