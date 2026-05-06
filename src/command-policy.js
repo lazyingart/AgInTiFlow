@@ -26,6 +26,25 @@ const READ_ONLY_PATTERNS = [
   /^echo(?:\s+.+)?$/,
 ];
 
+function stripBenignRedirections(command = "") {
+  return String(command || "")
+    .replace(/\s+2>&1\b/g, "")
+    .replace(/\s+1>&2\b/g, "")
+    .replace(/\s+2>\/dev\/null\b/g, "")
+    .replace(/\s+1>\/dev\/null\b/g, "")
+    .replace(/\s+>\/dev\/null\b/g, "")
+    .trim();
+}
+
+function isReadOnlyFindCommand(command = "") {
+  const normalized = stripBenignRedirections(command);
+  if (!/^find\s+/.test(normalized)) return false;
+  if (/(^|\s)(-delete|-exec|-execdir|-ok|-okdir|-fprint|-fprintf|-fls)\b/.test(normalized)) return false;
+  const unquoted = stripQuotedSegments(normalized);
+  if (/[|<>;&`$]/.test(unquoted)) return false;
+  return /^find\s+(?:[-./~\w]+|\/workspace)(?:\s+[-\w]+(?:\s+(?:"[^"\n]*"|'[^'\n]*'|[^\s|<>;&`$]+))?)*$/.test(normalized);
+}
+
 const TEST_PATTERNS = [
   /^npm\s+(run\s+)?(check|test|build|lint)(?:\s+--\s+[-\w./:=]+)*$/,
   /^npm\s+--prefix\s+[-\w./]+\s+(run\s+)?(check|test|build|lint)(?:\s+--\s+[-\w./:=]+)*$/,
@@ -242,6 +261,7 @@ function classifyGitClone(normalized) {
 }
 
 function classifySimpleCommand(normalized) {
+  const readOnlyCommand = stripBenignRedirections(normalized);
   if (ALWAYS_BLOCKED_PATTERNS.some((pattern) => pattern.test(normalized))) {
     return { category: "blocked", reason: "Command is blocked because it may expose secrets or publish packages." };
   }
@@ -294,7 +314,7 @@ function classifySimpleCommand(normalized) {
   const gitCloneClassification = classifyGitClone(normalized);
   if (gitCloneClassification) return gitCloneClassification;
 
-  const unquoted = stripQuotedSegments(normalized);
+  const unquoted = stripQuotedSegments(readOnlyCommand);
   const lowered = ` ${unquoted.toLowerCase()} `;
   if (BLOCKED_WRITE_TOKENS.some((part) => lowered.includes(part))) {
     return {
@@ -313,7 +333,7 @@ function classifySimpleCommand(normalized) {
     };
   }
 
-  if (matchAny(READ_ONLY_PATTERNS, normalized)) {
+  if (matchAny(READ_ONLY_PATTERNS, readOnlyCommand) || isReadOnlyFindCommand(normalized)) {
     return { category: "read-only", needsNetwork: false, writesWorkspace: false };
   }
   if (matchAny(TEST_PATTERNS, normalized)) {
@@ -395,13 +415,34 @@ function classifyShellSequence(normalized) {
   const classifications = parts.map((part) => classifyCdCommand(part) || classifySimpleCommand(part));
   const blocked = classifications.find((classification) => classification.category === "blocked" || classification.category === "destructive");
   if (blocked) return blocked;
-  return {
-    category: "general-shell",
+  const broad = classifications.find((classification) => classification.category === "general-shell");
+  if (broad) {
+    return {
+      ...broad,
+      reason: `Command sequence includes a broad shell segment and requires trusted shell policy: ${normalized}`,
+    };
+  }
+  const categories = new Set(classifications.map((classification) => classification.category));
+  const aggregate = {
     needsNetwork: classifications.some((classification) => classification.needsNetwork),
     writesWorkspace: classifications.some((classification) => classification.writesWorkspace),
     requiresDockerRoot: classifications.some((classification) => classification.requiresDockerRoot),
     virtualWorkspacePath: classifications.some((classification) => classification.virtualWorkspacePath),
     reason: `Command sequence uses shell separators with individually classified safe segments: ${normalized}`,
+  };
+  if (categories.has("system-package-install")) return { category: "system-package-install", ...aggregate };
+  if (categories.has("package-install")) return { category: "package-install", ...aggregate };
+  if (categories.has("env-setup")) return { category: "env-setup", ...aggregate };
+  if (categories.has("permission-change")) return { category: "permission-change", ...aggregate };
+  if (categories.has("git-remote")) return { category: "git-remote", ...aggregate };
+  if (categories.has("network-fetch")) return { category: "network-fetch", ...aggregate };
+  if (categories.has("workspace-write")) return { category: "workspace-write", ...aggregate };
+  if (categories.has("toolchain")) return { category: "toolchain", ...aggregate };
+  if (categories.has("test")) return { category: "test", ...aggregate };
+  if (categories.has("git-workflow")) return { category: "git-workflow", ...aggregate };
+  return {
+    category: "read-only",
+    ...aggregate,
   };
 }
 

@@ -266,6 +266,16 @@ try {
     packageInstallPolicy: "allow",
     commandCwd: workspace,
   };
+  const dockerWorkspaceNoInstallsPolicy = {
+    ...dockerWorkspacePolicy,
+    packageInstallPolicy: "block",
+  };
+  const readonlyProbePolicy = evaluateCommandPolicy(
+    'which pdflatex 2>&1; which latexmk 2>&1; echo "---"; find /workspace -name \'*.tex\' -maxdepth 3 2>/dev/null; echo "exit: $?"',
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(readonlyProbePolicy.allowed, "read-only toolchain probe sequence should not require package-install-policy=allow");
+  assert(readonlyProbePolicy.category === "read-only", "read-only toolchain probe sequence should be classified as read-only");
   const curlPolicy = evaluateCommandPolicy("curl -s -o /dev/null -w '%{http_code}' https://github.com/lazyingart/AgInTiFlow.git", dockerWorkspacePolicy);
   assert(curlPolicy.allowed, "curl URL probe with flags should be allowed in docker-workspace allow mode");
   assert(curlPolicy.needsNetwork, "curl URL probe with flags was not classified as network");
@@ -725,6 +735,7 @@ try {
           "large_profile_pro_route",
           "auto_system_pro_route",
           "auto_engineering_guidance",
+          "command_policy_readonly_probe_sequence_no_installs",
           "command_policy_git_clone_network",
           "command_policy_safe_chmod_sequence",
           "command_policy_cd_workspace",
