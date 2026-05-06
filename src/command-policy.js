@@ -23,6 +23,10 @@ const READ_ONLY_PATTERNS = [
   /^python(?:3)?\s+--version$/,
   /^pip(?:3)?\s+--version$/,
   /^conda\s+--version$/,
+  /^(?:pdflatex|latexmk)\s+--version$/,
+  /^test\s+-[efdx]\s+[-\w./~]+$/,
+  /^true$/,
+  /^false$/,
   /^echo(?:\s+.+)?$/,
 ];
 
@@ -392,13 +396,13 @@ function splitTopLevelShellSequence(command = "") {
       quote = char;
       continue;
     }
-    if (char === ";" || (char === "&" && text[index + 1] === "&")) {
+    if (char === ";" || (char === "&" && text[index + 1] === "&") || (char === "|" && text[index + 1] === "|")) {
       const part = current.trim();
       if (!part) return null;
       parts.push(part);
       current = "";
       hadSeparator = true;
-      if (char === "&") index += 1;
+      if (char === "&" || char === "|") index += 1;
       continue;
     }
     current += char;
@@ -412,7 +416,7 @@ function splitTopLevelShellSequence(command = "") {
 function classifyShellSequence(normalized) {
   const parts = splitTopLevelShellSequence(normalized);
   if (!parts) return null;
-  const classifications = parts.map((part) => classifyCdCommand(part) || classifySimpleCommand(part));
+  const classifications = parts.map((part) => classifyCdCommand(part) || classifyPipelineSequence(part) || classifySimpleCommand(part));
   const blocked = classifications.find((classification) => classification.category === "blocked" || classification.category === "destructive");
   if (blocked) return blocked;
   const broad = classifications.find((classification) => classification.category === "general-shell");
@@ -446,6 +450,73 @@ function classifyShellSequence(normalized) {
   };
 }
 
+function splitTopLevelPipeline(command = "") {
+  const parts = [];
+  let current = "";
+  let quote = "";
+  let escaped = false;
+  let hadPipe = false;
+  const text = String(command || "");
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      current += char;
+      if (char === quote) quote = "";
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      current += char;
+      quote = char;
+      continue;
+    }
+    if (char === "|" && text[index + 1] !== "|") {
+      const part = current.trim();
+      if (!part) return null;
+      parts.push(part);
+      current = "";
+      hadPipe = true;
+      continue;
+    }
+    current += char;
+  }
+  const finalPart = current.trim();
+  if (finalPart) parts.push(finalPart);
+  if (!hadPipe || parts.length < 2) return null;
+  return parts;
+}
+
+function classifyPipelineSequence(normalized) {
+  const parts = splitTopLevelPipeline(normalized);
+  if (!parts) return null;
+  const classifications = parts.map((part) => classifyCdCommand(part) || classifySimpleCommand(part));
+  const blocked = classifications.find((classification) => classification.category === "blocked" || classification.category === "destructive");
+  if (blocked) return blocked;
+  if (classifications.every((classification) => classification.category === "read-only")) {
+    return {
+      category: "read-only",
+      needsNetwork: false,
+      writesWorkspace: false,
+      reason: `Read-only shell pipeline: ${normalized}`,
+    };
+  }
+  return {
+    category: "general-shell",
+    needsNetwork: classifications.some((classification) => classification.needsNetwork),
+    writesWorkspace: classifications.some((classification) => classification.writesWorkspace),
+    reason: `Shell pipeline includes a broad segment and requires trusted shell policy: ${normalized}`,
+  };
+}
+
 function classifyCdCommand(normalized) {
   const match = normalized.match(/^cd\s+([-\w./]+)\s+&&\s+(.+)$/);
   if (!match) return null;
@@ -454,7 +525,7 @@ function classifyCdCommand(normalized) {
   if (!isSafeRelativeDir(dir) && !virtualWorkspacePath) {
     return { category: "blocked", reason: `cd target must be a safe workspace-relative directory: ${dir}` };
   }
-  const innerClassification = classifySimpleCommand(inner.trim());
+  const innerClassification = classifyShellSequence(inner.trim()) || classifyPipelineSequence(inner.trim()) || classifySimpleCommand(inner.trim());
   if (innerClassification.category === "blocked") return innerClassification;
   return { ...innerClassification, cdDir: dir, virtualWorkspacePath };
 }
@@ -463,7 +534,7 @@ export function classifyCommand(command) {
   const normalized = String(command || "").trim();
   if (!normalized) return { category: "blocked", reason: "Command is empty." };
 
-  return classifyCdCommand(normalized) || classifyShellSequence(normalized) || classifySimpleCommand(normalized);
+  return classifyCdCommand(normalized) || classifyShellSequence(normalized) || classifyPipelineSequence(normalized) || classifySimpleCommand(normalized);
 }
 
 export function evaluateCommandPolicy(command, config) {

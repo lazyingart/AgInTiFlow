@@ -276,6 +276,18 @@ try {
   );
   assert(readonlyProbePolicy.allowed, "read-only toolchain probe sequence should not require package-install-policy=allow");
   assert(readonlyProbePolicy.category === "read-only", "read-only toolchain probe sequence should be classified as read-only");
+  const readonlyVersionPipelinePolicy = evaluateCommandPolicy(
+    "which pdflatex latexmk python3 2>&1; pdflatex --version 2>&1 | head -2; latexmk --version 2>&1 | head -2",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(readonlyVersionPipelinePolicy.allowed, "read-only version probe pipelines should not require package-install-policy=allow");
+  assert(readonlyVersionPipelinePolicy.category === "read-only", "read-only version probe pipelines should be classified as read-only");
+  const readonlyTestEchoPolicy = evaluateCommandPolicy(
+    'test -f /usr/bin/pdflatex && echo "pdflatex: FOUND" || echo "pdflatex: NOT FOUND"; test -f /usr/bin/latexmk && echo "latexmk: FOUND" || echo "latexmk: NOT FOUND"; python3 --version 2>&1',
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(readonlyTestEchoPolicy.allowed, "read-only test/echo probe sequence should not require package-install-policy=allow");
+  assert(readonlyTestEchoPolicy.category === "read-only", "read-only test/echo probe sequence should be classified as read-only");
   const curlPolicy = evaluateCommandPolicy("curl -s -o /dev/null -w '%{http_code}' https://github.com/lazyingart/AgInTiFlow.git", dockerWorkspacePolicy);
   assert(curlPolicy.allowed, "curl URL probe with flags should be allowed in docker-workspace allow mode");
   assert(curlPolicy.needsNetwork, "curl URL probe with flags was not classified as network");
@@ -736,6 +748,8 @@ try {
           "auto_system_pro_route",
           "auto_engineering_guidance",
           "command_policy_readonly_probe_sequence_no_installs",
+          "command_policy_readonly_version_pipeline_no_installs",
+          "command_policy_readonly_test_echo_no_installs",
           "command_policy_git_clone_network",
           "command_policy_safe_chmod_sequence",
           "command_policy_cd_workspace",
