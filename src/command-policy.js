@@ -15,6 +15,7 @@ const READ_ONLY_PATTERNS = [
   /^cat(?:\s+[-\w./~*]+)+$/,
   /^head(?:\s+.+)?$/,
   /^tail(?:\s+.+)?$/,
+  /^sort(?:\s+[-\w./~*]+)*$/,
   /^wc(?:\s+.+)?$/,
   /^sed\s+-n\s+['"0-9,:p\s-]+\s+[-\w./~*]+$/,
   /^git\s+(status|branch|log|show|diff(?:\s+--stat)?|remote\s+-v)(?:\s+.+)?$/,
@@ -23,6 +24,11 @@ const READ_ONLY_PATTERNS = [
   /^python(?:3)?\s+--version$/,
   /^pip(?:3)?\s+--version$/,
   /^conda\s+--version$/,
+  /^(?:[-/\w.]+\/)?java\s+-version$/,
+  /^(?:[-/\w.]+\/)?gradle\s+--version$/,
+  /^(?:[-/\w.]+\/)?adb\s+devices(?:\s+-l)?$/,
+  /^(?:[-/\w.]+\/)?emulator\s+-list-avds$/,
+  /^(?:[-/\w.]+\/)?sdkmanager\s+--list(?:\s+[-\w./:=]+)*$/,
   /^(?:pdflatex|latexmk)\s+--version$/,
   /^test\s+-[efdx]\s+[-\w./~]+$/,
   /^true$/,
@@ -100,6 +106,7 @@ const UNSAFE_GIT_PATTERNS = [
 
 const TOOLCHAIN_PATTERNS = [
   /^python(?:3)?\s+[-\w./]+\.py(?:\s+[-\w./:=]+)*$/,
+  /^\.\/gradlew\s+(?:(?::[-\w]+:)?(?:assembleDebug|assembleRelease|bundleDebug|bundleRelease|compileDebugKotlin|compileReleaseKotlin|testDebugUnitTest|lintDebug|lint|check|build))(?:\s+[-\w./:=]+)*$/,
   /^latexmk\s+(?=[-\w./=\s]*-pdf\b)(?:(?:-cd|-pdf|-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+)\s+)+[-\w./]+\.tex$/,
   /^pdflatex\s+(?:(?:-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+|-jobname\s+[-\w./]+)\s+)*[-\w./]+\.tex$/,
 ];
@@ -651,7 +658,7 @@ export function evaluateCommandPolicy(command, config) {
     };
   }
 
-  if (classification.category === "permission-change" && !trustedDockerShell && !trustedHostShell) {
+  if (classification.category === "permission-change" && sandboxMode !== "host" && !trustedDockerShell && !trustedHostShell) {
     return {
       allowed: false,
       ...classification,

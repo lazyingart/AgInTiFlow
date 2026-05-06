@@ -270,6 +270,14 @@ try {
     ...dockerWorkspacePolicy,
     packageInstallPolicy: "block",
   };
+  const hostWorkspacePolicy = {
+    allowShellTool: true,
+    useDockerSandbox: false,
+    sandboxMode: "host",
+    packageInstallPolicy: "allow",
+    allowDestructive: false,
+    commandCwd: workspace,
+  };
   const readonlyProbePolicy = evaluateCommandPolicy(
     'which pdflatex 2>&1; which latexmk 2>&1; echo "---"; find /workspace -name \'*.tex\' -maxdepth 3 2>/dev/null; echo "exit: $?"',
     dockerWorkspaceNoInstallsPolicy
@@ -326,6 +334,21 @@ try {
   assert(safeChmodAndRunPolicy.allowed, "safe workspace chmod + script run sequence should be allowed in docker-workspace allow mode");
   const unsafeChmodPolicy = evaluateCommandPolicy("chmod +x /etc/passwd", dockerWorkspacePolicy);
   assert(!unsafeChmodPolicy.allowed, "chmod outside the workspace should be blocked");
+  const hostWorkspaceChmodPolicy = evaluateCommandPolicy("chmod +x android-app/gradlew && echo \"CHMOD_OK\"", hostWorkspacePolicy);
+  assert(hostWorkspaceChmodPolicy.allowed, "host mode should allow workspace-local chmod without full-host destructive access");
+  assert(
+    hostWorkspaceChmodPolicy.category === "permission-change",
+    "host workspace chmod sequence should remain categorized as permission-change"
+  );
+  const androidReadonlyProbePolicy = evaluateCommandPolicy(
+    'test -x /usr/bin/gradle && echo "GRADLE_OK" ; test -x /usr/bin/java && /usr/bin/java -version 2>&1 | head -1; adb devices; emulator -list-avds; find android-app -type f | sort',
+    hostWorkspacePolicy
+  );
+  assert(androidReadonlyProbePolicy.allowed, "Android host read-only probes should not require full-host destructive access");
+  assert(androidReadonlyProbePolicy.category === "read-only", "Android host probes should remain read-only");
+  const androidGradleBuildPolicy = evaluateCommandPolicy("cd android-app && ./gradlew :app:assembleDebug", hostWorkspacePolicy);
+  assert(androidGradleBuildPolicy.allowed, "workspace-local Gradle Android build should be allowed in host workspace mode");
+  assert(androidGradleBuildPolicy.category === "toolchain", "workspace-local Gradle Android build should be toolchain");
   const cdWorkspacePolicy = evaluateCommandPolicy("cd /workspace && git status --short 2>&1 | head -20", dockerWorkspacePolicy);
   assert(cdWorkspacePolicy.allowed, "cd /workspace should be allowed in docker-workspace mode");
   const gitCleanDryRunPolicy = evaluateCommandPolicy("git clean -nd reports", dockerWorkspacePolicy);
@@ -793,6 +816,9 @@ try {
           "command_policy_git_rebase_still_guarded",
           "command_policy_git_clone_network",
           "command_policy_safe_chmod_sequence",
+          "command_policy_host_workspace_chmod",
+          "command_policy_android_host_probes",
+          "command_policy_android_gradle_build",
           "command_policy_cd_workspace",
           "command_policy_git_clean_dry_run",
           "permission_recovery_advice",

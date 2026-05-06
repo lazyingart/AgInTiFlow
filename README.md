@@ -155,7 +155,7 @@ aginti --resume <session-id> \
   "Take a fresh screenshot of the running app in the emulator, save it with a durable filename in this project, and keep git status clean."
 ```
 
-Permission behavior is intentionally consistent: writes inside the current project are allowed through file tools, network/setup runs are normal in approved Docker workspace mode, and outside-project or trusted-host actions stop with a clear blocker plus a suggested rerun command. See [runtime modes and autonomy](docs/runtime-modes-and-autonomy.md) for the full contract.
+Permission behavior is intentionally consistent: writes inside the current project are allowed through file tools, workspace-local toolchain builds/probes can run when their command is narrowly classified, network/setup runs are normal in approved Docker workspace mode, and outside-project or trusted-host actions stop with a clear blocker plus a suggested rerun command. See [runtime modes and autonomy](docs/runtime-modes-and-autonomy.md) for the full contract.
 
 Tmux follows the same rule. In Docker sandbox mode, `tmux_start_session` and `tmux_send_keys` are durable host tools, but their commands must stay workspace-bound. In host mode, tmux startup/send command text follows the same host shell policy as `run_command`; broad host shell work needs explicit `--allow-destructive`. Use `--sandbox-mode host --allow-destructive` only when a tmux task really needs trusted whole-host execution.
 
@@ -167,7 +167,7 @@ Use these when you want explicit control instead of the default interactive poli
 | --- | --- | --- |
 | Strict inspection | `aginti --sandbox-mode docker-readonly --package-install-policy block --allow-shell --no-file-tools --no-web-search "inspect this project without edits"` | Enforced read-only project inspection through shell commands such as `ls`, `rg`, `cat`, and test commands that do not write. No file-tool writes, web calls, workspace writes, or installs. |
 | Full write in current folder | `aginti --sandbox-mode docker-workspace --package-install-policy allow --approve-package-installs --allow-shell --allow-file-tools "build and test this project"` | Read/write inside the current project folder, run network/setup commands in Docker, keep host safer. |
-| Full host computer access | `aginti --sandbox-mode host --package-install-policy allow --approve-package-installs --allow-shell --allow-file-tools --allow-destructive "perform the trusted host maintenance task"` | Direct host shell and destructive actions. Use only when you trust the task and want whole-host access. |
+| Full host computer access | `aginti --sandbox-mode host --package-install-policy allow --approve-package-installs --allow-shell --allow-file-tools --allow-destructive "perform the trusted host maintenance task"` | Direct host shell and destructive actions. Use only when you trust the task and want whole-host access. Android emulator/device work often needs this because the SDK and emulator live on the host. |
 
 For resume:
 

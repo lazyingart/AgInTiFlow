@@ -13,7 +13,7 @@ The failed task was expected under the current Docker design, but the agent shou
 
 The fix is guidance plus guardrails: raw `tmux` shell commands are blocked inside Docker `run_command`, and the model is told to use host tmux tools for durable sessions.
 
-Important boundary: host tmux tools are durable, but they are not a permission escape hatch. In `docker-readonly` and `docker-workspace` modes, `tmux_start_session` and `tmux_send_keys` are still workspace-bound. Startup commands and sent shell text must use relative paths under the project, not absolute host paths outside the project. In `host` mode, tmux startup/send command text follows the same host shell policy as `run_command`, so broad host shell work requires `--allow-destructive`. If a task really needs `/home/...`, `/etc/...`, an emulator outside the project, or whole-host maintenance, rerun explicitly with `--sandbox-mode host --allow-destructive`.
+Important boundary: host tmux tools are durable, but they are not a permission escape hatch. In `docker-readonly` and `docker-workspace` modes, `tmux_start_session` and `tmux_send_keys` are still workspace-bound. Startup commands and sent shell text must use relative paths under the project, not absolute host paths outside the project. In `host` mode, tmux startup/send command text follows the same host shell policy as `run_command`, so broad host shell work requires `--allow-destructive`. Narrow workspace-local probes/builds can run without full-host trust, but if a task really needs `/home/...`, `/etc/...`, an emulator outside the project, or whole-host maintenance, rerun explicitly with `--sandbox-mode host --allow-destructive`.
 
 ## Execution Modes
 
@@ -51,11 +51,13 @@ The runtime must be consistent when an action is not permitted. A blocked action
 Current contract:
 
 - Workspace file tools may read and write inside the configured project folder when file tools are enabled.
+- Narrow workspace-local shell actions such as safe probes, Gradle/TeX builds, and `chmod +x` on a project script may run when the command policy can classify them precisely.
 - Workspace writes outside that folder, secret paths, `.git` internals, and dependency folders such as `node_modules` are blocked.
 - `git clone`, `git fetch`, `git pull --ff-only`, `git push`, `curl`, and `wget` are classified as network operations.
 - Network/setup commands are allowed in `docker-workspace` only when package installs are approved.
 - Host `sudo` and host OS package installs are not automatic. The agent should ask the user to run a manual command or switch to a safer Docker setup.
 - Destructive host shell/git operations need explicit trusted host mode.
+- Android SDK/emulator work commonly needs host mode because `adb`, emulator images, and device state live outside Docker; use trusted host mode for install/launch/screenshot steps when the user approves that host access.
 
 When a tool is blocked, the tool result includes `permissionAdvice` with three choices: refuse/stop, approve a safer rerun, or switch to a trusted host run. The model prompt requires the agent to present that blocker and avoid retrying variants until the user approves a path.
 
