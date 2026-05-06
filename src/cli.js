@@ -36,6 +36,7 @@ import { readHousekeepingSummary } from "./housekeeping.js";
 import { handleSkillMeshCommand } from "./skillmesh.js";
 import { handleAapsCliCommand } from "./aaps-adapter.js";
 import { formatInstructionTemplateList, normalizeInstructionTemplate } from "./behavior-contract.js";
+import { applyPermissionMode, normalizePermissionMode } from "./permission-modes.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -116,6 +117,9 @@ const CLI_VALUE_OPTIONS = new Set([
   "--auxiliary-model",
   "--routing",
   "--cwd",
+  "--permission-mode",
+  "--safety",
+  "-s",
   "--sandbox-mode",
   "--package-install-policy",
   "--max-steps",
@@ -318,7 +322,10 @@ export function parseArgs(argv) {
     routingMode: "",
     commandCwd: "",
     sandboxMode: "",
+    permissionMode: "",
     packageInstallPolicy: "",
+    workspaceWritePolicy: undefined,
+    allowOutsideWorkspaceFileTools: undefined,
     allowShellTool: undefined,
     allowFileTools: undefined,
     allowWrapperTools: undefined,
@@ -496,6 +503,12 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "-s" || arg === "--safety" || arg === "--permission-mode") {
+      const mode = normalizePermissionMode(readOption(argv, i), "");
+      if (mode) applyPermissionMode(result, mode, { override: true });
+      i += 1;
+      continue;
+    }
     if (arg === "--sandbox-mode") {
       result.sandboxMode = readOption(argv, i);
       i += 1;
@@ -651,8 +664,9 @@ function exitOnUnknownOptions(parsed) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti update OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
+    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti update OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
+  console.log("Permission shortcuts: -s safe asks before writes/setup; -s normal allows current-project writes and Docker setup; -s danger enables trusted host/full-access mode.");
   console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
 }
 
@@ -700,8 +714,11 @@ function agentDefaults(args) {
   const envUseDockerSandbox = process.env.USE_DOCKER_SANDBOX;
   const envScoutCount = Number(process.env.AGINTI_SCOUT_COUNT);
   const taskProfile = args.taskProfile || process.env.AGINTI_TASK_PROFILE || (args.latex ? "latex" : "auto");
+  const permissionMode = normalizePermissionMode(args.permissionMode || process.env.AGINTI_PERMISSION_MODE || "normal");
+  const permissionDefaults = permissionMode ? applyPermissionMode({}, permissionMode, { override: true }) : {};
   const defaults = {
     ...args,
+    permissionMode,
     provider: args.provider || process.env.AGENT_PROVIDER || "",
     routingMode: args.routingMode || process.env.AGENT_ROUTING_MODE || "smart",
     routeProvider: args.routeProvider || process.env.AGINTI_ROUTE_PROVIDER || "",
@@ -713,17 +730,23 @@ function agentDefaults(args) {
     spareReasoning: args.spareReasoning || process.env.AGINTI_SPARE_REASONING || "",
     taskProfile,
     language: resolveLanguage(args.language || process.env.AGINTI_LANGUAGE || ""),
-    allowShellTool: args.allowShellTool ?? true,
-    allowFileTools: args.allowFileTools ?? true,
+    allowShellTool: args.allowShellTool ?? permissionDefaults.allowShellTool ?? true,
+    allowFileTools: args.allowFileTools ?? permissionDefaults.allowFileTools ?? true,
     allowAuxiliaryTools: args.allowAuxiliaryTools ?? true,
     allowWebSearch: args.allowWebSearch ?? true,
     allowParallelScouts: args.allowParallelScouts ?? true,
     enableScs: args.enableScs || process.env.AGINTI_SCS_MODE || "off",
     parallelScoutCount: args.parallelScoutCount || (Number.isFinite(envScoutCount) && envScoutCount > 0 ? envScoutCount : 3),
-    sandboxMode: args.sandboxMode || envSandboxMode || "docker-workspace",
-    packageInstallPolicy: args.packageInstallPolicy || envPackageInstallPolicy || "allow",
+    sandboxMode: args.sandboxMode || envSandboxMode || permissionDefaults.sandboxMode || "docker-workspace",
+    packageInstallPolicy: args.packageInstallPolicy || envPackageInstallPolicy || permissionDefaults.packageInstallPolicy || "allow",
+    workspaceWritePolicy: args.workspaceWritePolicy || permissionDefaults.workspaceWritePolicy || "allow",
+    allowDestructive: args.allowDestructive ?? permissionDefaults.allowDestructive ?? false,
+    allowPasswords: args.allowPasswords ?? permissionDefaults.allowPasswords ?? false,
+    allowOutsideWorkspaceFileTools:
+      args.allowOutsideWorkspaceFileTools ?? permissionDefaults.allowOutsideWorkspaceFileTools ?? false,
     useDockerSandbox:
       args.useDockerSandbox ??
+      permissionDefaults.useDockerSandbox ??
       (envUseDockerSandbox === undefined ? true : String(envUseDockerSandbox).toLowerCase() !== "false"),
     maxSteps:
       args.maxSteps ||
@@ -735,7 +758,8 @@ function agentDefaults(args) {
 
   if (defaults.sandboxMode === "host") {
     defaults.useDockerSandbox = false;
-    defaults.packageInstallPolicy = args.packageInstallPolicy || envPackageInstallPolicy || "prompt";
+    defaults.packageInstallPolicy =
+      args.packageInstallPolicy || envPackageInstallPolicy || permissionDefaults.packageInstallPolicy || "prompt";
   }
 
   return defaults;

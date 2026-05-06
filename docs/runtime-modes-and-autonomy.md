@@ -27,6 +27,7 @@ Important boundary: host tmux tools are durable, but they are not a permission e
 
 Codex exposes these concerns as `--sandbox read-only|workspace-write|danger-full-access` and `--ask-for-approval untrusted|on-failure|on-request|never`. AgInTiFlow maps the same philosophy into:
 
+- `-s safe|normal|danger` and `/safe`, `/normal`, `/danger`
 - `--sandbox-mode host|docker-readonly|docker-workspace`
 - `--package-install-policy block|prompt|allow`
 - `--allow-shell|--no-shell`
@@ -50,6 +51,9 @@ The runtime must be consistent when an action is not permitted. A blocked action
 
 Current contract:
 
+- `safe` asks before file-tool writes and package/setup actions. It is the right mode for inspection, review, and cautious first passes.
+- `normal` allows writes inside the current project folder and package/setup inside Docker workspace mode. It still blocks outside-project writes and host-system changes until approved.
+- `danger` is trusted host/full-access mode: host shell, destructive actions, host installs, password typing, and outside-workspace file paths are enabled. Use it only for tasks you trust; obvious secret/publish exfiltration guards remain hard stops.
 - Workspace file tools may read and write inside the configured project folder when file tools are enabled.
 - Narrow workspace-local shell actions such as safe probes, Gradle/TeX builds, and `chmod +x` on a project script may run when the command policy can classify them precisely.
 - Android/JVM toolchain commands may include safe local env assignments such as `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `JAVA_HOME`, or `GRADLE_USER_HOME`, plus small workspace-local status-log redirects. Secret-like env vars and redirects outside the workspace remain blocked.
@@ -60,7 +64,7 @@ Current contract:
 - Destructive host shell/git operations need explicit trusted host mode.
 - Android SDK/emulator work commonly needs host mode because `adb`, emulator images, and device state live outside Docker; use trusted host mode for install/launch/screenshot steps when the user approves that host access.
 
-When a tool is blocked, the tool result includes `permissionAdvice` with three choices: refuse/stop, approve a safer rerun, or switch to a trusted host run. The model prompt requires the agent to present that blocker and avoid retrying variants until the user approves a path.
+When a tool is blocked, the tool result includes `permissionAdvice`. Interactive CLI and web runs present the same approval language: `No`, `Yes this time`, and `Yes and always for this session`. One-time approval temporarily escalates the active continuation; always switches the session to the suggested shortcut mode. The model prompt requires the agent to present that blocker and avoid retrying variants until the user approves a path.
 
 The common controlled rerun shape is:
 
@@ -78,30 +82,14 @@ aginti --resume <session-id> \
 Three practical permission recipes:
 
 ```bash
-# Strict inspection: enforced read-only shell inspection, no file-tool writes, no web, no installs.
-aginti --sandbox-mode docker-readonly \
-  --package-install-policy block \
-  --allow-shell \
-  --no-file-tools \
-  --no-web-search \
-  "inspect this project without edits"
+# Safe: read-first, ask before writes and setup.
+aginti -s safe "inspect this project without edits"
 
-# Full write in the current project folder, with setup commands isolated in Docker.
-aginti --sandbox-mode docker-workspace \
-  --package-install-policy allow \
-  --approve-package-installs \
-  --allow-shell \
-  --allow-file-tools \
-  "build and test this project"
+# Normal: write in the current project folder, setup isolated in Docker.
+aginti -s normal "build and test this project"
 
-# Full host computer access for trusted maintenance.
-aginti --sandbox-mode host \
-  --package-install-policy allow \
-  --approve-package-installs \
-  --allow-shell \
-  --allow-file-tools \
-  --allow-destructive \
-  "perform the trusted host maintenance task"
+# Danger: full trusted host access for maintenance or emulator/device work.
+aginti -s danger "perform the trusted host maintenance task"
 ```
 
 For host-only work, use the stricter trusted form deliberately:
@@ -109,12 +97,7 @@ For host-only work, use the stricter trusted form deliberately:
 ```bash
 aginti --resume <session-id> \
   --cwd /path/to/project \
-  --sandbox-mode host \
-  --package-install-policy allow \
-  --approve-package-installs \
-  --allow-shell \
-  --allow-file-tools \
-  --allow-destructive \
+  -s danger \
   "Continue after trusted host approval. Inspect first and keep unrelated files untouched."
 ```
 
@@ -131,7 +114,7 @@ This starts interactive chat with Docker workspace mode, file tools, shell tools
 Direct trusted host mode:
 
 ```bash
-aginti --sandbox-mode host --allow-shell --allow-destructive "fix this local service"
+aginti -s danger "fix this local service"
 ```
 
 Use this only when the task truly needs host access. The agent should inspect first, show risky commands, stop on ambiguity, and avoid secrets.

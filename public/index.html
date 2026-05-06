@@ -154,6 +154,16 @@
           </div>
           <p id="package-warning" class="subtle package-warning"></p>
 
+          <label>
+            <span data-i18n="permissionModeLabel">Permission shortcut</span>
+            <select id="permissionMode" name="permissionMode">
+              <option value="safe" data-i18n="permissionSafeOption">Safe: ask before writes/setup</option>
+              <option value="normal" data-i18n="permissionNormalOption">Normal: project writes + Docker setup</option>
+              <option value="danger" data-i18n="permissionDangerOption">Danger: trusted host/full access</option>
+            </select>
+          </label>
+          <p id="permission-hint" class="subtle route-hint"></p>
+
           <div class="grid">
             <label>
               <span data-i18n="sandboxModeLabel">Sandbox mode</span>

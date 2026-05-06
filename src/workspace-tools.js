@@ -135,6 +135,14 @@ export function resolveWorkspacePath(config, inputPath = ".") {
   const absolutePath = path.resolve(root, workspacePath);
 
   if (!isInside(root, absolutePath)) {
+    if (config.allowOutsideWorkspaceFileTools && config.sandboxMode === "host" && config.allowDestructive) {
+      return {
+        root,
+        absolutePath,
+        relativePath: absolutePath,
+        outsideWorkspace: true,
+      };
+    }
     throw new Error(`Path escapes the configured workspace: ${rawPath}`);
   }
 
@@ -223,6 +231,14 @@ export function checkWorkspaceToolUse(toolName, args, config) {
   if (!WORKSPACE_TOOL_NAMES.includes(toolName)) return { allowed: true };
   if (!config.allowFileTools) {
     return { allowed: false, reason: "Workspace file tools are disabled for this run.", category: "workspace-tools" };
+  }
+  if (WORKSPACE_WRITE_TOOL_NAMES.includes(toolName) && config.workspaceWritePolicy === "prompt") {
+    return {
+      allowed: false,
+      reason: "Workspace writes require permission approval in safe mode.",
+      category: "workspace-write",
+      needsApproval: true,
+    };
   }
 
   try {

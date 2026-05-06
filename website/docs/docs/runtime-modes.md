@@ -38,26 +38,23 @@ Docker mode can allow practical setup commands such as `pip install`, `npm insta
 
 ## Permission Recipes
 
-Use explicit runtime flags when the task needs a clear privilege contract.
+Use the shortcut layer first. The long flags still exist for automation, but these three modes are the normal user interface.
 
 | Goal | Command | Contract |
 | --- | --- | --- |
-| Strict inspection | `aginti --sandbox-mode docker-readonly --package-install-policy block --allow-shell --no-file-tools --no-web-search "inspect this project without edits"` | Enforced read-only project inspection through shell commands. No file-tool writes, web calls, workspace writes, or installs. |
-| Full write in current folder | `aginti --sandbox-mode docker-workspace --package-install-policy allow --approve-package-installs --allow-shell --allow-file-tools "build and test this project"` | Read/write inside the current project folder, with package setup inside Docker. |
-| Full host computer access | `aginti --sandbox-mode host --package-install-policy allow --approve-package-installs --allow-shell --allow-file-tools --allow-destructive "perform the trusted host maintenance task"` | Direct host shell and destructive actions. Use only for trusted work. |
+| Safe | `aginti -s safe "inspect this project without edits"` | Read-first posture. Writes and setup stop for approval. |
+| Normal | `aginti -s normal "build and test this project"` | Current-project writes and Docker setup are allowed. Outside-project and host-system changes stop. |
+| Danger | `aginti -s danger "perform the trusted host maintenance task"` | Trusted host/full-access mode with destructive shell, host installs, password typing, and outside-workspace file paths enabled. |
 
 For a resumed session, keep the same shape and add the session id:
 
 ```bash
 aginti --resume <session-id> \
-  --sandbox-mode host \
-  --package-install-policy allow \
-  --approve-package-installs \
-  --allow-shell \
-  --allow-file-tools \
-  --allow-destructive \
+  -s danger \
   "continue with trusted host access"
 ```
+
+Inside interactive chat, `/safe`, `/normal`, and `/danger` switch the current session. When a blocked action needs a decision, the CLI and web app use the same selector: `No`, `Yes this time`, or `Yes and always for this session`.
 
 ## Full Host Access
 

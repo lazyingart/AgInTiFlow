@@ -8,6 +8,7 @@ import { normalizeTaskProfile } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 import { resolveLanguage } from "./i18n.js";
 import { normalizeScsMode, shouldActivateScs } from "./scs-controller.js";
+import { applyPermissionMode, normalizePermissionMode } from "./permission-modes.js";
 
 function parseBoolean(value, fallback) {
   if (value === undefined) return fallback;
@@ -91,9 +92,17 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     complexityScore: route.complexityScore,
   });
   const packageDir = path.resolve(overrides.packageDir || process.env.AGINTIFLOW_PACKAGE_DIR || baseDir);
+  const permissionMode = normalizePermissionMode(
+    overrides.permissionMode || args.permissionMode || process.env.AGINTI_PERMISSION_MODE || "normal"
+  );
+  const permissionDefaults = applyPermissionMode({}, permissionMode, { override: true });
   const dockerRequested = parseBoolean(overrides.useDockerSandbox ?? args.useDockerSandbox ?? process.env.USE_DOCKER_SANDBOX, true);
   const requestedSandboxMode =
-    overrides.sandboxMode || args.sandboxMode || process.env.SANDBOX_MODE || (dockerRequested ? "docker-workspace" : "host");
+    overrides.sandboxMode ||
+    args.sandboxMode ||
+    process.env.SANDBOX_MODE ||
+    permissionDefaults.sandboxMode ||
+    (dockerRequested ? "docker-workspace" : "host");
   const sandboxMode = normalizeSandboxMode(requestedSandboxMode);
   const explicitParallelScouts =
     overrides.allowParallelScouts !== undefined ||
@@ -143,10 +152,19 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     allowedDomains: Array.isArray(overrides.allowedDomains)
       ? overrides.allowedDomains
       : parseList(process.env.ALLOWED_DOMAINS),
-    allowPasswords: parseBoolean(overrides.allowPasswords ?? process.env.ALLOW_PASSWORDS, false),
-    allowDestructive: parseBoolean(overrides.allowDestructive ?? args.allowDestructive ?? process.env.ALLOW_DESTRUCTIVE, false),
-    allowShellTool: parseBoolean(overrides.allowShellTool ?? args.allowShellTool ?? process.env.ALLOW_SHELL_TOOL, true),
-    allowFileTools: parseBoolean(overrides.allowFileTools ?? args.allowFileTools ?? process.env.ALLOW_FILE_TOOLS, true),
+    allowPasswords: parseBoolean(overrides.allowPasswords ?? args.allowPasswords ?? process.env.ALLOW_PASSWORDS, permissionDefaults.allowPasswords || false),
+    allowDestructive: parseBoolean(
+      overrides.allowDestructive ?? args.allowDestructive ?? process.env.ALLOW_DESTRUCTIVE,
+      permissionDefaults.allowDestructive || false
+    ),
+    allowShellTool: parseBoolean(
+      overrides.allowShellTool ?? args.allowShellTool ?? process.env.ALLOW_SHELL_TOOL,
+      permissionDefaults.allowShellTool ?? true
+    ),
+    allowFileTools: parseBoolean(
+      overrides.allowFileTools ?? args.allowFileTools ?? process.env.ALLOW_FILE_TOOLS,
+      permissionDefaults.allowFileTools ?? true
+    ),
     allowWrapperTools: parseBoolean(
       overrides.allowWrapperTools ?? args.allowWrapperTools ?? process.env.ALLOW_WRAPPER_TOOLS,
       false
@@ -166,9 +184,22 @@ export function resolveRuntimeConfig(args, overrides = {}) {
       overrides.preferredWrapper ?? args.preferredWrapper ?? process.env.PREFERRED_WRAPPER ?? process.env.AGENT_WRAPPER
     ),
     wrapperTimeoutMs: parseNumber(overrides.wrapperTimeoutMs ?? process.env.WRAPPER_TIMEOUT_MS, 120000),
+    permissionMode,
     sandboxMode,
     packageInstallPolicy: normalizePackageInstallPolicy(
-      overrides.packageInstallPolicy || args.packageInstallPolicy || process.env.PACKAGE_INSTALL_POLICY || (sandboxMode === "host" ? "prompt" : "allow")
+      overrides.packageInstallPolicy ||
+        args.packageInstallPolicy ||
+        process.env.PACKAGE_INSTALL_POLICY ||
+        permissionDefaults.packageInstallPolicy ||
+        (sandboxMode === "host" ? "prompt" : "allow")
+    ),
+    workspaceWritePolicy:
+      overrides.workspaceWritePolicy || args.workspaceWritePolicy || process.env.AGINTI_WORKSPACE_WRITE_POLICY || permissionDefaults.workspaceWritePolicy || "allow",
+    allowOutsideWorkspaceFileTools: parseBoolean(
+      overrides.allowOutsideWorkspaceFileTools ??
+        args.allowOutsideWorkspaceFileTools ??
+        process.env.AGINTI_ALLOW_OUTSIDE_WORKSPACE_FILE_TOOLS,
+      permissionDefaults.allowOutsideWorkspaceFileTools || false
     ),
     useDockerSandbox: sandboxMode !== "host",
     dockerSandboxImage: overrides.dockerSandboxImage || process.env.DOCKER_SANDBOX_IMAGE || "agintiflow-sandbox:latest",

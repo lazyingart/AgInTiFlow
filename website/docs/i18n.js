@@ -17,9 +17,10 @@ const permissionRecipes = (header = "## Permission recipes") =>
   lines(
     header,
     "",
-    "- Strict inspection: `aginti --sandbox-mode docker-readonly --package-install-policy block --allow-shell --no-file-tools --no-web-search \"inspect this project without edits\"`",
-    "- Full write in current folder: `aginti --sandbox-mode docker-workspace --package-install-policy allow --approve-package-installs --allow-shell --allow-file-tools \"build and test this project\"`",
-    "- Full host computer access: `aginti --sandbox-mode host --package-install-policy allow --approve-package-installs --allow-shell --allow-file-tools --allow-destructive \"perform the trusted host maintenance task\"`"
+    "- Safe: `aginti -s safe \"inspect this project without edits\"` asks before writes and setup.",
+    "- Normal: `aginti -s normal \"build and test this project\"` allows current-project writes and Docker setup.",
+    "- Danger: `aginti -s danger \"perform the trusted host maintenance task\"` enables trusted host/full-access mode.",
+    "- In chat, `/safe`, `/normal`, and `/danger` switch the current session. Blocked actions can be approved with `No`, `Yes this time`, or `Yes and always for this session`."
   );
 
 const cliWebScreenshotRow = (header = "## CLI And Web Together", cliLabel = "CLI launch", webLabel = "Web console run output") =>

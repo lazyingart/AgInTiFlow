@@ -204,6 +204,11 @@ export function normalizePackageInstallPolicy(value) {
   return normalizePolicy(value, PACKAGE_INSTALL_POLICIES, "prompt");
 }
 
+function isHardBlockedClassification(classification = {}) {
+  const reason = String(classification.reason || "");
+  return /empty|secret|credential|token|publish/i.test(reason);
+}
+
 function matchAny(patterns, command) {
   return patterns.some((pattern) => pattern.test(command));
 }
@@ -656,8 +661,20 @@ export function evaluateCommandPolicy(command, config = {}) {
   const packageInstallsAllowed = packageInstallPolicy === "allow";
   const trustedDockerShell = dockerWorkspace && packageInstallsAllowed;
   const trustedHostShell = sandboxMode === "host" && Boolean(config.allowDestructive);
+  const trustedDangerHost = sandboxMode === "host" && Boolean(config.allowDestructive) && Boolean(config.allowPasswords);
 
   if (classification.category === "blocked") {
+    if (trustedDangerHost && !isHardBlockedClassification(classification)) {
+      return {
+        allowed: true,
+        ...classification,
+        category: "general-shell",
+        trustedDangerOverride: true,
+        reason: `Trusted danger host mode allows this broad host command: ${classification.reason}`,
+        sandboxMode,
+        packageInstallPolicy,
+      };
+    }
     return { allowed: false, ...classification, sandboxMode, packageInstallPolicy };
   }
 
@@ -681,7 +698,7 @@ export function evaluateCommandPolicy(command, config = {}) {
     };
   }
 
-  if (sandboxMode === "host" && /^sudo\b/.test(normalizedCommand)) {
+  if (sandboxMode === "host" && /^sudo\b/.test(normalizedCommand) && !trustedDangerHost) {
     return {
       allowed: false,
       category: "host-sudo",
@@ -693,7 +710,7 @@ export function evaluateCommandPolicy(command, config = {}) {
     };
   }
 
-  if (classification.category === "system-package-install" && sandboxMode === "host") {
+  if (classification.category === "system-package-install" && sandboxMode === "host" && !trustedDangerHost) {
     return {
       allowed: false,
       category: classification.category,

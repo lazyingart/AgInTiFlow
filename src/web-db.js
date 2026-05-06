@@ -5,12 +5,14 @@ import { resolveLanguage } from "./i18n.js";
 import { projectPaths } from "./project.js";
 import { deleteSessionIndex, renameSessionIndex, upsertSessionIndex } from "./session-index.js";
 import { loadDatabaseSync } from "./sqlite.js";
+import { permissionModeDefaults } from "./permission-modes.js";
 
-const PREFERENCES_SCHEMA_VERSION = 7;
+const PREFERENCES_SCHEMA_VERSION = 8;
 
 function defaultPreferences(baseDir) {
   const presets = getModelPresets();
   const roles = getModelRoleDefaults();
+  const permissions = permissionModeDefaults("normal");
   return {
     preferencesSchemaVersion: PREFERENCES_SCHEMA_VERSION,
     routingMode: "smart",
@@ -41,12 +43,15 @@ function defaultPreferences(baseDir) {
     allowWrapperTools: false,
     preferredWrapper: "codex",
     wrapperTimeoutMs: 120000,
-    sandboxMode: "docker-workspace",
-    packageInstallPolicy: "allow",
-    useDockerSandbox: true,
+    permissionMode: permissions.permissionMode,
+    sandboxMode: permissions.sandboxMode,
+    packageInstallPolicy: permissions.packageInstallPolicy,
+    workspaceWritePolicy: permissions.workspaceWritePolicy,
+    useDockerSandbox: permissions.useDockerSandbox,
     dockerSandboxImage: "agintiflow-sandbox:latest",
-    allowPasswords: false,
-    allowDestructive: false,
+    allowPasswords: permissions.allowPasswords,
+    allowDestructive: permissions.allowDestructive,
+    allowOutsideWorkspaceFileTools: permissions.allowOutsideWorkspaceFileTools,
     language: resolveLanguage(process.env.AGINTI_LANGUAGE || ""),
     taskProfile: "auto",
   };
@@ -149,6 +154,17 @@ export class WebDatabase {
           preferences.wrapperReasoning = preferences.wrapperReasoning || roles.wrapper.reasoning;
           preferences.auxiliaryProvider = preferences.auxiliaryProvider || roles.auxiliary.provider;
           preferences.auxiliaryModel = preferences.auxiliaryModel || roles.auxiliary.model;
+        }
+        if ((parsed.preferencesSchemaVersion || 1) < 8) {
+          const permissions = permissionModeDefaults(preferences.permissionMode || "normal");
+          preferences.permissionMode = permissions.permissionMode;
+          preferences.sandboxMode = permissions.sandboxMode;
+          preferences.packageInstallPolicy = permissions.packageInstallPolicy;
+          preferences.workspaceWritePolicy = permissions.workspaceWritePolicy;
+          preferences.useDockerSandbox = permissions.useDockerSandbox;
+          preferences.allowPasswords = permissions.allowPasswords;
+          preferences.allowDestructive = permissions.allowDestructive;
+          preferences.allowOutsideWorkspaceFileTools = permissions.allowOutsideWorkspaceFileTools;
         }
         this.savePreferences(preferences);
       }

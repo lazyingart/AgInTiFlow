@@ -134,6 +134,7 @@ aginti --language de
 | Use SCS only for complex work | `/scs auto` or `aginti --scs auto "task"` |
 | Work with AAPS workflows | `aginti aaps status`, `/aaps validate` |
 | Choose models | `/route`, `/model`, `/spare`, `/wrapper`, `/auxiliary model` |
+| Switch permissions | `-s safe`, `-s normal`, `-s danger`, or `/safe`, `/normal`, `/danger` |
 | Enable Venice shortcut | `/venice` |
 | Generate images | `/auxiliary image`, then ask for an image |
 | Resume current project | `aginti resume` |
@@ -161,7 +162,7 @@ aginti --resume <session-id> \
   "Take a fresh screenshot of the running app in the emulator, save it with a durable filename in this project, and keep git status clean."
 ```
 
-Permission behavior is intentionally consistent: writes inside the current project are allowed through file tools, workspace-local toolchain builds/probes can run when their command is narrowly classified, network/setup runs are normal in approved Docker workspace mode, and outside-project or trusted-host actions stop with a clear blocker plus a suggested rerun command. Android/Gradle builds can use safe local env assignments such as `ANDROID_HOME=... JAVA_HOME=... ./gradlew assembleDebug` and relative workspace logs without requiring whole-host destructive mode. See [runtime modes and autonomy](docs/runtime-modes-and-autonomy.md) for the full contract.
+Permission behavior is intentionally consistent. Use `-s safe` for read-first sessions that ask before writes/setup, `-s normal` for current-project writes plus Docker setup, and `-s danger` for trusted host/full-access work. Inside chat, `/safe`, `/normal`, and `/danger` switch the current session. When a blocked action appears, CLI and web can offer `No`, `Yes this time`, or `Yes and always for this session` instead of making the agent retry command variants. Android/Gradle builds can use safe local env assignments such as `ANDROID_HOME=... JAVA_HOME=... ./gradlew assembleDebug` and relative workspace logs without requiring whole-host destructive mode. See [runtime modes and autonomy](docs/runtime-modes-and-autonomy.md) for the full contract.
 
 Tmux follows the same rule. In Docker sandbox mode, `tmux_start_session` and `tmux_send_keys` are durable host tools, but their commands must stay workspace-bound. In host mode, tmux startup/send command text follows the same host shell policy as `run_command`; broad host shell work needs explicit `--allow-destructive`. Use `--sandbox-mode host --allow-destructive` only when a tmux task really needs trusted whole-host execution.
 
@@ -171,20 +172,15 @@ Use these when you want explicit control instead of the default interactive poli
 
 | Mode | Command | What it permits |
 | --- | --- | --- |
-| Strict inspection | `aginti --sandbox-mode docker-readonly --package-install-policy block --allow-shell --no-file-tools --no-web-search "inspect this project without edits"` | Enforced read-only project inspection through shell commands such as `ls`, `rg`, `cat`, and test commands that do not write. No file-tool writes, web calls, workspace writes, or installs. |
-| Full write in current folder | `aginti --sandbox-mode docker-workspace --package-install-policy allow --approve-package-installs --allow-shell --allow-file-tools "build and test this project"` | Read/write inside the current project folder, run network/setup commands in Docker, keep host safer. |
-| Full host computer access | `aginti --sandbox-mode host --package-install-policy allow --approve-package-installs --allow-shell --allow-file-tools --allow-destructive "perform the trusted host maintenance task"` | Direct host shell and destructive actions. Use only when you trust the task and want whole-host access. Android emulator/device work often needs this because the SDK and emulator live on the host. |
+| Safe | `aginti -s safe "inspect this project and ask before edits"` | Docker read-only posture, package/setup approval required, and file-tool writes stop for approval. |
+| Normal | `aginti -s normal "build and test this project"` | Current-project file writes and Docker workspace package/setup are allowed; outside-project writes and host-system changes still stop. |
+| Danger | `aginti -s danger "perform the trusted host maintenance task"` | Trusted host mode with destructive shell, host installs, password typing, and outside-workspace file paths enabled. Hard secret/publish guards still protect obvious credential leaks. |
 
 For resume:
 
 ```bash
 aginti --resume <session-id> \
-  --sandbox-mode host \
-  --package-install-policy allow \
-  --approve-package-installs \
-  --allow-shell \
-  --allow-file-tools \
-  --allow-destructive \
+  -s danger \
   "continue with trusted host access"
 ```
 

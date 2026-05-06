@@ -88,6 +88,8 @@ try {
   if (config.preferences?.commandCwd !== runtimeDir) throw new Error("commandCwd did not default to project root");
   if (config.preferences?.sandboxMode !== "docker-workspace") throw new Error("web did not default to docker workspace");
   if (config.preferences?.packageInstallPolicy !== "allow") throw new Error("web did not default to Docker package installs");
+  if (config.preferences?.permissionMode !== "normal") throw new Error("web did not default to normal permission mode");
+  if (config.preferences?.workspaceWritePolicy !== "allow") throw new Error("web did not default to workspace writes allowed");
   if (Number(config.preferences?.maxSteps) < 24) throw new Error("web default max steps is too low");
   if (!Array.isArray(config.taskProfiles) || !config.taskProfiles.some((profile) => profile.id === "latex")) {
     throw new Error("task profiles are not advertised by /api/config");
@@ -211,6 +213,48 @@ try {
   const hello = await fs.readFile(path.join(runtimeDir, "notes", "hello.md"), "utf8");
   if (!hello.includes("Created by AgInTiFlow mock mode.")) throw new Error("mock file run did not create requested path");
 
+  const safeRunStart = await fetchJson("/api/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      provider: "mock",
+      routingMode: "manual",
+      model: "mock-agent",
+      permissionMode: "safe",
+      goal: "Create notes/safe-web-approval.md with web approval content.",
+      commandCwd: runtimeDir,
+      allowShellTool: false,
+      allowFileTools: true,
+      preferredWrapper: "codex",
+      maxSteps: 4,
+      headless: true,
+    }),
+  });
+  const safeRun = await waitForRun(safeRunStart.sessionId);
+  if (!safeRun.logs?.some((entry) => entry.message === "tool.blocked" && entry.data?.permissionAdvice?.category === "workspace-write")) {
+    throw new Error("safe mode web run did not expose workspace-write permission advice");
+  }
+  const safePath = path.join(runtimeDir, "notes", "safe-web-approval.md");
+  const beforeApprovalExists = await fs.stat(safePath).then(() => true).catch(() => false);
+  if (beforeApprovalExists) throw new Error("safe mode created a file before approval");
+  const approval = await fetchJson(`/api/sessions/${encodeURIComponent(safeRunStart.sessionId)}/approve-permission`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "once", provider: "mock", routingMode: "manual", model: "mock-agent" }),
+  });
+  if (!approval.ok || approval.permissionMode !== "normal") throw new Error("permission approval endpoint did not escalate to normal");
+  const approvedRun = await waitForRun(safeRunStart.sessionId);
+  if (approvedRun.status !== "finished") throw new Error("permission-approved continuation did not finish");
+  const safeApproved = await fs.readFile(safePath, "utf8");
+  if (!safeApproved.includes("Created by AgInTiFlow mock mode.")) {
+    throw new Error("permission-approved continuation did not create the requested file");
+  }
+  await fetchJson("/api/preferences", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: "mock", routingMode: "manual", model: "mock-agent", permissionMode: "normal", commandCwd: runtimeDir }),
+  });
+
   const chat = await fetchJson(`/api/sessions/${encodeURIComponent(runStart.sessionId)}/chat`);
   if (!Array.isArray(chat.chat) || chat.chat.length < 2) throw new Error("chat history was not persisted");
   if (!Array.isArray(chat.inbox)) throw new Error("chat endpoint did not include shared inbox state");
@@ -328,6 +372,7 @@ try {
           "/api/sandbox/status",
           "/api/sandbox/preflight",
           "/api/runs",
+          "POST /api/sessions/:id/approve-permission",
           "/api/sessions/:id/chat",
           "/api/sessions/:id/inbox",
           "POST /api/sessions/:id/inbox",

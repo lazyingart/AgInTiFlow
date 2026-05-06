@@ -875,6 +875,26 @@ button.danger {
   background: rgba(255, 255, 255, 0.06);
 }
 
+.permission-approval {
+  margin: 8px 0 14px;
+  padding: 12px;
+  border: 1px solid rgba(251, 146, 60, 0.42);
+  border-radius: 14px;
+  background: rgba(124, 45, 18, 0.22);
+  color: #ffedd5;
+}
+
+.permission-approval p {
+  margin: 6px 0;
+}
+
+.permission-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .log-stream-title,
 .log-fold-note {
   padding: 0 12px 8px;

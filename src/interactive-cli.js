@@ -36,6 +36,13 @@ import {
 import { normalizeScsMode } from "./scs-controller.js";
 import { formatAapsResult, runAapsAction } from "./aaps-adapter.js";
 import { formatInstructionTemplateList, normalizeInstructionTemplate } from "./behavior-contract.js";
+import {
+  applyPermissionMode,
+  normalizePermissionMode,
+  permissionModeDescription,
+  permissionModeForApprovalCategory,
+  permissionModeLabel,
+} from "./permission-modes.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
@@ -99,6 +106,9 @@ const SLASH_COMMANDS = [
   "/routing",
   "/provider",
   "/model",
+  "/safe",
+  "/normal",
+  "/danger",
   "/language",
   "/lang",
   "/docker",
@@ -736,6 +746,7 @@ function printHelp() {
       `  ${command("/scouts on|off|<1-10>", "Enable parallel DeepSeek scouts and set scout count.", "helpScouts")}`,
       `  ${command("/routing <mode>", "Set routing: smart, fast, complex, manual.", "helpRouting")}`,
       `  ${command("/provider [name]", "Open provider selector, or set deepseek/openai/qwen/venice/mock.", "helpProvider")}`,
+      `  ${command("/safe | /normal | /danger", "Switch permission posture for this session.", "helpPermissionMode")}`,
       `  ${command("/docker on", "Use docker-workspace with approved package installs.", "helpDockerOn")}`,
       `  ${command("/docker off", "Use host shell policy.", "helpDockerOff")}`,
       `  ${command("/latex on", "Use the LaTeX/PDF profile in Docker with a larger step budget.", "helpLatex")}`,
@@ -1674,10 +1685,105 @@ function printStatus(state) {
   );
   printSystemLine(`profile=${state.taskProfile} maxSteps=${state.maxSteps}`);
   printSystemLine(
-    `shell=${state.allowShellTool} files=${state.allowFileTools} webSearch=${state.allowWebSearch} scouts=${state.allowParallelScouts}:${state.parallelScoutCount} scs=${state.enableScs || "off"} auxiliary=${state.allowAuxiliaryTools} sandbox=${state.sandboxMode} installs=${state.packageInstallPolicy}`
+    `permission=${state.permissionMode || "normal"} shell=${state.allowShellTool} files=${state.allowFileTools} writePolicy=${state.workspaceWritePolicy || "allow"} webSearch=${state.allowWebSearch} scouts=${state.allowParallelScouts}:${state.parallelScoutCount} scs=${state.enableScs || "off"} auxiliary=${state.allowAuxiliaryTools} sandbox=${state.sandboxMode} installs=${state.packageInstallPolicy}`
   );
   if (state.sandboxMode !== "host") {
     printSystemLine(`dockerWorkspace=/workspace -> ${state.commandCwd || process.cwd()}`);
+  }
+}
+
+function setPermissionMode(state, mode = "normal", { announce = true } = {}) {
+  const normalized = normalizePermissionMode(mode, state.permissionMode || "normal");
+  applyPermissionMode(state, normalized, { override: true });
+  state.sandboxMode = normalizeSandboxMode(state.sandboxMode);
+  state.packageInstallPolicy = normalizePackageInstallPolicy(state.packageInstallPolicy);
+  if (announce) {
+    printSystemLine(
+      `permission=${state.permissionMode} sandbox=${state.sandboxMode} installs=${state.packageInstallPolicy} writePolicy=${state.workspaceWritePolicy} destructive=${state.allowDestructive} passwords=${state.allowPasswords}`
+    );
+    printAgentMessage(`${permissionModeLabel(state.permissionMode)} mode: ${permissionModeDescription(state.permissionMode)}`);
+  }
+  return state.permissionMode;
+}
+
+function snapshotPermissionState(state) {
+  return {
+    permissionMode: state.permissionMode,
+    sandboxMode: state.sandboxMode,
+    packageInstallPolicy: state.packageInstallPolicy,
+    workspaceWritePolicy: state.workspaceWritePolicy,
+    allowShellTool: state.allowShellTool,
+    allowFileTools: state.allowFileTools,
+    allowDestructive: state.allowDestructive,
+    allowPasswords: state.allowPasswords,
+    allowOutsideWorkspaceFileTools: state.allowOutsideWorkspaceFileTools,
+  };
+}
+
+function restorePermissionState(state, snapshot = {}) {
+  for (const [key, value] of Object.entries(snapshot)) state[key] = value;
+}
+
+async function askPermissionApproval(advice = {}) {
+  if (!input.isTTY || !output.isTTY || typeof input.setRawMode !== "function") return null;
+  const category = advice.category || "permission";
+  const targetMode = permissionModeForApprovalCategory(category);
+  return selectModelChoice({
+    title: "Permission approval required",
+    subtitle: compactLine(advice.summary || advice.reason || "Choose whether to continue with a stronger permission mode.", 104),
+    options: [
+      {
+        action: "group",
+        value: "no",
+        label: "No",
+        description: "Keep current permissions and stop this blocked operation.",
+      },
+      {
+        action: "group",
+        value: "once",
+        label: "Yes this time",
+        description: `Temporarily continue this task in ${permissionModeLabel(targetMode).toLowerCase()} mode.`,
+      },
+      {
+        action: "group",
+        value: "always",
+        label: "Yes and always",
+        description: `Switch this session to ${permissionModeLabel(targetMode).toLowerCase()} mode.`,
+      },
+    ],
+    escapeValue: { value: "no" },
+  });
+}
+
+async function maybeContinueAfterPermissionApproval(advice, state, packageDir, { approvalDepth = 0, originalGoal = "" } = {}) {
+  if (!advice || approvalDepth > 0) return [];
+  const selected = await askPermissionApproval(advice);
+  if (!selected || selected.value === "no") {
+    printSystemLine("permission=declined");
+    return [];
+  }
+
+  const targetMode = permissionModeForApprovalCategory(advice.category || "");
+  const previous = snapshotPermissionState(state);
+  setPermissionMode(state, targetMode, { announce: true });
+  const approvalPrompt = [
+    "Continue the same task after the user approved the previously blocked permission.",
+    originalGoal ? `Original request: ${originalGoal}` : "",
+    "Do not repeat unrelated blocked actions.",
+    "Keep the work scoped to the user's request and verify outputs before finishing.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  try {
+    return await runPrompt(approvalPrompt, state, packageDir, { approvalDepth: approvalDepth + 1 });
+  } finally {
+    if (selected.value === "once") {
+      restorePermissionState(state, previous);
+      printSystemLine(
+        `permission=${state.permissionMode} sandbox=${state.sandboxMode} installs=${state.packageInstallPolicy} writePolicy=${state.workspaceWritePolicy}`
+      );
+    }
   }
 }
 
@@ -1797,22 +1903,29 @@ async function printResumeHint(state) {
 }
 
 function createState(args = {}) {
+  const permissionMode = normalizePermissionMode(args.permissionMode || process.env.AGINTI_PERMISSION_MODE || "normal");
+  const permissionDefaults = applyPermissionMode({}, permissionMode, { override: true });
   return {
     provider: args.provider || "",
     model: args.model || "",
     routingMode: args.routingMode || "smart",
     commandCwd: args.commandCwd || process.cwd(),
-    sandboxMode: normalizeSandboxMode(args.sandboxMode || "docker-workspace"),
-    packageInstallPolicy: normalizePackageInstallPolicy(args.packageInstallPolicy || "allow"),
-    allowShellTool: args.allowShellTool ?? true,
-    allowFileTools: args.allowFileTools ?? true,
+    permissionMode,
+    sandboxMode: normalizeSandboxMode(args.sandboxMode || permissionDefaults.sandboxMode || "docker-workspace"),
+    packageInstallPolicy: normalizePackageInstallPolicy(args.packageInstallPolicy || permissionDefaults.packageInstallPolicy || "allow"),
+    workspaceWritePolicy: args.workspaceWritePolicy || permissionDefaults.workspaceWritePolicy || "allow",
+    allowShellTool: args.allowShellTool ?? permissionDefaults.allowShellTool ?? true,
+    allowFileTools: args.allowFileTools ?? permissionDefaults.allowFileTools ?? true,
     allowAuxiliaryTools: args.allowAuxiliaryTools ?? true,
     allowWebSearch: args.allowWebSearch ?? true,
     allowParallelScouts: args.allowParallelScouts ?? true,
     enableScs: normalizeScsMode(args.enableScs || process.env.AGINTI_SCS_MODE || "off"),
     parallelScoutCount: args.parallelScoutCount || 3,
     allowWrapperTools: args.allowWrapperTools ?? false,
-    allowDestructive: args.allowDestructive ?? false,
+    allowDestructive: args.allowDestructive ?? permissionDefaults.allowDestructive ?? false,
+    allowPasswords: args.allowPasswords ?? permissionDefaults.allowPasswords ?? false,
+    allowOutsideWorkspaceFileTools:
+      args.allowOutsideWorkspaceFileTools ?? permissionDefaults.allowOutsideWorkspaceFileTools ?? false,
     preferredWrapper: args.preferredWrapper || "codex",
     routeProvider: args.routeProvider || "",
     routeModel: args.routeModel || "",
@@ -2319,7 +2432,7 @@ function selectModelChoice({ title, subtitle, options, initialIndex = 0, escapeV
         redraw();
         return;
       }
-      if (key.name === "return" || key.name === "enter" || key.sequence === "\r") {
+      if (key.name === "return" || key.name === "enter" || key.sequence === "\r" || key.sequence === " ") {
         if (Date.now() - startedAt < 120) return;
         finish(options[selectedIndex]);
       }
@@ -2626,6 +2739,10 @@ async function handleCommand(line, state, packageDir) {
     return true;
   }
   if (command === "exit" || command === "quit" || command === "q") return false;
+  if (command === "safe" || command === "normal" || command === "danger") {
+    setPermissionMode(state, command);
+    return true;
+  }
   if (command === "status") {
     printStatus(state);
     const keys = providerKeyStatus(process.cwd());
@@ -3197,7 +3314,7 @@ async function handleCommand(line, state, packageDir) {
   return true;
 }
 
-async function runPrompt(prompt, state, packageDir) {
+async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) {
   const controller = new AbortController();
   const runMaxSteps = Math.max(
     state.maxSteps,
@@ -3212,8 +3329,10 @@ async function runPrompt(prompt, state, packageDir) {
       model: state.model,
       routingMode: state.routingMode,
       commandCwd: state.commandCwd,
+      permissionMode: state.permissionMode,
       sandboxMode: state.sandboxMode,
       packageInstallPolicy: state.packageInstallPolicy,
+      workspaceWritePolicy: state.workspaceWritePolicy,
       allowShellTool: state.allowShellTool,
       allowFileTools: state.allowFileTools,
       allowAuxiliaryTools: state.allowAuxiliaryTools,
@@ -3223,6 +3342,8 @@ async function runPrompt(prompt, state, packageDir) {
       parallelScoutCount: state.parallelScoutCount,
       allowWrapperTools: state.allowWrapperTools,
       allowDestructive: state.allowDestructive,
+      allowPasswords: state.allowPasswords,
+      allowOutsideWorkspaceFileTools: state.allowOutsideWorkspaceFileTools,
       preferredWrapper: state.preferredWrapper,
       routeProvider: state.routeProvider,
       routeModel: state.routeModel,
@@ -3267,6 +3388,7 @@ async function runPrompt(prompt, state, packageDir) {
   let result;
   let runError = null;
   let queuedAfterFinish = [];
+  let latestPermissionAdvice = null;
   try {
     result = await runAgent({
       ...config,
@@ -3305,6 +3427,10 @@ async function runPrompt(prompt, state, packageDir) {
           printStatusEvent(state, "tool_blocked", data.toolName || data.reason || "unknown");
           if (data.permissionAdvice) {
             const advice = data.permissionAdvice;
+            latestPermissionAdvice = {
+              ...advice,
+              category: advice.category || data.category || "",
+            };
             outputLine(`${label("perm", ansi.red)} ${compactLine(advice.summary || advice.reason || "Permission advice available.", 104)}`);
             if (advice.suggestedCommand) outputLine(`${color(" | ", ansi.red)} rerun: ${compactLine(advice.suggestedCommand, 120)}`);
             if (advice.trustedHostCommand) outputLine(`${color(" | ", ansi.red)} host: ${compactLine(advice.trustedHostCommand, 120)}`);
@@ -3342,6 +3468,13 @@ async function runPrompt(prompt, state, packageDir) {
   if (result.stopped && result.reason === "user_interrupt") {
     await printResumeHint(state);
     return [];
+  }
+  if (!result.stopped && latestPermissionAdvice) {
+    const approvalQueued = await maybeContinueAfterPermissionApproval(latestPermissionAdvice, state, packageDir, {
+      approvalDepth,
+      originalGoal: prompt,
+    });
+    return [...queuedAfterFinish, ...approvalQueued];
   }
   return queuedAfterFinish;
 }

@@ -21,6 +21,11 @@ import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./src/comma
 import { summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./src/workspace-tools.js";
 import { listTaskProfiles, normalizeTaskProfile } from "./src/task-profiles.js";
 import {
+  applyPermissionMode,
+  normalizePermissionMode,
+  permissionModeForApprovalCategory,
+} from "./src/permission-modes.js";
+import {
   ensureProjectSessionStorage,
   listProjectSessions,
   loadProjectEnv,
@@ -128,7 +133,21 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
   const parsedMaxSteps = Number(body.maxSteps);
   const parsedWrapperTimeoutMs = Number(body.wrapperTimeoutMs);
   const parsedParallelScoutCount = Number(body.parallelScoutCount);
-  const sandboxMode = normalizeSandboxMode(body.sandboxMode || current.sandboxMode || "docker-workspace");
+  const permissionMode = normalizePermissionMode(body.permissionMode || current.permissionMode || "normal");
+  const permissionDefaults = applyPermissionMode({}, permissionMode, { override: true });
+  const bodyHasExplicitRuntime =
+    body.sandboxMode !== undefined ||
+    body.packageInstallPolicy !== undefined ||
+    body.workspaceWritePolicy !== undefined ||
+    body.allowPasswords !== undefined ||
+    body.allowDestructive !== undefined ||
+    body.allowOutsideWorkspaceFileTools !== undefined;
+  const currentModeChanged = permissionMode !== normalizePermissionMode(current.permissionMode || "normal");
+  const sandboxMode = normalizeSandboxMode(
+    bodyHasExplicitRuntime && !currentModeChanged
+      ? body.sandboxMode || current.sandboxMode || permissionDefaults.sandboxMode
+      : permissionDefaults.sandboxMode
+  );
 
   return {
     routingMode,
@@ -193,8 +212,19 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
         ? body.commandCwd.trim()
         : current.commandCwd || baseDir,
     taskProfile: normalizeTaskProfile(body.taskProfile || current.taskProfile || "auto"),
-    allowShellTool: typeof body.allowShellTool === "boolean" ? body.allowShellTool : Boolean(current.allowShellTool),
-    allowFileTools: typeof body.allowFileTools === "boolean" ? body.allowFileTools : current.allowFileTools !== false,
+    permissionMode,
+    allowShellTool:
+      typeof body.allowShellTool === "boolean" && !currentModeChanged
+        ? body.allowShellTool
+        : currentModeChanged
+          ? permissionDefaults.allowShellTool
+          : Boolean(current.allowShellTool),
+    allowFileTools:
+      typeof body.allowFileTools === "boolean" && !currentModeChanged
+        ? body.allowFileTools
+        : currentModeChanged
+          ? permissionDefaults.allowFileTools
+          : current.allowFileTools !== false,
     allowAuxiliaryTools:
       typeof body.allowAuxiliaryTools === "boolean" ? body.allowAuxiliaryTools : current.allowAuxiliaryTools !== false,
     allowWebSearch:
@@ -220,15 +250,36 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
           : Boolean(current.useDockerSandbox),
     sandboxMode,
     packageInstallPolicy: normalizePackageInstallPolicy(
-      body.packageInstallPolicy || current.packageInstallPolicy || (sandboxMode === "host" ? "prompt" : "allow")
+      bodyHasExplicitRuntime && !currentModeChanged
+        ? body.packageInstallPolicy || current.packageInstallPolicy || permissionDefaults.packageInstallPolicy
+        : permissionDefaults.packageInstallPolicy
     ),
+    workspaceWritePolicy:
+      bodyHasExplicitRuntime && !currentModeChanged
+        ? body.workspaceWritePolicy || current.workspaceWritePolicy || permissionDefaults.workspaceWritePolicy
+        : permissionDefaults.workspaceWritePolicy,
     dockerSandboxImage:
       typeof body.dockerSandboxImage === "string" && body.dockerSandboxImage.trim()
         ? body.dockerSandboxImage.trim()
         : current.dockerSandboxImage || "agintiflow-sandbox:latest",
-    allowPasswords: typeof body.allowPasswords === "boolean" ? body.allowPasswords : Boolean(current.allowPasswords),
+    allowPasswords:
+      typeof body.allowPasswords === "boolean" && !currentModeChanged
+        ? body.allowPasswords
+        : currentModeChanged
+          ? permissionDefaults.allowPasswords
+          : Boolean(current.allowPasswords),
     allowDestructive:
-      typeof body.allowDestructive === "boolean" ? body.allowDestructive : Boolean(current.allowDestructive),
+      typeof body.allowDestructive === "boolean" && !currentModeChanged
+        ? body.allowDestructive
+        : currentModeChanged
+          ? permissionDefaults.allowDestructive
+          : Boolean(current.allowDestructive),
+    allowOutsideWorkspaceFileTools:
+      typeof body.allowOutsideWorkspaceFileTools === "boolean" && !currentModeChanged
+        ? body.allowOutsideWorkspaceFileTools
+        : currentModeChanged
+          ? permissionDefaults.allowOutsideWorkspaceFileTools
+          : Boolean(current.allowOutsideWorkspaceFileTools),
     language: normalizeLanguage(body.language || process.env.AGINTI_LANGUAGE || current.language, current.language || "en"),
   };
 }
@@ -302,9 +353,12 @@ function buildRunConfig(body, overrides = {}) {
       allowWrapperTools: merged.allowWrapperTools,
       preferredWrapper: merged.preferredWrapper,
       wrapperTimeoutMs: merged.wrapperTimeoutMs,
+      permissionMode: merged.permissionMode,
       sandboxMode: merged.sandboxMode,
       packageInstallPolicy: merged.packageInstallPolicy,
+      workspaceWritePolicy: merged.workspaceWritePolicy,
       useDockerSandbox: merged.useDockerSandbox,
+      allowOutsideWorkspaceFileTools: merged.allowOutsideWorkspaceFileTools,
       dockerSandboxImage: merged.dockerSandboxImage,
       commandCwd: merged.commandCwd,
       taskProfile: merged.taskProfile,
@@ -494,6 +548,50 @@ async function ensureNotRunning(sessionId) {
   if (meta?.status === "running") {
     throw new Error("This session is already running.");
   }
+}
+
+async function latestPermissionAdvice(sessionId) {
+  const inMemory = runs.get(sessionId);
+  const memoryEntry = [...(inMemory?.logs || [])]
+    .reverse()
+    .find((entry) => entry.message === "tool.blocked" && entry.data?.permissionAdvice);
+  if (memoryEntry?.data?.permissionAdvice) {
+    return {
+      ...memoryEntry.data.permissionAdvice,
+      category: memoryEntry.data.permissionAdvice.category || memoryEntry.data.category || "",
+    };
+  }
+
+  const events = await sessionStore(sessionId).loadEvents().catch(() => []);
+  const event = [...events].reverse().find((candidate) => candidate.type === "tool.blocked" && candidate.data?.permissionAdvice);
+  if (!event?.data?.permissionAdvice) return null;
+  return {
+    ...event.data.permissionAdvice,
+    category: event.data.permissionAdvice.category || event.data.category || "",
+  };
+}
+
+function permissionApprovalPrompt(action, advice = {}, originalGoal = "") {
+  const original = originalGoal ? `Original request: ${originalGoal}` : "";
+  if (action === "once") {
+    return [
+      "Continue the same task after the user approved the previously blocked permission once.",
+      original,
+      "Do not repeat unrelated blocked actions.",
+      "Keep the work scoped to the user's request and verify outputs before finishing.",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+  return [
+    "Continue the same task after the user approved this permission mode for the current session.",
+    original,
+    "Use the stronger mode only for the requested task.",
+    "Verify outputs before finishing.",
+    advice.summary ? `Previous blocker: ${advice.summary}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 async function collectWorkspaceActivity(limit = 24) {
@@ -1102,6 +1200,101 @@ app.post("/api/sessions/:sessionId/messages", async (req, res) => {
   runs.set(sessionId, run);
   wireRun(run, config);
   res.json({ sessionId });
+});
+
+app.post("/api/sessions/:sessionId/approve-permission", async (req, res) => {
+  const sessionId = req.params.sessionId;
+  if (!isSafeSessionId(sessionId)) {
+    res.status(400).json({ error: "Invalid session id." });
+    return;
+  }
+
+  const action = String(req.body?.action || "no").trim().toLowerCase();
+  if (!["no", "once", "always"].includes(action)) {
+    res.status(400).json({ error: "Action must be no, once, or always." });
+    return;
+  }
+
+  try {
+    await ensureNotRunning(sessionId);
+  } catch (error) {
+    res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    return;
+  }
+
+  const meta = db.getSession(sessionId);
+  if (!meta) {
+    res.status(404).json({ error: "Session not found." });
+    return;
+  }
+
+  const advice = await latestPermissionAdvice(sessionId);
+  if (!advice) {
+    res.status(404).json({ error: "No pending permission advice found for this session." });
+    return;
+  }
+
+  const store = sessionStore(sessionId);
+  if (action === "no") {
+    await store.appendEvent("permission.approval_declined", {
+      source: "web",
+      category: advice.category || "",
+    });
+    const existing = runs.get(sessionId);
+    if (existing) {
+      existing.logs.push({
+        at: new Date().toISOString(),
+        kind: "event",
+        message: "permission.approval_declined",
+        data: { source: "web", category: advice.category || "" },
+      });
+    }
+    res.json({ ok: true, sessionId, action });
+    return;
+  }
+
+  const targetMode = normalizePermissionMode(req.body?.permissionMode || permissionModeForApprovalCategory(advice.category || ""));
+  const preferences = normalizePreferencePayload(
+    {
+      ...db.getPreferences(),
+      ...req.body,
+      permissionMode: targetMode,
+      goal: permissionApprovalPrompt(action, advice, meta.goal),
+    },
+    db.getPreferences()
+  );
+  if (action === "always") db.savePreferences(preferences);
+
+  const config = buildRunConfig(
+    {
+      ...preferences,
+      goal: permissionApprovalPrompt(action, advice, meta.goal),
+    },
+    {
+      resume: sessionId,
+      sessionId,
+      provider: preferences.provider || meta.provider,
+      model: preferences.model || meta.model,
+    }
+  );
+
+  if (!config.apiKey) {
+    res.status(400).json({ error: `Missing API key for ${config.provider}.` });
+    return;
+  }
+
+  await store.appendEvent("permission.approval_granted", {
+    source: "web",
+    action,
+    category: advice.category || "",
+    permissionMode: targetMode,
+  });
+
+  const stored = await loadStoredRun(sessionId);
+  const run = createRunRecord(config, config.goal, stored?.logs || []);
+  runs.set(sessionId, run);
+  wireRun(run, config);
+  res.json({ ok: true, sessionId, action, permissionMode: targetMode });
 });
 
 app.get("/api/runs/:sessionId", async (req, res) => {

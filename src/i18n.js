@@ -144,6 +144,7 @@ const TRANSLATIONS = {
     helpScouts: "Enable parallel DeepSeek scouts and set scout count.",
     helpRouting: "Set routing: smart, fast, complex, manual.",
     helpProvider: "Open provider selector, or set deepseek/openai/qwen/venice/mock.",
+    helpPermissionMode: "Switch safe/normal/danger permission posture for this session.",
     helpDockerOn: "Use docker-workspace with approved package installs.",
     helpDockerOff: "Use host shell policy.",
     helpLatex: "Use the LaTeX/PDF profile in Docker with a larger step budget.",

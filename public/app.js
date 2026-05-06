@@ -57,6 +57,18 @@ const translations = {
     commandCwdLabel: "Working directory",
     maxStepsLabel: "Max steps",
     sandboxModeLabel: "Sandbox mode",
+    permissionModeLabel: "Permission shortcut",
+    permissionSafeOption: "Safe: ask before writes/setup",
+    permissionNormalOption: "Normal: project writes + Docker setup",
+    permissionDangerOption: "Danger: trusted host/full access",
+    permissionHintSafe: "Safe mode asks before workspace writes and package/setup actions.",
+    permissionHintNormal: "Normal mode allows current-project writes and package setup inside Docker; outside-project and host-system changes still stop for approval.",
+    permissionHintDanger: "Danger mode enables trusted host access, destructive commands, password typing, and outside-workspace file paths. Use only for tasks you trust.",
+    permissionApprovalTitle: "Permission approval",
+    permissionApprovalNo: "No",
+    permissionApprovalOnce: "Yes this time",
+    permissionApprovalAlways: "Yes and always",
+    permissionApprovalFailed: "Permission approval failed.",
     sandboxHostOption: "Host read-only",
     sandboxDockerReadonlyOption: "Docker read-only",
     sandboxDockerWorkspaceOption: "Docker workspace-write",
@@ -672,6 +684,8 @@ const setupApiKeyField = document.querySelector("#setup-api-key");
 const saveApiKeyButton = document.querySelector("#save-api-key");
 const setupStatusEl = document.querySelector("#setup-status");
 const taskProfileField = document.querySelector("#taskProfile");
+const permissionModeField = document.querySelector("#permissionMode");
+const permissionHintEl = document.querySelector("#permission-hint");
 const sandboxModeField = document.querySelector("#sandboxMode");
 const packageInstallPolicyField = document.querySelector("#packageInstallPolicy");
 const packageWarningEl = document.querySelector("#package-warning");
@@ -1218,6 +1232,60 @@ function updatePackageWarning() {
   packageWarningEl.textContent = t(key);
 }
 
+function permissionDefaults(mode = "normal") {
+  if (mode === "safe") {
+    return {
+      sandboxMode: "docker-readonly",
+      packageInstallPolicy: "prompt",
+      workspaceWritePolicy: "prompt",
+      allowPasswords: false,
+      allowDestructive: false,
+      allowOutsideWorkspaceFileTools: false,
+    };
+  }
+  if (mode === "danger") {
+    return {
+      sandboxMode: "host",
+      packageInstallPolicy: "allow",
+      workspaceWritePolicy: "allow",
+      allowPasswords: true,
+      allowDestructive: true,
+      allowOutsideWorkspaceFileTools: true,
+    };
+  }
+  return {
+    sandboxMode: "docker-workspace",
+    packageInstallPolicy: "allow",
+    workspaceWritePolicy: "allow",
+    allowPasswords: false,
+    allowDestructive: false,
+    allowOutsideWorkspaceFileTools: false,
+  };
+}
+
+function updatePermissionHint() {
+  if (!permissionHintEl || !permissionModeField) return;
+  const key =
+    permissionModeField.value === "safe"
+      ? "permissionHintSafe"
+      : permissionModeField.value === "danger"
+        ? "permissionHintDanger"
+        : "permissionHintNormal";
+  permissionHintEl.textContent = t(key);
+}
+
+function applyPermissionModeToForm(mode = permissionModeField?.value || "normal") {
+  const defaults = permissionDefaults(mode);
+  if (sandboxModeField) sandboxModeField.value = defaults.sandboxMode;
+  if (packageInstallPolicyField) packageInstallPolicyField.value = defaults.packageInstallPolicy;
+  const allowPasswordsField = document.querySelector("#allowPasswords");
+  const allowDestructiveField = document.querySelector("#allowDestructive");
+  if (allowPasswordsField) allowPasswordsField.checked = defaults.allowPasswords;
+  if (allowDestructiveField) allowDestructiveField.checked = defaults.allowDestructive;
+  updatePermissionHint();
+  updatePackageWarning();
+}
+
 function applyLanguage(language, { persist = true } = {}) {
   currentLanguage = normalizeLanguage(language);
   document.documentElement.lang = currentLanguage;
@@ -1244,6 +1312,7 @@ function applyLanguage(language, { persist = true } = {}) {
   renderWorkspacePanel();
   renderSandboxStatus();
   updateRoutingHint();
+  updatePermissionHint();
   updatePackageWarning();
   renderSessions(lastSessions);
   renderSessionManager();
@@ -1274,8 +1343,10 @@ function formPayload() {
     allowedDomains: document.querySelector("#allowedDomains").value.trim(),
     commandCwd: document.querySelector("#commandCwd").value.trim(),
     maxSteps: Number(document.querySelector("#maxSteps").value) || 24,
+    permissionMode: permissionModeField?.value || "normal",
     sandboxMode: sandboxModeField.value,
     packageInstallPolicy: packageInstallPolicyField.value,
+    workspaceWritePolicy: permissionDefaults(permissionModeField?.value || "normal").workspaceWritePolicy,
     headless: document.querySelector("#headless").checked,
     allowShellTool: document.querySelector("#allowShellTool").checked,
     allowFileTools: document.querySelector("#allowFileTools").checked,
@@ -1290,6 +1361,7 @@ function formPayload() {
     dockerSandboxImage: document.querySelector("#dockerSandboxImage").value.trim(),
     allowPasswords: document.querySelector("#allowPasswords").checked,
     allowDestructive: document.querySelector("#allowDestructive").checked,
+    allowOutsideWorkspaceFileTools: permissionDefaults(permissionModeField?.value || "normal").allowOutsideWorkspaceFileTools,
   };
 }
 
@@ -1326,6 +1398,33 @@ function renderCommandOutputLog(entry) {
   `;
 }
 
+function renderPermissionApproval(entry) {
+  const advice = entry.data?.permissionAdvice;
+  if (!advice) return "";
+  const summary = advice.summary || advice.reason || "Permission approval is required.";
+  const category = advice.category || entry.data?.category || "";
+  const suggested = advice.suggestedCommand
+    ? `<div class="log-fold-note"><strong>rerun:</strong> <code>${escapeHtml(advice.suggestedCommand)}</code></div>`
+    : "";
+  const trusted = advice.trustedHostCommand
+    ? `<div class="log-fold-note"><strong>host:</strong> <code>${escapeHtml(advice.trustedHostCommand)}</code></div>`
+    : "";
+  return `
+    <article class="permission-approval">
+      <strong>${escapeHtml(t("permissionApprovalTitle"))}</strong>
+      <p>${escapeHtml(summary)}</p>
+      <div class="subtle">${escapeHtml(category)}</div>
+      ${suggested}
+      ${trusted}
+      <div class="permission-actions">
+        <button type="button" class="mini-button danger" data-permission-action="no">${escapeHtml(t("permissionApprovalNo"))}</button>
+        <button type="button" class="mini-button" data-permission-action="once">${escapeHtml(t("permissionApprovalOnce"))}</button>
+        <button type="button" class="mini-button" data-permission-action="always">${escapeHtml(t("permissionApprovalAlways"))}</button>
+      </div>
+    </article>
+  `;
+}
+
 function renderLogs(run) {
   logsEl.dataset.mode = "active";
   const parts = [
@@ -1340,6 +1439,10 @@ function renderLogs(run) {
       continue;
     }
     parts.push(`<div class="log-line">${escapeHtml(`[${entry.at}] ${entry.kind}: ${entry.message}`)}</div>`);
+    if (entry.message === "tool.blocked" && entry.data?.permissionAdvice) {
+      parts.push(renderPermissionApproval(entry));
+      continue;
+    }
     if (entry.data && Object.keys(entry.data).length > 0) {
       parts.push(`<pre class="log-json">${escapeHtml(JSON.stringify(entry.data, null, 2))}</pre>`);
     }
@@ -2270,6 +2373,36 @@ async function stopCurrentRun() {
   await refreshRun();
 }
 
+async function approvePermission(action) {
+  if (!currentSessionId) return;
+  chatStatusEl.textContent = t("sendingStatus");
+  const response = await fetch(`/api/sessions/${encodeURIComponent(currentSessionId)}/approve-permission`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...formPayload(),
+      action,
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    chatStatusEl.textContent = data.error || t("permissionApprovalFailed");
+    return;
+  }
+  if (data.permissionMode && action === "always" && permissionModeField) {
+    permissionModeField.value = data.permissionMode;
+    applyPermissionModeToForm(data.permissionMode);
+  }
+  currentRunStatus = action === "no" ? currentRunStatus : "running";
+  chatStatusEl.textContent = action === "no" ? t("permissionApprovalNo") : t("runningStatus");
+  updateStopRunButton();
+  await refreshRun();
+  if (action !== "no") {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(refreshRun, 1500);
+  }
+}
+
 async function refreshChat() {
   if (!currentSessionId) {
     pendingInboxItems = [];
@@ -2595,6 +2728,10 @@ modelField.addEventListener("change", updateRoutingHint);
   });
 sandboxModeField.addEventListener("change", updatePackageWarning);
 packageInstallPolicyField.addEventListener("change", updatePackageWarning);
+permissionModeField?.addEventListener("change", () => {
+  applyPermissionModeToForm(permissionModeField.value);
+  schedulePreferenceSave();
+});
 allowWrapperToolsField.addEventListener("change", () => renderWrapperStatus());
 preferredWrapperField.addEventListener("change", () => renderWrapperStatus());
 taskProfileField?.addEventListener("change", () => {
@@ -2684,6 +2821,14 @@ stopRunButton?.addEventListener("click", () => {
   stopCurrentRun().catch((error) => {
     chatStatusEl.textContent = String(error);
     updateStopRunButton();
+  });
+});
+
+logsEl?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-permission-action]");
+  if (!button) return;
+  approvePermission(button.dataset.permissionAction || "no").catch((error) => {
+    chatStatusEl.textContent = error instanceof Error ? error.message : String(error);
   });
 });
 
@@ -2870,6 +3015,7 @@ async function loadConfig() {
   document.querySelector("#commandCwd").value = prefs.commandCwd || data.project?.root || "";
   document.querySelector("#headless").checked = prefs.headless ?? data.defaults.headless;
   document.querySelector("#maxSteps").value = prefs.maxSteps ?? data.defaults.maxSteps;
+  if (permissionModeField) permissionModeField.value = prefs.permissionMode || "normal";
   sandboxModeField.value = prefs.sandboxMode || (prefs.useDockerSandbox ? "docker-workspace" : "host");
   packageInstallPolicyField.value = prefs.packageInstallPolicy || "allow";
   document.querySelector("#allowShellTool").checked = prefs.allowShellTool ?? true;
@@ -2891,6 +3037,7 @@ async function loadConfig() {
   await refreshWorkspaceChanges();
   renderSandboxLogs(data.sandbox?.logs || []);
   updateRoutingHint();
+  updatePermissionHint();
   updatePackageWarning();
 
   renderSessions(data.sessions || []);

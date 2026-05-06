@@ -97,6 +97,25 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
     };
   }
 
+  if (category === "workspace-write") {
+    return {
+      ...base,
+      summary:
+        "Safe mode requires approval before workspace writes. Read-only inspection can continue; writing a file or patching code needs a one-time approval or a switch to normal mode for this session.",
+      options: [
+        "No: keep inspecting without edits.",
+        "Yes this time: allow the current workspace write and continue once.",
+        "Yes and always for this session: switch this session to normal mode.",
+      ],
+      suggestedCommand: resumeCommand({
+        config,
+        state,
+        sandboxMode: "docker-workspace",
+        prompt: "Continue after the user approved current-project writes for this task. Keep edits inside the workspace and verify changed files before finishing.",
+      }),
+    };
+  }
+
   if (category === "host-sudo" || category === "system-package-install") {
     return {
       ...base,

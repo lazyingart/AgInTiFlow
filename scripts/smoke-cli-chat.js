@@ -456,6 +456,7 @@ try {
     !helpResult.stdout.includes("/auxiliary") ||
     !helpResult.stdout.includes("/review") ||
     !helpResult.stdout.includes("/scs") ||
+    !helpResult.stdout.includes("/safe") ||
     helpResult.stdout.includes("helpReview") ||
     helpResult.stdout.includes("helpRename") ||
     helpResult.stdout.includes("/enable" + "ss") ||
@@ -495,6 +496,18 @@ try {
   const scsAutoResult = await runChat("/scs auto\n");
   if (!scsAutoResult.stdout.includes("scs=auto")) {
     throw new Error("interactive /scs auto did not enable auto mode");
+  }
+  const safeResult = await runChat("/safe\n");
+  if (!safeResult.stdout.includes("permission=safe") || !safeResult.stdout.includes("writePolicy=prompt")) {
+    throw new Error("interactive /safe did not switch to safe permission mode");
+  }
+  const normalResult = await runChat("/normal\n");
+  if (!normalResult.stdout.includes("permission=normal") || !normalResult.stdout.includes("sandbox=docker-workspace")) {
+    throw new Error("interactive /normal did not switch to normal permission mode");
+  }
+  const dangerResult = await runChat("/danger\n");
+  if (!dangerResult.stdout.includes("permission=danger") || !dangerResult.stdout.includes("sandbox=host")) {
+    throw new Error("interactive /danger did not switch to danger permission mode");
   }
   const abbreviatedSkillsResult = await runChat("/sk website\n/ex\n");
   if (abbreviatedSkillsResult.stdout.includes("Unknown command") || !abbreviatedSkillsResult.stdout.includes("website-app")) {
@@ -574,6 +587,7 @@ try {
           "skills-command",
           "review-command",
           "scs-command-toggle",
+          "permission-mode-slash-commands",
           "resume-command-options",
           "slash-prefix-autoselect",
           "slash-prefix-canonical-history",
