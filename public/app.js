@@ -18,7 +18,7 @@ const translations = {
     brandKicker: "Developed by AgInTi Lab, LazyingArt LLC",
     languageLabel: "Language",
     intro:
-      "Project-aware, low-cost agents for real project work. Web, CLI, and API workspace with guarded tools, durable sessions, SCS supervision, and AAPS workflows.",
+      "Project-aware, low-cost agents for real project work.",
     projectStatusTitle: "Project folder",
     setupTitle: "Provider setup",
     setupHelp:

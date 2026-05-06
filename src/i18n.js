@@ -113,9 +113,9 @@ const LANGUAGE_ALIASES = new Map(
 
 const TRANSLATIONS = {
   en: {
-    launchSubtitle: "project-aware, low-cost agents for real project work",
+    launchSubtitle: "Project-aware, low-cost agents for real project work.",
     launchCredit: "Developed by AgInTi Lab, LazyingArt LLC",
-    launchTagline: "api + web + cli + guarded tools + durable sessions",
+    launchTagline: "",
     interactiveIntro: "Interactive agent chat. Type /help for commands, /exit to quit.",
     promptEmpty: "type a request, /help, Enter to send, Ctrl+J for newline",
     helpTitle: "Commands:",

@@ -685,8 +685,8 @@ export function buildLaunchHeaderLines({ packageVersion = "", frame = 2, width =
     versionLine ? row(versionLine) : "",
     row(centerLine(subtitle, contentWidth), ansi.dim),
     row(centerLine(credit, contentWidth), ansi.dim),
-    mid,
-    row(centerLine(tagline, contentWidth), ansi.cyan),
+    tagline ? mid : "",
+    tagline ? row(centerLine(tagline, contentWidth), ansi.cyan) : "",
     bottom,
   ].filter(Boolean);
   const indent = " ".repeat(Math.max(Math.floor((terminalColumns - Math.max(...boxLines.map((line) => visualLength(line)))) / 2), 0));

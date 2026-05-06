@@ -1,8 +1,8 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.112",
+  "version": "0.20.113",
   "type": "module",
-  "description": "Project-aware, low-cost Web/CLI/API agents for creative, scientific, software, hardware, and industrial work with SCS, AAPS, guarded tools, and durable sessions.",
+  "description": "A Web, CLI, and API workspace for project-aware, low-cost agents across creative, scientific, software, hardware, and industrial projects.",
   "license": "Apache-2.0",
   "homepage": "https://flow.lazying.art",
   "repository": {

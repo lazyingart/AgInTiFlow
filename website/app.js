@@ -2,9 +2,9 @@ const languageStorageKey = "agintiflow.website.language";
 
 const translations = {
   en: {
-    documentTitle: "AgInTiFlow | Project-aware low-cost agents",
+    documentTitle: "AgInTiFlow | Project-aware, low-cost agents",
     metaDescription:
-      "AgInTiFlow is a project-aware Web, CLI, and API agent workspace for creative, scientific, software, hardware, and industrial work with SCS, AAPS, guarded tools, and durable evidence.",
+      "A Web, CLI, and API workspace for agents that work across creative, scientific, software, hardware, and industrial projects with guarded tools, durable sessions, SCS supervision, and AAPS workflows.",
     brandHomeAria: "AgInTiFlow home",
     primaryNavAria: "Primary navigation",
     navScreenshots: "Screenshots",
@@ -14,9 +14,9 @@ const translations = {
     navLaunch: "Launch Web UI",
     languageLabel: "Language",
     heroEyebrow: "Web + CLI + API agent workspace",
-    heroTitle: "AgInTi Flow -- project-aware, low-cost agents",
+    heroTitle: "AgInTi Flow -- project-aware, low-cost agents for real project work",
     heroSubtitle:
-      "AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-aware intelligence, software automation, and industrial workflows. From lab planning to data analysis, from hardware control to production scripts, and from microscopy, drones, and robots to reports, it helps agents work through API, Web, or CLI with SCS supervision, AAPS workflows, guarded execution, and durable evidence.",
+      "A Web, CLI, and API workspace for agents that work across creative, scientific, software, hardware, and industrial projects with guarded tools, durable sessions, SCS supervision, and AAPS workflows.",
     installAria: "Install AgInTiFlow",
     copyButton: "Copy",
     copiedPrefix: "Copied: {text}",
@@ -88,7 +88,7 @@ const translations = {
     safetyItem5: "NPM publish, token commands, sudo, destructive git, and shell chaining are blocked.",
     bottomSummaryAria: "AgInTiFlow summary",
     bottomStatement:
-      "AgInTiFlow keeps real project work cheap and inspectable: creative work, science, software, hardware, and industrial workflows through routed models, visible tools, SCS supervision, AAPS pipelines, and durable evidence.",
+      "A Web, CLI, and API workspace for agents that work across creative, scientific, software, hardware, and industrial projects with guarded tools, durable sessions, SCS supervision, and AAPS workflows.",
     footerProduct: "AgInTiFlow by AgInTi Inc.",
   },
   ar: {
