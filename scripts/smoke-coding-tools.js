@@ -317,6 +317,15 @@ try {
   );
   assert(latexmkCompilePolicy.allowed, "workspace-local latexmk compile should be allowed without package installs");
   assert(latexmkCompilePolicy.category === "toolchain", "workspace-local latexmk compile should be classified as toolchain");
+  const pythonUnittestPolicy = evaluateCommandPolicy(
+    "python3 -m unittest test_data_helper.py 2>&1",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(pythonUnittestPolicy.allowed, "stdlib python unittest should be allowed without package installs");
+  assert(pythonUnittestPolicy.category === "test", "stdlib python unittest should be classified as test");
+  const pythonDemoPolicy = evaluateCommandPolicy("python3 demo.py 2>&1", dockerWorkspaceNoInstallsPolicy);
+  assert(pythonDemoPolicy.allowed, "workspace-local python demo script should be allowed without package installs");
+  assert(pythonDemoPolicy.category === "toolchain", "workspace-local python demo script should be classified as toolchain");
   const curlPolicy = evaluateCommandPolicy("curl -s -o /dev/null -w '%{http_code}' https://github.com/lazyingart/AgInTiFlow.git", dockerWorkspacePolicy);
   assert(curlPolicy.allowed, "curl URL probe with flags should be allowed in docker-workspace allow mode");
   assert(curlPolicy.needsNetwork, "curl URL probe with flags was not classified as network");
@@ -587,6 +596,14 @@ try {
   assert(/package\.json/.test(nodeProfile.prompt), "node profile does not require package manifest awareness");
   assert(/bin entry/i.test(nodeProfile.prompt), "node profile does not guide new CLI tools toward bin entries");
   assert(/scripts for test\/check\/start/i.test(nodeProfile.prompt), "node profile does not guide new Node projects toward package scripts");
+  const pythonProfile = getTaskProfile("python");
+  assert(/unittest|test script/i.test(pythonProfile.prompt), "python profile does not guide helper/tool work toward tests");
+  assert(/py_compile/i.test(pythonProfile.prompt), "python profile does not require syntax-check evidence");
+  assert(/durable report/i.test(pythonProfile.prompt), "python profile does not require durable evidence reports");
+  assert(
+    /__pycache__/.test(pythonProfile.prompt) && /do not claim transient artifacts are absent/i.test(pythonProfile.prompt),
+    "python profile does not guard against unverified transient artifact claims"
+  );
   let planTimeoutError = null;
   const neverCompletesClient = {
     chat: {
@@ -975,6 +992,7 @@ try {
           "block_secret_patch_content",
           "block_outside",
           "node_profile_cli_package_manifest",
+          "python_profile_helper_test_report",
           "model_timeout_compact_retry_messages",
         ],
       },

@@ -66,6 +66,7 @@ const TEST_PATTERNS = [
   /^bash\s+-n\s+[-\w./]+\.sh$/,
   /^sh\s+-n\s+[-\w./]+\.sh$/,
   /^python(?:3)?\s+-m\s+py_compile\s+[-\w./]+\.py$/,
+  /^python(?:3)?\s+-m\s+unittest(?:\s+[-\w./:=]+)*$/,
   /^python(?:3)?\s+-m\s+pytest(?:\s+[-\w./:=]+)*$/,
   /^pytest(?:\s+[-\w./:=]+)*$/,
 ];
