@@ -35,7 +35,13 @@ The short version: run `aginti` inside a project, give it a task, inspect what i
 | Product positioning | [references/agintiflow-product-positioning.md](references/agintiflow-product-positioning.md) |
 | Full archived README reference | [references/notes/readme-full-reference-2026-05-05.md](references/notes/readme-full-reference-2026-05-05.md) |
 
-Screenshots are kept out of the README body so the start guide stays readable. View them on the website carousel or in [demos/](demos/) and [website/assets/screenshots/](website/assets/screenshots/).
+## Visual Preview
+
+The README keeps only the two high-signal screenshots near the top. The full screenshot set stays in the website carousel and linked gallery below.
+
+| CLI launch | Web console |
+| --- | --- |
+| <img src="./demos/agintiflow-cli-launch.jpg" alt="AgInTiFlow CLI launch screen" width="480" /> | <img src="./demos/agintiflow-web-console-run-output.jpg" alt="AgInTiFlow web console run output" width="480" /> |
 
 ## Why This Exists
 
