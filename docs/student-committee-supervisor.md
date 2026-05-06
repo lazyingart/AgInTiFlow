@@ -66,6 +66,12 @@ The current implementation is deliberately bounded:
 
 Auto mode stays off for simple turns.
 
+## Dynamic Step Budgets
+
+SCS can support a future dynamic step-budget gate. Instead of treating `maxSteps` as an absolute stop in every case, the runtime can ask a bounded monitor for more steps when the run is near the limit and recent evidence shows real progress.
+
+In normal mode this should be a conservative lightweight gate. In `/scs on` or an activated `/scs auto` run, the student monitor should decide whether to approve `extend_steps`, deny the extension, or request a rethink. More steps must never bypass permissions, package policies, host safety, or user approval. The detailed design is tracked in [references/dynamic-step-budget-and-scs-auto.md](../references/dynamic-step-budget-and-scs-auto.md).
+
 ## When To Use It
 
 Use SCS for:

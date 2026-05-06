@@ -191,6 +191,12 @@ Recommended modes:
 
 `/scs` should toggle SCS on/off in interactive CLI. `/scs auto` keeps the mature complex-task gate for users who want quality control without paying the SCS cost on simple turns.
 
+## Dynamic Step Budget Extension
+
+SCS should eventually become the strict monitor for step-budget extension. The current runner uses a fixed `maxSteps` loop. A stronger design treats `maxSteps` as the initial budget and allows a bounded extension only when the monitor sees concrete progress, a specific next phase, and no permission blocker.
+
+For `/scs on`, the student emits a typed decision such as `extend_steps`, `deny_extension`, or `rethink_plan`. For `/scs auto`, router policy first decides whether SCS is active for the turn; if active, the SCS student owns the extension decision, otherwise normal mode uses a lighter conservative budget gate. More detail lives in [dynamic-step-budget-and-scs-auto.md](./dynamic-step-budget-and-scs-auto.md).
+
 ## Model Policy
 
 When SCS is enabled:
