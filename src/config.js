@@ -9,6 +9,7 @@ import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 import { resolveLanguage } from "./i18n.js";
 import { normalizeScsMode, shouldActivateScs } from "./scs-controller.js";
 import { applyPermissionMode, normalizePermissionMode } from "./permission-modes.js";
+import { normalizeDynamicStepsMode } from "./step-budget-controller.js";
 
 function parseBoolean(value, fallback) {
   if (value === undefined) return fallback;
@@ -155,6 +156,23 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     baseURL: overrides.baseURL || defaults.baseURL,
     model: activeModel || defaults.model,
     maxSteps: parseNumber(overrides.maxSteps ?? args.maxSteps ?? process.env.MAX_STEPS, defaultMaxSteps),
+    dynamicSteps: normalizeDynamicStepsMode(overrides.dynamicSteps ?? args.dynamicSteps ?? process.env.AGINTI_DYNAMIC_STEPS ?? "auto"),
+    dynamicStepExtensionLimit: clampNumber(
+      parseNumber(
+        overrides.dynamicStepExtensionLimit ?? args.dynamicStepExtensionLimit ?? process.env.AGINTI_STEP_EXTENSION_LIMIT,
+        scsActive ? 2 : 1
+      ),
+      0,
+      8
+    ),
+    dynamicStepHardCap: parseNumber(
+      overrides.dynamicStepHardCap ?? args.dynamicStepHardCap ?? process.env.AGINTI_STEP_EXTENSION_HARD_CAP,
+      0
+    ),
+    dynamicStepExtensionSize: parseNumber(
+      overrides.dynamicStepExtensionSize ?? args.dynamicStepExtensionSize ?? process.env.AGINTI_STEP_EXTENSION_SIZE,
+      0
+    ),
     headless: parseBoolean(overrides.headless ?? args.headless ?? process.env.HEADLESS, false),
     allowedDomains: Array.isArray(overrides.allowedDomains)
       ? overrides.allowedDomains

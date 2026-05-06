@@ -35,10 +35,17 @@ import {
   createScsPlan,
   reviewScsFinish,
   reviewScsProgress,
+  reviewScsStepBudget,
   reviewScsToolResult,
   shouldReviewScsProgress,
   shouldReviewToolResult,
 } from "./scs-controller.js";
+import {
+  applyStepBudgetExtension,
+  createStepBudgetState,
+  decideStepBudgetExtension,
+  serializeStepBudgetState,
+} from "./step-budget-controller.js";
 
 const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "open_workspace_file", "preview_workspace", "click", "type", "scroll", "press", "back"]);
@@ -672,6 +679,128 @@ function emitConsole(config, value = "", options = {}) {
 
   if (options.error) console.error(value);
   else console.log(value);
+}
+
+async function maybeExtendStepBudget({ client, config, state, store, observers, stepBudget, step, trigger = "near-limit" }) {
+  const events = await store.loadEvents();
+  const runtimeDecision = decideStepBudgetExtension({
+    config,
+    state,
+    budget: stepBudget,
+    step,
+    events,
+    trigger,
+  });
+  if (!runtimeDecision.checked) return runtimeDecision;
+
+  await store.appendEvent("budget.near_limit", {
+    ...runtimeDecision,
+    approved: undefined,
+    decision: undefined,
+  });
+  observers.event("budget.near_limit", {
+    stepsCompleted: step,
+    currentMaxSteps: stepBudget.currentMaxSteps,
+    hardCap: stepBudget.hardCap,
+  });
+
+  let decision = runtimeDecision;
+  await store.appendEvent("budget.extension_requested", runtimeDecision);
+  observers.event("budget.extension_requested", runtimeDecision);
+
+  if (runtimeDecision.approved && config.scsActive) {
+    const scsDecision = await reviewScsStepBudget(client, config, state, {
+      events,
+      taskProfile: config.taskProfile,
+      goal: config.goal,
+      runtimeDecision,
+      stepBudget: serializeStepBudgetState(stepBudget),
+    });
+    state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || "on", active: true };
+    state.meta.scs.budgetReviews = (state.meta.scs.budgetReviews || 0) + 1;
+    state.meta.scs.lastStudentDecision = scsDecision;
+    await store.appendEvent(`scs.student.${scsDecision.decision}`, {
+      ...scsDecision,
+      step,
+      trigger: "step-budget",
+    });
+    observers.event(`scs.student.${scsDecision.decision}`, {
+      decision: scsDecision.decision,
+      reason: scsDecision.reason,
+      trigger: "step-budget",
+    });
+    if (scsDecision.decision === "deny_extension") {
+      decision = {
+        ...runtimeDecision,
+        approved: false,
+        decision: "deny_extension",
+        reason: scsDecision.reason || "SCS student denied the step extension.",
+        evidence: scsDecision.evidence || runtimeDecision.evidence,
+        extraSteps: 0,
+        monitor: "scs-student",
+      };
+    } else {
+      decision = {
+        ...runtimeDecision,
+        approved: true,
+        decision: scsDecision.decision === "rethink_plan" ? "rethink_plan" : "extend_steps",
+        reason: scsDecision.reason || runtimeDecision.reason,
+        evidence: scsDecision.evidence?.length ? scsDecision.evidence : runtimeDecision.evidence,
+        extraSteps: scsDecision.extraSteps > 0 ? Math.min(scsDecision.extraSteps, runtimeDecision.extraSteps) : runtimeDecision.extraSteps,
+        monitor: "scs-student",
+      };
+      if (scsDecision.decision === "rethink_plan") {
+        state.messages.push({
+          role: "user",
+          content: [
+            "SCS student approved a step-budget extension but requested a focused rethink.",
+            `Reason: ${scsDecision.reason || "Plan needs adjustment near the step boundary."}`,
+            scsDecision.nextRequiredAction ? `Next required action: ${scsDecision.nextRequiredAction}` : "",
+            "Supervisor: use the extra steps only for the smallest corrective phase and concrete verification. Do not restart broad exploration.",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        });
+      }
+    }
+  }
+
+  if (!decision.approved) {
+    await store.appendEvent("budget.extension_denied", decision);
+    observers.event("budget.extension_denied", decision);
+    emitConsole(config, `budget: extension denied; ${decision.reason || "no bounded progress justification"}`, {
+      kind: "meta",
+    });
+    return decision;
+  }
+
+  const applied = applyStepBudgetExtension(stepBudget, decision);
+  if (!applied.applied) {
+    await store.appendEvent("budget.extension_denied", applied);
+    observers.event("budget.extension_denied", applied);
+    emitConsole(config, `budget: extension denied; ${applied.reason || "hard cap reached"}`, { kind: "meta" });
+    return applied;
+  }
+
+  config.maxSteps = stepBudget.currentMaxSteps;
+  state.meta.stepBudget = serializeStepBudgetState(stepBudget);
+  await store.appendEvent("budget.extension_approved", applied);
+  observers.event("budget.extension_approved", applied);
+  const label = config.scsActive ? "SCS: student approved" : "budget: monitor approved";
+  emitConsole(
+    config,
+    `${label} +${applied.approvedExtraSteps} steps (${step}/${applied.currentMaxSteps}); ${applied.reason || "continuing with bounded verification"}`,
+    { kind: "meta" }
+  );
+  state.messages.push({
+    role: "user",
+    content: [
+      `Runtime step budget extended from ${applied.currentMaxSteps - applied.approvedExtraSteps} to ${applied.currentMaxSteps}.`,
+      `Reason: ${applied.reason || "Recent concrete progress justified a bounded continuation."}`,
+      "Use the extra steps only to finish the current task, verify concrete outputs, or report a real blocker. Do not restart broad exploration.",
+    ].join("\n"),
+  });
+  return applied;
 }
 
 function createBrowserState() {
@@ -1841,6 +1970,9 @@ export async function runAgent(config) {
       packageInstallPolicy: config.packageInstallPolicy,
       dockerSandboxImage: config.useDockerSandbox ? config.dockerSandboxImage : "",
       startUrl: config.startUrl,
+      dynamicSteps: config.dynamicSteps,
+      dynamicStepExtensionLimit: config.dynamicStepExtensionLimit,
+      dynamicStepHardCap: config.dynamicStepHardCap,
     });
 
     emitConsole(config, `Session: ${sessionId}`, { kind: "meta" });
@@ -1868,7 +2000,21 @@ export async function runAgent(config) {
       emitConsole(config, "", { kind: "meta" });
     }
 
-    for (let step = state.stepsCompleted + 1; step <= config.maxSteps; step += 1) {
+    const stepBudget = createStepBudgetState(config, state);
+    config.maxSteps = stepBudget.currentMaxSteps;
+    state.meta.stepBudget = serializeStepBudgetState(stepBudget);
+    await store.appendEvent("budget.initialized", state.meta.stepBudget);
+    observers.event("budget.initialized", state.meta.stepBudget);
+    if (stepBudget.enabled) {
+      emitConsole(
+        config,
+        `Step budget: ${stepBudget.initialMaxSteps} initial, cap ${stepBudget.hardCap}, monitor=${stepBudget.monitor}`,
+        { kind: "meta" }
+      );
+    }
+
+    while (state.stepsCompleted < stepBudget.currentMaxSteps) {
+      const step = state.stepsCompleted + 1;
       throwIfAborted(config);
       await injectQueuedUserMessages(store, state, observers);
       const snapshot = await buildSnapshot(browserState, store, step, config);
@@ -1893,7 +2039,7 @@ export async function runAgent(config) {
 
       state.messages.push({
         role: "user",
-        content: `Step ${step}/${config.maxSteps} (${config.maxSteps - step} steps remain after this one). Latest runtime snapshot:\n${JSON.stringify({
+        content: `Step ${step}/${stepBudget.currentMaxSteps} (${stepBudget.currentMaxSteps - step} steps remain after this one). Latest runtime snapshot:\n${JSON.stringify({
           title: snapshot.title,
           url: snapshot.url,
           pageText: snapshot.pageText,
@@ -1919,6 +2065,7 @@ export async function runAgent(config) {
           projectInstructions: state.meta.projectInstructions || null,
           canvasArtifactsAvailable: true,
           taskProfile: getTaskProfile(config.taskProfile),
+          stepBudget: state.meta.stepBudget,
         })}`,
       });
 
@@ -2000,6 +2147,7 @@ export async function runAgent(config) {
         if (queuedCount > 0) {
           state.stepsCompleted = step;
           state.updatedAt = new Date().toISOString();
+          await maybeExtendStepBudget({ client, config, state, store, observers, stepBudget, step, trigger: "queued-input" });
           await store.saveState(state);
           continue;
         }
@@ -2029,6 +2177,7 @@ export async function runAgent(config) {
             });
             state.stepsCompleted = step;
             state.updatedAt = new Date().toISOString();
+            await maybeExtendStepBudget({ client, config, state, store, observers, stepBudget, step, trigger: "finish-rejected" });
             await store.saveState(state);
             emitConsole(config, `SCS: finish rejected: ${decision.reason || "needs more evidence"}`, { kind: "meta" });
             continue;
@@ -2154,6 +2303,7 @@ export async function runAgent(config) {
           if (queuedCount > 0) {
             state.stepsCompleted = step;
             state.updatedAt = new Date().toISOString();
+            await maybeExtendStepBudget({ client, config, state, store, observers, stepBudget, step, trigger: "queued-input" });
             await store.saveState(state);
             continueForQueuedInput = true;
             break;
@@ -2266,18 +2416,22 @@ export async function runAgent(config) {
 
       state.stepsCompleted = step;
       state.updatedAt = new Date().toISOString();
+      await maybeExtendStepBudget({ client, config, state, store, observers, stepBudget, step, trigger: "near-limit" });
       await store.saveState(state);
     }
 
     await store.appendEvent("session.stopped", {
       reason: "max_steps_reached",
-      maxSteps: config.maxSteps,
+      maxSteps: stepBudget.currentMaxSteps,
+      initialMaxSteps: stepBudget.initialMaxSteps,
+      hardCap: stepBudget.hardCap,
+      extensionsUsed: stepBudget.extensionsUsed,
     });
     observers.event("session.stopped", {
       reason: "max_steps_reached",
       sessionId,
     });
-    emitConsole(config, `Stopped after ${config.maxSteps} steps without finish().`, { kind: "error", error: true });
+    emitConsole(config, `Stopped after ${stepBudget.currentMaxSteps} steps without finish().`, { kind: "error", error: true });
     return {
       sessionId,
       result: "",

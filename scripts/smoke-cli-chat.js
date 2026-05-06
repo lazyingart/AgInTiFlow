@@ -389,6 +389,15 @@ try {
   if (scsAutoArgs.enableScs !== "auto" || scsAutoArgs.goal !== "fix this project") {
     throw new Error("--scs auto should consume auto and preserve the task");
   }
+  const dynamicBudgetArgs = parseArgs(["--dynamic-steps", "off", "--dynamic-step-limit", "3", "--dynamic-step-hard-cap", "64", "fix this project"]);
+  if (
+    dynamicBudgetArgs.dynamicSteps !== "off" ||
+    dynamicBudgetArgs.dynamicStepExtensionLimit !== 3 ||
+    dynamicBudgetArgs.dynamicStepHardCap !== 64 ||
+    dynamicBudgetArgs.goal !== "fix this project"
+  ) {
+    throw new Error("dynamic step-budget CLI options did not parse correctly");
+  }
   const unknownOptionArgs = parseArgs(["--provider", "mock", "--allow-web-search", "research this"]);
   if (unknownOptionArgs.unknownOptions[0] !== "--allow-web-search" || unknownOptionArgs.goal !== "research this") {
     throw new Error("unknown option-like arguments before the prompt should be reported, not silently folded into the goal");

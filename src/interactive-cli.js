@@ -1953,6 +1953,10 @@ function createState(args = {}) {
       Number.isFinite(args.maxSteps) && args.maxSteps > 0
         ? args.maxSteps
         : defaultMaxStepsForProfile(args.taskProfile || (args.latex ? "latex" : "auto")),
+    dynamicSteps: args.dynamicSteps || process.env.AGINTI_DYNAMIC_STEPS || "auto",
+    dynamicStepExtensionLimit: args.dynamicStepExtensionLimit,
+    dynamicStepHardCap: args.dynamicStepHardCap,
+    dynamicStepExtensionSize: args.dynamicStepExtensionSize,
     sessionId: args.resume || "",
   };
 }
@@ -3444,6 +3448,10 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
       taskProfile: state.taskProfile,
       language: state.language || cliLanguage,
       maxSteps: runMaxSteps,
+      dynamicSteps: state.dynamicSteps,
+      dynamicStepExtensionLimit: state.dynamicStepExtensionLimit,
+      dynamicStepHardCap: state.dynamicStepHardCap,
+      dynamicStepExtensionSize: state.dynamicStepExtensionSize,
       headless: state.headless,
       resume: state.sessionId,
       goal: prompt,

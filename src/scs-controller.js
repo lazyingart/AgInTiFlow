@@ -263,6 +263,22 @@ function normalizeDecision(parsed, fallbackDecision = "approve_plan") {
   };
 }
 
+function normalizeBudgetDecision(parsed, fallback = {}) {
+  const allowed = new Set(["extend_steps", "deny_extension", "rethink_plan"]);
+  const decision = allowed.has(String(parsed?.decision || "")) ? parsed.decision : fallback.decision || "deny_extension";
+  const confidence = Number(parsed?.confidence);
+  const extraSteps = Number(parsed?.extra_steps ?? parsed?.extraSteps ?? fallback.extraSteps ?? fallback.extra_steps ?? 0);
+  return {
+    role: "student",
+    decision,
+    confidence: Number.isFinite(confidence) ? Math.min(Math.max(confidence, 0), 1) : fallback.confidence || 0.6,
+    extraSteps: Number.isFinite(extraSteps) && extraSteps > 0 ? Math.floor(extraSteps) : 0,
+    evidence: normalizeStringList(parsed?.evidence, fallback.evidence || []),
+    reason: compact(parsed?.reason || fallback.reason || "", 500),
+    nextRequiredAction: compact(parsed?.next_required_action || parsed?.nextRequiredAction || fallback.nextRequiredAction || "", 240),
+  };
+}
+
 export async function createScsPlan(client, config, state, context = {}) {
   const evidence = buildScsEvidencePack(state, context);
   const fallbackCommittee = normalizeCommitteePlan({ plan: fallbackPlan(state.goal), phase_goal: state.goal }, state.goal);
@@ -430,6 +446,41 @@ export async function reviewScsProgress(client, config, state, context = {}) {
     "SCS progress monitor"
   );
   return normalizeDecision(raw, "accept_phase");
+}
+
+export async function reviewScsStepBudget(client, config, state, context = {}) {
+  const runtimeDecision = context.runtimeDecision || {};
+  const fallback = normalizeBudgetDecision({
+    decision: runtimeDecision.approved ? "extend_steps" : "deny_extension",
+    confidence: runtimeDecision.approved ? 0.62 : 0.72,
+    extra_steps: runtimeDecision.extraSteps || 0,
+    reason: runtimeDecision.reason || "Runtime budget gate supplied the fallback step-extension decision.",
+    evidence: runtimeDecision.evidence || [],
+    next_required_action: runtimeDecision.approved ? "supervisor_continue_with_focused_verification" : "finish_or_report_blocker",
+  });
+  const evidence = buildScsEvidencePack(state, context);
+  const raw = await callJson(
+    client,
+    config,
+    [
+      {
+        role: "system",
+        content:
+          "You are the SCS student budget gate. The run is near its step limit. Decide whether to grant a bounded extension. Emit extend_steps only when recent evidence shows concrete progress, no permission blocker is being bypassed, and the next phase is specific. Emit deny_extension when more steps would hide a loop or blocker. Emit rethink_plan when progress exists but the supervisor needs to adjust the next phase. Do not call tools. Return strict JSON with keys: role, decision, confidence, extra_steps, evidence, reason, next_required_action.",
+      },
+      {
+        role: "user",
+        content: [
+          `Runtime budget recommendation:\n${compactJson(runtimeDecision, 2600)}`,
+          `Step budget:\n${compactJson(context.stepBudget || {}, 1600)}`,
+          `Evidence pack:\n${evidence}`,
+        ].join("\n\n"),
+      },
+    ],
+    fallback,
+    "SCS step-budget monitor"
+  );
+  return normalizeBudgetDecision(raw, fallback);
 }
 
 export async function reviewScsFinish(client, config, state, result = "", context = {}) {

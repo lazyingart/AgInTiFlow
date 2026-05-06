@@ -123,6 +123,10 @@ const CLI_VALUE_OPTIONS = new Set([
   "--sandbox-mode",
   "--package-install-policy",
   "--max-steps",
+  "--dynamic-steps",
+  "--dynamic-step-limit",
+  "--dynamic-step-hard-cap",
+  "--dynamic-step-size",
   "--scout-count",
   "--wrapper",
   "--preferred-wrapper",
@@ -339,6 +343,10 @@ export function parseArgs(argv) {
     useDockerSandbox: undefined,
     headless: undefined,
     maxSteps: undefined,
+    dynamicSteps: undefined,
+    dynamicStepExtensionLimit: undefined,
+    dynamicStepHardCap: undefined,
+    dynamicStepExtensionSize: undefined,
     listRoutes: false,
     listModels: false,
     listWrappers: false,
@@ -543,6 +551,26 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "--dynamic-steps") {
+      result.dynamicSteps = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--dynamic-step-limit") {
+      result.dynamicStepExtensionLimit = Number(readOption(argv, i));
+      i += 1;
+      continue;
+    }
+    if (arg === "--dynamic-step-hard-cap") {
+      result.dynamicStepHardCap = Number(readOption(argv, i));
+      i += 1;
+      continue;
+    }
+    if (arg === "--dynamic-step-size") {
+      result.dynamicStepExtensionSize = Number(readOption(argv, i));
+      i += 1;
+      continue;
+    }
     if (arg === "--allow-shell") {
       result.allowShellTool = true;
       continue;
@@ -664,7 +692,7 @@ function exitOnUnknownOptions(parsed) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti update OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
+    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti update OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--dynamic-steps auto|on|off] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
   console.log("Permission shortcuts: -s safe asks before writes/setup; -s normal allows current-project writes and Docker setup; -s danger enables trusted host/full-access mode.");
   console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
@@ -754,6 +782,10 @@ function agentDefaults(args) {
         goal: args.goal || "",
         taskProfile,
       }),
+    dynamicSteps: args.dynamicSteps || process.env.AGINTI_DYNAMIC_STEPS || "auto",
+    dynamicStepExtensionLimit: args.dynamicStepExtensionLimit,
+    dynamicStepHardCap: args.dynamicStepHardCap,
+    dynamicStepExtensionSize: args.dynamicStepExtensionSize,
   };
 
   if (defaults.sandboxMode === "host") {

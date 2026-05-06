@@ -133,6 +133,7 @@ aginti --language de
 | Review current repo | `/review [focus]` |
 | Toggle SCS quality gate | `/scs` |
 | Use SCS only for complex work | `/scs auto` or `aginti --scs auto "task"` |
+| Control dynamic step budgets | `--dynamic-steps auto\|on\|off` |
 | Work with AAPS workflows | `aginti aaps status`, `/aaps validate` |
 | Choose models | `/route`, `/model`, `/spare`, `/wrapper`, `/auxiliary model` |
 | Switch permissions | `-s safe`, `-s normal`, `-s danger`, or `/safe`, `/normal`, `/danger` |
@@ -150,6 +151,8 @@ aginti --language de
 | Update CLI | `aginti update` |
 
 Interactive chat supports slash completion, Up/Down selectors, multiline input with `Ctrl+J`, full resume history, Markdown rendering, visible run status, ASAP pipe messages during a run, and clean interruption/resume with `Ctrl+C`. Installed interactive commands also check npm for a newer AgInTiFlow release and show an update/skip selector; source checkouts and non-TTY automation are left alone.
+
+AgInTiFlow treats `maxSteps` as an initial budget, not a silent infinite loop. By default, real-provider runs can receive a bounded extension only near the limit, only when recent tool/file/artifact evidence shows concrete progress, and never to bypass permission, package, host, or secret guardrails. Use `--dynamic-steps off` for a strict hard stop, or `--dynamic-steps on` to test the budget gate in mock/offline runs.
 
 For a fully controlled one-shot resume, use an explicit session id and choose the task profile deliberately. Use `auto` for normal routing or `android` when the work is Android/emulator-specific:
 
