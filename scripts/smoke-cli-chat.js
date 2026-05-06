@@ -64,7 +64,7 @@ function cellWidth(value = "") {
 }
 
 function runChat(inputText) {
-  return runCli(["chat", "--provider", "mock", "--routing", "manual", "--profile", "code"], inputText);
+  return runCli(["chat", "--provider", "mock", "--routing", "manual", "--profile", "code", "--headless"], inputText);
 }
 
 function runCli(args, inputText) {
