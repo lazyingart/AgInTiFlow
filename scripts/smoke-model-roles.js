@@ -10,7 +10,7 @@ import {
   selectModelRoute,
 } from "../src/model-routing.js";
 import { normalizeTextToolCallResponse, parseTextToolCalls, usesTextToolProtocol } from "../src/model-client.js";
-import { modelRoleChoices } from "../src/interactive-cli.js";
+import { modelRoleChoices, selectorVisibleWindow } from "../src/interactive-cli.js";
 import { buildScsEvidencePack, buildSupervisorInstruction } from "../src/scs-controller.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -151,6 +151,11 @@ assert(!routeChoices.includes("venice/e2ee-venice-uncensored-24b-p"), "shared mo
 assert(modelRoleChoices("route").some((item) => item.provider === "openai" && item.model === "gpt-5.5" && item.reasoningOptions.includes("xhigh")), "OpenAI selector missing reasoning levels");
 assert(modelRoleChoices("auxiliary").some((item) => item.provider === "grsai"), "auxiliary selector missing GRS AI");
 assert(modelRoleChoices("auxiliary").some((item) => item.provider === "venice" && item.model === "wan-2-7-pro-edit"), "auxiliary selector missing Venice Wan edit");
+const longAuxiliaryWindow = selectorVisibleWindow(32, 17, 24);
+assert(longAuxiliaryWindow.end - longAuxiliaryWindow.start <= 8, "selector should cap visible rows for long option lists");
+assert(longAuxiliaryWindow.topHidden > 0 && longAuxiliaryWindow.bottomHidden > 0, "selector should expose scroll indicators around middle selections");
+const topAuxiliaryWindow = selectorVisibleWindow(32, 0, 24);
+assert(topAuxiliaryWindow.start === 0 && topAuxiliaryWindow.bottomHidden > 0, "selector should keep first option visible at top of long lists");
 const parsedTextToolCalls = parseTextToolCalls('[TOOL_CALLS]list_files[ARGS]call_123[ARGS]{"path":".","maxDepth":1}');
 assert(parsedTextToolCalls.length === 1, "Venice text tool-call parser did not detect encoded tool call");
 assert(parsedTextToolCalls[0].function.name === "list_files", "Venice text tool-call parser returned wrong tool name");
@@ -253,6 +258,7 @@ console.log(
         "route-overrides",
         "provider-groups",
         "auxiliary-catalog",
+        "selector-windowing",
         "shared-model-selectors",
         "venice-text-tool-parser",
         "requested-tools-parser",

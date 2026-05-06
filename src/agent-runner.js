@@ -151,7 +151,7 @@ async function isPortAvailable(port) {
 async function findAvailablePort(preferredPort = 8765) {
   const preferred = Number(preferredPort);
   const start = Number.isFinite(preferred) && preferred > 0 ? preferred : 8765;
-  for (let port = start; port < start + 80; port += 1) {
+  for (let port = start; port < start + 1000 && port < 65535; port += 1) {
     if (await isPortAvailable(port)) return port;
   }
   throw new Error(`No available preview port found near ${start}.`);

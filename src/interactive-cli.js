@@ -2220,21 +2220,49 @@ function clearSelectorSequence(lineCount) {
   return Array.from({ length: Math.max(lineCount, 0) }, () => "\x1b[1A\r\x1b[2K").join("");
 }
 
+export function selectorVisibleWindow(optionCount = 0, selectedIndex = 0, height = terminalHeight()) {
+  const count = Math.max(Number(optionCount) || 0, 0);
+  const maxRows = Math.max(4, Math.min(8, Math.floor(Math.max(Number(height) || 24, 10) * 0.36)));
+  if (count <= maxRows) {
+    return { start: 0, end: count, topHidden: 0, bottomHidden: 0 };
+  }
+  const selected = clamp(selectedIndex, 0, count - 1);
+  const half = Math.floor(maxRows / 2);
+  const start = clamp(selected - half, 0, count - maxRows);
+  const end = Math.min(start + maxRows, count);
+  return {
+    start,
+    end,
+    topHidden: start,
+    bottomHidden: count - end,
+  };
+}
+
 function renderSelector({ title, subtitle, options, selectedIndex, lineCount = 0 }) {
   const width = Math.min(Math.max(terminalWidth() - 2, 60), 110);
   const bodyWidth = width - 4;
   const safeTitle = compactLine(title, bodyWidth);
   const safeSubtitle = compactLine(subtitle, bodyWidth);
+  const visible = selectorVisibleWindow(options.length, selectedIndex, terminalHeight());
+  const optionRows = [];
+  if (visible.topHidden > 0) {
+    optionRows.push(`│ ${padVisible(color(`  ... ${visible.topHidden} earlier option${visible.topHidden === 1 ? "" : "s"}`, ansi.dim), bodyWidth)} │`);
+  }
+  for (let index = visible.start; index < visible.end; index += 1) {
+    const option = options[index];
+    const marker = index === selectedIndex ? ">" : " ";
+    const rendered = `${marker} ${compactLine(modelChoiceLine(option), bodyWidth - 2)}`;
+    optionRows.push(`│ ${padVisible(index === selectedIndex ? color(rendered, ansi.userBg, ansi.bold) : rendered, bodyWidth)} │`);
+  }
+  if (visible.bottomHidden > 0) {
+    optionRows.push(`│ ${padVisible(color(`  ... ${visible.bottomHidden} later option${visible.bottomHidden === 1 ? "" : "s"}`, ansi.dim), bodyWidth)} │`);
+  }
   const rows = [
     `╭${"─".repeat(width - 2)}╮`,
     `│ ${padVisible(safeTitle, bodyWidth)} │`,
     `│ ${padVisible(safeSubtitle, bodyWidth)} │`,
     `├${"─".repeat(width - 2)}┤`,
-    ...options.map((option, index) => {
-      const marker = index === selectedIndex ? ">" : " ";
-      const rendered = `${marker} ${compactLine(modelChoiceLine(option), bodyWidth - 2)}`;
-      return `│ ${padVisible(index === selectedIndex ? color(rendered, ansi.userBg, ansi.bold) : rendered, bodyWidth)} │`;
-    }),
+    ...optionRows,
     `╰${"─".repeat(width - 2)}╯`,
   ];
   output.write(`${lineCount > 0 ? clearSelectorSequence(lineCount) : ""}${rows.join("\n")}\n`);

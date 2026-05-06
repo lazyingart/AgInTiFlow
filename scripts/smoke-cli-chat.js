@@ -76,6 +76,7 @@ function runCli(args, inputText) {
         ...process.env,
         AGINTIFLOW_RUNTIME_DIR: "",
         AGINTIFLOW_HOME: agintiflowHome,
+        AGINTIFLOW_PREVIEW_TTL_MS: "1000",
         AGINTI_LANGUAGE: "en",
       },
     });

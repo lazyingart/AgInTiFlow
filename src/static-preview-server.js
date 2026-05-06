@@ -5,6 +5,8 @@ import path from "node:path";
 const root = path.resolve(process.argv[2] || process.cwd());
 const port = Number(process.argv[3] || 0);
 const host = "127.0.0.1";
+const idleTtlMs = Math.max(Number(process.env.AGINTIFLOW_PREVIEW_TTL_MS) || 6 * 60 * 60 * 1000, 1000);
+let lastRequestAt = Date.now();
 
 const MIME_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -62,6 +64,7 @@ function isBlockedPath(relativePath) {
 }
 
 const server = http.createServer(async (req, res) => {
+  lastRequestAt = Date.now();
   if (!["GET", "HEAD"].includes(req.method || "")) {
     send(res, 405, "Method Not Allowed");
     return;
@@ -110,3 +113,14 @@ server.listen(port, host, () => {
   const actualPort = typeof address === "object" && address ? address.port : port;
   console.log(`AgInTiFlow static preview http://${host}:${actualPort}/ root=${root}`);
 });
+
+const ttlTimer = setInterval(async () => {
+  const rootExists = await fs
+    .stat(root)
+    .then((stat) => stat.isDirectory())
+    .catch(() => false);
+  if (rootExists && Date.now() - lastRequestAt < idleTtlMs) return;
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 1000).unref();
+}, Math.min(Math.max(Math.floor(idleTtlMs / 2), 1000), 60_000));
+ttlTimer.unref();
