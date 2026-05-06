@@ -36,6 +36,10 @@ const dockerConfig = {
   sandboxMode: "docker-workspace",
   packageInstallPolicy: "allow",
 };
+const dockerNoInstallsConfig = {
+  ...dockerConfig,
+  packageInstallPolicy: "block",
+};
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -122,6 +126,33 @@ try {
   });
   assert.equal(dockerTmuxRelativeStart.allowed, true, "Docker-mode tmux_start_session should allow workspace-relative paths");
 
+  const dockerTmuxRebaseStart = checkToolUse({
+    toolName: "tmux_start_session",
+    args: { name: `${session}-docker-rebase`, cwd: ".", command: "git rebase main" },
+    config: dockerNoInstallsConfig,
+  });
+  assert.equal(dockerTmuxRebaseStart.allowed, false, "Docker-mode tmux_start_session should not bypass git rebase guard");
+  assert.equal(dockerTmuxRebaseStart.category, "destructive", "Docker tmux rebase block should keep command-policy category");
+
+  const directDockerRebaseStart = await startTmuxSession(
+    { name: `${session}-direct-docker-rebase`, cwd: ".", command: "git rebase main" },
+    dockerNoInstallsConfig
+  );
+  assert.equal(directDockerRebaseStart.ok, false, "tmux_start_session direct path should enforce Docker shell policy");
+
+  const dockerTmuxRebaseSend = await sendTmuxKeys(
+    { target: start.target, text: "git rebase main", enter: true },
+    dockerNoInstallsConfig
+  );
+  assert.equal(dockerTmuxRebaseSend.ok, false, "Docker-mode tmux_send_keys should not bypass git rebase guard in shell panes");
+  assert.equal(dockerTmuxRebaseSend.category, "destructive", "Docker tmux send rebase block should keep command-policy category");
+
+  const dockerTmuxGitStatusSend = await sendTmuxKeys(
+    { target: start.target, text: "git status --short", enter: true },
+    dockerNoInstallsConfig
+  );
+  assert.equal(dockerTmuxGitStatusSend.ok, true, "Docker-mode tmux_send_keys should allow read-only git status in shell panes");
+
   const hostBroadTmuxStart = checkToolUse({
     toolName: "tmux_start_session",
     args: { name: `${session}-host-broad`, cwd: ".", command: 'echo "HOST_TMUX_STARTED"; sleep 1' },
@@ -203,6 +234,9 @@ try {
           "docker-tmux-send-outside-path-guardrail",
           "docker-tmux-start-project-path-allowed",
           "docker-tmux-start-relative-path-allowed",
+          "docker-tmux-start-command-policy-guardrail",
+          "docker-tmux-send-command-policy-guardrail",
+          "docker-tmux-send-readonly-command-allowed",
           "host-tmux-start-shell-policy-guardrail",
           "host-tmux-send-shell-policy-guardrail",
           "host-tmux-control-key-allowed",

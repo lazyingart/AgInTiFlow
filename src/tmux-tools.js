@@ -153,6 +153,36 @@ function checkHostShellPolicyForTmuxText(text = "", config = {}, label = "tmux t
   };
 }
 
+function shouldApplyDockerShellPolicy(config = {}) {
+  return Boolean(config.useDockerSandbox && config.sandboxMode === "docker-workspace");
+}
+
+function isShellPaneCommand(command = "") {
+  return /^(?:ba|z|fi|da|k)?sh$|^fish$/.test(String(command || "").trim());
+}
+
+async function getPaneCurrentCommand(target) {
+  const result = await runTmux(["display-message", "-p", "-t", target, "#{pane_current_command}"], {
+    timeout: 4000,
+    maxBuffer: 16 * 1024,
+  });
+  if (!result.ok) return "";
+  return String(result.stdout || "").trim();
+}
+
+function checkDockerShellPolicyForTmuxText(text = "", config = {}, label = "tmux text") {
+  const command = String(text || "").trim();
+  if (!command || !shouldApplyDockerShellPolicy(config)) return { ok: true };
+  const policy = evaluateCommandPolicy(command, config);
+  if (policy.allowed) return { ok: true, category: policy.category };
+  return {
+    ok: false,
+    reason: `${label} is blocked by the same Docker workspace shell policy as run_command: ${policy.reason}`,
+    category: policy.category || "tmux",
+    needsApproval: policy.needsApproval,
+  };
+}
+
 function parseSessions(stdout = "") {
   return String(stdout || "")
     .split(/\r?\n/)
@@ -266,6 +296,25 @@ export async function sendTmuxKeys(args = {}, config = {}) {
       needsApproval: hostPolicy.needsApproval,
     };
   }
+  const keyArgsForPolicy = [...keys];
+  if (enter) keyArgsForPolicy.push("Enter");
+  if (text && keyArgsForPolicy.includes("Enter") && shouldApplyDockerShellPolicy(config)) {
+    const paneCommand = await getPaneCurrentCommand(target.target);
+    if (isShellPaneCommand(paneCommand)) {
+      const dockerPolicy = checkDockerShellPolicyForTmuxText(text, config, "tmux text");
+      if (!dockerPolicy.ok) {
+        return {
+          ok: false,
+          toolName: "tmux_send_keys",
+          blocked: true,
+          reason: dockerPolicy.reason,
+          category: dockerPolicy.category,
+          needsApproval: dockerPolicy.needsApproval,
+          paneCommand,
+        };
+      }
+    }
+  }
   for (const key of keys) {
     if (!ALLOWED_KEYS.has(key)) {
       return { ok: false, toolName: "tmux_send_keys", blocked: true, reason: `Unsupported tmux key: ${key}` };
@@ -320,6 +369,17 @@ export async function startTmuxSession(args = {}, config = {}) {
   const workspaceBound = checkWorkspaceBoundTmuxText(command, config, "tmux startup command");
   if (!workspaceBound.ok) {
     return { ok: false, toolName: "tmux_start_session", blocked: true, reason: workspaceBound.reason };
+  }
+  const dockerPolicy = checkDockerShellPolicyForTmuxText(command, config, "tmux startup command");
+  if (!dockerPolicy.ok) {
+    return {
+      ok: false,
+      toolName: "tmux_start_session",
+      blocked: true,
+      reason: dockerPolicy.reason,
+      category: dockerPolicy.category,
+      needsApproval: dockerPolicy.needsApproval,
+    };
   }
   const hostPolicy = checkHostShellPolicyForTmuxText(command, config, "tmux startup command");
   if (!hostPolicy.ok) {
@@ -402,6 +462,15 @@ export function checkTmuxToolUse(toolName, args = {}, config = {}) {
     }
     const workspaceBound = checkWorkspaceBoundTmuxText(command, config, "tmux startup command");
     if (!workspaceBound.ok) return { allowed: false, reason: workspaceBound.reason, category: "tmux" };
+    const dockerPolicy = checkDockerShellPolicyForTmuxText(command, config, "tmux startup command");
+    if (!dockerPolicy.ok) {
+      return {
+        allowed: false,
+        reason: dockerPolicy.reason,
+        category: dockerPolicy.category || "tmux",
+        needsApproval: dockerPolicy.needsApproval,
+      };
+    }
     const hostPolicy = checkHostShellPolicyForTmuxText(command, config, "tmux startup command");
     if (!hostPolicy.ok) {
       return {
