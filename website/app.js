@@ -16,7 +16,7 @@ const translations = {
     heroEyebrow: "Web + CLI + API agent workspace",
     heroTitle: "AgInTi Flow -- project-aware, low-cost agents",
     heroSubtitle:
-      "Project-aware agents for creative, scientific, software, hardware, and industrial work. Use API, Web, or CLI with SCS supervision, AAPS workflows, guarded execution, and durable evidence.",
+      "AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-aware intelligence, software automation, and industrial workflows. From lab planning to data analysis, from hardware control to production scripts, and from microscopy, drones, and robots to reports, it helps agents work through API, Web, or CLI with SCS supervision, AAPS workflows, guarded execution, and durable evidence.",
     installAria: "Install AgInTiFlow",
     copyButton: "Copy",
     copiedPrefix: "Copied: {text}",
