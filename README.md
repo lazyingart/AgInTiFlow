@@ -155,7 +155,7 @@ aginti --resume <session-id> \
   "Take a fresh screenshot of the running app in the emulator, save it with a durable filename in this project, and keep git status clean."
 ```
 
-Permission behavior is intentionally consistent: writes inside the current project are allowed through file tools, workspace-local toolchain builds/probes can run when their command is narrowly classified, network/setup runs are normal in approved Docker workspace mode, and outside-project or trusted-host actions stop with a clear blocker plus a suggested rerun command. See [runtime modes and autonomy](docs/runtime-modes-and-autonomy.md) for the full contract.
+Permission behavior is intentionally consistent: writes inside the current project are allowed through file tools, workspace-local toolchain builds/probes can run when their command is narrowly classified, network/setup runs are normal in approved Docker workspace mode, and outside-project or trusted-host actions stop with a clear blocker plus a suggested rerun command. Android/Gradle builds can use safe local env assignments such as `ANDROID_HOME=... JAVA_HOME=... ./gradlew assembleDebug` and relative workspace logs without requiring whole-host destructive mode. See [runtime modes and autonomy](docs/runtime-modes-and-autonomy.md) for the full contract.
 
 Tmux follows the same rule. In Docker sandbox mode, `tmux_start_session` and `tmux_send_keys` are durable host tools, but their commands must stay workspace-bound. In host mode, tmux startup/send command text follows the same host shell policy as `run_command`; broad host shell work needs explicit `--allow-destructive`. Use `--sandbox-mode host --allow-destructive` only when a tmux task really needs trusted whole-host execution.
 

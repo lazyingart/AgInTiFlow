@@ -52,6 +52,7 @@ Current contract:
 
 - Workspace file tools may read and write inside the configured project folder when file tools are enabled.
 - Narrow workspace-local shell actions such as safe probes, Gradle/TeX builds, and `chmod +x` on a project script may run when the command policy can classify them precisely.
+- Android/JVM toolchain commands may include safe local env assignments such as `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `JAVA_HOME`, or `GRADLE_USER_HOME`, plus small workspace-local status-log redirects. Secret-like env vars and redirects outside the workspace remain blocked.
 - Workspace writes outside that folder, secret paths, `.git` internals, and dependency folders such as `node_modules` are blocked.
 - `git clone`, `git fetch`, `git pull --ff-only`, `git push`, `curl`, and `wget` are classified as network operations.
 - Network/setup commands are allowed in `docker-workspace` only when package installs are approved.

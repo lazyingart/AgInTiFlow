@@ -349,6 +349,28 @@ try {
   const androidGradleBuildPolicy = evaluateCommandPolicy("cd android-app && ./gradlew :app:assembleDebug", hostWorkspacePolicy);
   assert(androidGradleBuildPolicy.allowed, "workspace-local Gradle Android build should be allowed in host workspace mode");
   assert(androidGradleBuildPolicy.category === "toolchain", "workspace-local Gradle Android build should be toolchain");
+  const androidEnvGradleBuildPolicy = evaluateCommandPolicy(
+    'cd android-app && export ANDROID_HOME=/home/lachlan/Android/Sdk && export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 && ./gradlew assembleDebug 2>&1; echo "EXIT:$?" > /home/lachlan/ProjectsLFS/aginti-test/android-app/build-exit.log',
+    {
+      ...hostWorkspacePolicy,
+      commandCwd: "/home/lachlan/ProjectsLFS/aginti-test",
+    }
+  );
+  assert(androidEnvGradleBuildPolicy.allowed, "Android build with safe env exports and workspace-local status log should be allowed");
+  assert(androidEnvGradleBuildPolicy.category === "toolchain", "Android env build sequence should remain classified as toolchain");
+  const androidInlineEnvGradleBuildPolicy = evaluateCommandPolicy(
+    "cd android-app && ANDROID_HOME=/home/lachlan/Android/Sdk JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew assembleDebug",
+    hostWorkspacePolicy
+  );
+  assert(androidInlineEnvGradleBuildPolicy.allowed, "Android build with inline safe env assignments should be allowed");
+  assert(androidInlineEnvGradleBuildPolicy.category === "toolchain", "Android inline env build should be toolchain");
+  const androidUnsafeEnvPolicy = evaluateCommandPolicy("OPENAI_API_KEY=sk-test ./gradlew assembleDebug", hostWorkspacePolicy);
+  assert(!androidUnsafeEnvPolicy.allowed, "secret-like inline env assignments must remain blocked");
+  const androidOutsideLogPolicy = evaluateCommandPolicy(
+    'cd android-app && ./gradlew assembleDebug 2>&1; echo "EXIT:$?" > /tmp/aginti-build-exit.log',
+    hostWorkspacePolicy
+  );
+  assert(!androidOutsideLogPolicy.allowed, "status-log redirection outside the workspace should remain blocked");
   const cdWorkspacePolicy = evaluateCommandPolicy("cd /workspace && git status --short 2>&1 | head -20", dockerWorkspacePolicy);
   assert(cdWorkspacePolicy.allowed, "cd /workspace should be allowed in docker-workspace mode");
   const gitCleanDryRunPolicy = evaluateCommandPolicy("git clean -nd reports", dockerWorkspacePolicy);
@@ -819,6 +841,7 @@ try {
           "command_policy_host_workspace_chmod",
           "command_policy_android_host_probes",
           "command_policy_android_gradle_build",
+          "command_policy_android_gradle_build_with_safe_env",
           "command_policy_cd_workspace",
           "command_policy_git_clean_dry_run",
           "permission_recovery_advice",

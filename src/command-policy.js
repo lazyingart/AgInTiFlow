@@ -1,3 +1,5 @@
+import path from "node:path";
+
 export const SANDBOX_MODES = ["host", "docker-readonly", "docker-workspace"];
 export const PACKAGE_INSTALL_POLICIES = ["block", "prompt", "allow"];
 
@@ -70,6 +72,8 @@ const TEST_PATTERNS = [
 
 const SAFE_WORKSPACE_WRITE_PATTERNS = [/^mkdir\s+-p\s+[-\w./]+$/];
 const PERMISSION_CHANGE_PATTERNS = [/^(?:sudo\s+)?chmod\s+[-+=,rwxugoXst0-7]+\s+[-\w./]+$/];
+const SAFE_ENV_ASSIGNMENT_NAMES = new Set(["ANDROID_HOME", "ANDROID_SDK_ROOT", "JAVA_HOME", "GRADLE_USER_HOME", "PATH"]);
+const SAFE_ENV_VALUE_PATTERN = /^[-\w./:@+,%]+$/;
 
 const NETWORK_FETCH_PATTERNS = [
   /^curl\b(?=[\s\S]*https?:\/\/\S+)[\s\S]*$/,
@@ -249,6 +253,70 @@ function isSafeWorkspacePath(value) {
   return isSafeRelativeDir(value) || isSafeVirtualWorkspacePath(value);
 }
 
+function isInsideDirectory(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function relativizeWorkspaceAbsolutePaths(command = "", root = "") {
+  if (!root) return String(command || "");
+  const workspaceRoot = path.resolve(root);
+  return String(command || "").replace(/(?<!:)\/[^\s'"|;&<>]+/g, (candidate) => {
+    if (candidate.startsWith("//")) return candidate;
+    const resolved = path.resolve(candidate);
+    if (!isInsideDirectory(workspaceRoot, resolved)) return candidate;
+    return path.relative(workspaceRoot, resolved) || ".";
+  });
+}
+
+function isSafeEnvAssignment(name = "", value = "") {
+  if (!SAFE_ENV_ASSIGNMENT_NAMES.has(String(name || ""))) return false;
+  if (!value || !SAFE_ENV_VALUE_PATTERN.test(String(value || ""))) return false;
+  if (/(?:api[_-]?key|auth[_-]?token|secret|password|_authToken|bearer)/i.test(`${name}=${value}`)) return false;
+  return true;
+}
+
+function classifySafeEnvExport(normalized = "") {
+  const match = normalized.match(/^export\s+([A-Z_][A-Z0-9_]*)=([^\s;&|<>`$]+)$/);
+  if (!match) return null;
+  const [, name, value] = match;
+  if (!isSafeEnvAssignment(name, value)) return null;
+  return {
+    category: "read-only",
+    needsNetwork: false,
+    writesWorkspace: false,
+    reason: `Safe local toolchain environment assignment: ${name}`,
+  };
+}
+
+function stripSafeInlineEnvAssignments(command = "") {
+  let remaining = String(command || "").trim();
+  let stripped = false;
+  for (let guard = 0; guard < 8; guard += 1) {
+    const match = remaining.match(/^([A-Z_][A-Z0-9_]*)=([^\s;&|<>`$]+)\s+(.+)$/);
+    if (!match) break;
+    const [, name, value, rest] = match;
+    if (!isSafeEnvAssignment(name, value)) break;
+    remaining = rest.trim();
+    stripped = true;
+  }
+  return stripped ? remaining : command;
+}
+
+function classifySafeEchoRedirect(normalized = "") {
+  const match = normalized.match(/^echo\s+(?:"[^"\n]*"|'[^'\n]*'|[-\w.:/]+)\s+>>?\s+([-\w./]+|\/workspace\/[-\w./]+)$/);
+  if (!match) return null;
+  const target = match[1] || "";
+  if (!isSafeWorkspacePath(target)) return null;
+  return {
+    category: "workspace-write",
+    needsNetwork: false,
+    writesWorkspace: true,
+    virtualWorkspacePath: isSafeVirtualWorkspacePath(target),
+    reason: `Command writes a small workspace status log: ${target}`,
+  };
+}
+
 function classifyGitCleanDryRun(normalized) {
   const match = normalized.match(/^git\s+clean\b([\s\S]*)$/);
   if (!match) return null;
@@ -346,8 +414,13 @@ function classifySimpleCommand(normalized) {
   }
   const gitCloneClassification = classifyGitClone(normalized);
   if (gitCloneClassification) return gitCloneClassification;
+  const envExportClassification = classifySafeEnvExport(normalized);
+  if (envExportClassification) return envExportClassification;
+  const echoRedirectClassification = classifySafeEchoRedirect(normalized);
+  if (echoRedirectClassification) return echoRedirectClassification;
 
-  const unquoted = stripQuotedSegments(benignRedirectCommand);
+  const commandForPatternMatching = stripSafeInlineEnvAssignments(benignRedirectCommand);
+  const unquoted = stripQuotedSegments(commandForPatternMatching);
   const lowered = ` ${unquoted.toLowerCase()} `;
   if (BLOCKED_WRITE_TOKENS.some((part) => lowered.includes(part))) {
     return {
@@ -366,25 +439,25 @@ function classifySimpleCommand(normalized) {
     };
   }
 
-  if (matchAny(READ_ONLY_PATTERNS, benignRedirectCommand) || isReadOnlyFindCommand(normalized)) {
+  if (matchAny(READ_ONLY_PATTERNS, commandForPatternMatching) || isReadOnlyFindCommand(normalized)) {
     return { category: "read-only", needsNetwork: false, writesWorkspace: false };
   }
-  if (matchAny(TEST_PATTERNS, benignRedirectCommand)) {
+  if (matchAny(TEST_PATTERNS, commandForPatternMatching)) {
     return { category: "test", needsNetwork: false, writesWorkspace: false };
   }
-  if (matchAny(TOOLCHAIN_PATTERNS, benignRedirectCommand)) {
+  if (matchAny(TOOLCHAIN_PATTERNS, commandForPatternMatching)) {
     return { category: "toolchain", needsNetwork: false, writesWorkspace: true };
   }
-  if (matchAny(NETWORK_FETCH_PATTERNS, benignRedirectCommand)) {
-    return { category: "network-fetch", needsNetwork: true, writesWorkspace: /(\s-o\s|\s-O\s)/.test(benignRedirectCommand) };
+  if (matchAny(NETWORK_FETCH_PATTERNS, commandForPatternMatching)) {
+    return { category: "network-fetch", needsNetwork: true, writesWorkspace: /(\s-o\s|\s-O\s)/.test(commandForPatternMatching) };
   }
-  if (matchAny(SYSTEM_PACKAGE_INSTALL_PATTERNS, benignRedirectCommand)) {
+  if (matchAny(SYSTEM_PACKAGE_INSTALL_PATTERNS, commandForPatternMatching)) {
     return { category: "system-package-install", needsNetwork: true, writesWorkspace: false, requiresDockerRoot: true };
   }
-  if (matchAny(PACKAGE_INSTALL_PATTERNS, benignRedirectCommand)) {
+  if (matchAny(PACKAGE_INSTALL_PATTERNS, commandForPatternMatching)) {
     return { category: "package-install", needsNetwork: true, writesWorkspace: true };
   }
-  if (matchAny(ENV_SETUP_PATTERNS, benignRedirectCommand)) {
+  if (matchAny(ENV_SETUP_PATTERNS, commandForPatternMatching)) {
     return { category: "env-setup", needsNetwork: false, writesWorkspace: true };
   }
 
@@ -469,8 +542,8 @@ function classifyShellSequence(normalized) {
   if (categories.has("permission-change")) return { category: "permission-change", ...aggregate };
   if (categories.has("git-remote")) return { category: "git-remote", ...aggregate };
   if (categories.has("network-fetch")) return { category: "network-fetch", ...aggregate };
-  if (categories.has("workspace-write")) return { category: "workspace-write", ...aggregate };
   if (categories.has("toolchain")) return { category: "toolchain", ...aggregate };
+  if (categories.has("workspace-write")) return { category: "workspace-write", ...aggregate };
   if (categories.has("test")) return { category: "test", ...aggregate };
   if (categories.has("git-workflow")) return { category: "git-workflow", ...aggregate };
   return {
@@ -566,8 +639,9 @@ export function classifyCommand(command) {
   return classifyCdCommand(normalized) || classifyShellSequence(normalized) || classifyPipelineSequence(normalized) || classifySimpleCommand(normalized);
 }
 
-export function evaluateCommandPolicy(command, config) {
-  const classification = classifyCommand(command);
+export function evaluateCommandPolicy(command, config = {}) {
+  const normalizedForPolicy = relativizeWorkspaceAbsolutePaths(command, config.commandCwd);
+  const classification = classifyCommand(normalizedForPolicy);
   const normalizedCommand = String(command || "").trim();
   const sandboxMode = normalizeSandboxMode(config.sandboxMode);
   const packageInstallPolicy = normalizePackageInstallPolicy(config.packageInstallPolicy);
