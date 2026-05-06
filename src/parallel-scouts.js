@@ -1,4 +1,5 @@
 import { engineeringGuidanceForTask } from "./engineering-guidance.js";
+import { createChatCompletion } from "./model-client.js";
 import { getModelPresets } from "./model-routing.js";
 import { getTaskProfile, normalizeTaskProfile } from "./task-profiles.js";
 import { redactSensitiveText } from "./redaction.js";
@@ -181,7 +182,8 @@ function scoutMessages(config, state, scout, contextPack) {
 async function synthesizeScouts(client, config, model, scouts, contextPack) {
   const usable = scouts.filter((scout) => scout.content);
   if (usable.length < 2) return "";
-  const response = await client.chat.completions.create(
+  const response = await createChatCompletion(
+    client,
     {
       model,
       temperature: 0,
@@ -199,7 +201,8 @@ async function synthesizeScouts(client, config, model, scouts, contextPack) {
         },
       ],
     },
-    config.abortSignal ? { signal: config.abortSignal } : undefined
+    config,
+    "parallel scout synthesis request"
   );
   return redactSensitiveText(response.choices[0]?.message?.content || "").trim();
 }
@@ -244,13 +247,15 @@ export async function runParallelScouts(client, config, state) {
   const contextPack = context.text;
   const settled = await Promise.allSettled(
     selected.map(async (scout) => {
-      const response = await client.chat.completions.create(
+      const response = await createChatCompletion(
+        client,
         {
           model,
           temperature: 0,
           messages: scoutMessages(config, state, scout, contextPack),
         },
-        config.abortSignal ? { signal: config.abortSignal } : undefined
+        config,
+        `parallel scout ${scout.name} request`
       );
       return {
         name: scout.name,

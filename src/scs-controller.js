@@ -113,7 +113,7 @@ async function callJson(client, config, messages, fallback, label) {
       },
       {
         ...(config.abortSignal ? { signal: config.abortSignal } : {}),
-        timeout: Number(config.modelTimeoutMs || process.env.AGINTI_MODEL_TIMEOUT_MS || 90000),
+        timeout: Number(config.modelTimeoutMs || process.env.AGINTI_MODEL_TIMEOUT_MS || 180000),
       }
     );
   } catch (error) {

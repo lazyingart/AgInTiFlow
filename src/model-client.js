@@ -60,11 +60,68 @@ function prepareMessages(config, messages) {
 }
 
 function requestOptions(config) {
-  const timeout = Number(config.modelTimeoutMs || process.env.AGINTI_MODEL_TIMEOUT_MS || 90000);
+  const timeout = Number(config.modelTimeoutMs || process.env.AGINTI_MODEL_TIMEOUT_MS || 180000);
   return {
     ...(config.abortSignal ? { signal: config.abortSignal } : {}),
     ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}),
   };
+}
+
+function modelTimeoutMs(config) {
+  const timeout = Number(config.modelTimeoutMs || process.env.AGINTI_MODEL_TIMEOUT_MS || 180000);
+  return Number.isFinite(timeout) && timeout > 0 ? timeout : 0;
+}
+
+export async function createChatCompletion(client, payload, config, label = "model request") {
+  const timeout = modelTimeoutMs(config);
+  if (!timeout && !config.abortSignal) {
+    return client.chat.completions.create(payload, requestOptions(config));
+  }
+
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromParent = () => controller.abort(config.abortSignal?.reason || new Error("Model request aborted."));
+  if (config.abortSignal?.aborted) {
+    abortFromParent();
+  } else if (config.abortSignal) {
+    config.abortSignal.addEventListener("abort", abortFromParent, { once: true });
+  }
+  let rejectOnTimeout = null;
+  const timeoutPromise = timeout
+    ? new Promise((_, reject) => {
+        rejectOnTimeout = reject;
+      })
+    : null;
+  const timer = timeout
+    ? setTimeout(() => {
+        timedOut = true;
+        const timeoutError = new Error(`${label} timed out after ${timeout}ms`);
+        timeoutError.name = "ModelTimeoutError";
+        controller.abort(timeoutError);
+        rejectOnTimeout?.(timeoutError);
+      }, timeout)
+    : null;
+
+  try {
+    const request = client.chat.completions.create(payload, {
+      ...requestOptions(config),
+      signal: controller.signal,
+    });
+    return await (timeoutPromise ? Promise.race([request, timeoutPromise]) : request);
+  } catch (error) {
+    if (timedOut && error?.name !== "ModelTimeoutError") {
+      const timeoutError = new Error(`${label} timed out after ${timeout}ms`);
+      timeoutError.name = "ModelTimeoutError";
+      timeoutError.cause = error;
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (config.abortSignal) {
+      config.abortSignal.removeEventListener("abort", abortFromParent);
+    }
+  }
 }
 
 function toolChoiceForProvider(config, messages = []) {
@@ -492,7 +549,8 @@ export async function createPlan(client, config, state) {
     ].join("\n");
   }
 
-  const response = await client.chat.completions.create(
+  const response = await createChatCompletion(
+    client,
     {
       model: config.model,
       temperature: 0,
@@ -556,7 +614,8 @@ export async function createPlan(client, config, state) {
       },
       ],
     },
-    requestOptions(config)
+    config,
+    "plan request"
   );
 
   return redactSensitiveText(response.choices[0]?.message?.content?.trim() || "1. Inspect the page.\n2. Use the smallest safe action.\n3. Finish with a concise answer.");
@@ -1157,13 +1216,10 @@ export async function requestNextStep(client, config, messages) {
 
   let response;
   try {
-    response = await client.chat.completions.create(
-      textToolProtocol ? textPayload : nativePayload,
-      requestOptions(config)
-    );
+    response = await createChatCompletion(client, textToolProtocol ? textPayload : nativePayload, config, "agent step request");
   } catch (error) {
     if (!textToolProtocol && shouldRetryWithTextToolProtocol(error, config)) {
-      response = await client.chat.completions.create(textPayload, requestOptions(config));
+      response = await createChatCompletion(client, textPayload, config, "agent step text-tool retry");
     } else {
       throw error;
     }

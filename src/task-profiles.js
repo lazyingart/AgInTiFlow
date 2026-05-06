@@ -108,7 +108,7 @@ export const TASK_PROFILES = {
     id: "security",
     label: "Security review",
     prompt:
-      "Bias toward security review, threat modeling, secrets hygiene, dependency risks, auth/session logic, input validation, and safe automation. Gather evidence before changing code, never print secrets, distinguish exploitable risk from style concern, patch minimal high-impact issues, run relevant scanners/tests when available, and stop before destructive or credential-sensitive actions.",
+      "Bias toward security review, threat modeling, secrets hygiene, dependency risks, auth/session logic, input validation, and safe automation. Gather evidence before changing code, never print secrets, distinguish exploitable risk from style concern, and do not label HIGH/CRITICAL findings from pattern matches alone. For path traversal, injection, SSRF, open redirect, auth bypass, and file disclosure, reproduce a minimal safe case or downgrade to potential/unverified with limitations. Avoid generated/vendor/session/cache directories in broad scans, patch minimal high-impact issues when requested, run relevant scanners/tests when available, and stop before destructive or credential-sensitive actions.",
     tools: ["inspect_project", "search_files", "read_file", "apply_patch", "shell", "web_search", "sandbox"],
   },
   slides: {

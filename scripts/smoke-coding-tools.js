@@ -3,12 +3,20 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { repairModelMessageHistory, runAgent, sanitizeToolResult, shouldShortCircuitToolBatch, skippedAfterBlockedToolResult } from "../src/agent-runner.js";
+import {
+  buildModelTimeoutRetryMessages,
+  repairModelMessageHistory,
+  runAgent,
+  sanitizeToolResult,
+  shouldShortCircuitToolBatch,
+  skippedAfterBlockedToolResult,
+} from "../src/agent-runner.js";
 import { formatBehaviorContractForPrompt } from "../src/behavior-contract.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { readCodebaseMap } from "../src/codebase-map.js";
 import { evaluateCommandPolicy } from "../src/command-policy.js";
 import { engineeringGuidanceForTask, recommendedMaxStepsForTask } from "../src/engineering-guidance.js";
+import { createPlan } from "../src/model-client.js";
 import { selectModelRoute } from "../src/model-routing.js";
 import { listParallelScouts, runParallelScouts, shouldRunParallelScouts } from "../src/parallel-scouts.js";
 import { buildFailedCommandAdvice, buildPermissionAdvice } from "../src/permission-advice.js";
@@ -574,6 +582,91 @@ try {
   assert(inspected.sourceDirs.some((item) => item.path === "src"), "inspect_project did not identify src directory");
   assert(inspected.testFiles.some((item) => item.path === "test/index.test.js"), "inspect_project did not identify test file");
   assert(inspected.recommendedReads.includes("package.json"), "inspect_project did not recommend package.json");
+  let planTimeoutError = null;
+  const neverCompletesClient = {
+    chat: {
+      completions: {
+        create: () => new Promise(() => {}),
+      },
+    },
+  };
+  try {
+    await createPlan(
+      neverCompletesClient,
+      {
+        provider: "deepseek",
+        model: "deepseek-v4-pro",
+        taskProfile: "security",
+        goal: "perform a safe read-only security audit",
+        commandCwd: workspace,
+        allowedDomains: [],
+        allowShellTool: true,
+        allowFileTools: true,
+        allowWrapperTools: false,
+        allowAuxiliaryTools: false,
+        allowWebSearch: false,
+        allowParallelScouts: false,
+        sandboxMode: "host",
+        packageInstallPolicy: "block",
+        modelTimeoutMs: 25,
+      },
+      { goal: "perform a safe read-only security audit", meta: {} }
+    );
+  } catch (error) {
+    planTimeoutError = error;
+  }
+  assert(planTimeoutError?.name === "ModelTimeoutError", "plan model request did not fail with explicit timeout");
+  assert(/plan request timed out/.test(planTimeoutError.message), "plan timeout error message was not specific");
+  const compactRetryMessages = buildModelTimeoutRetryMessages(
+    {
+      plan: "Inspect safely, write a bounded report.",
+      messages: [
+        { role: "system", content: "system guidance" },
+        { role: "user", content: "Do a safe security audit and write reports/audit.md." },
+        { role: "user", content: "Step 3/8 (5 steps remain after this one). Latest runtime snapshot:\n{\"large\":\"snapshot\"}" },
+        {
+          role: "assistant",
+          content: "I will scan.",
+          tool_calls: [{ id: "call-a", type: "function", function: { name: "run_command", arguments: "{\"command\":\"grep -r token .\"}" } }],
+        },
+        {
+          role: "tool",
+          tool_call_id: "call-a",
+          content: JSON.stringify({
+            toolName: "run_command",
+            ok: false,
+            blocked: true,
+            category: "general-shell",
+            reason: "General shell commands on the host require Allow destructive actions.",
+            args: { command: "grep -r token ." },
+          }),
+        },
+      ],
+    },
+    {
+      taskProfile: "security",
+      sandboxMode: "host",
+      packageInstallPolicy: "block",
+      commandCwd: workspace,
+      maxSteps: 8,
+    },
+    { title: "No browser page open", url: "" },
+    3,
+    planTimeoutError
+  );
+  assert(compactRetryMessages.every((message) => message.role !== "tool"), "timeout retry messages retained tool role messages");
+  assert(
+    !compactRetryMessages.some((message) => Array.isArray(message.tool_calls)),
+    "timeout retry messages retained native tool_call records"
+  );
+  assert(
+    compactRetryMessages.some((message) => /compacted, valid transcript/.test(message.content || "")),
+    "timeout retry messages did not explain compacted recovery"
+  );
+  assert(
+    compactRetryMessages.some((message) => /blocked=general-shell/.test(message.content || "")),
+    "timeout retry messages did not retain blocked tool evidence"
+  );
   const fakeScoutPrompts = [];
   const fakeScoutClient = {
     chat: {
@@ -876,6 +969,7 @@ try {
           "allow_redacted_write_content",
           "block_secret_patch_content",
           "block_outside",
+          "model_timeout_compact_retry_messages",
         ],
       },
       null,

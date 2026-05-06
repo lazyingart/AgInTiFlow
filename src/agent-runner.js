@@ -234,6 +234,143 @@ function preserveAssistantMessage(message) {
   return preserved;
 }
 
+function compactSingleLine(value, limit = 600) {
+  const text = redactSensitiveText(String(value || ""))
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!limit || text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 16)).trimEnd()} ... [truncated]`;
+}
+
+function compactJson(value, limit = 1200) {
+  try {
+    return compactSingleLine(JSON.stringify(value), limit);
+  } catch {
+    return compactSingleLine(value, limit);
+  }
+}
+
+function safeParseToolContent(content) {
+  try {
+    return JSON.parse(String(content || ""));
+  } catch {
+    return null;
+  }
+}
+
+function summarizeToolHistory(messages = [], limit = 24) {
+  const items = [];
+  for (const message of messages) {
+    if (message?.role === "tool") {
+      const payload = safeParseToolContent(message.content);
+      const toolName = payload?.toolName || payload?.name || "tool";
+      const parts = [`tool=${toolName}`];
+      if ("ok" in (payload || {})) parts.push(`ok=${Boolean(payload.ok)}`);
+      if (payload?.blocked) parts.push(`blocked=${payload.category || true}`);
+      if (payload?.skipped) parts.push("skipped=true");
+      if (payload?.path) parts.push(`path=${payload.path}`);
+      if (payload?.outputPath) parts.push(`output=${payload.outputPath}`);
+      if (payload?.args?.path) parts.push(`argPath=${payload.args.path}`);
+      if (payload?.args?.command) parts.push(`command=${compactSingleLine(payload.args.command, 220)}`);
+      if (payload?.reason) parts.push(`reason=${compactSingleLine(payload.reason, 260)}`);
+      if (payload?.error) parts.push(`error=${compactSingleLine(payload.error, 260)}`);
+      if (payload?.stdout) parts.push(`stdout=${compactSingleLine(payload.stdout, 320)}`);
+      if (payload?.stderr) parts.push(`stderr=${compactSingleLine(payload.stderr, 320)}`);
+      if (payload?.result) parts.push(`result=${compactSingleLine(payload.result, 320)}`);
+      if (payload?.entries) parts.push(`entries=${Array.isArray(payload.entries) ? payload.entries.length : "present"}`);
+      if (payload?.results) parts.push(`results=${Array.isArray(payload.results) ? payload.results.length : "present"}`);
+      items.push(parts.join(" | "));
+      continue;
+    }
+
+    if (message?.role === "assistant" && String(message.content || "").trim()) {
+      items.push(`assistant=${compactSingleLine(message.content, 420)}`);
+    }
+  }
+  return items.slice(-limit);
+}
+
+function summarizeOriginalRequests(messages = [], limit = 4) {
+  const requests = [];
+  for (const message of messages) {
+    if (message?.role !== "user") continue;
+    const content = String(message.content || "");
+    if (!content.trim()) continue;
+    if (/^Step \d+\/\d+ .*Latest runtime snapshot:/i.test(content)) continue;
+    if (/^Previous assistant response retained as compacted history/i.test(content)) continue;
+    requests.push(compactSingleLine(content, 700));
+  }
+  return [...new Set(requests)].slice(0, limit);
+}
+
+function countMessageChars(messages = []) {
+  return messages.reduce((sum, message) => sum + String(message?.content || "").length, 0);
+}
+
+function modelTimeoutMsForConfig(config = {}) {
+  const timeout = Number(config.modelTimeoutMs || process.env.AGINTI_MODEL_TIMEOUT_MS || 180000);
+  return Number.isFinite(timeout) && timeout > 0 ? timeout : 180000;
+}
+
+export function buildModelTimeoutRetryMessages(state, config, snapshot, step, error) {
+  const messages = Array.isArray(state?.messages) ? state.messages : [];
+  const systemMessages = messages.filter((message) => message?.role === "system").slice(0, 4);
+  const requests = summarizeOriginalRequests(messages);
+  const toolHistory = summarizeToolHistory(messages);
+  const snapshotSummary = {
+    step,
+    maxSteps: config.maxSteps,
+    taskProfile: config.taskProfile,
+    sandboxMode: config.sandboxMode,
+    packageInstallPolicy: config.packageInstallPolicy,
+    commandCwd: config.commandCwd,
+    browserOpen: Boolean(snapshot?.url),
+    title: snapshot?.title || "",
+    url: snapshot?.url || "",
+    plan: state?.plan || "",
+  };
+  const compactedContent = [
+    "A previous agent-step model request timed out. Continue from this compacted, valid transcript.",
+    `Timeout: ${error?.name || "ModelTimeoutError"} ${compactSingleLine(error?.message || "", 260)}`,
+    "",
+    "Original user request(s):",
+    ...(requests.length ? requests.map((request, index) => `${index + 1}. ${request}`) : ["1. (No compact request found; continue from plan and tool evidence.)"]),
+    "",
+    "Current plan:",
+    compactSingleLine(state?.plan || "(no plan recorded)", 1200),
+    "",
+    "Recent tool/model evidence:",
+    ...(toolHistory.length ? toolHistory.map((item) => `- ${item}`) : ["- No tool evidence recorded yet."]),
+    "",
+    "Latest runtime snapshot:",
+    compactJson(snapshotSummary, 1600),
+    "",
+    "Recovery instruction:",
+    "Do not restart broad discovery. Use the evidence above, avoid repeating blocked broad shell commands, and either call the smallest remaining tool or finish with a concrete report/blocker.",
+  ].join("\n");
+
+  const compactMessages = [
+    ...systemMessages,
+    {
+      role: "user",
+      content: compactedContent,
+    },
+  ];
+
+  if (!compactMessages.some((message) => message.role === "system")) {
+    compactMessages.unshift({
+      role: "system",
+      content: "You are AgInTiFlow. Continue safely from compacted runtime evidence and avoid repeating blocked actions.",
+    });
+  }
+
+  return compactMessages;
+}
+
+function isModelTimeoutError(error) {
+  return error?.name === "ModelTimeoutError" || /timed out after \d+ms/i.test(String(error?.message || ""));
+}
+
 export function repairModelMessageHistory(state, config = {}) {
   if (!Array.isArray(state?.messages)) {
     return {
@@ -1551,7 +1688,29 @@ export async function runAgent(config) {
           kind: "meta",
         });
       } else {
-        const plan = redactSensitiveText(await createPlan(client, config, state));
+        const planRequest = {
+          provider: config.provider,
+          model: config.model,
+          taskProfile: config.taskProfile,
+          timeoutMs: modelTimeoutMsForConfig(config),
+        };
+        await store.appendEvent("plan.requested", planRequest);
+        observers.event("plan.requested", planRequest);
+        let plan;
+        try {
+          plan = redactSensitiveText(await createPlan(client, config, state));
+        } catch (error) {
+          const detail = {
+            provider: config.provider,
+            model: config.model,
+            taskProfile: config.taskProfile,
+            error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+            name: error?.name || "",
+          };
+          await store.appendEvent("plan.failed", detail);
+          observers.event("plan.failed", detail);
+          throw error;
+        }
         state.plan = plan;
         await store.savePlan(plan);
         await store.appendEvent("plan.created", { plan });
@@ -1746,7 +1905,45 @@ export async function runAgent(config) {
         provider: config.provider,
         model: config.model,
       });
-      const response = await requestNextStep(client, config, state.messages);
+      let response;
+      try {
+        response = await requestNextStep(client, config, state.messages);
+      } catch (error) {
+        const retryKey = `step-${step}`;
+        const retriedSteps = state.meta.modelTimeoutRetries || {};
+        if (!isModelTimeoutError(error) || retriedSteps[retryKey]) throw error;
+
+        const timeoutMs = modelTimeoutMsForConfig(config);
+        const retryTimeoutMs = Math.max(timeoutMs * 2, 180000);
+        const compactMessages = buildModelTimeoutRetryMessages(state, config, snapshot, step, error);
+        const detail = {
+          step,
+          provider: config.provider,
+          model: config.model,
+          timeoutMs,
+          retryTimeoutMs,
+          messageCharsBefore: countMessageChars(state.messages),
+          messageCharsAfter: countMessageChars(compactMessages),
+          error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+        };
+        state.messages = compactMessages;
+        state.meta.modelTimeoutRetries = {
+          ...retriedSteps,
+          [retryKey]: true,
+        };
+        state.meta.lastModelTimeout = detail;
+        await store.appendEvent("model.timeout", detail);
+        await store.appendEvent("history.compacted_for_model_retry", detail);
+        observers.event("model.timeout", detail);
+        observers.event("history.compacted_for_model_retry", detail);
+        emitConsole(
+          config,
+          `Model request timed out after ${timeoutMs}ms; compacted history and retrying once with ${retryTimeoutMs}ms.`,
+          { kind: "meta" }
+        );
+        await store.saveState(state);
+        response = await requestNextStep(client, { ...config, modelTimeoutMs: retryTimeoutMs }, state.messages);
+      }
       const assistantMessage = response.choices[0]?.message;
       if (!assistantMessage) {
         throw new Error("Model returned no assistant message.");
@@ -2060,6 +2257,32 @@ export async function runAgent(config) {
       reason: "max_steps_reached",
     };
   } catch (error) {
+    if (isModelTimeoutError(error)) {
+      const detail = {
+        reason: "model_timeout",
+        error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+        name: error?.name || "",
+        provider: config.provider,
+        model: config.model,
+      };
+      state.stepsCompleted = state.stepsCompleted || 0;
+      state.updatedAt = new Date().toISOString();
+      await store.saveState(state).catch(() => {});
+      await store.appendEvent("session.failed", detail).catch(() => {});
+      observers.event("session.failed", {
+        ...detail,
+        sessionId,
+      });
+      const message = `Model request timed out for ${config.provider}/${config.model}. Session saved; resume it to continue from compacted evidence.`;
+      emitConsole(config, message, { kind: "error", error: true });
+      return {
+        sessionId,
+        result: message,
+        stopped: true,
+        failed: true,
+        reason: "model_timeout",
+      };
+    }
     if (!isAbortError(error, config)) throw error;
     state.stepsCompleted = state.stepsCompleted || 0;
     state.updatedAt = new Date().toISOString();
