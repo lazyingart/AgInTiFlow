@@ -9,6 +9,7 @@ import {
   formatCommittedUserPromptLines,
   buildPromptLayout,
   buildPromptRenderSequence,
+  ComposerHistory,
   canonicalSlashPromptBuffer,
   classifyEscapeAction,
   formatElapsedDuration,
@@ -367,6 +368,65 @@ try {
   if (classifyEscapeAction({ active: true, pendingAsap: [] }) !== "abort") {
     throw new Error("active Esc should abort when no ASAP pipe messages are pending");
   }
+  const composerHistory = new ComposerHistory([
+    "first prompt",
+    "second prompt\nwith code",
+    "second prompt\nwith code",
+    "third prompt",
+  ]);
+  let recalled = composerHistory.navigate("", -1);
+  if (recalled?.buffer !== "third prompt" || recalled.cursor !== "third prompt".length) {
+    throw new Error("composer history did not recall the latest prompt from an empty input");
+  }
+  recalled = composerHistory.navigate(recalled.buffer, -1);
+  if (recalled?.buffer !== "second prompt\nwith code") {
+    throw new Error("composer history did not keep browsing with repeated Up while unedited");
+  }
+  recalled = composerHistory.navigate(recalled.buffer, 1);
+  if (recalled?.buffer !== "third prompt") {
+    throw new Error("composer history did not move newer with Down while unedited");
+  }
+  recalled = composerHistory.navigate(recalled.buffer, 1);
+  if (recalled?.buffer !== "" || recalled.browsing !== false) {
+    throw new Error("composer history did not restore the empty draft past the newest entry");
+  }
+  const editedHistory = new ComposerHistory(["older", "latest"]);
+  const latestRecall = editedHistory.navigate("", -1);
+  editedHistory.resetBrowsing();
+  if (editedHistory.navigate(`${latestRecall.buffer} edited`, -1) !== null) {
+    throw new Error("composer history should not browse after a recalled prompt was edited");
+  }
+  if (editedHistory.navigate(latestRecall.buffer, -1) !== null) {
+    throw new Error("composer history should not browse after explicit browsing reset");
+  }
+  const seededHistory = new ComposerHistory(["local command"]);
+  seededHistory.seedFromChat([
+    { role: "assistant", content: "ignore me" },
+    { role: "user", content: "resumed one" },
+    { role: "user", content: "resumed one" },
+    { role: "user", content: "resumed two" },
+    { role: "tool", content: "ignore tool" },
+  ]);
+  if (seededHistory.entries.join("|") !== "local command|resumed one|resumed two") {
+    throw new Error("composer history did not seed resumed user messages with adjacent duplicate filtering");
+  }
+  const sourceHistory = new ComposerHistory();
+  sourceHistory.seedFromChat([
+    { role: "user", content: "resumed one" },
+    { role: "user", content: "resumed two" },
+  ], "same-session");
+  sourceHistory.seedFromChat([
+    { role: "user", content: "resumed one" },
+    { role: "user", content: "resumed two" },
+  ], "same-session");
+  if (sourceHistory.entries.join("|") !== "resumed one|resumed two") {
+    throw new Error("composer history duplicated prompts when reseeding the same session");
+  }
+  seededHistory.recordSubmission("resumed two");
+  seededHistory.recordSubmission("new submission");
+  if (seededHistory.entries.at(-1) !== "new submission" || seededHistory.entries.filter((entry) => entry === "resumed two").length !== 1) {
+    throw new Error("composer history did not collapse adjacent duplicate submissions");
+  }
   await runChat("/exit\n");
   const idleSessionEntries = await fs.readdir(path.join(agintiflowHome, "sessions"), { withFileTypes: true }).catch(() => []);
   if (idleSessionEntries.some((entry) => entry.isDirectory())) {
@@ -591,6 +651,8 @@ try {
           "cli-i18n",
           "user-prompt-label",
           "escape-policy",
+          "composer-history-recall",
+          "composer-history-resume-seed",
           "live-input-status-layout",
           "agent-response-gutter",
           "aginti-md",

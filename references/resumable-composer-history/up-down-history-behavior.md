@@ -6,7 +6,7 @@ This note documents the desired AgInTiFlow CLI behavior for resumed input histor
 
 When an AgInTiFlow session is resumed, the transcript is printed, but the prompt editor cannot use Up/Down to recall the previous user messages from that resumed session.
 
-Current AgInTiFlow behavior is caused by two separate facts:
+The old AgInTiFlow behavior was caused by two separate facts:
 
 - `src/interactive-cli.js` keeps `promptHistory` as an in-memory array for the current CLI process.
 - `printResumeHistory()` reads and prints saved chat entries, but does not seed `promptHistory` with the resumed session's prior user messages.
@@ -63,9 +63,9 @@ Codex also tracks:
 
 The design principle is simple: history recall is a mode, not just a keybinding.
 
-## AgInTiFlow Current Behavior
+## Previous AgInTiFlow Behavior
 
-Current AgInTiFlow code path:
+Previous AgInTiFlow code path:
 
 - `promptHistory` is declared in `src/interactive-cli.js`.
 - `readTtyPrompt()` owns `buffer`, `cursor`, `preferredColumn`, `historyIndex`, and `draft`.
@@ -78,11 +78,11 @@ This is good enough for one live CLI process, but it has two gaps:
 - Resume history is not loaded into `promptHistory`.
 - History browsing is not explicitly invalidated by all non-Up/Down edits and cursor movement, so the code relies mostly on rendered row boundaries rather than an explicit `lastHistoryText` gate.
 
-## Recommended AgInTiFlow Design
+## Implemented AgInTiFlow Design
 
-Create a small composer-history state machine instead of spreading the logic across `readTtyPrompt()`.
+AgInTiFlow now uses a small composer-history state machine instead of spreading the logic across `readTtyPrompt()`.
 
-Suggested shape:
+Implemented shape:
 
 ```js
 class ComposerHistory {
@@ -96,7 +96,7 @@ class ComposerHistory {
   seed(entries) {}
   recordSubmission(text) {}
   resetBrowsing() {}
-  shouldNavigate(buffer, cursor, direction, layoutLocation) {}
+  shouldNavigate(buffer, direction) {}
   navigateUp(buffer) {}
   navigateDown() {}
 }
@@ -120,33 +120,29 @@ Important details:
 - Preserve chronological order.
 - Ignore empty prompts.
 - Collapse adjacent duplicates.
+- Track the seeded session id/count so repeated resume-history rendering does not duplicate the same old prompts.
 - Do not add assistant messages.
 - Do not add tool output or system state rows.
 - Keep this per-session unless a future global history is deliberately added.
 
 ### Navigation Gate
 
-Use a gate close to Codex:
+The implemented gate follows the user-facing behavior requested for AgInTiFlow:
 
 ```js
-function shouldNavigateHistory({ buffer, cursor, direction, location, layout }) {
+function shouldNavigateHistory({ buffer, direction }) {
   if (history.entries.length === 0) return false;
-  if (buffer.length === 0) return true;
-  if (buffer !== history.lastRecalledText) return false;
-
-  if (direction < 0) {
-    return location.rowIndex === 0 && cursor === 0;
-  }
-  return location.rowIndex === layout.rows.length - 1 && cursor === buffer.length;
+  if (buffer.length === 0) return direction < 0;
+  return history.cursor !== null && buffer === history.lastRecalledText;
 }
 ```
 
-There are two possible policies:
+This means:
 
-- Strict policy: only allow continued history browsing at absolute start/end of the recalled buffer.
-- Codex-like boundary policy: allow at line/text boundary when current text still exactly matches the recalled entry.
-
-For AgInTiFlow, strict policy is safer because the prompt editor is not a full TUI textarea. It avoids surprise replacement while editing multiline code.
+- Empty input + Up recalls the latest prior user prompt.
+- Repeated Up/Down keeps browsing as long as the recalled entry is still exactly unedited.
+- Any edit or intentional cursor/navigation key exits browsing mode.
+- After browsing is exited, Up/Down behave like textarea vertical movement and do not replace the buffer.
 
 ### Invalidate On Non-History Input
 
@@ -221,11 +217,12 @@ Required cases:
 
 ## Implementation Notes For AgInTiFlow
 
-Best integration points:
+Implemented integration points:
 
-- `src/interactive-cli.js`: replace raw `promptHistory` operations with a `ComposerHistory` helper.
-- `printResumeHistory()`: return or expose resumed user prompt entries, or have session loading call a seed helper before prompt loop.
-- `readPromptAnswer()`: accept seeded history through state/options instead of relying only on a global array.
+- `src/interactive-cli.js`: raw `promptHistory` operations are replaced with a `ComposerHistory` helper.
+- `printResumeHistory()`: seeds prompt recall from resumed session user chat entries.
+- `readTtyPrompt()`: resets browsing on each prompt, records submissions, and invalidates browsing on non-Up/Down edits/navigation.
+- `scripts/smoke-cli-chat.js`: covers recall, repeated Up/Down, resume seeding, edited-history invalidation, and duplicate filtering.
 
 Avoid coupling history recall to transcript rendering. Transcript printing and input recall should read from the same session data, but they are different UI surfaces.
 

@@ -128,7 +128,87 @@ function parseInitTemplateValue(value = "") {
   if (parts[0] === "template" || parts[0] === "--template" || parts[0] === "-t") return normalizeInstructionTemplate(parts[1]);
   return normalizeInstructionTemplate(parts[0] || "disciplined");
 }
-const promptHistory = [];
+
+function dedupeAdjacentEntries(entries = []) {
+  const result = [];
+  for (const entry of entries) {
+    const text = String(entry || "");
+    if (!text.trim()) continue;
+    if (result[result.length - 1] !== text) result.push(text);
+  }
+  return result;
+}
+
+export class ComposerHistory {
+  constructor(entries = []) {
+    this.entries = [];
+    this.seededSources = new Map();
+    this.cursor = null;
+    this.draft = "";
+    this.lastRecalledText = null;
+    this.seed(entries);
+  }
+
+  seed(entries = []) {
+    this.entries = dedupeAdjacentEntries([...this.entries, ...entries]);
+    this.resetBrowsing();
+  }
+
+  seedFromChat(chat = [], sourceId = "") {
+    const entries = (Array.isArray(chat) ? chat : [])
+      .filter((entry) => entry?.role === "user" && entry?.content)
+      .map((entry) => String(entry.content));
+    const sourceKey = String(sourceId || "");
+    if (!sourceKey) {
+      this.seed(entries);
+      return;
+    }
+    const previousCount = this.seededSources.get(sourceKey) || 0;
+    this.seed(entries.slice(previousCount));
+    this.seededSources.set(sourceKey, entries.length);
+  }
+
+  recordSubmission(text = "") {
+    const value = String(text || "");
+    if (value.trim() && this.entries[this.entries.length - 1] !== value) this.entries.push(value);
+    this.resetBrowsing();
+  }
+
+  resetBrowsing() {
+    this.cursor = null;
+    this.draft = "";
+    this.lastRecalledText = null;
+  }
+
+  shouldNavigate(buffer = "", direction = -1) {
+    if (this.entries.length === 0) return false;
+    const text = String(buffer || "");
+    if (!text) return direction < 0;
+    return this.cursor !== null && text === this.lastRecalledText;
+  }
+
+  navigate(buffer = "", direction = -1) {
+    if (!this.shouldNavigate(buffer, direction)) return null;
+    if (this.cursor === null) {
+      this.cursor = this.entries.length;
+      this.draft = String(buffer || "");
+    }
+    if (direction < 0) {
+      this.cursor = Math.max(this.cursor - 1, 0);
+    } else if (this.cursor < this.entries.length - 1) {
+      this.cursor += 1;
+    } else {
+      const draft = this.draft;
+      this.resetBrowsing();
+      return { buffer: draft, cursor: draft.length, browsing: false };
+    }
+    const recalled = this.entries[this.cursor] || "";
+    this.lastRecalledText = recalled;
+    return { buffer: recalled, cursor: recalled.length, browsing: true };
+  }
+}
+
+const promptHistory = new ComposerHistory();
 let activeRunInput = null;
 let cliLanguage = resolveLanguage();
 
@@ -1110,11 +1190,10 @@ function readTtyPrompt(options = {}) {
     let cursor = 0;
     let rendered = { lineCount: 0, cursorRow: 0 };
     let preferredColumn = null;
-    let historyIndex = promptHistory.length;
-    let draft = "";
     let redrawHandle = null;
     let suggestionAnchor = "";
     let suggestionIndex = 0;
+    promptHistory.resetBrowsing();
 
     const clearPromptPanel = () => {
       if (!rendered.lineCount) return;
@@ -1164,15 +1243,15 @@ function readTtyPrompt(options = {}) {
       clearPromptPanel();
       cleanup();
       printCommittedUserInput(buffer);
-      const saved = buffer.trim();
-      if (saved && promptHistory[promptHistory.length - 1] !== buffer) promptHistory.push(buffer);
+      promptHistory.recordSubmission(buffer);
       resolve(buffer);
     };
 
-    const setBuffer = (nextBuffer, nextCursor = nextBuffer.length, { keepSuggestionAnchor = false } = {}) => {
+    const setBuffer = (nextBuffer, nextCursor = nextBuffer.length, { keepSuggestionAnchor = false, keepHistoryMode = false } = {}) => {
       buffer = nextBuffer;
       cursor = clamp(nextCursor, 0, buffer.length);
       preferredColumn = null;
+      if (!keepHistoryMode) promptHistory.resetBrowsing();
       if (!keepSuggestionAnchor) {
         suggestionAnchor = "";
         suggestionIndex = 0;
@@ -1197,29 +1276,19 @@ function readTtyPrompt(options = {}) {
     const suggestionModeActive = () => commandSuggestions(suggestionAnchor || buffer.split("\n")[0] || "").length > 1;
 
     const moveVertical = (direction) => {
+      const historyNext = promptHistory.navigate(buffer, direction);
+      if (historyNext) {
+        setBuffer(historyNext.buffer, historyNext.cursor, { keepHistoryMode: true });
+        return;
+      }
       const layout = buildPromptLayout(buffer, cursor);
       const location = cursorLocation(layout, cursor);
       const targetRowIndex = location.rowIndex + direction;
-      if (targetRowIndex < 0) {
-        if (promptHistory.length === 0) return;
-        if (historyIndex === promptHistory.length) draft = buffer;
-        historyIndex = Math.max(historyIndex - 1, 0);
-        setBuffer(promptHistory[historyIndex], promptHistory[historyIndex].length);
-        return;
-      }
-      if (targetRowIndex >= layout.rows.length) {
-        if (historyIndex < promptHistory.length - 1) {
-          historyIndex += 1;
-          setBuffer(promptHistory[historyIndex], promptHistory[historyIndex].length);
-        } else if (historyIndex < promptHistory.length) {
-          historyIndex = promptHistory.length;
-          setBuffer(draft, draft.length);
-        }
-        return;
-      }
+      if (targetRowIndex < 0 || targetRowIndex >= layout.rows.length) return;
       const currentColumn = preferredColumn ?? location.column;
       const targetRow = layout.rows[targetRowIndex];
       cursor = targetRow.start + Math.min(currentColumn, targetRow.end - targetRow.start);
+      promptHistory.resetBrowsing();
       preferredColumn = currentColumn;
       redraw();
     };
@@ -1232,6 +1301,7 @@ function readTtyPrompt(options = {}) {
         return;
       }
       if ((key.ctrl && key.name === "j") || key.sequence === "\n") {
+        promptHistory.resetBrowsing();
         ({ buffer, cursor } = insertAt(buffer, cursor, "\n"));
         preferredColumn = null;
         redraw();
@@ -1242,6 +1312,7 @@ function readTtyPrompt(options = {}) {
         return;
       }
       if (key.name === "backspace") {
+        promptHistory.resetBrowsing();
         ({ buffer, cursor } = removeBefore(buffer, cursor));
         preferredColumn = null;
         suggestionAnchor = "";
@@ -1250,6 +1321,7 @@ function readTtyPrompt(options = {}) {
         return;
       }
       if (key.name === "delete") {
+        promptHistory.resetBrowsing();
         ({ buffer, cursor } = removeAt(buffer, cursor));
         preferredColumn = null;
         suggestionAnchor = "";
@@ -1259,6 +1331,7 @@ function readTtyPrompt(options = {}) {
       }
       if (key.name === "left") {
         if (suggestionModeActive() && cycleSuggestion(-1)) return;
+        promptHistory.resetBrowsing();
         cursor = Math.max(cursor - 1, 0);
         preferredColumn = null;
         redraw();
@@ -1266,6 +1339,7 @@ function readTtyPrompt(options = {}) {
       }
       if (key.name === "right") {
         if (suggestionModeActive() && cycleSuggestion(1)) return;
+        promptHistory.resetBrowsing();
         cursor = Math.min(cursor + 1, buffer.length);
         preferredColumn = null;
         redraw();
@@ -1282,18 +1356,21 @@ function readTtyPrompt(options = {}) {
         return;
       }
       if ((key.ctrl && key.name === "a") || key.name === "home") {
+        promptHistory.resetBrowsing();
         cursor = lineBounds(buffer, cursor).start;
         preferredColumn = null;
         redraw();
         return;
       }
       if ((key.ctrl && key.name === "e") || key.name === "end") {
+        promptHistory.resetBrowsing();
         cursor = lineBounds(buffer, cursor).end;
         preferredColumn = null;
         redraw();
         return;
       }
       if (key.ctrl && key.name === "u") {
+        promptHistory.resetBrowsing();
         const bounds = lineBounds(buffer, cursor);
         buffer = `${buffer.slice(0, bounds.start)}${buffer.slice(cursor)}`;
         cursor = bounds.start;
@@ -1302,6 +1379,7 @@ function readTtyPrompt(options = {}) {
         return;
       }
       if (key.ctrl && key.name === "k") {
+        promptHistory.resetBrowsing();
         const bounds = lineBounds(buffer, cursor);
         buffer = `${buffer.slice(0, cursor)}${buffer.slice(bounds.end)}`;
         preferredColumn = null;
@@ -1311,6 +1389,7 @@ function readTtyPrompt(options = {}) {
       if (key.name === "tab") {
         const suggestions = commandSuggestions(suggestionAnchor || buffer.split("\n")[0] || "");
         if (suggestions.length > 0) {
+          promptHistory.resetBrowsing();
           buffer = suggestions[clamp(suggestionIndex, 0, suggestions.length - 1)];
           cursor = buffer.length;
           suggestionAnchor = "";
@@ -1326,6 +1405,7 @@ function readTtyPrompt(options = {}) {
       }
       if (key.ctrl || key.meta) return;
       if (str && !key.sequence?.startsWith("\x1b")) {
+        promptHistory.resetBrowsing();
         const text = str.replace(/\r/g, "");
         ({ buffer, cursor } = insertAt(buffer, cursor, text));
         preferredColumn = null;
@@ -1830,6 +1910,7 @@ async function printResumeHistory(state, { limit = 0 } = {}) {
   const saved = await store.loadState().catch(() => null);
   const events = await store.loadEvents().catch(() => []);
   const chat = Array.isArray(saved?.chat) ? saved.chat.filter((entry) => entry?.content) : [];
+  promptHistory.seedFromChat(chat, state.sessionId);
   const metadata = `chat=${chat.length}${events.length > 0 ? ` events=${events.length}` : ""}`;
   if (chat.length === 0) {
     printSystemLine(`resume history session=${state.sessionId} ${metadata}`);
