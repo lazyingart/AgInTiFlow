@@ -386,6 +386,14 @@ try {
   if (scsAutoArgs.enableScs !== "auto" || scsAutoArgs.goal !== "fix this project") {
     throw new Error("--scs auto should consume auto and preserve the task");
   }
+  const unknownOptionArgs = parseArgs(["--provider", "mock", "--allow-web-search", "research this"]);
+  if (unknownOptionArgs.unknownOptions[0] !== "--allow-web-search" || unknownOptionArgs.goal !== "research this") {
+    throw new Error("unknown option-like arguments before the prompt should be reported, not silently folded into the goal");
+  }
+  const dashedPromptArgs = parseArgs(["--provider", "mock", "--", "--allow-web-search should be prompt text"]);
+  if (dashedPromptArgs.unknownOptions.length || dashedPromptArgs.goal !== "--allow-web-search should be prompt text") {
+    throw new Error("explicit -- delimiter should allow prompt text that starts with a dash");
+  }
   const resumeAfterOptions = parseResumeCommandArgs([
     "web-agent-smoke",
     "--provider",
@@ -415,6 +423,10 @@ try {
     parseArgs(resumePromptAfterDash.optionArgv).provider !== "mock"
   ) {
     throw new Error("resume subcommand should preserve explicit prompt text after --");
+  }
+  const resumeUnknownOption = parseResumeCommandArgs(["web-agent-smoke", "--allow-web-search", "continue research"]);
+  if (resumeUnknownOption.unknownOptions[0] !== "--allow-web-search" || resumeUnknownOption.prompt !== "continue research") {
+    throw new Error("resume subcommand should report unknown option-like arguments before prompt text");
   }
   const leadingResume = splitResumeCommandArgv(["--provider", "mock", "--routing", "manual", "resume", "latest"]);
   if (

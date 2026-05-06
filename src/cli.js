@@ -65,6 +65,31 @@ function readOptionalScsMode(argv, index) {
   return { mode: value, consumed: true };
 }
 
+function suggestCliOption(option = "") {
+  const normalized = String(option || "");
+  const aliases = {
+    "--allow-web-search": "--web-search",
+    "--disable-web-search": "--no-web-search",
+    "--allow-scouts": "--parallel-scouts",
+    "--disable-scouts": "--no-parallel-scouts",
+    "--allow-auxiliary": "--allow-auxiliary-tools",
+    "--disable-auxiliary": "--no-auxiliary-tools",
+    "--allow-files": "--allow-file-tools",
+    "--no-files": "--no-file-tools",
+  };
+  if (aliases[normalized]) return aliases[normalized];
+  return "";
+}
+
+function printUnknownCliOptions(options = []) {
+  const unique = [...new Set(options.filter(Boolean))];
+  for (const option of unique) {
+    const suggestion = suggestCliOption(option);
+    console.error(`Unknown option: ${option}${suggestion ? `. Did you mean ${suggestion}?` : ""}`);
+  }
+  console.error("Use `--` before a prompt that intentionally starts with a dash.");
+}
+
 const CLI_VALUE_OPTIONS = new Set([
   "--port",
   "--host",
@@ -225,6 +250,7 @@ export function parseResumeCommandArgs(resumeArgv = [], leadingOptionArgv = []) 
   const optionArgv = [...leadingOptionArgv];
   const positional = [];
   const promptParts = [];
+  const unknownOptions = [];
   let allSessions = false;
   let promptMode = false;
 
@@ -251,6 +277,11 @@ export function parseResumeCommandArgs(resumeArgv = [], leadingOptionArgv = []) 
       index = collected.nextIndex;
       continue;
     }
+    if (String(arg || "").startsWith("--") && promptParts.length === 0) {
+      unknownOptions.push(arg);
+      index += 1;
+      continue;
+    }
     if (positional.length === 0) positional.push(arg);
     else promptParts.push(arg);
     index += 1;
@@ -261,6 +292,7 @@ export function parseResumeCommandArgs(resumeArgv = [], leadingOptionArgv = []) 
     optionArgv,
     sessionId: positional[0] || "",
     prompt: promptParts.join(" ").trim(),
+    unknownOptions,
   };
 }
 
@@ -316,11 +348,16 @@ export function parseArgs(argv) {
     language: "",
     autoUpdate: undefined,
     enableScs: "",
+    unknownOptions: [],
   };
 
   const parts = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (arg === "--") {
+      parts.push(...argv.slice(i + 1));
+      break;
+    }
     if (arg === "web" || arg === "--web") {
       result.web = true;
       continue;
@@ -595,11 +632,21 @@ export function parseArgs(argv) {
       result.sandboxMode = result.sandboxMode || "docker-readonly";
       continue;
     }
+    if (String(arg || "").startsWith("--") && parts.length === 0) {
+      result.unknownOptions.push(arg);
+      continue;
+    }
     parts.push(arg);
   }
 
   result.goal = parts.join(" ").trim();
   return result;
+}
+
+function exitOnUnknownOptions(parsed) {
+  if (!parsed?.unknownOptions?.length) return false;
+  printUnknownCliOptions(parsed.unknownOptions);
+  process.exit(1);
 }
 
 function printUsage() {
@@ -1347,6 +1394,7 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (commandArgv[0] === "doctor") {
     const parsed = parseArgs(commandArgv.slice(1).filter((arg) => arg !== "--json" && arg !== "--capabilities"));
+    exitOnUnknownOptions(parsed);
     const config = loadConfig(
       {
         ...parsed,
@@ -1368,6 +1416,7 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (commandArgv[0] === "capabilities") {
     const parsed = parseArgs(commandArgv.slice(1).filter((arg) => arg !== "--json"));
+    exitOnUnknownOptions(parsed);
     const config = loadConfig(
       {
         ...parsed,
@@ -1456,6 +1505,10 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (resumeCommand) {
     const resumeOptions = parseResumeCommandArgs(resumeCommand.resumeArgv, resumeCommand.leadingOptionArgv);
+    if (resumeOptions.unknownOptions?.length) {
+      printUnknownCliOptions(resumeOptions.unknownOptions);
+      process.exit(1);
+    }
     let sessionId = resumeOptions.sessionId;
     const prompt = resumeOptions.prompt;
     try {
@@ -1466,13 +1519,17 @@ export async function main(argv = process.argv.slice(2)) {
     }
     if (!sessionId) return;
     if (!prompt) {
-      await startInteractiveCli(agentDefaults({ ...parseArgs(resumeOptions.optionArgv), resume: sessionId, commandCwd }), {
+      const parsedResumeOptions = parseArgs(resumeOptions.optionArgv);
+      exitOnUnknownOptions(parsedResumeOptions);
+      await startInteractiveCli(agentDefaults({ ...parsedResumeOptions, resume: sessionId, commandCwd }), {
         packageDir,
         packageVersion: packageJson.version,
       });
       return;
     }
-    const resumeArgs = agentDefaults({ ...parseArgs([...resumeOptions.optionArgv, prompt]), resume: sessionId, goal: prompt, commandCwd });
+    const parsedResumeArgs = parseArgs([...resumeOptions.optionArgv, prompt]);
+    exitOnUnknownOptions(parsedResumeArgs);
+    const resumeArgs = agentDefaults({ ...parsedResumeArgs, resume: sessionId, goal: prompt, commandCwd });
     if (!(await ensureDeepSeekKeyForOneShot(resumeArgs))) process.exit(1);
     const config = loadConfig(resumeArgs, { packageDir });
     await runAgent(config);
@@ -1480,6 +1537,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   const args = { ...parseArgs(commandArgv), commandCwd };
+  exitOnUnknownOptions(args);
 
   if (args.web) {
     if (args.port) process.env.PORT = String(args.port);
