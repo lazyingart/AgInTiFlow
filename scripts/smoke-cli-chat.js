@@ -746,6 +746,30 @@ try {
     throw new Error("resume history should render full saved messages instead of compact previews");
   }
 
+  const explicitCwd = path.join(tempRoot, "explicit-cwd");
+  await fs.mkdir(explicitCwd, { recursive: true });
+  await runCli([
+    "--no-auto-update",
+    "--provider",
+    "mock",
+    "--routing",
+    "manual",
+    "--cwd",
+    explicitCwd,
+    "--sandbox-mode",
+    "host",
+    "--allow-file-tools",
+    "Create reports/cwd-smoke.md with a one-line cwd smoke note.",
+  ], "");
+  const explicitCwdOutput = path.join(explicitCwd, "reports", "cwd-smoke.md");
+  const wrongCwdOutput = path.join(tempRoot, "reports", "cwd-smoke.md");
+  if (!(await fs.stat(explicitCwdOutput).then((stat) => stat.isFile()).catch(() => false))) {
+    throw new Error("one-shot --cwd did not write into the explicit command cwd");
+  }
+  if (await fs.stat(wrongCwdOutput).then((stat) => stat.isFile()).catch(() => false)) {
+    throw new Error("one-shot --cwd wrote into the process cwd instead of the explicit command cwd");
+  }
+
   await runTmuxInterruptSmoke({ key: "Escape", expected: /Active run stopped|Session saved/ });
   await runTmuxInterruptSmoke({ key: "C-c", expected: /EXIT:130|Session stopped by ctrl-c|Interrupted\. Session saved/ });
 
@@ -787,6 +811,7 @@ try {
           "interactive-chat",
           "mock-file-write",
           "run-status",
+          "one-shot-cwd",
           "tmux-escape-active-run-stop",
           "tmux-ctrl-c-session-stop",
           "resume-latest",

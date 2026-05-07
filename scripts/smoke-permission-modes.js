@@ -65,6 +65,16 @@ async function main() {
   assert(parsedDanger.sandboxMode === "host", "danger should set host sandbox");
   assert(parsedDanger.allowDestructive === true, "danger should allow destructive shell");
   assert(parsedDanger.allowOutsideWorkspaceFileTools === true, "danger should allow outside workspace file tools");
+  const explicitPackageBeforeSafety = parseArgs(["--package-install-policy", "block", "-s", "normal", "--provider", "mock", "hello"]);
+  assert(
+    explicitPackageBeforeSafety.packageInstallPolicy === "block",
+    "CLI -s normal should not override an explicit earlier --package-install-policy block"
+  );
+  const explicitSandboxBeforeSafety = parseArgs(["--sandbox-mode", "docker-readonly", "-s", "danger", "--provider", "mock", "hello"]);
+  assert(
+    explicitSandboxBeforeSafety.sandboxMode === "docker-readonly",
+    "CLI -s danger should not override an explicit earlier --sandbox-mode docker-readonly"
+  );
 
   const safe = configFor("safe");
   assert(safe.permissionMode === "safe", "runtime safe mode not set");

@@ -513,7 +513,7 @@ export function parseArgs(argv) {
     }
     if (arg === "-s" || arg === "--safety" || arg === "--permission-mode") {
       const mode = normalizePermissionMode(readOption(argv, i), "");
-      if (mode) applyPermissionMode(result, mode, { override: true });
+      if (mode) applyPermissionMode(result, mode, { override: false });
       i += 1;
       continue;
     }
@@ -1606,19 +1606,20 @@ export async function main(argv = process.argv.slice(2)) {
   if (commandArgv[0] === "doctor") {
     const parsed = parseArgs(commandArgv.slice(1).filter((arg) => arg !== "--json" && arg !== "--capabilities"));
     exitOnUnknownOptions(parsed);
+    const effectiveCommandCwd = parsed.commandCwd || commandCwd;
     const config = loadConfig(
       {
         ...parsed,
         goal: "doctor",
-        commandCwd,
+        commandCwd: effectiveCommandCwd,
         allowShellTool: parsed.allowShellTool ?? true,
         allowFileTools: parsed.allowFileTools ?? true,
       },
-      { packageDir, baseDir: commandCwd }
+      { packageDir, baseDir: effectiveCommandCwd }
     );
     const report = commandArgv.includes("--capabilities")
-      ? await buildCapabilityReport(commandCwd, packageJson.version, config)
-      : await doctorReport(commandCwd, packageJson.version, config);
+      ? await buildCapabilityReport(effectiveCommandCwd, packageJson.version, config)
+      : await doctorReport(effectiveCommandCwd, packageJson.version, config);
     if (commandArgv.includes("--json")) console.log(JSON.stringify(report, null, 2));
     else if (commandArgv.includes("--capabilities")) printCapabilityReport(report);
     else printDoctorReport(report);
@@ -1628,17 +1629,18 @@ export async function main(argv = process.argv.slice(2)) {
   if (commandArgv[0] === "capabilities") {
     const parsed = parseArgs(commandArgv.slice(1).filter((arg) => arg !== "--json"));
     exitOnUnknownOptions(parsed);
+    const effectiveCommandCwd = parsed.commandCwd || commandCwd;
     const config = loadConfig(
       {
         ...parsed,
         goal: "capabilities",
-        commandCwd,
+        commandCwd: effectiveCommandCwd,
         allowShellTool: parsed.allowShellTool ?? true,
         allowFileTools: parsed.allowFileTools ?? true,
       },
-      { packageDir, baseDir: commandCwd }
+      { packageDir, baseDir: effectiveCommandCwd }
     );
-    const report = await buildCapabilityReport(commandCwd, packageJson.version, config);
+    const report = await buildCapabilityReport(effectiveCommandCwd, packageJson.version, config);
     if (commandArgv.includes("--json")) console.log(JSON.stringify(report, null, 2));
     else printCapabilityReport(report);
     return;
@@ -1732,7 +1734,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (!prompt) {
       const parsedResumeOptions = parseArgs(resumeOptions.optionArgv);
       exitOnUnknownOptions(parsedResumeOptions);
-      await startInteractiveCli(agentDefaults({ ...parsedResumeOptions, resume: sessionId, commandCwd }), {
+      await startInteractiveCli(agentDefaults({ ...parsedResumeOptions, resume: sessionId, commandCwd: parsedResumeOptions.commandCwd || commandCwd }), {
         packageDir,
         packageVersion: packageJson.version,
       });
@@ -1740,14 +1742,15 @@ export async function main(argv = process.argv.slice(2)) {
     }
     const parsedResumeArgs = parseArgs([...resumeOptions.optionArgv, prompt]);
     exitOnUnknownOptions(parsedResumeArgs);
-    const resumeArgs = agentDefaults({ ...parsedResumeArgs, resume: sessionId, goal: prompt, commandCwd });
+    const resumeArgs = agentDefaults({ ...parsedResumeArgs, resume: sessionId, goal: prompt, commandCwd: parsedResumeArgs.commandCwd || commandCwd });
     if (!(await ensureDeepSeekKeyForOneShot(resumeArgs))) process.exit(1);
     const config = loadConfig(resumeArgs, { packageDir });
     await runAgent(config);
     return;
   }
 
-  const args = { ...parseArgs(commandArgv), commandCwd };
+  const parsedArgs = parseArgs(commandArgv);
+  const args = { ...parsedArgs, commandCwd: parsedArgs.commandCwd || commandCwd };
   exitOnUnknownOptions(args);
 
   if (args.web) {
