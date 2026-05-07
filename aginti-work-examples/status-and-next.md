@@ -10,6 +10,7 @@
 - `policy`: Android supervision exposed unsafe host sudo/package-install behavior; command policy now blocks that path in host mode.
 - `final git state`: AgInTiFlow now receives stronger guidance to check and report final git status.
 - `profile coverage`: profiles expanded to cover common daily work: code, large codebase, app, website, Python, Node, Java/JVM, iOS/Swift, Go, Rust, .NET/C#, PHP, Ruby, C/C++, R/Stan, Android, LaTeX, paper, research, writing, book, novel, design, image, Word, GitHub, shell, maintenance, AAPS, and supervision.
+- `read-only path advice`: a ProteinStructure-style read-only missing host path in docker-workspace mode no longer triggers misleading danger-mode permission advice; outside-workspace write/destructive failures still produce approval/remedy guidance.
 
 ## What Is Not Yet Fully Proven
 
@@ -54,3 +55,5 @@ The following profiles exist but still need real supervised homework runs:
 ## Next Run
 
 Move next to `TASK-Profile-QA`, then language/platform profiles such as `TASK-Profile-Java`, `TASK-Profile-IOS`, `TASK-Profile-Go`, and `TASK-Profile-Rust`. The next QA stress task should use a normal user-level prompt and verify that the agent creates or repairs a clean runnable test project without inventing contrived failures.
+
+Before the next broad profile run, keep one control regression in scope: verify that `/status`, `Esc`, `Ctrl+C`, resume pagination, and read-only missing-path failures remain stable in the installed CLI after every interactive-shell change.

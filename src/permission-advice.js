@@ -249,7 +249,7 @@ export function looksLikeDockerWorkspacePathFailure(result = {}, config = {}) {
 }
 
 export function buildFailedCommandAdvice({ args = {}, commandPolicy = {}, commandResult = {}, config = {}, state = {} } = {}) {
-  if (looksLikeDockerWorkspacePathFailure(commandResult, config)) {
+  if (looksLikeDockerWorkspacePathFailure(commandResult, config) && commandPolicy.category !== "read-only") {
     return {
       ...adviceForCategory("workspace-path", {
         toolName: "run_command",

@@ -568,6 +568,18 @@ try {
   assert(failedOutsidePathAdvice?.failureKind === "workspace-path", "outside host path failure advice was not generated");
   assert(failedOutsidePathAdvice.suggestedCommand.includes("--sandbox-mode host"), "outside path advice did not suggest host mode");
   assert(!failedOutsidePathAdvice.suggestedCommand.includes("aginti run --sandbox host"), "outside path advice used legacy sandbox syntax");
+  const missingReadonlyHostPathAdvice = buildFailedCommandAdvice({
+    args: { command: "ls /home/lachlan/ProjectsLFS/ProteinStructure" },
+    commandPolicy: evaluateCommandPolicy("ls /home/lachlan/ProjectsLFS/ProteinStructure", dockerWorkspacePolicy),
+    commandResult: {
+      ok: false,
+      stdout: "",
+      stderr: "ls: cannot access '/home/lachlan/ProjectsLFS/ProteinStructure': No such file or directory",
+    },
+    config: dockerWorkspacePolicy,
+    state: { sessionId: "coding-readonly-missing-host-path-smoke" },
+  });
+  assert(missingReadonlyHostPathAdvice === null, "missing read-only host path should not trigger danger-mode permission advice");
   assert(
     shouldRunParallelScouts(
       {
