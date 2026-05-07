@@ -1306,11 +1306,11 @@ export function formatSessionChoices(sessions, { filterText = "", allSessions = 
     );
   });
   if (sessions.length > shown.length) {
-    lines.push(`... ${sessions.length - shown.length} more hidden; press Space/PageDown or Enter, or type more, to show next ${RESUME_SESSION_PAGE_SIZE}; /text narrows.`);
+    lines.push(`... ${sessions.length - shown.length} more hidden; press Space or PageDown, or type more, to show next ${RESUME_SESSION_PAGE_SIZE}; /text narrows.`);
   }
   lines.push(
     sessions.length > shown.length
-      ? "Type a number to select, Space/PageDown/Enter/more to show more, /text to filter, / to clear, all to show all, or q to quit."
+      ? "Type a number to select, Space/PageDown/more to show more, /text to filter, / to clear, all to show all, or q to quit."
       : "Type a number to select, /text to filter, / to clear, or q to quit."
   );
   return lines.join("\n");
@@ -1324,7 +1324,7 @@ function handleResumeSelectorAnswer(rawAnswer = "", { filtered = [], visibleCoun
   const answer = String(rawAnswer || "").trim();
   const lower = answer.toLowerCase();
   if (!answer) {
-    if (hasMore) {
+    if (String(rawAnswer || "").length > 0 && hasMore) {
       showMore?.();
       return { redraw: true };
     }
@@ -1354,7 +1354,7 @@ function handleResumeSelectorAnswer(rawAnswer = "", { filtered = [], visibleCoun
   return {
     redraw: true,
     message: hasMore
-      ? "Invalid selection. Type a shown number, press Space/PageDown or Enter to show more, /text to filter, or q to quit."
+      ? "Invalid selection. Type a shown number, press Space or PageDown to show more, /text to filter, or q to quit."
       : "Invalid selection. Type a shown number, /text to filter, or q to quit.",
   };
 }
@@ -1371,7 +1371,7 @@ async function promptSelectSession(sessions, { allSessions = false } = {}) {
         const visibleCount = Math.min(filtered.length, maxShown);
         const hasMore = filtered.length > visibleCount;
         printSessionChoices(filtered, { filterText, allSessions, maxShown });
-        const rawAnswer = await rl.question(hasMore ? "Session number/filter/more: " : "Session number/filter: ");
+        const rawAnswer = await rl.question(hasMore ? "Session number/filter/space-more: " : "Session number/filter: ");
         const selected = handleResumeSelectorAnswer(rawAnswer, {
           filtered,
           visibleCount,
@@ -1415,7 +1415,7 @@ async function promptSelectSession(sessions, { allSessions = false } = {}) {
       const visibleCount = Math.min(filtered.length, maxShown);
       const hasMore = filtered.length > visibleCount;
       printSessionChoices(filtered, { filterText, allSessions, maxShown });
-      output.write(hasMore ? "Session number/filter/more: " : "Session number/filter: ");
+      output.write(hasMore ? "Session number/filter/space-more: " : "Session number/filter: ");
     };
     const redraw = (message = "") => {
       buffer = "";
@@ -1452,9 +1452,12 @@ async function promptSelectSession(sessions, { allSessions = false } = {}) {
       const name = key.name || char;
       const filtered = filterSessions(sessions, filterText);
       const hasMore = filtered.length > Math.min(filtered.length, maxShown);
-      if ((name === "space" || name === "pagedown") && !buffer && hasMore) {
-        maxShown = Math.min(filtered.length, maxShown + RESUME_SESSION_PAGE_SIZE);
-        return redraw();
+      if ((name === "space" || name === "pagedown") && !buffer) {
+        if (hasMore) {
+          maxShown = Math.min(filtered.length, maxShown + RESUME_SESSION_PAGE_SIZE);
+          return redraw();
+        }
+        return undefined;
       }
       if ((name === "q" || name === "escape") && !buffer) return cleanup("");
       if (name === "return" || name === "enter") {
