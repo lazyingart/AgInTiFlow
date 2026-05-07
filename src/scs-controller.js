@@ -6,6 +6,7 @@ export const SCS_MODES = ["off", "on", "auto"];
 const COMPLEX_AUTO_PROFILES = new Set([
   "android",
   "app",
+  "book",
   "code",
   "codebase",
   "database",
@@ -15,6 +16,7 @@ const COMPLEX_AUTO_PROFILES = new Set([
   "large-codebase",
   "latex",
   "maintenance",
+  "novel",
   "paper",
   "qa",
   "research",
@@ -22,6 +24,7 @@ const COMPLEX_AUTO_PROFILES = new Set([
   "security",
   "supervision",
   "website",
+  "writing",
 ]);
 
 const COMPLEX_AUTO_HINTS = [
@@ -29,6 +32,7 @@ const COMPLEX_AUTO_HINTS = [
   /\b(implement|refactor|debug|failing|regression|root cause|test|build|compile|migrate)\b/i,
   /\b(android|ios|gradle|xcode|docker|systemd|github|pull request|release|deploy|latex|pdf)\b/i,
   /\b(supervise|monitor|long[- ]running|resume|tmux|simulator|emulator)\b/i,
+  /\b(novel|book|chapter|manuscript|screenplay|story bible|long[- ]form|research paper)\b/i,
 ];
 
 function compact(value = "", limit = 1200) {
@@ -217,6 +221,7 @@ export function buildSupervisorInstruction(scs = {}) {
     criteria.length ? `Acceptance criteria:\n${criteria.map((item) => `- ${item}`).join("\n")}` : "",
     stopConditions.length ? `Stop conditions:\n${stopConditions.map((item) => `- ${item}`).join("\n")}` : "",
     "Before calling finish, include concrete evidence: files changed, commands/checks run, artifacts created, or a clear limitation.",
+    "For substantial writing phases, use writing_specialist for isolated prose/argument/scene drafting, then let the supervisor handle files, formatting, citations, checks, and artifacts.",
   ]
     .filter(Boolean)
     .join("\n");

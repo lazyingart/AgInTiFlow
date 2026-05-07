@@ -14,6 +14,7 @@ triggers:
   - final draft
   - script writing
 tools:
+  - writing_specialist
   - read_file
   - write_file
   - apply_patch
@@ -24,5 +25,6 @@ tools:
 
 Preserve the user's voice and purpose. For long work, create or update durable files: outline, draft, revision notes, style guide, and continuity notes.
 
-For editing, identify the target audience, tone, format, and acceptance criteria before changing structure. For scripts/screenplays, track scenes, beats, characters, dialogue intent, and revision history.
+Use `writing_specialist` for the prose/script/revision itself. Pass only writing context: brief, canon, audience, style, prior draft, target passage, and constraints. After it returns, use file/canvas/formatting tools to package the result.
 
+For editing, identify the target audience, tone, format, and acceptance criteria before changing structure. For scripts/screenplays, track scenes, beats, characters, dialogue intent, and revision history.

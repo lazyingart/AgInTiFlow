@@ -14,6 +14,8 @@ AgInTiFlow treats model choice as a role-based control plane. A provider supplie
 
 Smart routing still works as before: normal work goes to the route model, and complex work goes to the main model. Manual provider/model selection remains available for one-off runs.
 
+Long writing tasks use an additional tool boundary: `writing_specialist`. The main model still plans the run, manages files, formats Markdown/LaTeX/Final Draft output, compiles/checks artifacts, and finishes. The specialist gets only the writing brief, canon, style guide, prior draft, target, audience, constraints, and format intent, then returns prose plus a formatter handoff. This avoids polluting fiction/manuscript drafting with shell, browser, safety, and agent-runtime context. Set `AGINTI_WRITING_PROVIDER` or `AGINTI_WRITING_MODEL` to route this isolated writer separately from the main agent.
+
 ## CLI Commands
 
 ```bash

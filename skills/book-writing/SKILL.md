@@ -11,6 +11,7 @@ triggers:
   - outline
   - manuscript
 tools:
+  - writing_specialist
   - write_file
   - read_file
   - web_search
@@ -19,5 +20,7 @@ tools:
 # Book And Long-Form Writing
 
 Start with structure: audience, promise, outline, chapter flow, voice, and revision plan. Save durable drafts as Markdown unless the user requests another format.
+
+Use `writing_specialist` for the chapter/section writing itself. Pass the book promise, audience, outline, chapter target, style guide, prior draft, and constraints; let the main agent handle Markdown/LaTeX/export formatting and durable files.
 
 Use web search for current facts and keep source notes when claims matter. For long work, produce incremental chapters and revision notes instead of one huge brittle output.

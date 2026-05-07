@@ -496,6 +496,30 @@ function mockImageReadToolForGoal(goal = "") {
   });
 }
 
+function mockWritingSpecialistToolForGoal(goal = "", taskProfile = "") {
+  const text = `${String(goal || "")}\n${String(taskProfile || "")}`;
+  if (!/\b(write|draft|revise|rewrite|continue|polish|outline|critique|edit)\b/i.test(text)) return null;
+  if (!/\b(novel|story|scene|chapter|book|manuscript|paper|research paper|article|essay|screenplay|script|dialogue|poem|prose|latex)\b/i.test(text)) {
+    return null;
+  }
+  const kind = /\b(research paper|paper|manuscript|latex|article|essay)\b/i.test(text)
+    ? "research_paper"
+    : /\b(screenplay|script)\b/i.test(text)
+      ? "screenplay"
+      : /\b(book)\b/i.test(text)
+        ? "book"
+        : /\b(novel|scene|chapter|story)\b/i.test(text)
+          ? "novel"
+          : "other";
+  return mockToolCall("writing_specialist", {
+    task: /\b(revise|rewrite|polish|edit)\b/i.test(text) ? "revise" : "draft",
+    kind,
+    writingBrief: String(goal).replace(/\s+/g, " ").slice(0, 1200),
+    target: kind === "research_paper" ? "requested manuscript section" : "requested creative passage",
+    formatIntent: /\blatex\b/i.test(text) ? "latex" : /\bmarkdown\b/i.test(text) ? "markdown" : "",
+  });
+}
+
 function mockPreviewToolForGoal(goal = "") {
   const text = String(goal).toLowerCase();
   if (!/(open|preview|view|browser|website|web\s*site)/.test(text)) return null;
@@ -604,6 +628,7 @@ export async function createPlan(client, config, state) {
           config.allowWebSearch
             ? "web_search is available for lightweight snippets. web_research is available for auditable sourced research with persisted artifacts; use mode=snippets by default and mode=openai only when hosted OpenAI web research is needed and configured. Prefer these tools over opening a search engine in the browser."
             : "web_search is disabled for this run.",
+          "For substantial writing work such as novels, chapters, books, scripts, essays, LaTeX manuscripts, or research-paper prose, plan to call writing_specialist with only the writing brief/canon/style/draft context. The main agent should handle files, citations, checks, and Markdown/LaTeX/Final Draft formatting after the isolated writing draft returns.",
           config.allowFileTools
             ? "read_image is available for workspace-local or allowed remote screenshots/images using OpenAI vision when OPENAI_API_KEY is configured. It returns typed visual observations and persists a perception artifact; if credentials are missing, report the blocker instead of guessing from the filename."
             : "",
@@ -742,6 +767,65 @@ export async function requestNextStep(client, config, messages) {
           properties: {
             ms: { type: "integer" },
           },
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "writing_specialist",
+        description:
+          "Call an isolated writing-only LLM context for novels, books, scenes, scripts, essays, research-paper prose, LaTeX manuscript text, or substantial revision. Pass only writing-relevant context: brief, canon, style guide, prior draft, target, constraints, audience, and intended downstream format. Do not pass agent runtime, shell, browser, safety, tool, or file-management instructions. The tool returns draft prose plus continuity/revision notes and a format_handoff for a separate formatter/file step.",
+        parameters: {
+          type: "object",
+          properties: {
+            task: {
+              type: "string",
+              enum: ["draft", "revise", "continue", "outline", "critique", "style_pass"],
+              description: "Writing operation. Defaults to draft.",
+            },
+            kind: {
+              type: "string",
+              enum: [
+                "novel",
+                "story",
+                "scene",
+                "book",
+                "research_paper",
+                "latex_manuscript",
+                "article",
+                "screenplay",
+                "script",
+                "essay",
+                "poem",
+                "other",
+              ],
+              description: "Writing form.",
+            },
+            language: { type: "string", description: "Natural language for the draft, if specified by the user." },
+            writingBrief: { type: "string", description: "The writing request, goal, or section brief. Required." },
+            target: { type: "string", description: "Specific chapter, scene, section, paragraph, or passage to write." },
+            audience: { type: "string", description: "Reader, journal, market, age group, or audience." },
+            canon: { type: "string", description: "Story bible, research thesis, claims, facts, character arcs, worldbuilding, or continuity context." },
+            styleGuide: { type: "string", description: "Voice, tone, prose style, citation voice, rhythm, genre, or author-like constraints." },
+            priorDraft: { type: "string", description: "Existing passage to revise or continue." },
+            constraints: { type: "string", description: "Must-include, must-avoid, factual, genre, or continuity constraints." },
+            length: { type: "string", description: "Approximate target length, for example 800 words or 3 scenes." },
+            formatIntent: {
+              type: "string",
+              description:
+                "Downstream format target such as markdown, latex, finaldraft, screenplay, or plain text. The writer should not manage formatting mechanics; it should return format_handoff notes.",
+            },
+            temperature: { type: "number", description: "Optional writer temperature. Creative default is higher; academic default is lower." },
+            provider: {
+              type: "string",
+              enum: ["deepseek", "openai", "qwen", "venice", "mock"],
+              description: "Optional provider override for the isolated writer route. Defaults to AGINTI_WRITING_PROVIDER or current provider.",
+            },
+            model: { type: "string", description: "Optional model override for the isolated writer route. Defaults to AGINTI_WRITING_MODEL or current model." },
+          },
+          required: ["writingBrief"],
           additionalProperties: false,
         },
       },
@@ -1257,6 +1341,11 @@ export async function requestNextStep(client, config, messages) {
       if (previewTool) {
         return mockChatResponse("Mock mode will exercise the workspace preview tool.", [previewTool]);
       }
+    }
+
+    const writingTool = mockWritingSpecialistToolForGoal(config.goal, config.taskProfile);
+    if (writingTool) {
+      return mockChatResponse("Mock mode will exercise the isolated writing specialist before file or format work.", [writingTool]);
     }
 
     if (config.allowAuxiliaryTools) {

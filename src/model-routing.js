@@ -50,6 +50,13 @@ const COMPLEXITY_KEYWORDS = [
   "cmake",
   "gradle",
   "maven",
+  "novel",
+  "book",
+  "chapter",
+  "screenplay",
+  "story bible",
+  "long-form",
+  "manuscript",
 ];
 
 const COMPLEX_ROUTE_HINTS = [
@@ -63,6 +70,7 @@ const COMPLEX_ROUTE_HINTS = [
   /\bpdflatex\b/i,
   /\blatexmk\b/i,
   /\b(manuscript|research paper|white paper|technical report)\b/i,
+  /\b(novel|book|chapter|screenplay|story bible|long[- ]form|fiction arc|scene draft)\b/i,
   /\bcompile\b.*\bpdf\b/i,
   /\bwrite\b.*\bpdf\b/i,
 ];
@@ -778,7 +786,9 @@ export function scoreTaskComplexity(goal = "", taskProfile = "auto") {
   let score = text.length > 600 ? 2 : text.length > 240 ? 1 : 0;
   const profile = String(taskProfile || "").toLowerCase();
   if (["large-codebase", "engineering", "codebase", "code", "qa", "database", "devops", "security"].includes(profile)) score += 3;
-  if (["app", "data", "paper", "research", "latex", "github", "maintenance", "supervision"].includes(profile)) score += 2;
+  if (["app", "data", "paper", "research", "latex", "github", "maintenance", "supervision", "writing", "book", "novel"].includes(profile)) {
+    score += 2;
+  }
   for (const keyword of COMPLEXITY_KEYWORDS) {
     if (text.includes(keyword)) score += 1;
   }

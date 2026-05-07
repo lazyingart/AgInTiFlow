@@ -15,6 +15,7 @@ const PROGRESS_TOOL_NAMES = new Set([
   "send_to_canvas",
   "web_research",
   "web_search",
+  "writing_specialist",
   "write_file",
 ]);
 

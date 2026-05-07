@@ -27,6 +27,7 @@ import { buildFailedCommandAdvice, buildPermissionAdvice } from "../src/permissi
 import { SessionStore } from "../src/session-store.js";
 import { getTaskProfile } from "../src/task-profiles.js";
 import { searchWeb } from "../src/web-search.js";
+import { isLikelyWritingSpecialistGoal, runWritingSpecialist } from "../src/writing-specialist.js";
 import { executeWorkspaceTool } from "../src/workspace-tools.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -220,6 +221,31 @@ try {
     }) >= 36,
     "code profile did not get enough steps for inspect-fix-test-cleanup"
   );
+  const novelRoute = selectModelRoute({
+    routingMode: "smart",
+    provider: "deepseek",
+    goal: "write a novel chapter with a complete story bible, continuity, and scene-level revision notes",
+    taskProfile: "novel",
+  });
+  assert(/pro/i.test(novelRoute.model), "novel profile did not route substantial writing work to DeepSeek pro");
+  assert(
+    isLikelyWritingSpecialistGoal("Write a novel chapter from this story bible and keep the tone lyrical.", "novel"),
+    "writing specialist goal detector did not recognize novel chapter drafting"
+  );
+  const writerDraft = await runWritingSpecialist(
+    {
+      task: "draft",
+      kind: "novel",
+      writingBrief: "Write the opening of a quiet science-fiction chapter.",
+      canon: "The protagonist repairs drones in a rain-soaked harbor city.",
+      styleGuide: "Concrete sensory prose, restrained dialogue.",
+      formatIntent: "markdown",
+    },
+    { provider: "mock", model: "mock-agent" }
+  );
+  assert(writerDraft.ok, "mock writing specialist did not succeed");
+  assert(writerDraft.draft.includes("Writing brief honored"), "mock writing specialist did not return draft prose");
+  assert(writerDraft.formatHandoff?.targetFormat === "markdown", "writing specialist did not preserve formatter handoff");
   for (const complexProfile of ["qa", "database", "devops", "security"]) {
     const route = selectModelRoute({
       routingMode: "smart",
@@ -562,6 +588,11 @@ try {
     { allowWebSearch: true, webSearchDryRun: true }
   );
   assert(drySearch.ok && drySearch.results.length === 1, "web_search dry-run did not return deterministic result");
+  const writingRun = await runMock("Write a novel chapter about a harbor drone repairer and save the draft.", "coding-writing-specialist");
+  assert(
+    writingRun.events.some((event) => event.type === "tool.completed" && event.data?.toolName === "writing_specialist"),
+    "mock agent did not route writing work through writing_specialist"
+  );
 
   await fs.mkdir(path.join(workspace, "src"), { recursive: true });
   await fs.mkdir(path.join(workspace, "test"), { recursive: true });
@@ -1003,6 +1034,9 @@ try {
           "interleaved_tool_history_repair",
           "blocked_tool_batch_short_circuit",
           "deepseek_pro_patch_route",
+          "deepseek_pro_writing_route",
+          "writing_specialist_mock",
+          "writing_specialist_mock_routing",
           "runtime_time_context",
           "large_profile_pro_route",
           "auto_system_pro_route",

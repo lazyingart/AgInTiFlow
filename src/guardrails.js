@@ -271,6 +271,39 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
     return { allowed: true };
   }
 
+  if (toolName === "writing_specialist") {
+    const brief = String(args.writingBrief || args.brief || args.prompt || "").trim();
+    if (!brief) return { allowed: false, reason: "Writing specialist requires writingBrief.", category: "writing-specialist" };
+    const provider = String(args.provider || process.env.AGINTI_WRITING_PROVIDER || "").trim();
+    if (provider && !["deepseek", "openai", "qwen", "venice", "mock"].includes(provider)) {
+      return { allowed: false, reason: `Unknown writing specialist provider: ${provider}`, category: "writing-specialist" };
+    }
+    const payloadBytes = Buffer.byteLength(
+      [
+        brief,
+        args.canon,
+        args.background,
+        args.context,
+        args.styleGuide,
+        args.priorDraft,
+        args.constraints,
+        args.target,
+        args.audience,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      "utf8"
+    );
+    if (payloadBytes > 180_000) {
+      return {
+        allowed: false,
+        reason: "Writing specialist context is too large. Save the canon/draft to workspace files and ask for a focused section pass.",
+        category: "writing-specialist",
+      };
+    }
+    return { allowed: true };
+  }
+
   if (toolName === "generate_image") {
     if (!config.allowAuxiliaryTools) {
       return { allowed: false, reason: "Auxiliary tools are disabled for this run.", category: "auxiliary-tools" };

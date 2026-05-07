@@ -31,8 +31,8 @@ export const TASK_PROFILES = {
     id: "writing",
     label: "Book/script writing",
     prompt:
-      "Bias toward long-form writing quality without refusing adjacent research, code, or formatting tasks. Create structured drafts with outlines, sections, revision notes, and saved files for durable output. Use web search when current sources matter and canvas for important drafts.",
-    tools: ["files", "canvas"],
+      "Bias toward long-form writing quality without refusing adjacent research, code, or formatting tasks. For substantial prose, scenes, chapters, scripts, essays, or manuscript sections, call writing_specialist with only the writing brief/canon/style/prior draft context, then save or format the returned draft with file/canvas tools. Create structured drafts with outlines, sections, revision notes, and durable files. Use web search when current sources matter and canvas for important drafts.",
+    tools: ["writing_specialist", "files", "canvas"],
   },
   research: {
     id: "research",
@@ -45,22 +45,22 @@ export const TASK_PROFILES = {
     id: "paper",
     label: "Academic paper",
     prompt:
-      "Bias toward academic paper and manuscript production while still handling code, figures, literature, and LaTeX. Build an outline, define claims and contributions, keep sources traceable, create or update durable manuscript files, compile/check outputs when possible, and save PDFs/figures with descriptive paths.",
-    tools: ["files", "shell", "web_search", "canvas", "sandbox"],
+      "Bias toward academic paper and manuscript production while still handling code, figures, literature, and LaTeX. Use writing_specialist for isolated paper prose, argument, abstract/introduction/discussion drafting, and revision; keep citation gathering, data checks, LaTeX, files, and compilation in the main agent loop. Build an outline, define claims and contributions, keep sources traceable, create or update durable manuscript files, compile/check outputs when possible, and save PDFs/figures with descriptive paths.",
+    tools: ["writing_specialist", "files", "shell", "web_search", "canvas", "sandbox"],
   },
   book: {
     id: "book",
     label: "Book writing",
     prompt:
-      "Bias toward book-scale structure while staying useful for research, code snippets, figures, and publication tooling. Maintain a chapter map, outline before drafting, write durable chapter files, preserve voice/style notes, and produce revision checklists instead of one-off chat-only prose.",
-    tools: ["files", "web_search", "canvas"],
+      "Bias toward book-scale structure while staying useful for research, code snippets, figures, and publication tooling. Use writing_specialist for chapter/section prose with only book canon, audience, voice, outline, and prior draft context; the main agent should handle filenames, Markdown/LaTeX/export formatting, checks, and canvas. Maintain a chapter map, outline before drafting, write durable chapter files, preserve voice/style notes, and produce revision checklists instead of one-off chat-only prose.",
+    tools: ["writing_specialist", "files", "web_search", "canvas"],
   },
   novel: {
     id: "novel",
     label: "Novel writing",
     prompt:
-      "Bias toward fiction craft while still supporting research and formatting. Track premise, characters, arcs, scenes, continuity, tone, and chapter files; draft in durable files and use canvas for important scenes or outlines.",
-    tools: ["files", "web_search", "canvas"],
+      "Bias toward fiction craft while still supporting research and formatting. Use writing_specialist for story-only drafting and revision with premise, characters, arcs, scene goal, continuity, tone, and prior draft context; keep file organization, Markdown/LaTeX/screenplay formatting, and project operations in the main agent. Track premise, characters, arcs, scenes, continuity, tone, and chapter files; draft in durable files and use canvas for important scenes or outlines.",
+    tools: ["writing_specialist", "files", "web_search", "canvas"],
   },
   design: {
     id: "design",
@@ -269,8 +269,8 @@ export const TASK_PROFILES = {
     id: "latex",
     label: "LaTeX",
     prompt:
-      "Bias toward LaTeX/PDF production while still using writing, plotting, code, and web research when needed. Locate or create source and figures in a subfolder, check existing latexmk/pdflatex before installing or rebuilding toolchains, compile when a TeX toolchain is available, run enough passes for references, and send the PDF through the canvas tunnel. In Docker, use /workspace for outputs and /aginti-env for persistent tools only when setup is actually needed.",
-    tools: ["files", "shell", "canvas", "sandbox"],
+      "Bias toward LaTeX/PDF production while still using writing, plotting, code, and web research when needed. Use writing_specialist for substantial manuscript prose before converting it into LaTeX structure; keep TeX packages, labels, citations, compilation, and file layout in the main agent. Locate or create source and figures in a subfolder, check existing latexmk/pdflatex before installing or rebuilding toolchains, compile when a TeX toolchain is available, run enough passes for references, and send the PDF through the canvas tunnel. In Docker, use /workspace for outputs and /aginti-env for persistent tools only when setup is actually needed.",
+    tools: ["writing_specialist", "files", "shell", "canvas", "sandbox"],
   },
   maintenance: {
     id: "maintenance",

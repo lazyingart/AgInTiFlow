@@ -6,7 +6,7 @@ AgInTiFlow separates **skills** from **tools** so the agent can stay general whi
 
 **Skill**: Markdown guidance stored at `skills/<id>/SKILL.md`. A skill describes when to use a workflow, what to inspect first, which outputs matter, and which tools are usually useful. Skills are prompt context, not executable code.
 
-**Tool**: A deterministic callable capability exposed to the model, such as `inspect_project`, `read_file`, `apply_patch`, `run_command`, `web_search`, `web_research`, `read_image`, `research_wrapper`, `generate_image`, `preview_workspace`, `tmux_capture_pane`, or `send_to_canvas`.
+**Tool**: A deterministic or bounded callable capability exposed to the model, such as `inspect_project`, `read_file`, `apply_patch`, `run_command`, `web_search`, `web_research`, `read_image`, `writing_specialist`, `research_wrapper`, `generate_image`, `preview_workspace`, `tmux_capture_pane`, or `send_to_canvas`.
 
 **Profile**: A broad runtime mode such as `auto`, `code`, `latex`, or `maintenance`. Profiles tune routing, max steps, and general behavior. Skills can combine across profiles.
 
@@ -64,3 +64,10 @@ For visual or current-information tasks, prefer:
 - `research_wrapper` for strict-JSON second opinions from the selected read-only wrapper, usually Codex `gpt-5.4-mini` medium.
 
 See [Image Reading And Web Research](perception-and-web-research.md).
+
+For substantial writing tasks, prefer:
+
+- `writing_specialist` for isolated prose, scene, chapter, paper-section, script, book, essay, and revision drafting.
+- The main agent for all non-writing work around that draft: file names, workspace edits, citations, Markdown/LaTeX/Final Draft formatting, PDF compilation, canvas publishing, and verification.
+
+The writer receives only writing context: brief, canon, style guide, prior draft, target, audience, constraints, length, and downstream format intent. It should not receive shell/file/browser policy or agent-runtime details.

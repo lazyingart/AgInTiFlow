@@ -53,6 +53,7 @@ Most agent tools are either a chat box with hidden state or an expensive one-mod
 | Inspectable beats mysterious | Plans, tool calls, file diffs, command output, canvas artifacts, and session events are saved and resumable. |
 | Disciplined by default | `AGINTI.md` starts with a behavior contract: surface ambiguity, keep edits surgical, avoid speculative complexity, verify outcomes, and respect permission blockers. |
 | Role-based models | Route, main, spare, wrapper, and auxiliary image roles are separate. You can use cheap route models, stronger main models, optional OpenAI/Qwen/Venice routes, and GRS AI/Venice image tools. |
+| Writing without agent noise | `writing_specialist` drafts novels, books, scripts, essays, and paper prose in an isolated writing-only context, then the main agent handles files, formatting, citations, checks, and artifacts. |
 | Visual and web evidence | `read_image` reads screenshots/figures with typed perception artifacts, `web_research` saves sourced research artifacts, and `research_wrapper` can ask Codex `gpt-5.4-mini` medium for a strict-JSON second opinion. |
 | Scouts before big work | Parallel scouts can cheaply map architecture, tests, risks, symbols, and integration points before the main executor edits anything. |
 | SCS for high-risk work | Student-Committee-Supervisor mode adds a typed gate: committee drafts, student approves/monitors, supervisor executes. Use `/scs` or `--scs auto`. |
@@ -213,6 +214,7 @@ The website keeps the visual walkthrough in a carousel so this README can stay f
 | Shell tools | Guarded host or Docker workspace shell execution with package-install policy and command safety checks. |
 | Browser tools | Playwright browser actions with lazy startup and optional domain allowlists. |
 | Model routing | DeepSeek fast/pro defaults, manual OpenAI/Qwen/Venice/mock routes, spare models, wrapper models, and auxiliary image models. |
+| Writing specialist | A dedicated writing-only LLM call for prose, chapters, scripts, books, essays, research-paper sections, and revisions, with formatter handoff notes for Markdown/LaTeX/Final Draft. |
 | Patch workflow | Codex-style patch envelopes, unified diffs, exact replacements, hashes, compact diffs, and path guardrails. |
 | Parallel scouts | Optional scout calls for architecture, implementation, review, tests, git flow, research, symbol tracing, and dependency risk. |
 | Image reading and web research | `read_image` uses OpenAI vision for workspace images when `OPENAI_API_KEY` is configured. `web_research` preserves source lists, and optional OpenAI hosted web search or `research_wrapper` can be used for higher-confidence research. |

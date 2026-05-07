@@ -265,6 +265,7 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
       })),
       orchestration: {
         webSearch: config.allowWebSearch !== false,
+        writingSpecialist: true,
         parallelScouts: config.allowParallelScouts !== false,
         parallelScoutCount: Number(config.parallelScoutCount) || 3,
       },

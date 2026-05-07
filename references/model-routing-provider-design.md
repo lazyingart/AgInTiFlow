@@ -24,6 +24,15 @@ The UI should be role-first rather than provider-first:
 - **Wrapper (`/wrapper`):** external coding assistant. Default Codex with `gpt-5.5` medium reasoning, disabled unless wrapper tools are enabled.
 - **Auxiliary (`/auxiliary`):** media/image tools. Default `grsai/nano-banana-2`; Venice image models are optional.
 
+Writing has a separate tool boundary rather than a separate always-on agent identity:
+
+- **`writing_specialist`:** isolated prose/argument/scene drafting. It receives only writing brief, canon, style guide, prior draft, target, audience, constraints, length, and downstream format intent.
+- **Main agent:** owns project state, files, formatting, shell/browser/tool policy, citations, LaTeX/PDF compilation, canvas artifacts, and final verification.
+
+This protects writing quality from agent-side context overload. The writer should not be told about shell tools, file tools, routing policy, guardrails, Docker, or browser state unless the user explicitly needs those details inside the text itself.
+
+The specialist can follow the main provider/model, or be routed separately with `AGINTI_WRITING_PROVIDER` and `AGINTI_WRITING_MODEL`.
+
 This keeps the mental model stable: providers are supply, roles are policy.
 
 ## Current Commands

@@ -27,6 +27,7 @@ import {
 import { refreshCodebaseMap } from "./codebase-map.js";
 import { readImage, researchWrapper, webResearch } from "./perception-tools.js";
 import { searchWeb } from "./web-search.js";
+import { runWritingSpecialist } from "./writing-specialist.js";
 import { runParallelScouts, shouldRunParallelScouts } from "./parallel-scouts.js";
 import { readProjectInstructions } from "./project.js";
 import { formatSkillsForPrompt, selectSkillsForGoal } from "./skill-library.js";
@@ -602,6 +603,7 @@ async function createInitialState(config, sessionId) {
           config.allowWebSearch
             ? "web_search is available for lightweight snippets. web_research is available for sourced, persisted research artifacts; use domains for official-source constraints and mode=openai only when hosted OpenAI web research is needed and configured. Prefer these tools over browser search-engine navigation."
             : "web_search is disabled.",
+          "For substantial writing tasks such as novels, chapters, books, scripts, essays, LaTeX manuscripts, or research-paper prose, call writing_specialist first with only writing context: brief, canon, style, prior draft, target, audience, constraints, and downstream format intent. Do not pass tool policy, shell/browser/file instructions, or agent runtime context into the writer. After the writer returns, the main agent owns saving files, formatting to Markdown/LaTeX/Final Draft, citations, checks, and canvas/file delivery.",
           config.allowParallelScouts
             ? `Parallel DeepSeek scouts may run before complex execution. Scout count: ${config.parallelScoutCount}.`
             : "Parallel scouts are disabled.",
@@ -654,6 +656,7 @@ async function createInitialState(config, sessionId) {
                 .join(" ")}`
             : "",
           config.allowWebSearch ? "Web search tool: enabled." : "Web search tool: disabled.",
+          "Writing specialist: available for isolated prose/argument/scene drafting; use it before formatting or writing files for substantial writing tasks.",
           config.allowParallelScouts ? `Parallel scouts: enabled count=${config.parallelScoutCount}.` : "Parallel scouts: disabled.",
           config.scsActive ? "SCS mode: active. Wait for the approved supervisor phase instruction before treating the plan as executable." : "",
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
@@ -1014,6 +1017,7 @@ async function applyContinuationPrompt(state, config, observers) {
       config.allowWrapperTools
         ? `Agent wrappers: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}`
         : "",
+      "Writing specialist: available for isolated prose/argument/scene drafting. Use it before saving or formatting substantial writing deliverables.",
       `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
       skillContext,
       engineeringGuidance,
@@ -1088,6 +1092,20 @@ function sanitizeToolArgs(toolName, args) {
     return {
       ...safeArgs,
       content: `[${Buffer.byteLength(args.content, "utf8")} bytes sha256=${hashForLog(args.content)}]`,
+    };
+  }
+  if (toolName === "writing_specialist") {
+    return {
+      ...safeArgs,
+      writingBrief:
+        typeof args.writingBrief === "string" ? `[${Buffer.byteLength(args.writingBrief, "utf8")} bytes sha256=${hashForLog(args.writingBrief)}]` : safeArgs.writingBrief,
+      canon: typeof args.canon === "string" ? `[${Buffer.byteLength(args.canon, "utf8")} bytes sha256=${hashForLog(args.canon)}]` : safeArgs.canon,
+      priorDraft:
+        typeof args.priorDraft === "string" ? `[${Buffer.byteLength(args.priorDraft, "utf8")} bytes sha256=${hashForLog(args.priorDraft)}]` : safeArgs.priorDraft,
+      styleGuide:
+        typeof args.styleGuide === "string" ? `[${Buffer.byteLength(args.styleGuide, "utf8")} bytes sha256=${hashForLog(args.styleGuide)}]` : safeArgs.styleGuide,
+      constraints:
+        typeof args.constraints === "string" ? `[${Buffer.byteLength(args.constraints, "utf8")} bytes sha256=${hashForLog(args.constraints)}]` : safeArgs.constraints,
     };
   }
   if (toolName === "apply_patch") {
@@ -1177,6 +1195,13 @@ export function sanitizeToolResult(result) {
       safeResult.contentTruncated = true;
       delete safeResult.content;
     }
+  }
+  if (safeResult.toolName === "writing_specialist" && typeof safeResult.draft === "string") {
+    const draftBytes = Buffer.byteLength(safeResult.draft, "utf8");
+    safeResult.draftBytes = draftBytes;
+    safeResult.draftPreview = safeResult.draft.slice(0, TOOL_RESULT_CONTENT_PREVIEW_CHARS);
+    safeResult.draftTruncated = true;
+    delete safeResult.draft;
   }
   return safeResult;
 }
@@ -1281,12 +1306,13 @@ async function captureSyntheticSnapshot(store, step, config) {
       config.allowFileTools
         ? `Workspace file tools available in: ${config.commandCwd}. Use inspect_project first for large or unfamiliar codebases, then search/read exact files before editing. Use workspace-relative paths. Use apply_patch for code edits; it supports exact single-file replacement and multi-file Codex-style/unified patches. For new standalone generated content, pick a descriptive non-conflicting filename and avoid overwriting unless explicitly requested.`
         : "Workspace file tools disabled.",
-          config.allowWrapperTools
-            ? `Agent wrappers available: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}. research_wrapper is available for strict-JSON perception/research second opinions and defaults to gpt-5.4-mini medium when not overridden.`
-            : "Agent wrappers disabled.",
+      config.allowWrapperTools
+        ? `Agent wrappers available: selected=${normalizeWrapperName(config.preferredWrapper)}; ${wrapperStatusText()}. research_wrapper is available for strict-JSON perception/research second opinions and defaults to gpt-5.4-mini medium when not overridden.`
+        : "Agent wrappers disabled.",
       config.allowFileTools
         ? "read_image is available for local screenshots/images and allowed remote image URLs. It persists typed perception artifacts and must not be replaced by guessing from filenames."
         : "",
+      "writing_specialist is available for isolated novel/book/script/paper drafting. It receives only writing context and returns prose plus formatter handoff notes.",
       config.allowWebSearch
         ? "web_research is available for auditable source lists and dated/current research artifacts; use domains for official-source constraints."
         : "",
@@ -1449,6 +1475,13 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       }
       case "read_image": {
         const result = await readImage(args, config, store);
+        const eventResult = sanitizeToolResult(result);
+        await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        return result;
+      }
+      case "writing_specialist": {
+        const result = await runWritingSpecialist(args, config, store);
         const eventResult = sanitizeToolResult(result);
         await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
         observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
