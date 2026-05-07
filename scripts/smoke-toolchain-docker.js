@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readArtifactContent } from "../src/artifact-tunnel.js";
 import { evaluateCommandPolicy } from "../src/command-policy.js";
-import { runDockerPreflight, runDockerSandboxCommand } from "../src/docker-sandbox.js";
+import { dockerReadOnlyHostMounts, runDockerPreflight, runDockerSandboxCommand } from "../src/docker-sandbox.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -13,7 +13,10 @@ const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-toolchain-"
 process.env.AGINTIFLOW_HOME = path.join(tempRoot, ".agintiflow-home");
 const runtimeDir = path.join(tempRoot, "runtime");
 const workspace = path.join(tempRoot, "workspace");
+const outsideData = path.join(tempRoot, "outside-data");
 await fs.mkdir(workspace, { recursive: true });
+await fs.mkdir(outsideData, { recursive: true });
+process.env.AGINTI_DOCKER_READONLY_HOST_MOUNTS = tempRoot;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -53,6 +56,14 @@ try {
 
   const preflight = await runDockerPreflight(config, { buildImage: false });
   assert(preflight.ok, "Docker toolchain preflight failed. Run scripts/setup-agent-toolchain-docker.sh first.");
+  assert(
+    dockerReadOnlyHostMounts(config).includes(tempRoot),
+    "Docker read-only host mount configuration did not include the requested outside-data root"
+  );
+
+  await fs.writeFile(path.join(outsideData, "source-note.txt"), "READ_ONLY_HOST_MOUNT_OK\n", "utf8");
+  const outsideRead = await runToolchainCommand(`cat ${path.join(outsideData, "source-note.txt")}`, config);
+  assert(outsideRead.stdout.includes("READ_ONLY_HOST_MOUNT_OK"), "Docker normal mode could not read the configured outside data root");
 
   await fs.writeFile(
     path.join(workspace, "plot_fx.py"),
@@ -174,6 +185,7 @@ try {
         ok: true,
         image: config.dockerSandboxImage,
         workspace,
+        outsideReadRoot: outsideData,
         outputs: ["plot_fx.svg", "paper.pdf", "figure-note/fx_figure.pdf", "figure-note/figure_note.pdf"],
         artifactKinds: ["image/svg+xml", "application/pdf"],
       },

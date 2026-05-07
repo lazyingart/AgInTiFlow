@@ -1182,6 +1182,13 @@ export function classifyEscapeAction({ active = false, pendingAsap = [] } = {}) 
   return Array.isArray(pendingAsap) && pendingAsap.length > 0 ? "wait-for-asap" : "abort";
 }
 
+export function activeRunSlashCommandAction(value = "") {
+  const content = canonicalSlashPromptBuffer(value).trim();
+  if (!content.startsWith("/")) return "";
+  if (/^\/status(?:\s|$)/.test(content)) return "status";
+  return "blocked";
+}
+
 function readTtyPrompt(options = {}) {
   return new Promise((resolve, reject) => {
     emitKeypressEvents(input);
@@ -1581,8 +1588,18 @@ class LiveRunInput {
   async submitAsap() {
     const content = this.buffer.trim();
     if (!content) return;
-    if (content.startsWith("/")) {
-      this.printLine(`${label("warn", ansi.red)} Slash commands are disabled while a run is active. Press Esc/Ctrl+C to stop, or wait until idle.`);
+    const slashAction = activeRunSlashCommandAction(content);
+    if (slashAction === "status") {
+      this.setBuffer("");
+      printStatus(this.state);
+      if (this.pendingAsap.length || this.pendingQueued.length) {
+        printSystemLine(`pending asap=${this.pendingAsap.length} queued=${this.pendingQueued.length}`);
+      }
+      this.redraw();
+      return;
+    }
+    if (slashAction === "blocked") {
+      this.printLine(`${label("warn", ansi.red)} Slash commands are disabled while a run is active except /status. Press Esc/Ctrl+C to stop, or wait until idle.`);
       this.setStatus(`running · command ${compactLine(content, 24)} not accepted during active run`);
       return;
     }
@@ -1610,7 +1627,14 @@ class LiveRunInput {
   queueAfterFinish() {
     const content = this.buffer.trim();
     if (!content) return;
-    if (content.startsWith("/")) {
+    const slashAction = activeRunSlashCommandAction(content);
+    if (slashAction === "status") {
+      this.setBuffer("");
+      printStatus(this.state);
+      this.redraw();
+      return;
+    }
+    if (slashAction === "blocked") {
       this.printLine(`${label("warn", ansi.red)} Slash commands cannot be queued during a run. Wait until idle, then run ${content}.`);
       this.setStatus(`running · command ${compactLine(content, 24)} not queued`);
       return;

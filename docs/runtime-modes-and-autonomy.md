@@ -52,7 +52,7 @@ The runtime must be consistent when an action is not permitted. A blocked action
 Current contract:
 
 - `safe` asks before file-tool writes and package/setup actions. It is the right mode for inspection, review, and cautious first passes.
-- `normal` allows writes inside the current project folder and package/setup inside Docker workspace mode. It still blocks outside-project writes and host-system changes until approved.
+- `normal` allows writes inside the current project folder, read-only inspection of visible host data roots, and package/setup inside Docker workspace mode. It still blocks outside-project writes and host-system changes until approved.
 - `danger` is trusted host/full-access mode: host shell, destructive actions, host installs, password typing, and outside-workspace file paths are enabled. Use it only for tasks you trust; obvious secret/publish exfiltration guards remain hard stops.
 - Workspace file tools may read and write inside the configured project folder when file tools are enabled.
 - Narrow workspace-local shell actions such as safe probes, Gradle/TeX builds, and `chmod +x` on a project script may run when the command policy can classify them precisely.
@@ -110,6 +110,8 @@ aginti
 ```
 
 This starts interactive chat with Docker workspace mode, file tools, shell tools, web search, and package installs allowed inside Docker.
+
+Docker workspace mode also mounts common host data roots, such as the user's home parent, read-only at their original absolute paths. This lets a task in `/home/lachlan/ProjectsLFS/aginti-test` inspect a sibling dataset such as `/home/lachlan/ProjectsLFS/ProteinStructure` without switching to host-write mode. Outputs and edits still belong under `/workspace` unless the user explicitly approves stronger host permissions. Set `AGINTI_DOCKER_READONLY_HOST_MOUNTS=/path/a:/path/b` to override the read-only mounts, or set it to `off` to disable them.
 
 Direct trusted host mode:
 

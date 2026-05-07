@@ -10,6 +10,7 @@ import {
   buildPromptLayout,
   buildPromptRenderSequence,
   ComposerHistory,
+  activeRunSlashCommandAction,
   canonicalSlashPromptBuffer,
   classifyEscapeAction,
   formatElapsedDuration,
@@ -367,6 +368,15 @@ try {
   }
   if (classifyEscapeAction({ active: true, pendingAsap: [] }) !== "abort") {
     throw new Error("active Esc should abort when no ASAP pipe messages are pending");
+  }
+  if (activeRunSlashCommandAction("/status") !== "status" || activeRunSlashCommandAction("/status verbose") !== "status") {
+    throw new Error("active /status should be allowed during a run");
+  }
+  if (activeRunSlashCommandAction("/scs") !== "blocked") {
+    throw new Error("active mutating slash commands should remain blocked during a run");
+  }
+  if (activeRunSlashCommandAction("continue writing") !== "") {
+    throw new Error("active normal input should still pipe into the running task");
   }
   const composerHistory = new ComposerHistory([
     "first prompt",

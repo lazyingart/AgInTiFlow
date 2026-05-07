@@ -1,4 +1,4 @@
-import { constants as fsConstants } from "node:fs";
+import fsSync, { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +15,7 @@ const DOCKER_ENV = "/aginti-env";
 const READY_IMAGES = new Set();
 const SANDBOX_LOG_LIMIT = 80;
 const sandboxLogs = [];
+const DISABLE_HOST_READ_MOUNTS = new Set(["0", "false", "no", "off", "none"]);
 
 function recordSandboxLog(type, data = {}) {
   sandboxLogs.push({
@@ -138,6 +139,30 @@ function persistentDockerDirs(config) {
     cache: path.join(root, "cache"),
     env: path.join(root, "env"),
   };
+}
+
+function uniqueHostMounts(mounts = []) {
+  const seen = new Set();
+  const result = [];
+  for (const mount of mounts) {
+    const normalized = path.resolve(String(mount || "").trim());
+    if (!normalized || normalized === "/" || seen.has(normalized)) continue;
+    if (!path.isAbsolute(normalized) || !fsSync.existsSync(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+export function dockerReadOnlyHostMounts(config = {}, sandboxMode = normalizeSandboxMode(config.sandboxMode)) {
+  if (sandboxMode !== "docker-workspace") return [];
+  const configured = process.env.AGINTI_DOCKER_READONLY_HOST_MOUNTS || process.env.AGINTI_DOCKER_HOST_READ_MOUNTS || "";
+  if (DISABLE_HOST_READ_MOUNTS.has(configured.trim().toLowerCase())) return [];
+  if (Array.isArray(config.readOnlyHostMounts)) return uniqueHostMounts(config.readOnlyHostMounts);
+  if (configured.trim()) return uniqueHostMounts(configured.split(path.delimiter));
+
+  const homeParent = path.dirname(os.homedir() || "");
+  return uniqueHostMounts([homeParent, "/mnt", "/media", "/Volumes"]);
 }
 
 async function ensurePersistentDockerDirs(config) {
@@ -265,6 +290,7 @@ function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, 
   const mountMode = sandboxMode === "docker-workspace" ? "rw" : "ro";
   const networkMode = policy.needsNetwork ? "bridge" : "none";
   const toolchain = policy.category === "toolchain";
+  const readOnlyHostMountArgs = dockerReadOnlyHostMounts(config, sandboxMode).flatMap((mount) => ["-v", `${mount}:${mount}:ro`]);
   const readOnlyArgs =
     mountMode === "ro"
       ? ["--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m"]
@@ -291,6 +317,7 @@ function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, 
     "NPM_CONFIG_USERCONFIG=/tmp/.npmrc",
     "-e",
     "PIP_DISABLE_PIP_VERSION_CHECK=1",
+    ...readOnlyHostMountArgs,
     "-v",
     `${config.commandCwd}:${DOCKER_WORKSPACE}:${mountMode}`,
     "-v",
