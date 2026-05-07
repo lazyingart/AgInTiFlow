@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fsSync, { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -63,6 +64,23 @@ async function execDocker(args, options = {}) {
     signal: options.signal,
   };
   recordSandboxLog("docker.command", { args });
+  const containerName = options.containerName || "";
+  let abortHandler = null;
+  if (options.signal && containerName) {
+    abortHandler = () => {
+      void execFile("docker", ["kill", containerName], {
+        timeout: 8000,
+        maxBuffer: 32 * 1024,
+      }).catch((error) => {
+        recordSandboxLog("docker.kill.failed", {
+          containerName,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    };
+    if (options.signal.aborted) abortHandler();
+    else options.signal.addEventListener("abort", abortHandler, { once: true });
+  }
 
   try {
     const result = await execFile("docker", args, execOptions);
@@ -81,6 +99,8 @@ async function execDocker(args, options = {}) {
       stdout: redactSensitiveText(result.stdout),
       stderr: redactSensitiveText(result.stderr),
     };
+  } finally {
+    if (options.signal && abortHandler) options.signal.removeEventListener("abort", abortHandler);
   }
 }
 
@@ -282,7 +302,11 @@ function dockerCommand(command, policy) {
   return [...envLines, dockerUserCommand(command, policy)].join("\n");
 }
 
-function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, config), persistentDirs = persistentDockerDirs(config)) {
+function dockerContainerName() {
+  return `aginti-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`.slice(0, 63);
+}
+
+function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, config), persistentDirs = persistentDockerDirs(config), options = {}) {
   const uid = typeof process.getuid === "function" ? String(process.getuid()) : "";
   const gid = typeof process.getgid === "function" ? String(process.getgid()) : "";
   const userArgs = uid && gid && !policy.requiresDockerRoot ? ["--user", `${uid}:${gid}`] : [];
@@ -299,6 +323,7 @@ function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, 
   return [
     "run",
     "--rm",
+    ...(options.containerName ? ["--name", options.containerName] : []),
     "--network",
     networkMode,
     "--cap-drop",
@@ -337,10 +362,12 @@ function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, 
 
 export async function runDockerSandboxCommand(command, config, policy = evaluateCommandPolicy(command, config), options = {}) {
   const persistentDirs = await ensurePersistentDockerDirs(config);
-  const result = await execDocker(dockerRunArgs(command, config, policy, persistentDirs), {
+  const containerName = dockerContainerName();
+  const result = await execDocker(dockerRunArgs(command, config, policy, persistentDirs, { containerName }), {
     timeout: dockerExecTimeoutMs(policy),
     maxBuffer: 300 * 1024,
     signal: options.signal,
+    containerName,
   });
 
   const payload = {

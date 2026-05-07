@@ -720,6 +720,9 @@ function printCommandOutputLog(data = {}) {
     if (advice.suggestedCommand) outputLine(`${color(" | ", ansi.red)} rerun: ${compactLine(advice.suggestedCommand, 120)}`);
     if (advice.trustedHostCommand) outputLine(`${color(" | ", ansi.red)} host: ${compactLine(advice.trustedHostCommand, 120)}`);
   }
+  if (data.diagnosticHint) {
+    outputLine(`${label("hint", ansi.yellow)} ${compactLine(data.diagnosticHint, 112)}`);
+  }
 }
 
 function printHeading(text) {
@@ -1675,7 +1678,8 @@ class LiveRunInput {
 
   handleKey(str = "", key = {}) {
     if (key.ctrl && key.name === "c") {
-      this.controller.abort(new Error("Interrupted by ctrl-c."));
+      this.setStatus("stopping · ctrl-c");
+      this.controller.abort(createAbortError("Interrupted by ctrl-c."));
       return;
     }
     if (key.name === "escape") {
@@ -1686,7 +1690,8 @@ class LiveRunInput {
         this.redraw();
         return;
       }
-      this.controller.abort(new Error("Interrupted by escape."));
+      this.setStatus("stopping · escape");
+      this.controller.abort(createAbortError("Interrupted by escape."));
       return;
     }
     if (key.meta && key.name === "up") {
@@ -1784,7 +1789,9 @@ function printStatus(state) {
   printSystemLine(`project=${process.cwd()}`);
   printSystemLine(`cwd=${state.commandCwd || process.cwd()}`);
   printSystemLine(`session=${state.sessionId || "new"}`);
-  printSystemLine(`status=${state.status || "idle"}${state.activeGoal ? ` workingOn=${state.activeGoal}` : ""}`);
+  const progress =
+    state.currentStep && state.currentMaxSteps ? ` progress=${state.currentStep}/${state.currentMaxSteps}` : state.currentStep ? ` progress=${state.currentStep}` : "";
+  printSystemLine(`status=${state.status || "idle"}${progress}${state.activeGoal ? ` workingOn=${state.activeGoal}` : ""}`);
   printSystemLine(`language=${state.language || cliLanguage} (${languageLabel(state.language || cliLanguage)})`);
   if (state.lastEvent) printSystemLine(`last=${state.lastEvent}`);
   printSystemLine(`provider=${state.provider || "auto"} routing=${state.routingMode} model=${state.model || "auto"}`);
@@ -1954,9 +1961,26 @@ async function printResumeHistory(state, { limit = 0 } = {}) {
   for (const entry of shown) printHistoryEntry(entry);
 }
 
-function printStatusEvent(state, label, details = "") {
+function toolStatusDetails(data = {}) {
+  const tool = data.toolName || "unknown";
+  const args = data.args || {};
+  if (tool === "run_command" && args.command) return `${tool}: ${compactLine(args.command, 58)}`;
+  if ((tool === "write_file" || tool === "apply_patch" || tool === "read_file" || tool === "open_workspace_file") && args.path) {
+    return `${tool}: ${compactLine(args.path, 58)}`;
+  }
+  if ((tool === "open_url" || tool === "web_research" || tool === "web_search") && (args.url || args.query || args.q)) {
+    return `${tool}: ${compactLine(args.url || args.query || args.q, 58)}`;
+  }
+  return tool;
+}
+
+function printStatusEvent(state, label, details = "", meta = {}) {
   const safeDetails = compactLine(details, 72);
-  state.lastEvent = safeDetails ? `${label}: ${safeDetails}` : label;
+  if (meta.step) state.currentStep = meta.step;
+  if (meta.maxSteps) state.currentMaxSteps = meta.maxSteps;
+  const progress =
+    state.currentStep && state.currentMaxSteps ? `step ${state.currentStep}/${state.currentMaxSteps} · ` : state.currentStep ? `step ${state.currentStep} · ` : "";
+  state.lastEvent = `${progress}${safeDetails ? `${label}: ${safeDetails}` : label}`;
   const statusText = `${state.status || "running"} · ${state.lastEvent}`;
   if (activeRunInput) {
     activeRunInput.setStatus(statusText);
@@ -1979,7 +2003,7 @@ function attachRunInterrupts(controller) {
     if (controller.signal.aborted) return;
     const reason = isEscape ? "escape" : "ctrl-c";
     printSystemLine(`status=stopping reason=${reason}`);
-    controller.abort(new Error(`Interrupted by ${reason}.`));
+    controller.abort(createAbortError(`Interrupted by ${reason}.`));
   };
   input.on("keypress", handler);
   return () => {
@@ -3613,12 +3637,18 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
       onEvent: (type, data = {}) => {
         if (type === "plan.created") {
           printStatusEvent(state, "planned");
+        } else if (type === "budget.initialized") {
+          state.currentMaxSteps = data.currentMaxSteps || data.initialMaxSteps || state.maxSteps;
+          printStatusEvent(state, "budget", `${state.currentMaxSteps} steps`);
         } else if (type === "model.requested") {
-          printStatusEvent(state, "model_wait", `${data.provider || "model"}/${data.model || ""}`);
+          printStatusEvent(state, "model_wait", `${data.provider || "model"}/${data.model || ""}`, {
+            step: data.step,
+            maxSteps: state.currentMaxSteps,
+          });
         } else if (type === "tool.started") {
-          printStatusEvent(state, "tool", data.toolName || "unknown");
-        } else if (type === "tool.completed") {
-          printStatusEvent(state, "tool_done", data.toolName || "unknown");
+          printStatusEvent(state, "tool", toolStatusDetails(data));
+        } else if (type === "tool.completed" || type === "tool.failed") {
+          printStatusEvent(state, type === "tool.failed" || data.ok === false ? "tool_failed" : "tool_done", toolStatusDetails(data));
         } else if (type === "file.changed") {
           printWorkspaceChange(data);
         } else if (type === "tool.blocked") {
@@ -3643,7 +3673,10 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
         } else if (type === "session.stopped") {
           printStatusEvent(state, "stopped", data.reason || "");
         } else if (type === "model.responded") {
-          printStatusEvent(state, "model_responded", data.content ? data.content.slice(0, 80).replace(/\s+/g, " ") : "");
+          printStatusEvent(state, "model_responded", data.content ? data.content.slice(0, 80).replace(/\s+/g, " ") : "", {
+            step: data.step,
+            maxSteps: state.currentMaxSteps,
+          });
         }
       },
     });

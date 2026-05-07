@@ -9,6 +9,7 @@ import {
   runAgent,
   sanitizeToolResult,
   shouldShortCircuitToolBatch,
+  shellDiagnosticHint,
   skippedAfterBlockedToolResult,
 } from "../src/agent-runner.js";
 import { formatBehaviorContractForPrompt } from "../src/behavior-contract.js";
@@ -410,6 +411,13 @@ try {
     quotedDangerSearchPolicy.category !== "destructive",
     "quoted destructive strings in grep pattern should not classify as a destructive command"
   );
+  const grepCountHint = shellDiagnosticHint("grep -c 'Fatal\\|Emergency' article.log && echo done", {
+    ok: false,
+    exitCode: 1,
+    stdout: "0\n",
+    stderr: "",
+  });
+  assert(grepCountHint.includes("grep -c exits 1"), "failed grep-count validation should explain clean zero-match exit behavior");
   const actualDangerAfterQuotePolicy = evaluateCommandPolicy('echo "rm -rf is text" && rm -rf reports', dockerWorkspacePolicy);
   assert(!actualDangerAfterQuotePolicy.allowed, "actual destructive command after quoted text should still be blocked");
   assert(actualDangerAfterQuotePolicy.category === "destructive", "actual destructive command after quoted text was not classified as destructive");

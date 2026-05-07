@@ -2,9 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
-import { exec as execCallback, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import { chromium } from "playwright";
 import { createClient, createPlan, requestNextStep } from "./model-client.js";
 import { SessionStore } from "./session-store.js";
@@ -54,7 +53,6 @@ import {
   serializeStepBudgetState,
 } from "./step-budget-controller.js";
 
-const exec = promisify(execCallback);
 const BROWSER_TOOLS = new Set(["open_url", "open_workspace_file", "preview_workspace", "click", "type", "scroll", "press", "back"]);
 const WORKSPACE_TOOLS = new Set(WORKSPACE_TOOL_NAMES);
 const STATIC_PREVIEW_SERVER_PATH = fileURLToPath(new URL("./static-preview-server.js", import.meta.url));
@@ -585,6 +583,7 @@ async function createInitialState(config, sessionId) {
             : "No shell command tool is available.",
           `Permission contract: permission mode is ${config.permissionMode || "normal"}. Safe mode asks before workspace writes/setup. Normal mode allows current-project writes, read-only inspection of visible host paths, and approved Docker setup, but outside-workspace writes and host-system changes require approval. Danger mode is trusted host/full-access mode. Do not bypass blockers by retrying variants. If a tool result includes permissionAdvice or suggestedCommand, stop, explain the blocker, copy the exact suggestedCommand when giving a rerun path, and ask the user to approve/rerun that mode or choose a safer workspace-relative path. Never invent legacy AgInTi syntax such as \`aginti run --sandbox host\`; use the exact flags from permissionAdvice.`,
           "If an operation fails but a directory, artifact, or file already exists, treat it as pre-existing unless you have evidence this run created or updated it. Verify expected outputs before claiming success.",
+          "For validation/evidence commands, remember that grep exits 1 on zero matches. If zero matches is the expected clean result, use `grep -c PATTERN file || true`, split evidence checks into independent commands, or use awk/python so a clean zero count does not stop an `&&` chain.",
           config.allowShellTool
         ? "Host tmux tools are available for long-running terminals: list sessions, capture panes, send safe keys/text, and start detached sessions. Prefer these tools for monitoring long installs/tests/dev servers without blocking; capture before sending input and never send secrets or sudo passwords. Do not start or install tmux inside Docker run_command containers because those containers are short-lived. In Docker sandbox mode, tmux start/send commands must stay workspace-write-bound; prefer run_command for read-only host absolute path inspection through read-only mounts, and ask for --sandbox-mode host for trusted whole-host write/system work."
         + " For one-shot tmux commands, redirect stdout/stderr and exit status to a durable workspace log or keep the pane alive for capture; if capture fails because the session ended, do not infer output or exit status."
@@ -1006,6 +1005,7 @@ async function applyContinuationPrompt(state, config, observers) {
       temporalContext,
       config.startUrl ? `Suggested start URL: ${config.startUrl}` : "",
       config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
+      "Validation reminder: grep exits 1 on zero matches. For clean-zero checks, guard `grep -c` with `|| true` or split evidence commands so the validation can continue.",
       config.allowShellTool
         ? config.useDockerSandbox
           ? `Shell working directory mounted into Docker as /workspace from ${config.commandCwd}. Use relative paths or /workspace paths for outputs/writes; common host data roots are read-only at original absolute paths for inspection. Persistent Docker env: /aginti-env, caches: /aginti-cache. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
@@ -1074,6 +1074,112 @@ function safeExecutionEnv() {
     LANG: process.env.LANG || "C.UTF-8",
     LC_ALL: process.env.LC_ALL || "C.UTF-8",
   };
+}
+
+function trimOutput(value = "", limit = 8000) {
+  const text = redactSensitiveText(String(value || ""));
+  return text.trim().slice(0, limit);
+}
+
+function killChildTree(child, signal = "SIGTERM") {
+  if (!child || child.killed) return;
+  try {
+    if (process.platform === "win32") child.kill(signal);
+    else process.kill(-child.pid, signal);
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      // Best effort; process may already be gone.
+    }
+  }
+}
+
+function runHostShellCommand(command, config) {
+  return new Promise((resolve, reject) => {
+    const shell = hostShellOption();
+    const child = spawn(String(command || ""), {
+      cwd: config.commandCwd,
+      env: safeExecutionEnv(),
+      shell,
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timedOut = false;
+    const timeoutMs = Number(config.shellTimeoutMs || process.env.AGINTI_SHELL_TIMEOUT_MS || 30000);
+    const maxStdout = 220 * 1024;
+    const maxStderr = 120 * 1024;
+
+    const settle = (callback) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (config.abortSignal && onAbort) config.abortSignal.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const onAbort = () => {
+      killChildTree(child, "SIGTERM");
+      setTimeout(() => killChildTree(child, "SIGKILL"), 1200).unref?.();
+      const error = new Error("Run interrupted by user.");
+      error.name = "AbortError";
+      error.code = "ABORT_ERR";
+      settle(() => reject(error));
+    };
+    const timer =
+      Number.isFinite(timeoutMs) && timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            killChildTree(child, "SIGTERM");
+            setTimeout(() => killChildTree(child, "SIGKILL"), 1200).unref?.();
+          }, timeoutMs)
+        : null;
+    timer?.unref?.();
+
+    if (config.abortSignal?.aborted) return onAbort();
+    if (config.abortSignal) config.abortSignal.addEventListener("abort", onAbort, { once: true });
+
+    child.stdout?.on("data", (chunk) => {
+      if (stdout.length < maxStdout) stdout += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk) => {
+      if (stderr.length < maxStderr) stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      settle(() =>
+        resolve({
+          ok: false,
+          exitCode: 1,
+          stdout,
+          stderr: `${stderr}${stderr ? "\n" : ""}${error instanceof Error ? error.message : String(error)}`,
+        })
+      );
+    });
+    child.on("close", (code, signalName) => {
+      settle(() =>
+        resolve({
+          ok: !timedOut && Number(code || 0) === 0,
+          exitCode: timedOut ? 124 : Number.isInteger(code) ? code : signalName ? 130 : 1,
+          stdout,
+          stderr: `${stderr}${timedOut ? `\nCommand timed out after ${timeoutMs}ms.` : ""}`,
+        })
+      );
+    });
+  });
+}
+
+export function shellDiagnosticHint(command = "", result = {}) {
+  if (result?.ok !== false) return "";
+  const text = String(command || "");
+  if (/\bgrep\b[\s\S]*\s-c\b|\bgrep\s+-c\b/.test(text)) {
+    return "grep -c exits 1 when it finds zero matches even though it prints 0. For count-only validation, use `grep -c PATTERN file || true`, split evidence commands, or use awk/python when zero matches is the expected clean state.";
+  }
+  if (/\bgrep\b/.test(text) && /&&/.test(text)) {
+    return "grep exits 1 when it finds no matches, so an `&&` evidence chain can stop early. If no matches is acceptable, guard that grep with `|| true` or run independent validation commands.";
+  }
+  return "";
 }
 
 function hashForLog(value) {
@@ -1261,29 +1367,26 @@ async function runShellCommand(command, config, policy = evaluateCommandPolicy(c
     throwIfAborted(config);
     const result = config.useDockerSandbox
       ? await runDockerSandboxCommand(command, config, policy, { signal: config.abortSignal })
-      : await exec(command, {
-          cwd: config.commandCwd,
-          timeout: 30000,
-          maxBuffer: 200 * 1024,
-          shell: hostShellOption(),
-          env: safeExecutionEnv(),
-          signal: config.abortSignal,
-        });
+      : await runHostShellCommand(command, config);
+    const diagnosticHint = shellDiagnosticHint(command, result);
 
     return {
-      ok: true,
-      exitCode: 0,
-      stdout: redactSensitiveText(result.stdout).trim().slice(0, 8000),
-      stderr: redactSensitiveText(result.stderr).trim().slice(0, 4000),
+      ok: result.ok !== false,
+      exitCode: Number.isInteger(result.exitCode) ? result.exitCode : 0,
+      stdout: trimOutput(result.stdout, 8000),
+      stderr: trimOutput(result.stderr, 4000),
+      ...(diagnosticHint ? { diagnosticHint } : {}),
     };
   } catch (error) {
     if (isAbortError(error, config)) throw error;
-    return {
+    const failedResult = {
       ok: false,
       exitCode: Number.isInteger(error?.code) ? error.code : 1,
-      stdout: redactSensitiveText(String(error?.stdout || "")).trim().slice(0, 8000),
-      stderr: redactSensitiveText(String(error?.stderr || error?.message || "")).trim().slice(0, 4000),
+      stdout: trimOutput(error?.stdout || "", 8000),
+      stderr: trimOutput(error?.stderr || error?.message || "", 4000),
     };
+    const diagnosticHint = shellDiagnosticHint(command, failedResult);
+    return diagnosticHint ? { ...failedResult, diagnosticHint } : failedResult;
   }
 }
 
@@ -1295,6 +1398,7 @@ async function captureSyntheticSnapshot(store, step, config) {
     pageText: [
       "No browser page is currently open.",
       config.startUrl ? `Suggested start URL: ${config.startUrl}` : "",
+      "Validation reminder: grep exits 1 on zero matches; guard expected clean-zero grep checks or split evidence commands.",
       config.allowShellTool
         ? config.useDockerSandbox
           ? `Shell tool available in Docker with mounted workspace /workspace from ${config.commandCwd}. Use relative paths or /workspace paths for outputs/writes; common host data roots are read-only at original absolute paths for inspection. Persistent Docker env: /aginti-env, caches: /aginti-cache. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
@@ -2377,6 +2481,7 @@ export async function runAgent(config) {
             command: redactSensitiveText(toolResult.args?.command || ""),
             stdout: toolResult.stdout || "",
             stderr: toolResult.stderr || "",
+            diagnosticHint: toolResult.diagnosticHint || "",
             commandPolicy: toolResult.commandPolicy,
             blocked: Boolean(toolResult.blocked),
             error: toolResult.error || toolResult.reason || "",

@@ -65,6 +65,25 @@ try {
   const outsideRead = await runToolchainCommand(`cat ${path.join(outsideData, "source-note.txt")}`, config);
   assert(outsideRead.stdout.includes("READ_ONLY_HOST_MOUNT_OK"), "Docker normal mode could not read the configured outside data root");
 
+  const abortController = new AbortController();
+  const abortCommand = `python3 -c 'import time; time.sleep(20)'`;
+  const abortPolicy = evaluateCommandPolicy(abortCommand, { ...config, packageInstallPolicy: "allow" });
+  assert(abortPolicy.allowed, "long-running Docker command should be allowed for interrupt smoke");
+  const abortStartedAt = Date.now();
+  const abortRun = runDockerSandboxCommand(abortCommand, { ...config, packageInstallPolicy: "allow" }, abortPolicy, {
+    signal: abortController.signal,
+  });
+  setTimeout(() => abortController.abort(new Error("smoke interrupt")), 500);
+  let interrupted = false;
+  try {
+    await abortRun;
+  } catch (error) {
+    interrupted = /abort|interrupt|cancel/i.test(String(error?.name || "")) || /abort|interrupt|cancel/i.test(String(error?.message || ""));
+  }
+  const abortElapsed = Date.now() - abortStartedAt;
+  assert(interrupted, "Docker command did not reject as interrupted after AbortController abort");
+  assert(abortElapsed < 8000, `Docker interrupt took too long: ${abortElapsed}ms`);
+
   await fs.writeFile(
     path.join(workspace, "plot_fx.py"),
     [
