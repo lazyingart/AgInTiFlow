@@ -143,7 +143,7 @@ aginti --language de
 | Read screenshots/images | `/image-read path/to/screenshot.png "what changed?"` |
 | Research with sources | `/web-research latest Android Gradle plugin official docs` |
 | Enable research wrapper | `/research-wrapper gpt-5.4-mini medium` |
-| Resume current project | `aginti resume` |
+| Resume current project | `aginti resume` (`1` is newest/latest; Space/PageDown shows more) |
 | Browse all sessions | `aginti resume --all-sessions` |
 | Queue into a running session | `aginti queue <session-id> "extra instruction"` |
 | Clean empty sessions | `aginti --remove-empty-sessions` |
@@ -151,7 +151,7 @@ aginti --language de
 | Sync reviewed skills | `aginti skillmesh status`, `aginti skillmesh sync` |
 | Update CLI | `aginti update` |
 
-Interactive chat supports slash completion, Up/Down selectors, multiline input with `Ctrl+J`, full resume history, Markdown rendering, visible run status, ASAP pipe messages during a run, and clean interruption/resume with `Ctrl+C`. Installed interactive commands also check npm for a newer AgInTiFlow release and show an update/skip selector; source checkouts and non-TTY automation are left alone.
+Interactive chat supports slash completion, Up/Down selectors, a newest-first resume selector with Space/PageDown pagination, multiline input with `Ctrl+J`, full resume history, Markdown rendering, visible run status, ASAP pipe messages during a run, and clean interruption/resume with `Ctrl+C`. Installed interactive commands also check npm for a newer AgInTiFlow release and show an update/skip selector; source checkouts and non-TTY automation are left alone.
 
 AgInTiFlow treats `maxSteps` as an initial budget, not a silent infinite loop. By default, real-provider runs can receive a bounded extension only near the limit, only when recent tool/file/artifact evidence shows concrete progress, and never to bypass permission, package, host, or secret guardrails. Use `--dynamic-steps off` for a strict hard stop, or `--dynamic-steps on` to test the budget gate in mock/offline runs.
 

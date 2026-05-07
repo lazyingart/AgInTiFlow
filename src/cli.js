@@ -1289,47 +1289,199 @@ function filterSessions(sessions, filterText = "") {
   return sessions.filter((session) => sessionSearchText(session).includes(needle));
 }
 
-function printSessionChoices(sessions, { filterText = "", allSessions = false, maxShown = 20 } = {}) {
-  const scope = allSessions ? "all sessions" : `cwd ${process.cwd()}`;
+const RESUME_SESSION_PAGE_SIZE = 20;
+
+export function formatSessionChoices(sessions, { filterText = "", allSessions = false, maxShown = RESUME_SESSION_PAGE_SIZE, cwd = process.cwd() } = {}) {
+  const scope = allSessions ? "all sessions" : `cwd ${cwd}`;
   const shown = sessions.slice(0, maxShown);
-  console.log(`Select a session to resume (${scope}${filterText ? `, filter="${filterText}"` : ""}):`);
+  const lines = [`Select a session to resume (${scope}; newest first, 1 is latest${filterText ? `, filter="${filterText}"` : ""}):`];
   if (shown.length === 0) {
-    console.log("No matching sessions. Type /text to change the filter, / to clear it, or q to quit.");
-    return;
+    lines.push("No matching sessions. Type /text to change the filter, / to clear it, or q to quit.");
+    return lines.join("\n");
   }
   shown.forEach((session, index) => {
     const title = session.title || session.goal || "(untitled)";
-    console.log(
+    lines.push(
       `${index + 1}. ${session.sessionId} ${session.provider || "unknown"}/${session.model || "unknown"} ${session.updatedAt || ""} ${title.slice(0, 90)}`
     );
   });
-  if (sessions.length > shown.length) console.log(`... ${sessions.length - shown.length} more hidden by display limit; type /text to narrow.`);
-  console.log("Type a number to select, /text to filter, / to clear, or q to quit.");
+  if (sessions.length > shown.length) {
+    lines.push(`... ${sessions.length - shown.length} more hidden; press Space/PageDown or Enter, or type more, to show next ${RESUME_SESSION_PAGE_SIZE}; /text narrows.`);
+  }
+  lines.push(
+    sessions.length > shown.length
+      ? "Type a number to select, Space/PageDown/Enter/more to show more, /text to filter, / to clear, all to show all, or q to quit."
+      : "Type a number to select, /text to filter, / to clear, or q to quit."
+  );
+  return lines.join("\n");
+}
+
+function printSessionChoices(sessions, options = {}) {
+  console.log(formatSessionChoices(sessions, options));
+}
+
+function handleResumeSelectorAnswer(rawAnswer = "", { filtered = [], visibleCount = 0, hasMore = false, setFilter, showMore, showAll, write } = {}) {
+  const answer = String(rawAnswer || "").trim();
+  const lower = answer.toLowerCase();
+  if (!answer) {
+    if (hasMore) {
+      showMore?.();
+      return { redraw: true };
+    }
+    return { done: true, sessionId: "" };
+  }
+  if (lower === "q" || lower === "quit") return { done: true, sessionId: "" };
+  if (lower === "more" || lower === "m" || lower === "n" || lower === "next" || lower === "+") {
+    if (hasMore) {
+      showMore?.();
+      return { redraw: true };
+    }
+    write?.("All matching sessions are already shown.");
+    return { redraw: false };
+  }
+  if (lower === "all") {
+    showAll?.();
+    return { redraw: true };
+  }
+  if (answer.startsWith("/")) {
+    setFilter?.(answer.slice(1).trim());
+    return { redraw: true };
+  }
+  const index = Number(answer) - 1;
+  if (Number.isInteger(index) && index >= 0 && index < visibleCount) {
+    return { done: true, sessionId: filtered[index]?.sessionId || "" };
+  }
+  return {
+    redraw: true,
+    message: hasMore
+      ? "Invalid selection. Type a shown number, press Space/PageDown or Enter to show more, /text to filter, or q to quit."
+      : "Invalid selection. Type a shown number, /text to filter, or q to quit.",
+  };
 }
 
 async function promptSelectSession(sessions, { allSessions = false } = {}) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return sessions[0]?.sessionId || "";
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  let filterText = "";
-  try {
-    while (true) {
-      const filtered = filterSessions(sessions, filterText);
-      printSessionChoices(filtered, { filterText, allSessions });
-      const answer = (await rl.question("Session number/filter: ")).trim();
-      if (!answer || answer.toLowerCase() === "q" || answer.toLowerCase() === "quit") return "";
-      if (answer.startsWith("/")) {
-        filterText = answer.slice(1).trim();
-        continue;
+  if (!process.stdin.setRawMode) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    let filterText = "";
+    let maxShown = RESUME_SESSION_PAGE_SIZE;
+    try {
+      while (true) {
+        const filtered = filterSessions(sessions, filterText);
+        const visibleCount = Math.min(filtered.length, maxShown);
+        const hasMore = filtered.length > visibleCount;
+        printSessionChoices(filtered, { filterText, allSessions, maxShown });
+        const rawAnswer = await rl.question(hasMore ? "Session number/filter/more: " : "Session number/filter: ");
+        const selected = handleResumeSelectorAnswer(rawAnswer, {
+          filtered,
+          visibleCount,
+          hasMore,
+          setFilter: (value) => {
+            filterText = value;
+            maxShown = RESUME_SESSION_PAGE_SIZE;
+          },
+          showMore: () => {
+            maxShown = Math.min(filtered.length, maxShown + RESUME_SESSION_PAGE_SIZE);
+          },
+          showAll: () => {
+            maxShown = filtered.length;
+          },
+          write: (message) => console.log(message),
+        });
+        if (selected.done) return selected.sessionId || "";
       }
-      const index = Number(answer) - 1;
-      if (Number.isInteger(index) && index >= 0 && index < Math.min(filtered.length, 20)) {
-        return filtered[index]?.sessionId || "";
-      }
-      console.log("Invalid selection. Type a shown number, /text to filter, or q to quit.");
+    } finally {
+      rl.close();
     }
-  } finally {
-    rl.close();
   }
+
+  let filterText = "";
+  let maxShown = RESUME_SESSION_PAGE_SIZE;
+  let buffer = "";
+  const input = process.stdin;
+  const output = process.stdout;
+  const wasRaw = input.isRaw;
+
+  return new Promise((resolve) => {
+    const cleanup = (sessionId = "") => {
+      input.off("keypress", onKeypress);
+      if (input.setRawMode) input.setRawMode(Boolean(wasRaw));
+      input.pause();
+      output.write("\n");
+      resolve(sessionId || "");
+    };
+    const writePrompt = () => {
+      const filtered = filterSessions(sessions, filterText);
+      const visibleCount = Math.min(filtered.length, maxShown);
+      const hasMore = filtered.length > visibleCount;
+      printSessionChoices(filtered, { filterText, allSessions, maxShown });
+      output.write(hasMore ? "Session number/filter/more: " : "Session number/filter: ");
+    };
+    const redraw = (message = "") => {
+      buffer = "";
+      output.write("\n");
+      if (message) output.write(`${message}\n`);
+      writePrompt();
+    };
+    const submit = (rawAnswer = "") => {
+      const filtered = filterSessions(sessions, filterText);
+      const visibleCount = Math.min(filtered.length, maxShown);
+      const hasMore = filtered.length > visibleCount;
+      const selected = handleResumeSelectorAnswer(rawAnswer, {
+        filtered,
+        visibleCount,
+        hasMore,
+        setFilter: (value) => {
+          filterText = value;
+          maxShown = RESUME_SESSION_PAGE_SIZE;
+        },
+        showMore: () => {
+          maxShown = Math.min(filtered.length, maxShown + RESUME_SESSION_PAGE_SIZE);
+        },
+        showAll: () => {
+          maxShown = filtered.length;
+        },
+        write: (message) => redraw(message),
+      });
+      if (selected.done) return cleanup(selected.sessionId || "");
+      if (selected.redraw) return redraw(selected.message || "");
+      return undefined;
+    };
+    function onKeypress(char, key = {}) {
+      if (key.ctrl && key.name === "c") return cleanup("");
+      const name = key.name || char;
+      const filtered = filterSessions(sessions, filterText);
+      const hasMore = filtered.length > Math.min(filtered.length, maxShown);
+      if ((name === "space" || name === "pagedown") && !buffer && hasMore) {
+        maxShown = Math.min(filtered.length, maxShown + RESUME_SESSION_PAGE_SIZE);
+        return redraw();
+      }
+      if ((name === "q" || name === "escape") && !buffer) return cleanup("");
+      if (name === "return" || name === "enter") {
+        output.write("\n");
+        const rawAnswer = buffer;
+        buffer = "";
+        return submit(rawAnswer);
+      }
+      if (name === "backspace" || name === "delete") {
+        if (buffer.length > 0) {
+          buffer = buffer.slice(0, -1);
+          output.write("\b \b");
+        }
+        return undefined;
+      }
+      if (char && !key.ctrl && !key.meta && char >= " ") {
+        buffer += char;
+        output.write(char);
+      }
+      return undefined;
+    }
+    readlineRaw.emitKeypressEvents(input);
+    input.setRawMode(true);
+    input.resume();
+    input.on("keypress", onKeypress);
+    writePrompt();
+  });
 }
 
 async function resolveResumeSessionId(sessionId, { allSessions = false } = {}) {

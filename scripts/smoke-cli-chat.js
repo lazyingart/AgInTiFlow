@@ -16,7 +16,7 @@ import {
   formatWorkspaceChange,
   stripMarkdown,
 } from "../src/interactive-cli.js";
-import { parseArgs, parseResumeCommandArgs, splitResumeCommandArgv } from "../src/cli.js";
+import { formatSessionChoices, parseArgs, parseResumeCommandArgs, splitResumeCommandArgv } from "../src/cli.js";
 import { dockerPolicyTimeoutMs, dockerUserCommand } from "../src/docker-sandbox.js";
 import { formatBehaviorContractForPrompt } from "../src/behavior-contract.js";
 import { SUPPORTED_LANGUAGES, t } from "../src/i18n.js";
@@ -512,6 +512,27 @@ try {
   if (splitResumeCommandArgv(["--provider", "mock", "resume", "a normal task"]) !== null) {
     throw new Error("leading global options should not turn an ordinary resume-themed prompt into the resume subcommand");
   }
+  const sessionChoices = Array.from({ length: 23 }, (_, index) => ({
+    sessionId: `session-${String(index + 1).padStart(2, "0")}`,
+    provider: "mock",
+    model: "test",
+    updatedAt: `2026-05-07T10:${String(59 - index).padStart(2, "0")}:00Z`,
+    title: index === 0 ? "newest session" : `older session ${index + 1}`,
+  }));
+  const resumeSelectorFirstPage = formatSessionChoices(sessionChoices, { cwd: tempRoot, maxShown: 20 });
+  if (
+    !resumeSelectorFirstPage.includes("newest first, 1 is latest") ||
+    !resumeSelectorFirstPage.includes("1. session-01") ||
+    !resumeSelectorFirstPage.includes("20. session-20") ||
+    resumeSelectorFirstPage.includes("21. session-21") ||
+    !resumeSelectorFirstPage.includes("3 more hidden; press Space/PageDown or Enter")
+  ) {
+    throw new Error("resume selector should make newest-first numbering and show-more pagination explicit");
+  }
+  const resumeSelectorExpanded = formatSessionChoices(sessionChoices, { cwd: tempRoot, maxShown: 40 });
+  if (!resumeSelectorExpanded.includes("23. session-23") || resumeSelectorExpanded.includes("more hidden")) {
+    throw new Error("resume selector expanded page should show later sessions without hidden-count text");
+  }
 
   await runCli(["init"], "");
   const instructions = await fs.readFile(path.join(tempRoot, "AGINTI.md"), "utf8");
@@ -663,6 +684,8 @@ try {
           "scs-command-toggle",
           "permission-mode-slash-commands",
           "resume-command-options",
+          "resume-selector-newest-first",
+          "resume-selector-pagination",
           "slash-prefix-autoselect",
           "slash-prefix-canonical-history",
           "instructions-chat-edit",
