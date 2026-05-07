@@ -1306,11 +1306,11 @@ export function formatSessionChoices(sessions, { filterText = "", allSessions = 
     );
   });
   if (sessions.length > shown.length) {
-    lines.push(`... ${sessions.length - shown.length} more hidden; press Space or PageDown, or type more, to show next ${RESUME_SESSION_PAGE_SIZE}; /text narrows.`);
+    lines.push(`... ${sessions.length - shown.length} more hidden; press Space, Enter, or PageDown, or type more, to show next ${RESUME_SESSION_PAGE_SIZE}; /text narrows.`);
   }
   lines.push(
     sessions.length > shown.length
-      ? "Type a number to select, Space/PageDown/more to show more, /text to filter, / to clear, all to show all, or q to quit."
+      ? "Type a number to select, Space/Enter/PageDown/more to show more, /text to filter, / to clear, all to show all, or q to quit."
       : "Type a number to select, /text to filter, / to clear, or q to quit."
   );
   return lines.join("\n");
@@ -1324,7 +1324,7 @@ function handleResumeSelectorAnswer(rawAnswer = "", { filtered = [], visibleCoun
   const answer = String(rawAnswer || "").trim();
   const lower = answer.toLowerCase();
   if (!answer) {
-    if (String(rawAnswer || "").length > 0 && hasMore) {
+    if (hasMore) {
       showMore?.();
       return { redraw: true };
     }
@@ -1354,7 +1354,7 @@ function handleResumeSelectorAnswer(rawAnswer = "", { filtered = [], visibleCoun
   return {
     redraw: true,
     message: hasMore
-      ? "Invalid selection. Type a shown number, press Space or PageDown to show more, /text to filter, or q to quit."
+      ? "Invalid selection. Type a shown number, press Space, Enter, or PageDown to show more, /text to filter, or q to quit."
       : "Invalid selection. Type a shown number, /text to filter, or q to quit.",
   };
 }

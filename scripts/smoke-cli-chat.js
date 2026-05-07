@@ -525,7 +525,7 @@ try {
     !resumeSelectorFirstPage.includes("1. session-01") ||
     !resumeSelectorFirstPage.includes("20. session-20") ||
     resumeSelectorFirstPage.includes("21. session-21") ||
-    !resumeSelectorFirstPage.includes("3 more hidden; press Space or PageDown")
+    !resumeSelectorFirstPage.includes("3 more hidden; press Space, Enter, or PageDown")
   ) {
     throw new Error("resume selector should make newest-first numbering and show-more pagination explicit");
   }
