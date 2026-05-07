@@ -50,6 +50,7 @@ async function runTmux(args, options = {}) {
       timeout: options.timeout ?? 12000,
       maxBuffer: options.maxBuffer ?? 220 * 1024,
       env: safeEnv(),
+      signal: options.signal,
     });
     return {
       ok: true,
@@ -57,6 +58,7 @@ async function runTmux(args, options = {}) {
       stderr: redactSensitiveText(result.stderr || ""),
     };
   } catch (error) {
+    if (error?.name === "AbortError" || error?.code === "ABORT_ERR") throw error;
     const message = redactSensitiveText(error instanceof Error ? error.message : String(error));
     return {
       ok: false,
@@ -161,10 +163,11 @@ function isShellPaneCommand(command = "") {
   return /^(?:ba|z|fi|da|k)?sh$|^fish$/.test(String(command || "").trim());
 }
 
-async function getPaneCurrentCommand(target) {
+async function getPaneCurrentCommand(target, config = {}) {
   const result = await runTmux(["display-message", "-p", "-t", target, "#{pane_current_command}"], {
     timeout: 4000,
     maxBuffer: 16 * 1024,
+    signal: config.abortSignal,
   });
   if (!result.ok) return "";
   return String(result.stdout || "").trim();
@@ -215,12 +218,12 @@ function parsePanes(stdout = "") {
     });
 }
 
-export async function listTmuxSessions(args = {}) {
+export async function listTmuxSessions(args = {}, config = {}) {
   const sessionsResult = await runTmux([
     "list-sessions",
     "-F",
     "#{session_name}|#{session_windows}|#{session_attached}|#{session_created}|#{session_activity}",
-  ]);
+  ], { signal: config.abortSignal });
   if (!sessionsResult.ok && /no server running|failed to connect/i.test(`${sessionsResult.stderr} ${sessionsResult.error}`)) {
     return { ok: true, toolName: "tmux_list_sessions", sessions: [], panes: [], summary: "No tmux server is running." };
   }
@@ -233,7 +236,7 @@ export async function listTmuxSessions(args = {}) {
       "-a",
       "-F",
       "#{session_name}:#{window_index}.#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{pane_active}|#{pane_title}",
-    ]);
+    ], { signal: config.abortSignal });
     if (panesResult.ok) panes = parsePanes(panesResult.stdout);
   }
   const sessions = parseSessions(sessionsResult.stdout);
@@ -246,13 +249,14 @@ export async function listTmuxSessions(args = {}) {
   };
 }
 
-export async function captureTmuxPane(args = {}) {
+export async function captureTmuxPane(args = {}, config = {}) {
   const target = validateTarget(args.target);
   if (!target.ok) return { ok: false, toolName: "tmux_capture_pane", blocked: true, reason: target.reason };
   const lines = clampInteger(args.lines, 80, 1, MAX_CAPTURE_LINES);
   const result = await runTmux(["capture-pane", "-t", target.target, "-p", "-S", `-${lines}`], {
     timeout: 8000,
     maxBuffer: 260 * 1024,
+    signal: config.abortSignal,
   });
   if (!result.ok) return { ok: false, toolName: "tmux_capture_pane", target: target.target, error: result.stderr || result.error };
   const content = redactSensitiveText(result.stdout || "").replace(/\s+$/g, "");
@@ -299,7 +303,7 @@ export async function sendTmuxKeys(args = {}, config = {}) {
   const keyArgsForPolicy = [...keys];
   if (enter) keyArgsForPolicy.push("Enter");
   if (text && keyArgsForPolicy.includes("Enter") && shouldApplyDockerShellPolicy(config)) {
-    const paneCommand = await getPaneCurrentCommand(target.target);
+      const paneCommand = await getPaneCurrentCommand(target.target, config);
     if (isShellPaneCommand(paneCommand)) {
       const dockerPolicy = checkDockerShellPolicyForTmuxText(text, config, "tmux text");
       if (!dockerPolicy.ok) {
@@ -323,14 +327,14 @@ export async function sendTmuxKeys(args = {}, config = {}) {
 
   const steps = [];
   if (text) {
-    const sent = await runTmux(["send-keys", "-t", target.target, "-l", text], { timeout: 8000 });
+    const sent = await runTmux(["send-keys", "-t", target.target, "-l", text], { timeout: 8000, signal: config.abortSignal });
     if (!sent.ok) return { ok: false, toolName: "tmux_send_keys", target: target.target, error: sent.stderr || sent.error };
     steps.push("literal-text");
   }
   const keyArgs = [...keys];
   if (enter) keyArgs.push("Enter");
   if (keyArgs.length > 0) {
-    const sent = await runTmux(["send-keys", "-t", target.target, ...keyArgs], { timeout: 8000 });
+    const sent = await runTmux(["send-keys", "-t", target.target, ...keyArgs], { timeout: 8000, signal: config.abortSignal });
     if (!sent.ok) return { ok: false, toolName: "tmux_send_keys", target: target.target, error: sent.stderr || sent.error };
     steps.push(...keyArgs);
   }
@@ -395,7 +399,7 @@ export async function startTmuxSession(args = {}, config = {}) {
 
   const tmuxArgs = ["new-session", "-d", "-s", name.name, "-c", cwd.cwd];
   if (command) tmuxArgs.push(command);
-  const result = await runTmux(tmuxArgs, { timeout: 10000 });
+  const result = await runTmux(tmuxArgs, { timeout: 10000, signal: config.abortSignal });
   if (!result.ok) return { ok: false, toolName: "tmux_start_session", session: name.name, error: result.stderr || result.error };
   return {
     ok: true,

@@ -405,6 +405,7 @@ export function normalizeTextToolCallResponse(response) {
 
 function mockCommandForGoal(goal = "") {
   const text = String(goal).toLowerCase();
+  if (/\bsleep\b|\binterrupt\b|\bstall\b|\blong[- ]running\b/.test(text)) return "python3 -c 'import time; time.sleep(20)'";
   if (/\blist\b|folder contents|directory contents|files?/.test(text)) return "ls -la";
   return "pwd";
 }

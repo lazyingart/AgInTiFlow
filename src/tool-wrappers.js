@@ -1,9 +1,6 @@
-import { execFile as execFileCallback, execFileSync } from "node:child_process";
-import { promisify } from "node:util";
+import { execFileSync, spawn } from "node:child_process";
 import { getModelPresets } from "./model-routing.js";
 import { redactSensitiveText } from "./redaction.js";
-
-const execFile = promisify(execFileCallback);
 
 export const WRAPPER_NAMES = ["codex", "claude", "gemini", "copilot", "qwen"];
 export const DEFAULT_WRAPPER_NAME = "codex";
@@ -29,6 +26,93 @@ function commandExists(command) {
 
 function cleanOutput(value, limit) {
   return redactSensitiveText(value).trim().slice(0, limit);
+}
+
+function killChildTree(child, signal = "SIGTERM") {
+  if (!child || child.killed) return;
+  try {
+    if (process.platform === "win32") child.kill(signal);
+    else process.kill(-child.pid, signal);
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      // Process may already have exited.
+    }
+  }
+}
+
+function runWrapperProcess(spec, config) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(spec.command, spec.args, {
+      cwd: config.commandCwd,
+      env: process.env,
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const timeoutMs = Number(config.wrapperTimeoutMs) || 120000;
+    const maxStdout = 512 * 1024;
+    const maxStderr = 128 * 1024;
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timedOut = false;
+
+    const settle = (callback) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (config.abortSignal && onAbort) config.abortSignal.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const makeError = (message, code = 1) => {
+      const error = new Error(message);
+      error.code = code;
+      error.stdout = stdout;
+      error.stderr = stderr;
+      return error;
+    };
+    const onAbort = () => {
+      killChildTree(child, "SIGTERM");
+      setTimeout(() => killChildTree(child, "SIGKILL"), 1200).unref?.();
+      const error = makeError("Wrapper interrupted by user.", "ABORT_ERR");
+      error.name = "AbortError";
+      settle(() => reject(error));
+    };
+    const timer =
+      Number.isFinite(timeoutMs) && timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            killChildTree(child, "SIGTERM");
+            setTimeout(() => killChildTree(child, "SIGKILL"), 1200).unref?.();
+          }, timeoutMs)
+        : null;
+    timer?.unref?.();
+
+    if (config.abortSignal?.aborted) return onAbort();
+    if (config.abortSignal) config.abortSignal.addEventListener("abort", onAbort, { once: true });
+
+    child.stdout?.on("data", (chunk) => {
+      if (stdout.length < maxStdout) stdout += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk) => {
+      if (stderr.length < maxStderr) stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      settle(() => reject(makeError(error instanceof Error ? error.message : String(error), 1)));
+    });
+    child.on("close", (code, signal) => {
+      if (timedOut) {
+        settle(() => reject(makeError(`Wrapper timed out after ${timeoutMs}ms.`, 124)));
+        return;
+      }
+      if (Number(code || 0) === 0) {
+        settle(() => resolve({ stdout, stderr }));
+        return;
+      }
+      settle(() => reject(makeError(`Wrapper exited with ${signal || code}.`, Number.isInteger(code) ? code : 1)));
+    });
+  });
 }
 
 function buildPrompt(prompt) {
@@ -157,13 +241,7 @@ export async function runAgentWrapper({ wrapper, prompt }, config) {
     return { ok: false, wrapper, error: `Wrapper command is not available: ${wrapper}` };
   }
 
-  const runOnce = async (spec) =>
-    execFile(spec.command, spec.args, {
-      cwd: config.commandCwd,
-      timeout: Number(config.wrapperTimeoutMs) || 120000,
-      maxBuffer: 512 * 1024,
-      env: process.env,
-    });
+  const runOnce = async (spec) => runWrapperProcess(spec, config);
 
   try {
     const result = await runOnce(commandSpec);
@@ -174,6 +252,7 @@ export async function runAgentWrapper({ wrapper, prompt }, config) {
       stderr: cleanOutput(result.stderr, 4000),
     };
   } catch (error) {
+    if (error?.name === "AbortError" || error?.code === "ABORT_ERR") throw error;
     if (wrapper === "codex") {
       const fallbackSpec = wrapperCommand(wrapper, prompt, config, { fallback: true });
       try {
@@ -186,6 +265,7 @@ export async function runAgentWrapper({ wrapper, prompt }, config) {
           stderr: cleanOutput(fallback.stderr, 4000),
         };
       } catch (fallbackError) {
+        if (fallbackError?.name === "AbortError" || fallbackError?.code === "ABORT_ERR") throw fallbackError;
         return {
           ok: false,
           wrapper,

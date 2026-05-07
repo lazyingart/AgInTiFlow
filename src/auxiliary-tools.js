@@ -164,11 +164,43 @@ async function writeJson(filePath, payload) {
   await fs.writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 }
 
-async function requestJson(url, payload, apiKey, { timeoutMs = 300000, retries = 2 } = {}) {
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = signal.reason instanceof Error ? signal.reason : new Error("Operation interrupted by user.");
+  error.name = error.name || "AbortError";
+  throw error;
+}
+
+function sleepAbortable(ms, signal) {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason instanceof Error ? signal.reason : new Error("Operation interrupted by user."));
+    };
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function requestJson(url, payload, apiKey, { timeoutMs = 300000, retries = 2, signal = null } = {}) {
   let lastError = null;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
+    throwIfAborted(signal);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const onAbort = () => controller.abort(signal.reason || new Error("Operation interrupted by user."));
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
     try {
       const response = await fetch(url, {
         method: "POST",
@@ -187,25 +219,29 @@ async function requestJson(url, payload, apiKey, { timeoutMs = 300000, retries =
       }
       return parseJsonResponse(text);
     } catch (error) {
+      if (signal?.aborted || error?.code === "ABORT_ERR" || (error?.name === "AbortError" && !timedOut)) throw error;
       lastError = error;
       const retryable = TRANSIENT_HTTP_CODES.has(Number(error?.status)) || /aborted|timeout|fetch failed/i.test(String(error?.message || ""));
       if (!retryable || attempt >= retries) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 2000 + attempt * 2000));
+      await sleepAbortable(2000 + attempt * 2000, signal);
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
     }
   }
   throw lastError || new Error("Image API request failed.");
 }
 
-async function pollResult({ host, taskId, apiKey, outputDir, intervalMs = 5000, timeoutMs = 900000, requestTimeoutMs = 300000 }) {
+async function pollResult({ host, taskId, apiKey, outputDir, intervalMs = 5000, timeoutMs = 900000, requestTimeoutMs = 300000, signal = null }) {
   const started = Date.now();
   const pollUrl = `${host.replace(/\/+$/, "")}/v1/draw/result`;
   let attempt = 0;
   while (true) {
+    throwIfAborted(signal);
     const result = await requestJson(pollUrl, { id: taskId }, apiKey, {
       timeoutMs: requestTimeoutMs,
       retries: 4,
+      signal,
     });
     await writeJson(path.join(outputDir, "result_response.json"), result);
 
@@ -214,15 +250,16 @@ async function pollResult({ host, taskId, apiKey, outputDir, intervalMs = 5000, 
     if (status === "succeeded" || status === "failed") return result;
     if (Date.now() - started > timeoutMs) throw new Error(`Image generation polling timed out for task ${taskId}.`);
     attempt += 1;
-    await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs + attempt * 250, 12000)));
+    await sleepAbortable(Math.min(intervalMs + attempt * 250, 12000), signal);
   }
 }
 
-async function downloadImage(url, destination) {
+async function downloadImage(url, destination, signal = null) {
   const response = await fetch(url, {
     headers: {
       "User-Agent": "AgInTiFlow/1.0",
     },
+    signal,
   });
   if (!response.ok) throw new Error(`Image download failed with HTTP ${response.status}.`);
   const buffer = Buffer.from(await response.arrayBuffer());
@@ -268,7 +305,7 @@ function veniceBaseUrl(value = "") {
     .replace(/\/+$/, "");
 }
 
-async function generateVeniceImages({ prompt, args, target, outputStem, manifest, manifestPath }) {
+async function generateVeniceImages({ prompt, args, target, outputStem, manifest, manifestPath, signal = null }) {
   const apiKey = veniceKey();
   if (!apiKey) {
     throw new Error("Missing VENICE_API_KEY. Run `aginti login venice` or `aginti keys set venice --stdin`.");
@@ -295,6 +332,7 @@ async function generateVeniceImages({ prompt, args, target, outputStem, manifest
   const resultPayload = await requestJson(`${base}/image/generate`, payload, apiKey, {
     timeoutMs: Number(args.requestTimeoutMs) || 300000,
     retries: 2,
+    signal,
   });
   await writeJson(path.join(target.absolutePath, "venice_result_response.json"), {
     id: resultPayload.id || "",
@@ -419,7 +457,7 @@ export async function generateImage(args = {}, config = {}) {
   }
 
   if (provider === "venice") {
-    return generateVeniceImages({ prompt, args, target, outputStem, manifest, manifestPath });
+    return generateVeniceImages({ prompt, args, target, outputStem, manifest, manifestPath, signal: config.abortSignal });
   }
 
   const apiKey = grsaiKey();
@@ -431,6 +469,7 @@ export async function generateImage(args = {}, config = {}) {
   const submitPayload = await requestJson(submitUrl, payload, apiKey, {
     timeoutMs: Number(args.requestTimeoutMs) || 300000,
     retries: 2,
+    signal: config.abortSignal,
   });
   await writeJson(path.join(target.absolutePath, "submit_response.json"), submitPayload);
   const taskId = submitPayload?.data?.id || submitPayload?.id;
@@ -449,6 +488,7 @@ export async function generateImage(args = {}, config = {}) {
     intervalMs: Number(args.pollIntervalMs) || 5000,
     timeoutMs: Number(args.pollTimeoutMs) || 900000,
     requestTimeoutMs: Number(args.requestTimeoutMs) || 300000,
+    signal: config.abortSignal,
   });
 
   const status = resultPayload.status || resultPayload?.data?.status;
@@ -468,7 +508,7 @@ export async function generateImage(args = {}, config = {}) {
     const suffix = path.extname(parsed.pathname) || ".png";
     const filename = urls.length === 1 ? `${outputStem}${suffix}` : `${outputStem}_${String(index + 1).padStart(2, "0")}${suffix}`;
     const absolutePath = path.join(target.absolutePath, filename);
-    const info = await downloadImage(urls[index], absolutePath);
+    const info = await downloadImage(urls[index], absolutePath, config.abortSignal);
     const relativePath = path.posix.join(target.relativePath, filename);
     imagePaths.push(relativePath);
     downloads.push({ path: relativePath, ...info });

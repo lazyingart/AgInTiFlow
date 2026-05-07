@@ -1661,9 +1661,9 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         break;
       case "wait":
         if (browserState.page) {
-          await browserState.page.waitForTimeout(Number.isFinite(args.ms) ? Number(args.ms) : 1000);
+          await abortable(browserState.page.waitForTimeout(Number.isFinite(args.ms) ? Number(args.ms) : 1000), config.abortSignal);
         } else {
-          await new Promise((resolve) => setTimeout(resolve, Number.isFinite(args.ms) ? Number(args.ms) : 1000));
+          await abortable(new Promise((resolve) => setTimeout(resolve, Number.isFinite(args.ms) ? Number(args.ms) : 1000)), config.abortSignal);
         }
         break;
       case "inspect_project":
@@ -1749,14 +1749,14 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         return result;
       }
       case "tmux_list_sessions": {
-        const result = await listTmuxSessions(args);
+        const result = await listTmuxSessions(args, config);
         const eventResult = sanitizeToolResult(result);
         await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
         observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
         return result;
       }
       case "tmux_capture_pane": {
-        const result = await captureTmuxPane(args);
+        const result = await captureTmuxPane(args, config);
         const eventResult = sanitizeToolResult(result);
         await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
         observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);

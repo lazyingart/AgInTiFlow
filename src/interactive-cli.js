@@ -210,6 +210,10 @@ export class ComposerHistory {
 
 const promptHistory = new ComposerHistory();
 let activeRunInput = null;
+let activeRunController = null;
+let activeRunExitAfterStop = false;
+let activeRunAbortSource = "";
+let activeRunForceExitTimer = null;
 let cliLanguage = resolveLanguage();
 
 function setCliLanguage(language = "") {
@@ -228,6 +232,24 @@ function color(value, ...codes) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function interruptForceExitMs() {
+  const value = Number(process.env.AGINTI_INTERRUPT_FORCE_EXIT_MS || 8000);
+  return Number.isFinite(value) && value > 0 ? value : 8000;
+}
+
+function restoreTerminalForExit() {
+  try {
+    if (typeof input.setRawMode === "function" && input.isRaw) input.setRawMode(false);
+  } catch {
+    // Terminal may already be closed.
+  }
+  try {
+    output.write(ansi.cursorShow);
+  } catch {
+    // Ignore closed stdout.
+  }
 }
 
 const ROLE_LABEL_WIDTH = "aginti".length;
@@ -1173,16 +1195,83 @@ function removeAt(buffer, cursor) {
   };
 }
 
-function createAbortError(message = "Aborted with Ctrl+C") {
+function createAbortError(message = "Aborted with Ctrl+C", options = {}) {
   const error = new Error(message);
   error.code = "ABORT_ERR";
   error.name = "AbortError";
+  error.source = options.source || "";
+  error.exitSession = Boolean(options.exitSession);
   return error;
 }
 
 export function classifyEscapeAction({ active = false, pendingAsap = [] } = {}) {
   if (!active) return "noop";
-  return Array.isArray(pendingAsap) && pendingAsap.length > 0 ? "wait-for-asap" : "abort";
+  return "abort";
+}
+
+function scheduleRunForceExit(reason = "interrupt", forceExitMs = interruptForceExitMs()) {
+  if (activeRunForceExitTimer || !Number.isFinite(forceExitMs) || forceExitMs <= 0) return;
+  activeRunForceExitTimer = setTimeout(() => {
+    restoreTerminalForExit();
+    printSystemLine(`status=force_exit reason=${reason}`);
+    process.exit(130);
+  }, forceExitMs);
+  activeRunForceExitTimer.unref?.();
+}
+
+function clearRunForceExit() {
+  if (!activeRunForceExitTimer) return;
+  clearTimeout(activeRunForceExitTimer);
+  activeRunForceExitTimer = null;
+}
+
+function requestActiveRunStop({ source = "escape", exitSession = false, forceExitMs = interruptForceExitMs() } = {}) {
+  if (!activeRunController) return false;
+  activeRunExitAfterStop = activeRunExitAfterStop || Boolean(exitSession);
+  activeRunAbortSource = activeRunAbortSource || source;
+  const reason = source === "ctrl-c" ? "ctrl-c" : source === "sigterm" ? "sigterm" : "escape";
+  const message =
+    exitSession || source === "ctrl-c"
+      ? "Interrupted by ctrl-c; stopping the session."
+      : `Interrupted by ${reason}; stopping the active run.`;
+  if (!activeRunController.signal.aborted) {
+    printStatusEvent({ status: "stopping" }, "interrupt", `${reason}; hard stop in ${Math.ceil(forceExitMs / 1000)}s`);
+    activeRunController.abort(createAbortError(message, { source, exitSession }));
+  } else if (exitSession) {
+    scheduleRunForceExit("second-interrupt", 100);
+    return true;
+  }
+  scheduleRunForceExit(reason, forceExitMs);
+  return true;
+}
+
+function clearActiveRunControl(controller) {
+  if (activeRunController !== controller) return;
+  activeRunController = null;
+  activeRunAbortSource = "";
+  activeRunExitAfterStop = false;
+  clearRunForceExit();
+}
+
+function installProcessInterruptHandlers() {
+  const onSigint = () => {
+    if (requestActiveRunStop({ source: "ctrl-c", exitSession: true, forceExitMs: interruptForceExitMs() })) return;
+    restoreTerminalForExit();
+    printSystemLine("status=exit reason=ctrl-c");
+    process.exit(130);
+  };
+  const onSigterm = () => {
+    if (requestActiveRunStop({ source: "sigterm", exitSession: true, forceExitMs: 1000 })) return;
+    restoreTerminalForExit();
+    printSystemLine("status=exit reason=sigterm");
+    process.exit(143);
+  };
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
+  return () => {
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+  };
 }
 
 export function activeRunSlashCommandAction(value = "") {
@@ -1307,7 +1396,7 @@ function readTtyPrompt(options = {}) {
       if (key.ctrl && key.name === "c") {
         clearPromptPanel();
         cleanup();
-        reject(createAbortError());
+        reject(createAbortError("Interrupted by ctrl-c.", { source: "ctrl-c", exitSession: true }));
         return;
       }
       if ((key.ctrl && key.name === "j") || key.sequence === "\n") {
@@ -1679,19 +1768,13 @@ class LiveRunInput {
   handleKey(str = "", key = {}) {
     if (key.ctrl && key.name === "c") {
       this.setStatus("stopping · ctrl-c");
-      this.controller.abort(createAbortError("Interrupted by ctrl-c."));
+      requestActiveRunStop({ source: "ctrl-c", exitSession: true });
       return;
     }
     if (key.name === "escape") {
       const action = classifyEscapeAction({ active: true, pendingAsap: this.pendingAsap });
-      if (action === "wait-for-asap") {
-        const count = this.pendingAsap.length;
-        this.setStatus(`running · waiting to apply ${count} asap pipe message${count === 1 ? "" : "s"}`);
-        this.redraw();
-        return;
-      }
       this.setStatus("stopping · escape");
-      this.controller.abort(createAbortError("Interrupted by escape."));
+      if (action === "abort") requestActiveRunStop({ source: "escape", exitSession: false });
       return;
     }
     if (key.meta && key.name === "up") {
@@ -2003,7 +2086,7 @@ function attachRunInterrupts(controller) {
     if (controller.signal.aborted) return;
     const reason = isEscape ? "escape" : "ctrl-c";
     printSystemLine(`status=stopping reason=${reason}`);
-    controller.abort(createAbortError(`Interrupted by ${reason}.`));
+    requestActiveRunStop({ source: reason, exitSession: isCtrlC });
   };
   input.on("keypress", handler);
   return () => {
@@ -3599,6 +3682,10 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
     projectSessionsDir: config.projectSessionsDir,
   });
   const liveInput = new LiveRunInput({ state, store, controller });
+  activeRunController = controller;
+  activeRunExitAfterStop = false;
+  activeRunAbortSource = "";
+  clearRunForceExit();
   const liveStarted = liveInput.start();
   const detachInterrupts = liveStarted ? () => {} : attachRunInterrupts(controller);
   if (liveStarted) {
@@ -3685,11 +3772,15 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
   } finally {
     detachInterrupts();
     queuedAfterFinish = await liveInput.stop();
+    clearRunForceExit();
   }
   if (runError) {
     state.status = isAbortError(runError) ? "stopped" : "failed";
     state.activeGoal = "";
     printSystemLine(`status=${state.status} session=${state.sessionId}`);
+    const exitSession = Boolean(runError.exitSession || activeRunExitAfterStop);
+    clearActiveRunControl(controller);
+    if (isAbortError(runError) && !exitSession) return queuedAfterFinish;
     throw runError;
   }
   state.sessionId = result.sessionId || state.sessionId;
@@ -3697,9 +3788,16 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
   state.activeGoal = "";
   printSystemLine(`status=${state.status} session=${state.sessionId}`);
   if (result.stopped && result.reason === "user_interrupt") {
-    await printResumeHint(state);
+    const exitSession = activeRunExitAfterStop;
+    const abortSource = activeRunAbortSource || "ctrl-c";
+    clearActiveRunControl(controller);
+    if (exitSession) {
+      throw createAbortError("Session stopped by ctrl-c.", { source: abortSource, exitSession: true });
+    }
+    printAgentMessage("Active run stopped. Session saved; enter a new prompt or use /status.");
     return [];
   }
+  clearActiveRunControl(controller);
   if (!result.stopped && latestPermissionAdvice) {
     const approvalQueued = await maybeContinueAfterPermissionApproval(latestPermissionAdvice, state, packageDir, {
       approvalDepth,
@@ -3712,6 +3810,7 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
 
 export async function startInteractiveCli(args = {}, { packageDir, packageVersion } = {}) {
   const state = createState(args);
+  const detachProcessInterrupts = installProcessInterruptHandlers();
   setCliLanguage(state.language);
   const rl =
     input.isTTY && output.isTTY
@@ -3738,6 +3837,7 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
       } catch (error) {
         if (error?.code === "ERR_USE_AFTER_CLOSE") break;
         if (isAbortError(error)) {
+          if (error.exitSession) process.exitCode = 130;
           await printResumeHint(state);
           break;
         }
@@ -3767,6 +3867,7 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
         }
       } catch (error) {
         if (isAbortError(error)) {
+          if (error.exitSession) process.exitCode = 130;
           await printResumeHint(state);
           break;
         }
@@ -3774,6 +3875,8 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
       }
     }
   } finally {
+    detachProcessInterrupts();
     rl?.close();
+    restoreTerminalForExit();
   }
 }

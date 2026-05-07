@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -108,6 +108,88 @@ function runCli(args, inputText) {
 
     child.stdin.end(inputText);
   });
+}
+
+function shellQuote(value = "") {
+  return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function tmux(args, options = {}) {
+  return execFileSync("tmux", args, {
+    encoding: "utf8",
+    timeout: options.timeout || 12000,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+function tmuxCapture(session) {
+  try {
+    return tmux(["capture-pane", "-t", session, "-p", "-S", "-200"], { timeout: 5000 });
+  } catch {
+    return "";
+  }
+}
+
+async function waitForTmuxText(session, pattern, timeoutMs = 12000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const pane = tmuxCapture(session);
+    if (pattern.test(pane)) return pane;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return tmuxCapture(session);
+}
+
+async function runTmuxInterruptSmoke({ key, expected }) {
+  const session = `aginti-interrupt-${process.pid}-${key.toLowerCase().replace(/[^a-z0-9]+/g, "")}`;
+  const command = [
+    "env",
+    `AGINTIFLOW_HOME=${shellQuote(agintiflowHome)}`,
+    "AGINTIFLOW_RUNTIME_DIR=",
+    "AGINTI_LANGUAGE=en",
+    "AGINTI_INTERRUPT_FORCE_EXIT_MS=2500",
+    shellQuote(process.execPath),
+    shellQuote(binPath),
+    "chat",
+    "--provider",
+    "mock",
+    "--routing",
+    "manual",
+    "--profile",
+    "code",
+    "--allow-shell",
+    "-s",
+    "normal",
+  ].join(" ");
+  const shellCommand = `cd ${shellQuote(tempRoot)} && ${command}`;
+  try {
+    tmux(["kill-session", "-t", session], { timeout: 2000 });
+  } catch {
+    // Session does not exist.
+  }
+  try {
+    tmux(["new-session", "-d", "-s", session, "bash", "-lc", `${shellCommand}; printf '\\nEXIT:%s\\n' "$?"; sleep 3`]);
+    let pane = await waitForTmuxText(session, /user>/, 10000);
+    if (!/user>/.test(pane)) throw new Error(`interrupt smoke did not reach prompt before ${key}\n${pane}`);
+    tmux(["send-keys", "-t", session, "-l", "sleep interruption smoke"]);
+    tmux(["send-keys", "-t", session, "Enter"]);
+    pane = await waitForTmuxText(session, /run_command|model_wait|Docker:/, 12000);
+    if (!/run_command|model_wait|Docker:/.test(pane)) throw new Error(`interrupt smoke did not start a run before ${key}\n${pane}`);
+    tmux(["send-keys", "-t", session, key]);
+    pane = await waitForTmuxText(session, expected, 10000);
+    if (!expected.test(pane)) throw new Error(`interrupt smoke did not observe ${expected} after ${key}\n${pane}`);
+    if (key === "Escape" && !/EXIT:/.test(pane)) {
+      tmux(["send-keys", "-t", session, "-l", "/exit"]);
+      tmux(["send-keys", "-t", session, "Enter"]);
+      await waitForTmuxText(session, /EXIT:0/, 8000);
+    }
+  } finally {
+    try {
+      tmux(["kill-session", "-t", session], { timeout: 2000 });
+    } catch {
+      // Session may already have exited.
+    }
+  }
 }
 
 try {
@@ -363,8 +445,8 @@ try {
   if (classifyEscapeAction({ active: false }) !== "noop") {
     throw new Error("idle Esc should not redraw or clear the prompt");
   }
-  if (classifyEscapeAction({ active: true, pendingAsap: [{ content: "apply now" }] }) !== "wait-for-asap") {
-    throw new Error("active Esc should wait when ASAP pipe messages are pending");
+  if (classifyEscapeAction({ active: true, pendingAsap: [{ content: "apply now" }] }) !== "abort") {
+    throw new Error("active Esc should always abort, even when ASAP pipe messages are pending");
   }
   if (classifyEscapeAction({ active: true, pendingAsap: [] }) !== "abort") {
     throw new Error("active Esc should abort when no ASAP pipe messages are pending");
@@ -664,6 +746,9 @@ try {
     throw new Error("resume history should render full saved messages instead of compact previews");
   }
 
+  await runTmuxInterruptSmoke({ key: "Escape", expected: /Active run stopped|Session saved/ });
+  await runTmuxInterruptSmoke({ key: "C-c", expected: /EXIT:130|Session stopped by ctrl-c|Interrupted\. Session saved/ });
+
   console.log(
     JSON.stringify(
       {
@@ -702,6 +787,8 @@ try {
           "interactive-chat",
           "mock-file-write",
           "run-status",
+          "tmux-escape-active-run-stop",
+          "tmux-ctrl-c-session-stop",
           "resume-latest",
           "resume-history-metadata",
           "resume-history-prompt-labels",
