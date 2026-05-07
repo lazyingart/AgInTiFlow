@@ -20,7 +20,7 @@
 
 **실제 문제를 위한 저비용, 프로젝트 인식 에이전트.**
 
-Web 또는 CLI에서 같은 에이전트 작업공간을 사용하며 DeepSeek/Venice/OpenAI 라우팅, 보이는 도구 호출, 영구 세션, scouts, SCS 감독, AAPS 워크플로, 보호된 로컬 실행을 제공합니다.
+AgInTiFlow는 hybrid wet-dry R&D, hardware-aware intelligence, software automation, industrial workflow를 위한 project-aware agent workspace입니다. 실험 계획부터 데이터 분석까지, 하드웨어 제어부터 production script까지, microscopy, drone, robot부터 report까지, SCS supervision, AAPS workflow, guarded execution, durable evidence와 함께 API, Web, CLI로 에이전트가 작업하게 합니다.
 
 짧게 말하면, 프로젝트 안에서 `aginti`를 실행하고 작업을 맡긴 뒤 계획과 모든 도구 호출을 확인하며, 나중에 다시 이어서 실행하고 결과물을 작업공간에 남길 수 있습니다.
 

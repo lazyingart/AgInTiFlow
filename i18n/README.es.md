@@ -20,7 +20,7 @@
 
 **Agentes de bajo costo y conscientes del proyecto para problemas reales.**
 
-Usa el mismo workspace de agente desde Web o CLI, con routing DeepSeek/Venice/OpenAI, llamadas de herramientas visibles, sesiones durables, scouts, supervisión SCS, workflows AAPS y ejecución local protegida.
+AgInTiFlow es un workspace de agentes project-aware para I+D híbrida wet-dry, inteligencia hardware-aware, automatización de software y workflows industriales. Desde planificación de laboratorio hasta análisis de datos, desde control de hardware hasta scripts de producción, y desde microscopía, drones y robots hasta informes, ayuda a los agentes a trabajar mediante API, Web o CLI con supervisión SCS, workflows AAPS, ejecución protegida y evidencia duradera.
 
 La idea breve: ejecuta `aginti` dentro de un proyecto, dale una tarea, revisa el plan, ve cada llamada de herramienta, reanuda más tarde y conserva las salidas dentro de tu workspace.
 

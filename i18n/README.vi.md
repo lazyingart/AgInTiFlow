@@ -20,7 +20,7 @@
 
 **Agent chi phí thấp, hiểu dự án, cho các vấn đề thực tế.**
 
-Dùng cùng một workspace agent từ Web hoặc CLI, với routing DeepSeek/Venice/OpenAI, tool call nhìn thấy được, session bền vững, scouts, giám sát SCS, workflow AAPS và thực thi cục bộ có bảo vệ.
+AgInTiFlow là một project-aware agent workspace cho hybrid wet-dry R&D, hardware-aware intelligence, software automation và industrial workflows. Từ lập kế hoạch thí nghiệm đến phân tích dữ liệu, từ điều khiển phần cứng đến production scripts, và từ microscopy, drones, robots đến reports, nó giúp agent làm việc qua API, Web hoặc CLI với SCS supervision, AAPS workflows, guarded execution và durable evidence.
 
 Nói ngắn gọn: chạy `aginti` trong một dự án, giao nhiệm vụ, xem kế hoạch, kiểm tra từng tool call, tiếp tục lại sau, và giữ kết quả trong workspace.
 
