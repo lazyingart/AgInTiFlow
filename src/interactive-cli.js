@@ -294,7 +294,23 @@ function promptViewportRows(height = terminalHeight()) {
 }
 
 function stripAnsi(value) {
-  return String(value || "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+  return String(value || "")
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
+function terminalHyperlink(url = "", text = url) {
+  if (!useColor || process.env.AGINTIFLOW_NO_HYPERLINK === "1") return String(text || "");
+  const safeUrl = String(url || "").replace(/[\x00-\x1f\x7f]/g, "");
+  if (!safeUrl) return String(text || "");
+  return `\x1b]8;;${safeUrl}\x07${text}\x1b]8;;\x07`;
+}
+
+function linkifyTerminalUrl(line = "", url = "") {
+  const visibleLine = String(line || "");
+  const visibleUrl = String(url || "");
+  if (!visibleLine || !visibleUrl || !visibleLine.includes(visibleUrl)) return visibleLine;
+  return visibleLine.replace(visibleUrl, terminalHyperlink(visibleUrl, visibleUrl));
 }
 
 function charCellWidth(char = "") {
@@ -806,7 +822,9 @@ export function buildLaunchHeaderLines({
     row(centerLine(subtitle, contentWidth), ansi.dim),
     row(centerLine(credit, contentWidth), ansi.dim),
     tagline ? mid : "",
-    tagline ? row(centerLine(compactLine(tagline, contentWidth), contentWidth), webAppUrl ? ansi.cyan : ansi.yellow) : "",
+    tagline
+      ? row(centerLine(linkifyTerminalUrl(compactLine(tagline, contentWidth), webAppUrl), contentWidth), webAppUrl ? ansi.cyan : ansi.yellow)
+      : "",
     bottom,
   ].filter(Boolean);
   const indent = " ".repeat(Math.max(Math.floor((terminalColumns - Math.max(...boxLines.map((line) => visualLength(line)))) / 2), 0));
