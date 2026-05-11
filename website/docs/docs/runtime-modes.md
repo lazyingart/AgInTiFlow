@@ -36,6 +36,8 @@ Package install policy can be:
 
 Docker mode can allow practical setup commands such as `pip install`, `npm install`, `apt`, `curl`, and `wget` inside the container. Host mode remains more conservative.
 
+Use `aginti docker status` to inspect Docker readiness and `aginti docker setup` to build or verify the companion sandbox image. The setup command checks Node, npm, Python, matplotlib/numpy, `latexmk`, `pdflatex`, git, and ripgrep inside Docker. If host Docker is missing, AgInTiFlow prints OS-specific guidance. Host Docker installation is explicit only, for example `aginti docker install-host --yes` on supported Ubuntu hosts; npm postinstall does not silently change host services.
+
 ## Permission Recipes
 
 Use the shortcut layer first. The long flags still exist for automation, but these three modes are the normal user interface.

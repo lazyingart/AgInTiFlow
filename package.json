@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.125",
+  "version": "0.20.126",
   "type": "module",
   "description": "AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-aware intelligence, software automation, and industrial workflows.",
   "license": "Apache-2.0",
@@ -57,6 +57,7 @@
     "scripts/smoke-canvas-artifacts.js",
     "scripts/smoke-cli-chat.js",
     "scripts/smoke-coding-tools.js",
+    "scripts/smoke-docker-command.js",
     "scripts/smoke-dynamic-step-budget.js",
     "scripts/smoke-capabilities.js",
     "scripts/smoke-auto-update.js",
@@ -94,6 +95,7 @@
     "smoke:auth": "node scripts/smoke-auth.js",
     "smoke:canvas-artifacts": "node scripts/smoke-canvas-artifacts.js",
     "smoke:cli-chat": "node scripts/smoke-cli-chat.js",
+    "smoke:docker-command": "node scripts/smoke-docker-command.js",
     "smoke:skills": "node scripts/smoke-skills.js",
     "smoke:skillmesh": "node scripts/smoke-skillmesh.js",
     "smoke:toolchain-docker": "node scripts/smoke-toolchain-docker.js",
@@ -112,7 +114,7 @@
     "postinstall": "node scripts/postinstall-webapp.js",
     "supervision:seed": "node scripts/seed-supervised-homework.js",
     "storage:migrate": "node bin/aginti-cli.js storage migrate",
-    "test": "npm run check && npm run smoke:autoupdate && npm run smoke:web-api && npm run smoke:web-autostart && npm run smoke:webapp-command && npm run smoke:web-port-fallback && npm run smoke:coding-tools && npm run smoke:dynamic-step-budget && npm run smoke:aaps-adapter && npm run smoke:auxiliary-tools && npm run smoke:perception-research && npm run smoke:auth && npm run smoke:canvas-artifacts && npm run smoke:capabilities && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:permission-modes && npm run smoke:skills && npm run smoke:skillmesh && npm run smoke:tmux-tools && npm run smoke:cli-chat && npm run smoke:inbox",
+    "test": "npm run check && npm run smoke:autoupdate && npm run smoke:web-api && npm run smoke:web-autostart && npm run smoke:webapp-command && npm run smoke:web-port-fallback && npm run smoke:docker-command && npm run smoke:coding-tools && npm run smoke:dynamic-step-budget && npm run smoke:aaps-adapter && npm run smoke:auxiliary-tools && npm run smoke:perception-research && npm run smoke:auth && npm run smoke:canvas-artifacts && npm run smoke:capabilities && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:permission-modes && npm run smoke:skills && npm run smoke:skillmesh && npm run smoke:tmux-tools && npm run smoke:cli-chat && npm run smoke:inbox",
     "pack:dry-run": "npm pack --dry-run",
     "smoke:capabilities": "node scripts/smoke-capabilities.js"
   },

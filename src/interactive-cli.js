@@ -13,6 +13,8 @@ import {
   sessionStoreOptions,
 } from "./project.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
+import { getDockerSandboxStatus, runDockerPreflight } from "./docker-sandbox.js";
+import { formatDockerSetupText, summarizeDockerSetup } from "./docker-setup.js";
 import { defaultMaxStepsForProfile, normalizeTaskProfile } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 import { normalizeAuthProvider, runAuthWizard, shouldPromptForDeepSeek } from "./auth-onboarding.js";
@@ -889,8 +891,7 @@ function printHelp() {
       `  ${command("/routing <mode>", "Set routing: smart, fast, complex, manual.", "helpRouting")}`,
       `  ${command("/provider [name]", "Open provider selector, or set deepseek/openai/qwen/venice/mock.", "helpProvider")}`,
       `  ${command("/safe | /normal | /danger", "Switch permission posture for this session.", "helpPermissionMode")}`,
-      `  ${command("/docker on", "Use docker-workspace with approved package installs.", "helpDockerOn")}`,
-      `  ${command("/docker off", "Use host shell policy.", "helpDockerOff")}`,
+      `  ${command("/docker [status|setup|on|off]", "Inspect or prepare the Docker sandbox/toolchain.", "helpDocker")}`,
       `  ${command("/latex on", "Use the LaTeX/PDF profile in Docker with a larger step budget.", "helpLatex")}`,
       `  ${command("/installs block|prompt|allow", "Set package install policy.", "helpInstalls")}`,
       `  ${command("/cwd <path>", "Change command workspace.", "helpCwd")}`,
@@ -3619,8 +3620,35 @@ async function handleCommand(line, state, packageDir) {
       state.sandboxMode = "host";
       state.packageInstallPolicy = "prompt";
       printSystemLine("docker=off sandbox=host installs=prompt");
+    } else if (value === "status" || value === "") {
+      const config = loadConfig(
+        {
+          ...state,
+          goal: "docker status",
+          commandCwd: state.commandCwd || process.cwd(),
+          sandboxMode: state.sandboxMode || "docker-workspace",
+          packageInstallPolicy: state.packageInstallPolicy || "allow",
+        },
+        { packageDir, baseDir: state.commandCwd || process.cwd() }
+      );
+      const status = await getDockerSandboxStatus(config);
+      printAgentMessage(formatDockerSetupText(summarizeDockerSetup({ status, packageDir })));
+    } else if (value === "setup" || value === "preflight" || value === "build" || value === "latex") {
+      const config = loadConfig(
+        {
+          ...state,
+          goal: "docker setup",
+          commandCwd: state.commandCwd || process.cwd(),
+          sandboxMode: "docker-workspace",
+          packageInstallPolicy: "allow",
+        },
+        { packageDir, baseDir: state.commandCwd || process.cwd() }
+      );
+      printSystemLine("docker=setup starting");
+      const result = await runDockerPreflight(config, { buildImage: true });
+      printAgentMessage(formatDockerSetupText(summarizeDockerSetup({ status: result.status, preflight: result, packageDir })));
     } else {
-      printAgentMessage("Usage: /docker on OR /docker off");
+      printAgentMessage("Usage: /docker status OR /docker setup OR /docker on OR /docker off");
     }
     return true;
   }

@@ -114,6 +114,16 @@ aginti web --port 3210
 # opens http://127.0.0.1:3210, or the next available port
 ```
 
+Check or prepare the Docker/LaTeX sandbox explicitly:
+
+```bash
+aginti docker status
+aginti docker setup
+aginti docker install-host --yes   # Ubuntu host only; explicit opt-in
+```
+
+AgInTiFlow does not silently install Docker during npm postinstall. Docker changes host services and permissions, so host installation is explicit. Normal mode can install packages and TeX/Python dependencies inside the Docker sandbox. Danger mode is trusted host mode for tasks that really need host package managers or system services.
+
 Run without live model credentials for smoke tests:
 
 ```bash

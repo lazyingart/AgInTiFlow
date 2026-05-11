@@ -43,6 +43,15 @@ Docker package installs are safe when they match the sandbox contract.
 - OS package installs such as `apt-get install htop` affect only the current short-lived command container unless the Docker image is rebuilt.
 - To make OS packages portable, add them to `docker/sandbox.Dockerfile` and rebuild with `scripts/setup-agent-toolchain-docker.sh`.
 
+Use the built-in Docker setup command for the normal sandbox/toolchain path:
+
+```bash
+aginti docker status
+aginti docker setup
+```
+
+`aginti docker setup` builds or verifies the companion sandbox image and checks Node, npm, Python, matplotlib/numpy, `latexmk`, `pdflatex`, git, and ripgrep inside Docker. If host Docker itself is missing, AgInTiFlow prints platform-specific install guidance. `aginti docker install-host --yes` is only an explicit opt-in helper for supported Ubuntu hosts; npm postinstall does not silently install Docker or mutate host services.
+
 This is why a task can safely install Python packages in Docker, but cannot keep an interactive tmux server alive inside a one-shot Docker command.
 
 ## Permission Contract

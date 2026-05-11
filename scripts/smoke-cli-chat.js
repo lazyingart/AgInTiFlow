@@ -219,6 +219,7 @@ try {
     "helpScouts",
     "helpRouting",
     "helpProvider",
+    "helpDocker",
     "helpDockerOn",
     "helpDockerOff",
     "helpLatex",

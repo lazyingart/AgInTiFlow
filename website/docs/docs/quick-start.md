@@ -97,6 +97,13 @@ Mock mode exercises the same run/session/tool path without calling DeepSeek or O
 
 The interactive CLI defaults to Docker workspace mode with package installs allowed inside the container. This is useful for Python, Node, plotting, and LaTeX tasks while keeping host installs separate.
 
+Prepare or check the sandbox explicitly:
+
+```bash
+aginti docker status
+aginti docker setup
+```
+
 Switch host mode only when you intend to operate directly on the host:
 
 ```text
