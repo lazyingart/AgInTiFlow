@@ -2061,6 +2061,12 @@ function resetArtifactViewer() {
   artifactViewerBodyEl.innerHTML = `<p class="subtle">${t("artifactViewerEmpty")}</p>`;
 }
 
+function artifactRawUrl(artifactId, { download = false } = {}) {
+  if (!currentSessionId || !artifactId) return "";
+  const base = `/api/sessions/${encodeURIComponent(currentSessionId)}/artifacts/${encodeURIComponent(artifactId)}/raw`;
+  return download ? `${base}?download=1` : base;
+}
+
 function renderArtifactShell() {
   renderArtifactBadge();
   renderArtifactList();
@@ -2075,19 +2081,36 @@ function renderArtifactContent(content) {
   artifactViewerTitleEl.textContent = content.title || item?.title || t("artifactViewerEmptyTitle");
   artifactViewerMetaEl.textContent = [content.path || item?.path, item ? artifactLabel(item) : ""].filter(Boolean).join(" · ");
   artifactViewerKindEl.textContent = content.kind || item?.kind || "";
+  const streamedUrl = content.url || (content.id ? artifactRawUrl(content.id) : "");
+  const downloadUrl = content.downloadUrl || (content.id ? artifactRawUrl(content.id, { download: true }) : "");
+  const renderUrl = content.dataUrl || streamedUrl;
 
-  if (content.dataUrl && (content.kind === "pdf" || content.mime === "application/pdf")) {
+  if (renderUrl && (content.kind === "pdf" || content.mime === "application/pdf")) {
     artifactViewerBodyEl.innerHTML = `
-      <iframe class="artifact-pdf-frame" src="${content.dataUrl}" title="${escapeHtml(content.title || "Artifact PDF")}"></iframe>
+      <iframe class="artifact-pdf-frame" src="${renderUrl}" title="${escapeHtml(content.title || "Artifact PDF")}"></iframe>
     `;
     return;
   }
 
-  if (content.dataUrl) {
+  if (renderUrl && (content.kind === "image" || String(content.mime || "").startsWith("image/"))) {
     artifactViewerBodyEl.innerHTML = `
       <figure class="artifact-image-frame">
-        <img class="artifact-preview-image" src="${content.dataUrl}" alt="${escapeHtml(content.title || "Artifact image")}" />
+        <img class="artifact-preview-image" src="${renderUrl}" alt="${escapeHtml(content.title || "Artifact image")}" />
       </figure>
+    `;
+    return;
+  }
+
+  if ((content.tooLargeForInline || content.binary) && streamedUrl) {
+    artifactViewerBodyEl.innerHTML = `
+      <div class="artifact-large-file">
+        <strong>${escapeHtml(content.preview || "Artifact is available as a streamed file.")}</strong>
+        <p>${escapeHtml(content.path || item?.path || content.title || "Generated artifact")}</p>
+        <div class="artifact-file-actions">
+          <a class="secondary-button" href="${streamedUrl}" target="_blank" rel="noreferrer">Open preview</a>
+          <a class="secondary-button" href="${downloadUrl}" download="${escapeHtml(artifactDownloadName(item, content))}">Download</a>
+        </div>
+      </div>
     `;
     return;
   }
@@ -2152,6 +2175,21 @@ async function downloadArtifact(artifactId) {
     );
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || t("artifactDownloadFailed"));
+
+    if ((data.downloadUrl || data.url) && !data.dataUrl && typeof data.text !== "string") {
+      const link = document.createElement("a");
+      link.href = data.downloadUrl || artifactRawUrl(artifactId, { download: true }) || data.url;
+      link.download = artifactDownloadName(item, data);
+      document.body.append(link);
+      link.click();
+      link.remove();
+
+      markArtifactRead(artifactId);
+      renderArtifactBadge();
+      renderArtifactList();
+      artifactStatusEl.textContent = t("artifactDownloadReady");
+      return;
+    }
 
     const blob = data.dataUrl
       ? blobFromDataUrl(data.dataUrl)

@@ -1602,6 +1602,29 @@ button.danger {
   background: white;
 }
 
+.artifact-large-file {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  margin: 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.artifact-large-file p {
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.artifact-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .artifact-editor {
   min-height: 100%;
   height: 100%;

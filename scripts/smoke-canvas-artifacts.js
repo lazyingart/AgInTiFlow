@@ -1,7 +1,13 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { buildArtifacts, normalizeCanvasPayload, persistCanvasPayloadFile, readArtifactContent } from "../src/artifact-tunnel.js";
+import {
+  buildArtifacts,
+  normalizeCanvasPayload,
+  persistCanvasPayloadFile,
+  readArtifactContent,
+  resolveArtifactFile,
+} from "../src/artifact-tunnel.js";
 import { SessionStore } from "../src/session-store.js";
 
 async function main() {
@@ -53,6 +59,45 @@ async function main() {
   const content = await readArtifactContent(items[0], { store, config });
   if (!content.ok) throw new Error(content.error || "persisted artifact could not be read");
   if (!String(content.text || "").includes("Durable report")) throw new Error("persisted artifact content mismatch");
+
+  const largeImagePath = path.join(workspace, "large-preview.png");
+  const pngHeader = Buffer.from("89504e470d0a1a0a", "hex");
+  await fs.writeFile(largeImagePath, Buffer.concat([pngHeader, Buffer.alloc(4_200_000)]));
+  const largeNormalized = normalizeCanvasPayload(
+    {
+      title: "Large preview image",
+      kind: "image",
+      path: "large-preview.png",
+      selected: true,
+    },
+    config
+  );
+  if (!largeNormalized.ok) throw new Error(largeNormalized.reason || "large image canvas payload normalization failed");
+  const largePersisted = await persistCanvasPayloadFile(largeNormalized.payload, { config, store });
+  if (!largePersisted.ok) throw new Error(largePersisted.reason || "large image canvas artifact persistence failed");
+  if (!largePersisted.payload.artifactPersisted) throw new Error("large image was not persisted into session artifacts");
+
+  const largeEvents = [
+    {
+      timestamp: new Date().toISOString(),
+      type: "canvas.item",
+      data: {
+        ...largePersisted.payload,
+        commandCwd: workspace,
+      },
+    },
+  ];
+  const { items: largeItems } = buildArtifacts({ sessionId: store.sessionId, events: largeEvents, store });
+  const largeContent = await readArtifactContent(largeItems[0], { store, config });
+  if (!largeContent.ok) throw new Error(largeContent.error || "large artifact metadata could not be read");
+  if (largeContent.dataUrl) throw new Error("large artifact should not be inlined as a data URL");
+  if (!largeContent.url || !largeContent.downloadUrl || !largeContent.tooLargeForInline) {
+    throw new Error("large artifact did not expose streamed preview URLs");
+  }
+  const largeFile = await resolveArtifactFile(largeItems[0], { store, config });
+  if (!largeFile.ok || largeFile.size <= 4_000_000 || largeFile.mime !== "image/png") {
+    throw new Error("large artifact file resolver returned invalid metadata");
+  }
 
   const missing = await persistCanvasPayloadFile({ ...normalized.payload, path: "missing.png" }, { config, store });
   if (missing.ok) throw new Error("missing canvas path should fail persistence");

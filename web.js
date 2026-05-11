@@ -1,3 +1,4 @@
+import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import express from "express";
 import path from "node:path";
@@ -43,6 +44,7 @@ import {
   countUnreadArtifacts,
   findArtifact,
   readArtifactContent,
+  resolveArtifactFile,
   serializeArtifacts,
 } from "./src/artifact-tunnel.js";
 
@@ -73,6 +75,17 @@ function sessionStore(sessionId) {
 
 function isSafeSessionId(sessionId) {
   return /^[A-Za-z0-9._:-]+$/.test(String(sessionId || "")) && !String(sessionId || "").includes("..");
+}
+
+function safeDownloadFilename(value) {
+  const basename = path.basename(String(value || "artifact").replace(/\\/g, "/"));
+  return (
+    basename
+      .replace(/[\r\n"\\]+/g, "_")
+      .replace(/^\.+/, "")
+      .replace(/[^A-Za-z0-9._ -]+/g, "-")
+      .slice(0, 120) || "artifact"
+  );
 }
 
 function mapEventLogs(events) {
@@ -875,6 +888,39 @@ app.get("/api/sessions/:sessionId/artifacts/:artifactId", async (req, res) => {
     return;
   }
   res.json(content);
+});
+
+app.get("/api/sessions/:sessionId/artifacts/:artifactId/raw", async (req, res) => {
+  const bundle = await loadArtifactBundle(req.params.sessionId);
+  if (bundle.error) {
+    res.status(bundle.status || 500).json({ error: bundle.error });
+    return;
+  }
+
+  const artifact = findArtifact(bundle.items, req.params.artifactId);
+  const file = await resolveArtifactFile(artifact, bundle);
+  if (!file.ok) {
+    res.status(artifact ? 400 : 404).json({ error: file.error || "Artifact not found." });
+    return;
+  }
+
+  const filename = safeDownloadFilename(file.path || file.title || file.absolutePath);
+  const disposition = req.query.download === "1" ? "attachment" : "inline";
+  res.setHeader("Content-Type", file.mime || "application/octet-stream");
+  res.setHeader("Content-Length", String(file.size));
+  res.setHeader("Content-Disposition", `${disposition}; filename="${filename}"`);
+  res.setHeader("Cache-Control", "private, max-age=0, no-cache");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+
+  const stream = createReadStream(file.absolutePath);
+  stream.on("error", (error) => {
+    if (!res.headersSent) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+    res.destroy(error);
+  });
+  stream.pipe(res);
 });
 
 app.post("/api/sessions/:sessionId/artifacts/select", async (req, res) => {

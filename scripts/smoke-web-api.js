@@ -350,6 +350,37 @@ try {
     throw new Error("artifact content endpoint did not return renderable content");
   }
 
+  const largeSessionId = "large-artifact-smoke";
+  const largeStore = new SessionStore(paths.globalSessionsDir, largeSessionId, sessionStoreOptions(runtimeDir, largeSessionId));
+  await largeStore.ensure();
+  const largeCanvasDir = path.join(largeStore.artifactsDir, "canvas");
+  await fs.mkdir(largeCanvasDir, { recursive: true });
+  const largeImagePath = path.join(largeCanvasDir, "large-image.png");
+  await fs.writeFile(largeImagePath, Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.alloc(4_200_000)]));
+  await largeStore.appendEvent("canvas.item", {
+    artifactId: "large-image",
+    title: "Large streamed image",
+    kind: "image",
+    path: "large-image.png",
+    sessionFilePath: largeImagePath,
+    selected: true,
+  });
+  const largeArtifacts = await fetchJson(`/api/sessions/${encodeURIComponent(largeSessionId)}/artifacts`);
+  if (!largeArtifacts.items?.some((item) => item.id === "large-image")) {
+    throw new Error("large artifact endpoint did not list session artifact");
+  }
+  const largeContent = await fetchJson(`/api/sessions/${encodeURIComponent(largeSessionId)}/artifacts/large-image`);
+  if (!largeContent.tooLargeForInline || !largeContent.url || largeContent.dataUrl) {
+    throw new Error("large artifact metadata did not switch to streamed preview");
+  }
+  const rawResponse = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(largeSessionId)}/artifacts/large-image/raw`);
+  if (!rawResponse.ok) throw new Error(`large artifact raw endpoint failed: ${rawResponse.status}`);
+  if (!/^image\/png\b/i.test(rawResponse.headers.get("content-type") || "")) {
+    throw new Error("large artifact raw endpoint did not preserve image content type");
+  }
+  const rawBytes = await rawResponse.arrayBuffer();
+  if (rawBytes.byteLength <= 4_000_000) throw new Error("large artifact raw endpoint returned truncated content");
+
   const deleted = await fetchJson(`/api/sessions/${encodeURIComponent(runStart.sessionId)}`, {
     method: "DELETE",
   });
@@ -384,6 +415,7 @@ try {
           "/api/workspace/changes",
           "/api/sessions/:id/artifacts",
           "/api/sessions/:id/artifacts/:artifactId",
+          "/api/sessions/:id/artifacts/:artifactId/raw",
           "POST /api/sessions/:id/artifacts/select",
         ],
         provider: run.provider,

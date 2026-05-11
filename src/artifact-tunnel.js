@@ -60,6 +60,16 @@ function mimeForPath(filePath) {
   return IMAGE_MIME_BY_EXT.get(ext) || BINARY_RENDER_MIME_BY_EXT.get(ext) || "text/plain; charset=utf-8";
 }
 
+function isRenderableBinaryMime(mime) {
+  return String(mime || "").startsWith("image/") || mime === "application/pdf";
+}
+
+function artifactRawUrl(item, download = false) {
+  if (!item?.sessionId || !item?.id) return "";
+  const base = `/api/sessions/${encodeURIComponent(item.sessionId)}/artifacts/${encodeURIComponent(item.id)}/raw`;
+  return download ? `${base}?download=1` : base;
+}
+
 function safeCanvasFilename(artifactId, filePath) {
   const rawBase = path.basename(String(filePath || "artifact"));
   const safeBase = rawBase
@@ -285,6 +295,57 @@ export function findArtifact(items, artifactId) {
   return items.find((item) => item.id === artifactId) || null;
 }
 
+export async function resolveArtifactFile(item, { store, config } = {}) {
+  if (!item) {
+    return { ok: false, error: "Artifact not found." };
+  }
+
+  if (item.ref?.type === "session-file") {
+    if (!store?.sessionDir) return { ok: false, error: "Artifact session store is unavailable." };
+    const absolutePath = path.resolve(item.ref.path);
+    if (!isInside(store.sessionDir, absolutePath)) {
+      return { ok: false, error: "Artifact path is outside this session." };
+    }
+
+    const stat = await fs.stat(absolutePath).catch(() => null);
+    if (!stat?.isFile()) return { ok: false, error: "Artifact file is missing." };
+    const mime = mimeForPath(absolutePath);
+    return {
+      ok: true,
+      absolutePath,
+      size: stat.size,
+      mime,
+      kind: mime === "application/pdf" ? "pdf" : mime.startsWith("image/") ? "image" : item.kind,
+      title: item.title,
+      path: item.path || "",
+    };
+  }
+
+  if (item.ref?.type === "workspace-file") {
+    const itemConfig = item.ref.commandCwd ? { ...config, commandCwd: item.ref.commandCwd } : config;
+    const guard = checkWorkspaceToolUse("read_file", { path: item.ref.path }, itemConfig);
+    if (!guard.allowed) {
+      return { ok: false, error: guard.reason || "Workspace read blocked." };
+    }
+
+    const target = resolveWorkspacePath(itemConfig, item.ref.path);
+    const stat = await fs.stat(target.absolutePath).catch(() => null);
+    if (!stat?.isFile()) return { ok: false, error: "Workspace file is missing." };
+    const mime = mimeForPath(target.absolutePath);
+    return {
+      ok: true,
+      absolutePath: target.absolutePath,
+      size: stat.size,
+      mime,
+      kind: mime === "application/pdf" ? "pdf" : mime.startsWith("image/") ? "image" : item.kind,
+      title: item.title,
+      path: item.path || "",
+    };
+  }
+
+  return { ok: false, error: "Artifact has no readable file." };
+}
+
 export async function readArtifactContent(item, { store, config }) {
   if (!item) {
     return { ok: false, error: "Artifact not found." };
@@ -302,81 +363,55 @@ export async function readArtifactContent(item, { store, config }) {
     };
   }
 
-  if (item.ref?.type === "session-file") {
-    const absolutePath = path.resolve(item.ref.path);
-    if (!isInside(store.sessionDir, absolutePath)) {
-      return { ok: false, error: "Artifact path is outside this session." };
-    }
+  if (item.ref?.type === "session-file" || item.ref?.type === "workspace-file") {
+    const resolved = await resolveArtifactFile(item, { store, config });
+    if (!resolved.ok) return resolved;
 
-    const stat = await fs.stat(absolutePath).catch(() => null);
-    if (!stat?.isFile()) return { ok: false, error: "Artifact file is missing." };
-    const mime = mimeForPath(absolutePath);
-    const isBinaryRenderable = mime.startsWith("image/") || mime === "application/pdf";
+    const isBinaryRenderable = isRenderableBinaryMime(resolved.mime);
     const maxBytes = isBinaryRenderable ? MAX_ARTIFACT_IMAGE_BYTES : MAX_ARTIFACT_TEXT_BYTES;
-    if (stat.size > maxBytes) return { ok: false, error: "Artifact is too large to preview safely." };
-
-    const buffer = await fs.readFile(absolutePath);
-    if (isBinaryRenderable) {
-      return {
-        ok: true,
-        id: item.id,
-        kind: mime === "application/pdf" ? "pdf" : "image",
-        title: item.title,
-        path: item.path || "",
-        mime,
-        dataUrl: `data:${mime};base64,${buffer.toString("base64")}`,
-      };
-    }
-
-    if (buffer.includes(0)) return { ok: false, error: "Binary artifact cannot be rendered as text." };
-    return {
+    const url = artifactRawUrl(item);
+    const downloadUrl = artifactRawUrl(item, true);
+    const base = {
       ok: true,
       id: item.id,
-      kind: item.kind,
+      kind: resolved.kind,
       title: item.title,
       path: item.path || "",
-      mime,
-      text: redactSensitiveText(buffer.toString("utf8")),
+      mime: resolved.mime,
+      size: resolved.size,
+      url,
+      downloadUrl,
     };
-  }
 
-  if (item.ref?.type === "workspace-file") {
-    const itemConfig = item.ref.commandCwd ? { ...config, commandCwd: item.ref.commandCwd } : config;
-    const guard = checkWorkspaceToolUse("read_file", { path: item.ref.path }, itemConfig);
-    if (!guard.allowed) {
-      return { ok: false, error: guard.reason || "Workspace read blocked." };
-    }
-
-    const target = resolveWorkspacePath(itemConfig, item.ref.path);
-    const stat = await fs.stat(target.absolutePath).catch(() => null);
-    if (!stat?.isFile()) return { ok: false, error: "Workspace file is missing." };
-
-    const mime = mimeForPath(target.absolutePath);
-    const isBinaryRenderable = mime.startsWith("image/") || mime === "application/pdf";
-    const maxBytes = isBinaryRenderable ? MAX_ARTIFACT_IMAGE_BYTES : MAX_ARTIFACT_TEXT_BYTES;
-    if (stat.size > maxBytes) return { ok: false, error: "Workspace file is too large to preview safely." };
-
-    const buffer = await fs.readFile(target.absolutePath);
-    if (isBinaryRenderable) {
+    if (resolved.size > maxBytes) {
       return {
-        ok: true,
-        id: item.id,
-        kind: mime === "application/pdf" ? "pdf" : "image",
-        title: item.title,
-        path: item.path || "",
-        mime,
-        dataUrl: `data:${mime};base64,${buffer.toString("base64")}`,
+        ...base,
+        tooLargeForInline: true,
+        preview: isBinaryRenderable
+          ? "Large renderable artifact is available through the streamed artifact endpoint."
+          : "Large artifact is available through the streamed artifact endpoint.",
       };
     }
 
-    if (buffer.includes(0)) return { ok: false, error: "Binary workspace file cannot be rendered as text." };
+    const buffer = await fs.readFile(resolved.absolutePath);
+    if (isBinaryRenderable) {
+      return {
+        ...base,
+        dataUrl: `data:${resolved.mime};base64,${buffer.toString("base64")}`,
+      };
+    }
+
+    if (buffer.includes(0)) {
+      return {
+        ...base,
+        binary: true,
+        preview: "Binary artifact is available through the streamed artifact endpoint.",
+      };
+    }
+
     return {
-      ok: true,
-      id: item.id,
+      ...base,
       kind: item.kind,
-      title: item.title,
-      path: item.path || "",
-      mime,
       text: redactSensitiveText(buffer.toString("utf8")),
     };
   }
