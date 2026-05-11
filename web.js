@@ -1383,7 +1383,21 @@ app.post("/api/runs/:sessionId/stop", async (req, res) => {
 });
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, app: "agintiflow", port, url: `http://${host}:${port}` });
+  res.json({
+    ok: true,
+    app: "agintiflow",
+    version: packageJson.version,
+    pid: process.pid,
+    host,
+    port,
+    url: `http://${host}:${port}`,
+    runtimeDir: baseDir,
+    projectRoot: baseDir,
+    agintiflowHome: storagePaths.agintiflowHome,
+    sessionsDir,
+    projectSessionsDir,
+    packageDir,
+  });
 });
 
 await fs.mkdir(sessionsDir, { recursive: true });

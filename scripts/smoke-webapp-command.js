@@ -47,7 +47,8 @@ async function runCase({ port, env = {}, expectHeader, label }) {
     env: {
       ...process.env,
       AGINTIFLOW_NO_ANIMATION: "1",
-      AGINTIFLOW_HOME: path.join(runtimeDir, `.agintiflow-home-${label}`),
+      AGINTIFLOW_HOME: path.join(runtimeDir, `.ignored-cli-home-${label}`),
+      AGINTIFLOW_WEB_HOME: path.join(runtimeDir, `.agintiflow-web-home-${label}`),
       ...env,
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -64,9 +65,14 @@ async function runCase({ port, env = {}, expectHeader, label }) {
     await waitFor(() => output.stdout.includes(expectHeader), child, `${label} launch header`, output);
     child.stdin.write(`/webapp ${port}\n`);
     await waitFor(() => output.stdout.includes(`webapp=http://127.0.0.1:${port}`), child, `${label} /webapp command`, output);
+    child.stdin.write(`/webapp restart ${port}\n`);
+    await waitFor(() => output.stdout.includes(`webapp=http://127.0.0.1:${port} restarted`), child, `${label} /webapp restart command`, output);
     const health = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
     if (!health.ok || health.app !== "agintiflow" || Number(health.port) !== port) {
       throw new Error(`invalid /webapp health response for ${label}: ${JSON.stringify(health)}`);
+    }
+    if (path.resolve(health.agintiflowHome) !== path.resolve(path.join(runtimeDir, `.agintiflow-web-home-${label}`))) {
+      throw new Error(`webapp command inherited the wrong home for ${label}: ${JSON.stringify(health)}`);
     }
   } finally {
     child.kill("SIGTERM");

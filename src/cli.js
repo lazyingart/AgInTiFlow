@@ -95,11 +95,12 @@ function printUnknownCliOptions(options = []) {
 }
 
 async function maybeEnsureDefaultWebApp(args = {}, { commandCwd = process.cwd() } = {}) {
-  if (args.web) return { ok: false, url: "" };
+  if (args.web || args.webapp) return { ok: false, url: "" };
   try {
     return await ensureAgintiWebApp({
       packageDir,
       cwd: args.commandCwd || commandCwd || process.cwd(),
+      home: args.webHome || "",
       host: args.host || process.env.AGINTI_WEB_HOST || "127.0.0.1",
       preferredPort: args.port || process.env.AGINTI_WEB_PORT || 3210,
       language: args.language ? resolveLanguage(args.language) : "",
@@ -379,6 +380,9 @@ export function parseArgs(argv) {
     sandboxStatus: false,
     sandboxPreflight: false,
     web: false,
+    webapp: false,
+    webAction: "",
+    webHome: "",
     interactive: false,
     port: "",
     host: "",
@@ -399,6 +403,21 @@ export function parseArgs(argv) {
       parts.push(...argv.slice(i + 1));
       break;
     }
+    if ((arg === "web" || arg === "--web") && String(argv[i + 1] || "").toLowerCase() === "restart") {
+      result.webapp = true;
+      result.webAction = "restart";
+      i += 1;
+      continue;
+    }
+    if (arg === "webapp" || arg === "--webapp" || arg === "web-ui" || arg === "--web-ui") {
+      result.webapp = true;
+      const next = String(argv[i + 1] || "");
+      if (next && !next.startsWith("--")) {
+        result.webAction = next.toLowerCase();
+        i += 1;
+      }
+      continue;
+    }
     if (arg === "web" || arg === "--web") {
       result.web = true;
       continue;
@@ -414,6 +433,11 @@ export function parseArgs(argv) {
     }
     if (arg === "--host") {
       result.host = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--web-home") {
+      result.webHome = readOption(argv, i);
       i += 1;
       continue;
     }
@@ -1879,6 +1903,33 @@ export async function main(argv = process.argv.slice(2)) {
   const parsedArgs = parseArgs(commandArgv);
   const args = { ...parsedArgs, commandCwd: parsedArgs.commandCwd || commandCwd };
   exitOnUnknownOptions(args);
+
+  if (args.webapp) {
+    const action = String(args.webAction || "start").toLowerCase();
+    if (!["start", "restart", "reuse"].includes(action)) {
+      console.error("Usage: aginti webapp [start|restart] [--port 3210] [--host 127.0.0.1]");
+      process.exit(1);
+    }
+    const result = await ensureAgintiWebApp({
+      packageDir,
+      cwd: args.commandCwd || commandCwd,
+      home: args.webHome || "",
+      host: args.host || process.env.AGINTI_WEB_HOST || "127.0.0.1",
+      preferredPort: args.port || process.env.AGINTI_WEB_PORT || 3210,
+      language: args.language ? resolveLanguage(args.language) : "",
+      restart: action === "restart",
+      respectAutoStartDisable: false,
+    }).catch((error) => ({ ok: false, error: error instanceof Error ? error.message : String(error), url: "" }));
+    if (!result.ok) {
+      console.error(`webapp unavailable: ${result.error || "unknown"}`);
+      process.exit(1);
+    }
+    const state = result.restarted ? "restarted" : result.reused ? "reused" : "started";
+    console.log(`webapp: ${result.url} ${state}`);
+    console.log(`project: ${result.runtimeDir || path.resolve(args.commandCwd || commandCwd)}`);
+    console.log(`home: ${result.agintiflowHome || ""}`);
+    return;
+  }
 
   if (args.web) {
     if (args.port) process.env.PORT = String(args.port);

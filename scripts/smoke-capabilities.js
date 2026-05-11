@@ -26,6 +26,7 @@ async function runCli(args, envOverrides = {}) {
       ...process.env,
       AGINTIFLOW_RUNTIME_DIR: "",
       AGINTIFLOW_HOME: agintiflowHome,
+      AGINTIFLOW_NO_WEB_AUTO_START: "1",
       ...envOverrides,
     },
   });
@@ -41,6 +42,7 @@ async function runCliIn(cwd, args, envOverrides = {}) {
       ...process.env,
       AGINTIFLOW_RUNTIME_DIR: "",
       AGINTIFLOW_HOME: agintiflowHome,
+      AGINTIFLOW_NO_WEB_AUTO_START: "1",
       ...envOverrides,
     },
   });

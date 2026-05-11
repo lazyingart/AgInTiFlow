@@ -2083,7 +2083,7 @@ function renderArtifactContent(content) {
   artifactViewerKindEl.textContent = content.kind || item?.kind || "";
   const streamedUrl = content.url || (content.id ? artifactRawUrl(content.id) : "");
   const downloadUrl = content.downloadUrl || (content.id ? artifactRawUrl(content.id, { download: true }) : "");
-  const renderUrl = content.dataUrl || streamedUrl;
+  const renderUrl = streamedUrl || content.dataUrl;
 
   if (renderUrl && (content.kind === "pdf" || content.mime === "application/pdf")) {
     artifactViewerBodyEl.innerHTML = `
@@ -2133,15 +2133,19 @@ function artifactDownloadName(item, content) {
       ? ".pdf"
       : content.mime?.startsWith("image/png")
         ? ".png"
-        : content.mime?.startsWith("image/svg")
-          ? ".svg"
-          : content.kind === "json"
-            ? ".json"
-            : content.kind === "diff"
-              ? ".diff"
-              : content.kind === "markdown"
-                ? ".md"
-                : ".txt";
+        : content.mime?.startsWith("image/jpeg")
+          ? ".jpg"
+          : content.mime?.startsWith("image/webp")
+            ? ".webp"
+            : content.mime?.startsWith("image/svg")
+              ? ".svg"
+              : content.kind === "json"
+                ? ".json"
+                : content.kind === "diff"
+                  ? ".diff"
+                  : content.kind === "markdown"
+                    ? ".md"
+                    : ".txt";
   const base = sourceName
     .split("/")
     .filter(Boolean)

@@ -99,6 +99,42 @@ async function main() {
     throw new Error("large artifact file resolver returned invalid metadata");
   }
 
+  const largePdfPath = path.join(workspace, "compiled-paper.pdf");
+  await fs.writeFile(largePdfPath, Buffer.concat([Buffer.from("%PDF-1.7\n"), Buffer.alloc(4_200_000)]));
+  const pdfNormalized = normalizeCanvasPayload(
+    {
+      title: "Compiled paper",
+      kind: "pdf",
+      path: "compiled-paper.pdf",
+      selected: true,
+    },
+    config
+  );
+  if (!pdfNormalized.ok) throw new Error(pdfNormalized.reason || "large PDF canvas payload normalization failed");
+  const pdfPersisted = await persistCanvasPayloadFile(pdfNormalized.payload, { config, store });
+  if (!pdfPersisted.ok) throw new Error(pdfPersisted.reason || "large PDF canvas artifact persistence failed");
+  const { items: pdfItems } = buildArtifacts({
+    sessionId: store.sessionId,
+    events: [
+      {
+        timestamp: new Date().toISOString(),
+        type: "canvas.item",
+        data: {
+          ...pdfPersisted.payload,
+          commandCwd: workspace,
+        },
+      },
+    ],
+    store,
+  });
+  const pdfContent = await readArtifactContent(pdfItems[0], { store, config });
+  if (!pdfContent.ok || pdfContent.kind !== "pdf" || pdfContent.mime !== "application/pdf") {
+    throw new Error(`large PDF artifact did not expose PDF metadata: ${JSON.stringify(pdfContent)}`);
+  }
+  if (!pdfContent.tooLargeForInline || !pdfContent.url || !pdfContent.downloadUrl || pdfContent.dataUrl) {
+    throw new Error("large PDF artifact should stream through preview/download URLs instead of inline data");
+  }
+
   const missing = await persistCanvasPayloadFile({ ...normalized.payload, path: "missing.png" }, { config, store });
   if (missing.ok) throw new Error("missing canvas path should fail persistence");
 

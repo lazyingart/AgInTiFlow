@@ -881,7 +881,7 @@ function printHelp() {
       `  ${command("/skills [query]", "List Markdown skills selected for a topic.", "helpSkills")}`,
       `  ${command("/skillmesh [status|off|record|share|sync]", "Manage strict reviewed skill sharing.", "helpSkillMesh")}`,
       `  ${command("/profile <name>", "Set task profile, e.g. code, website, latex, maintenance.", "helpProfile")}`,
-      `  ${command("/webapp [port]", "Start or reuse the local webapp and print its URL.", "helpWebapp")}`,
+      `  ${command("/webapp [port|restart]", "Start, reuse, or restart the local webapp and print its URL.", "helpWebapp")}`,
       `  ${command("/web-search on|off", "Enable or disable the web_search tool.", "helpWebSearch")}`,
       `  ${command("/web-research <query>", "Run a sourced web_research turn with persisted evidence.", "helpWebSearch")}`,
       `  ${command("/image-read <path> [question]", "Run read_image on a workspace screenshot/image.", "helpWebSearch")}`,
@@ -3010,20 +3010,24 @@ async function handleCommand(line, state, packageDir) {
     return true;
   }
   if (command === "webapp" || command === "web") {
-    const port = Number(value) || Number(process.env.AGINTI_WEB_PORT || process.env.PORT || 3210);
-    printSystemLine("webapp=starting");
+    const words = value.split(/\s+/).filter(Boolean);
+    const restart = words.some((word) => word.toLowerCase() === "restart");
+    const portValue = words.find((word) => /^\d+$/.test(word));
+    const port = Number(portValue) || Number(process.env.AGINTI_WEB_PORT || process.env.PORT || 3210);
+    printSystemLine(restart ? "webapp=restarting" : "webapp=starting");
     const result = await ensureAgintiWebApp({
       packageDir,
       cwd: state.commandCwd || process.cwd(),
       host: process.env.AGINTI_WEB_HOST || process.env.HOST || "127.0.0.1",
       preferredPort: port,
       language: state.language,
+      restart,
       respectAutoStartDisable: false,
     }).catch((error) => ({ ok: false, error: error instanceof Error ? error.message : String(error), url: "" }));
     if (result.ok) {
       state.webAppUrl = result.url;
       state.webAppNotice = "";
-      printSystemLine(`webapp=${result.url} ${result.reused ? "reused" : "started"}`);
+      printSystemLine(`webapp=${result.url} ${result.restarted ? "restarted" : result.reused ? "reused" : "started"}`);
     } else {
       state.webAppUrl = "";
       state.webAppNotice = `webapp unavailable - use /webapp to retry; error: ${compactLine(result.error || "unknown", 72)}`;
