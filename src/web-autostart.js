@@ -86,8 +86,9 @@ export async function ensureAgintiWebApp({
   host = DEFAULT_HOST,
   preferredPort = DEFAULT_PORT,
   language = "",
+  respectAutoStartDisable = true,
 } = {}) {
-  if (process.env.AGINTI_NO_WEB_AUTO_START === "1" || process.env.AGINTIFLOW_NO_WEB_AUTO_START === "1") {
+  if (respectAutoStartDisable && (process.env.AGINTI_NO_WEB_AUTO_START === "1" || process.env.AGINTIFLOW_NO_WEB_AUTO_START === "1")) {
     return { ok: false, disabled: true, url: "" };
   }
 

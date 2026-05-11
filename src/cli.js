@@ -107,6 +107,14 @@ async function maybeEnsureDefaultWebApp(args = {}, { commandCwd = process.cwd() 
   }
 }
 
+function webAppNotice(result) {
+  if (!result || result.ok) return "";
+  if (result.disabled) return "webapp auto-start disabled - use /webapp to start manually";
+  const error = String(result.error || "unknown").replace(/\s+/g, " ").trim();
+  const compact = error.length > 84 ? `${error.slice(0, 83)}…` : error;
+  return `webapp unavailable - use /webapp to retry; error: ${compact}`;
+}
+
 const CLI_VALUE_OPTIONS = new Set([
   "--port",
   "--host",
@@ -1755,6 +1763,7 @@ export async function main(argv = process.argv.slice(2)) {
         packageDir,
         packageVersion: packageJson.version,
         webAppUrl: webLaunch.ok ? webLaunch.url : "",
+        webAppNotice: webAppNotice(webLaunch),
       });
       return;
     }
@@ -1783,7 +1792,12 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (args.interactive || (!args.goal && !args.resume && process.stdin.isTTY)) {
     const webLaunch = await maybeEnsureDefaultWebApp(args, { commandCwd });
-    await startInteractiveCli(agentDefaults(args), { packageDir, packageVersion: packageJson.version, webAppUrl: webLaunch.ok ? webLaunch.url : "" });
+    await startInteractiveCli(agentDefaults(args), {
+      packageDir,
+      packageVersion: packageJson.version,
+      webAppUrl: webLaunch.ok ? webLaunch.url : "",
+      webAppNotice: webAppNotice(webLaunch),
+    });
     return;
   }
 

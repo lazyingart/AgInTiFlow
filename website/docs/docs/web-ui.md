@@ -1,6 +1,8 @@
 # Web UI
 
-The web UI auto-starts or is reused when you launch the CLI from a project folder. AgInTiFlow tries `http://127.0.0.1:3210` first, then `3211`, `3212`, and so on if needed. The active URL appears in the CLI launch header where the tagline is shown.
+The web UI auto-starts or is reused when you launch the CLI from a project folder. AgInTiFlow tries `http://127.0.0.1:3210` first, then `3211`, `3212`, and so on if needed. The active URL appears in the CLI launch header where the tagline is shown. If startup fails, that same header row shows a recovery hint; use `/webapp [port]` inside the CLI to retry.
+
+Package installation also performs a best-effort quiet initialization of the local webapp. This is optional and non-fatal: install continues even if the webapp cannot start.
 
 Start the web UI explicitly when you want a foreground web server:
 

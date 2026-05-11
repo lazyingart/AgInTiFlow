@@ -43,6 +43,7 @@ import {
   permissionModeForApprovalCategory,
   permissionModeLabel,
 } from "./permission-modes.js";
+import { ensureAgintiWebApp } from "./web-autostart.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
@@ -95,6 +96,8 @@ const SLASH_COMMANDS = [
   "/skillsync",
   "/profile",
   "/web-search",
+  "/webapp",
+  "/web",
   "/web-research",
   "/image-read",
   "/research-wrapper",
@@ -772,10 +775,19 @@ function launchTitleLines(contentWidth) {
   return largeWidth <= contentWidth ? LARGE_LAUNCH_TITLE : COMPACT_LAUNCH_TITLE;
 }
 
-export function buildLaunchHeaderLines({ packageVersion = "", frame = 2, width = terminalWidth(), animated = true, language = cliLanguage, webAppUrl = "" } = {}) {
+export function buildLaunchHeaderLines({
+  packageVersion = "",
+  frame = 2,
+  width = terminalWidth(),
+  animated = true,
+  language = cliLanguage,
+  webAppUrl = "",
+  webAppNotice = "",
+} = {}) {
   const subtitle = t("launchSubtitle", language);
   const credit = t("launchCredit", language);
-  const tagline = webAppUrl ? `webapp: ${webAppUrl}` : t("launchTagline", language);
+  const webappLine = webAppUrl ? `webapp: ${webAppUrl}` : webAppNotice;
+  const tagline = webappLine || t("launchTagline", language);
   const version = packageVersion ? `v${packageVersion}` : "";
   const terminalColumns = Math.max(Number(width) || 80, 50);
   const contentWidth = Math.min(Math.max(terminalColumns - 8, 58), 112);
@@ -794,16 +806,16 @@ export function buildLaunchHeaderLines({ packageVersion = "", frame = 2, width =
     row(centerLine(subtitle, contentWidth), ansi.dim),
     row(centerLine(credit, contentWidth), ansi.dim),
     tagline ? mid : "",
-    tagline ? row(centerLine(tagline, contentWidth), ansi.cyan) : "",
+    tagline ? row(centerLine(compactLine(tagline, contentWidth), contentWidth), webAppUrl ? ansi.cyan : ansi.yellow) : "",
     bottom,
   ].filter(Boolean);
   const indent = " ".repeat(Math.max(Math.floor((terminalColumns - Math.max(...boxLines.map((line) => visualLength(line)))) / 2), 0));
   return boxLines.map((line) => `${indent}${line}`);
 }
 
-async function renderLaunchHeader(packageVersion = "", language = cliLanguage, webAppUrl = "") {
+async function renderLaunchHeader(packageVersion = "", language = cliLanguage, webAppUrl = "", webAppNotice = "") {
   if (!useColor || process.env.AGINTIFLOW_NO_ANIMATION === "1") {
-    console.log(buildLaunchHeaderLines({ packageVersion, animated: false, language, webAppUrl }).join("\n"));
+    console.log(buildLaunchHeaderLines({ packageVersion, animated: false, language, webAppUrl, webAppNotice }).join("\n"));
     return;
   }
 
@@ -812,7 +824,7 @@ async function renderLaunchHeader(packageVersion = "", language = cliLanguage, w
   let previousLineCount = 0;
   output.write(ansi.cursorHide);
   for (let frame = 0; frame < 18; frame += 1) {
-    const lines = [...paddingLines, ...buildLaunchHeaderLines({ packageVersion, frame, animated: true, language, webAppUrl })];
+    const lines = [...paddingLines, ...buildLaunchHeaderLines({ packageVersion, frame, animated: true, language, webAppUrl, webAppNotice })];
     if (previousLineCount > 0) output.write(`\x1b[${previousLineCount}A`);
     output.write(lines.map((line) => `\r${ansi.clearLine}${line}`).join("\n"));
     output.write("\n");
@@ -849,6 +861,7 @@ function printHelp() {
       `  ${command("/skills [query]", "List Markdown skills selected for a topic.", "helpSkills")}`,
       `  ${command("/skillmesh [status|off|record|share|sync]", "Manage strict reviewed skill sharing.", "helpSkillMesh")}`,
       `  ${command("/profile <name>", "Set task profile, e.g. code, website, latex, maintenance.", "helpProfile")}`,
+      `  ${command("/webapp [port]", "Start or reuse the local webapp and print its URL.", "helpWebapp")}`,
       `  ${command("/web-search on|off", "Enable or disable the web_search tool.", "helpWebSearch")}`,
       `  ${command("/web-research <query>", "Run a sourced web_research turn with persisted evidence.", "helpWebSearch")}`,
       `  ${command("/image-read <path> [question]", "Run read_image on a workspace screenshot/image.", "helpWebSearch")}`,
@@ -2170,6 +2183,8 @@ function createState(args = {}) {
     dynamicStepHardCap: args.dynamicStepHardCap,
     dynamicStepExtensionSize: args.dynamicStepExtensionSize,
     sessionId: args.resume || "",
+    webAppUrl: args.webAppUrl || "",
+    webAppNotice: args.webAppNotice || "",
   };
 }
 
@@ -2975,6 +2990,28 @@ async function handleCommand(line, state, packageDir) {
     );
     return true;
   }
+  if (command === "webapp" || command === "web") {
+    const port = Number(value) || Number(process.env.AGINTI_WEB_PORT || process.env.PORT || 3210);
+    printSystemLine("webapp=starting");
+    const result = await ensureAgintiWebApp({
+      packageDir,
+      cwd: state.commandCwd || process.cwd(),
+      host: process.env.AGINTI_WEB_HOST || process.env.HOST || "127.0.0.1",
+      preferredPort: port,
+      language: state.language,
+      respectAutoStartDisable: false,
+    }).catch((error) => ({ ok: false, error: error instanceof Error ? error.message : String(error), url: "" }));
+    if (result.ok) {
+      state.webAppUrl = result.url;
+      state.webAppNotice = "";
+      printSystemLine(`webapp=${result.url} ${result.reused ? "reused" : "started"}`);
+    } else {
+      state.webAppUrl = "";
+      state.webAppNotice = `webapp unavailable - use /webapp to retry; error: ${compactLine(result.error || "unknown", 72)}`;
+      printSystemLine(state.webAppNotice);
+    }
+    return true;
+  }
   if (command === "language" || command === "lang") {
     if (!value) {
       printSystemLine(tr("languageSet", { language: state.language || cliLanguage, label: languageLabel(state.language || cliLanguage) }));
@@ -3599,12 +3636,6 @@ async function handleCommand(line, state, packageDir) {
     printAgentMessage(`initialized project=${result.projectRoot}\nAGINTI.md=${result.instructionsPath}\ntemplate=${result.template}`);
     return true;
   }
-  if (command === "web") {
-    const port = value || "3220";
-    printAgentMessage(`Run in another terminal: aginti web --port ${port}`);
-    return true;
-  }
-
   const typed = `/${command}`;
   const suggestions = SLASH_COMMANDS.filter((candidate) => candidate.startsWith(typed));
   printAgentMessage(
@@ -3808,8 +3839,8 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
   return queuedAfterFinish;
 }
 
-export async function startInteractiveCli(args = {}, { packageDir, packageVersion, webAppUrl = "" } = {}) {
-  const state = createState(args);
+export async function startInteractiveCli(args = {}, { packageDir, packageVersion, webAppUrl = "", webAppNotice = "" } = {}) {
+  const state = createState({ ...args, webAppUrl, webAppNotice });
   const detachProcessInterrupts = installProcessInterruptHandlers();
   setCliLanguage(state.language);
   const rl =
@@ -3822,7 +3853,7 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
           completer: commandCompleter,
         });
 
-  await renderLaunchHeader(packageVersion, state.language, webAppUrl);
+  await renderLaunchHeader(packageVersion, state.language, state.webAppUrl, state.webAppNotice);
   printSystemLine(`${tr("project")}: ${process.cwd()}`);
   await maybeOnboardDeepSeekKey(state);
   printAgentMessage(tr("interactiveIntro"));

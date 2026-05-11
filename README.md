@@ -103,7 +103,9 @@ Provider signup and key pages:
 | Qwen / DashScope | [https://bailian.console.aliyun.com/](https://bailian.console.aliyun.com/) | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
 | GRS AI image tools | [https://grsai.ai/dashboard/api-keys](https://grsai.ai/dashboard/api-keys) | Configure with `/auxiliary grsai` or `aginti login grsai` |
 
-The CLI auto-starts or reuses the local web UI from the same project. It tries `http://127.0.0.1:3210` first, then `3211`, `3212`, and so on if the port is already occupied. The active URL is shown in the CLI launch header.
+The CLI quietly auto-starts or reuses the local web UI from the same project. It tries `http://127.0.0.1:3210` first, then `3211`, `3212`, and so on if the port is already occupied. The active URL is shown in the CLI launch header. If startup is blocked or unavailable, the same header row shows the recovery hint; run `/webapp [port]` inside the CLI to retry.
+
+Package installation also makes a best-effort, non-blocking webapp initialization. Install never fails because the optional local webapp could not start.
 
 Launch the web UI explicitly when you want a foreground web server:
 

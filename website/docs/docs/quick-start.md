@@ -39,7 +39,7 @@ Start the CLI and auto-start the local web UI:
 aginti
 ```
 
-The CLI auto-starts or reuses the local web UI. It tries `http://127.0.0.1:3210` first and prints the actual webapp URL in the launch header. Use `aginti web --port 3210` when you want to run the web server in the foreground.
+The CLI auto-starts or reuses the local web UI. It tries `http://127.0.0.1:3210` first and prints the actual webapp URL in the launch header. If startup fails, the launch header shows the recovery hint; use `/webapp [port]` inside the CLI to retry. Use `aginti web --port 3210` when you want to run the web server in the foreground.
 
 ## Auto-update (optional)
 

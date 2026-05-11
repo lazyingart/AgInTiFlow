@@ -326,6 +326,15 @@ try {
   if (!launchHeaderWithWeb.includes("webapp: http://127.0.0.1:3210")) {
     throw new Error("launch header did not render the active webapp URL in the tagline row");
   }
+  const launchHeaderWithWebError = buildLaunchHeaderLines({
+    width: 120,
+    packageVersion: "0.0.0",
+    animated: false,
+    webAppNotice: "webapp unavailable - use /webapp to retry; error: smoke failure",
+  }).join("\n");
+  if (!launchHeaderWithWebError.includes("webapp unavailable - use /webapp to retry")) {
+    throw new Error("launch header did not render webapp recovery advice in the tagline row");
+  }
   if (
     formatElapsedDuration(0) !== "00:00" ||
     formatElapsedDuration(65_000) !== "01:05" ||
@@ -650,6 +659,7 @@ try {
     !helpResult.stdout.includes("/auxiliary") ||
     !helpResult.stdout.includes("/review") ||
     !helpResult.stdout.includes("/scs") ||
+    !helpResult.stdout.includes("/webapp") ||
     !helpResult.stdout.includes("/safe") ||
     helpResult.stdout.includes("helpReview") ||
     helpResult.stdout.includes("helpRename") ||
