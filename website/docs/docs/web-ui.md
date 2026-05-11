@@ -1,6 +1,8 @@
 # Web UI
 
-Start the web UI from the project folder:
+The web UI auto-starts or is reused when you launch the CLI from a project folder. AgInTiFlow tries `http://127.0.0.1:3210` first, then `3211`, `3212`, and so on if needed. The active URL appears in the CLI launch header where the tagline is shown.
+
+Start the web UI explicitly when you want a foreground web server:
 
 ```bash
 aginti web --port 3210

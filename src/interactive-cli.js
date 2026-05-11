@@ -772,10 +772,10 @@ function launchTitleLines(contentWidth) {
   return largeWidth <= contentWidth ? LARGE_LAUNCH_TITLE : COMPACT_LAUNCH_TITLE;
 }
 
-export function buildLaunchHeaderLines({ packageVersion = "", frame = 2, width = terminalWidth(), animated = true, language = cliLanguage } = {}) {
+export function buildLaunchHeaderLines({ packageVersion = "", frame = 2, width = terminalWidth(), animated = true, language = cliLanguage, webAppUrl = "" } = {}) {
   const subtitle = t("launchSubtitle", language);
   const credit = t("launchCredit", language);
-  const tagline = t("launchTagline", language);
+  const tagline = webAppUrl ? `webapp: ${webAppUrl}` : t("launchTagline", language);
   const version = packageVersion ? `v${packageVersion}` : "";
   const terminalColumns = Math.max(Number(width) || 80, 50);
   const contentWidth = Math.min(Math.max(terminalColumns - 8, 58), 112);
@@ -801,9 +801,9 @@ export function buildLaunchHeaderLines({ packageVersion = "", frame = 2, width =
   return boxLines.map((line) => `${indent}${line}`);
 }
 
-async function renderLaunchHeader(packageVersion = "", language = cliLanguage) {
+async function renderLaunchHeader(packageVersion = "", language = cliLanguage, webAppUrl = "") {
   if (!useColor || process.env.AGINTIFLOW_NO_ANIMATION === "1") {
-    console.log(buildLaunchHeaderLines({ packageVersion, animated: false, language }).join("\n"));
+    console.log(buildLaunchHeaderLines({ packageVersion, animated: false, language, webAppUrl }).join("\n"));
     return;
   }
 
@@ -812,7 +812,7 @@ async function renderLaunchHeader(packageVersion = "", language = cliLanguage) {
   let previousLineCount = 0;
   output.write(ansi.cursorHide);
   for (let frame = 0; frame < 18; frame += 1) {
-    const lines = [...paddingLines, ...buildLaunchHeaderLines({ packageVersion, frame, animated: true, language })];
+    const lines = [...paddingLines, ...buildLaunchHeaderLines({ packageVersion, frame, animated: true, language, webAppUrl })];
     if (previousLineCount > 0) output.write(`\x1b[${previousLineCount}A`);
     output.write(lines.map((line) => `\r${ansi.clearLine}${line}`).join("\n"));
     output.write("\n");
@@ -3808,7 +3808,7 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
   return queuedAfterFinish;
 }
 
-export async function startInteractiveCli(args = {}, { packageDir, packageVersion } = {}) {
+export async function startInteractiveCli(args = {}, { packageDir, packageVersion, webAppUrl = "" } = {}) {
   const state = createState(args);
   const detachProcessInterrupts = installProcessInterruptHandlers();
   setCliLanguage(state.language);
@@ -3822,7 +3822,7 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
           completer: commandCompleter,
         });
 
-  await renderLaunchHeader(packageVersion, state.language);
+  await renderLaunchHeader(packageVersion, state.language, webAppUrl);
   printSystemLine(`${tr("project")}: ${process.cwd()}`);
   await maybeOnboardDeepSeekKey(state);
   printAgentMessage(tr("interactiveIntro"));

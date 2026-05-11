@@ -317,6 +317,15 @@ try {
   if (launchHeader.includes("launchTagline")) {
     throw new Error("empty launch tagline should not render the i18n key name");
   }
+  const launchHeaderWithWeb = buildLaunchHeaderLines({
+    width: 120,
+    packageVersion: "0.0.0",
+    animated: false,
+    webAppUrl: "http://127.0.0.1:3210",
+  }).join("\n");
+  if (!launchHeaderWithWeb.includes("webapp: http://127.0.0.1:3210")) {
+    throw new Error("launch header did not render the active webapp URL in the tagline row");
+  }
   if (
     formatElapsedDuration(0) !== "00:00" ||
     formatElapsedDuration(65_000) !== "01:05" ||

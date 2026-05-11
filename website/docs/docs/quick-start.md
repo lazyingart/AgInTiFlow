@@ -33,13 +33,13 @@ Start interactive chat:
 aginti
 ```
 
-Start the web UI:
+Start the CLI and auto-start the local web UI:
 
 ```bash
-aginti web --port 3210
+aginti
 ```
 
-Open `http://127.0.0.1:3210`.
+The CLI auto-starts or reuses the local web UI. It tries `http://127.0.0.1:3210` first and prints the actual webapp URL in the launch header. Use `aginti web --port 3210` when you want to run the web server in the foreground.
 
 ## Auto-update (optional)
 

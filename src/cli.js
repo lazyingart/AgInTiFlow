@@ -37,6 +37,7 @@ import { handleSkillMeshCommand } from "./skillmesh.js";
 import { handleAapsCliCommand } from "./aaps-adapter.js";
 import { formatInstructionTemplateList, normalizeInstructionTemplate } from "./behavior-contract.js";
 import { applyPermissionMode, normalizePermissionMode } from "./permission-modes.js";
+import { ensureAgintiWebApp } from "./web-autostart.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,6 +90,21 @@ function printUnknownCliOptions(options = []) {
     console.error(`Unknown option: ${option}${suggestion ? `. Did you mean ${suggestion}?` : ""}`);
   }
   console.error("Use `--` before a prompt that intentionally starts with a dash.");
+}
+
+async function maybeEnsureDefaultWebApp(args = {}, { commandCwd = process.cwd() } = {}) {
+  if (args.web) return { ok: false, url: "" };
+  try {
+    return await ensureAgintiWebApp({
+      packageDir,
+      cwd: args.commandCwd || commandCwd || process.cwd(),
+      host: args.host || process.env.AGINTI_WEB_HOST || "127.0.0.1",
+      preferredPort: args.port || process.env.AGINTI_WEB_PORT || 3210,
+      language: args.language ? resolveLanguage(args.language) : "",
+    });
+  } catch (error) {
+    return { ok: false, url: "", error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 const CLI_VALUE_OPTIONS = new Set([
@@ -1734,9 +1750,11 @@ export async function main(argv = process.argv.slice(2)) {
     if (!prompt) {
       const parsedResumeOptions = parseArgs(resumeOptions.optionArgv);
       exitOnUnknownOptions(parsedResumeOptions);
+      const webLaunch = await maybeEnsureDefaultWebApp(parsedResumeOptions, { commandCwd });
       await startInteractiveCli(agentDefaults({ ...parsedResumeOptions, resume: sessionId, commandCwd: parsedResumeOptions.commandCwd || commandCwd }), {
         packageDir,
         packageVersion: packageJson.version,
+        webAppUrl: webLaunch.ok ? webLaunch.url : "",
       });
       return;
     }
@@ -1744,6 +1762,7 @@ export async function main(argv = process.argv.slice(2)) {
     exitOnUnknownOptions(parsedResumeArgs);
     const resumeArgs = agentDefaults({ ...parsedResumeArgs, resume: sessionId, goal: prompt, commandCwd: parsedResumeArgs.commandCwd || commandCwd });
     if (!(await ensureDeepSeekKeyForOneShot(resumeArgs))) process.exit(1);
+    await maybeEnsureDefaultWebApp(resumeArgs, { commandCwd });
     const config = loadConfig(resumeArgs, { packageDir });
     await runAgent(config);
     return;
@@ -1763,7 +1782,8 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (args.interactive || (!args.goal && !args.resume && process.stdin.isTTY)) {
-    await startInteractiveCli(agentDefaults(args), { packageDir, packageVersion: packageJson.version });
+    const webLaunch = await maybeEnsureDefaultWebApp(args, { commandCwd });
+    await startInteractiveCli(agentDefaults(args), { packageDir, packageVersion: packageJson.version, webAppUrl: webLaunch.ok ? webLaunch.url : "" });
     return;
   }
 
@@ -1808,6 +1828,7 @@ export async function main(argv = process.argv.slice(2)) {
 
   const finalArgs = agentDefaults(args);
   if (!(await ensureDeepSeekKeyForOneShot(finalArgs))) process.exit(1);
+  await maybeEnsureDefaultWebApp(finalArgs, { commandCwd });
   const config = loadConfig(finalArgs, { packageDir });
   await runAgent(config);
 }

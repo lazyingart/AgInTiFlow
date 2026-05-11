@@ -58,7 +58,7 @@ loadProjectEnv(baseDir);
 await ensureProjectSessionStorage(baseDir);
 
 const app = express();
-const port = Number(process.env.PORT || 3210);
+let port = Number(process.env.PORT || 3210);
 const host = process.env.HOST || "127.0.0.1";
 const runs = new Map();
 const db = new WebDatabase(baseDir);
@@ -1337,12 +1337,39 @@ app.post("/api/runs/:sessionId/stop", async (req, res) => {
 });
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, port });
+  res.json({ ok: true, app: "agintiflow", port, url: `http://${host}:${port}` });
 });
 
 await fs.mkdir(sessionsDir, { recursive: true });
 await syncStoredSessions();
 
-app.listen(port, host, () => {
-  console.log(`Website control agent UI running on http://${host}:${port}`);
-});
+function listenOnPort(candidatePort) {
+  return new Promise((resolve, reject) => {
+    const server = app.listen({ port: candidatePort, host });
+    server.once("error", (error) => reject(error));
+    server.once("listening", () => resolve(server));
+  });
+}
+
+async function listenWithFallback(preferredPort, attempts = 50) {
+  const startPort = Number.isInteger(Number(preferredPort)) && Number(preferredPort) > 0 ? Number(preferredPort) : 3210;
+  let lastError = null;
+  for (let offset = 0; offset < attempts; offset += 1) {
+    const candidatePort = startPort + offset;
+    if (candidatePort >= 65536) break;
+    try {
+      return await listenOnPort(candidatePort);
+    } catch (error) {
+      lastError = error;
+      if (error?.code !== "EADDRINUSE") throw error;
+    }
+  }
+  const error = new Error(`No available AgInTiFlow web port from ${startPort} after ${attempts} attempts.`);
+  error.cause = lastError;
+  throw error;
+}
+
+export const webServer = await listenWithFallback(port);
+port = webServer.address()?.port || port;
+export const webUrl = `http://${host}:${port}`;
+console.log(`Website control agent UI running on ${webUrl}`);
