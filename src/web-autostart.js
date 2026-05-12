@@ -187,7 +187,8 @@ export async function findReusableOrFreeWebPort({
     if (port >= 65536) break;
     const health = await fetchHealthDetails(normalizedHost, port);
     if (health.ok) {
-      if (restart && Number(port) === startPort) {
+      const compatible = compatibleHealth(health, { cwd: runtimeDir, home: homeDir, packageDir });
+      if (restart && compatible) {
         const stopped = await stopWebAppOnPort({ host: normalizedHost, port, health });
         if (!stopped.ok) return { port, host: normalizedHost, url: "", reused: false, available: false, stopped, error: stopped.error };
         return {
@@ -200,7 +201,7 @@ export async function findReusableOrFreeWebPort({
           stopped,
         };
       }
-      if (compatibleHealth(health, { cwd: runtimeDir, home: homeDir, packageDir })) {
+      if (compatible) {
         return { port, host: normalizedHost, url: webUrl(normalizedHost, port), reused: true, available: false, health };
       }
       continue;

@@ -101,4 +101,52 @@ else process.env.AGINTIFLOW_AUTO_UPDATE_STARTUP_INTERVAL_MS = previousStartupInt
 if (previousCi === undefined) delete process.env.CI;
 else process.env.CI = previousCi;
 
+const updateHome = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-auto-update-install-"));
+const previousInstallHome = process.env.AGINTIFLOW_HOME;
+process.env.AGINTIFLOW_HOME = updateHome;
+await fs.writeFile(
+  path.join(updateHome, "update-check.json"),
+  `${JSON.stringify({ checkedAt: Date.now(), latest: "0.20.99" })}\n`,
+  "utf8"
+);
+const hookEvents = [];
+const fakeInstallWrites = [];
+const fakeInstallStdout = {
+  isTTY: true,
+  write(value) {
+    fakeInstallWrites.push(String(value));
+  },
+};
+const fakeInstallStderr = {
+  write(value) {
+    fakeInstallWrites.push(String(value));
+  },
+};
+const installed = await maybeAutoUpdate({
+  argv: ["update"],
+  manual: true,
+  packageDir: scopedGlobalPath,
+  packageName: "@lazyingart/agintiflow",
+  packageVersion: "0.20.38",
+  restart: false,
+  stdout: fakeInstallStdout,
+  stderr: fakeInstallStderr,
+  installPackage: async (packageName) => {
+    hookEvents.push(["install", packageName]);
+    return { ok: true, code: 0 };
+  },
+  afterUpdate: async (context) => {
+    hookEvents.push(["afterUpdate", context.latest]);
+    return { ok: true, restarted: true, url: "http://127.0.0.1:3210" };
+  },
+});
+assert(installed.updated === true, "fake install did not report update success");
+assert(installed.webappRestart?.ok === true && installed.webappRestart.restarted === true, "after-update webapp restart result missing");
+assert(hookEvents.some((event) => event[0] === "install"), "install hook was not called");
+assert(hookEvents.some((event) => event[0] === "afterUpdate"), "after-update hook was not called");
+assert(fakeInstallWrites.join("").includes("webapp restarted after update"), "after-update webapp restart was not reported");
+if (previousInstallHome === undefined) delete process.env.AGINTIFLOW_HOME;
+else process.env.AGINTIFLOW_HOME = previousInstallHome;
+await fs.rm(updateHome, { recursive: true, force: true });
+
 console.log("auto-update smoke ok");

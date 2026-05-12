@@ -189,6 +189,24 @@ async function restartCurrentProcess() {
   });
 }
 
+async function runAfterUpdateHook(afterUpdate, context, stdout, stderr) {
+  if (typeof afterUpdate !== "function") return null;
+  try {
+    const result = (await afterUpdate(context)) || { ok: true };
+    if (result.ok && result.url) {
+      const state = result.restarted ? "restarted" : result.reused ? "reused" : result.started ? "started" : "ready";
+      stdout.write(`AgInTiFlow webapp ${state} after update: ${result.url}\n`);
+    } else if (result.ok === false) {
+      stderr.write(`AgInTiFlow webapp restart after update failed: ${result.error || "unknown error"}\n`);
+    }
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    stderr.write(`AgInTiFlow webapp restart after update failed: ${message}\n`);
+    return { ok: false, error: message };
+  }
+}
+
 function shouldSkipFailedInstall(cache, currentMs, force) {
   if (force) return false;
   const failedAt = Number(cache.lastInstallFailedAt || 0);
@@ -289,6 +307,9 @@ export async function maybeAutoUpdate({
   packageVersion = "",
   restart = false,
   selectUpdateAction = promptUpdateChoice,
+  installPackage = installLatest,
+  restartProcess = restartCurrentProcess,
+  afterUpdate = null,
   stdout = process.stdout,
   stderr = process.stderr,
 } = {}) {
@@ -369,7 +390,7 @@ export async function maybeAutoUpdate({
 
   stdout.write(`AgInTiFlow update available: ${packageVersion} -> ${latest}\n`);
   stdout.write(`Running: npm install -g ${packageName}@latest\n`);
-  const install = await installLatest(packageName);
+  const install = await installPackage(packageName);
   if (!install.ok) {
     await writeCache({
       ...cache,
@@ -394,12 +415,27 @@ export async function maybeAutoUpdate({
     packageName,
   });
   stdout.write(`AgInTiFlow updated to ${latest}.\n`);
+  const webappRestart = await runAfterUpdateHook(
+    afterUpdate,
+    { current: packageVersion, latest, packageName },
+    stdout,
+    stderr
+  );
 
   if (restart) {
     stdout.write("Restarting AgInTiFlow with the updated package...\n");
-    const restarted = await restartCurrentProcess();
-    return { checked: true, latest, current: packageVersion, updated: true, restarted: true, exitCode: restarted.exitCode, error: restarted.error };
+    const restarted = await restartProcess();
+    return {
+      checked: true,
+      latest,
+      current: packageVersion,
+      updated: true,
+      restarted: true,
+      exitCode: restarted.exitCode,
+      error: restarted.error,
+      webappRestart,
+    };
   }
 
-  return { checked: true, latest, current: packageVersion, updated: true };
+  return { checked: true, latest, current: packageVersion, updated: true, webappRestart };
 }

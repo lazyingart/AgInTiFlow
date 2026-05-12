@@ -869,6 +869,43 @@ function stripLeadingGlobalOptions(argv = []) {
   };
 }
 
+function commandCwdFromArgv(argv = []) {
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === "--cwd") {
+      const cwd = readOption(argv, index);
+      if (cwd) return path.resolve(cwd);
+    }
+  }
+  return process.cwd();
+}
+
+function languageFromArgv(argv = []) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--language" || arg === "--lang" || arg === "-L") {
+      const first = readOption(argv, index);
+      const second = argv[index + 2] && !String(argv[index + 2]).startsWith("--") ? argv[index + 2] : "";
+      if (["cn", "zh"].includes(String(first || "").toLowerCase()) && ["s", "t"].includes(String(second || "").toLowerCase())) {
+        return resolveLanguage(`${first}-${second}`);
+      }
+      return resolveLanguage(first);
+    }
+  }
+  return "";
+}
+
+async function restartWebAppAfterUpdate({ commandCwd = process.cwd(), language = "" } = {}) {
+  return await ensureAgintiWebApp({
+    packageDir,
+    cwd: commandCwd,
+    host: process.env.AGINTI_WEB_HOST || process.env.HOST || "127.0.0.1",
+    preferredPort: process.env.AGINTI_WEB_PORT || process.env.PORT || 3210,
+    language,
+    restart: true,
+    respectAutoStartDisable: false,
+  }).catch((error) => ({ ok: false, error: error instanceof Error ? error.message : String(error), url: "" }));
+}
+
 function providerLabel(provider) {
   const normalized = String(provider || "").toLowerCase();
   if (normalized === "openai") return "OpenAI";
@@ -1687,6 +1724,8 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (argv[0] === "update" || argv[0] === "upgrade") {
+    const updateCommandCwd = commandCwdFromArgv(argv);
+    const updateLanguage = languageFromArgv(argv);
     const updateResult = await maybeAutoUpdate({
       argv,
       force: true,
@@ -1695,11 +1734,14 @@ export async function main(argv = process.argv.slice(2)) {
       packageName: packageJson.name,
       packageVersion: packageJson.version,
       restart: false,
+      afterUpdate: () => restartWebAppAfterUpdate({ commandCwd: updateCommandCwd, language: updateLanguage }),
     });
     if (updateResult.error) process.exit(1);
     return;
   }
 
+  const updateCommandCwd = commandCwdFromArgv(argv);
+  const updateLanguage = languageFromArgv(argv);
   const autoUpdateResult = await maybeAutoUpdate({
     argv,
     force: argv.includes("--auto-update"),
@@ -1707,6 +1749,7 @@ export async function main(argv = process.argv.slice(2)) {
     packageName: packageJson.name,
     packageVersion: packageJson.version,
     restart: true,
+    afterUpdate: () => restartWebAppAfterUpdate({ commandCwd: updateCommandCwd, language: updateLanguage }),
   });
   if (autoUpdateResult.restarted) process.exit(autoUpdateResult.exitCode ?? 0);
 
