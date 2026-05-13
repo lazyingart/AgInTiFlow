@@ -139,7 +139,7 @@ const TRANSLATIONS = {
     helpSkills: "List Markdown skills selected for a topic.",
     helpSkillMesh: "Manage strict reviewed skill sharing.",
     helpProfile: "Set task profile, e.g. code, website, latex, maintenance.",
-    helpWebapp: "Start, reuse, or restart the local webapp and print its URL.",
+    helpWebapp: "Start, reuse, stop, or restart the local webapp and print its URL.",
     helpWebSearch: "Enable or disable the web_search tool.",
     helpEnableScs: "Toggle Student-Committee-Supervisor gated execution.",
     helpScouts: "Enable parallel DeepSeek scouts and set scout count.",

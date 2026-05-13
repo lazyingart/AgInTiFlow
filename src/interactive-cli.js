@@ -45,7 +45,7 @@ import {
   permissionModeForApprovalCategory,
   permissionModeLabel,
 } from "./permission-modes.js";
-import { ensureAgintiWebApp } from "./web-autostart.js";
+import { ensureAgintiWebApp, stopAgintiWebApp } from "./web-autostart.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
@@ -881,7 +881,7 @@ function printHelp() {
       `  ${command("/skills [query]", "List Markdown skills selected for a topic.", "helpSkills")}`,
       `  ${command("/skillmesh [status|off|record|share|sync]", "Manage strict reviewed skill sharing.", "helpSkillMesh")}`,
       `  ${command("/profile <name>", "Set task profile, e.g. code, website, latex, maintenance.", "helpProfile")}`,
-      `  ${command("/webapp [port|restart]", "Start, reuse, or restart the local webapp and print its URL.", "helpWebapp")}`,
+      `  ${command("/webapp [port|start|stop|restart|reuse]", "Start, reuse, stop, or restart the local webapp and print its URL.", "helpWebapp")}`,
       `  ${command("/web-search on|off", "Enable or disable the web_search tool.", "helpWebSearch")}`,
       `  ${command("/web-research <query>", "Run a sourced web_research turn with persisted evidence.", "helpWebSearch")}`,
       `  ${command("/image-read <path> [question]", "Run read_image on a workspace screenshot/image.", "helpWebSearch")}`,
@@ -3011,23 +3011,43 @@ async function handleCommand(line, state, packageDir) {
   }
   if (command === "webapp" || command === "web") {
     const words = value.split(/\s+/).filter(Boolean);
+    const action = words.find((word) => ["start", "stop", "restart", "reuse"].includes(word.toLowerCase()))?.toLowerCase() || "start";
     const restart = words.some((word) => word.toLowerCase() === "restart");
     const portValue = words.find((word) => /^\d+$/.test(word));
     const port = Number(portValue) || Number(process.env.AGINTI_WEB_PORT || process.env.PORT || 3210);
-    printSystemLine(restart ? "webapp=restarting" : "webapp=starting");
-    const result = await ensureAgintiWebApp({
+    printSystemLine(action === "stop" ? "webapp=stopping" : restart ? "webapp=restarting" : "webapp=starting");
+    const webOptions = {
       packageDir,
       cwd: state.commandCwd || process.cwd(),
       host: process.env.AGINTI_WEB_HOST || process.env.HOST || "127.0.0.1",
       preferredPort: port,
-      language: state.language,
-      restart,
-      respectAutoStartDisable: false,
-    }).catch((error) => ({ ok: false, error: error instanceof Error ? error.message : String(error), url: "" }));
+    };
+    const result = await (action === "stop"
+      ? stopAgintiWebApp(webOptions)
+      : ensureAgintiWebApp({
+          ...webOptions,
+          language: state.language,
+          restart,
+          respectAutoStartDisable: false,
+        })
+    ).catch((error) => ({ ok: false, error: error instanceof Error ? error.message : String(error), url: "" }));
     if (result.ok) {
-      state.webAppUrl = result.url;
-      state.webAppNotice = "";
-      printSystemLine(`webapp=${result.url} ${result.restarted ? "restarted" : result.reused ? "reused" : "started"}`);
+      const stateLabel = result.stopped
+        ? action === "stop"
+          ? "stopped"
+          : result.restarted
+            ? "restarted"
+            : "started"
+        : action === "stop" && result.alreadyStopped
+          ? "already stopped"
+          : result.restarted
+            ? "restarted"
+            : result.reused
+              ? "reused"
+              : "started";
+      state.webAppUrl = action === "stop" ? "" : result.url;
+      state.webAppNotice = action === "stop" ? "webapp stopped - use /webapp to start it again" : "";
+      printSystemLine(`webapp=${result.url} ${stateLabel}`);
     } else {
       state.webAppUrl = "";
       state.webAppNotice = `webapp unavailable - use /webapp to retry; error: ${compactLine(result.error || "unknown", 72)}`;

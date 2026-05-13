@@ -103,7 +103,7 @@ Provider signup and key pages:
 | Qwen / DashScope | [https://bailian.console.aliyun.com/](https://bailian.console.aliyun.com/) | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
 | GRS AI image tools | [https://grsai.ai/dashboard/api-keys](https://grsai.ai/dashboard/api-keys) | Configure with `/auxiliary grsai` or `aginti login grsai` |
 
-The CLI quietly auto-starts or reuses the local web UI from the same project. It tries `http://127.0.0.1:3210` first, then `3211`, `3212`, and so on if the port is already occupied by another project. The active URL is shown in the CLI launch header. If startup is blocked, stale, or unavailable, the same header row shows the recovery hint; run `/webapp [port]` inside the CLI to retry, or `/webapp restart [port]` to stop and relaunch the local webapp with the current project and canonical `~/.agintiflow` session home. After a successful `aginti update` or accepted startup auto-update, AgInTiFlow also restarts the compatible local webapp so artifact serving uses the updated package.
+The CLI quietly auto-starts or reuses the local web UI from the same project. It tries `http://127.0.0.1:3210` first, then `3211`, `3212`, and so on if the port is already occupied by another project. The active URL is shown in the CLI launch header. If startup is blocked, stale, or unavailable, the same header row shows the recovery hint; run `/webapp [port]` inside the CLI to retry, `/webapp stop [port]` to stop the compatible local webapp, or `/webapp restart [port]` to stop and relaunch the local webapp with the current project and canonical `~/.agintiflow` session home. After a successful `aginti update` or accepted startup auto-update, AgInTiFlow also restarts the compatible local webapp so artifact serving uses the updated package.
 
 Package installation also makes a best-effort, non-blocking webapp initialization. Install never fails because the optional local webapp could not start.
 
@@ -111,6 +111,7 @@ Launch the web UI explicitly when you want a foreground web server:
 
 ```bash
 aginti webapp
+aginti webapp stop
 aginti webapp restart
 aginti web --port 3210
 # opens http://127.0.0.1:3210, or the next available port
@@ -145,7 +146,7 @@ aginti --language de
 | Goal | Command |
 | --- | --- |
 | Start interactive chat | `aginti` or `aginti chat` |
-| Start local web app | Auto-starts with `aginti`; detached command is `aginti webapp`; restart with `aginti webapp restart`; foreground mode is `aginti web --port 3210` |
+| Start local web app | Auto-starts with `aginti`; detached command is `aginti webapp`; stop with `aginti webapp stop`; restart with `aginti webapp restart`; foreground mode is `aginti web --port 3210` |
 | Save provider keys | `aginti auth`, `/auth`, `/login` |
 | Review current repo | `/review [focus]` |
 | Toggle SCS quality gate | `/scs` |

@@ -74,6 +74,19 @@ async function runCase({ port, env = {}, expectHeader, label }) {
     if (path.resolve(health.agintiflowHome) !== path.resolve(path.join(runtimeDir, `.agintiflow-web-home-${label}`))) {
       throw new Error(`webapp command inherited the wrong home for ${label}: ${JSON.stringify(health)}`);
     }
+    child.stdin.write(`/webapp stop ${port}\n`);
+    await waitFor(() => output.stdout.includes(`webapp=http://127.0.0.1:${port} stopped`), child, `${label} /webapp stop command`, output);
+    let stopped = false;
+    try {
+      await fetch(`http://127.0.0.1:${port}/health`);
+    } catch {
+      stopped = true;
+    }
+    if (!stopped) {
+      throw new Error(`webapp still responded after /webapp stop for ${label}`);
+    }
+    child.stdin.write(`/webapp ${port}\n`);
+    await waitFor(() => output.stdout.includes(`webapp=http://127.0.0.1:${port} started`), child, `${label} /webapp restart after stop`, output);
   } finally {
     child.kill("SIGTERM");
     await killPort(port);

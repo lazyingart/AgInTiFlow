@@ -169,6 +169,57 @@ async function stopWebAppOnPort({ host, port, health = {} } = {}) {
     : { ok: false, pids: [...pids], error: `AgInTiFlow webapp on ${host}:${port} did not stop.` };
 }
 
+export async function stopAgintiWebApp({
+  packageDir = process.cwd(),
+  cwd = process.cwd(),
+  home = "",
+  host = DEFAULT_HOST,
+  preferredPort = DEFAULT_PORT,
+  force = false,
+} = {}) {
+  const normalizedHost = normalizeHost(host);
+  const port = normalizePort(preferredPort);
+  const url = webUrl(normalizedHost, port);
+  const runtimeDir = resolveRuntimeDir(cwd);
+  const homeDir = resolveWebHome(home);
+  const health = await fetchHealthDetails(normalizedHost, port);
+
+  if (!health.ok) {
+    if (await canListen(normalizedHost, port)) {
+      return { ok: true, stopped: false, alreadyStopped: true, host: normalizedHost, port, url, runtimeDir, agintiflowHome: homeDir };
+    }
+    return { ok: false, stopped: false, host: normalizedHost, port, url, error: `No AgInTiFlow health endpoint responded on ${url}.` };
+  }
+
+  if (!force && !compatibleHealth(health, { cwd: runtimeDir, home: homeDir, packageDir })) {
+    return {
+      ok: false,
+      stopped: false,
+      host: normalizedHost,
+      port,
+      url,
+      runtimeDir,
+      agintiflowHome: homeDir,
+      health,
+      error: `Refusing to stop AgInTiFlow webapp on ${url} because it belongs to a different project or home.`,
+    };
+  }
+
+  const stopped = await stopWebAppOnPort({ host: normalizedHost, port, health });
+  return {
+    ok: Boolean(stopped.ok),
+    stopped: Boolean(stopped.ok),
+    alreadyStopped: false,
+    host: normalizedHost,
+    port,
+    url,
+    runtimeDir,
+    agintiflowHome: homeDir,
+    health,
+    ...stopped,
+  };
+}
+
 export async function findReusableOrFreeWebPort({
   host = DEFAULT_HOST,
   preferredPort = DEFAULT_PORT,
