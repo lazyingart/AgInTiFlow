@@ -14,6 +14,10 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function occurrenceCount(value, pattern) {
+  return String(value || "").split(pattern).length - 1;
+}
+
 async function waitFor(predicate, child, label, output) {
   const deadline = Date.now() + 12000;
   while (Date.now() < deadline) {
@@ -74,6 +78,13 @@ async function runCase({ port, env = {}, expectHeader, label }) {
     if (path.resolve(health.agintiflowHome) !== path.resolve(path.join(runtimeDir, `.agintiflow-web-home-${label}`))) {
       throw new Error(`webapp command inherited the wrong home for ${label}: ${JSON.stringify(health)}`);
     }
+    child.stdin.write(`/webapp disable\n`);
+    await waitFor(() => output.stdout.includes("webapp auto-start=disabled"), child, `${label} /webapp disable command`, output);
+    const disabledCount = occurrenceCount(output.stdout, "webapp auto-start=disabled");
+    child.stdin.write(`/webapp status\n`);
+    await waitFor(() => occurrenceCount(output.stdout, "webapp auto-start=disabled") > disabledCount, child, `${label} /webapp status disabled command`, output);
+    child.stdin.write(`/webapp enable\n`);
+    await waitFor(() => output.stdout.includes("webapp auto-start=enabled"), child, `${label} /webapp enable command`, output);
     child.stdin.write(`/webapp stop ${port}\n`);
     await waitFor(() => output.stdout.includes(`webapp=http://127.0.0.1:${port} stopped`), child, `${label} /webapp stop command`, output);
     let stopped = false;

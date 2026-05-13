@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import fs from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -52,6 +53,32 @@ function resolveWebHome(home = "") {
 
 function resolveRuntimeDir(cwd = "") {
   return path.resolve(process.env.AGINTIFLOW_WEB_RUNTIME_DIR || cwd || process.cwd());
+}
+
+function webPreferencePath(home = "") {
+  return path.join(resolveWebHome(home), "webapp.json");
+}
+
+export async function readWebAppPreference({ home = "" } = {}) {
+  const file = webPreferencePath(home);
+  try {
+    const data = JSON.parse(await fs.readFile(file, "utf8"));
+    return { autoStart: data.autoStart !== false, path: file };
+  } catch {
+    return { autoStart: true, path: file };
+  }
+}
+
+export async function writeWebAppPreference({ home = "", autoStart = true } = {}) {
+  const file = webPreferencePath(home);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, `${JSON.stringify({ autoStart: Boolean(autoStart), updatedAt: new Date().toISOString() }, null, 2)}\n`, "utf8");
+  return await readWebAppPreference({ home });
+}
+
+async function webAutoStartDisabled(home = "") {
+  if (process.env.AGINTI_NO_WEB_AUTO_START === "1" || process.env.AGINTIFLOW_NO_WEB_AUTO_START === "1") return true;
+  return (await readWebAppPreference({ home })).autoStart === false;
 }
 
 function fetchHealthDetails(host, port, timeoutMs = 450) {
@@ -274,7 +301,7 @@ export async function ensureAgintiWebApp({
   restart = false,
   respectAutoStartDisable = true,
 } = {}) {
-  if (respectAutoStartDisable && (process.env.AGINTI_NO_WEB_AUTO_START === "1" || process.env.AGINTIFLOW_NO_WEB_AUTO_START === "1")) {
+  if (respectAutoStartDisable && (await webAutoStartDisabled(home))) {
     return { ok: false, disabled: true, url: "" };
   }
 

@@ -37,7 +37,7 @@ import { handleSkillMeshCommand } from "./skillmesh.js";
 import { handleAapsCliCommand } from "./aaps-adapter.js";
 import { formatInstructionTemplateList, normalizeInstructionTemplate } from "./behavior-contract.js";
 import { applyPermissionMode, normalizePermissionMode } from "./permission-modes.js";
-import { ensureAgintiWebApp, stopAgintiWebApp } from "./web-autostart.js";
+import { ensureAgintiWebApp, readWebAppPreference, stopAgintiWebApp, writeWebAppPreference } from "./web-autostart.js";
 import { dockerHostInstallPlan, formatDockerSetupText, summarizeDockerSetup } from "./docker-setup.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -403,7 +403,7 @@ export function parseArgs(argv) {
       parts.push(...argv.slice(i + 1));
       break;
     }
-    if ((arg === "web" || arg === "--web") && ["restart", "stop"].includes(String(argv[i + 1] || "").toLowerCase())) {
+    if ((arg === "web" || arg === "--web") && ["restart", "stop", "enable", "disable", "status"].includes(String(argv[i + 1] || "").toLowerCase())) {
       result.webapp = true;
       result.webAction = String(argv[i + 1] || "").toLowerCase();
       i += 1;
@@ -902,7 +902,7 @@ async function restartWebAppAfterUpdate({ commandCwd = process.cwd(), language =
     preferredPort: process.env.AGINTI_WEB_PORT || process.env.PORT || 3210,
     language,
     restart: true,
-    respectAutoStartDisable: false,
+    respectAutoStartDisable: true,
   }).catch((error) => ({ ok: false, error: error instanceof Error ? error.message : String(error), url: "" }));
 }
 
@@ -1949,8 +1949,8 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (args.webapp) {
     const action = String(args.webAction || "start").toLowerCase();
-    if (!["start", "stop", "restart", "reuse"].includes(action)) {
-      console.error("Usage: aginti webapp [start|stop|restart|reuse] [--port 3210] [--host 127.0.0.1]");
+    if (!["start", "stop", "restart", "reuse", "enable", "disable", "status"].includes(action)) {
+      console.error("Usage: aginti webapp [start|stop|restart|reuse|enable|disable|status] [--port 3210] [--host 127.0.0.1]");
       process.exit(1);
     }
     const webOptions = {
@@ -1960,6 +1960,16 @@ export async function main(argv = process.argv.slice(2)) {
       host: args.host || process.env.AGINTI_WEB_HOST || "127.0.0.1",
       preferredPort: args.port || process.env.AGINTI_WEB_PORT || 3210,
     };
+    if (action === "enable" || action === "disable" || action === "status") {
+      const preference =
+        action === "status"
+          ? await readWebAppPreference({ home: webOptions.home })
+          : await writeWebAppPreference({ home: webOptions.home, autoStart: action === "enable" });
+      console.log(`webapp auto-start: ${preference.autoStart ? "enabled" : "disabled"}`);
+      console.log(`preference: ${preference.path}`);
+      if (!preference.autoStart) console.log("Use `aginti webapp stop` or `/webapp stop` to stop a currently running webapp.");
+      return;
+    }
     const result = await (action === "stop"
       ? stopAgintiWebApp(webOptions)
       : ensureAgintiWebApp({
