@@ -91,6 +91,12 @@ export function formatDockerSetupText(summary = {}) {
   if (!summary.dockerAvailable) {
     lines.push("Docker is not available.");
     lines.push(`Install path: ${summary.install?.command || "Install Docker, then run: aginti docker setup"}`);
+    if (summary.install?.supported) {
+      lines.push("Install command: aginti docker install-host --yes");
+      lines.push("After install, open a fresh shell or run newgrp docker, then run: aginti docker setup");
+    } else {
+      lines.push("After installing Docker for this platform, run: aginti docker setup");
+    }
   } else if (!summary.imageReady || summary.preflightOk === false) {
     lines.push("Next: aginti docker setup");
   } else {
