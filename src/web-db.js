@@ -9,6 +9,38 @@ import { permissionModeDefaults } from "./permission-modes.js";
 
 const PREFERENCES_SCHEMA_VERSION = 8;
 
+function jsonStatePath(dbPath) {
+  return dbPath.replace(/\.sqlite$/i, ".json");
+}
+
+function emptyJsonState() {
+  return {
+    preferences: {},
+    sessions: {},
+  };
+}
+
+function readJsonFile(filePath) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return {
+      ...emptyJsonState(),
+      ...parsed,
+      preferences: parsed && typeof parsed.preferences === "object" && parsed.preferences ? parsed.preferences : {},
+      sessions: parsed && typeof parsed.sessions === "object" && parsed.sessions ? parsed.sessions : {},
+    };
+  } catch {
+    return emptyJsonState();
+  }
+}
+
+function writeJsonFile(filePath, state) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify(state, null, 2)}\n`);
+  fs.renameSync(tmpPath, filePath);
+}
+
 function defaultPreferences(baseDir) {
   const presets = getModelPresets();
   const roles = getModelRoleDefaults();
@@ -63,33 +95,40 @@ export class WebDatabase {
     this.paths = projectPaths(this.baseDir);
     this.dbDir = this.paths.sessionsDir;
     this.dbPath = this.paths.sessionDbPath;
+    this.jsonPath = jsonStatePath(this.dbPath);
     fs.mkdirSync(this.dbDir, { recursive: true });
-    const DatabaseSync = loadDatabaseSync();
-    this.db = new DatabaseSync(this.dbPath);
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS preferences (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
+    const DatabaseSync = loadDatabaseSync({ optional: true });
+    this.driver = DatabaseSync ? "sqlite" : "json";
+    this.db = DatabaseSync ? new DatabaseSync(this.dbPath) : null;
+    if (this.db) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS preferences (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
 
-      CREATE TABLE IF NOT EXISTS sessions (
-        session_id TEXT PRIMARY KEY,
-        provider TEXT NOT NULL,
-        model TEXT NOT NULL,
-        goal TEXT NOT NULL,
-        status TEXT NOT NULL,
-        started_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        ended_at TEXT,
-        result TEXT,
-        error TEXT
-      );
-    `);
+        CREATE TABLE IF NOT EXISTS sessions (
+          session_id TEXT PRIMARY KEY,
+          provider TEXT NOT NULL,
+          model TEXT NOT NULL,
+          goal TEXT NOT NULL,
+          status TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          ended_at TEXT,
+          result TEXT,
+          error TEXT
+        );
+      `);
+    } else if (!fs.existsSync(this.jsonPath)) {
+      writeJsonFile(this.jsonPath, emptyJsonState());
+    }
     this.migrate();
   }
 
   migrate() {
+    if (!this.db) return;
     const sessionColumns = this.db.prepare("PRAGMA table_info(sessions)").all();
     if (!sessionColumns.some((column) => column.name === "title")) {
       this.db.exec("ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT ''");
@@ -108,12 +147,29 @@ export class WebDatabase {
     }
   }
 
+  readJsonState() {
+    return readJsonFile(this.jsonPath);
+  }
+
+  writeJsonState(state) {
+    writeJsonFile(this.jsonPath, state);
+  }
+
   getPreferences() {
+    if (!this.db) {
+      const raw = this.readJsonState().preferences.ui;
+      if (!raw) return defaultPreferences(this.baseDir);
+      return this.normalizePreferences(raw);
+    }
     const row = this.db.prepare("SELECT value FROM preferences WHERE key = ?").get("ui");
     if (!row) return defaultPreferences(this.baseDir);
 
+    return this.normalizePreferences(row.value);
+  }
+
+  normalizePreferences(value) {
     try {
-      const parsed = JSON.parse(row.value);
+      const parsed = typeof value === "string" ? JSON.parse(value) : value;
       const preferences = {
         ...defaultPreferences(this.baseDir),
         ...parsed,
@@ -177,6 +233,13 @@ export class WebDatabase {
   savePreferences(preferences) {
     const value = JSON.stringify(preferences);
     const updatedAt = new Date().toISOString();
+    if (!this.db) {
+      const state = this.readJsonState();
+      state.preferences.ui = value;
+      state.preferences.uiUpdatedAt = updatedAt;
+      this.writeJsonState(state);
+      return;
+    }
     this.db
       .prepare(
         `INSERT INTO preferences (key, value, updated_at)
@@ -192,6 +255,35 @@ export class WebDatabase {
     const commandCwd = session.commandCwd || projectRoot;
     const projectSessionsDir = session.projectSessionsDir || this.paths.sessionsDir;
     const sessionDir = session.sessionDir || path.join(this.paths.globalSessionsDir, session.sessionId);
+    const record = {
+      sessionId: session.sessionId,
+      projectRoot,
+      commandCwd,
+      projectSessionsDir,
+      sessionDir,
+      provider: session.provider,
+      model: session.model,
+      goal: session.goal,
+      title: session.title || "",
+      status: session.status,
+      startedAt: session.startedAt,
+      updatedAt,
+      endedAt: session.endedAt || null,
+      result: session.result || "",
+      error: session.error || "",
+    };
+    if (!this.db) {
+      const state = this.readJsonState();
+      const previous = state.sessions[session.sessionId] || {};
+      state.sessions[session.sessionId] = {
+        ...previous,
+        ...record,
+        title: record.title || previous.title || "",
+      };
+      this.writeJsonState(state);
+      this.syncSessionIndex(record);
+      return;
+    }
     this.db
       .prepare(
         `INSERT INTO sessions (
@@ -230,15 +322,14 @@ export class WebDatabase {
         session.result || "",
         session.error || ""
       );
+    this.syncSessionIndex(record);
+  }
+
+  syncSessionIndex(record) {
     try {
       upsertSessionIndex({
-        ...session,
-        projectRoot,
-        commandCwd,
-        projectSessionsDir,
-        sessionDir,
-        createdAt: session.startedAt,
-        updatedAt,
+        ...record,
+        createdAt: record.startedAt,
       });
     } catch {
       // The project-local database remains the fallback if the global index cannot be updated.
@@ -246,6 +337,9 @@ export class WebDatabase {
   }
 
   getSession(sessionId) {
+    if (!this.db) {
+      return this.readJsonState().sessions[sessionId] || null;
+    }
     return (
       this.db
         .prepare(
@@ -273,6 +367,12 @@ export class WebDatabase {
   }
 
   listSessions(limit = 20) {
+    if (!this.db) {
+      const maxRows = Math.min(Math.max(Number(limit) || 20, 1), 1000);
+      return Object.values(this.readJsonState().sessions)
+        .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")))
+        .slice(0, maxRows);
+    }
     return this.db
       .prepare(
         `SELECT
@@ -300,6 +400,19 @@ export class WebDatabase {
 
   renameSession(sessionId, title) {
     const updatedAt = new Date().toISOString();
+    if (!this.db) {
+      const state = this.readJsonState();
+      if (!state.sessions[sessionId]) return false;
+      state.sessions[sessionId].title = title;
+      state.sessions[sessionId].updatedAt = updatedAt;
+      this.writeJsonState(state);
+      try {
+        renameSessionIndex(sessionId, title);
+      } catch {
+        // Keep the project-local JSON store as the source of truth.
+      }
+      return true;
+    }
     const result = this.db
       .prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE session_id = ?")
       .run(title, updatedAt, sessionId);
@@ -308,6 +421,18 @@ export class WebDatabase {
   }
 
   deleteSession(sessionId) {
+    if (!this.db) {
+      const state = this.readJsonState();
+      if (!state.sessions[sessionId]) return false;
+      delete state.sessions[sessionId];
+      this.writeJsonState(state);
+      try {
+        deleteSessionIndex(sessionId);
+      } catch {
+        // Keep the project-local JSON store as the source of truth.
+      }
+      return true;
+    }
     const result = this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(sessionId);
     if (result.changes > 0) deleteSessionIndex(sessionId);
     return result.changes > 0;

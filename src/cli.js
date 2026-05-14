@@ -1098,6 +1098,7 @@ function parseInitOptions(argv = []) {
 function printDoctorReport(report) {
   console.log(`AgInTiFlow ${report.package.version} (npm latest: ${report.package.npmLatest})`);
   console.log(`node=${report.node.version} ok=${report.node.ok}`);
+  console.log(`nodeSqlite=${report.node.sqlite?.ok ? "available" : "fallback-json"} storage=${report.node.sqlite?.ok ? "sqlite" : "json"}`);
   console.log(`platform=${report.platform.label} family=${report.platform.linuxFamily || report.platform.platform}`);
   console.log(`project=${report.project.root}`);
   console.log(`instructions=${report.project.instructionsPath} present=${report.project.instructionsPresent}`);
@@ -1125,6 +1126,10 @@ function printDoctorReport(report) {
   if (report.platform.setupHints.length > 0) {
     console.log("platform setup hints:");
     for (const hint of report.platform.setupHints) console.log(`- ${hint}`);
+  }
+  if (report.node.recovery?.length) {
+    console.log("node runtime recovery:");
+    for (const line of report.node.recovery) console.log(`- ${line}`);
   }
 }
 

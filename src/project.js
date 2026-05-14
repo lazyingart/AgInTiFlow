@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { listAgentWrappers } from "./tool-wrappers.js";
 import { getDockerSandboxStatus } from "./docker-sandbox.js";
 import { platformInfo, platformLabel, platformSetupHints } from "./platform.js";
+import { nodeSqliteRecoveryLines, nodeSqliteStatus } from "./sqlite.js";
 import { buildAgintiInstructions, normalizeInstructionTemplate } from "./behavior-contract.js";
 import {
   LEGACY_PROJECT_SESSIONS_DIR_NAME,
@@ -758,6 +759,7 @@ export async function doctorReport(projectRoot, packageVersion, config) {
   const paths = projectPaths(projectRoot);
   const keyStatus = providerKeyStatus(projectRoot);
   const platform = platformInfo();
+  const sqliteStatus = nodeSqliteStatus();
   const [sessions, dockerStatus, latestVersion, instructions] = await Promise.all([
     listProjectSessions(projectRoot, 8),
     getDockerSandboxStatus(config).catch((error) => ({ ok: false, error: error.message })),
@@ -775,6 +777,8 @@ export async function doctorReport(projectRoot, packageVersion, config) {
     node: {
       version: process.version,
       ok: Number(process.versions.node.split(".")[0]) >= 22,
+      sqlite: sqliteStatus,
+      recovery: sqliteStatus.ok ? [] : nodeSqliteRecoveryLines(sqliteStatus),
     },
     platform: {
       ...platform,

@@ -17,6 +17,7 @@ export function globalSessionPaths(sessionId = "") {
     home,
     sessionsDir,
     indexDbPath: path.join(sessionsDir, "index.sqlite"),
+    indexJsonPath: path.join(sessionsDir, "index.json"),
     sessionDir: sessionId ? path.join(sessionsDir, sessionId) : "",
   };
 }
@@ -29,7 +30,8 @@ export function isSafeSessionId(sessionId) {
 function ensureIndexDb() {
   const paths = globalSessionPaths();
   fs.mkdirSync(paths.sessionsDir, { recursive: true });
-  const DatabaseSync = loadDatabaseSync();
+  const DatabaseSync = loadDatabaseSync({ optional: true });
+  if (!DatabaseSync) return null;
   const db = new DatabaseSync(paths.indexDbPath);
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
@@ -57,14 +59,86 @@ function ensureIndexDb() {
   return db;
 }
 
-export function upsertSessionIndex(record = {}) {
-  const sessionId = String(record.sessionId || record.session_id || "").trim();
-  if (!isSafeSessionId(sessionId)) return false;
+function emptyIndexState() {
+  return {
+    sessions: {},
+  };
+}
+
+function readIndexJson() {
+  const paths = globalSessionPaths();
+  fs.mkdirSync(paths.sessionsDir, { recursive: true });
+  try {
+    const parsed = JSON.parse(fs.readFileSync(paths.indexJsonPath, "utf8"));
+    return {
+      ...emptyIndexState(),
+      ...parsed,
+      sessions: parsed && typeof parsed.sessions === "object" && parsed.sessions ? parsed.sessions : {},
+    };
+  } catch {
+    return emptyIndexState();
+  }
+}
+
+function writeIndexJson(state) {
+  const paths = globalSessionPaths();
+  fs.mkdirSync(paths.sessionsDir, { recursive: true });
+  const tmpPath = `${paths.indexJsonPath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify(state, null, 2)}\n`);
+  fs.renameSync(tmpPath, paths.indexJsonPath);
+}
+
+function normalizeIndexRecord(record = {}, sessionId = "") {
   const now = new Date().toISOString();
-  const db = ensureIndexDb();
   const paths = globalSessionPaths(sessionId);
   const createdAt = record.createdAt || record.startedAt || record.created_at || now;
   const updatedAt = record.updatedAt || record.updated_at || createdAt || now;
+  return {
+    sessionId,
+    projectRoot: String(record.projectRoot || record.project_root || ""),
+    commandCwd: String(record.commandCwd || record.command_cwd || record.projectRoot || record.project_root || ""),
+    projectSessionsDir: String(record.projectSessionsDir || record.project_sessions_dir || ""),
+    sessionDir: String(record.sessionDir || record.session_dir || paths.sessionDir),
+    provider: String(record.provider || ""),
+    model: String(record.model || ""),
+    goal: String(record.goal || ""),
+    title: String(record.title || ""),
+    status: String(record.status || ""),
+    createdAt,
+    updatedAt,
+    endedAt: record.endedAt || record.ended_at || null,
+    result: String(record.result || ""),
+    error: String(record.error || ""),
+  };
+}
+
+export function upsertSessionIndex(record = {}) {
+  const sessionId = String(record.sessionId || record.session_id || "").trim();
+  if (!isSafeSessionId(sessionId)) return false;
+  const db = ensureIndexDb();
+  const normalized = normalizeIndexRecord(record, sessionId);
+  if (!db) {
+    const state = readIndexJson();
+    const previous = state.sessions[sessionId] || {};
+    state.sessions[sessionId] = {
+      ...previous,
+      ...normalized,
+      projectRoot: normalized.projectRoot || previous.projectRoot || "",
+      commandCwd: normalized.commandCwd || previous.commandCwd || "",
+      projectSessionsDir: normalized.projectSessionsDir || previous.projectSessionsDir || "",
+      sessionDir: normalized.sessionDir || previous.sessionDir || globalSessionPaths(sessionId).sessionDir,
+      provider: normalized.provider || previous.provider || "",
+      model: normalized.model || previous.model || "",
+      goal: normalized.goal || previous.goal || "",
+      title: normalized.title || previous.title || "",
+      status: normalized.status || previous.status || "",
+      result: normalized.result || previous.result || "",
+      error: normalized.error || previous.error || "",
+    };
+    writeIndexJson(state);
+    return true;
+  }
+  const paths = globalSessionPaths(sessionId);
   db.prepare(
     `INSERT INTO sessions (
        session_id, project_root, command_cwd, project_sessions_dir, session_dir,
@@ -86,20 +160,20 @@ export function upsertSessionIndex(record = {}) {
        error = CASE WHEN excluded.error != '' THEN excluded.error ELSE sessions.error END`
   ).run(
     sessionId,
-    String(record.projectRoot || record.project_root || ""),
-    String(record.commandCwd || record.command_cwd || record.projectRoot || record.project_root || ""),
-    String(record.projectSessionsDir || record.project_sessions_dir || ""),
-    String(record.sessionDir || record.session_dir || paths.sessionDir),
-    String(record.provider || ""),
-    String(record.model || ""),
-    String(record.goal || ""),
-    String(record.title || ""),
-    String(record.status || ""),
-    createdAt,
-    updatedAt,
-    record.endedAt || record.ended_at || null,
-    String(record.result || ""),
-    String(record.error || "")
+    normalized.projectRoot,
+    normalized.commandCwd,
+    normalized.projectSessionsDir,
+    normalized.sessionDir || paths.sessionDir,
+    normalized.provider,
+    normalized.model,
+    normalized.goal,
+    normalized.title,
+    normalized.status,
+    normalized.createdAt,
+    normalized.updatedAt,
+    normalized.endedAt,
+    normalized.result,
+    normalized.error
   );
   return true;
 }
@@ -107,6 +181,14 @@ export function upsertSessionIndex(record = {}) {
 export function renameSessionIndex(sessionId, title) {
   if (!isSafeSessionId(sessionId)) return false;
   const db = ensureIndexDb();
+  if (!db) {
+    const state = readIndexJson();
+    if (!state.sessions[sessionId]) return false;
+    state.sessions[sessionId].title = String(title || "").trim();
+    state.sessions[sessionId].updatedAt = new Date().toISOString();
+    writeIndexJson(state);
+    return true;
+  }
   const result = db
     .prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE session_id = ?")
     .run(String(title || "").trim(), new Date().toISOString(), sessionId);
@@ -116,6 +198,13 @@ export function renameSessionIndex(sessionId, title) {
 export function deleteSessionIndex(sessionId) {
   if (!isSafeSessionId(sessionId)) return false;
   const db = ensureIndexDb();
+  if (!db) {
+    const state = readIndexJson();
+    if (!state.sessions[sessionId]) return false;
+    delete state.sessions[sessionId];
+    writeIndexJson(state);
+    return true;
+  }
   const result = db.prepare("DELETE FROM sessions WHERE session_id = ?").run(sessionId);
   return result.changes > 0;
 }
@@ -123,6 +212,18 @@ export function deleteSessionIndex(sessionId) {
 export function listSessionIndex({ projectRoot = "", commandCwd = "", limit = 100 } = {}) {
   const db = ensureIndexDb();
   const maxRows = Math.min(Math.max(Number(limit) || 100, 1), 1000);
+  if (!db) {
+    const resolvedProjectRoot = projectRoot ? path.resolve(projectRoot) : "";
+    const resolvedCommandCwd = commandCwd ? path.resolve(commandCwd) : "";
+    return Object.values(readIndexJson().sessions)
+      .filter((session) => {
+        if (resolvedProjectRoot && session.projectRoot !== resolvedProjectRoot) return false;
+        if (resolvedCommandCwd && session.commandCwd !== resolvedCommandCwd) return false;
+        return true;
+      })
+      .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")))
+      .slice(0, maxRows);
+  }
   const columns = `session_id AS sessionId, project_root AS projectRoot, command_cwd AS commandCwd, project_sessions_dir AS projectSessionsDir,
     session_dir AS sessionDir, provider, model, goal, title, status,
     created_at AS createdAt, updated_at AS updatedAt, ended_at AS endedAt, result, error`;

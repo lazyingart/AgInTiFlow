@@ -1397,6 +1397,7 @@ app.get("/health", (_req, res) => {
     sessionsDir,
     projectSessionsDir,
     packageDir,
+    storageDriver: db.driver || "sqlite",
   });
 });
 

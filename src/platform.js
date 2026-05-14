@@ -58,6 +58,7 @@ export function platformSetupHints(info = platformInfo()) {
   if (info.isWsl) {
     return [
       "Use the Linux/WSL shell as the primary AgInTiFlow environment; keep projects under the WSL filesystem for best file and Docker performance.",
+      "Use Node.js 22+ from nvm/fnm/NodeSource; if an old ~/.npm-global/bin/aginti is earlier on PATH, reinstall AgInTiFlow after switching Node.",
       "Use Docker Desktop with WSL integration or Docker Engine inside WSL for docker-workspace mode.",
       "For LaTeX, reuse WSL latexmk/pdflatex when installed, or use the companion Docker sandbox image.",
     ];
@@ -65,6 +66,7 @@ export function platformSetupHints(info = platformInfo()) {
   if (info.isMac) {
     return [
       "Use Node.js 22+ from Homebrew, nvm, fnm, or the official installer.",
+      "After changing Node versions, verify `node -v`, `which aginti`, and reinstall with `npm install -g @lazyingart/agintiflow@latest` so the CLI uses the same Node that installed it.",
       "Use Docker Desktop or Colima for docker-workspace mode; the Ubuntu Docker installer is intentionally not used on macOS.",
       "For LaTeX, reuse MacTeX/BasicTeX when latexmk and pdflatex are on PATH; otherwise use the companion Docker sandbox image.",
       "Use Homebrew for optional host tools such as ripgrep, git, python, and latexmk when you choose host mode.",
@@ -80,6 +82,7 @@ export function platformSetupHints(info = platformInfo()) {
   if (info.linuxFamily === "debian") {
     return [
       "Use Node.js 22+ from nvm/fnm, NodeSource, or distro packages.",
+      "After changing Node versions, verify `node -v`, `which aginti`, and reinstall with `npm install -g @lazyingart/agintiflow@latest` to avoid stale npm-global shims.",
       "Docker can be installed with scripts/install-docker-ubuntu.sh on Ubuntu/Debian-like hosts.",
       "For LaTeX, reuse host latexmk/pdflatex when available; otherwise use the companion Docker sandbox image.",
     ];
