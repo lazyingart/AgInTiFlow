@@ -179,6 +179,12 @@ const multipleRequestedToolCalls = parseTextToolCalls(
 );
 assert(multipleRequestedToolCalls.length === 2, "Requested tools parser did not detect multiple function-call texts");
 assert(multipleRequestedToolCalls[1].function.name === "inspect_project", "Requested tools parser returned wrong second requested tool");
+const xmlTextToolCalls = parseTextToolCalls(
+  '<tool_calls>\n<tool_call name="inspect_project">{"project_path":"/workspace"}</tool_call>\n<tool_call name="list_files">{"path":".","depth":2}</tool_call>\n</tool_calls>'
+);
+assert(xmlTextToolCalls.length === 2, "XML text tool-call parser did not detect multiple calls");
+assert(xmlTextToolCalls[0].function.name === "inspect_project", "XML text tool-call parser returned wrong first tool");
+assert(xmlTextToolCalls[1].function.arguments.includes('"depth":2'), "XML text tool-call parser returned wrong arguments");
 const malformedRequestedToolResponse = normalizeTextToolCallResponse({
   choices: [
     {

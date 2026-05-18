@@ -204,6 +204,7 @@ export function parseTextToolCalls(content = "") {
 
   const calls = [];
   for (const call of parseRequestedToolCalls(text)) calls.push(call);
+  for (const call of parseXmlToolCalls(text, calls.length)) calls.push(call);
   const jsonBlock = text.match(/TOOL_CALLS\s*:\s*```(?:json)?\s*([\s\S]*?)```/i);
   if (jsonBlock?.[1]) {
     try {
@@ -258,7 +259,51 @@ export function parseTextToolCalls(content = "") {
 
 function hasTextToolCallMarker(content = "") {
   const text = String(content || "");
-  return text.includes("[TOOL_CALLS]") || /TOOL_CALLS\s*:/i.test(text) || /Requested tools?\s*:/i.test(text);
+  return (
+    text.includes("[TOOL_CALLS]") ||
+    /TOOL_CALLS\s*:/i.test(text) ||
+    /Requested tools?\s*:/i.test(text) ||
+    /<tool_calls?>/i.test(text)
+  );
+}
+
+function decodeXmlToolArgs(value = "") {
+  return String(value || "")
+    .trim()
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function parseXmlToolCalls(content = "", offset = 0) {
+  const text = String(content || "");
+  const calls = [];
+  const pattern = /<tool_call\b([^>]*)>([\s\S]*?)<\/tool_call>/gi;
+  let match;
+  while ((match = pattern.exec(text))) {
+    const attrs = match[1] || "";
+    const name =
+      attrs.match(/\bname\s*=\s*"([^"]+)"/i)?.[1]?.trim() ||
+      attrs.match(/\bname\s*=\s*'([^']+)'/i)?.[1]?.trim();
+    if (!name) continue;
+    const rawArgs = decodeXmlToolArgs(match[2]);
+    try {
+      JSON.parse(rawArgs || "{}");
+    } catch {
+      continue;
+    }
+    calls.push({
+      id: `text-tool-${offset + calls.length + 1}`,
+      type: "function",
+      function: {
+        name,
+        arguments: rawArgs || "{}",
+      },
+    });
+  }
+  return calls;
 }
 
 function findMatchingParen(text = "", openIndex = 0) {
@@ -330,6 +375,7 @@ function textBeforeToolCallMarker(content = "") {
     .split("[TOOL_CALLS]")[0]
     .split("TOOL_CALLS:")[0]
     .split(/Requested tools?\s*:/i)[0]
+    .split(/<tool_calls?>/i)[0]
     .split("<|tool_call>")[0]
     .trim();
 }
