@@ -66,9 +66,25 @@ try {
   const veniceDefaults = getProviderDefaults("venice");
   assert(veniceDefaults.provider === "venice" && veniceDefaults.model === "venice-uncensored-1-2", "venice provider defaults are not available");
 
+  process.env.DEEPSEEK_API_KEY = "ambient-deepseek-key";
+  process.env.VENICE_API_KEY = "ambient-venice-key";
+  process.env.GRSAI_API_KEY = "ambient-grsai-key";
+  let status = providerKeyStatus(tempRoot);
+  assert(status.deepseek && status.venice && status.grsai, "ambient provider keys were not detected");
+  assert(status.localEnv, "ambient provider keys were not persisted into local .aginti/.env");
+  const localEnv = await fs.readFile(path.join(tempRoot, ".aginti", ".env"), "utf8");
+  assert(localEnv.includes("DEEPSEEK_API_KEY="), "ambient DeepSeek key was not saved locally");
+  assert(localEnv.includes("VENICE_API_KEY="), "ambient Venice key was not saved locally");
+  assert(localEnv.includes("GRSAI_API_KEY="), "ambient GRS AI key was not saved locally");
+  delete process.env.DEEPSEEK_API_KEY;
+  delete process.env.VENICE_API_KEY;
+  delete process.env.GRSAI_API_KEY;
+  status = providerKeyStatus(tempRoot);
+  assert(status.deepseek && status.venice && status.grsai, "persisted provider keys were not reloaded after ambient env was cleared");
+
   await setProviderKey(tempRoot, "qwen", "test-qwen-key");
   await setProviderKey(tempRoot, "venice", "test-venice-key");
-  let status = providerKeyStatus(tempRoot);
+  status = providerKeyStatus(tempRoot);
   assert(status.qwen, "qwen key status was not detected");
   assert(status.venice, "venice key status was not detected");
   assert(status.envVars.qwen.includes("QWEN_API_KEY"), "qwen env var name was not reported");
@@ -103,6 +119,7 @@ try {
           "provider-key-preview",
           "qwen-defaults",
           "venice-defaults",
+          "ambient-key-autopersist",
           "qwen-key-status",
           "venice-key-status",
           "cli-key-status-redacted",

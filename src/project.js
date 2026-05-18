@@ -51,6 +51,16 @@ const PROVIDER_KEY_CANDIDATES = {
   grsai: ["GRSAI", "GRSAI_API_KEY"],
 };
 
+const AMBIENT_PROVIDER_KEYS = [
+  "DEEPSEEK_API_KEY",
+  "OPENAI_API_KEY",
+  "QWEN_API_KEY",
+  "VENICE_API_KEY",
+  "GRSAI",
+  "GRSAI_API_KEY",
+  "LLM_API_KEY",
+];
+
 export function resolveProjectRoot(input = process.cwd()) {
   return path.resolve(input || process.cwd());
 }
@@ -206,6 +216,55 @@ export function parseEnvText(text = "") {
   return values;
 }
 
+function ensureSecretGitignoreLinesSync(gitignorePath) {
+  const lines = [".aginti/.env", ".aginti/.env.*", "!.aginti/.env.example"];
+  let current = "";
+  try {
+    current = fs.readFileSync(gitignorePath, "utf8");
+  } catch {
+    current = "";
+  }
+  const existing = new Set(current.split(/\r?\n/).map((line) => line.trim()));
+  const missing = lines.filter((line) => !existing.has(line));
+  if (missing.length === 0) return;
+  const prefix = current && !current.endsWith("\n") ? "\n" : "";
+  fs.writeFileSync(gitignorePath, `${current}${prefix}${missing.join("\n")}\n`, "utf8");
+}
+
+function persistAmbientProviderKeysSync(paths) {
+  let parsed = {};
+  try {
+    parsed = parseEnvText(fs.readFileSync(paths.envPath, "utf8"));
+  } catch {
+    parsed = {};
+  }
+
+  let changed = false;
+  const persistedKeys = [];
+  for (const keyName of AMBIENT_PROVIDER_KEYS) {
+    const value = String(process.env[keyName] || "").trim();
+    if (!value || parsed[keyName]) continue;
+    parsed[keyName] = value;
+    persistedKeys.push(keyName);
+    changed = true;
+  }
+  if (!changed) return { persisted: false, keys: [] };
+
+  fs.mkdirSync(paths.controlDir, { recursive: true });
+  ensureSecretGitignoreLinesSync(paths.gitignorePath);
+  const output = Object.entries(parsed)
+    .filter(([key]) => LOCAL_ENV_KEYS.has(key))
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join("\n");
+  fs.writeFileSync(paths.envPath, `${output}\n`, { mode: 0o600 });
+  try {
+    fs.chmodSync(paths.envPath, 0o600);
+  } catch {
+    // chmod can fail on non-POSIX filesystems; the file still remains local and gitignored.
+  }
+  return { persisted: true, keys: persistedKeys };
+}
+
 export function loadProjectEnv(projectRoot = process.cwd(), { override = false } = {}) {
   const paths = projectPaths(projectRoot);
   const envPaths = [paths.rootEnvPath, paths.envPath];
@@ -222,10 +281,14 @@ export function loadProjectEnv(projectRoot = process.cwd(), { override = false }
       // Ignore missing or unreadable optional local env files.
     }
   }
+  const ambient = persistAmbientProviderKeysSync(paths);
+  if (ambient.persisted && !loadedPaths.includes(paths.envPath)) loadedPaths.push(paths.envPath);
   return {
     loaded: loadedPaths.length > 0,
     path: paths.envPath,
     paths: loadedPaths,
+    ambientPersisted: ambient.persisted,
+    ambientKeys: ambient.keys,
   };
 }
 
