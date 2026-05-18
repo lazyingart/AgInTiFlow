@@ -681,6 +681,20 @@ try {
   );
   assert(limitedReadResult.content === "line 001\nline 002\nline 003", "read_file lineLimit did not return the requested line slice");
   assert(limitedReadResult.contentTruncatedByLines === true, "read_file lineLimit should report remaining lines");
+  const largeReadLines = Array.from({ length: 30000 }, (_, index) => `large line ${String(index + 1).padStart(5, "0")}`).join("\n");
+  await fs.writeFile(path.join(workspace, "large-read-smoke.md"), largeReadLines, "utf8");
+  const largeLimitedReadResult = await executeWorkspaceTool(
+    "read_file",
+    { path: "large-read-smoke.md", startLine: 100, lineLimit: 2 },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  assert(
+    largeLimitedReadResult.content === "large line 00100\nlarge line 00101",
+    "read_file lineLimit should work on larger text files"
+  );
   const inspected = await executeWorkspaceTool(
     "inspect_project",
     { path: ".", maxDepth: 4, limit: 200 },

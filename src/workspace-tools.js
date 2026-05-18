@@ -7,6 +7,7 @@ export const WORKSPACE_TOOL_NAMES = ["inspect_project", "list_files", "read_file
 export const WORKSPACE_WRITE_TOOL_NAMES = ["write_file", "apply_patch"];
 
 const MAX_READ_BYTES = 220_000;
+const MAX_LINE_LIMIT_READ_BYTES = 5_000_000;
 const MAX_WRITE_BYTES = 220_000;
 const MAX_PATCH_BYTES = 260_000;
 const MAX_LIST_ENTRIES = 360;
@@ -390,10 +391,14 @@ async function listFiles(config, args) {
   };
 }
 
-async function readTextFile(target) {
+async function readTextFile(target, { allowLargeLineLimited = false } = {}) {
   const stat = await fs.stat(target.absolutePath);
   if (!stat.isFile()) throw new Error(`Path is not a file: ${target.relativePath}`);
-  if (stat.size > MAX_READ_BYTES) throw new Error(`File is too large to read safely: ${target.relativePath}`);
+  if (stat.size > MAX_READ_BYTES) {
+    if (!allowLargeLineLimited || stat.size > MAX_LINE_LIMIT_READ_BYTES) {
+      throw new Error(`File is too large to read safely: ${target.relativePath}`);
+    }
+  }
 
   const buffer = await fs.readFile(target.absolutePath);
   if (buffer.includes(0)) throw new Error(`Binary files are not readable through this tool: ${target.relativePath}`);
@@ -406,11 +411,11 @@ async function readTextFile(target) {
 
 async function readFile(config, args) {
   const target = resolveWorkspacePath(config, args.path);
-  const { stat, content, hash } = await readTextFile(target);
-  const lines = content.split(/\r?\n/);
-  const startLine = Math.min(Math.max(Number(args.startLine) || 1, 1), Math.max(lines.length, 1));
   const requestedLineLimit = Number(args.lineLimit || args.limit || 0);
   const lineLimit = Number.isFinite(requestedLineLimit) && requestedLineLimit > 0 ? Math.min(requestedLineLimit, 1000) : 0;
+  const { stat, content, hash } = await readTextFile(target, { allowLargeLineLimited: lineLimit > 0 });
+  const lines = content.split(/\r?\n/);
+  const startLine = Math.min(Math.max(Number(args.startLine) || 1, 1), Math.max(lines.length, 1));
   const selectedLines = lineLimit > 0 ? lines.slice(startLine - 1, startLine - 1 + lineLimit) : lines;
   const selectedContent = selectedLines.join("\n");
   return {
