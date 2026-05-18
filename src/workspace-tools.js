@@ -198,13 +198,42 @@ function pathPolicy(toolName, relativePath) {
 }
 
 function secretContentPolicy(content) {
-  if (!hasSensitiveText(content)) return { allowed: true };
+  if (!hasSensitiveText(stripSafeCredentialReferences(content))) return { allowed: true };
   return {
     allowed: false,
     reason:
       "Write content appears to contain token-like secret text. Redact secret values as [REDACTED] or use dedicated key storage such as `aginti keys set`; do not write credentials into workspace files.",
     category: "workspace-content",
   };
+}
+
+function stripSafeCredentialReferences(content) {
+  let text = String(content ?? "");
+  const keyName = String.raw`(?:api[_-]?key|token|secret|password|passwd|npm_token|_authToken|grsai|venice_api_key)`;
+  const envName = String.raw`[A-Z][A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PASSWD|GRSAI|VENICE)[A-Z0-9_]*`;
+
+  text = text.replace(
+    new RegExp(String.raw`\b${keyName}\s*=\s*(?:os\.environ\.get|os\.getenv)\(\s*["']${envName}["'](?:\s*,\s*(?:None|""|''))?\s*\)`, "gi"),
+    "safe_credential_ref=[ENV_REF]"
+  );
+  text = text.replace(
+    new RegExp(String.raw`\b${keyName}\s*=\s*(?:os\.environ|env)\[\s*["']${envName}["']\s*\]`, "gi"),
+    "safe_credential_ref=[ENV_REF]"
+  );
+  text = text.replace(
+    new RegExp(String.raw`\b${keyName}\s*=\s*(?:process\.env\.${envName}|Deno\.env\.get\(\s*["']${envName}["']\s*\))`, "gi"),
+    "safe_credential_ref=[ENV_REF]"
+  );
+  text = text.replace(
+    new RegExp(String.raw`([,(]\s*)${keyName}\s*=\s*[A-Za-z_$][\w$]*(?=\s*[,)\n])`, "gi"),
+    "$1safe_credential_ref=[VAR_REF]"
+  );
+  text = text.replace(
+    new RegExp(String.raw`([,{]\s*)${keyName}\s*:\s*[A-Za-z_$][\w$]*(?=\s*[,}\n])`, "gi"),
+    "$1safe_credential_ref=[VAR_REF]"
+  );
+
+  return text;
 }
 
 function writeContentPolicy(toolName, args, operations = null) {

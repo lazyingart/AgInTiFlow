@@ -1031,6 +1031,27 @@ try {
       if (error.code !== "ENOENT") throw error;
     });
 
+  const safeEnvReferenceResult = await executeWorkspaceTool(
+    "write_file",
+    {
+      path: "scripts/safe-env-reference.py",
+      content: [
+        "import os",
+        "from openai import OpenAI",
+        'api_key = os.environ.get("DEEPSEEK_API_KEY")',
+        'client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")',
+        "print(client)",
+        "",
+      ].join("\n"),
+      mode: "create",
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  assert(safeEnvReferenceResult.ok, "write_file should allow safe env-var credential references in source code");
+
   const redactedContentResult = await executeWorkspaceTool(
     "write_file",
     {
@@ -1127,6 +1148,7 @@ try {
           "patch_move_no_overwrite",
           "block_env",
           "block_secret_write_content",
+          "allow_safe_env_reference_content",
           "allow_redacted_write_content",
           "block_secret_patch_content",
           "block_outside",
