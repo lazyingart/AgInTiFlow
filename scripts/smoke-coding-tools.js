@@ -671,6 +671,16 @@ try {
   assert(sanitizedSmallRead.content === longSmallFile, "small read_file result did not keep full content for the model");
   assert(sanitizedSmallRead.contentTruncated === false, "small read_file result should not be marked truncated");
   assert(!("contentPreview" in sanitizedSmallRead), "small read_file result should not replace full content with preview");
+  const limitedReadResult = await executeWorkspaceTool(
+    "read_file",
+    { path: "small-read-smoke.md", startLine: 2, lineLimit: 3 },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  assert(limitedReadResult.content === "line 001\nline 002\nline 003", "read_file lineLimit did not return the requested line slice");
+  assert(limitedReadResult.contentTruncatedByLines === true, "read_file lineLimit should report remaining lines");
   const inspected = await executeWorkspaceTool(
     "inspect_project",
     { path: ".", maxDepth: 4, limit: 200 },

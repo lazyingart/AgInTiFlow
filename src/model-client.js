@@ -1153,6 +1153,9 @@ export async function requestNextStep(client, config, messages) {
             type: "object",
             properties: {
               path: { type: "string", description: "Workspace-relative file path." },
+              startLine: { type: "integer", description: "Optional 1-based first line to read." },
+              lineLimit: { type: "integer", description: "Optional maximum number of lines to read; use this for large source files." },
+              limit: { type: "integer", description: "Alias for lineLimit for compatibility with older prompts." },
             },
             required: ["path"],
             additionalProperties: false,

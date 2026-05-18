@@ -407,13 +407,23 @@ async function readTextFile(target) {
 async function readFile(config, args) {
   const target = resolveWorkspacePath(config, args.path);
   const { stat, content, hash } = await readTextFile(target);
+  const lines = content.split(/\r?\n/);
+  const startLine = Math.min(Math.max(Number(args.startLine) || 1, 1), Math.max(lines.length, 1));
+  const requestedLineLimit = Number(args.lineLimit || args.limit || 0);
+  const lineLimit = Number.isFinite(requestedLineLimit) && requestedLineLimit > 0 ? Math.min(requestedLineLimit, 1000) : 0;
+  const selectedLines = lineLimit > 0 ? lines.slice(startLine - 1, startLine - 1 + lineLimit) : lines;
+  const selectedContent = selectedLines.join("\n");
   return {
     ok: true,
     toolName: "read_file",
     path: target.relativePath,
     bytes: stat.size,
     sha256: hash,
-    content: redactSensitiveText(content),
+    content: redactSensitiveText(selectedContent),
+    startLine,
+    lineLimit: lineLimit || null,
+    lineCount: lines.length,
+    contentTruncatedByLines: lineLimit > 0 && startLine - 1 + lineLimit < lines.length,
   };
 }
 
