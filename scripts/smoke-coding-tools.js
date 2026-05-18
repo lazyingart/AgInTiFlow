@@ -1038,7 +1038,9 @@ try {
       content: [
         "import os",
         "from openai import OpenAI",
-        'api_key = os.environ.get("DEEPSEEK_API_KEY")',
+        "def load_api_key():",
+        '    return os.environ.get("DEEPSEEK_API_KEY")',
+        "api_key = load_api_key()",
         'client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")',
         "print(client)",
         "",

@@ -210,6 +210,8 @@ function secretContentPolicy(content) {
 function stripSafeCredentialReferences(content) {
   let text = String(content ?? "");
   const keyName = String.raw`(?:api[_-]?key|token|secret|password|passwd|npm_token|_authToken|grsai|venice_api_key)`;
+  const codeKeyName = String.raw`(?:api[_-]?key|apiKey|token|secret|password|passwd|npmToken|authToken|grsai|veniceApiKey|venice_api_key)`;
+  const codeExpression = String.raw`[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\([^"'\n]*\))?`;
   const envName = String.raw`[A-Z][A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PASSWD|GRSAI|VENICE)[A-Z0-9_]*`;
 
   text = text.replace(
@@ -227,6 +229,10 @@ function stripSafeCredentialReferences(content) {
   text = text.replace(
     new RegExp(String.raw`([,(]\s*)${keyName}\s*=\s*[A-Za-z_$][\w$]*(?=\s*[,)\n])`, "gi"),
     "$1safe_credential_ref=[VAR_REF]"
+  );
+  text = text.replace(
+    new RegExp(String.raw`\b${codeKeyName}\s*=\s*${codeExpression}(?=\s*[,;)\n])`, "g"),
+    "safe_credential_ref=[EXPR_REF]"
   );
   text = text.replace(
     new RegExp(String.raw`([,{]\s*)${keyName}\s*:\s*[A-Za-z_$][\w$]*(?=\s*[,}\n])`, "gi"),
