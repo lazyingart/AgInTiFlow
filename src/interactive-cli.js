@@ -1082,7 +1082,8 @@ export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth
     renderedRows.push(panelLine(`${labelText("hint", { prompt: true })}${renderSuggestionList(suggestions, suggestionIndex)}`, ansi.systemBg, lineWidth));
   }
   if (options.commandCwd) {
-    renderedRows.push(panelLine(`${labelText("cwd", { prompt: true })}${options.commandCwd}`, ansi.systemBg, lineWidth));
+    const footerStatus = options.footerStatus ? `  ${options.footerStatus}` : "";
+    renderedRows.push(panelLine(`${labelText("cwd", { prompt: true })}${options.commandCwd}${footerStatus}`, ansi.systemBg, lineWidth));
   }
 
   return {
@@ -1555,7 +1556,11 @@ function readTtyPrompt(options = {}) {
 
 async function readPromptAnswer(rl, state = {}) {
   if (input.isTTY && output.isTTY && typeof input.setRawMode === "function") {
-    return readTtyPrompt({ commandCwd: state.commandCwd || process.cwd(), language: state.language || cliLanguage });
+    return readTtyPrompt({
+      commandCwd: state.commandCwd || process.cwd(),
+      language: state.language || cliLanguage,
+      footerStatus: modeFooterStatus(state),
+    });
   }
   return rl.question(userPrompt());
 }
@@ -1656,6 +1661,7 @@ class LiveRunInput {
     this.rendered = renderPromptBuffer(this.buffer, this.cursor, this.rendered, {
       commandCwd: this.commandCwd,
       language: this.state.language || cliLanguage,
+      footerStatus: modeFooterStatus(this.state),
       statusLine: this.currentStatusLine(),
       pendingAsap: this.pendingAsap,
       pendingQueued: this.pendingQueued,
@@ -1688,6 +1694,7 @@ class LiveRunInput {
     const layout = buildPromptLayout(this.buffer, this.cursor, terminalWidth(), terminalHeight(), {
       commandCwd: this.commandCwd,
       language: this.state.language || cliLanguage,
+      footerStatus: modeFooterStatus(this.state),
       statusLine: this.currentStatusLine(),
       pendingAsap: this.pendingAsap,
       pendingQueued: this.pendingQueued,
@@ -1900,9 +1907,29 @@ class LiveRunInput {
   }
 }
 
+function aapsModeStatus(state = {}) {
+  if (state.taskProfile !== "aaps") return "off";
+  if (state.aapsMode === "auto") return "auto";
+  return "on";
+}
+
+function veniceModeStatus(state = {}) {
+  const providers = [state.provider, state.routeProvider, state.mainProvider].filter(Boolean);
+  if (providers.includes("venice")) return "on";
+  return state.veniceMode === "on" ? "on" : "off";
+}
+
+function modeFooterStatus(state = {}) {
+  return [
+    `scs=${normalizeScsMode(state.enableScs || "off")}`,
+    `aaps=${aapsModeStatus(state)}`,
+    `venice=${veniceModeStatus(state)}`,
+  ].join(" ");
+}
+
 function printStatus(state) {
   printSystemLine(`project=${process.cwd()}`);
-  printSystemLine(`cwd=${state.commandCwd || process.cwd()}`);
+  printSystemLine(`cwd=${state.commandCwd || process.cwd()} ${modeFooterStatus(state)}`);
   printSystemLine(`session=${state.sessionId || "new"}`);
   const progress =
     state.currentStep && state.currentMaxSteps ? ` progress=${state.currentStep}/${state.currentMaxSteps}` : state.currentStep ? ` progress=${state.currentStep}` : "";
@@ -2191,6 +2218,8 @@ function createState(args = {}) {
     auxiliaryProvider: args.auxiliaryProvider || "grsai",
     auxiliaryModel: args.auxiliaryModel || "nano-banana-2",
     taskProfile: normalizeTaskProfile(args.taskProfile || "auto"),
+    aapsMode: normalizeTaskProfile(args.taskProfile || "auto") === "aaps" ? "on" : "off",
+    veniceMode: "",
     language: resolveLanguage(args.language || process.env.AGINTI_LANGUAGE || ""),
     headless: args.headless ?? false,
     maxSteps:
@@ -2228,6 +2257,7 @@ function useDeepSeekDefaults(state) {
   state.routingMode = "smart";
   state.provider = "deepseek";
   state.model = "";
+  state.veniceMode = "off";
   state.routeProvider = "deepseek";
   state.routeModel = "deepseek-v4-flash";
   state.routeReasoning = "";
@@ -2294,6 +2324,7 @@ function useVeniceModels(state, routeModel = "venice-uncensored-1-2", mainModel 
   state.routingMode = "smart";
   state.provider = "deepseek";
   state.model = "";
+  state.veniceMode = "on";
   state.routeProvider = "venice";
   state.routeModel = routeModel;
   state.mainProvider = "venice";
@@ -3168,6 +3199,7 @@ async function handleCommand(line, state, packageDir) {
     const normalizedAction = String(action || "status").toLowerCase();
     if (normalizedAction === "on" || normalizedAction === "auto") {
       state.taskProfile = "aaps";
+      state.aapsMode = normalizedAction;
       state.maxSteps = Math.max(state.maxSteps, 36);
       printSystemLine(`aaps=${normalizedAction} profile=aaps maxSteps=${state.maxSteps}`);
       printAgentMessage("AAPS mode enabled. Use `/aaps init`, `/aaps validate`, `/aaps compile`, or write normal requests about .aaps workflows.");
@@ -3175,6 +3207,7 @@ async function handleCommand(line, state, packageDir) {
     }
     if (normalizedAction === "off") {
       state.taskProfile = "auto";
+      state.aapsMode = "off";
       printSystemLine("aaps=off profile=auto");
       return true;
     }

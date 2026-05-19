@@ -405,6 +405,16 @@ try {
   ) {
     throw new Error("terminal prompt layout did not render visual-only input padding safely");
   }
+  const footerPromptLayout = buildPromptLayout("hello", 5, 110, 24, {
+    commandCwd: "/tmp/aginti-project",
+    footerStatus: "scs=auto aaps=off venice=off",
+  });
+  const footerPromptText = footerPromptLayout.renderedRows
+    .map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""))
+    .join("\n");
+  if (!footerPromptText.includes("cwd     /tmp/aginti-project  scs=auto aaps=off venice=off")) {
+    throw new Error("terminal prompt layout did not render mode status after the cwd footer");
+  }
   const committedUserText = formatCommittedUserPromptLines("list files", 90)
     .map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""))
     .join("\n");
@@ -687,6 +697,13 @@ try {
   if (!scsDefaultStatusResult.stdout.includes("SCS mode: auto")) {
     throw new Error("interactive /scs status did not show default auto mode");
   }
+  const statusFooterResult = await runChat("/status\n");
+  if (
+    !statusFooterResult.stdout.includes(`cwd=${tempRoot} scs=auto aaps=off venice=off`) ||
+    !statusFooterResult.stdout.includes("permission=")
+  ) {
+    throw new Error("interactive /status did not include scs/aaps/venice mode state on the cwd line");
+  }
   const scsOnResult = await runChat("/scs on\n");
   if (!scsOnResult.stdout.includes("scs=on")) {
     throw new Error("interactive /scs on did not enable SCS");
@@ -707,6 +724,10 @@ try {
   const scsAutoResult = await runChat("/scs auto\n");
   if (!scsAutoResult.stdout.includes("scs=auto")) {
     throw new Error("interactive /scs auto did not enable auto mode");
+  }
+  const aapsAutoResult = await runChat("/aaps auto\n");
+  if (!aapsAutoResult.stdout.includes("aaps=auto profile=aaps")) {
+    throw new Error("interactive /aaps auto did not enable AAPS auto mode");
   }
   const safeResult = await runChat("/safe\n");
   if (!safeResult.stdout.includes("permission=safe") || !safeResult.stdout.includes("writePolicy=prompt")) {
