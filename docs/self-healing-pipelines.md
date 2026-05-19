@@ -10,6 +10,8 @@ The agent should first read status files, manifests, logs, and tmux panes. It sh
 
 When repair is justified, the agent should patch project-owned scripts or prompts in small reversible changes. Preferred repairs include failed-only retry modes, bounded retry passes, atomic writes, stale claim cleanup, idempotent compile commands, clear status JSON, and durable logs.
 
+Concurrency is a tool, not a product stance. AgInTiFlow should choose sequential, parallel, async, or review-gated operation from the user's request and the local project evidence. It should not force a sharded design into projects that do not need it.
+
 ## Boundaries
 
 AgInTiFlow should not embed project-specific schemas in its core. A book writer, data pipeline, or build system owns its own validators and artifact layout. AgInTiFlow provides the reusable behavior: diagnose, preserve valid work, patch the local workflow, verify, restart only affected sessions, and report exact resume commands.

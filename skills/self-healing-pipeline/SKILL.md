@@ -44,13 +44,14 @@ Use this skill when a project has a durable worker, writer, reviewer, monitor, q
 - Make monitors gentle: wait on healthy progress, restart only after explicit stop/stall/error evidence, and write a durable decision log.
 - If parallel workers exist, require disjoint output paths or claim files, atomic promotion, and merge-stage validation before compiling.
 
-## Parallel And Async Design
+## Parallel And Async Options
 
-Use parallelism only where outputs can be partitioned cleanly.
+Parallel and async designs are optional implementation patterns, not a default preference. Use them when the user asks for concurrency, the existing project already has a parallel pipeline, or the evidence shows a sequential bottleneck that can be partitioned safely.
 
-- Prefer sharded writer/fetcher workers for independent JSON/data chunks. Give each worker a deterministic shard, separate log file, and no compile responsibility.
-- Use a separate async reviewer/promoter loop to validate and promote completed candidate files. It may run periodically while writers continue, but it must use atomic writes, locks, or merge directories so it cannot race with active writers.
-- Keep compilation, publishing, and git commits out of parallel workers. Compile after merge/review checkpoints or from a monitor that holds one clear responsibility.
+- Sequential processing is often the safest default for small jobs, fragile prompts, scarce quota, or unclear ownership boundaries.
+- If using sharded writer/fetcher workers for independent JSON/data chunks, give each worker a deterministic shard, separate log file, and no compile responsibility.
+- An async reviewer/promoter loop can validate and promote completed candidate files while writers continue, but it must use atomic writes, locks, or merge directories so it cannot race with active writers.
+- Keep compilation, publishing, and git commits out of parallel workers unless the project already has a safe, serialized mechanism for those steps.
 - If a worker stalls on one bad chunk, it should mark the chunk failed and continue its shard. Failed-only repair passes should be bounded and observable.
 - When increasing concurrency, check provider quota/rate-limit behavior. If rate limits appear, reduce worker count or add backoff rather than letting every worker retry aggressively.
 

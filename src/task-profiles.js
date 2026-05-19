@@ -136,7 +136,7 @@ export const TASK_PROFILES = {
     id: "pipeline",
     label: "Self-healing pipeline",
     prompt:
-      "Bias toward keeping long-running writer, reviewer, monitor, queue, ETL, batch generation, and build pipelines observable, resumable, and moving. Diagnose from status files, logs, manifests, tmux panes, and timestamps before intervening. Distinguish healthy waiting from stalls. Preserve valid artifacts, quarantine stale or invalid outputs, patch project-owned scripts/prompts/validators in small reversible steps, add failed-only retry or stale-claim cleanup when useful, and use sharded parallel writers with a separate async review/promote loop when outputs can be partitioned safely. Keep compile/publish/git steps out of parallel workers. Verify with focused checks, then restart only the affected session and record the exact resume command.",
+      "Bias toward keeping long-running writer, reviewer, monitor, queue, ETL, batch generation, and build pipelines observable, resumable, and moving. Diagnose from status files, logs, manifests, tmux panes, and timestamps before intervening. Distinguish healthy waiting from stalls. Preserve valid artifacts, quarantine stale or invalid outputs, and patch project-owned scripts/prompts/validators in small reversible steps only when evidence supports it. Choose sequential, parallel, async, or review-gated designs according to the user's request and the project's existing architecture. Verify with focused checks, then restart only the affected session and record the exact resume command.",
     tools: ["inspect_project", "search_files", "read_file", "apply_patch", "shell", "tmux", "sandbox"],
   },
   app: {
