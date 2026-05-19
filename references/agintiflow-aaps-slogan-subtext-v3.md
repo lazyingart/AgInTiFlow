@@ -14,7 +14,7 @@ AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-a
 
 Project-oriented programming for agentic workflows.
 
-AAPS is a prompt-native programming language and visual studio for turning prompts into structured, verifiable pipelines. It connects wet and dry experiments, hardware and software, and human intent with executable agent work through tasks, typed inputs, declared outputs, validation gates, recovery steps, and durable artifacts.
+AAPS is a project oriented and prompt-native programming language and visual studio for turning prompts into structured, verifiable pipelines. It connects wet and dry experiments, hardware and software, and human intent with executable agent work through tasks, typed inputs, declared outputs, validation gates, recovery steps, and durable artifacts.
 
 ## Shorter Version
 
