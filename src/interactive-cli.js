@@ -3837,6 +3837,14 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
         } else if (type === "budget.initialized") {
           state.currentMaxSteps = data.currentMaxSteps || data.initialMaxSteps || state.maxSteps;
           printStatusEvent(state, "budget", `${state.currentMaxSteps} steps`);
+        } else if (type === "conversation.continued") {
+          printStatusEvent(state, "continued", compactLine(data.prompt || "", 64));
+        } else if (type === "surgical_context.prepared") {
+          printStatusEvent(state, "context", data.fingerprint || "prepared");
+        } else if (type === "surgical_context.failed") {
+          printStatusEvent(state, "context_failed", data.error || "");
+        } else if (type === "scs.plan.requested") {
+          printStatusEvent(state, "scs_plan", `${data.provider || "model"}/${data.model || ""}`);
         } else if (type === "model.requested") {
           printStatusEvent(state, "model_wait", `${data.provider || "model"}/${data.model || ""}`, {
             step: data.step,

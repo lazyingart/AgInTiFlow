@@ -2102,7 +2102,14 @@ export async function runAgent(config) {
     await store.saveState(state);
   } else {
     await store.appendEvent("session.resumed", { sessionId });
+    const continuationPrompt = config.goal || "";
     await applyContinuationPrompt(state, config, observers);
+    if (continuationPrompt) {
+      await store.appendEvent("conversation.continued", {
+        sessionId,
+        prompt: redactSensitiveText(continuationPrompt),
+      });
+    }
     await store.saveState(state);
   }
 
@@ -2133,6 +2140,16 @@ export async function runAgent(config) {
     }
     if (!state.plan) {
       if (config.scsActive) {
+        await store.appendEvent("scs.plan.requested", {
+          provider: config.provider,
+          model: config.model,
+          mode: config.enableScs || "on",
+        });
+        observers.event("scs.plan.requested", {
+          provider: config.provider,
+          model: config.model,
+          mode: config.enableScs || "on",
+        });
         const scsPlan = await createScsPlan(client, config, state, {
           events: await store.loadEvents(),
           taskProfile: config.taskProfile,

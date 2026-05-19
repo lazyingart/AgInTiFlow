@@ -52,6 +52,42 @@ function compactJson(value, limit = 1800) {
   }
 }
 
+function likelyWholePageText(value = "") {
+  const text = String(value || "").replace(/\\n/g, "\n");
+  if (text.length < 1200) return false;
+  const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length < 16) return false;
+  const signalPatterns = [
+    /\b(history|assets?|library|new chat|home|login|profile|settings|examples?|all|yesterday|this month)\b/i,
+    /历史记录|资产库|新对话|全部|昨天|本月|更早|登录|会员|爆款案例/,
+    /\b(upload|attach|reference|submit|publish|model|duration|prompt)\b/i,
+    /上传|参考|提交|发布|模型|时长|提示词|按钮/,
+  ];
+  const signals = signalPatterns.filter((pattern) => pattern.test(text)).length;
+  return signals >= 2;
+}
+
+export function isSuspiciousBroadBrowserToolResult(toolResult = {}) {
+  if (!toolResult || toolResult.ok === false || toolResult.blocked || toolResult.done) return false;
+  const toolName = String(toolResult.toolName || "");
+  const command = String(toolResult.args?.command || "");
+  const stdout = String(toolResult.stdout || "");
+  const combined = `${toolName}\n${command}\n${stdout}`;
+  const browserCommand =
+    /\b(browser|chrome|chromium|cdp|devtools|playwright|selenium|puppeteer)\b/i.test(combined) ||
+    /\b(click-text|click_text|clickText|querySelector|document\.|xpath|dom)\b/i.test(combined);
+  if (!browserCommand) return false;
+
+  let resultText = "";
+  const parsed = parseJsonObject(stdout);
+  if (parsed && typeof parsed === "object") {
+    resultText = [parsed.text, parsed.clicked, parsed.label, parsed.reason].filter(Boolean).join("\n");
+  }
+  const inspectedText = resultText || stdout;
+  if (!likelyWholePageText(inspectedText)) return false;
+  return /\b(click-text|click_text|clickText|click)\b/i.test(command) || resultText.length > 0;
+}
+
 export function normalizeScsMode(value = "off") {
   const text = String(value ?? "").trim().toLowerCase();
   if (["1", "true", "yes", "y", "enable", "enabled", "on", "scs"].includes(text)) return "on";
@@ -226,6 +262,7 @@ export function buildSupervisorInstruction(scs = {}) {
     stopConditions.length ? `Stop conditions:\n${stopConditions.map((item) => `- ${item}`).join("\n")}` : "",
     "Before calling finish, include concrete evidence: files changed, commands/checks run, artifacts created, or a clear limitation.",
     "For substantial writing phases, use writing_specialist for isolated prose/argument/scene drafting, then let the supervisor handle files, formatting, citations, checks, and artifacts.",
+    "For browser/CDP/helper workflows, a command can return ok=true while still clicking the wrong broad page element. If a click/search result returns whole-page text, repeated navigation/sidebar text, or no scoped target, treat it as suspect evidence: verify state, switch to a precise selector or scoped toolbar/container query, and do not repeat the same broad click.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -375,6 +412,7 @@ export async function createScsPlan(client, config, state, context = {}) {
 export function shouldReviewToolResult(toolResult, state = {}) {
   if (!toolResult || toolResult.done) return false;
   if (toolResult.ok === false || toolResult.blocked || toolResult.error || toolResult.reason) return true;
+  if (isSuspiciousBroadBrowserToolResult(toolResult)) return true;
   const recent = state.meta?.toolLoop?.recent || [];
   const warned = state.meta?.toolLoop?.warned || [];
   return warned.length > 0 && recent.some((entry) => entry.toolName === toolResult.toolName && entry.ok === false);
@@ -385,7 +423,9 @@ export async function reviewScsToolResult(client, config, state, toolResult, con
     {
       decision: "rethink_plan",
       confidence: 0.65,
-      reason: `Tool evidence needs supervisor adjustment: ${toolResult?.error || toolResult?.reason || toolResult?.toolName || "unknown"}`,
+      reason: isSuspiciousBroadBrowserToolResult(toolResult)
+        ? "Browser/helper output looked successful but returned broad whole-page text, so the click or selector was probably imprecise."
+        : `Tool evidence needs supervisor adjustment: ${toolResult?.error || toolResult?.reason || toolResult?.toolName || "unknown"}`,
       next_required_action: "supervisor_continue",
       evidence: [toolResult?.toolName || "tool"],
     },
@@ -407,11 +447,19 @@ export async function reviewScsToolResult(client, config, state, toolResult, con
       {
         role: "system",
         content:
-          "You are the SCS student monitor. Review the latest failed/blocked tool evidence. Emit one decision: accept_phase, reject_phase, or rethink_plan. Do not call tools. If the supervisor is repeating a bad path, propose interruption and a new bounded plan. Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.",
+          "You are the SCS student monitor. Review the latest failed/blocked/suspicious tool evidence. Emit one decision: accept_phase, reject_phase, or rethink_plan. Do not call tools. If browser/CDP/helper output says ok=true but returns whole-page text, navigation/history/sidebar text, or an unscoped broad match, treat it as a likely wrong target and propose a precise selector/state-check replan. If the supervisor is repeating a bad path, propose interruption and a new bounded plan. Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.",
       },
       {
         role: "user",
-        content: `Latest tool result:\n${compactJson(toolResult, 2500)}\n\nEvidence pack:\n${evidence}`,
+        content: [
+          `Latest tool result:\n${compactJson(toolResult, 2500)}`,
+          isSuspiciousBroadBrowserToolResult(toolResult)
+            ? "Runtime heuristic: this successful browser/helper result appears to contain whole-page text from an imprecise click or broad selector."
+            : "",
+          `Evidence pack:\n${evidence}`,
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
       },
     ],
     fallback,

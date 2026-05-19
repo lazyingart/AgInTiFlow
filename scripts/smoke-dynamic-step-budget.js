@@ -5,7 +5,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runAgent } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
-import { shouldActivateScs } from "../src/scs-controller.js";
+import {
+  isSuspiciousBroadBrowserToolResult,
+  shouldActivateScs,
+  shouldReviewToolResult,
+} from "../src/scs-controller.js";
 import {
   createStepBudgetState,
   decideStepBudgetExtension,
@@ -55,6 +59,38 @@ try {
   assert(
     !shouldActivateScs("auto", { goal: "say hello", taskProfile: "auto", complexityScore: 0 }),
     "/scs auto should stay off for trivial prompts"
+  );
+  const broadBrowserClick = {
+    toolName: "run_command",
+    ok: true,
+    args: {
+      command: "python scripts/browser_cdp.py click-text PAGE \"Create\"",
+    },
+    stdout: JSON.stringify({
+      ok: true,
+      text: Array(30)
+        .fill("New chat\nAsset library\nHistory\nAll\nYesterday\nThis month\nSettings\nUpload reference\nSubmit prompt")
+        .join("\n"),
+      x: 650,
+      y: 390,
+    }),
+  };
+  assert(
+    isSuspiciousBroadBrowserToolResult(broadBrowserClick),
+    "SCS should flag successful browser clicks that return broad whole-page text"
+  );
+  assert(
+    shouldReviewToolResult(broadBrowserClick, { meta: {} }),
+    "SCS should review suspicious broad browser click results"
+  );
+  assert(
+    !isSuspiciousBroadBrowserToolResult({
+      toolName: "run_command",
+      ok: true,
+      args: { command: "echo ok" },
+      stdout: "ok",
+    }),
+    "SCS should not flag ordinary successful shell output as a browser click problem"
   );
 
   const normalBudget = createStepBudgetState(

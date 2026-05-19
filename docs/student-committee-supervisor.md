@@ -93,6 +93,10 @@ Avoid SCS for:
 
 SCS emits compact event names:
 
+- `conversation.continued`
+- `surgical_context.prepared`
+- `surgical_context.failed`
+- `scs.plan.requested`
 - `scs.enabled`
 - `scs.committee.plan_drafted`
 - `scs.student.approve_plan`
@@ -105,6 +109,8 @@ SCS emits compact event names:
 - `scs.supervisor.phase_started`
 
 These are saved in the normal session event log under `~/.agintiflow/sessions/<session-id>/events.jsonl`, with project pointers under `.aginti-sessions/`.
+
+Browser and CDP helper commands are reviewed by evidence, not only by exit status. If a click or selector command reports `ok: true` but returns broad whole-page text, repeated navigation/history/sidebar text, or no scoped target evidence, SCS treats the result as suspicious and asks the supervisor to verify state or switch to a precise selector before continuing.
 
 ## Design Reference
 
