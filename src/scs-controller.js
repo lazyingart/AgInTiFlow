@@ -32,7 +32,10 @@ const COMPLEX_AUTO_HINTS = [
   /\b(implement|refactor|debug|failing|regression|root cause|test|build|compile|migrate)\b/i,
   /\b(android|ios|gradle|xcode|docker|systemd|github|pull request|release|deploy|latex|pdf)\b/i,
   /\b(supervise|monitor|long[- ]running|resume|tmux|simulator|emulator)\b/i,
+  /\b(browser|web[- ]?ui|website|chrome|chromedriver|cdp|devtools|playwright|selenium|puppeteer)\b/i,
+  /\b(upload|attach|asset library|submit|publish|poll|download|reference video|reference image)\b/i,
   /\b(novel|book|chapter|manuscript|screenplay|story bible|long[- ]form|research paper)\b/i,
+  /小云雀|浏览器|网页|上传|提交|发布|资产库|参考图|参考视频|短片|生成视频|沉浸式|按钮|登录|积分/,
 ];
 
 function compact(value = "", limit = 1200) {
@@ -213,6 +216,7 @@ export function buildSupervisorInstruction(scs = {}) {
   return [
     "SCS mode is enabled. SCS means Student-Committee-Supervisor; do not redefine the acronym.",
     "You are the supervisor executor in that Student-Committee-Supervisor pipeline.",
+    "Role boundaries: committee plans only; student monitors, approves, rejects, or proposes interruption/replan only; supervisor executes tools and gathers evidence.",
     "Execute the approved phase plan. You may choose exact tools and paths, but you may not replace the strategic plan with a new one.",
     formatBehaviorContractForPrompt(),
     "If tool evidence invalidates the plan, stop repeating the failed path and explain the blocker through finish or wait for student review.",
@@ -306,7 +310,7 @@ export async function createScsPlan(client, config, state, context = {}) {
         {
           role: "system",
           content:
-            `You are the SCS committee. Draft one practical next-phase plan only. You cannot approve it and you cannot call tools. ${formatBehaviorContractForPrompt({ mode: "plan" })} Return strict JSON with keys: role, phase_goal, plan, acceptance_criteria, allowed_tools, stop_conditions.`,
+            `You are the SCS committee. Draft one practical next-phase plan only. You cannot approve it, monitor execution, or call tools. ${formatBehaviorContractForPrompt({ mode: "plan" })} Return strict JSON with keys: role, phase_goal, plan, acceptance_criteria, allowed_tools, stop_conditions.`,
         },
         {
           role: "user",
@@ -325,7 +329,7 @@ export async function createScsPlan(client, config, state, context = {}) {
         {
           role: "system",
           content:
-            `You are the SCS student monitor. You may approve_plan or veto_plan only. Judge whether the committee phase plan is safe, scoped, minimal, permission-aware, and evidence-oriented. ${formatBehaviorContractForPrompt({ mode: "plan" })} Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.`,
+            `You are the SCS student monitor. You may approve_plan or veto_plan only. Judge whether the committee phase plan is safe, scoped, minimal, permission-aware, and evidence-oriented. You cannot execute tools; when necessary, propose interruption or a new plan for the supervisor. ${formatBehaviorContractForPrompt({ mode: "plan" })} Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.`,
         },
         {
           role: "user",
@@ -403,7 +407,7 @@ export async function reviewScsToolResult(client, config, state, toolResult, con
       {
         role: "system",
         content:
-          "You are the SCS student monitor. Review the latest failed/blocked tool evidence. Emit one decision: accept_phase, reject_phase, or rethink_plan. Do not call tools. Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.",
+          "You are the SCS student monitor. Review the latest failed/blocked tool evidence. Emit one decision: accept_phase, reject_phase, or rethink_plan. Do not call tools. If the supervisor is repeating a bad path, propose interruption and a new bounded plan. Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.",
       },
       {
         role: "user",
@@ -440,7 +444,7 @@ export async function reviewScsProgress(client, config, state, context = {}) {
       {
         role: "system",
         content:
-          "You are the SCS student monitor. Perform a periodic progress review. Emit accept_phase if progress is coherent, rethink_plan if the plan needs adjustment, or reject_phase if the supervisor is drifting or lacks evidence. Do not call tools. Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.",
+          "You are the SCS student monitor. Perform a periodic progress review. Emit accept_phase if progress is coherent, rethink_plan if the plan needs adjustment, or reject_phase if the supervisor is drifting or lacks evidence. Do not call tools. Monitor progress only; propose interruption/replan when needed. Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.",
       },
       {
         role: "user",

@@ -942,7 +942,7 @@ function agentDefaults(args) {
     allowAuxiliaryTools: args.allowAuxiliaryTools ?? true,
     allowWebSearch: args.allowWebSearch ?? true,
     allowParallelScouts: args.allowParallelScouts ?? true,
-    enableScs: args.enableScs || process.env.AGINTI_SCS_MODE || "off",
+    enableScs: args.enableScs || process.env.AGINTI_SCS_MODE || "auto",
     parallelScoutCount: args.parallelScoutCount || (Number.isFinite(envScoutCount) && envScoutCount > 0 ? envScoutCount : 3),
     sandboxMode: args.sandboxMode || envSandboxMode || permissionDefaults.sandboxMode || "docker-workspace",
     packageInstallPolicy: args.packageInstallPolicy || envPackageInstallPolicy || permissionDefaults.packageInstallPolicy || "allow",

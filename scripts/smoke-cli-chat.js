@@ -683,9 +683,13 @@ try {
   if (!reviewResult.stdout.includes("Review focus: changed files only") || !reviewResult.stdout.includes("Mock run complete")) {
     throw new Error("interactive /review did not launch the bounded review workflow");
   }
-  const scsOnResult = await runChat("/scs\n");
+  const scsDefaultStatusResult = await runChat("/scs status\n");
+  if (!scsDefaultStatusResult.stdout.includes("SCS mode: auto")) {
+    throw new Error("interactive /scs status did not show default auto mode");
+  }
+  const scsOnResult = await runChat("/scs on\n");
   if (!scsOnResult.stdout.includes("scs=on")) {
-    throw new Error("interactive /scs did not toggle SCS on");
+    throw new Error("interactive /scs on did not enable SCS");
   }
   const legacyScsAlias = "/enable" + "ss";
   const oldScsAliasResult = await runChat(`${legacyScsAlias}\n/exit\n`);
@@ -696,9 +700,9 @@ try {
   if (!scsOffResult.stdout.includes("scs=off")) {
     throw new Error("interactive /scs did not toggle SCS off");
   }
-  const scsStatusResult = await runChat("/scs status\n");
+  const scsStatusResult = await runCli(["chat", "--provider", "mock", "--routing", "manual", "--profile", "code", "--no-scs"], "/scs status\n");
   if (!scsStatusResult.stdout.includes("SCS mode: off")) {
-    throw new Error("interactive /scs status did not show current mode");
+    throw new Error("interactive /scs status did not show explicit off mode");
   }
   const scsAutoResult = await runChat("/scs auto\n");
   if (!scsAutoResult.stdout.includes("scs=auto")) {

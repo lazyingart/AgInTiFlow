@@ -45,6 +45,14 @@ try {
     "/scs auto should activate for complex engineering prompts"
   );
   assert(
+    shouldActivateScs("auto", {
+      goal: "Use Chrome Driver/CDP on 127.0.0.1:9222 to upload five reference images, choose an asset-library video, submit the browser form, and monitor progress.",
+      taskProfile: "auto",
+      complexityScore: 1,
+    }),
+    "/scs auto should activate for browser automation and host-local CDP workflows"
+  );
+  assert(
     !shouldActivateScs("auto", { goal: "say hello", taskProfile: "auto", complexityScore: 0 }),
     "/scs auto should stay off for trivial prompts"
   );
@@ -131,6 +139,7 @@ try {
       sessionId: "dynamic-step-budget-smoke",
     }
   );
+  assert(config.enableScs === "auto", "runtime config should default SCS mode to auto");
   const run = await runAgent(config);
   assert(!run.stopped, "mock run stopped instead of using dynamic extension");
   const written = await fs.readFile(path.join(workspace, "notes/dynamic-budget.md"), "utf8");

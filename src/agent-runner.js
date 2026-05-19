@@ -583,12 +583,18 @@ async function createInitialState(config, sessionId) {
               : `A host shell command tool is available under the configured trust policy on ${platformLabel(platform)}. On native Windows, prefer PowerShell/cmd-compatible commands or switch to WSL/Docker for bash-like toolchains.`
             : "No shell command tool is available.",
           `Permission contract: permission mode is ${config.permissionMode || "normal"}. Safe mode asks before workspace writes/setup. Normal mode allows current-project writes, read-only inspection of visible host paths, and approved Docker setup, but outside-workspace writes and host-system changes require approval. Danger mode is trusted host/full-access mode. Do not bypass blockers by retrying variants. If a tool result includes permissionAdvice or suggestedCommand, stop, explain the blocker, copy the exact suggestedCommand when giving a rerun path, and ask the user to approve/rerun that mode or choose a safer workspace-relative path. Never invent legacy AgInTi syntax such as \`aginti run --sandbox host\`; use the exact flags from permissionAdvice.`,
+          config.allowShellTool && !config.useDockerSandbox
+            ? "Host-shell recovery note: a single broad host command blocker is not a global ban on Python or shell use. Decompose blocked pipelines/chains into narrow read-only probes or existing project helper scripts. If the task needs a host-local browser/CDP endpoint, first verify connectivity with a small localhost probe, then use existing helper scripts and the user's current Python/toolchain. Escalate to danger mode only for real host mutation, account actions, browser submissions, or other externally visible side effects the user has explicitly requested."
+            : "",
           "If an operation fails but a directory, artifact, or file already exists, treat it as pre-existing unless you have evidence this run created or updated it. Verify expected outputs before claiming success.",
           "For validation/evidence commands, remember that grep exits 1 on zero matches. If zero matches is the expected clean result, use `grep -c PATTERN file || true`, split evidence checks into independent commands, or use awk/python so a clean zero count does not stop an `&&` chain.",
           config.allowShellTool
-        ? "Host tmux tools are available for long-running terminals: list sessions, capture panes, send safe keys/text, and start detached sessions. Prefer these tools for monitoring long installs/tests/dev servers without blocking; capture before sending input and never send secrets or sudo passwords. Do not start or install tmux inside Docker run_command containers because those containers are short-lived. In Docker sandbox mode, tmux start/send commands must stay workspace-write-bound; prefer run_command for read-only host absolute path inspection through read-only mounts, and ask for --sandbox-mode host for trusted whole-host write/system work."
-        + " For one-shot tmux commands, redirect stdout/stderr and exit status to a durable workspace log or keep the pane alive for capture; if capture fails because the session ended, do not infer output or exit status."
-        : "",
+            ? "Host tmux tools are available for long-running terminals: list sessions, capture panes, send safe keys/text, and start detached sessions. Prefer these tools for monitoring long installs/tests/dev servers without blocking; capture before sending input and never send secrets or sudo passwords. Do not start or install tmux inside Docker run_command containers because those containers are short-lived. In Docker sandbox mode, tmux start/send commands must stay workspace-write-bound; prefer run_command for read-only host absolute path inspection through read-only mounts, and ask for --sandbox-mode host for trusted whole-host write/system work." +
+              " For one-shot tmux commands, redirect stdout/stderr and exit status to a durable workspace log or keep the pane alive for capture; if capture fails because the session ended, do not infer output or exit status."
+            : "",
+          config.allowShellTool && config.useDockerSandbox
+            ? "Docker localhost caveat: inside Docker, 127.0.0.1/localhost is the container, not the host. If a task needs a host-local browser, CDP endpoint, dev server, emulator, or GUI bridge and localhost connection is refused, do not keep retrying; report the host-local-service blocker and use the suggested host-mode resume path when the user approves."
+            : "",
           config.allowFileTools
             ? `Workspace file tools are available in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, preview_workspace, and read_image. For large or unfamiliar repositories, call inspect_project first, then search/read AGINTI.md/AGENTS.md/README/manifests as relevant before editing. Use read_image for screenshots, plots, microscopy images, scanned text, and visual debugging; it persists a typed perception artifact and must not be replaced by guessing from filenames. apply_patch supports exact single-file replacements plus Codex-style/unified multi-file patches; prefer it for source edits after reading/searching the relevant context. Always use workspace-relative paths such as plot_fx.svg or docs/report.tex, never absolute host paths. For newly generated standalone prose/docs/stories/assets, choose a descriptive non-conflicting filename from the topic/language and use mode=create; do not overwrite existing files unless the user explicitly asked to update/replace/overwrite that file. Secret paths, .git internals, node_modules writes, and huge files are blocked. For generated local websites/pages, use open_workspace_file or preview_workspace instead of starting a localhost server inside Docker.`
             : "No workspace file tools are available.",
@@ -1069,11 +1075,26 @@ async function closeBrowser(browserState, store) {
 }
 
 function safeExecutionEnv() {
+  const home = process.env.HOME || "/tmp";
+  const pathEntries = [
+    process.env.PATH || "",
+    `${home}/miniconda3/bin`,
+    `${home}/anaconda3/bin`,
+    `${home}/.local/bin`,
+  ]
+    .join(":")
+    .split(":")
+    .filter(Boolean);
+  const uniquePath = [...new Set(pathEntries)].join(":") || "/usr/local/bin:/usr/bin:/bin";
   return {
-    PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
-    HOME: process.env.HOME || "/tmp",
+    PATH: uniquePath,
+    HOME: home,
     LANG: process.env.LANG || "C.UTF-8",
     LC_ALL: process.env.LC_ALL || "C.UTF-8",
+    ...(process.env.CONDA_PREFIX ? { CONDA_PREFIX: process.env.CONDA_PREFIX } : {}),
+    ...(process.env.CONDA_DEFAULT_ENV ? { CONDA_DEFAULT_ENV: process.env.CONDA_DEFAULT_ENV } : {}),
+    ...(process.env.VIRTUAL_ENV ? { VIRTUAL_ENV: process.env.VIRTUAL_ENV } : {}),
+    ...(process.env.PYTHONPATH ? { PYTHONPATH: process.env.PYTHONPATH } : {}),
   };
 }
 
@@ -1436,7 +1457,7 @@ async function captureSyntheticSnapshot(store, step, config) {
       config.allowShellTool
         ? config.useDockerSandbox
           ? `Shell tool available in Docker with mounted workspace /workspace from ${config.commandCwd}. Use relative paths or /workspace paths for outputs/writes; common host data roots are read-only at original absolute paths for inspection. Persistent Docker env: /aginti-env, caches: /aginti-cache. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}.`
-          : `Shell tool available in: ${config.commandCwd} on ${platformLabel(platform)}. Use OS-compatible commands; prefer WSL/Docker for bash-heavy workflows on Windows.`
+          : `Shell tool available in: ${config.commandCwd} on ${platformLabel(platform)}. Use OS-compatible commands; prefer WSL/Docker for bash-heavy workflows on Windows. If a broad host command is blocked, split it into narrow allowed probes or existing helper scripts before treating the task as blocked.`
         : "Shell tool disabled.",
       config.allowShellTool
         ? "Host tmux tools available: tmux_list_sessions, tmux_capture_pane, tmux_send_keys, tmux_start_session. Use them for long-running jobs and agent terminals; capture before sending input. Docker run_command containers are ephemeral, so tmux there will not persist. In Docker sandbox mode, tmux start/send commands must stay workspace-write-bound; when sending text into a shell pane, tmux follows the same Docker workspace command policy as run_command and is not a bypass for package installs, destructive git history rewrites, or broad shell text. Prefer run_command for read-only host absolute path inspection through read-only mounts. Use --sandbox-mode host for trusted whole-host write/system work. In host mode, tmux startup/send command text follows the same host shell policy as run_command; if a broad host command is blocked, present the approval/rerun path instead of trying tmux as a workaround. For one-shot tmux commands, redirect output and exit status to a durable workspace log or keep the pane alive for capture; if capture fails because the session ended, do not infer output or exit status."

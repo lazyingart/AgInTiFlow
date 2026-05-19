@@ -6,9 +6,14 @@ const NETWORK_FAILURE_PATTERNS = [
   /name or service not known/i,
   /network is unreachable/i,
   /failed to connect/i,
+  /failed to establish a new connection/i,
+  /connection refused/i,
+  /\bECONNREFUSED\b/i,
   /connection timed out/i,
   /unable to access ['"].*?:/i,
 ];
+
+const LOCALHOST_TARGET_PATTERN = /\b(127\.0\.0\.1|localhost|::1)\b/i;
 
 const DOCKER_WORKSPACE_PATH_FAILURE_PATTERNS = [
   /\/home\/[^:\n]+:\s+No such file or directory/i,
@@ -154,6 +159,26 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
     };
   }
 
+  if (category === "host-local-service") {
+    return {
+      ...base,
+      summary:
+        "The command tried to reach a localhost service from inside the Docker workspace. In Docker, 127.0.0.1 is the container, not the host browser/server. Do not keep retrying the same URL from Docker.",
+      options: [
+        "If the service is a host browser/debug server/dev server, rerun the session in host sandbox mode and retry the exact connectivity probe.",
+        "If Docker must be used, expose the service on a reachable host interface or use a configured gateway such as host.docker.internal when available.",
+        "If the service is not running, start or ask the user to start it, then verify with a small curl probe before continuing.",
+      ],
+      suggestedCommand: resumeCommand({
+        config,
+        state,
+        sandboxMode: "host",
+        prompt:
+          "Continue after switching to host sandbox because the task needs a host-local browser/dev-server endpoint. First rerun the exact localhost connectivity probe, then continue only if it succeeds.",
+      }),
+    };
+  }
+
   if (category === "destructive") {
     return {
       ...base,
@@ -248,7 +273,27 @@ export function looksLikeDockerWorkspacePathFailure(result = {}, config = {}) {
   return DOCKER_WORKSPACE_PATH_FAILURE_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+export function looksLikeDockerLocalhostFailure(args = {}, result = {}, config = {}) {
+  if (!String(config.sandboxMode || "").startsWith("docker")) return false;
+  const command = String(args.command || args.text || "");
+  if (!LOCALHOST_TARGET_PATTERN.test(command)) return false;
+  return looksLikeNetworkFailure(result);
+}
+
 export function buildFailedCommandAdvice({ args = {}, commandPolicy = {}, commandResult = {}, config = {}, state = {} } = {}) {
+  if (looksLikeDockerLocalhostFailure(args, commandResult, config)) {
+    return {
+      ...adviceForCategory("host-local-service", {
+        toolName: "run_command",
+        args,
+        config,
+        state,
+        reason:
+          "The command targeted localhost from Docker and failed to connect. This usually means the intended service is on the host loopback, not inside the container.",
+      }),
+      failureKind: "host-local-service",
+    };
+  }
   if (looksLikeDockerWorkspacePathFailure(commandResult, config) && commandPolicy.category !== "read-only") {
     return {
       ...adviceForCategory("workspace-path", {

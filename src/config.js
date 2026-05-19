@@ -78,7 +78,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     auxiliaryModel: overrides.auxiliaryModel || args.auxiliaryModel || process.env.AGINTI_AUX_MODEL || "",
   });
 
-  const scsMode = normalizeScsMode(overrides.enableScs ?? args.enableScs ?? process.env.AGINTI_SCS_MODE ?? "off");
+  const scsMode = normalizeScsMode(overrides.enableScs ?? args.enableScs ?? process.env.AGINTI_SCS_MODE ?? "auto");
   const scsActive = shouldActivateScs(scsMode, {
     goal: args.goal || "",
     taskProfile,

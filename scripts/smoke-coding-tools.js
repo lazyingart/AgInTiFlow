@@ -441,6 +441,18 @@ try {
   );
   assert(androidReadonlyProbePolicy.allowed, "Android host read-only probes should not require full-host destructive access");
   assert(androidReadonlyProbePolicy.category === "read-only", "Android host probes should remain read-only");
+  const hostLocalhostJsonProbePolicy = evaluateCommandPolicy(
+    "curl -s http://127.0.0.1:9222/json/version | python3 -m json.tool",
+    hostWorkspacePolicy
+  );
+  assert(hostLocalhostJsonProbePolicy.allowed, "host localhost JSON probe should not require full-host destructive access");
+  assert(hostLocalhostJsonProbePolicy.category === "network-fetch", "host localhost JSON probe should stay classified as network-fetch");
+  const absolutePythonHelperPolicy = evaluateCommandPolicy(
+    "/home/lachlan/miniconda3/bin/python scripts/xyq_cdp_browser.py list-pages",
+    hostWorkspacePolicy
+  );
+  assert(absolutePythonHelperPolicy.allowed, "host absolute Python helper script should be allowed without full-host destructive access");
+  assert(absolutePythonHelperPolicy.category === "toolchain", "host absolute Python helper should remain classified as toolchain");
   const androidGradleBuildPolicy = evaluateCommandPolicy("cd android-app && ./gradlew :app:assembleDebug", hostWorkspacePolicy);
   assert(androidGradleBuildPolicy.allowed, "workspace-local Gradle Android build should be allowed in host workspace mode");
   assert(androidGradleBuildPolicy.category === "toolchain", "workspace-local Gradle Android build should be toolchain");
@@ -554,6 +566,18 @@ try {
   assert(
     failedNetworkAdvice.instruction.includes("Stop and present this blocker"),
     "network failure advice did not tell the model to stop and ask"
+  );
+  const failedDockerLocalhostAdvice = buildFailedCommandAdvice({
+    args: { command: "curl -fsS http://127.0.0.1:9222/json/version" },
+    commandPolicy: evaluateCommandPolicy("curl -fsS http://127.0.0.1:9222/json/version", dockerWorkspacePolicy),
+    commandResult: { ok: false, stderr: "curl: (7) Failed to connect to 127.0.0.1 port 9222: Connection refused" },
+    config: dockerWorkspacePolicy,
+    state: { sessionId: "coding-localhost-cdp-smoke" },
+  });
+  assert(failedDockerLocalhostAdvice?.failureKind === "host-local-service", "Docker localhost failure advice was not generated");
+  assert(
+    failedDockerLocalhostAdvice.suggestedCommand.includes("--sandbox-mode host"),
+    "Docker localhost advice did not suggest host mode"
   );
   const failedOutsidePathAdvice = buildFailedCommandAdvice({
     args: { command: 'echo "outside permission test" > /home/lachlan/ProjectsLFS/outside.txt' },
@@ -1149,6 +1173,8 @@ try {
           "command_policy_safe_chmod_sequence",
           "command_policy_host_workspace_chmod",
           "command_policy_android_host_probes",
+          "command_policy_host_localhost_json_probe",
+          "command_policy_absolute_python_helper",
           "command_policy_android_gradle_build",
           "command_policy_android_gradle_build_with_safe_env",
           "command_policy_cd_workspace",

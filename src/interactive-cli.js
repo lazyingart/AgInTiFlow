@@ -2169,7 +2169,7 @@ function createState(args = {}) {
     allowAuxiliaryTools: args.allowAuxiliaryTools ?? true,
     allowWebSearch: args.allowWebSearch ?? true,
     allowParallelScouts: args.allowParallelScouts ?? true,
-    enableScs: normalizeScsMode(args.enableScs || process.env.AGINTI_SCS_MODE || "off"),
+    enableScs: normalizeScsMode(args.enableScs || process.env.AGINTI_SCS_MODE || "auto"),
     parallelScoutCount: args.parallelScoutCount || 3,
     allowWrapperTools: args.allowWrapperTools ?? false,
     allowDestructive: args.allowDestructive ?? permissionDefaults.allowDestructive ?? false,

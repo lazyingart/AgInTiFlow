@@ -27,6 +27,7 @@ const READ_ONLY_PATTERNS = [
   /^node\s+(?:-v|--version)$/,
   /^npm\s+(?:-v|--version)$/,
   /^python(?:3)?\s+--version$/,
+  /^python(?:3)?\s+-m\s+json\.tool$/,
   /^pip(?:3)?\s+--version$/,
   /^conda\s+--version$/,
   /^R\s+--version$/,
@@ -115,7 +116,7 @@ const UNSAFE_GIT_PATTERNS = [
 ];
 
 const TOOLCHAIN_PATTERNS = [
-  /^python(?:3)?\s+[-\w./]+\.py(?:\s+[-\w./:=]+)*$/,
+  /^(?:[-/\w.]+\/)?python(?:3)?\s+[-\w./]+\.py(?:\s+[-\w./:=]+)*$/,
   /^Rscript\s+[-\w./]+\.R(?:\s+[-\w./:=]+)*$/,
   /^(?:\.\/gradlew|[-\w./]+\/gradlew)\s+(?:-p\s+[-\w./]+\s+)?(?:(?::[-\w]+:)?(?:assembleDebug|assembleRelease|bundleDebug|bundleRelease|compileDebugKotlin|compileReleaseKotlin|testDebugUnitTest|lintDebug|lint|check|build))(?:\s+[-\w./:=]+)*$/,
   /^latexmk\s+(?=[-\w./=\s]*-pdf\b)(?:(?:-cd|-pdf|-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+)\s+)+[-\w./]+\.tex$/,
@@ -621,6 +622,17 @@ function classifyPipelineSequence(normalized) {
       needsNetwork: false,
       writesWorkspace: false,
       reason: `Read-only shell pipeline: ${normalized}`,
+    };
+  }
+  const benignPipelineCategories = new Set(["read-only", "network-fetch", "test"]);
+  if (
+    classifications.every((classification) => benignPipelineCategories.has(classification.category) && !classification.writesWorkspace)
+  ) {
+    return {
+      category: classifications.some((classification) => classification.category === "network-fetch") ? "network-fetch" : "read-only",
+      needsNetwork: classifications.some((classification) => classification.needsNetwork),
+      writesWorkspace: false,
+      reason: `Benign read/network shell pipeline: ${normalized}`,
     };
   }
   return {
