@@ -37,6 +37,7 @@ import { languageInstruction } from "./i18n.js";
 import { flushHousekeeping } from "./housekeeping.js";
 import { buildFailedCommandAdvice, buildPermissionAdvice } from "./permission-advice.js";
 import { formatBehaviorContractForPrompt } from "./behavior-contract.js";
+import { browserStateReconciliationGuidance } from "./browser-automation-guidance.js";
 import {
   buildSupervisorInstruction,
   createScsPlan,
@@ -570,6 +571,7 @@ async function createInitialState(config, sessionId) {
           "Do not open a browser page just because a start URL exists. Treat it as a suggestion only.",
           "Only reference element ids from the latest browser snapshot.",
           "Prefer short, deliberate actions over guessing.",
+          browserStateReconciliationGuidance(),
           "Never navigate outside the allowed domains when an allowlist exists.",
           "Avoid destructive actions, purchases, account changes, and sensitive workflows.",
           languageInstruction(config.language || "en"),
@@ -626,6 +628,7 @@ async function createInitialState(config, sessionId) {
           "For website/app/code/LaTeX/Python/C/shell tasks, create or edit real workspace files, run available build/compile/test commands, and surface artifacts through the canvas when useful.",
           "For LaTeX/PDF tasks, check existing latexmk/pdflatex first and compile with the available host or Docker TeX toolchain before installing packages or rebuilding the sandbox.",
           "For research or web-search tasks, use browser tools or safe shell network tools when the current policy allows; cite or save useful sources in workspace notes when the task needs traceability.",
+          browserStateReconciliationGuidance(),
           "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files. When no save path is specified, choose a descriptive non-conflicting workspace path near the working directory and keep it there.",
           "For environment or system-maintenance work, use the configured sandbox and package policy; Docker workspace mode is the preferred place for installs and toolchain setup.",
           "For long-running work, create a durable checkpoint or artifact at each completed phase, then continue with the next concrete phase until the requested outcome is actually complete or blocked by a real dependency.",
@@ -1029,6 +1032,7 @@ async function applyContinuationPrompt(state, config, observers) {
       skillContext,
       engineeringGuidance,
       formatProjectInstructions(projectInstructions),
+      browserStateReconciliationGuidance(),
       "AGINTI.md is editable project memory. If the user asks to remember a preference or update instructions, patch AGINTI.md rather than hiding that preference in session-only chat.",
     ]
       .filter(Boolean)

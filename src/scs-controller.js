@@ -1,5 +1,6 @@
 import { redactSensitiveText, redactValue } from "./redaction.js";
 import { formatBehaviorContractForPrompt, scsContractCriteria } from "./behavior-contract.js";
+import { browserStateReconciliationGuidance } from "./browser-automation-guidance.js";
 
 export const SCS_MODES = ["off", "on", "auto"];
 
@@ -262,6 +263,7 @@ export function buildSupervisorInstruction(scs = {}) {
     stopConditions.length ? `Stop conditions:\n${stopConditions.map((item) => `- ${item}`).join("\n")}` : "",
     "Before calling finish, include concrete evidence: files changed, commands/checks run, artifacts created, or a clear limitation.",
     "For substantial writing phases, use writing_specialist for isolated prose/argument/scene drafting, then let the supervisor handle files, formatting, citations, checks, and artifacts.",
+    browserStateReconciliationGuidance(),
     "For browser/CDP/helper workflows, a command can return ok=true while still clicking the wrong broad page element. If a click/search result returns whole-page text, repeated navigation/sidebar text, or no scoped target, treat it as suspect evidence: verify state, switch to a precise selector or scoped toolbar/container query, and do not repeat the same broad click.",
   ]
     .filter(Boolean)
@@ -347,7 +349,7 @@ export async function createScsPlan(client, config, state, context = {}) {
         {
           role: "system",
           content:
-            `You are the SCS committee. Draft one practical next-phase plan only. You cannot approve it, monitor execution, or call tools. ${formatBehaviorContractForPrompt({ mode: "plan" })} Return strict JSON with keys: role, phase_goal, plan, acceptance_criteria, allowed_tools, stop_conditions.`,
+            `You are the SCS committee. Draft one practical next-phase plan only. You cannot approve it, monitor execution, or call tools. ${browserStateReconciliationGuidance()} ${formatBehaviorContractForPrompt({ mode: "plan" })} Return strict JSON with keys: role, phase_goal, plan, acceptance_criteria, allowed_tools, stop_conditions.`,
         },
         {
           role: "user",
@@ -366,7 +368,7 @@ export async function createScsPlan(client, config, state, context = {}) {
         {
           role: "system",
           content:
-            `You are the SCS student monitor. You may approve_plan or veto_plan only. Judge whether the committee phase plan is safe, scoped, minimal, permission-aware, and evidence-oriented. You cannot execute tools; when necessary, propose interruption or a new plan for the supervisor. ${formatBehaviorContractForPrompt({ mode: "plan" })} Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.`,
+            `You are the SCS student monitor. You may approve_plan or veto_plan only. Judge whether the committee phase plan is safe, scoped, minimal, permission-aware, and evidence-oriented. You cannot execute tools; when necessary, propose interruption or a new plan for the supervisor. For browser tasks, reject plans that stop merely because a state field is unknown when the user requested a target state and a bounded set-then-verify path is available. ${formatBehaviorContractForPrompt({ mode: "plan" })} Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.`,
         },
         {
           role: "user",

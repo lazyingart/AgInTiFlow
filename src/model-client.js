@@ -7,6 +7,7 @@ import { formatSkillsForPrompt, selectSkillsForGoal } from "./skill-library.js";
 import { platformInfo, platformLabel } from "./platform.js";
 import { formatBehaviorContractForPrompt } from "./behavior-contract.js";
 import { redactSensitiveText } from "./redaction.js";
+import { browserStateReconciliationGuidance } from "./browser-automation-guidance.js";
 
 export function createClient(config) {
   if (config.provider === "mock") {
@@ -662,7 +663,7 @@ export async function createPlan(client, config, state) {
       {
         role: "system",
         content:
-          `You are planning a browser, shell, workspace, and coding-agent task. The plan is only a launchpad: after planning, the runtime will continue with tools until the task is complete or genuinely blocked. Prefer real workspace edits/checks over advice-only answers. If a local shell command can satisfy the goal, prefer that before browser actions. Treat any suggested start URL as optional. ${formatBehaviorContractForPrompt({ mode: "plan" })} Write a concise execution plan with 3 to 6 steps. Mention risks or blockers when relevant. Keep it short and practical.`,
+          `You are planning a browser, shell, workspace, and coding-agent task. The plan is only a launchpad: after planning, the runtime will continue with tools until the task is complete or genuinely blocked. Prefer real workspace edits/checks over advice-only answers. If a local shell command can satisfy the goal, prefer that before browser actions. Treat any suggested start URL as optional. ${browserStateReconciliationGuidance()} ${formatBehaviorContractForPrompt({ mode: "plan" })} Write a concise execution plan with 3 to 6 steps. Mention risks or blockers when relevant. Keep it short and practical.`,
       },
       {
         role: "user",
@@ -713,6 +714,7 @@ export async function createPlan(client, config, state) {
           "For large apps, websites, LaTeX documents, Python/C/shell projects, or system tasks, plan a coherent minimal implementation, then use tools to create files, run checks, and publish artifacts.",
           "For LaTeX/PDF work, first check whether latexmk or pdflatex already exists in the active host/Docker environment; compile with the existing toolchain before installing packages or rebuilding Docker.",
           "For web search or current information tasks, plan to use browser tools or safe shell network tools when allowed, then preserve useful source notes if the output depends on them.",
+          browserStateReconciliationGuidance(),
           "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files.",
           "For environment or system-maintenance work, prefer project-local dry-run plans/scripts unless the configured policy explicitly allows stronger actions.",
           "Docker language/toolchain installs should prefer /aginti-env or project files so they persist across runs; apt/apk changes are ephemeral unless the image is rebuilt.",
