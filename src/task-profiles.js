@@ -132,6 +132,13 @@ export const TASK_PROFILES = {
       "Bias toward supervising another agent or long-running task instead of doing the target work directly. Define acceptance criteria, give the student agent normal user-level prompts, monitor progress through tmux/session logs/artifacts, independently verify claims, record evidence, and convert repeated failures into reusable AgInTiFlow skills, tools, policies, tests, or profile improvements.",
     tools: ["shell", "files", "canvas", "inspect_project", "tmux"],
   },
+  pipeline: {
+    id: "pipeline",
+    label: "Self-healing pipeline",
+    prompt:
+      "Bias toward keeping long-running writer, reviewer, monitor, queue, ETL, batch generation, and build pipelines observable, resumable, and moving. Diagnose from status files, logs, manifests, tmux panes, and timestamps before intervening. Distinguish healthy waiting from stalls. Preserve valid artifacts, quarantine stale or invalid outputs, patch project-owned scripts/prompts/validators in small reversible steps, add failed-only retry or stale-claim cleanup when useful, verify with focused checks, then restart only the affected session and record the exact resume command.",
+    tools: ["inspect_project", "search_files", "read_file", "apply_patch", "shell", "tmux", "sandbox"],
+  },
   app: {
     id: "app",
     label: "App builder",
@@ -391,6 +398,16 @@ const PROFILE_ALIASES = {
   curriculum: "supervision",
   selfsupervision: "supervision",
   "self-supervision": "supervision",
+  pipeline: "pipeline",
+  pipelines: "pipeline",
+  autorepair: "pipeline",
+  "auto-repair": "pipeline",
+  "self-healing": "pipeline",
+  stuck: "pipeline",
+  stalled: "pipeline",
+  monitor: "pipeline",
+  queue: "pipeline",
+  reviewer: "pipeline",
   cpp: "c-cpp",
   "c++": "c-cpp",
   clang: "c-cpp",
@@ -432,6 +449,7 @@ export function defaultMaxStepsForProfile(value = "auto") {
   if (profile === "android") return 60;
   if (profile === "latex") return 30;
   if (profile === "supervision") return 40;
+  if (profile === "pipeline") return 44;
   if (profile === "aaps") return 36;
   if (["devops", "security"].includes(profile)) return 36;
   if (

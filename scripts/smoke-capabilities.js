@@ -129,6 +129,10 @@ try {
     capabilities.tools?.taskProfiles?.some((profile) => profile.id === "supervision"),
     "capabilities did not report supervision task profile"
   );
+  assert(
+    capabilities.tools?.taskProfiles?.some((profile) => profile.id === "pipeline"),
+    "capabilities did not report pipeline task profile"
+  );
   for (const profileId of ["docs", "data", "qa", "database", "devops", "security", "slides", "education", "java", "ios", "go", "rust", "dotnet", "php", "ruby"]) {
     assert(
       capabilities.tools?.taskProfiles?.some((profile) => profile.id === profileId),
@@ -138,6 +142,7 @@ try {
   const qaProfile = listTaskProfiles().find((profile) => profile.id === "qa");
   assert(qaProfile, "QA profile is missing");
   assert(defaultMaxStepsForProfile("qa") >= 40, "QA profile step budget is too low for verification and cleanup");
+  assert(defaultMaxStepsForProfile("pipeline") >= 44, "pipeline profile step budget is too low for repair/verify/resume loops");
   assert(!/misleading failing test/i.test(qaProfile.prompt), "QA profile still encourages misleading test fixtures");
   assert(/do not stage fake bugs/i.test(qaProfile.prompt), "QA profile does not discourage fake staged failures");
   assert(
@@ -167,6 +172,10 @@ try {
   assert(
     capabilities.tools?.skills?.some((skill) => skill.id === "supervision-student"),
     "capabilities did not report built-in supervision skill"
+  );
+  assert(
+    capabilities.tools?.skills?.some((skill) => skill.id === "self-healing-pipeline"),
+    "capabilities did not report built-in self-healing pipeline skill"
   );
   for (const skillId of ["data-analysis", "docs-knowledge", "qa-testing", "database", "devops-deployment", "security-review", "presentation-slides", "writing-editing", "java-jvm", "ios-swift", "go", "rust", "dotnet-csharp", "php", "ruby"]) {
     assert(
