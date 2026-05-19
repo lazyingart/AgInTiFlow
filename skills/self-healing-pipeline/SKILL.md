@@ -44,6 +44,16 @@ Use this skill when a project has a durable worker, writer, reviewer, monitor, q
 - Make monitors gentle: wait on healthy progress, restart only after explicit stop/stall/error evidence, and write a durable decision log.
 - If parallel workers exist, require disjoint output paths or claim files, atomic promotion, and merge-stage validation before compiling.
 
+## Parallel And Async Design
+
+Use parallelism only where outputs can be partitioned cleanly.
+
+- Prefer sharded writer/fetcher workers for independent JSON/data chunks. Give each worker a deterministic shard, separate log file, and no compile responsibility.
+- Use a separate async reviewer/promoter loop to validate and promote completed candidate files. It may run periodically while writers continue, but it must use atomic writes, locks, or merge directories so it cannot race with active writers.
+- Keep compilation, publishing, and git commits out of parallel workers. Compile after merge/review checkpoints or from a monitor that holds one clear responsibility.
+- If a worker stalls on one bad chunk, it should mark the chunk failed and continue its shard. Failed-only repair passes should be bounded and observable.
+- When increasing concurrency, check provider quota/rate-limit behavior. If rate limits appear, reduce worker count or add backoff rather than letting every worker retry aggressively.
+
 ## Verification And Resume
 
 After a repair:
