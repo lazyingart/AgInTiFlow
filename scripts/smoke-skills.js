@@ -42,6 +42,7 @@ for (const required of [
   "php",
   "security-review",
   "self-healing-pipeline",
+  "source-ingestion",
   "system-maintenance",
   "supervision-student",
   "tmux-session",
@@ -70,6 +71,7 @@ assert(selectedIds("debug a C# dotnet web API").includes("dotnet-csharp"), ".NET
 assert(selectedIds("fix a PHP Laravel composer project").includes("php"), "PHP prompt did not select php");
 assert(selectedIds("repair a Ruby Rails app with RSpec").includes("ruby"), "Ruby prompt did not select ruby");
 assert(selectedIds("clean a CSV dataset and make plots").includes("data-analysis"), "data prompt did not select data-analysis");
+assert(selectedIds("convert scanned PDF EPUB and image sources to markdown with OCR").includes("source-ingestion"), "source ingestion prompt did not select source-ingestion");
 assert(selectedIds("write README API docs and a tutorial").includes("docs-knowledge"), "docs prompt did not select docs-knowledge");
 assert(selectedIds("fix failing tests and add regression coverage").includes("qa-testing"), "QA prompt did not select qa-testing");
 const qaSkill = skills.find((skill) => skill.id === "qa-testing");
