@@ -25,6 +25,7 @@ import { createPlan } from "../src/model-client.js";
 import { selectModelRoute } from "../src/model-routing.js";
 import { listParallelScouts, runParallelScouts, shouldRunParallelScouts } from "../src/parallel-scouts.js";
 import { buildFailedCommandAdvice, buildPermissionAdvice } from "../src/permission-advice.js";
+import { runJsonSpecialist } from "../src/json-specialist.js";
 import { SessionStore } from "../src/session-store.js";
 import { getTaskProfile } from "../src/task-profiles.js";
 import { searchWeb } from "../src/web-search.js";
@@ -613,6 +614,30 @@ try {
     writingRun.events.some((event) => event.type === "tool.completed" && event.data?.toolName === "writing_specialist"),
     "mock agent did not route writing work through writing_specialist"
   );
+  const jsonResult = await runJsonSpecialist(
+    {
+      task: "Return a strict JSON status object.",
+      schema: {
+        type: "object",
+        properties: {
+          summary: { type: "string" },
+          complete: { type: "boolean" },
+        },
+        required: ["summary", "complete"],
+        additionalProperties: false,
+      },
+      inputText: "structured JSON smoke",
+      provider: "mock",
+    },
+    { provider: "mock", model: "mock-agent" },
+    new SessionStore(runtimeDir, "json-specialist-smoke", { projectRoot: workspace, commandCwd: workspace })
+  );
+  assert(jsonResult.ok && jsonResult.result?.complete === true, "json_specialist mock result did not satisfy schema");
+  const jsonRun = await runMock("Extract a valid JSON object with schema from this text.", "coding-json-specialist");
+  assert(
+    jsonRun.events.some((event) => event.type === "tool.completed" && event.data?.toolName === "json_specialist"),
+    "mock agent did not route structured JSON work through json_specialist"
+  );
 
   await fs.mkdir(path.join(workspace, "src"), { recursive: true });
   await fs.mkdir(path.join(workspace, "test"), { recursive: true });
@@ -1104,6 +1129,8 @@ try {
           "deepseek_pro_writing_route",
           "writing_specialist_mock",
           "writing_specialist_mock_routing",
+          "json_specialist_mock",
+          "json_specialist_mock_routing",
           "runtime_time_context",
           "large_profile_pro_route",
           "auto_system_pro_route",

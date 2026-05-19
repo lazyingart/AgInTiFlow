@@ -26,6 +26,7 @@ import {
 import { refreshCodebaseMap } from "./codebase-map.js";
 import { readImage, researchWrapper, webResearch } from "./perception-tools.js";
 import { searchWeb } from "./web-search.js";
+import { runJsonSpecialist, runJsonSpecialistBatch } from "./json-specialist.js";
 import { runWritingSpecialist } from "./writing-specialist.js";
 import { runParallelScouts, shouldRunParallelScouts } from "./parallel-scouts.js";
 import { readProjectInstructions } from "./project.js";
@@ -1214,6 +1215,26 @@ function sanitizeToolArgs(toolName, args) {
         typeof args.constraints === "string" ? `[${Buffer.byteLength(args.constraints, "utf8")} bytes sha256=${hashForLog(args.constraints)}]` : safeArgs.constraints,
     };
   }
+  if (toolName === "json_specialist") {
+    return {
+      ...safeArgs,
+      task: typeof args.task === "string" ? `[${Buffer.byteLength(args.task, "utf8")} bytes sha256=${hashForLog(args.task)}]` : safeArgs.task,
+      instructions:
+        typeof args.instructions === "string" ? `[${Buffer.byteLength(args.instructions, "utf8")} bytes sha256=${hashForLog(args.instructions)}]` : safeArgs.instructions,
+      context: typeof args.context === "string" ? `[${Buffer.byteLength(args.context, "utf8")} bytes sha256=${hashForLog(args.context)}]` : safeArgs.context,
+      inputText:
+        typeof args.inputText === "string" ? `[${Buffer.byteLength(args.inputText, "utf8")} bytes sha256=${hashForLog(args.inputText)}]` : safeArgs.inputText,
+      schemaJson:
+        typeof args.schemaJson === "string" ? `[${Buffer.byteLength(args.schemaJson, "utf8")} bytes sha256=${hashForLog(args.schemaJson)}]` : safeArgs.schemaJson,
+    };
+  }
+  if (toolName === "json_specialist_batch") {
+    return {
+      ...safeArgs,
+      defaults: args.defaults ? "[json specialist defaults redacted]" : safeArgs.defaults,
+      items: Array.isArray(args.items) ? `[${args.items.length} json specialist items]` : safeArgs.items,
+    };
+  }
   if (toolName === "apply_patch") {
     return {
       ...safeArgs,
@@ -1308,6 +1329,19 @@ export function sanitizeToolResult(result) {
     safeResult.draftPreview = safeResult.draft.slice(0, TOOL_RESULT_CONTENT_PREVIEW_CHARS);
     safeResult.draftTruncated = true;
     delete safeResult.draft;
+  }
+  if (safeResult.toolName === "json_specialist" && safeResult.result !== undefined) {
+    const encoded = JSON.stringify(safeResult.result);
+    safeResult.resultBytes = Buffer.byteLength(encoded, "utf8");
+    if (safeResult.resultBytes > TOOL_RESULT_INLINE_CONTENT_BYTES) {
+      safeResult.resultPreview = encoded.slice(0, TOOL_RESULT_CONTENT_PREVIEW_CHARS);
+      safeResult.resultTruncated = true;
+      delete safeResult.result;
+    }
+  }
+  if (safeResult.toolName === "json_specialist_batch" && Array.isArray(safeResult.results)) {
+    safeResult.resultCount = safeResult.results.length;
+    safeResult.results = safeResult.results.map((item) => sanitizeToolResult(item));
   }
   return safeResult;
 }
@@ -1579,6 +1613,20 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       }
       case "read_image": {
         const result = await readImage(args, config, store);
+        const eventResult = sanitizeToolResult(result);
+        await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        return result;
+      }
+      case "json_specialist": {
+        const result = await runJsonSpecialist(args, config, store);
+        const eventResult = sanitizeToolResult(result);
+        await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        return result;
+      }
+      case "json_specialist_batch": {
+        const result = await runJsonSpecialistBatch(args.items || [], { ...args, items: undefined }, config, store);
         const eventResult = sanitizeToolResult(result);
         await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
         observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);

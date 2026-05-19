@@ -304,6 +304,66 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
     return { allowed: true };
   }
 
+  if (toolName === "json_specialist") {
+    const task = String(args.task || args.prompt || "").trim();
+    if (!task) return { allowed: false, reason: "JSON specialist requires task.", category: "json-specialist" };
+    if (!args.schema && !String(args.schemaJson || "").trim()) {
+      return { allowed: false, reason: "JSON specialist requires schema or schemaJson.", category: "json-specialist" };
+    }
+    const provider = String(args.provider || process.env.AGINTI_JSON_PROVIDER || "").trim();
+    if (provider && !["deepseek", "openai", "qwen", "venice", "mock"].includes(provider)) {
+      return { allowed: false, reason: `Unknown JSON specialist provider: ${provider}`, category: "json-specialist" };
+    }
+    const payloadBytes = Buffer.byteLength(
+      [
+        task,
+        args.instructions,
+        args.requirements,
+        args.context,
+        args.inputText,
+        args.source,
+        args.content,
+        args.schemaJson,
+        args.inputJson ? JSON.stringify(args.inputJson) : "",
+        args.schema ? JSON.stringify(args.schema) : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      "utf8"
+    );
+    if (payloadBytes > 220_000) {
+      return {
+        allowed: false,
+        reason: "JSON specialist payload is too large. Split the source into smaller independent items or save inputs to files and pass a focused excerpt.",
+        category: "json-specialist",
+      };
+    }
+    return { allowed: true };
+  }
+
+  if (toolName === "json_specialist_batch") {
+    const items = Array.isArray(args.items) ? args.items : [];
+    if (items.length === 0) return { allowed: false, reason: "JSON specialist batch requires items.", category: "json-specialist" };
+    if (items.length > 32) return { allowed: false, reason: "JSON specialist batch is limited to 32 items per tool call.", category: "json-specialist" };
+    const concurrency = Number(args.concurrency || 4);
+    if (Number.isFinite(concurrency) && concurrency > 16) {
+      return { allowed: false, reason: "JSON specialist batch concurrency is limited to 16.", category: "json-specialist" };
+    }
+    const provider = String(args.provider || args.defaults?.provider || process.env.AGINTI_JSON_PROVIDER || "").trim();
+    if (provider && !["deepseek", "openai", "qwen", "venice", "mock"].includes(provider)) {
+      return { allowed: false, reason: `Unknown JSON specialist provider: ${provider}`, category: "json-specialist" };
+    }
+    const payloadBytes = Buffer.byteLength(JSON.stringify({ defaults: args.defaults || {}, items }), "utf8");
+    if (payloadBytes > 360_000) {
+      return {
+        allowed: false,
+        reason: "JSON specialist batch payload is too large. Use fewer items or smaller chunk text per call.",
+        category: "json-specialist",
+      };
+    }
+    return { allowed: true };
+  }
+
   if (toolName === "generate_image") {
     if (!config.allowAuxiliaryTools) {
       return { allowed: false, reason: "Auxiliary tools are disabled for this run.", category: "auxiliary-tools" };

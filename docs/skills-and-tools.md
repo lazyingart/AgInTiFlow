@@ -71,3 +71,10 @@ For substantial writing tasks, prefer:
 - The main agent for all non-writing work around that draft: file names, workspace edits, citations, Markdown/LaTeX/Final Draft formatting, PDF compilation, canvas publishing, and verification.
 
 The writer receives only writing context: brief, canon, style guide, prior draft, target, audience, constraints, length, and downstream format intent. It should not receive shell/file/browser policy or agent-runtime details.
+
+For schema-bound structured data, prefer:
+
+- `json_specialist` for one isolated extraction, annotation, conversion, or validation request.
+- `json_specialist_batch` for independent chunks that can be requested in parallel without shared writes.
+
+The JSON specialist receives only the task, focused instructions, minimal context, input, and JSON Schema. It tries provider-native structured output (`json_schema` or JSON object mode) when available, then falls back to prompt-and-validate parsing.

@@ -567,6 +567,27 @@ function mockWritingSpecialistToolForGoal(goal = "", taskProfile = "") {
   });
 }
 
+function mockJsonSpecialistToolForGoal(goal = "") {
+  const text = String(goal || "");
+  if (!/\b(json|schema|structured output|extract structured|valid object|valid array)\b/i.test(text)) return null;
+  return mockToolCall("json_specialist", {
+    task: text.replace(/\s+/g, " ").slice(0, 800) || "Return structured JSON.",
+    schemaName: "mock_structured_output",
+    schema: {
+      type: "object",
+      properties: {
+        summary: { type: "string" },
+        complete: { type: "boolean" },
+      },
+      required: ["summary", "complete"],
+      additionalProperties: false,
+    },
+    inputText: text.slice(0, 1200),
+    responseFormat: "prompt",
+    provider: "mock",
+  });
+}
+
 function mockPreviewToolForGoal(goal = "") {
   const text = String(goal).toLowerCase();
   if (!/(open|preview|view|browser|website|web\s*site)/.test(text)) return null;
@@ -676,6 +697,7 @@ export async function createPlan(client, config, state) {
             ? "web_search is available for lightweight snippets. web_research is available for auditable sourced research with persisted artifacts; use mode=snippets by default and mode=openai only when hosted OpenAI web research is needed and configured. Prefer these tools over opening a search engine in the browser."
             : "web_search is disabled for this run.",
           "For substantial writing work such as novels, chapters, books, scripts, essays, LaTeX manuscripts, or research-paper prose, plan to call writing_specialist with only the writing brief/canon/style/draft context. The main agent should handle files, citations, checks, and Markdown/LaTeX/Final Draft formatting after the isolated writing draft returns.",
+          "For repetitive schema-bound extraction, annotation, conversion, or validation tasks, use json_specialist with only the task, input, schema, and focused instructions. It calls the model directly for strict JSON, tries provider-native structured output when supported, and keeps agent/runtime/tool context out of the specialist prompt.",
           config.allowFileTools
             ? "read_image is available for workspace-local or allowed remote screenshots/images using OpenAI vision when OPENAI_API_KEY is configured. It returns typed visual observations and persists a perception artifact; if credentials are missing, report the blocker instead of guessing from the filename."
             : "",
@@ -725,6 +747,66 @@ export async function requestNextStep(client, config, messages) {
             url: { type: "string" },
           },
           required: ["url"],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "json_specialist",
+        description:
+          "Call an isolated schema-only LLM context for strict JSON extraction, annotation, classification, conversion, or validation. Pass only the task, input, schema, and focused instructions; do not pass shell/browser/file policy, agent runtime, or broad planning context. The tool tries provider-native structured JSON where supported and falls back to prompt-and-validate parsing.",
+        parameters: {
+          type: "object",
+          properties: {
+            task: { type: "string", description: "Focused JSON task. Required." },
+            instructions: { type: "string", description: "Additional schema-specific rules or quality constraints." },
+            context: { type: "string", description: "Minimal domain context needed for the JSON transformation." },
+            inputText: { type: "string", description: "Source text or serialized input to transform." },
+            inputJson: { type: "object", description: "Source object to transform.", additionalProperties: true },
+            schema: { type: "object", description: "JSON Schema object for the expected output.", additionalProperties: true },
+            schemaJson: { type: "string", description: "JSON-stringified schema alternative when schema is easier to pass as text." },
+            schemaName: { type: "string", description: "Short schema name for provider-native structured output." },
+            responseFormat: {
+              type: "string",
+              enum: ["auto", "json_schema", "json_object", "prompt"],
+              description: "Native structured-output preference. auto tries native JSON schema/object then prompt fallback.",
+            },
+            fallbackOnInvalid: { type: "boolean", description: "Try a weaker fallback if native structured output is unsupported or invalid. Defaults true." },
+            strict: { type: "boolean", description: "Use strict provider schema mode where supported. Defaults true." },
+            temperature: { type: "number", description: "Defaults to 0 for deterministic structured data." },
+            maxTokens: { type: "integer", description: "Maximum completion tokens for the JSON specialist call." },
+            provider: {
+              type: "string",
+              enum: ["deepseek", "openai", "qwen", "venice", "mock"],
+              description: "Optional provider override. Defaults to AGINTI_JSON_PROVIDER or current provider.",
+            },
+            model: { type: "string", description: "Optional model override. Defaults to AGINTI_JSON_MODEL or current model." },
+          },
+          required: ["task"],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "json_specialist_batch",
+        description:
+          "Run many isolated json_specialist requests concurrently for chunked structured-data work. Each item is one independent schema-bound task. Use only for independent items with no shared writes or ordering dependency.",
+        parameters: {
+          type: "object",
+          properties: {
+            concurrency: { type: "integer", description: "Parallel request count, clamped by runtime guardrails." },
+            defaults: { type: "object", description: "Default json_specialist arguments applied to every item.", additionalProperties: true },
+            items: {
+              type: "array",
+              description: "Independent json_specialist argument objects.",
+              items: { type: "object", additionalProperties: true },
+            },
+          },
+          required: ["items"],
           additionalProperties: false,
         },
       },
@@ -1391,6 +1473,11 @@ export async function requestNextStep(client, config, messages) {
       if (previewTool) {
         return mockChatResponse("Mock mode will exercise the workspace preview tool.", [previewTool]);
       }
+    }
+
+    const jsonTool = mockJsonSpecialistToolForGoal(config.goal);
+    if (jsonTool) {
+      return mockChatResponse("Mock mode will exercise the isolated JSON specialist.", [jsonTool]);
     }
 
     const writingTool = mockWritingSpecialistToolForGoal(config.goal, config.taskProfile);

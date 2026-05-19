@@ -6,6 +6,8 @@ const PROGRESS_TOOL_NAMES = new Set([
   "apply_patch",
   "generate_image",
   "inspect_project",
+  "json_specialist",
+  "json_specialist_batch",
   "open_workspace_file",
   "preview_workspace",
   "read_file",
