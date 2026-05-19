@@ -201,6 +201,38 @@ function normalizePlanText(plan) {
   return redacted.length <= 1800 ? redacted : `${redacted.slice(0, 1776)} ... [truncated]`;
 }
 
+function isBrowserSubmitGoal(goal = "") {
+  const text = String(goal || "");
+  const browserSignal =
+    /\b(browser|chrome|chromium|cdp|devtools|selenium|playwright|web[- ]?ui|website|composer)\b/i.test(text) ||
+    /小云雀|xyq|浏览器|网页|上传|资产库|参考视频|参考图|短片|沉浸式/.test(text);
+  const submitSignal =
+    /\b(submit|publish|generate|post|upload|attach|asset library|reference video|reference image)\b/i.test(text) ||
+    /提交|发布|生成|上传|附件|资产库|参考视频|参考图/.test(text);
+  return browserSignal && submitSignal;
+}
+
+function hasAllowedExternalBrowserBlocker(result = "") {
+  return /积分不足|余额不足|credits? (not enough|insufficient)|not enough credits|login|登录|captcha|验证码|internal error|server error|服务器错误|内部错误|合规|安全|风控|account permission|会员权限|permission denied|确认弹窗|confirmation dialog|user confirmation/i.test(
+    String(result || "")
+  );
+}
+
+export function browserSubmitFinishIssue(goal = "", result = "") {
+  if (!isBrowserSubmitGoal(goal)) return null;
+  const text = String(result || "");
+  if (!text.trim() || hasAllowedExternalBrowserBlocker(text)) return null;
+  const incomplete =
+    /未执行|未完成|跳过|步骤不足|未找到.*(提交|生成)|没有.*(提交|生成)|not submitted|did not submit|submit[^.\n]{0,80}(not|skipped|missing|failed)|skipped|incomplete|not executed|not run|not found/i.test(
+      text
+    ) ||
+    /资产库[^。\n|]*未执行|参考视频[^。\n|]*未执行|VIP[^。\n|]*跳过|提交[^。\n|]*未执行|生成[^。\n|]*未执行|页面状态出现偏差|非创建页|manual.*confirm/i.test(
+      text
+    );
+  if (!incomplete) return null;
+  return "Browser submit/generation task is unfinished: the proposed result reports skipped or unexecuted required UI actions, but no real external blocker was proven.";
+}
+
 export function buildScsEvidencePack(state = {}, context = {}) {
   const messages = Array.isArray(state.messages) ? state.messages.slice(-16) : [];
   const messageSummary = messages.map((message) => {
@@ -543,6 +575,24 @@ export async function reviewScsStepBudget(client, config, state, context = {}) {
 }
 
 export async function reviewScsFinish(client, config, state, result = "", context = {}) {
+  const deterministicIssue = browserSubmitFinishIssue(context.goal || state.goal || "", result);
+  if (deterministicIssue && (state.meta?.scs?.finishRejects || 0) < 2) {
+    return normalizeDecision(
+      {
+        decision: "finish_rejected",
+        confidence: 0.96,
+        reason: deterministicIssue,
+        evidence: [
+          "The user requested a browser submit/generation workflow.",
+          "The proposed final result says required UI steps were skipped, not executed, or not submitted.",
+        ],
+        next_required_action:
+          "Continue with the smallest remaining browser action: verify exact selected model/tier, attach required assets/reference media, find the active composer submit control, then submit or report a real external blocker.",
+      },
+      "finish_rejected"
+    );
+  }
+
   const fallback = normalizeDecision(
     {
       decision: "finish_allowed",

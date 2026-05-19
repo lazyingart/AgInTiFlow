@@ -48,6 +48,8 @@ Workflow:
 5. If a helper reports `ok: true` but returns whole-page text, history/sidebar/nav text, unrelated examples, or an unscoped match, treat it as a wrong target and retry with scoped JS, coordinates from a screenshot, or a narrower selector.
 6. For uploads or asset-library selection, verify visible chips, thumbnails, filenames, counters, or previews before submitting.
 7. For model/duration/mode controls, distinguish selected state from ads, recommendations, and history labels.
-8. Before irreversible or externally visible actions such as submit, publish, purchase, or account changes, verify all requested state. If verification remains impossible after a bounded set attempt, stop with the exact blocker and evidence.
+8. For model selectors, honor the exact requested tier. If the user asked for a non-VIP model and the toolbar says VIP, open the selector and choose a non-VIP option; if none exists, stop with that evidence instead of assuming account membership changes the selected model.
+9. Before irreversible or externally visible actions such as submit, publish, purchase, or account changes, verify all requested state. If verification remains impossible after a bounded set attempt, stop with the exact blocker and evidence.
+10. If the user requested submit/publish/generation, do not finish merely because time or steps are running low while assets, reference media, model choice, or the final submit remain skipped. Continue with a narrower action or stop only for an external blocker such as login, credits, captcha, server/internal error, missing account permission, or a user confirmation dialog.
 
 For logged-in browser sessions, preserve the user’s state. Do not open new tabs, navigate to home/history, or close pages unless the current composer is unusable and the user allowed it.
