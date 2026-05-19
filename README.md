@@ -240,7 +240,7 @@ The website keeps the visual walkthrough in a carousel so this README can stay f
 | SCS mode | Optional Student-Committee-Supervisor quality gate for complicated or risky tasks. |
 | AAPS adapter | Optional `@lazyingart/aaps` integration for `.aaps` workflow init, validate, parse, compile, dry-run, and run commands. |
 | Image generation | Optional GRS AI and Venice image tools with saved manifests and canvas artifact previews. |
-| Skill library | Built-in Markdown skills for code, websites, Android/iOS, Python, Rust, Java, LaTeX, writing, reviews, GitHub, AAPS, and more. |
+| Skill library | Built-in Markdown skills for code, websites, Android/iOS, Python, Rust, Java, LaTeX, writing, reviews, source ingestion/OCR, structured JSON, autonomous artifact pipelines, GitHub, AAPS, and more. |
 | Skill Mesh | Optional strict skill recording/sharing for reviewed reusable skill packs. If unused, AgInTiFlow runs normally without background sharing. |
 | Multilingual UI | CLI and docs language support for English, Japanese, Simplified/Traditional Chinese, Korean, French, Spanish, Arabic, Vietnamese, German, and Russian. |
 

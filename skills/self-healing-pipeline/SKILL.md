@@ -43,6 +43,9 @@ Use this skill when a project has a durable worker, writer, reviewer, monitor, q
 - Keep writer/reviewer/monitor responsibilities separate. The writer should produce and validate; the reviewer should repair quality; the monitor should observe, compile, restart, or queue the next bounded run.
 - Make monitors gentle: wait on healthy progress, restart only after explicit stop/stall/error evidence, and write a durable decision log.
 - If parallel workers exist, require disjoint output paths or claim files, atomic promotion, and merge-stage validation before compiling.
+- A reviewer is not just a promoter. It should inspect valid-looking outputs for source drift, missing units, repeated filler, malformed annotations, and known quality failures, then write candidate fixes or failed-only repair requests.
+- A companion repairer should be independent from the main writer process. It can stay dormant, wake from status files or monitor decisions, run bounded repair passes, and exit without blocking healthy writer progress.
+- If the same failure repeats after a local nudge, improve the runner, validator, prompt, or status model rather than relying on manual chat intervention.
 
 ## Parallel And Async Options
 
@@ -63,7 +66,8 @@ After a repair:
 2. Run a dry-run or small bounded batch when safe.
 3. Verify status counters, first missing item, failed IDs, and output timestamps.
 4. Restart only the affected tmux session, not unrelated jobs.
-5. Record the exact resume command, current status, logs inspected, and remaining failed items.
-6. Commit reusable script/profile/prompt fixes when the project expects git tracking.
+5. Compile or export a checkpoint artifact when the pipeline has a renderer or build command.
+6. Record the exact resume command, current status, logs inspected, remaining failed items, and any quarantined artifacts.
+7. Commit reusable script/profile/prompt fixes when the project expects git tracking.
 
 The goal is not to hide failures. The goal is to keep the pipeline observable, resumable, and able to recover from known classes of failure without overwriting good work.

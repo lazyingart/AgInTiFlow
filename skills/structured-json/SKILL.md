@@ -1,6 +1,22 @@
 ---
-name: structured-json
-description: Use isolated schema-bound JSON generation for extraction, annotation, conversion, classification, or chunked data production without mixing in agent runtime context.
+id: structured-json
+label: Structured JSON Generation
+description: Use isolated schema-bound JSON generation for extraction, annotation, conversion, classification, repair, or chunked data production without mixing in agent runtime context.
+triggers:
+  - structured json
+  - json schema
+  - schema-bound
+  - json specialist
+  - json fetcher
+  - parallel json
+  - repair json
+  - valid json
+tools:
+  - json_specialist
+  - json_specialist_batch
+  - read_file
+  - write_file
+  - run_command
 ---
 
 # Structured JSON
@@ -15,8 +31,16 @@ Use this skill when the user needs reliable JSON that follows an explicit schema
 4. Keep formatting, file writes, validation scripts, compilation, and project-specific orchestration in the main agent.
 5. After the tool returns, validate any project-specific invariants with local scripts before treating the data as complete.
 
+## Provider Strategy
+
+- Prefer provider-native structured output when available, such as JSON Schema or JSON object mode.
+- Keep a fallback parser/repair path for providers that do not support strict schema responses.
+- On validation failure, retry with the exact schema errors and only the smallest relevant source text.
+- For batch work, write candidate JSON per chunk first; promote it only after schema and semantic validators pass.
+- Keep schema versions in the artifact metadata so old reviewed outputs can be reused or selectively regenerated when prompts change.
+
 ## Boundaries
 
 - Do not pass shell, browser, file policy, package-install, or agent-planning context into the JSON specialist.
 - Do not make schemas book-, app-, or project-specific inside AgInTiFlow core. Project schemas belong in the target repository.
-- Prefer provider-native structured output when available, but keep fallback parsing enabled unless the user explicitly wants hard failure on unsupported response formats.
+- Do not let parallel JSON workers share one mutable output file. Use shard-local outputs, atomic renames, and a serialized merge/promote step.

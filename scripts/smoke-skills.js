@@ -21,6 +21,7 @@ const ids = new Set(skills.map((skill) => skill.id));
 assert(skills.length >= 27, "expected built-in skills to load");
 for (const required of [
   "aaps",
+  "autonomous-artifact-pipeline",
   "code",
   "code-review",
   "data-analysis",
@@ -43,6 +44,7 @@ for (const required of [
   "security-review",
   "self-healing-pipeline",
   "source-ingestion",
+  "structured-json",
   "system-maintenance",
   "supervision-student",
   "tmux-session",
@@ -60,6 +62,12 @@ assert(selectedIds("generate a logo image with grsai nanobanana").includes("imag
 assert(selectedIds("git status commit push with gh").includes("github-maintenance"), "git prompt did not select github-maintenance");
 assert(selectedIds("monitor a long running tmux session").includes("tmux-session"), "tmux prompt did not select tmux-session");
 assert(selectedIds("repair a stuck writer monitor pipeline and retry failed chunks").includes("self-healing-pipeline"), "stuck pipeline prompt did not select self-healing-pipeline");
+assert(
+  selectedIds("from raw pdf epub sources create markdown chunks json and compile final pdf in tmux with monitor and auto repair").includes(
+    "autonomous-artifact-pipeline"
+  ),
+  "raw-source artifact pipeline prompt did not select autonomous-artifact-pipeline"
+);
 assert(selectedIds("create an .aaps example for @lazyingart/aaps").includes("aaps"), "AAPS prompt did not select aaps");
 assert(selectedIds("debug a C++ CMake build").includes("c-cpp"), "C++ prompt did not select c-cpp");
 assert(selectedIds("set up Stan and CmdStanR reproducibly").includes("r-stan"), "Stan prompt did not select r-stan");
@@ -72,6 +80,7 @@ assert(selectedIds("fix a PHP Laravel composer project").includes("php"), "PHP p
 assert(selectedIds("repair a Ruby Rails app with RSpec").includes("ruby"), "Ruby prompt did not select ruby");
 assert(selectedIds("clean a CSV dataset and make plots").includes("data-analysis"), "data prompt did not select data-analysis");
 assert(selectedIds("convert scanned PDF EPUB and image sources to markdown with OCR").includes("source-ingestion"), "source ingestion prompt did not select source-ingestion");
+assert(selectedIds("use json schema to fetch valid structured json for each chunk in parallel").includes("structured-json"), "structured JSON prompt did not select structured-json");
 assert(selectedIds("write README API docs and a tutorial").includes("docs-knowledge"), "docs prompt did not select docs-knowledge");
 assert(selectedIds("fix failing tests and add regression coverage").includes("qa-testing"), "QA prompt did not select qa-testing");
 const qaSkill = skills.find((skill) => skill.id === "qa-testing");

@@ -27,13 +27,14 @@ Use this skill when the task asks for a paired-language book, ruby/furigana/piny
 
 1. Inspect repository instructions, existing scripts, book plans, and ignored paths before editing.
 2. Keep original PDFs/EPUBs in source folders and do not commit large source media unless the repository explicitly tracks them.
-3. Convert source books to durable Markdown first. Keep raw and cleaned Markdown separate when OCR or EPUB extraction is noisy.
+3. Convert source books to durable Markdown first. Treat PDF, EPUB, image, JSON/wiki, and scanned sources as ingestion problems; create a source manifest with hashes, method, role, language, and caveats before generation. Keep raw and cleaned Markdown separate when OCR or EPUB extraction is noisy.
 4. Split cleaned Markdown into stable paragraph- or chapter-scoped chunks with `manifest.json` and `chunks.jsonl`. Use source paragraph IDs that survive reruns. If a paragraph is too large for reliable provider output, split it into ordered subchunks at sentence or clause boundaries while preserving the original source order and recording `split_from_chunk_id`, `split_part`, and `split_part_count`.
 5. When retuning chunk size or repairing split logic, merge any existing `split_from_chunk_id` groups back to the original paragraph text first, then split again. Do not repeatedly split already-split parts, and do not discard valid reviewed chunks unless validation proves they no longer match the manifest.
 6. Write resumable per-chunk JSON artifacts. Never overwrite a valid reviewed chunk unless a validator or prompt version requires regeneration; move stale chunks out of the compile path.
-7. Generate or repair annotations with a provider worker loop, not a monolithic prompt. Each chunk should validate independently before promotion. If JSON is malformed or validation fails, retry the chunk with the exact validator errors before marking it failed.
-8. Compile preview PDFs periodically and at the end. For paired-language books, compile both directions when renderers exist, plus color and blackwhite variants when color is supported.
-9. Run the writer and monitor in observable tmux sessions with status files, logs, retry/backoff for provider limits, and clear resume commands.
+7. Generate or repair annotations with a provider worker loop, not a monolithic prompt. Each chunk should validate independently before promotion. If JSON is malformed or validation fails, retry the chunk with the exact validator errors before marking it failed. Use the structured JSON workflow for repetitive chunk output.
+8. Keep writer, reviewer, repairer, monitor, merge, and compile roles explicit. Writers produce candidates; validators promote; reviewers check semantic quality and request fixes; repairers handle failed-only or quarantined chunks; monitors observe and resume gently.
+9. Compile preview PDFs periodically and at the end. For paired-language books, compile both directions when renderers exist, plus color and blackwhite variants when color is supported.
+10. Run long jobs in observable tmux sessions with status files, logs, retry/backoff for provider limits, and clear resume commands.
 
 ## JSON Quality Gates
 

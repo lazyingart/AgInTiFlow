@@ -12,7 +12,7 @@ AgInTiFlow separates **skills** from **tools** so the agent can stay general whi
 
 ## Built-In Skills
 
-The package ships built-in skills for code engineering, website/app building, LaTeX manuscripts, books, Microsoft Word documents, image generation, GitHub maintenance, system maintenance, tmux session control, Android, R/Stan, Python, C/C++, shell scripting, AAPS, novel writing, and supervision/student-agent training.
+The package ships built-in skills for code engineering, website/app building, LaTeX manuscripts, books, Microsoft Word documents, image generation, GitHub maintenance, system maintenance, source ingestion/OCR, structured JSON, autonomous artifact pipelines, tmux session control, Android, R/Stan, Python, C/C++, shell scripting, AAPS, novel writing, and supervision/student-agent training.
 
 List them from a project:
 
@@ -78,3 +78,5 @@ For schema-bound structured data, prefer:
 - `json_specialist_batch` for independent chunks that can be requested in parallel without shared writes.
 
 The JSON specialist receives only the task, focused instructions, minimal context, input, and JSON Schema. It tries provider-native structured output (`json_schema` or JSON object mode) when available, then falls back to prompt-and-validate parsing.
+
+For raw-input-to-final-output work, prefer the autonomous artifact pipeline pattern. The target project should own its source manifest, chunk manifest, schemas, validators, runner scripts, reviewer/repairer logic, and compiler/exporter. AgInTiFlow should create or patch those project-local pieces, run them in observable sessions, and verify checkpoint artifacts before declaring completion.
