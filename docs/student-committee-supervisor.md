@@ -31,7 +31,7 @@ SCS uses the selected main model for every internal role.
 | Role | Right | Boundary |
 | --- | --- | --- |
 | Committee | Draft one next-phase plan with acceptance criteria and stop conditions. | Cannot approve plans or call tools. |
-| Student | Approve/veto the phase plan, review failure evidence, and approve/reject finish. | Cannot call tools or override runtime safety. |
+| Student | Act as the independent validator: approve/veto the phase plan, review failure evidence, and approve/reject finish. | Cannot call tools, approve its own work, or override runtime safety. |
 | Supervisor | Execute the approved phase with the existing browser, shell, file, canvas, and wrapper tools. | Cannot replace the strategic plan without student review. |
 
 The runtime remains the real authority for command policy, filesystem guardrails, secret redaction, session persistence, and user interruption.
@@ -44,9 +44,10 @@ When SCS is active:
 - Parallel scouts are disabled by default unless explicitly requested, avoiding duplicate advisory layers.
 - The normal `createPlan()` path is replaced by a committee draft plus student approval.
 - An approved supervisor instruction is injected into the execution loop.
-- Failed or blocked tools trigger a bounded student monitor review.
+- Failed, blocked, suspicious, or mismatched tools trigger a bounded student validator review.
 - Every fourth execution step triggers a bounded progress review for long runs.
 - `finish` and assistant-content completion pass through a final student gate.
+- If the student validator rejects progress or finish, the runtime asks the committee for a new phase plan and sends that plan back through the student gate before the supervisor continues.
 - Decisions are persisted as `scs.*` events and the phase pack is saved as a session artifact.
 
 The current implementation is deliberately bounded:
@@ -106,6 +107,7 @@ SCS emits compact event names:
 - `scs.student.reject_phase`
 - `scs.student.finish_allowed`
 - `scs.student.finish_rejected`
+- `scs.committee.replan_drafted`
 - `scs.supervisor.phase_started`
 
 These are saved in the normal session event log under `~/.agintiflow/sessions/<session-id>/events.jsonl`, with project pointers under `.aginti-sessions/`.

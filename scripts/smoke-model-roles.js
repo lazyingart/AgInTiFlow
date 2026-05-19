@@ -11,7 +11,7 @@ import {
 } from "../src/model-routing.js";
 import { normalizeTextToolCallResponse, parseTextToolCalls, usesTextToolProtocol } from "../src/model-client.js";
 import { modelRoleChoices, selectorVisibleWindow } from "../src/interactive-cli.js";
-import { buildScsEvidencePack, buildSupervisorInstruction } from "../src/scs-controller.js";
+import { buildScsEvidencePack, buildSupervisorInstruction, shouldRequestScsReplan } from "../src/scs-controller.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -219,6 +219,10 @@ assert(!usesTextToolProtocol({ provider: "venice", model: "venice-uncensored-1-2
 const scsInstruction = buildSupervisorInstruction({ plan: "Create one file.", acceptanceCriteria: ["File exists."] });
 assert(scsInstruction.includes("Student-Committee-Supervisor"), "SCS supervisor instruction should define the acronym");
 assert(!scsInstruction.includes("Syntax-Checker Sentinel"), "SCS supervisor instruction should not allow alternate acronym expansions");
+assert(scsInstruction.includes("student is the independent validator"), "SCS supervisor instruction should define student as validator");
+assert(shouldRequestScsReplan({ decision: "finish_rejected" }), "finish rejection should trigger committee replan");
+assert(shouldRequestScsReplan({ decision: "rethink_plan" }), "student rethink should trigger committee replan");
+assert(!shouldRequestScsReplan({ decision: "finish_allowed" }), "finish approval should not trigger committee replan");
 const longStdout = [
   "=== Student-Committee-Supervisor present ===",
   "3:SCS stands for **Student-Committee-Supervisor**",
@@ -270,6 +274,7 @@ console.log(
         "requested-tools-parser",
         "malformed-text-tool-retry",
         "scs-supervisor-identity",
+        "scs-student-validator-replan",
         "scs-evidence-stdout",
         "cli-models-command",
         "venice-shortcut",

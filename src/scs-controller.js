@@ -119,6 +119,18 @@ function fallbackPlan(goal = "") {
   ].join("\n");
 }
 
+function fallbackBlockedPlan(goal = "", studentReason = "") {
+  return [
+    "1. Do not execute target work under a phase plan the student validator rejected.",
+    "2. Report the validator blocker with the specific evidence and unresolved acceptance criteria.",
+    "3. Ask for either clearer requirements or an explicit override before taking irreversible actions.",
+    studentReason ? `4. Validator concern to preserve: ${compact(studentReason, 180)}` : "",
+    goal ? `5. Original goal remains: ${compact(goal, 180)}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function parseJsonObject(content = "") {
   const text = String(content || "").trim();
   if (!text) return null;
@@ -285,8 +297,9 @@ export function buildSupervisorInstruction(scs = {}) {
   return [
     "SCS mode is enabled. SCS means Student-Committee-Supervisor; do not redefine the acronym.",
     "You are the supervisor executor in that Student-Committee-Supervisor pipeline.",
-    "Role boundaries: committee plans only; student monitors, approves, rejects, or proposes interruption/replan only; supervisor executes tools and gathers evidence.",
+    "Role boundaries: committee plans only; student is the independent validator/QA gate and may approve, reject, or request replan; supervisor executes tools and gathers evidence.",
     "Execute the approved phase plan. You may choose exact tools and paths, but you may not replace the strategic plan with a new one.",
+    "If the student validator rejects a finish, tool result, or phase progress, stop treating the current plan as self-approved. Wait for the runtime to request a committee replan, then execute the new approved phase.",
     formatBehaviorContractForPrompt(),
     "If tool evidence invalidates the plan, stop repeating the failed path and explain the blocker through finish or wait for student review.",
     "Approved phase plan:",
@@ -300,6 +313,34 @@ export function buildSupervisorInstruction(scs = {}) {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function committeeSystemPrompt({ phaseKind = "initial" } = {}) {
+  const replan = phaseKind === "replan";
+  return [
+    "You are the SCS committee planner. Draft one practical next-phase plan only.",
+    "You cannot approve the plan, monitor execution, call tools, or declare completion.",
+    replan
+      ? "This is a replan request caused by the independent student validator rejecting the prior phase, progress, or finish. Address the validator evidence directly instead of repeating the same plan."
+      : "",
+    browserStateReconciliationGuidance(),
+    formatBehaviorContractForPrompt({ mode: "plan" }),
+    "Return strict JSON with keys: role, phase_goal, plan, acceptance_criteria, allowed_tools, stop_conditions.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function studentPlanGatePrompt() {
+  return [
+    "You are the independent SCS student validator. You are QA, not a cheerleader.",
+    "You may approve_plan or veto_plan only.",
+    "Judge whether the committee phase plan is safe, scoped, minimal, permission-aware, and evidence-oriented.",
+    "You cannot execute tools or approve your own work. If the plan is weak, veto it so the committee must draft a better plan.",
+    "For browser tasks, reject plans that stop merely because a state field is unknown when the user requested a target state and a bounded set-then-verify path is available.",
+    formatBehaviorContractForPrompt({ mode: "plan" }),
+    "Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.",
+  ].join(" ");
 }
 
 function normalizeCommitteePlan(parsed, goal = "") {
@@ -359,7 +400,10 @@ function normalizeBudgetDecision(parsed, fallback = {}) {
   };
 }
 
-export async function createScsPlan(client, config, state, context = {}) {
+async function createScsPhase(client, config, state, context = {}, options = {}) {
+  const phase = Number(options.phase || 1);
+  const phaseKind = options.phaseKind || "initial";
+  const validatorFeedback = options.validatorFeedback || null;
   const evidence = buildScsEvidencePack(state, context);
   const fallbackCommittee = normalizeCommitteePlan({ plan: fallbackPlan(state.goal), phase_goal: state.goal }, state.goal);
   let committee = fallbackCommittee;
@@ -372,6 +416,7 @@ export async function createScsPlan(client, config, state, context = {}) {
     },
     "approve_plan"
   );
+  let lastValidatorConcern = validatorFeedback?.reason || validatorFeedback?.nextRequiredAction || "";
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const rawCommittee = await callJson(
@@ -380,12 +425,20 @@ export async function createScsPlan(client, config, state, context = {}) {
       [
         {
           role: "system",
-          content:
-            `You are the SCS committee. Draft one practical next-phase plan only. You cannot approve it, monitor execution, or call tools. ${browserStateReconciliationGuidance()} ${formatBehaviorContractForPrompt({ mode: "plan" })} Return strict JSON with keys: role, phase_goal, plan, acceptance_criteria, allowed_tools, stop_conditions.`,
+          content: committeeSystemPrompt({ phaseKind }),
         },
         {
           role: "user",
-          content: `Goal and evidence:\n${evidence}\n\nReturn one short phase plan as JSON. Plan must be 3-6 concrete steps.`,
+          content: [
+            `Goal and evidence:\n${evidence}`,
+            validatorFeedback
+              ? `Student validator feedback that caused this ${phaseKind}:\n${compactJson(validatorFeedback, 1800)}`
+              : "",
+            lastValidatorConcern && attempt > 1 ? `Previous student veto concern to address:\n${lastValidatorConcern}` : "",
+            "Return one short phase plan as JSON. Plan must be 3-6 concrete steps.",
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
         },
       ],
       fallbackCommittee,
@@ -399,8 +452,7 @@ export async function createScsPlan(client, config, state, context = {}) {
       [
         {
           role: "system",
-          content:
-            `You are the SCS student monitor. You may approve_plan or veto_plan only. Judge whether the committee phase plan is safe, scoped, minimal, permission-aware, and evidence-oriented. You cannot execute tools; when necessary, propose interruption or a new plan for the supervisor. For browser tasks, reject plans that stop merely because a state field is unknown when the user requested a target state and a bounded set-then-verify path is available. ${formatBehaviorContractForPrompt({ mode: "plan" })} Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.`,
+          content: studentPlanGatePrompt(),
         },
         {
           role: "user",
@@ -411,13 +463,34 @@ export async function createScsPlan(client, config, state, context = {}) {
       "SCS student plan gate"
     );
     student = normalizeDecision(rawStudent, "approve_plan");
+    lastValidatorConcern = student.reason || student.nextRequiredAction || lastValidatorConcern;
     if (student.decision !== "veto_plan" || attempt === 2) break;
   }
 
   if (student.decision === "veto_plan") {
-    student.decision = "approve_plan";
-    student.reason = `Plan veto was capped after retries; approving conservative fallback. Last concern: ${student.reason || "unspecified"}`;
-    committee = fallbackCommittee;
+    committee = normalizeCommitteePlan(
+      {
+        phase_goal: "Report SCS validator blocker instead of executing rejected target work.",
+        plan: fallbackBlockedPlan(state.goal, student.reason || lastValidatorConcern),
+        acceptance_criteria: [
+          "The run does not execute target work under a rejected plan.",
+          "The final report names the student validator concern and requested clarification or override.",
+        ],
+        stop_conditions: ["Any attempt to proceed with target work without an approved phase plan."],
+      },
+      state.goal
+    );
+    student = normalizeDecision(
+      {
+        decision: "approve_plan",
+        confidence: 0.9,
+        reason:
+          "Student veto remained after committee retries; approving only a blocker-reporting phase, not target execution.",
+        evidence: student.evidence || [],
+        next_required_action: "supervisor_report_validator_blocker",
+      },
+      "approve_plan"
+    );
   }
 
   const scs = {
@@ -425,7 +498,8 @@ export async function createScsPlan(client, config, state, context = {}) {
     mode: config.enableScs || "on",
     active: true,
     model: `${config.provider}/${config.model}`,
-    phase: 1,
+    phase,
+    phaseKind,
     phaseGoal: committee.phaseGoal,
     plan: committee.plan,
     acceptanceCriteria: committee.acceptanceCriteria,
@@ -433,6 +507,7 @@ export async function createScsPlan(client, config, state, context = {}) {
     stopConditions: committee.stopConditions,
     committee,
     student,
+    validatorFeedback,
     finishRejects: 0,
     monitorReviews: 0,
   };
@@ -441,6 +516,31 @@ export async function createScsPlan(client, config, state, context = {}) {
     plan: committee.plan,
     supervisorInstruction: buildSupervisorInstruction(scs),
   };
+}
+
+export async function createScsPlan(client, config, state, context = {}) {
+  return createScsPhase(client, config, state, context, { phase: 1, phaseKind: "initial" });
+}
+
+export async function createScsReplan(client, config, state, studentDecision, context = {}) {
+  const previousScs = state.meta?.scs || {};
+  const phase = Number(previousScs.phase || 1) + 1;
+  const result = await createScsPhase(client, config, state, context, {
+    phase,
+    phaseKind: "replan",
+    validatorFeedback: studentDecision,
+  });
+  result.scs.finishRejects = previousScs.finishRejects || 0;
+  result.scs.monitorReviews = previousScs.monitorReviews || 0;
+  result.scs.budgetReviews = previousScs.budgetReviews || 0;
+  result.scs.replanCount = (previousScs.replanCount || 0) + 1;
+  result.scs.previousPhase = previousScs.phase || null;
+  result.scs.replannedFrom = studentDecision || null;
+  return result;
+}
+
+export function shouldRequestScsReplan(decision = {}) {
+  return ["rethink_plan", "reject_phase", "finish_rejected"].includes(String(decision?.decision || ""));
 }
 
 export function shouldReviewToolResult(toolResult, state = {}) {

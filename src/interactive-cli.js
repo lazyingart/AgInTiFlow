@@ -3446,7 +3446,7 @@ async function handleCommand(line, state, packageDir) {
       printAgentMessage(
         [
           `SCS mode: ${state.enableScs || "off"}`,
-          "Student-Committee-Supervisor gates complex work with one main model: committee drafts, student approves/monitors, supervisor executes.",
+          "Student-Committee-Supervisor gates complex work with one main model: committee plans, student validates, supervisor executes.",
           "Use `/scs` to toggle, `/scs auto` for complex-task auto mode, `/scs on` to force it on, or `/scs off` for the normal fast pipeline.",
         ].join("\n")
       );

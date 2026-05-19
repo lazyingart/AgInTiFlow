@@ -41,10 +41,12 @@ import { browserStateReconciliationGuidance } from "./browser-automation-guidanc
 import {
   buildSupervisorInstruction,
   createScsPlan,
+  createScsReplan,
   reviewScsFinish,
   reviewScsProgress,
   reviewScsStepBudget,
   reviewScsToolResult,
+  shouldRequestScsReplan,
   shouldReviewScsProgress,
   shouldReviewToolResult,
 } from "./scs-controller.js";
@@ -877,17 +879,29 @@ async function maybeExtendStepBudget({ client, config, state, store, observers, 
         monitor: "scs-student",
       };
       if (scsDecision.decision === "rethink_plan") {
-        state.messages.push({
-          role: "user",
-          content: [
-            "SCS student approved a step-budget extension but requested a focused rethink.",
-            `Reason: ${scsDecision.reason || "Plan needs adjustment near the step boundary."}`,
-            scsDecision.nextRequiredAction ? `Next required action: ${scsDecision.nextRequiredAction}` : "",
-            "Supervisor: use the extra steps only for the smallest corrective phase and concrete verification. Do not restart broad exploration.",
-          ]
-            .filter(Boolean)
-            .join("\n"),
+        const replanned = await requestScsReplan({
+          client,
+          config,
+          state,
+          store,
+          observers,
+          decision: scsDecision,
+          trigger: "step-budget",
+          step,
         });
+        if (!replanned) {
+          state.messages.push({
+            role: "user",
+            content: [
+              "SCS student approved a step-budget extension but requested a focused rethink.",
+              `Reason: ${scsDecision.reason || "Plan needs adjustment near the step boundary."}`,
+              scsDecision.nextRequiredAction ? `Next required action: ${scsDecision.nextRequiredAction}` : "",
+              "Supervisor: use the extra steps only for concrete verification or a blocker report.",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          });
+        }
       }
     }
   }
@@ -928,6 +942,96 @@ async function maybeExtendStepBudget({ client, config, state, store, observers, 
     ].join("\n"),
   });
   return applied;
+}
+
+async function requestScsReplan({ client, config, state, store, observers, decision, trigger = "student-validator", step = null }) {
+  if (!config.scsActive || !shouldRequestScsReplan(decision)) return null;
+  state.meta.scs = state.meta.scs || {
+    enabled: true,
+    mode: config.enableScs || "on",
+    active: true,
+    model: `${config.provider}/${config.model}`,
+    phase: 1,
+  };
+  if ((state.meta.scs.replanCount || 0) >= 3) {
+    state.messages.push({
+      role: "user",
+      content: [
+        "SCS student validator requested another replan, but the replan cap is reached.",
+        `Decision: ${decision.decision}`,
+        `Reason: ${decision.reason || "No reason provided."}`,
+        "Supervisor: do not claim success. Finish only with a concrete blocker report or ask the user for clarification/override.",
+      ].join("\n"),
+    });
+    return null;
+  }
+
+  const replan = await createScsReplan(client, config, state, decision, {
+    events: await store.loadEvents(),
+    taskProfile: config.taskProfile,
+    goal: config.goal,
+    trigger,
+    step,
+  });
+  state.plan = redactSensitiveText(replan.plan);
+  state.meta.scs = {
+    ...state.meta.scs,
+    ...replan.scs,
+    supervisorInstructionInjected: true,
+  };
+  state.messages.push({
+    role: "user",
+    content: [
+      "SCS student validator rejected the previous phase or finish. Committee drafted a new phase and Student validated it.",
+      `Trigger: ${trigger}`,
+      `Validator reason: ${decision.reason || "No reason provided."}`,
+      replan.supervisorInstruction,
+    ].join("\n\n"),
+  });
+
+  const phaseName = String(replan.scs.phase || 1).padStart(3, "0");
+  await store.saveJsonArtifact(`scs-phase-${phaseName}.json`, replan.scs).catch(() => "");
+  await store.savePlan(state.plan);
+  await store.appendEvent("scs.committee.replan_drafted", {
+    phase: replan.scs.phase,
+    trigger,
+    previousDecision: decision.decision,
+    phaseGoal: replan.scs.phaseGoal,
+    plan: state.plan,
+    acceptanceCriteria: replan.scs.acceptanceCriteria,
+  });
+  await store.appendEvent(`scs.student.${replan.scs.student.decision}`, {
+    ...replan.scs.student,
+    trigger: "replan-gate",
+    phase: replan.scs.phase,
+  });
+  await store.appendEvent("scs.supervisor.phase_started", {
+    phase: replan.scs.phase,
+    phaseGoal: replan.scs.phaseGoal,
+    trigger,
+  });
+  await store.appendEvent("plan.updated", {
+    plan: state.plan,
+    scs: true,
+    trigger,
+    previousDecision: decision.decision,
+  });
+  observers.event("scs.committee.replan_drafted", {
+    phase: replan.scs.phase,
+    trigger,
+  });
+  observers.event(`scs.student.${replan.scs.student.decision}`, {
+    decision: replan.scs.student.decision,
+    reason: replan.scs.student.reason,
+    trigger: "replan-gate",
+  });
+  observers.event("plan.updated", { plan: state.plan, scs: true, trigger });
+  emitConsole(
+    config,
+    `SCS: committee replanned phase ${replan.scs.phase} after student validator ${decision.decision}.`,
+    { kind: "meta" }
+  );
+  return replan;
 }
 
 function createBrowserState() {
@@ -2186,8 +2290,8 @@ export async function runAgent(config) {
         await store.appendEvent("plan.created", { plan: state.plan, scs: true });
         await store.saveState(state);
         observers.event("plan.created", { plan: state.plan, scs: true });
-        observers.event("scs.student.approve_plan", scsPlan.scs.student);
-        emitConsole(config, `SCS: student approved phase plan (${Math.round((scsPlan.scs.student.confidence || 0) * 100)}%).`, {
+        observers.event(`scs.student.${scsPlan.scs.student.decision}`, scsPlan.scs.student);
+        emitConsole(config, `SCS: student validator approved phase plan (${Math.round((scsPlan.scs.student.confidence || 0) * 100)}%).`, {
           kind: "meta",
         });
       } else {
@@ -2517,14 +2621,26 @@ export async function runAgent(config) {
           });
           if (decision.decision === "finish_rejected") {
             state.meta.scs.finishRejects = (state.meta.scs.finishRejects || 0) + 1;
-            state.messages.push({
-              role: "user",
-              content: [
-                "SCS student rejected the proposed finish.",
-                `Reason: ${decision.reason || "Finish lacked enough evidence."}`,
-                "Supervisor: continue with the approved phase, collect concrete evidence, or call finish with a clear blocker.",
-              ].join("\n"),
+            const replanned = await requestScsReplan({
+              client,
+              config,
+              state,
+              store,
+              observers,
+              decision,
+              trigger: "finish-rejected",
+              step,
             });
+            if (!replanned) {
+              state.messages.push({
+                role: "user",
+                content: [
+                  "SCS student rejected the proposed finish.",
+                  `Reason: ${decision.reason || "Finish lacked enough evidence."}`,
+                  "Supervisor: continue only to collect concrete evidence or call finish with a clear blocker.",
+                ].join("\n"),
+              });
+            }
             state.stepsCompleted = step;
             state.updatedAt = new Date().toISOString();
             await maybeExtendStepBudget({ client, config, state, store, observers, stepBudget, step, trigger: "finish-rejected" });
@@ -2634,14 +2750,26 @@ export async function runAgent(config) {
             });
             if (decision.decision === "finish_rejected") {
               state.meta.scs.finishRejects = (state.meta.scs.finishRejects || 0) + 1;
-              state.messages.push({
-                role: "user",
-                content: [
-                  "SCS student rejected the proposed finish.",
-                  `Reason: ${decision.reason || "Finish lacked enough evidence."}`,
-                  "Supervisor: continue with the approved phase, collect concrete evidence, or call finish with a clear blocker.",
-                ].join("\n"),
+              const replanned = await requestScsReplan({
+                client,
+                config,
+                state,
+                store,
+                observers,
+                decision,
+                trigger: "finish-rejected",
+                step,
               });
+              if (!replanned) {
+                state.messages.push({
+                  role: "user",
+                  content: [
+                    "SCS student rejected the proposed finish.",
+                    `Reason: ${decision.reason || "Finish lacked enough evidence."}`,
+                    "Supervisor: continue only to collect concrete evidence or call finish with a clear blocker.",
+                  ].join("\n"),
+                });
+              }
               state.stepsCompleted = step;
               state.updatedAt = new Date().toISOString();
               await store.saveState(state);
@@ -2706,18 +2834,30 @@ export async function runAgent(config) {
             toolName: toolResult.toolName,
           });
           if (decision.decision === "rethink_plan" || decision.decision === "reject_phase") {
-            state.messages.push({
-              role: "user",
-              content: [
-                "SCS student monitor requested a rethink based on tool evidence.",
-                `Decision: ${decision.decision}`,
-                `Reason: ${decision.reason || "No reason provided."}`,
-                decision.nextRequiredAction ? `Next required action: ${decision.nextRequiredAction}` : "",
-                "Supervisor: do not repeat the same failed call. Adjust within the approved phase or finish with a concrete blocker if the phase is invalidated.",
-              ]
-                .filter(Boolean)
-                .join("\n"),
+            const replanned = await requestScsReplan({
+              client,
+              config,
+              state,
+              store,
+              observers,
+              decision,
+              trigger: `tool-${toolResult.toolName || "unknown"}`,
+              step,
             });
+            if (!replanned) {
+              state.messages.push({
+                role: "user",
+                content: [
+                  "SCS student monitor requested a rethink based on tool evidence.",
+                  `Decision: ${decision.decision}`,
+                  `Reason: ${decision.reason || "No reason provided."}`,
+                  decision.nextRequiredAction ? `Next required action: ${decision.nextRequiredAction}` : "",
+                  "Supervisor: do not repeat the same failed call. Finish with a concrete blocker if the phase is invalidated.",
+                ]
+                  .filter(Boolean)
+                  .join("\n"),
+              });
+            }
             emitConsole(config, `SCS: ${decision.decision} after ${toolResult.toolName}: ${decision.reason || "reviewed"}`, {
               kind: "meta",
             });
@@ -2747,18 +2887,30 @@ export async function runAgent(config) {
           trigger: "periodic",
         });
         if (decision.decision === "rethink_plan" || decision.decision === "reject_phase") {
-          state.messages.push({
-            role: "user",
-            content: [
-              "SCS student requested a periodic rethink.",
-              `Decision: ${decision.decision}`,
-              `Reason: ${decision.reason || "No reason provided."}`,
-              decision.nextRequiredAction ? `Next required action: ${decision.nextRequiredAction}` : "",
-              "Supervisor: adjust the next action within the approved phase, collect stronger evidence, or finish with a concrete blocker if the phase is invalidated.",
-            ]
-              .filter(Boolean)
-              .join("\n"),
+          const replanned = await requestScsReplan({
+            client,
+            config,
+            state,
+            store,
+            observers,
+            decision,
+            trigger: "periodic-progress",
+            step,
           });
+          if (!replanned) {
+            state.messages.push({
+              role: "user",
+              content: [
+                "SCS student requested a periodic rethink.",
+                `Decision: ${decision.decision}`,
+                `Reason: ${decision.reason || "No reason provided."}`,
+                decision.nextRequiredAction ? `Next required action: ${decision.nextRequiredAction}` : "",
+                "Supervisor: collect stronger evidence or finish with a concrete blocker if the phase is invalidated.",
+              ]
+                .filter(Boolean)
+                .join("\n"),
+            });
+          }
           emitConsole(config, `SCS: periodic ${decision.decision}: ${decision.reason || "reviewed"}`, { kind: "meta" });
         }
       }
