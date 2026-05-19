@@ -48,6 +48,7 @@ Project-specific schemas, prompts, layouts, and compilers belong in the target r
 - Convert raw files into durable intermediate inputs before asking a model to generate downstream artifacts.
 - Split work into deterministic chunks that survive reruns. If chunk policy changes, map old outputs by stable source IDs instead of restarting from zero.
 - Use isolated structured-data calls for repetitive JSON units. Keep prompts focused on the chunk, schema, source references, and validation errors.
+- Add deterministic canonicalizers before model retry when failures are representational, such as punctuation normalization, stable token splitting, missing metadata backfill, schema version migration, or renderer-specific wrapping. Do not spend provider calls on repairs a local script can prove.
 - Run writers in tmux or another observable background process. Each worker must have disjoint claims, atomic output writes, and shard-local logs.
 - Keep review and repair asynchronous but safe. Reviewers may produce candidate fixes while writers continue; only validators or merge scripts promote candidates.
 - Compile or export checkpoint previews after successful merge batches and always at final completion.
@@ -60,6 +61,7 @@ A robust pipeline has an independent repair path that is not blocked by the main
 - Heartbeats record active worker, current chunk, last success, last failure, and provider wait state.
 - Provider/rate-limit failures wait with backoff and retry at long intervals.
 - Schema/parse failures are repaired with the exact validator error and the smallest useful input.
+- Mechanical validation failures are repaired locally first when the canonical form is derivable from source text or schema rules.
 - Semantic/source-drift failures are retried with smaller chunks or stronger source references.
 - Repeated failures are quarantined with reasons, then handled by a bounded failed-only repair pass.
 - Monitor intervention is gentle: observe healthy progress, restart only on hard error, stale claim, repeated no-progress window, or missing child process.

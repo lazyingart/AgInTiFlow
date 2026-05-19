@@ -38,6 +38,7 @@ Use this skill when the user needs reliable JSON that follows an explicit schema
 - On validation failure, retry with the exact schema errors and only the smallest relevant source text.
 - For batch work, write candidate JSON per chunk first; promote it only after schema and semantic validators pass.
 - Keep schema versions in the artifact metadata so old reviewed outputs can be reused or selectively regenerated when prompts change.
+- Before retrying the provider, classify whether the failure is semantic or mechanical. Use local canonicalization for deterministic fixes such as token splitting, punctuation restoration from source text, missing default fields, role aliases, or renderer wrappers.
 
 ## Boundaries
 

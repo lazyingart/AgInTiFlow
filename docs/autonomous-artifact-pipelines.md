@@ -23,7 +23,7 @@ The validator promotes candidates only after schema and project-specific checks 
 
 The reviewer inspects valid-looking artifacts for missing source units, source drift, repeated filler, malformed annotations, suspicious all-one-style output, and other known quality failures. It writes candidate fixes or failed-only repair requests.
 
-The repairer runs independently of the writer. It can wake from status files, handle failed or quarantined chunks, retry with exact validator errors, reduce chunk size, or escalate to a stronger model when the project allows it.
+The repairer runs independently of the writer. It can wake from status files, handle failed or quarantined chunks, retry with exact validator errors, reduce chunk size, or escalate to a stronger model when the project allows it. If the error is mechanical, it should repair locally first: punctuation restoration from source text, token splitting, default metadata, schema migration, and renderer wrapping should not consume model calls.
 
 The monitor is gentle. It waits through healthy progress and provider limits, restarts only on hard evidence of stall or crash, and records each decision.
 
