@@ -30,7 +30,7 @@ Use this skill when the task asks for a paired-language book, ruby/furigana/piny
 3. Convert source books to durable Markdown first. Keep raw and cleaned Markdown separate when OCR or EPUB extraction is noisy.
 4. Split cleaned Markdown into stable paragraph- or chapter-scoped chunks with `manifest.json` and `chunks.jsonl`. Use source paragraph IDs that survive reruns. If a paragraph is too large for reliable provider output, split it into ordered subchunks at sentence or clause boundaries while preserving the original source order and recording `split_from_chunk_id`, `split_part`, and `split_part_count`.
 5. Write resumable per-chunk JSON artifacts. Never overwrite a valid reviewed chunk unless a validator or prompt version requires regeneration; move stale chunks out of the compile path.
-6. Generate or repair annotations with a provider worker loop, not a monolithic prompt. Each chunk should validate independently before promotion.
+6. Generate or repair annotations with a provider worker loop, not a monolithic prompt. Each chunk should validate independently before promotion. If JSON is malformed or validation fails, retry the chunk with the exact validator errors before marking it failed.
 7. Compile preview PDFs periodically and at the end. For paired-language books, compile both directions when renderers exist, plus color and blackwhite variants when color is supported.
 8. Run the writer and monitor in observable tmux sessions with status files, logs, retry/backoff for provider limits, and clear resume commands.
 
