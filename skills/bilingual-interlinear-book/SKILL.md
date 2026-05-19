@@ -43,6 +43,8 @@ For classical Chinese texts, bracketed notes such as `〈 ... 〉`, inline comme
 
 Chunk boundaries must not create malformed note syntax. Avoid putting a leading close marker such as `〉` at the start of a subchunk; attach it to the previous subchunk so the writer sees balanced source context.
 
+For dense classical texts that require one-token-per-Hanzi plus Japanese glosses, start with provider-safe subchunks around 120-160 source characters. If outputs become malformed near provider token limits, retune smaller immediately instead of repeatedly retrying oversized chunks.
+
 For grammar coloring, assign `g` using only: `subject`, `predicate`, `object`, `attributive`, `adverbial`, `complement`, `topic`, `function`. Color PDFs depend on these fields: every Chinese Hanzi token and every Japanese kanji token should carry `g`. Blackwhite builds should force all grammar colors to black through the renderer, not by deleting `g`.
 
 ## Completion Evidence
