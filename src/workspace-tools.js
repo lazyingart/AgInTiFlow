@@ -214,6 +214,15 @@ function stripSafeCredentialReferences(content) {
   const codeExpression = String.raw`[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\([^"'\n]*\))?`;
   const envName = String.raw`[A-Z][A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PASSWD|GRSAI|VENICE)[A-Z0-9_]*`;
 
+  text = text.replace(new RegExp(String.raw`(["'])${envName}=\1`, "g"), "$1ENV_NAME=$1");
+  text = text.replace(
+    /(["']Authorization["']\s*:\s*["']Bearer\s*["']\s*\+\s*[A-Za-z_$][\w$]*)/gi,
+    "safe_auth_header=[VAR_REF]"
+  );
+  text = text.replace(
+    /(["']Authorization["']\s*:\s*`Bearer\s+\$\{[^}\n]+\}`)/gi,
+    "safe_auth_header=[VAR_REF]"
+  );
   text = text.replace(
     new RegExp(String.raw`\b${keyName}\s*=\s*(?:os\.environ\.get|os\.getenv)\(\s*["']${envName}["'](?:\s*,\s*(?:None|""|''))?\s*\)`, "gi"),
     "safe_credential_ref=[ENV_REF]"
