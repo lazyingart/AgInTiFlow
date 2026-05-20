@@ -31,6 +31,8 @@ The npm trust setup may require the package to exist before trust can be attache
 4. Push the release commit and create a GitHub Release, or run the publish workflow manually.
 5. Confirm the npm package page shows provenance.
 
+If local token publishing fails with `E401` or `E404`, do not treat that as terminal when Trusted Publishing is configured. Use the GitHub Actions workflow with an account that can dispatch workflows for `lazyingart/AgInTiFlow`, then verify the registry and install the published package. See `references/agintiflow-npm-publication-memory.md` for the 2026-05-20 `0.20.169` publication evidence and the known working command sequence.
+
 ## Local Token Fallback
 
 Trusted Publishing is preferred. A local automation token can be used only for bootstrap or emergency fallback:
