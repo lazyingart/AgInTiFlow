@@ -778,6 +778,71 @@ export function formatWorkspaceChange(change = {}) {
   };
 }
 
+function embeddedWorkspaceChangesFromText(value = "") {
+  const lines = String(value || "").split(/\r?\n/);
+  const changes = [];
+  let currentTool = "";
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const toolMatch = lines[index].match(/^\s*Tool:\s*(.+?)\s*$/i);
+    if (toolMatch) {
+      currentTool = toolMatch[1].trim();
+      continue;
+    }
+
+    const pathMatch = lines[index].match(/^\s*Path:\s*(.+?)\s*$/i);
+    if (!pathMatch) continue;
+
+    let cursor = index + 1;
+    while (cursor < lines.length && !/^\s*Diff:\s*$/i.test(lines[cursor]) && !/^\s*(?:Tool|Path):\s*/i.test(lines[cursor])) {
+      cursor += 1;
+    }
+    if (!/^\s*Diff:\s*$/i.test(lines[cursor] || "")) continue;
+
+    const diffLines = [];
+    cursor += 1;
+    while (cursor < lines.length) {
+      if (diffLines.length && /^\s*(?:Tool|Path):\s*/i.test(lines[cursor])) break;
+      if (
+        diffLines.length &&
+        /^\s*(?:Output:|No command output|Blocked by guardrail\.|Mock run complete\.)/i.test(lines[cursor]) &&
+        !/^[-+@ ]/.test(lines[cursor])
+      ) {
+        break;
+      }
+      diffLines.push(lines[cursor]);
+      cursor += 1;
+    }
+    while (diffLines.length && !diffLines[diffLines.length - 1].trim()) diffLines.pop();
+    if (diffLines.length) {
+      changes.push({
+        toolName: currentTool || "write_file",
+        path: pathMatch[1].trim(),
+        diff: diffLines.join("\n"),
+      });
+      index = Math.max(index, cursor - 1);
+    }
+  }
+
+  return changes;
+}
+
+function embeddedWorkspaceSummary(value = "") {
+  const summary = [];
+  let skippingDiff = false;
+  for (const line of String(value || "").split(/\r?\n/)) {
+    if (/^\s*Diff:\s*$/i.test(line)) {
+      skippingDiff = true;
+      continue;
+    }
+    if (skippingDiff && /^\s*(?:Tool|Path):\s*/i.test(line)) skippingDiff = false;
+    if (skippingDiff) continue;
+    if (/^\s*Path:\s*/i.test(line)) continue;
+    summary.push(line);
+  }
+  return summary.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function printWorkspaceChange(change = {}) {
   if (!change?.diff) return;
   const formatted = formatWorkspaceChange(change);
@@ -785,6 +850,15 @@ function printWorkspaceChange(change = {}) {
   outputLine(`${label(formatted.label, bg)} ${compactLine(formatted.summary, 92)}`);
   const gutter = `${color(" | ", bg)} `;
   for (const line of formatted.lines) outputLine(`${gutter}${line}`);
+}
+
+function printEmbeddedWorkspaceResult(result = "", { labelName = "finish", time = "" } = {}) {
+  const changes = embeddedWorkspaceChangesFromText(result);
+  if (changes.length === 0) return false;
+  const summary = embeddedWorkspaceSummary(result);
+  if (summary) printHistoryBlock(labelName, summary, { time, bg: ansi.systemBg });
+  for (const change of changes) printWorkspaceChange(change);
+  return true;
 }
 
 function printPreviewBlock(role, text, { time = "", bg = ansi.systemBg, maxLines = 5 } = {}) {
@@ -2201,6 +2275,24 @@ async function latestSession() {
 }
 
 function printHistoryEntry(entry) {
+  if (entry.role === "tool") {
+    const time = entry.at ? new Date(entry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+    try {
+      const parsed = JSON.parse(entry.content || "{}");
+      if (parsed.toolName === "finish" && printEmbeddedWorkspaceResult(parsed.result || parsed.args?.result || "", { labelName: "finish", time })) {
+        return;
+      }
+      if (parsed.diff) {
+        printWorkspaceChange(parsed);
+        return;
+      }
+      outputLine(`${label(parsed.ok === false ? "fail" : "done", parsed.ok === false ? ansi.red : ansi.systemBg)} ${toolStatusDetails(parsed)}`);
+      return;
+    } catch {
+      printHistoryBlock("tool", entry.content, { time, bg: ansi.systemBg });
+      return;
+    }
+  }
   const role = entry.role === "assistant" ? "aginti>" : entry.role === "user" ? "user>" : String(entry.role || "note");
   const bg = role === "aginti>" ? ansi.agentBg : role === "user>" ? ansi.userBg : ansi.systemBg;
   const time = entry.at ? new Date(entry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
@@ -2279,6 +2371,9 @@ function printResumeEvent(event = {}) {
       printWorkspaceChange(data);
       return true;
     }
+    if (data.toolName === "finish" && printEmbeddedWorkspaceResult(data.result || data.args?.result || "", { labelName: "finish" })) {
+      return true;
+    }
     if (data.toolName === "run_command") {
       printCommandOutputLog({
         command: data.args?.command || data.command || "",
@@ -2318,6 +2413,7 @@ function printResumeEvent(event = {}) {
     return true;
   }
   if (type === "session.finished") {
+    if (printEmbeddedWorkspaceResult(data.result || "", { labelName: "finish" })) return true;
     outputLine(`${label("state", ansi.systemBg)} status=finished${data.result ? ` result=${compactLine(data.result, 86)}` : ""}`);
     return true;
   }
@@ -4178,7 +4274,11 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
         } else if (type === "tool.started") {
           printStatusEvent(state, "tool", toolStatusDetails(data));
         } else if (type === "tool.completed" || type === "tool.failed") {
-          printStatusEvent(state, type === "tool.failed" || data.ok === false ? "tool_failed" : "tool_done", toolStatusDetails(data));
+          if (data.toolName === "finish" && printEmbeddedWorkspaceResult(data.result || data.args?.result || "", { labelName: "finish" })) {
+            // The finish tool can recap a workspace diff; render it like the original write/patch event.
+          } else {
+            printStatusEvent(state, type === "tool.failed" || data.ok === false ? "tool_failed" : "tool_done", toolStatusDetails(data));
+          }
         } else if (type === "file.changed") {
           printWorkspaceChange(data);
         } else if (type === "tool.blocked") {

@@ -209,6 +209,21 @@ try {
     const chatTail = (await page.locator("#chat-thread").innerText().catch(() => "")).slice(-1200);
     throw new Error(`web UI did not render formatted file-change diff event; state=${state}\nlogs tail:\n${logsTail}\nchat tail:\n${chatTail}`);
   }
+  try {
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll(".event-finish .change-diff")].some((node) =>
+          (node.textContent || "").includes("+Created by AgInTiFlow mock mode.")
+        ),
+      null,
+      { timeout: 30000 }
+    );
+  } catch (error) {
+    const state = await page.locator("#run-state").evaluate((node) => node.dataset.status || "").catch(() => "unknown");
+    const logsTail = (await page.locator("#logs").innerText().catch(() => "")).slice(-1200);
+    const chatTail = (await page.locator("#chat-thread").innerText().catch(() => "")).slice(-1200);
+    throw new Error(`web UI did not render formatted finish-result diff event; state=${state}\nlogs tail:\n${logsTail}\nchat tail:\n${chatTail}`);
+  }
 
   await page.click("#open-settings");
   await page.waitForSelector("#settings-modal[open]");
@@ -246,6 +261,7 @@ try {
           "new-session-resets-scope",
           "formatted-plan-event-card",
           "formatted-file-diff-event-card",
+          "formatted-finish-result-diff-card",
           "settings-provider-dropdowns",
           "settings-wrapper-dropdowns",
         ],

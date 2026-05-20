@@ -896,6 +896,9 @@ try {
   if (!latest.stdout.includes(" write ") || !latest.stdout.includes("+Created by AgInTiFlow mock mode.")) {
     throw new Error("bare aginti resume did not replay formatted file-change diff context");
   }
+  if (!/\bfinish\b/.test(latest.stdout) || latest.stdout.includes('{"result":"Mock run complete')) {
+    throw new Error("bare aginti resume did not render finish-result diffs in formatted mode");
+  }
   if (latest.stdout.includes("resume note=showing chat transcript only")) {
     throw new Error("bare aginti resume regressed to chat-only history");
   }

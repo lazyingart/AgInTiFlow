@@ -1796,6 +1796,83 @@ function renderPlanEvent(entry) {
   `;
 }
 
+function embeddedWorkspaceChangesFromText(value = "") {
+  const lines = String(value || "").split(/\r?\n/);
+  const changes = [];
+  let currentTool = "";
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const toolMatch = lines[index].match(/^\s*Tool:\s*(.+?)\s*$/i);
+    if (toolMatch) {
+      currentTool = toolMatch[1].trim();
+      continue;
+    }
+
+    const pathMatch = lines[index].match(/^\s*Path:\s*(.+?)\s*$/i);
+    if (!pathMatch) continue;
+
+    let cursor = index + 1;
+    while (cursor < lines.length && !/^\s*Diff:\s*$/i.test(lines[cursor]) && !/^\s*(?:Tool|Path):\s*/i.test(lines[cursor])) {
+      cursor += 1;
+    }
+    if (!/^\s*Diff:\s*$/i.test(lines[cursor] || "")) continue;
+
+    const diffLines = [];
+    cursor += 1;
+    while (cursor < lines.length) {
+      if (diffLines.length && /^\s*(?:Tool|Path):\s*/i.test(lines[cursor])) break;
+      if (
+        diffLines.length &&
+        /^\s*(?:Output:|No command output|Blocked by guardrail\.|Mock run complete\.)/i.test(lines[cursor]) &&
+        !/^[-+@ ]/.test(lines[cursor])
+      ) {
+        break;
+      }
+      diffLines.push(lines[cursor]);
+      cursor += 1;
+    }
+    while (diffLines.length && !diffLines[diffLines.length - 1].trim()) diffLines.pop();
+    if (diffLines.length) {
+      changes.push({
+        toolName: currentTool || "write_file",
+        path: pathMatch[1].trim(),
+        diff: diffLines.join("\n"),
+      });
+      index = Math.max(index, cursor - 1);
+    }
+  }
+
+  return changes;
+}
+
+function embeddedWorkspaceSummary(value = "") {
+  const summary = [];
+  let skippingDiff = false;
+  for (const line of String(value || "").split(/\r?\n/)) {
+    if (/^\s*Diff:\s*$/i.test(line)) {
+      skippingDiff = true;
+      continue;
+    }
+    if (skippingDiff && /^\s*(?:Tool|Path):\s*/i.test(line)) skippingDiff = false;
+    if (skippingDiff) continue;
+    if (/^\s*Path:\s*/i.test(line)) continue;
+    summary.push(line);
+  }
+  return summary.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function renderEmbeddedWorkspaceResult(value = "", entry = {}) {
+  const changes = embeddedWorkspaceChangesFromText(value);
+  if (changes.length === 0) return "";
+  const summary = embeddedWorkspaceSummary(value);
+  return `
+    ${summary ? `<div class="event-result-summary markdown-body">${renderMarkdown(summary)}</div>` : ""}
+    <div class="embedded-change-list">
+      ${changes.map((change) => renderWorkspaceChangeEvent({ data: change, at: entry.at, content: change.path })).join("")}
+    </div>
+  `;
+}
+
 function renderWorkspaceChangeEvent(entry) {
   const data = entry.data || {};
   const toolName = data.toolName || data.action || "file.changed";
@@ -1833,14 +1910,18 @@ function renderToolEvent(entry) {
   const skipped = message === "tool.skipped";
   const toolName = data.toolName || "tool";
   const args = data.args || {};
+  const resultText = String(data.result || args.result || "");
+  const embeddedResult = resultText ? renderEmbeddedWorkspaceResult(resultText, entry) : "";
   const argPreview =
-    toolName === "run_command" && args.command
+    toolName === "finish"
+      ? ""
+      : toolName === "run_command" && args.command
       ? args.command
       : args.path || args.url || args.query || args.q || (Object.keys(args).length ? JSON.stringify(args) : "");
   const stdout = data.stdout ? outputPreviewText(data.stdout) : null;
   const stderr = data.stderr ? outputPreviewText(data.stderr) : null;
   return `
-    <article class="event-card ${failed ? "event-failed" : skipped ? "event-muted" : "event-tool"}">
+    <article class="event-card ${failed ? "event-failed" : skipped ? "event-muted" : toolName === "finish" ? "event-finish" : "event-tool"}">
       <div class="event-card-meta">
         <span>${escapeHtml(failed ? "tool failed" : skipped ? "tool skipped" : message === "tool.started" ? "tool" : "tool done")}</span>
         <span>${entry.at ? escapeHtml(new Date(entry.at).toLocaleString()) : ""}</span>
@@ -1848,6 +1929,7 @@ function renderToolEvent(entry) {
       <strong class="event-path">${escapeHtml(toolName)}</strong>
       ${argPreview ? `<code class="event-inline-code">${escapeHtml(argPreview)}</code>` : ""}
       ${data.error || data.reason ? `<div class="event-fold-note">${escapeHtml(data.error || data.reason)}</div>` : ""}
+      ${embeddedResult || (toolName === "finish" && resultText ? `<div class="markdown-body">${renderMarkdown(resultText)}</div>` : "")}
       ${stdout ? `<div class="log-stream-title">stdout</div><pre class="event-output">${escapeHtml(stdout.text)}</pre>` : ""}
       ${stdout?.hidden > 0 ? `<div class="event-fold-note">... ${stdout.hidden} more stdout line(s) folded</div>` : ""}
       ${stderr ? `<div class="log-stream-title">stderr</div><pre class="event-output">${escapeHtml(stderr.text)}</pre>` : ""}
@@ -1862,13 +1944,14 @@ function renderStatusEvent(entry) {
   const label = entry.eventLabel || message.replace(/^[^.]+\./, "");
   const content = data.result || data.error || data.reason || entry.content || "";
   const failed = message === "session.failed";
+  const embeddedResult = content ? renderEmbeddedWorkspaceResult(content, entry) : "";
   return `
-    <article class="event-card ${failed ? "event-failed" : "event-muted"}">
+    <article class="event-card ${failed ? "event-failed" : message === "session.finished" && embeddedResult ? "event-finish" : "event-muted"}">
       <div class="event-card-meta">
         <span>${escapeHtml(label)}</span>
         <span>${entry.at ? escapeHtml(new Date(entry.at).toLocaleString()) : ""}</span>
       </div>
-      ${content ? `<div class="chat-content">${escapeHtml(content)}</div>` : ""}
+      ${embeddedResult || (content ? `<div class="chat-content">${escapeHtml(content)}</div>` : "")}
     </article>
   `;
 }
@@ -1909,9 +1992,14 @@ function renderStructuredEvent(entry) {
 
 function renderLogs(run) {
   logsEl.dataset.mode = "active";
+  const structuredRunResult = run.result ? renderEmbeddedWorkspaceResult(run.result, { at: run.endedAt || run.updatedAt || "" }) : "";
   const parts = [
     `<div class="log-line">${escapeHtml(`status=${run.status} session=${run.sessionId} provider=${run.provider} model=${run.model}`)}</div>`,
-    run.result ? `<div class="log-line">${escapeHtml(`result=${run.result}`)}</div>` : "",
+    structuredRunResult
+      ? `<article class="event-card event-finish"><div class="event-card-meta"><span>result</span></div>${structuredRunResult}</article>`
+      : run.result
+        ? `<div class="log-line">${escapeHtml(`result=${run.result}`)}</div>`
+        : "",
     run.error ? `<div class="log-line error">${escapeHtml(`error=${run.error}`)}</div>` : "",
   ];
 
@@ -2173,6 +2261,28 @@ function renderChat(chatEntries) {
             <div class="chat-content">${escapeHtml(entry.content || "").replace(/\n/g, "<br>")}</div>
           </article>
         `;
+      }
+      if (entry.role === "tool") {
+        try {
+          const parsed = JSON.parse(entry.content || "{}");
+          const toolName = parsed.toolName || "tool";
+          return renderToolEvent({
+            role: "event",
+            eventType: parsed.ok === false ? "tool.failed" : "tool.completed",
+            message: parsed.ok === false ? "tool.failed" : "tool.completed",
+            eventLabel: parsed.ok === false ? "tool failed" : "tool done",
+            data: parsed,
+            content: parsed.result || toolName,
+            at: entry.at,
+          });
+        } catch {
+          return `
+            <article class="event-card event-tool">
+              <div class="event-card-meta">tool${entry.at ? ` · ${new Date(entry.at).toLocaleString()}` : ""}</div>
+              <pre class="event-output">${escapeHtml(entry.content || "")}</pre>
+            </article>
+          `;
+        }
       }
       const role = entry.role === "assistant" ? "assistant" : "user";
       const label = role === "assistant" ? t("assistantLabel") : t("youLabel");
