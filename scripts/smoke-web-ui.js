@@ -224,6 +224,14 @@ try {
     const chatTail = (await page.locator("#chat-thread").innerText().catch(() => "")).slice(-1200);
     throw new Error(`web UI did not render formatted finish-result diff event; state=${state}\nlogs tail:\n${logsTail}\nchat tail:\n${chatTail}`);
   }
+  const formattedChatText = await page.locator("#chat-thread").innerText();
+  if (formattedChatText.includes('{"result":"Mock run complete')) {
+    throw new Error("web UI rendered raw finish JSON in chat history");
+  }
+  const mockCompleteCount = (formattedChatText.match(/Mock run complete\./g) || []).length;
+  if (mockCompleteCount > 1) {
+    throw new Error(`web UI duplicated the assistant/session finish result ${mockCompleteCount} times`);
+  }
 
   await page.click("#open-settings");
   await page.waitForSelector("#settings-modal[open]");
@@ -262,6 +270,7 @@ try {
           "formatted-plan-event-card",
           "formatted-file-diff-event-card",
           "formatted-finish-result-diff-card",
+          "deduped-finish-history",
           "settings-provider-dropdowns",
           "settings-wrapper-dropdowns",
         ],

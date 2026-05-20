@@ -843,6 +843,47 @@ function embeddedWorkspaceSummary(value = "") {
   return summary.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function normalizedTimelineText(value = "") {
+  return String(value || "").replace(/\r\n?/g, "\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function timelineTextFingerprint(value = "") {
+  return normalizedTimelineText(value).replace(/\s+/g, " ").trim();
+}
+
+function workspaceChangeFingerprint(change = {}) {
+  const pathKey = String(change.path || change.args?.path || "").replace(/\\/g, "/").trim();
+  const diffKey = normalizedTimelineText(change.diff || "");
+  return pathKey || diffKey ? `${pathKey}\n${diffKey}` : "";
+}
+
+function eventWorkspaceChangeFingerprint(event = {}) {
+  const data = event.data || {};
+  if (event.type === "file.changed") return workspaceChangeFingerprint(data);
+  if ((event.type === "tool.completed" || event.type === "tool.failed") && data.diff) return workspaceChangeFingerprint(data);
+  return "";
+}
+
+function eventWorkspaceChangePath(event = {}) {
+  const data = event.data || {};
+  if (event.type !== "file.changed" && !data.diff) return "";
+  return String(data.path || data.args?.path || "").replace(/\\/g, "/").trim();
+}
+
+function toolLifecycleKey(event = {}) {
+  const data = event.data || {};
+  const args = data.args || {};
+  const focusedArgs = {
+    path: args.path || args.file || data.path || "",
+    command: args.command || data.command || "",
+    title: args.title || data.title || "",
+    kind: args.kind || data.kind || "",
+    query: args.query || args.q || "",
+    url: args.url || data.url || "",
+  };
+  return `${data.toolName || ""}:${JSON.stringify(focusedArgs)}`;
+}
+
 function printWorkspaceChange(change = {}) {
   if (!change?.diff) return;
   const formatted = formatWorkspaceChange(change);
@@ -852,12 +893,14 @@ function printWorkspaceChange(change = {}) {
   for (const line of formatted.lines) outputLine(`${gutter}${line}`);
 }
 
-function printEmbeddedWorkspaceResult(result = "", { labelName = "finish", time = "" } = {}) {
+function printEmbeddedWorkspaceResult(result = "", { labelName = "finish", time = "", bg = ansi.systemBg, includeDiffs = true } = {}) {
   const changes = embeddedWorkspaceChangesFromText(result);
   if (changes.length === 0) return false;
   const summary = embeddedWorkspaceSummary(result);
-  if (summary) printHistoryBlock(labelName, summary, { time, bg: ansi.systemBg });
-  for (const change of changes) printWorkspaceChange(change);
+  if (summary) printHistoryBlock(labelName, summary, { time, bg });
+  if (includeDiffs) {
+    for (const change of changes) printWorkspaceChange(change);
+  }
   return true;
 }
 
@@ -2296,6 +2339,17 @@ function printHistoryEntry(entry) {
   const role = entry.role === "assistant" ? "aginti>" : entry.role === "user" ? "user>" : String(entry.role || "note");
   const bg = role === "aginti>" ? ansi.agentBg : role === "user>" ? ansi.userBg : ansi.systemBg;
   const time = entry.at ? new Date(entry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  if (
+    entry.role === "assistant" &&
+    printEmbeddedWorkspaceResult(entry.content, {
+      labelName: role,
+      time,
+      bg,
+      includeDiffs: !entry.suppressEmbeddedWorkspaceDiffs,
+    })
+  ) {
+    return;
+  }
   printHistoryBlock(role, entry.content, { time, bg });
 }
 
@@ -2335,16 +2389,66 @@ function isReplayableResumeEvent(event = {}) {
 function resumeTimelineItems(chat = [], events = [], { limit = 0 } = {}) {
   const shownChat = limit > 0 ? chat.slice(-limit) : chat;
   const firstChatTime = limit > 0 && shownChat.length > 0 ? timestampMs(shownChat[0].at) : 0;
-  const chatItems = shownChat.map((entry, index) => ({
-    kind: "chat",
-    entry,
-    order: index * 2,
-    at: timestampMs(entry.at),
-  }));
-  const eventItems = events
+  const eventList = Array.isArray(events) ? events : [];
+  const workspaceChangeKeys = new Set(eventList.map(eventWorkspaceChangeFingerprint).filter(Boolean));
+  const workspaceChangePaths = new Set(eventList.map(eventWorkspaceChangePath).filter(Boolean));
+  const chatResultFingerprints = new Set(
+    (Array.isArray(chat) ? chat : [])
+      .filter((entry) => entry?.role === "assistant" && entry?.content)
+      .map((entry) => timelineTextFingerprint(entry.content))
+      .filter(Boolean)
+  );
+  const finishResultFingerprints = new Set(
+    eventList
+      .filter((event) => (event.type === "tool.completed" && event.data?.toolName === "finish") || event.type === "session.finished")
+      .map((event) => timelineTextFingerprint(event.data?.result || ""))
+      .filter(Boolean)
+  );
+  const terminalToolKeys = new Set(
+    eventList
+      .filter((event) => ["tool.completed", "tool.failed", "tool.skipped", "tool.blocked"].includes(event.type))
+      .map(toolLifecycleKey)
+      .filter(Boolean)
+  );
+  const shouldSuppressEvent = (event = {}) => {
+    const type = String(event.type || "");
+    const data = event.data || {};
+    const toolName = String(data.toolName || "");
+    const resultFingerprint = timelineTextFingerprint(data.result || data.args?.result || "");
+    if (type === "tool.started" && terminalToolKeys.has(toolLifecycleKey(event))) return true;
+    if (type === "tool.started" && toolName === "finish" && resultFingerprint) {
+      return chatResultFingerprints.has(resultFingerprint) || finishResultFingerprints.has(resultFingerprint);
+    }
+    if (["tool.completed", "tool.failed", "tool.skipped"].includes(type)) {
+      if (toolName === "finish" && resultFingerprint && chatResultFingerprints.has(resultFingerprint)) return true;
+      if (["write_file", "apply_patch"].includes(toolName)) {
+        const pathKey = String(data.path || data.args?.path || data.args?.file || "").replace(/\\/g, "/").trim();
+        if (pathKey && workspaceChangePaths.has(pathKey)) return true;
+        const changeKey = eventWorkspaceChangeFingerprint(event);
+        if (changeKey && workspaceChangeKeys.has(changeKey)) return true;
+      }
+    }
+    if (type === "session.finished" && resultFingerprint) {
+      return chatResultFingerprints.has(resultFingerprint) || finishResultFingerprints.has(resultFingerprint);
+    }
+    return false;
+  };
+  const chatItems = shownChat.map((entry, index) => {
+    const embeddedChanges = entry.role === "assistant" ? embeddedWorkspaceChangesFromText(entry.content) : [];
+    const suppressEmbeddedWorkspaceDiffs =
+      embeddedChanges.length > 0 && embeddedChanges.every((change) => workspaceChangeKeys.has(workspaceChangeFingerprint(change)));
+    return {
+      kind: "chat",
+      entry: { ...entry, suppressEmbeddedWorkspaceDiffs },
+      order: index * 2,
+      at: timestampMs(entry.at),
+    };
+  });
+  const eventItems = eventList
     .map((event, index) => ({ event, index }))
     .filter(({ event }) => isReplayableResumeEvent(event))
     .filter(({ event }) => !firstChatTime || timestampMs(event.timestamp) >= firstChatTime)
+    .filter(({ event }) => !shouldSuppressEvent(event))
     .map(({ event, index }) => ({
       kind: "event",
       event,
@@ -2462,6 +2566,9 @@ function toolStatusDetails(data = {}) {
   if (tool === "run_command" && args.command) return `${tool}: ${compactLine(args.command, 58)}`;
   if ((tool === "write_file" || tool === "apply_patch" || tool === "read_file" || tool === "open_workspace_file") && args.path) {
     return `${tool}: ${compactLine(args.path, 58)}`;
+  }
+  if ((tool === "send_to_canvas" || tool === "create_artifact") && (args.title || args.kind)) {
+    return `${tool}: ${compactLine([args.title || "canvas artifact", args.kind || "", args.selected ? "selected" : ""].filter(Boolean).join(" · "), 72)}`;
   }
   if ((tool === "open_url" || tool === "web_research" || tool === "web_search") && (args.url || args.query || args.q)) {
     return `${tool}: ${compactLine(args.url || args.query || args.q, 58)}`;

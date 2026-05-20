@@ -1371,6 +1371,10 @@ button.danger {
   box-shadow: none;
 }
 
+.assistant-result-card {
+  margin: 0;
+}
+
 #logs .event-fold-note {
   color: #94a3b8;
 }

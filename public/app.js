@@ -1873,6 +1873,28 @@ function renderEmbeddedWorkspaceResult(value = "", entry = {}) {
   `;
 }
 
+function compactInline(value = "", limit = 180) {
+  return compactMessage(value, limit);
+}
+
+function toolArgumentPreview(toolName = "", args = {}, data = {}) {
+  if (toolName === "finish") return "";
+  if (toolName === "run_command" && (args.command || data.command)) return args.command || data.command;
+  if (["write_file", "apply_patch", "read_file", "open_workspace_file", "preview_workspace"].includes(toolName)) {
+    return args.path || args.file || data.path || "";
+  }
+  if (["send_to_canvas", "create_artifact"].includes(toolName)) {
+    return [args.title || data.title || "canvas artifact", args.kind || data.kind || "", args.selected ? "selected" : ""]
+      .filter(Boolean)
+      .join(" · ");
+  }
+  if (["open_url", "web_research", "web_search"].includes(toolName)) return args.url || args.query || args.q || data.url || "";
+  const scalar = ["title", "path", "file", "query", "q", "url", "kind"]
+    .map((key) => args[key] || data[key])
+    .find(Boolean);
+  return scalar ? compactInline(scalar) : "";
+}
+
 function renderWorkspaceChangeEvent(entry) {
   const data = entry.data || {};
   const toolName = data.toolName || data.action || "file.changed";
@@ -1912,12 +1934,7 @@ function renderToolEvent(entry) {
   const args = data.args || {};
   const resultText = String(data.result || args.result || "");
   const embeddedResult = resultText ? renderEmbeddedWorkspaceResult(resultText, entry) : "";
-  const argPreview =
-    toolName === "finish"
-      ? ""
-      : toolName === "run_command" && args.command
-      ? args.command
-      : args.path || args.url || args.query || args.q || (Object.keys(args).length ? JSON.stringify(args) : "");
+  const argPreview = toolArgumentPreview(toolName, args, data);
   const stdout = data.stdout ? outputPreviewText(data.stdout) : null;
   const stderr = data.stderr ? outputPreviewText(data.stderr) : null;
   return `
@@ -1990,6 +2007,66 @@ function renderStructuredEvent(entry) {
   return "";
 }
 
+function logToolLifecycleKey(data = {}) {
+  const args = data.args || {};
+  const focusedArgs = {
+    path: args.path || args.file || data.path || "",
+    command: args.command || data.command || "",
+    title: args.title || data.title || "",
+    kind: args.kind || data.kind || "",
+    query: args.query || args.q || "",
+    url: args.url || data.url || "",
+  };
+  return `${data.toolName || ""}:${JSON.stringify(focusedArgs)}`;
+}
+
+function logEventDedupContext(entries = [], runResult = "") {
+  const terminalToolKeys = new Set();
+  const finishResultFingerprints = new Set();
+  const workspaceChangePaths = new Set();
+  const runResultFingerprint = compactInline(runResult, 100000);
+
+  for (const entry of entries || []) {
+    const data = entry.data || {};
+    const type = entry.message || entry.eventType || "";
+    if (["tool.completed", "tool.failed", "tool.skipped", "tool.blocked"].includes(type)) {
+      terminalToolKeys.add(logToolLifecycleKey(data));
+    }
+    if (type === "tool.completed" && data.toolName === "finish" && data.result) {
+      finishResultFingerprints.add(compactInline(data.result, 100000));
+    }
+    if (type === "session.finished" && data.result) {
+      finishResultFingerprints.add(compactInline(data.result, 100000));
+    }
+    if (type === "file.changed" && (data.path || data.args?.path)) {
+      workspaceChangePaths.add(String(data.path || data.args?.path || "").replace(/\\/g, "/"));
+    }
+  }
+
+  return { terminalToolKeys, finishResultFingerprints, workspaceChangePaths, runResultFingerprint };
+}
+
+function shouldSuppressLogEntry(entry = {}, context = {}) {
+  const data = entry.data || {};
+  const type = entry.message || entry.eventType || "";
+  const toolName = data.toolName || "";
+  const toolKey = logToolLifecycleKey(data);
+  const resultKey = data.result || data.args?.result ? compactInline(data.result || data.args?.result, 100000) : "";
+  if (type === "tool.started" && context.terminalToolKeys?.has(toolKey)) return true;
+  if (type === "tool.started" && toolName === "finish" && resultKey) {
+    return resultKey === context.runResultFingerprint || context.finishResultFingerprints?.has(resultKey);
+  }
+  if (type === "tool.completed" && toolName === "finish" && resultKey && resultKey === context.runResultFingerprint) return true;
+  if (type === "session.finished" && resultKey) {
+    return resultKey === context.runResultFingerprint || context.finishResultFingerprints?.has(resultKey);
+  }
+  if (type === "tool.completed" && ["write_file", "apply_patch"].includes(toolName)) {
+    const pathKey = String(data.path || data.args?.path || data.args?.file || "").replace(/\\/g, "/");
+    if (pathKey && context.workspaceChangePaths?.has(pathKey)) return true;
+  }
+  return false;
+}
+
 function renderLogs(run) {
   logsEl.dataset.mode = "active";
   const structuredRunResult = run.result ? renderEmbeddedWorkspaceResult(run.result, { at: run.endedAt || run.updatedAt || "" }) : "";
@@ -2003,7 +2080,9 @@ function renderLogs(run) {
     run.error ? `<div class="log-line error">${escapeHtml(`error=${run.error}`)}</div>` : "",
   ];
 
+  const dedupContext = logEventDedupContext(run.logs || [], run.result || "");
   for (const entry of run.logs || []) {
+    if (shouldSuppressLogEntry(entry, dedupContext)) continue;
     const structured = renderStructuredEvent(entry);
     if (structured) {
       parts.push(structured);
@@ -2286,10 +2365,17 @@ function renderChat(chatEntries) {
       }
       const role = entry.role === "assistant" ? "assistant" : "user";
       const label = role === "assistant" ? t("assistantLabel") : t("youLabel");
-      const content =
-        role === "assistant"
-          ? `<div class="markdown-body">${renderMarkdown(entry.content)}</div>`
-          : escapeHtml(entry.content).replace(/\n/g, "<br>");
+      let content = escapeHtml(entry.content).replace(/\n/g, "<br>");
+      if (role === "assistant") {
+        const embeddedResult = renderEmbeddedWorkspaceResult(entry.content, entry);
+        if (embeddedResult && entry.suppressEmbeddedWorkspaceDiffs) {
+          content = `<div class="markdown-body">${renderMarkdown(embeddedWorkspaceSummary(entry.content))}</div>`;
+        } else if (embeddedResult) {
+          content = `<article class="event-card event-finish assistant-result-card">${embeddedResult}</article>`;
+        } else {
+          content = `<div class="markdown-body">${renderMarkdown(entry.content)}</div>`;
+        }
+      }
       return `
         <article class="chat-item ${role}">
           <div class="chat-meta">${label}${entry.at ? ` · ${new Date(entry.at).toLocaleString()}` : ""}</div>
