@@ -138,7 +138,8 @@ function compatibleHealth(health = {}, { cwd = "", home = "", packageDir = "" } 
   if (!health.runtimeDir || !health.agintiflowHome) return false;
   if (!samePath(health.runtimeDir, cwd)) return false;
   if (!samePath(health.agintiflowHome, home)) return false;
-  if (health.packageDir && packageDir && !samePath(health.packageDir, packageDir)) return false;
+  // Package paths legitimately change after npm updates or local installs. The
+  // safe ownership boundary for reuse/stop is the same app, runtime, and home.
   return true;
 }
 
