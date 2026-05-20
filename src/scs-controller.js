@@ -1,6 +1,7 @@
 import { redactSensitiveText, redactValue } from "./redaction.js";
 import { formatBehaviorContractForPrompt, scsContractCriteria } from "./behavior-contract.js";
 import { browserStateReconciliationGuidance } from "./browser-automation-guidance.js";
+import { createChatCompletion } from "./model-client.js";
 import {
   buildScsEvidenceLedger,
   deriveScsTaskContract,
@@ -192,16 +193,15 @@ async function callJson(client, config, messages, fallback, label) {
   if (client.mock) return fallback;
   let response;
   try {
-    response = await client.chat.completions.create(
+    response = await createChatCompletion(
+      client,
       {
         model: config.model,
         temperature: 0,
         messages,
       },
-      {
-        ...(config.abortSignal ? { signal: config.abortSignal } : {}),
-        timeout: Number(config.modelTimeoutMs || process.env.AGINTI_MODEL_TIMEOUT_MS || 180000),
-      }
+      config,
+      label
     );
   } catch (error) {
     if (config.abortSignal?.aborted || error?.name === "AbortError" || error?.code === "ABORT_ERR") throw error;
