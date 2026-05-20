@@ -9,6 +9,37 @@ which session produced which part of the work.
 
 ## Sessions
 
+### Agent Meta-AAPS Session
+
+- Session: `019da8c5-6cd9-7602-bc14-aafa6206fe5d`
+- Tmux session: `codex-meta-aaps`
+- Status context shown by Codex: `~/ProjectsLFS/Agent`, then later `~/ProjectsLFS/AAPS`
+- Rollout file: `/home/lachlan/.codex/sessions/2026/04/20/rollout-2026-04-20T10-43-24-019da8c5-6cd9-7602-bc14-aafa6206fe5d.jsonl`
+- Primary repos involved: `/home/lachlan/ProjectsLFS/Agent`, `/home/lachlan/ProjectsLFS/AAPS`
+- Related AgInTiFlow repo: `/home/lachlan/ProjectsLFS/Agent/AgInTiFlow`
+- Role: cross-repo session that used AgInTiFlow-style CLI/webapp ideas to
+  harden AAPS as an installable Studio and backend-adapter workflow tool.
+
+Verified AAPS commits from this session:
+
+- `b8e50b7` - Add AAPS webapp autostart and chat CLI
+- `d63868c` - Upgrade AAPS interactive CLI
+- `843ba3c` - Improve AAPS CLI composer and update restart
+- `e44e807` - Improve AAPS backend discovery and multiline input
+- `1abd8a3` - Add AAPS Studio webapp stop and restart controls
+- `69170be` - Add persistent AAPS Studio webapp preference controls
+- `51ec880` - Harden AAPS webapp startup and program chat planning
+- `63df3cd` - Deepen Studio chat planning for blocks and writing programs
+
+AgInTiFlow relevance:
+
+- AAPS adopted an AgInTiFlow-like interactive CLI and webapp lifecycle model,
+  but AAPS semantics still belong to AAPS.
+- AgInTiFlow should act as a backend adapter that receives AAPS context and
+  returns structured evidence, edits, scripts, or blockers.
+- AgInTiFlow must not own or silently mutate AAPS-selected project, workflow,
+  program, block, or working file.
+
 ### LALACHAN Browser And AgInTi Supervision Source Session
 
 - Session: `019dc795-e538-75b2-8a03-bc103b32985d`
@@ -93,6 +124,9 @@ Important AgInTiFlow relevance:
 
 These sessions should be read together:
 
+- Agent Meta-AAPS supplies the cross-repo bridge: AAPS borrows useful
+  AgInTiFlow interaction patterns while keeping AAPS as the state and semantics
+  owner.
 - LALACHAN supplies the concrete failure mode: browser automation and media tasks
   can look successful while the visible external state is wrong or unverified.
 - ZhJpBook supplies the long-running pipeline pressure: the agent must keep
