@@ -40,30 +40,30 @@ AgInTiFlow relevance:
 - AgInTiFlow must not own or silently mutate AAPS-selected project, workflow,
   program, block, or working file.
 
-### LALACHAN Browser And AgInTi Supervision Source Session
+### Browser Automation And AgInTi Supervision Source Session
 
 - Session: `019dc795-e538-75b2-8a03-bc103b32985d`
-- Status context shown by Codex: `~/ProjectsLFS/LALACHAN`
-- Primary repo involved: `/home/lachlan/ProjectsLFS/LALACHAN`
+- Status context shown by Codex: a project-local media/browser workflow repo
+- Primary repo involved: project-local, outside AgInTiFlow core
 - Related AgInTiFlow repo: `/home/lachlan/ProjectsLFS/Agent/AgInTiFlow`
 - Role: failure-source and product-requirement session.
 
-This session started from LALACHAN/Xiaoyunque browser video workflows and exposed
-a general AgInTiFlow weakness: the executor could claim progress or completion
+This session started from a project-local browser video workflow and exposed a
+general AgInTiFlow weakness: the executor could claim progress or completion
 without enough evidence that the requested browser state, upload state, selected
 mode, selected model, prompt, reference media, or generated artifact actually
 existed.
 
 Important lesson from this session:
 
-- Do not hard-code Xiaoyunque-specific rules into AgInTiFlow core.
+- Do not hard-code project-specific browser workflow rules into AgInTiFlow core.
 - Keep domain details in project-local skills such as `.aginti/skills/<id>/SKILL.md`.
 - Improve the core agent harness instead: task contract, monitor, evidence ledger,
   validator gate, replan loop, and real blocker reporting.
 
 Project-local skill produced from this direction:
 
-- `/home/lachlan/ProjectsLFS/LALACHAN/.aginti/skills/xiaoyunque-video-browser/SKILL.md`
+- `.aginti/skills/<project-browser-workflow>/SKILL.md` in the task repository
 
 ### ZhJpBook And AgInTiFlow Implementation Session
 
@@ -76,7 +76,7 @@ Project-local skill produced from this direction:
 This session used a long bilingual book pipeline to stress AgInTiFlow's ability
 to run durable, evidence-based work: source conversion, chunking, DeepSeek JSON
 writing, validation, monitoring, PDF compilation, artifact handling, and recovery.
-The same core principle from the LALACHAN session was then implemented in
+The same core principle from the browser workflow session was then implemented in
 AgInTiFlow.
 
 Relevant AgInTiFlow commits:
@@ -127,7 +127,7 @@ These sessions should be read together:
 - Agent Meta-AAPS supplies the cross-repo bridge: AAPS borrows useful
   AgInTiFlow interaction patterns while keeping AAPS as the state and semantics
   owner.
-- LALACHAN supplies the concrete failure mode: browser automation and media tasks
+- The browser workflow session supplies the concrete failure mode: browser automation and media tasks
   can look successful while the visible external state is wrong or unverified.
 - ZhJpBook supplies the long-running pipeline pressure: the agent must keep
   moving through scripts, monitors, validators, and artifacts without accepting

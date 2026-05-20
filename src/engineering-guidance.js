@@ -179,11 +179,11 @@ export function recommendedMaxStepsForTask({ goal = "", taskProfile = "auto", co
   const text = String(goal || "");
   const browserSubmitWorkflow =
     /\b(browser|chrome|chromium|cdp|devtools|selenium|playwright|web[- ]?ui|website)\b/i.test(text) ||
-    /小云雀|xyq|浏览器|网页|上传|资产库|参考视频|参考图|短片|沉浸式|生成视频|提交|发布/.test(text);
+    /浏览器|网页|上传|素材库|资产库|参考素材|参考视频|参考图|生成视频|提交|发布/.test(text);
   if (
     browserSubmitWorkflow &&
     (/\b(upload|attach|asset library|reference video|reference image|submit|publish|generate|composer|model|duration)\b/i.test(text) ||
-      /上传|附件|资产库|参考视频|参考图|提交|发布|生成|模型|时长|短片/.test(text))
+      /上传|附件|素材库|资产库|参考素材|参考视频|参考图|提交|发布|生成|模型|时长/.test(text))
   ) {
     return Math.max(profileDefault, 48);
   }

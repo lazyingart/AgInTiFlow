@@ -47,7 +47,7 @@ const COMPLEX_AUTO_HINTS = [
   /\b(browser|web[- ]?ui|website|chrome|chromedriver|cdp|devtools|playwright|selenium|puppeteer)\b/i,
   /\b(upload|attach|asset library|submit|publish|poll|download|reference video|reference image)\b/i,
   /\b(novel|book|chapter|manuscript|screenplay|story bible|long[- ]form|research paper)\b/i,
-  /小云雀|浏览器|网页|上传|提交|发布|资产库|参考图|参考视频|短片|生成视频|沉浸式|按钮|登录|积分/,
+  /浏览器|网页|上传|提交|发布|素材库|资产库|参考图|参考视频|按钮|登录|验证码|积分/,
 ];
 
 function compact(value = "", limit = 1200) {
@@ -326,10 +326,10 @@ function isBrowserSubmitGoal(goal = "") {
   const text = String(goal || "");
   const browserSignal =
     /\b(browser|chrome|chromium|cdp|devtools|selenium|playwright|web[- ]?ui|website|composer)\b/i.test(text) ||
-    /小云雀|xyq|浏览器|网页|上传|资产库|参考视频|参考图|短片|沉浸式/.test(text);
+    /浏览器|网页|上传|素材库|资产库|参考素材|参考视频|参考图/.test(text);
   const submitSignal =
     /\b(submit|publish|generate|post|upload|attach|asset library|reference video|reference image)\b/i.test(text) ||
-    /提交|发布|生成|上传|附件|资产库|参考视频|参考图/.test(text);
+    /提交|发布|生成|上传|附件|素材库|资产库|参考素材|参考视频|参考图/.test(text);
   return browserSignal && submitSignal;
 }
 
@@ -347,7 +347,7 @@ export function browserSubmitFinishIssue(goal = "", result = "") {
     /未执行|未完成|跳过|步骤不足|未找到.*(提交|生成)|没有.*(提交|生成)|not submitted|did not submit|submit[^.\n]{0,80}(not|skipped|missing|failed)|skipped|incomplete|not executed|not run|not found/i.test(
       text
     ) ||
-    /资产库[^。\n|]*未执行|参考视频[^。\n|]*未执行|VIP[^。\n|]*跳过|提交[^。\n|]*未执行|生成[^。\n|]*未执行|页面状态出现偏差|非创建页|manual.*confirm/i.test(
+    /(素材库|资产库|附件|参考素材|参考视频|参考图)[^。\n|]*(未执行|未完成|跳过)|(提交|发布|生成)[^。\n|]*(未执行|未完成|跳过)|(模型|模式|时长|选项|付费层级)[^。\n|]*(未选择|未完成|跳过)|页面状态出现偏差|非创建页|manual.*confirm/i.test(
       text
     );
   if (!incomplete) return null;

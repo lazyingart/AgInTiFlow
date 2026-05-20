@@ -448,7 +448,7 @@ try {
   assert(hostLocalhostJsonProbePolicy.allowed, "host localhost JSON probe should not require full-host destructive access");
   assert(hostLocalhostJsonProbePolicy.category === "network-fetch", "host localhost JSON probe should stay classified as network-fetch");
   const absolutePythonHelperPolicy = evaluateCommandPolicy(
-    "/home/lachlan/miniconda3/bin/python scripts/xyq_cdp_browser.py list-pages",
+    "/home/lachlan/miniconda3/bin/python scripts/browser_cdp_helper.py list-pages",
     hostWorkspacePolicy
   );
   assert(absolutePythonHelperPolicy.allowed, "host absolute Python helper script should be allowed without full-host destructive access");

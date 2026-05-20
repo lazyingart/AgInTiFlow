@@ -66,7 +66,7 @@ assert(
   ),
   "browser automation prompt did not select browser-automation"
 );
-assert(selectedIds("小云雀 网页 上传 五张图 从资产库选择视频 提交").includes("browser-automation"), "Chinese XYQ prompt did not select browser-automation");
+assert(selectedIds("网页表单 上传 五张图 从素材库选择视频 提交").includes("browser-automation"), "Chinese browser prompt did not select browser-automation");
 assert(selectedIds("write a LaTeX paper and compile a PDF").includes("latex-manuscript"), "latex prompt did not select latex-manuscript");
 assert(selectedIds("edit a Microsoft Word docx and preserve the original").includes("word-documents"), "docx prompt did not select word-documents");
 assert(selectedIds("generate a logo image with grsai nanobanana").includes("image-generation"), "image prompt did not select image-generation");

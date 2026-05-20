@@ -96,19 +96,19 @@ try {
   );
   assert(
     recommendedMaxStepsForTask({
-      goal: "Use Chrome CDP to upload five images, select an asset-library video, choose non-VIP model, and submit the Xiaoyunque browser composer.",
+      goal: "Use Chrome CDP to upload five images, select an asset-library video, choose the requested non-premium model tier, and submit the browser composer.",
     }) >= 48,
     "browser submit workflows need a larger default step budget"
   );
   assert(
     browserSubmitFinishIssue(
-      "小云雀网页上传五张图，从资产库选择参考视频，然后提交生成",
-      "资产库旧三人视频 未执行；提交 未执行；步骤不足。"
+      "网页创作器上传五张图，从素材库选择参考视频，然后提交生成",
+      "素材库参考视频 未执行；提交 未执行；步骤不足。"
     ),
     "SCS finish gate should reject unfinished browser submit reports"
   );
   assert(
-    !browserSubmitFinishIssue("小云雀网页提交生成", "停止：积分不足，需要用户处理 credits not enough。"),
+    !browserSubmitFinishIssue("网页创作器提交生成", "停止：积分不足，需要用户处理 credits not enough。"),
     "SCS finish gate should allow real external browser blockers"
   );
 

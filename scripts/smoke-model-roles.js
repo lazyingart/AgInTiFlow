@@ -256,13 +256,13 @@ assert(scsEvidence.includes("evaluation"), "SCS evidence pack should include det
 
 const uploadContract = deriveScsTaskContract({
   goal:
-    "Upload five images in the browser composer and verify visible thumbnails: /tmp/display.png /tmp/notebook.png /tmp/Trio.png. Do not submit.",
+    "Upload five images in the browser composer and verify visible thumbnails: /tmp/reference-a.png /tmp/reference-b.png /tmp/reference-c.png. Do not submit.",
   taskProfile: "website",
 });
 assert(
-  uploadContract.exactInputPaths.includes("/tmp/display.png") &&
-    uploadContract.exactInputPaths.includes("/tmp/notebook.png") &&
-    uploadContract.exactInputPaths.includes("/tmp/Trio.png"),
+  uploadContract.exactInputPaths.includes("/tmp/reference-a.png") &&
+    uploadContract.exactInputPaths.includes("/tmp/reference-b.png") &&
+    uploadContract.exactInputPaths.includes("/tmp/reference-c.png"),
   "SCS contract should preserve exact input/reference paths for browser upload tasks"
 );
 const uploadImagePlanContradiction = deterministicPlanActionContradiction(
@@ -297,7 +297,7 @@ const weakUploadLedger = buildScsEvidenceLedger({
           toolName: "run_command",
           ok: true,
           exitCode: 0,
-          args: { command: "scripts/cdp-helper set-file-input PAGE_ID display.png R1.jpg" },
+          args: { command: "scripts/cdp-helper set-file-input PAGE_ID reference-a.png reference-b.jpg" },
           stdout: '{"ok":true,"nodeCount":1}',
         }),
       },
@@ -317,7 +317,7 @@ const strongUploadLedger = buildScsEvidenceLedger({
           toolName: "run_command",
           ok: true,
           exitCode: 0,
-          args: { command: "scripts/cdp-helper upload-images-verify PAGE_ID display.png R1.jpg --screenshot outputs/upload.png" },
+          args: { command: "scripts/cdp-helper upload-images-verify PAGE_ID reference-a.png reference-b.jpg --screenshot outputs/upload.png" },
           stdout: '{"ok":true,"visibleEvidenceCount":5,"screenshot":"outputs/upload.png"}',
         }),
       },
