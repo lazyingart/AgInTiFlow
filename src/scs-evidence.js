@@ -384,6 +384,8 @@ function resolveContractPath(commandCwd = process.cwd(), rawPath = "") {
   const text = String(rawPath || "").trim();
   if (!text) return "";
   if (text.startsWith("~/")) return path.join(process.env.HOME || commandCwd, text.slice(2));
+  if (text === "/workspace") return path.resolve(commandCwd || process.cwd());
+  if (text.startsWith("/workspace/")) return path.resolve(commandCwd || process.cwd(), text.slice("/workspace/".length));
   if (path.isAbsolute(text)) return text;
   return path.resolve(commandCwd || process.cwd(), text);
 }
