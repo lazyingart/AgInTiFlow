@@ -131,6 +131,108 @@ h1 {
 .run-defaults-form {
   display: grid;
   gap: 14px;
+  margin-top: 12px;
+}
+
+.run-defaults-card {
+  min-width: 0;
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(236, 253, 245, 0.72), rgba(255, 253, 250, 0.9)),
+    #fffdfa;
+}
+
+.run-defaults-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content max-content;
+  gap: 10px;
+  align-items: center;
+  list-style: none;
+  cursor: pointer;
+}
+
+.run-defaults-summary::-webkit-details-marker {
+  display: none;
+}
+
+.run-defaults-summary strong,
+.workspace-search-head strong {
+  display: block;
+  color: #0f766e;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.run-defaults-summary .subtle {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.78rem;
+}
+
+.key-status-summary {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  padding: 5px 10px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 253, 250, 0.82);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.key-status-summary[data-ready="true"] {
+  border-color: rgba(15, 118, 110, 0.32);
+  background: rgba(204, 251, 241, 0.52);
+  color: #0f766e;
+}
+
+.key-status-list,
+.project-status-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.key-status-list {
+  grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
+}
+
+.key-status-chip,
+.project-status-chip {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(95, 86, 74, 0.16);
+  border-radius: 14px;
+  background: rgba(255, 253, 250, 0.78);
+}
+
+.key-status-chip[data-ready="true"] {
+  border-color: rgba(15, 118, 110, 0.28);
+  background: rgba(204, 251, 241, 0.42);
+}
+
+.key-status-chip strong,
+.project-status-chip strong {
+  display: block;
+  color: #0f766e;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.key-status-chip span,
+.project-status-chip span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.35;
 }
 
 .run-defaults-head {
@@ -142,14 +244,8 @@ h1 {
   background: rgba(204, 251, 241, 0.28);
 }
 
-.run-defaults-head strong {
-  color: #0f766e;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
 .run-defaults-head p {
-  margin: 4px 0 0;
+  margin: 0;
   font-size: 0.88rem;
   line-height: 1.45;
 }
@@ -316,6 +412,7 @@ h1 {
   background: rgba(204, 251, 241, 0.52);
 }
 
+.workspace-search-card,
 .project-card,
 .setup-card {
   min-width: 0;
@@ -329,6 +426,61 @@ h1 {
 .setup-card {
   display: grid;
   gap: 10px;
+}
+
+.workspace-search-card {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.workspace-search-head {
+  display: flex;
+  min-width: 0;
+  gap: 12px;
+  align-items: start;
+  justify-content: space-between;
+}
+
+.workspace-search-head p {
+  margin: 3px 0 0;
+  line-height: 1.45;
+}
+
+.workspace-search-field {
+  position: relative;
+  display: grid;
+  gap: 6px;
+}
+
+.workspace-search-field input[type="search"] {
+  min-height: 48px;
+  padding: 12px 14px 12px 42px;
+  border-color: rgba(15, 118, 110, 0.24);
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, rgba(204, 251, 241, 0.28), rgba(255, 253, 250, 0.96)),
+    #fffdfa;
+  font-size: 0.94rem;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.workspace-search-field::before {
+  position: absolute;
+  bottom: 12px;
+  left: 15px;
+  color: #0f766e;
+  font-size: 1rem;
+  content: "⌕";
+  pointer-events: none;
+}
+
+.project-status-grid {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.project-status-chip[data-wide="true"] {
+  grid-column: 1 / -1;
 }
 
 .project-card {
@@ -1869,6 +2021,14 @@ button.danger {
   .role-editor-grid,
   .quick-mode-bar {
     grid-template-columns: 1fr;
+  }
+
+  .run-defaults-summary {
+    grid-template-columns: 1fr max-content;
+  }
+
+  .run-defaults-summary .key-status-summary {
+    justify-self: start;
   }
 
   .quick-mode-status {

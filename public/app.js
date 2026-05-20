@@ -52,6 +52,7 @@ const translations = {
     goalPlaceholder: "Open a site and summarize it, or use run_command for simple terminal inspection.",
     runDefaultsTitle: "Run defaults",
     runDefaultsHelp: "The chat box is the first goal for a new run. These controls set how that run starts.",
+    runDefaultsFoldHint: "Routing, safety, tool toggles, and key status.",
     scsModeLabel: "SCS",
     scsOnOption: "On",
     scsAutoOption: "Auto",
@@ -64,6 +65,8 @@ const translations = {
     allowedDomainsLabel: "Allowed domains",
     allowedDomainsPlaceholder: "news.ycombinator.com,github.com",
     commandCwdLabel: "Working directory",
+    commandCwdHelp: "Runs start from this working directory.",
+    commandCwdPlaceholder: "/home/user/project",
     maxStepsLabel: "Max steps",
     sandboxModeLabel: "Sandbox mode",
     permissionModeLabel: "Permission shortcut",
@@ -718,6 +721,8 @@ const setupApiKeyField = document.querySelector("#setup-api-key");
 const saveApiKeyButton = document.querySelector("#save-api-key");
 const setupStatusEl = document.querySelector("#setup-status");
 const taskProfileField = document.querySelector("#taskProfile");
+const commandCwdField = document.querySelector("#commandCwd");
+const commandCwdSuggestionsEl = document.querySelector("#command-cwd-suggestions");
 const permissionModeField = document.querySelector("#permissionMode");
 const permissionHintEl = document.querySelector("#permission-hint");
 const sandboxModeField = document.querySelector("#sandboxMode");
@@ -727,6 +732,7 @@ const logsEl = document.querySelector("#logs");
 const runMetaEl = document.querySelector("#run-meta");
 const stopRunButton = document.querySelector("#stop-run");
 const keyStatusEl = document.querySelector("#key-status");
+const keyStatusListEl = document.querySelector("#key-status-list");
 const allowAuxiliaryToolsField = document.querySelector("#allowAuxiliaryTools");
 const allowWebSearchField = document.querySelector("#allowWebSearch");
 const allowMcpToolsField = document.querySelector("#allowMcpTools");
@@ -928,31 +934,99 @@ function setRunStatus(status = "", { sessionId, detail = "", announce = false } 
 function renderKeyStatus(status = lastKeyStatus) {
   lastKeyStatus = status;
   if (!status) return;
-  keyStatusEl.textContent = `${t("keysLabel")}: OpenAI ${
-    status.openai ? t("availableLabel") : t("missingLabel")
-  } · DeepSeek ${status.deepseek ? t("availableLabel") : t("missingLabel")} · Qwen ${
-    status.qwen ? t("availableLabel") : t("missingLabel")
-  } · Venice ${
-    status.venice ? t("availableLabel") : t("missingLabel")
-  } · GRS AI ${
-    status.grsai ? t("availableLabel") : t("missingLabel")
-  } · ${t("mockLabel")} ${
-    status.mock ? t("availableLabel") : t("missingLabel")
-  }`;
+  const providers = [
+    ["OpenAI", status.openai],
+    ["DeepSeek", status.deepseek],
+    ["Qwen", status.qwen],
+    ["Venice", status.venice],
+    ["GRS AI", status.grsai],
+    [t("mockLabel"), status.mock],
+  ];
+  const available = providers.filter(([, ready]) => Boolean(ready)).length;
+  if (keyStatusEl) {
+    keyStatusEl.textContent = `${t("keysLabel")} ${available}/${providers.length}`;
+    keyStatusEl.dataset.ready = String(available > 0);
+  }
+  if (keyStatusListEl) {
+    keyStatusListEl.replaceChildren(
+      ...providers.map(([name, ready]) => {
+        const chip = document.createElement("div");
+        chip.className = "key-status-chip";
+        chip.dataset.ready = String(Boolean(ready));
+        const title = document.createElement("strong");
+        title.textContent = name;
+        const value = document.createElement("span");
+        value.textContent = ready ? t("availableLabel") : t("missingLabel");
+        chip.append(title, value);
+        return chip;
+      })
+    );
+  }
   if (setupCardEl) setupCardEl.hidden = Boolean(status.openai || status.deepseek || status.qwen || status.venice);
 }
 
 function renderProjectStatus(info = projectInfo) {
   projectInfo = info;
   if (!projectStatusEl || !info) return;
-  projectStatusEl.textContent = [
-    info.platform?.label ? `os=${info.platform.label}` : "",
-    `root=${info.root || ""}`,
-    `cwd=${info.commandCwd || ""}`,
-    `sessions=${info.sessionsDir || ""}`,
-    `db=${info.sessionDbPath || ""}`,
-    `shared=${info.sharedSessionFolder ? "yes" : "no"}`,
-  ].join(" · ");
+  const rows = [
+    ["OS", info.platform?.label || ""],
+    ["Root", info.root || ""],
+    ["CWD", info.commandCwd || ""],
+    ["Sessions", info.sessionsDir || ""],
+    ["Database", info.sessionDbPath || ""],
+    ["Shared", info.sharedSessionFolder ? "yes" : "no"],
+  ].filter(([, value]) => value !== "");
+  projectStatusEl.replaceChildren(
+    ...rows.map(([label, value]) => {
+      const chip = document.createElement("div");
+      chip.className = "project-status-chip";
+      if (String(value).length > 54) chip.dataset.wide = "true";
+      const title = document.createElement("strong");
+      title.textContent = label;
+      const body = document.createElement("span");
+      body.textContent = value;
+      chip.append(title, body);
+      return chip;
+    })
+  );
+}
+
+function baseDirectorySuggestions(info = projectInfo) {
+  const projectLfsRoot = info?.root?.includes("/ProjectsLFS/")
+    ? `${info.root.split("/ProjectsLFS/")[0]}/ProjectsLFS`
+    : "";
+  const values = [
+    info?.commandCwd,
+    info?.root,
+    info?.sessionsDir ? info.sessionsDir.replace(/\/\.agintiflow\/sessions$/, "") : "",
+    projectLfsRoot,
+  ].filter(Boolean);
+  return [...new Set(values)];
+}
+
+function renderCommandCwdSuggestions(suggestions = []) {
+  if (!commandCwdSuggestionsEl) return;
+  commandCwdSuggestionsEl.replaceChildren(
+    ...suggestions.slice(0, 16).map((value) => {
+      const option = document.createElement("option");
+      option.value = value;
+      return option;
+    })
+  );
+}
+
+async function refreshCommandCwdSuggestions(query = "") {
+  const fallback = baseDirectorySuggestions();
+  renderCommandCwdSuggestions(fallback);
+  try {
+    const response = await fetch(`/api/path-suggestions?q=${encodeURIComponent(query || "")}`);
+    const data = await response.json();
+    if (response.ok && Array.isArray(data.suggestions)) {
+      renderCommandCwdSuggestions([...new Set([...data.suggestions, ...fallback])]);
+    }
+  } catch {
+    renderCommandCwdSuggestions(fallback);
+  }
 }
 
 function renderTaskProfiles(selected = "auto") {
@@ -1584,7 +1658,7 @@ function formPayload() {
     auxiliaryModel: fieldValue(auxiliaryModelField) || "nano-banana-2",
     startUrl: document.querySelector("#startUrl").value.trim(),
     allowedDomains: document.querySelector("#allowedDomains").value.trim(),
-    commandCwd: document.querySelector("#commandCwd").value.trim(),
+    commandCwd: commandCwdField?.value.trim() || "",
     maxSteps: Number(document.querySelector("#maxSteps").value) || 24,
     permissionMode: permissionModeField?.value || "normal",
     sandboxMode: sandboxModeField.value,
@@ -3146,6 +3220,22 @@ saveApiKeyButton?.addEventListener("click", async () => {
 form.addEventListener("input", schedulePreferenceSave);
 form.addEventListener("change", schedulePreferenceSave);
 
+let commandCwdSuggestTimer = null;
+commandCwdField?.addEventListener("focus", () => {
+  refreshCommandCwdSuggestions(commandCwdField.value).catch(() => {});
+});
+commandCwdField?.addEventListener("input", () => {
+  schedulePreferenceSave();
+  clearTimeout(commandCwdSuggestTimer);
+  commandCwdSuggestTimer = setTimeout(() => {
+    refreshCommandCwdSuggestions(commandCwdField.value).catch(() => {});
+  }, 120);
+});
+commandCwdField?.addEventListener("change", () => {
+  schedulePreferenceSave();
+  refreshCommandCwdSuggestions(commandCwdField.value).catch(() => {});
+});
+
 chatInputEl.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
     event.preventDefault();
@@ -3343,7 +3433,7 @@ async function loadConfig() {
   renderTaskProfiles(prefs.taskProfile || "auto");
   document.querySelector("#startUrl").value = prefs.startUrl || "";
   document.querySelector("#allowedDomains").value = prefs.allowedDomains || "";
-  document.querySelector("#commandCwd").value = prefs.commandCwd || data.project?.root || "";
+  if (commandCwdField) commandCwdField.value = prefs.commandCwd || data.project?.root || "";
   document.querySelector("#headless").checked = prefs.headless ?? data.defaults.headless;
   document.querySelector("#maxSteps").value = prefs.maxSteps ?? data.defaults.maxSteps;
   if (permissionModeField) permissionModeField.value = prefs.permissionMode || "normal";
@@ -3366,6 +3456,7 @@ async function loadConfig() {
 
   renderKeyStatus(data.keyStatus);
   renderProjectStatus(data.project);
+  await refreshCommandCwdSuggestions(commandCwdField?.value || "");
   renderWrapperStatus(data.wrappers || []);
   refreshProviderDropdowns();
   renderWorkspacePanel(data.workspace, []);

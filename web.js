@@ -1,6 +1,7 @@
 import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import express from "express";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runAgent } from "./src/agent-runner.js";
@@ -355,6 +356,88 @@ function publicKeyStatus(projectRoot = baseDir) {
     localEnv: status.localEnv,
     envVars: status.envVars,
   };
+}
+
+function expandUserPath(value = "") {
+  const text = String(value || "").trim();
+  if (text === "~") return os.homedir();
+  if (text.startsWith("~/")) return path.join(os.homedir(), text.slice(2));
+  return text;
+}
+
+function uniquePaths(values = []) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    if (!value) continue;
+    const resolved = path.resolve(expandUserPath(value));
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    result.push(resolved);
+  }
+  return result;
+}
+
+async function readableDirectory(value = "") {
+  try {
+    const stat = await fs.stat(value);
+    return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function directoryChildren(parent = "", prefix = "", limit = 20) {
+  const entries = [];
+  try {
+    const dirents = await fs.readdir(parent, { withFileTypes: true });
+    const normalizedPrefix = prefix.toLowerCase();
+    for (const entry of dirents) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      if (normalizedPrefix && !entry.name.toLowerCase().startsWith(normalizedPrefix)) continue;
+      entries.push(path.join(parent, entry.name));
+      if (entries.length >= limit) break;
+    }
+  } catch {
+    return [];
+  }
+  return entries.sort((left, right) => left.localeCompare(right));
+}
+
+async function pathSuggestions(query = "") {
+  const raw = String(query || "").trim();
+  const home = os.homedir();
+  const projectsLfs = path.join(home, "ProjectsLFS");
+  const baseCandidates = uniquePaths([
+    baseDir,
+    path.dirname(baseDir),
+    process.cwd(),
+    home,
+    projectsLfs,
+    path.join(home, "Documents"),
+    path.join(home, "Desktop"),
+  ]);
+  const suggestions = [];
+  for (const candidate of baseCandidates) {
+    if (await readableDirectory(candidate)) suggestions.push(candidate);
+  }
+
+  if (raw) {
+    const expanded = expandUserPath(raw);
+    const absolute = path.isAbsolute(expanded) ? expanded : path.resolve(baseDir, expanded);
+    const parent = raw.endsWith("/") || raw.endsWith(path.sep) ? absolute : path.dirname(absolute);
+    const prefix = raw.endsWith("/") || raw.endsWith(path.sep) ? "" : path.basename(absolute);
+    suggestions.push(...(await directoryChildren(parent, prefix, 16)));
+    for (const root of baseCandidates.slice(0, 5)) {
+      suggestions.push(...(await directoryChildren(root, path.basename(expanded), 4)));
+    }
+  } else {
+    for (const root of baseCandidates.slice(0, 4)) {
+      suggestions.push(...(await directoryChildren(root, "", 4)));
+    }
+  }
+
+  return uniquePaths(suggestions).slice(0, 20);
 }
 
 function buildRunConfig(body, overrides = {}) {
@@ -839,6 +922,11 @@ app.get("/api/config", async (_req, res) => {
     keyStatus,
     sessions: db.listSessions(100),
   });
+});
+
+app.get("/api/path-suggestions", async (req, res) => {
+  const suggestions = await pathSuggestions(String(req.query.q || ""));
+  res.json({ ok: true, suggestions });
 });
 
 app.get("/api/keys/status", (_req, res) => {

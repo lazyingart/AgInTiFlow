@@ -88,6 +88,12 @@ try {
   if (!/start new run/i.test(initialSubmit)) throw new Error(`composer did not default to new-run mode: ${initialSubmit}`);
   if (await page.locator("#stop-run").isVisible()) throw new Error("stop button is visible before a run starts");
   if ((await page.locator("#goal").count()) !== 0) throw new Error("old standalone goal textarea is still rendered");
+  if (!(await page.locator("#commandCwd").isVisible())) throw new Error("working directory search field is not visible at the top level");
+  if (await page.locator("#run-defaults-card").evaluate((node) => node.open)) throw new Error("run defaults should start folded");
+  await page.locator("#commandCwd").fill(runtimeDir.slice(0, Math.max(runtimeDir.lastIndexOf("/"), 1)));
+  await page.waitForFunction(() => document.querySelectorAll("#command-cwd-suggestions option").length > 0);
+  if ((await page.locator(".project-status-chip").count()) < 4) throw new Error("project folder status did not render structured chips");
+  await page.locator("#run-defaults-card summary").click();
 
   await page.selectOption("#enableScs", "auto");
   await page.locator("label:has(#aapsModeToggle)").click();
@@ -167,6 +173,9 @@ try {
         checks: [
           "composer-starts-new-run",
           "old-goal-form-hidden",
+          "working-directory-search-top",
+          "project-status-chips",
+          "run-defaults-folded",
           "quick-scs-aaps-venice-controls",
           "quick-mode-control-alignment",
           "dynamic-steps-dropdown",

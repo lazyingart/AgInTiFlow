@@ -36,13 +36,30 @@
         <p class="subtle" data-i18n="intro">
           Project-aware, low-cost agent for real problems
         </p>
-        <details class="project-card">
-          <summary>
-            <strong data-i18n="projectStatusTitle">Project folder</strong>
-            <span class="project-card-toggle" aria-hidden="true"></span>
-          </summary>
-          <p id="project-status" class="subtle">Loading project context...</p>
-        </details>
+        <section class="workspace-search-card" aria-labelledby="workspace-search-title">
+          <div class="workspace-search-head">
+            <div>
+              <strong id="workspace-search-title" data-i18n="projectStatusTitle">Project folder</strong>
+              <p class="subtle" data-i18n="commandCwdHelp">Runs start from this working directory.</p>
+            </div>
+          </div>
+          <label class="workspace-search-field">
+            <span data-i18n="commandCwdLabel">Working directory</span>
+            <input
+              id="commandCwd"
+              name="commandCwd"
+              type="search"
+              value="/home/lachlan/ProjectsLFS/Agent"
+              list="command-cwd-suggestions"
+              autocomplete="off"
+              spellcheck="false"
+              data-i18n-placeholder="commandCwdPlaceholder"
+              placeholder="/home/lachlan/ProjectsLFS/Agent"
+            />
+            <datalist id="command-cwd-suggestions"></datalist>
+          </label>
+          <div id="project-status" class="project-status-grid" aria-live="polite">Loading project context...</div>
+        </section>
 
         <section id="setup-card" class="setup-card" hidden>
           <div>
@@ -84,14 +101,20 @@
           </div>
         </section>
 
-        <form id="run-form" class="run-defaults-form">
-          <div class="run-defaults-head">
-            <div>
+        <details id="run-defaults-card" class="run-defaults-card">
+          <summary class="run-defaults-summary">
+            <span>
               <strong data-i18n="runDefaultsTitle">Run defaults</strong>
+              <span class="subtle" data-i18n="runDefaultsFoldHint">Routing, safety, tool toggles, and key status.</span>
+            </span>
+            <span id="key-status" class="key-status-summary"></span>
+            <span class="project-card-toggle" aria-hidden="true"></span>
+          </summary>
+          <form id="run-form" class="run-defaults-form">
+            <div class="run-defaults-head">
               <p class="subtle" data-i18n="runDefaultsHelp">The chat box is the first goal for a new run. These controls set how that run starts.</p>
+              <div id="key-status-list" class="key-status-list" aria-live="polite"></div>
             </div>
-            <span id="key-status" class="subtle"></span>
-          </div>
 
           <label>
             <span data-i18n="routingModeLabel">Routing policy</span>
@@ -135,10 +158,6 @@
           </label>
 
           <div class="grid">
-            <label>
-              <span data-i18n="commandCwdLabel">Working directory</span>
-              <input id="commandCwd" name="commandCwd" type="text" value="/home/lachlan/ProjectsLFS/Agent" />
-            </label>
             <label>
               <span data-i18n="maxStepsLabel">Max steps</span>
               <input id="maxSteps" name="maxSteps" type="number" min="1" max="50" value="24" />
@@ -202,7 +221,8 @@
           </div>
 
           <button id="open-settings" type="button" class="secondary settings-button">Advanced settings</button>
-        </form>
+          </form>
+        </details>
       </section>
 
       <section class="stack">

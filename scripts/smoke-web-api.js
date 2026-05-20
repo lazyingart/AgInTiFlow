@@ -96,7 +96,7 @@ try {
   if (chatThreadIndex < 0 || chatPendingIndex < 0 || chatPendingIndex < chatThreadIndex) {
     throw new Error("pending message panel must render below the chat thread");
   }
-  for (const marker of ['id="new-session"', 'id="run-state"', 'id="toast-region"', 'id="chat-submit"', 'id="enableScs"', 'id="aapsModeToggle"', 'id="veniceModeToggle"', 'id="dynamicSteps"']) {
+  for (const marker of ['id="new-session"', 'id="run-state"', 'id="toast-region"', 'id="chat-submit"', 'id="command-cwd-suggestions"', 'id="enableScs"', 'id="aapsModeToggle"', 'id="veniceModeToggle"', 'id="dynamicSteps"']) {
     if (!webAppHtml.includes(marker)) throw new Error(`web UI is missing ${marker}`);
   }
   if (webAppHtml.includes('id="goal"') || /<button[^>]+type="submit"[^>]*>\s*Start run\s*<\/button>/i.test(webAppHtml)) {
@@ -109,6 +109,10 @@ try {
   if (config.preferences?.preferredWrapper !== "codex") throw new Error("Codex is not the default preferred wrapper");
   if (config.project?.root !== runtimeDir) throw new Error("web project root did not default to launch directory");
   if (config.preferences?.commandCwd !== runtimeDir) throw new Error("commandCwd did not default to project root");
+  const pathSuggest = await fetchJson(`/api/path-suggestions?q=${encodeURIComponent(runtimeDir.slice(0, runtimeDir.lastIndexOf("/")))}`);
+  if (!pathSuggest.ok || !Array.isArray(pathSuggest.suggestions) || !pathSuggest.suggestions.some((item) => item === runtimeDir)) {
+    throw new Error(`path suggestions did not include the runtime directory: ${JSON.stringify(pathSuggest)}`);
+  }
   if (config.preferences?.sandboxMode !== "docker-workspace") throw new Error("web did not default to docker workspace");
   if (config.preferences?.packageInstallPolicy !== "allow") throw new Error("web did not default to Docker package installs");
   if (config.preferences?.permissionMode !== "normal") throw new Error("web did not default to normal permission mode");
