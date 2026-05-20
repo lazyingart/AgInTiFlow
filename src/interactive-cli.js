@@ -321,6 +321,7 @@ function charCellWidth(char = "") {
   const code = char.codePointAt(0);
   if (!code) return 0;
   if (code < 32 || (code >= 0x7f && code < 0xa0)) return 0;
+  if (code === 0x200d || (code >= 0xfe00 && code <= 0xfe0f)) return 0;
   if (
     (code >= 0x0300 && code <= 0x036f) ||
     (code >= 0x1ab0 && code <= 0x1aff) ||
@@ -355,13 +356,116 @@ function stringCellWidth(value = "") {
   return [...String(value || "")].reduce((sum, char) => sum + charCellWidth(char), 0);
 }
 
+const graphemeSegmenter = (() => {
+  try {
+    return typeof Intl?.Segmenter === "function" ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+  } catch {
+    return null;
+  }
+})();
+
+function graphemeSegments(value = "", baseOffset = 0) {
+  const text = String(value || "");
+  if (!text) return [];
+  if (graphemeSegmenter) {
+    return [...graphemeSegmenter.segment(text)].map((item) => ({
+      text: item.segment,
+      start: baseOffset + item.index,
+      end: baseOffset + item.index + item.segment.length,
+      width: stringCellWidth(item.segment),
+    }));
+  }
+  const result = [];
+  let offset = 0;
+  for (const char of text) {
+    result.push({
+      text: char,
+      start: baseOffset + offset,
+      end: baseOffset + offset + char.length,
+      width: stringCellWidth(char),
+    });
+    offset += char.length;
+  }
+  return result;
+}
+
+function normalizeCursorBoundary(buffer = "", cursor = 0) {
+  const safeBuffer = String(buffer || "");
+  const safeCursor = clamp(Number(cursor) || 0, 0, safeBuffer.length);
+  for (const segment of graphemeSegments(safeBuffer)) {
+    if (safeCursor <= segment.start) return segment.start;
+    if (safeCursor < segment.end) return segment.start;
+  }
+  return safeCursor;
+}
+
+function previousGraphemeBoundary(buffer = "", cursor = 0) {
+  const safeBuffer = String(buffer || "");
+  const safeCursor = clamp(Number(cursor) || 0, 0, safeBuffer.length);
+  let previous = 0;
+  for (const segment of graphemeSegments(safeBuffer)) {
+    if (segment.end >= safeCursor) return segment.start;
+    previous = segment.start;
+  }
+  return safeCursor > 0 ? previous : 0;
+}
+
+function nextGraphemeBoundary(buffer = "", cursor = 0) {
+  const safeBuffer = String(buffer || "");
+  const safeCursor = clamp(Number(cursor) || 0, 0, safeBuffer.length);
+  for (const segment of graphemeSegments(safeBuffer)) {
+    if (segment.end > safeCursor) return segment.end;
+  }
+  return safeBuffer.length;
+}
+
+function takeCellWidthChunk(text = "", startOffset = 0, maxCells = 1) {
+  let used = 0;
+  let chunk = "";
+  let endOffset = startOffset;
+  for (const segment of graphemeSegments(String(text || "").slice(startOffset), startOffset)) {
+    const next = used + segment.width;
+    if (chunk && next > maxCells) break;
+    if (!chunk && segment.width > maxCells && maxCells > 0) {
+      chunk += segment.text;
+      endOffset = segment.end;
+      used = next;
+      break;
+    }
+    if (next > maxCells) break;
+    chunk += segment.text;
+    endOffset = segment.end;
+    used = next;
+  }
+  return { text: chunk, endOffset, cellWidth: used };
+}
+
+function rowCellOffset(buffer = "", row = {}, cursor = 0) {
+  const safeCursor = clamp(Number(cursor) || 0, row.start || 0, row.end || 0);
+  return stringCellWidth(String(buffer || "").slice(row.start || 0, safeCursor));
+}
+
+function cursorForRowCellColumn(buffer = "", row = {}, column = 0) {
+  const target = Math.max(Number(column) || 0, 0);
+  let used = 0;
+  let best = row.start || 0;
+  for (const segment of graphemeSegments(String(buffer || "").slice(row.start || 0, row.end || 0), row.start || 0)) {
+    const next = used + segment.width;
+    if (next > target) return segment.start;
+    best = segment.end;
+    if (next === target) return best;
+    used = next;
+  }
+  return best;
+}
+
 function sliceToVisualWidth(value = "", width = 0) {
   let used = 0;
   let result = "";
-  for (const char of String(value || "")) {
-    const next = used + charCellWidth(char);
+  for (const segment of graphemeSegments(value)) {
+    const next = used + segment.width;
     if (next > width) break;
-    result += char;
+    result += segment.text;
     used = next;
   }
   return result;
@@ -944,7 +1048,7 @@ function promptVisibleWindow(rows, cursorRow, height = terminalHeight()) {
 
 export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth(), height = terminalHeight(), options = {}) {
   const safeBuffer = String(buffer || "");
-  const safeCursor = clamp(Number(cursor) || 0, 0, safeBuffer.length);
+  const safeCursor = normalizeCursorBoundary(safeBuffer, cursor);
   const lineWidth = editorWidth(width);
   const firstPrefix = labelText("user>", { prompt: true });
   const nextPrefix = labelText("...", { prompt: true });
@@ -972,18 +1076,19 @@ export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth
     while (localOffset < text.length) {
       const prefix = lineIndex === 0 && localOffset === 0 ? firstPrefix : nextPrefix;
       const innerWidth = prefix === firstPrefix ? firstInnerWidth : nextInnerWidth;
-      const chunk = text.slice(localOffset, localOffset + innerWidth);
+      const chunk = takeCellWidthChunk(text, localOffset, innerWidth);
       rows.push({
         prefix,
-        text: chunk,
+        text: chunk.text,
         start: line.start + localOffset,
-        end: line.start + localOffset + chunk.length,
+        end: line.start + chunk.endOffset,
+        textCellWidth: chunk.cellWidth,
         innerWidth,
         lineStart: line.start,
         lineEnd: line.end,
         hasNewline: line.hasNewline,
       });
-      localOffset += chunk.length;
+      localOffset = chunk.endOffset;
     }
   }
 
@@ -1001,7 +1106,7 @@ export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth
   }
 
   const last = rows[rows.length - 1];
-  if (safeCursor === safeBuffer.length && last.end === safeCursor && last.text.length >= last.innerWidth) {
+  if (safeCursor === safeBuffer.length && last.end === safeCursor && (last.textCellWidth || stringCellWidth(last.text)) >= last.innerWidth) {
     rows.push({
       prefix: nextPrefix,
       text: "",
@@ -1021,13 +1126,13 @@ export function buildPromptLayout(buffer = "", cursor = 0, width = terminalWidth
     const next = rows[index + 1];
     if (safeCursor < row.end) {
       cursorRow = index;
-      cursorColumn = row.prefix.length + safeCursor - row.start;
+      cursorColumn = stringCellWidth(row.prefix) + rowCellOffset(safeBuffer, row, safeCursor);
       break;
     }
     if (safeCursor === row.end) {
-      if (next && next.start === safeCursor && row.text.length >= row.innerWidth) continue;
+      if (next && next.start === safeCursor && (row.textCellWidth || stringCellWidth(row.text)) >= row.innerWidth) continue;
       cursorRow = index;
-      cursorColumn = row.prefix.length + safeCursor - row.start;
+      cursorColumn = stringCellWidth(row.prefix) + rowCellOffset(safeBuffer, row, safeCursor);
       break;
     }
   }
@@ -1102,15 +1207,18 @@ function cursorLocation(layout, cursor) {
   for (let index = 0; index < layout.rows.length; index += 1) {
     const row = layout.rows[index];
     const next = layout.rows[index + 1];
-    if (cursor < row.end) return { rowIndex: index, column: cursor - row.start };
+    if (cursor < row.end) {
+      const localCursor = clamp(cursor - row.start, 0, row.text.length);
+      return { rowIndex: index, column: stringCellWidth(row.text.slice(0, localCursor)) };
+    }
     if (cursor === row.end) {
-      if (next && next.start === cursor && row.text.length >= row.innerWidth) continue;
-      return { rowIndex: index, column: cursor - row.start };
+      if (next && next.start === cursor && (row.textCellWidth || stringCellWidth(row.text)) >= row.innerWidth) continue;
+      return { rowIndex: index, column: row.textCellWidth || stringCellWidth(row.text) };
     }
   }
   const rowIndex = Math.max(layout.rows.length - 1, 0);
   const row = layout.rows[rowIndex];
-  return { rowIndex, column: Math.max(row.end - row.start, 0) };
+  return { rowIndex, column: row.textCellWidth || stringCellWidth(row.text) };
 }
 
 function clearRenderedPrompt(previous) {
@@ -1217,17 +1325,21 @@ function insertAt(buffer, cursor, text) {
 
 function removeBefore(buffer, cursor) {
   if (cursor <= 0) return { buffer, cursor };
+  const safeCursor = normalizeCursorBoundary(buffer, cursor);
+  const start = previousGraphemeBoundary(buffer, safeCursor);
   return {
-    buffer: `${buffer.slice(0, cursor - 1)}${buffer.slice(cursor)}`,
-    cursor: cursor - 1,
+    buffer: `${buffer.slice(0, start)}${buffer.slice(safeCursor)}`,
+    cursor: start,
   };
 }
 
 function removeAt(buffer, cursor) {
   if (cursor >= buffer.length) return { buffer, cursor };
+  const safeCursor = normalizeCursorBoundary(buffer, cursor);
+  const end = nextGraphemeBoundary(buffer, safeCursor);
   return {
-    buffer: `${buffer.slice(0, cursor)}${buffer.slice(cursor + 1)}`,
-    cursor,
+    buffer: `${buffer.slice(0, safeCursor)}${buffer.slice(end)}`,
+    cursor: safeCursor,
   };
 }
 
@@ -1384,7 +1496,7 @@ function readTtyPrompt(options = {}) {
 
     const setBuffer = (nextBuffer, nextCursor = nextBuffer.length, { keepSuggestionAnchor = false, keepHistoryMode = false } = {}) => {
       buffer = nextBuffer;
-      cursor = clamp(nextCursor, 0, buffer.length);
+      cursor = normalizeCursorBoundary(buffer, nextCursor);
       preferredColumn = null;
       if (!keepHistoryMode) promptHistory.resetBrowsing();
       if (!keepSuggestionAnchor) {
@@ -1422,7 +1534,7 @@ function readTtyPrompt(options = {}) {
       if (targetRowIndex < 0 || targetRowIndex >= layout.rows.length) return;
       const currentColumn = preferredColumn ?? location.column;
       const targetRow = layout.rows[targetRowIndex];
-      cursor = targetRow.start + Math.min(currentColumn, targetRow.end - targetRow.start);
+      cursor = cursorForRowCellColumn(buffer, targetRow, currentColumn);
       promptHistory.resetBrowsing();
       preferredColumn = currentColumn;
       redraw();
@@ -1467,7 +1579,7 @@ function readTtyPrompt(options = {}) {
       if (key.name === "left") {
         if (suggestionModeActive() && cycleSuggestion(-1)) return;
         promptHistory.resetBrowsing();
-        cursor = Math.max(cursor - 1, 0);
+        cursor = previousGraphemeBoundary(buffer, cursor);
         preferredColumn = null;
         redraw();
         return;
@@ -1475,7 +1587,7 @@ function readTtyPrompt(options = {}) {
       if (key.name === "right") {
         if (suggestionModeActive() && cycleSuggestion(1)) return;
         promptHistory.resetBrowsing();
-        cursor = Math.min(cursor + 1, buffer.length);
+        cursor = nextGraphemeBoundary(buffer, cursor);
         preferredColumn = null;
         redraw();
         return;
@@ -1681,7 +1793,7 @@ class LiveRunInput {
 
   setBuffer(nextBuffer, nextCursor = nextBuffer.length) {
     this.buffer = String(nextBuffer || "");
-    this.cursor = clamp(nextCursor, 0, this.buffer.length);
+    this.cursor = normalizeCursorBoundary(this.buffer, nextCursor);
     this.preferredColumn = null;
     this.redraw();
   }
@@ -1707,7 +1819,7 @@ class LiveRunInput {
     if (targetRowIndex < 0 || targetRowIndex >= layout.rows.length) return;
     const currentColumn = this.preferredColumn ?? location.column;
     const targetRow = layout.rows[targetRowIndex];
-    this.cursor = targetRow.start + Math.min(currentColumn, targetRow.end - targetRow.start);
+    this.cursor = cursorForRowCellColumn(this.buffer, targetRow, currentColumn);
     this.preferredColumn = currentColumn;
     this.redraw();
   }
@@ -1854,13 +1966,13 @@ class LiveRunInput {
       return;
     }
     if (key.name === "left") {
-      this.cursor = Math.max(this.cursor - 1, 0);
+      this.cursor = previousGraphemeBoundary(this.buffer, this.cursor);
       this.preferredColumn = null;
       this.redraw();
       return;
     }
     if (key.name === "right") {
-      this.cursor = Math.min(this.cursor + 1, this.buffer.length);
+      this.cursor = nextGraphemeBoundary(this.buffer, this.cursor);
       this.preferredColumn = null;
       this.redraw();
       return;

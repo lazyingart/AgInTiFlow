@@ -408,6 +408,25 @@ try {
   if (promptLayout.cursorRow < 0 || promptLayout.cursorColumn < 0) {
     throw new Error("terminal prompt layout returned an invalid cursor location");
   }
+  const cjkPrompt = "你好日本語";
+  const cjkPromptLayout = buildPromptLayout(cjkPrompt, cjkPrompt.length, 80, 24, { inputPadding: false });
+  if (cjkPromptLayout.cursorColumn !== cjkPromptLayout.rows[0].prefix.length + cellWidth(cjkPrompt)) {
+    throw new Error("terminal prompt layout did not place CJK/IME cursor at the visual end of input");
+  }
+  const mixedPrompt = "abc你好";
+  const mixedPromptLayout = buildPromptLayout(mixedPrompt, mixedPrompt.length, 80, 24, { inputPadding: false });
+  if (mixedPromptLayout.cursorColumn !== mixedPromptLayout.rows[0].prefix.length + cellWidth(mixedPrompt)) {
+    throw new Error("terminal prompt layout did not combine ASCII and CJK cursor cell widths correctly");
+  }
+  const wrappedCjkPrompt = "你".repeat(30);
+  const wrappedCjkLayout = buildPromptLayout(wrappedCjkPrompt, wrappedCjkPrompt.length, 50, 24, { inputPadding: false });
+  if (
+    wrappedCjkLayout.rows.length < 2 ||
+    wrappedCjkLayout.rows.some((row) => cellWidth(row.text) > row.innerWidth) ||
+    wrappedCjkLayout.cursorColumn !== wrappedCjkLayout.rows.at(-1).prefix.length + cellWidth(wrappedCjkLayout.rows.at(-1).text)
+  ) {
+    throw new Error("terminal prompt layout did not wrap CJK text by terminal cell width");
+  }
   const promptCursorMoveBefore = buildPromptLayout("smooth typing", 13, 90, 24, { commandCwd: "/tmp/aginti-project" });
   const promptCursorMoveAfter = buildPromptLayout("smooth typing", 4, 90, 24, { commandCwd: "/tmp/aginti-project" });
   const cursorOnlySequence = buildPromptRenderSequence(promptCursorMoveAfter, {
@@ -860,6 +879,8 @@ try {
           "workspace-patch-event-render",
           "large-launch-header",
           "prompt-layout",
+          "prompt-cjk-ime-cursor-column",
+          "prompt-cjk-cell-width-wrap",
           "prompt-redraw-fast-path",
           "committed-user-no-cwd-footer",
           "cli-i18n",
