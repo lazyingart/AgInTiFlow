@@ -114,6 +114,11 @@ async function main() {
   assert(dangerAbsoluteMkdir.trustedDangerOverride === true, "danger absolute host path should be explicit override");
   const dangerPublish = evaluateCommandPolicy("npm publish", danger);
   assert(dangerPublish.allowed === false, "danger should still block hard publish/token guardrails");
+  const workspaceCdSecretProbe = evaluateCommandPolicy(
+    `cd ${workspace} && env | grep -i 'deepseek\\\\|API_KEY' | head -5; echo "EXIT:$?"`,
+    danger
+  );
+  assert(workspaceCdSecretProbe.allowed === false, "workspace-root cd must not bypass secret command guardrails");
   const outsidePath = path.join(tempRoot, "outside-danger.txt");
   const dangerOutside = await executeWorkspaceTool("write_file", { path: outsidePath, content: "danger outside ok" }, danger);
   assert(dangerOutside.ok === true, "danger should allow outside workspace file write");

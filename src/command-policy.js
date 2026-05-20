@@ -247,6 +247,7 @@ function stripQuotedSegments(command = "") {
 function isSafeRelativeDir(value) {
   const normalized = String(value || "").trim();
   if (!normalized || normalized.startsWith("/") || normalized.startsWith("~")) return false;
+  if (normalized === ".") return true;
   return normalized.split("/").every((part) => part && part !== "." && part !== "..");
 }
 
