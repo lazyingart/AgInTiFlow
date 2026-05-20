@@ -393,18 +393,18 @@ const virtualFileContract = deriveScsTaskContract({
 const outputListContract = deriveScsTaskContract({
   goal: [
     "Create:",
-    "- `books/demo/work/generate_chunk.py`",
-    "- `books/demo/work/review_chunks.py`",
+    "- `work/demo/generate_items.py`",
+    "- `work/demo/review_items.py`",
     "",
-    "Validate with `books/demo/work/validate_chunk.py` before promoting output.",
-    "Do not treat `books/demo/work/existing_validator.py` as an output artifact.",
+    "Validate with `work/demo/validate_items.py` before promoting output.",
+    "Do not treat `work/demo/existing_validator.py` as an output artifact.",
     "",
     "Output structure:",
-    "- `build/demo/jp-main/color/book.pdf`",
-    "- `build/demo/zh-main/color/book.pdf`",
+    "- `build/demo/primary/color/book.pdf`",
+    "- `build/demo/secondary/color/book.pdf`",
     "",
-    "Each generated chunk file goes to:",
-    "`data/demo/chunks/{chunk_id}.json`",
+    "Each generated item file goes to:",
+    "`data/demo/items/{item_id}.json`",
   ].join("\n"),
   taskProfile: "code",
 });
@@ -460,16 +460,16 @@ assert(
   "virtual output filename should require file evidence without treating output in the filename as an artifact"
 );
 assert(
-  outputListContract.exactOutputPaths.includes("books/demo/work/generate_chunk.py") &&
-    outputListContract.exactOutputPaths.includes("books/demo/work/review_chunks.py") &&
-    outputListContract.exactOutputPaths.includes("build/demo/jp-main/color/book.pdf") &&
-    outputListContract.exactOutputPaths.includes("build/demo/zh-main/color/book.pdf"),
+  outputListContract.exactOutputPaths.includes("work/demo/generate_items.py") &&
+    outputListContract.exactOutputPaths.includes("work/demo/review_items.py") &&
+    outputListContract.exactOutputPaths.includes("build/demo/primary/color/book.pdf") &&
+    outputListContract.exactOutputPaths.includes("build/demo/secondary/color/book.pdf"),
   "SCS should infer exact outputs from Create/Output structure list sections"
 );
 assert(
-  !outputListContract.exactOutputPaths.includes("books/demo/work/validate_chunk.py") &&
-    !outputListContract.exactOutputPaths.includes("books/demo/work/existing_validator.py") &&
-    !outputListContract.exactOutputPaths.some((item) => item.includes("{chunk_id}")),
+  !outputListContract.exactOutputPaths.includes("work/demo/validate_items.py") &&
+    !outputListContract.exactOutputPaths.includes("work/demo/existing_validator.py") &&
+    !outputListContract.exactOutputPaths.some((item) => item.includes("{item_id}")),
   "SCS should not treat validator/tool paths or templated paths as exact output artifacts"
 );
 assert(

@@ -1,17 +1,19 @@
 ---
 id: bilingual-interlinear-book
-label: Bilingual Interlinear Book Pipeline
-description: Build Chinese/Japanese or other paired-language pocket books with Markdown extraction, chunk manifests, ruby/pinyin JSON, grammar roles, monitoring, and LaTeX PDF outputs.
+label: Multilingual Annotated Book Pipeline
+description: Build paired-language, interlinear, or annotated books from source documents using ingestion, stable task chunks, schema-bound annotations, review loops, and compiled outputs.
 triggers:
   - interlinear
   - bilingual book
+  - multilingual book
   - paired language
+  - annotated book
+  - parallel text
+  - ruby
   - furigana
   - pinyin
-  - ruby
   - xelatex
   - pocket book
-  - grammar roles
 tools:
   - read_file
   - write_file
@@ -19,35 +21,34 @@ tools:
   - tmux_start_session
   - tmux_capture_pane
 ---
-# Bilingual Interlinear Book Pipeline
+# Multilingual Annotated Book Pipeline
 
-Use this skill when the task asks for a paired-language book, ruby/furigana/pinyin, Chinese/Japanese interlinear layout, grammar-role color, or pocket-size LaTeX output.
+Use this skill when the user asks AgInTi to create a book-like artifact that combines a main text with translations, glosses, commentary, readings, grammar labels, or other aligned annotations.
 
-## Required Workflow
+This is a general workflow skill. It must not hard-code a specific book, language pair, schema, layout, filename, page size, or house style. If the target repository contains a project-local skill under `.aginti/skills/<id>/SKILL.md`, prefer that skill for domain-specific rules.
 
-1. Inspect repository instructions, existing scripts, book plans, and ignored paths before editing.
-2. Keep original PDFs/EPUBs in source folders and do not commit large source media unless the repository explicitly tracks them.
-3. Convert source books to durable Markdown first. Treat PDF, EPUB, image, JSON/wiki, and scanned sources as ingestion problems; create a source manifest with hashes, method, role, language, and caveats before generation. Keep raw and cleaned Markdown separate when OCR or EPUB extraction is noisy.
-4. Split cleaned Markdown into stable paragraph- or chapter-scoped chunks with `manifest.json` and `chunks.jsonl`. Use source paragraph IDs that survive reruns. If a paragraph is too large for reliable provider output, split it into ordered subchunks at sentence or clause boundaries while preserving the original source order and recording `split_from_chunk_id`, `split_part`, and `split_part_count`.
-5. When retuning chunk size or repairing split logic, merge any existing `split_from_chunk_id` groups back to the original paragraph text first, then split again. Do not repeatedly split already-split parts, and do not discard valid reviewed chunks unless validation proves they no longer match the manifest.
-6. Write resumable per-chunk JSON artifacts. Never overwrite a valid reviewed chunk unless a validator or prompt version requires regeneration; move stale chunks out of the compile path.
-7. Generate or repair annotations with a provider worker loop, not a monolithic prompt. Each chunk should validate independently before promotion. If JSON is malformed or validation fails, retry the chunk with the exact validator errors before marking it failed. Use the structured JSON workflow for repetitive chunk output.
-8. Keep writer, reviewer, repairer, monitor, merge, and compile roles explicit. Writers produce candidates; validators promote; reviewers check semantic quality and request fixes; repairers handle failed-only or quarantined chunks; monitors observe and resume gently.
-9. Compile preview PDFs periodically and at the end. For paired-language books, compile both directions when renderers exist, plus color and blackwhite variants when color is supported.
-10. Run long jobs in observable tmux sessions with status files, logs, retry/backoff for provider limits, and clear resume commands.
+## Workflow
 
-## JSON Quality Gates
+1. Inspect repository instructions, existing scripts, source folders, build folders, ignored paths, and project-local skills before editing.
+2. Inventory sources and create or update a source manifest with path, hash, language/role, extraction method, and caveats. Keep original source media untouched unless the user explicitly asks otherwise.
+3. Convert inputs into durable intermediate text first. Use the source-ingestion workflow for PDF, EPUB, image, scan, archive, JSON/wiki, or mixed input folders.
+4. Split cleaned text into stable paragraph-, section-, page-, or chapter-scoped tasks with persistent IDs. Record source spans so chunks can be regenerated, reused, reviewed, or mapped after later split changes.
+5. Define the project schema in the target repository. Use the structured JSON workflow for repetitive annotation or alignment output, with focused prompts and provider-native JSON/schema modes when available.
+6. Keep writer, validator, reviewer, repairer, monitor, merge, compile/export, and final-report roles separate. Writers produce candidates; validators promote; reviewers request fixes; monitors observe progress and restart only affected work.
+7. Make all workers resumable. Use shard-local outputs, atomic promotion, status files, logs, retry/backoff for provider limits, and exact resume commands.
+8. Never overwrite a valid reviewed artifact unless the source hash, schema version, or prompt version proves it is stale. Quarantine invalid outputs instead of deleting useful work.
+9. Compile or export previews periodically and final variants at the end. Variant names and directions belong to the project schema or local skill, not this built-in skill.
+10. Verify final artifacts externally: manifest coverage, valid/reviewed counts, missing/stale/failed items, output paths, metadata, and representative visual checks for PDFs or images.
 
-Every promoted chunk must preserve source text exactly. Chinese Hanzi tokens are one character each with pinyin. Japanese kanji tokens are one character each with furigana. Nontrivial Japanese lines must use normal mixed kanji/kana, not kana-only placeholders.
+## Annotation Rules
 
-For classical Chinese texts, bracketed notes such as `〈 ... 〉`, inline commentary, variant readings, and punctuation are source text. They must be included in the Chinese token stream and must not be silently skipped as "comments".
+Keep annotation policies project-defined:
 
-Chunk boundaries must not create malformed note syntax. Avoid putting a leading close marker such as `〉` at the start of a subchunk; attach it to the previous subchunk so the writer sees balanced source context.
-
-For dense classical texts that require one-token-per-Hanzi plus Japanese glosses, start with provider-safe subchunks around 120-160 source characters. If outputs become malformed near provider token limits, retune smaller immediately instead of repeatedly retrying oversized chunks.
-
-For grammar coloring, assign `g` using only: `subject`, `predicate`, `object`, `attributive`, `adverbial`, `complement`, `topic`, `function`. Color PDFs depend on these fields: every Chinese Hanzi token and every Japanese kanji token should carry `g`. Blackwhite builds should force all grammar colors to black through the renderer, not by deleting `g`.
+- Token shape, reading placement, grammar tags, and alignment granularity must come from the project schema.
+- For scripts that need per-character readings, validators should enforce that locally instead of relying on a prompt.
+- Placeholder translations, empty commentary, duplicated readings, copied modern paraphrases, or source drift should be detected by validators or reviewers.
+- Color, typography, page size, table of contents, cover design, and exact PDF variants belong in project renderers.
 
 ## Completion Evidence
 
-Report chunk totals, valid/reviewed count, failed or stale count, first missing chunk, latest PDF paths, and the exact resume command. Verify PDFs exist on disk and that generated TeX contains grammar color macros for color builds. Commit tracked scripts, templates, plans, and stable JSON checkpoints after meaningful edits.
+Report the current manifest total, valid/promoted count, reviewed count, failed or quarantined count, first missing ID, latest artifact paths, compile/export commands, and the exact command to resume generation. Do not claim completion from a model summary alone; check the files and outputs directly.
