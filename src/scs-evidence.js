@@ -125,10 +125,25 @@ function forbiddenTails(text = "") {
 function inferExactOutputPaths(goal = "") {
   const paths = [];
   const lines = String(goal || "").split(/\n+/);
-  const pathPattern = /(?:^|[\s"'`：:])((?:~|\.{1,2}|[A-Za-z0-9_\-\u4e00-\u9fff])[\w./~\-\u4e00-\u9fff ]{0,220}\.(?:md|txt|json|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx))(?:$|[\s"'`,，。；;])/gi;
+  const extensionPattern = "md|txt|json|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
+  const quotedPathPattern = new RegExp("[\"'`]([^\"'`\\n]{1,220}\\.(?:" + extensionPattern + "))[\"'`]", "gi");
+  const pathPattern = new RegExp(
+    '(?:^|[\\s：:])((?:~|\\.{1,2}|/|[A-Za-z0-9_\\-\\u4e00-\\u9fff])[\\w./~\\-\\u4e00-\\u9fff]{0,220}\\.(?:' +
+      extensionPattern +
+      '))(?:$|[\\s"\'`,，。；;.!?！？])',
+    "gi"
+  );
   for (const line of lines) {
-    if (!/\b(save|saved|write|written|output|create|store|update|modify|edit)\b|保存|写入|寫入|输出|輸出|创建|建立|更新|修改|编辑|編輯/.test(line)) continue;
-    for (const match of line.matchAll(pathPattern)) {
+    if (!/\b(save|saved|write|written|output|create|store|update|modify|edit)\b|保存|写入|寫入|输出|輸出|创建|建立|更新|修改|编辑|編輯/i.test(line)) continue;
+    quotedPathPattern.lastIndex = 0;
+    for (const match of line.matchAll(quotedPathPattern)) {
+      const raw = String(match[1] || "").trim();
+      if (!raw) continue;
+      paths.push(raw);
+    }
+    const unquotedLine = line.replace(quotedPathPattern, (match) => " ".repeat(match.length));
+    pathPattern.lastIndex = 0;
+    for (const match of unquotedLine.matchAll(pathPattern)) {
       const raw = String(match[1] || "").trim();
       if (!raw) continue;
       paths.push(raw);
@@ -153,8 +168,8 @@ function inferRequiredTextTerms(goal = "") {
     )[0];
     const requiredSegment = stripForbiddenTextClauses(positiveSegment);
     if (
-      /\b(must|require|required|include|contain|contains|check|verify|grep|keyword|keywords)\b/i.test(line) ||
-      /必须|必須|要求|包含|检查|檢查|验证|驗證|关键词|關鍵詞|自检|自檢/.test(line)
+      /\b(must|require|required|include|contain|contains|check|verify|grep|keyword|keywords|preserve|keep|retain|appear)\b/i.test(line) ||
+      /必须|必須|要求|包含|保留|出现|出現|精确字符串|精確字符串|明确出现|明確出現|检查|檢查|验证|驗證|关键词|關鍵詞|自检|自檢/.test(line)
     ) {
       terms.push(...quotedTerms(requiredSegment));
     }
