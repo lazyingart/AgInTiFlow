@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SessionStore } from "../src/session-store.js";
 import { projectPaths, sessionStoreOptions } from "../src/project.js";
+import { WebDatabase } from "../src/web-db.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixtureMcpServer = path.join(repoRoot, "scripts", "fixtures", "mcp-stdio-smoke-server.mjs");
@@ -94,6 +95,9 @@ try {
   const chatPendingIndex = webAppHtml.indexOf('id="chat-pending"');
   if (chatThreadIndex < 0 || chatPendingIndex < 0 || chatPendingIndex < chatThreadIndex) {
     throw new Error("pending message panel must render below the chat thread");
+  }
+  for (const marker of ['id="new-session"', 'id="run-state"', 'id="toast-region"', 'id="chat-submit"']) {
+    if (!webAppHtml.includes(marker)) throw new Error(`web UI is missing ${marker}`);
   }
 
   const config = await fetchJson("/api/config");
@@ -337,6 +341,35 @@ try {
   const changes = await fetchJson("/api/workspace/changes");
   if (!Array.isArray(changes.activity)) throw new Error("workspace changes endpoint returned an invalid payload");
 
+  const staleSessionId = "stale-running-smoke";
+  const staleStore = new SessionStore(paths.globalSessionsDir, staleSessionId, sessionStoreOptions(runtimeDir, staleSessionId));
+  await staleStore.ensure();
+  await staleStore.appendEvent("session.finished", {
+    result: "stale running session reconciled",
+    mode: "smoke",
+  });
+  const staleDb = new WebDatabase(runtimeDir);
+  staleDb.upsertSession({
+    sessionId: staleSessionId,
+    provider: "mock",
+    model: "mock-agent",
+    goal: "Synthetic stale running session.",
+    status: "running",
+    startedAt: new Date(Date.now() - 60_000).toISOString(),
+    updatedAt: new Date(Date.now() - 30_000).toISOString(),
+    endedAt: "",
+    result: "",
+    error: "",
+    projectRoot: runtimeDir,
+    commandCwd: runtimeDir,
+    projectSessionsDir: paths.sessionsDir,
+    sessionDir: staleStore.sessionDir,
+  });
+  const reconciledStaleRun = await fetchJson(`/api/runs/${encodeURIComponent(staleSessionId)}`);
+  if (reconciledStaleRun.status !== "finished" || !reconciledStaleRun.result.includes("reconciled")) {
+    throw new Error(`orphaned running session was not reconciled: ${JSON.stringify(reconciledStaleRun)}`);
+  }
+
   const canvasRunStart = await fetchJson("/api/runs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -443,6 +476,7 @@ try {
           "POST /api/sessions/:id/auto-title",
           "DELETE /api/sessions/:id",
           "/api/workspace/changes",
+          "stale running status reconciliation",
           "/api/sessions/:id/artifacts",
           "/api/sessions/:id/artifacts/:artifactId",
           "/api/sessions/:id/artifacts/:artifactId/raw",

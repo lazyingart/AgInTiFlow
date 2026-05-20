@@ -99,6 +99,20 @@ const translations = {
     stopRunButton: "Stop",
     stoppingRun: "Stopping...",
     stopRunFailed: "Failed to stop run.",
+    newSessionButton: "New",
+    runStateIdle: "Ready",
+    runStateIdleDetail: "Select a conversation or type a new goal below.",
+    runStateRunning: "Running",
+    runStateFinished: "Finished",
+    runStateStopped: "Stopped",
+    runStateFailed: "Failed",
+    composerStartButton: "Start new run",
+    composerPlaceholderNoSession: "Type a goal to start a new agent run.",
+    composerPlaceholderSession: "Continue the selected conversation here.",
+    toastRunStarted: "Run started.",
+    toastRunFinished: "Run finished.",
+    toastRunStopped: "Run stopped.",
+    toastRunFailed: "Run failed.",
     runOutputTitle: "Run output",
     noRunStarted: "No run started.",
     conversationTitle: "Conversation",
@@ -716,9 +730,15 @@ const sandboxLogsEl = document.querySelector("#sandbox-logs");
 const checkSandboxButton = document.querySelector("#check-sandbox");
 const preflightSandboxButton = document.querySelector("#preflight-sandbox");
 const sessionSelectEl = document.querySelector("#session-select");
+const newSessionButton = document.querySelector("#new-session");
+const runStateEl = document.querySelector("#run-state");
+const runStateTextEl = document.querySelector("#run-state-text");
+const runStateDetailEl = document.querySelector("#run-state-detail");
+const toastRegionEl = document.querySelector("#toast-region");
 const chatThreadEl = document.querySelector("#chat-thread");
 const chatFormEl = document.querySelector("#chat-form");
 const chatInputEl = document.querySelector("#chat-input");
+const chatSubmitButton = document.querySelector("#chat-submit");
 const chatPendingEl = document.querySelector("#chat-pending");
 const chatStatusEl = document.querySelector("#chat-status");
 const pipeMessageButton = document.querySelector("#pipe-message");
@@ -789,6 +809,7 @@ let artifactItems = [];
 let selectedArtifactId = "";
 let currentArtifactTab = "canvas";
 let artifactUnreadCount = 0;
+let lastAnnouncedRunKey = "";
 
 function normalizeLanguage(language) {
   const lower = String(language || "").toLowerCase();
@@ -804,6 +825,36 @@ function t(key) {
 function setLogs(text, mode = "active") {
   logsEl.dataset.mode = mode;
   logsEl.textContent = text;
+}
+
+function isRunningStatus(status = currentRunStatus) {
+  return status === "running";
+}
+
+function isTerminalStatus(status = currentRunStatus) {
+  return ["finished", "failed", "stopped"].includes(status);
+}
+
+function runStatusLabel(status = currentRunStatus) {
+  if (status === "running") return t("runStateRunning");
+  if (status === "finished") return t("runStateFinished");
+  if (status === "failed") return t("runStateFailed");
+  if (status === "stopped") return t("runStateStopped");
+  return t("runStateIdle");
+}
+
+function showToast(message, kind = "info") {
+  if (!toastRegionEl || !message) return;
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.dataset.kind = kind;
+  toast.textContent = message;
+  toastRegionEl.append(toast);
+  setTimeout(() => {
+    toast.style.opacity = "0";
+    toast.style.transform = "translateY(6px)";
+  }, 2600);
+  setTimeout(() => toast.remove(), 3200);
 }
 
 function outputLineCount(value = "") {
@@ -823,8 +874,37 @@ function outputPreviewText(value = "", maxLines = 18) {
 
 function updateStopRunButton() {
   if (!stopRunButton) return;
-  stopRunButton.hidden = currentRunStatus !== "running";
-  stopRunButton.disabled = currentRunStatus !== "running";
+  stopRunButton.hidden = !isRunningStatus();
+  stopRunButton.disabled = !isRunningStatus();
+  if (pipeMessageButton) pipeMessageButton.disabled = !currentSessionId;
+  if (queueAfterFinishButton) queueAfterFinishButton.disabled = !currentSessionId;
+  if (chatSubmitButton) chatSubmitButton.textContent = currentSessionId ? t("sendMessageButton") : t("composerStartButton");
+  if (chatInputEl) {
+    chatInputEl.placeholder = currentSessionId ? t("composerPlaceholderSession") : t("composerPlaceholderNoSession");
+  }
+  if (runStateEl) {
+    const status = currentRunStatus || "idle";
+    runStateEl.dataset.status = status;
+    runStateTextEl.textContent = runStatusLabel(status);
+    const selected = currentSessionId ? `session=${currentSessionId}` : t("runStateIdleDetail");
+    runStateDetailEl.textContent = isRunningStatus(status) || isTerminalStatus(status) ? selected : t("runStateIdleDetail");
+  }
+}
+
+function setRunStatus(status = "", { sessionId, detail = "", announce = false } = {}) {
+  const previous = currentRunStatus;
+  currentRunStatus = String(status || "");
+  if (sessionId !== undefined) currentSessionId = sessionId;
+  updateStopRunButton();
+  if (detail && runStateDetailEl) runStateDetailEl.textContent = detail;
+
+  const key = `${currentSessionId}:${currentRunStatus}`;
+  if (!announce || key === lastAnnouncedRunKey || previous === currentRunStatus) return;
+  lastAnnouncedRunKey = key;
+  if (currentRunStatus === "running") showToast(t("toastRunStarted"));
+  if (currentRunStatus === "finished") showToast(t("toastRunFinished"));
+  if (currentRunStatus === "stopped") showToast(t("toastRunStopped"));
+  if (currentRunStatus === "failed") showToast(t("toastRunFailed"), "error");
 }
 
 function renderKeyStatus(status = lastKeyStatus) {
@@ -880,10 +960,10 @@ function recommendedMaxStepsForProfile(profile = "auto", goal = "") {
   return 24;
 }
 
-function ensureRecommendedMaxStepsForCurrentTask() {
+function ensureRecommendedMaxStepsForCurrentTask(goalOverride = "") {
   const maxStepsField = document.querySelector("#maxSteps");
   const goalField = document.querySelector("#goal");
-  const recommended = recommendedMaxStepsForProfile(taskProfileField?.value || "auto", goalField?.value || "");
+  const recommended = recommendedMaxStepsForProfile(taskProfileField?.value || "auto", goalOverride || goalField?.value || "");
   if (maxStepsField && Number(maxStepsField.value || 0) < recommended) {
     maxStepsField.value = String(recommended);
   }
@@ -891,6 +971,7 @@ function ensureRecommendedMaxStepsForCurrentTask() {
 
 function renderWrapperStatus(wrappers = lastWrappers) {
   lastWrappers = wrappers || [];
+  refreshProviderDropdowns();
   if (lastWrappers.length === 0) {
     wrapperStatusEl.textContent = "";
     wrapperGridEl.innerHTML = "";
@@ -1045,6 +1126,51 @@ function fieldValue(field) {
   return String(field?.value || "").trim();
 }
 
+const providerLabels = {
+  deepseek: "DeepSeek",
+  openai: "OpenAI",
+  qwen: "Qwen",
+  venice: "Venice",
+  mock: "Mock local",
+  grsai: "GRS AI image",
+};
+
+function setChoiceOptions(select, options, selectedValue = "", fallbackValue = "") {
+  if (!select) return "";
+  const normalized = (options || [])
+    .map((item) => (typeof item === "string" ? { id: item, label: providerLabels[item] || item } : item))
+    .filter((item) => item?.id);
+  const selected = String(selectedValue || fallbackValue || "").trim();
+  if (selected && !normalized.some((item) => item.id === selected)) {
+    normalized.unshift({ id: selected, label: providerLabels[selected] || `Custom: ${selected}` });
+  }
+  select.innerHTML = normalized
+    .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label || item.id)}</option>`)
+    .join("");
+  select.value = selected && normalized.some((item) => item.id === selected) ? selected : normalized[0]?.id || "";
+  return select.value;
+}
+
+function configuredTextProviders({ includeMock = true } = {}) {
+  const base = ["deepseek", "openai", "qwen", "venice"];
+  if (includeMock) base.push("mock");
+  if (Object.keys(modelCatalog || {}).length === 0) return base;
+  return base.filter((provider) => provider === "mock" || Array.isArray(modelCatalog[provider]));
+}
+
+function refreshProviderDropdowns() {
+  setChoiceOptions(setupProviderField, ["deepseek", "openai", "qwen", "venice", "grsai"], setupProviderField?.value || "deepseek", "deepseek");
+  setChoiceOptions(providerField, configuredTextProviders({ includeMock: true }), providerField?.value || "deepseek", "deepseek");
+  setChoiceOptions(routeProviderField, configuredTextProviders({ includeMock: true }), routeProviderField?.value || "deepseek", "deepseek");
+  setChoiceOptions(mainProviderField, configuredTextProviders({ includeMock: false }), mainProviderField?.value || "deepseek", "deepseek");
+  setChoiceOptions(spareProviderField, configuredTextProviders({ includeMock: false }), spareProviderField?.value || "openai", "openai");
+  setChoiceOptions(auxiliaryProviderField, ["grsai", "venice"], auxiliaryProviderField?.value || "grsai", "grsai");
+  const wrappers = lastWrappers.length
+    ? lastWrappers.map((wrapper) => ({ id: wrapper.name, label: wrapper.label || wrapper.name }))
+    : ["codex", "claude", "gemini", "copilot", "qwen"].map((name) => ({ id: name, label: providerLabels[name] || name }));
+  setChoiceOptions(preferredWrapperField, wrappers, preferredWrapperField?.value || "codex", "codex");
+}
+
 function providerModelOptions(provider = providerField.value) {
   return (modelCatalog[provider] || []).filter((item) => !item.hidden);
 }
@@ -1108,6 +1234,7 @@ function setSelectOptions(select, options, selectedValue = "", fallbackValue = "
 }
 
 function refreshModelDropdowns() {
+  refreshProviderDropdowns();
   const provider = providerField?.value || "deepseek";
   setSelectOptions(modelField, providerModelOptions(provider), fieldValue(modelField), defaults[provider]);
   setSelectOptions(
@@ -1926,7 +2053,7 @@ async function pipeMessageFromInput() {
 }
 
 async function flushAfterFinishQueue() {
-  if (!currentSessionId || flushingAfterFinish || currentRunStatus === "running" || pendingAfterFinishItems.length === 0) return;
+  if (!currentSessionId || flushingAfterFinish || isRunningStatus() || pendingAfterFinishItems.length === 0) return;
   flushingAfterFinish = true;
   const next = pendingAfterFinishItems[0];
   pendingAfterFinishItems = pendingAfterFinishItems.slice(1);
@@ -1944,9 +2071,11 @@ async function flushAfterFinishQueue() {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || t("failedContinue"));
-    currentSessionId = data.sessionId;
-    currentRunStatus = data.queued ? currentRunStatus : "running";
-    updateStopRunButton();
+    if (!data.queued) setRunStatus("running", { sessionId: data.sessionId, announce: true });
+    else {
+      currentSessionId = data.sessionId;
+      updateStopRunButton();
+    }
     chatStatusEl.textContent = data.queued ? t("queuedStatus") : t("runningStatus");
     await refreshSessions();
     await refreshChat();
@@ -2408,20 +2537,26 @@ async function refreshWorkspaceChanges() {
 }
 
 async function refreshRun() {
-  if (!currentSessionId) return;
+  if (!currentSessionId) {
+    setRunStatus("", { sessionId: "" });
+    return;
+  }
   const response = await fetch(`/api/runs/${encodeURIComponent(currentSessionId)}`);
-  if (!response.ok) return;
+  if (!response.ok) {
+    setRunStatus("", { detail: t("noRunSelected") });
+    return;
+  }
   const run = await response.json();
-  currentRunStatus = run.status || "";
-  updateStopRunButton();
+  setRunStatus(run.status || "", { sessionId: run.sessionId, announce: true });
   runMetaEl.textContent = `${run.status} · ${run.sessionId}`;
   renderLogs(run);
   await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
   await refreshInbox();
 
-  if (run.status === "finished" || run.status === "failed" || run.status === "stopped") {
+  if (isTerminalStatus(run.status)) {
     clearInterval(pollTimer);
     pollTimer = null;
+    chatStatusEl.textContent = run.status === "finished" ? t("runStateFinished") : run.error || runStatusLabel(run.status);
     await refreshChat();
     await refreshSessions();
     await refreshWorkspaceChanges();
@@ -2431,7 +2566,7 @@ async function refreshRun() {
 }
 
 async function stopCurrentRun() {
-  if (!currentSessionId || currentRunStatus !== "running") return;
+  if (!currentSessionId || !isRunningStatus()) return;
   stopRunButton.disabled = true;
   chatStatusEl.textContent = t("stoppingRun");
   const response = await fetch(`/api/runs/${encodeURIComponent(currentSessionId)}/stop`, {
@@ -2440,6 +2575,7 @@ async function stopCurrentRun() {
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     chatStatusEl.textContent = data.error || t("stopRunFailed");
+    if (data.status) setRunStatus(data.status, { announce: true });
     updateStopRunButton();
     return;
   }
@@ -2466,7 +2602,7 @@ async function approvePermission(action) {
     permissionModeField.value = data.permissionMode;
     applyPermissionModeToForm(data.permissionMode);
   }
-  currentRunStatus = action === "no" ? currentRunStatus : "running";
+  if (action !== "no") setRunStatus("running", { announce: true });
   chatStatusEl.textContent = action === "no" ? t("permissionApprovalNo") : t("runningStatus");
   updateStopRunButton();
   await refreshRun();
@@ -2608,18 +2744,78 @@ async function deleteManagedSession() {
   }
 
   if (currentSessionId === selected.sessionId) {
-    currentSessionId = "";
-    sessionSelectEl.value = "";
-    runMetaEl.textContent = "";
-    setLogs(t("noRunSelected"), "empty");
-    renderChat([]);
-    artifactItems = [];
-    selectedArtifactId = "";
-    renderArtifactShell();
+    clearCurrentSessionScope({ focus: false });
   }
   managedSessionId = "";
   await refreshSessions();
   renderSessionManager(t("sessionDeleted"));
+}
+
+function clearCurrentSessionScope({ focus = true } = {}) {
+  currentSessionId = "";
+  setRunStatus("", { sessionId: "" });
+  pendingInboxItems = [];
+  pendingAfterFinishItems = [];
+  sessionSelectEl.value = "";
+  runMetaEl.textContent = "";
+  setLogs(t("noRunSelected"), "empty");
+  renderChat([]);
+  renderPendingMessages();
+  artifactItems = [];
+  selectedArtifactId = "";
+  renderArtifactShell();
+  chatStatusEl.textContent = "";
+  if (focus) chatInputEl.focus();
+}
+
+async function startRunFromGoal(goal, { clearComposer = false } = {}) {
+  const normalizedGoal = String(goal || "").trim();
+  if (!normalizedGoal) {
+    setLogs(t("goalRequired"), "empty");
+    chatStatusEl.textContent = t("goalRequired");
+    return false;
+  }
+  ensureRecommendedMaxStepsForCurrentTask(normalizedGoal);
+
+  const payload = {
+    ...formPayload(),
+    goal: normalizedGoal,
+  };
+
+  setLogs(t("startingRun"));
+  runMetaEl.textContent = "";
+  chatStatusEl.textContent = t("startingRun");
+  showToast(t("startingRun"));
+
+  const response = await fetch("/api/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    setLogs(data.error || t("failedStartRun"));
+    chatStatusEl.textContent = data.error || t("failedStartRun");
+    showToast(data.error || t("failedStartRun"), "error");
+    return false;
+  }
+
+  currentSessionId = data.sessionId;
+  setRunStatus("running", { sessionId: data.sessionId, announce: true });
+  sessionSelectEl.value = currentSessionId;
+  runMetaEl.textContent = `${runStatusLabel("running")} · ${currentSessionId}`;
+  if (clearComposer) chatInputEl.value = "";
+  await refreshSessions();
+  sessionSelectEl.value = currentSessionId;
+  await refreshChat();
+  await refreshWorkspaceChanges();
+  await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
+
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(refreshRun, 1500);
+  await refreshRun();
+  return true;
 }
 
 function schedulePreferenceSave() {
@@ -2654,6 +2850,10 @@ manageSessionsButton.addEventListener("click", () => {
   openSessionManager().catch((error) => {
     chatStatusEl.textContent = String(error);
   });
+});
+
+newSessionButton?.addEventListener("click", () => {
+  clearCurrentSessionScope();
 });
 
 openArtifactsButton.addEventListener("click", () => {
@@ -2906,7 +3106,7 @@ logsEl?.addEventListener("click", (event) => {
 });
 
 window.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape" || currentRunStatus !== "running") return;
+  if (event.key !== "Escape" || !isRunningStatus()) return;
   const tag = event.target?.tagName?.toLowerCase();
   if (tag === "select" || tag === "button") return;
   event.preventDefault();
@@ -2920,62 +3120,13 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   const goal = document.querySelector("#goal").value.trim();
-  if (!goal) {
-    setLogs(t("goalRequired"), "empty");
-    return;
-  }
-  ensureRecommendedMaxStepsForCurrentTask();
-
-  const payload = {
-    ...formPayload(),
-    goal,
-  };
-
-  setLogs(t("startingRun"));
-  runMetaEl.textContent = "";
-  chatStatusEl.textContent = "";
-
-  const response = await fetch("/api/runs", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-  const data = await response.json();
-  if (!response.ok) {
-    setLogs(data.error || t("failedStartRun"));
-    return;
-  }
-
-  currentSessionId = data.sessionId;
-  currentRunStatus = "running";
-  updateStopRunButton();
-  sessionSelectEl.value = currentSessionId;
-  runMetaEl.textContent = `${t("runningStatus").replace("...", "")} · ${currentSessionId}`;
-  await refreshSessions();
-  await refreshChat();
-  await refreshWorkspaceChanges();
-  await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
-
-  if (pollTimer) clearInterval(pollTimer);
-  pollTimer = setInterval(refreshRun, 1500);
-  await refreshRun();
+  await startRunFromGoal(goal);
 });
 
 sessionSelectEl.addEventListener("change", async () => {
   currentSessionId = sessionSelectEl.value;
   if (!currentSessionId) {
-    currentRunStatus = "";
-    pendingInboxItems = [];
-    pendingAfterFinishItems = [];
-    updateStopRunButton();
-    runMetaEl.textContent = "";
-    setLogs(t("noRunSelected"), "empty");
-    renderChat([]);
-    renderPendingMessages();
-    artifactItems = [];
-    selectedArtifactId = "";
-    renderArtifactShell();
+    clearCurrentSessionScope({ focus: false });
     return;
   }
   await refreshRun();
@@ -2986,14 +3137,14 @@ sessionSelectEl.addEventListener("change", async () => {
 chatFormEl.addEventListener("submit", async (event) => {
   event.preventDefault();
 
-  if (!currentSessionId) {
-    chatStatusEl.textContent = t("selectSessionFirst");
-    return;
-  }
-
   const content = chatInputEl.value.trim();
   if (!content) {
     chatStatusEl.textContent = t("messageRequired");
+    return;
+  }
+
+  if (!currentSessionId) {
+    await startRunFromGoal(content, { clearComposer: true });
     return;
   }
 
@@ -3015,8 +3166,8 @@ chatFormEl.addEventListener("submit", async (event) => {
   }
 
   currentSessionId = data.sessionId;
-  currentRunStatus = data.queued ? currentRunStatus : "running";
-  updateStopRunButton();
+  if (!data.queued) setRunStatus("running", { sessionId: data.sessionId, announce: true });
+  else updateStopRunButton();
   chatInputEl.value = "";
   chatStatusEl.textContent = data.queued ? t("queuedStatus") : t("runningStatus");
   await refreshSessions();
@@ -3047,6 +3198,7 @@ async function loadConfig() {
   defaults.mock = data.defaults?.mock?.model || defaults.mock;
 
   applyLanguage(prefs.language || normalizeLanguage(navigator.language || "en"), { persist: false });
+  refreshProviderDropdowns();
 
   routingModeField.value = prefs.routingMode || "smart";
   providerField.value = prefs.provider || "deepseek";
@@ -3107,6 +3259,7 @@ async function loadConfig() {
   renderKeyStatus(data.keyStatus);
   renderProjectStatus(data.project);
   renderWrapperStatus(data.wrappers || []);
+  refreshProviderDropdowns();
   renderWorkspacePanel(data.workspace, []);
   renderMcpPanel(data.mcp || null);
   await refreshWorkspaceChanges();

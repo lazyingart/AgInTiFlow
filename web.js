@@ -105,18 +105,47 @@ async function loadStoredRun(sessionId) {
 
   const store = sessionStore(sessionId);
   const events = await store.loadEvents();
+  const terminalEvent = [...events]
+    .reverse()
+    .find((event) => ["session.finished", "session.failed", "session.stopped"].includes(event.type));
+  const orphanedRunning = meta.status === "running" && !runs.has(sessionId);
+  const reconciled = { ...meta };
+
+  if (orphanedRunning && terminalEvent) {
+    reconciled.status =
+      terminalEvent.type === "session.finished" ? "finished" : terminalEvent.type === "session.failed" ? "failed" : "stopped";
+    reconciled.endedAt = reconciled.endedAt || terminalEvent.timestamp || new Date().toISOString();
+    reconciled.updatedAt = terminalEvent.timestamp || reconciled.updatedAt || reconciled.endedAt;
+    reconciled.result =
+      reconciled.status === "finished" ? String(terminalEvent.data?.result || reconciled.result || "") : reconciled.result || "";
+    reconciled.error =
+      reconciled.status === "failed"
+        ? String(terminalEvent.data?.error || terminalEvent.data?.reason || reconciled.error || "Run failed.")
+        : reconciled.status === "stopped"
+          ? String(terminalEvent.data?.reason || reconciled.error || "Run stopped.")
+          : reconciled.error || "";
+    db.upsertSession(reconciled);
+  } else if (orphanedRunning) {
+    reconciled.status = "stopped";
+    reconciled.endedAt = reconciled.endedAt || new Date().toISOString();
+    reconciled.updatedAt = reconciled.endedAt;
+    reconciled.error =
+      reconciled.error ||
+      "Run is not active in this web process. It may have ended before the web server restarted.";
+    db.upsertSession(reconciled);
+  }
 
   return {
-    sessionId: meta.sessionId,
-    status: meta.status,
-    provider: meta.provider,
-    model: meta.model,
-    goal: meta.goal,
-    title: meta.title || "",
-    startedAt: meta.startedAt,
-    endedAt: meta.endedAt || null,
-    result: meta.result || "",
-    error: meta.error || "",
+    sessionId: reconciled.sessionId,
+    status: reconciled.status,
+    provider: reconciled.provider,
+    model: reconciled.model,
+    goal: reconciled.goal,
+    title: reconciled.title || "",
+    startedAt: reconciled.startedAt,
+    endedAt: reconciled.endedAt || null,
+    result: reconciled.result || "",
+    error: reconciled.error || "",
     logs: mapEventLogs(events).slice(-300),
   };
 }
@@ -562,8 +591,8 @@ async function ensureNotRunning(sessionId) {
     throw new Error("This session is already running.");
   }
 
-  const meta = db.getSession(sessionId);
-  if (meta?.status === "running") {
+  const stored = await loadStoredRun(sessionId);
+  if (stored?.status === "running") {
     throw new Error("This session is already running.");
   }
 }
@@ -717,12 +746,16 @@ function wireRun(record, config) {
     onEvent: (type, data = {}) => push("event", type, data),
   })
     .then((result) => {
-      record.status = result?.stopped ? "stopped" : "finished";
+      record.status = result?.failed ? "failed" : result?.stopped ? "stopped" : "finished";
       record.result = result?.result || "";
-      record.error = result?.stopped ? result.reason || "Run stopped before finish." : "";
+      record.error = result?.failed
+        ? result.reason || result.result || "Run failed."
+        : result?.stopped
+          ? result.reason || "Run stopped before finish."
+          : "";
       record.updatedAt = new Date().toISOString();
       record.endedAt = new Date().toISOString();
-      push("session", result?.stopped ? "Run stopped" : "Run finished", {
+      push("session", result?.failed ? "Run failed" : result?.stopped ? "Run stopped" : "Run finished", {
         result: record.result,
         reason: result?.reason || "",
       });

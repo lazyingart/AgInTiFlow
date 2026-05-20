@@ -242,6 +242,8 @@ h1 {
 .role-editor-grid {
   display: grid;
   gap: 10px;
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
+  align-items: start;
 }
 
 .role-editor-grid label {
@@ -806,6 +808,83 @@ button.danger {
   max-width: none;
 }
 
+.run-state {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(255, 253, 250, 0.9), rgba(240, 253, 250, 0.76));
+}
+
+.run-state[data-status="running"] {
+  border-color: rgba(15, 118, 110, 0.34);
+  background: linear-gradient(135deg, rgba(204, 251, 241, 0.9), rgba(254, 243, 199, 0.62));
+}
+
+.run-state[data-status="failed"],
+.run-state[data-status="stopped"] {
+  border-color: rgba(185, 28, 28, 0.22);
+  background: linear-gradient(135deg, rgba(254, 242, 242, 0.92), rgba(255, 251, 235, 0.7));
+}
+
+.run-state-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #94a3b8;
+  box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.14);
+}
+
+.run-state[data-status="running"] .run-state-dot {
+  background: #0f766e;
+  box-shadow: 0 0 0 4px rgba(15, 118, 110, 0.16);
+}
+
+.run-state[data-status="finished"] .run-state-dot {
+  background: #15803d;
+  box-shadow: 0 0 0 4px rgba(21, 128, 61, 0.15);
+}
+
+.run-state[data-status="failed"] .run-state-dot,
+.run-state[data-status="stopped"] .run-state-dot {
+  background: #b91c1c;
+  box-shadow: 0 0 0 4px rgba(185, 28, 28, 0.13);
+}
+
+.run-state strong {
+  color: var(--ink);
+}
+
+.toast-region {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 60;
+  display: grid;
+  width: min(360px, calc(100vw - 36px));
+  gap: 10px;
+  pointer-events: none;
+}
+
+.toast {
+  padding: 12px 14px;
+  border: 1px solid rgba(15, 118, 110, 0.22);
+  border-radius: 16px;
+  background: rgba(255, 253, 250, 0.96);
+  box-shadow: 0 18px 48px rgba(36, 28, 15, 0.16);
+  color: var(--ink);
+  font-size: 0.9rem;
+  pointer-events: auto;
+}
+
+.toast[data-kind="error"] {
+  border-color: rgba(185, 28, 28, 0.25);
+  background: rgba(254, 242, 242, 0.96);
+}
+
 .logs {
   width: 100%;
   min-width: 0;
@@ -1313,6 +1392,8 @@ button.danger {
 .settings-modal-card {
   max-height: min(860px, calc(100vh - 28px));
   overflow: auto;
+  display: grid;
+  gap: 14px;
 }
 
 .settings-section {
@@ -1699,7 +1780,8 @@ button.danger {
   }
 
   .settings-grid,
-  .settings-checks {
+  .settings-checks,
+  .role-editor-grid {
     grid-template-columns: 1fr;
   }
 }
