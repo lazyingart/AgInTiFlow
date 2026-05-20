@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.162",
+  "version": "0.20.163",
   "type": "module",
   "description": "AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-aware intelligence, software automation, and industrial workflows.",
   "license": "Apache-2.0",
@@ -48,6 +48,7 @@
     "references/notes/*.md",
     "references/run_design_scan.sh",
     "scripts/install-docker-ubuntu.sh",
+    "scripts/npm-publish-from-env.js",
     "scripts/setup-agent-toolchain-docker.sh",
     "scripts/real-deepseek-capabilities.js",
     "scripts/postinstall-webapp.js",
@@ -119,6 +120,8 @@
     "postinstall": "node scripts/postinstall-webapp.js",
     "supervision:seed": "node scripts/seed-supervised-homework.js",
     "storage:migrate": "node bin/aginti-cli.js storage migrate",
+    "publish:env": "node scripts/npm-publish-from-env.js publish --access public",
+    "publish:env:whoami": "node scripts/npm-publish-from-env.js whoami",
     "test": "npm run check && npm run smoke:runtime-compat && npm run smoke:autoupdate && npm run smoke:web-api && npm run smoke:web-autostart && npm run smoke:webapp-command && npm run smoke:web-port-fallback && npm run smoke:docker-command && npm run smoke:coding-tools && npm run smoke:dynamic-step-budget && npm run smoke:aaps-adapter && npm run smoke:auxiliary-tools && npm run smoke:perception-research && npm run smoke:auth && npm run smoke:canvas-artifacts && npm run smoke:capabilities && npm run smoke:mcp && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:permission-modes && npm run smoke:skills && npm run smoke:skillmesh && npm run smoke:tmux-tools && npm run smoke:cli-chat && npm run smoke:inbox",
     "pack:dry-run": "npm pack --dry-run",
     "smoke:capabilities": "node scripts/smoke-capabilities.js"

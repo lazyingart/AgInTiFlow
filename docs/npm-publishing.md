@@ -38,8 +38,10 @@ Trusted Publishing is preferred. A local automation token can be used only for b
 ```bash
 cp .env.example .env
 # Add NPM_TOKEN or NODE_AUTH_TOKEN locally only.
-set -a && source .env && set +a
-npm publish --access public
+npm run publish:env:whoami
+npm run publish:env
 ```
+
+`publish:env` reads `.env`, writes a temporary npm config, runs npm with that config, and deletes it. Do not use global `~/.npmrc` for agent-driven publishing because it can be stale, point at the wrong account, or leak between projects.
 
 Never commit `.env`, `.npmrc`, npm tokens, OTPs, npm debug logs, or generated credential material. The runtime command policy intentionally blocks npm publish and npm token commands during agent runs.
