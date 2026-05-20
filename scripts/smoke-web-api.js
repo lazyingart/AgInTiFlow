@@ -257,6 +257,11 @@ try {
   if (fileRun.status !== "finished") throw new Error(`mock file run failed: ${fileRun.error || "unknown error"}`);
   const hello = await fs.readFile(path.join(runtimeDir, "notes", "hello.md"), "utf8");
   if (!hello.includes("Created by AgInTiFlow mock mode.")) throw new Error("mock file run did not create requested path");
+  const fileChat = await fetchJson(`/api/sessions/${encodeURIComponent(fileRunStart.sessionId)}/chat`);
+  const fileChange = fileChat.timeline?.find((entry) => entry.role === "event" && entry.eventType === "file.changed");
+  if (!fileChange?.data?.diff || !fileChange.data.diff.includes("+Created by AgInTiFlow mock mode.")) {
+    throw new Error("chat timeline did not preserve structured file-change diff data");
+  }
 
   const safeRunStart = await fetchJson("/api/runs", {
     method: "POST",

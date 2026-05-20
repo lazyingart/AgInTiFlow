@@ -1782,6 +1782,131 @@ function renderPermissionApproval(entry) {
   `;
 }
 
+function renderPlanEvent(entry) {
+  const data = entry.data || {};
+  const plan = data.plan || entry.content || "";
+  return `
+    <article class="event-card event-plan">
+      <div class="event-card-meta">
+        <span>plan</span>
+        <span>${entry.at ? escapeHtml(new Date(entry.at).toLocaleString()) : ""}</span>
+      </div>
+      <div class="markdown-body">${renderMarkdown(plan)}</div>
+    </article>
+  `;
+}
+
+function renderWorkspaceChangeEvent(entry) {
+  const data = entry.data || {};
+  const toolName = data.toolName || data.action || "file.changed";
+  const isPatch = toolName === "apply_patch" || String(toolName).startsWith("apply_patch");
+  const diff = String(data.diff || "");
+  const maxDiffChars = 9000;
+  const diffBlock = diff
+    ? `<pre class="change-diff event-diff">${renderDiffHtml(diff, maxDiffChars)}</pre>${
+        diff.length > maxDiffChars ? `<div class="event-fold-note">... diff truncated for browser preview</div>` : ""
+      }`
+    : "";
+  const hashes =
+    data.beforeHash || data.afterHash
+      ? `<div class="event-card-meta"><span>before=${escapeHtml((data.beforeHash || "new").slice(0, 10))}</span><span>after=${escapeHtml((data.afterHash || "").slice(0, 10))}</span></div>`
+      : "";
+  return `
+    <article class="event-card ${isPatch ? "event-patch" : "event-write"}">
+      <div class="event-card-meta">
+        <span>${escapeHtml(isPatch ? "patch" : "write")}</span>
+        <span>${escapeHtml(toolName)}</span>
+        <span>${entry.at ? escapeHtml(new Date(entry.at).toLocaleString()) : ""}</span>
+      </div>
+      <strong class="event-path">${escapeHtml(data.path || entry.content || "")}</strong>
+      ${data.created ? `<div class="event-fold-note">created</div>` : ""}
+      ${hashes}
+      ${diffBlock || `<div class="event-fold-note">No diff preview recorded for this file event.</div>`}
+    </article>
+  `;
+}
+
+function renderToolEvent(entry) {
+  const data = entry.data || {};
+  const message = entry.message || entry.eventType || "";
+  const failed = message === "tool.failed" || data.ok === false || data.blocked || data.error;
+  const skipped = message === "tool.skipped";
+  const toolName = data.toolName || "tool";
+  const args = data.args || {};
+  const argPreview =
+    toolName === "run_command" && args.command
+      ? args.command
+      : args.path || args.url || args.query || args.q || (Object.keys(args).length ? JSON.stringify(args) : "");
+  const stdout = data.stdout ? outputPreviewText(data.stdout) : null;
+  const stderr = data.stderr ? outputPreviewText(data.stderr) : null;
+  return `
+    <article class="event-card ${failed ? "event-failed" : skipped ? "event-muted" : "event-tool"}">
+      <div class="event-card-meta">
+        <span>${escapeHtml(failed ? "tool failed" : skipped ? "tool skipped" : message === "tool.started" ? "tool" : "tool done")}</span>
+        <span>${entry.at ? escapeHtml(new Date(entry.at).toLocaleString()) : ""}</span>
+      </div>
+      <strong class="event-path">${escapeHtml(toolName)}</strong>
+      ${argPreview ? `<code class="event-inline-code">${escapeHtml(argPreview)}</code>` : ""}
+      ${data.error || data.reason ? `<div class="event-fold-note">${escapeHtml(data.error || data.reason)}</div>` : ""}
+      ${stdout ? `<div class="log-stream-title">stdout</div><pre class="event-output">${escapeHtml(stdout.text)}</pre>` : ""}
+      ${stdout?.hidden > 0 ? `<div class="event-fold-note">... ${stdout.hidden} more stdout line(s) folded</div>` : ""}
+      ${stderr ? `<div class="log-stream-title">stderr</div><pre class="event-output">${escapeHtml(stderr.text)}</pre>` : ""}
+      ${stderr?.hidden > 0 ? `<div class="event-fold-note">... ${stderr.hidden} more stderr line(s) folded</div>` : ""}
+    </article>
+  `;
+}
+
+function renderStatusEvent(entry) {
+  const data = entry.data || {};
+  const message = entry.message || entry.eventType || "event";
+  const label = entry.eventLabel || message.replace(/^[^.]+\./, "");
+  const content = data.result || data.error || data.reason || entry.content || "";
+  const failed = message === "session.failed";
+  return `
+    <article class="event-card ${failed ? "event-failed" : "event-muted"}">
+      <div class="event-card-meta">
+        <span>${escapeHtml(label)}</span>
+        <span>${entry.at ? escapeHtml(new Date(entry.at).toLocaleString()) : ""}</span>
+      </div>
+      ${content ? `<div class="chat-content">${escapeHtml(content)}</div>` : ""}
+    </article>
+  `;
+}
+
+function renderStructuredEvent(entry) {
+  const message = entry.message || entry.eventType || "";
+  if (message === "plan.created") return renderPlanEvent(entry);
+  if (message === "command.output") return renderCommandOutputLog(entry);
+  if (message === "file.changed") return renderWorkspaceChangeEvent(entry);
+  if (message === "tool.blocked" && entry.data?.permissionAdvice) return renderPermissionApproval(entry);
+  if (message === "tool.blocked") {
+    return `
+      <article class="event-card event-failed">
+        <div class="event-card-meta">
+          <span>permission</span>
+          <span>${entry.at ? escapeHtml(new Date(entry.at).toLocaleString()) : ""}</span>
+        </div>
+        <strong class="event-path">${escapeHtml(entry.data?.toolName || "blocked")}</strong>
+        <div class="chat-content">${escapeHtml(entry.data?.reason || entry.content || "Permission blocked.")}</div>
+      </article>
+    `;
+  }
+  if (message === "tool.started" || message === "tool.completed" || message === "tool.failed" || message === "tool.skipped") {
+    return renderToolEvent(entry);
+  }
+  if (
+    message === "budget.initialized" ||
+    message === "conversation.continued" ||
+    message === "conversation.queued_input_applied" ||
+    message === "session.finished" ||
+    message === "session.failed" ||
+    message === "session.stopped"
+  ) {
+    return renderStatusEvent(entry);
+  }
+  return "";
+}
+
 function renderLogs(run) {
   logsEl.dataset.mode = "active";
   const parts = [
@@ -1791,24 +1916,12 @@ function renderLogs(run) {
   ];
 
   for (const entry of run.logs || []) {
-    if (entry.message === "command.output") {
-      parts.push(renderCommandOutputLog(entry));
-      continue;
-    }
-    if (entry.message === "plan.created" && entry.data?.plan) {
-      parts.push(`
-        <article class="log-plan">
-          <div class="log-plan-title">${escapeHtml(`[${entry.at}] plan`)}</div>
-          <div class="markdown-body">${renderMarkdown(entry.data.plan)}</div>
-        </article>
-      `);
+    const structured = renderStructuredEvent(entry);
+    if (structured) {
+      parts.push(structured);
       continue;
     }
     parts.push(`<div class="log-line">${escapeHtml(`[${entry.at}] ${entry.kind}: ${entry.message}`)}</div>`);
-    if (entry.message === "tool.blocked" && entry.data?.permissionAdvice) {
-      parts.push(renderPermissionApproval(entry));
-      continue;
-    }
     if (entry.data && Object.keys(entry.data).length > 0) {
       parts.push(`<pre class="log-json">${escapeHtml(JSON.stringify(entry.data, null, 2))}</pre>`);
     }
@@ -2054,14 +2167,10 @@ function renderChat(chatEntries) {
   chatThreadEl.innerHTML = lastChatEntries
     .map((entry) => {
       if (entry.role === "event") {
-        const label = entry.eventLabel || entry.eventType || "event";
-        const content = entry.markdown
-          ? `<div class="markdown-body">${renderMarkdown(entry.content)}</div>`
-          : escapeHtml(entry.content || "").replace(/\n/g, "<br>");
-        return `
+        return renderStructuredEvent(entry) || `
           <article class="chat-item event" data-event-type="${escapeHtml(entry.eventType || "")}">
-            <div class="chat-meta">${escapeHtml(label)}${entry.at ? ` · ${new Date(entry.at).toLocaleString()}` : ""}</div>
-            <div class="chat-content">${content}</div>
+            <div class="chat-meta">${escapeHtml(entry.eventLabel || entry.eventType || "event")}${entry.at ? ` · ${new Date(entry.at).toLocaleString()}` : ""}</div>
+            <div class="chat-content">${escapeHtml(entry.content || "").replace(/\n/g, "<br>")}</div>
           </article>
         `;
       }

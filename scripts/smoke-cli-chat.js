@@ -893,6 +893,9 @@ try {
   if (!latest.stdout.includes(" plan ")) {
     throw new Error("bare aginti resume did not replay saved plan/run context");
   }
+  if (!latest.stdout.includes(" write ") || !latest.stdout.includes("+Created by AgInTiFlow mock mode.")) {
+    throw new Error("bare aginti resume did not replay formatted file-change diff context");
+  }
   if (latest.stdout.includes("resume note=showing chat transcript only")) {
     throw new Error("bare aginti resume regressed to chat-only history");
   }

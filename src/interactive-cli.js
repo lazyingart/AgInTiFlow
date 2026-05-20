@@ -2275,6 +2275,10 @@ function printResumeEvent(event = {}) {
   }
   if (type === "tool.completed" || type === "tool.failed" || type === "tool.skipped") {
     const failed = type === "tool.failed" || data.ok === false || data.blocked || data.error;
+    if (data.diff) {
+      printWorkspaceChange(data);
+      return true;
+    }
     if (data.toolName === "run_command") {
       printCommandOutputLog({
         command: data.args?.command || data.command || "",

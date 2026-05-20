@@ -129,6 +129,7 @@ function timelineEntryForEvent(event = {}) {
       role: "event",
       eventType: type,
       eventLabel: "plan",
+      data,
       content: data.plan,
       markdown: true,
       at,
@@ -139,6 +140,7 @@ function timelineEntryForEvent(event = {}) {
       role: "event",
       eventType: type,
       eventLabel: "tool",
+      data,
       content: toolTimelineSummary(data),
       at,
     };
@@ -151,6 +153,7 @@ function timelineEntryForEvent(event = {}) {
       role: "event",
       eventType: type,
       eventLabel: failed ? "tool failed" : "tool done",
+      data,
       content: `${toolTimelineSummary(data)}${stdout}${stderr}`,
       at,
     };
@@ -160,6 +163,7 @@ function timelineEntryForEvent(event = {}) {
       role: "event",
       eventType: type,
       eventLabel: "permission",
+      data,
       content: data.permissionAdvice?.summary || data.reason || data.toolName || "Permission blocked.",
       at,
     };
@@ -169,6 +173,7 @@ function timelineEntryForEvent(event = {}) {
       role: "event",
       eventType: type,
       eventLabel: data.toolName === "apply_patch" ? "patch" : "write",
+      data,
       content: [data.toolName || data.action || "file.changed", data.path || "", data.created ? "created" : "updated"]
         .filter(Boolean)
         .join(" "),
@@ -180,6 +185,7 @@ function timelineEntryForEvent(event = {}) {
       role: "event",
       eventType: type,
       eventLabel: "budget",
+      data,
       content: `${data.currentMaxSteps || data.initialMaxSteps || data.maxSteps || "unknown"} steps`,
       at,
     };
@@ -189,6 +195,7 @@ function timelineEntryForEvent(event = {}) {
       role: "event",
       eventType: type,
       eventLabel: "continued",
+      data,
       content: data.prompt || "",
       at,
     };
@@ -198,6 +205,7 @@ function timelineEntryForEvent(event = {}) {
       role: "event",
       eventType: type,
       eventLabel: "queued input",
+      data,
       content: data.priority === "asap" ? "ASAP queued input applied" : "Queued input applied",
       at,
     };
@@ -207,6 +215,7 @@ function timelineEntryForEvent(event = {}) {
       role: "event",
       eventType: type,
       eventLabel: type.replace("session.", ""),
+      data,
       content: data.result || data.error || data.reason || type,
       at,
     };

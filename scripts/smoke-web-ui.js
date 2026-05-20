@@ -92,6 +92,7 @@ try {
   if (await page.locator("#run-defaults-card").evaluate((node) => node.open)) throw new Error("run defaults should start folded");
   await page.locator("#commandCwd").fill(runtimeDir.slice(0, Math.max(runtimeDir.lastIndexOf("/"), 1)));
   await page.waitForFunction(() => document.querySelectorAll("#command-cwd-suggestions option").length > 0);
+  await page.locator("#commandCwd").fill(runtimeDir);
   if ((await page.locator(".project-status-chip").count()) < 4) throw new Error("project folder status did not render structured chips");
   await page.locator("#run-defaults-card summary").click();
   if (await page.locator("#veniceModeToggle").isChecked()) throw new Error("Venice quick mode should default off");
@@ -161,6 +162,10 @@ try {
     throw new Error(`default route/main payload mismatch after Venice off: ${runPayloads.at(-1) || ""}`);
   }
   await waitForRunState(page, "running");
+  await page.waitForSelector(".event-plan", { timeout: 12000 });
+  if (!(await page.locator(".event-plan .markdown-body").first().innerText()).trim()) {
+    throw new Error("web run log did not render the plan as a formatted event card");
+  }
   if (!(await page.locator("#stop-run").isVisible())) throw new Error("stop button did not appear while run was active");
   await page.click("#stop-run");
   await waitForTerminalRunState(page);
@@ -173,6 +178,27 @@ try {
   await waitForRunState(page, "idle");
   const resetSubmit = await page.locator("#chat-submit").innerText();
   if (!/start new run/i.test(resetSubmit)) throw new Error("new session did not reset composer to start mode");
+  if (await page.locator("#aapsModeToggle").isChecked()) await page.locator("label:has(#aapsModeToggle)").click();
+  await page.selectOption("#taskProfile", "code");
+  await page.selectOption("#enableScs", "off");
+  await page.fill("#chat-input", "Create notes/web-ui-format.md with a short formatted event smoke message.");
+  await page.click("#chat-submit");
+  await waitForTerminalRunState(page);
+  try {
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll(".event-write .change-diff")].some((node) =>
+          (node.textContent || "").includes("+Created by AgInTiFlow mock mode.")
+        ),
+      null,
+      { timeout: 30000 }
+    );
+  } catch (error) {
+    const state = await page.locator("#run-state").evaluate((node) => node.dataset.status || "").catch(() => "unknown");
+    const logsTail = (await page.locator("#logs").innerText().catch(() => "")).slice(-1200);
+    const chatTail = (await page.locator("#chat-thread").innerText().catch(() => "")).slice(-1200);
+    throw new Error(`web UI did not render formatted file-change diff event; state=${state}\nlogs tail:\n${logsTail}\nchat tail:\n${chatTail}`);
+  }
 
   await page.click("#open-settings");
   await page.waitForSelector("#settings-modal[open]");
@@ -208,6 +234,8 @@ try {
           "running-status-toast",
           "terminal-stop-button-hidden",
           "new-session-resets-scope",
+          "formatted-plan-event-card",
+          "formatted-file-diff-event-card",
           "settings-provider-dropdowns",
           "settings-wrapper-dropdowns",
         ],
