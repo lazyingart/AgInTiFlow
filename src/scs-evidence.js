@@ -90,7 +90,36 @@ function splitInlineTerms(text = "") {
   return String(text || "")
     .split(/[、,，;；]/)
     .map((item) => item.replace(/[。.!！?？:：]/g, "").trim())
-    .filter((item) => item.length >= 2 && item.length <= 40 && !/[\\/]/.test(item));
+    .filter((item) => item.length >= 2 && item.length <= 40 && !/[\\/"'“”‘’`]/.test(item));
+}
+
+function trimForbiddenTail(tail = "") {
+  let text = String(tail || "").trim();
+  if (!text) return "";
+  const stopPatterns = [
+    /(?:^|[，,、\s])(?:并|且)?(?:末尾|最后|最後|保存|存到|写入|寫入|输出|輸出|完成后|完成後|运行|执行|執行|用命令|检查|檢查|验证|驗證|确认|確認|保留)/,
+    /(?:^|[,\s])(?:and\s+)?(?:then|save|write|output|run|execute|check|verify|confirm|after)\b/i,
+  ];
+  const stops = stopPatterns.map((pattern) => text.search(pattern)).filter((index) => index >= 0);
+  if (stops.length) text = text.slice(0, Math.min(...stops)).trim();
+  return text.replace(/[，,、;；:\s]+$/g, "").trim();
+}
+
+function forbiddenTails(text = "") {
+  const tails = [];
+  const source = String(text || "");
+  const patterns = [
+    /(?:不要(?:写|寫)成|不得(?:写|寫)成|禁止(?:写|寫)成)\s*([^，,。；;\n]+)/g,
+    /(?:(?:不要|不得|禁止)(?:(?:写|寫)(?!成)|包含|提到)|(?:确认|確認)[^。；;\n]{0,40}?(?:没有|沒有))\s*([^。；;\n]+)/g,
+    /\b(?:do not|don't|dont|must not|never)\s+(?:write|include|mention|contain)\s+([^.\n;]+)/gi,
+  ];
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      const tail = trimForbiddenTail(match[1] || "");
+      if (tail) tails.push(tail);
+    }
+  }
+  return tails;
 }
 
 function inferExactOutputPaths(goal = "") {
@@ -98,7 +127,7 @@ function inferExactOutputPaths(goal = "") {
   const lines = String(goal || "").split(/\n+/);
   const pathPattern = /(?:^|[\s"'`：:])((?:~|\.{1,2}|[A-Za-z0-9_\-\u4e00-\u9fff])[\w./~\-\u4e00-\u9fff ]{0,220}\.(?:md|txt|json|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx))(?:$|[\s"'`,，。；;])/gi;
   for (const line of lines) {
-    if (!/\b(save|saved|write|written|output|create|store)\b|保存|写入|寫入|输出|輸出|创建|建立/.test(line)) continue;
+    if (!/\b(save|saved|write|written|output|create|store|update|modify|edit)\b|保存|写入|寫入|输出|輸出|创建|建立|更新|修改|编辑|編輯/.test(line)) continue;
     for (const match of line.matchAll(pathPattern)) {
       const raw = String(match[1] || "").trim();
       if (!raw) continue;
@@ -108,6 +137,13 @@ function inferExactOutputPaths(goal = "") {
   return uniqueLimited(paths, 8);
 }
 
+function stripForbiddenTextClauses(text = "") {
+  return String(text || "")
+    .replace(/(?:不要(?:写|寫)成|不得(?:写|寫)成|禁止(?:写|寫)成)\s*[^，,。；;\n]+/g, "")
+    .replace(/(?:(?:不要|不得|禁止)(?:(?:写|寫)(?!成)|包含|提到)|(?:确认|確認)[^。；;\n]{0,40}?(?:没有|沒有))\s*[^。；;\n]+/g, "")
+    .replace(/\b(?:do not|don't|dont|must not|never)\s+(?:write|include|mention|contain)\s+[^.\n;]+/gi, "");
+}
+
 function inferRequiredTextTerms(goal = "") {
   const terms = [];
   const lines = String(goal || "").split(/\n+/);
@@ -115,11 +151,12 @@ function inferRequiredTextTerms(goal = "") {
     const positiveSegment = String(line || "").split(
       /(?:并)?确认没有|(?:并)?確認沒有|没有|沒有|\b(?:does not contain|do not contain|not contain|not include|without)\b/i
     )[0];
+    const requiredSegment = stripForbiddenTextClauses(positiveSegment);
     if (
       /\b(must|require|required|include|contain|contains|check|verify|grep|keyword|keywords)\b/i.test(line) ||
       /必须|必須|要求|包含|检查|檢查|验证|驗證|关键词|關鍵詞|自检|自檢/.test(line)
     ) {
-      terms.push(...quotedTerms(positiveSegment));
+      terms.push(...quotedTerms(requiredSegment));
     }
   }
   return uniqueLimited(terms, 24);
@@ -129,16 +166,7 @@ function inferForbiddenTextTerms(goal = "") {
   const terms = [];
   const lines = String(goal || "").split(/\n+/);
   for (const line of lines) {
-    const text = String(line || "");
-    if (
-      /\b(?:do not|don't|dont|must not|never)\s+(?:write|include|mention|contain)\b/i.test(text) ||
-      /不要(?:写|寫|包含|提到)|不得(?:写|寫|包含|提到)|禁止(?:写|寫|包含|提到)|(?:确认|確認)(?:没有|沒有)/.test(text)
-    ) {
-      const tail =
-        text.match(/(?:不要(?:写|寫|包含|提到)|不得(?:写|寫|包含|提到)|禁止(?:写|寫|包含|提到))(.+)/)?.[1] ||
-        text.match(/(?:确认|確認)(?:没有|沒有)(.+)/)?.[1] ||
-        text.match(/\b(?:do not|don't|dont|must not|never)\s+(?:write|include|mention|contain)\s+(.+)/i)?.[1] ||
-        "";
+    for (const tail of forbiddenTails(line)) {
       terms.push(...quotedTerms(tail));
       const unquotedTail = tail.replace(/“[^”]+”|"[^"\n]+"|'[^'\n]+'|`[^`\n]+`/g, "");
       terms.push(...splitInlineTerms(unquotedTail).filter((item) => !/^(and|or|the|a|an|other|其他|上一集道具)$/.test(item)));
