@@ -890,10 +890,13 @@ try {
   if (!latest.stdout.includes("  user>") || !latest.stdout.includes("aginti>") || latest.stdout.includes("user>   ")) {
     throw new Error("resume history should use prompt-style user>/aginti> labels");
   }
-  if (!latest.stdout.includes("resume note=showing chat transcript only")) {
-    throw new Error("bare aginti resume did not clarify that tool/run events are separate from chat history");
+  if (!latest.stdout.includes(" plan ")) {
+    throw new Error("bare aginti resume did not replay saved plan/run context");
   }
-  if (latest.stdout.includes("showing=") || latest.stdout.includes("…")) {
+  if (latest.stdout.includes("resume note=showing chat transcript only")) {
+    throw new Error("bare aginti resume regressed to chat-only history");
+  }
+  if (latest.stdout.includes("showing=")) {
     throw new Error("resume history should render full saved messages instead of compact previews");
   }
 

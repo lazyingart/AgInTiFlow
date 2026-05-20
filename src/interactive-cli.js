@@ -2207,6 +2207,127 @@ function printHistoryEntry(entry) {
   printHistoryBlock(role, entry.content, { time, bg });
 }
 
+function timestampMs(value = "") {
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isReplayableResumeEvent(event = {}) {
+  const type = String(event.type || "");
+  const data = event.data || {};
+  if (type === "plan.created") return Boolean(data.plan);
+  if (
+    [
+      "budget.initialized",
+      "conversation.continued",
+      "conversation.queued_input_applied",
+      "file.changed",
+      "session.failed",
+      "session.finished",
+      "session.stopped",
+      "tool.blocked",
+      "tool.failed",
+      "tool.skipped",
+      "tool.started",
+    ].includes(type)
+  ) {
+    return true;
+  }
+  if (type === "tool.completed") {
+    const toolName = String(data.toolName || "");
+    return ["run_command", "write_file", "apply_patch", "create_artifact"].includes(toolName) || data.ok === false || data.blocked || data.error;
+  }
+  return false;
+}
+
+function resumeTimelineItems(chat = [], events = [], { limit = 0 } = {}) {
+  const shownChat = limit > 0 ? chat.slice(-limit) : chat;
+  const firstChatTime = limit > 0 && shownChat.length > 0 ? timestampMs(shownChat[0].at) : 0;
+  const chatItems = shownChat.map((entry, index) => ({
+    kind: "chat",
+    entry,
+    order: index * 2,
+    at: timestampMs(entry.at),
+  }));
+  const eventItems = events
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => isReplayableResumeEvent(event))
+    .filter(({ event }) => !firstChatTime || timestampMs(event.timestamp) >= firstChatTime)
+    .map(({ event, index }) => ({
+      kind: "event",
+      event,
+      order: index * 2 + 1,
+      at: timestampMs(event.timestamp),
+    }));
+  return [...chatItems, ...eventItems].sort((left, right) => (left.at || 0) - (right.at || 0) || left.order - right.order);
+}
+
+function printResumeEvent(event = {}) {
+  const type = String(event.type || "");
+  const data = event.data || {};
+  if (type === "plan.created") {
+    printWrapped(`${label("plan", ansi.systemBg)} `, data.plan || "");
+    return true;
+  }
+  if (type === "tool.started") {
+    outputLine(`${label("tool", ansi.statusBg)} ${toolStatusDetails(data)}`);
+    return true;
+  }
+  if (type === "tool.completed" || type === "tool.failed" || type === "tool.skipped") {
+    const failed = type === "tool.failed" || data.ok === false || data.blocked || data.error;
+    if (data.toolName === "run_command") {
+      printCommandOutputLog({
+        command: data.args?.command || data.command || "",
+        stdout: data.stdout || "",
+        stderr: data.stderr || "",
+        diagnosticHint: data.diagnosticHint || "",
+        commandPolicy: data.commandPolicy,
+        blocked: Boolean(data.blocked),
+        error: data.error || data.reason || "",
+        permissionAdvice: data.permissionAdvice || null,
+      });
+    }
+    outputLine(`${label(failed ? "fail" : "done", failed ? ansi.red : ansi.systemBg)} ${toolStatusDetails(data)}`);
+    return true;
+  }
+  if (type === "tool.blocked") {
+    outputLine(`${label("perm", ansi.red)} ${compactLine(data.reason || data.permissionAdvice?.summary || data.toolName || "Permission blocked.", 104)}`);
+    if (data.permissionAdvice?.suggestedCommand) outputLine(`${color(" | ", ansi.red)} rerun: ${compactLine(data.permissionAdvice.suggestedCommand, 120)}`);
+    if (data.permissionAdvice?.trustedHostCommand) outputLine(`${color(" | ", ansi.red)} host: ${compactLine(data.permissionAdvice.trustedHostCommand, 120)}`);
+    return true;
+  }
+  if (type === "file.changed") {
+    if (data.diff) printWorkspaceChange(data);
+    else outputLine(`${label("write", ansi.systemBg)} ${compactLine(formatWorkspaceChange(data).summary, 92)}`);
+    return true;
+  }
+  if (type === "budget.initialized") {
+    outputLine(`${label("state", ansi.systemBg)} budget=${data.currentMaxSteps || data.initialMaxSteps || data.maxSteps || "unknown"} steps`);
+    return true;
+  }
+  if (type === "conversation.continued") {
+    outputLine(`${label("state", ansi.systemBg)} continued=${compactLine(data.prompt || "", 76)}`);
+    return true;
+  }
+  if (type === "conversation.queued_input_applied") {
+    outputLine(`${label("state", ansi.systemBg)} queued_input_applied=${data.priority === "asap" ? "asap" : "normal"}`);
+    return true;
+  }
+  if (type === "session.finished") {
+    outputLine(`${label("state", ansi.systemBg)} status=finished${data.result ? ` result=${compactLine(data.result, 86)}` : ""}`);
+    return true;
+  }
+  if (type === "session.failed") {
+    outputLine(`${label("state", ansi.red)} status=failed${data.error ? ` error=${compactLine(data.error, 86)}` : ""}`);
+    return true;
+  }
+  if (type === "session.stopped") {
+    outputLine(`${label("state", ansi.systemBg)} status=stopped${data.reason ? ` reason=${compactLine(data.reason, 86)}` : ""}`);
+    return true;
+  }
+  return false;
+}
+
 async function printResumeHistory(state, { limit = 0 } = {}) {
   if (!state.sessionId) return;
   const paths = projectPaths(process.cwd());
@@ -2215,23 +2336,24 @@ async function printResumeHistory(state, { limit = 0 } = {}) {
   const events = await store.loadEvents().catch(() => []);
   const chat = Array.isArray(saved?.chat) ? saved.chat.filter((entry) => entry?.content) : [];
   promptHistory.seedFromChat(chat, state.sessionId);
-  const metadata = `chat=${chat.length}${events.length > 0 ? ` events=${events.length}` : ""}`;
-  if (chat.length === 0) {
+  const timeline = resumeTimelineItems(chat, events, { limit });
+  const replayedEvents = timeline.filter((item) => item.kind === "event").length;
+  const metadata = `chat=${chat.length}${events.length > 0 ? ` events=${events.length}` : ""}${replayedEvents > 0 ? ` replay=${replayedEvents}` : ""}`;
+  if (timeline.length === 0) {
     printSystemLine(`resume history session=${state.sessionId} ${metadata}`);
-    if (events.length > 0) {
-      printSystemLine("resume note=showing chat transcript only; model/tool/run events are saved in events.jsonl and artifacts/");
-    }
     return;
   }
 
-  const shown = limit > 0 ? chat.slice(-limit) : chat;
   printSystemLine(
-    `resume history session=${state.sessionId} ${metadata}${limit > 0 ? ` showing=${shown.length}/${chat.length}` : ""}`
+    `resume history session=${state.sessionId} ${metadata}${limit > 0 ? ` showing=${timeline.length}/${chat.length + events.length}` : ""}`
   );
-  if (events.length > chat.length) {
-    printSystemLine("resume note=showing chat transcript only; model/tool/run events are saved in events.jsonl and artifacts/");
+  if (events.length > replayedEvents) {
+    printSystemLine("resume note=showing chat plus key run events; full raw events remain in events.jsonl and artifacts/.");
   }
-  for (const entry of shown) printHistoryEntry(entry);
+  for (const item of timeline) {
+    if (item.kind === "chat") printHistoryEntry(item.entry);
+    else printResumeEvent(item.event);
+  }
 }
 
 function toolStatusDetails(data = {}) {

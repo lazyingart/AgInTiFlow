@@ -102,6 +102,131 @@ function mapEventLogs(events) {
   }));
 }
 
+function compactText(value = "", limit = 120) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length <= limit ? text : `${text.slice(0, Math.max(limit - 1, 1)).trim()}...`;
+}
+
+function toolTimelineSummary(data = {}) {
+  const tool = data.toolName || "unknown";
+  const args = data.args || {};
+  if (tool === "run_command" && args.command) return `${tool}: ${compactText(args.command, 92)}`;
+  if ((tool === "write_file" || tool === "apply_patch" || tool === "read_file" || tool === "open_workspace_file") && args.path) {
+    return `${tool}: ${compactText(args.path, 92)}`;
+  }
+  if ((tool === "open_url" || tool === "web_research" || tool === "web_search") && (args.url || args.query || args.q)) {
+    return `${tool}: ${compactText(args.url || args.query || args.q, 92)}`;
+  }
+  return tool;
+}
+
+function timelineEntryForEvent(event = {}) {
+  const type = String(event.type || "");
+  const data = event.data || {};
+  const at = event.timestamp || "";
+  if (type === "plan.created" && data.plan) {
+    return {
+      role: "event",
+      eventType: type,
+      eventLabel: "plan",
+      content: data.plan,
+      markdown: true,
+      at,
+    };
+  }
+  if (type === "tool.started") {
+    return {
+      role: "event",
+      eventType: type,
+      eventLabel: "tool",
+      content: toolTimelineSummary(data),
+      at,
+    };
+  }
+  if (type === "tool.completed" || type === "tool.failed" || type === "tool.skipped") {
+    const failed = type === "tool.failed" || data.ok === false || data.blocked || data.error;
+    const stdout = data.toolName === "run_command" && data.stdout ? `\nstdout: ${compactText(data.stdout, 180)}` : "";
+    const stderr = data.toolName === "run_command" && data.stderr ? `\nstderr: ${compactText(data.stderr, 180)}` : "";
+    return {
+      role: "event",
+      eventType: type,
+      eventLabel: failed ? "tool failed" : "tool done",
+      content: `${toolTimelineSummary(data)}${stdout}${stderr}`,
+      at,
+    };
+  }
+  if (type === "tool.blocked") {
+    return {
+      role: "event",
+      eventType: type,
+      eventLabel: "permission",
+      content: data.permissionAdvice?.summary || data.reason || data.toolName || "Permission blocked.",
+      at,
+    };
+  }
+  if (type === "file.changed") {
+    return {
+      role: "event",
+      eventType: type,
+      eventLabel: data.toolName === "apply_patch" ? "patch" : "write",
+      content: [data.toolName || data.action || "file.changed", data.path || "", data.created ? "created" : "updated"]
+        .filter(Boolean)
+        .join(" "),
+      at,
+    };
+  }
+  if (type === "budget.initialized") {
+    return {
+      role: "event",
+      eventType: type,
+      eventLabel: "budget",
+      content: `${data.currentMaxSteps || data.initialMaxSteps || data.maxSteps || "unknown"} steps`,
+      at,
+    };
+  }
+  if (type === "conversation.continued") {
+    return {
+      role: "event",
+      eventType: type,
+      eventLabel: "continued",
+      content: data.prompt || "",
+      at,
+    };
+  }
+  if (type === "conversation.queued_input_applied") {
+    return {
+      role: "event",
+      eventType: type,
+      eventLabel: "queued input",
+      content: data.priority === "asap" ? "ASAP queued input applied" : "Queued input applied",
+      at,
+    };
+  }
+  if (type === "session.finished" || type === "session.failed" || type === "session.stopped") {
+    return {
+      role: "event",
+      eventType: type,
+      eventLabel: type.replace("session.", ""),
+      content: data.result || data.error || data.reason || type,
+      at,
+    };
+  }
+  return null;
+}
+
+function sessionTimelineFromChatAndEvents(chat = [], events = []) {
+  const chatItems = (Array.isArray(chat) ? chat : [])
+    .filter((entry) => entry?.content)
+    .map((entry, index) => ({ ...entry, order: index * 2, sortAt: Date.parse(entry.at || "") || 0 }));
+  const eventItems = (Array.isArray(events) ? events : [])
+    .map(timelineEntryForEvent)
+    .filter(Boolean)
+    .map((entry, index) => ({ ...entry, order: index * 2 + 1, sortAt: Date.parse(entry.at || "") || 0 }));
+  return [...chatItems, ...eventItems]
+    .sort((left, right) => (left.sortAt || 0) - (right.sortAt || 0) || left.order - right.order)
+    .map(({ sortAt: _sortAt, order: _order, ...entry }) => entry);
+}
+
 async function loadStoredRun(sessionId) {
   const meta = db.getSession(sessionId);
   if (!meta) return null;
@@ -606,11 +731,16 @@ function deriveChatFromState(state, meta) {
 
 async function loadChat(sessionId) {
   const store = sessionStore(sessionId);
-  const [state, meta] = await Promise.all([store.loadState(), Promise.resolve(db.getSession(sessionId))]);
+  const [state, meta, events] = await Promise.all([
+    store.loadState(),
+    Promise.resolve(db.getSession(sessionId)),
+    store.loadEvents().catch(() => []),
+  ]);
 
   if (!state && !meta) return null;
 
   const inbox = await store.loadInbox().catch(() => []);
+  const chat = deriveChatFromState(state, meta);
   return {
     sessionId,
     goal: state?.goal || meta?.goal || "",
@@ -619,7 +749,9 @@ async function loadChat(sessionId) {
     model: state?.model || meta?.model || "",
     status: meta?.status || "",
     inbox,
-    chat: deriveChatFromState(state, meta),
+    chat,
+    events: events.slice(-120),
+    timeline: sessionTimelineFromChatAndEvents(chat, events).slice(-220),
   };
 }
 

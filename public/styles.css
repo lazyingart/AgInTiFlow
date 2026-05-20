@@ -1155,6 +1155,23 @@ button.danger {
   color: #fecaca;
 }
 
+.log-plan {
+  margin: 0 0 12px;
+  padding: 12px;
+  border: 1px solid rgba(94, 234, 212, 0.22);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.54);
+}
+
+.log-plan-title {
+  margin-bottom: 8px;
+  color: #99f6e4;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .log-json,
 .log-command pre {
   margin: 8px 0 12px;
@@ -1269,6 +1286,25 @@ button.danger {
   justify-self: start;
   background: var(--assistant);
   border-bottom-left-radius: 6px;
+}
+
+.chat-item.event {
+  justify-self: stretch;
+  width: auto;
+  max-width: 100%;
+  border-color: rgba(20, 184, 166, 0.28);
+  border-style: dashed;
+  background:
+    linear-gradient(90deg, rgba(20, 184, 166, 0.12), rgba(245, 158, 11, 0.08)),
+    rgba(255, 255, 255, 0.48);
+  box-shadow: none;
+}
+
+.chat-item.event[data-event-type="plan.created"] {
+  border-style: solid;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(20, 184, 166, 0.16), transparent 28%),
+    linear-gradient(180deg, rgba(240, 253, 250, 0.88), rgba(255, 251, 235, 0.7));
 }
 
 .chat-meta {

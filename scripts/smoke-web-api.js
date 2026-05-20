@@ -303,6 +303,15 @@ try {
   const chat = await fetchJson(`/api/sessions/${encodeURIComponent(runStart.sessionId)}/chat`);
   if (!Array.isArray(chat.chat) || chat.chat.length < 2) throw new Error("chat history was not persisted");
   if (!Array.isArray(chat.inbox)) throw new Error("chat endpoint did not include shared inbox state");
+  if (!Array.isArray(chat.events) || !chat.events.some((entry) => entry.type === "plan.created")) {
+    throw new Error("chat endpoint did not include saved plan events");
+  }
+  if (
+    !Array.isArray(chat.timeline) ||
+    !chat.timeline.some((entry) => entry.role === "event" && entry.eventType === "plan.created" && String(entry.content || "").trim())
+  ) {
+    throw new Error("chat endpoint did not return a resume-ready timeline with the saved plan");
+  }
 
   const queued = await fetchJson(`/api/sessions/${encodeURIComponent(runStart.sessionId)}/inbox`, {
     method: "POST",

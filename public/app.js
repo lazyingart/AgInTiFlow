@@ -1795,6 +1795,15 @@ function renderLogs(run) {
       parts.push(renderCommandOutputLog(entry));
       continue;
     }
+    if (entry.message === "plan.created" && entry.data?.plan) {
+      parts.push(`
+        <article class="log-plan">
+          <div class="log-plan-title">${escapeHtml(`[${entry.at}] plan`)}</div>
+          <div class="markdown-body">${renderMarkdown(entry.data.plan)}</div>
+        </article>
+      `);
+      continue;
+    }
     parts.push(`<div class="log-line">${escapeHtml(`[${entry.at}] ${entry.kind}: ${entry.message}`)}</div>`);
     if (entry.message === "tool.blocked" && entry.data?.permissionAdvice) {
       parts.push(renderPermissionApproval(entry));
@@ -2044,6 +2053,18 @@ function renderChat(chatEntries) {
 
   chatThreadEl.innerHTML = lastChatEntries
     .map((entry) => {
+      if (entry.role === "event") {
+        const label = entry.eventLabel || entry.eventType || "event";
+        const content = entry.markdown
+          ? `<div class="markdown-body">${renderMarkdown(entry.content)}</div>`
+          : escapeHtml(entry.content || "").replace(/\n/g, "<br>");
+        return `
+          <article class="chat-item event" data-event-type="${escapeHtml(entry.eventType || "")}">
+            <div class="chat-meta">${escapeHtml(label)}${entry.at ? ` · ${new Date(entry.at).toLocaleString()}` : ""}</div>
+            <div class="chat-content">${content}</div>
+          </article>
+        `;
+      }
       const role = entry.role === "assistant" ? "assistant" : "user";
       const label = role === "assistant" ? t("assistantLabel") : t("youLabel");
       const content =
@@ -2830,7 +2851,7 @@ async function refreshChat() {
   pendingInboxItems = data.inbox || [];
   pendingAfterFinishItems = loadAfterFinishQueue(currentSessionId);
   renderPendingMessages();
-  renderChat(data.chat || []);
+  renderChat(data.timeline || data.chat || []);
 }
 
 async function savePreferences() {
