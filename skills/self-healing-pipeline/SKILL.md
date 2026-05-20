@@ -39,6 +39,8 @@ Use this skill when a project has a durable worker, writer, reviewer, monitor, q
 ## Repair Pattern
 
 - Patch project-owned scripts, prompts, validators, or monitors only after the logs identify a repeatable failure.
+- Patch at the right layer. If a failure is caused by task-specific source semantics, schema, prompt, validator, or output conventions, fix the project script or project-local skill. If it is caused by a reusable pipeline capability gap, improve a built-in skill or task profile. If it is caused by runtime/tool/session/SCS behavior, improve AgInTiFlow core.
+- Avoid hard-coded one-case repairs. Prefer data-driven project configuration, language/source profiles, schema versions, prompt versions, validator versions, and manifest evidence so the same pipeline can be reused and backfixed cleanly.
 - Prefer small resumability upgrades: `--failed-only`, bounded retry passes, stale-claim cleanup, atomic writes, checkpoint status, idempotent compile commands, and clear resume commands.
 - Keep writer/reviewer/monitor responsibilities separate. The writer should produce and validate; the reviewer should repair quality; the monitor should observe, compile, restart, or queue the next bounded run.
 - Make monitors gentle: wait on healthy progress, restart only after explicit stop/stall/error evidence, and write a durable decision log.
@@ -57,6 +59,10 @@ Parallel and async designs are optional implementation patterns, not a default p
 - Keep compilation, publishing, and git commits out of parallel workers unless the project already has a safe, serialized mechanism for those steps.
 - If a worker stalls on one bad chunk, it should mark the chunk failed and continue its shard. Failed-only repair passes should be bounded and observable.
 - When increasing concurrency, check provider quota/rate-limit behavior. If rate limits appear, reduce worker count or add backoff rather than letting every worker retry aggressively.
+
+## Interactive Supervisor Pattern
+
+When AgInTiFlow is the project orchestrator, it should run as an interactive tmux session that writes and updates the project runner scripts, then starts separate non-interactive tmux jobs for writers, reviewers, monitors, compilers, and repair passes. The interactive session remains responsible for reading logs, changing project code, restarting affected jobs, and committing progress. Background workers should not edit orchestrator code unless explicitly designed as a companion repairer with clear write scope and logs.
 
 ## Verification And Resume
 

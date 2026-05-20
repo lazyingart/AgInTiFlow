@@ -38,10 +38,12 @@ Use this skill when the user needs reliable JSON that follows an explicit schema
 - On validation failure, retry with the exact schema errors and only the smallest relevant source text.
 - For batch work, write candidate JSON per chunk first; promote it only after schema and semantic validators pass.
 - Keep schema versions in the artifact metadata so old reviewed outputs can be reused or selectively regenerated when prompts change.
+- Keep prompt versions and validator versions in or near the artifact metadata. When quality rules change, backfix only artifacts made stale by that change instead of restarting the whole corpus.
 - Before retrying the provider, classify whether the failure is semantic or mechanical. Use local canonicalization for deterministic fixes such as token splitting, punctuation restoration from source text, missing default fields, role aliases, or renderer wrappers.
 
 ## Boundaries
 
 - Do not pass shell, browser, file policy, package-install, or agent-planning context into the JSON specialist.
 - Do not make schemas book-, app-, or project-specific inside AgInTiFlow core. Project schemas belong in the target repository.
+- Do not hard-code source-specific semantic rules in this skill. If JSON quality requires language-specific or corpus-specific checks, make them part of the project schema, project validator, or project-local skill and record the version.
 - Do not let parallel JSON workers share one mutable output file. Use shard-local outputs, atomic renames, and a serialized merge/promote step.
