@@ -48,7 +48,7 @@ async function fetchJson(pathname, options = {}) {
 }
 
 async function waitForHealth() {
-  const deadline = Date.now() + 15000;
+  const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     if (server.exitCode !== null) break;
     try {

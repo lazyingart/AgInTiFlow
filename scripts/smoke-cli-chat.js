@@ -15,6 +15,7 @@ import {
   classifyEscapeAction,
   formatElapsedDuration,
   formatWorkspaceChange,
+  shouldIgnorePromptSubmission,
   stripMarkdown,
 } from "../src/interactive-cli.js";
 import { formatSessionChoices, parseArgs, parseResumeCommandArgs, splitResumeCommandArgv } from "../src/cli.js";
@@ -209,6 +210,60 @@ async function runTmuxInterruptSmoke({ key, expected }) {
       tmux(["send-keys", "-t", session, "Enter"]);
       await waitForTmuxText(session, /EXIT:0/, 8000);
     }
+  } finally {
+    try {
+      tmux(["kill-session", "-t", session], { timeout: 2000 });
+    } catch {
+      // Session may already have exited.
+    }
+  }
+}
+
+async function runTmuxEmptyEnterSmoke() {
+  const session = `aginti-empty-enter-${process.pid}`;
+  const command = [
+    "env",
+    `AGINTIFLOW_HOME=${shellQuote(agintiflowHome)}`,
+    "AGINTIFLOW_RUNTIME_DIR=",
+    "AGINTIFLOW_NO_WEB_AUTO_START=1",
+    "AGINTI_LANGUAGE=en",
+    shellQuote(process.execPath),
+    shellQuote(binPath),
+    "chat",
+    "--provider",
+    "mock",
+    "--routing",
+    "manual",
+    "--profile",
+    "code",
+    "--sandbox-mode",
+    "host",
+  ].join(" ");
+  const shellCommand = `cd ${shellQuote(tempRoot)} && ${command}`;
+  try {
+    tmux(["kill-session", "-t", session], { timeout: 2000 });
+  } catch {
+    // Session does not exist.
+  }
+  try {
+    tmux(["new-session", "-d", "-s", session, "bash", "-lc", `${shellCommand}; printf '\\nEXIT:%s\\n' "$?"; sleep 3`]);
+    const before = await waitForTmuxText(session, /user>/, 10000);
+    const beforeCount = (before.match(/^\s*user>/gm) || []).length;
+    if (beforeCount < 1) throw new Error(`empty-enter smoke did not reach the composer\n${before}`);
+    tmux(["send-keys", "-t", session, "Enter"]);
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    const after = tmuxCapture(session);
+    const afterCount = (after.match(/^\s*user>/gm) || []).length;
+    if (afterCount !== beforeCount) {
+      throw new Error(`empty Enter committed a blank user turn: before=${beforeCount} after=${afterCount}\n${after}`);
+    }
+    if (/Mock run complete|status=running|status=idle session=/.test(after)) {
+      throw new Error(`empty Enter started an agent run\n${after}`);
+    }
+    tmux(["send-keys", "-t", session, "-l", "/exit"]);
+    tmux(["send-keys", "-t", session, "Enter"]);
+    const exited = await waitForTmuxText(session, /EXIT:0/, 8000);
+    if (!/EXIT:0/.test(exited)) throw new Error(`empty-enter smoke did not exit cleanly\n${exited}`);
   } finally {
     try {
       tmux(["kill-session", "-t", session], { timeout: 2000 });
@@ -607,6 +662,9 @@ try {
   ) {
     throw new Error("slash command prompt canonicalization did not preserve final submitted command correctly");
   }
+  if (!shouldIgnorePromptSubmission("") || !shouldIgnorePromptSubmission("   \n\t  ") || shouldIgnorePromptSubmission("run analysis")) {
+    throw new Error("empty prompt submission guard did not classify blank input correctly");
+  }
   const scsBooleanArgs = parseArgs(["--scs", "fix this project"]);
   if (scsBooleanArgs.enableScs !== "on" || scsBooleanArgs.goal !== "fix this project") {
     throw new Error("--scs should behave as a boolean flag when followed by a task");
@@ -865,6 +923,7 @@ try {
 
   await runTmuxInterruptSmoke({ key: "Escape", expected: /Active run stopped|Session saved/ });
   await runTmuxInterruptSmoke({ key: "C-c", expected: /EXIT:130|Session stopped by ctrl-c|Interrupted\. Session saved/ });
+  await runTmuxEmptyEnterSmoke();
 
   console.log(
     JSON.stringify(
@@ -909,6 +968,7 @@ try {
           "one-shot-cwd",
           "tmux-escape-active-run-stop",
           "tmux-ctrl-c-session-stop",
+          "tmux-empty-enter-noop",
           "resume-latest",
           "resume-history-metadata",
           "resume-history-prompt-labels",

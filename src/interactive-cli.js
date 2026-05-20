@@ -539,6 +539,10 @@ export function canonicalSlashPromptBuffer(value = "") {
   return resolved === raw ? text : `/${resolved}`;
 }
 
+export function shouldIgnorePromptSubmission(value = "") {
+  return canonicalSlashPromptBuffer(value).trim().length === 0;
+}
+
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
@@ -1486,6 +1490,18 @@ function readTtyPrompt(options = {}) {
       if (canonical !== buffer) {
         buffer = canonical;
         cursor = buffer.length;
+      }
+      if (shouldIgnorePromptSubmission(buffer)) {
+        if (buffer.length > 0 || cursor !== 0) {
+          buffer = "";
+          cursor = 0;
+          preferredColumn = null;
+          suggestionAnchor = "";
+          suggestionIndex = 0;
+          promptHistory.resetBrowsing();
+          redraw();
+        }
+        return;
       }
       clearPromptPanel();
       cleanup();

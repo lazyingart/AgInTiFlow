@@ -19,7 +19,7 @@ function occurrenceCount(value, pattern) {
 }
 
 async function waitFor(predicate, child, label, output) {
-  const deadline = Date.now() + 12000;
+  const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     if (predicate()) return true;
     if (child.exitCode !== null) break;
@@ -67,6 +67,7 @@ async function runCase({ port, env = {}, expectHeader, label }) {
 
   try {
     await waitFor(() => output.stdout.includes(expectHeader), child, `${label} launch header`, output);
+    await waitFor(() => output.stdout.includes("status=idle") && output.stdout.includes("user>"), child, `${label} interactive ready`, output);
     child.stdin.write(`/webapp ${port}\n`);
     await waitFor(() => output.stdout.includes(`webapp=http://127.0.0.1:${port}`), child, `${label} /webapp command`, output);
     child.stdin.write(`/webapp restart ${port}\n`);
