@@ -61,15 +61,46 @@ Current verified implementation point:
 - Package version in repo: `0.20.160`.
 - NPM publish status from the supervising session: not published in that pass.
 
+### AAPS Studio Recent Commits Session
+
+- Session: `019dd6ee-7f77-7361-ae9a-8f25a4036525`
+- Status context shown by Codex: `~/ProjectsLFS/AAPS`
+- Primary repo involved: `/home/lachlan/ProjectsLFS/AAPS`
+- Related AgInTiFlow repo: `/home/lachlan/ProjectsLFS/Agent/AgInTiFlow`
+- Role: AAPS Studio continuity and backend-adapter context session.
+
+This session anchors the AAPS-side state that AgInTiFlow needs to remember when
+acting as an AAPS backend adapter. It captured recent AAPS Studio and CLI work:
+webapp autostart/stop/restart controls, persistent webapp preferences, backend
+discovery, multiline CLI input, and deeper program/block chat planning.
+
+Current AAPS repository anchor recorded from that session:
+
+- AAPS branch: `main`
+- AAPS head after the cross-reference note: `f8dee03` - Document AAPS Codex session reference
+- Prior AAPS functional anchor: `63df3cd` - Deepen Studio chat planning for blocks and writing programs
+- AAPS cross-reference note: `/home/lachlan/ProjectsLFS/AAPS/references/codex-session-cross-references.md`
+
+Important AgInTiFlow relevance:
+
+- AgInTiFlow is a backend agent option for AAPS, not the owner of AAPS semantics.
+- Backend switching must not change selected AAPS project, workflow, program,
+  block, or working file.
+- The SCS evidence gate should validate AAPS backend claims against AAPS-visible
+  outputs, artifacts, parse/compile/run evidence, and selected-scope continuity.
+
 ## Cross-Session Design Thread
 
-The two sessions should be read together:
+These sessions should be read together:
 
 - LALACHAN supplies the concrete failure mode: browser automation and media tasks
   can look successful while the visible external state is wrong or unverified.
 - ZhJpBook supplies the long-running pipeline pressure: the agent must keep
   moving through scripts, monitors, validators, and artifacts without accepting
   unsupported finish claims.
+- AAPS supplies the project/workflow/block/program front-end contract where
+  AgInTiFlow may act as a backend adapter but must not mutate AAPS scope or
+  semantics unexpectedly.
 - AgInTiFlow core response is the SCS evidence gate: derive a task contract,
   collect structured evidence, compare evidence against required categories,
   allow proven blockers, and reject unsupported completion.
