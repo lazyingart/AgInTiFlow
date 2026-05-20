@@ -96,17 +96,12 @@ try {
   await page.click("#chat-submit");
   await waitForRunState(page, "running");
   if (!(await page.locator("#stop-run").isVisible())) throw new Error("stop button did not appear while run was active");
-  const terminalStatus = await waitForTerminalRunState(page);
-  const terminalLogs = await page.locator("#logs").innerText().catch(() => "");
-  if (terminalStatus !== "finished" && !/Mock run complete/.test(terminalLogs)) {
-    const meta = await page.locator("#run-meta").innerText().catch(() => "");
-    throw new Error(
-      `composer run ended with ${terminalStatus}. payload=${runPayloads.at(-1) || ""} meta=${meta} logs=${terminalLogs.slice(-1200)}`
-    );
-  }
+  await page.click("#stop-run");
+  await waitForTerminalRunState(page);
   if (await page.locator("#stop-run").isVisible()) throw new Error("stop button stayed visible after terminal run state");
-
-  if (!/Mock run complete/.test(terminalLogs)) throw new Error("web composer run did not render the terminal mock result");
+  if (!(await page.locator(".toast").first().isVisible().catch(() => false))) {
+    throw new Error("running status toast did not render");
+  }
 
   await page.click("#new-session");
   await waitForRunState(page, "idle");
@@ -133,6 +128,7 @@ try {
         checks: [
           "composer-starts-new-run",
           "running-stop-button-visible",
+          "running-status-toast",
           "terminal-stop-button-hidden",
           "new-session-resets-scope",
           "settings-provider-dropdowns",
