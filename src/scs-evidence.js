@@ -139,6 +139,8 @@ function inferExactOutputPaths(goal = "") {
     /^(?:#+\s*)?(?:create|created files?|files? to create|outputs?|output structure|required outputs?|artifacts?|generated files?|writer requirements|renderer requirements|生成文件|输出结构|輸出結構|输出文件|輸出文件|创建文件|建立文件)\s*[：:]\s*$/i;
   const nonOutputToolLine =
     /\b(?:validate|verify|check|compile|run|execute)\s+(?:(?:with|using)\s+)?[`"']?[^`"'\n]*\.(?:md|txt|json|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx)\b/i;
+  const negatedOutputLine =
+    /\b(?:do not|don't|dont|never|not)\b[^.\n]*(?:output|artifact|create|write|save|store|update|modify|edit)\b|\b(?:do not|don't|dont|never|not)\b[^.\n]*(?:treat|count|consider)\b/i;
   let inOutputList = false;
   let outputListPending = false;
   const pushPath = (raw = "") => {
@@ -171,6 +173,7 @@ function inferExactOutputPaths(goal = "") {
     }
     const hasDirectOutputAction = directOutputAction.test(line);
     if (!isOutputListItem && !hasDirectOutputAction) continue;
+    if (!isOutputListItem && negatedOutputLine.test(line)) continue;
     if (!isOutputListItem && nonOutputToolLine.test(line)) continue;
     quotedPathPattern.lastIndex = 0;
     for (const match of line.matchAll(quotedPathPattern)) {

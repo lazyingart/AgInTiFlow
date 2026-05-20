@@ -221,7 +221,7 @@ async function callJson(client, config, messages, fallback, label) {
 }
 
 function normalizeStringList(value, fallback = []) {
-  if (Array.isArray(value)) return value.map((item) => compact(item, 220)).filter(Boolean).slice(0, 8);
+  if (Array.isArray(value)) return value.map((item) => compact(item, 220)).filter(Boolean).slice(0, 16);
   if (typeof value === "string" && value.trim()) return [compact(value, 220)];
   return fallback;
 }

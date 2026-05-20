@@ -11,7 +11,13 @@ import {
 } from "../src/model-routing.js";
 import { normalizeTextToolCallResponse, parseTextToolCalls, usesTextToolProtocol } from "../src/model-client.js";
 import { modelRoleChoices, selectorVisibleWindow } from "../src/interactive-cli.js";
-import { buildScsEvidencePack, buildSupervisorInstruction, reviewScsFinish, shouldRequestScsReplan } from "../src/scs-controller.js";
+import {
+  buildScsEvidencePack,
+  buildSupervisorInstruction,
+  deterministicPlanActionContradiction,
+  reviewScsFinish,
+  shouldRequestScsReplan,
+} from "../src/scs-controller.js";
 import { buildScsEvidenceLedger, deriveScsTaskContract, evaluateScsEvidence } from "../src/scs-evidence.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -252,6 +258,18 @@ const uploadContract = deriveScsTaskContract({
   goal: "Upload five images in the browser composer and verify visible thumbnails. Do not submit.",
   taskProfile: "website",
 });
+const uploadImagePlanContradiction = deterministicPlanActionContradiction(
+  "Find the latest .mp4 in the project, upload the video file, then click submit.",
+  uploadContract
+);
+assert(
+  /video-file upload/i.test(uploadImagePlanContradiction || ""),
+  "SCS deterministic plan gate should reject invented video-file uploads for image-upload tasks"
+);
+assert(
+  !deterministicPlanActionContradiction("Upload the five images, verify thumbnails, and do not submit.", uploadContract),
+  "SCS deterministic plan gate should allow matching image-upload plans"
+);
 assert(uploadContract.requiresExternalEvidence, "browser upload contract should require external evidence");
 assert(
   uploadContract.requiredEvidence.some((item) => item.category === "browser"),
@@ -372,6 +390,7 @@ const outputListContract = deriveScsTaskContract({
     "- `books/demo/work/review_chunks.py`",
     "",
     "Validate with `books/demo/work/validate_chunk.py` before promoting output.",
+    "Do not treat `books/demo/work/existing_validator.py` as an output artifact.",
     "",
     "Output structure:",
     "- `build/demo/jp-main/color/book.pdf`",
@@ -379,6 +398,24 @@ const outputListContract = deriveScsTaskContract({
     "",
     "Each generated chunk file goes to:",
     "`data/demo/chunks/{chunk_id}.json`",
+  ].join("\n"),
+  taskProfile: "code",
+});
+const manyOutputContract = deriveScsTaskContract({
+  goal: [
+    "Required outputs:",
+    "- `out/a01.json`",
+    "- `out/a02.json`",
+    "- `out/a03.json`",
+    "- `out/a04.json`",
+    "- `out/a05.json`",
+    "- `out/a06.json`",
+    "- `out/a07.json`",
+    "- `out/a08.json`",
+    "- `out/a09.json`",
+    "- `out/a10.json`",
+    "- `out/a11.json`",
+    "- `out/a12.json`",
   ].join("\n"),
   taskProfile: "code",
 });
@@ -424,8 +461,13 @@ assert(
 );
 assert(
   !outputListContract.exactOutputPaths.includes("books/demo/work/validate_chunk.py") &&
+    !outputListContract.exactOutputPaths.includes("books/demo/work/existing_validator.py") &&
     !outputListContract.exactOutputPaths.some((item) => item.includes("{chunk_id}")),
   "SCS should not treat validator/tool paths or templated paths as exact output artifacts"
+);
+assert(
+  manyOutputContract.exactOutputPaths.length === 12 && manyOutputContract.exactOutputPaths.includes("out/a12.json"),
+  "SCS should preserve more than eight exact output paths for multi-artifact tasks"
 );
 assert(
   generatedReviewContract.requiredEvidence.some((item) => item.category === "command") &&
