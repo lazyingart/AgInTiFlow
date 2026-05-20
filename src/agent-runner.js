@@ -1775,6 +1775,40 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         const eventResult = sanitizeToolResult(result);
         await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
         observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        if (result.ok && result.markdownPath) {
+          const normalized = normalizeCanvasPayload(
+            {
+              title: "Image reading report",
+              kind: "markdown",
+              path: result.markdownPath,
+              note: result.result?.summary || result.result?.answer || "Image reading report.",
+              selected: true,
+            },
+            config
+          );
+          if (normalized.ok) {
+            const persisted = await persistCanvasPayloadFile(normalized.payload, { config, store });
+            if (persisted.ok) {
+              const canvasItem = {
+                ...persisted.payload,
+                toolName: "read_image",
+                commandCwd: config.commandCwd,
+              };
+              await store.appendEvent("canvas.item", canvasItem);
+              observers.event("canvas.item", canvasItem);
+              await store.appendEvent("canvas.selected", {
+                artifactId: canvasItem.artifactId,
+                title: canvasItem.title,
+                source: "read_image",
+              });
+              observers.event("canvas.selected", {
+                artifactId: canvasItem.artifactId,
+                title: canvasItem.title,
+                source: "read_image",
+              });
+            }
+          }
+        }
         return result;
       }
       case "json_specialist": {

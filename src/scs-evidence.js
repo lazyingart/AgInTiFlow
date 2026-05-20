@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { redactSensitiveText, redactValue } from "./redaction.js";
 
 const CATEGORY_LABELS = {
@@ -60,6 +62,89 @@ function compactJson(value, limit = 900) {
 
 function unique(items = []) {
   return [...new Set(items.filter(Boolean))];
+}
+
+function uniqueLimited(items = [], limit = 16) {
+  return unique(items.map((item) => compact(item, 120)).filter(Boolean)).slice(0, limit);
+}
+
+function quotedTerms(text = "") {
+  const terms = [];
+  const patterns = [
+    /“([^”]{1,80})”/g,
+    /"([^"\n]{1,80})"/g,
+    /'([^'\n]{1,80})'/g,
+    /`([^`\n]{1,80})`/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of String(text || "").matchAll(pattern)) {
+      const term = String(match[1] || "").trim();
+      if (!term || /[\\/]/.test(term)) continue;
+      terms.push(term);
+    }
+  }
+  return terms;
+}
+
+function splitInlineTerms(text = "") {
+  return String(text || "")
+    .split(/[、,，;；]/)
+    .map((item) => item.replace(/[。.!！?？:：]/g, "").trim())
+    .filter((item) => item.length >= 2 && item.length <= 40 && !/[\\/]/.test(item));
+}
+
+function inferExactOutputPaths(goal = "") {
+  const paths = [];
+  const lines = String(goal || "").split(/\n+/);
+  const pathPattern = /(?:^|[\s"'`：:])((?:~|\.{1,2}|[A-Za-z0-9_\-\u4e00-\u9fff])[\w./~\-\u4e00-\u9fff ]{0,220}\.(?:md|txt|json|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx))(?:$|[\s"'`,，。；;])/gi;
+  for (const line of lines) {
+    if (!/\b(save|saved|write|written|output|create|store)\b|保存|写入|寫入|输出|輸出|创建|建立/.test(line)) continue;
+    for (const match of line.matchAll(pathPattern)) {
+      const raw = String(match[1] || "").trim();
+      if (!raw) continue;
+      paths.push(raw);
+    }
+  }
+  return uniqueLimited(paths, 8);
+}
+
+function inferRequiredTextTerms(goal = "") {
+  const terms = [];
+  const lines = String(goal || "").split(/\n+/);
+  for (const line of lines) {
+    const positiveSegment = String(line || "").split(
+      /(?:并)?确认没有|(?:并)?確認沒有|没有|沒有|\b(?:does not contain|do not contain|not contain|not include|without)\b/i
+    )[0];
+    if (
+      /\b(must|require|required|include|contain|contains|check|verify|grep|keyword|keywords)\b/i.test(line) ||
+      /必须|必須|要求|包含|检查|檢查|验证|驗證|关键词|關鍵詞|自检|自檢/.test(line)
+    ) {
+      terms.push(...quotedTerms(positiveSegment));
+    }
+  }
+  return uniqueLimited(terms, 24);
+}
+
+function inferForbiddenTextTerms(goal = "") {
+  const terms = [];
+  const lines = String(goal || "").split(/\n+/);
+  for (const line of lines) {
+    const text = String(line || "");
+    if (
+      /\b(?:do not|don't|dont|must not|never)\s+(?:write|include|mention|contain)\b/i.test(text) ||
+      /不要(?:写|寫|包含|提到)|不得(?:写|寫|包含|提到)|禁止(?:写|寫|包含|提到)|(?:确认|確認)(?:没有|沒有)/.test(text)
+    ) {
+      const tail =
+        text.match(/(?:不要(?:写|寫|包含|提到)|不得(?:写|寫|包含|提到)|禁止(?:写|寫|包含|提到))(.+)/)?.[1] ||
+        text.match(/(?:确认|確認)(?:没有|沒有)(.+)/)?.[1] ||
+        text.match(/\b(?:do not|don't|dont|must not|never)\s+(?:write|include|mention|contain)\s+(.+)/i)?.[1] ||
+        "";
+      terms.push(...quotedTerms(tail));
+      const unquotedTail = tail.replace(/“[^”]+”|"[^"\n]+"|'[^'\n]+'|`[^`\n]+`/g, "");
+      terms.push(...splitInlineTerms(unquotedTail).filter((item) => !/^(and|or|the|a|an|other|其他|上一集道具)$/.test(item)));
+    }
+  }
+  return uniqueLimited(terms, 16);
 }
 
 function blockerFromPayload(payload = {}, source = "tool") {
@@ -182,7 +267,7 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   if (textHas(text, /\b(artifact|canvas|pdf|image|video|screenshot|cover|plot|chart|figure|docx|archive|copy to|export|generated|generate|draft)\b/) || /输出|产物|图片|视频|截图|封面|生成/.test(text)) {
     categories.add("artifact");
   }
-  if (textHas(text, /\b(browser|chrome|chromium|cdp|devtools|playwright|selenium|web[- ]?ui|website|page|tab|composer|click|type|upload|attach|submit|form)\b/) || /浏览器|网页|页面|上传|提交|附件|资产库|按钮/.test(text)) {
+  if (textHas(text, /\b(browser|chrome|chromium|cdp|devtools|playwright|selenium|web[- ]?ui|website|page|tab|composer|click|type|upload|attach|submit|form)\b/) || /浏览器|网页|页面|上传|提交|附件|资产库/.test(text)) {
     categories.add("browser");
   }
   if (textHas(text, /\b(screenshot|visible|visual|see|inspect image|open image|read_image|thumbnail)\b/) || /截图|可见|缩略图/.test(text)) {
@@ -205,6 +290,10 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
 function inferForbiddenActions(goal = "") {
   const text = String(goal || "");
   const forbidden = [];
+  const isAction = (value = "") =>
+    /\b(use|open|click|browse|browser|upload|attach|submit|publish|deploy|run|execute|install|delete|remove|commit|push|call|api)\b/i.test(
+      value
+    ) || /浏览器|网页|打开|点击|上传|提交|发布|部署|运行|执行|安装|删除|复制|移动|提交代码|推送|调用|API/.test(value);
   const patterns = [
     { re: /\b(do not|don't|dont|never|no need to|without)\s+([^.\n;]+)/gi, prefix: "User forbids" },
     { re: /不要([^。\n；]+)/g, prefix: "User forbids" },
@@ -212,7 +301,8 @@ function inferForbiddenActions(goal = "") {
   ];
   for (const { re, prefix } of patterns) {
     for (const match of text.matchAll(re)) {
-      forbidden.push(`${prefix}: ${compact(match[2] || match[1], 160)}`);
+      const value = compact(match[2] || match[1], 160);
+      if (isAction(value)) forbidden.push(`${prefix}: ${value}`);
     }
   }
   return unique(forbidden).slice(0, 8);
@@ -240,7 +330,75 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     requiresExternalEvidence,
     requiredEvidence,
     forbiddenActions: inferForbiddenActions(goal),
+    exactOutputPaths: inferExactOutputPaths(goal),
+    requiredTextTerms: inferRequiredTextTerms(goal),
+    forbiddenTextTerms: inferForbiddenTextTerms(goal),
     successCriteria: unique(acceptanceCriteria).slice(0, 10),
+  };
+}
+
+function resolveContractPath(commandCwd = process.cwd(), rawPath = "") {
+  const text = String(rawPath || "").trim();
+  if (!text) return "";
+  if (text.startsWith("~/")) return path.join(process.env.HOME || commandCwd, text.slice(2));
+  if (path.isAbsolute(text)) return text;
+  return path.resolve(commandCwd || process.cwd(), text);
+}
+
+export function evaluateScsSemanticContract(contract = {}, { commandCwd = process.cwd() } = {}) {
+  const exactOutputPaths = Array.isArray(contract.exactOutputPaths) ? contract.exactOutputPaths : [];
+  const requiredTextTerms = Array.isArray(contract.requiredTextTerms) ? contract.requiredTextTerms : [];
+  const forbiddenTextTerms = Array.isArray(contract.forbiddenTextTerms) ? contract.forbiddenTextTerms : [];
+  if (!exactOutputPaths.length && !requiredTextTerms.length && !forbiddenTextTerms.length) {
+    return { ok: true, checked: false, reason: "No semantic file contract was inferred." };
+  }
+  if (!exactOutputPaths.length) {
+    return {
+      ok: true,
+      checked: false,
+      reason: "Semantic text terms were inferred, but no exact output path was inferred for deterministic file inspection.",
+      requiredTextTerms,
+      forbiddenTextTerms,
+    };
+  }
+
+  const files = exactOutputPaths.map((rawPath) => {
+    const absolutePath = resolveContractPath(commandCwd, rawPath);
+    try {
+      const content = fs.readFileSync(absolutePath, "utf8");
+      return { rawPath, absolutePath, exists: true, content };
+    } catch {
+      return { rawPath, absolutePath, exists: false, content: "" };
+    }
+  });
+  const missingFiles = files.filter((file) => !file.exists).map((file) => file.rawPath);
+  const combinedContent = files.map((file) => file.content).join("\n");
+  const missingRequiredText = requiredTextTerms.filter((term) => !combinedContent.includes(term));
+  const presentForbiddenText = forbiddenTextTerms.filter((term) => combinedContent.includes(term));
+  const ok = missingFiles.length === 0 && missingRequiredText.length === 0 && presentForbiddenText.length === 0;
+  return {
+    ok,
+    checked: true,
+    exactOutputPaths,
+    requiredTextTerms,
+    forbiddenTextTerms,
+    missingFiles,
+    missingRequiredText,
+    presentForbiddenText,
+    inspectedFiles: files.map((file) => ({
+      path: file.rawPath,
+      exists: file.exists,
+      chars: file.content.length,
+    })),
+    reason: ok
+      ? "Exact output files satisfy inferred semantic hard constraints."
+      : [
+          missingFiles.length ? `Missing exact output files: ${missingFiles.join(", ")}` : "",
+          missingRequiredText.length ? `Missing required text terms: ${missingRequiredText.join(", ")}` : "",
+          presentForbiddenText.length ? `Forbidden text terms present: ${presentForbiddenText.join(", ")}` : "",
+        ]
+          .filter(Boolean)
+          .join("; "),
   };
 }
 
@@ -415,6 +573,9 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
         description: item.description,
       })),
       forbiddenActions: contract.forbiddenActions || [],
+      exactOutputPaths: contract.exactOutputPaths || [],
+      requiredTextTerms: contract.requiredTextTerms || [],
+      forbiddenTextTerms: contract.forbiddenTextTerms || [],
       successCriteria: contract.successCriteria || [],
     },
     evidenceLedger: {

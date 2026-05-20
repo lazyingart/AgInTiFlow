@@ -6,7 +6,7 @@ AgInTiFlow separates visual understanding, web search, and wrapper advice so eac
 
 | Tool | Purpose | Evidence |
 | --- | --- | --- |
-| `read_image` | Read workspace screenshots, plots, scanned text, diagrams, or allowed remote image URLs. | Saves `artifacts/perception/*-read-image.json` in the central session store with image hashes, MIME type, size, model, prompt, and typed result. |
+| `read_image` | Read workspace screenshots, plots, scanned text, diagrams, or allowed remote image URLs. | Saves JSON and Markdown reports under `artifacts/perception/`, records image hashes, and sends the Markdown report to the canvas when used by an agent run. |
 | `web_search` | Cheap raw search snippets. | Returns compact titles, URLs, snippets, and fallback search URL. |
 | `web_research` | Sourced research unit for current or external information. | Saves `artifacts/research/*-web-research.json` with query, mode, source list, and answer. |
 | `research_wrapper` | Read-only strict-JSON second opinion from the selected wrapper. | Saves `artifacts/wrappers/*-research-wrapper.json` with wrapper, model, reasoning, metadata, result, and raw fallback output. |
@@ -14,7 +14,9 @@ AgInTiFlow separates visual understanding, web search, and wrapper advice so eac
 ## Defaults
 
 - `read_image` uses OpenAI Responses vision when `OPENAI_API_KEY` is configured.
-- `read_image` defaults to `AGINTI_PERCEPTION_MODEL=gpt-5.4-mini` and `AGINTI_PERCEPTION_REASONING=medium`, then falls back through `AGINTI_PERCEPTION_FALLBACK_MODELS` or `gpt-4o-mini` if the account lacks access to the preferred model.
+- If OpenAI vision is unavailable, `read_image` falls back to `codex exec --image` when the Codex CLI is installed and wrapper tools are enabled.
+- Wrapper tools default on when Codex is available, and can still be disabled with `/wrapper off` or `--no-wrapper`-style runtime settings.
+- `read_image` defaults to `AGINTI_PERCEPTION_MODEL=gpt-5.4-mini` and `AGINTI_PERCEPTION_REASONING=medium`, then falls back through `AGINTI_PERCEPTION_FALLBACK_MODELS` or `gpt-4o-mini` if the account lacks access to the preferred OpenAI model.
 - `web_research` defaults to lightweight snippet mode; use `mode=openai` only when hosted OpenAI web search is needed and configured.
 - `web_research mode=openai` defaults to `AGINTI_WEB_RESEARCH_MODEL=gpt-5.4-mini` / `medium`, then falls back through `AGINTI_WEB_RESEARCH_FALLBACK_MODELS` or `gpt-4o-mini`.
 - `research_wrapper` defaults to `AGINTI_RESEARCH_WRAPPER_MODEL=gpt-5.4-mini` and `AGINTI_RESEARCH_WRAPPER_REASONING=medium`.
@@ -24,6 +26,7 @@ AgInTiFlow separates visual understanding, web search, and wrapper advice so eac
 
 ```text
 /image-read artifacts/screenshots/app.png what looks wrong?
+/image-read --codex artifacts/screenshots/app.png what looks wrong?
 /web-research latest Android Gradle plugin official docs
 /research-wrapper gpt-5.4-mini medium
 /research-wrapper off

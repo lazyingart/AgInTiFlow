@@ -17,7 +17,7 @@ import {
   getProviderDefaults,
   normalizeRoutingMode,
 } from "./src/model-routing.js";
-import { listAgentWrappers, normalizeWrapperName } from "./src/tool-wrappers.js";
+import { isWrapperAvailable, listAgentWrappers, normalizeWrapperName } from "./src/tool-wrappers.js";
 import { getDockerSandboxStatus, getSandboxLogs, runDockerPreflight } from "./src/docker-sandbox.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./src/command-policy.js";
 import { summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./src/workspace-tools.js";
@@ -574,7 +574,11 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
         ? Math.min(Math.max(parsedParallelScoutCount, 1), 10)
         : Number(current.parallelScoutCount) || 3,
     allowWrapperTools:
-      typeof body.allowWrapperTools === "boolean" ? body.allowWrapperTools : Boolean(current.allowWrapperTools),
+      typeof body.allowWrapperTools === "boolean"
+        ? body.allowWrapperTools
+        : current.allowWrapperTools !== undefined
+          ? Boolean(current.allowWrapperTools)
+          : isWrapperAvailable(normalizeWrapperName(body.preferredWrapper || current.preferredWrapper || "codex")),
     preferredWrapper: normalizeWrapperName(body.preferredWrapper || current.preferredWrapper || "codex"),
     wrapperTimeoutMs:
       Number.isFinite(parsedWrapperTimeoutMs) && parsedWrapperTimeoutMs >= 10000

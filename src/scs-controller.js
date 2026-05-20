@@ -5,6 +5,7 @@ import {
   buildScsEvidenceLedger,
   deriveScsTaskContract,
   deterministicFinishBlocker,
+  evaluateScsSemanticContract,
   evaluateScsEvidence,
   finishResultClaimsBlocker,
   hasScsBlockerEvidence,
@@ -140,6 +141,25 @@ function fallbackBlockedPlan(goal = "", studentReason = "") {
     .join("\n");
 }
 
+function fallbackHardContractPlan(goal = "", contract = {}, studentReason = "") {
+  const exactOutputPaths = normalizeStringList(contract.exactOutputPaths, []);
+  const requiredTextTerms = normalizeStringList(contract.requiredTextTerms, []);
+  const forbiddenTextTerms = normalizeStringList(contract.forbiddenTextTerms, []);
+  return [
+    "1. Execute the user's target work under the deterministic hard-contract fallback plan.",
+    exactOutputPaths.length
+      ? `2. Write the requested output exactly at: ${exactOutputPaths.join(", ")}. If an output file already exists and the user allowed overwrite/update, overwrite it intentionally.`
+      : "2. Create or update the requested output artifact at the user-specified location.",
+    requiredTextTerms.length ? `3. Ensure the output contains these required term(s): ${requiredTextTerms.join(", ")}.` : "",
+    forbiddenTextTerms.length ? `4. Ensure the output does not contain these forbidden term(s): ${forbiddenTextTerms.join(", ")}.` : "",
+    "5. Run concrete validation commands or inspections for file existence and content before finish.",
+    studentReason ? `6. Preserve the validator concern while executing: ${compact(studentReason, 180)}` : "",
+    goal ? `7. Original goal remains authoritative: ${compact(goal, 220)}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function parseJsonObject(content = "") {
   const text = String(content || "").trim();
   if (!text) return null;
@@ -220,6 +240,47 @@ function normalizePlanText(plan) {
   if (!text) return "";
   const redacted = redactSensitiveText(text);
   return redacted.length <= 1800 ? redacted : `${redacted.slice(0, 1776)} ... [truncated]`;
+}
+
+function formatHardContractForPrompt(contract = {}) {
+  const lines = [];
+  const exactOutputPaths = normalizeStringList(contract.exactOutputPaths, []);
+  const requiredTextTerms = normalizeStringList(contract.requiredTextTerms, []);
+  const forbiddenTextTerms = normalizeStringList(contract.forbiddenTextTerms, []);
+  const forbiddenActions = normalizeStringList(contract.forbiddenActions, []);
+  if (exactOutputPaths.length) lines.push(`Exact output path(s): ${exactOutputPaths.join(", ")}`);
+  if (requiredTextTerms.length) lines.push(`Required text term(s) in the output: ${requiredTextTerms.join(", ")}`);
+  if (forbiddenTextTerms.length) lines.push(`Forbidden text term(s) in the output: ${forbiddenTextTerms.join(", ")}`);
+  if (forbiddenActions.length) lines.push(`Forbidden action(s): ${forbiddenActions.join("; ")}`);
+  return lines.length
+    ? [
+        "Inferred hard task contract. Preserve these literally; do not replace them with weaker or contradictory criteria:",
+        ...lines.map((line) => `- ${line}`),
+      ].join("\n")
+    : "";
+}
+
+function deterministicPlanContractIssue(committee = {}, contract = {}) {
+  const planText = `${committee.phaseGoal || ""}\n${committee.plan || ""}\n${(committee.acceptanceCriteria || []).join("\n")}`;
+  const missingPath = normalizeStringList(contract.exactOutputPaths, []).filter((item) => !planText.includes(item));
+  const missingRequiredTerms = normalizeStringList(contract.requiredTextTerms, []).filter((item) => !planText.includes(item));
+  const forbiddenTermsInPlan = normalizeStringList(contract.forbiddenTextTerms, []).filter((item) => planText.includes(item));
+  if (missingPath.length || missingRequiredTerms.length || forbiddenTermsInPlan.length) {
+    return {
+      decision: "veto_plan",
+      confidence: 0.94,
+      evidence: [
+        missingPath.length ? `Plan omitted exact output path(s): ${missingPath.join(", ")}` : "",
+        missingRequiredTerms.length ? `Plan omitted required text term(s): ${missingRequiredTerms.join(", ")}` : "",
+        forbiddenTermsInPlan.length ? `Plan includes forbidden text term(s): ${forbiddenTermsInPlan.join(", ")}` : "",
+      ].filter(Boolean),
+      reason:
+        "The phase plan does not preserve the user's inferred hard task contract. It must carry exact paths and required/forbidden output terms into acceptance criteria.",
+      next_required_action:
+        "Committee must draft a new plan whose acceptance criteria explicitly include every exact output path, required text term, and forbidden text term from the hard contract.",
+    };
+  }
+  return null;
 }
 
 function isBrowserSubmitGoal(goal = "") {
@@ -345,6 +406,7 @@ export function buildScsEvidencePack(state = {}, context = {}) {
 export function buildSupervisorInstruction(scs = {}) {
   const criteria = normalizeStringList(scs.acceptanceCriteria);
   const stopConditions = normalizeStringList(scs.stopConditions);
+  const hardContract = formatHardContractForPrompt(scs.taskContract || {});
   return [
     "SCS mode is enabled. SCS means Student-Committee-Supervisor; do not redefine the acronym.",
     "You are the supervisor executor in that Student-Committee-Supervisor pipeline.",
@@ -355,6 +417,7 @@ export function buildSupervisorInstruction(scs = {}) {
     "If tool evidence invalidates the plan, stop repeating the failed path and explain the blocker through finish or wait for student review.",
     "Approved phase plan:",
     scs.plan || fallbackPlan(),
+    hardContract,
     criteria.length ? `Acceptance criteria:\n${criteria.map((item) => `- ${item}`).join("\n")}` : "",
     stopConditions.length ? `Stop conditions:\n${stopConditions.map((item) => `- ${item}`).join("\n")}` : "",
     "Before calling finish, include concrete evidence: files changed, commands/checks run, artifacts created, or a clear limitation.",
@@ -376,6 +439,7 @@ function committeeSystemPrompt({ phaseKind = "initial" } = {}) {
       : "",
     browserStateReconciliationGuidance(),
     formatBehaviorContractForPrompt({ mode: "plan" }),
+    "Preserve exact user hard constraints literally: output paths, required words/phrases, forbidden words/phrases, model/duration/tier, and explicit no-action instructions. Do not invent contradictory acceptance criteria such as a different length target or output location.",
     "Return strict JSON with keys: role, phase_goal, plan, acceptance_criteria, allowed_tools, stop_conditions.",
   ]
     .filter(Boolean)
@@ -389,6 +453,7 @@ function studentPlanGatePrompt() {
     "Judge whether the committee phase plan is safe, scoped, minimal, permission-aware, and evidence-oriented.",
     "You cannot execute tools or approve your own work. If the plan is weak, veto it so the committee must draft a better plan.",
     "For browser tasks, reject plans that stop merely because a state field is unknown when the user requested a target state and a bounded set-then-verify path is available.",
+    "Reject any plan whose phase goal, steps, or acceptance criteria omit exact output paths, required output phrases, or forbidden output phrases from the hard task contract. Also reject plans that add contradictory constraints not requested by the user.",
     formatBehaviorContractForPrompt({ mode: "plan" }),
     "Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.",
   ].join(" ");
@@ -468,6 +533,11 @@ async function createScsPhase(client, config, state, context = {}, options = {})
     "approve_plan"
   );
   let lastValidatorConcern = validatorFeedback?.reason || validatorFeedback?.nextRequiredAction || "";
+  const taskContract = deriveScsTaskContract({
+    goal: state.goal,
+    taskProfile: context.taskProfile || "",
+    acceptanceCriteria: [],
+  });
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const rawCommittee = await callJson(
@@ -482,6 +552,7 @@ async function createScsPhase(client, config, state, context = {}, options = {})
           role: "user",
           content: [
             `Goal and evidence:\n${evidence}`,
+            formatHardContractForPrompt(taskContract),
             validatorFeedback
               ? `Student validator feedback that caused this ${phaseKind}:\n${compactJson(validatorFeedback, 1800)}`
               : "",
@@ -496,6 +567,13 @@ async function createScsPhase(client, config, state, context = {}, options = {})
       "SCS committee"
     );
     committee = normalizeCommitteePlan(rawCommittee, state.goal);
+    const deterministicIssue = deterministicPlanContractIssue(committee, taskContract);
+    if (deterministicIssue) {
+      student = normalizeDecision(deterministicIssue, "veto_plan");
+      lastValidatorConcern = student.reason || student.nextRequiredAction || lastValidatorConcern;
+      if (attempt < 2) continue;
+      break;
+    }
 
     const rawStudent = await callJson(
       client,
@@ -507,7 +585,11 @@ async function createScsPhase(client, config, state, context = {}, options = {})
         },
         {
           role: "user",
-          content: `Goal/evidence:\n${evidence}\n\nCommittee plan:\n${compactJson(committee, 4000)}`,
+          content: [
+            `Goal/evidence:\n${evidence}`,
+            formatHardContractForPrompt(taskContract),
+            `Committee plan:\n${compactJson(committee, 4000)}`,
+          ].join("\n\n"),
         },
       ],
       student,
@@ -519,15 +601,19 @@ async function createScsPhase(client, config, state, context = {}, options = {})
   }
 
   if (student.decision === "veto_plan") {
+    const hardContractPlan = fallbackHardContractPlan(state.goal, taskContract, student.reason || lastValidatorConcern);
+    const hardContractCriteria = [
+      ...normalizeStringList(taskContract.exactOutputPaths, []).map((item) => `Exact output path is used: ${item}`),
+      ...normalizeStringList(taskContract.requiredTextTerms, []).map((item) => `Output contains required text: ${item}`),
+      ...normalizeStringList(taskContract.forbiddenTextTerms, []).map((item) => `Output omits forbidden text: ${item}`),
+      "Concrete file/content validation evidence is collected before finish.",
+    ];
     committee = normalizeCommitteePlan(
       {
-        phase_goal: "Report SCS validator blocker instead of executing rejected target work.",
-        plan: fallbackBlockedPlan(state.goal, student.reason || lastValidatorConcern),
-        acceptance_criteria: [
-          "The run does not execute target work under a rejected plan.",
-          "The final report names the student validator concern and requested clarification or override.",
-        ],
-        stop_conditions: ["Any attempt to proceed with target work without an approved phase plan."],
+        phase_goal: "Execute the user's target work using the deterministic hard-contract fallback plan.",
+        plan: hardContractPlan,
+        acceptance_criteria: hardContractCriteria,
+        stop_conditions: ["A required file path is inaccessible.", "A required/forbidden text constraint cannot be satisfied."],
       },
       state.goal
     );
@@ -536,9 +622,9 @@ async function createScsPhase(client, config, state, context = {}, options = {})
         decision: "approve_plan",
         confidence: 0.9,
         reason:
-          "Student veto remained after committee retries; approving only a blocker-reporting phase, not target execution.",
+          "Student veto remained after committee retries; runtime synthesized a deterministic hard-contract fallback plan that preserves exact user constraints.",
         evidence: student.evidence || [],
-        next_required_action: "supervisor_report_validator_blocker",
+        next_required_action: "supervisor_execute_hard_contract_plan",
       },
       "approve_plan"
     );
@@ -756,8 +842,28 @@ export async function reviewScsFinish(client, config, state, result = "", contex
   });
   const evidenceLedger = buildScsEvidenceLedger({ state, context });
   const evidenceEvaluation = evaluateScsEvidence(taskContract, evidenceLedger);
+  const semanticEvaluation = evaluateScsSemanticContract(taskContract, {
+    commandCwd: config.commandCwd || process.cwd(),
+  });
   const deterministicBlocker = deterministicFinishBlocker(taskContract, evidenceLedger, evidenceEvaluation);
   const hasRealBlocker = hasScsBlockerEvidence(evidenceLedger) && finishResultClaimsBlocker(result);
+  if (!semanticEvaluation.ok && !hasRealBlocker) {
+    return normalizeDecision(
+      {
+        decision: "finish_rejected",
+        confidence: 0.97,
+        reason: `SCS semantic hard-contract gate rejected finish: ${semanticEvaluation.reason}`,
+        evidence: [
+          ...(semanticEvaluation.missingFiles || []).map((item) => `missing file: ${item}`),
+          ...(semanticEvaluation.missingRequiredText || []).map((item) => `missing required text: ${item}`),
+          ...(semanticEvaluation.presentForbiddenText || []).map((item) => `forbidden text present: ${item}`),
+        ],
+        next_required_action:
+          "Revise the exact output file(s) to satisfy the required and forbidden text terms, then run concrete validation commands before finishing.",
+      },
+      "finish_rejected"
+    );
+  }
   const requiresEvidence =
     taskContract.requiresExternalEvidence ||
     finishRequiresExternalEvidence(context.goal || state.goal || "", context.taskProfile || config.taskProfile || "");

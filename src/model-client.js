@@ -723,7 +723,7 @@ export async function createPlan(client, config, state) {
           "For substantial writing work such as novels, chapters, books, scripts, essays, LaTeX manuscripts, or research-paper prose, plan to call writing_specialist with only the writing brief/canon/style/draft context. The main agent should handle files, citations, checks, and Markdown/LaTeX/Final Draft formatting after the isolated writing draft returns.",
           "For repetitive schema-bound extraction, annotation, conversion, or validation tasks, use json_specialist with only the task, input, schema, and focused instructions. It calls the model directly for strict JSON, tries provider-native structured output when supported, and keeps agent/runtime/tool context out of the specialist prompt.",
           config.allowFileTools
-            ? "read_image is available for workspace-local or allowed remote screenshots/images using OpenAI vision when OPENAI_API_KEY is configured. It returns typed visual observations and persists a perception artifact; if credentials are missing, report the blocker instead of guessing from the filename."
+            ? "read_image is available for workspace-local or allowed remote screenshots/images. It tries OpenAI vision first when OPENAI_API_KEY is configured, then Codex CLI image wrapper when available and wrappers are enabled. It returns typed visual observations and persists JSON plus Markdown artifacts; never guess from filenames."
             : "",
           config.allowParallelScouts
             ? `Parallel scout notes may be injected before execution for complex tasks. Scout count: ${config.parallelScoutCount}.`
@@ -1179,7 +1179,7 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "read_image",
           description:
-            "Read and describe workspace-local screenshots/images or allowed remote image URLs using OpenAI vision. Use for UI screenshots, plots, microscopy images, scanned text, diagrams, and visual debugging. It records hashes and persists a typed perception artifact. Defaults to gpt-5.4-mini with gpt-4o-mini fallback when needed. Requires OPENAI_API_KEY; if unavailable, report that blocker.",
+            "Read and describe workspace-local screenshots/images or allowed remote image URLs. Use for UI screenshots, plots, microscopy images, scanned text, diagrams, and visual debugging. It records hashes and persists JSON plus Markdown perception artifacts. Defaults to OpenAI vision, then falls back to the Codex image wrapper when Codex CLI is available and wrappers are enabled.",
           parameters: {
             type: "object",
             properties: {
@@ -1191,8 +1191,9 @@ export async function requestNextStep(client, config, messages) {
                 description: "Optional multiple workspace-relative image paths or HTTPS image URLs, maximum 4.",
               },
               prompt: { type: "string", description: "Question or reading instruction for the image(s)." },
+              provider: { type: "string", enum: ["auto", "openai", "codex"], description: "Perception backend. auto tries OpenAI then Codex wrapper." },
               detail: { type: "string", enum: ["low", "high", "auto"], description: "Vision detail level. Defaults to auto." },
-              model: { type: "string", description: "Optional OpenAI vision model. Defaults to AGINTI_PERCEPTION_MODEL or gpt-5.4-mini." },
+              model: { type: "string", description: "Optional perception model. OpenAI defaults to AGINTI_PERCEPTION_MODEL; Codex defaults to the research wrapper model." },
               reasoning: { type: "string", enum: ["low", "medium", "high", "xhigh"], description: "Optional reasoning effort. Defaults to medium." },
             },
             additionalProperties: false,
@@ -1577,6 +1578,8 @@ export async function requestNextStep(client, config, messages) {
         toolPayload.error,
         toolPayload.reason,
         toolPayload.summary ? `Summary: ${toolPayload.summary}` : "",
+        toolPayload.result?.summary ? `Summary: ${toolPayload.result.summary}` : "",
+        toolPayload.result?.answer ? `Answer: ${toolPayload.result.answer}` : "",
         toolPayload.counts ? `Counts: ${JSON.stringify(toolPayload.counts)}` : "",
         Array.isArray(toolPayload.recommendedReads) && toolPayload.recommendedReads.length
           ? `Recommended reads: ${toolPayload.recommendedReads.join(", ")}`
@@ -1585,6 +1588,8 @@ export async function requestNextStep(client, config, messages) {
           ? `Results:\n${toolPayload.results.map((item, index) => `${index + 1}. ${item.title} ${item.url}`).join("\n")}`
           : "",
         toolPayload.path ? `Path: ${toolPayload.path}` : "",
+        toolPayload.markdownPath ? `Markdown: ${toolPayload.markdownPath}` : "",
+        toolPayload.artifactPath ? `Artifact: ${toolPayload.artifactPath}` : "",
         Array.isArray(toolPayload.changes)
           ? toolPayload.changes
               .map((change) => [change.path ? `Path: ${change.path}` : "", change.diff ? `Diff:\n${change.diff}` : ""].filter(Boolean).join("\n"))

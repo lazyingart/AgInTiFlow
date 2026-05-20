@@ -1,4 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { getModelPresets } from "./model-routing.js";
 import { redactSensitiveText } from "./redaction.js";
 
@@ -11,7 +14,7 @@ const BASE_ADVISORY_PROMPT = [
   "Return concise findings, commands to consider, or an implementation plan.",
 ].join(" ");
 
-function commandExists(command) {
+export function commandExists(command) {
   try {
     if (process.platform === "win32") {
       execFileSync("where", [command], { stdio: "ignore" });
@@ -225,6 +228,11 @@ export function listAgentWrappers() {
   ];
 }
 
+export function isWrapperAvailable(wrapper) {
+  const candidate = normalizeWrapperName(wrapper);
+  return Boolean(wrapperCommand(candidate, "", {}, {}) && commandExists(wrapperCommand(candidate, "", {}, {}).command));
+}
+
 export function wrapperStatusText() {
   return listAgentWrappers()
     .map((wrapper) => `${wrapper.name}:${wrapper.available ? "available" : "missing"}`)
@@ -282,5 +290,97 @@ export async function runAgentWrapper({ wrapper, prompt }, config) {
       stdout: cleanOutput(error.stdout, 8000),
       stderr: cleanOutput(error.stderr, 4000),
     };
+  }
+}
+
+function codexImageArgs(prompt, imagePaths, config, preset, outputFile) {
+  const imageArgs = [];
+  for (const imagePath of imagePaths || []) {
+    imageArgs.push("--image", imagePath);
+  }
+  return [
+    "exec",
+    "--model",
+    preset.model,
+    "-c",
+    `model_reasoning_effort="${preset.reasoning}"`,
+    "--sandbox",
+    "read-only",
+    "--cd",
+    config.commandCwd,
+    "--skip-git-repo-check",
+    "--output-last-message",
+    outputFile,
+    ...imageArgs,
+    "--",
+    buildPrompt(prompt),
+  ];
+}
+
+export async function runCodexImageWrapper({ prompt, imagePaths = [] }, config) {
+  if (!commandExists("codex")) {
+    return { ok: false, wrapper: "codex", error: "Codex CLI is not available on PATH." };
+  }
+  if (!Array.isArray(imagePaths) || imagePaths.length === 0) {
+    return { ok: false, wrapper: "codex", error: "At least one image file is required for Codex image reading." };
+  }
+
+  const presets = getModelPresets({
+    wrapperModel: config.wrapperModel,
+    wrapperReasoning: config.wrapperReasoning,
+  });
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-codex-image-"));
+  const runOnce = async (preset, label) => {
+    const outputFile = path.join(tempDir, `${label}.txt`);
+    const result = await runWrapperProcess(
+      {
+        command: "codex",
+        args: codexImageArgs(prompt, imagePaths, config, preset, outputFile),
+      },
+      config
+    );
+    const lastMessage = await fs.readFile(outputFile, "utf8").catch(() => "");
+    return {
+      stdout: cleanOutput(lastMessage || result.stdout, 24000),
+      stderr: cleanOutput(result.stderr, 4000),
+    };
+  };
+
+  try {
+    const result = await runOnce(presets.codexPrimary, "primary");
+    return {
+      ok: true,
+      wrapper: "codex",
+      model: presets.codexPrimary.model,
+      reasoning: presets.codexPrimary.reasoning,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
+  } catch (error) {
+    if (error?.name === "AbortError" || error?.code === "ABORT_ERR") throw error;
+    try {
+      const fallback = await runOnce(presets.codexSpare, "fallback");
+      return {
+        ok: true,
+        wrapper: "codex",
+        fallback: true,
+        model: presets.codexSpare.model,
+        reasoning: presets.codexSpare.reasoning,
+        stdout: fallback.stdout,
+        stderr: fallback.stderr,
+      };
+    } catch (fallbackError) {
+      if (fallbackError?.name === "AbortError" || fallbackError?.code === "ABORT_ERR") throw fallbackError;
+      return {
+        ok: false,
+        wrapper: "codex",
+        error: redactSensitiveText(fallbackError instanceof Error ? fallbackError.message : String(fallbackError)),
+        primaryError: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+        stdout: cleanOutput(fallbackError.stdout, 8000),
+        stderr: cleanOutput(fallbackError.stderr, 4000),
+      };
+    }
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
 }

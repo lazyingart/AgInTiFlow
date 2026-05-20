@@ -47,6 +47,7 @@ import {
 } from "./permission-modes.js";
 import { ensureAgintiWebApp, readWebAppPreference, stopAgintiWebApp, writeWebAppPreference } from "./web-autostart.js";
 import { mcpCliCommand, formatMcpCliResult } from "./mcp/tool-bridge.js";
+import { isWrapperAvailable } from "./tool-wrappers.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
@@ -1112,7 +1113,7 @@ function printHelp() {
       `  ${command("/webapp [port|start|stop|restart|reuse|enable|disable|status]", "Start, reuse, stop, restart, or configure the local webapp.", "helpWebapp")}`,
       `  ${command("/web-search on|off", "Enable or disable the web_search tool.", "helpWebSearch")}`,
       `  ${command("/web-research <query>", "Run a sourced web_research turn with persisted evidence.", "helpWebSearch")}`,
-      `  ${command("/image-read <path> [question]", "Run read_image on a workspace screenshot/image.", "helpWebSearch")}`,
+      `  ${command("/image-read [--codex|--openai] <path> [question]", "Run read_image on a workspace screenshot/image.", "helpWebSearch")}`,
       `  ${command("/research-wrapper [on|off|model reasoning]", "Configure strict JSON wrapper research, default gpt-5.4-mini medium.", "helpWrapper")}`,
       `  ${command("/scs [on|auto|off|status]", "Toggle Student-Committee-Supervisor gated execution.", "helpEnableScs")}`,
       `  ${command("/scouts on|off|<1-10>", "Enable parallel DeepSeek scouts and set scout count.", "helpScouts")}`,
@@ -2659,7 +2660,7 @@ function createState(args = {}) {
     allowParallelScouts: args.allowParallelScouts ?? true,
     enableScs: normalizeScsMode(args.enableScs || process.env.AGINTI_SCS_MODE || "on"),
     parallelScoutCount: args.parallelScoutCount || 3,
-    allowWrapperTools: args.allowWrapperTools ?? false,
+    allowWrapperTools: args.allowWrapperTools ?? isWrapperAvailable(args.preferredWrapper || "codex"),
     allowDestructive: args.allowDestructive ?? permissionDefaults.allowDestructive ?? false,
     allowPasswords: args.allowPasswords ?? permissionDefaults.allowPasswords ?? false,
     allowOutsideWorkspaceFileTools:
@@ -3844,21 +3845,27 @@ async function handleCommand(line, state, packageDir) {
     return true;
   }
   if (command === "image-read") {
-    const [target, ...questionParts] = value.split(/\s+/).filter(Boolean);
+    const rawParts = value.split(/\s+/).filter(Boolean);
+    const providerFlag = ["--codex", "--openai"].includes(rawParts[0]) ? rawParts.shift() : "";
+    const provider = providerFlag ? providerFlag.replace(/^--/, "") : "";
+    const [target, ...questionParts] = rawParts;
     if (!target) {
-      printAgentMessage("Usage: /image-read <workspace-image-path-or-url> [question]");
+      printAgentMessage("Usage: /image-read [--codex|--openai] <workspace-image-path-or-url> [question]");
       return true;
     }
     const previousProfile = state.taskProfile;
     const previousMaxSteps = state.maxSteps;
+    const previousWrapperTools = state.allowWrapperTools;
     try {
       state.taskProfile = "image";
       state.maxSteps = Math.max(state.maxSteps, 12);
+      if (provider === "codex") state.allowWrapperTools = true;
       await runPrompt(
         [
           `Use the read_image tool on ${target}.`,
+          provider ? `Use read_image provider=${provider}.` : "Use read_image provider=auto so it can use OpenAI vision or Codex fallback.",
           questionParts.length ? `Question: ${questionParts.join(" ")}` : "Question: describe the image accurately and report visible text, issues, and uncertainty.",
-          "Do not infer from the filename. Report the read_image artifact path.",
+          "Do not infer from the filename. Report the read_image JSON and Markdown artifact paths.",
         ].join("\n"),
         state,
         packageDir
@@ -3866,6 +3873,7 @@ async function handleCommand(line, state, packageDir) {
     } finally {
       state.taskProfile = previousProfile;
       state.maxSteps = previousMaxSteps;
+      state.allowWrapperTools = previousWrapperTools;
     }
     return true;
   }

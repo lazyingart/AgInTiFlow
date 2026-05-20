@@ -4,7 +4,7 @@ import path from "node:path";
 import OpenAI from "openai";
 import { isDomainAllowed } from "./guardrails.js";
 import { redactSensitiveText } from "./redaction.js";
-import { normalizeWrapperName, runAgentWrapper } from "./tool-wrappers.js";
+import { isWrapperAvailable, normalizeWrapperName, runAgentWrapper, runCodexImageWrapper } from "./tool-wrappers.js";
 import { searchWeb } from "./web-search.js";
 import { resolveWorkspacePath } from "./workspace-tools.js";
 
@@ -152,6 +152,92 @@ async function persistToolArtifact(store, subdir, stem, payload) {
   const filePath = path.join(outputDir, filename);
   await fs.writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   return filePath;
+}
+
+function markdownList(items = []) {
+  const values = Array.isArray(items) ? items.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  return values.length ? values.map((item) => `- ${item}`).join("\n") : "- None recorded.";
+}
+
+function imageReadMarkdown(payload = {}) {
+  const result = payload.result || {};
+  const images = Array.isArray(payload.images) ? payload.images : [];
+  return [
+    "# Image Reading Report",
+    "",
+    `- Status: ${payload.ok ? "ok" : "failed"}`,
+    `- Provider: ${payload.provider || ""}`,
+    payload.wrapper ? `- Wrapper: ${payload.wrapper}` : "",
+    payload.model ? `- Model: ${payload.model}` : "",
+    payload.reasoning ? `- Reasoning: ${payload.reasoning}` : "",
+    payload.detail ? `- Detail: ${payload.detail}` : "",
+    payload.prompt ? `- Prompt: ${payload.prompt}` : "",
+    payload.error ? `- Error: ${payload.error}` : "",
+    "",
+    "## Images",
+    "",
+    images.length
+      ? images
+          .map(
+            (image, index) =>
+              `${index + 1}. ${image.path || image.url || "image"} (${image.mime || "unknown"}, ${image.sizeBytes || 0} bytes, sha256=${image.sha256 || ""})`
+          )
+          .join("\n")
+      : "No loaded images were recorded.",
+    "",
+    "## Summary",
+    "",
+    result.summary || payload.rawText || payload.error || "No summary was returned.",
+    "",
+    "## Answer",
+    "",
+    result.answer || result.summary || payload.rawText || payload.error || "No answer was returned.",
+    "",
+    "## Visible Text",
+    "",
+    markdownList(result.visibleText),
+    "",
+    "## Observations",
+    "",
+    markdownList(result.observations),
+    "",
+    "## Issues",
+    "",
+    markdownList(result.issues),
+    "",
+    "## Uncertainty",
+    "",
+    markdownList(result.uncertainty || result.uncertainties),
+    "",
+  ]
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd() + "\n";
+}
+
+async function persistMarkdownArtifact(store, config, subdir, stem, payload) {
+  const content = imageReadMarkdown(payload);
+  const filename = `${isoStamp()}-${stem}.md`;
+  let markdownArtifactPath = "";
+  let markdownPath = "";
+
+  if (store?.artifactsDir) {
+    await store.ensure();
+    const outputDir = path.join(store.artifactsDir, subdir);
+    await fs.mkdir(outputDir, { recursive: true });
+    markdownArtifactPath = path.join(outputDir, filename);
+    await fs.writeFile(markdownArtifactPath, content, "utf8");
+  }
+
+  if (config?.commandCwd) {
+    const workspaceDir = path.join(config.commandCwd, "artifacts", subdir);
+    await fs.mkdir(workspaceDir, { recursive: true });
+    const workspacePath = path.join(workspaceDir, filename);
+    await fs.writeFile(workspacePath, content, "utf8");
+    markdownPath = path.relative(config.commandCwd, workspacePath).replace(/\\/g, "/");
+  }
+
+  return { markdownArtifactPath, markdownPath };
 }
 
 function imageMimeForPath(inputPath, contentType = "") {
@@ -310,17 +396,132 @@ async function callOpenAiImageRead(args, images, config) {
   };
 }
 
+function codexImageReadPrompt(args, images) {
+  return [
+    "Inspect the attached image(s) directly and return strict JSON only. Do not wrap in Markdown.",
+    "Use this schema:",
+    JSON.stringify({
+      summary: "short factual summary",
+      visibleText: ["OCR text or labels, empty if none"],
+      observations: ["concrete visible details"],
+      issues: ["possible UI/data/quality issues, empty if none"],
+      answer: "direct answer to the user's question",
+      uncertainty: ["limits, ambiguity, or details not visible"],
+    }),
+    "Rules: describe only visible evidence. Do not infer from filenames. If uncertain, say so.",
+    `User question: ${String(args.prompt || args.question || "Describe the image accurately.").trim()}`,
+    `Image metadata: ${images
+      .map((image, index) => `${index + 1}. ${image.path || image.url} ${image.mime} ${image.sizeBytes} bytes sha256=${image.sha256}`)
+      .join("; ")}`,
+  ].join("\n");
+}
+
+async function codexReadableImagePaths(images, store) {
+  const imagePaths = [];
+  for (const image of images) {
+    if (image.absolutePath) {
+      imagePaths.push(image.absolutePath);
+      continue;
+    }
+    if (!store?.artifactsDir) {
+      throw new Error("Codex image fallback needs a local image file; remote image copy store is unavailable.");
+    }
+    await store.ensure();
+    const ext = image.mime === "image/jpeg" ? ".jpg" : image.mime === "image/webp" ? ".webp" : image.mime === "image/gif" ? ".gif" : ".png";
+    const outputDir = path.join(store.artifactsDir, "perception", "codex-inputs");
+    await fs.mkdir(outputDir, { recursive: true });
+    const outputPath = path.join(outputDir, `${isoStamp()}-${image.sha256.slice(0, 12)}${ext}`);
+    const raw = Buffer.from(String(image.dataUrl || "").replace(/^data:image\/[a-z0-9.+-]+;base64,/i, ""), "base64");
+    if (!raw.length) throw new Error("Remote image copy for Codex fallback was empty.");
+    await fs.writeFile(outputPath, raw);
+    imagePaths.push(outputPath);
+  }
+  return imagePaths;
+}
+
+async function callCodexImageRead(args, images, config, store, priorError = null) {
+  if (args.codexDryRun) {
+    return {
+      provider: "codex-wrapper-dry-run",
+      wrapper: "codex",
+      model: args.model || config.researchWrapperModel || "gpt-5.4-mini",
+      reasoning: args.reasoning || config.researchWrapperReasoning || "medium",
+      rawText: "",
+      parsed: {
+        summary: "Codex image fallback dry run",
+        visibleText: [],
+        observations: ["Codex image wrapper fallback path was selected."],
+        issues: [],
+        answer: "dry run",
+        uncertainty: [],
+      },
+    };
+  }
+  if (config.allowWrapperTools === false && args.provider !== "codex") {
+    throw new Error("Codex image fallback is disabled because wrapper tools are off.");
+  }
+  if (!isWrapperAvailable("codex")) {
+    throw new Error("Codex image fallback is unavailable because the Codex CLI was not found on PATH.");
+  }
+  const imagePaths = await codexReadableImagePaths(images, store);
+  const wrapperConfig = {
+    ...config,
+    wrapperModel: args.model || config.researchWrapperModel || process.env.AGINTI_RESEARCH_WRAPPER_MODEL || "gpt-5.4-mini",
+    wrapperReasoning: args.reasoning || config.researchWrapperReasoning || process.env.AGINTI_RESEARCH_WRAPPER_REASONING || "medium",
+  };
+  const wrapperResult = await runCodexImageWrapper(
+    {
+      prompt: [
+        codexImageReadPrompt(args, images),
+        priorError ? `OpenAI vision fallback reason: ${redactSensitiveText(priorError instanceof Error ? priorError.message : String(priorError))}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+      imagePaths,
+    },
+    wrapperConfig
+  );
+  if (!wrapperResult.ok) throw new Error(wrapperResult.error || "Codex image fallback failed.");
+  const parsed = firstJsonObject(wrapperResult.stdout || "");
+  return {
+    provider: "codex-wrapper",
+    wrapper: "codex",
+    model: wrapperResult.model || wrapperConfig.wrapperModel,
+    reasoning: wrapperResult.reasoning || wrapperConfig.wrapperReasoning,
+    rawText: compactText(wrapperResult.stdout || ""),
+    parsed,
+    stderr: compactText(wrapperResult.stderr || "", 4000),
+    fallback: Boolean(priorError || wrapperResult.fallback),
+    fallbackReason: priorError ? redactSensitiveText(priorError instanceof Error ? priorError.message : String(priorError)) : "",
+  };
+}
+
+async function callImageRead(args, images, config, store) {
+  const provider = String(args.provider || args.engine || "auto").trim().toLowerCase();
+  if (args.dryRun) {
+    return { provider: "dry-run", rawText: "", parsed: { summary: "read_image dry run", answer: "dry run" } };
+  }
+  if (provider === "codex") return callCodexImageRead(args, images, config, store);
+  if (provider === "openai") return callOpenAiImageRead(args, images, config);
+  try {
+    return await callOpenAiImageRead(args, images, config);
+  } catch (error) {
+    return callCodexImageRead(args, images, config, store, error);
+  }
+}
+
 export async function readImage(args = {}, config = {}, store = null) {
   const loadedImages = [];
   let payload = null;
   try {
     const images = await loadImageInputs(args, config);
     loadedImages.push(...images);
-    const analysis = args.dryRun ? { provider: "dry-run", rawText: "", parsed: { summary: "read_image dry run", answer: "dry run" } } : await callOpenAiImageRead(args, images, config);
+    const analysis = await callImageRead(args, images, config, store);
     payload = {
       ok: true,
       toolName: "read_image",
       provider: analysis.provider,
+      wrapper: analysis.wrapper || "",
       model: analysis.model || "",
       reasoning: analysis.reasoning || "",
       detail: analysis.detail || "",
@@ -328,8 +529,12 @@ export async function readImage(args = {}, config = {}, store = null) {
       images: images.map(({ dataUrl, absolutePath, ...image }) => image),
       result: analysis.parsed || { summary: analysis.rawText, answer: analysis.rawText, uncertainty: ["Model output was not valid JSON."] },
       rawText: analysis.parsed ? "" : analysis.rawText,
+      stderr: analysis.stderr || "",
+      fallback: Boolean(analysis.fallback),
+      fallbackReason: analysis.fallbackReason || "",
     };
     payload.artifactPath = await persistToolArtifact(store, "perception", "read-image", payload);
+    Object.assign(payload, await persistMarkdownArtifact(store, config, "perception", "read-image", payload));
     return payload;
   } catch (error) {
     payload = {
@@ -339,6 +544,7 @@ export async function readImage(args = {}, config = {}, store = null) {
       images: loadedImages.map(({ dataUrl, absolutePath, ...image }) => image),
     };
     payload.artifactPath = await persistToolArtifact(store, "perception", "read-image-failed", payload);
+    Object.assign(payload, await persistMarkdownArtifact(store, config, "perception", "read-image-failed", payload));
     return payload;
   }
 }

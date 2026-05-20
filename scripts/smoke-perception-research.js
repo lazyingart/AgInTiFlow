@@ -58,7 +58,28 @@ async function main() {
   assert(image.ok, `read_image dry-run failed: ${image.error || "unknown"}`);
   assert(image.images?.[0]?.sha256, "read_image did not record image hash");
   assert(image.artifactPath, "read_image did not persist a perception artifact");
+  assert(image.markdownArtifactPath, "read_image did not persist a Markdown perception artifact");
+  assert(image.markdownPath, "read_image did not persist a workspace Markdown report");
   await fs.access(image.artifactPath);
+  await fs.access(image.markdownArtifactPath);
+  await fs.access(path.join(workspace, image.markdownPath));
+
+  const codexFallback = await readImage(
+    {
+      path: "artifacts/screenshots/tiny.png",
+      prompt: "Describe this tiny image with the Codex image fallback.",
+      provider: "codex",
+      codexDryRun: true,
+    },
+    {
+      ...config,
+      allowWrapperTools: true,
+    },
+    store
+  );
+  assert(codexFallback.ok, `read_image Codex fallback dry-run failed: ${codexFallback.error || "unknown"}`);
+  assert(codexFallback.provider === "codex-wrapper-dry-run", "read_image did not select the Codex wrapper fallback path");
+  assert(codexFallback.markdownPath, "read_image Codex fallback did not write a Markdown report");
 
   const secretBlock = checkToolUse({
     toolName: "read_image",
@@ -116,6 +137,7 @@ async function main() {
   const runStore = new SessionStore(agentConfig.sessionsDir, run.sessionId);
   const events = await runStore.loadEvents();
   assert(events.some((event) => event.type === "tool.completed" && event.data?.toolName === "read_image"), "mock agent did not call read_image");
+  assert(events.some((event) => event.type === "canvas.item" && event.data?.toolName === "read_image"), "read_image did not send the Markdown report to canvas");
 
   await fs.rm(tempRoot, { recursive: true, force: true });
   console.log("smoke-perception-research ok");

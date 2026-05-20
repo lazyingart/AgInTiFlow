@@ -2,7 +2,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { getModelRoleDefaults, getProviderDefaults, normalizeRoutingMode, selectModelRoute } from "./model-routing.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
-import { normalizeWrapperName } from "./tool-wrappers.js";
+import { isWrapperAvailable, normalizeWrapperName } from "./tool-wrappers.js";
 import { loadProjectEnv, projectPaths, resolveProjectRoot } from "./project.js";
 import { normalizeTaskProfile } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
@@ -113,6 +113,10 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     overrides.allowParallelScouts ?? args.allowParallelScouts ?? process.env.AGINTI_PARALLEL_SCOUTS,
     true
   );
+  const preferredWrapper = normalizeWrapperName(
+    overrides.preferredWrapper ?? args.preferredWrapper ?? process.env.PREFERRED_WRAPPER ?? process.env.AGENT_WRAPPER
+  );
+  const wrapperDefaultEnabled = isWrapperAvailable(preferredWrapper) || isWrapperAvailable("codex");
 
   return {
     ...defaults,
@@ -192,7 +196,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     ),
     allowWrapperTools: parseBoolean(
       overrides.allowWrapperTools ?? args.allowWrapperTools ?? process.env.ALLOW_WRAPPER_TOOLS,
-      false
+      wrapperDefaultEnabled
     ),
     allowAuxiliaryTools: parseBoolean(
       overrides.allowAuxiliaryTools ?? args.allowAuxiliaryTools ?? process.env.ALLOW_AUXILIARY_TOOLS,
@@ -206,9 +210,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
       1,
       10
     ),
-    preferredWrapper: normalizeWrapperName(
-      overrides.preferredWrapper ?? args.preferredWrapper ?? process.env.PREFERRED_WRAPPER ?? process.env.AGENT_WRAPPER
-    ),
+    preferredWrapper,
     wrapperTimeoutMs: parseNumber(overrides.wrapperTimeoutMs ?? process.env.WRAPPER_TIMEOUT_MS, 120000),
     permissionMode,
     sandboxMode,
