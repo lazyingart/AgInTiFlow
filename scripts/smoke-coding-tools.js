@@ -1103,6 +1103,29 @@ try {
   );
   assert(safeEnvReferenceResult.ok, "write_file should allow safe env-var credential references in source code");
 
+  const safeTokenVariableSyntaxResult = await executeWorkspaceTool(
+    "write_file",
+    {
+      path: "scripts/safe-token-variable-syntax.py",
+      content: [
+        "def validate(tokens):",
+        "    for token in tokens:",
+        "        if not isinstance(token, dict) or \"t\" not in token:",
+        "            raise ValueError(\"token must contain t\")",
+        "        text = str(token.get(\"t\", \"\"))",
+        "        if token:",
+        "            print(text)",
+        "",
+      ].join("\n"),
+      mode: "create",
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  assert(safeTokenVariableSyntaxResult.ok, "write_file should allow benign token variable syntax in source code");
+
   const redactedContentResult = await executeWorkspaceTool(
     "write_file",
     {
