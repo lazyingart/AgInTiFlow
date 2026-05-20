@@ -255,9 +255,16 @@ assert(scsEvidence.includes("evidenceLedger"), "SCS evidence pack should include
 assert(scsEvidence.includes("evaluation"), "SCS evidence pack should include deterministic contract evaluation");
 
 const uploadContract = deriveScsTaskContract({
-  goal: "Upload five images in the browser composer and verify visible thumbnails. Do not submit.",
+  goal:
+    "Upload five images in the browser composer and verify visible thumbnails: /tmp/display.png /tmp/notebook.png /tmp/Trio.png. Do not submit.",
   taskProfile: "website",
 });
+assert(
+  uploadContract.exactInputPaths.includes("/tmp/display.png") &&
+    uploadContract.exactInputPaths.includes("/tmp/notebook.png") &&
+    uploadContract.exactInputPaths.includes("/tmp/Trio.png"),
+  "SCS contract should preserve exact input/reference paths for browser upload tasks"
+);
 const uploadImagePlanContradiction = deterministicPlanActionContradiction(
   "Find the latest .mp4 in the project, upload the video file, then click submit.",
   uploadContract

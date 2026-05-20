@@ -143,6 +143,7 @@ function fallbackBlockedPlan(goal = "", studentReason = "") {
 
 function fallbackHardContractPlan(goal = "", contract = {}, studentReason = "") {
   const exactOutputPaths = normalizeStringList(contract.exactOutputPaths, []);
+  const exactInputPaths = normalizeStringList(contract.exactInputPaths, []);
   const requiredTextTerms = normalizeStringList(contract.requiredTextTerms, []);
   const forbiddenTextTerms = normalizeStringList(contract.forbiddenTextTerms, []);
   return [
@@ -150,11 +151,12 @@ function fallbackHardContractPlan(goal = "", contract = {}, studentReason = "") 
     exactOutputPaths.length
       ? `2. Write the requested output exactly at: ${exactOutputPaths.join(", ")}. If an output file already exists and the user allowed overwrite/update, overwrite it intentionally.`
       : "2. Create or update the requested output artifact at the user-specified location.",
-    requiredTextTerms.length ? `3. Ensure the output contains these required term(s): ${requiredTextTerms.join(", ")}.` : "",
-    forbiddenTextTerms.length ? `4. Ensure the output does not contain these forbidden term(s): ${forbiddenTextTerms.join(", ")}.` : "",
-    "5. Run concrete validation commands or inspections for file existence and content before finish.",
-    studentReason ? `6. Preserve the validator concern while executing: ${compact(studentReason, 180)}` : "",
-    goal ? `7. Original goal remains authoritative: ${compact(goal, 220)}` : "",
+    exactInputPaths.length ? `3. Use these exact user-specified input/reference path(s): ${exactInputPaths.join(", ")}.` : "",
+    requiredTextTerms.length ? `4. Ensure the output contains these required term(s): ${requiredTextTerms.join(", ")}.` : "",
+    forbiddenTextTerms.length ? `5. Ensure the output does not contain these forbidden term(s): ${forbiddenTextTerms.join(", ")}.` : "",
+    "6. Run concrete validation commands or inspections for file existence and content before finish.",
+    studentReason ? `7. Preserve the validator concern while executing: ${compact(studentReason, 180)}` : "",
+    goal ? `8. Original goal remains authoritative: ${compact(goal, 220)}` : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -245,10 +247,12 @@ function normalizePlanText(plan) {
 function formatHardContractForPrompt(contract = {}) {
   const lines = [];
   const exactOutputPaths = normalizeStringList(contract.exactOutputPaths, []);
+  const exactInputPaths = normalizeStringList(contract.exactInputPaths, []);
   const requiredTextTerms = normalizeStringList(contract.requiredTextTerms, []);
   const forbiddenTextTerms = normalizeStringList(contract.forbiddenTextTerms, []);
   const forbiddenActions = normalizeStringList(contract.forbiddenActions, []);
   if (exactOutputPaths.length) lines.push(`Exact output path(s): ${exactOutputPaths.join(", ")}`);
+  if (exactInputPaths.length) lines.push(`Exact input/reference path(s) to use: ${exactInputPaths.join(", ")}`);
   if (requiredTextTerms.length) lines.push(`Required text term(s) in the output: ${requiredTextTerms.join(", ")}`);
   if (forbiddenTextTerms.length) lines.push(`Forbidden text term(s) in the output: ${forbiddenTextTerms.join(", ")}`);
   if (forbiddenActions.length) lines.push(`Forbidden action(s): ${forbiddenActions.join("; ")}`);
@@ -263,22 +267,57 @@ function formatHardContractForPrompt(contract = {}) {
 function deterministicPlanContractIssue(committee = {}, contract = {}) {
   const planText = `${committee.phaseGoal || ""}\n${committee.plan || ""}\n${(committee.acceptanceCriteria || []).join("\n")}`;
   const missingPath = normalizeStringList(contract.exactOutputPaths, []).filter((item) => !planText.includes(item));
+  const missingInputPath = normalizeStringList(contract.exactInputPaths, []).filter((item) => !planText.includes(item));
   const missingRequiredTerms = normalizeStringList(contract.requiredTextTerms, []).filter((item) => !planText.includes(item));
   const forbiddenTermsInPlan = normalizeStringList(contract.forbiddenTextTerms, []).filter((item) => planText.includes(item));
-  if (missingPath.length || missingRequiredTerms.length || forbiddenTermsInPlan.length) {
+  const actionContradiction = deterministicPlanActionContradiction(planText, contract);
+  if (missingPath.length || missingInputPath.length || missingRequiredTerms.length || forbiddenTermsInPlan.length || actionContradiction) {
     return {
       decision: "veto_plan",
       confidence: 0.94,
       evidence: [
         missingPath.length ? `Plan omitted exact output path(s): ${missingPath.join(", ")}` : "",
+        missingInputPath.length ? `Plan omitted exact input/reference path(s): ${missingInputPath.join(", ")}` : "",
         missingRequiredTerms.length ? `Plan omitted required text term(s): ${missingRequiredTerms.join(", ")}` : "",
         forbiddenTermsInPlan.length ? `Plan includes forbidden text term(s): ${forbiddenTermsInPlan.join(", ")}` : "",
+        actionContradiction || "",
       ].filter(Boolean),
       reason:
-        "The phase plan does not preserve the user's inferred hard task contract. It must carry exact paths and required/forbidden output terms into acceptance criteria.",
+        "The phase plan does not preserve the user's inferred hard task contract. It must carry exact paths, required/forbidden output terms, and requested action targets without inventing contradictory actions.",
       next_required_action:
-        "Committee must draft a new plan whose acceptance criteria explicitly include every exact output path, required text term, and forbidden text term from the hard contract.",
+        "Committee must draft a new plan whose acceptance criteria explicitly include every exact output path, required text term, forbidden text term, and requested action target from the hard contract.",
     };
+  }
+  return null;
+}
+
+const UPLOAD_ACTION_RE =
+  /\b(upload|attach|add|select|choose|import|provide)\b|上传|附加|添加|选择|选取|导入|提供|从资产库选择|从素材库选择/iu;
+const IMAGE_TARGET_RE = /\b(images?|photos?|pictures?|thumbnails?)\b|图片|照片|参考图|素材图|图像|五张|5张/iu;
+const VIDEO_TARGET_RE = /\b(video\s*files?|mp4s?|movs?|webms?)\b|视频文件|mp4|mov|webm/iu;
+
+function nearbyUploadTargetKinds(text = "") {
+  const kinds = new Set();
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return kinds;
+  const segments = normalized
+    .split(/(?<=[。.!?！？；;])|\n+/u)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  for (const segment of segments) {
+    if (!UPLOAD_ACTION_RE.test(segment)) continue;
+    if (IMAGE_TARGET_RE.test(segment)) kinds.add("image");
+    if (VIDEO_TARGET_RE.test(segment)) kinds.add("video-file");
+  }
+  return kinds;
+}
+
+export function deterministicPlanActionContradiction(planText = "", contract = {}) {
+  const goal = String(contract.outcome || "");
+  const requestedKinds = nearbyUploadTargetKinds(goal);
+  const planKinds = nearbyUploadTargetKinds(planText);
+  if (requestedKinds.has("image") && !requestedKinds.has("video-file") && planKinds.has("video-file")) {
+    return "Plan invents a video-file upload even though the user requested image/reference-image uploads.";
   }
   return null;
 }
@@ -453,7 +492,7 @@ function studentPlanGatePrompt() {
     "Judge whether the committee phase plan is safe, scoped, minimal, permission-aware, and evidence-oriented.",
     "You cannot execute tools or approve your own work. If the plan is weak, veto it so the committee must draft a better plan.",
     "For browser tasks, reject plans that stop merely because a state field is unknown when the user requested a target state and a bounded set-then-verify path is available.",
-    "Reject any plan whose phase goal, steps, or acceptance criteria omit exact output paths, required output phrases, or forbidden output phrases from the hard task contract. Also reject plans that add contradictory constraints not requested by the user.",
+    "Reject any plan whose phase goal, steps, or acceptance criteria omit exact input/reference paths, exact output paths, required output phrases, or forbidden output phrases from the hard task contract. Also reject plans that add contradictory constraints not requested by the user.",
     formatBehaviorContractForPrompt({ mode: "plan" }),
     "Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.",
   ].join(" ");
@@ -604,6 +643,7 @@ async function createScsPhase(client, config, state, context = {}, options = {})
     const hardContractPlan = fallbackHardContractPlan(state.goal, taskContract, student.reason || lastValidatorConcern);
     const hardContractCriteria = [
       ...normalizeStringList(taskContract.exactOutputPaths, []).map((item) => `Exact output path is used: ${item}`),
+      ...normalizeStringList(taskContract.exactInputPaths, []).map((item) => `Exact input/reference path is used: ${item}`),
       ...normalizeStringList(taskContract.requiredTextTerms, []).map((item) => `Output contains required text: ${item}`),
       ...normalizeStringList(taskContract.forbiddenTextTerms, []).map((item) => `Output omits forbidden text: ${item}`),
       "Concrete file/content validation evidence is collected before finish.",

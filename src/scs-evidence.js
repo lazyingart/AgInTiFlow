@@ -128,13 +128,15 @@ function inferExactOutputPaths(goal = "") {
   const extensionPattern = "md|txt|json|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
   const quotedPathPattern = new RegExp("[\"'`]([^\"'`\\n]{1,220}\\.(?:" + extensionPattern + "))[\"'`]", "gi");
   const pathPattern = new RegExp(
-    '(?:^|[\\s：:])((?:~|\\.{1,2}|/|[A-Za-z0-9_\\-\\u4e00-\\u9fff])[\\w./~\\-\\u4e00-\\u9fff]{0,220}\\.(?:' +
+    '(?:^|[\\s：:,，、])((?:~|\\.{1,2}|/|[A-Za-z0-9_\\-\\u4e00-\\u9fff])[\\w./~\\-\\u4e00-\\u9fff]{0,220}\\.(?:' +
       extensionPattern +
-      '))(?:$|[\\s"\'`,，。；;.!?！？])',
+      '))(?=$|[\\s"\'`,，、。；;.!?！？])',
     "gi"
   );
   const directOutputAction =
     /\b(save|saved|write|written|output|create|store|update|modify|edit)\b|保存|写入|寫入|输出|輸出|创建|建立|更新|修改|编辑|編輯/i;
+  const directOutputActionGlobal =
+    /\b(save|saved|write|written|output|create|store|update|modify|edit)\b|保存|写入|寫入|输出|輸出|创建|建立|更新|修改|编辑|編輯/gi;
   const outputListHeader =
     /^(?:#+\s*)?(?:(?:required|final|expected|declared|target|pilot|deliverable)\s+)*(?:create|created files?|files? to create|outputs?|output structure|required outputs?|artifacts?|deliverables?|generated files?|writer requirements|renderer requirements|生成文件|输出结构|輸出結構|输出文件|輸出文件|创建文件|建立文件)(?:\s+(?:outputs?|artifacts?|deliverables?))?\s*[：:]?\s*$/i;
   const nonOutputToolLine =
@@ -143,9 +145,11 @@ function inferExactOutputPaths(goal = "") {
     /\b(?:do not|don't|dont|never|not)\b[^.\n]*(?:output|artifact|create|write|save|store|update|modify|edit)\b|\b(?:do not|don't|dont|never|not)\b[^.\n]*(?:treat|count|consider)\b/i;
   let inOutputList = false;
   let outputListPending = false;
+  let activeOutputDir = "";
   const pushPath = (raw = "") => {
-    const cleaned = String(raw || "").trim();
+    let cleaned = String(raw || "").trim();
     if (!cleaned || /[{}]/.test(cleaned)) return;
+    if (activeOutputDir && !/[\\/]/.test(cleaned)) cleaned = `${activeOutputDir}${cleaned}`;
     paths.push(cleaned);
   };
   const filterShadowedBasenames = (items = []) => {
@@ -156,6 +160,16 @@ function inferExactOutputPaths(goal = "") {
         .filter(Boolean)
     );
     return items.filter((item) => /[\\/]/.test(item) || !basenamesWithDirectory.has(item));
+  };
+  const outputActionIndex = (text = "") => {
+    const source = String(text || "");
+    directOutputActionGlobal.lastIndex = 0;
+    const matches = [...source.matchAll(directOutputActionGlobal)];
+    for (const match of matches) {
+      const slice = source.slice(match.index, match.index + 120);
+      if (/(?:to|at|in|under|到|至|在)\s*[^\s，,、；;。]*[/.]/i.test(slice)) return match.index;
+    }
+    return matches[0]?.index ?? -1;
   };
   for (const rawLine of lines) {
     const line = String(rawLine || "").trim();
@@ -180,11 +194,57 @@ function inferExactOutputPaths(goal = "") {
     } else if (outputListPending) {
       outputListPending = false;
     }
-    const hasDirectOutputAction = directOutputAction.test(line);
+    const directOutputIndex = outputActionIndex(line);
+    const hasDirectOutputAction = directOutputIndex >= 0;
     if (!isOutputListItem && !hasDirectOutputAction) continue;
-    if (!isOutputListItem && negatedOutputLine.test(line)) continue;
-    if (!isOutputListItem && nonOutputToolLine.test(line)) continue;
-    if (!isOutputListItem && /\boutput\s+(?:subfolders?|directories|folders?|paths?)\b/i.test(line)) continue;
+    const sourceLine = !isOutputListItem && hasDirectOutputAction ? line.slice(directOutputIndex) : line;
+    if (!isOutputListItem && negatedOutputLine.test(sourceLine)) continue;
+    if (!isOutputListItem && nonOutputToolLine.test(sourceLine)) continue;
+    if (!isOutputListItem && /\boutput\s+(?:subfolders?|directories|folders?|paths?)\b/i.test(sourceLine)) continue;
+    const outputDirMatch = sourceLine.match(/(?:to|at|in|under|到|至|在)\s*([^\s，,、；;。]+\/)/i);
+    activeOutputDir = outputDirMatch?.[1] || "";
+    quotedPathPattern.lastIndex = 0;
+    for (const match of sourceLine.matchAll(quotedPathPattern)) {
+      pushPath(match[1]);
+    }
+    const unquotedLine = sourceLine.replace(quotedPathPattern, (match) => " ".repeat(match.length));
+    pathPattern.lastIndex = 0;
+    for (const match of unquotedLine.matchAll(pathPattern)) {
+      pushPath(match[1]);
+    }
+    activeOutputDir = "";
+  }
+  return uniqueLimited(filterShadowedBasenames(paths), 16);
+}
+
+function inferExactInputPaths(goal = "") {
+  const paths = [];
+  const lines = String(goal || "").split(/\n/);
+  const extensionPattern = "md|txt|json|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
+  const quotedPathPattern = new RegExp("[\"'`]([^\"'`\\n]{1,260}\\.(?:" + extensionPattern + "))[\"'`]", "gi");
+  const pathPattern = new RegExp(
+    '(?:^|[\\s：:,，、])((?:~|\\.{1,2}|/|[A-Za-z0-9_\\-\\u4e00-\\u9fff])[\\w./~\\-\\u4e00-\\u9fff]{0,260}\\.(?:' +
+      extensionPattern +
+      '))(?=$|[\\s"\'`,，、。；;.!?！？])',
+    "gi"
+  );
+  const inputAction =
+    /\b(use|using|read|load|fill|upload|attach|import|select|choose|reference|input|from)\b|使用|读取|讀取|加载|載入|填写|填入|上传|上傳|附加|导入|導入|选择|選擇|选取|選取|参考|參考|素材|图片|圖片|照片|提示词|提示詞|从|從/i;
+  const directOutputAction =
+    /\b(save|saved|write|written|output|create|store|update|modify|edit)\b|保存|写入|寫入|输出|輸出|创建|建立|更新|修改|编辑|編輯/i;
+  const pushPath = (raw = "") => {
+    const cleaned = String(raw || "").trim();
+    if (!cleaned || /[{}]/.test(cleaned)) return;
+    paths.push(cleaned);
+  };
+  for (const rawLine of lines) {
+    const fullLine = String(rawLine || "").trim();
+    const outputIndex = fullLine.search(directOutputAction);
+    const line = outputIndex > 0 ? fullLine.slice(0, outputIndex).trim() : fullLine;
+    if (!line || !inputAction.test(line)) continue;
+    if (directOutputAction.test(line) && !/\b(read|load|upload|attach|reference|input|from)\b|读取|讀取|加载|載入|上传|上傳|附加|参考|參考|素材|图片|圖片|照片|提示词|提示詞|从|從/i.test(line)) {
+      continue;
+    }
     quotedPathPattern.lastIndex = 0;
     for (const match of line.matchAll(quotedPathPattern)) {
       pushPath(match[1]);
@@ -195,7 +255,7 @@ function inferExactOutputPaths(goal = "") {
       pushPath(match[1]);
     }
   }
-  return uniqueLimited(filterShadowedBasenames(paths), 16);
+  return uniqueLimited(paths, 24);
 }
 
 function stripForbiddenTextClauses(text = "") {
@@ -412,6 +472,8 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     category,
     description: CATEGORY_LABELS[category] || category,
   }));
+  const exactOutputPaths = inferExactOutputPaths(goal);
+  const exactInputPaths = inferExactInputPaths(goal).filter((item) => !exactOutputPaths.includes(item));
   return {
     version: 1,
     outcome: compact(goal || "Complete the requested task.", 500),
@@ -419,7 +481,8 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     requiresExternalEvidence,
     requiredEvidence,
     forbiddenActions: inferForbiddenActions(goal),
-    exactOutputPaths: inferExactOutputPaths(goal),
+    exactOutputPaths,
+    exactInputPaths,
     requiredTextTerms: inferRequiredTextTerms(goal),
     forbiddenTextTerms: inferForbiddenTextTerms(goal),
     successCriteria: unique(acceptanceCriteria).slice(0, 10),
@@ -665,6 +728,7 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
       })),
       forbiddenActions: contract.forbiddenActions || [],
       exactOutputPaths: contract.exactOutputPaths || [],
+      exactInputPaths: contract.exactInputPaths || [],
       requiredTextTerms: contract.requiredTextTerms || [],
       forbiddenTextTerms: contract.forbiddenTextTerms || [],
       successCriteria: contract.successCriteria || [],
