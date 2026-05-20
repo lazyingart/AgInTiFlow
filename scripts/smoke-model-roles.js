@@ -365,6 +365,23 @@ const jsonObjectContract = deriveScsTaskContract({
 const virtualFileContract = deriveScsTaskContract({
   goal: "Create file: /workspace/virtual-output.txt with virtual Docker path support.",
 });
+const outputListContract = deriveScsTaskContract({
+  goal: [
+    "Create:",
+    "- `books/demo/work/generate_chunk.py`",
+    "- `books/demo/work/review_chunks.py`",
+    "",
+    "Validate with `books/demo/work/validate_chunk.py` before promoting output.",
+    "",
+    "Output structure:",
+    "- `build/demo/jp-main/color/book.pdf`",
+    "- `build/demo/zh-main/color/book.pdf`",
+    "",
+    "Each generated chunk file goes to:",
+    "`data/demo/chunks/{chunk_id}.json`",
+  ].join("\n"),
+  taskProfile: "code",
+});
 const generatedReviewContract = deriveScsTaskContract({
   goal: [
     "Review focus: changed files only",
@@ -397,6 +414,18 @@ assert(
   virtualFileContract.requiredEvidence.some((item) => item.category === "file") &&
     !virtualFileContract.requiredEvidence.some((item) => item.category === "artifact"),
   "virtual output filename should require file evidence without treating output in the filename as an artifact"
+);
+assert(
+  outputListContract.exactOutputPaths.includes("books/demo/work/generate_chunk.py") &&
+    outputListContract.exactOutputPaths.includes("books/demo/work/review_chunks.py") &&
+    outputListContract.exactOutputPaths.includes("build/demo/jp-main/color/book.pdf") &&
+    outputListContract.exactOutputPaths.includes("build/demo/zh-main/color/book.pdf"),
+  "SCS should infer exact outputs from Create/Output structure list sections"
+);
+assert(
+  !outputListContract.exactOutputPaths.includes("books/demo/work/validate_chunk.py") &&
+    !outputListContract.exactOutputPaths.some((item) => item.includes("{chunk_id}")),
+  "SCS should not treat validator/tool paths or templated paths as exact output artifacts"
 );
 assert(
   generatedReviewContract.requiredEvidence.some((item) => item.category === "command") &&

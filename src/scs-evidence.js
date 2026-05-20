@@ -124,7 +124,7 @@ function forbiddenTails(text = "") {
 
 function inferExactOutputPaths(goal = "") {
   const paths = [];
-  const lines = String(goal || "").split(/\n+/);
+  const lines = String(goal || "").split(/\n/);
   const extensionPattern = "md|txt|json|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
   const quotedPathPattern = new RegExp("[\"'`]([^\"'`\\n]{1,220}\\.(?:" + extensionPattern + "))[\"'`]", "gi");
   const pathPattern = new RegExp(
@@ -133,23 +133,56 @@ function inferExactOutputPaths(goal = "") {
       '))(?:$|[\\s"\'`,，。；;.!?！？])',
     "gi"
   );
-  for (const line of lines) {
-    if (!/\b(save|saved|write|written|output|create|store|update|modify|edit)\b|保存|写入|寫入|输出|輸出|创建|建立|更新|修改|编辑|編輯/i.test(line)) continue;
+  const directOutputAction =
+    /\b(save|saved|write|written|output|create|store|update|modify|edit)\b|保存|写入|寫入|输出|輸出|创建|建立|更新|修改|编辑|編輯/i;
+  const outputListHeader =
+    /^(?:#+\s*)?(?:create|created files?|files? to create|outputs?|output structure|required outputs?|artifacts?|generated files?|writer requirements|renderer requirements|生成文件|输出结构|輸出結構|输出文件|輸出文件|创建文件|建立文件)\s*[：:]\s*$/i;
+  const nonOutputToolLine =
+    /\b(?:validate|verify|check|compile|run|execute)\s+(?:(?:with|using)\s+)?[`"']?[^`"'\n]*\.(?:md|txt|json|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx)\b/i;
+  let inOutputList = false;
+  let outputListPending = false;
+  const pushPath = (raw = "") => {
+    const cleaned = String(raw || "").trim();
+    if (!cleaned || /[{}]/.test(cleaned)) return;
+    paths.push(cleaned);
+  };
+  for (const rawLine of lines) {
+    const line = String(rawLine || "").trim();
+    if (!line) {
+      if (inOutputList) inOutputList = false;
+      continue;
+    }
+    if (/^#+\s+/.test(line) && !outputListHeader.test(line)) {
+      inOutputList = false;
+      outputListPending = false;
+    }
+    if (outputListHeader.test(line)) {
+      outputListPending = true;
+      inOutputList = false;
+      continue;
+    }
+    const isListItem = /^\s*(?:[-*]|\d+[.)])\s+/.test(rawLine);
+    const isOutputListItem = (inOutputList || outputListPending) && isListItem;
+    if (isOutputListItem) {
+      inOutputList = true;
+      outputListPending = false;
+    } else if (outputListPending) {
+      outputListPending = false;
+    }
+    const hasDirectOutputAction = directOutputAction.test(line);
+    if (!isOutputListItem && !hasDirectOutputAction) continue;
+    if (!isOutputListItem && nonOutputToolLine.test(line)) continue;
     quotedPathPattern.lastIndex = 0;
     for (const match of line.matchAll(quotedPathPattern)) {
-      const raw = String(match[1] || "").trim();
-      if (!raw) continue;
-      paths.push(raw);
+      pushPath(match[1]);
     }
     const unquotedLine = line.replace(quotedPathPattern, (match) => " ".repeat(match.length));
     pathPattern.lastIndex = 0;
     for (const match of unquotedLine.matchAll(pathPattern)) {
-      const raw = String(match[1] || "").trim();
-      if (!raw) continue;
-      paths.push(raw);
+      pushPath(match[1]);
     }
   }
-  return uniqueLimited(paths, 8);
+  return uniqueLimited(paths, 16);
 }
 
 function stripForbiddenTextClauses(text = "") {
