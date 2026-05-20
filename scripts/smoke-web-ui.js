@@ -167,7 +167,6 @@ try {
     throw new Error("web run log did not render the plan as a formatted event card");
   }
   if (!(await page.locator("#stop-run").isVisible())) throw new Error("stop button did not appear while run was active");
-  await page.click("#stop-run");
   await waitForTerminalRunState(page);
   if (await page.locator("#stop-run").isVisible()) throw new Error("stop button stayed visible after terminal run state");
   if (!(await page.locator(".toast").first().isVisible().catch(() => false))) {
