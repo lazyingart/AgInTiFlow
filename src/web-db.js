@@ -7,7 +7,7 @@ import { deleteSessionIndex, renameSessionIndex, upsertSessionIndex } from "./se
 import { loadDatabaseSync } from "./sqlite.js";
 import { permissionModeDefaults } from "./permission-modes.js";
 
-const PREFERENCES_SCHEMA_VERSION = 8;
+const PREFERENCES_SCHEMA_VERSION = 9;
 
 function jsonStatePath(dbPath) {
   return dbPath.replace(/\.sqlite$/i, ".json");
@@ -71,6 +71,8 @@ function defaultPreferences(baseDir) {
     allowAuxiliaryTools: true,
     allowWebSearch: true,
     allowParallelScouts: true,
+    enableScs: process.env.AGINTI_SCS_MODE || "on",
+    dynamicSteps: process.env.AGINTI_DYNAMIC_STEPS || "auto",
     parallelScoutCount: 3,
     allowWrapperTools: false,
     preferredWrapper: "codex",
@@ -221,6 +223,10 @@ export class WebDatabase {
           preferences.allowPasswords = permissions.allowPasswords;
           preferences.allowDestructive = permissions.allowDestructive;
           preferences.allowOutsideWorkspaceFileTools = permissions.allowOutsideWorkspaceFileTools;
+        }
+        if ((parsed.preferencesSchemaVersion || 1) < 9) {
+          preferences.enableScs = preferences.enableScs || process.env.AGINTI_SCS_MODE || "on";
+          preferences.dynamicSteps = preferences.dynamicSteps || process.env.AGINTI_DYNAMIC_STEPS || "auto";
         }
         this.savePreferences(preferences);
       }

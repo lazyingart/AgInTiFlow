@@ -96,8 +96,11 @@ try {
   if (chatThreadIndex < 0 || chatPendingIndex < 0 || chatPendingIndex < chatThreadIndex) {
     throw new Error("pending message panel must render below the chat thread");
   }
-  for (const marker of ['id="new-session"', 'id="run-state"', 'id="toast-region"', 'id="chat-submit"']) {
+  for (const marker of ['id="new-session"', 'id="run-state"', 'id="toast-region"', 'id="chat-submit"', 'id="enableScs"', 'id="aapsModeToggle"', 'id="veniceModeToggle"', 'id="dynamicSteps"']) {
     if (!webAppHtml.includes(marker)) throw new Error(`web UI is missing ${marker}`);
+  }
+  if (webAppHtml.includes('id="goal"') || /<button[^>]+type="submit"[^>]*>\s*Start run\s*<\/button>/i.test(webAppHtml)) {
+    throw new Error("web UI still exposes the old separate goal/start-run form");
   }
 
   const config = await fetchJson("/api/config");
@@ -110,6 +113,8 @@ try {
   if (config.preferences?.packageInstallPolicy !== "allow") throw new Error("web did not default to Docker package installs");
   if (config.preferences?.permissionMode !== "normal") throw new Error("web did not default to normal permission mode");
   if (config.preferences?.workspaceWritePolicy !== "allow") throw new Error("web did not default to workspace writes allowed");
+  if (config.preferences?.enableScs !== "on") throw new Error("web did not default to CLI-aligned SCS on mode");
+  if (config.preferences?.dynamicSteps !== "auto") throw new Error("web did not default to CLI-aligned dynamic steps auto mode");
   if (Number(config.preferences?.maxSteps) < 24) throw new Error("web default max steps is too low");
   if (!Array.isArray(config.taskProfiles) || !config.taskProfiles.some((profile) => profile.id === "latex")) {
     throw new Error("task profiles are not advertised by /api/config");
@@ -208,6 +213,8 @@ try {
       auxiliaryProvider: "grsai",
       auxiliaryModel: "nano-banana-2",
       goal: "Report the current working directory with a safe command.",
+      enableScs: "off",
+      dynamicSteps: "off",
       commandCwd: runtimeDir,
       sandboxMode: "host",
       packageInstallPolicy: "block",

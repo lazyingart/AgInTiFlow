@@ -50,6 +50,15 @@ const translations = {
     modelLabel: "Model",
     goalLabel: "Goal",
     goalPlaceholder: "Open a site and summarize it, or use run_command for simple terminal inspection.",
+    runDefaultsTitle: "Run defaults",
+    runDefaultsHelp: "The chat box is the first goal for a new run. These controls set how that run starts.",
+    scsModeLabel: "SCS",
+    scsOnOption: "On",
+    scsAutoOption: "Auto",
+    scsOffOption: "Off",
+    aapsModeLabel: "AAPS",
+    veniceModeLabel: "Venice",
+    quickModeStatus: "CLI sync",
     startUrlLabel: "Start URL",
     startUrlPlaceholder: "https://news.ycombinator.com",
     allowedDomainsLabel: "Allowed domains",
@@ -88,6 +97,10 @@ const translations = {
     webSearchLabel: "Enable web search",
     parallelScoutsLabel: "Parallel DeepSeek scouts",
     parallelScoutCountLabel: "Scout count",
+    dynamicStepsLabel: "Dynamic steps",
+    dynamicStepsAutoOption: "Auto",
+    dynamicStepsOnOption: "On",
+    dynamicStepsOffOption: "Off",
     wrapperToolLabel: "Enable agent wrappers",
     preferredWrapperLabel: "Preferred wrapper",
     dockerSandboxLabel: "Use Docker sandbox",
@@ -678,6 +691,10 @@ const languageField = document.querySelector("#language");
 const routingModeField = document.querySelector("#routingMode");
 const providerField = document.querySelector("#provider");
 const modelField = document.querySelector("#model");
+const enableScsField = document.querySelector("#enableScs");
+const aapsModeToggle = document.querySelector("#aapsModeToggle");
+const veniceModeToggle = document.querySelector("#veniceModeToggle");
+const quickModeStatusEl = document.querySelector("#quick-mode-status");
 const modelCatalogEl = document.querySelector("#model-catalog");
 const modelRoleGridEl = document.querySelector("#model-role-grid");
 const modelRoutePillEl = document.querySelector("#model-route-pill");
@@ -715,6 +732,7 @@ const allowWebSearchField = document.querySelector("#allowWebSearch");
 const allowMcpToolsField = document.querySelector("#allowMcpTools");
 const allowParallelScoutsField = document.querySelector("#allowParallelScouts");
 const parallelScoutCountField = document.querySelector("#parallelScoutCount");
+const dynamicStepsField = document.querySelector("#dynamicSteps");
 const allowWrapperToolsField = document.querySelector("#allowWrapperTools");
 const preferredWrapperField = document.querySelector("#preferredWrapper");
 const wrapperStatusEl = document.querySelector("#wrapper-status");
@@ -962,8 +980,7 @@ function recommendedMaxStepsForProfile(profile = "auto", goal = "") {
 
 function ensureRecommendedMaxStepsForCurrentTask(goalOverride = "") {
   const maxStepsField = document.querySelector("#maxSteps");
-  const goalField = document.querySelector("#goal");
-  const recommended = recommendedMaxStepsForProfile(taskProfileField?.value || "auto", goalOverride || goalField?.value || "");
+  const recommended = recommendedMaxStepsForProfile(taskProfileField?.value || "auto", goalOverride || chatInputEl?.value || "");
   if (maxStepsField && Number(maxStepsField.value || 0) < recommended) {
     maxStepsField.value = String(recommended);
   }
@@ -1264,6 +1281,74 @@ function refreshModelDropdowns() {
   );
 }
 
+function selectedVeniceTextModel() {
+  const options = providerModelOptions("venice");
+  return (
+    fieldValue(routeProviderField) === "venice" && fieldValue(routeModelField)
+      ? fieldValue(routeModelField)
+      : options.find((item) => item.id === "venice-uncensored-1-2")?.id || options[0]?.id || defaults.venice
+  );
+}
+
+function inferVeniceMode() {
+  return [providerField?.value, routeProviderField?.value, mainProviderField?.value].includes("venice");
+}
+
+function syncQuickModeControls() {
+  if (aapsModeToggle) aapsModeToggle.checked = (taskProfileField?.value || "auto") === "aaps";
+  if (veniceModeToggle) veniceModeToggle.checked = inferVeniceMode();
+  if (quickModeStatusEl) {
+    const scs = enableScsField?.value || "on";
+    const profile = taskProfileField?.value || "auto";
+    const route = `${routeProviderField?.value || "deepseek"}/${fieldValue(routeModelField) || "auto"}`;
+    const main = `${mainProviderField?.value || "deepseek"}/${fieldValue(mainModelField) || "auto"}`;
+    quickModeStatusEl.textContent = `scs=${scs} · profile=${profile} · route ${route} · main ${main}`;
+  }
+}
+
+function applyAapsMode(enabled) {
+  if (!taskProfileField) return;
+  taskProfileField.value = enabled ? "aaps" : taskProfileField.value === "aaps" ? "auto" : taskProfileField.value;
+  ensureRecommendedMaxStepsForCurrentTask();
+  syncQuickModeControls();
+}
+
+function applyVeniceMode(enabled) {
+  if (enabled) {
+    const model = selectedVeniceTextModel();
+    routingModeField.value = "smart";
+    providerField.value = "deepseek";
+    if (routeProviderField) routeProviderField.value = "venice";
+    refreshModelDropdowns();
+    if (routeModelField) setSelectOptions(routeModelField, providerModelOptions("venice"), model, defaults.venice);
+    if (mainProviderField) mainProviderField.value = "venice";
+    refreshModelDropdowns();
+    if (mainModelField) setSelectOptions(mainModelField, providerModelOptions("venice"), model, defaults.venice);
+  } else {
+    routingModeField.value = "smart";
+    providerField.value = "deepseek";
+    if (routeProviderField?.value === "venice") routeProviderField.value = "deepseek";
+    if (mainProviderField?.value === "venice") mainProviderField.value = "deepseek";
+    refreshModelDropdowns();
+    if (routeModelField && routeProviderField?.value === "deepseek") {
+      setSelectOptions(routeModelField, providerModelOptions("deepseek"), "deepseek-v4-flash", "deepseek-v4-flash");
+    }
+    if (mainModelField && mainProviderField?.value === "deepseek") {
+      setSelectOptions(mainModelField, providerModelOptions("deepseek"), "deepseek-v4-pro", "deepseek-v4-pro");
+    }
+  }
+  updateRoutingHint();
+  syncQuickModeControls();
+}
+
+function applyScsMode(mode = enableScsField?.value || "on") {
+  if (enableScsField) enableScsField.value = ["on", "auto", "off"].includes(mode) ? mode : "on";
+  if (allowParallelScoutsField && enableScsField?.value === "on") {
+    allowParallelScoutsField.checked = false;
+  }
+  syncQuickModeControls();
+}
+
 function renderModelRoles() {
   if (!modelRoleGridEl) return;
   const roles = {
@@ -1373,6 +1458,7 @@ function updateRoutingHint() {
     fieldValue(modelField) || defaults[providerField.value] || ""
   }`;
   renderModelOptions();
+  syncQuickModeControls();
 }
 
 function updatePackageWarning() {
@@ -1511,6 +1597,8 @@ function formPayload() {
     allowWebSearch: allowWebSearchField?.checked ?? true,
     allowMcpTools: allowMcpToolsField?.checked ?? true,
     allowParallelScouts: allowParallelScoutsField?.checked ?? true,
+    enableScs: enableScsField?.value || "on",
+    dynamicSteps: dynamicStepsField?.value || "auto",
     parallelScoutCount: Math.min(Math.max(Number(parallelScoutCountField?.value) || 3, 1), 10),
     allowWrapperTools: allowWrapperToolsField.checked,
     preferredWrapper: preferredWrapperField.value,
@@ -2971,6 +3059,7 @@ providerField.addEventListener("change", () => {
     modelField.value = defaults[providerField.value] || "";
   }
   updateRoutingHint();
+  syncQuickModeControls();
   schedulePreferenceSave();
 });
 
@@ -2982,6 +3071,21 @@ modelCatalogEl?.addEventListener("click", (event) => {
   schedulePreferenceSave();
 });
 
+enableScsField?.addEventListener("change", () => {
+  applyScsMode(enableScsField.value);
+  schedulePreferenceSave();
+});
+
+aapsModeToggle?.addEventListener("change", () => {
+  applyAapsMode(aapsModeToggle.checked);
+  schedulePreferenceSave();
+});
+
+veniceModeToggle?.addEventListener("change", () => {
+  applyVeniceMode(veniceModeToggle.checked);
+  schedulePreferenceSave();
+});
+
 modelField.addEventListener("change", updateRoutingHint);
 [routeProviderField, routeModelField, mainProviderField, mainModelField, spareProviderField, spareModelField, spareReasoningField, wrapperModelField, wrapperReasoningField, auxiliaryProviderField, auxiliaryModelField]
   .filter(Boolean)
@@ -2990,12 +3094,14 @@ modelField.addEventListener("change", updateRoutingHint);
       if (field === routeProviderField || field === mainProviderField || field === spareProviderField || field === auxiliaryProviderField) refreshModelDropdowns();
       renderModelRoles();
       renderModelOptions();
+      syncQuickModeControls();
       schedulePreferenceSave();
     });
     field.addEventListener("change", () => {
       if (field === routeProviderField || field === mainProviderField || field === spareProviderField || field === auxiliaryProviderField) refreshModelDropdowns();
       renderModelRoles();
       renderModelOptions();
+      syncQuickModeControls();
       schedulePreferenceSave();
     });
   });
@@ -3007,8 +3113,10 @@ permissionModeField?.addEventListener("change", () => {
 });
 allowWrapperToolsField.addEventListener("change", () => renderWrapperStatus());
 preferredWrapperField.addEventListener("change", () => renderWrapperStatus());
+dynamicStepsField?.addEventListener("change", schedulePreferenceSave);
 taskProfileField?.addEventListener("change", () => {
   ensureRecommendedMaxStepsForCurrentTask();
+  syncQuickModeControls();
   schedulePreferenceSave();
 });
 
@@ -3118,9 +3226,7 @@ window.addEventListener("keydown", (event) => {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-
-  const goal = document.querySelector("#goal").value.trim();
-  await startRunFromGoal(goal);
+  chatInputEl?.focus();
 });
 
 sessionSelectEl.addEventListener("change", async () => {
@@ -3249,6 +3355,8 @@ async function loadConfig() {
   if (allowWebSearchField) allowWebSearchField.checked = prefs.allowWebSearch ?? true;
   if (allowMcpToolsField) allowMcpToolsField.checked = prefs.allowMcpTools ?? true;
   if (allowParallelScoutsField) allowParallelScoutsField.checked = prefs.allowParallelScouts ?? true;
+  if (enableScsField) enableScsField.value = prefs.enableScs || "on";
+  if (dynamicStepsField) dynamicStepsField.value = prefs.dynamicSteps || "auto";
   if (parallelScoutCountField) parallelScoutCountField.value = String(prefs.parallelScoutCount || 3);
   allowWrapperToolsField.checked = prefs.allowWrapperTools ?? false;
   preferredWrapperField.value = prefs.preferredWrapper || "codex";
@@ -3267,6 +3375,7 @@ async function loadConfig() {
   updateRoutingHint();
   updatePermissionHint();
   updatePackageWarning();
+  syncQuickModeControls();
 
   renderSessions(data.sessions || []);
   if (data.sessions && data.sessions.length > 0) {

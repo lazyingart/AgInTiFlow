@@ -84,20 +84,12 @@
           </div>
         </section>
 
-        <form id="run-form">
-          <label>
-            <span data-i18n="goalLabel">Goal</span>
-            <textarea
-              id="goal"
-              name="goal"
-              rows="5"
-              data-i18n-placeholder="goalPlaceholder"
-              placeholder="Open a site and summarize it, or use run_command for simple terminal inspection."
-            ></textarea>
-          </label>
-
-          <div class="actions run-start-actions">
-            <button type="submit" data-i18n="startRunButton">Start run</button>
+        <form id="run-form" class="run-defaults-form">
+          <div class="run-defaults-head">
+            <div>
+              <strong data-i18n="runDefaultsTitle">Run defaults</strong>
+              <p class="subtle" data-i18n="runDefaultsHelp">The chat box is the first goal for a new run. These controls set how that run starts.</p>
+            </div>
             <span id="key-status" class="subtle"></span>
           </div>
 
@@ -150,6 +142,14 @@
             <label>
               <span data-i18n="maxStepsLabel">Max steps</span>
               <input id="maxSteps" name="maxSteps" type="number" min="1" max="50" value="24" />
+            </label>
+            <label>
+              <span data-i18n="dynamicStepsLabel">Dynamic steps</span>
+              <select id="dynamicSteps" name="dynamicSteps">
+                <option value="auto" data-i18n="dynamicStepsAutoOption">Auto</option>
+                <option value="on" data-i18n="dynamicStepsOnOption">On</option>
+                <option value="off" data-i18n="dynamicStepsOffOption">Off</option>
+              </select>
             </label>
           </div>
           <p id="package-warning" class="subtle package-warning"></p>
@@ -239,6 +239,27 @@
             <span id="run-state-dot" class="run-state-dot" aria-hidden="true"></span>
             <strong id="run-state-text" data-i18n="runStateIdle">Ready</strong>
             <span id="run-state-detail" class="subtle" data-i18n="runStateIdleDetail">Select a conversation or type a new goal below.</span>
+          </div>
+          <div class="quick-mode-bar" aria-label="Run mode shortcuts">
+            <label class="quick-mode-select">
+              <span data-i18n="scsModeLabel">SCS</span>
+              <select id="enableScs" name="enableScs">
+                <option value="on" data-i18n="scsOnOption">On</option>
+                <option value="auto" data-i18n="scsAutoOption">Auto</option>
+                <option value="off" data-i18n="scsOffOption">Off</option>
+              </select>
+            </label>
+            <label class="switch-label compact-switch">
+              <input id="aapsModeToggle" name="aapsModeToggle" type="checkbox" />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="aapsModeLabel">AAPS</span>
+            </label>
+            <label class="switch-label compact-switch">
+              <input id="veniceModeToggle" name="veniceModeToggle" type="checkbox" />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="veniceModeLabel">Venice</span>
+            </label>
+            <span id="quick-mode-status" class="subtle quick-mode-status"></span>
           </div>
           <form id="chat-form" class="chat-form">
             <textarea

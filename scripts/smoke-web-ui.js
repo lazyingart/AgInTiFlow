@@ -87,13 +87,39 @@ try {
   const initialSubmit = await page.locator("#chat-submit").innerText();
   if (!/start new run/i.test(initialSubmit)) throw new Error(`composer did not default to new-run mode: ${initialSubmit}`);
   if (await page.locator("#stop-run").isVisible()) throw new Error("stop button is visible before a run starts");
+  if ((await page.locator("#goal").count()) !== 0) throw new Error("old standalone goal textarea is still rendered");
+
+  await page.selectOption("#enableScs", "auto");
+  await page.locator("label:has(#aapsModeToggle)").click();
+  if ((await page.locator("#taskProfile").inputValue()) !== "aaps") throw new Error("AAPS toggle did not select the AAPS task profile");
+  await page.locator("label:has(#veniceModeToggle)").click();
+  if ((await page.locator("#routeProvider").inputValue()) !== "venice") throw new Error("Venice toggle did not set route provider");
+  if ((await page.locator("#mainProvider").inputValue()) !== "venice") throw new Error("Venice toggle did not set main provider");
+  const quickStatus = await page.locator("#quick-mode-status").innerText();
+  if (!/scs=auto/.test(quickStatus) || !/profile=aaps/.test(quickStatus) || !/route venice\//.test(quickStatus)) {
+    throw new Error(`quick mode status did not reflect CLI modes: ${quickStatus}`);
+  }
 
   await page.selectOption("#routingMode", "manual");
   await page.selectOption("#provider", "mock");
   await page.selectOption("#model", "mock-agent");
   await page.fill("#maxSteps", "4");
+  await page.selectOption("#dynamicSteps", "off");
   await page.fill("#chat-input", "Say hello from the web UI composer in one concise sentence.");
   await page.click("#chat-submit");
+  const firstPayload = JSON.parse(runPayloads.at(-1) || "{}");
+  if (firstPayload.goal !== "Say hello from the web UI composer in one concise sentence.") {
+    throw new Error("composer text was not used as the first run goal");
+  }
+  if (firstPayload.enableScs !== "auto" || firstPayload.taskProfile !== "aaps") {
+    throw new Error(`CLI mode payload mismatch: ${runPayloads.at(-1) || ""}`);
+  }
+  if (firstPayload.dynamicSteps !== "off") {
+    throw new Error(`dynamic steps payload mismatch: ${runPayloads.at(-1) || ""}`);
+  }
+  if (firstPayload.routeProvider !== "venice" || firstPayload.mainProvider !== "venice") {
+    throw new Error(`Venice route/main payload mismatch: ${runPayloads.at(-1) || ""}`);
+  }
   await waitForRunState(page, "running");
   if (!(await page.locator("#stop-run").isVisible())) throw new Error("stop button did not appear while run was active");
   await page.click("#stop-run");
@@ -127,6 +153,10 @@ try {
         runtimeDir,
         checks: [
           "composer-starts-new-run",
+          "old-goal-form-hidden",
+          "quick-scs-aaps-venice-controls",
+          "dynamic-steps-dropdown",
+          "composer-goal-payload",
           "running-stop-button-visible",
           "running-status-toast",
           "terminal-stop-button-hidden",

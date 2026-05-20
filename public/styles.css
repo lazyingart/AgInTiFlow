@@ -128,6 +128,32 @@ h1 {
   line-height: 1.45;
 }
 
+.run-defaults-form {
+  display: grid;
+  gap: 14px;
+}
+
+.run-defaults-head {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  border-radius: 16px;
+  background: rgba(204, 251, 241, 0.28);
+}
+
+.run-defaults-head strong {
+  color: #0f766e;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.run-defaults-head p {
+  margin: 4px 0 0;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
 .model-catalog-panel {
   display: grid;
   gap: 10px;
@@ -527,6 +553,24 @@ textarea {
   min-height: 100%;
 }
 
+.compact-switch {
+  min-height: 42px;
+  padding: 8px 10px;
+}
+
+.compact-switch .switch {
+  width: 50px;
+  min-width: 50px;
+}
+
+.compact-switch .switch::before {
+  width: 18px;
+}
+
+.compact-switch input[type="checkbox"]:checked + .switch::before {
+  transform: translateX(24px);
+}
+
 .settings-button {
   width: 100%;
   justify-self: stretch;
@@ -598,17 +642,38 @@ button.danger {
   justify-content: space-between;
 }
 
-.run-start-actions {
+.quick-mode-bar {
   display: grid;
-  gap: 8px;
+  grid-template-columns: minmax(130px, 170px) repeat(2, minmax(110px, max-content)) minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(236, 253, 245, 0.76), rgba(255, 253, 250, 0.9)),
+    #fffdfa;
 }
 
-.run-start-actions button {
-  width: 100%;
+.quick-mode-select {
+  display: grid;
+  gap: 5px;
 }
 
-.run-start-actions #key-status {
-  min-height: 1.2em;
+.quick-mode-select span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.quick-mode-status {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.84rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .run-header-actions {
@@ -1781,8 +1846,13 @@ button.danger {
 
   .settings-grid,
   .settings-checks,
-  .role-editor-grid {
+  .role-editor-grid,
+  .quick-mode-bar {
     grid-template-columns: 1fr;
+  }
+
+  .quick-mode-status {
+    white-space: normal;
   }
 }
 
