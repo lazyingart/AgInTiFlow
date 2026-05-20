@@ -144,6 +144,9 @@ try {
   await page.selectOption("#routingMode", "manual");
   await page.selectOption("#provider", "mock");
   await page.selectOption("#model", "mock-agent");
+  await page.selectOption("#enableScs", "off");
+  if (await page.locator("#aapsModeToggle").isChecked()) await page.locator("label:has(#aapsModeToggle)").click();
+  await page.selectOption("#taskProfile", "auto");
   await page.fill("#maxSteps", "4");
   await page.selectOption("#dynamicSteps", "off");
   await page.fill("#chat-input", "Say hello from the web UI composer in one concise sentence.");
@@ -152,7 +155,7 @@ try {
   if (firstPayload.goal !== "Say hello from the web UI composer in one concise sentence.") {
     throw new Error("composer text was not used as the first run goal");
   }
-  if (firstPayload.enableScs !== "auto" || firstPayload.taskProfile !== "aaps") {
+  if (firstPayload.enableScs !== "off" || firstPayload.taskProfile !== "auto") {
     throw new Error(`CLI mode payload mismatch: ${runPayloads.at(-1) || ""}`);
   }
   if (firstPayload.dynamicSteps !== "off") {

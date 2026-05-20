@@ -51,6 +51,26 @@ async function killPort(port) {
   }
 }
 
+async function stopChild(child) {
+  if (!child || child.exitCode !== null) return;
+  try {
+    child.stdin?.write("/exit\n");
+  } catch {
+    // The CLI may have closed stdin after the final prompt; fall back to process signals.
+  }
+  const exited = await Promise.race([
+    new Promise((resolve) => child.once("exit", () => resolve(true))),
+    delay(2000).then(() => false),
+  ]);
+  if (exited || child.exitCode !== null) return;
+  child.kill("SIGTERM");
+  const terminated = await Promise.race([
+    new Promise((resolve) => child.once("exit", () => resolve(true))),
+    delay(2000).then(() => false),
+  ]);
+  if (!terminated && child.exitCode === null) child.kill("SIGKILL");
+}
+
 async function runCase({ port, env = {}, expectHeader, label }) {
   const output = { stdout: "", stderr: "" };
   const child = spawn(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), "chat", "--provider", "mock", "--routing", "manual", "--port", String(port)], {
@@ -109,8 +129,9 @@ async function runCase({ port, env = {}, expectHeader, label }) {
     child.stdin.write(`/webapp ${active.port}\n`);
     await waitFor(() => latestWebappEvent(output.stdout, "started|reused")?.port === active.port, child, `${label} /webapp restart after stop`, output);
   } finally {
-    child.kill("SIGTERM");
+    await stopChild(child);
     await killPort(port);
+    await delay(250);
   }
 }
 
@@ -133,5 +154,6 @@ try {
 } finally {
   await killPort(autoPort);
   await killPort(manualPort);
-  await fs.rm(runtimeDir, { recursive: true, force: true });
+  await delay(250);
+  await fs.rm(runtimeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
