@@ -64,6 +64,72 @@ function compactJson(value, limit = 1800) {
   }
 }
 
+function decisionText(decision = {}) {
+  return [
+    decision.reason,
+    decision.nextRequiredAction,
+    decision.next_required_action,
+    ...(Array.isArray(decision.evidence) ? decision.evidence : []),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function decisionClaimsNoEvidence(decision = {}) {
+  const text = decisionText(decision);
+  if (!text) return false;
+  return (
+    /\b(?:no|zero|lack(?:s|ing)?|missing|without)\b.{0,90}\b(?:evidence|tool results?|tool outputs?|output|progress|actionable evidence)\b/i.test(text) ||
+    /\b(?:has not|hasn't|not yet|never)\b.{0,90}\b(?:started|begun|progressed|initiated|provided|executed)\b/i.test(text) ||
+    /\b(?:no actionable evidence|no concrete evidence|no tool evidence|no tool results visible|lack of tangible execution evidence)\b/i.test(text)
+  );
+}
+
+function ledgerHasConcreteEvidence(ledger = {}) {
+  if (Number(ledger.itemCount || 0) > 0) return true;
+  return Array.isArray(ledger.items) && ledger.items.some((item) => item?.verified !== false && item?.category);
+}
+
+function overrideNoEvidenceProgressDecision(decision = {}, ledger = {}) {
+  if (!["reject_phase", "rethink_plan"].includes(decision.decision)) return decision;
+  if (!decisionClaimsNoEvidence(decision) || !ledgerHasConcreteEvidence(ledger)) return decision;
+  const categories = (ledger.categories || []).join(", ") || "tool";
+  return normalizeDecision(
+    {
+      decision: "accept_phase",
+      confidence: Math.max(Number(decision.confidence || 0), 0.82),
+      evidence: [
+        `Deterministic evidence ledger contains ${ledger.itemCount || ledger.items?.length || 0} concrete item(s).`,
+        `Evidence categories present: ${categories}.`,
+      ],
+      reason:
+        "Overrode a no-evidence progress rejection because the deterministic SCS evidence ledger contains concrete tool/artifact evidence.",
+      next_required_action: "supervisor_continue_with_evidence_aware_validation",
+    },
+    "accept_phase"
+  );
+}
+
+function overrideNoEvidenceFinishDecision(decision = {}, evaluation = {}, ledger = {}) {
+  if (decision.decision !== "finish_rejected") return decision;
+  if (!evaluation.ok || !decisionClaimsNoEvidence(decision) || !ledgerHasConcreteEvidence(ledger)) return decision;
+  const categories = (ledger.categories || []).join(", ") || "tool";
+  return normalizeDecision(
+    {
+      decision: "finish_allowed",
+      confidence: Math.max(Number(decision.confidence || 0), 0.84),
+      evidence: [
+        `Deterministic evidence contract is satisfied with ${ledger.itemCount || ledger.items?.length || 0} concrete item(s).`,
+        `Evidence categories present: ${categories}.`,
+      ],
+      reason:
+        "Overrode a no-evidence finish rejection because the deterministic SCS evidence ledger satisfies the task contract.",
+      next_required_action: "finish",
+    },
+    "finish_allowed"
+  );
+}
+
 function likelyWholePageText(value = "") {
   const text = String(value || "").replace(/\\n/g, "\n");
   if (text.length < 1200) return false;
@@ -821,6 +887,12 @@ export async function reviewScsProgress(client, config, state, context = {}) {
     "accept_phase"
   );
   const evidence = buildScsEvidencePack(state, context);
+  const taskContract = contractForState(state, {
+    ...context,
+    taskProfile: context.taskProfile || config.taskProfile || "",
+  });
+  const evidenceLedger = buildScsEvidenceLedger({ state, context });
+  const evidenceEvaluation = evaluateScsEvidence(taskContract, evidenceLedger);
   const raw = await callJson(
     client,
     config,
@@ -838,7 +910,11 @@ export async function reviewScsProgress(client, config, state, context = {}) {
     fallback,
     "SCS progress monitor"
   );
-  return normalizeDecision(raw, "accept_phase");
+  const decision = normalizeDecision(raw, "accept_phase");
+  if (evidenceEvaluation.hasAnyEvidence) {
+    return overrideNoEvidenceProgressDecision(decision, evidenceLedger);
+  }
+  return decision;
 }
 
 export async function reviewScsStepBudget(client, config, state, context = {}) {
@@ -987,10 +1063,11 @@ export async function reviewScsFinish(client, config, state, result = "", contex
     fallback,
     "SCS finish gate"
   );
-  const decision = normalizeDecision(raw, "finish_allowed");
+  let decision = normalizeDecision(raw, "finish_allowed");
   if (!["finish_allowed", "finish_rejected"].includes(decision.decision)) {
     decision.decision = decision.decision === "reject_phase" ? "finish_rejected" : "finish_allowed";
   }
+  decision = overrideNoEvidenceFinishDecision(decision, evidenceEvaluation, evidenceLedger);
   if (decision.decision === "finish_allowed" && deterministicBlocker && !hasAllowedExternalBrowserBlocker(result)) {
     if (hasRealBlocker) return decision;
     return normalizeDecision(
