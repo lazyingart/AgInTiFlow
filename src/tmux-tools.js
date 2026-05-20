@@ -30,7 +30,7 @@ const ALLOWED_KEYS = new Set([
 ]);
 const SECRET_PATTERN = /(api[_-]?key|auth[_-]?token|npm[_-]?token|_authToken|password|passwd|secret|bearer\s+[A-Za-z0-9._-]+)/i;
 const DESTRUCTIVE_PATTERN =
-  /\b(rm\s+-[^\n;]*[rf][^\n;]*(\/|\*|~|\$HOME)|mkfs(?:\.[a-z0-9]+)?\b|dd\s+if=.*\s+of=\/dev\/|shutdown\b|reboot\b|poweroff\b)/i;
+  /\b(rm\s+-[^\n;]*[rf][^\n;]*(?:\s+(?:\/|\/\*|~|\$HOME)(?:\s|;|$))|mkfs(?:\.[a-z0-9]+)?\b|dd\s+if=.*\s+of=\/dev\/|shutdown\b|reboot\b|poweroff\b)/i;
 const ABSOLUTE_PATH_PATTERN = /(^|[\s"'`=(:])((?:\/[A-Za-z0-9._@%+~:-]+)+\/?)/g;
 const ALWAYS_ALLOWED_ABSOLUTE_PATHS = new Set(["/dev/null"]);
 

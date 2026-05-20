@@ -83,6 +83,13 @@ try {
   const destructive = checkTmuxToolUse("tmux_send_keys", { target: start.target, text: "rm -rf /" }, config);
   assert.equal(destructive.allowed, false, "tmux guardrail did not block destructive text");
 
+  const workspaceRelativeCleanup = checkToolUse({
+    toolName: "tmux_start_session",
+    args: { name: `${session}-cleanup`, cwd: ".", command: "rm -f logs/task.status && echo cleaned" },
+    config,
+  });
+  assert.equal(workspaceRelativeCleanup.allowed, true, "Host danger tmux should allow workspace-relative cleanup commands");
+
   const outsidePath = path.join(os.tmpdir(), "agintiflow-outside-workspace-canary.txt");
   const workspacePath = path.join(workspace, "inside-workspace.txt");
   const dockerTmuxOutsideStart = checkToolUse({
@@ -249,6 +256,7 @@ try {
           "list-sessions",
           "secret-guardrail",
           "destructive-guardrail",
+          "host-danger-workspace-cleanup-allowed",
           "docker-tmux-start-outside-path-guardrail",
           "docker-tmux-send-outside-path-guardrail",
           "docker-tmux-start-project-path-allowed",
