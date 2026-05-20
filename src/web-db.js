@@ -245,6 +245,18 @@ export class WebDatabase {
         }
         this.savePreferences(preferences);
       }
+      if (
+        preferences.veniceMode !== true &&
+        preferences.routingMode !== "manual" &&
+        preferences.provider !== "venice" &&
+        (preferences.routeProvider === "venice" || preferences.mainProvider === "venice")
+      ) {
+        preferences.routeProvider = "deepseek";
+        preferences.routeModel = "deepseek-v4-flash";
+        preferences.mainProvider = "deepseek";
+        preferences.mainModel = "deepseek-v4-pro";
+        this.savePreferences(preferences);
+      }
       return preferences;
     } catch {
       return defaultPreferences(this.baseDir);
