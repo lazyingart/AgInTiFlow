@@ -136,7 +136,7 @@ function inferExactOutputPaths(goal = "") {
   const directOutputAction =
     /\b(save|saved|write|written|output|create|store|update|modify|edit)\b|保存|写入|寫入|输出|輸出|创建|建立|更新|修改|编辑|編輯/i;
   const outputListHeader =
-    /^(?:#+\s*)?(?:create|created files?|files? to create|outputs?|output structure|required outputs?|artifacts?|generated files?|writer requirements|renderer requirements|生成文件|输出结构|輸出結構|输出文件|輸出文件|创建文件|建立文件)\s*[：:]\s*$/i;
+    /^(?:#+\s*)?(?:(?:required|final|expected|declared|target|pilot|deliverable)\s+)*(?:create|created files?|files? to create|outputs?|output structure|required outputs?|artifacts?|deliverables?|generated files?|writer requirements|renderer requirements|生成文件|输出结构|輸出結構|输出文件|輸出文件|创建文件|建立文件)(?:\s+(?:outputs?|artifacts?|deliverables?))?\s*[：:]?\s*$/i;
   const nonOutputToolLine =
     /\b(?:validate|verify|check|compile|run|execute)\s+(?:(?:with|using)\s+)?[`"']?[^`"'\n]*\.(?:md|txt|json|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx)\b/i;
   const negatedOutputLine =
@@ -147,6 +147,15 @@ function inferExactOutputPaths(goal = "") {
     const cleaned = String(raw || "").trim();
     if (!cleaned || /[{}]/.test(cleaned)) return;
     paths.push(cleaned);
+  };
+  const filterShadowedBasenames = (items = []) => {
+    const basenamesWithDirectory = new Set(
+      items
+        .filter((item) => /[\\/]/.test(item))
+        .map((item) => String(item).split(/[\\/]/).filter(Boolean).pop())
+        .filter(Boolean)
+    );
+    return items.filter((item) => /[\\/]/.test(item) || !basenamesWithDirectory.has(item));
   };
   for (const rawLine of lines) {
     const line = String(rawLine || "").trim();
@@ -175,6 +184,7 @@ function inferExactOutputPaths(goal = "") {
     if (!isOutputListItem && !hasDirectOutputAction) continue;
     if (!isOutputListItem && negatedOutputLine.test(line)) continue;
     if (!isOutputListItem && nonOutputToolLine.test(line)) continue;
+    if (!isOutputListItem && /\boutput\s+(?:subfolders?|directories|folders?|paths?)\b/i.test(line)) continue;
     quotedPathPattern.lastIndex = 0;
     for (const match of line.matchAll(quotedPathPattern)) {
       pushPath(match[1]);
@@ -185,7 +195,7 @@ function inferExactOutputPaths(goal = "") {
       pushPath(match[1]);
     }
   }
-  return uniqueLimited(paths, 16);
+  return uniqueLimited(filterShadowedBasenames(paths), 16);
 }
 
 function stripForbiddenTextClauses(text = "") {
@@ -202,10 +212,10 @@ function inferRequiredTextTerms(goal = "") {
     const positiveSegment = String(line || "").split(
       /(?:并)?确认没有|(?:并)?確認沒有|没有|沒有|\b(?:does not contain|do not contain|not contain|not include|without)\b/i
     )[0];
-    const requiredSegment = stripForbiddenTextClauses(positiveSegment);
+    const requiredSegment = stripForbiddenLanguage(stripForbiddenTextClauses(positiveSegment));
     if (
-      /\b(must|require|required|include|contain|contains|check|verify|grep|keyword|keywords|preserve|keep|retain|appear)\b/i.test(line) ||
-      /必须|必須|要求|包含|保留|出现|出現|精确字符串|精確字符串|明确出现|明確出現|检查|檢查|验证|驗證|关键词|關鍵詞|自检|自檢/.test(line)
+      /\b(must|require|required|include|contain|contains|check|verify|grep|keyword|keywords|preserve|keep|retain|appear)\b/i.test(requiredSegment) ||
+      /必须|必須|要求|包含|保留|出现|出現|精确字符串|精確字符串|明确出现|明確出現|检查|檢查|验证|驗證|关键词|關鍵詞|自检|自檢/.test(requiredSegment)
     ) {
       terms.push(...quotedTerms(requiredSegment));
     }
