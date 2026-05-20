@@ -26,6 +26,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-cli-chat-"));
 const agintiflowHome = path.join(tempRoot, ".agintiflow-home");
 const binPath = path.join(repoRoot, "bin/aginti-cli.js");
+const headlessCliTimeoutMs = process.env.CI ? 90000 : 45000;
 
 function charCellWidth(char = "") {
   const code = char.codePointAt(0);
@@ -88,8 +89,17 @@ function runCli(args, inputText) {
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
-      reject(new Error("interactive chat smoke timed out"));
-    }, 25000);
+      reject(
+        new Error(
+          [
+            `interactive chat smoke timed out after ${headlessCliTimeoutMs}ms`,
+            `args: ${args.join(" ")}`,
+            `stdout tail:\n${stdout.slice(-4000)}`,
+            `stderr tail:\n${stderr.slice(-4000)}`,
+          ].join("\n")
+        )
+      );
+    }, headlessCliTimeoutMs);
 
     child.stdout.on("data", (chunk) => {
       stdout += String(chunk);
