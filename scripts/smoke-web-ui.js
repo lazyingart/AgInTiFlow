@@ -147,6 +147,11 @@ try {
   await page.selectOption("#enableScs", "off");
   if (await page.locator("#aapsModeToggle").isChecked()) await page.locator("label:has(#aapsModeToggle)").click();
   await page.selectOption("#taskProfile", "auto");
+  await page.evaluate(() => {
+    const input = document.querySelector("#allowShellTool");
+    input.checked = false;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
   await page.fill("#maxSteps", "4");
   await page.selectOption("#dynamicSteps", "off");
   await page.fill("#chat-input", "Say hello from the web UI composer in one concise sentence.");
@@ -160,6 +165,9 @@ try {
   }
   if (firstPayload.dynamicSteps !== "off") {
     throw new Error(`dynamic steps payload mismatch: ${runPayloads.at(-1) || ""}`);
+  }
+  if (firstPayload.allowShellTool !== false) {
+    throw new Error(`shell tool should be disabled for deterministic renderer smoke: ${runPayloads.at(-1) || ""}`);
   }
   if (firstPayload.veniceMode !== false || firstPayload.routeProvider !== "deepseek" || firstPayload.mainProvider !== "deepseek") {
     throw new Error(`default route/main payload mismatch after Venice off: ${runPayloads.at(-1) || ""}`);
