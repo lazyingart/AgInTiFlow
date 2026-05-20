@@ -204,7 +204,7 @@ async function runTmuxInterruptSmoke({ key, expected }) {
     const stoppedPattern = new RegExp(`${expected.source}|SESSION_EXITED`, expected.flags);
     pane = await waitForTmuxText(session, stoppedPattern, 20000);
     if (!stoppedPattern.test(pane)) throw new Error(`interrupt smoke did not observe ${expected} after ${key}\n${pane}`);
-    if (key === "Escape" && !/EXIT:/.test(pane)) {
+    if (key === "Escape" && !/EXIT:/.test(pane) && tmuxSessionExists(session)) {
       tmux(["send-keys", "-t", session, "-l", "/exit"]);
       tmux(["send-keys", "-t", session, "Enter"]);
       await waitForTmuxText(session, /EXIT:0/, 8000);
