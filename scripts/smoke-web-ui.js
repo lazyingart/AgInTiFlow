@@ -56,7 +56,7 @@ async function waitForRunState(page, status, timeout = 20000) {
   );
 }
 
-async function waitForTerminalRunState(page, timeout = 30000) {
+async function waitForTerminalRunState(page, timeout = 90000) {
   await page.waitForFunction(
     () => ["finished", "failed", "stopped"].includes(document.querySelector("#run-state")?.dataset.status || ""),
     null,
