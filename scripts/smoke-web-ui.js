@@ -94,17 +94,38 @@ try {
   await page.waitForFunction(() => document.querySelectorAll("#command-cwd-suggestions option").length > 0);
   if ((await page.locator(".project-status-chip").count()) < 4) throw new Error("project folder status did not render structured chips");
   await page.locator("#run-defaults-card summary").click();
+  if (await page.locator("#veniceModeToggle").isChecked()) throw new Error("Venice quick mode should default off");
+  if ((await page.locator("#routeProvider").inputValue()) !== "deepseek") throw new Error("route provider should default to DeepSeek");
+  if ((await page.locator("#mainProvider").inputValue()) !== "deepseek") throw new Error("main provider should default to DeepSeek");
 
   await page.selectOption("#enableScs", "auto");
   await page.locator("label:has(#aapsModeToggle)").click();
   if ((await page.locator("#taskProfile").inputValue()) !== "aaps") throw new Error("AAPS toggle did not select the AAPS task profile");
   await page.locator("label:has(#veniceModeToggle)").click();
+  if ((await page.locator("#provider").inputValue()) !== "venice") throw new Error("Venice toggle did not set primary provider");
+  if (!/^venice|^e2ee|^gemma|^qwen|^openai|^claude/.test(await page.locator("#model").inputValue())) {
+    throw new Error(`Venice toggle did not update primary model: ${await page.locator("#model").inputValue()}`);
+  }
   if ((await page.locator("#routeProvider").inputValue()) !== "venice") throw new Error("Venice toggle did not set route provider");
   if ((await page.locator("#mainProvider").inputValue()) !== "venice") throw new Error("Venice toggle did not set main provider");
+  if (!/^venice|^e2ee|^gemma|^qwen|^openai|^claude/.test(await page.locator("#routeModel").inputValue())) {
+    throw new Error(`Venice toggle did not update route model: ${await page.locator("#routeModel").inputValue()}`);
+  }
+  if (!/^venice|^e2ee|^gemma|^qwen|^openai|^claude/.test(await page.locator("#mainModel").inputValue())) {
+    throw new Error(`Venice toggle did not update main model: ${await page.locator("#mainModel").inputValue()}`);
+  }
   const quickStatus = await page.locator("#quick-mode-status").innerText();
   if (!/scs=auto/.test(quickStatus) || !/profile=aaps/.test(quickStatus) || !/route venice\//.test(quickStatus)) {
     throw new Error(`quick mode status did not reflect CLI modes: ${quickStatus}`);
   }
+  await page.locator("label:has(#veniceModeToggle)").click();
+  if (await page.locator("#veniceModeToggle").isChecked()) throw new Error("Venice quick mode did not turn off");
+  if ((await page.locator("#provider").inputValue()) !== "deepseek") throw new Error("Venice off did not restore primary provider");
+  if ((await page.locator("#model").inputValue()) !== "deepseek-v4-flash") throw new Error("Venice off did not restore primary model");
+  if ((await page.locator("#routeProvider").inputValue()) !== "deepseek") throw new Error("Venice off did not restore route provider");
+  if ((await page.locator("#routeModel").inputValue()) !== "deepseek-v4-flash") throw new Error("Venice off did not restore route model");
+  if ((await page.locator("#mainProvider").inputValue()) !== "deepseek") throw new Error("Venice off did not restore main provider");
+  if ((await page.locator("#mainModel").inputValue()) !== "deepseek-v4-pro") throw new Error("Venice off did not restore main model");
   const quickBoxes = await Promise.all([
     page.locator(".quick-mode-select").boundingBox(),
     page.locator("label:has(#aapsModeToggle)").boundingBox(),
@@ -136,8 +157,8 @@ try {
   if (firstPayload.dynamicSteps !== "off") {
     throw new Error(`dynamic steps payload mismatch: ${runPayloads.at(-1) || ""}`);
   }
-  if (firstPayload.routeProvider !== "venice" || firstPayload.mainProvider !== "venice") {
-    throw new Error(`Venice route/main payload mismatch: ${runPayloads.at(-1) || ""}`);
+  if (firstPayload.veniceMode !== false || firstPayload.routeProvider !== "deepseek" || firstPayload.mainProvider !== "deepseek") {
+    throw new Error(`default route/main payload mismatch after Venice off: ${runPayloads.at(-1) || ""}`);
   }
   await waitForRunState(page, "running");
   if (!(await page.locator("#stop-run").isVisible())) throw new Error("stop button did not appear while run was active");
@@ -176,6 +197,9 @@ try {
           "working-directory-search-top",
           "project-status-chips",
           "run-defaults-folded",
+          "venice-mode-default-off",
+          "venice-mode-model-sync",
+          "venice-mode-off-restores-deepseek",
           "quick-scs-aaps-venice-controls",
           "quick-mode-control-alignment",
           "dynamic-steps-dropdown",

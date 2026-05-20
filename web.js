@@ -282,6 +282,7 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
       typeof body.allowParallelScouts === "boolean" ? body.allowParallelScouts : current.allowParallelScouts !== false,
     enableScs: normalizeScsMode(body.enableScs || current.enableScs || process.env.AGINTI_SCS_MODE || "on"),
     dynamicSteps: normalizeDynamicStepsMode(body.dynamicSteps || current.dynamicSteps || process.env.AGINTI_DYNAMIC_STEPS || "auto"),
+    veniceMode: typeof body.veniceMode === "boolean" ? body.veniceMode : current.veniceMode === true,
     parallelScoutCount:
       Number.isFinite(parsedParallelScoutCount) && parsedParallelScoutCount > 0
         ? Math.min(Math.max(parsedParallelScoutCount, 1), 10)

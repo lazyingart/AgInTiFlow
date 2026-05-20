@@ -834,6 +834,7 @@ let selectedArtifactId = "";
 let currentArtifactTab = "canvas";
 let artifactUnreadCount = 0;
 let lastAnnouncedRunKey = "";
+let quickVeniceModeActive = false;
 
 function normalizeLanguage(language) {
   const lower = String(language || "").toLowerCase();
@@ -1266,6 +1267,31 @@ function providerModelOptions(provider = providerField.value) {
   return (modelCatalog[provider] || []).filter((item) => !item.hidden);
 }
 
+function modelIdsForProvider(provider = "") {
+  return new Set(providerModelOptions(provider).map((item) => String(item.id || "")));
+}
+
+function modelDefaultValues() {
+  return new Set(Object.values(defaults).filter(Boolean));
+}
+
+function fallbackModelForProvider(provider = "deepseek", role = "primary") {
+  if (provider === "deepseek" && role === "main") return "deepseek-v4-pro";
+  if (provider === "deepseek") return "deepseek-v4-flash";
+  if (provider === "openai" && role === "spare") return "gpt-5.4";
+  return defaults[provider] || providerModelOptions(provider)[0]?.id || "";
+}
+
+function coerceModelForProvider(provider = "deepseek", currentModel = "", fallbackModel = "") {
+  const current = String(currentModel || "").trim();
+  const fallback = String(fallbackModel || fallbackModelForProvider(provider)).trim();
+  const providerModelIds = modelIdsForProvider(provider);
+  const knownDefault = modelDefaultValues().has(current);
+  const wrongProviderModel = providerModelIds.size > 0 && current && !providerModelIds.has(current);
+  if (!current || knownDefault || wrongProviderModel) return fallback;
+  return current;
+}
+
 function mergeModelOptions(...groups) {
   const seen = new Set();
   const merged = [];
@@ -1327,24 +1353,32 @@ function setSelectOptions(select, options, selectedValue = "", fallbackValue = "
 function refreshModelDropdowns() {
   refreshProviderDropdowns();
   const provider = providerField?.value || "deepseek";
-  setSelectOptions(modelField, providerModelOptions(provider), fieldValue(modelField), defaults[provider]);
+  setSelectOptions(
+    modelField,
+    providerModelOptions(provider),
+    coerceModelForProvider(provider, fieldValue(modelField), fallbackModelForProvider(provider, "primary")),
+    fallbackModelForProvider(provider, "primary")
+  );
+  const routeProvider = routeProviderField?.value || "deepseek";
   setSelectOptions(
     routeModelField,
-    providerModelOptions(routeProviderField?.value || "deepseek"),
-    fieldValue(routeModelField),
-    modelRoles.route?.model || "deepseek-v4-flash"
+    providerModelOptions(routeProvider),
+    coerceModelForProvider(routeProvider, fieldValue(routeModelField), fallbackModelForProvider(routeProvider, "route")),
+    fallbackModelForProvider(routeProvider, "route")
   );
+  const mainProvider = mainProviderField?.value || "deepseek";
   setSelectOptions(
     mainModelField,
-    providerModelOptions(mainProviderField?.value || "deepseek"),
-    fieldValue(mainModelField),
-    modelRoles.main?.model || "deepseek-v4-pro"
+    providerModelOptions(mainProvider),
+    coerceModelForProvider(mainProvider, fieldValue(mainModelField), fallbackModelForProvider(mainProvider, "main")),
+    fallbackModelForProvider(mainProvider, "main")
   );
+  const spareProvider = spareProviderField?.value || "openai";
   setSelectOptions(
     spareModelField,
-    providerModelOptions(spareProviderField?.value || "openai"),
-    fieldValue(spareModelField),
-    modelRoles.spare?.model || "gpt-5.4"
+    providerModelOptions(spareProvider),
+    coerceModelForProvider(spareProvider, fieldValue(spareModelField), fallbackModelForProvider(spareProvider, "spare")),
+    fallbackModelForProvider(spareProvider, "spare")
   );
   setSelectOptions(wrapperModelField, wrapperModelOptions(), fieldValue(wrapperModelField), modelRoles.wrapper?.model || "gpt-5.5");
   setSelectOptions(
@@ -1364,13 +1398,9 @@ function selectedVeniceTextModel() {
   );
 }
 
-function inferVeniceMode() {
-  return [providerField?.value, routeProviderField?.value, mainProviderField?.value].includes("venice");
-}
-
 function syncQuickModeControls() {
   if (aapsModeToggle) aapsModeToggle.checked = (taskProfileField?.value || "auto") === "aaps";
-  if (veniceModeToggle) veniceModeToggle.checked = inferVeniceMode();
+  if (veniceModeToggle) veniceModeToggle.checked = quickVeniceModeActive;
   if (quickModeStatusEl) {
     const scs = enableScsField?.value || "on";
     const profile = taskProfileField?.value || "auto";
@@ -1388,10 +1418,13 @@ function applyAapsMode(enabled) {
 }
 
 function applyVeniceMode(enabled) {
+  quickVeniceModeActive = Boolean(enabled);
   if (enabled) {
     const model = selectedVeniceTextModel();
     routingModeField.value = "smart";
-    providerField.value = "deepseek";
+    providerField.value = "venice";
+    refreshModelDropdowns();
+    if (modelField) setSelectOptions(modelField, providerModelOptions("venice"), model, defaults.venice);
     if (routeProviderField) routeProviderField.value = "venice";
     refreshModelDropdowns();
     if (routeModelField) setSelectOptions(routeModelField, providerModelOptions("venice"), model, defaults.venice);
@@ -1400,10 +1433,13 @@ function applyVeniceMode(enabled) {
     if (mainModelField) setSelectOptions(mainModelField, providerModelOptions("venice"), model, defaults.venice);
   } else {
     routingModeField.value = "smart";
-    providerField.value = "deepseek";
+    if (providerField?.value === "venice") providerField.value = "deepseek";
     if (routeProviderField?.value === "venice") routeProviderField.value = "deepseek";
     if (mainProviderField?.value === "venice") mainProviderField.value = "deepseek";
     refreshModelDropdowns();
+    if (modelField && providerField?.value === "deepseek") {
+      setSelectOptions(modelField, providerModelOptions("deepseek"), "deepseek-v4-flash", "deepseek-v4-flash");
+    }
     if (routeModelField && routeProviderField?.value === "deepseek") {
       setSelectOptions(routeModelField, providerModelOptions("deepseek"), "deepseek-v4-flash", "deepseek-v4-flash");
     }
@@ -1673,6 +1709,7 @@ function formPayload() {
     allowParallelScouts: allowParallelScoutsField?.checked ?? true,
     enableScs: enableScsField?.value || "on",
     dynamicSteps: dynamicStepsField?.value || "auto",
+    veniceMode: quickVeniceModeActive,
     parallelScoutCount: Math.min(Math.max(Number(parallelScoutCountField?.value) || 3, 1), 10),
     allowWrapperTools: allowWrapperToolsField.checked,
     preferredWrapper: preferredWrapperField.value,
@@ -3122,16 +3159,8 @@ providerField.addEventListener("change", () => {
     routingModeField.value = "manual";
   }
 
-  if (
-    !fieldValue(modelField) ||
-    modelField.value === defaults.openai ||
-    modelField.value === defaults.deepseek ||
-    modelField.value === defaults.qwen ||
-    modelField.value === defaults.venice ||
-    modelField.value === defaults.mock
-  ) {
-    modelField.value = defaults[providerField.value] || "";
-  }
+  if (providerField.value !== "venice") quickVeniceModeActive = false;
+  refreshModelDropdowns();
   updateRoutingHint();
   syncQuickModeControls();
   schedulePreferenceSave();
@@ -3394,6 +3423,7 @@ async function loadConfig() {
   defaults.mock = data.defaults?.mock?.model || defaults.mock;
 
   applyLanguage(prefs.language || normalizeLanguage(navigator.language || "en"), { persist: false });
+  quickVeniceModeActive = prefs.veniceMode === true;
   refreshProviderDropdowns();
 
   routingModeField.value = prefs.routingMode || "smart";
@@ -3404,24 +3434,41 @@ async function loadConfig() {
   if (spareReasoningField) spareReasoningField.value = prefs.spareReasoning || modelRoles.spare?.reasoning || "medium";
   if (wrapperReasoningField) wrapperReasoningField.value = prefs.wrapperReasoning || modelRoles.wrapper?.reasoning || "medium";
   if (auxiliaryProviderField) auxiliaryProviderField.value = prefs.auxiliaryProvider || modelRoles.auxiliary?.provider || "grsai";
-  setSelectOptions(modelField, providerModelOptions(providerField.value), prefs.model || defaults[providerField.value], defaults[providerField.value]);
+  setSelectOptions(
+    modelField,
+    providerModelOptions(providerField.value),
+    coerceModelForProvider(providerField.value, prefs.model, fallbackModelForProvider(providerField.value, "primary")),
+    fallbackModelForProvider(providerField.value, "primary")
+  );
   setSelectOptions(
     routeModelField,
     providerModelOptions(routeProviderField?.value || "deepseek"),
-    prefs.routeModel || modelRoles.route?.model,
-    "deepseek-v4-flash"
+    coerceModelForProvider(
+      routeProviderField?.value || "deepseek",
+      prefs.routeModel || modelRoles.route?.model,
+      fallbackModelForProvider(routeProviderField?.value || "deepseek", "route")
+    ),
+    fallbackModelForProvider(routeProviderField?.value || "deepseek", "route")
   );
   setSelectOptions(
     mainModelField,
     providerModelOptions(mainProviderField?.value || "deepseek"),
-    prefs.mainModel || modelRoles.main?.model,
-    "deepseek-v4-pro"
+    coerceModelForProvider(
+      mainProviderField?.value || "deepseek",
+      prefs.mainModel || modelRoles.main?.model,
+      fallbackModelForProvider(mainProviderField?.value || "deepseek", "main")
+    ),
+    fallbackModelForProvider(mainProviderField?.value || "deepseek", "main")
   );
   setSelectOptions(
     spareModelField,
     providerModelOptions(spareProviderField?.value || "openai"),
-    prefs.spareModel || modelRoles.spare?.model,
-    "gpt-5.4"
+    coerceModelForProvider(
+      spareProviderField?.value || "openai",
+      prefs.spareModel || modelRoles.spare?.model,
+      fallbackModelForProvider(spareProviderField?.value || "openai", "spare")
+    ),
+    fallbackModelForProvider(spareProviderField?.value || "openai", "spare")
   );
   setSelectOptions(wrapperModelField, wrapperModelOptions(), prefs.wrapperModel || modelRoles.wrapper?.model, "gpt-5.5");
   setSelectOptions(
@@ -3463,6 +3510,7 @@ async function loadConfig() {
   renderMcpPanel(data.mcp || null);
   await refreshWorkspaceChanges();
   renderSandboxLogs(data.sandbox?.logs || []);
+  if (quickVeniceModeActive) applyVeniceMode(true);
   updateRoutingHint();
   updatePermissionHint();
   updatePackageWarning();

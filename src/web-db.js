@@ -7,7 +7,7 @@ import { deleteSessionIndex, renameSessionIndex, upsertSessionIndex } from "./se
 import { loadDatabaseSync } from "./sqlite.js";
 import { permissionModeDefaults } from "./permission-modes.js";
 
-const PREFERENCES_SCHEMA_VERSION = 9;
+const PREFERENCES_SCHEMA_VERSION = 10;
 
 function jsonStatePath(dbPath) {
   return dbPath.replace(/\.sqlite$/i, ".json");
@@ -73,6 +73,7 @@ function defaultPreferences(baseDir) {
     allowParallelScouts: true,
     enableScs: process.env.AGINTI_SCS_MODE || "on",
     dynamicSteps: process.env.AGINTI_DYNAMIC_STEPS || "auto",
+    veniceMode: false,
     parallelScoutCount: 3,
     allowWrapperTools: false,
     preferredWrapper: "codex",
@@ -227,6 +228,20 @@ export class WebDatabase {
         if ((parsed.preferencesSchemaVersion || 1) < 9) {
           preferences.enableScs = preferences.enableScs || process.env.AGINTI_SCS_MODE || "on";
           preferences.dynamicSteps = preferences.dynamicSteps || process.env.AGINTI_DYNAMIC_STEPS || "auto";
+        }
+        if ((parsed.preferencesSchemaVersion || 1) < 10) {
+          preferences.veniceMode = false;
+          const legacyQuickVenice =
+            (parsed.routingMode || preferences.routingMode) === "smart" &&
+            (parsed.provider || preferences.provider) === "deepseek" &&
+            (parsed.routeProvider || preferences.routeProvider) === "venice" &&
+            (parsed.mainProvider || preferences.mainProvider) === "venice";
+          if (legacyQuickVenice) {
+            preferences.routeProvider = "deepseek";
+            preferences.routeModel = "deepseek-v4-flash";
+            preferences.mainProvider = "deepseek";
+            preferences.mainModel = "deepseek-v4-pro";
+          }
         }
         this.savePreferences(preferences);
       }

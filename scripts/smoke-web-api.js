@@ -119,6 +119,7 @@ try {
   if (config.preferences?.workspaceWritePolicy !== "allow") throw new Error("web did not default to workspace writes allowed");
   if (config.preferences?.enableScs !== "on") throw new Error("web did not default to CLI-aligned SCS on mode");
   if (config.preferences?.dynamicSteps !== "auto") throw new Error("web did not default to CLI-aligned dynamic steps auto mode");
+  if (config.preferences?.veniceMode !== false) throw new Error("web should default Venice shortcut mode off");
   if (Number(config.preferences?.maxSteps) < 24) throw new Error("web default max steps is too low");
   if (!Array.isArray(config.taskProfiles) || !config.taskProfiles.some((profile) => profile.id === "latex")) {
     throw new Error("task profiles are not advertised by /api/config");
