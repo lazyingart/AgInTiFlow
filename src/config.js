@@ -199,6 +199,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
       true
     ),
     allowWebSearch: parseBoolean(overrides.allowWebSearch ?? args.allowWebSearch ?? process.env.ALLOW_WEB_SEARCH, true),
+    allowMcpTools: parseBoolean(overrides.allowMcpTools ?? args.allowMcpTools ?? process.env.AGINTI_ALLOW_MCP_TOOLS, true),
     allowParallelScouts: scsActive && !explicitParallelScouts ? false : allowParallelScouts,
     parallelScoutCount: clampNumber(
       parseNumber(overrides.parallelScoutCount ?? args.parallelScoutCount ?? process.env.AGINTI_SCOUT_COUNT, 3),

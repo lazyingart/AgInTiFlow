@@ -287,6 +287,15 @@
           <div id="workspace-changes" class="workspace-changes"></div>
         </section>
 
+        <section class="capability-card mcp-card">
+          <div>
+            <h2 data-i18n="mcpCapabilityTitle">MCP servers</h2>
+            <p id="mcp-status" class="subtle wrapper-status"></p>
+          </div>
+          <div id="mcp-grid" class="capability-grid"></div>
+          <pre id="mcp-warnings" class="sandbox-logs mcp-warnings"></pre>
+        </section>
+
         <section class="sandbox-card">
           <div class="header-row">
             <div>
@@ -428,6 +437,11 @@
               <input id="allowAuxiliaryTools" name="allowAuxiliaryTools" type="checkbox" checked />
               <span class="switch" aria-hidden="true"></span>
               <span data-i18n="auxiliaryToolLabel">Enable auxiliary skills</span>
+            </label>
+            <label class="switch-label">
+              <input id="allowMcpTools" name="allowMcpTools" type="checkbox" checked />
+              <span class="switch" aria-hidden="true"></span>
+              <span data-i18n="mcpToolLabel">Enable MCP bridge</span>
             </label>
             <label class="switch-label">
               <input id="allowParallelScouts" name="allowParallelScouts" type="checkbox" checked />

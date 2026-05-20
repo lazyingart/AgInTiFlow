@@ -58,6 +58,7 @@ Most agent tools are either a chat box with hidden state or an expensive one-mod
 | Scouts before big work | Parallel scouts can cheaply map architecture, tests, risks, symbols, and integration points before the main executor edits anything. |
 | SCS by default | Student-Committee-Supervisor mode adds a typed gate: committee drafts, student approves/monitors, supervisor executes. Use `/scs off` or `--no-scs` only when speed matters more than validation. |
 | AAPS for large workflows | AAPS describes top-down agentic pipeline scripts; AgInTiFlow can act as the interactive backend that validates, compiles, and executes those workflows. |
+| MCP without tool sprawl | Project/global MCP servers can be connected through a fixed guarded bridge. AgInTiFlow lists tools/resources/prompts and calls selected server tools without dumping untrusted remote tool schemas directly into every model turn. |
 | Local safety by default | Docker workspace mode, path guardrails, secret redaction, blocked npm publish/token commands, and visible logs keep the agent practical without making it opaque. |
 
 ## Quick Start
@@ -156,6 +157,7 @@ aginti --language de
 | Disable SCS for simple work | `/scs off` or `aginti --no-scs "task"` |
 | Control dynamic step budgets | `--dynamic-steps auto\|on\|off` |
 | Work with AAPS workflows | `aginti aaps status`, `/aaps validate` |
+| Inspect or call MCP servers | `aginti mcp status`, `/mcp tools <server>`, `/mcp call <server> <tool> '{"arg":"value"}'` |
 | Choose models | `/route`, `/model`, `/spare`, `/wrapper`, `/auxiliary model` |
 | Switch permissions | `-s safe`, `-s normal`, `-s danger`, or `/safe`, `/normal`, `/danger` |
 | Enable Venice shortcut | `/venice` |

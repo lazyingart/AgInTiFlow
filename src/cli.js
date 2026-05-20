@@ -39,6 +39,8 @@ import { formatInstructionTemplateList, normalizeInstructionTemplate } from "./b
 import { applyPermissionMode, normalizePermissionMode } from "./permission-modes.js";
 import { ensureAgintiWebApp, readWebAppPreference, stopAgintiWebApp, writeWebAppPreference } from "./web-autostart.js";
 import { dockerHostInstallPlan, formatDockerSetupText, summarizeDockerSetup } from "./docker-setup.js";
+import { mcpCliCommand, formatMcpCliResult } from "./mcp/tool-bridge.js";
+import { closeAllMcpConnections } from "./mcp/client-registry.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -78,6 +80,8 @@ function suggestCliOption(option = "") {
     "--disable-scouts": "--no-parallel-scouts",
     "--allow-auxiliary": "--allow-auxiliary-tools",
     "--disable-auxiliary": "--no-auxiliary-tools",
+    "--allow-mcp": "--mcp",
+    "--disable-mcp": "--no-mcp",
     "--allow-files": "--allow-file-tools",
     "--no-files": "--no-file-tools",
   };
@@ -187,6 +191,11 @@ const CLI_FLAG_OPTIONS = new Set([
   "--no-auxiliary",
   "--web-search",
   "--no-web-search",
+  "--mcp",
+  "--allow-mcp",
+  "--allow-mcp-tools",
+  "--no-mcp",
+  "--no-mcp-tools",
   "--parallel-scouts",
   "--no-parallel-scouts",
   "--allow-wrappers",
@@ -362,6 +371,7 @@ export function parseArgs(argv) {
     allowWrapperTools: undefined,
     allowAuxiliaryTools: undefined,
     allowWebSearch: undefined,
+    allowMcpTools: undefined,
     allowParallelScouts: undefined,
     parallelScoutCount: undefined,
     allowDestructive: undefined,
@@ -657,6 +667,14 @@ export function parseArgs(argv) {
       result.allowWebSearch = false;
       continue;
     }
+    if (arg === "--mcp" || arg === "--allow-mcp" || arg === "--allow-mcp-tools") {
+      result.allowMcpTools = true;
+      continue;
+    }
+    if (arg === "--no-mcp" || arg === "--no-mcp-tools") {
+      result.allowMcpTools = false;
+      continue;
+    }
     if (arg === "--parallel-scouts") {
       result.allowParallelScouts = true;
       continue;
@@ -742,10 +760,33 @@ function exitOnUnknownOptions(parsed) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti docker [status|setup|install-host] OR aginti update OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--dynamic-steps auto|on|off] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
+    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti docker [status|setup|install-host] OR aginti update OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti mcp [status|config|inspect|tools|resources|read|prompts|prompt|call|restart] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--dynamic-steps auto|on|off] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--mcp|--no-mcp] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
   console.log("Permission shortcuts: -s safe asks before writes/setup; -s normal allows current-project writes and Docker setup; -s danger enables trusted host/full-access mode.");
   console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
+}
+
+function splitToolCommandArgv(argv = []) {
+  const actionArgv = [];
+  const optionArgv = [];
+  let json = false;
+  for (let index = 0; index < argv.length;) {
+    const arg = argv[index];
+    if (arg === "--json") {
+      json = true;
+      index += 1;
+      continue;
+    }
+    const collected = collectCliOption(argv, index);
+    if (collected.recognized) {
+      optionArgv.push(...collected.args);
+      index = collected.nextIndex;
+      continue;
+    }
+    actionArgv.push(arg);
+    index += 1;
+  }
+  return { actionArgv, optionArgv, json };
 }
 
 function parseDockerCommandArgs(argv = [], fallbackCwd = process.cwd()) {
@@ -941,6 +982,7 @@ function agentDefaults(args) {
     allowFileTools: args.allowFileTools ?? permissionDefaults.allowFileTools ?? true,
     allowAuxiliaryTools: args.allowAuxiliaryTools ?? true,
     allowWebSearch: args.allowWebSearch ?? true,
+    allowMcpTools: args.allowMcpTools ?? true,
     allowParallelScouts: args.allowParallelScouts ?? true,
     enableScs: args.enableScs || process.env.AGINTI_SCS_MODE || "on",
     parallelScoutCount: args.parallelScoutCount || (Number.isFinite(envScoutCount) && envScoutCount > 0 ? envScoutCount : 3),
@@ -1777,6 +1819,39 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (commandArgv[0] === "docker") {
     await handleDockerCommand(commandArgv.slice(1), { commandCwd });
+    return;
+  }
+
+  if (commandArgv[0] === "mcp") {
+    const mcpArgs = splitToolCommandArgv(commandArgv.slice(1));
+    const parsed = parseArgs(mcpArgs.optionArgv);
+    exitOnUnknownOptions(parsed);
+    const effectiveCommandCwd = parsed.commandCwd || commandCwd;
+    const config = loadConfig(
+      {
+        ...parsed,
+        goal: "mcp",
+        commandCwd: effectiveCommandCwd,
+        allowShellTool: parsed.allowShellTool ?? true,
+        allowFileTools: parsed.allowFileTools ?? true,
+        allowMcpTools: parsed.allowMcpTools ?? true,
+      },
+      { packageDir, baseDir: effectiveCommandCwd }
+    );
+    try {
+      const result = await mcpCliCommand(mcpArgs.actionArgv, config);
+      console.log(mcpArgs.json ? JSON.stringify(result, null, 2) : formatMcpCliResult(result));
+      await closeAllMcpConnections();
+      if (result.ok === false) process.exit(1);
+    } catch (error) {
+      await closeAllMcpConnections().catch(() => {});
+      if (mcpArgs.json) {
+        console.log(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }, null, 2));
+      } else {
+        console.error(error instanceof Error ? error.message : String(error));
+      }
+      process.exit(1);
+    }
     return;
   }
 

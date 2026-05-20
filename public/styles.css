@@ -687,6 +687,15 @@ button.danger {
   background: linear-gradient(135deg, rgba(255, 253, 250, 0.9), rgba(239, 246, 255, 0.72));
 }
 
+.mcp-card {
+  border-color: rgba(15, 118, 110, 0.18);
+  background: linear-gradient(135deg, rgba(255, 253, 250, 0.92), rgba(204, 251, 241, 0.32));
+}
+
+.mcp-warnings[hidden] {
+  display: none;
+}
+
 .workspace-changes {
   display: grid;
   gap: 8px;

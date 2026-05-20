@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.161",
+  "version": "0.20.162",
   "type": "module",
   "description": "AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-aware intelligence, software automation, and industrial workflows.",
   "license": "Apache-2.0",
@@ -62,6 +62,8 @@
     "scripts/smoke-capabilities.js",
     "scripts/smoke-auto-update.js",
     "scripts/smoke-inbox.js",
+    "scripts/smoke-mcp.js",
+    "scripts/fixtures/mcp-stdio-smoke-server.mjs",
     "scripts/smoke-model-roles.js",
     "scripts/smoke-platform.js",
     "scripts/smoke-perception-research.js",
@@ -87,7 +89,7 @@
   "scripts": {
     "start": "node run.js",
     "web": "node web.js",
-    "check": "node --check run.js && node --check web.js && node --check bin/aginti-cli.js && node --check src/*.js && node --check scripts/seed-supervised-homework.js",
+    "check": "node --check run.js && node --check web.js && node --check bin/aginti-cli.js && node --check src/*.js && node --check src/mcp/*.js && node --check public/app.js && node --check scripts/seed-supervised-homework.js && node --check scripts/smoke-mcp.js && node --check scripts/fixtures/mcp-stdio-smoke-server.mjs",
     "setup:toolchain-docker": "scripts/setup-agent-toolchain-docker.sh",
     "smoke:coding-tools": "node scripts/smoke-coding-tools.js",
     "smoke:dynamic-step-budget": "node scripts/smoke-dynamic-step-budget.js",
@@ -101,6 +103,7 @@
     "smoke:skillmesh": "node scripts/smoke-skillmesh.js",
     "smoke:toolchain-docker": "node scripts/smoke-toolchain-docker.js",
     "smoke:inbox": "node scripts/smoke-inbox.js",
+    "smoke:mcp": "node scripts/smoke-mcp.js",
     "smoke:model-roles": "node scripts/smoke-model-roles.js",
     "smoke:platform": "node scripts/smoke-platform.js",
     "smoke:perception-research": "node scripts/smoke-perception-research.js",
@@ -116,11 +119,12 @@
     "postinstall": "node scripts/postinstall-webapp.js",
     "supervision:seed": "node scripts/seed-supervised-homework.js",
     "storage:migrate": "node bin/aginti-cli.js storage migrate",
-    "test": "npm run check && npm run smoke:runtime-compat && npm run smoke:autoupdate && npm run smoke:web-api && npm run smoke:web-autostart && npm run smoke:webapp-command && npm run smoke:web-port-fallback && npm run smoke:docker-command && npm run smoke:coding-tools && npm run smoke:dynamic-step-budget && npm run smoke:aaps-adapter && npm run smoke:auxiliary-tools && npm run smoke:perception-research && npm run smoke:auth && npm run smoke:canvas-artifacts && npm run smoke:capabilities && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:permission-modes && npm run smoke:skills && npm run smoke:skillmesh && npm run smoke:tmux-tools && npm run smoke:cli-chat && npm run smoke:inbox",
+    "test": "npm run check && npm run smoke:runtime-compat && npm run smoke:autoupdate && npm run smoke:web-api && npm run smoke:web-autostart && npm run smoke:webapp-command && npm run smoke:web-port-fallback && npm run smoke:docker-command && npm run smoke:coding-tools && npm run smoke:dynamic-step-budget && npm run smoke:aaps-adapter && npm run smoke:auxiliary-tools && npm run smoke:perception-research && npm run smoke:auth && npm run smoke:canvas-artifacts && npm run smoke:capabilities && npm run smoke:mcp && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:permission-modes && npm run smoke:skills && npm run smoke:skillmesh && npm run smoke:tmux-tools && npm run smoke:cli-chat && npm run smoke:inbox",
     "pack:dry-run": "npm pack --dry-run",
     "smoke:capabilities": "node scripts/smoke-capabilities.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "express": "^5.1.0",
     "openai": "^6.3.0",
     "playwright": "^1.55.0"

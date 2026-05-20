@@ -84,6 +84,7 @@ const translations = {
     shellToolLabel: "Enable shell tool",
     fileToolLabel: "Enable file tools",
     auxiliaryToolLabel: "Enable auxiliary skills",
+    mcpToolLabel: "Enable MCP bridge",
     webSearchLabel: "Enable web search",
     parallelScoutsLabel: "Parallel DeepSeek scouts",
     parallelScoutCountLabel: "Scout count",
@@ -114,6 +115,8 @@ const translations = {
     wrappersOffLabel: "wrapper tools off",
     wrapperCapabilityTitle: "Agent wrappers",
     workspaceCapabilityTitle: "Workspace files",
+    mcpCapabilityTitle: "MCP servers",
+    mcpEmpty: "No MCP servers configured.",
     workspaceToolsLabel: "File tools",
     workspaceChangesEmpty: "No file changes yet.",
     changedLabel: "changed",
@@ -695,6 +698,7 @@ const stopRunButton = document.querySelector("#stop-run");
 const keyStatusEl = document.querySelector("#key-status");
 const allowAuxiliaryToolsField = document.querySelector("#allowAuxiliaryTools");
 const allowWebSearchField = document.querySelector("#allowWebSearch");
+const allowMcpToolsField = document.querySelector("#allowMcpTools");
 const allowParallelScoutsField = document.querySelector("#allowParallelScouts");
 const parallelScoutCountField = document.querySelector("#parallelScoutCount");
 const allowWrapperToolsField = document.querySelector("#allowWrapperTools");
@@ -704,6 +708,9 @@ const wrapperGridEl = document.querySelector("#wrapper-grid");
 const workspaceStatusEl = document.querySelector("#workspace-status");
 const workspaceToolsEl = document.querySelector("#workspace-tools");
 const workspaceChangesEl = document.querySelector("#workspace-changes");
+const mcpStatusEl = document.querySelector("#mcp-status");
+const mcpGridEl = document.querySelector("#mcp-grid");
+const mcpWarningsEl = document.querySelector("#mcp-warnings");
 const sandboxStatusEl = document.querySelector("#sandbox-status");
 const sandboxLogsEl = document.querySelector("#sandbox-logs");
 const checkSandboxButton = document.querySelector("#check-sandbox");
@@ -776,6 +783,7 @@ let lastWrappers = [];
 let lastSandbox = null;
 let lastWorkspace = null;
 let lastWorkspaceActivity = [];
+let lastMcp = null;
 let managedSessionId = "";
 let artifactItems = [];
 let selectedArtifactId = "";
@@ -973,6 +981,28 @@ function renderWorkspacePanel(workspace = lastWorkspace, activity = lastWorkspac
       `;
     })
     .join("");
+}
+
+function renderMcpPanel(mcp = lastMcp) {
+  lastMcp = mcp || null;
+  if (!mcpStatusEl || !mcpGridEl || !mcpWarningsEl) return;
+  const servers = mcp?.servers || [];
+  const enabled = servers.filter((server) => server.enabled).length;
+  mcpStatusEl.textContent = servers.length
+    ? `${enabled}/${servers.length} enabled · config=${(mcp.loadedPaths || []).length || 0}`
+    : t("mcpEmpty");
+  mcpGridEl.innerHTML = servers
+    .map(
+      (server) => `
+        <div class="capability-chip" data-ready="${Boolean(server.enabled)}">
+          <strong>${escapeHtml(server.id || server.label || "mcp")}</strong>
+          <span>${escapeHtml(server.transport || "")} · trust=${escapeHtml(server.trust || "untrusted")}</span>
+        </div>
+      `
+    )
+    .join("");
+  mcpWarningsEl.textContent = (mcp?.warnings || []).join("\n");
+  mcpWarningsEl.hidden = !(mcp?.warnings || []).length;
 }
 
 function renderSandboxStatus(status = lastSandbox) {
@@ -1352,6 +1382,7 @@ function formPayload() {
     allowFileTools: document.querySelector("#allowFileTools").checked,
     allowAuxiliaryTools: allowAuxiliaryToolsField?.checked ?? true,
     allowWebSearch: allowWebSearchField?.checked ?? true,
+    allowMcpTools: allowMcpToolsField?.checked ?? true,
     allowParallelScouts: allowParallelScoutsField?.checked ?? true,
     parallelScoutCount: Math.min(Math.max(Number(parallelScoutCountField?.value) || 3, 1), 10),
     allowWrapperTools: allowWrapperToolsField.checked,
@@ -3064,6 +3095,7 @@ async function loadConfig() {
   document.querySelector("#allowFileTools").checked = prefs.allowFileTools ?? true;
   if (allowAuxiliaryToolsField) allowAuxiliaryToolsField.checked = prefs.allowAuxiliaryTools ?? true;
   if (allowWebSearchField) allowWebSearchField.checked = prefs.allowWebSearch ?? true;
+  if (allowMcpToolsField) allowMcpToolsField.checked = prefs.allowMcpTools ?? true;
   if (allowParallelScoutsField) allowParallelScoutsField.checked = prefs.allowParallelScouts ?? true;
   if (parallelScoutCountField) parallelScoutCountField.value = String(prefs.parallelScoutCount || 3);
   allowWrapperToolsField.checked = prefs.allowWrapperTools ?? false;
@@ -3076,6 +3108,7 @@ async function loadConfig() {
   renderProjectStatus(data.project);
   renderWrapperStatus(data.wrappers || []);
   renderWorkspacePanel(data.workspace, []);
+  renderMcpPanel(data.mcp || null);
   await refreshWorkspaceChanges();
   renderSandboxLogs(data.sandbox?.logs || []);
   updateRoutingHint();

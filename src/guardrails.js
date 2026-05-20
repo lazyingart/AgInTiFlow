@@ -2,6 +2,7 @@ import { evaluateCommandPolicy } from "./command-policy.js";
 import { checkWorkspaceToolUse, WORKSPACE_TOOL_NAMES } from "./workspace-tools.js";
 import { normalizeWrapperName } from "./tool-wrappers.js";
 import { checkTmuxToolUse, TMUX_TOOL_NAMES } from "./tmux-tools.js";
+import { checkMcpToolUse, isMcpBridgeTool } from "./mcp/policy.js";
 
 const DESTRUCTIVE_KEYWORDS = [
   "delete",
@@ -75,6 +76,10 @@ export function isDomainAllowed(urlString, allowedDomains) {
 }
 
 export function checkToolUse({ toolName, args, snapshot, config }) {
+  if (isMcpBridgeTool(toolName)) {
+    return checkMcpToolUse(toolName, args, config);
+  }
+
   if (WORKSPACE_TOOL_NAMES.includes(toolName)) {
     return checkWorkspaceToolUse(toolName, args, config);
   }

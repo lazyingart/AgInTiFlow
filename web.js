@@ -39,6 +39,8 @@ import { buildCapabilityReport } from "./src/capabilities.js";
 import { listExternalSkillPacks, listSkills } from "./src/skill-library.js";
 import { platformInfo, platformLabel, platformSetupHints } from "./src/platform.js";
 import { normalizeLanguage } from "./src/i18n.js";
+import { summarizeMcpConfig } from "./src/mcp/config.js";
+import { mcpCliCommand } from "./src/mcp/tool-bridge.js";
 import {
   buildArtifacts,
   countUnreadArtifacts,
@@ -242,6 +244,8 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
       typeof body.allowAuxiliaryTools === "boolean" ? body.allowAuxiliaryTools : current.allowAuxiliaryTools !== false,
     allowWebSearch:
       typeof body.allowWebSearch === "boolean" ? body.allowWebSearch : current.allowWebSearch !== false,
+    allowMcpTools:
+      typeof body.allowMcpTools === "boolean" ? body.allowMcpTools : current.allowMcpTools !== false,
     allowParallelScouts:
       typeof body.allowParallelScouts === "boolean" ? body.allowParallelScouts : current.allowParallelScouts !== false,
     parallelScoutCount:
@@ -361,6 +365,7 @@ function buildRunConfig(body, overrides = {}) {
       allowFileTools: merged.allowFileTools,
       allowAuxiliaryTools: merged.allowAuxiliaryTools,
       allowWebSearch: merged.allowWebSearch,
+      allowMcpTools: merged.allowMcpTools,
       allowParallelScouts: merged.allowParallelScouts,
       parallelScoutCount: merged.parallelScoutCount,
       allowWrapperTools: merged.allowWrapperTools,
@@ -790,6 +795,7 @@ app.get("/api/config", async (_req, res) => {
       logs: getSandboxLogs(),
     },
     workspace: summarizeWorkspaceTools(config),
+    mcp: summarizeMcpConfig(config.commandCwd || baseDir),
     preferences,
     keyStatus,
     sessions: db.listSessions(100),
@@ -810,6 +816,39 @@ app.get("/api/capabilities", async (_req, res) => {
   });
   const report = await buildCapabilityReport(baseDir, packageJson.version, config);
   res.json(report);
+});
+
+app.get("/api/mcp", async (_req, res) => {
+  const preferences = normalizePreferencePayload({}, db.getPreferences());
+  const config = buildRunConfig({
+    ...preferences,
+    goal: "mcp status",
+    allowShellTool: true,
+    allowFileTools: true,
+    allowMcpTools: true,
+  });
+  res.json(await mcpCliCommand(["status"], config));
+});
+
+app.post("/api/mcp", async (req, res) => {
+  try {
+    const preferences = normalizePreferencePayload({}, db.getPreferences());
+    const config = buildRunConfig({
+      ...preferences,
+      goal: "mcp",
+      allowShellTool: true,
+      allowFileTools: true,
+      allowMcpTools: true,
+    });
+    const action = Array.isArray(req.body?.argv)
+      ? req.body.argv.map((item) => String(item || ""))
+      : String(req.body?.command || req.body?.action || "status")
+          .split(/\s+/)
+          .filter(Boolean);
+    res.json(await mcpCliCommand(action.length ? action : ["status"], config));
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.post("/api/keys/:provider", async (req, res) => {

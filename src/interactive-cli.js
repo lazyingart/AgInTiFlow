@@ -46,6 +46,7 @@ import {
   permissionModeLabel,
 } from "./permission-modes.js";
 import { ensureAgintiWebApp, readWebAppPreference, stopAgintiWebApp, writeWebAppPreference } from "./web-autostart.js";
+import { mcpCliCommand, formatMcpCliResult } from "./mcp/tool-bridge.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
@@ -87,6 +88,7 @@ const SLASH_COMMANDS = [
   "/memory",
   "/auxiliary",
   "/aaps",
+  "/mcp",
   "/new",
   "/resume",
   "/sessions",
@@ -873,6 +875,7 @@ function printHelp() {
       `  ${command("/wrapper [on|off|codex model reasoning]", "Configure optional external wrapper.", "helpWrapper")}`,
       `  ${command("/auxiliary [status|grsai|venice|model [provider/model]|on|off|image]", "Manage optional auxiliary skills, including image generation.", "helpAuxiliary")}`,
       `  ${command("/aaps [status|init|files|validate|compile|check|run]", "Manage AAPS workflows through the optional @lazyingart/aaps adapter.", "helpAaps")}`,
+      `  ${command("/mcp [status|tools|call]", "Inspect or call configured MCP servers through the guarded bridge.", "helpMcp")}`,
       `  ${command("/new", "Start a fresh session on the next message.", "helpNew")}`,
       `  ${command("/resume <session-id>", "Continue a saved session.", "helpResume")}`,
       `  ${command("/review [focus]", "Run a bounded repo/diff review with controlled context gathering.", "helpReview")}`,
@@ -1944,7 +1947,7 @@ function printStatus(state) {
   );
   printSystemLine(`profile=${state.taskProfile} maxSteps=${state.maxSteps}`);
   printSystemLine(
-    `permission=${state.permissionMode || "normal"} shell=${state.allowShellTool} files=${state.allowFileTools} writePolicy=${state.workspaceWritePolicy || "allow"} webSearch=${state.allowWebSearch} scouts=${state.allowParallelScouts}:${state.parallelScoutCount} scs=${state.enableScs || "off"} auxiliary=${state.allowAuxiliaryTools} sandbox=${state.sandboxMode} installs=${state.packageInstallPolicy}`
+    `permission=${state.permissionMode || "normal"} shell=${state.allowShellTool} files=${state.allowFileTools} writePolicy=${state.workspaceWritePolicy || "allow"} webSearch=${state.allowWebSearch} mcp=${state.allowMcpTools} scouts=${state.allowParallelScouts}:${state.parallelScoutCount} scs=${state.enableScs || "off"} auxiliary=${state.allowAuxiliaryTools} sandbox=${state.sandboxMode} installs=${state.packageInstallPolicy}`
   );
   if (state.sandboxMode !== "host") {
     printSystemLine(`dockerWorkspace=/workspace -> ${state.commandCwd || process.cwd()}`);
@@ -2195,6 +2198,7 @@ function createState(args = {}) {
     allowFileTools: args.allowFileTools ?? permissionDefaults.allowFileTools ?? true,
     allowAuxiliaryTools: args.allowAuxiliaryTools ?? true,
     allowWebSearch: args.allowWebSearch ?? true,
+    allowMcpTools: args.allowMcpTools ?? true,
     allowParallelScouts: args.allowParallelScouts ?? true,
     enableScs: normalizeScsMode(args.enableScs || process.env.AGINTI_SCS_MODE || "on"),
     parallelScoutCount: args.parallelScoutCount || 3,
@@ -3225,6 +3229,39 @@ async function handleCommand(line, state, packageDir) {
     }
     return true;
   }
+  if (command === "mcp") {
+    const args = value ? value.split(/\s+/).filter(Boolean) : ["status"];
+    const action = String(args[0] || "status").toLowerCase();
+    if (action === "on") {
+      state.allowMcpTools = true;
+      printSystemLine("mcp=on");
+      return true;
+    }
+    if (action === "off") {
+      state.allowMcpTools = false;
+      printSystemLine("mcp=off");
+      return true;
+    }
+    const config = loadConfig(
+      {
+        ...state,
+        goal: "mcp",
+        commandCwd: state.commandCwd || process.cwd(),
+        allowShellTool: state.allowShellTool ?? true,
+        allowFileTools: state.allowFileTools ?? true,
+        allowMcpTools: state.allowMcpTools ?? true,
+      },
+      { packageDir, baseDir: state.commandCwd || process.cwd() }
+    );
+    try {
+      const result = await mcpCliCommand(args, config);
+      printAgentMessage(formatMcpCliResult(result));
+      if (result.ok === false && result.error) printSystemLine(`mcp=failed ${result.error}`);
+    } catch (error) {
+      printAgentMessage(error instanceof Error ? error.message : String(error));
+    }
+    return true;
+  }
   if (command === "new") {
     state.sessionId = "";
     printAgentMessage("Next message will start a new session.");
@@ -3781,6 +3818,7 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
       allowFileTools: state.allowFileTools,
       allowAuxiliaryTools: state.allowAuxiliaryTools,
       allowWebSearch: state.allowWebSearch,
+      allowMcpTools: state.allowMcpTools,
       allowParallelScouts: state.allowParallelScouts,
       enableScs: state.enableScs,
       parallelScoutCount: state.parallelScoutCount,

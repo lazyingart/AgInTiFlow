@@ -8,6 +8,7 @@ import { SessionStore } from "../src/session-store.js";
 import { projectPaths, sessionStoreOptions } from "../src/project.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const fixtureMcpServer = path.join(repoRoot, "scripts", "fixtures", "mcp-stdio-smoke-server.mjs");
 const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-api-smoke-"));
 const agintiflowHome = path.join(runtimeDir, ".agintiflow-home");
 process.env.AGINTIFLOW_HOME = agintiflowHome;
@@ -72,6 +73,21 @@ async function waitForRun(sessionId) {
 
 try {
   await waitForHealth();
+  await fs.mkdir(path.join(runtimeDir, ".aginti"), { recursive: true });
+  await fs.writeFile(
+    path.join(runtimeDir, ".aginti", "mcp.json"),
+    JSON.stringify({
+      mcpServers: {
+        smoke: {
+          transport: "stdio",
+          command: process.execPath,
+          args: [fixtureMcpServer],
+          trust: "trusted",
+          allowedTools: ["echo"],
+        },
+      },
+    })
+  );
 
   const webAppHtml = await fs.readFile(path.join(repoRoot, "public", "index.html"), "utf8");
   const chatThreadIndex = webAppHtml.indexOf('id="chat-thread"');
@@ -100,6 +116,9 @@ try {
   if (!Array.isArray(config.skillPacks)) {
     throw new Error("skill packs are not advertised by /api/config");
   }
+  if (!config.mcp?.servers?.some((server) => server.id === "smoke" && server.allowHostProcess === true)) {
+    throw new Error("MCP servers are not advertised by /api/config");
+  }
   if (!config.modelCatalog?.venice?.some((model) => model.id === "venice-uncensored-1-2")) {
     throw new Error("venice model catalog is not advertised by /api/config");
   }
@@ -124,6 +143,13 @@ try {
   }
   if (!capabilities.trustedDockerPolicy?.some((check) => check.command.startsWith("apt-get install") && check.allowed)) {
     throw new Error("capability endpoint did not report trusted Docker package policy");
+  }
+  if (!capabilities.tools?.mcp?.servers?.some((server) => server.id === "smoke")) {
+    throw new Error("capability endpoint did not report MCP config");
+  }
+  const mcpStatus = await fetchJson("/api/mcp");
+  if (!mcpStatus.servers?.some((server) => server.id === "smoke")) {
+    throw new Error("MCP status endpoint did not report configured smoke server");
   }
   const savedKey = await fetchJson("/api/keys/deepseek", {
     method: "POST",
@@ -402,6 +428,7 @@ try {
           "/api/config",
           "/api/keys/status",
           "/api/capabilities",
+          "/api/mcp",
           "POST /api/keys/:provider",
           "/api/sandbox/status",
           "/api/sandbox/preflight",

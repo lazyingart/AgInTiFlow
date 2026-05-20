@@ -11,6 +11,7 @@ import { listAuxiliarySkills } from "./auxiliary-tools.js";
 import { readCodebaseMap } from "./codebase-map.js";
 import { listExternalSkillPacks, listSkills } from "./skill-library.js";
 import { platformInfo, platformLabel, platformSetupHints } from "./platform.js";
+import { summarizeMcpConfig } from "./mcp/config.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -137,6 +138,7 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
   const [node, npm, python, conda, r, pdflatex, latexmk, tmux] = commands;
   const homebrew = platform.isMac ? commands[8] : undefined;
   const wsl = platform.isWindows ? commands[8] : undefined;
+  const mcp = summarizeMcpConfig(projectRoot);
 
   const npmPrefixPolicy = evaluateCommandPolicy("npm --prefix round9-node-app test", config);
   const cdNpmTestPolicy = evaluateCommandPolicy("cd round9-node-app && npm test", config);
@@ -169,6 +171,12 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
       setup: "Optional for image generation. Run `aginti login grsai` or use `/auxiliary grsai` in chat.",
     }),
     capability("file-tools", Boolean(config.allowFileTools), { workspace: config.commandCwd }),
+    capability("mcp-bridge", config.allowMcpTools !== false, {
+      configuredServers: mcp.servers.length,
+      enabledServers: mcp.servers.filter((server) => server.enabled).length,
+      loadedPaths: mcp.loadedPaths,
+      warnings: mcp.warnings,
+    }),
     capability("shell-tool", Boolean(config.allowShellTool), {
       sandboxMode: config.sandboxMode,
       packageInstallPolicy: config.packageInstallPolicy,
@@ -238,6 +246,7 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
       envVars: keyStatus.envVars,
     },
     tools: {
+      mcp,
       wrappers: listAgentWrappers().map((wrapper) => ({
         name: wrapper.name,
         label: wrapper.label,
@@ -325,6 +334,12 @@ export function printCapabilityReport(report) {
   if (report.trustedDockerPolicy?.length) {
     const allowed = report.trustedDockerPolicy.filter((item) => item.allowed).length;
     console.log(`trustedDockerPolicy=${allowed}/${report.trustedDockerPolicy.length} allowed when sandbox=docker-workspace packageInstalls=allow`);
+  }
+  if (report.tools?.mcp) {
+    console.log(
+      `mcp=${report.tools.mcp.servers.length} configured ${report.tools.mcp.servers.filter((server) => server.enabled).length} enabled`
+    );
+    for (const warning of report.tools.mcp.warnings || []) console.log(`mcp warning: ${warning}`);
   }
   if (report.actionableSetup.length > 0) {
     console.log("setup:");
