@@ -14,6 +14,34 @@ AgInTiFlow separates **skills** from **tools** so the agent can stay general whi
 
 The package ships built-in skills for code engineering, website/app building, LaTeX manuscripts, books, Microsoft Word documents, image generation, GitHub maintenance, system maintenance, source ingestion/OCR, structured JSON, autonomous artifact pipelines, tmux session control, Android, R/Stan, Python, C/C++, shell scripting, AAPS, skill creation, novel writing, and supervision/student-agent training.
 
+## External Skill Packs
+
+AgInTiFlow can also load whole external Agent Skills repositories as grouped
+skill packs. This is for large curated collections that should remain intact,
+with their own references, scripts, assets, and upstream history.
+
+The current default scientific pack integration looks for the sibling checkout:
+
+```bash
+/home/lachlan/ProjectsLFS/Agent/scientific-agent-skills
+```
+
+When present, it appears as `source=external-pack category=scientific
+pack=scientific-agent-skills`:
+
+```bash
+aginti skills rdkit
+aginti skills "single cell scanpy"
+```
+
+For arbitrary pack roots, set:
+
+```bash
+AGINTIFLOW_SKILL_PACKS=/path/to/pack-a:/path/to/pack-b aginti skills
+```
+
+See [External Skill Packs](external-skill-packs.md).
+
 List them from a project:
 
 ```bash

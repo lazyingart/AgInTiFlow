@@ -36,7 +36,7 @@ import {
   setProviderKey,
 } from "./src/project.js";
 import { buildCapabilityReport } from "./src/capabilities.js";
-import { listSkills } from "./src/skill-library.js";
+import { listExternalSkillPacks, listSkills } from "./src/skill-library.js";
 import { platformInfo, platformLabel, platformSetupHints } from "./src/platform.js";
 import { normalizeLanguage } from "./src/i18n.js";
 import {
@@ -774,6 +774,12 @@ app.get("/api/config", async (_req, res) => {
     auxiliaryModelCatalog: AUXILIARY_MODEL_CATALOG,
     modelRoles: getModelRoleDefaults(preferences),
     taskProfiles: listTaskProfiles(),
+    skillPacks: listExternalSkillPacks().map((pack) => ({
+      id: pack.id,
+      label: pack.label,
+      category: pack.category,
+      skillsDir: pack.skillsDir,
+    })),
     skills: listSkills(),
     routing: {
       modes: ["smart", "fast", "complex", "manual"],

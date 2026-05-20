@@ -97,6 +97,9 @@ try {
   if (!Array.isArray(config.skills) || !config.skills.some((skill) => skill.id === "website-app")) {
     throw new Error("built-in skills are not advertised by /api/config");
   }
+  if (!Array.isArray(config.skillPacks)) {
+    throw new Error("skill packs are not advertised by /api/config");
+  }
   if (!config.modelCatalog?.venice?.some((model) => model.id === "venice-uncensored-1-2")) {
     throw new Error("venice model catalog is not advertised by /api/config");
   }

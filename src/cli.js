@@ -1031,7 +1031,9 @@ function printSkills(query = "") {
     const triggers = skill.triggers?.length ? ` triggers=${skill.triggers.join(",")}` : "";
     const tools = skill.tools?.length ? ` tools=${skill.tools.join(",")}` : "";
     const source = skill.source && skill.source !== "built-in" ? ` source=${skill.source}` : "";
-    console.log(`${skill.id}: ${skill.label} - ${skill.description}${triggers}${tools}${source}`);
+    const category = skill.category ? ` category=${skill.category}` : "";
+    const pack = skill.pack?.id ? ` pack=${skill.pack.id}` : "";
+    console.log(`${skill.id}: ${skill.label} - ${skill.description}${triggers}${tools}${source}${category}${pack}`);
   }
 }
 

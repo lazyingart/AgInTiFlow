@@ -242,6 +242,7 @@ The website keeps the visual walkthrough in a carousel so this README can stay f
 | AAPS adapter | Optional `@lazyingart/aaps` integration for `.aaps` workflow init, validate, parse, compile, dry-run, and run commands. |
 | Image generation | Optional GRS AI and Venice image tools with saved manifests and canvas artifact previews. |
 | Skill library | Built-in Markdown skills plus project-local `.aginti/skills/<id>/SKILL.md` skills for reusable workflow knowledge that should not be hard-coded into the runtime. |
+| External skill packs | Whole Agent Skills repositories can be loaded as grouped packs without flattening. A sibling `../scientific-agent-skills` checkout is discovered as the `scientific` category, so commands like `aginti skills rdkit` and `aginti skills "single cell scanpy"` expose K-Dense Scientific Agent Skills when present. |
 | Skill Mesh | Optional strict skill recording/sharing for reviewed reusable skill packs. If unused, AgInTiFlow runs normally without background sharing. |
 | Multilingual UI | CLI and docs language support for English, Japanese, Simplified/Traditional Chinese, Korean, French, Spanish, Arabic, Vietnamese, German, and Russian. |
 

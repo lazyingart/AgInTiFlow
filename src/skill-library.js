@@ -7,6 +7,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SKILLS_DIR = path.resolve(__dirname, "..", "skills");
 const DEFAULT_PROMPT_CHARS = 5200;
 const PROJECT_SKILLS_RELATIVE_DIR = path.join(".aginti", "skills");
+const EXTERNAL_SKILL_PACKS_ENV = "AGINTIFLOW_SKILL_PACKS";
+const SCIENTIFIC_SKILL_PACK_ENV = "AGINTIFLOW_SCIENTIFIC_SKILLS_ROOT";
 
 function parseScalar(value = "") {
   const trimmed = String(value || "").trim();
@@ -48,11 +50,49 @@ export function parseFrontmatter(text, filePath) {
   };
 }
 
+function parseLooseFrontmatter(text, filePath) {
+  const match = String(text || "").match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (!match) throw new Error(`${filePath}: missing YAML frontmatter`);
+  const meta = {};
+  const lines = match[1].split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    if (/^\s/.test(line)) continue;
+    const scalar = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (!scalar) continue;
+    const key = scalar[1];
+    const value = scalar[2];
+    if (value.trim()) {
+      meta[key] = parseScalar(value);
+      continue;
+    }
+    const items = [];
+    while (index + 1 < lines.length && /^\s+-\s+/.test(lines[index + 1])) {
+      index += 1;
+      items.push(parseScalar(lines[index].replace(/^\s+-\s+/, "")));
+    }
+    meta[key] = items;
+  }
+  return {
+    meta,
+    body: String(text || "").slice(match[0].length).trim(),
+  };
+}
+
 function normalizeList(value) {
   if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
   if (!value) return [];
   return String(value)
     .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeExternalTools(value) {
+  return normalizeList(value)
+    .flatMap((item) => String(item || "").split(/\s+/))
     .map((item) => item.trim())
     .filter(Boolean);
 }
@@ -76,6 +116,46 @@ export function loadSkillFile(filePath) {
   };
 }
 
+function titleCaseSkillId(id = "") {
+  return String(id || "")
+    .split(/[-_\s/]+/)
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function loadExternalAgentSkillFile(filePath, { pack, includeBody = false } = {}) {
+  const text = fs.readFileSync(filePath, "utf8");
+  const { meta, body } = parseLooseFrontmatter(text, filePath);
+  const fallbackId = path.basename(path.dirname(filePath));
+  const id = String(meta.id || meta.name || fallbackId).trim();
+  const description = String(meta.description || "").trim();
+  if (!id || !description) {
+    throw new Error(`${filePath}: external skill must define name/id and description`);
+  }
+  const tools = normalizeExternalTools(meta.tools || meta["allowed-tools"]);
+  const triggers = normalizeList(meta.triggers);
+  if (!triggers.includes(id)) triggers.push(id);
+  const skill = {
+    id,
+    label: String(meta.label || titleCaseSkillId(id)).trim(),
+    description,
+    triggers,
+    tools,
+    path: filePath,
+    source: "external-pack",
+    category: pack.category,
+    pack: {
+      id: pack.id,
+      label: pack.label,
+      root: pack.root,
+      skillsDir: pack.skillsDir,
+    },
+  };
+  if (includeBody) skill.body = body;
+  return skill;
+}
+
 function loadSkillsFromDir({ includeBody = false, skillsDir = DEFAULT_SKILLS_DIR, source = "built-in" } = {}) {
   let dirEntries = [];
   try {
@@ -94,6 +174,106 @@ function loadSkillsFromDir({ includeBody = false, skillsDir = DEFAULT_SKILLS_DIR
       skills.push(skill);
     } catch {
       // Invalid local skill files are skipped so one bad skill does not break the agent.
+    }
+  }
+  return skills;
+}
+
+function splitExternalPackPaths(value = "") {
+  return String(value || "")
+    .split(new RegExp(`[${escapeRegExp(path.delimiter)},]`))
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function expandHome(value = "") {
+  const text = String(value || "");
+  if (text === "~") return process.env.HOME || text;
+  if (text.startsWith("~/")) return path.join(process.env.HOME || "", text.slice(2));
+  return text;
+}
+
+function inferExternalPackCategory(root) {
+  const name = path.basename(root).toLowerCase();
+  if (name.includes("scientific") || name.includes("science")) return "scientific";
+  if (name.includes("bio") || name.includes("lab")) return "scientific";
+  return "external";
+}
+
+function inferExternalPackLabel(root) {
+  return titleCaseSkillId(path.basename(root).replace(/-skills?$/i, ""));
+}
+
+function inferExternalSkillsDir(root) {
+  const candidates = [
+    path.join(root, "scientific-skills"),
+    path.join(root, "skills"),
+    root,
+  ];
+  for (const candidate of candidates) {
+    try {
+      const entries = fs.readdirSync(candidate, { withFileTypes: true });
+      if (entries.some((entry) => entry.isDirectory() && fs.existsSync(path.join(candidate, entry.name, "SKILL.md")))) {
+        return candidate;
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return "";
+}
+
+function defaultScientificSkillPackRoots() {
+  return [
+    process.env[SCIENTIFIC_SKILL_PACK_ENV],
+    path.resolve(__dirname, "..", "..", "scientific-agent-skills"),
+    path.join(agintiflowHome(), "skillpacks", "scientific-agent-skills"),
+  ].filter(Boolean);
+}
+
+export function listExternalSkillPacks() {
+  const roots = [
+    ...splitExternalPackPaths(process.env[EXTERNAL_SKILL_PACKS_ENV]),
+    ...defaultScientificSkillPackRoots(),
+  ];
+  const seen = new Set();
+  const packs = [];
+  for (const rawRoot of roots) {
+    const root = path.resolve(expandHome(rawRoot));
+    if (seen.has(root)) continue;
+    seen.add(root);
+    const skillsDir = inferExternalSkillsDir(root);
+    if (!skillsDir) continue;
+    const category = inferExternalPackCategory(root);
+    const basename = path.basename(root);
+    packs.push({
+      id: basename,
+      label: basename === "scientific-agent-skills" ? "Scientific Agent Skills" : inferExternalPackLabel(root),
+      category,
+      root,
+      skillsDir,
+    });
+  }
+  return packs.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function loadExternalSkillPackSkills({ includeBody = false } = {}) {
+  const skills = [];
+  for (const pack of listExternalSkillPacks()) {
+    let dirEntries = [];
+    try {
+      dirEntries = fs.readdirSync(pack.skillsDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of dirEntries) {
+      if (!entry.isDirectory()) continue;
+      const skillPath = path.join(pack.skillsDir, entry.name, "SKILL.md");
+      try {
+        skills.push(loadExternalAgentSkillFile(skillPath, { pack, includeBody }));
+      } catch {
+        // External packs are optional and may contain skills using a different dialect.
+      }
     }
   }
   return skills;
@@ -164,6 +344,7 @@ export function listSkills({
   skillsDir = DEFAULT_SKILLS_DIR,
   includeSkillMesh = true,
   includeProjectLocal = true,
+  includeExternalSkillPacks = true,
   projectRoot = process.cwd(),
 } = {}) {
   const defaultDir = path.resolve(skillsDir) === DEFAULT_SKILLS_DIR;
@@ -186,6 +367,9 @@ export function listSkills({
         skills.push(skill);
       }
     }
+  }
+  if (includeExternalSkillPacks && defaultDir) {
+    appendUniqueSkills(skills, loadExternalSkillPackSkills({ includeBody }));
   }
   return skills.sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -248,6 +432,7 @@ export function formatSkillsForPrompt(skills = [], { maxChars = DEFAULT_PROMPT_C
       [
         `## ${skill.id}: ${skill.label}`,
         `Description: ${skill.description}`,
+        skill.pack ? `Source pack: ${skill.pack.label} (${skill.category || "external"})` : "",
         skill.tools?.length ? `Preferred tools: ${skill.tools.join(", ")}` : "",
         skill.body ? compactBody(skill.body) : "",
       ]

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { formatSkillsForPrompt, listSkills, selectSkillsForGoal } from "../src/skill-library.js";
+import { formatSkillsForPrompt, listExternalSkillPacks, listSkills, selectSkillsForGoal } from "../src/skill-library.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -159,6 +159,44 @@ assert(
   "aginti skills did not print project-local skill from cwd"
 );
 fs.rmSync(localProject, { recursive: true, force: true });
+
+const externalPackRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agintiflow-scientific-pack-"));
+fs.mkdirSync(path.join(externalPackRoot, "scientific-skills", "temp-omics-review"), { recursive: true });
+fs.writeFileSync(
+  path.join(externalPackRoot, "scientific-skills", "temp-omics-review", "SKILL.md"),
+  `---
+name: temp-omics-review
+description: Review single-cell and multi-omics analysis plans with scientific rigor, typed outputs, and validation expectations.
+allowed-tools: Read Write Edit Bash
+metadata:
+  skill-author: Test Pack
+---
+# Temp Omics Review
+
+Inspect the dataset, define QC gates, select an analysis plan, and verify outputs before claiming scientific conclusions.
+`,
+  "utf8"
+);
+const previousExternalPacks = process.env.AGINTIFLOW_SKILL_PACKS;
+process.env.AGINTIFLOW_SKILL_PACKS = externalPackRoot;
+const externalPacks = listExternalSkillPacks();
+assert(externalPacks.some((pack) => pack.root === externalPackRoot && pack.category === "scientific"), "external scientific pack did not register");
+const externalSkills = listSkills({ includeBody: false }).filter((skill) => skill.id === "temp-omics-review");
+assert(externalSkills.length === 1, "external pack skill did not load exactly once");
+assert(externalSkills[0].source === "external-pack", "external pack skill did not keep source metadata");
+assert(externalSkills[0].category === "scientific", "external pack skill did not keep category metadata");
+assert(externalSkills[0].pack.id === path.basename(externalPackRoot), "external pack skill did not keep pack metadata");
+assert(
+  selectSkillsForGoal("review a multi-omics single-cell analysis plan", { includeBody: false, limit: 12 }).some(
+    (skill) => skill.id === "temp-omics-review" && skill.source === "external-pack"
+  ),
+  "external scientific pack skill was not selected by goal"
+);
+const externalPrompt = formatSkillsForPrompt(selectSkillsForGoal("temp omics review", { includeBody: true, limit: 3 }));
+assert(externalPrompt.includes("Source pack:"), "external skill prompt did not preserve source pack metadata");
+if (previousExternalPacks === undefined) delete process.env.AGINTIFLOW_SKILL_PACKS;
+else process.env.AGINTIFLOW_SKILL_PACKS = previousExternalPacks;
+fs.rmSync(externalPackRoot, { recursive: true, force: true });
 
 const cli = await execFileAsync(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), "skills", "website"], {
   cwd: repoRoot,

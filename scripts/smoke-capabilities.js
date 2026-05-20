@@ -161,6 +161,7 @@ try {
     capabilities.tools?.skills?.some((skill) => skill.id === "website-app"),
     "capabilities did not report built-in website skill"
   );
+  assert(Array.isArray(capabilities.tools?.skillPacks), "capabilities did not report skill packs");
   assert(
     capabilities.tools?.skills?.some((skill) => skill.id === "latex-manuscript"),
     "capabilities did not report built-in LaTeX skill"
