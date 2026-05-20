@@ -18,7 +18,6 @@ triggers:
   - publish
   - model selector
   - prompt composer
-  - 小云雀
   - 浏览器
   - 网页
   - 上传
