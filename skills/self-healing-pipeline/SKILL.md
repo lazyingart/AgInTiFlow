@@ -64,13 +64,22 @@ Parallel and async designs are optional implementation patterns, not a default p
 
 When AgInTiFlow is the project orchestrator, it should run as an interactive tmux session that writes and updates the project runner scripts, then starts separate non-interactive tmux jobs for writers, reviewers, monitors, compilers, and repair passes. The interactive session remains responsible for reading logs, changing project code, restarting affected jobs, and committing progress. Background workers should not edit orchestrator code unless explicitly designed as a companion repairer with clear write scope and logs.
 
+## Fresh Tmux Evidence
+
+Tmux panes keep old scrollback. After stopping or restarting a worker, do not treat a later pane capture as current evidence unless it includes a fresh run marker, heartbeat, log timestamp, PID, or progress line produced after the restart.
+
+- Prefer starting each runner with a unique marker such as `RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)-$$; echo "AGINTI_RUN_START:$RUN_ID"` and write the same marker to the durable log or status file.
+- If safe for the pane, clear the screen/history before a restart, but still rely on the marker or log timestamp as the proof boundary.
+- When a capture contains both old failures and new progress, judge only the lines after the current marker. If no marker exists, inspect the durable log mtime, process PID/elapsed time, and status file before accepting the run as healthy.
+- Do not call a background pipeline repaired or complete immediately after sending a restart command. Capture fresh output after a short wait or verify a status/log update from the restarted process.
+
 ## Verification And Resume
 
 After a repair:
 
 1. Run syntax checks for changed scripts.
 2. Run a dry-run or small bounded batch when safe.
-3. Verify status counters, first missing item, failed IDs, and output timestamps.
+3. Verify status counters, first missing item, failed IDs, output timestamps, and fresh run markers after any tmux restart.
 4. Restart only the affected tmux session, not unrelated jobs.
 5. Compile or export a checkpoint artifact when the pipeline has a renderer or build command.
 6. Record the exact resume command, current status, logs inspected, remaining failed items, and any quarantined artifacts.

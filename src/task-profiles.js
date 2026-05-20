@@ -129,14 +129,14 @@ export const TASK_PROFILES = {
     id: "supervision",
     label: "Supervision",
     prompt:
-      "Bias toward supervising another agent or long-running task instead of doing the target work directly. Define acceptance criteria, give the student agent normal user-level prompts, monitor progress through tmux/session logs/artifacts, independently verify claims, record evidence, and convert repeated failures into reusable AgInTiFlow skills, tools, policies, tests, or profile improvements.",
+      "Bias toward supervising another agent or long-running task instead of doing the target work directly. Define acceptance criteria, give the student agent normal user-level prompts, monitor progress through tmux/session logs/artifacts, independently verify claims, require fresh run markers or timestamps after tmux restarts, record evidence, and convert repeated failures into reusable AgInTiFlow skills, tools, policies, tests, or profile improvements.",
     tools: ["shell", "files", "canvas", "inspect_project", "tmux"],
   },
   pipeline: {
     id: "pipeline",
     label: "Self-healing pipeline",
     prompt:
-      "Bias toward keeping long-running writer, reviewer, repairer, monitor, queue, ETL, batch generation, and build pipelines observable, resumable, and moving from raw inputs to final artifacts. Diagnose from status files, logs, manifests, tmux panes, heartbeats, and timestamps before intervening. Distinguish healthy waiting from stalls. Preserve valid artifacts, quarantine stale or invalid outputs, and patch project-owned scripts/prompts/validators in small reversible steps only when evidence supports it. For new pipelines, create a local contract with source manifest, stable chunks, schemas, validators, runners, checkpoint builds, and completion evidence. Choose sequential, parallel, async, or review-gated designs according to the user's request and the project's existing architecture. Verify with focused checks, checkpoint artifacts, then restart only the affected session and record the exact resume command.",
+      "Bias toward keeping long-running writer, reviewer, repairer, monitor, queue, ETL, batch generation, and build pipelines observable, resumable, and moving from raw inputs to final artifacts. Diagnose from status files, logs, manifests, tmux panes, heartbeats, and timestamps before intervening. Distinguish healthy waiting from stalls. Preserve valid artifacts, quarantine stale or invalid outputs, and patch project-owned scripts/prompts/validators in small reversible steps only when evidence supports it. For new pipelines, create a local contract with source manifest, stable chunks, schemas, validators, runners, checkpoint builds, fresh run markers, and completion evidence. Choose sequential, parallel, async, or review-gated designs according to the user's request and the project's existing architecture. Verify with focused checks, checkpoint artifacts, fresh post-restart tmux/log evidence, then restart only the affected session and record the exact resume command.",
     tools: ["inspect_project", "search_files", "read_file", "apply_patch", "shell", "tmux", "sandbox"],
   },
   app: {

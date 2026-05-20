@@ -14,10 +14,12 @@ Concurrency is a tool, not a product stance. AgInTiFlow should choose sequential
 
 Review and repair are separate from writing. A reviewer should detect missing source units, repeated filler, malformed structured data, source drift, and known quality failures, then produce candidate repairs or failed-only requests. A repairer should be able to run independently of the writer, wake from status files, run bounded passes, and exit without blocking healthy progress.
 
+Tmux evidence must be fresh. Tmux panes preserve old scrollback, so after a restart the agent should emit a unique run marker into the pane and durable log/status file, then verify output after that marker. If no marker exists, it must compare log mtimes, process PID/elapsed time, and status timestamps before claiming the current run is healthy. Old failures in scrollback are useful history, not proof that the restarted worker is still failing.
+
 ## Boundaries
 
 AgInTiFlow should not embed project-specific schemas in its core. A book writer, data pipeline, or build system owns its own validators and artifact layout. AgInTiFlow provides the reusable behavior: diagnose, preserve valid work, patch the local workflow, verify, build checkpoint artifacts, restart only affected sessions, and report exact resume commands.
 
 ## Verification
 
-After a repair, the agent should run syntax checks for changed scripts, perform a dry-run or bounded batch when safe, inspect counters and first-missing IDs, and keep unrelated tmux sessions running. If the same symptom repeats, the agent should improve the project workflow or a reusable AgInTiFlow skill instead of repeatedly sending manual nudges.
+After a repair, the agent should run syntax checks for changed scripts, perform a dry-run or bounded batch when safe, inspect counters, first-missing IDs, fresh run markers, and timestamps, and keep unrelated tmux sessions running. If the same symptom repeats, the agent should improve the project workflow or a reusable AgInTiFlow skill instead of repeatedly sending manual nudges.

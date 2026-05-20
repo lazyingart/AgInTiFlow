@@ -38,7 +38,8 @@ Before launching long work, create or identify a project-local contract:
 3. Task manifest: stable chunk IDs, source location, dependency order, prompt/schema version, and output paths.
 4. Artifact schema: JSON Schema or other validator-owned shape for each generated unit.
 5. Runners: resumable writer, reviewer, repairer, monitor, merge, compile/export, and status commands.
-6. Completion evidence: counters, first missing item, failed IDs, current previews, final artifact paths, and resume commands.
+6. Freshness evidence: runner IDs, heartbeats, log timestamps, status file mtimes, and tmux markers that separate current output from old scrollback.
+7. Completion evidence: counters, first missing item, failed IDs, current previews, final artifact paths, and resume commands.
 
 Project-specific schemas, prompts, layouts, and compilers belong in the target repository. AgInTiFlow provides the orchestration pattern and should generate or patch local scripts when they are missing.
 
@@ -50,6 +51,7 @@ Project-specific schemas, prompts, layouts, and compilers belong in the target r
 - Use isolated structured-data calls for repetitive JSON units. Keep prompts focused on the chunk, schema, source references, and validation errors.
 - Add deterministic canonicalizers before model retry when failures are representational, such as punctuation normalization, stable token splitting, missing metadata backfill, schema version migration, or renderer-specific wrapping. Do not spend provider calls on repairs a local script can prove.
 - Run writers in tmux or another observable background process. Each worker must have disjoint claims, atomic output writes, and shard-local logs.
+- When restarting a tmux worker, print a unique run marker and write the same marker to its log or status file. A pane capture that only shows old scrollback is not proof of current progress.
 - Keep review and repair asynchronous but safe. Reviewers may produce candidate fixes while writers continue; only validators or merge scripts promote candidates.
 - Compile or export checkpoint previews after successful merge batches and always at final completion.
 - Commit reusable scripts, manifests, validators, templates, and stable checkpoints when the project expects git tracking.
@@ -68,4 +70,4 @@ A robust pipeline has an independent repair path that is not blocked by the main
 
 ## Done Criteria
 
-Do not call the task complete until the final artifact was built from the current manifest and the status report shows complete or intentionally quarantined coverage. A partial PDF, stale page count, or successful worker log is not enough.
+Do not call the task complete until the final artifact was built from the current manifest and the status report shows complete or intentionally quarantined coverage. A partial PDF, stale page count, old tmux scrollback, or successful worker log is not enough.

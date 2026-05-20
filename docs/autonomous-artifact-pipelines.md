@@ -11,6 +11,7 @@ Each pipeline should create these project-local files or equivalents:
 - Task manifest: stable chunk IDs, source locations, dependencies, prompt/schema version, and output paths.
 - Schema and validator: the exact artifact shape plus semantic checks that define a promotable output.
 - Runners: writer, reviewer, repairer, monitor, merge, compile/export, and status commands.
+- Freshness markers: run IDs, heartbeats, log/status timestamps, and tmux markers that separate a current run from old scrollback.
 - Completion report: counts, first missing ID, failed/quarantined items, latest previews, final artifact paths, and resume commands.
 
 The target repository owns its schemas, prompts, chunk policy, and rendering code. AgInTiFlow owns the behavior: inspect, create missing scripts, run observable sessions, preserve valid work, validate, repair, compile, and report evidence.
@@ -27,10 +28,12 @@ The repairer runs independently of the writer. It can wake from status files, ha
 
 The monitor is gentle. It waits through healthy progress and provider limits, restarts only on hard evidence of stall or crash, and records each decision.
 
+When the monitor restarts a tmux worker, it should require a fresh run marker or updated heartbeat before judging the new run. Capturing a pane immediately after restart can include old failures; those lines are history unless they occur after the current marker or current log timestamp.
+
 ## Concurrency
 
 Parallelism is optional. When used, each worker needs deterministic shard ownership, separate logs, atomic writes, and no direct compile responsibility. Merge, promotion, compilation, publishing, and commits should be serialized unless the project already has a safe coordinator.
 
 ## Completion
 
-A run is complete only when the final artifact was built from the current manifest and the status report shows full coverage or intentional quarantine. A successful tmux pane, a page count, or a single preview file is not enough.
+A run is complete only when the final artifact was built from the current manifest and the status report shows full coverage or intentional quarantine. A successful tmux pane, stale scrollback, a page count, or a single preview file is not enough.
