@@ -11,7 +11,8 @@ import {
 } from "../src/model-routing.js";
 import { normalizeTextToolCallResponse, parseTextToolCalls, usesTextToolProtocol } from "../src/model-client.js";
 import { modelRoleChoices, selectorVisibleWindow } from "../src/interactive-cli.js";
-import { buildScsEvidencePack, buildSupervisorInstruction, shouldRequestScsReplan } from "../src/scs-controller.js";
+import { buildScsEvidencePack, buildSupervisorInstruction, reviewScsFinish, shouldRequestScsReplan } from "../src/scs-controller.js";
+import { buildScsEvidenceLedger, deriveScsTaskContract, evaluateScsEvidence } from "../src/scs-evidence.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -244,6 +245,212 @@ const scsEvidence = buildScsEvidencePack({
 });
 assert(scsEvidence.includes("Student-Committee-Supervisor"), "SCS evidence pack should preserve raw verification stdout");
 assert(scsEvidence.includes("Syntax-Checker Sentinel absent"), "SCS evidence pack should keep absence checks visible to the final gate");
+assert(scsEvidence.includes("evidenceLedger"), "SCS evidence pack should include the structured evidence ledger");
+assert(scsEvidence.includes("evaluation"), "SCS evidence pack should include deterministic contract evaluation");
+
+const uploadContract = deriveScsTaskContract({
+  goal: "Upload five images in the browser composer and verify visible thumbnails. Do not submit.",
+  taskProfile: "website",
+});
+assert(uploadContract.requiresExternalEvidence, "browser upload contract should require external evidence");
+assert(
+  uploadContract.requiredEvidence.some((item) => item.category === "browser"),
+  "browser upload contract should require browser evidence"
+);
+assert(
+  uploadContract.requiredEvidence.some((item) => item.category === "visual"),
+  "visible upload contract should require visual evidence"
+);
+assert(uploadContract.forbiddenActions.some((item) => /submit/i.test(item)), "contract should preserve forbidden submit action");
+
+const weakUploadLedger = buildScsEvidenceLedger({
+  state: {
+    messages: [
+      {
+        role: "tool",
+        content: JSON.stringify({
+          toolName: "run_command",
+          ok: true,
+          exitCode: 0,
+          args: { command: "scripts/cdp-helper set-file-input PAGE_ID display.png R1.jpg" },
+          stdout: '{"ok":true,"nodeCount":1}',
+        }),
+      },
+    ],
+  },
+});
+const weakUploadEval = evaluateScsEvidence(uploadContract, weakUploadLedger);
+assert(!weakUploadEval.ok, "set-file-input alone should not satisfy visible upload evidence");
+assert(weakUploadEval.missing.some((item) => item.category === "visual"), "weak upload evidence should miss visual proof");
+
+const strongUploadLedger = buildScsEvidenceLedger({
+  state: {
+    messages: [
+      {
+        role: "tool",
+        content: JSON.stringify({
+          toolName: "run_command",
+          ok: true,
+          exitCode: 0,
+          args: { command: "scripts/cdp-helper upload-images-verify PAGE_ID display.png R1.jpg --screenshot outputs/upload.png" },
+          stdout: '{"ok":true,"visibleEvidenceCount":5,"screenshot":"outputs/upload.png"}',
+        }),
+      },
+    ],
+  },
+});
+const strongUploadEval = evaluateScsEvidence(uploadContract, strongUploadLedger);
+assert(strongUploadEval.ok, "visible upload verifier evidence should satisfy browser and visual contract");
+const weakUploadFinish = await reviewScsFinish(
+  { mock: true },
+  { provider: "mock", model: "mock-agent", taskProfile: "website" },
+  {
+    goal: uploadContract.outcome,
+    messages: weakUploadLedger.items.map((item) => ({
+      role: "tool",
+      content: JSON.stringify({
+        toolName: item.toolName || "run_command",
+        ok: true,
+        stdout: item.proof,
+        args: { command: item.target || "" },
+      }),
+    })),
+  },
+  "Done, uploaded five images.",
+  { goal: uploadContract.outcome, taskProfile: "website" }
+);
+assert(weakUploadFinish.decision === "finish_rejected", "SCS finish gate should reject upload claim without visual evidence");
+assert(/visual|missing/i.test(weakUploadFinish.reason), "SCS finish rejection should name missing evidence");
+const strongUploadFinish = await reviewScsFinish(
+  { mock: true },
+  { provider: "mock", model: "mock-agent", taskProfile: "website" },
+  {
+    goal: uploadContract.outcome,
+    messages: [
+      {
+        role: "tool",
+        content: JSON.stringify({
+          toolName: "run_command",
+          ok: true,
+          exitCode: 0,
+          args: { command: "scripts/cdp-helper upload-images-verify PAGE_ID --screenshot outputs/upload.png" },
+          stdout: '{"ok":true,"visibleEvidenceCount":5,"screenshot":"outputs/upload.png"}',
+        }),
+      },
+    ],
+  },
+  "Done, verified five visible uploaded images.",
+  { goal: uploadContract.outcome, taskProfile: "website" }
+);
+assert(strongUploadFinish.decision === "finish_allowed", "SCS finish gate should allow satisfied upload evidence");
+
+const codeContract = deriveScsTaskContract({
+  goal: "Fix the bug in src/app.js and run the test.",
+  taskProfile: "code",
+});
+const explainCodeContract = deriveScsTaskContract({
+  goal: "Explain JavaScript closures at a high level.",
+  taskProfile: "code",
+});
+const noteFileContract = deriveScsTaskContract({
+  goal: "Create notes/hello.md with a short smoke-test note.",
+  taskProfile: "code",
+});
+const canvasArtifactContract = deriveScsTaskContract({
+  goal: "Create a canvas artifact preview for this smoke test.",
+});
+const jsonObjectContract = deriveScsTaskContract({
+  goal: "Extract a valid JSON object with schema from this text.",
+});
+const virtualFileContract = deriveScsTaskContract({
+  goal: "Create file: /workspace/virtual-output.txt with virtual Docker path support.",
+});
+const generatedReviewContract = deriveScsTaskContract({
+  goal: [
+    "Review focus: changed files only",
+    "Run a bounded, evidence-based code review of this workspace.",
+    "Exclude generated, vendored, binary, cache, and large artifact paths.",
+    "Final answer format: Findings first with file/line references.",
+  ].join("\n"),
+  taskProfile: "review",
+});
+assert(
+  !explainCodeContract.requiresExternalEvidence,
+  "code profile alone should not force external evidence for a pure explanation"
+);
+assert(
+  noteFileContract.requiredEvidence.some((item) => item.category === "file") &&
+    !noteFileContract.requiredEvidence.some((item) => item.category === "command"),
+  "simple markdown note creation should require file evidence without an unrelated command check"
+);
+assert(
+  canvasArtifactContract.requiredEvidence.some((item) => item.category === "artifact") &&
+    !canvasArtifactContract.requiredEvidence.some((item) => item.category === "file") &&
+    !canvasArtifactContract.requiredEvidence.some((item) => item.category === "visual"),
+  "canvas artifact preview should require artifact evidence without unrelated file or screenshot evidence"
+);
+assert(
+  !jsonObjectContract.requiredEvidence.some((item) => item.category === "file"),
+  "JSON object extraction should not be treated as a workspace file requirement without an explicit file/path"
+);
+assert(
+  virtualFileContract.requiredEvidence.some((item) => item.category === "file") &&
+    !virtualFileContract.requiredEvidence.some((item) => item.category === "artifact"),
+  "virtual output filename should require file evidence without treating output in the filename as an artifact"
+);
+assert(
+  generatedReviewContract.requiredEvidence.some((item) => item.category === "command") &&
+    !generatedReviewContract.requiredEvidence.some((item) => item.category === "file") &&
+    !generatedReviewContract.requiredEvidence.some((item) => item.category === "artifact"),
+  "review profile should not turn review-format boilerplate into file/artifact production requirements"
+);
+const fileOnlyLedger = buildScsEvidenceLedger({
+  context: { events: [{ type: "file.changed", data: { path: "src/app.js" } }] },
+});
+const fileOnlyEval = evaluateScsEvidence(codeContract, fileOnlyLedger);
+assert(!fileOnlyEval.ok, "code task should not finish from file evidence without check evidence");
+assert(fileOnlyEval.missing.some((item) => item.category === "command"), "code task should require command/check evidence");
+const checkedCodeEval = evaluateScsEvidence(
+  codeContract,
+  buildScsEvidenceLedger({
+    context: { events: [{ type: "file.changed", data: { path: "src/app.js" } }] },
+    state: {
+      messages: [
+        {
+          role: "tool",
+          content: JSON.stringify({ toolName: "run_command", ok: true, exitCode: 0, args: { command: "npm test" }, stdout: "ok" }),
+        },
+      ],
+    },
+  })
+);
+assert(checkedCodeEval.ok, "code task should finish when file and command evidence are both present");
+
+const blockedFileFinish = await reviewScsFinish(
+  { mock: true },
+  { provider: "mock", model: "mock-agent", taskProfile: "code" },
+  {
+    goal: "Create notes/safe.md with approval-gated content.",
+    messages: [
+      {
+        role: "tool",
+        content: JSON.stringify({
+          toolName: "write_file",
+          ok: false,
+          blocked: true,
+          needsApproval: true,
+          category: "workspace-write",
+          reason: "Workspace write requires approval in safe mode.",
+          permissionAdvice: { category: "workspace-write", reason: "Approve this workspace write." },
+          args: { path: "notes/safe.md" },
+        }),
+      },
+    ],
+  },
+  "Blocked by guardrail: this workspace write requires approval before creating notes/safe.md.",
+  { goal: "Create notes/safe.md with approval-gated content.", taskProfile: "code" }
+);
+assert(blockedFileFinish.decision === "finish_allowed", "SCS final gate should allow a proven permission blocker report");
 
 const output = await runCli(["models"]);
 assert(output.includes("/route") && output.includes("/spare") && output.includes("venice-gpt"), "aginti models output missing role details");
@@ -276,6 +483,7 @@ console.log(
         "scs-supervisor-identity",
         "scs-student-validator-replan",
         "scs-evidence-stdout",
+        "scs-contract-evidence-ledger",
         "cli-models-command",
         "venice-shortcut",
       ],

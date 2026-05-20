@@ -47,6 +47,8 @@ When SCS is active:
 - Failed, blocked, suspicious, or mismatched tools trigger a bounded student validator review.
 - Every fourth execution step triggers a bounded progress review for long runs.
 - `finish` and assistant-content completion pass through a final student gate.
+- A deterministic task contract and evidence ledger are built under the student gate. The contract records required evidence categories such as file, command, artifact, browser, visual, git, or publish evidence. The ledger classifies recent tool and event evidence into those categories.
+- The final gate compares the contract, approved plan, executor finish claim, and evidence ledger. A model approval cannot override missing deterministic evidence for evidence-bearing tasks unless the run is reporting a real external blocker.
 - If the student validator rejects progress or finish, the runtime asks the committee for a new phase plan and sends that plan back through the student gate before the supervisor continues.
 - Decisions are persisted as `scs.*` events and the phase pack is saved as a session artifact.
 
@@ -114,6 +116,8 @@ These are saved in the normal session event log under `~/.agintiflow/sessions/<s
 
 Browser and CDP helper commands are reviewed by evidence, not only by exit status. If a click or selector command reports `ok: true` but returns broad whole-page text, repeated navigation/history/sidebar text, or no scoped target evidence, SCS treats the result as suspicious and asks the supervisor to verify state or switch to a precise selector before continuing.
 
+For upload, browser, visual, media, or external-service tasks, a successful helper command is not enough by itself. The ledger must include evidence that proves the requested state, such as the active page, visible count, screenshot, output artifact, build/test output, or committed/published state.
+
 ## Design Reference
 
-The deeper design research lives in [references/student-committee-supervisor-mode.md](../references/student-committee-supervisor-mode.md). The important design choice is that SCS is a typed event gate, not a free-form debate. Internal roles emit structured decisions, and the runtime decides what those decisions are allowed to do.
+The deeper design research lives in [references/student-committee-supervisor-mode.md](../references/student-committee-supervisor-mode.md) and [references/scs-evidence-validator-core-design.md](../references/scs-evidence-validator-core-design.md). The important design choice is that SCS is a typed event gate, not a free-form debate. Internal roles emit structured decisions, and the runtime decides what those decisions are allowed to do.

@@ -1,6 +1,15 @@
 import { redactSensitiveText, redactValue } from "./redaction.js";
 import { formatBehaviorContractForPrompt, scsContractCriteria } from "./behavior-contract.js";
 import { browserStateReconciliationGuidance } from "./browser-automation-guidance.js";
+import {
+  buildScsEvidenceLedger,
+  deriveScsTaskContract,
+  deterministicFinishBlocker,
+  evaluateScsEvidence,
+  finishResultClaimsBlocker,
+  hasScsBlockerEvidence,
+  summarizeScsContractEvidence,
+} from "./scs-evidence.js";
 
 export const SCS_MODES = ["off", "on", "auto"];
 
@@ -259,37 +268,23 @@ function finishRequiresExternalEvidence(goal = "", taskProfile = "") {
   return false;
 }
 
+function contractForState(state = {}, context = {}) {
+  const scs = state.meta?.scs || {};
+  return (
+    scs.taskContract ||
+    deriveScsTaskContract({
+      goal: state.goal || context.goal || "",
+      taskProfile: context.taskProfile || "",
+      acceptanceCriteria: scs.acceptanceCriteria || [],
+    })
+  );
+}
+
 function hasConcreteFinishEvidence(state = {}, context = {}) {
-  const events = Array.isArray(context.events) ? context.events.slice(-30) : [];
-  if (
-    events.some((event) =>
-      [
-        "file.changed",
-        "tool.completed",
-        "canvas.item",
-        "canvas.selected",
-        "image.generated",
-        "parallel_scouts.completed",
-        "budget.extension_approved",
-      ].includes(event.type)
-    )
-  ) {
-    return true;
-  }
-  const messages = Array.isArray(state.messages) ? state.messages.slice(-20) : [];
-  return messages.some((message) => {
-    if (message.role !== "tool") return false;
-    try {
-      const parsed = JSON.parse(message.content || "{}");
-      if (parsed.ok === false) return false;
-      if (parsed.path || parsed.stdout || parsed.result || parsed.done || (Array.isArray(parsed.changes) && parsed.changes.length > 0)) {
-        return true;
-      }
-    } catch {
-      return String(message.content || "").trim().length > 0;
-    }
-    return false;
-  });
+  const contract = contractForState(state, context);
+  const ledger = buildScsEvidenceLedger({ state, context });
+  const evaluation = evaluateScsEvidence(contract, ledger);
+  return evaluation.ok;
 }
 
 export function buildScsEvidencePack(state = {}, context = {}) {
@@ -325,12 +320,21 @@ export function buildScsEvidencePack(state = {}, context = {}) {
       }))
     : [];
 
+  const taskContract = contractForState(state, context);
+  const evidenceLedger = buildScsEvidenceLedger({ state, context });
+  const evidenceEvaluation = evaluateScsEvidence(taskContract, evidenceLedger);
+
   return compactJson(
     {
       goal: state.goal || context.goal || "",
       taskProfile: context.taskProfile || "",
       approvedPlan: state.plan || "",
       scs: state.meta?.scs || null,
+      ...summarizeScsContractEvidence({
+        contract: taskContract,
+        ledger: evidenceLedger,
+        evaluation: evidenceEvaluation,
+      }),
       recentEvents: events,
       recentMessages: messageSummary,
     },
@@ -550,6 +554,11 @@ async function createScsPhase(client, config, state, context = {}, options = {})
     phaseGoal: committee.phaseGoal,
     plan: committee.plan,
     acceptanceCriteria: committee.acceptanceCriteria,
+    taskContract: deriveScsTaskContract({
+      goal: state.goal,
+      taskProfile: context.taskProfile || "",
+      acceptanceCriteria: committee.acceptanceCriteria,
+    }),
     allowedTools: committee.allowedTools,
     stopConditions: committee.stopConditions,
     committee,
@@ -741,23 +750,49 @@ export async function reviewScsFinish(client, config, state, result = "", contex
   }
 
   const evidence = buildScsEvidencePack(state, context);
-  const requiresEvidence = finishRequiresExternalEvidence(context.goal || state.goal || "", context.taskProfile || config.taskProfile || "");
-  const hasEvidence = hasConcreteFinishEvidence(state, context);
+  const taskContract = contractForState(state, {
+    ...context,
+    taskProfile: context.taskProfile || config.taskProfile || "",
+  });
+  const evidenceLedger = buildScsEvidenceLedger({ state, context });
+  const evidenceEvaluation = evaluateScsEvidence(taskContract, evidenceLedger);
+  const deterministicBlocker = deterministicFinishBlocker(taskContract, evidenceLedger, evidenceEvaluation);
+  const hasRealBlocker = hasScsBlockerEvidence(evidenceLedger) && finishResultClaimsBlocker(result);
+  const requiresEvidence =
+    taskContract.requiresExternalEvidence ||
+    finishRequiresExternalEvidence(context.goal || state.goal || "", context.taskProfile || config.taskProfile || "");
+  const hasEvidence = hasConcreteFinishEvidence(state, {
+    ...context,
+    taskProfile: context.taskProfile || config.taskProfile || "",
+  });
   const fallback = normalizeDecision(
     {
-      decision: requiresEvidence && !hasEvidence ? "finish_rejected" : "finish_allowed",
-      confidence: requiresEvidence && !hasEvidence ? 0.78 : 0.55,
+      decision: requiresEvidence && !hasEvidence && !hasRealBlocker ? "finish_rejected" : "finish_allowed",
+      confidence: requiresEvidence && !hasEvidence && !hasRealBlocker ? 0.78 : hasRealBlocker ? 0.82 : 0.55,
       reason:
-        requiresEvidence && !hasEvidence
-          ? "Fallback finish rejection: this task requires concrete external evidence, but no recent tool/file/artifact evidence was available."
+        hasRealBlocker
+          ? "Fallback finish approval for a real tool/permission blocker with structured blocker evidence."
+          : requiresEvidence && !hasEvidence
+          ? `Fallback finish rejection: ${evidenceEvaluation.reason || "this task requires concrete external evidence, but the evidence ledger is insufficient."}`
           : "Fallback finish approval for a task without mandatory external evidence. Runtime guardrails remain authoritative.",
-      evidence: hasEvidence ? ["recent concrete tool/file/artifact evidence was present"] : ["finish requested"],
-      next_required_action: requiresEvidence && !hasEvidence ? "collect concrete evidence or report a real blocker" : "finish",
+      evidence: hasEvidence
+        ? ["contract evidence categories were satisfied"]
+        : hasRealBlocker
+          ? (evidenceLedger.blockers || []).map(
+              (item) => `${item.toolName || "tool"} blocked (${item.category || "blocked"}): ${item.reason || "approval required"}`
+            )
+        : deterministicBlocker?.evidence || ["finish requested"],
+      next_required_action:
+        hasRealBlocker
+          ? "report_blocker"
+          : requiresEvidence && !hasEvidence
+          ? deterministicBlocker?.nextRequiredAction || "collect concrete evidence or report a real blocker"
+          : "finish",
     },
-    requiresEvidence && !hasEvidence ? "finish_rejected" : "finish_allowed"
+    requiresEvidence && !hasEvidence && !hasRealBlocker ? "finish_rejected" : "finish_allowed"
   );
   if ((state.meta?.scs?.finishRejects || 0) >= 2) {
-    if (requiresEvidence && !hasEvidence && !hasAllowedExternalBrowserBlocker(result)) {
+    if (requiresEvidence && !hasEvidence && !hasAllowedExternalBrowserBlocker(result) && !hasRealBlocker) {
       return {
         ...fallback,
         reason: "Finish rejection cap reached, but SCS still cannot allow completion without concrete evidence for an evidence-bearing task.",
@@ -789,6 +824,16 @@ export async function reviewScsFinish(client, config, state, result = "", contex
   const decision = normalizeDecision(raw, "finish_allowed");
   if (!["finish_allowed", "finish_rejected"].includes(decision.decision)) {
     decision.decision = decision.decision === "reject_phase" ? "finish_rejected" : "finish_allowed";
+  }
+  if (decision.decision === "finish_allowed" && deterministicBlocker && !hasAllowedExternalBrowserBlocker(result)) {
+    if (hasRealBlocker) return decision;
+    return normalizeDecision(
+      {
+        ...deterministicBlocker,
+        reason: `SCS deterministic evidence gate overrode finish approval: ${deterministicBlocker.reason}`,
+      },
+      "finish_rejected"
+    );
   }
   return decision;
 }

@@ -453,8 +453,20 @@ export function normalizeTextToolCallResponse(response) {
 function mockCommandForGoal(goal = "") {
   const text = String(goal).toLowerCase();
   if (/\bsleep\b|\binterrupt\b|\bstall\b|\blong[- ]running\b/.test(text)) return "python3 -c 'import time; time.sleep(20)'";
+  if (/\b(review focus|code review|bounded.*review|changed files)\b/.test(text)) return "pwd";
+  if (/\b(git status|git diff)\b/.test(text)) return "git status --short";
   if (/\blist\b|folder contents|directory contents|files?/.test(text)) return "ls -la";
   return "pwd";
+}
+
+function mockShouldPreferShellForGoal(goal = "") {
+  const text = String(goal || "");
+  return (
+    /\b(?:command|shell|terminal|pwd|working directory|current working directory|safe command|run command|review focus|code review|git status|git diff|changed files)\b/i.test(
+      text
+    ) ||
+    /当前工作目录|工作目录|命令|终端/.test(text)
+  );
 }
 
 function mockPathForGoal(goal = "") {
@@ -591,7 +603,7 @@ function mockJsonSpecialistToolForGoal(goal = "") {
 
 function mockPreviewToolForGoal(goal = "") {
   const text = String(goal).toLowerCase();
-  if (!/(open|preview|view|browser|website|web\s*site)/.test(text)) return null;
+  if (!/\b(open|preview|view|browser|website|web\s*site)\b/.test(text)) return null;
   const targetPath = mockPathForGoal(goal);
   if (targetPath === "mock-output.txt") return null;
   if (!/\.(html|htm|svg|png|jpe?g|webp|pdf|txt|md)$/i.test(targetPath)) return null;
@@ -1489,6 +1501,12 @@ export async function requestNextStep(client, config, messages) {
     const writingTool = mockWritingSpecialistToolForGoal(config.goal, config.taskProfile);
     if (writingTool) {
       return mockChatResponse("Mock mode will exercise the isolated writing specialist before file or format work.", [writingTool]);
+    }
+
+    if (config.allowShellTool && mockShouldPreferShellForGoal(config.goal)) {
+      return mockChatResponse("Mock mode will use the guarded shell tool for an explicitly local command task.", [
+        mockToolCall("run_command", { command: mockCommandForGoal(config.goal) }),
+      ]);
     }
 
     if (config.allowAuxiliaryTools) {
