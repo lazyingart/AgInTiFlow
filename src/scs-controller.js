@@ -727,11 +727,31 @@ export function shouldRequestScsReplan(decision = {}) {
 
 export function shouldReviewToolResult(toolResult, state = {}) {
   if (!toolResult || toolResult.done) return false;
+  if (isRecoverableShellToolResult(toolResult)) return false;
   if (toolResult.ok === false || toolResult.blocked || toolResult.error || toolResult.reason) return true;
   if (isSuspiciousBroadBrowserToolResult(toolResult)) return true;
   const recent = state.meta?.toolLoop?.recent || [];
   const warned = state.meta?.toolLoop?.warned || [];
   return warned.length > 0 && recent.some((entry) => entry.toolName === toolResult.toolName && entry.ok === false);
+}
+
+export function isRecoverableShellToolResult(toolResult = {}) {
+  if (!toolResult || toolResult.toolName !== "run_command") return false;
+  const command = String(toolResult.args?.command || "");
+  const reason = String(toolResult.reason || toolResult.error || toolResult.permissionAdvice?.reason || "");
+  const stderr = String(toolResult.stderr || "");
+  const combined = `${command}\n${reason}\n${stderr}`;
+  if (toolResult.blocked && /secret|credential|token|api[_ -]?key|password/i.test(combined)) {
+    return true;
+  }
+  if (
+    toolResult.ok === false &&
+    Number(toolResult.exitCode || 0) !== 0 &&
+    /syntax error|unexpected end of file|unexpected eof|unterminated quoted string|bad substitution/i.test(combined)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export async function reviewScsToolResult(client, config, state, toolResult, context = {}) {

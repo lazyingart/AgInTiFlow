@@ -7,6 +7,7 @@ import { runAgent } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import {
   browserSubmitFinishIssue,
+  isRecoverableShellToolResult,
   isSuspiciousBroadBrowserToolResult,
   shouldActivateScs,
   shouldReviewToolResult,
@@ -84,6 +85,29 @@ try {
   assert(
     shouldReviewToolResult(broadBrowserClick, { meta: {} }),
     "SCS should review suspicious broad browser click results"
+  );
+  const blockedSecretProbe = {
+    toolName: "run_command",
+    blocked: true,
+    args: { command: "env | grep API_KEY" },
+    reason: "Command is blocked because it references secrets or credential files.",
+  };
+  assert(isRecoverableShellToolResult(blockedSecretProbe), "SCS should classify blocked secret probes as recoverable shell results");
+  assert(
+    !shouldReviewToolResult(blockedSecretProbe, { meta: {} }),
+    "SCS should not derail the phase for a safely blocked credential probe"
+  );
+  const malformedReadOnlyCheck = {
+    toolName: "run_command",
+    ok: false,
+    exitCode: 2,
+    args: { command: "for f in *.pdf; do python3 -c 'print(\"oops\")'" },
+    stderr: "/bin/bash: -c: line 9: syntax error: unexpected end of file",
+  };
+  assert(isRecoverableShellToolResult(malformedReadOnlyCheck), "SCS should classify shell quoting mistakes as recoverable");
+  assert(
+    !shouldReviewToolResult(malformedReadOnlyCheck, { meta: {} }),
+    "SCS should let the normal agent loop repair simple shell quoting mistakes"
   );
   assert(
     !isSuspiciousBroadBrowserToolResult({
