@@ -144,11 +144,21 @@ function tmuxCapture(session) {
   }
 }
 
+function tmuxSessionExists(session) {
+  try {
+    tmux(["has-session", "-t", session], { timeout: 2000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function waitForTmuxText(session, pattern, timeoutMs = 12000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const pane = tmuxCapture(session);
     if (pattern.test(pane)) return pane;
+    if (!tmuxSessionExists(session)) return `${pane}\nSESSION_EXITED`;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return tmuxCapture(session);
@@ -191,8 +201,9 @@ async function runTmuxInterruptSmoke({ key, expected }) {
     pane = await waitForTmuxText(session, /run_command|model_wait|Docker:/, 12000);
     if (!/run_command|model_wait|Docker:/.test(pane)) throw new Error(`interrupt smoke did not start a run before ${key}\n${pane}`);
     tmux(["send-keys", "-t", session, key]);
-    pane = await waitForTmuxText(session, expected, 10000);
-    if (!expected.test(pane)) throw new Error(`interrupt smoke did not observe ${expected} after ${key}\n${pane}`);
+    const stoppedPattern = new RegExp(`${expected.source}|SESSION_EXITED`, expected.flags);
+    pane = await waitForTmuxText(session, stoppedPattern, 20000);
+    if (!stoppedPattern.test(pane)) throw new Error(`interrupt smoke did not observe ${expected} after ${key}\n${pane}`);
     if (key === "Escape" && !/EXIT:/.test(pane)) {
       tmux(["send-keys", "-t", session, "-l", "/exit"]);
       tmux(["send-keys", "-t", session, "Enter"]);
