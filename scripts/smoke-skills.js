@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -44,6 +46,7 @@ for (const required of [
   "php",
   "security-review",
   "self-healing-pipeline",
+  "skill-creator",
   "source-ingestion",
   "structured-json",
   "system-maintenance",
@@ -90,6 +93,7 @@ assert(selectedIds("clean a CSV dataset and make plots").includes("data-analysis
 assert(selectedIds("convert scanned PDF EPUB and image sources to markdown with OCR").includes("source-ingestion"), "source ingestion prompt did not select source-ingestion");
 assert(selectedIds("use json schema to fetch valid structured json for each chunk in parallel").includes("structured-json"), "structured JSON prompt did not select structured-json");
 assert(selectedIds("write README API docs and a tutorial").includes("docs-knowledge"), "docs prompt did not select docs-knowledge");
+assert(selectedIds("create a custom skill for a reusable browser upload workflow").includes("skill-creator"), "custom skill prompt did not select skill-creator");
 assert(selectedIds("fix failing tests and add regression coverage").includes("qa-testing"), "QA prompt did not select qa-testing");
 const qaSkill = skills.find((skill) => skill.id === "qa-testing");
 assert(qaSkill?.body.includes("Do not invent staged bugs"), "QA skill does not guard against fake staged failures");
@@ -111,6 +115,50 @@ const prompt = formatSkillsForPrompt(selectSkillsForGoal("write latex manuscript
 assert(prompt.includes("A skill is Markdown guidance"), "skill prompt does not explain skill semantics");
 assert(prompt.includes("latex-manuscript"), "skill prompt omitted selected skill");
 assert(prompt.length < 5400, "skill prompt is too large for normal runs");
+
+const localProject = fs.mkdtempSync(path.join(os.tmpdir(), "agintiflow-local-skill-"));
+fs.mkdirSync(path.join(localProject, ".aginti", "skills", "local-browser-submit"), { recursive: true });
+fs.writeFileSync(
+  path.join(localProject, ".aginti", "skills", "local-browser-submit", "SKILL.md"),
+  `---
+id: local-browser-submit
+label: Local Browser Submit
+description: Project-local guidance for selecting assets, checking model controls, and submitting a browser composer.
+triggers:
+  - local browser submit
+  - asset picker
+tools:
+  - run_command
+  - read_image
+---
+# Local Browser Submit
+
+Inspect the composer, attach required assets, verify visible state, then submit only when the requested controls are correct.
+`,
+  "utf8"
+);
+const localSkills = listSkills({ includeBody: false, projectRoot: localProject });
+assert(localSkills.some((skill) => skill.id === "local-browser-submit" && skill.source === "project-local"), "project-local skill did not load");
+assert(
+  selectSkillsForGoal("use local browser submit with the asset picker", { includeBody: false, projectRoot: localProject }).some(
+    (skill) => skill.id === "local-browser-submit"
+  ),
+  "project-local skill was not selected by goal"
+);
+const localCli = await execFileAsync(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), "skills", "asset picker"], {
+  cwd: localProject,
+  timeout: 10000,
+  maxBuffer: 512 * 1024,
+  env: {
+    ...process.env,
+    AGINTIFLOW_RUNTIME_DIR: "",
+  },
+});
+assert(
+  localCli.stdout.includes("local-browser-submit") && localCli.stdout.includes("source=project-local"),
+  "aginti skills did not print project-local skill from cwd"
+);
+fs.rmSync(localProject, { recursive: true, force: true });
 
 const cli = await execFileAsync(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), "skills", "website"], {
   cwd: repoRoot,

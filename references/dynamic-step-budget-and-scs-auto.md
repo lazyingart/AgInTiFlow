@@ -1,6 +1,6 @@
 # Dynamic Step Budget And SCS Auto Routing
 
-This note documents the implemented design for dynamic `maxSteps` extension and SCS auto routing.
+This note documents the implemented design for dynamic `maxSteps` extension and SCS routing. SCS now defaults to `on`; auto routing remains available with `--scs auto` or `/scs auto` when a user wants SCS only for complex turns.
 
 ## Current State
 
@@ -15,11 +15,11 @@ Relevant paths:
 - `src/step-budget-controller.js`: owns deterministic progress/blocker checks, caps, serialization, and extension application.
 - `src/scs-controller.js`: supports `off`, `on`, `auto`, and the SCS student step-budget gate.
 
-SCS auto is supported:
+SCS auto is supported but is not the default:
 
 - CLI: `--scs auto`.
 - Interactive: `/scs auto`.
-- Config: `enableScs: "auto"`.
+- Config: `enableScs: "on"` by default, or `"auto"` when explicitly requested.
 - Router policy: `shouldActivateScs("auto", { goal, taskProfile, complexityScore })`.
 - Active model policy: when SCS is active, committee/student/supervisor use the main model.
 
@@ -212,12 +212,12 @@ Defaults:
 Routing semantics:
 
 - `/scs off`: never use SCS; dynamic budget uses normal deterministic monitoring if enabled.
-- `/scs on`: always use SCS; dynamic budget uses the student budget gate.
+- `/scs on`: always use SCS; this is the default, and dynamic budget uses the student budget gate.
 - `/scs auto`: router decides per run; if activated, dynamic budget uses the student gate.
 
 For observability, state preserves:
 
-- configured mode: `enableScs = "auto"`;
+- configured mode: `enableScs = "auto"` after explicit `--scs auto` or `/scs auto`;
 - actual run activation: `scsActive = true|false`;
 - budget state: `state.meta.stepBudget`.
 

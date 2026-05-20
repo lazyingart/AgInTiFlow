@@ -4,7 +4,7 @@ AgInTiFlow separates **skills** from **tools** so the agent can stay general whi
 
 ## Definitions
 
-**Skill**: Markdown guidance stored at `skills/<id>/SKILL.md`. A skill describes when to use a workflow, what to inspect first, which outputs matter, and which tools are usually useful. Skills are prompt context, not executable code.
+**Skill**: Markdown guidance stored at built-in `skills/<id>/SKILL.md` or project-local `.aginti/skills/<id>/SKILL.md`. A skill describes when to use a workflow, what to inspect first, which outputs matter, and which tools are usually useful. Skills are prompt context, not executable code.
 
 **Tool**: A deterministic or bounded callable capability exposed to the model, such as `inspect_project`, `read_file`, `apply_patch`, `run_command`, `web_search`, `web_research`, `read_image`, `writing_specialist`, `research_wrapper`, `generate_image`, `preview_workspace`, `tmux_capture_pane`, or `send_to_canvas`.
 
@@ -12,7 +12,7 @@ AgInTiFlow separates **skills** from **tools** so the agent can stay general whi
 
 ## Built-In Skills
 
-The package ships built-in skills for code engineering, website/app building, LaTeX manuscripts, books, Microsoft Word documents, image generation, GitHub maintenance, system maintenance, source ingestion/OCR, structured JSON, autonomous artifact pipelines, tmux session control, Android, R/Stan, Python, C/C++, shell scripting, AAPS, novel writing, and supervision/student-agent training.
+The package ships built-in skills for code engineering, website/app building, LaTeX manuscripts, books, Microsoft Word documents, image generation, GitHub maintenance, system maintenance, source ingestion/OCR, structured JSON, autonomous artifact pipelines, tmux session control, Android, R/Stan, Python, C/C++, shell scripting, AAPS, skill creation, novel writing, and supervision/student-agent training.
 
 List them from a project:
 
@@ -53,9 +53,13 @@ Selected skills are injected into the plan and execution prompts. The LLM still 
 
 ## Adding A Skill
 
-Create `skills/<id>/SKILL.md` with valid YAML frontmatter and a short Markdown body. Keep descriptions strings, not YAML arrays, because loaders expect `id`, `label`, and `description` as scalar strings.
+For a reusable project workflow, create `.aginti/skills/<id>/SKILL.md` with valid YAML frontmatter and a short Markdown body. These skills are loaded from the current project, shown as `source=project-local`, and are preferred for task-specific knowledge that should not become core runtime policy.
+
+Built-in package skills live at `skills/<id>/SKILL.md`. Keep descriptions strings, not YAML arrays, because loaders expect `id`, `label`, and `description` as scalar strings.
 
 Good skills are small, actionable, and tool-aware. They should say what to inspect, what to create or verify, and what to avoid. They should not hard-code one exact task.
+
+Use the built-in `skill-creator` skill when the user asks AgInTiFlow to learn or document a reusable method. It should create project-local skills first, then propose SkillMesh sharing only after the workflow has been validated.
 
 For visual or current-information tasks, prefer:
 

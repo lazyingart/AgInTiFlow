@@ -642,7 +642,11 @@ function mockChatResponse(content, toolCalls = []) {
 export async function createPlan(client, config, state) {
   const taskProfile = getTaskProfile(config.taskProfile);
   const engineeringGuidance = engineeringGuidanceForTask(state.goal, config.taskProfile);
-  const selectedSkills = selectSkillsForGoal(state.goal, { taskProfile: config.taskProfile, limit: 5 });
+  const selectedSkills = selectSkillsForGoal(state.goal, {
+    taskProfile: config.taskProfile,
+    limit: 5,
+    projectRoot: config.commandCwd || config.baseDir || process.cwd(),
+  });
   const skillContext = formatSkillsForPrompt(selectedSkills);
   const projectInstructions = state.meta?.projectInstructions;
   const platform = platformInfo();

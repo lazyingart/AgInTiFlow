@@ -1,13 +1,13 @@
 # Student-Committee-Supervisor Mode
 
-Student-Committee-Supervisor mode, or SCS, is an optional quality gate for complicated AgInTiFlow tasks.
+Student-Committee-Supervisor mode, or SCS, is the default quality gate for AgInTiFlow tasks.
 
-It is intentionally separate from the normal fast pipeline. Small requests should stay cheap and direct. SCS is for work where a weak plan, repeated failed action, or premature finish would be expensive.
+It separates planning, execution, and validation so the executor does not grade its own work. Use `--no-scs` or `/scs off` only when latency matters more than independent validation.
 
 ## Commands
 
 ```bash
-aginti --scs "fix this complicated project and verify it"
+aginti "fix this complicated project and verify it"
 aginti --scs auto "migrate this app and run the checks"
 aginti --no-scs "answer this simple question"
 ```
@@ -22,7 +22,7 @@ Inside interactive chat:
 /scs status
 ```
 
-`/scs` without arguments toggles the feature: off becomes on, and on/auto becomes off.
+`/scs` without arguments toggles the feature: off becomes on, and on/auto becomes off. The default for new sessions is `on`.
 
 ## Role Contract
 
@@ -59,23 +59,23 @@ The current implementation is deliberately bounded:
 
 ## Auto Mode
 
-`/scs auto` and `--scs auto` activate SCS for complex, risky, or long-running work. Signals include:
+`/scs auto` and `--scs auto` are still available when a user wants cheaper routing for simple turns. Auto mode activates SCS for complex, risky, or long-running work. Signals include:
 
 - high smart-routing complexity score;
 - profiles such as code, app, Android/iOS, large-codebase, GitHub, maintenance, security, LaTeX, research, and supervision;
 - prompts mentioning multi-file work, regressions, builds, deployments, tmux, emulators, Docker, PDFs, or similar high-friction workflows.
 
-Auto mode stays off for simple turns.
+Auto mode stays off for simple turns, but it is not the default.
 
 ## Dynamic Step Budgets
 
 AgInTiFlow treats `maxSteps` as the initial run budget. Near the boundary, the runtime may grant a bounded extension only when recent tool/file/artifact evidence shows concrete progress and no permission blocker is being bypassed.
 
-Normal mode uses a lightweight deterministic monitor. `/scs on` and activated `/scs auto` runs add the SCS student budget gate, which can emit `extend_steps`, `deny_extension`, or `rethink_plan`. More steps never escalate permissions, package policy, host access, destructive actions, or secret access. Use `--dynamic-steps off` when a strict hard stop is required. The detailed design is tracked in [references/dynamic-step-budget-and-scs-auto.md](../references/dynamic-step-budget-and-scs-auto.md).
+Normal mode uses a lightweight deterministic monitor. Default SCS runs and activated `/scs auto` runs add the SCS student budget gate, which can emit `extend_steps`, `deny_extension`, or `rethink_plan`. More steps never escalate permissions, package policy, host access, destructive actions, or secret access. Use `--dynamic-steps off` when a strict hard stop is required. The detailed design is tracked in [references/dynamic-step-budget-and-scs-auto.md](../references/dynamic-step-budget-and-scs-auto.md).
 
-## When To Use It
+## When To Keep It On
 
-Use SCS for:
+Keep SCS on for:
 
 - large coding tasks with ambiguous scope;
 - Android/iOS/system tasks where environment checks matter;
@@ -84,7 +84,7 @@ Use SCS for:
 - paper/LaTeX work where final artifacts need evidence;
 - self-supervision or capability-training runs.
 
-Avoid SCS for:
+Turn SCS off only for:
 
 - `ls`, `pwd`, short factual answers, and small one-file edits;
 - tasks where latency matters more than plan quality;

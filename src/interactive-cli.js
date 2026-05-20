@@ -2196,7 +2196,7 @@ function createState(args = {}) {
     allowAuxiliaryTools: args.allowAuxiliaryTools ?? true,
     allowWebSearch: args.allowWebSearch ?? true,
     allowParallelScouts: args.allowParallelScouts ?? true,
-    enableScs: normalizeScsMode(args.enableScs || process.env.AGINTI_SCS_MODE || "auto"),
+    enableScs: normalizeScsMode(args.enableScs || process.env.AGINTI_SCS_MODE || "on"),
     parallelScoutCount: args.parallelScoutCount || 3,
     allowWrapperTools: args.allowWrapperTools ?? false,
     allowDestructive: args.allowDestructive ?? permissionDefaults.allowDestructive ?? false,
@@ -3291,8 +3291,8 @@ async function handleCommand(line, state, packageDir) {
   }
   if (command === "skills" || command === "skill") {
     const skills = value
-      ? selectSkillsForGoal(value, { taskProfile: state.taskProfile, limit: 12, includeBody: false })
-      : listSkills({ includeBody: false });
+      ? selectSkillsForGoal(value, { taskProfile: state.taskProfile, limit: 12, includeBody: false, projectRoot: state.commandCwd || process.cwd() })
+      : listSkills({ includeBody: false, projectRoot: state.commandCwd || process.cwd() });
     if (skills.length === 0) {
       printAgentMessage("No matching skills found.");
       return true;

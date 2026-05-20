@@ -404,7 +404,7 @@ function validateSkillMarkdownContent(content = "", context = "SKILL.md") {
 }
 
 function builtInSkillIds() {
-  return new Set(listSkills({ includeBody: false, includeSkillMesh: false }).map((skill) => skill.id));
+  return new Set(listSkills({ includeBody: false, includeSkillMesh: false, includeProjectLocal: false }).map((skill) => skill.id));
 }
 
 export async function buildSkillPack(skillId, { home = agintiflowHome(), author = "local-user", valueScore = 80 } = {}) {

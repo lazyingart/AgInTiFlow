@@ -245,6 +245,53 @@ export function browserSubmitFinishIssue(goal = "", result = "") {
   return "Browser submit/generation task is unfinished: the proposed result reports skipped or unexecuted required UI actions, but no real external blocker was proven.";
 }
 
+function finishRequiresExternalEvidence(goal = "", taskProfile = "") {
+  const text = `${String(goal || "")}\n${String(taskProfile || "")}`.toLowerCase();
+  if (
+    /\b(code|app|android|ios|large-codebase|github|maintenance|security|latex|research|supervision|aaps|website)\b/.test(text) ||
+    /\b(create|write|edit|patch|fix|repair|refactor|build|test|run|install|publish|submit|upload|download|copy|move|convert|remove|delete|commit|push|deploy|browser|chrome|cdp|playwright|selenium|artifact|file|video|image|pdf|docx)\b/.test(
+      text
+    ) ||
+    /创建|写入|编辑|修复|测试|运行|安装|发布|提交|上传|下载|复制|移动|转换|删除|浏览器|网页|文件|视频|图片|资产|生成/.test(text)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function hasConcreteFinishEvidence(state = {}, context = {}) {
+  const events = Array.isArray(context.events) ? context.events.slice(-30) : [];
+  if (
+    events.some((event) =>
+      [
+        "file.changed",
+        "tool.completed",
+        "canvas.item",
+        "canvas.selected",
+        "image.generated",
+        "parallel_scouts.completed",
+        "budget.extension_approved",
+      ].includes(event.type)
+    )
+  ) {
+    return true;
+  }
+  const messages = Array.isArray(state.messages) ? state.messages.slice(-20) : [];
+  return messages.some((message) => {
+    if (message.role !== "tool") return false;
+    try {
+      const parsed = JSON.parse(message.content || "{}");
+      if (parsed.ok === false) return false;
+      if (parsed.path || parsed.stdout || parsed.result || parsed.done || (Array.isArray(parsed.changes) && parsed.changes.length > 0)) {
+        return true;
+      }
+    } catch {
+      return String(message.content || "").trim().length > 0;
+    }
+    return false;
+  });
+}
+
 export function buildScsEvidencePack(state = {}, context = {}) {
   const messages = Array.isArray(state.messages) ? state.messages.slice(-16) : [];
   const messageSummary = messages.map((message) => {
@@ -693,24 +740,35 @@ export async function reviewScsFinish(client, config, state, result = "", contex
     );
   }
 
+  const evidence = buildScsEvidencePack(state, context);
+  const requiresEvidence = finishRequiresExternalEvidence(context.goal || state.goal || "", context.taskProfile || config.taskProfile || "");
+  const hasEvidence = hasConcreteFinishEvidence(state, context);
   const fallback = normalizeDecision(
     {
-      decision: "finish_allowed",
-      confidence: 0.55,
-      reason: "Fallback finish approval. Runtime guardrails remain authoritative.",
-      evidence: ["finish requested"],
-      next_required_action: "finish",
+      decision: requiresEvidence && !hasEvidence ? "finish_rejected" : "finish_allowed",
+      confidence: requiresEvidence && !hasEvidence ? 0.78 : 0.55,
+      reason:
+        requiresEvidence && !hasEvidence
+          ? "Fallback finish rejection: this task requires concrete external evidence, but no recent tool/file/artifact evidence was available."
+          : "Fallback finish approval for a task without mandatory external evidence. Runtime guardrails remain authoritative.",
+      evidence: hasEvidence ? ["recent concrete tool/file/artifact evidence was present"] : ["finish requested"],
+      next_required_action: requiresEvidence && !hasEvidence ? "collect concrete evidence or report a real blocker" : "finish",
     },
-    "finish_allowed"
+    requiresEvidence && !hasEvidence ? "finish_rejected" : "finish_allowed"
   );
   if ((state.meta?.scs?.finishRejects || 0) >= 2) {
+    if (requiresEvidence && !hasEvidence && !hasAllowedExternalBrowserBlocker(result)) {
+      return {
+        ...fallback,
+        reason: "Finish rejection cap reached, but SCS still cannot allow completion without concrete evidence for an evidence-bearing task.",
+      };
+    }
     return {
       ...fallback,
       reason: "Finish rejection cap reached; allowing finish to prevent SCS deadlock.",
     };
   }
 
-  const evidence = buildScsEvidencePack(state, context);
   const raw = await callJson(
     client,
     config,
@@ -718,7 +776,7 @@ export async function reviewScsFinish(client, config, state, result = "", contex
       {
         role: "system",
         content:
-          "You are the SCS student final gate. Decide if the supervisor has enough concrete evidence to finish. Emit finish_allowed or finish_rejected only. Be strict for coding/system tasks, but do not demand impossible checks. Evaluate both the proposed final result and the evidence pack; tool stdout in recentMessages/recentEvents is raw command evidence and does not need to be duplicated in the final answer. Reject only when neither the final answer nor the evidence pack contains concrete file/tool/check evidence for the acceptance criteria. Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.",
+          "You are the SCS student final gate. Decide if the supervisor has enough concrete evidence to finish. Emit finish_allowed or finish_rejected only. Do not accept a supervisor finish claim merely because it sounds confident. Compare the approved plan, acceptance criteria, final answer, and evidence pack. For tasks involving files, code, shell commands, browser state, uploads, external services, generated artifacts, commits, or tests, require concrete tool/file/artifact/check evidence or a real external blocker. For pure explanatory or prose answers, allow finish when the answer directly satisfies the request. Tool stdout in recentMessages/recentEvents is raw command evidence and does not need to be duplicated in the final answer. Reject when requested observable state is missing, skipped, unverifiable, or contradicted by the evidence. Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.",
       },
       {
         role: "user",

@@ -56,7 +56,7 @@ Most agent tools are either a chat box with hidden state or an expensive one-mod
 | Writing without agent noise | `writing_specialist` drafts novels, books, scripts, essays, and paper prose in an isolated writing-only context, then the main agent handles files, formatting, citations, checks, and artifacts. |
 | Visual and web evidence | `read_image` reads screenshots/figures with typed perception artifacts, `web_research` saves sourced research artifacts, and `research_wrapper` can ask Codex `gpt-5.4-mini` medium for a strict-JSON second opinion. |
 | Scouts before big work | Parallel scouts can cheaply map architecture, tests, risks, symbols, and integration points before the main executor edits anything. |
-| SCS for high-risk work | Student-Committee-Supervisor mode adds a typed gate: committee drafts, student approves/monitors, supervisor executes. Use `/scs` or `--scs auto`. |
+| SCS by default | Student-Committee-Supervisor mode adds a typed gate: committee drafts, student approves/monitors, supervisor executes. Use `/scs off` or `--no-scs` only when speed matters more than validation. |
 | AAPS for large workflows | AAPS describes top-down agentic pipeline scripts; AgInTiFlow can act as the interactive backend that validates, compiles, and executes those workflows. |
 | Local safety by default | Docker workspace mode, path guardrails, secret redaction, blocked npm publish/token commands, and visible logs keep the agent practical without making it opaque. |
 
@@ -153,6 +153,7 @@ aginti --language de
 | Review current repo | `/review [focus]` |
 | Toggle SCS quality gate | `/scs` |
 | Use SCS only for complex work | `/scs auto` or `aginti --scs auto "task"` |
+| Disable SCS for simple work | `/scs off` or `aginti --no-scs "task"` |
 | Control dynamic step budgets | `--dynamic-steps auto\|on\|off` |
 | Work with AAPS workflows | `aginti aaps status`, `/aaps validate` |
 | Choose models | `/route`, `/model`, `/spare`, `/wrapper`, `/auxiliary model` |
@@ -237,10 +238,10 @@ The website keeps the visual walkthrough in a carousel so this README can stay f
 | Patch workflow | Codex-style patch envelopes, unified diffs, exact replacements, hashes, compact diffs, and path guardrails. |
 | Parallel scouts | Optional scout calls for architecture, implementation, review, tests, git flow, research, symbol tracing, and dependency risk. |
 | Image reading and web research | `read_image` uses OpenAI vision for workspace images when `OPENAI_API_KEY` is configured. `web_research` preserves source lists, and optional OpenAI hosted web search or `research_wrapper` can be used for higher-confidence research. |
-| SCS mode | Optional Student-Committee-Supervisor quality gate for complicated or risky tasks. |
+| SCS mode | Default Student-Committee-Supervisor quality gate with independent planning, execution, and validation roles. |
 | AAPS adapter | Optional `@lazyingart/aaps` integration for `.aaps` workflow init, validate, parse, compile, dry-run, and run commands. |
 | Image generation | Optional GRS AI and Venice image tools with saved manifests and canvas artifact previews. |
-| Skill library | Built-in Markdown skills for code, websites, Android/iOS, Python, Rust, Java, LaTeX, writing, reviews, source ingestion/OCR, structured JSON, autonomous artifact pipelines, GitHub, AAPS, and more. |
+| Skill library | Built-in Markdown skills plus project-local `.aginti/skills/<id>/SKILL.md` skills for reusable workflow knowledge that should not be hard-coded into the runtime. |
 | Skill Mesh | Optional strict skill recording/sharing for reviewed reusable skill packs. If unused, AgInTiFlow runs normally without background sharing. |
 | Multilingual UI | CLI and docs language support for English, Japanese, Simplified/Traditional Chinese, Korean, French, Spanish, Arabic, Vietnamese, German, and Russian. |
 

@@ -527,7 +527,8 @@ async function createInitialState(config, sessionId) {
   const now = new Date().toISOString();
   const taskProfile = getTaskProfile(config.taskProfile);
   const engineeringGuidance = engineeringGuidanceForTask(config.goal, config.taskProfile);
-  const selectedSkills = selectSkillsForGoal(config.goal, { taskProfile: config.taskProfile, limit: 6 });
+  const projectRoot = config.commandCwd || config.baseDir || process.cwd();
+  const selectedSkills = selectSkillsForGoal(config.goal, { taskProfile: config.taskProfile, limit: 6, projectRoot });
   const skillContext = formatSkillsForPrompt(selectedSkills);
   const projectInstructions = await readProjectInstructions(config.baseDir || config.commandCwd || process.cwd());
   const projectInstructionContext = formatProjectInstructions(projectInstructions);
@@ -1090,7 +1091,8 @@ async function applyContinuationPrompt(state, config, observers) {
 
   const taskProfile = getTaskProfile(config.taskProfile);
   const engineeringGuidance = engineeringGuidanceForTask(config.goal, config.taskProfile);
-  const selectedSkills = selectSkillsForGoal(config.goal, { taskProfile: config.taskProfile, limit: 6 });
+  const projectRoot = config.commandCwd || config.baseDir || process.cwd();
+  const selectedSkills = selectSkillsForGoal(config.goal, { taskProfile: config.taskProfile, limit: 6, projectRoot });
   const skillContext = formatSkillsForPrompt(selectedSkills);
   const projectInstructions = await readProjectInstructions(config.baseDir || config.commandCwd || process.cwd());
   state.meta = state.meta || {};

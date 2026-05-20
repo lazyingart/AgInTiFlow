@@ -407,12 +407,12 @@ try {
   }
   const footerPromptLayout = buildPromptLayout("hello", 5, 110, 24, {
     commandCwd: "/tmp/aginti-project",
-    footerStatus: "scs=auto aaps=off venice=off",
+    footerStatus: "scs=on aaps=off venice=off",
   });
   const footerPromptText = footerPromptLayout.renderedRows
     .map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""))
     .join("\n");
-  if (!footerPromptText.includes("cwd     /tmp/aginti-project  scs=auto aaps=off venice=off")) {
+  if (!footerPromptText.includes("cwd     /tmp/aginti-project  scs=on aaps=off venice=off")) {
     throw new Error("terminal prompt layout did not render mode status after the cwd footer");
   }
   const committedUserText = formatCommittedUserPromptLines("list files", 90)
@@ -694,12 +694,12 @@ try {
     throw new Error("interactive /review did not launch the bounded review workflow");
   }
   const scsDefaultStatusResult = await runChat("/scs status\n");
-  if (!scsDefaultStatusResult.stdout.includes("SCS mode: auto")) {
-    throw new Error("interactive /scs status did not show default auto mode");
+  if (!scsDefaultStatusResult.stdout.includes("SCS mode: on")) {
+    throw new Error("interactive /scs status did not show default on mode");
   }
   const statusFooterResult = await runChat("/status\n");
   if (
-    !statusFooterResult.stdout.includes(`cwd=${tempRoot} scs=auto aaps=off venice=off`) ||
+    !statusFooterResult.stdout.includes(`cwd=${tempRoot} scs=on aaps=off venice=off`) ||
     !statusFooterResult.stdout.includes("permission=")
   ) {
     throw new Error("interactive /status did not include scs/aaps/venice mode state on the cwd line");
@@ -709,7 +709,10 @@ try {
     throw new Error("interactive /scs on did not enable SCS");
   }
   const legacyScsAlias = "/enable" + "ss";
-  const oldScsAliasResult = await runChat(`${legacyScsAlias}\n/exit\n`);
+  const oldScsAliasResult = await runCli(
+    ["chat", "--provider", "mock", "--routing", "manual", "--profile", "code", "--headless", "--no-scs"],
+    `${legacyScsAlias}\n/exit\n`
+  );
   if (!oldScsAliasResult.stdout.includes(`Unknown command: ${legacyScsAlias}`) || oldScsAliasResult.stdout.includes("scs=on")) {
     throw new Error(`legacy ${legacyScsAlias} alias should be removed and must not toggle SCS`);
   }

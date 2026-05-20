@@ -6,6 +6,7 @@ import { agintiflowHome } from "./session-index.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SKILLS_DIR = path.resolve(__dirname, "..", "skills");
 const DEFAULT_PROMPT_CHARS = 5200;
+const PROJECT_SKILLS_RELATIVE_DIR = path.join(".aginti", "skills");
 
 function parseScalar(value = "") {
   const trimmed = String(value || "").trim();
@@ -102,6 +103,10 @@ function skillMeshSkillsDir() {
   return path.join(agintiflowHome(), "skillmesh", "skills");
 }
 
+function projectLocalSkillsDir(projectRoot = process.cwd()) {
+  return path.join(path.resolve(projectRoot || process.cwd()), PROJECT_SKILLS_RELATIVE_DIR);
+}
+
 function skillMeshEnabled() {
   try {
     const configPath = path.join(agintiflowHome(), "skillmesh", "config.json");
@@ -145,9 +150,35 @@ function loadEnabledSkillMeshSkills({ includeBody = false } = {}) {
   return skills;
 }
 
-export function listSkills({ includeBody = false, skillsDir = DEFAULT_SKILLS_DIR, includeSkillMesh = true } = {}) {
-  const skills = loadSkillsFromDir({ includeBody, skillsDir, source: skillsDir === DEFAULT_SKILLS_DIR ? "built-in" : "local" });
-  if (includeSkillMesh && skillsDir === DEFAULT_SKILLS_DIR) {
+function appendUniqueSkills(skills, incoming) {
+  const existing = new Set(skills.map((skill) => skill.id));
+  for (const skill of incoming) {
+    if (existing.has(skill.id)) continue;
+    existing.add(skill.id);
+    skills.push(skill);
+  }
+}
+
+export function listSkills({
+  includeBody = false,
+  skillsDir = DEFAULT_SKILLS_DIR,
+  includeSkillMesh = true,
+  includeProjectLocal = true,
+  projectRoot = process.cwd(),
+} = {}) {
+  const defaultDir = path.resolve(skillsDir) === DEFAULT_SKILLS_DIR;
+  const skills = loadSkillsFromDir({ includeBody, skillsDir, source: defaultDir ? "built-in" : "local" });
+  if (includeProjectLocal && defaultDir) {
+    appendUniqueSkills(
+      skills,
+      loadSkillsFromDir({
+        includeBody,
+        skillsDir: projectLocalSkillsDir(projectRoot),
+        source: "project-local",
+      })
+    );
+  }
+  if (includeSkillMesh && defaultDir) {
     const existing = new Set(skills.map((skill) => skill.id));
     for (const skill of loadEnabledSkillMeshSkills({ includeBody })) {
       if (!existing.has(skill.id)) {
@@ -187,9 +218,9 @@ function textHasTrigger(text, needle) {
   return text.includes(needle);
 }
 
-export function selectSkillsForGoal(goal = "", { taskProfile = "auto", limit = 6, includeBody = true } = {}) {
+export function selectSkillsForGoal(goal = "", { taskProfile = "auto", limit = 6, includeBody = true, projectRoot = process.cwd() } = {}) {
   const text = `${goal} ${taskProfile}`.toLowerCase();
-  const skills = listSkills({ includeBody });
+  const skills = listSkills({ includeBody, projectRoot });
   const scored = skills
     .map((skill) => ({ skill, score: scoreSkill(skill, text, taskProfile) }))
     .filter((item) => item.score > 0)
