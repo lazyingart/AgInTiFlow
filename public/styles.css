@@ -554,13 +554,18 @@ textarea {
 }
 
 .compact-switch {
-  min-height: 42px;
+  width: max-content;
+  grid-template-columns: auto auto;
+  height: 50px;
+  min-height: 50px;
   padding: 8px 10px;
+  gap: 8px;
+  white-space: nowrap;
 }
 
 .compact-switch .switch {
-  width: 50px;
-  min-width: 50px;
+  width: 44px;
+  min-width: 44px;
 }
 
 .compact-switch .switch::before {
@@ -568,7 +573,7 @@ textarea {
 }
 
 .compact-switch input[type="checkbox"]:checked + .switch::before {
-  transform: translateX(24px);
+  transform: translateX(18px);
 }
 
 .settings-button {
@@ -644,7 +649,7 @@ button.danger {
 
 .quick-mode-bar {
   display: grid;
-  grid-template-columns: minmax(130px, 170px) repeat(2, minmax(110px, max-content)) minmax(0, 1fr);
+  grid-template-columns: max-content max-content max-content minmax(0, 1fr);
   gap: 10px;
   align-items: center;
   padding: 10px;
@@ -656,8 +661,16 @@ button.danger {
 }
 
 .quick-mode-select {
-  display: grid;
-  gap: 5px;
+  display: inline-flex;
+  width: max-content;
+  height: 50px;
+  min-height: 50px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 253, 250, 0.72);
 }
 
 .quick-mode-select span {
@@ -666,6 +679,13 @@ button.danger {
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.quick-mode-select select {
+  width: 68px;
+  min-width: 68px;
+  padding: 5px 20px 5px 9px;
+  border-radius: 10px;
 }
 
 .quick-mode-status {

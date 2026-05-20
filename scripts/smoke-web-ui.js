@@ -99,6 +99,19 @@ try {
   if (!/scs=auto/.test(quickStatus) || !/profile=aaps/.test(quickStatus) || !/route venice\//.test(quickStatus)) {
     throw new Error(`quick mode status did not reflect CLI modes: ${quickStatus}`);
   }
+  const quickBoxes = await Promise.all([
+    page.locator(".quick-mode-select").boundingBox(),
+    page.locator("label:has(#aapsModeToggle)").boundingBox(),
+    page.locator("label:has(#veniceModeToggle)").boundingBox(),
+  ]);
+  if (quickBoxes.some((box) => !box)) throw new Error("quick mode controls did not render measurable boxes");
+  const centers = quickBoxes.map((box) => box.y + box.height / 2);
+  if (Math.max(...centers) - Math.min(...centers) > 2) {
+    throw new Error(`quick mode controls are not vertically aligned: ${JSON.stringify(quickBoxes)}`);
+  }
+  if (quickBoxes.some((box) => box.height < 48 || box.height > 52) || quickBoxes.some((box) => box.width > 128)) {
+    throw new Error(`quick mode controls are not compact button-sized elements: ${JSON.stringify(quickBoxes)}`);
+  }
 
   await page.selectOption("#routingMode", "manual");
   await page.selectOption("#provider", "mock");
@@ -155,6 +168,7 @@ try {
           "composer-starts-new-run",
           "old-goal-form-hidden",
           "quick-scs-aaps-venice-controls",
+          "quick-mode-control-alignment",
           "dynamic-steps-dropdown",
           "composer-goal-payload",
           "running-stop-button-visible",

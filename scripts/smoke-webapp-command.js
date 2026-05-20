@@ -18,6 +18,13 @@ function occurrenceCount(value, pattern) {
   return String(value || "").split(pattern).length - 1;
 }
 
+function latestWebappEvent(value, statePattern = "started|restarted|reused|stopped") {
+  const pattern = new RegExp(`webapp=(http://127\\.0\\.0\\.1:(\\d+)) (${statePattern})`, "g");
+  const matches = [...String(value || "").matchAll(pattern)];
+  const latest = matches.at(-1);
+  return latest ? { url: latest[1], port: Number(latest[2]), state: latest[3] } : null;
+}
+
 async function waitFor(predicate, child, label, output) {
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
@@ -69,11 +76,13 @@ async function runCase({ port, env = {}, expectHeader, label }) {
     await waitFor(() => output.stdout.includes(expectHeader), child, `${label} launch header`, output);
     await waitFor(() => output.stdout.includes("status=idle") && output.stdout.includes("user>"), child, `${label} interactive ready`, output);
     child.stdin.write(`/webapp ${port}\n`);
-    await waitFor(() => output.stdout.includes(`webapp=http://127.0.0.1:${port}`), child, `${label} /webapp command`, output);
-    child.stdin.write(`/webapp restart ${port}\n`);
-    await waitFor(() => output.stdout.includes(`webapp=http://127.0.0.1:${port} restarted`), child, `${label} /webapp restart command`, output);
-    const health = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
-    if (!health.ok || health.app !== "agintiflow" || Number(health.port) !== port) {
+    await waitFor(() => latestWebappEvent(output.stdout, "started|reused"), child, `${label} /webapp command`, output);
+    let active = latestWebappEvent(output.stdout, "started|reused");
+    child.stdin.write(`/webapp restart ${active.port}\n`);
+    await waitFor(() => latestWebappEvent(output.stdout, "restarted"), child, `${label} /webapp restart command`, output);
+    active = latestWebappEvent(output.stdout, "restarted");
+    const health = await fetch(`${active.url}/health`).then((response) => response.json());
+    if (!health.ok || health.app !== "agintiflow" || Number(health.port) !== active.port) {
       throw new Error(`invalid /webapp health response for ${label}: ${JSON.stringify(health)}`);
     }
     if (path.resolve(health.agintiflowHome) !== path.resolve(path.join(runtimeDir, `.agintiflow-web-home-${label}`))) {
@@ -86,19 +95,19 @@ async function runCase({ port, env = {}, expectHeader, label }) {
     await waitFor(() => occurrenceCount(output.stdout, "webapp auto-start=disabled") > disabledCount, child, `${label} /webapp status disabled command`, output);
     child.stdin.write(`/webapp enable\n`);
     await waitFor(() => output.stdout.includes("webapp auto-start=enabled"), child, `${label} /webapp enable command`, output);
-    child.stdin.write(`/webapp stop ${port}\n`);
-    await waitFor(() => output.stdout.includes(`webapp=http://127.0.0.1:${port} stopped`), child, `${label} /webapp stop command`, output);
+    child.stdin.write(`/webapp stop ${active.port}\n`);
+    await waitFor(() => latestWebappEvent(output.stdout, "stopped")?.port === active.port, child, `${label} /webapp stop command`, output);
     let stopped = false;
     try {
-      await fetch(`http://127.0.0.1:${port}/health`);
+      await fetch(`${active.url}/health`);
     } catch {
       stopped = true;
     }
     if (!stopped) {
       throw new Error(`webapp still responded after /webapp stop for ${label}`);
     }
-    child.stdin.write(`/webapp ${port}\n`);
-    await waitFor(() => output.stdout.includes(`webapp=http://127.0.0.1:${port} started`), child, `${label} /webapp restart after stop`, output);
+    child.stdin.write(`/webapp ${active.port}\n`);
+    await waitFor(() => latestWebappEvent(output.stdout, "started|reused")?.port === active.port, child, `${label} /webapp restart after stop`, output);
   } finally {
     child.kill("SIGTERM");
     await killPort(port);
