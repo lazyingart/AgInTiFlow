@@ -9,11 +9,11 @@ triggers:
   - paired language
   - annotated book
   - parallel text
-  - ruby
-  - furigana
-  - pinyin
-  - xelatex
-  - pocket book
+  - aligned annotations
+  - glossed text
+  - reading annotations
+  - translation notes
+  - source commentary
 tools:
   - read_file
   - write_file
@@ -46,7 +46,7 @@ This is a general workflow skill. It must not hard-code a specific book, languag
 Keep annotation policies project-defined:
 
 - Token shape, reading placement, grammar tags, and alignment granularity must come from the project schema.
-- For scripts that need per-character readings, validators should enforce that locally instead of relying on a prompt.
+- For scripts that need per-token or per-character readings, validators should enforce that locally instead of relying on a prompt.
 - Placeholder translations, empty commentary, duplicated readings, copied modern paraphrases, or source drift should be detected by validators or reviewers.
 - Translation/reference quality gates must be derived from the project schema, language profile, and source audit. Do not bake one book's vocabulary, source names, or forbidden-token list into this built-in skill or AgInTiFlow core.
 - If a reference is unreliable for the requested target language, do not feed it to the writer as trusted translation. Either omit it, label it clearly as alignment/source-only context, or ask the project to supply a reliable reference.

@@ -65,11 +65,11 @@ Project-local skill produced from this direction:
 
 - `.aginti/skills/<project-browser-workflow>/SKILL.md` in the task repository
 
-### ZhJpBook And AgInTiFlow Implementation Session
+### Multilingual Book Pipeline And AgInTiFlow Implementation Session
 
 - Session: `019e1f99-289e-7711-986a-d41047f5ed21`
-- Status context shown by Codex: `~/ProjectsLFS/ZhJpBook`
-- Primary task repo involved: `/home/lachlan/ProjectsLFS/ZhJpBook`
+- Status context shown by Codex: a project-local multilingual book repository
+- Primary task repo involved: project-local, outside AgInTiFlow core
 - AgInTiFlow implementation repo: `/home/lachlan/ProjectsLFS/Agent/AgInTiFlow`
 - Role: implementation and validation session.
 
@@ -129,9 +129,9 @@ These sessions should be read together:
   owner.
 - The browser workflow session supplies the concrete failure mode: browser automation and media tasks
   can look successful while the visible external state is wrong or unverified.
-- ZhJpBook supplies the long-running pipeline pressure: the agent must keep
-  moving through scripts, monitors, validators, and artifacts without accepting
-  unsupported finish claims.
+- The multilingual book pipeline supplies the long-running pipeline pressure:
+  the agent must keep moving through scripts, monitors, validators, and
+  artifacts without accepting unsupported finish claims.
 - AAPS supplies the project/workflow/block/program front-end contract where
   AgInTiFlow may act as a backend adapter but must not mutate AAPS scope or
   semantics unexpectedly.

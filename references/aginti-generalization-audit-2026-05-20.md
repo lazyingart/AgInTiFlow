@@ -60,7 +60,8 @@ npm run smoke:model-roles
 node scripts/smoke-skills.js
 node scripts/smoke-dynamic-step-budget.js
 node scripts/smoke-coding-tools.js
-rg -n --hidden --glob '!node_modules/**' --glob '!.git/**' --glob '!dist/**' --glob '!coverage/**' 'xiaoyunque|小云雀|xyq|jianying|LALACHAN|啦啦|拉拉|阿芽|飒飒|Seedance|沉浸式短片|Trio\.png|display\.png|R1\.jpg|patchwork-leather|duanpian' .
+rg -n --hidden --glob '!node_modules/**' --glob '!.git/**' --glob '!dist/**' --glob '!coverage/**' '<private-project-term-pattern>' .
 ```
 
-Result: checks passed, and the repository search found no remaining private workflow terms in AgInTiFlow runtime code, tests, or general references after excluding this audit's own search expression.
+Result: checks passed, and the repository search found no remaining private
+workflow terms in AgInTiFlow runtime code, tests, or general references.

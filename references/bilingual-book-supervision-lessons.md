@@ -1,7 +1,7 @@
 # Bilingual Book Supervision Lessons
 
-This note records lessons from supervising AgInTiFlow on the ZhJpBook bilingual
-interlinear book pipeline. The goal is not to make AgInTiFlow a book-specific
+This note records lessons from supervising AgInTiFlow on a multilingual
+annotated book pipeline. The goal is not to make AgInTiFlow a book-specific
 tool. The goal is to identify which failures were project workflow issues and
 which reusable capabilities AgInTiFlow needs in order to complete large artifact
 projects from raw inputs to final outputs with less external guidance.
@@ -19,25 +19,25 @@ Observed AgInTiFlow primitives:
 - `docs/self-healing-pipelines.md`
 - `docs/auxiliary-image-generation.md`
 
-Observed ZhJpBook workflow pieces:
+Observed project-local workflow pieces:
 
-- `scripts/interlinear/aginti_write_chunks.py`
-- `scripts/interlinear/aginti_dynamic_review_chunks.py`
-- `scripts/interlinear/start_aginti_parallel_json_writers.sh`
-- `scripts/interlinear/watch_aginti_compile.py`
-- `scripts/interlinear/compile_prepared_book_both_previews.sh`
+- source ingestion and cleanup scripts
+- chunk writer runners
+- dynamic review scripts
+- parallel structured-output workers
+- compile and progress-watch scripts
 
-Observed Sishu run evidence:
+Observed large-run evidence:
 
-- The book reached `2480/2480` manifest chunks valid with no missing chunks.
-- The final compile produced four PDFs: ZH-main and JP-main, color and
-  blackwhite.
-- Page counts were `2387` for ZH-main and `2065` for JP-main.
+- The book reached full manifest coverage with no missing chunks.
+- The final compile produced multiple language, direction, and style variants.
+- Page counts differed by output variant and had to be verified against the
+  current manifest.
 - A stale compile-watch status still reported older failed counts after the
   canonical progress report was clean, showing that multiple status snapshots
   can diverge unless one source of truth is enforced.
 - AgInTi image generation was useful for cover backgrounds, but exact title,
-  author, furigana, and curation text still needed deterministic composition.
+  author, annotations, and curation text still needed deterministic composition.
 
 ## Main Finding
 
@@ -66,11 +66,12 @@ artifact-pipeline lifecycle that AgInTi can instantiate and supervise:
 These belong in the target repository or generated project scripts, not in
 AgInTiFlow core:
 
-- Book-specific source schemas and bilingual chunk schemas.
-- Chinese/Japanese rendering decisions, TeX macros, page size, grammar colors,
-  ruby placement, table of contents, and cover typography.
-- Exact validators for source preservation, Hanzi tokenization, furigana/pinyin
-  policy, grammar roles, and line-based interlinear layout.
+- Book-specific source schemas and annotated chunk schemas.
+- Language-pair rendering decisions, TeX or renderer macros, page size,
+  grammar colors, reading placement, table of contents, and cover typography.
+- Exact validators for source preservation, script-specific tokenization,
+  reading or romanization policy, grammar roles, and line-based interlinear
+  layout.
 - Book plans, source bundles, source-specific OCR cleanup rules, and known
   editions/translations.
 - The concrete writer prompt for one literary/classical task.
@@ -132,8 +133,8 @@ Recommended core behavior:
 ### 2. Restarting From Zero Destroyed Efficiency
 
 Large book work is valuable even when partial. The most expensive artifacts were
-translation/alignment/ruby/grammar chunks. Retuning chunk size or prompt
-instructions should not discard reviewed chunks.
+translation, alignment, reading, and grammar chunks. Retuning chunk size or
+prompt instructions should not discard reviewed chunks.
 
 Recommended core behavior:
 
@@ -164,7 +165,7 @@ Recommended core behavior:
 
 The deterministic reviewer fixed schema/render issues. The user also wanted
 review that notices OCR corruption, missing text, bad line alignment, all-one
-color grammar pages, kana-only Japanese, source drift, and repeated filler.
+color grammar pages, wrong-script output, source drift, and repeated filler.
 
 Recommended core behavior:
 
@@ -177,8 +178,8 @@ Recommended core behavior:
 
 ### 5. OCR and Source Ingestion Were Underestimated
 
-For scanned Chinese books, bad OCR flowed into later high-cost annotation. The
-right place to catch this is before bilingual generation.
+For scanned or OCR-heavy books, bad OCR flowed into later high-cost annotation.
+The right place to catch this is before multilingual generation.
 
 Recommended core behavior:
 
@@ -201,7 +202,7 @@ Recommended core behavior:
 
 - Cover/poster workflows should default to "image model creates background;
   deterministic renderer adds exact text" when exact titles, author names, URLs,
-  ruby, or branding are required.
+  reading marks, annotations, or branding are required.
 - The image-generation tool should save raw prompt/result metadata, but project
   scripts should own final typography.
 
