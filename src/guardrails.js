@@ -2,6 +2,7 @@ import { evaluateCommandPolicy } from "./command-policy.js";
 import { checkWorkspaceToolUse, WORKSPACE_TOOL_NAMES } from "./workspace-tools.js";
 import { normalizeWrapperName } from "./tool-wrappers.js";
 import { checkTmuxToolUse, TMUX_TOOL_NAMES } from "./tmux-tools.js";
+import { checkLongJobToolUse, LONG_JOB_TOOL_NAMES } from "./long-job-tools.js";
 import { checkMcpToolUse, isMcpBridgeTool } from "./mcp/policy.js";
 
 const DESTRUCTIVE_KEYWORDS = [
@@ -86,6 +87,10 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
 
   if (TMUX_TOOL_NAMES.includes(toolName)) {
     return checkTmuxToolUse(toolName, args, config);
+  }
+
+  if (LONG_JOB_TOOL_NAMES.includes(toolName)) {
+    return checkLongJobToolUse(toolName, args, config);
   }
 
   if (toolName === "open_url") {

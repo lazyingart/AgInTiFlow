@@ -625,6 +625,18 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
   if (toolName === "run_command" || payload.stdout || Number.isInteger(payload.exitCode)) {
     push("command", `exit=${payload.exitCode ?? 0} stdout=${compact(payload.stdout || "", 260)}`, args.command || "");
   }
+  if (["start_long_job", "long_job_status"].includes(toolName)) {
+    push(
+      "command",
+      `${toolName} ${payload.state ? `state=${payload.state}` : payload.background ? "background=true" : ""} status=${payload.statusPath || ""}`,
+      payload.statusPath || payload.expectedOutputPath || args.command || ""
+    );
+    push(
+      "artifact",
+      `${toolName} produced durable status/log artifact paths`,
+      payload.statusMarkdownPath || payload.statusPath || payload.expectedOutputPath || ""
+    );
+  }
   if (["open_url", "click", "type", "scroll", "press", "back"].includes(toolName) || /\b(browser|chrome|cdp|playwright|selenium|upload|attach|submit|click|tab|page)\b/.test(text)) {
     push("browser", `${toolName || "browser tool"} affected or inspected browser/UI state`, payload.url || args.url || args.command || "");
   }

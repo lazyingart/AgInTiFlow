@@ -41,6 +41,7 @@ import { browserStateReconciliationGuidance } from "./browser-automation-guidanc
 import { summarizeMcpConfig } from "./mcp/config.js";
 import { isMcpBridgeTool } from "./mcp/policy.js";
 import { executeMcpBridgeTool } from "./mcp/tool-bridge.js";
+import { longJobStatus, startLongJob } from "./long-job-tools.js";
 import {
   buildSupervisorInstruction,
   createScsPlan,
@@ -612,7 +613,7 @@ async function createInitialState(config, sessionId) {
           "If an operation fails but a directory, artifact, or file already exists, treat it as pre-existing unless you have evidence this run created or updated it. Verify expected outputs before claiming success.",
           "For validation/evidence commands, remember that grep exits 1 on zero matches. If zero matches is the expected clean result, use `grep -c PATTERN file || true`, split evidence checks into independent commands, or use awk/python so a clean zero count does not stop an `&&` chain.",
           config.allowShellTool
-            ? "Host tmux tools are available for long-running terminals: list sessions, capture panes, send safe keys/text, and start detached sessions. Prefer these tools for monitoring long installs/tests/dev servers without blocking; capture before sending input and never send secrets or sudo passwords. Do not start or install tmux inside Docker run_command containers because those containers are short-lived. In Docker sandbox mode, tmux start/send commands must stay workspace-write-bound; prefer run_command for read-only host absolute path inspection through read-only mounts, and ask for --sandbox-mode host for trusted whole-host write/system work." +
+            ? "For downloads, long I/O, long tests/builds, model jobs, or any command with an ETA of minutes or hours, prefer start_long_job over wait loops. start_long_job creates a durable tmux-backed status ledger, stdout/stderr logs, optional expected-size verification, and returns immediately; after it starts, report the job id/status path and finish instead of polling with model steps. Host tmux tools are also available for interactive terminals: list sessions, capture panes, send safe keys/text, and start detached sessions. Capture before sending input and never send secrets or sudo passwords. Do not start or install tmux inside Docker run_command containers because those containers are short-lived. In Docker sandbox mode, tmux and long-job commands must stay workspace-write-bound; prefer run_command for read-only host absolute path inspection through read-only mounts, and ask for --sandbox-mode host for trusted whole-host write/system work." +
               " For one-shot tmux commands, redirect stdout/stderr and exit status to a durable workspace log or keep the pane alive for capture; if capture fails because the session ended, do not infer output or exit status."
             : "",
           config.allowShellTool && config.useDockerSandbox
@@ -653,7 +654,7 @@ async function createInitialState(config, sessionId) {
           browserStateReconciliationGuidance(),
           "Use the canvas tunnel for outputs the user would likely want to inspect visually, such as figures, PDFs, screenshots, images, important markdown, or generated files. When no save path is specified, choose a descriptive non-conflicting workspace path near the working directory and keep it there.",
           "For environment or system-maintenance work, use the configured sandbox and package policy; Docker workspace mode is the preferred place for installs and toolchain setup.",
-          "For long-running work, create a durable checkpoint or artifact at each completed phase, then continue with the next concrete phase until the requested outcome is actually complete or blocked by a real dependency.",
+          "For long-running work, create durable checkpoints. If a single command will run for minutes or hours, hand it to start_long_job with verification hooks and finish with the status path instead of keeping the model loop alive.",
           "If the user asks to open a generated local website or file, use open_workspace_file for a file or preview_workspace for a static site. Do not keep retrying the same localhost URL when a preview fails.",
           "Docker language/toolchain installs should prefer /aginti-env or project files so they persist across runs; apt/apk changes are ephemeral unless the image is rebuilt.",
           "If the run is close to the max-step limit, finish with the best complete artifact and honest limitations instead of starting a new approach.",
@@ -1402,6 +1403,16 @@ function sanitizeToolArgs(toolName, args) {
         : safeArgs.referenceImages,
     };
   }
+  if (toolName === "start_long_job") {
+    return {
+      ...safeArgs,
+      command: typeof args.command === "string" ? `[${Buffer.byteLength(args.command, "utf8")} bytes sha256=${hashForLog(args.command)}]` : safeArgs.command,
+      verifyCommand:
+        typeof args.verifyCommand === "string"
+          ? `[${Buffer.byteLength(args.verifyCommand, "utf8")} bytes sha256=${hashForLog(args.verifyCommand)}]`
+          : safeArgs.verifyCommand,
+    };
+  }
   return safeArgs;
 }
 
@@ -1589,7 +1600,7 @@ async function captureSyntheticSnapshot(store, step, config) {
           : `Shell tool available in: ${config.commandCwd} on ${platformLabel(platform)}. Use OS-compatible commands; prefer WSL/Docker for bash-heavy workflows on Windows. If a broad host command is blocked, split it into narrow allowed probes or existing helper scripts before treating the task as blocked.`
         : "Shell tool disabled.",
       config.allowShellTool
-        ? "Host tmux tools available: tmux_list_sessions, tmux_capture_pane, tmux_send_keys, tmux_start_session. Use them for long-running jobs and agent terminals; capture before sending input. Tmux captures include old scrollback, so after a restart require a fresh run marker, heartbeat, PID, or log/status timestamp before treating capture text as current evidence. Docker run_command containers are ephemeral, so tmux there will not persist. In Docker sandbox mode, tmux start/send commands must stay workspace-write-bound; when sending text into a shell pane, tmux follows the same Docker workspace command policy as run_command and is not a bypass for package installs, destructive git history rewrites, or broad shell text. Prefer run_command for read-only host absolute path inspection through read-only mounts. Use --sandbox-mode host for trusted whole-host write/system work. In host mode, tmux startup/send command text follows the same host shell policy as run_command; if a broad host command is blocked, present the approval/rerun path instead of trying tmux as a workaround. For one-shot tmux commands, redirect output and exit status to a durable workspace log or keep the pane alive for capture; if capture fails because the session ended, do not infer output or exit status."
+        ? "Long-job tool available: start_long_job for downloads, long I/O, long tests/builds, model jobs, and any command with an ETA of minutes or hours. It starts a durable tmux-backed supervisor, writes status/log files, supports expected-size and verifyCommand checks, and returns immediately; do not keep the model loop alive to poll it. Use long_job_status later for explicit status requests. Host tmux tools are also available: tmux_list_sessions, tmux_capture_pane, tmux_send_keys, tmux_start_session. Use tmux for interactive terminals; capture before sending input. Tmux captures include old scrollback, so after a restart require a fresh run marker, heartbeat, PID, or log/status timestamp before treating capture text as current evidence. Docker run_command containers are ephemeral, so tmux there will not persist. In Docker sandbox mode, tmux start/send commands must stay workspace-write-bound; when sending text into a shell pane, tmux follows the same Docker workspace command policy as run_command and is not a bypass for package installs, destructive git history rewrites, or broad shell text. Prefer run_command for read-only host absolute path inspection through read-only mounts. Use --sandbox-mode host for trusted whole-host write/system work. In host mode, tmux startup/send command text follows the same host shell policy as run_command; if a broad host command is blocked, present the approval/rerun path instead of trying tmux as a workaround. For one-shot tmux commands, redirect output and exit status to a durable workspace log or keep the pane alive for capture; if capture fails because the session ended, do not infer output or exit status."
         : "",
       config.allowFileTools
         ? `Workspace file tools available in: ${config.commandCwd}. Use inspect_project first for large or unfamiliar codebases, then search/read exact files before editing. Use workspace-relative paths. Use apply_patch for code edits; it supports exact single-file replacement and multi-file Codex-style/unified patches. For new standalone generated content, pick a descriptive non-conflicting filename and avoid overwriting unless explicitly requested.`
@@ -2012,6 +2023,48 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       }
       case "tmux_start_session": {
         const result = await startTmuxSession(args, config);
+        const eventResult = sanitizeToolResult(result);
+        await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        return result;
+      }
+      case "start_long_job": {
+        const result = await startLongJob(args, config);
+        const eventResult = sanitizeToolResult(result);
+        await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
+        if (result.ok) {
+          await store.appendEvent("long_job.started", eventResult);
+          observers.event("long_job.started", eventResult);
+          if (result.statusMarkdownPath) {
+            const normalized = normalizeCanvasPayload(
+              {
+                title: `Long job: ${result.name || result.jobId}`,
+                kind: "markdown",
+                path: result.statusMarkdownPath,
+                note: `Background job ${result.jobId} is running; status: ${result.statusPath}`,
+                selected: false,
+              },
+              config
+            );
+            if (normalized.ok) {
+              const persisted = await persistCanvasPayloadFile(normalized.payload, { config, store });
+              if (persisted.ok) {
+                const canvasItem = {
+                  ...persisted.payload,
+                  toolName: "start_long_job",
+                  commandCwd: config.commandCwd,
+                };
+                await store.appendEvent("canvas.item", canvasItem);
+                observers.event("canvas.item", canvasItem);
+              }
+            }
+          }
+        }
+        return result;
+      }
+      case "long_job_status": {
+        const result = await longJobStatus(args, config);
         const eventResult = sanitizeToolResult(result);
         await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
         observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);

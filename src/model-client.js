@@ -463,11 +463,24 @@ function mockCommandForGoal(goal = "") {
 function mockShouldPreferShellForGoal(goal = "") {
   const text = String(goal || "");
   return (
-    /\b(?:command|shell|terminal|pwd|working directory|current working directory|safe command|run command|review focus|code review|git status|git diff|changed files)\b/i.test(
+    /\b(?:command|shell|terminal|pwd|working directory|current working directory|safe command|run command|review focus|code review|git status|git diff|changed files|download|wget|curl|long[- ]running|background job|large file)\b/i.test(
       text
     ) ||
-    /当前工作目录|工作目录|命令|终端/.test(text)
+    /当前工作目录|工作目录|命令|终端|下载|后台|长时间/.test(text)
   );
+}
+
+function mockLongJobToolForGoal(goal = "") {
+  const text = String(goal || "").toLowerCase();
+  if (!/\b(download|wget|curl|long[- ]running|hours?|background|durable job|large file)\b|下载|后台|长时间/.test(text)) return null;
+  return mockToolCall("start_long_job", {
+    name: "mock-long-job",
+    command: "printf 'mock long job complete\\n' > mock-long-job-output.txt",
+    expectedOutputPath: "mock-long-job-output.txt",
+    verifyCommand: "grep -q complete mock-long-job-output.txt",
+    pollIntervalSeconds: 5,
+    note: "Mock long-job handoff smoke.",
+  });
 }
 
 function mockPathForGoal(goal = "") {
@@ -693,7 +706,7 @@ export async function createPlan(client, config, state) {
             ? `Shell tool is enabled in ${config.commandCwd}. Host platform: ${platformLabel(platform)}. In Docker, this path is mounted as /workspace with persistent /aginti-env and /aginti-cache mounts, and common host data roots such as the user's home parent are mounted read-only at their original absolute paths for inspection. Use relative paths or /workspace for outputs and writes. Absolute host paths are acceptable for read-only inspection when visible, but do not write outside /workspace unless the user approves host mode. Permission mode: ${config.permissionMode || "normal"}. Sandbox mode: ${config.sandboxMode}. Package install policy: ${config.packageInstallPolicy}. For npm/pip/conda/venv setup, explain the need and wait for approval unless policy is allow. Do not run npx aginti, npm exec aginti, or nested aginti diagnostics from this shell; they may resolve stale project packages or create recursive agent sessions. On native Windows host mode, prefer PowerShell/cmd-compatible commands or WSL/Docker for bash-like toolchains.`
             : "",
           config.allowShellTool
-            ? "Host tmux tools are enabled for long-running sessions. Plan to use tmux_start_session for durable jobs, tmux_capture_pane to monitor, tmux_send_keys to interact after capture, and tmux_list_sessions to discover existing sessions. Tmux captures include old scrollback, so after a restart require a fresh run marker, heartbeat, PID, or log/status timestamp before treating capture text as current evidence. Do not install or run tmux inside Docker run_command containers; those containers are short-lived and cannot preserve tmux servers. In Docker sandbox mode, tmux startup/send commands are still workspace-write-bound and shell-pane text follows the same Docker workspace command policy as run_command: use relative project paths for writes and outputs. Read-only inspection of visible host absolute paths is allowed through run_command's read-only mounts; do not use tmux as a workaround for package installs, destructive git rewrites, or broad shell commands. In host mode, tmux startup/send command text follows the same host shell policy as run_command; if blocked, present the suggested approval/rerun path instead of trying tmux as a workaround. Ask for --sandbox-mode host --allow-destructive before trusted whole-host write/system work."
+            ? "Long-job tools are enabled for downloads, long I/O, long tests/builds, model jobs, and any command likely to run for minutes or hours. Plan to use start_long_job with expectedOutputPath/expectedSizeBytes/verifyCommand when applicable; it creates a durable tmux-backed supervisor and returns immediately, so do not keep the model loop alive with wait/poll steps. Use long_job_status only when the user explicitly asks for status later. Host tmux tools are also enabled for interactive durable sessions. Use tmux_start_session for manual terminals, tmux_capture_pane to monitor, tmux_send_keys to interact after capture, and tmux_list_sessions to discover existing sessions. Tmux captures include old scrollback, so after a restart require a fresh run marker, heartbeat, PID, or log/status timestamp before treating capture text as current evidence. Do not install or run tmux inside Docker run_command containers; those containers are short-lived and cannot preserve tmux servers. In Docker sandbox mode, tmux/long-job commands are still workspace-write-bound and shell-pane text follows the same Docker workspace command policy as run_command: use relative project paths for writes and outputs. Read-only inspection of visible host absolute paths is allowed through run_command's read-only mounts; do not use tmux as a workaround for package installs, destructive git rewrites, or broad shell commands. In host mode, tmux startup/send command text follows the same host shell policy as run_command; if blocked, present the suggested approval/rerun path instead of trying tmux as a workaround. Ask for --sandbox-mode host --allow-destructive before trusted whole-host write/system work."
             : "",
           config.allowFileTools
             ? `Workspace file tools are enabled in ${config.commandCwd}: inspect_project, list_files, read_file, search_files, write_file, apply_patch, open_workspace_file, preview_workspace. For large or unfamiliar repos, plan to call inspect_project first, then search/read AGINTI.md/AGENTS.md/README/manifests and exact files. apply_patch supports exact single-file replacements and Codex-style/unified multi-file patches; prefer it for edits after reading relevant context. Keep all paths workspace-relative, for example plot_fx.svg or docs/report.tex, and avoid secrets. For newly generated standalone prose/docs/stories/assets, choose a descriptive non-conflicting filename from the topic/language instead of generic names like story.txt or output.txt; do not overwrite existing files unless the user explicitly asked to update/replace/overwrite that file. For generated local HTML/SVG/PDF/static sites, plan to use open_workspace_file or preview_workspace rather than starting a localhost server inside Docker.`
@@ -742,7 +755,7 @@ export async function createPlan(client, config, state) {
           "For environment or system-maintenance work, prefer project-local dry-run plans/scripts unless the configured policy explicitly allows stronger actions.",
           "Docker language/toolchain installs should prefer /aginti-env or project files so they persist across runs; apt/apk changes are ephemeral unless the image is rebuilt.",
           "If a localhost/browser preview fails, do not loop on the same URL. Switch to open_workspace_file or preview_workspace, or finish with the local path and honest limitation.",
-          "If the run is close to the max-step limit, finish with the best complete artifact and honest limitations instead of starting a new approach.",
+          "If a command will take minutes or hours, hand it to start_long_job and finish with the durable status path instead of burning model steps. If the run is close to the max-step limit, finish with the best complete artifact and honest limitations instead of starting a new approach.",
           "Plan for a complete result, not endless exploration; finish once the request is satisfied and checks have passed or been honestly skipped.",
           "Return a numbered plan only.",
         ]
@@ -1242,6 +1255,65 @@ export async function requestNextStep(client, config, messages) {
       {
         type: "function",
         function: {
+          name: "start_long_job",
+          description:
+            "Start a durable tmux-backed background job for downloads, long I/O, long tests/builds, model jobs, or any command expected to take minutes or hours. This tool writes .aginti/long-jobs/<jobId>/status.json plus stdout/stderr/supervisor logs and returns immediately. Use expectedOutputPath, expectedSizeBytes, restartOnFailure, and verifyCommand for resumable downloads. After this tool succeeds, do not keep the model loop alive with wait/poll calls; finish with the job id and status path unless the user explicitly asked for an immediate one-time status check.",
+          parameters: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Short safe job name, e.g. dataset-download or latex-build." },
+              command: { type: "string", description: "Shell command to run under the active shell policy. Do not include secrets." },
+              cwd: { type: "string", description: "Workspace-relative cwd for the job. Defaults to ." },
+              expectedOutputPath: {
+                type: "string",
+                description: "Optional expected output file path. Relative paths are resolved from cwd. Used for progress and completion checks.",
+              },
+              expectedSizeBytes: {
+                type: "integer",
+                description: "Optional exact expected output size in bytes, e.g. Content-Length for downloads.",
+              },
+              verifyCommand: {
+                type: "string",
+                description: "Optional shell verification after the main command succeeds, e.g. unzip -t file.zip or sha256sum -c checksums.txt.",
+              },
+              restartOnFailure: {
+                type: "boolean",
+                description: "Restart command when it exits before expected output is complete. Useful with wget -c/curl -C resumable downloads.",
+              },
+              pollIntervalSeconds: {
+                type: "integer",
+                description: "Shell supervisor status update and restart delay, 5 to 3600 seconds. Defaults to 60.",
+              },
+              timeoutSeconds: {
+                type: "integer",
+                description: "Optional overall timeout. 0 means no timeout.",
+              },
+              note: { type: "string", description: "Short human note for the status card." },
+            },
+            required: ["command"],
+            additionalProperties: false,
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "long_job_status",
+          description:
+            "Read the deterministic status JSON for a previously started start_long_job. Use only when the user asks for status or when a later run explicitly needs to verify a background job; do not poll this repeatedly inside one model loop.",
+          parameters: {
+            type: "object",
+            properties: {
+              jobId: { type: "string", description: "Job id returned by start_long_job." },
+            },
+            required: ["jobId"],
+            additionalProperties: false,
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
           name: "tmux_list_sessions",
           description:
             "List durable host tmux sessions and panes. Use this to discover long-running terminals, agent sessions, dev servers, or jobs before interacting with them. tmux tools run host-side even when command execution is Docker-sandboxed; do not use run_command to start tmux inside an ephemeral Docker container.",
@@ -1637,6 +1709,10 @@ export async function requestNextStep(client, config, messages) {
     }
 
     if (config.allowShellTool && mockShouldPreferShellForGoal(config.goal)) {
+      const longJobTool = mockLongJobToolForGoal(config.goal);
+      if (longJobTool) {
+        return mockChatResponse("Mock mode will start a durable long job instead of polling in the model loop.", [longJobTool]);
+      }
       return mockChatResponse("Mock mode will use the guarded shell tool for an explicitly local command task.", [
         mockToolCall("run_command", { command: mockCommandForGoal(config.goal) }),
       ]);

@@ -138,6 +138,22 @@ aginti "start a tmux session named demo, run ls in it, keep it open, and tell me
 
 The agent should use `tmux_start_session`, `tmux_send_keys`, and `tmux_capture_pane`, not Docker `run_command`. In Docker sandbox mode, tmux commands must stay inside the project. In host mode, tmux command text is still governed by host shell policy; if a tmux command is blocked, present the suggested rerun path instead of trying tmux as a workaround. For trusted whole-host tmux work, use the host recipe above.
 
+Long download or long command:
+
+```bash
+aginti "download this large zip with wget -c, verify the final byte count, and do not burn model steps polling it"
+```
+
+The agent should use `start_long_job` once instead of repeatedly calling `wait`, `run_command`, or `tmux_capture_pane`. The tool creates `.aginti/long-jobs/<job-id>/status.json`, stdout/stderr logs, a supervisor log, and an optional status card. For resumable downloads, the agent should first determine `Content-Length` when practical, then call `start_long_job` with:
+
+- `command`: a resumable transfer such as `wget -c URL -O file.zip`
+- `expectedOutputPath`: the downloaded file
+- `expectedSizeBytes`: the expected byte count
+- `verifyCommand`: a deterministic check such as `unzip -t file.zip` or `sha256sum -c`
+- `restartOnFailure`: `true` when the transfer command is safe to resume
+
+After `start_long_job` succeeds, the model loop should finish with the job id and status path. Later status checks should use `long_job_status` or direct shell inspection of the status JSON. This keeps multi-hour I/O under a shell supervisor instead of consuming model tokens and step budget.
+
 ## Future Persistent Container Mode
 
 A useful next runtime mode is a service container:
