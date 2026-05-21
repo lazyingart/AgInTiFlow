@@ -19,6 +19,7 @@ import {
   initProject,
   listProjectSessionRemovalCandidates,
   listProjectSessions,
+  loadProjectEnv,
   renameProjectSession,
   removeProjectSessions,
   providerKeyStatus,
@@ -1027,6 +1028,7 @@ function printRoutes() {
 }
 
 function printModels() {
+  loadProjectEnv(process.cwd(), { override: true });
   const roles = getModelRoleDefaults();
   console.log("Model roles:");
   for (const role of Object.values(roles)) {

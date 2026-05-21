@@ -2837,7 +2837,7 @@ function printModelRoles(state) {
       "Set roles",
       "/route deepseek/deepseek-v4-flash",
       "/model deepseek/deepseek-v4-pro",
-      "/spare openai/gpt-5.4 medium",
+      "/spare openai/gpt-5.4-high high",
       "/wrapper codex gpt-5.5 medium",
       "/auxiliary model grsai/nano-banana-2",
       "",
@@ -2856,7 +2856,8 @@ function printModelRoles(state) {
 function compactReasoning(model = {}) {
   const values = Array.isArray(model.reasoning) ? model.reasoning : [];
   if (values.length === 0) return "";
-  const preferred = model.id === "gpt-5.4-mini" || model.id === "gpt-5.3-codex-spark" ? "high" : "medium";
+  const preferred =
+    model.id === "gpt-5.4-mini" || model.id === "gpt-5.3-codex-spark" || model.id === "gpt-5.4-high" ? "high" : "medium";
   return `${preferred} reasoning`;
 }
 
@@ -3044,7 +3045,7 @@ function providerChoices() {
     },
     {
       provider: "openai",
-      model: "gpt-5.4",
+      model: "gpt-5.4-high",
       label: "OpenAI",
       description: "manual GPT route; use /model for exact model",
     },

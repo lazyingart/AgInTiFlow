@@ -212,6 +212,13 @@ export const PROVIDER_MODEL_CATALOG = {
       description: "Strong model for everyday coding.",
     },
     {
+      id: "gpt-5.4-high",
+      label: "GPT-5.4 High",
+      role: "everyday coding",
+      reasoning: ["low", "medium", "high", "xhigh"],
+      description: "GPT-5.4 alias for environments that surface a high-reasoning model name.",
+    },
+    {
       id: "gpt-5.4-mini",
       label: "GPT-5.4 Mini",
       role: "fast spare",
@@ -541,7 +548,7 @@ export function getProviderDefaults(provider = "deepseek") {
     return {
       provider: "openai",
       apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || "",
-      baseURL: process.env.LLM_BASE_URL || "https://api.openai.com/v1",
+      baseURL: process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || "https://api.openai.com/v1",
       model: process.env.OPENAI_DEFAULT_MODEL || process.env.LLM_MODEL || "gpt-5.4-mini",
     };
   }
@@ -667,6 +674,14 @@ export function getModelPresets(overrides = {}) {
       model: "gpt-5.4",
       reasoning: "medium",
       description: "Strong OpenAI route for everyday coding.",
+    },
+    openaiGpt54High: {
+      id: "openaiGpt54High",
+      label: "OpenAI GPT-5.4 High",
+      provider: "openai",
+      model: "gpt-5.4-high",
+      reasoning: "high",
+      description: "High-reasoning OpenAI route for everyday coding.",
     },
     openaiGpt54Mini: {
       id: "openaiGpt54Mini",
