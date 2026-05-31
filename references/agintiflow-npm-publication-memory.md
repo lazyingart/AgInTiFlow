@@ -10,6 +10,17 @@ This note records the working publication route for AgInTiFlow so future release
 
 Latest verified release:
 
+- Version: `0.20.188`
+- Commit: `939e2ec`
+- GitHub Actions run: `https://github.com/lazyingart/AgInTiFlow/actions/runs/26705729544`
+- Workflow result: success
+- npm registry check: `npm view @lazyingart/agintiflow version dist-tags.latest --registry=https://registry.npmjs.org` returned `0.20.188`.
+- Installed verification: `npm install -g @lazyingart/agintiflow@0.20.188` then `aginti --version` returned `0.20.188`.
+- Webapp verification: `aginti webapp restart --port 3210` then `curl -fsS http://127.0.0.1:3210/health` returned `version":"0.20.188"` from the global npm package path.
+- OpenRouter verification: `/api/config` reports the OpenRouter default provider as `openrouter/auto` with base URL `https://openrouter.ai/api/v1`; `aginti keys status` reports `openrouter=missing` because no local OpenRouter key was persisted during release verification.
+
+Previous verified release:
+
 - Version: `0.20.187`
 - Commit: `9339b2e`
 - GitHub Actions run: `https://github.com/lazyingart/AgInTiFlow/actions/runs/26701125864`
