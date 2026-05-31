@@ -10,6 +10,17 @@ This note records the working publication route for AgInTiFlow so future release
 
 Latest verified release:
 
+- Version: `0.20.187`
+- Commit: `9339b2e`
+- GitHub Actions run: `https://github.com/lazyingart/AgInTiFlow/actions/runs/26701125864`
+- Workflow result: success
+- npm registry check: `npm view @lazyingart/agintiflow version dist-tags.latest --registry=https://registry.npmjs.org` returned `0.20.187`.
+- Installed verification: `npm install -g @lazyingart/agintiflow@0.20.187` then `aginti --version` returned `0.20.187`.
+- Webapp verification: `aginti webapp restart --port 3210` then `curl -fsS http://127.0.0.1:3210/health` returned `version":"0.20.187"` from the global npm package path.
+- Workspace explorer verification: `POST /api/workspace/snapshot` returned no `.aginti/`, `.aginti-work/`, `.sessions/`, or `.env` entries for the project root.
+
+Previous verified release:
+
 - Version: `0.20.186`
 - Commit: `f32a748`
 - GitHub Actions run: `https://github.com/lazyingart/AgInTiFlow/actions/runs/26700782132`
