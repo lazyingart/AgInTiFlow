@@ -89,6 +89,10 @@ try {
       },
     })
   );
+  await fs.mkdir(path.join(runtimeDir, "notes"), { recursive: true });
+  await fs.mkdir(path.join(runtimeDir, "data"), { recursive: true });
+  await fs.writeFile(path.join(runtimeDir, "notes", "workspace-smoke.md"), "# Workspace smoke\n\nEditable text.\n");
+  await fs.writeFile(path.join(runtimeDir, "data", "workspace-smoke.csv"), "sample,value\nalpha,1\n");
 
   const webAppHtml = await fs.readFile(path.join(repoRoot, "public", "index.html"), "utf8");
   const chatThreadIndex = webAppHtml.indexOf('id="chat-thread"');
@@ -96,7 +100,20 @@ try {
   if (chatThreadIndex < 0 || chatPendingIndex < 0 || chatPendingIndex < chatThreadIndex) {
     throw new Error("pending message panel must render below the chat thread");
   }
-  for (const marker of ['id="new-session"', 'id="run-state"', 'id="toast-region"', 'id="chat-submit"', 'id="command-cwd-suggestions"', 'id="enableScs"', 'id="aapsModeToggle"', 'id="veniceModeToggle"', 'id="dynamicSteps"']) {
+  for (const marker of [
+    'id="new-session"',
+    'id="run-state"',
+    'id="toast-region"',
+    'id="chat-submit"',
+    'id="command-cwd-suggestions"',
+    'id="workspace-explorer"',
+    'id="workspace-workbench"',
+    'id="workspace-editor"',
+    'id="enableScs"',
+    'id="aapsModeToggle"',
+    'id="veniceModeToggle"',
+    'id="dynamicSteps"',
+  ]) {
     if (!webAppHtml.includes(marker)) throw new Error(`web UI is missing ${marker}`);
   }
   if (webAppHtml.includes('id="goal"') || /<button[^>]+type="submit"[^>]*>\s*Start run\s*<\/button>/i.test(webAppHtml)) {
@@ -113,6 +130,54 @@ try {
   if (!pathSuggest.ok || !Array.isArray(pathSuggest.suggestions) || !pathSuggest.suggestions.some((item) => item === runtimeDir)) {
     throw new Error(`path suggestions did not include the runtime directory: ${JSON.stringify(pathSuggest)}`);
   }
+  const pathChildren = await fetchJson(`/api/path-children?path=${encodeURIComponent(path.dirname(runtimeDir))}`);
+  if (!pathChildren.ok || !pathChildren.children?.some((item) => item.path === runtimeDir && item.kind === "directory")) {
+    throw new Error(`path children did not include the runtime directory: ${JSON.stringify(pathChildren)}`);
+  }
+  const workspaceSnapshot = await fetchJson("/api/workspace/snapshot", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ commandCwd: runtimeDir }),
+  });
+  if (!workspaceSnapshot.ok || workspaceSnapshot.root !== runtimeDir) {
+    throw new Error(`workspace snapshot root mismatch: ${JSON.stringify(workspaceSnapshot)}`);
+  }
+  if (!workspaceSnapshot.files?.some((file) => file.path === "notes/workspace-smoke.md" && file.content.includes("Editable text."))) {
+    throw new Error(`workspace snapshot did not include editable note: ${JSON.stringify(workspaceSnapshot.files?.slice(0, 5))}`);
+  }
+  const rawWorkspaceResponse = await fetch(
+    `${baseUrl}/api/workspace/raw?commandCwd=${encodeURIComponent(runtimeDir)}&path=${encodeURIComponent("notes/workspace-smoke.md")}`
+  );
+  const rawWorkspaceText = await rawWorkspaceResponse.text();
+  if (!rawWorkspaceResponse.ok || !rawWorkspaceText.includes("Workspace smoke")) {
+    throw new Error(`workspace raw endpoint failed: status=${rawWorkspaceResponse.status} body=${rawWorkspaceText.slice(0, 120)}`);
+  }
+  const writtenWorkspace = await fetchJson("/api/workspace/write", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ commandCwd: runtimeDir, path: "notes/workspace-written.md", content: "written from web api\n" }),
+  });
+  if (!writtenWorkspace.ok || (await fs.readFile(path.join(runtimeDir, "notes", "workspace-written.md"), "utf8")) !== "written from web api\n") {
+    throw new Error("workspace write endpoint did not persist expected content");
+  }
+  const renamedWorkspace = await fetchJson("/api/workspace/rename", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ commandCwd: runtimeDir, from: "notes/workspace-written.md", to: "notes/workspace-renamed.md" }),
+  });
+  if (!renamedWorkspace.ok || !(await fs.stat(path.join(runtimeDir, "notes", "workspace-renamed.md")).then(() => true).catch(() => false))) {
+    throw new Error("workspace rename endpoint did not move the file");
+  }
+  const deletedWorkspace = await fetchJson("/api/workspace/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ commandCwd: runtimeDir, path: "notes/workspace-renamed.md" }),
+  });
+  if (!deletedWorkspace.ok || (await fs.stat(path.join(runtimeDir, "notes", "workspace-renamed.md")).then(() => true).catch(() => false))) {
+    throw new Error("workspace delete endpoint did not remove the file");
+  }
+  const traversalResponse = await fetch(`${baseUrl}/api/workspace/raw?commandCwd=${encodeURIComponent(runtimeDir)}&path=../escape.txt`);
+  if (traversalResponse.ok) throw new Error("workspace raw endpoint allowed path traversal");
   if (config.preferences?.sandboxMode !== "docker-workspace") throw new Error("web did not default to docker workspace");
   if (config.preferences?.packageInstallPolicy !== "allow") throw new Error("web did not default to Docker package installs");
   if (config.preferences?.permissionMode !== "normal") throw new Error("web did not default to normal permission mode");
@@ -501,6 +566,12 @@ try {
           "PATCH /api/sessions/:id",
           "POST /api/sessions/:id/auto-title",
           "DELETE /api/sessions/:id",
+          "/api/path-children",
+          "POST /api/workspace/snapshot",
+          "/api/workspace/raw",
+          "POST /api/workspace/write",
+          "POST /api/workspace/rename",
+          "POST /api/workspace/delete",
           "/api/workspace/changes",
           "stale running status reconciliation",
           "/api/sessions/:id/artifacts",

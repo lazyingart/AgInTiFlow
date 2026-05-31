@@ -145,6 +145,14 @@ const translations = {
     wrappersOffLabel: "wrapper tools off",
     wrapperCapabilityTitle: "Agent wrappers",
     workspaceCapabilityTitle: "Workspace files",
+    workspaceExplorerTitle: "Workspace explorer",
+    workspaceExplorerHelp: "Browse, classify, drag into chat, and open project files.",
+    workspaceRefreshButton: "Refresh",
+    workspaceAutomapButton: "Auto map",
+    workspaceWorkbenchTitle: "Workspace workbench",
+    workspaceNoFileSelected: "Select a file from the explorer.",
+    workspaceSaveButton: "Save file",
+    workspaceRevertButton: "Revert",
     mcpCapabilityTitle: "MCP servers",
     mcpEmpty: "No MCP servers configured.",
     workspaceToolsLabel: "File tools",
@@ -746,6 +754,19 @@ const wrapperGridEl = document.querySelector("#wrapper-grid");
 const workspaceStatusEl = document.querySelector("#workspace-status");
 const workspaceToolsEl = document.querySelector("#workspace-tools");
 const workspaceChangesEl = document.querySelector("#workspace-changes");
+const workspaceExplorerEl = document.querySelector("#workspace-explorer");
+const workspaceBrowserStatusEl = document.querySelector("#workspace-browser-status");
+const workspaceLanesEl = document.querySelector("#workspace-lanes");
+const workspaceTreeEl = document.querySelector("#workspace-tree");
+const workspaceRefreshButton = document.querySelector("#workspace-refresh");
+const workspaceAutomapButton = document.querySelector("#workspace-automap");
+const workspaceActiveTitleEl = document.querySelector("#workspace-active-title");
+const workspaceActiveMetaEl = document.querySelector("#workspace-active-meta");
+const workspacePreviewEl = document.querySelector("#workspace-preview");
+const workspaceEditorEl = document.querySelector("#workspace-editor");
+const workspaceSaveButton = document.querySelector("#workspace-save");
+const workspaceRevertButton = document.querySelector("#workspace-revert");
+const workspaceEditorStatusEl = document.querySelector("#workspace-editor-status");
 const mcpStatusEl = document.querySelector("#mcp-status");
 const mcpGridEl = document.querySelector("#mcp-grid");
 const mcpWarningsEl = document.querySelector("#mcp-warnings");
@@ -835,6 +856,31 @@ let currentArtifactTab = "canvas";
 let artifactUnreadCount = 0;
 let lastAnnouncedRunKey = "";
 let quickVeniceModeActive = false;
+const WORKSPACE_LANES = [
+  { id: "all", label: "All" },
+  { id: "source", label: "Source" },
+  { id: "scripts", label: "Scripts" },
+  { id: "docs", label: "Docs" },
+  { id: "data", label: "Data" },
+  { id: "media", label: "Media" },
+  { id: "references", label: "Refs" },
+  { id: "artifacts", label: "Artifacts" },
+  { id: "logs", label: "Logs" },
+  { id: "other", label: "Other" },
+];
+let workspaceBrowser = {
+  root: "",
+  files: [],
+  warnings: [],
+  activeLane: "all",
+  activePath: "",
+  activeContent: "",
+  savedContent: "",
+  overrides: {},
+  loading: false,
+  error: "",
+  initialized: false,
+};
 
 function normalizeLanguage(language) {
   const lower = String(language || "").toLowerCase();
@@ -1154,6 +1200,278 @@ function renderWorkspacePanel(workspace = lastWorkspace, activity = lastWorkspac
       `;
     })
     .join("");
+}
+
+function workspaceRoot() {
+  return commandCwdField?.value.trim() || projectInfo?.commandCwd || projectInfo?.root || "";
+}
+
+function workspaceExt(filePath = "") {
+  const name = String(filePath || "").toLowerCase();
+  const index = name.lastIndexOf(".");
+  return index >= 0 ? name.slice(index) : "";
+}
+
+function workspaceDir(filePath = "") {
+  const normalized = String(filePath || "").replace(/\\/g, "/");
+  const index = normalized.lastIndexOf("/");
+  return index >= 0 ? normalized.slice(0, index) : "";
+}
+
+function workspaceBaseName(filePath = "") {
+  return String(filePath || "").replace(/\\/g, "/").split("/").filter(Boolean).pop() || filePath;
+}
+
+function inferWorkspaceLane(file = {}) {
+  const filePath = String(file.path || "").toLowerCase();
+  const first = filePath.split("/")[0] || "";
+  const ext = workspaceExt(filePath);
+  if (workspaceBrowser.overrides[file.path]) return workspaceBrowser.overrides[file.path];
+  if (["artifacts", "runs", "outputs", "reports"].includes(first)) return "artifacts";
+  if (["logs", "log", "events"].includes(first) || ext === ".log") return "logs";
+  if (["data", "datasets", "tables"].includes(first) || [".csv", ".tsv", ".jsonl", ".xlsx", ".parquet"].includes(ext)) return "data";
+  if (["docs", "doc", "references", "reference"].includes(first) || [".md", ".txt", ".tex", ".rst"].includes(ext)) return "docs";
+  if (["refs", "bibliography"].includes(first) || [".bib", ".ris", ".enw"].includes(ext)) return "references";
+  if (["scripts", "bin"].includes(first) || [".py", ".r", ".sh", ".m", ".pl"].includes(ext)) return "scripts";
+  if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".pdf", ".mp4", ".mov", ".wav", ".mp3"].includes(ext)) return "media";
+  if ([".js", ".mjs", ".ts", ".tsx", ".jsx", ".css", ".html", ".go", ".rs", ".c", ".cpp", ".h", ".hpp", ".java", ".rb", ".php", ".lua"].includes(ext)) {
+    return "source";
+  }
+  return "other";
+}
+
+function workspaceFilesByLane() {
+  const groups = Object.fromEntries(WORKSPACE_LANES.map((lane) => [lane.id, []]));
+  for (const file of workspaceBrowser.files) {
+    groups.all.push(file);
+    const lane = inferWorkspaceLane(file);
+    if (!groups[lane]) groups.other.push(file);
+    else groups[lane].push(file);
+  }
+  return groups;
+}
+
+function workspaceActiveFile() {
+  return workspaceBrowser.files.find((file) => file.path === workspaceBrowser.activePath) || null;
+}
+
+function formatBytes(size = 0) {
+  const value = Number(size || 0);
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function workspaceRawUrl(filePath = "") {
+  const params = new URLSearchParams({ commandCwd: workspaceBrowser.root || workspaceRoot(), path: filePath });
+  return `/api/workspace/raw?${params.toString()}`;
+}
+
+function setWorkspaceEditorStatus(message = "", kind = "info") {
+  if (!workspaceEditorStatusEl) return;
+  workspaceEditorStatusEl.textContent = message;
+  workspaceEditorStatusEl.dataset.kind = kind;
+}
+
+function renderWorkspaceExplorer() {
+  if (!workspaceExplorerEl || !workspaceLanesEl || !workspaceTreeEl || !workspaceBrowserStatusEl) return;
+  const groups = workspaceFilesByLane();
+  const activeLane = workspaceBrowser.activeLane || "all";
+  const warnings = workspaceBrowser.warnings?.length ? ` · ${workspaceBrowser.warnings.length} warning(s)` : "";
+  const truncated = workspaceBrowser.truncated ? " · truncated" : "";
+  const status = workspaceBrowser.loading
+    ? "Loading workspace..."
+    : workspaceBrowser.error
+      ? `Workspace unavailable: ${workspaceBrowser.error}`
+      : `${workspaceBrowser.files.length} files · ${workspaceBrowser.root || workspaceRoot()}${warnings}${truncated}`;
+  workspaceBrowserStatusEl.textContent = status;
+
+  workspaceLanesEl.innerHTML = WORKSPACE_LANES.map((lane) => {
+    const count = groups[lane.id]?.length || 0;
+    return `
+      <button
+        type="button"
+        class="workspace-lane"
+        data-workspace-lane="${escapeHtml(lane.id)}"
+        data-selected="${lane.id === activeLane}"
+        title="Drop a file here to classify it as ${escapeHtml(lane.label)}"
+      >
+        <span>${escapeHtml(lane.label)}</span>
+        <strong>${count}</strong>
+      </button>
+    `;
+  }).join("");
+
+  const visibleFiles = (groups[activeLane] || []).slice().sort((left, right) => left.path.localeCompare(right.path));
+  if (!visibleFiles.length) {
+    workspaceTreeEl.innerHTML = `<p class="subtle workspace-empty">No files in this category.</p>`;
+    return;
+  }
+
+  workspaceTreeEl.innerHTML = visibleFiles
+    .map((file) => {
+      const lane = inferWorkspaceLane(file);
+      const active = file.path === workspaceBrowser.activePath;
+      const meta = [lane, formatBytes(file.size), file.binary ? "binary" : "text"].join(" · ");
+      return `
+        <button
+          type="button"
+          class="workspace-file-row"
+          data-workspace-file="${escapeHtml(file.path)}"
+          data-selected="${active}"
+          draggable="true"
+        >
+          <span class="workspace-file-main">
+            <strong>${escapeHtml(workspaceBaseName(file.path))}</strong>
+            <small>${escapeHtml(workspaceDir(file.path) || ".")}</small>
+          </span>
+          <span class="workspace-file-meta">${escapeHtml(meta)}</span>
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function renderWorkspaceWorkbench() {
+  if (!workspaceActiveTitleEl || !workspaceActiveMetaEl || !workspacePreviewEl || !workspaceEditorEl) return;
+  const file = workspaceActiveFile();
+  const dirty = workspaceBrowser.activeContent !== workspaceBrowser.savedContent;
+
+  if (!file) {
+    workspaceActiveTitleEl.textContent = t("workspaceNoFileSelected");
+    workspaceActiveMetaEl.textContent = t("workspaceNoFileSelected");
+    workspacePreviewEl.innerHTML = `<p class="subtle">${t("workspaceNoFileSelected")}</p>`;
+    workspaceEditorEl.hidden = true;
+    if (workspaceSaveButton) workspaceSaveButton.disabled = true;
+    if (workspaceRevertButton) workspaceRevertButton.disabled = true;
+    setWorkspaceEditorStatus("");
+    return;
+  }
+
+  workspaceActiveTitleEl.textContent = file.path;
+  workspaceActiveMetaEl.textContent = `${inferWorkspaceLane(file)} · ${formatBytes(file.size)} · ${
+    file.binary ? "preview-only" : dirty ? "edited" : "saved"
+  }`;
+
+  const ext = workspaceExt(file.path);
+  const rawUrl = workspaceRawUrl(file.path);
+  if (file.binary) {
+    workspaceEditorEl.hidden = true;
+    if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"].includes(ext)) {
+      workspacePreviewEl.innerHTML = `<img class="workspace-media-preview" src="${escapeHtml(rawUrl)}" alt="${escapeHtml(file.path)}" />`;
+    } else if (ext === ".pdf") {
+      workspacePreviewEl.innerHTML = `<iframe class="workspace-pdf-preview" src="${escapeHtml(rawUrl)}" title="${escapeHtml(file.path)}"></iframe>`;
+    } else {
+      workspacePreviewEl.innerHTML = `<p class="subtle">Binary file preview is unavailable. Use the raw file path or artifact canvas for specialized previews.</p>`;
+    }
+    if (workspaceSaveButton) workspaceSaveButton.disabled = true;
+    if (workspaceRevertButton) workspaceRevertButton.disabled = true;
+    setWorkspaceEditorStatus("Preview-only binary file.");
+    return;
+  }
+
+  workspacePreviewEl.innerHTML = `<pre class="workspace-code-preview">${escapeHtml(workspaceBrowser.activeContent).slice(
+    0,
+    12000
+  )}</pre>`;
+  workspaceEditorEl.hidden = false;
+  if (document.activeElement !== workspaceEditorEl && workspaceEditorEl.value !== workspaceBrowser.activeContent) {
+    workspaceEditorEl.value = workspaceBrowser.activeContent;
+  }
+  if (workspaceSaveButton) workspaceSaveButton.disabled = !dirty;
+  if (workspaceRevertButton) workspaceRevertButton.disabled = !dirty;
+  setWorkspaceEditorStatus(dirty ? "Unsaved editor changes." : "File loaded.");
+}
+
+function renderWorkspaceBrowser() {
+  renderWorkspaceExplorer();
+  renderWorkspaceWorkbench();
+}
+
+async function refreshWorkspaceSnapshot({ preserveActive = true } = {}) {
+  if (!workspaceExplorerEl) return;
+  workspaceBrowser.loading = true;
+  workspaceBrowser.error = "";
+  renderWorkspaceExplorer();
+  try {
+    const response = await fetch("/api/workspace/snapshot", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ commandCwd: workspaceRoot() }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "Workspace snapshot failed.");
+    workspaceBrowser = {
+      ...workspaceBrowser,
+      root: data.root || workspaceRoot(),
+      files: data.files || [],
+      warnings: data.warnings || [],
+      truncated: Boolean(data.truncated),
+      loading: false,
+      error: "",
+      initialized: true,
+    };
+    if (!preserveActive || !workspaceBrowser.files.some((file) => file.path === workspaceBrowser.activePath)) {
+      workspaceBrowser.activePath = workspaceBrowser.files.find((file) => !file.binary)?.path || workspaceBrowser.files[0]?.path || "";
+      const active = workspaceActiveFile();
+      workspaceBrowser.activeContent = active?.content || "";
+      workspaceBrowser.savedContent = active?.content || "";
+    } else {
+      const active = workspaceActiveFile();
+      if (!active?.binary && workspaceBrowser.activeContent === workspaceBrowser.savedContent) {
+        workspaceBrowser.activeContent = active?.content || "";
+        workspaceBrowser.savedContent = active?.content || "";
+      }
+    }
+  } catch (error) {
+    workspaceBrowser.loading = false;
+    workspaceBrowser.error = error instanceof Error ? error.message : String(error);
+  }
+  renderWorkspaceBrowser();
+}
+
+function selectWorkspaceFile(filePath = "") {
+  const file = workspaceBrowser.files.find((item) => item.path === filePath);
+  if (!file) return;
+  workspaceBrowser.activePath = file.path;
+  workspaceBrowser.activeContent = file.content || "";
+  workspaceBrowser.savedContent = file.content || "";
+  renderWorkspaceBrowser();
+}
+
+async function saveWorkspaceEditor() {
+  const file = workspaceActiveFile();
+  if (!file || file.binary || !workspaceEditorEl) return;
+  const content = workspaceEditorEl.value;
+  setWorkspaceEditorStatus("Saving...");
+  const response = await fetch("/api/workspace/write", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ commandCwd: workspaceBrowser.root || workspaceRoot(), path: file.path, content }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    setWorkspaceEditorStatus(data.error || "Save failed.", "error");
+    return;
+  }
+  workspaceBrowser.activeContent = content;
+  workspaceBrowser.savedContent = content;
+  showToast(`Saved ${file.path}.`);
+  await refreshWorkspaceSnapshot({ preserveActive: true });
+}
+
+function revertWorkspaceEditor() {
+  workspaceBrowser.activeContent = workspaceBrowser.savedContent;
+  if (workspaceEditorEl) workspaceEditorEl.value = workspaceBrowser.savedContent;
+  renderWorkspaceWorkbench();
+}
+
+function insertWorkspaceReference(filePath = "") {
+  if (!chatInputEl || !filePath) return;
+  const reference = `@file ${filePath}`;
+  const current = chatInputEl.value.trimEnd();
+  chatInputEl.value = current ? `${current}\n${reference}` : reference;
+  chatInputEl.focus();
 }
 
 function renderMcpPanel(mcp = lastMcp) {
@@ -1663,6 +1981,7 @@ function applyLanguage(language, { persist = true } = {}) {
   renderProjectStatus();
   renderWrapperStatus();
   renderWorkspacePanel();
+  renderWorkspaceBrowser();
   renderSandboxStatus();
   updateRoutingHint();
   updatePermissionHint();
@@ -3085,6 +3404,7 @@ async function refreshRun() {
     await refreshChat();
     await refreshSessions();
     await refreshWorkspaceChanges();
+    await refreshWorkspaceSnapshot({ preserveActive: true });
     await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
     if (run.status === "finished") await flushAfterFinishQueue();
   }
@@ -3335,6 +3655,7 @@ async function startRunFromGoal(goal, { clearComposer = false } = {}) {
   sessionSelectEl.value = currentSessionId;
   await refreshChat();
   await refreshWorkspaceChanges();
+  await refreshWorkspaceSnapshot({ preserveActive: true });
   await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
 
   if (pollTimer) clearInterval(pollTimer);
@@ -3589,6 +3910,77 @@ commandCwdField?.addEventListener("input", () => {
 commandCwdField?.addEventListener("change", () => {
   schedulePreferenceSave();
   refreshCommandCwdSuggestions(commandCwdField.value).catch(() => {});
+  refreshWorkspaceSnapshot({ preserveActive: false }).catch(() => {});
+});
+
+workspaceRefreshButton?.addEventListener("click", () => {
+  refreshWorkspaceSnapshot({ preserveActive: true }).catch((error) => {
+    setWorkspaceEditorStatus(String(error), "error");
+  });
+});
+
+workspaceAutomapButton?.addEventListener("click", () => {
+  workspaceBrowser.overrides = {};
+  renderWorkspaceBrowser();
+  showToast("Workspace files auto-mapped by general category.");
+});
+
+workspaceLanesEl?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-workspace-lane]");
+  if (!button) return;
+  workspaceBrowser.activeLane = button.dataset.workspaceLane || "all";
+  renderWorkspaceBrowser();
+});
+
+workspaceLanesEl?.addEventListener("dragover", (event) => {
+  if (event.target.closest("[data-workspace-lane]")) event.preventDefault();
+});
+
+workspaceLanesEl?.addEventListener("drop", (event) => {
+  const button = event.target.closest("[data-workspace-lane]");
+  const filePath = event.dataTransfer?.getData("text/agintiflow-workspace-file") || event.dataTransfer?.getData("text/plain");
+  const lane = button?.dataset.workspaceLane;
+  if (!button || !filePath || !lane || lane === "all") return;
+  event.preventDefault();
+  workspaceBrowser.overrides[filePath] = lane;
+  workspaceBrowser.activeLane = lane;
+  renderWorkspaceBrowser();
+});
+
+workspaceTreeEl?.addEventListener("click", (event) => {
+  const row = event.target.closest("[data-workspace-file]");
+  if (!row) return;
+  selectWorkspaceFile(row.dataset.workspaceFile || "");
+});
+
+workspaceTreeEl?.addEventListener("dragstart", (event) => {
+  const row = event.target.closest("[data-workspace-file]");
+  if (!row || !event.dataTransfer) return;
+  event.dataTransfer.setData("text/agintiflow-workspace-file", row.dataset.workspaceFile || "");
+  event.dataTransfer.setData("text/plain", row.dataset.workspaceFile || "");
+  event.dataTransfer.effectAllowed = "copyMove";
+});
+
+workspaceEditorEl?.addEventListener("input", () => {
+  workspaceBrowser.activeContent = workspaceEditorEl.value;
+  renderWorkspaceWorkbench();
+});
+
+workspaceSaveButton?.addEventListener("click", () => {
+  saveWorkspaceEditor().catch((error) => setWorkspaceEditorStatus(String(error), "error"));
+});
+
+workspaceRevertButton?.addEventListener("click", revertWorkspaceEditor);
+
+chatInputEl?.addEventListener("dragover", (event) => {
+  if (event.dataTransfer?.types?.includes("text/agintiflow-workspace-file")) event.preventDefault();
+});
+
+chatInputEl?.addEventListener("drop", (event) => {
+  const filePath = event.dataTransfer?.getData("text/agintiflow-workspace-file");
+  if (!filePath) return;
+  event.preventDefault();
+  insertWorkspaceReference(filePath);
 });
 
 chatInputEl.addEventListener("keydown", (event) => {
@@ -3724,6 +4116,7 @@ chatFormEl.addEventListener("submit", async (event) => {
   await refreshSessions();
   await refreshChat();
   await refreshWorkspaceChanges();
+  await refreshWorkspaceSnapshot({ preserveActive: true });
   await refreshArtifacts({ loadSelected: artifactTunnelDialog?.open });
 
   if (pollTimer) clearInterval(pollTimer);
@@ -3835,6 +4228,7 @@ async function loadConfig() {
   renderWorkspacePanel(data.workspace, []);
   renderMcpPanel(data.mcp || null);
   await refreshWorkspaceChanges();
+  await refreshWorkspaceSnapshot({ preserveActive: false });
   renderSandboxLogs(data.sandbox?.logs || []);
   if (quickVeniceModeActive) applyVeniceMode(true);
   updateRoutingHint();

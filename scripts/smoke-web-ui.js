@@ -73,6 +73,10 @@ let browser;
 
 try {
   await waitForHealth();
+  await fs.mkdir(path.join(runtimeDir, "notes"), { recursive: true });
+  await fs.mkdir(path.join(runtimeDir, "data"), { recursive: true });
+  await fs.writeFile(path.join(runtimeDir, "notes", "workspace-ui.md"), "# Workspace UI\n\ninitial body\n");
+  await fs.writeFile(path.join(runtimeDir, "data", "workspace-ui.csv"), "sample,value\nalpha,1\n");
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   const runPayloads = [];
@@ -94,6 +98,40 @@ try {
   await page.waitForFunction(() => document.querySelectorAll("#command-cwd-suggestions option").length > 0);
   await page.locator("#commandCwd").fill(runtimeDir);
   if ((await page.locator(".project-status-chip").count()) < 4) throw new Error("project folder status did not render structured chips");
+  await page.waitForSelector('[data-workspace-file="notes/workspace-ui.md"]', { timeout: 15000 });
+  if ((await page.locator("#workspace-lanes [data-workspace-lane]").count()) < 8) {
+    throw new Error("workspace explorer did not render general category lanes");
+  }
+  if ((await page.locator('[data-workspace-file="notes/workspace-ui.md"]').getAttribute("draggable")) !== "true") {
+    throw new Error("workspace file rows are not draggable");
+  }
+  await page.locator("#workspace-automap").click();
+  await page.locator('[data-workspace-lane="docs"]').click();
+  await page.waitForSelector('[data-workspace-file="notes/workspace-ui.md"]', { timeout: 10000 });
+  await page.locator('[data-workspace-file="notes/workspace-ui.md"]').click();
+  await page.waitForFunction(() => document.querySelector("#workspace-editor")?.value.includes("initial body"));
+  await page.locator("#workspace-editor").fill("# Workspace UI\n\nedited body\n");
+  await page.locator("#workspace-save").click();
+  await page.waitForFunction(() => document.querySelector("#workspace-save")?.disabled === true, null, { timeout: 10000 });
+  const savedWorkspaceUi = await fs.readFile(path.join(runtimeDir, "notes", "workspace-ui.md"), "utf8");
+  if (!savedWorkspaceUi.includes("edited body")) throw new Error("workspace workbench save did not persist to disk");
+  await page.evaluate(() => {
+    const input = document.querySelector("#chat-input");
+    const data = new DataTransfer();
+    data.setData("text/agintiflow-workspace-file", "notes/workspace-ui.md");
+    input.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: data }));
+  });
+  if (!(await page.locator("#chat-input").inputValue()).includes("@file notes/workspace-ui.md")) {
+    throw new Error("workspace file drop did not insert a file reference into chat");
+  }
+  await page.evaluate(() => {
+    const lane = document.querySelector('[data-workspace-lane="data"]');
+    const data = new DataTransfer();
+    data.setData("text/agintiflow-workspace-file", "notes/workspace-ui.md");
+    lane.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: data }));
+  });
+  await page.locator('[data-workspace-lane="data"]').click();
+  await page.waitForSelector('[data-workspace-file="notes/workspace-ui.md"]', { timeout: 10000 });
   await page.locator("#run-defaults-card summary").click();
   if (await page.locator("#veniceModeToggle").isChecked()) throw new Error("Venice quick mode should default off");
   if ((await page.locator("#routeProvider").inputValue()) !== "deepseek") throw new Error("route provider should default to DeepSeek");
@@ -177,7 +215,18 @@ try {
   if (!(await page.locator(".event-plan .markdown-body").first().innerText()).trim()) {
     throw new Error("web run log did not render the plan as a formatted event card");
   }
-  if (!(await page.locator("#stop-run").isVisible())) throw new Error("stop button did not appear while run was active");
+  await page.waitForFunction(
+    () => {
+      const state = document.querySelector("#run-state")?.dataset.status || "";
+      const stop = document.querySelector("#stop-run");
+      return state !== "running" || (stop && !stop.hidden && !stop.disabled);
+    },
+    null,
+    { timeout: 10000 }
+  );
+  if ((await page.locator("#run-state").evaluate((node) => node.dataset.status || "")) === "running") {
+    if (!(await page.locator("#stop-run").isVisible())) throw new Error("stop button did not appear while run was active");
+  }
   await waitForTerminalRunState(page);
   if (await page.locator("#stop-run").isVisible()) throw new Error("stop button stayed visible after terminal run state");
   if (!(await page.locator(".toast").first().isVisible().catch(() => false))) {
@@ -255,6 +304,11 @@ try {
           "old-goal-form-hidden",
           "working-directory-search-top",
           "project-status-chips",
+          "workspace-explorer-general-lanes",
+          "workspace-file-selection",
+          "workspace-editor-save-persists",
+          "workspace-file-drop-to-chat",
+          "workspace-dragdrop-category-override",
           "run-defaults-folded",
           "venice-mode-default-off",
           "venice-mode-model-sync",

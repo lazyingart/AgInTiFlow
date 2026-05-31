@@ -32,13 +32,13 @@ body {
 }
 
 .page {
-  width: min(1240px, 100%);
+  width: min(1500px, 100%);
   max-width: 100%;
   margin: 32px auto;
   padding: 0 16px;
   display: grid;
   gap: 20px;
-  grid-template-columns: minmax(280px, 400px) minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 430px) minmax(0, 1fr);
 }
 
 .stack {
@@ -924,6 +924,201 @@ button.danger {
 .workspace-card {
   border-color: rgba(0, 111, 238, 0.18);
   background: linear-gradient(135deg, rgba(255, 253, 250, 0.9), rgba(239, 246, 255, 0.72));
+}
+
+.workspace-explorer-card {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(236, 253, 245, 0.72), rgba(255, 253, 250, 0.92)),
+    rgba(255, 255, 255, 0.8);
+}
+
+.workspace-explorer-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.workspace-explorer-head h2 {
+  margin: 0 0 4px;
+  font-size: 1.05rem;
+}
+
+.workspace-explorer-actions,
+.workspace-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.workspace-browser-status {
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.workspace-lanes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
+  gap: 7px;
+}
+
+.workspace-lane {
+  min-height: 46px;
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  padding: 8px 9px;
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  border-radius: 13px;
+  background: rgba(255, 253, 250, 0.78);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.workspace-lane strong {
+  color: var(--accent);
+  font-size: 0.78rem;
+}
+
+.workspace-lane[data-selected="true"] {
+  border-color: rgba(15, 118, 110, 0.55);
+  background: linear-gradient(135deg, rgba(20, 184, 166, 0.18), rgba(255, 255, 255, 0.9));
+  box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.08);
+}
+
+.workspace-tree {
+  display: grid;
+  gap: 7px;
+  max-height: 440px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.workspace-empty {
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed rgba(15, 118, 110, 0.24);
+  border-radius: 14px;
+}
+
+.workspace-file-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  width: 100%;
+  padding: 10px 11px;
+  border: 1px solid rgba(217, 119, 6, 0.16);
+  border-radius: 14px;
+  background: rgba(255, 253, 250, 0.72);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.workspace-file-row:hover {
+  border-color: rgba(15, 118, 110, 0.34);
+  background: rgba(240, 253, 250, 0.72);
+}
+
+.workspace-file-row[data-selected="true"] {
+  border-color: rgba(15, 118, 110, 0.58);
+  background: linear-gradient(135deg, rgba(15, 118, 110, 0.18), rgba(255, 255, 255, 0.92));
+  box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.1);
+}
+
+.workspace-file-main {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.workspace-file-main strong,
+.workspace-file-main small,
+.workspace-file-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-file-main small,
+.workspace-file-meta {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.workspace-workbench {
+  display: grid;
+  gap: 12px;
+}
+
+.workspace-active-title {
+  padding: 9px 11px;
+  border: 1px solid rgba(15, 118, 110, 0.14);
+  border-radius: 13px;
+  background: rgba(255, 253, 250, 0.76);
+  color: var(--muted);
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  font-size: 0.84rem;
+  overflow-wrap: anywhere;
+}
+
+.workspace-preview {
+  min-height: 140px;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid rgba(15, 118, 110, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.workspace-code-preview {
+  margin: 0;
+  padding: 13px;
+  color: #1f2937;
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.workspace-editor {
+  min-height: 320px;
+  width: 100%;
+  resize: vertical;
+  border-color: rgba(15, 118, 110, 0.24);
+  background: #fffefb;
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.workspace-media-preview {
+  display: block;
+  width: 100%;
+  max-height: 520px;
+  object-fit: contain;
+  padding: 10px;
+  background: rgba(255, 253, 250, 0.8);
+}
+
+.workspace-pdf-preview {
+  display: block;
+  width: 100%;
+  min-height: 520px;
+  border: 0;
+}
+
+.workspace-editor-status[data-kind="error"] {
+  color: #b91c1c;
 }
 
 .mcp-card {

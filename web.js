@@ -731,6 +731,238 @@ async function pathSuggestions(query = "") {
   return uniquePaths(suggestions).slice(0, 20);
 }
 
+const WORKSPACE_TEXT_EXTENSIONS = new Set([
+  ".aaps",
+  ".bib",
+  ".c",
+  ".cc",
+  ".cfg",
+  ".conf",
+  ".cpp",
+  ".css",
+  ".csv",
+  ".env",
+  ".go",
+  ".h",
+  ".hpp",
+  ".html",
+  ".ini",
+  ".java",
+  ".js",
+  ".json",
+  ".jsx",
+  ".log",
+  ".lua",
+  ".m",
+  ".md",
+  ".mjs",
+  ".py",
+  ".r",
+  ".rb",
+  ".rs",
+  ".scss",
+  ".sh",
+  ".sql",
+  ".svg",
+  ".tex",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".txt",
+  ".xml",
+  ".yaml",
+  ".yml",
+]);
+const WORKSPACE_SKIP_NAMES = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  ".aginti-sessions",
+  ".agintiflow-home",
+  ".cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  ".tox",
+  ".venv",
+  "__pycache__",
+  "build",
+  "dist",
+  "node_modules",
+]);
+const WORKSPACE_MAX_FILES = 1600;
+const WORKSPACE_MAX_TEXT_BYTES = 512 * 1024;
+
+function isInsideDirectory(parent, candidate) {
+  const relative = path.relative(parent, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function workspaceRootFromRequest(value = "") {
+  const raw = String(value || "").trim();
+  const expanded = raw ? expandUserPath(raw) : baseDir;
+  return path.resolve(expanded);
+}
+
+async function ensureWorkspaceRoot(value = "") {
+  const root = workspaceRootFromRequest(value);
+  const stat = await fs.stat(root);
+  if (!stat.isDirectory()) throw new Error("Workspace root must be a directory.");
+  return root;
+}
+
+function relativeWorkspacePath(root, absolutePath) {
+  return path.relative(root, absolutePath).split(path.sep).join("/");
+}
+
+async function resolveWorkspaceFilePath(root, relativePath = "", { mustExist = false } = {}) {
+  const normalizedRelative = String(relativePath || "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
+  if (!normalizedRelative || normalizedRelative.includes("\0")) throw new Error("Workspace file path is required.");
+  const absolutePath = path.resolve(root, normalizedRelative);
+  if (!isInsideDirectory(root, absolutePath)) throw new Error("Workspace file path escapes the selected folder.");
+
+  const rootReal = await fs.realpath(root);
+  const parentReal = await fs.realpath(path.dirname(absolutePath)).catch(() => null);
+  if (parentReal && !isInsideDirectory(rootReal, parentReal)) {
+    throw new Error("Workspace file parent escapes the selected folder.");
+  }
+
+  const fileReal = await fs.realpath(absolutePath).catch(() => null);
+  if (fileReal && !isInsideDirectory(rootReal, fileReal)) {
+    throw new Error("Workspace symlink target escapes the selected folder.");
+  }
+  if (mustExist && !fileReal) throw new Error("Workspace file does not exist.");
+  return absolutePath;
+}
+
+function looksTextual(relativePath, buffer) {
+  const extension = path.extname(relativePath).toLowerCase();
+  if (WORKSPACE_TEXT_EXTENSIONS.has(extension)) return true;
+  const sample = buffer.subarray(0, Math.min(buffer.length, 4096));
+  if (sample.includes(0)) return false;
+  const suspicious = [...sample].filter((byte) => byte < 7 || (byte > 13 && byte < 32)).length;
+  return sample.length === 0 || suspicious / sample.length < 0.02;
+}
+
+async function pathChildren(value = "", { limit = 200 } = {}) {
+  const root = workspaceRootFromRequest(value || baseDir);
+  const parent = (await readableDirectory(root)) ? root : path.dirname(root);
+  const prefix = (await readableDirectory(root)) ? "" : path.basename(root);
+  const directories = await directoryChildren(parent, prefix, limit);
+  return directories.map((item) => ({
+    path: item,
+    name: path.basename(item),
+    kind: "directory",
+  }));
+}
+
+async function buildWorkspaceSnapshot(root) {
+  const files = [];
+  const warnings = [];
+  let truncated = false;
+  const rootReal = await fs.realpath(root);
+
+  async function walk(currentDir) {
+    if (files.length >= WORKSPACE_MAX_FILES) {
+      truncated = true;
+      return;
+    }
+
+    let dirents = [];
+    try {
+      dirents = await fs.readdir(currentDir, { withFileTypes: true });
+    } catch (error) {
+      warnings.push(`Cannot read ${relativeWorkspacePath(root, currentDir) || "."}: ${error.message}`);
+      return;
+    }
+
+    dirents.sort((left, right) => {
+      if (left.isDirectory() !== right.isDirectory()) return left.isDirectory() ? -1 : 1;
+      return left.name.localeCompare(right.name);
+    });
+
+    for (const entry of dirents) {
+      if (files.length >= WORKSPACE_MAX_FILES) {
+        truncated = true;
+        return;
+      }
+      if (WORKSPACE_SKIP_NAMES.has(entry.name)) continue;
+
+      const absolutePath = path.join(currentDir, entry.name);
+      const relativePath = relativeWorkspacePath(root, absolutePath);
+      let stat;
+      let realPath = absolutePath;
+      let symlink = false;
+      try {
+        const lstat = await fs.lstat(absolutePath);
+        symlink = lstat.isSymbolicLink();
+        if (symlink) {
+          realPath = await fs.realpath(absolutePath);
+          if (!isInsideDirectory(rootReal, realPath)) {
+            warnings.push(`Skipped outside-workspace symlink: ${relativePath}`);
+            continue;
+          }
+          stat = await fs.stat(realPath);
+        } else {
+          stat = lstat;
+        }
+      } catch (error) {
+        warnings.push(`Cannot stat ${relativePath}: ${error.message}`);
+        continue;
+      }
+
+      if (stat.isDirectory()) {
+        await walk(absolutePath);
+        continue;
+      }
+      if (!stat.isFile()) continue;
+
+      const item = {
+        path: relativePath,
+        name: entry.name,
+        dir: path.dirname(relativePath) === "." ? "" : path.dirname(relativePath).split(path.sep).join("/"),
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        symlink,
+      };
+
+      if (stat.size > WORKSPACE_MAX_TEXT_BYTES) {
+        files.push({
+          ...item,
+          binary: true,
+          truncated: true,
+          content: "",
+        });
+        continue;
+      }
+
+      try {
+        const buffer = await fs.readFile(realPath);
+        const textual = looksTextual(relativePath, buffer);
+        files.push({
+          ...item,
+          binary: !textual,
+          content: textual ? buffer.toString("utf8") : "",
+        });
+      } catch (error) {
+        warnings.push(`Cannot read ${relativePath}: ${error.message}`);
+      }
+    }
+  }
+
+  await walk(root);
+  return {
+    ok: true,
+    root,
+    files,
+    truncated,
+    fileLimit: WORKSPACE_MAX_FILES,
+    maxInlineBytes: WORKSPACE_MAX_TEXT_BYTES,
+    warnings,
+  };
+}
+
 function buildRunConfig(body, overrides = {}) {
   const preferences = normalizePreferencePayload(body, db.getPreferences());
   const merged = {
@@ -1225,6 +1457,83 @@ app.get("/api/config", async (_req, res) => {
 app.get("/api/path-suggestions", async (req, res) => {
   const suggestions = await pathSuggestions(String(req.query.q || ""));
   res.json({ ok: true, suggestions });
+});
+
+app.get("/api/path-children", async (req, res) => {
+  try {
+    const children = await pathChildren(String(req.query.path || req.query.q || baseDir));
+    res.json({ ok: true, children });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/workspace/snapshot", async (req, res) => {
+  try {
+    const root = await ensureWorkspaceRoot(req.body?.commandCwd || req.body?.cwd || baseDir);
+    res.json(await buildWorkspaceSnapshot(root));
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get("/api/workspace/raw", async (req, res) => {
+  try {
+    const root = await ensureWorkspaceRoot(req.query.commandCwd || req.query.cwd || baseDir);
+    const absolutePath = await resolveWorkspaceFilePath(root, req.query.path, { mustExist: true });
+    res.sendFile(absolutePath);
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/workspace/write", async (req, res) => {
+  try {
+    const root = await ensureWorkspaceRoot(req.body?.commandCwd || req.body?.cwd || baseDir);
+    const absolutePath = await resolveWorkspaceFilePath(root, req.body?.path || req.body?.file);
+    const content = String(req.body?.content ?? "");
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.writeFile(absolutePath, content, "utf8");
+    const stat = await fs.stat(absolutePath);
+    res.json({
+      ok: true,
+      path: relativeWorkspacePath(root, absolutePath),
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+    });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/workspace/delete", async (req, res) => {
+  try {
+    const root = await ensureWorkspaceRoot(req.body?.commandCwd || req.body?.cwd || baseDir);
+    const absolutePath = await resolveWorkspaceFilePath(root, req.body?.path || req.body?.file, { mustExist: true });
+    const stat = await fs.stat(absolutePath);
+    if (stat.isDirectory()) throw new Error("Delete only supports files.");
+    await fs.unlink(absolutePath);
+    res.json({ ok: true, path: relativeWorkspacePath(root, absolutePath) });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/workspace/rename", async (req, res) => {
+  try {
+    const root = await ensureWorkspaceRoot(req.body?.commandCwd || req.body?.cwd || baseDir);
+    const fromPath = await resolveWorkspaceFilePath(root, req.body?.from || req.body?.path, { mustExist: true });
+    const toPath = await resolveWorkspaceFilePath(root, req.body?.to || req.body?.newPath || req.body?.target);
+    await fs.mkdir(path.dirname(toPath), { recursive: true });
+    await fs.rename(fromPath, toPath);
+    res.json({
+      ok: true,
+      from: relativeWorkspacePath(root, fromPath),
+      to: relativeWorkspacePath(root, toPath),
+    });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.get("/api/keys/status", (_req, res) => {

@@ -223,6 +223,22 @@
           <button id="open-settings" type="button" class="secondary settings-button">Advanced settings</button>
           </form>
         </details>
+
+        <section id="workspace-explorer" class="workspace-explorer-card" aria-labelledby="workspace-explorer-title">
+          <div class="workspace-explorer-head">
+            <div>
+              <h2 id="workspace-explorer-title" data-i18n="workspaceExplorerTitle">Workspace explorer</h2>
+              <p class="subtle" data-i18n="workspaceExplorerHelp">Browse, classify, drag into chat, and open project files.</p>
+            </div>
+            <div class="workspace-explorer-actions">
+              <button id="workspace-refresh" type="button" class="secondary" data-i18n="workspaceRefreshButton">Refresh</button>
+              <button id="workspace-automap" type="button" class="secondary" data-i18n="workspaceAutomapButton">Auto map</button>
+            </div>
+          </div>
+          <div id="workspace-browser-status" class="subtle workspace-browser-status" aria-live="polite">Loading workspace...</div>
+          <div id="workspace-lanes" class="workspace-lanes" aria-label="Workspace file categories"></div>
+          <div id="workspace-tree" class="workspace-tree" aria-live="polite"></div>
+        </section>
       </section>
 
       <section class="stack">
@@ -304,6 +320,23 @@
             <div class="subtle" data-i18n="noConversationLoaded">No conversation loaded.</div>
           </div>
           <div id="chat-pending" class="chat-pending" hidden></div>
+        </section>
+
+        <section id="workspace-workbench" class="panel workspace-workbench">
+          <div class="header-row">
+            <div>
+              <h2 data-i18n="workspaceWorkbenchTitle">Workspace workbench</h2>
+              <p id="workspace-active-meta" class="subtle" data-i18n="workspaceNoFileSelected">Select a file from the explorer.</p>
+            </div>
+            <div class="workspace-editor-actions">
+              <button id="workspace-revert" type="button" class="secondary" disabled data-i18n="workspaceRevertButton">Revert</button>
+              <button id="workspace-save" type="button" disabled data-i18n="workspaceSaveButton">Save file</button>
+            </div>
+          </div>
+          <div id="workspace-active-title" class="workspace-active-title" data-i18n="workspaceNoFileSelected">Select a file from the explorer.</div>
+          <div id="workspace-preview" class="workspace-preview"></div>
+          <textarea id="workspace-editor" class="workspace-editor" spellcheck="false" hidden></textarea>
+          <div id="workspace-editor-status" class="subtle workspace-editor-status"></div>
         </section>
 
         <section class="panel output-panel">
