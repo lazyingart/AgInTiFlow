@@ -2,11 +2,23 @@
 
 Date: 2026-05-20
 
+Updated: 2026-05-31
+
 This note records the working publication route for AgInTiFlow so future release work does not get blocked by stale local npm tokens or repeated discussion about why direct `npm publish` failed.
 
 ## Published Evidence
 
 Latest verified release:
+
+- Version: `0.20.184`
+- Commit: `9b22f4c`
+- GitHub Actions run: `https://github.com/lazyingart/AgInTiFlow/actions/runs/26700154894`
+- Workflow result: success
+- npm registry check: `npm view @lazyingart/agintiflow version dist-tags.latest --registry=https://registry.npmjs.org` returned `0.20.184`.
+- Installed verification: `npm install -g @lazyingart/agintiflow@0.20.184` then `aginti --version` returned `0.20.184`.
+- Webapp verification: `aginti webapp restart --port 3210` then `curl -fsS http://127.0.0.1:3210/health` returned `version":"0.20.184"` from the global npm package path.
+
+Previous verified release:
 
 - Version: `0.20.182`
 - Commit: `b5492f7`
