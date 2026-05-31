@@ -10,6 +10,17 @@ This note records the working publication route for AgInTiFlow so future release
 
 Latest verified release:
 
+- Version: `0.20.185`
+- Commit: `58d6087`
+- GitHub Actions run: `https://github.com/lazyingart/AgInTiFlow/actions/runs/26700387931`
+- Workflow result: success
+- npm registry check: `npm view @lazyingart/agintiflow version dist-tags.latest --registry=https://registry.npmjs.org` returned `0.20.185`.
+- Installed verification: `npm install -g @lazyingart/agintiflow@0.20.185` then `aginti --version` returned `0.20.185`.
+- Webapp verification: `aginti webapp restart --port 3210` then `curl -fsS http://127.0.0.1:3210/health` returned `version":"0.20.185"` from the global npm package path.
+- Image API verification: `POST /api/auxiliary/generate-image` with `format:"svg"` and `dryRun:true` returned `requestedFormat:"svg"`, `actualFormat:"png"`, and a clear raster PNG fallback notice.
+
+Previous verified release:
+
 - Version: `0.20.184`
 - Commit: `9b22f4c`
 - GitHub Actions run: `https://github.com/lazyingart/AgInTiFlow/actions/runs/26700154894`
