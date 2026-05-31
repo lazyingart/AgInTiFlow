@@ -60,6 +60,27 @@ try {
     }
   );
   assert(veniceDryRun.ok && veniceDryRun.provider === "venice", "venice generate_image dry run failed");
+  const svgFallbackDryRun = await generateImage(
+    {
+      provider: "venice",
+      prompt: "A simple geometric logo requested as SVG.",
+      outputDir: "artifacts/images/svg-fallback-dry-run",
+      outputStem: "logo.svg",
+      format: "svg",
+      dryRun: true,
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  assert(svgFallbackDryRun.ok && svgFallbackDryRun.requestedFormat === "svg", "SVG fallback did not record requestedFormat");
+  assert(svgFallbackDryRun.actualFormat === "png", "SVG fallback did not select PNG output");
+  assert(/raster PNG/i.test(svgFallbackDryRun.formatNotice || ""), "SVG fallback did not explain the PNG fallback");
+  const svgFallbackManifest = JSON.parse(
+    await fs.readFile(path.join(workspace, "artifacts/images/svg-fallback-dry-run/task_manifest.json"), "utf8")
+  );
+  assert(svgFallbackManifest.requestedFormat === "svg" && svgFallbackManifest.actualFormat === "png", "SVG fallback manifest missing format contract");
 
   const blocked = await generateImage(
     {
@@ -109,6 +130,7 @@ try {
           "venice_image_skill_listed",
           "generate_image_dry_run",
           "venice_generate_image_dry_run",
+          "svg_request_png_fallback",
           "generate_image_guardrail",
           "mock_agent_image_tool",
         ],

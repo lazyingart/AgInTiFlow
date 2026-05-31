@@ -39,6 +39,7 @@ import {
   setProviderKey,
 } from "./src/project.js";
 import { buildCapabilityReport } from "./src/capabilities.js";
+import { generateImage } from "./src/auxiliary-tools.js";
 import { listExternalSkillPacks, listSkills } from "./src/skill-library.js";
 import { platformInfo, platformLabel, platformSetupHints } from "./src/platform.js";
 import { normalizeLanguage } from "./src/i18n.js";
@@ -1582,6 +1583,28 @@ app.post("/api/mcp", async (req, res) => {
     res.json(await mcpCliCommand(action.length ? action : ["status"], config));
   } catch (error) {
     res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/auxiliary/generate-image", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const preferences = normalizePreferencePayload({}, db.getPreferences());
+    const config = buildRunConfig({
+      ...preferences,
+      ...body,
+      goal: "auxiliary image generation",
+      commandCwd: body.commandCwd || body.cwd || preferences.commandCwd || baseDir,
+      allowFileTools: true,
+      allowAuxiliaryTools: true,
+      auxiliaryProvider: body.provider || body.auxiliaryProvider || preferences.auxiliaryProvider,
+      auxiliaryModel: body.model || body.auxiliaryModel || preferences.auxiliaryModel,
+    });
+    const result = await generateImage(body, config);
+    const status = result.ok ? 200 : result.blocked ? 403 : 400;
+    res.status(status).json(result);
+  } catch (error) {
+    res.status(400).json({ ok: false, toolName: "generate_image", error: error instanceof Error ? error.message : String(error) });
   }
 });
 

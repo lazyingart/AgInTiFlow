@@ -7,6 +7,10 @@ AgInTiFlow separates **skills** from **tools**:
 
 The optional image-generation skills are `image_generation` and `venice_image_generation`. Both use the deterministic `generate_image` tool.
 
+`generate_image` is a raster-image tool. It does not produce true SVG/vector output. If a caller requests `svg`, the tool records
+`requestedFormat: "svg"`, generates a PNG fallback with `actualFormat: "png"`, and returns a `formatNotice`. If the task truly requires
+editable vectors, use AgInTiFlow file tools to write deterministic SVG/LaTeX/HTML instead of calling `generate_image`.
+
 ## Setup
 
 Store a GRS AI or Venice key project-locally:
@@ -38,8 +42,36 @@ For image, cover, poster, illustration, photo, or logo-concept requests, the mod
   "model": "nano-banana-2",
   "outputDir": "artifacts/images/robot-cover",
   "outputStem": "robot-cover",
+  "format": "png",
   "aspectRatio": "1:1",
   "imageSize": "2K"
+}
+```
+
+For trusted local apps that need image generation without routing through a language-model run, the web server exposes a deterministic endpoint:
+
+```bash
+curl -sS http://127.0.0.1:3210/api/auxiliary/generate-image \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "prompt": "A polished cyan robot painting a circuit-board river",
+    "provider": "venice",
+    "format": "svg",
+    "outputDir": "artifacts/images/robot-cover",
+    "outputStem": "robot-cover"
+  }'
+```
+
+This endpoint is intended for trusted local/server-side callers. Browser apps on another origin should use an explicit adapter/proxy
+rather than relying on permissive CORS, because generation can consume API keys and write workspace artifacts.
+
+That SVG request returns a PNG fallback contract rather than pretending SVG was generated:
+
+```json
+{
+  "requestedFormat": "svg",
+  "actualFormat": "png",
+  "formatNotice": "SVG/vector output is not supported by generate_image. A raster PNG is generated instead."
 }
 ```
 

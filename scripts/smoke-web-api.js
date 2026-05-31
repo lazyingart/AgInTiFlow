@@ -178,6 +178,23 @@ try {
   }
   const traversalResponse = await fetch(`${baseUrl}/api/workspace/raw?commandCwd=${encodeURIComponent(runtimeDir)}&path=../escape.txt`);
   if (traversalResponse.ok) throw new Error("workspace raw endpoint allowed path traversal");
+  const imageApiDryRun = await fetchJson("/api/auxiliary/generate-image", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      commandCwd: runtimeDir,
+      provider: "venice",
+      prompt: "A compact logo requested as SVG for API fallback testing.",
+      format: "svg",
+      outputDir: "artifacts/images/api-svg-fallback",
+      outputStem: "api-logo.svg",
+      dryRun: true,
+    }),
+  });
+  if (!imageApiDryRun.ok || imageApiDryRun.requestedFormat !== "svg" || imageApiDryRun.actualFormat !== "png") {
+    throw new Error(`direct auxiliary image API did not return SVG-to-PNG fallback: ${JSON.stringify(imageApiDryRun)}`);
+  }
+  await fs.access(path.join(runtimeDir, "artifacts/images/api-svg-fallback/task_manifest.json"));
   if (config.preferences?.sandboxMode !== "docker-workspace") throw new Error("web did not default to docker workspace");
   if (config.preferences?.packageInstallPolicy !== "allow") throw new Error("web did not default to Docker package installs");
   if (config.preferences?.permissionMode !== "normal") throw new Error("web did not default to normal permission mode");
@@ -572,6 +589,7 @@ try {
           "POST /api/workspace/write",
           "POST /api/workspace/rename",
           "POST /api/workspace/delete",
+          "POST /api/auxiliary/generate-image",
           "/api/workspace/changes",
           "stale running status reconciliation",
           "/api/sessions/:id/artifacts",

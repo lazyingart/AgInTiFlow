@@ -723,7 +723,7 @@ export async function createPlan(client, config, state) {
           config.allowAuxiliaryTools
             ? `Auxiliary skills are enabled: ${listAuxiliarySkills()
                 .map((skill) => `${skill.id} via ${skill.toolName} (${skill.available ? "key available" : `needs ${skill.keyName}`})`)
-                .join(", ")}. For raster image generation requests, plan to use generate_image when a GRSAI or Venice image key is available; otherwise ask the user to run /auxiliary grsai, aginti login grsai, or aginti login venice.`
+                .join(", ")}. For raster image generation requests, plan to use generate_image when a GRSAI or Venice image key is available. generate_image is raster-only; if SVG/vector is requested, either create true SVG/LaTeX/HTML with file tools or use PNG fallback and report requestedFormat=svg, actualFormat=png. Otherwise ask the user to run /auxiliary grsai, aginti login grsai, or aginti login venice.`
             : "Auxiliary skills are disabled for this run.",
           config.allowWebSearch
             ? "web_search is available for lightweight snippets. web_research is available for auditable sourced research with persisted artifacts; use mode=snippets by default and mode=openai only when hosted OpenAI web research is needed and configured. Prefer these tools over opening a search engine in the browser."
@@ -1578,7 +1578,7 @@ export async function requestNextStep(client, config, messages) {
       function: {
         name: "generate_image",
         description:
-          "Generate a raster image artifact through optional GRS AI Nano Banana or Venice image-generation skills. Use for user requests that explicitly need a real image/photo/illustration/cover/poster/logo concept rather than SVG/code-native graphics. Saves prompt, redacted payload, manifest, and downloaded images in the workspace. If keys are missing, ask the user to run /auxiliary grsai, aginti login grsai, or aginti login venice.",
+          "Generate a raster image artifact through optional GRS AI Nano Banana or Venice image-generation skills. Use for user requests that explicitly need a real image/photo/illustration/cover/poster/logo concept rather than SVG/code-native graphics. If a caller requests SVG/vector through this tool, request PNG and report the SVG-to-PNG fallback; if true vector is required, write SVG/LaTeX/HTML deterministically with file tools instead. Saves prompt, redacted payload, manifest, and downloaded images in the workspace. If keys are missing, ask the user to run /auxiliary grsai, aginti login grsai, or aginti login venice.",
         parameters: {
           type: "object",
           properties: {
@@ -1590,6 +1590,11 @@ export async function requestNextStep(client, config, messages) {
             prompt: { type: "string", description: "Detailed image-generation prompt." },
             outputDir: { type: "string", description: "Workspace-relative output directory. Defaults to artifacts/images/<timestamp>." },
             outputStem: { type: "string", description: "Filename stem for downloaded images." },
+            format: {
+              type: "string",
+              enum: ["png", "webp", "svg", "jpeg", "jpg", "gif"],
+              description: "Requested output format. SVG/vector is not supported by generate_image and is returned as a PNG fallback with requestedFormat/actualFormat metadata.",
+            },
             aspectRatio: { type: "string", description: "Aspect ratio such as 1:1, 16:9, 2:3, or 3:2." },
             imageSize: { type: "string", description: "Image size such as 1K, 2K, or 4K." },
             model: { type: "string", description: "Image model. Defaults to nano-banana-2; Venice also supports models such as gpt-image-2, wan-2-7-text-to-image, qwen-image-2, and bria-bg-remover." },

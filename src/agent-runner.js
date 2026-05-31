@@ -629,7 +629,7 @@ async function createInitialState(config, sessionId) {
           config.allowAuxiliaryTools
             ? `Auxiliary skills are available: ${listAuxiliarySkills()
                 .map((skill) => `${skill.id} via ${skill.toolName} (${skill.available ? "key available" : `needs ${skill.keyName}`})`)
-                .join(", ")}. Use generate_image for real raster image/photo/illustration/cover/poster/logo requests when appropriate; if image keys are missing, ask the user to run /auxiliary grsai, aginti login grsai, or aginti login venice.`
+                .join(", ")}. Use generate_image for real raster image/photo/illustration/cover/poster/logo requests when appropriate. generate_image is raster-only; if SVG/vector is requested, either create true SVG/LaTeX/HTML with file tools or call generate_image with format=png and explicitly report requestedFormat=svg, actualFormat=png. If image keys are missing, ask the user to run /auxiliary grsai, aginti login grsai, or aginti login venice.`
             : "Auxiliary skills are disabled for this run.",
           config.allowWebSearch
             ? "web_search is available for lightweight snippets. web_research is available for sourced, persisted research artifacts; use domains for official-source constraints and mode=openai only when hosted OpenAI web research is needed and configured. Prefer these tools over browser search-engine navigation."

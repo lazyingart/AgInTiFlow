@@ -10,6 +10,7 @@ const DEFAULT_IMAGE_MODEL = "nano-banana-2";
 const DEFAULT_VENICE_IMAGE_MODEL = "nano-banana-2";
 const DEFAULT_ASPECT_RATIO = "1:1";
 const DEFAULT_IMAGE_SIZE = "2K";
+const DEFAULT_OUTPUT_FORMAT = "png";
 const TRANSIENT_HTTP_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const MAX_PROMPT_BYTES = 120_000;
 const MAX_REFERENCE_BYTES = 4_000_000;
@@ -42,9 +43,43 @@ function timestampSlug() {
 function safeStem(value = "image") {
   const stem = String(value || "image")
     .trim()
+    .replace(/\.(?:svg|png|jpe?g|webp|gif)$/i, "")
     .replace(/[^A-Za-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return stem || "image";
+}
+
+function normalizeOutputFormat(args = {}) {
+  const requested = String(args.outputFormat || args.format || DEFAULT_OUTPUT_FORMAT)
+    .trim()
+    .toLowerCase()
+    .replace(/^image\//, "");
+  if (requested === "svg" || requested === "svg+xml" || requested === "vector") {
+    return {
+      requestedFormat: requested === "svg+xml" ? "svg" : requested,
+      actualFormat: "png",
+      notice: "SVG/vector output is not supported by generate_image. A raster PNG is generated instead.",
+    };
+  }
+  if (requested === "webp") {
+    return {
+      requestedFormat: "webp",
+      actualFormat: "webp",
+      notice: "",
+    };
+  }
+  if (["jpg", "jpeg", "gif"].includes(requested)) {
+    return {
+      requestedFormat: requested,
+      actualFormat: "png",
+      notice: `${requested.toUpperCase()} output is not currently exposed by generate_image. A raster PNG is generated instead.`,
+    };
+  }
+  return {
+    requestedFormat: requested || DEFAULT_OUTPUT_FORMAT,
+    actualFormat: DEFAULT_OUTPUT_FORMAT,
+    notice: "",
+  };
 }
 
 function normalizeAspectRatio(value) {
@@ -305,7 +340,7 @@ function veniceBaseUrl(value = "") {
     .replace(/\/+$/, "");
 }
 
-async function generateVeniceImages({ prompt, args, target, outputStem, manifest, manifestPath, signal = null }) {
+async function generateVeniceImages({ prompt, args, target, outputStem, manifest, manifestPath, formatInfo, signal = null }) {
   const apiKey = veniceKey();
   if (!apiKey) {
     throw new Error("Missing VENICE_API_KEY. Run `aginti login venice` or `aginti keys set venice --stdin`.");
@@ -314,7 +349,7 @@ async function generateVeniceImages({ prompt, args, target, outputStem, manifest
   const model =
     String(args.model || process.env.AGINTI_AUX_MODEL || process.env.VENICE_IMAGE_MODEL || DEFAULT_VENICE_IMAGE_MODEL).trim() ||
     DEFAULT_VENICE_IMAGE_MODEL;
-  const format = String(args.format || "png").trim().toLowerCase() === "webp" ? "webp" : "png";
+  const format = formatInfo.actualFormat === "webp" ? "webp" : "png";
   const sizing = veniceSizingForModel(model, args);
   const payload = {
     model,
@@ -356,6 +391,9 @@ async function generateVeniceImages({ prompt, args, target, outputStem, manifest
   manifest.provider = "venice";
   manifest.host = base;
   manifest.model = model;
+  manifest.requestedFormat = formatInfo.requestedFormat;
+  manifest.actualFormat = format;
+  if (formatInfo.notice) manifest.formatNotice = formatInfo.notice;
   manifest.status = "succeeded";
   manifest.finishedAt = new Date().toISOString();
   manifest.downloadedFiles = downloads;
@@ -372,7 +410,10 @@ async function generateVeniceImages({ prompt, args, target, outputStem, manifest
     promptPath: path.posix.join(target.relativePath, "prompt.txt"),
     requestPayloadPath: path.posix.join(target.relativePath, "request_payload.redacted.json"),
     taskId: resultPayload.id ? String(resultPayload.id) : "",
-    summary: `${imagePaths.length} image(s) generated through Venice`,
+    requestedFormat: formatInfo.requestedFormat,
+    actualFormat: format,
+    formatNotice: formatInfo.notice,
+    summary: `${imagePaths.length} image(s) generated through Venice${formatInfo.notice ? ` (${formatInfo.notice})` : ""}`,
   };
 }
 
@@ -403,6 +444,7 @@ export async function generateImage(args = {}, config = {}) {
   }
 
   const provider = args.provider ? normalizeImageProvider(args.provider) : defaultImageProvider(config);
+  const formatInfo = normalizeOutputFormat(args);
   const host = provider === "venice" ? veniceBaseUrl(args.host) : String(args.host || DEFAULT_GRS_HOST).trim().replace(/\/+$/, "") || DEFAULT_GRS_HOST;
   const model =
     provider === "venice"
@@ -419,6 +461,7 @@ export async function generateImage(args = {}, config = {}) {
     webHook: "-1",
     shutProgress: Boolean(args.shutProgress),
   };
+  if (provider === "venice") payload.format = formatInfo.actualFormat;
 
   const redactedPayload = redactPayload(payload);
   redactedPayload.urls = references.map((item) => item.redacted);
@@ -433,6 +476,9 @@ export async function generateImage(args = {}, config = {}) {
     provider,
     host,
     model,
+    requestedFormat: formatInfo.requestedFormat,
+    actualFormat: formatInfo.actualFormat,
+    formatNotice: formatInfo.notice,
     outputDir: target.relativePath,
     promptFile: path.posix.join(target.relativePath, "prompt.txt"),
     requestPayloadRedacted: path.posix.join(target.relativePath, "request_payload.redacted.json"),
@@ -452,12 +498,15 @@ export async function generateImage(args = {}, config = {}) {
       promptPath: path.posix.join(target.relativePath, "prompt.txt"),
       requestPayloadPath: path.posix.join(target.relativePath, "request_payload.redacted.json"),
       imagePaths: [],
-      summary: "Prepared redacted image-generation payload without calling the provider.",
+      requestedFormat: formatInfo.requestedFormat,
+      actualFormat: formatInfo.actualFormat,
+      formatNotice: formatInfo.notice,
+      summary: `Prepared redacted image-generation payload without calling the provider.${formatInfo.notice ? ` ${formatInfo.notice}` : ""}`,
     };
   }
 
   if (provider === "venice") {
-    return generateVeniceImages({ prompt, args, target, outputStem, manifest, manifestPath, signal: config.abortSignal });
+    return generateVeniceImages({ prompt, args, target, outputStem, manifest, manifestPath, formatInfo, signal: config.abortSignal });
   }
 
   const apiKey = grsaiKey();
@@ -515,6 +564,9 @@ export async function generateImage(args = {}, config = {}) {
   }
 
   manifest.status = "succeeded";
+  manifest.requestedFormat = formatInfo.requestedFormat;
+  manifest.actualFormat = path.extname(imagePaths[0] || "").replace(/^\./, "") || formatInfo.actualFormat;
+  if (formatInfo.notice) manifest.formatNotice = formatInfo.notice;
   manifest.finishedAt = new Date().toISOString();
   manifest.downloadedFiles = downloads;
   await writeJson(manifestPath, manifest);
@@ -528,6 +580,9 @@ export async function generateImage(args = {}, config = {}) {
     promptPath: path.posix.join(target.relativePath, "prompt.txt"),
     requestPayloadPath: path.posix.join(target.relativePath, "request_payload.redacted.json"),
     taskId: String(taskId),
-    summary: `${imagePaths.length} image(s) generated`,
+    requestedFormat: formatInfo.requestedFormat,
+    actualFormat: manifest.actualFormat,
+    formatNotice: formatInfo.notice,
+    summary: `${imagePaths.length} image(s) generated${formatInfo.notice ? ` (${formatInfo.notice})` : ""}`,
   };
 }
