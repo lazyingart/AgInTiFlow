@@ -61,13 +61,13 @@ The current implementation is deliberately bounded:
 
 ## Auto Mode
 
-`/scs auto` and `--scs auto` are still available when a user wants cheaper routing for simple turns. Auto mode activates SCS for complex, risky, or long-running work. Signals include:
+`/scs auto` and `--scs auto` are the default for users who want cheap simple turns without losing strict validation on risky work. Auto mode activates SCS for high-risk, evidence-heavy, or long-running work. Signals include:
 
-- high smart-routing complexity score;
-- profiles such as code, app, Android/iOS, large-codebase, GitHub, maintenance, security, LaTeX, research, and supervision;
-- prompts mentioning multi-file work, regressions, builds, deployments, tmux, emulators, Docker, PDFs, or similar high-friction workflows.
+- very high smart-routing complexity score;
+- profiles such as app, Android/iOS, large-codebase, GitHub, maintenance, QA, security, supervision, pipeline, and website;
+- prompts mentioning failing tests, repo-wide changes, browser uploads, releases, deployments, tmux, emulators, Docker, PDFs, or similar high-friction workflows.
 
-Auto mode stays off for simple turns, but it is not the default.
+Auto mode is the default. It stays off for simple turns, uses the main model for moderate complexity, and activates SCS only for high-risk or evidence-heavy turns.
 
 ## Dynamic Step Budgets
 

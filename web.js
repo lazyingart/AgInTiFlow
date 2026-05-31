@@ -27,7 +27,7 @@ import {
   normalizePermissionMode,
   permissionModeForApprovalCategory,
 } from "./src/permission-modes.js";
-import { normalizeScsMode } from "./src/scs-controller.js";
+import { DEFAULT_SCS_MODE, normalizeScsMode } from "./src/scs-controller.js";
 import { normalizeDynamicStepsMode } from "./src/step-budget-controller.js";
 import {
   ensureProjectSessionStorage,
@@ -566,7 +566,7 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
       typeof body.allowMcpTools === "boolean" ? body.allowMcpTools : current.allowMcpTools !== false,
     allowParallelScouts:
       typeof body.allowParallelScouts === "boolean" ? body.allowParallelScouts : current.allowParallelScouts !== false,
-    enableScs: normalizeScsMode(body.enableScs || current.enableScs || process.env.AGINTI_SCS_MODE || "on"),
+    enableScs: normalizeScsMode(body.enableScs || current.enableScs || process.env.AGINTI_SCS_MODE || DEFAULT_SCS_MODE),
     dynamicSteps: normalizeDynamicStepsMode(body.dynamicSteps || current.dynamicSteps || process.env.AGINTI_DYNAMIC_STEPS || "auto"),
     veniceMode: typeof body.veniceMode === "boolean" ? body.veniceMode : current.veniceMode === true,
     parallelScoutCount:

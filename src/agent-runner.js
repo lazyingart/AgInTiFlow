@@ -43,6 +43,7 @@ import { isMcpBridgeTool } from "./mcp/policy.js";
 import { executeMcpBridgeTool } from "./mcp/tool-bridge.js";
 import { longJobStatus, startLongJob } from "./long-job-tools.js";
 import {
+  DEFAULT_SCS_MODE,
   buildSupervisorInstruction,
   createScsPlan,
   createScsReplan,
@@ -866,7 +867,7 @@ async function maybeExtendStepBudget({ client, config, state, store, observers, 
       runtimeDecision,
       stepBudget: serializeStepBudgetState(stepBudget),
     });
-    state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || "on", active: true };
+    state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || DEFAULT_SCS_MODE, active: true };
     state.meta.scs.budgetReviews = (state.meta.scs.budgetReviews || 0) + 1;
     state.meta.scs.lastStudentDecision = scsDecision;
     await store.appendEvent(`scs.student.${scsDecision.decision}`, {
@@ -969,7 +970,7 @@ async function requestScsReplan({ client, config, state, store, observers, decis
   if (!config.scsActive || !shouldRequestScsReplan(decision)) return null;
   state.meta.scs = state.meta.scs || {
     enabled: true,
-    mode: config.enableScs || "on",
+    mode: config.enableScs || DEFAULT_SCS_MODE,
     active: true,
     model: `${config.provider}/${config.model}`,
     phase: 1,
@@ -2368,12 +2369,12 @@ export async function runAgent(config) {
         await store.appendEvent("scs.plan.requested", {
           provider: config.provider,
           model: config.model,
-          mode: config.enableScs || "on",
+          mode: config.enableScs || DEFAULT_SCS_MODE,
         });
         observers.event("scs.plan.requested", {
           provider: config.provider,
           model: config.model,
-          mode: config.enableScs || "on",
+          mode: config.enableScs || DEFAULT_SCS_MODE,
         });
         const scsPlan = await createScsPlan(client, config, state, {
           events: await store.loadEvents(),
@@ -2444,7 +2445,7 @@ export async function runAgent(config) {
     } else if (config.scsActive && !state.meta?.scs?.supervisorInstructionInjected) {
       state.meta.scs = state.meta.scs || {
         enabled: true,
-        mode: config.enableScs || "on",
+        mode: config.enableScs || DEFAULT_SCS_MODE,
         active: true,
         model: `${config.provider}/${config.model}`,
         phase: 1,
@@ -2547,7 +2548,7 @@ export async function runAgent(config) {
     emitConsole(config, `Provider: ${config.provider}`, { kind: "meta" });
     emitConsole(config, `Model: ${config.model}`, { kind: "meta" });
     emitConsole(config, `Routing: ${config.routingMode} (${config.routeReason})`, { kind: "meta" });
-    if (config.scsActive) emitConsole(config, `SCS: ${config.enableScs || "on"} using main-model policy`, { kind: "meta" });
+    if (config.scsActive) emitConsole(config, `SCS: ${config.enableScs || DEFAULT_SCS_MODE} using main-model policy`, { kind: "meta" });
     emitConsole(config, `Workspace: ${config.commandCwd}`, { kind: "meta" });
     emitConsole(config, `Sessions: ${config.sessionsDir}`, { kind: "meta" });
     if (config.projectSessionsDir) emitConsole(config, `Project session index: ${config.projectSessionsDir}`, { kind: "meta" });
@@ -2731,7 +2732,7 @@ export async function runAgent(config) {
             taskProfile: config.taskProfile,
             goal: config.goal,
           });
-          state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || "on", active: true };
+          state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || DEFAULT_SCS_MODE, active: true };
           state.meta.scs.lastStudentDecision = decision;
           await store.appendEvent(`scs.student.${decision.decision}`, decision);
           observers.event(`scs.student.${decision.decision}`, {
@@ -2860,7 +2861,7 @@ export async function runAgent(config) {
               taskProfile: config.taskProfile,
               goal: config.goal,
             });
-            state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || "on", active: true };
+            state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || DEFAULT_SCS_MODE, active: true };
             state.meta.scs.lastStudentDecision = decision;
             await store.appendEvent(`scs.student.${decision.decision}`, decision);
             observers.event(`scs.student.${decision.decision}`, {
@@ -2940,7 +2941,7 @@ export async function runAgent(config) {
             taskProfile: config.taskProfile,
             goal: config.goal,
           });
-          state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || "on", active: true };
+          state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || DEFAULT_SCS_MODE, active: true };
           state.meta.scs.monitorReviews = (state.meta.scs.monitorReviews || 0) + 1;
           state.meta.scs.lastStudentDecision = decision;
           await store.appendEvent(`scs.student.${decision.decision}`, {
@@ -2992,7 +2993,7 @@ export async function runAgent(config) {
           taskProfile: config.taskProfile,
           goal: config.goal,
         });
-        state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || "on", active: true };
+        state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || DEFAULT_SCS_MODE, active: true };
         state.meta.scs.monitorReviews = (state.meta.scs.monitorReviews || 0) + 1;
         state.meta.scs.lastStudentDecision = decision;
         await store.appendEvent(`scs.student.${decision.decision}`, {

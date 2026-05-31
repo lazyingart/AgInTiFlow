@@ -37,6 +37,7 @@ import { handleSkillMeshCommand } from "./skillmesh.js";
 import { handleAapsCliCommand } from "./aaps-adapter.js";
 import { formatInstructionTemplateList, normalizeInstructionTemplate } from "./behavior-contract.js";
 import { applyPermissionMode, normalizePermissionMode } from "./permission-modes.js";
+import { DEFAULT_SCS_MODE } from "./scs-controller.js";
 import { ensureAgintiWebApp, readWebAppPreference, stopAgintiWebApp, writeWebAppPreference } from "./web-autostart.js";
 import { dockerHostInstallPlan, formatDockerSetupText, summarizeDockerSetup } from "./docker-setup.js";
 import { mcpCliCommand, formatMcpCliResult } from "./mcp/tool-bridge.js";
@@ -984,7 +985,7 @@ function agentDefaults(args) {
     allowWebSearch: args.allowWebSearch ?? true,
     allowMcpTools: args.allowMcpTools ?? true,
     allowParallelScouts: args.allowParallelScouts ?? true,
-    enableScs: args.enableScs || process.env.AGINTI_SCS_MODE || "on",
+    enableScs: args.enableScs || process.env.AGINTI_SCS_MODE || DEFAULT_SCS_MODE,
     parallelScoutCount: args.parallelScoutCount || (Number.isFinite(envScoutCount) && envScoutCount > 0 ? envScoutCount : 3),
     sandboxMode: args.sandboxMode || envSandboxMode || permissionDefaults.sandboxMode || "docker-workspace",
     packageInstallPolicy: args.packageInstallPolicy || envPackageInstallPolicy || permissionDefaults.packageInstallPolicy || "allow",

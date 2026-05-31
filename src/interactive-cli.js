@@ -35,7 +35,7 @@ import {
   setSkillMeshMode,
   skillMeshModeChoices,
 } from "./skillmesh.js";
-import { normalizeScsMode } from "./scs-controller.js";
+import { DEFAULT_SCS_MODE, normalizeScsMode } from "./scs-controller.js";
 import { formatAapsResult, runAapsAction } from "./aaps-adapter.js";
 import { formatInstructionTemplateList, normalizeInstructionTemplate } from "./behavior-contract.js";
 import {
@@ -2658,7 +2658,7 @@ function createState(args = {}) {
     allowWebSearch: args.allowWebSearch ?? true,
     allowMcpTools: args.allowMcpTools ?? true,
     allowParallelScouts: args.allowParallelScouts ?? true,
-    enableScs: normalizeScsMode(args.enableScs || process.env.AGINTI_SCS_MODE || "on"),
+    enableScs: normalizeScsMode(args.enableScs || process.env.AGINTI_SCS_MODE || DEFAULT_SCS_MODE),
     parallelScoutCount: args.parallelScoutCount || 3,
     allowWrapperTools: args.allowWrapperTools ?? isWrapperAvailable(args.preferredWrapper || "codex"),
     allowDestructive: args.allowDestructive ?? permissionDefaults.allowDestructive ?? false,

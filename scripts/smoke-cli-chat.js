@@ -795,12 +795,12 @@ try {
     throw new Error("interactive /review did not launch the bounded review workflow");
   }
   const scsDefaultStatusResult = await runChat("/scs status\n");
-  if (!scsDefaultStatusResult.stdout.includes("SCS mode: on")) {
-    throw new Error("interactive /scs status did not show default on mode");
+  if (!scsDefaultStatusResult.stdout.includes("SCS mode: auto")) {
+    throw new Error("interactive /scs status did not show default auto mode");
   }
   const statusFooterResult = await runChat("/status\n");
   if (
-    !statusFooterResult.stdout.includes(`cwd=${tempRoot} scs=on aaps=off venice=off`) ||
+    !statusFooterResult.stdout.includes(`cwd=${tempRoot} scs=auto aaps=off venice=off`) ||
     !statusFooterResult.stdout.includes("permission=")
   ) {
     throw new Error("interactive /status did not include scs/aaps/venice mode state on the cwd line");

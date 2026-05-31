@@ -6,8 +6,9 @@ import { projectPaths } from "./project.js";
 import { deleteSessionIndex, renameSessionIndex, upsertSessionIndex } from "./session-index.js";
 import { loadDatabaseSync } from "./sqlite.js";
 import { permissionModeDefaults } from "./permission-modes.js";
+import { DEFAULT_SCS_MODE } from "./scs-controller.js";
 
-const PREFERENCES_SCHEMA_VERSION = 10;
+const PREFERENCES_SCHEMA_VERSION = 11;
 
 function jsonStatePath(dbPath) {
   return dbPath.replace(/\.sqlite$/i, ".json");
@@ -71,7 +72,7 @@ function defaultPreferences(baseDir) {
     allowAuxiliaryTools: true,
     allowWebSearch: true,
     allowParallelScouts: true,
-    enableScs: process.env.AGINTI_SCS_MODE || "on",
+    enableScs: process.env.AGINTI_SCS_MODE || DEFAULT_SCS_MODE,
     dynamicSteps: process.env.AGINTI_DYNAMIC_STEPS || "auto",
     veniceMode: false,
     parallelScoutCount: 3,
@@ -226,7 +227,7 @@ export class WebDatabase {
           preferences.allowOutsideWorkspaceFileTools = permissions.allowOutsideWorkspaceFileTools;
         }
         if ((parsed.preferencesSchemaVersion || 1) < 9) {
-          preferences.enableScs = preferences.enableScs || process.env.AGINTI_SCS_MODE || "on";
+          preferences.enableScs = preferences.enableScs || process.env.AGINTI_SCS_MODE || DEFAULT_SCS_MODE;
           preferences.dynamicSteps = preferences.dynamicSteps || process.env.AGINTI_DYNAMIC_STEPS || "auto";
         }
         if ((parsed.preferencesSchemaVersion || 1) < 10) {
@@ -242,6 +243,9 @@ export class WebDatabase {
             preferences.mainProvider = "deepseek";
             preferences.mainModel = "deepseek-v4-pro";
           }
+        }
+        if ((parsed.preferencesSchemaVersion || 1) < 11 && !process.env.AGINTI_SCS_MODE && (parsed.enableScs || preferences.enableScs) === "on") {
+          preferences.enableScs = DEFAULT_SCS_MODE;
         }
         this.savePreferences(preferences);
       }

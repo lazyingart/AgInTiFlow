@@ -153,7 +153,7 @@ aginti --language de
 | Save provider keys | `aginti auth`, `/auth`, `/login` |
 | Review current repo | `/review [focus]` |
 | Toggle SCS quality gate | `/scs` |
-| Use SCS only for complex work | `/scs auto` or `aginti --scs auto "task"` |
+| Keep default auto SCS routing | `/scs auto` or `aginti --scs auto "task"` |
 | Disable SCS for simple work | `/scs off` or `aginti --no-scs "task"` |
 | Control dynamic step budgets | `--dynamic-steps auto\|on\|off` |
 | Work with AAPS workflows | `aginti aaps status`, `/aaps validate` |

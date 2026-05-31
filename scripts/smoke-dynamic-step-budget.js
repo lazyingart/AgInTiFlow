@@ -218,7 +218,8 @@ try {
       sessionId: "dynamic-step-budget-smoke",
     }
   );
-  assert(config.enableScs === "on", "runtime config should default SCS mode to on");
+  assert(config.enableScs === "auto", "runtime config should default SCS mode to auto");
+  assert(config.scsActive === false, "simple mock write should not activate SCS in auto mode");
   const run = await runAgent(config);
   assert(!run.stopped, "mock run stopped instead of using dynamic extension");
   const written = await fs.readFile(path.join(workspace, "notes/dynamic-budget.md"), "utf8");

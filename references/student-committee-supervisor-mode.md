@@ -187,7 +187,7 @@ Recommended modes:
 | --- | --- |
 | `off` | Current behavior. |
 | `on` | SCS gates all non-trivial work in the session. |
-| `auto` | SCS only activates for complex tasks, write actions, multi-step shell work, GitHub, system maintenance, Android/iOS, LaTeX/PDF, and long-running tasks. |
+| `auto` | Default. Simple turns stay linear, moderate tasks may use the main model without SCS, and SCS activates for high-risk/evidence-heavy work such as failing builds, repo-wide edits, GitHub/release work, browser uploads, system maintenance, Android/iOS, LaTeX/PDF compilation, and long-running supervision. |
 
 `/scs` should toggle SCS on/off in interactive CLI. `/scs auto` keeps the mature complex-task gate for users who want quality control without paying the SCS cost on simple turns.
 

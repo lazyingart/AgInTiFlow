@@ -1,6 +1,6 @@
 # Dynamic Step Budget And SCS Auto Routing
 
-This note documents the implemented design for dynamic `maxSteps` extension and SCS routing. SCS now defaults to `on`; auto routing remains available with `--scs auto` or `/scs auto` when a user wants SCS only for complex turns.
+This note documents the implemented design for dynamic `maxSteps` extension and SCS routing. SCS defaults to `auto`: simple turns use the fast route, moderate work can use the main model without heavy validation, and high-risk evidence-bearing work activates the Student-Committee-Supervisor gates.
 
 ## Current State
 
@@ -15,11 +15,11 @@ Relevant paths:
 - `src/step-budget-controller.js`: owns deterministic progress/blocker checks, caps, serialization, and extension application.
 - `src/scs-controller.js`: supports `off`, `on`, `auto`, and the SCS student step-budget gate.
 
-SCS auto is supported but is not the default:
+SCS auto is the default:
 
 - CLI: `--scs auto`.
 - Interactive: `/scs auto`.
-- Config: `enableScs: "on"` by default, or `"auto"` when explicitly requested.
+- Config: `enableScs: "auto"` by default, or `"on"`/`"off"` when explicitly requested.
 - Router policy: `shouldActivateScs("auto", { goal, taskProfile, complexityScore })`.
 - Active model policy: when SCS is active, committee/student/supervisor use the main model.
 
@@ -86,11 +86,11 @@ SCS mode allows a slightly larger budget because the student gate is stricter:
 
 ### SCS Auto Mode
 
-`/scs auto` means the router may activate SCS for a specific turn. Signals include:
+`/scs auto` means the router may activate SCS for a specific turn. It deliberately has a higher bar than smart model routing, so a turn can use the main model without paying SCS overhead. Signals include:
 
-- high smart-routing complexity score;
-- high-friction profiles such as Android, app, code, large-codebase, GitHub, maintenance, QA, research, review, security, supervision, or website;
-- prompt language such as debug, failing, migration, emulator, deploy, PDF, refactor, monitor, or long-running.
+- very high smart-routing complexity score;
+- high-friction profiles such as Android, app, large-codebase, GitHub, maintenance, QA, security, supervision, pipeline, or website;
+- prompt language such as failing tests, fix the build, migration, deploy, browser automation, upload, PDF compilation, publish, monitor, or long-running.
 
 If SCS auto activates, dynamic step extension uses the SCS student gate. If SCS auto does not activate, dynamic step extension uses the normal deterministic gate.
 
@@ -212,7 +212,7 @@ Defaults:
 Routing semantics:
 
 - `/scs off`: never use SCS; dynamic budget uses normal deterministic monitoring if enabled.
-- `/scs on`: always use SCS; this is the default, and dynamic budget uses the student budget gate.
+- `/scs on`: always use SCS, and dynamic budget uses the student budget gate.
 - `/scs auto`: router decides per run; if activated, dynamic budget uses the student gate.
 
 For observability, state preserves:

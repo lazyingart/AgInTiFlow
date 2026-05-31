@@ -14,40 +14,38 @@ import {
 } from "./scs-evidence.js";
 
 export const SCS_MODES = ["off", "on", "auto"];
+export const DEFAULT_SCS_MODE = "auto";
 
-const COMPLEX_AUTO_PROFILES = new Set([
+const SCS_AUTO_PROFILES = new Set([
   "android",
   "app",
-  "book",
-  "code",
   "codebase",
   "database",
   "devops",
   "github",
   "ios",
   "large-codebase",
-  "latex",
   "maintenance",
-  "novel",
-  "paper",
+  "pipeline",
   "qa",
-  "research",
-  "review",
   "security",
   "supervision",
   "website",
-  "writing",
 ]);
 
-const COMPLEX_AUTO_HINTS = [
-  /\b(complex|complicated|large|multi[- ]file|cross[- ]file|repo[- ]wide|workspace[- ]wide)\b/i,
-  /\b(implement|refactor|debug|failing|regression|root cause|test|build|compile|migrate)\b/i,
-  /\b(android|ios|gradle|xcode|docker|systemd|github|pull request|release|deploy|latex|pdf)\b/i,
-  /\b(supervise|monitor|long[- ]running|resume|tmux|simulator|emulator)\b/i,
+const SCS_AUTO_HINTS = [
+  /\b(large|big|complex|complicated)\s+(repo|repository|codebase|project|task|migration|refactor)\b/i,
+  /\b(multi[- ]file|cross[- ]file|repo[- ]wide|workspace[- ]wide)\b/i,
+  /\b(root cause|regression|failing tests?|fix the build|make it pass|self[- ]debug|test[- ]debug[- ]validate|tdv)\b/i,
+  /\b(release|publish|deploy|migration|database migration|schema migration|production|rollback|ci|github|pull request)\b/i,
+  /\b(android|ios|gradle|xcode|docker|systemd|kubernetes|nginx|postgres|redis|toolchain|permission denied)\b/i,
+  /\b(supervise|monitor|long[- ]running|background|resume|tmux|simulator|emulator|pipeline|watchdog)\b/i,
   /\b(browser|web[- ]?ui|website|chrome|chromedriver|cdp|devtools|playwright|selenium|puppeteer)\b/i,
-  /\b(upload|attach|asset library|submit|publish|poll|download|reference video|reference image)\b/i,
-  /\b(novel|book|chapter|manuscript|screenplay|story bible|long[- ]form|research paper)\b/i,
-  /浏览器|网页|上传|提交|发布|素材库|资产库|参考图|参考视频|按钮|登录|验证码|积分/,
+  /\b(upload|attach|asset library|submit|poll|download|reference video|reference image|visual evidence)\b/i,
+  /\b(latex|pdflatex|latexmk|compile)\b.{0,80}\b(pdf|paper|manuscript|report)\b/i,
+  /\b(write|create|generate|produce)\b.{0,80}\b(pdf|compiled artifact|zip|dataset|database|csv|json|figure|plot|report)\b/i,
+  /\b(commit|push|npm publish|trusted publishing|release workflow|install globally)\b/i,
+  /浏览器|网页|上传|提交|发布|素材库|资产库|参考图|参考视频|按钮|登录|验证码|积分|编译|部署|回滚/,
 ];
 
 function compact(value = "", limit = 1200) {
@@ -181,9 +179,9 @@ export function shouldActivateScs(mode = "off", context = {}) {
 
   const profile = String(context.taskProfile || "").toLowerCase();
   const goal = String(context.goal || "");
-  if (Number(context.complexityScore || 0) >= 3) return true;
-  if (COMPLEX_AUTO_PROFILES.has(profile)) return true;
-  return COMPLEX_AUTO_HINTS.some((hint) => hint.test(goal));
+  if (SCS_AUTO_PROFILES.has(profile)) return true;
+  if (SCS_AUTO_HINTS.some((hint) => hint.test(goal))) return true;
+  return Number(context.complexityScore || 0) >= 5;
 }
 
 function fallbackPlan(goal = "") {
@@ -738,7 +736,7 @@ async function createScsPhase(client, config, state, context = {}, options = {})
 
   const scs = {
     enabled: true,
-    mode: config.enableScs || "on",
+    mode: config.enableScs || DEFAULT_SCS_MODE,
     active: true,
     model: `${config.provider}/${config.model}`,
     phase,

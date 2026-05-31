@@ -1402,7 +1402,7 @@ function syncQuickModeControls() {
   if (aapsModeToggle) aapsModeToggle.checked = (taskProfileField?.value || "auto") === "aaps";
   if (veniceModeToggle) veniceModeToggle.checked = quickVeniceModeActive;
   if (quickModeStatusEl) {
-    const scs = enableScsField?.value || "on";
+    const scs = enableScsField?.value || "auto";
     const profile = taskProfileField?.value || "auto";
     const route = `${routeProviderField?.value || "deepseek"}/${fieldValue(routeModelField) || "auto"}`;
     const main = `${mainProviderField?.value || "deepseek"}/${fieldValue(mainModelField) || "auto"}`;
@@ -1451,8 +1451,8 @@ function applyVeniceMode(enabled) {
   syncQuickModeControls();
 }
 
-function applyScsMode(mode = enableScsField?.value || "on") {
-  if (enableScsField) enableScsField.value = ["on", "auto", "off"].includes(mode) ? mode : "on";
+function applyScsMode(mode = enableScsField?.value || "auto") {
+  if (enableScsField) enableScsField.value = ["on", "auto", "off"].includes(mode) ? mode : "auto";
   if (allowParallelScoutsField && enableScsField?.value === "on") {
     allowParallelScoutsField.checked = false;
   }
@@ -1707,7 +1707,7 @@ function formPayload() {
     allowWebSearch: allowWebSearchField?.checked ?? true,
     allowMcpTools: allowMcpToolsField?.checked ?? true,
     allowParallelScouts: allowParallelScoutsField?.checked ?? true,
-    enableScs: enableScsField?.value || "on",
+    enableScs: enableScsField?.value || "auto",
     dynamicSteps: dynamicStepsField?.value || "auto",
     veniceMode: quickVeniceModeActive,
     parallelScoutCount: Math.min(Math.max(Number(parallelScoutCountField?.value) || 3, 1), 10),
@@ -3818,7 +3818,7 @@ async function loadConfig() {
   if (allowWebSearchField) allowWebSearchField.checked = prefs.allowWebSearch ?? true;
   if (allowMcpToolsField) allowMcpToolsField.checked = prefs.allowMcpTools ?? true;
   if (allowParallelScoutsField) allowParallelScoutsField.checked = prefs.allowParallelScouts ?? true;
-  if (enableScsField) enableScsField.value = prefs.enableScs || "on";
+  if (enableScsField) enableScsField.value = prefs.enableScs || "auto";
   if (dynamicStepsField) dynamicStepsField.value = prefs.dynamicSteps || "auto";
   if (parallelScoutCountField) parallelScoutCountField.value = String(prefs.parallelScoutCount || 3);
   allowWrapperToolsField.checked = prefs.allowWrapperTools ?? false;

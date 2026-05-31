@@ -7,7 +7,7 @@ import { loadProjectEnv, projectPaths, resolveProjectRoot } from "./project.js";
 import { normalizeTaskProfile } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 import { resolveLanguage } from "./i18n.js";
-import { normalizeScsMode, shouldActivateScs } from "./scs-controller.js";
+import { DEFAULT_SCS_MODE, normalizeScsMode, shouldActivateScs } from "./scs-controller.js";
 import { applyPermissionMode, normalizePermissionMode } from "./permission-modes.js";
 import { normalizeDynamicStepsMode } from "./step-budget-controller.js";
 
@@ -78,7 +78,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     auxiliaryModel: overrides.auxiliaryModel || args.auxiliaryModel || process.env.AGINTI_AUX_MODEL || "",
   });
 
-  const scsMode = normalizeScsMode(overrides.enableScs ?? args.enableScs ?? process.env.AGINTI_SCS_MODE ?? "on");
+  const scsMode = normalizeScsMode(overrides.enableScs ?? args.enableScs ?? process.env.AGINTI_SCS_MODE ?? DEFAULT_SCS_MODE);
   const scsActive = shouldActivateScs(scsMode, {
     goal: args.goal || "",
     taskProfile,

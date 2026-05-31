@@ -16,9 +16,11 @@ import {
   buildSupervisorInstruction,
   deterministicPlanActionContradiction,
   reviewScsFinish,
+  shouldActivateScs,
   shouldRequestScsReplan,
 } from "../src/scs-controller.js";
 import { buildScsEvidenceLedger, deriveScsTaskContract, evaluateScsEvidence } from "../src/scs-evidence.js";
+import { resolveRuntimeConfig } from "../src/config.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -115,6 +117,86 @@ const fastRoute = selectModelRoute({
   routeModel: "deepseek-v4-flash",
 });
 assert(fastRoute.model === "deepseek-v4-flash", "fast route did not use route model override");
+
+const simpleSmartRoute = selectModelRoute({
+  routingMode: "smart",
+  provider: "deepseek",
+  goal: "say hello",
+  taskProfile: "auto",
+});
+assert(simpleSmartRoute.model === "deepseek-v4-flash", "simple smart route should use the route model");
+assert(
+  !shouldActivateScs("auto", {
+    goal: "say hello",
+    taskProfile: "auto",
+    complexityScore: simpleSmartRoute.complexityScore,
+  }),
+  "SCS auto should stay inactive for simple turns"
+);
+
+const moderateSmartRoute = selectModelRoute({
+  routingMode: "smart",
+  provider: "deepseek",
+  goal: "implement a focused refactor design for one module",
+  taskProfile: "auto",
+});
+assert(moderateSmartRoute.model === "deepseek-v4-pro", "moderate smart route should use the main model");
+assert(
+  !shouldActivateScs("auto", {
+    goal: "implement a focused refactor design for one module",
+    taskProfile: "auto",
+    complexityScore: moderateSmartRoute.complexityScore,
+  }),
+  "SCS auto should not gate every main-model turn"
+);
+
+const highRiskSmartRoute = selectModelRoute({
+  routingMode: "smart",
+  provider: "deepseek",
+  goal: "debug failing tests and fix the build in a large repo, then commit and push",
+  taskProfile: "auto",
+});
+assert(highRiskSmartRoute.model === "deepseek-v4-pro", "high-risk smart route should use the main model");
+assert(
+  shouldActivateScs("auto", {
+    goal: "debug failing tests and fix the build in a large repo, then commit and push",
+    taskProfile: "auto",
+    complexityScore: highRiskSmartRoute.complexityScore,
+  }),
+  "SCS auto should activate for high-risk evidence-bearing work"
+);
+assert(
+  !shouldActivateScs("auto", { goal: "explain this function", taskProfile: "code", complexityScore: 0 }),
+  "code profile alone should not force SCS auto"
+);
+
+const simpleRuntimeConfig = resolveRuntimeConfig({
+  goal: "say hello",
+  provider: "deepseek",
+  routingMode: "smart",
+  taskProfile: "auto",
+});
+assert(simpleRuntimeConfig.enableScs === "auto", "runtime config should default SCS mode to auto");
+assert(simpleRuntimeConfig.scsActive === false, "simple runtime config should not activate SCS");
+assert(simpleRuntimeConfig.model === "deepseek-v4-flash", "simple runtime config should use route model");
+
+const moderateRuntimeConfig = resolveRuntimeConfig({
+  goal: "implement a focused refactor design for one module",
+  provider: "deepseek",
+  routingMode: "smart",
+  taskProfile: "auto",
+});
+assert(moderateRuntimeConfig.scsActive === false, "moderate main-model work should not automatically activate SCS");
+assert(moderateRuntimeConfig.model === "deepseek-v4-pro", "moderate runtime config should use main model");
+
+const highRiskRuntimeConfig = resolveRuntimeConfig({
+  goal: "debug failing tests and fix the build in a large repo, then commit and push",
+  provider: "deepseek",
+  routingMode: "smart",
+  taskProfile: "auto",
+});
+assert(highRiskRuntimeConfig.scsActive === true, "high-risk runtime config should activate SCS");
+assert(highRiskRuntimeConfig.model === "deepseek-v4-pro", "SCS runtime config should use main model");
 
 assert(MODEL_PROVIDER_GROUPS["venice-gpt"].provider === "venice", "venice-gpt group missing");
 assert(modelsForProviderGroup("venice").some((item) => item.id === "venice-uncensored-1-2"), "venice group missing Venice 1.2");
