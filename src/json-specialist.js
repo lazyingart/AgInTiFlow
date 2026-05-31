@@ -4,7 +4,7 @@ import { getProviderDefaults } from "./model-routing.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
 
 const MAX_INLINE_PREVIEW = 1600;
-const JSON_PROVIDERS = new Set(["openai", "deepseek", "qwen", "venice", "mock"]);
+const JSON_PROVIDERS = new Set(["openai", "openrouter", "deepseek", "qwen", "venice", "mock"]);
 
 function compact(value = "", limit = MAX_INLINE_PREVIEW) {
   const text = redactSensitiveText(String(value || "").trim());
@@ -219,7 +219,7 @@ function attemptsForRequest(request, provider) {
   if (request.responseFormat === "prompt") return ["prompt"];
   if (request.responseFormat === "json_schema") return ["json_schema", "prompt"];
   if (request.responseFormat === "json_object") return ["json_object", "prompt"];
-  if (["openai", "deepseek", "qwen"].includes(provider)) return ["json_schema", "json_object", "prompt"];
+  if (["openai", "openrouter", "deepseek", "qwen"].includes(provider)) return ["json_schema", "json_object", "prompt"];
   return ["json_object", "prompt"];
 }
 

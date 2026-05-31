@@ -18,9 +18,20 @@ export function createClient(config) {
     };
   }
 
+  const defaultHeaders =
+    config.provider === "openrouter"
+      ? Object.fromEntries(
+          Object.entries({
+            "HTTP-Referer": process.env.OPENROUTER_HTTP_REFERER || process.env.OPENROUTER_SITE_URL || "https://flow.lazying.art",
+            "X-Title": process.env.OPENROUTER_APP_TITLE || "AgInTiFlow",
+          }).filter(([, value]) => String(value || "").trim())
+        )
+      : undefined;
+
   return new OpenAI({
     apiKey: config.apiKey,
     baseURL: config.baseURL,
+    ...(defaultHeaders ? { defaultHeaders } : {}),
   });
 }
 
@@ -141,7 +152,7 @@ export function usesTextToolProtocol(config = {}) {
 }
 
 function shouldRetryWithTextToolProtocol(error, config = {}) {
-  if (config.provider !== "venice") return false;
+  if (config.provider !== "venice" && config.provider !== "openrouter") return false;
   const message = [
     error?.message,
     error?.error?.message,
@@ -817,7 +828,7 @@ export async function requestNextStep(client, config, messages) {
             maxTokens: { type: "integer", description: "Maximum completion tokens for the JSON specialist call." },
             provider: {
               type: "string",
-              enum: ["deepseek", "openai", "qwen", "venice", "mock"],
+              enum: ["deepseek", "openai", "openrouter", "qwen", "venice", "mock"],
               description: "Optional provider override. Defaults to AGINTI_JSON_PROVIDER or current provider.",
             },
             model: { type: "string", description: "Optional model override. Defaults to AGINTI_JSON_MODEL or current model." },
@@ -987,7 +998,7 @@ export async function requestNextStep(client, config, messages) {
             temperature: { type: "number", description: "Optional writer temperature. Creative default is higher; academic default is lower." },
             provider: {
               type: "string",
-              enum: ["deepseek", "openai", "qwen", "venice", "mock"],
+              enum: ["deepseek", "openai", "openrouter", "qwen", "venice", "mock"],
               description: "Optional provider override for the isolated writer route. Defaults to AGINTI_WRITING_PROVIDER or current provider.",
             },
             model: { type: "string", description: "Optional model override for the isolated writer route. Defaults to AGINTI_WRITING_MODEL or current model." },

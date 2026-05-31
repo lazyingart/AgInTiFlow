@@ -25,6 +25,8 @@ aginti --list-routes
 
 # one-shot overrides
 aginti --route-model deepseek-v4-flash --main-model deepseek-v4-pro "fix this project"
+aginti --provider openrouter --model openrouter/auto --routing manual "try a gateway route"
+aginti --provider openrouter --model anthropic/claude-sonnet-4.6 --routing manual "draft a design review"
 aginti --provider venice --model venice-uncensored-1-2 --routing manual "draft a note"
 aginti --spare-provider openai --spare-model gpt-5.4 --spare-reasoning medium "review this design"
 aginti --allow-wrappers --wrapper codex --wrapper-model gpt-5.5 "patch this bug"
@@ -63,6 +65,13 @@ Provider families:
 | DeepSeek | `deepseek-v4-flash`, `deepseek-v4-pro` |
 | Venice | `venice-uncensored-1-2`, `venice-uncensored`, `gemma-4-uncensored` |
 | OpenAI | `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5.2`; each has low/medium/high/xhigh reasoning |
+| OpenRouter | `openrouter/auto`, `openrouter/pareto-code`, `openrouter/free` |
+| OpenRouter OpenAI | `openai/gpt-5.5`, `openai/gpt-5.4`, `openai/gpt-5.4-mini`, `openai/gpt-4o` |
+| OpenRouter Anthropic | Claude routes such as `anthropic/claude-sonnet-4.6`, `anthropic/claude-opus-4.7`, `anthropic/claude-opus-4.8-fast` |
+| OpenRouter Google | Gemini/Gemma routes such as `google/gemini-3.5-flash`, `google/gemini-3.1-flash-lite`, `google/gemma-4-31b-it` |
+| OpenRouter DeepSeek | `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro`, `deepseek/deepseek-r1-0528` |
+| OpenRouter Qwen | Qwen routes such as `qwen/qwen3.7-max`, `qwen/qwen3.6-flash`, `qwen/qwen3.6-plus` |
+| OpenRouter Meta/Mistral/Moonshot/xAI | `meta-llama/llama-4-maverick`, `mistralai/mistral-medium-3-5`, `moonshotai/kimi-k2.6`, `x-ai/grok-4.3` |
 | Venice GPT | GPT-family Venice routes such as `openai-gpt-55`, `openai-gpt-54`, `openai-gpt-54-mini`, `openai-gpt-53-codex`, `openai-gpt-52` |
 | Venice Gemma | Gemma instruct routes such as `google-gemma-4-31b-it`, `google-gemma-4-26b-a4b-it`, `google-gemma-3-27b-it` |
 | Venice Claude | Claude Sonnet/Opus routes such as `claude-sonnet-4-6`, `claude-opus-4-7`, `claude-opus-4-6` |
@@ -96,6 +105,16 @@ It keeps smart routing enabled. If the Venice key is missing, run `/auth venice`
 | --- | --- | --- |
 | `deepseek` | DeepSeek | Default route/main because V4 Flash and V4 Pro are cheap and strong. |
 | `openai` | OpenAI | Spare/frontier checks, Codex-family work, and explicit manual routes. |
+| `openrouter` | OpenRouter | OpenAI-compatible gateway with auto/free/code routers. |
+| `openrouter-openai` | OpenRouter | OpenAI-family models through OpenRouter. |
+| `openrouter-anthropic` | OpenRouter | Claude-family models through OpenRouter. |
+| `openrouter-google` | OpenRouter | Gemini/Gemma models through OpenRouter. |
+| `openrouter-deepseek` | OpenRouter | DeepSeek models through OpenRouter. |
+| `openrouter-qwen` | OpenRouter | Qwen models through OpenRouter. |
+| `openrouter-meta` | OpenRouter | Meta Llama models through OpenRouter. |
+| `openrouter-mistral` | OpenRouter | Mistral models through OpenRouter. |
+| `openrouter-moonshot` | OpenRouter | Moonshot/Kimi models through OpenRouter. |
+| `openrouter-xai` | OpenRouter | xAI Grok models through OpenRouter. |
 | `qwen` | Qwen | Chinese and general-purpose OpenAI-compatible tasks. |
 | `venice` | Venice | Venice-native text shortcuts: Venice 1.2, Venice 1.1, and Gemma 4 Uncensored. |
 | `venice-gpt` | Venice | GPT-family models through Venice. |
@@ -118,8 +137,10 @@ Keys are set per project and stored only in ignored `.aginti/.env`:
 
 ```bash
 aginti auth
+aginti auth openrouter
 aginti auth venice
 aginti keys status
+printf '%s' "$OPENROUTER_API_KEY" | aginti keys set openrouter --stdin
 printf '%s' "$VENICE_API_KEY" | aginti keys set venice --stdin
 ```
 

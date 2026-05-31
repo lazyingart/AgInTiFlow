@@ -65,16 +65,18 @@
           <div>
             <strong data-i18n="setupTitle">Provider setup</strong>
             <p class="subtle" data-i18n="setupHelp">
-              DeepSeek/OpenAI/Qwen/Venice keys are missing. Use mock mode, export an env var, or save a project-local key.
+              DeepSeek/OpenAI/OpenRouter/Qwen/Venice keys are missing. Use mock mode, export an env var, or save a project-local key.
             </p>
             <p class="subtle" data-i18n="setupEnvHelp">
-              Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, QWEN_API_KEY, VENICE_API_KEY, or LLM_API_KEY. Mock mode remains available for local tests.
+              Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, QWEN_API_KEY, VENICE_API_KEY, or LLM_API_KEY. Mock mode remains available for local tests.
             </p>
             <p class="subtle key-links">
               <span data-i18n="setupKeyLinksLabel">Get keys:</span>
               <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer" data-i18n="deepseekKeyLink">DeepSeek API keys</a>
               <span aria-hidden="true">·</span>
               <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer" data-i18n="openaiKeyLink">OpenAI API keys</a>
+              <span aria-hidden="true">·</span>
+              <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noreferrer">OpenRouter API keys</a>
               <span aria-hidden="true">·</span>
               <a href="https://venice.ai" target="_blank" rel="noreferrer">Venice API</a>
             </p>
@@ -85,6 +87,7 @@
               <select id="setup-provider">
                 <option value="deepseek">DeepSeek</option>
                 <option value="openai">OpenAI</option>
+                <option value="openrouter">OpenRouter</option>
                 <option value="qwen">Qwen</option>
                 <option value="venice">Venice</option>
                 <option value="grsai">GRS AI image</option>
@@ -132,6 +135,7 @@
             <select id="provider" name="provider">
               <option value="deepseek">DeepSeek</option>
               <option value="openai">OpenAI</option>
+              <option value="openrouter">OpenRouter</option>
               <option value="qwen">Qwen</option>
               <option value="venice">Venice</option>
               <option value="mock" data-i18n="mockProviderOption">Mock local</option>
@@ -414,6 +418,7 @@
               <select id="routeProvider" name="routeProvider">
                 <option value="deepseek">DeepSeek</option>
                 <option value="openai">OpenAI</option>
+                <option value="openrouter">OpenRouter</option>
                 <option value="qwen">Qwen</option>
                 <option value="venice">Venice</option>
                 <option value="mock">Mock</option>
@@ -427,6 +432,7 @@
               <select id="mainProvider" name="mainProvider">
                 <option value="deepseek">DeepSeek</option>
                 <option value="openai">OpenAI</option>
+                <option value="openrouter">OpenRouter</option>
                 <option value="qwen">Qwen</option>
                 <option value="venice">Venice</option>
               </select>
@@ -438,6 +444,7 @@
               <span>Spare</span>
               <select id="spareProvider" name="spareProvider">
                 <option value="openai">OpenAI</option>
+                <option value="openrouter">OpenRouter</option>
                 <option value="deepseek">DeepSeek</option>
                 <option value="qwen">Qwen</option>
                 <option value="venice">Venice</option>

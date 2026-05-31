@@ -164,6 +164,7 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
     capability("docker", Boolean(dockerStatus?.dockerAvailable), dockerStatus || {}),
     capability("deepseek-key", keyStatus.deepseek, { envVars: keyStatus.envVars.deepseek }),
     capability("openai-key", keyStatus.openai, { envVars: keyStatus.envVars.openai }),
+    capability("openrouter-key", keyStatus.openrouter, { envVars: keyStatus.envVars.openrouter }),
     capability("qwen-key", keyStatus.qwen, { envVars: keyStatus.envVars.qwen }),
     capability("venice-key", keyStatus.venice, { envVars: keyStatus.envVars.venice }),
     capability("grsai-key", keyStatus.grsai, {
@@ -238,6 +239,7 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
     keys: {
       deepseek: keyStatus.deepseek,
       openai: keyStatus.openai,
+      openrouter: keyStatus.openrouter,
       qwen: keyStatus.qwen,
       venice: keyStatus.venice,
       grsai: keyStatus.grsai,
@@ -321,7 +323,7 @@ export function printCapabilityReport(report) {
   console.log(
     `keys: deepseek=${report.keys.deepseek ? "available" : "missing"} openai=${
       report.keys.openai ? "available" : "missing"
-    } qwen=${report.keys.qwen ? "available" : "missing"} venice=${
+    } openrouter=${report.keys.openrouter ? "available" : "missing"} qwen=${report.keys.qwen ? "available" : "missing"} venice=${
       report.keys.venice ? "available" : "missing"
     } grsai=${
       report.keys.grsai ? "available" : "missing"

@@ -123,6 +123,18 @@ try {
 
   const config = await fetchJson("/api/config");
   if (!config.keyStatus?.mock) throw new Error("mock provider is not advertised by /api/config");
+  if (!Object.prototype.hasOwnProperty.call(config.keyStatus || {}, "openrouter")) {
+    throw new Error("OpenRouter key status is not advertised by /api/config");
+  }
+  if (config.defaults?.openrouter?.baseURL !== "https://openrouter.ai/api/v1") {
+    throw new Error(`OpenRouter defaults are missing from /api/config: ${JSON.stringify(config.defaults?.openrouter)}`);
+  }
+  if (!config.modelCatalog?.openrouter?.some((model) => model.id === "openrouter/auto")) {
+    throw new Error("OpenRouter model catalog is missing from /api/config");
+  }
+  if (!config.modelGroups?.["openrouter-openai"]) {
+    throw new Error("OpenRouter company model groups are missing from /api/config");
+  }
   if (!config.workspace?.enabled) throw new Error("workspace file tools are not advertised by /api/config");
   if (config.preferences?.preferredWrapper !== "codex") throw new Error("Codex is not the default preferred wrapper");
   if (config.project?.root !== runtimeDir) throw new Error("web project root did not default to launch directory");

@@ -762,7 +762,7 @@ function exitOnUnknownOptions(parsed) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti docker [status|setup|install-host] OR aginti update OR aginti image [--json] [--dry-run] [--format png|webp|svg] "prompt" OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti mcp [status|config|inspect|tools|resources|read|prompts|prompt|call|restart] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--dynamic-steps auto|on|off] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--mcp|--no-mcp] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
+    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti docker [status|setup|install-host] OR aginti update OR aginti image [--json] [--dry-run] [--format png|webp|svg] "prompt" OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti mcp [status|config|inspect|tools|resources|read|prompts|prompt|call|restart] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|openrouter|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--dynamic-steps auto|on|off] [--routing smart|fast|complex|manual] [--provider deepseek|openai|openrouter|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--mcp|--no-mcp] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
   console.log("Permission shortcuts: -s safe asks before writes/setup; -s normal allows current-project writes and Docker setup; -s danger enables trusted host/full-access mode.");
   console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
@@ -1157,6 +1157,7 @@ async function restartWebAppAfterUpdate({ commandCwd = process.cwd(), language =
 function providerLabel(provider) {
   const normalized = String(provider || "").toLowerCase();
   if (normalized === "openai") return "OpenAI";
+  if (normalized === "openrouter" || normalized === "or" || normalized === "open-router") return "OpenRouter";
   if (normalized === "qwen") return "Qwen";
   if (normalized === "venice") return "Venice";
   if (normalized === "grsai" || normalized === "auxiliary") return "GRSAI";
@@ -1394,7 +1395,7 @@ async function readStdin() {
 async function ensureDeepSeekKeyForOneShot(args) {
   if (!shouldPromptForDeepSeek(args, process.cwd())) return true;
   console.log("No main model API key is configured for this project.");
-  console.log("Choose DeepSeek, OpenAI, Qwen, or Venice, then paste a key to save in `.aginti/.env` with 0600 permissions.");
+  console.log("Choose DeepSeek, OpenAI, OpenRouter, Qwen, or Venice, then paste a key to save in `.aginti/.env` with 0600 permissions.");
   const result = await runAuthWizard(process.cwd(), { provider: args.provider || "" });
   printAuthWizardResult(result);
   if (result.saved.some((item) => item.provider !== "grsai")) {
@@ -1413,9 +1414,9 @@ async function handleKeyCommand(argv) {
         status.openai ? "available" : "missing"
       } qwen=${status.qwen ? "available" : "missing"} venice=${
         status.venice ? "available" : "missing"
-      } grsai=${status.grsai ? "available" : "missing"} mock=available localEnv=${status.localEnv}`
+      } openrouter=${status.openrouter ? "available" : "missing"} grsai=${status.grsai ? "available" : "missing"} mock=available localEnv=${status.localEnv}`
     );
-    console.log("env vars: DeepSeek=DEEPSEEK_API_KEY or LLM_API_KEY; OpenAI=OPENAI_API_KEY or LLM_API_KEY; Qwen=QWEN_API_KEY; Venice=VENICE_API_KEY; image=GRSAI or GRSAI_API_KEY");
+    console.log("env vars: DeepSeek=DEEPSEEK_API_KEY or LLM_API_KEY; OpenAI=OPENAI_API_KEY or LLM_API_KEY; OpenRouter=OPENROUTER_API_KEY; Qwen=QWEN_API_KEY; Venice=VENICE_API_KEY; image=GRSAI or GRSAI_API_KEY");
     return;
   }
 
@@ -1431,7 +1432,7 @@ async function handleKeyCommand(argv) {
     return;
   }
 
-  console.error("Usage: aginti keys status OR aginti keys set deepseek|openai|qwen|venice|grsai [--stdin]");
+  console.error("Usage: aginti keys status OR aginti keys set deepseek|openai|openrouter|qwen|venice|grsai [--stdin]");
   process.exit(1);
 }
 

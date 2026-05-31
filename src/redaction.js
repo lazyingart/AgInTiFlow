@@ -1,8 +1,9 @@
 const SECRET_PATTERNS = [
   /\bsk-[A-Za-z0-9_-]{16,}\b/g,
+  /\bsk-or-v1-[A-Za-z0-9_-]{16,}\b/g,
   /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
   /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g,
-  /((?:api[_-]?key|token|secret|password|passwd|npm_token|_authToken|grsai|venice_api_key)[^\S\r\n]*[:=][^\S\r\n]*)[^\s"'`]+/gi,
+  /((?:api[_-]?key|token|secret|password|passwd|npm_token|_authToken|grsai|venice_api_key|openrouter_api_key)[^\S\r\n]*[:=][^\S\r\n]*)[^\s"'`]+/gi,
   /(\/\/registry\.npmjs\.org\/:_authToken=)[^\s"'`]+/gi,
   /(Authorization:\s*Bearer\s+)[^\s"'`]+/gi,
 ];

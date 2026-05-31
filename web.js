@@ -460,7 +460,7 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
   const modelPresets = getModelPresets();
   const modelRoles = getModelRoleDefaults();
   const providerCandidate = body.provider || current.provider || "deepseek";
-  const provider = ["openai", "deepseek", "qwen", "venice", "mock"].includes(providerCandidate) ? providerCandidate : "deepseek";
+  const provider = ["openai", "openrouter", "deepseek", "qwen", "venice", "mock"].includes(providerCandidate) ? providerCandidate : "deepseek";
   const routingMode =
     provider === "mock" ? "manual" : normalizeRoutingMode(body.routingMode || current.routingMode || "smart");
   const providerDefaults = getProviderDefaults(provider);
@@ -640,6 +640,7 @@ function publicKeyStatus(projectRoot = baseDir) {
   const status = providerKeyStatus(projectRoot);
   return {
     openai: status.openai,
+    openrouter: status.openrouter,
     deepseek: status.deepseek,
     qwen: status.qwen,
     venice: status.venice,
@@ -1444,6 +1445,7 @@ app.get("/api/config", async (_req, res) => {
     },
     defaults: {
       openai: publicProviderDefault("openai"),
+      openrouter: publicProviderDefault("openrouter"),
       deepseek: publicProviderDefault("deepseek"),
       qwen: publicProviderDefault("qwen"),
       venice: publicProviderDefault("venice"),

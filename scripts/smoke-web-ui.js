@@ -297,7 +297,7 @@ try {
   await page.click("#open-settings");
   await page.waitForSelector("#settings-modal[open]");
   const routeProviders = await optionValues(page, "#routeProvider");
-  for (const provider of ["deepseek", "openai", "qwen", "venice", "mock"]) {
+  for (const provider of ["deepseek", "openai", "openrouter", "qwen", "venice", "mock"]) {
     if (!routeProviders.includes(provider)) throw new Error(`settings route provider dropdown is missing ${provider}`);
   }
   const wrapperOptions = await optionValues(page, "#preferredWrapper");

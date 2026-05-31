@@ -45,11 +45,13 @@ export function resolveRuntimeConfig(args, overrides = {}) {
       ? "deepseek"
       : process.env.OPENAI_API_KEY
         ? "openai"
-        : process.env.QWEN_API_KEY
-          ? "qwen"
-          : process.env.VENICE_API_KEY
-            ? "venice"
-            : "deepseek");
+        : process.env.OPENROUTER_API_KEY
+          ? "openrouter"
+          : process.env.QWEN_API_KEY
+            ? "qwen"
+            : process.env.VENICE_API_KEY
+              ? "venice"
+              : "deepseek");
   const routingMode = normalizeRoutingMode(overrides.routingMode || args.routingMode || process.env.AGENT_ROUTING_MODE || "smart");
   const taskProfile = normalizeTaskProfile(overrides.taskProfile || args.taskProfile || process.env.AGINTI_TASK_PROFILE || "auto");
   const language = resolveLanguage(overrides.language || args.language || process.env.AGINTI_LANGUAGE || "");

@@ -85,11 +85,12 @@ aginti init --template aaps
 aginti init --template supervision
 ```
 
-On first interactive use, AgInTiFlow opens an auth wizard if no main model key is found. Pick DeepSeek, OpenAI, Qwen, or Venice, paste the key, and it saves to the ignored project-local `.aginti/.env` file with restricted permissions. You can rerun setup any time:
+On first interactive use, AgInTiFlow opens an auth wizard if no main model key is found. Pick DeepSeek, OpenAI, OpenRouter, Qwen, or Venice, paste the key, and it saves to the ignored project-local `.aginti/.env` file with restricted permissions. You can rerun setup any time:
 
 ```bash
 aginti auth
 aginti auth deepseek
+aginti auth openrouter
 aginti auth venice
 aginti login grsai
 ```
@@ -99,6 +100,7 @@ Provider signup and key pages:
 | Provider | Register / key page | API base URL used by AgInTiFlow |
 | --- | --- | --- |
 | DeepSeek | [https://platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) | `https://api.deepseek.com` |
+| OpenRouter | [https://openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) | `https://openrouter.ai/api/v1` |
 | Venice | [https://venice.ai/settings/api](https://venice.ai/settings/api) | `https://api.venice.ai/api/v1` |
 | OpenAI | [https://platform.openai.com/api-keys](https://platform.openai.com/api-keys) | `https://api.openai.com/v1` |
 | Qwen / DashScope | [https://bailian.console.aliyun.com/](https://bailian.console.aliyun.com/) | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
@@ -273,6 +275,7 @@ Useful selectors:
 ```
 
 Venice routes can be used for optional uncensored or less restricted creative work. DeepSeek remains the economic default for normal engineering workflows. See [docs/model-selection.md](docs/model-selection.md) and [references/venice-model-reference.md](references/venice-model-reference.md).
+OpenRouter is available as a first-class OpenAI-compatible provider with one key and company-grouped model buckets such as OpenRouter OpenAI, Anthropic, Google, DeepSeek, Qwen, Meta, Mistral, Moonshot, and xAI.
 
 ## AAPS And Large Workflows
 
@@ -348,6 +351,9 @@ Common environment variables:
 ```bash
 DEEPSEEK_API_KEY=...
 OPENAI_API_KEY=...
+OPENROUTER_API_KEY=...
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_MODEL=openrouter/auto
 QWEN_API_KEY=...
 VENICE_API_KEY=...
 GRSAI_API_KEY=...
@@ -365,6 +371,7 @@ Project-local keys:
 ```bash
 aginti init
 printf '%s' "$DEEPSEEK_API_KEY" | aginti keys set deepseek --stdin
+printf '%s' "$OPENROUTER_API_KEY" | aginti keys set openrouter --stdin
 printf '%s' "$VENICE_API_KEY" | aginti keys set venice --stdin
 ```
 

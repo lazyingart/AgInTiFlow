@@ -285,7 +285,7 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
     const brief = String(args.writingBrief || args.brief || args.prompt || "").trim();
     if (!brief) return { allowed: false, reason: "Writing specialist requires writingBrief.", category: "writing-specialist" };
     const provider = String(args.provider || process.env.AGINTI_WRITING_PROVIDER || "").trim();
-    if (provider && !["deepseek", "openai", "qwen", "venice", "mock"].includes(provider)) {
+    if (provider && !["deepseek", "openai", "openrouter", "qwen", "venice", "mock"].includes(provider)) {
       return { allowed: false, reason: `Unknown writing specialist provider: ${provider}`, category: "writing-specialist" };
     }
     const payloadBytes = Buffer.byteLength(
@@ -321,7 +321,7 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
       return { allowed: false, reason: "JSON specialist requires schema or schemaJson.", category: "json-specialist" };
     }
     const provider = String(args.provider || process.env.AGINTI_JSON_PROVIDER || "").trim();
-    if (provider && !["deepseek", "openai", "qwen", "venice", "mock"].includes(provider)) {
+    if (provider && !["deepseek", "openai", "openrouter", "qwen", "venice", "mock"].includes(provider)) {
       return { allowed: false, reason: `Unknown JSON specialist provider: ${provider}`, category: "json-specialist" };
     }
     const payloadBytes = Buffer.byteLength(
@@ -360,7 +360,7 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
       return { allowed: false, reason: "JSON specialist batch concurrency is limited to 16.", category: "json-specialist" };
     }
     const provider = String(args.provider || args.defaults?.provider || process.env.AGINTI_JSON_PROVIDER || "").trim();
-    if (provider && !["deepseek", "openai", "qwen", "venice", "mock"].includes(provider)) {
+    if (provider && !["deepseek", "openai", "openrouter", "qwen", "venice", "mock"].includes(provider)) {
       return { allowed: false, reason: `Unknown JSON specialist provider: ${provider}`, category: "json-specialist" };
     }
     const payloadBytes = Buffer.byteLength(JSON.stringify({ defaults: args.defaults || {}, items }), "utf8");

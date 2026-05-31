@@ -1089,8 +1089,8 @@ function printHelp() {
       tr("helpTitle"),
       `  ${command("/help", "Show this help.", "helpHelp")}`,
       `  ${command("/status", "Show active route, workspace, sandbox, and session.", "helpStatus")}`,
-      `  ${command("/login [deepseek|openai|qwen|venice|grsai]", "Pick, paste, and save project-local API keys.", "helpLogin")}`,
-      `  ${command("/auth [deepseek|openai|qwen|venice|grsai]", "Alias for /login.", "helpLogin")}`,
+      `  ${command("/login [deepseek|openai|openrouter|qwen|venice|grsai]", "Pick, paste, and save project-local API keys.", "helpLogin")}`,
+      `  ${command("/auth [deepseek|openai|openrouter|qwen|venice|grsai]", "Alias for /login.", "helpLogin")}`,
       `  ${command("/instructions", "Show AGINTI.md project instructions status.", "helpInstructions")}`,
       `  ${command("/memory", "Alias for /instructions.", "helpInstructions")}`,
       `  ${command("/models", "Show route/main/spare/wrapper/auxiliary model roles.", "helpModels")}`,
@@ -1118,7 +1118,7 @@ function printHelp() {
       `  ${command("/scs [on|auto|off|status]", "Toggle Student-Committee-Supervisor gated execution.", "helpEnableScs")}`,
       `  ${command("/scouts on|off|<1-10>", "Enable parallel DeepSeek scouts and set scout count.", "helpScouts")}`,
       `  ${command("/routing <mode>", "Set routing: smart, fast, complex, manual.", "helpRouting")}`,
-      `  ${command("/provider [name]", "Open provider selector, or set deepseek/openai/qwen/venice/mock.", "helpProvider")}`,
+      `  ${command("/provider [name]", "Open provider selector, or set deepseek/openai/openrouter/qwen/venice/mock.", "helpProvider")}`,
       `  ${command("/safe | /normal | /danger", "Switch permission posture for this session.", "helpPermissionMode")}`,
       `  ${command("/docker [status|setup|on|off]", "Inspect or prepare the Docker sandbox/toolchain.", "helpDocker")}`,
       `  ${command("/latex on", "Use the LaTeX/PDF profile in Docker with a larger step budget.", "helpLatex")}`,
@@ -2709,7 +2709,7 @@ function parseProviderModel(value, fallbackProvider = "") {
     };
   }
   const parts = text.split(/\s+/).filter(Boolean);
-  if (parts.length >= 2 && ["deepseek", "openai", "qwen", "venice", "mock", "grsai", "venice-image"].includes(parts[0])) {
+  if (parts.length >= 2 && ["deepseek", "openai", "openrouter", "qwen", "venice", "mock", "grsai", "venice-image"].includes(parts[0])) {
     return { provider: parts[0], model: parts.slice(1).join(" ") };
   }
   return { provider: fallbackProvider, model: text };
@@ -2867,6 +2867,21 @@ function isReasoningLevel(value = "") {
 function modelSelectorGroup(provider, model = {}) {
   if (provider === "deepseek") return "DeepSeek";
   if (provider === "openai") return "OpenAI";
+  if (provider === "openrouter") {
+    const buckets = {
+      openrouter: "OpenRouter",
+      "openrouter-openai": "OpenRouter OpenAI",
+      "openrouter-anthropic": "OpenRouter Anthropic",
+      "openrouter-google": "OpenRouter Google",
+      "openrouter-deepseek": "OpenRouter DeepSeek",
+      "openrouter-qwen": "OpenRouter Qwen",
+      "openrouter-meta": "OpenRouter Meta",
+      "openrouter-mistral": "OpenRouter Mistral",
+      "openrouter-moonshot": "OpenRouter Moonshot",
+      "openrouter-xai": "OpenRouter xAI",
+    };
+    return buckets[model.bucket] || "OpenRouter";
+  }
   if (provider === "qwen") return "Qwen";
   if (provider === "mock") return "Mock";
   if (provider === "venice") {
@@ -2895,6 +2910,56 @@ const TEXT_MODEL_GROUPS = [
     id: "openai",
     label: "OpenAI",
     description: "GPT and Codex models with selectable reasoning.",
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    description: "OpenRouter auto, free, and coding routers.",
+  },
+  {
+    id: "openrouter-openai",
+    label: "OpenRouter OpenAI",
+    description: "GPT-family models through OpenRouter.",
+  },
+  {
+    id: "openrouter-anthropic",
+    label: "OpenRouter Anthropic",
+    description: "Claude Sonnet and Opus models through OpenRouter.",
+  },
+  {
+    id: "openrouter-google",
+    label: "OpenRouter Google",
+    description: "Gemini and Gemma models through OpenRouter.",
+  },
+  {
+    id: "openrouter-deepseek",
+    label: "OpenRouter DeepSeek",
+    description: "DeepSeek V4/R1 models through OpenRouter.",
+  },
+  {
+    id: "openrouter-qwen",
+    label: "OpenRouter Qwen",
+    description: "Qwen Max/Plus/Flash models through OpenRouter.",
+  },
+  {
+    id: "openrouter-meta",
+    label: "OpenRouter Meta",
+    description: "Meta Llama models through OpenRouter.",
+  },
+  {
+    id: "openrouter-mistral",
+    label: "OpenRouter Mistral",
+    description: "Mistral and Devstral models through OpenRouter.",
+  },
+  {
+    id: "openrouter-moonshot",
+    label: "OpenRouter Moonshot",
+    description: "Moonshot/Kimi models through OpenRouter.",
+  },
+  {
+    id: "openrouter-xai",
+    label: "OpenRouter xAI",
+    description: "xAI Grok models through OpenRouter.",
   },
   {
     id: "venice-gpt",
@@ -2930,6 +2995,7 @@ const TEXT_MODEL_GROUPS = [
 
 function modelGroupForSelection(provider, model = {}) {
   if (provider === "venice") return model.bucket || "venice";
+  if (provider === "openrouter") return model.bucket || "openrouter";
   return provider;
 }
 
@@ -2946,6 +3012,9 @@ function modelsForSelectorGroup(groupId = "") {
   const group = String(groupId || "");
   if (group === "deepseek") return (PROVIDER_MODEL_CATALOG.deepseek || []).filter((model) => !model.hidden);
   if (group === "openai") return (PROVIDER_MODEL_CATALOG.openai || []).filter((model) => !model.hidden);
+  if (group === "openrouter" || group.startsWith("openrouter-")) {
+    return (PROVIDER_MODEL_CATALOG.openrouter || []).filter((model) => !model.hidden && model.bucket === group);
+  }
   if (group === "qwen") return (PROVIDER_MODEL_CATALOG.qwen || []).filter((model) => !model.hidden);
   if (group === "mock") return (PROVIDER_MODEL_CATALOG.mock || []).filter((model) => !model.hidden);
   if (group === "venice") {
@@ -2961,6 +3030,7 @@ function modelsForSelectorGroup(groupId = "") {
 
 function providerForSelectorGroup(groupId = "") {
   if (String(groupId).startsWith("venice")) return "venice";
+  if (String(groupId).startsWith("openrouter")) return "openrouter";
   return groupId;
 }
 
@@ -3047,6 +3117,12 @@ function providerChoices() {
       model: "gpt-5.4",
       label: "OpenAI",
       description: "manual GPT route; use /model for exact model",
+    },
+    {
+      provider: "openrouter",
+      model: "openrouter/auto",
+      label: "OpenRouter",
+      description: "manual multi-provider gateway; use /models for company buckets",
     },
     {
       provider: "venice",
@@ -3414,7 +3490,7 @@ async function maybeOnboardDeepSeekKey(state) {
   printAgentMessage(
     [
       "No main model API key is configured for this project.",
-      "Choose DeepSeek, OpenAI, or Qwen, then paste a key to save in `.aginti/.env` with 0600 permissions.",
+      "Choose DeepSeek, OpenAI, OpenRouter, or Qwen, then paste a key to save in `.aginti/.env` with 0600 permissions.",
       "After that, you can optionally paste the auxiliary image key. Press Esc to skip.",
     ].join("\n")
   );
@@ -3427,7 +3503,7 @@ async function maybeOnboardDeepSeekKey(state) {
   state.provider = "mock";
   state.routingMode = "manual";
   state.model = "mock-agent";
-  printAgentMessage("No main key saved. Continuing in local mock mode. Use `/auth` later to save DeepSeek, OpenAI, Qwen, or Venice.");
+  printAgentMessage("No main key saved. Continuing in local mock mode. Use `/auth` later to save DeepSeek, OpenAI, OpenRouter, Qwen, or Venice.");
 }
 
 function applyAuthWizardResult(result, state = null) {
@@ -3496,7 +3572,9 @@ async function handleCommand(line, state, packageDir) {
     printStatus(state);
     const keys = providerKeyStatus(process.cwd());
     printSystemLine(
-      `keys deepseek=${keys.deepseek ? "available" : "missing"} openai=${keys.openai ? "available" : "missing"} grsai=${
+      `keys deepseek=${keys.deepseek ? "available" : "missing"} openai=${keys.openai ? "available" : "missing"} openrouter=${
+        keys.openrouter ? "available" : "missing"
+      } grsai=${
         keys.grsai ? "available" : "missing"
       } qwen=${keys.qwen ? "available" : "missing"} venice=${keys.venice ? "available" : "missing"}`
     );
@@ -4167,7 +4245,7 @@ async function handleCommand(line, state, packageDir) {
         if (!changed) printSystemLine(`provider=${state.provider || "auto"} model=${state.model || "auto"}`);
         return true;
       }
-      printAgentMessage(`Provider: ${state.provider || "auto"}\nUse /provider deepseek|openai|qwen|venice|mock.`);
+      printAgentMessage(`Provider: ${state.provider || "auto"}\nUse /provider deepseek|openai|openrouter|qwen|venice|mock.`);
       return true;
     }
     state.provider = value === "auto" ? "" : value;

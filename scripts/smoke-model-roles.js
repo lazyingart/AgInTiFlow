@@ -207,6 +207,14 @@ assert(modelsForProviderGroup("venice-claude").some((item) => item.id === "claud
 assert(modelsForProviderGroup("venice-qwen").some((item) => item.id === "qwen3-coder-480b-a35b-instruct-turbo"), "venice-qwen bucket missing Qwen Coder");
 assert(AUXILIARY_MODEL_CATALOG["venice-image"].some((item) => item.id === "gpt-image-2"), "Venice image catalog missing GPT Image 2");
 assert(AUXILIARY_MODEL_CATALOG["venice-image"].some((item) => item.id === "wan-2-7-pro-edit"), "Venice image catalog missing Wan edit");
+assert(MODEL_PROVIDER_GROUPS["openrouter"].provider === "openrouter", "openrouter group missing");
+assert(MODEL_PROVIDER_GROUPS["openrouter-openai"].provider === "openrouter", "openrouter-openai group missing");
+assert(modelsForProviderGroup("openrouter").some((item) => item.id === "openrouter/auto"), "openrouter group missing auto router");
+assert(modelsForProviderGroup("openrouter-openai").some((item) => item.id === "openai/gpt-5.4-mini"), "openrouter OpenAI bucket missing GPT-5.4 Mini");
+assert(modelsForProviderGroup("openrouter-anthropic").some((item) => item.id === "anthropic/claude-sonnet-4.6"), "openrouter Anthropic bucket missing Claude Sonnet");
+assert(modelsForProviderGroup("openrouter-google").some((item) => item.id === "google/gemini-3.5-flash"), "openrouter Google bucket missing Gemini");
+assert(modelsForProviderGroup("openrouter-deepseek").some((item) => item.id === "deepseek/deepseek-v4-pro"), "openrouter DeepSeek bucket missing V4 Pro");
+assert(modelsForProviderGroup("openrouter-qwen").some((item) => item.id === "qwen/qwen3.7-max"), "openrouter Qwen bucket missing Qwen Max");
 const routeChoices = modelRoleChoices("route").map((item) => `${item.provider}/${item.model}`);
 const mainChoices = modelRoleChoices("main").map((item) => `${item.provider}/${item.model}`);
 const spareChoices = modelRoleChoices("spare").map((item) => `${item.provider}/${item.model}`);
@@ -231,6 +239,12 @@ for (const expected of [
   "openai/gpt-5.4-mini",
   "openai/gpt-5.3-codex",
   "openai/gpt-5.3-codex-spark",
+  "openrouter/openrouter/auto",
+  "openrouter/openai/gpt-5.4-mini",
+  "openrouter/anthropic/claude-sonnet-4.6",
+  "openrouter/google/gemini-3.5-flash",
+  "openrouter/deepseek/deepseek-v4-pro",
+  "openrouter/qwen/qwen3.7-max",
   "qwen/qwen-plus",
   "mock/mock-agent",
 ]) {

@@ -820,6 +820,7 @@ const ariaLabelNodes = [...document.querySelectorAll("[data-i18n-aria-label]")];
 
 const defaults = {
   openai: "gpt-5.4-mini",
+  openrouter: "openrouter/auto",
   deepseek: "deepseek-v4-flash",
   qwen: "qwen-plus",
   venice: "venice-uncensored-1-2",
@@ -983,6 +984,7 @@ function renderKeyStatus(status = lastKeyStatus) {
   if (!status) return;
   const providers = [
     ["OpenAI", status.openai],
+    ["OpenRouter", status.openrouter],
     ["DeepSeek", status.deepseek],
     ["Qwen", status.qwen],
     ["Venice", status.venice],
@@ -1009,7 +1011,7 @@ function renderKeyStatus(status = lastKeyStatus) {
       })
     );
   }
-  if (setupCardEl) setupCardEl.hidden = Boolean(status.openai || status.deepseek || status.qwen || status.venice);
+  if (setupCardEl) setupCardEl.hidden = Boolean(status.openai || status.openrouter || status.deepseek || status.qwen || status.venice);
 }
 
 function renderProjectStatus(info = projectInfo) {
@@ -1611,6 +1613,7 @@ function fieldValue(field) {
 const providerLabels = {
   deepseek: "DeepSeek",
   openai: "OpenAI",
+  openrouter: "OpenRouter",
   qwen: "Qwen",
   venice: "Venice",
   mock: "Mock local",
@@ -1634,14 +1637,14 @@ function setChoiceOptions(select, options, selectedValue = "", fallbackValue = "
 }
 
 function configuredTextProviders({ includeMock = true } = {}) {
-  const base = ["deepseek", "openai", "qwen", "venice"];
+  const base = ["deepseek", "openai", "openrouter", "qwen", "venice"];
   if (includeMock) base.push("mock");
   if (Object.keys(modelCatalog || {}).length === 0) return base;
   return base.filter((provider) => provider === "mock" || Array.isArray(modelCatalog[provider]));
 }
 
 function refreshProviderDropdowns() {
-  setChoiceOptions(setupProviderField, ["deepseek", "openai", "qwen", "venice", "grsai"], setupProviderField?.value || "deepseek", "deepseek");
+  setChoiceOptions(setupProviderField, ["deepseek", "openai", "openrouter", "qwen", "venice", "grsai"], setupProviderField?.value || "deepseek", "deepseek");
   setChoiceOptions(providerField, configuredTextProviders({ includeMock: true }), providerField?.value || "deepseek", "deepseek");
   setChoiceOptions(routeProviderField, configuredTextProviders({ includeMock: true }), routeProviderField?.value || "deepseek", "deepseek");
   setChoiceOptions(mainProviderField, configuredTextProviders({ includeMock: false }), mainProviderField?.value || "deepseek", "deepseek");
@@ -3874,7 +3877,13 @@ deleteSessionButton.addEventListener("click", () => {
 });
 
 providerField.addEventListener("change", () => {
-  if (providerField.value === "mock" || providerField.value === "venice" || providerField.value === "openai" || providerField.value === "qwen") {
+  if (
+    providerField.value === "mock" ||
+    providerField.value === "venice" ||
+    providerField.value === "openai" ||
+    providerField.value === "openrouter" ||
+    providerField.value === "qwen"
+  ) {
     routingModeField.value = "manual";
   }
 
@@ -4208,6 +4217,7 @@ async function loadConfig() {
   taskProfiles = data.taskProfiles || [];
   projectInfo = data.project || null;
   defaults.openai = data.defaults?.openai?.model || defaults.openai;
+  defaults.openrouter = data.defaults?.openrouter?.model || defaults.openrouter;
   defaults.qwen = data.defaults?.qwen?.model || defaults.qwen;
   defaults.venice = data.defaults?.venice?.model || defaults.venice;
   defaults.deepseek = routingPresets.fast?.model || data.defaults?.deepseek?.model || defaults.deepseek;
