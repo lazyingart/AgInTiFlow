@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import { runAgent } from "../src/agent-runner.js";
 import { generateImage, listAuxiliarySkills } from "../src/auxiliary-tools.js";
 import { resolveRuntimeConfig } from "../src/config.js";
@@ -10,6 +12,7 @@ import { providerKeyStatus, setProviderKey } from "../src/project.js";
 import { SessionStore } from "../src/session-store.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const execFile = promisify(execFileCallback);
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-auxiliary-"));
 process.env.AGINTIFLOW_HOME = path.join(tempRoot, ".agintiflow-home");
 const runtimeDir = path.join(tempRoot, "runtime");
@@ -82,6 +85,37 @@ try {
   );
   assert(svgFallbackManifest.requestedFormat === "svg" && svgFallbackManifest.actualFormat === "png", "SVG fallback manifest missing format contract");
 
+  const cliImage = await execFile(
+    process.execPath,
+    [
+      path.join(repoRoot, "bin/aginti-cli.js"),
+      "--no-auto-update",
+      "image",
+      "--json",
+      "--dry-run",
+      "--cwd",
+      workspace,
+      "--provider",
+      "venice",
+      "--format",
+      "svg",
+      "--output-dir",
+      "artifacts/images/cli-svg-fallback",
+      "--output-stem",
+      "diagram.svg",
+      "A simple geometric diagram requested as SVG.",
+    ],
+    {
+      cwd: repoRoot,
+      env: { ...process.env, AGINTIFLOW_HOME: process.env.AGINTIFLOW_HOME },
+    }
+  );
+  const cliImageResult = JSON.parse(cliImage.stdout);
+  assert(cliImageResult.ok && cliImageResult.requestedFormat === "svg", "direct image CLI did not record requestedFormat");
+  assert(cliImageResult.actualFormat === "png", "direct image CLI did not select PNG fallback");
+  assert(/raster PNG/i.test(cliImageResult.formatNotice || ""), "direct image CLI did not explain SVG-to-PNG fallback");
+  await fs.access(path.join(workspace, "artifacts/images/cli-svg-fallback/task_manifest.json"));
+
   const blocked = await generateImage(
     {
       prompt: "blocked",
@@ -131,6 +165,7 @@ try {
           "generate_image_dry_run",
           "venice_generate_image_dry_run",
           "svg_request_png_fallback",
+          "direct_image_cli_svg_request_png_fallback",
           "generate_image_guardrail",
           "mock_agent_image_tool",
         ],

@@ -75,6 +75,21 @@ That SVG request returns a PNG fallback contract rather than pretending SVG was 
 }
 ```
 
+The CLI exposes the same direct path for shell scripts and other local apps:
+
+```bash
+aginti image --json --dry-run \
+  --provider venice \
+  --format svg \
+  --output-dir artifacts/images/robot-cover \
+  --output-stem cover.svg \
+  "A cyan robot painting a poster, clean product illustration"
+```
+
+`aginti image ...` returns the same `requestedFormat`, `actualFormat`, and `formatNotice` fields as the web API. Use this direct CLI when
+an app needs a deterministic tool call. Use `aginti --image "..."` when the user wants an agent-mediated image task that may plan, inspect
+references, create files, or send artifacts to the canvas.
+
 With GRS AI, the tool uses the Nano Banana API:
 
 - `POST https://grsaiapi.com/v1/draw/nano-banana`

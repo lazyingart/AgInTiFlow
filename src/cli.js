@@ -30,6 +30,7 @@ import { listTaskProfiles } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 import { normalizeAuthProvider, promptHidden, runAuthWizard, shouldPromptForDeepSeek } from "./auth-onboarding.js";
 import { listSkills, selectSkillsForGoal } from "./skill-library.js";
+import { generateImage } from "./auxiliary-tools.js";
 import { languageLabel, resolveLanguage } from "./i18n.js";
 import { maybeAutoUpdate } from "./auto-update.js";
 import { readHousekeepingSummary } from "./housekeeping.js";
@@ -761,7 +762,7 @@ function exitOnUnknownOptions(parsed) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti docker [status|setup|install-host] OR aginti update OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti mcp [status|config|inspect|tools|resources|read|prompts|prompt|call|restart] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--dynamic-steps auto|on|off] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--mcp|--no-mcp] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
+    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti docker [status|setup|install-host] OR aginti update OR aginti image [--json] [--dry-run] [--format png|webp|svg] "prompt" OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti mcp [status|config|inspect|tools|resources|read|prompts|prompt|call|restart] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--dynamic-steps auto|on|off] [--routing smart|fast|complex|manual] [--provider deepseek|openai|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--mcp|--no-mcp] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
   console.log("Permission shortcuts: -s safe asks before writes/setup; -s normal allows current-project writes and Docker setup; -s danger enables trusted host/full-access mode.");
   console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
@@ -788,6 +789,211 @@ function splitToolCommandArgv(argv = []) {
     index += 1;
   }
   return { actionArgv, optionArgv, json };
+}
+
+function takeImageOptionValue(argv, index, option) {
+  const equals = String(option || "").match(/^([^=]+)=(.*)$/);
+  if (equals) return { value: equals[2], nextIndex: index + 1 };
+  const value = argv[index + 1];
+  return { value: value && !String(value).startsWith("--") ? value : "", nextIndex: value && !String(value).startsWith("--") ? index + 2 : index + 1 };
+}
+
+function parseImageCommandArgs(argv = []) {
+  const result = {
+    prompt: "",
+    provider: "",
+    model: "",
+    format: "",
+    outputDir: "",
+    outputStem: "",
+    aspectRatio: "",
+    imageSize: "",
+    host: "",
+    referenceImages: [],
+    commandCwd: "",
+    requestTimeoutMs: "",
+    pollTimeoutMs: "",
+    pollIntervalMs: "",
+    dryRun: false,
+    json: false,
+    stdin: false,
+    help: false,
+    unknownOptions: [],
+  };
+  const promptParts = [];
+  let index = 0;
+  if (["generate", "create", "make"].includes(String(argv[0] || "").toLowerCase())) index = 1;
+
+  while (index < argv.length) {
+    const arg = String(argv[index] || "");
+    const name = arg.split("=")[0];
+    if (arg === "--") {
+      promptParts.push(...argv.slice(index + 1));
+      break;
+    }
+    if (arg === "--help" || arg === "-h") {
+      result.help = true;
+      index += 1;
+      continue;
+    }
+    if (arg === "--json") {
+      result.json = true;
+      index += 1;
+      continue;
+    }
+    if (arg === "--dry-run" || arg === "--dryrun") {
+      result.dryRun = true;
+      index += 1;
+      continue;
+    }
+    if (arg === "--stdin") {
+      result.stdin = true;
+      index += 1;
+      continue;
+    }
+
+    const valueOptions = new Map([
+      ["--provider", "provider"],
+      ["--aux-provider", "provider"],
+      ["--auxiliary-provider", "provider"],
+      ["--model", "model"],
+      ["--aux-model", "model"],
+      ["--auxiliary-model", "model"],
+      ["--format", "format"],
+      ["--output-dir", "outputDir"],
+      ["--out-dir", "outputDir"],
+      ["--dir", "outputDir"],
+      ["--output-stem", "outputStem"],
+      ["--stem", "outputStem"],
+      ["--aspect-ratio", "aspectRatio"],
+      ["--ratio", "aspectRatio"],
+      ["--image-size", "imageSize"],
+      ["--size", "imageSize"],
+      ["--host", "host"],
+      ["--cwd", "commandCwd"],
+      ["--request-timeout-ms", "requestTimeoutMs"],
+      ["--poll-timeout-ms", "pollTimeoutMs"],
+      ["--poll-interval-ms", "pollIntervalMs"],
+    ]);
+    if (valueOptions.has(name)) {
+      const { value, nextIndex } = takeImageOptionValue(argv, index, arg);
+      if (!value) result.unknownOptions.push(arg);
+      else result[valueOptions.get(name)] = value;
+      index = nextIndex;
+      continue;
+    }
+    if (["--reference", "--reference-image", "--ref", "--image-ref"].includes(name)) {
+      const { value, nextIndex } = takeImageOptionValue(argv, index, arg);
+      if (!value) result.unknownOptions.push(arg);
+      else result.referenceImages.push(value);
+      index = nextIndex;
+      continue;
+    }
+    if (arg.startsWith("--") && promptParts.length === 0) {
+      result.unknownOptions.push(arg);
+      index += 1;
+      continue;
+    }
+    promptParts.push(arg);
+    index += 1;
+  }
+
+  result.prompt = promptParts.join(" ").trim();
+  return result;
+}
+
+function printImageCommandUsage() {
+  console.log(
+    'Usage: aginti image [generate] [--json] [--dry-run] [--provider grsai|venice] [--model MODEL] [--format png|webp|svg] [--output-dir DIR] [--output-stem STEM] [--aspect-ratio 1:1] [--image-size 1K|2K|4K|1024x1024] [--reference path-or-url] "prompt"'
+  );
+  console.log("Direct image CLI calls the same generate_image tool as the web API. SVG/vector requests return PNG with requestedFormat/actualFormat/formatNotice.");
+  console.log('Agent-mediated image work is still available as: aginti --image "draw a poster"');
+}
+
+function directImageCommandArgv(argv = []) {
+  const first = String(argv[0] || "").toLowerCase();
+  const second = String(argv[1] || "").toLowerCase();
+  if (["image", "imagegen", "image-gen", "generate-image", "image-generate"].includes(first)) return argv.slice(1);
+  if (["aux", "auxiliary"].includes(first) && ["image", "imagegen", "image-gen", "generate-image", "generate"].includes(second)) {
+    return argv.slice(2);
+  }
+  return null;
+}
+
+function printImageCommandResult(result = {}) {
+  const status = result.dryRun ? "prepared" : result.ok ? "generated" : result.blocked ? "blocked" : "failed";
+  console.log(`image: ${status}`);
+  if (result.summary) console.log(`summary: ${result.summary}`);
+  if (result.provider) console.log(`provider: ${result.provider}`);
+  if (result.requestedFormat || result.actualFormat) {
+    const requested = result.requestedFormat || "auto";
+    const actual = result.actualFormat || "unknown";
+    console.log(`format: ${requested}${requested === actual ? "" : ` -> ${actual}`}`);
+  }
+  if (result.formatNotice) console.log(`notice: ${result.formatNotice}`);
+  if (result.path) console.log(`path: ${result.path}`);
+  if (result.imagePaths?.length) console.log(`images: ${result.imagePaths.join(", ")}`);
+  if (result.manifestPath) console.log(`manifest: ${result.manifestPath}`);
+  if (result.promptPath) console.log(`prompt: ${result.promptPath}`);
+  if (result.requestPayloadPath) console.log(`request: ${result.requestPayloadPath}`);
+  if (result.reason) console.log(`reason: ${result.reason}`);
+}
+
+async function handleImageCommand(argv, { commandCwd = process.cwd() } = {}) {
+  const parsed = parseImageCommandArgs(argv);
+  if (parsed.help) {
+    printImageCommandUsage();
+    return;
+  }
+  if (parsed.unknownOptions.length) {
+    printUnknownCliOptions(parsed.unknownOptions);
+    process.exit(1);
+  }
+  const prompt = parsed.stdin ? await readStdin() : parsed.prompt;
+  if (!prompt) {
+    printImageCommandUsage();
+    process.exit(1);
+  }
+  const effectiveCommandCwd = path.resolve(parsed.commandCwd || commandCwd || process.cwd());
+  const config = loadConfig(
+    {
+      goal: prompt,
+      taskProfile: "image",
+      commandCwd: effectiveCommandCwd,
+      auxiliaryProvider: parsed.provider,
+      auxiliaryModel: parsed.model,
+      allowFileTools: true,
+      allowAuxiliaryTools: true,
+    },
+    { packageDir, baseDir: effectiveCommandCwd }
+  );
+  const result = await generateImage(
+    {
+      prompt,
+      provider: parsed.provider,
+      model: parsed.model,
+      format: parsed.format,
+      outputDir: parsed.outputDir || undefined,
+      outputStem: parsed.outputStem || undefined,
+      aspectRatio: parsed.aspectRatio || undefined,
+      imageSize: parsed.imageSize || undefined,
+      host: parsed.host || undefined,
+      referenceImages: parsed.referenceImages,
+      requestTimeoutMs: parsed.requestTimeoutMs || undefined,
+      pollTimeoutMs: parsed.pollTimeoutMs || undefined,
+      pollIntervalMs: parsed.pollIntervalMs || undefined,
+      dryRun: parsed.dryRun,
+    },
+    {
+      ...config,
+      commandCwd: effectiveCommandCwd,
+      allowFileTools: true,
+      allowAuxiliaryTools: true,
+    }
+  );
+  if (parsed.json) console.log(JSON.stringify(result, null, 2));
+  else printImageCommandResult(result);
+  if (!result.ok) process.exit(1);
 }
 
 function parseDockerCommandArgs(argv = [], fallbackCwd = process.cwd()) {
@@ -1851,6 +2057,20 @@ export async function main(argv = process.argv.slice(2)) {
       } else {
         console.error(error instanceof Error ? error.message : String(error));
       }
+      process.exit(1);
+    }
+    return;
+  }
+
+  const imageCommand = directImageCommandArgv(commandArgv);
+  if (imageCommand) {
+    try {
+      await handleImageCommand(imageCommand, { commandCwd });
+    } catch (error) {
+      const wantsJson = imageCommand.includes("--json");
+      const message = error instanceof Error ? error.message : String(error);
+      if (wantsJson) console.log(JSON.stringify({ ok: false, error: message }, null, 2));
+      else console.error(message);
       process.exit(1);
     }
     return;
