@@ -93,6 +93,7 @@ try {
   await fs.mkdir(path.join(runtimeDir, "data"), { recursive: true });
   await fs.writeFile(path.join(runtimeDir, "notes", "workspace-smoke.md"), "# Workspace smoke\n\nEditable text.\n");
   await fs.writeFile(path.join(runtimeDir, "data", "workspace-smoke.csv"), "sample,value\nalpha,1\n");
+  await fs.writeFile(path.join(runtimeDir, ".aginti", ".env"), "DEEPSEEK_API_KEY=should-not-render\n");
 
   const webAppHtml = await fs.readFile(path.join(repoRoot, "public", "index.html"), "utf8");
   const chatThreadIndex = webAppHtml.indexOf('id="chat-thread"');
@@ -145,12 +146,29 @@ try {
   if (!workspaceSnapshot.files?.some((file) => file.path === "notes/workspace-smoke.md" && file.content.includes("Editable text."))) {
     throw new Error(`workspace snapshot did not include editable note: ${JSON.stringify(workspaceSnapshot.files?.slice(0, 5))}`);
   }
+  if (workspaceSnapshot.files?.some((file) => file.path === ".aginti/.env" || file.path === ".aginti/mcp.json" || file.path === ".env")) {
+    throw new Error(`workspace snapshot exposed protected internal/secret files: ${JSON.stringify(workspaceSnapshot.files?.slice(0, 10))}`);
+  }
   const rawWorkspaceResponse = await fetch(
     `${baseUrl}/api/workspace/raw?commandCwd=${encodeURIComponent(runtimeDir)}&path=${encodeURIComponent("notes/workspace-smoke.md")}`
   );
   const rawWorkspaceText = await rawWorkspaceResponse.text();
   if (!rawWorkspaceResponse.ok || !rawWorkspaceText.includes("Workspace smoke")) {
     throw new Error(`workspace raw endpoint failed: status=${rawWorkspaceResponse.status} body=${rawWorkspaceText.slice(0, 120)}`);
+  }
+  const protectedRawResponse = await fetch(
+    `${baseUrl}/api/workspace/raw?commandCwd=${encodeURIComponent(runtimeDir)}&path=${encodeURIComponent(".aginti/.env")}`
+  );
+  if (protectedRawResponse.ok) {
+    throw new Error("workspace raw endpoint exposed protected .aginti/.env");
+  }
+  const protectedWriteResponse = await fetch(`${baseUrl}/api/workspace/write`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ commandCwd: runtimeDir, path: ".env", content: "SECRET=blocked\n" }),
+  });
+  if (protectedWriteResponse.ok) {
+    throw new Error("workspace write endpoint allowed protected .env");
   }
   const writtenWorkspace = await fetchJson("/api/workspace/write", {
     method: "POST",

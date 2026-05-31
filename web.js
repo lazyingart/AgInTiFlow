@@ -778,8 +778,11 @@ const WORKSPACE_SKIP_NAMES = new Set([
   ".git",
   ".hg",
   ".svn",
+  ".aginti",
+  ".aginti-work",
   ".aginti-sessions",
   ".agintiflow-home",
+  ".sessions",
   ".cache",
   ".pytest_cache",
   ".ruff_cache",
@@ -790,8 +793,25 @@ const WORKSPACE_SKIP_NAMES = new Set([
   "dist",
   "node_modules",
 ]);
+const WORKSPACE_PROTECTED_DIRS = new Set([".aginti", ".aginti-work", ".aginti-sessions", ".agintiflow-home", ".sessions", ".git", ".hg", ".svn"]);
+const WORKSPACE_PROTECTED_FILES = new Set([".env", ".npmrc", ".pypirc", ".netrc"]);
 const WORKSPACE_MAX_FILES = 1600;
 const WORKSPACE_MAX_TEXT_BYTES = 512 * 1024;
+
+function isProtectedEnvName(name = "") {
+  const value = String(name || "");
+  if (value === ".env") return true;
+  if (!value.startsWith(".env.")) return false;
+  return !/\.(example|sample|template)$/i.test(value);
+}
+
+function isProtectedWorkspacePath(relativePath = "") {
+  const normalized = String(relativePath || "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
+  const parts = normalized.split("/").filter(Boolean);
+  return parts.some((part) => WORKSPACE_PROTECTED_DIRS.has(part) || WORKSPACE_PROTECTED_FILES.has(part) || isProtectedEnvName(part));
+}
 
 function isInsideDirectory(parent, candidate) {
   const relative = path.relative(parent, candidate);
@@ -820,6 +840,9 @@ async function resolveWorkspaceFilePath(root, relativePath = "", { mustExist = f
     .replace(/\\/g, "/")
     .replace(/^\/+/, "");
   if (!normalizedRelative || normalizedRelative.includes("\0")) throw new Error("Workspace file path is required.");
+  if (isProtectedWorkspacePath(normalizedRelative)) {
+    throw new Error("Workspace file is protected because it may contain secrets or AgInTiFlow internals.");
+  }
   const absolutePath = path.resolve(root, normalizedRelative);
   if (!isInsideDirectory(root, absolutePath)) throw new Error("Workspace file path escapes the selected folder.");
 
@@ -892,6 +915,7 @@ async function buildWorkspaceSnapshot(root) {
 
       const absolutePath = path.join(currentDir, entry.name);
       const relativePath = relativeWorkspacePath(root, absolutePath);
+      if (isProtectedWorkspacePath(relativePath)) continue;
       let stat;
       let realPath = absolutePath;
       let symlink = false;

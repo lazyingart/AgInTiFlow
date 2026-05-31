@@ -959,8 +959,41 @@ button.danger {
 }
 
 .workspace-browser-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.workspace-status-chip {
+  padding: 4px 8px;
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 253, 250, 0.86);
+  color: var(--ink);
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.workspace-root-path {
+  min-width: 0;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid rgba(15, 118, 110, 0.14);
+  border-radius: 10px;
+  background: rgba(13, 148, 136, 0.07);
+  color: #155e75;
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.workspace-status-warn {
+  color: #b45309;
+  font-size: 0.76rem;
 }
 
 .workspace-lanes {
@@ -995,11 +1028,105 @@ button.danger {
 }
 
 .workspace-tree {
-  display: grid;
-  gap: 7px;
   max-height: 440px;
   overflow: auto;
-  padding-right: 2px;
+  padding: 8px;
+  border: 1px solid rgba(15, 118, 110, 0.12);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 253, 250, 0.88), rgba(240, 253, 250, 0.58)),
+    rgba(255, 255, 255, 0.72);
+}
+
+.workspace-tree-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin: -8px -8px 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(15, 118, 110, 0.1);
+  background: rgba(255, 253, 250, 0.95);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.workspace-tree-toolbar strong {
+  color: var(--accent);
+}
+
+.workspace-folder-root,
+.workspace-folder-children {
+  display: grid;
+  gap: 4px;
+}
+
+.workspace-folder {
+  margin-left: calc(var(--depth, 0) * 12px);
+}
+
+.workspace-folder summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  color: var(--ink);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.workspace-folder summary::-webkit-details-marker {
+  display: none;
+}
+
+.workspace-folder summary:hover {
+  border-color: rgba(15, 118, 110, 0.16);
+  background: rgba(240, 253, 250, 0.72);
+}
+
+.workspace-folder-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 6px;
+  color: var(--accent);
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  font-size: 0.68rem;
+  transition: transform 0.16s ease;
+}
+
+.workspace-folder[open] > summary .workspace-folder-icon {
+  transform: rotate(90deg);
+}
+
+.workspace-folder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 750;
+}
+
+.workspace-folder summary small {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.workspace-folder-children {
+  margin-top: 4px;
 }
 
 .workspace-empty {
@@ -1011,16 +1138,21 @@ button.danger {
 
 .workspace-file-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 3px;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 8px;
+  align-items: center;
   width: 100%;
-  padding: 10px 11px;
+  padding: 8px 10px;
   border: 1px solid rgba(217, 119, 6, 0.16);
-  border-radius: 14px;
+  border-radius: 12px;
   background: rgba(255, 253, 250, 0.72);
   color: var(--ink);
   cursor: pointer;
   text-align: left;
+}
+
+.workspace-tree-file {
+  margin-left: calc(var(--depth, 0) * 12px);
 }
 
 .workspace-file-row:hover {
@@ -1030,8 +1162,22 @@ button.danger {
 
 .workspace-file-row[data-selected="true"] {
   border-color: rgba(15, 118, 110, 0.58);
-  background: linear-gradient(135deg, rgba(15, 118, 110, 0.18), rgba(255, 255, 255, 0.92));
+  background: linear-gradient(135deg, rgba(15, 118, 110, 0.22), rgba(255, 255, 255, 0.96));
   box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.1);
+}
+
+.workspace-file-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 24px;
+  border-radius: 8px;
+  background: rgba(15, 118, 110, 0.09);
+  color: #155e75;
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  font-size: 0.62rem;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .workspace-file-main {
@@ -1050,6 +1196,7 @@ button.danger {
 
 .workspace-file-main small,
 .workspace-file-meta {
+  grid-column: 2;
   color: var(--muted);
   font-size: 0.76rem;
 }

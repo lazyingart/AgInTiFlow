@@ -73,8 +73,10 @@ let browser;
 
 try {
   await waitForHealth();
+  await fs.mkdir(path.join(runtimeDir, ".aginti"), { recursive: true });
   await fs.mkdir(path.join(runtimeDir, "notes"), { recursive: true });
   await fs.mkdir(path.join(runtimeDir, "data"), { recursive: true });
+  await fs.writeFile(path.join(runtimeDir, ".aginti", ".env"), "DEEPSEEK_API_KEY=should-not-render\n");
   await fs.writeFile(path.join(runtimeDir, "notes", "workspace-ui.md"), "# Workspace UI\n\ninitial body\n");
   await fs.writeFile(path.join(runtimeDir, "data", "workspace-ui.csv"), "sample,value\nalpha,1\n");
   browser = await chromium.launch({ headless: true });
@@ -101,6 +103,16 @@ try {
   await page.waitForSelector('[data-workspace-file="notes/workspace-ui.md"]', { timeout: 15000 });
   if ((await page.locator("#workspace-lanes [data-workspace-lane]").count()) < 8) {
     throw new Error("workspace explorer did not render general category lanes");
+  }
+  if ((await page.locator('[data-workspace-file=".aginti/.env"]').count()) !== 0) {
+    throw new Error("workspace explorer exposed protected .aginti/.env");
+  }
+  if ((await page.locator("#workspace-tree details.workspace-folder").count()) < 1) {
+    throw new Error("workspace explorer did not render a folder tree");
+  }
+  const statusText = await page.locator("#workspace-browser-status").innerText();
+  if (!statusText.includes(runtimeDir) || !/files/i.test(statusText)) {
+    throw new Error(`workspace explorer status did not show file count and root path: ${statusText}`);
   }
   if ((await page.locator('[data-workspace-file="notes/workspace-ui.md"]').getAttribute("draggable")) !== "true") {
     throw new Error("workspace file rows are not draggable");
@@ -305,6 +317,9 @@ try {
           "working-directory-search-top",
           "project-status-chips",
           "workspace-explorer-general-lanes",
+          "workspace-explorer-folder-tree",
+          "workspace-explorer-protected-files-hidden",
+          "workspace-explorer-status-root",
           "workspace-file-selection",
           "workspace-editor-save-persists",
           "workspace-file-drop-to-chat",

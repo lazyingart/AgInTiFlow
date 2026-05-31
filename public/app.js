@@ -1251,6 +1251,37 @@ function workspaceFilesByLane() {
   return groups;
 }
 
+function buildWorkspaceFolderTree(files = []) {
+  const root = { name: "", path: "", dirs: new Map(), files: [] };
+  for (const file of files) {
+    const parts = String(file.path || "")
+      .split("/")
+      .filter(Boolean);
+    if (!parts.length) continue;
+    const fileName = parts.pop();
+    let node = root;
+    let currentPath = "";
+    for (const part of parts) {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      if (!node.dirs.has(part)) node.dirs.set(part, { name: part, path: currentPath, dirs: new Map(), files: [] });
+      node = node.dirs.get(part);
+    }
+    node.files.push({ ...file, name: file.name || fileName });
+  }
+  return root;
+}
+
+function workspaceFolderCount(node) {
+  if (!node) return 0;
+  let count = node.files?.length || 0;
+  for (const child of node.dirs?.values?.() || []) count += workspaceFolderCount(child);
+  return count;
+}
+
+function sortWorkspaceFiles(left, right) {
+  return String(left.path || "").localeCompare(String(right.path || ""));
+}
+
 function workspaceActiveFile() {
   return workspaceBrowser.files.find((file) => file.path === workspaceBrowser.activePath) || null;
 }
@@ -1279,12 +1310,18 @@ function renderWorkspaceExplorer() {
   const activeLane = workspaceBrowser.activeLane || "all";
   const warnings = workspaceBrowser.warnings?.length ? ` · ${workspaceBrowser.warnings.length} warning(s)` : "";
   const truncated = workspaceBrowser.truncated ? " · truncated" : "";
-  const status = workspaceBrowser.loading
-    ? "Loading workspace..."
-    : workspaceBrowser.error
-      ? `Workspace unavailable: ${workspaceBrowser.error}`
-      : `${workspaceBrowser.files.length} files · ${workspaceBrowser.root || workspaceRoot()}${warnings}${truncated}`;
-  workspaceBrowserStatusEl.textContent = status;
+  if (workspaceBrowser.loading) {
+    workspaceBrowserStatusEl.textContent = "Loading workspace...";
+  } else if (workspaceBrowser.error) {
+    workspaceBrowserStatusEl.textContent = `Workspace unavailable: ${workspaceBrowser.error}`;
+  } else {
+    workspaceBrowserStatusEl.innerHTML = `
+      <span class="workspace-status-chip">${workspaceBrowser.files.length} files</span>
+      <span class="workspace-status-chip">${escapeHtml(activeLane)}</span>
+      <code class="workspace-root-path">${escapeHtml(workspaceBrowser.root || workspaceRoot())}</code>
+      ${warnings || truncated ? `<span class="workspace-status-warn">${escapeHtml(`${warnings}${truncated}`.replace(/^ · /, ""))}</span>` : ""}
+    `;
+  }
 
   workspaceLanesEl.innerHTML = WORKSPACE_LANES.map((lane) => {
     const count = groups[lane.id]?.length || 0;
@@ -1302,34 +1339,69 @@ function renderWorkspaceExplorer() {
     `;
   }).join("");
 
-  const visibleFiles = (groups[activeLane] || []).slice().sort((left, right) => left.path.localeCompare(right.path));
+  const visibleFiles = (groups[activeLane] || []).slice().sort(sortWorkspaceFiles);
   if (!visibleFiles.length) {
     workspaceTreeEl.innerHTML = `<p class="subtle workspace-empty">No files in this category.</p>`;
     return;
   }
 
-  workspaceTreeEl.innerHTML = visibleFiles
-    .map((file) => {
-      const lane = inferWorkspaceLane(file);
-      const active = file.path === workspaceBrowser.activePath;
-      const meta = [lane, formatBytes(file.size), file.binary ? "binary" : "text"].join(" · ");
-      return `
-        <button
-          type="button"
-          class="workspace-file-row"
-          data-workspace-file="${escapeHtml(file.path)}"
-          data-selected="${active}"
-          draggable="true"
-        >
-          <span class="workspace-file-main">
-            <strong>${escapeHtml(workspaceBaseName(file.path))}</strong>
-            <small>${escapeHtml(workspaceDir(file.path) || ".")}</small>
-          </span>
-          <span class="workspace-file-meta">${escapeHtml(meta)}</span>
-        </button>
-      `;
-    })
-    .join("");
+  const tree = buildWorkspaceFolderTree(visibleFiles);
+  workspaceTreeEl.innerHTML = `
+    <div class="workspace-tree-toolbar">
+      <span>${escapeHtml(WORKSPACE_LANES.find((lane) => lane.id === activeLane)?.label || "Files")}</span>
+      <strong>${visibleFiles.length}</strong>
+    </div>
+    <div class="workspace-folder-root">
+      ${renderWorkspaceFolderNode(tree, 0)}
+    </div>
+  `;
+}
+
+function renderWorkspaceFileNode(file, depth = 0) {
+  const lane = inferWorkspaceLane(file);
+  const active = file.path === workspaceBrowser.activePath;
+  const meta = [lane, formatBytes(file.size), file.binary ? "binary" : "text"].join(" · ");
+  return `
+    <button
+      type="button"
+      class="workspace-file-row workspace-tree-file"
+      data-workspace-file="${escapeHtml(file.path)}"
+      data-selected="${active}"
+      draggable="true"
+      style="--depth: ${depth};"
+    >
+      <span class="workspace-file-icon" aria-hidden="true">${file.binary ? "bin" : "txt"}</span>
+      <span class="workspace-file-main">
+        <strong>${escapeHtml(workspaceBaseName(file.path))}</strong>
+        <small>${escapeHtml(workspaceDir(file.path) || ".")}</small>
+      </span>
+      <span class="workspace-file-meta">${escapeHtml(meta)}</span>
+    </button>
+  `;
+}
+
+function renderWorkspaceFolderNode(node, depth = 0) {
+  const dirs = [...(node.dirs?.values?.() || [])].sort((left, right) => left.name.localeCompare(right.name));
+  const files = (node.files || []).slice().sort(sortWorkspaceFiles);
+  const children = [
+    ...dirs.map((child) => renderWorkspaceFolderNode(child, depth + 1)),
+    ...files.map((file) => renderWorkspaceFileNode(file, depth)),
+  ].join("");
+  if (depth === 0) return children;
+  const activeInside = workspaceBrowser.activePath && workspaceBrowser.activePath.startsWith(`${node.path}/`);
+  const open = depth <= 2 || activeInside;
+  return `
+    <details class="workspace-folder" ${open ? "open" : ""} style="--depth: ${Math.max(depth - 1, 0)};">
+      <summary>
+        <span class="workspace-folder-icon" aria-hidden="true">&gt;</span>
+        <span class="workspace-folder-name">${escapeHtml(node.name)}</span>
+        <small>${workspaceFolderCount(node)}</small>
+      </summary>
+      <div class="workspace-folder-children">
+        ${children}
+      </div>
+    </details>
+  `;
 }
 
 function renderWorkspaceWorkbench() {
