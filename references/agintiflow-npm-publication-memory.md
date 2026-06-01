@@ -10,6 +10,17 @@ This note records the working publication route for AgInTiFlow so future release
 
 Latest verified release:
 
+- Version: `0.20.190`
+- Commit: `f192f8e`
+- GitHub Actions run: `https://github.com/lazyingart/AgInTiFlow/actions/runs/26736284533`
+- Workflow result: success
+- npm registry check: `npm view @lazyingart/agintiflow version dist-tags.latest --registry=https://registry.npmjs.org` returned `0.20.190`.
+- Installed verification: `npm install -g @lazyingart/agintiflow@0.20.190` then `aginti --version` returned `0.20.190`.
+- Webapp verification: `aginti webapp restart --port 3210` then `curl -fsS http://127.0.0.1:3210/health` returned `version":"0.20.190"` from the global npm package path.
+- Feature verification: `aginti --provider mock --routing manual --model mock-agent --no-shell --allow-file-tools --scs off "hello"` returned a direct greeting and did not create `hello.py`.
+
+Previous verified release:
+
 - Version: `0.20.189`
 - Commit: `0095284`
 - GitHub Actions run: `https://github.com/lazyingart/AgInTiFlow/actions/runs/26734901522`
