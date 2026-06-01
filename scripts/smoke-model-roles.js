@@ -6,10 +6,12 @@ import {
   AUXILIARY_MODEL_CATALOG,
   MODEL_PROVIDER_GROUPS,
   getModelRoleDefaults,
+  getProviderDefaults,
   modelsForProviderGroup,
+  normalizeReasoningEffort,
   selectModelRoute,
 } from "../src/model-routing.js";
-import { normalizeTextToolCallResponse, parseTextToolCalls, usesTextToolProtocol } from "../src/model-client.js";
+import { createChatCompletion, normalizeTextToolCallResponse, parseTextToolCalls, usesTextToolProtocol } from "../src/model-client.js";
 import { modelRoleChoices, selectorVisibleWindow } from "../src/interactive-cli.js";
 import {
   buildScsEvidencePack,
@@ -103,6 +105,27 @@ assert(roles.main.model === "deepseek-v4-pro", "main model default should be dee
 assert(roles.spare.provider === "openai" && roles.spare.model === "gpt-5.4", "spare model default should be OpenAI GPT-5.4");
 assert(roles.wrapper.provider === "codex" && roles.wrapper.model === "gpt-5.5", "wrapper default should be Codex GPT-5.5");
 assert(roles.auxiliary.provider === "grsai" && roles.auxiliary.model === "nano-banana-2", "auxiliary default should be GRS AI Nano Banana");
+
+const envSnapshot = {
+  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
+  LLM_BASE_URL: process.env.LLM_BASE_URL,
+  AGINTI_MAIN_REASONING: process.env.AGINTI_MAIN_REASONING,
+};
+process.env.OPENAI_BASE_URL = "https://openai-compatible.example/v1";
+process.env.LLM_BASE_URL = "https://generic-compatible.example/v1";
+assert(getProviderDefaults("openai").baseURL === "https://openai-compatible.example/v1", "OPENAI_BASE_URL should override LLM_BASE_URL for OpenAI provider");
+delete process.env.OPENAI_BASE_URL;
+assert(getProviderDefaults("openai").baseURL === "https://generic-compatible.example/v1", "LLM_BASE_URL should remain OpenAI fallback when OPENAI_BASE_URL is unset");
+process.env.AGINTI_MAIN_REASONING = "provider-default";
+assert(getModelRoleDefaults().main.reasoning === "", "provider-default main reasoning should normalize to omitted reasoning");
+process.env.AGINTI_MAIN_REASONING = "none";
+assert(getModelRoleDefaults().main.reasoning === "", "none main reasoning should normalize to omitted reasoning");
+assert(normalizeReasoningEffort("min") === "minimal", "min reasoning alias should normalize to minimal");
+assert(normalizeReasoningEffort("extra-high") === "xhigh", "extra-high reasoning alias should normalize to xhigh");
+for (const [key, value] of Object.entries(envSnapshot)) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
 
 const complexRoute = selectModelRoute({
   routingMode: "complex",
@@ -198,6 +221,64 @@ const highRiskRuntimeConfig = resolveRuntimeConfig({
 assert(highRiskRuntimeConfig.scsActive === true, "high-risk runtime config should activate SCS");
 assert(highRiskRuntimeConfig.model === "deepseek-v4-pro", "SCS runtime config should use main model");
 
+const customGatewayRuntimeConfig = resolveRuntimeConfig({
+  goal: "use a custom OpenAI-compatible model alias",
+  provider: "deepseek",
+  routingMode: "complex",
+  taskProfile: "auto",
+  mainProvider: "openai",
+  mainModel: "gpt-5.4-high",
+  mainReasoning: "none",
+});
+assert(customGatewayRuntimeConfig.provider === "openai", "custom OpenAI-compatible runtime should route through OpenAI provider");
+assert(customGatewayRuntimeConfig.model === "gpt-5.4-high", "custom OpenAI-compatible runtime should preserve arbitrary model string");
+assert(customGatewayRuntimeConfig.reasoning === "", "custom OpenAI-compatible runtime should omit reasoning when requested");
+
+const chatPayloadCalls = [];
+const fakeOpenAiClient = {
+  chat: {
+    completions: {
+      create: async (payload) => {
+        chatPayloadCalls.push(payload);
+        return { choices: [{ message: { content: "ok" } }] };
+      },
+    },
+  },
+};
+await createChatCompletion(
+  fakeOpenAiClient,
+  { model: "gpt-5.4", messages: [{ role: "user", content: "hello" }] },
+  { provider: "openai", reasoning: "high" },
+  "smoke reasoning request"
+);
+assert(chatPayloadCalls[0].reasoning_effort === "high", "OpenAI chat payload should include non-empty reasoning_effort");
+await createChatCompletion(
+  fakeOpenAiClient,
+  { model: "gpt-5.4-high", messages: [{ role: "user", content: "hello" }] },
+  { provider: "openai", reasoning: "provider-default" },
+  "smoke provider-default reasoning request"
+);
+assert(!("reasoning_effort" in chatPayloadCalls[1]), "Provider-default reasoning should omit reasoning_effort");
+let retryAttempts = 0;
+const retryOpenAiClient = {
+  chat: {
+    completions: {
+      create: async (payload) => {
+        retryAttempts += 1;
+        if (payload.reasoning_effort) throw new Error("Unsupported parameter: reasoning_effort");
+        return { choices: [{ message: { content: "ok" } }] };
+      },
+    },
+  },
+};
+await createChatCompletion(
+  retryOpenAiClient,
+  { model: "gateway-model", messages: [{ role: "user", content: "hello" }] },
+  { provider: "openai", reasoning: "medium" },
+  "smoke reasoning retry request"
+);
+assert(retryAttempts === 2, "OpenAI-compatible reasoning retry should retry once without reasoning_effort");
+
 assert(MODEL_PROVIDER_GROUPS["venice-gpt"].provider === "venice", "venice-gpt group missing");
 assert(modelsForProviderGroup("venice").some((item) => item.id === "venice-uncensored-1-2"), "venice group missing Venice 1.2");
 assert(modelsForProviderGroup("venice-gemma").some((item) => item.id === "google-gemma-4-31b-it"), "venice-gemma bucket missing Gemma 4 instruct");
@@ -215,6 +296,7 @@ assert(modelsForProviderGroup("openrouter-anthropic").some((item) => item.id ===
 assert(modelsForProviderGroup("openrouter-google").some((item) => item.id === "google/gemini-3.5-flash"), "openrouter Google bucket missing Gemini");
 assert(modelsForProviderGroup("openrouter-deepseek").some((item) => item.id === "deepseek/deepseek-v4-pro"), "openrouter DeepSeek bucket missing V4 Pro");
 assert(modelsForProviderGroup("openrouter-qwen").some((item) => item.id === "qwen/qwen3.7-max"), "openrouter Qwen bucket missing Qwen Max");
+assert(!modelsForProviderGroup("openai").some((item) => item.id === "gpt-5.4-high"), "OpenAI catalog should not include synthetic gpt-5.4-high alias");
 const routeChoices = modelRoleChoices("route").map((item) => `${item.provider}/${item.model}`);
 const mainChoices = modelRoleChoices("main").map((item) => `${item.provider}/${item.model}`);
 const spareChoices = modelRoleChoices("spare").map((item) => `${item.provider}/${item.model}`);
@@ -252,6 +334,7 @@ for (const expected of [
 }
 assert(!routeChoices.includes("venice/e2ee-venice-uncensored-24b-p"), "shared model selector should hide unstable E2EE Venice 1.1");
 assert(modelRoleChoices("route").some((item) => item.provider === "openai" && item.model === "gpt-5.5" && item.reasoningOptions.includes("xhigh")), "OpenAI selector missing reasoning levels");
+assert(modelRoleChoices("route").some((item) => item.provider === "openai" && item.model === "gpt-5.5" && item.reasoningOptions.includes("")), "OpenAI selector missing Provider default reasoning option");
 assert(modelRoleChoices("auxiliary").some((item) => item.provider === "grsai"), "auxiliary selector missing GRS AI");
 assert(modelRoleChoices("auxiliary").some((item) => item.provider === "venice" && item.model === "wan-2-7-pro-edit"), "auxiliary selector missing Venice Wan edit");
 const longAuxiliaryWindow = selectorVisibleWindow(32, 17, 24);
@@ -646,6 +729,9 @@ console.log(
       ok: true,
       checks: [
         "role-defaults",
+        "openai-base-url",
+        "provider-default-reasoning",
+        "openai-chat-reasoning-payload",
         "route-overrides",
         "provider-groups",
         "auxiliary-catalog",

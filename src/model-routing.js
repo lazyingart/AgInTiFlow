@@ -76,6 +76,24 @@ const COMPLEX_ROUTE_HINTS = [
 ];
 
 export const ROUTING_MODES = ["smart", "fast", "complex", "manual"];
+export const REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
+export const REASONING_PROVIDER_DEFAULT_LABEL = "Provider default";
+
+export function normalizeReasoningEffort(value = "", fallback = "") {
+  const text = String(value ?? "").trim().toLowerCase();
+  const normalizedFallback = REASONING_EFFORTS.includes(String(fallback || "").trim().toLowerCase())
+    ? String(fallback || "").trim().toLowerCase()
+    : "";
+  if (!text) return normalizedFallback;
+  if (["none", "off", "default", "provider-default", "provider_default", "providerdefault", "auto"].includes(text)) return "";
+  if (text === "min") return "minimal";
+  if (text === "x-high" || text === "extra-high" || text === "extra_high") return "xhigh";
+  return REASONING_EFFORTS.includes(text) ? text : normalizedFallback;
+}
+
+export function reasoningEffortLabel(value = "") {
+  return normalizeReasoningEffort(value) || REASONING_PROVIDER_DEFAULT_LABEL;
+}
 
 export const MODEL_PROVIDER_GROUPS = {
   deepseek: {
@@ -261,42 +279,42 @@ export const PROVIDER_MODEL_CATALOG = {
       id: "gpt-5.5",
       label: "GPT-5.5",
       role: "frontier",
-      reasoning: ["low", "medium", "high", "xhigh"],
+      reasoning: REASONING_EFFORTS,
       description: "Frontier model for complex coding, research, and real-world work.",
     },
     {
       id: "gpt-5.4",
       label: "GPT-5.4",
       role: "everyday coding",
-      reasoning: ["low", "medium", "high", "xhigh"],
+      reasoning: REASONING_EFFORTS,
       description: "Strong model for everyday coding.",
     },
     {
       id: "gpt-5.4-mini",
       label: "GPT-5.4 Mini",
       role: "fast spare",
-      reasoning: ["low", "medium", "high", "xhigh"],
+      reasoning: REASONING_EFFORTS,
       description: "Small, fast, cost-efficient model for simpler coding tasks.",
     },
     {
       id: "gpt-5.3-codex",
       label: "GPT-5.3 Codex",
       role: "coding",
-      reasoning: ["low", "medium", "high", "xhigh"],
+      reasoning: REASONING_EFFORTS,
       description: "Coding-optimized model.",
     },
     {
       id: "gpt-5.3-codex-spark",
       label: "GPT-5.3 Codex Spark",
       role: "fast coding",
-      reasoning: ["low", "medium", "high", "xhigh"],
+      reasoning: REASONING_EFFORTS,
       description: "Ultra-fast coding model.",
     },
     {
       id: "gpt-5.2",
       label: "GPT-5.2",
       role: "long-running",
-      reasoning: ["low", "medium", "high", "xhigh"],
+      reasoning: REASONING_EFFORTS,
       description: "Optimized for professional work and long-running agents.",
     },
   ],
@@ -824,7 +842,7 @@ export function getProviderDefaults(provider = "deepseek") {
     return {
       provider: "openai",
       apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || "",
-      baseURL: process.env.LLM_BASE_URL || "https://api.openai.com/v1",
+      baseURL: process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || "https://api.openai.com/v1",
       model: process.env.OPENAI_DEFAULT_MODEL || process.env.LLM_MODEL || "gpt-5.4-mini",
     };
   }
@@ -1046,7 +1064,7 @@ export function getModelRoleDefaults(overrides = {}) {
       command: "/route",
       provider: presets.fast.provider,
       model: presets.fast.model,
-      reasoning: overrides.routeReasoning || process.env.AGINTI_ROUTE_REASONING || "",
+      reasoning: normalizeReasoningEffort(overrides.routeReasoning ?? process.env.AGINTI_ROUTE_REASONING ?? ""),
       description: "Fast planner and triage model. Default: DeepSeek V4 Flash.",
     },
     main: {
@@ -1055,7 +1073,7 @@ export function getModelRoleDefaults(overrides = {}) {
       command: "/model",
       provider: presets.complex.provider,
       model: presets.complex.model,
-      reasoning: overrides.mainReasoning || process.env.AGINTI_MAIN_REASONING || "",
+      reasoning: normalizeReasoningEffort(overrides.mainReasoning ?? process.env.AGINTI_MAIN_REASONING ?? ""),
       description: "Complex executor for coding, debugging, writing, and long tasks. Default: DeepSeek V4 Pro.",
     },
     spare: {
@@ -1064,7 +1082,7 @@ export function getModelRoleDefaults(overrides = {}) {
       command: "/spare",
       provider: spareProvider,
       model: spareModel,
-      reasoning: overrides.spareReasoning || process.env.AGINTI_SPARE_REASONING || "medium",
+      reasoning: normalizeReasoningEffort(overrides.spareReasoning ?? process.env.AGINTI_SPARE_REASONING ?? "medium", "medium"),
       description: "Fallback or cross-check model. Default: OpenAI GPT-5.4 medium reasoning.",
     },
     wrapper: {

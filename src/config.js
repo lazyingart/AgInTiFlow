@@ -1,6 +1,12 @@
 import path from "node:path";
 import crypto from "node:crypto";
-import { getModelRoleDefaults, getProviderDefaults, normalizeRoutingMode, selectModelRoute } from "./model-routing.js";
+import {
+  getModelRoleDefaults,
+  getProviderDefaults,
+  normalizeReasoningEffort,
+  normalizeRoutingMode,
+  selectModelRoute,
+} from "./model-routing.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
 import { isWrapperAvailable, normalizeWrapperName } from "./tool-wrappers.js";
 import { loadProjectEnv, projectPaths, resolveProjectRoot } from "./project.js";
@@ -31,6 +37,13 @@ function parseList(value) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function configuredReasoning(overrides, args, key, envName) {
+  if (Object.prototype.hasOwnProperty.call(overrides, key)) return overrides[key];
+  if (Object.prototype.hasOwnProperty.call(args, key) && String(args[key] ?? "").trim()) return args[key];
+  if (process.env[envName] !== undefined) return process.env[envName];
+  return undefined;
 }
 
 export function resolveRuntimeConfig(args, overrides = {}) {
@@ -69,11 +82,13 @@ export function resolveRuntimeConfig(args, overrides = {}) {
   const modelRoles = getModelRoleDefaults({
     routeProvider: overrides.routeProvider || args.routeProvider || process.env.AGINTI_ROUTE_PROVIDER || "",
     routeModel: overrides.routeModel || args.routeModel || process.env.AGINTI_ROUTE_MODEL || "",
+    routeReasoning: configuredReasoning(overrides, args, "routeReasoning", "AGINTI_ROUTE_REASONING"),
     mainProvider: overrides.mainProvider || args.mainProvider || process.env.AGINTI_MAIN_PROVIDER || "",
     mainModel: overrides.mainModel || args.mainModel || process.env.AGINTI_MAIN_MODEL || "",
+    mainReasoning: configuredReasoning(overrides, args, "mainReasoning", "AGINTI_MAIN_REASONING"),
     spareProvider: overrides.spareProvider || args.spareProvider || process.env.AGINTI_SPARE_PROVIDER || "",
     spareModel: overrides.spareModel || args.spareModel || process.env.AGINTI_SPARE_MODEL || "",
-    spareReasoning: overrides.spareReasoning || args.spareReasoning || process.env.AGINTI_SPARE_REASONING || "",
+    spareReasoning: configuredReasoning(overrides, args, "spareReasoning", "AGINTI_SPARE_REASONING"),
     wrapperModel: overrides.wrapperModel || args.wrapperModel || process.env.AGINTI_WRAPPER_MODEL || "",
     wrapperReasoning: overrides.wrapperReasoning || args.wrapperReasoning || process.env.AGINTI_WRAPPER_REASONING || "",
     auxiliaryProvider: overrides.auxiliaryProvider || args.auxiliaryProvider || process.env.AGINTI_AUX_PROVIDER || "",
@@ -88,6 +103,22 @@ export function resolveRuntimeConfig(args, overrides = {}) {
   });
   const activeProvider = scsActive && route.provider !== "mock" ? modelRoles.main.provider : route.provider;
   const activeModel = scsActive && route.provider !== "mock" ? modelRoles.main.model : route.model;
+  const explicitReasoning = normalizeReasoningEffort(
+    overrides.reasoning ??
+      args.reasoning ??
+      configuredReasoning(overrides, args, "mainReasoning", "AGINTI_MAIN_REASONING") ??
+      configuredReasoning(overrides, args, "routeReasoning", "AGINTI_ROUTE_REASONING") ??
+      process.env.AGINTI_REASONING ??
+      ""
+  );
+  const activeReasoning =
+    scsActive && route.provider !== "mock"
+      ? modelRoles.main.reasoning
+      : route.provider === modelRoles.main.provider && route.model === modelRoles.main.model
+        ? modelRoles.main.reasoning
+        : route.provider === modelRoles.route.provider && route.model === modelRoles.route.model
+          ? modelRoles.route.reasoning
+          : explicitReasoning;
   const defaults = getProviderDefaults(activeProvider);
   const defaultMaxSteps = recommendedMaxStepsForTask({
     goal: args.goal || "",
@@ -147,12 +178,20 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     wrapperModel: modelRoles.wrapper.model,
     wrapperReasoning: modelRoles.wrapper.reasoning,
     perceptionModel: overrides.perceptionModel || args.perceptionModel || process.env.AGINTI_PERCEPTION_MODEL || "gpt-5.4-mini",
-    perceptionReasoning: overrides.perceptionReasoning || args.perceptionReasoning || process.env.AGINTI_PERCEPTION_REASONING || "medium",
+    perceptionReasoning: normalizeReasoningEffort(
+      overrides.perceptionReasoning ?? args.perceptionReasoning ?? process.env.AGINTI_PERCEPTION_REASONING ?? "medium",
+      "medium"
+    ),
     webResearchModel: overrides.webResearchModel || args.webResearchModel || process.env.AGINTI_WEB_RESEARCH_MODEL || "gpt-5.4-mini",
-    webResearchReasoning: overrides.webResearchReasoning || args.webResearchReasoning || process.env.AGINTI_WEB_RESEARCH_REASONING || "medium",
+    webResearchReasoning: normalizeReasoningEffort(
+      overrides.webResearchReasoning ?? args.webResearchReasoning ?? process.env.AGINTI_WEB_RESEARCH_REASONING ?? "medium",
+      "medium"
+    ),
     researchWrapperModel: overrides.researchWrapperModel || args.researchWrapperModel || process.env.AGINTI_RESEARCH_WRAPPER_MODEL || "gpt-5.4-mini",
-    researchWrapperReasoning:
-      overrides.researchWrapperReasoning || args.researchWrapperReasoning || process.env.AGINTI_RESEARCH_WRAPPER_REASONING || "medium",
+    researchWrapperReasoning: normalizeReasoningEffort(
+      overrides.researchWrapperReasoning ?? args.researchWrapperReasoning ?? process.env.AGINTI_RESEARCH_WRAPPER_REASONING ?? "medium",
+      "medium"
+    ),
     auxiliaryProvider: modelRoles.auxiliary.provider,
     auxiliaryModel: modelRoles.auxiliary.model,
     requestedProvider,
@@ -161,6 +200,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     apiKey: overrides.apiKey || defaults.apiKey,
     baseURL: overrides.baseURL || defaults.baseURL,
     model: activeModel || defaults.model,
+    reasoning: activeReasoning,
     maxSteps: parseNumber(overrides.maxSteps ?? args.maxSteps ?? process.env.MAX_STEPS, defaultMaxSteps),
     dynamicSteps: normalizeDynamicStepsMode(overrides.dynamicSteps ?? args.dynamicSteps ?? process.env.AGINTI_DYNAMIC_STEPS ?? "auto"),
     dynamicStepExtensionLimit: clampNumber(

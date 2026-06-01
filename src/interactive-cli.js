@@ -26,6 +26,8 @@ import {
   PROVIDER_MODEL_CATALOG,
   getModelRoleDefaults,
   modelsForProviderGroup,
+  normalizeReasoningEffort,
+  reasoningEffortLabel,
 } from "./model-routing.js";
 import { languageLabel, resolveLanguage, t } from "./i18n.js";
 import {
@@ -2668,13 +2670,13 @@ function createState(args = {}) {
     preferredWrapper: args.preferredWrapper || "codex",
     routeProvider: args.routeProvider || "",
     routeModel: args.routeModel || "",
-    routeReasoning: args.routeReasoning || "",
+    routeReasoning: isReasoningLevel(args.routeReasoning) ? reasoningConfigValue(args.routeReasoning) : "",
     mainProvider: args.mainProvider || "",
     mainModel: args.mainModel || "",
-    mainReasoning: args.mainReasoning || "",
+    mainReasoning: isReasoningLevel(args.mainReasoning) ? reasoningConfigValue(args.mainReasoning) : "",
     spareProvider: args.spareProvider || "openai",
     spareModel: args.spareModel || "gpt-5.4",
-    spareReasoning: args.spareReasoning || "medium",
+    spareReasoning: isReasoningLevel(args.spareReasoning) ? reasoningConfigValue(args.spareReasoning) : args.spareReasoning || "medium",
     wrapperModel: args.wrapperModel || "gpt-5.5",
     wrapperReasoning: args.wrapperReasoning || "medium",
     auxiliaryProvider: args.auxiliaryProvider || "grsai",
@@ -2810,7 +2812,7 @@ function printModelRoles(state) {
     auxiliaryModel: state.auxiliaryModel,
   });
   const roleLines = Object.values(roles).map((role) => {
-    const reasoning = role.reasoning ? ` reasoning=${role.reasoning}` : "";
+    const reasoning = role.reasoning !== undefined ? formatReasoningSuffix(role.reasoning) : "";
     return `${role.command.padEnd(12)} ${role.provider}/${role.model}${reasoning}\n  ${role.description}`;
   });
   const groups = Object.entries(MODEL_PROVIDER_GROUPS).map(([id, group]) => {
@@ -2861,7 +2863,20 @@ function compactReasoning(model = {}) {
 }
 
 function isReasoningLevel(value = "") {
-  return ["low", "medium", "high", "xhigh"].includes(String(value || "").toLowerCase());
+  const text = String(value || "").trim().toLowerCase();
+  return (
+    ["none", "off", "default", "provider-default", "provider_default", "providerdefault", "auto"].includes(text) ||
+    Boolean(normalizeReasoningEffort(text))
+  );
+}
+
+function formatReasoningSuffix(reasoning = "") {
+  return ` reasoning=${reasoningEffortLabel(reasoning)}`;
+}
+
+function reasoningConfigValue(value = "") {
+  const normalized = normalizeReasoningEffort(value);
+  return normalized || "provider-default";
 }
 
 function modelSelectorGroup(provider, model = {}) {
@@ -3052,7 +3067,7 @@ function textModelRoleChoices(groupId = "") {
         group,
         description: details,
         reasoningDefault: reasoning ? reasoning.split(" ")[0] : "",
-        reasoningOptions: Array.isArray(model.reasoning) ? model.reasoning : [],
+        reasoningOptions: Array.isArray(model.reasoning) ? ["", ...model.reasoning] : [],
       });
     }
   }
@@ -3356,15 +3371,17 @@ async function pickModelRole(role, state) {
       if (Array.isArray(modelSelection.reasoningOptions) && modelSelection.reasoningOptions.length > 0) {
         const currentReasoning =
           role === "route"
-            ? state.routeReasoning || selectedReasoning || "medium"
+            ? state.routeReasoning || selectedReasoning || ""
             : role === "spare"
               ? state.spareReasoning || selectedReasoning || "medium"
-              : state.mainReasoning || selectedReasoning || "medium";
+              : state.mainReasoning || selectedReasoning || "";
         const reasoningOptions = modelSelection.reasoningOptions.map((level) => ({
           action: "reasoning",
-          label: level,
-          value: level,
-          description: `${modelSelection.label} with ${level} reasoning`,
+          label: reasoningEffortLabel(level),
+          value: reasoningConfigValue(level),
+          description: level
+            ? `${modelSelection.label} with ${level} reasoning`
+            : `Omit reasoning effort and let the provider or gateway default for ${modelSelection.label}`,
         }));
         const reasoning = await selectModelChoice({
           title: `Select reasoning: ${modelSelection.label}`,
@@ -3379,7 +3396,7 @@ async function pickModelRole(role, state) {
         });
         if (isSelectorBack(reasoning)) continue;
         if (!reasoning) return false;
-        selectedReasoning = reasoning.value;
+        selectedReasoning = reasoningConfigValue(reasoning.value);
       }
       selected = modelSelection;
     }
@@ -3391,13 +3408,13 @@ async function pickModelRole(role, state) {
   if (role === "route") {
     state.routeProvider = selected.provider;
     state.routeModel = selected.model;
-    state.routeReasoning = selectedReasoning || state.routeReasoning || "";
-    printSystemLine(`route=${state.routeProvider}/${state.routeModel}${state.routeReasoning ? ` reasoning=${state.routeReasoning}` : ""}`);
+    state.routeReasoning = selectedReasoning;
+    printSystemLine(`route=${state.routeProvider}/${state.routeModel}${formatReasoningSuffix(state.routeReasoning)}`);
   } else if (role === "spare") {
     state.spareProvider = selected.provider;
     state.spareModel = selected.model;
-    state.spareReasoning = selectedReasoning || state.spareReasoning || "medium";
-    printSystemLine(`spare=${state.spareProvider}/${state.spareModel} reasoning=${state.spareReasoning}`);
+    state.spareReasoning = selectedReasoning;
+    printSystemLine(`spare=${state.spareProvider}/${state.spareModel}${formatReasoningSuffix(state.spareReasoning)}`);
   } else if (role === "auxiliary") {
     state.auxiliaryProvider = selected.provider;
     state.auxiliaryModel = selected.model;
@@ -3406,8 +3423,8 @@ async function pickModelRole(role, state) {
   } else {
     state.mainProvider = selected.provider;
     state.mainModel = selected.model;
-    state.mainReasoning = selectedReasoning || state.mainReasoning || "";
-    printSystemLine(`main=${state.mainProvider}/${state.mainModel}${state.mainReasoning ? ` reasoning=${state.mainReasoning}` : ""}`);
+    state.mainReasoning = selectedReasoning;
+    printSystemLine(`main=${state.mainProvider}/${state.mainModel}${formatReasoningSuffix(state.mainReasoning)}`);
   }
   return true;
 }
@@ -4149,8 +4166,8 @@ async function handleCommand(line, state, packageDir) {
     const selected = parseProviderModel(parts[0] || value, state.routeProvider || "deepseek");
     state.routeProvider = selected.provider || "deepseek";
     state.routeModel = selected.model || state.routeModel || "deepseek-v4-flash";
-    if (isReasoningLevel(parts[1])) state.routeReasoning = parts[1].toLowerCase();
-    printSystemLine(`route=${state.routeProvider}/${state.routeModel}${state.routeReasoning ? ` reasoning=${state.routeReasoning}` : ""}`);
+    if (isReasoningLevel(parts[1])) state.routeReasoning = reasoningConfigValue(parts[1]);
+    printSystemLine(`route=${state.routeProvider}/${state.routeModel}${formatReasoningSuffix(state.routeReasoning)}`);
     return true;
   }
   if (command === "main" || command === "model") {
@@ -4182,12 +4199,12 @@ async function handleCommand(line, state, packageDir) {
     if (command === "main" || selected.provider) {
       state.mainProvider = selected.provider || "deepseek";
       state.mainModel = selected.model || "deepseek-v4-pro";
-      if (isReasoningLevel(parts[1])) state.mainReasoning = parts[1].toLowerCase();
+      if (isReasoningLevel(parts[1])) state.mainReasoning = reasoningConfigValue(parts[1]);
       if (command === "model") {
         state.provider = state.mainProvider;
         state.model = state.mainModel;
       }
-      printSystemLine(`main=${state.mainProvider}/${state.mainModel}${state.mainReasoning ? ` reasoning=${state.mainReasoning}` : ""}`);
+      printSystemLine(`main=${state.mainProvider}/${state.mainModel}${formatReasoningSuffix(state.mainReasoning)}`);
       return true;
     }
     state.model = value;
@@ -4198,18 +4215,18 @@ async function handleCommand(line, state, packageDir) {
     if (!value) {
       if (input.isTTY && output.isTTY && typeof input.setRawMode === "function") {
         const changed = await pickModelRole("spare", state);
-        if (!changed) printSystemLine(`spare=${state.spareProvider}/${state.spareModel} reasoning=${state.spareReasoning}`);
+        if (!changed) printSystemLine(`spare=${state.spareProvider}/${state.spareModel}${formatReasoningSuffix(state.spareReasoning)}`);
         return true;
       }
-      printAgentMessage(`Spare model: ${state.spareProvider}/${state.spareModel} reasoning=${state.spareReasoning}`);
+      printAgentMessage(`Spare model: ${state.spareProvider}/${state.spareModel}${formatReasoningSuffix(state.spareReasoning)}`);
       return true;
     }
     const parts = value.split(/\s+/).filter(Boolean);
     const selected = parseProviderModel(parts[0] || "", state.spareProvider || "openai");
     state.spareProvider = selected.provider || "openai";
     state.spareModel = selected.model || state.spareModel || "gpt-5.4";
-    if (parts[1]) state.spareReasoning = parts[1];
-    printSystemLine(`spare=${state.spareProvider}/${state.spareModel} reasoning=${state.spareReasoning}`);
+    if (isReasoningLevel(parts[1])) state.spareReasoning = reasoningConfigValue(parts[1]);
+    printSystemLine(`spare=${state.spareProvider}/${state.spareModel}${formatReasoningSuffix(state.spareReasoning)}`);
     return true;
   }
   if (command === "wrapper") {

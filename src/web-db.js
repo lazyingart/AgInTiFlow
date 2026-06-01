@@ -8,7 +8,7 @@ import { loadDatabaseSync } from "./sqlite.js";
 import { permissionModeDefaults } from "./permission-modes.js";
 import { DEFAULT_SCS_MODE } from "./scs-controller.js";
 
-const PREFERENCES_SCHEMA_VERSION = 11;
+const PREFERENCES_SCHEMA_VERSION = 12;
 
 function jsonStatePath(dbPath) {
   return dbPath.replace(/\.sqlite$/i, ".json");
@@ -53,8 +53,10 @@ function defaultPreferences(baseDir) {
     model: presets.fast.model,
     routeProvider: roles.route.provider,
     routeModel: roles.route.model,
+    routeReasoning: roles.route.reasoning,
     mainProvider: roles.main.provider,
     mainModel: roles.main.model,
+    mainReasoning: roles.main.reasoning,
     spareProvider: roles.spare.provider,
     spareModel: roles.spare.model,
     spareReasoning: roles.spare.reasoning,
@@ -205,8 +207,10 @@ export class WebDatabase {
           const roles = getModelRoleDefaults();
           preferences.routeProvider = preferences.routeProvider || roles.route.provider;
           preferences.routeModel = preferences.routeModel || roles.route.model;
+          preferences.routeReasoning = preferences.routeReasoning ?? roles.route.reasoning;
           preferences.mainProvider = preferences.mainProvider || roles.main.provider;
           preferences.mainModel = preferences.mainModel || roles.main.model;
+          preferences.mainReasoning = preferences.mainReasoning ?? roles.main.reasoning;
           preferences.spareProvider = preferences.spareProvider || roles.spare.provider;
           preferences.spareModel = preferences.spareModel || roles.spare.model;
           preferences.spareReasoning = preferences.spareReasoning || roles.spare.reasoning;
@@ -246,6 +250,11 @@ export class WebDatabase {
         }
         if ((parsed.preferencesSchemaVersion || 1) < 11 && !process.env.AGINTI_SCS_MODE && (parsed.enableScs || preferences.enableScs) === "on") {
           preferences.enableScs = DEFAULT_SCS_MODE;
+        }
+        if ((parsed.preferencesSchemaVersion || 1) < 12) {
+          const roles = getModelRoleDefaults();
+          preferences.routeReasoning = preferences.routeReasoning ?? roles.route.reasoning;
+          preferences.mainReasoning = preferences.mainReasoning ?? roles.main.reasoning;
         }
         this.savePreferences(preferences);
       }

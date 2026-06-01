@@ -8,6 +8,7 @@ import {
   getModelPresets,
   getModelRoleDefaults,
   modelsForProviderGroup,
+  reasoningEffortLabel,
 } from "./model-routing.js";
 import { getDockerSandboxStatus, runDockerPreflight } from "./docker-sandbox.js";
 import { buildCapabilityReport, printCapabilityReport } from "./capabilities.js";
@@ -19,6 +20,7 @@ import {
   initProject,
   listProjectSessionRemovalCandidates,
   listProjectSessions,
+  loadProjectEnv,
   renameProjectSession,
   removeProjectSessions,
   providerKeyStatus,
@@ -352,8 +354,10 @@ export function parseArgs(argv) {
     model: "",
     routeProvider: "",
     routeModel: "",
+    routeReasoning: "",
     mainProvider: "",
     mainModel: "",
+    mainReasoning: "",
     spareProvider: "",
     spareModel: "",
     spareReasoning: "",
@@ -518,6 +522,11 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "--route-reasoning") {
+      result.routeReasoning = readOption(argv, i);
+      i += 1;
+      continue;
+    }
     if (arg === "--main-provider") {
       result.mainProvider = readOption(argv, i);
       i += 1;
@@ -525,6 +534,11 @@ export function parseArgs(argv) {
     }
     if (arg === "--main-model") {
       result.mainModel = readOption(argv, i);
+      i += 1;
+      continue;
+    }
+    if (arg === "--main-reasoning") {
+      result.mainReasoning = readOption(argv, i);
       i += 1;
       continue;
     }
@@ -762,7 +776,7 @@ function exitOnUnknownOptions(parsed) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti docker [status|setup|install-host] OR aginti update OR aginti image [--json] [--dry-run] [--format png|webp|svg] "prompt" OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti mcp [status|config|inspect|tools|resources|read|prompts|prompt|call|restart] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|openrouter|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--dynamic-steps auto|on|off] [--routing smart|fast|complex|manual] [--provider deepseek|openai|openrouter|qwen|venice|mock] [--model MODEL] [--route-model MODEL] [--main-model MODEL] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--mcp|--no-mcp] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
+    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti docker [status|setup|install-host] OR aginti update OR aginti image [--json] [--dry-run] [--format png|webp|svg] "prompt" OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti mcp [status|config|inspect|tools|resources|read|prompts|prompt|call|restart] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|openrouter|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--dynamic-steps auto|on|off] [--routing smart|fast|complex|manual] [--provider deepseek|openai|openrouter|qwen|venice|mock] [--model MODEL] [--route-model MODEL --route-reasoning provider-default|minimal|low|medium|high|xhigh] [--main-model MODEL --main-reasoning provider-default|minimal|low|medium|high|xhigh] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--mcp|--no-mcp] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
   console.log("Permission shortcuts: -s safe asks before writes/setup; -s normal allows current-project writes and Docker setup; -s danger enables trusted host/full-access mode.");
   console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
@@ -1183,6 +1197,8 @@ function agentDefaults(args) {
     mainModel: args.mainModel || process.env.AGINTI_MAIN_MODEL || "",
     spareProvider: args.spareProvider || process.env.AGINTI_SPARE_PROVIDER || "",
     spareModel: args.spareModel || process.env.AGINTI_SPARE_MODEL || "",
+    routeReasoning: args.routeReasoning || process.env.AGINTI_ROUTE_REASONING || "",
+    mainReasoning: args.mainReasoning || process.env.AGINTI_MAIN_REASONING || "",
     spareReasoning: args.spareReasoning || process.env.AGINTI_SPARE_REASONING || "",
     taskProfile,
     language: resolveLanguage(args.language || process.env.AGINTI_LANGUAGE || ""),
@@ -1227,18 +1243,20 @@ function agentDefaults(args) {
 }
 
 function printRoutes() {
+  loadProjectEnv(process.cwd());
   const presets = getModelPresets();
   for (const preset of Object.values(presets)) {
-    const reasoning = preset.reasoning ? ` reasoning=${preset.reasoning}` : "";
+    const reasoning = preset.reasoning ? ` reasoning=${reasoningEffortLabel(preset.reasoning)}` : "";
     console.log(`${preset.id}: provider=${preset.provider} model=${preset.model}${reasoning} - ${preset.description}`);
   }
 }
 
 function printModels() {
+  loadProjectEnv(process.cwd());
   const roles = getModelRoleDefaults();
   console.log("Model roles:");
   for (const role of Object.values(roles)) {
-    const reasoning = role.reasoning ? ` reasoning=${role.reasoning}` : "";
+    const reasoning = role.reasoning !== undefined ? ` reasoning=${reasoningEffortLabel(role.reasoning)}` : "";
     console.log(`  ${role.command}: ${role.provider}/${role.model}${reasoning} - ${role.description}`);
   }
   console.log("");

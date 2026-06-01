@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { normalizeWrapperName, wrapperStatusText } from "./tool-wrappers.js";
 import { getTaskProfile } from "./task-profiles.js";
 import { listAuxiliarySkills } from "./auxiliary-tools.js";
+import { normalizeReasoningEffort } from "./model-routing.js";
 import { engineeringGuidanceForTask } from "./engineering-guidance.js";
 import { formatSkillsForPrompt, selectSkillsForGoal } from "./skill-library.js";
 import { platformInfo, platformLabel } from "./platform.js";
@@ -85,10 +86,39 @@ function modelTimeoutMs(config) {
   return Number.isFinite(timeout) && timeout > 0 ? timeout : 0;
 }
 
+function chatReasoningEffort(config = {}) {
+  if (config.provider !== "openai") return "";
+  return normalizeReasoningEffort(config.reasoning || config.mainReasoning || config.spareReasoning || "");
+}
+
+function withChatReasoningEffort(payload = {}, config = {}) {
+  const reasoning = chatReasoningEffort(config);
+  if (!reasoning) {
+    const { reasoning_effort: _reasoningEffort, ...rest } = payload;
+    return rest;
+  }
+  return { ...payload, reasoning_effort: reasoning };
+}
+
+function shouldRetryWithoutReasoningEffort(error, payload = {}) {
+  if (!payload.reasoning_effort) return false;
+  const message = `${error?.message || ""} ${error?.error?.message || ""} ${error?.cause?.message || ""}`;
+  return /reasoning[_\s.-]?effort|unsupported parameter|unknown parameter|unrecognized request argument/i.test(message);
+}
+
 export async function createChatCompletion(client, payload, config, label = "model request") {
+  const preparedPayload = withChatReasoningEffort(payload, config);
   const timeout = modelTimeoutMs(config);
   if (!timeout && !config.abortSignal) {
-    return client.chat.completions.create(payload, requestOptions(config));
+    try {
+      return await client.chat.completions.create(preparedPayload, requestOptions(config));
+    } catch (error) {
+      if (shouldRetryWithoutReasoningEffort(error, preparedPayload)) {
+        const { reasoning_effort: _reasoningEffort, ...retryPayload } = preparedPayload;
+        return client.chat.completions.create(retryPayload, requestOptions(config));
+      }
+      throw error;
+    }
   }
 
   const controller = new AbortController();
@@ -116,12 +146,19 @@ export async function createChatCompletion(client, payload, config, label = "mod
     : null;
 
   try {
-    const request = client.chat.completions.create(payload, {
+    const request = client.chat.completions.create(preparedPayload, {
       ...requestOptions(config),
       signal: controller.signal,
     });
     return await (timeoutPromise ? Promise.race([request, timeoutPromise]) : request);
   } catch (error) {
+    if (shouldRetryWithoutReasoningEffort(error, preparedPayload)) {
+      const { reasoning_effort: _reasoningEffort, ...retryPayload } = preparedPayload;
+      return await client.chat.completions.create(retryPayload, {
+        ...requestOptions(config),
+        signal: controller.signal,
+      });
+    }
     if (timedOut && error?.name !== "ModelTimeoutError") {
       const timeoutError = new Error(`${label} timed out after ${timeout}ms`);
       timeoutError.name = "ModelTimeoutError";

@@ -7,6 +7,7 @@ import { redactSensitiveText } from "./redaction.js";
 import { isWrapperAvailable, normalizeWrapperName, runAgentWrapper, runCodexImageWrapper } from "./tool-wrappers.js";
 import { searchWeb } from "./web-search.js";
 import { resolveWorkspacePath } from "./workspace-tools.js";
+import { normalizeReasoningEffort } from "./model-routing.js";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_IMAGE_COUNT = 4;
@@ -331,7 +332,7 @@ async function callOpenAiImageRead(args, images, config) {
   const preferredModel = String(args.model || config.perceptionModel || process.env.AGINTI_PERCEPTION_MODEL || "gpt-5.4-mini").trim();
   const fallbackModels = normalizeList(args.fallbackModels || process.env.AGINTI_PERCEPTION_FALLBACK_MODELS || "gpt-4o-mini");
   const models = uniqueList([preferredModel, ...fallbackModels]);
-  const reasoning = String(args.reasoning || config.perceptionReasoning || process.env.AGINTI_PERCEPTION_REASONING || "medium").trim();
+  const reasoning = normalizeReasoningEffort(args.reasoning ?? config.perceptionReasoning ?? process.env.AGINTI_PERCEPTION_REASONING ?? "medium", "medium");
   const detail = ["low", "high", "auto"].includes(String(args.detail || "").toLowerCase())
     ? String(args.detail).toLowerCase()
     : "auto";
@@ -578,7 +579,10 @@ async function callOpenAiWebResearch(args, config) {
   const preferredModel = String(args.model || config.webResearchModel || process.env.AGINTI_WEB_RESEARCH_MODEL || "gpt-5.4-mini").trim();
   const fallbackModels = normalizeList(args.fallbackModels || process.env.AGINTI_WEB_RESEARCH_FALLBACK_MODELS || "gpt-4o-mini");
   const models = uniqueList([preferredModel, ...fallbackModels]);
-  const reasoning = String(args.reasoning || config.webResearchReasoning || process.env.AGINTI_WEB_RESEARCH_REASONING || "medium").trim();
+  const reasoning = normalizeReasoningEffort(
+    args.reasoning ?? config.webResearchReasoning ?? process.env.AGINTI_WEB_RESEARCH_REASONING ?? "medium",
+    "medium"
+  );
   const domains = normalizeList(args.domains || args.allowedDomains);
   const blockedDomains = normalizeList(args.blockedDomains);
   const filters = {};

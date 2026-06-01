@@ -15,6 +15,7 @@ import {
   getModelPresets,
   getModelRoleDefaults,
   getProviderDefaults,
+  normalizeReasoningEffort,
   normalizeRoutingMode,
 } from "./src/model-routing.js";
 import { isWrapperAvailable, listAgentWrappers, normalizeWrapperName } from "./src/tool-wrappers.js";
@@ -482,6 +483,11 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
       ? body.sandboxMode || current.sandboxMode || permissionDefaults.sandboxMode
       : permissionDefaults.sandboxMode
   );
+  const normalizeReasoningPreference = (key, fallback = "") => {
+    if (Object.prototype.hasOwnProperty.call(body, key)) return normalizeReasoningEffort(body[key]);
+    if (Object.prototype.hasOwnProperty.call(current, key)) return normalizeReasoningEffort(current[key]);
+    return normalizeReasoningEffort(fallback);
+  };
 
   return {
     routingMode,
@@ -500,6 +506,7 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
       typeof body.routeModel === "string" && body.routeModel.trim()
         ? body.routeModel.trim()
         : current.routeModel || modelRoles.route.model,
+    routeReasoning: normalizeReasoningPreference("routeReasoning", modelRoles.route.reasoning),
     mainProvider:
       typeof body.mainProvider === "string" && body.mainProvider.trim()
         ? body.mainProvider.trim()
@@ -508,6 +515,7 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
       typeof body.mainModel === "string" && body.mainModel.trim()
         ? body.mainModel.trim()
         : current.mainModel || modelRoles.main.model,
+    mainReasoning: normalizeReasoningPreference("mainReasoning", modelRoles.main.reasoning),
     spareProvider:
       typeof body.spareProvider === "string" && body.spareProvider.trim()
         ? body.spareProvider.trim()
@@ -516,10 +524,7 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
       typeof body.spareModel === "string" && body.spareModel.trim()
         ? body.spareModel.trim()
         : current.spareModel || modelRoles.spare.model,
-    spareReasoning:
-      typeof body.spareReasoning === "string" && body.spareReasoning.trim()
-        ? body.spareReasoning.trim()
-        : current.spareReasoning || modelRoles.spare.reasoning,
+    spareReasoning: normalizeReasoningPreference("spareReasoning", modelRoles.spare.reasoning),
     wrapperModel:
       typeof body.wrapperModel === "string" && body.wrapperModel.trim()
         ? body.wrapperModel.trim()
@@ -1009,8 +1014,10 @@ function buildRunConfig(body, overrides = {}) {
       routingMode: merged.routingMode,
       routeProvider: merged.routeProvider,
       routeModel: merged.routeModel,
+      routeReasoning: merged.routeReasoning,
       mainProvider: merged.mainProvider,
       mainModel: merged.mainModel,
+      mainReasoning: merged.mainReasoning,
       spareProvider: merged.spareProvider,
       spareModel: merged.spareModel,
       spareReasoning: merged.spareReasoning,

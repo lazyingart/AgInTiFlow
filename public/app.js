@@ -711,8 +711,10 @@ const modelRoleGridEl = document.querySelector("#model-role-grid");
 const modelRoutePillEl = document.querySelector("#model-route-pill");
 const routeProviderField = document.querySelector("#routeProvider");
 const routeModelField = document.querySelector("#routeModel");
+const routeReasoningField = document.querySelector("#routeReasoning");
 const mainProviderField = document.querySelector("#mainProvider");
 const mainModelField = document.querySelector("#mainModel");
+const mainReasoningField = document.querySelector("#mainReasoning");
 const spareProviderField = document.querySelector("#spareProvider");
 const spareModelField = document.querySelector("#spareModel");
 const spareReasoningField = document.querySelector("#spareReasoning");
@@ -1859,17 +1861,19 @@ function renderModelRoles() {
       ...(modelRoles.route || {}),
       provider: routeProviderField?.value || modelRoles.route?.provider || "deepseek",
       model: routeModelField?.value || modelRoles.route?.model || "deepseek-v4-flash",
+      reasoning: routeReasoningField?.value ?? modelRoles.route?.reasoning ?? "",
     },
     main: {
       ...(modelRoles.main || {}),
       provider: mainProviderField?.value || modelRoles.main?.provider || "deepseek",
       model: mainModelField?.value || modelRoles.main?.model || "deepseek-v4-pro",
+      reasoning: mainReasoningField?.value ?? modelRoles.main?.reasoning ?? "",
     },
     spare: {
       ...(modelRoles.spare || {}),
       provider: spareProviderField?.value || modelRoles.spare?.provider || "openai",
       model: spareModelField?.value || modelRoles.spare?.model || "gpt-5.4",
-      reasoning: spareReasoningField?.value || modelRoles.spare?.reasoning || "medium",
+      reasoning: spareReasoningField?.value ?? modelRoles.spare?.reasoning ?? "medium",
     },
     wrapper: {
       ...(modelRoles.wrapper || {}),
@@ -1885,7 +1889,7 @@ function renderModelRoles() {
   };
   modelRoleGridEl.innerHTML = Object.values(roles)
     .map((role) => {
-      const reasoning = role.reasoning ? ` · ${role.reasoning}` : "";
+      const reasoning = role.reasoning ? ` · ${role.reasoning}` : role.reasoning === "" ? " · Provider default" : "";
       return `
         <div class="model-role-card">
           <strong>${escapeHtml(role.label || role.id)}</strong>
@@ -2077,11 +2081,13 @@ function formPayload() {
     model: fieldValue(modelField),
     routeProvider: routeProviderField?.value || "deepseek",
     routeModel: fieldValue(routeModelField) || "deepseek-v4-flash",
+    routeReasoning: routeReasoningField?.value ?? "",
     mainProvider: mainProviderField?.value || "deepseek",
     mainModel: fieldValue(mainModelField) || "deepseek-v4-pro",
+    mainReasoning: mainReasoningField?.value ?? "",
     spareProvider: spareProviderField?.value || "openai",
     spareModel: fieldValue(spareModelField) || "gpt-5.4",
-    spareReasoning: spareReasoningField?.value || "medium",
+    spareReasoning: spareReasoningField?.value ?? "medium",
     wrapperModel: fieldValue(wrapperModelField) || "gpt-5.5",
     wrapperReasoning: wrapperReasoningField?.value || "medium",
     auxiliaryProvider: auxiliaryProviderField?.value || "grsai",
@@ -3918,7 +3924,7 @@ veniceModeToggle?.addEventListener("change", () => {
 });
 
 modelField.addEventListener("change", updateRoutingHint);
-[routeProviderField, routeModelField, mainProviderField, mainModelField, spareProviderField, spareModelField, spareReasoningField, wrapperModelField, wrapperReasoningField, auxiliaryProviderField, auxiliaryModelField]
+[routeProviderField, routeModelField, routeReasoningField, mainProviderField, mainModelField, mainReasoningField, spareProviderField, spareModelField, spareReasoningField, wrapperModelField, wrapperReasoningField, auxiliaryProviderField, auxiliaryModelField]
   .filter(Boolean)
   .forEach((field) => {
     field.addEventListener("input", () => {
@@ -4230,9 +4236,11 @@ async function loadConfig() {
   routingModeField.value = prefs.routingMode || "smart";
   providerField.value = prefs.provider || "deepseek";
   if (routeProviderField) routeProviderField.value = prefs.routeProvider || modelRoles.route?.provider || "deepseek";
+  if (routeReasoningField) routeReasoningField.value = prefs.routeReasoning ?? modelRoles.route?.reasoning ?? "";
   if (mainProviderField) mainProviderField.value = prefs.mainProvider || modelRoles.main?.provider || "deepseek";
+  if (mainReasoningField) mainReasoningField.value = prefs.mainReasoning ?? modelRoles.main?.reasoning ?? "";
   if (spareProviderField) spareProviderField.value = prefs.spareProvider || modelRoles.spare?.provider || "openai";
-  if (spareReasoningField) spareReasoningField.value = prefs.spareReasoning || modelRoles.spare?.reasoning || "medium";
+  if (spareReasoningField) spareReasoningField.value = prefs.spareReasoning ?? modelRoles.spare?.reasoning ?? "medium";
   if (wrapperReasoningField) wrapperReasoningField.value = prefs.wrapperReasoning || modelRoles.wrapper?.reasoning || "medium";
   if (auxiliaryProviderField) auxiliaryProviderField.value = prefs.auxiliaryProvider || modelRoles.auxiliary?.provider || "grsai";
   setSelectOptions(
