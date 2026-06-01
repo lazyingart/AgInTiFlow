@@ -204,10 +204,11 @@ try {
   });
   await page.fill("#maxSteps", "4");
   await page.selectOption("#dynamicSteps", "off");
-  await page.fill("#chat-input", "Say hello from the web UI composer in one concise sentence.");
+  const composerGoal = "Create notes/web-ui-smoke.md with one concise sentence from the web UI composer.";
+  await page.fill("#chat-input", composerGoal);
   await page.click("#chat-submit");
   const firstPayload = JSON.parse(runPayloads.at(-1) || "{}");
-  if (firstPayload.goal !== "Say hello from the web UI composer in one concise sentence.") {
+  if (firstPayload.goal !== composerGoal) {
     throw new Error("composer text was not used as the first run goal");
   }
   if (firstPayload.enableScs !== "off" || firstPayload.taskProfile !== "auto") {

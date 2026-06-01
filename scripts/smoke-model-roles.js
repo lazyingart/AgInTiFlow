@@ -23,6 +23,7 @@ import {
 } from "../src/scs-controller.js";
 import { buildScsEvidenceLedger, deriveScsTaskContract, evaluateScsEvidence } from "../src/scs-evidence.js";
 import { resolveRuntimeConfig } from "../src/config.js";
+import { classifyGoalIntent, isDirectAnswerIntent } from "../src/goal-intent.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -126,6 +127,14 @@ for (const [key, value] of Object.entries(envSnapshot)) {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;
 }
+
+const helloIntent = classifyGoalIntent("hello");
+assert(isDirectAnswerIntent(helloIntent), "bare hello should be classified as direct conversational intent");
+assert(helloIntent.requiresTools === false, "bare hello should not require tools");
+assert(classifyGoalIntent("你好").directAnswer.includes("你好"), "Chinese greeting should get a direct Chinese reply");
+assert(classifyGoalIntent("say hello in Japanese").directAnswer.includes("こんにちは"), "Japanese greeting request should answer directly");
+assert(classifyGoalIntent("create hello.py").requiresTools, "explicit file creation should remain agentic");
+assert(classifyGoalIntent("write a hello-world Python script and run it").requiresTools, "explicit coding task should require tools");
 
 const complexRoute = selectModelRoute({
   routingMode: "complex",
@@ -732,6 +741,7 @@ console.log(
         "openai-base-url",
         "provider-default-reasoning",
         "openai-chat-reasoning-payload",
+        "goal-intent-direct-answer",
         "route-overrides",
         "provider-groups",
         "auxiliary-catalog",

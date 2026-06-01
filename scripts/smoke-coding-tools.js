@@ -939,6 +939,23 @@ try {
     "surgical context message was not injected into model history"
   );
 
+  const helloRun = await runMock("hello", "coding-direct-hello");
+  assert(helloRun.result.result.includes("Hello"), "bare hello did not finish with a direct greeting");
+  assert(!helloRun.state?.plan, "bare hello should not create an execution plan");
+  assert(
+    helloRun.events.some((event) => event.type === "session.finished" && event.data?.mode === "direct-answer"),
+    "bare hello did not finish through the direct-answer path"
+  );
+  assert(
+    !helloRun.events.some((event) => event.type === "tool.started" || event.type === "tool.completed"),
+    "bare hello should not call tools"
+  );
+  const helloPyExists = await fs
+    .stat(path.join(workspace, "hello.py"))
+    .then(() => true)
+    .catch(() => false);
+  assert(!helloPyExists, "bare hello should not create hello.py");
+
   const writeRun = await runMock("Create notes/hello.md with a short coding smoke message.", "coding-write");
   const written = await fs.readFile(path.join(workspace, "notes/hello.md"), "utf8");
   assert(written.includes("Created by AgInTiFlow mock mode."), "mock write did not create expected file");
@@ -1214,6 +1231,7 @@ try {
           "scout_blackboard",
           "surgical_context_pack",
           "mock_inspect_project",
+          "direct_greeting_no_tools",
           "write_file",
           "duplicate_write_failed",
           "resume_session_write",

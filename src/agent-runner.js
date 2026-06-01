@@ -42,6 +42,7 @@ import { summarizeMcpConfig } from "./mcp/config.js";
 import { isMcpBridgeTool } from "./mcp/policy.js";
 import { executeMcpBridgeTool } from "./mcp/tool-bridge.js";
 import { longJobStatus, startLongJob } from "./long-job-tools.js";
+import { classifyGoalIntent, isDirectAnswerIntent } from "./goal-intent.js";
 import {
   DEFAULT_SCS_MODE,
   buildSupervisorInstruction,
@@ -589,11 +590,11 @@ async function createInitialState(config, sessionId) {
         content: [
           "You are a careful browser and shell agent with a small tool surface.",
           "Use only the provided tools.",
-          "The execution plan is not the final answer. After planning, actively use tools until the requested task is complete or genuinely blocked.",
+          "The execution plan is not the final answer. After planning, actively use tools until the requested task is complete or genuinely blocked. If the user only sends a greeting, thanks, or another simple conversational turn, finish directly without creating files, running shell commands, opening browsers, or sending canvas artifacts.",
           "If the shell tool can satisfy a local task, prefer it before opening a browser.",
           "Do not open a browser page just because a start URL exists. Treat it as a suggestion only.",
           "Only reference element ids from the latest browser snapshot.",
-          "Prefer short, deliberate actions over guessing.",
+          "Prefer short, deliberate actions over guessing. Use tools only when the request actually needs workspace, browser, shell, web, canvas, image, MCP, or specialist work.",
           browserStateReconciliationGuidance(),
           "Never navigate outside the allowed domains when an allowlist exists.",
           "Avoid destructive actions, purchases, account changes, and sensitive workflows.",
@@ -645,7 +646,7 @@ async function createInitialState(config, sessionId) {
           `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
           skillContext,
           engineeringGuidance,
-          "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. File paths sent to canvas are copied into session artifacts for durable preview, but user-requested outputs should also remain in a clear workspace path unless the user asked only for a temporary preview.",
+          "A frontend canvas/artifacts tunnel exists. Use send_to_canvas when important markdown, diffs, screenshots, images, or workspace files should be highlighted in the UI. File paths sent to canvas are copied into session artifacts for durable preview, but user-requested outputs should also remain in a clear workspace path unless the user asked only for a temporary preview. Do not use canvas for ordinary greetings or short chat replies.",
           "For visual-output requests such as draw, plot, graph, chart, diagram, figure, image, or visualization, proactively publish a canvas artifact even when the user does not mention canvas. If workspace file tools are enabled, prefer creating a small SVG or markdown artifact and call send_to_canvas with selected=true.",
           "Work like a practical coding agent: orient with inspect_project/search/read, patch code with apply_patch, run safe checks when they add confidence, iterate on failures, and keep outputs inside the workspace.",
           "For large projects, decompose into useful files and milestones, identify entry points/tests/contracts first, implement a coherent minimal version, then iterate with checks rather than only describing what you would do.",
@@ -1105,6 +1106,40 @@ function appendChatEntry(state, role, content) {
     content,
     at: new Date().toISOString(),
   });
+}
+
+async function finishWithDirectAnswer({ config, state, store, observers, sessionId, intent }) {
+  const result = redactSensitiveText(intent.directAnswer || "I'm here. How can I help?");
+  state.meta = state.meta || {};
+  state.meta.goalIntent = intent;
+  state.updatedAt = new Date().toISOString();
+  state.messages.push({
+    role: "assistant",
+    content: result,
+  });
+  appendChatEntry(state, "assistant", result);
+  await store.saveState(state);
+  await store.appendEvent("intent.classified", intent);
+  await store.appendEvent("session.finished", {
+    result,
+    mode: "direct-answer",
+    intent: {
+      kind: intent.kind,
+      reason: intent.reason,
+      requiresTools: intent.requiresTools,
+    },
+  });
+  observers.event("intent.classified", intent);
+  observers.event("session.finished", {
+    result,
+    sessionId,
+    mode: "direct-answer",
+  });
+  emitConsole(config, result, { kind: "assistant", markdown: true });
+  return {
+    sessionId,
+    result,
+  };
 }
 
 async function applyContinuationPrompt(state, config, observers) {
@@ -2360,6 +2395,16 @@ export async function runAgent(config) {
 
   try {
     throwIfAborted(config);
+    const goalIntent = classifyGoalIntent(config.goal);
+    const canFinishDirectly =
+      !config.resume && !state.plan && Number(state.stepsCompleted || 0) === 0 && isDirectAnswerIntent(goalIntent);
+    if (canFinishDirectly) {
+      return await finishWithDirectAnswer({ config, state, store, observers, sessionId, intent: goalIntent });
+    }
+
+    state.meta = state.meta || {};
+    state.meta.goalIntent = goalIntent;
+
     const scoutsWillRun = shouldRunParallelScouts(config, state);
     if (!scoutsWillRun) {
       await maybePrepareSurgicalContext(config, state, store, observers);

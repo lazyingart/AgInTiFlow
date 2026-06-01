@@ -742,7 +742,7 @@ export async function createPlan(client, config, state) {
       {
         role: "system",
         content:
-          `You are planning a browser, shell, workspace, and coding-agent task. The plan is only a launchpad: after planning, the runtime will continue with tools until the task is complete or genuinely blocked. Prefer real workspace edits/checks over advice-only answers. If a local shell command can satisfy the goal, prefer that before browser actions. Treat any suggested start URL as optional. ${browserStateReconciliationGuidance()} ${formatBehaviorContractForPrompt({ mode: "plan" })} Write a concise execution plan with 3 to 6 steps. Mention risks or blockers when relevant. Keep it short and practical.`,
+          `You are planning a browser, shell, workspace, and coding-agent task. The plan is only a launchpad: after planning, the runtime will continue with tools until the task is complete or genuinely blocked. Use tools only when the user actually asks for workspace, browser, shell, web, canvas, image, MCP, or specialist work. For greetings, thanks, or simple conversational turns, finish directly; never invent file creation or shell work for them. Prefer real workspace edits/checks over advice-only answers only when the request is an explicit task or deliverable. If a local shell command can satisfy a local task, prefer that before browser actions. Treat any suggested start URL as optional. ${browserStateReconciliationGuidance()} ${formatBehaviorContractForPrompt({ mode: "plan" })} Write a concise execution plan with 3 to 6 steps only for requests that need execution. Mention risks or blockers when relevant. Keep it short and practical.`,
       },
       {
         role: "user",
