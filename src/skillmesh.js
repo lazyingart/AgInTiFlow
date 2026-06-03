@@ -321,6 +321,60 @@ function canonicalSkillContent(content = "") {
   return String(content || "").replace(/\r\n/g, "\n").trim();
 }
 
+function titleCaseSkillId(id = "") {
+  return String(id || "")
+    .split(/[-_\s/]+/)
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function parseSkillMarkdownContent(content = "", context = "SKILL.md") {
+  const text = String(content || "");
+  if (!text.trim()) throw new Error(`${context}: empty skill`);
+  if (Buffer.byteLength(text, "utf8") > MAX_SKILL_BYTES) throw new Error(`${context}: skill is too large`);
+  if (redactSensitiveText(text) !== text) throw new Error(`${context}: contains token-like secret text`);
+  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (!match) throw new Error(`${context}: missing YAML frontmatter`);
+  const frontmatter = match[1].replace(/\r\n/g, "\n");
+  const fields = {};
+  const passthrough = [];
+  for (const line of frontmatter.split(/\n/)) {
+    const scalar = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (scalar) {
+      const key = scalar[1];
+      const value = scalar[2].trim().replace(/^['"]|['"]$/g, "");
+      if (value) fields[key] = value;
+      if (["id", "name", "label", "description"].includes(key)) continue;
+    }
+    passthrough.push(line);
+  }
+  const id = fields.id || fields.name || "";
+  if (!id) throw new Error(`${context}: id or name is required`);
+  if (!safeSkillId(id)) throw new Error(`${context}: invalid skill id ${id}`);
+  const description = fields.description || "";
+  if (!description) throw new Error(`${context}: description is required`);
+  const label = fields.label || titleCaseSkillId(id);
+  return {
+    fields: { ...fields, id, label, description },
+    body: text.slice(match[0].length).trim(),
+    passthrough: passthrough.join("\n").trim(),
+  };
+}
+
+function normalizeSkillMarkdownForSkillMesh(content = "", context = "SKILL.md") {
+  const parsed = parseSkillMarkdownContent(content, context);
+  const frontmatter = [
+    "---",
+    `id: ${parsed.fields.id}`,
+    `label: ${parsed.fields.label}`,
+    `description: ${parsed.fields.description}`,
+    parsed.passthrough,
+    "---",
+  ].filter((line) => line !== "");
+  return `${frontmatter.join("\n")}\n\n${parsed.body}`.trim();
+}
+
 function canonicalPackForSignature(pack) {
   const copy = { ...pack };
   delete copy.signature;
@@ -382,25 +436,7 @@ function verifyPackSignature(pack) {
 }
 
 function validateSkillMarkdownContent(content = "", context = "SKILL.md") {
-  const text = String(content || "");
-  if (!text.trim()) throw new Error(`${context}: empty skill`);
-  if (Buffer.byteLength(text, "utf8") > MAX_SKILL_BYTES) throw new Error(`${context}: skill is too large`);
-  if (redactSensitiveText(text) !== text) throw new Error(`${context}: contains token-like secret text`);
-  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-  if (!match) throw new Error(`${context}: missing YAML frontmatter`);
-  const frontmatter = match[1];
-  const fields = {};
-  for (const line of frontmatter.split(/\r?\n/)) {
-    const scalar = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
-    if (!scalar) continue;
-    const value = scalar[2].trim().replace(/^['"]|['"]$/g, "");
-    if (value) fields[scalar[1]] = value;
-  }
-  for (const field of ["id", "label", "description"]) {
-    if (!fields[field]) throw new Error(`${context}: ${field} is required`);
-  }
-  if (!safeSkillId(fields.id)) throw new Error(`${context}: invalid skill id ${fields.id}`);
-  return fields;
+  return parseSkillMarkdownContent(content, context).fields;
 }
 
 function builtInSkillIds() {
@@ -420,7 +456,7 @@ export async function buildSkillPack(skillId, { home = agintiflowHome(), author 
 export async function buildSkillPackFromMarkdown(content, { home = agintiflowHome(), author = "local-user", valueScore = 80 } = {}) {
   const fields = validateSkillMarkdownContent(content, "SKILL.md");
   const id = fields.id;
-  const normalized = canonicalSkillContent(content);
+  const normalized = normalizeSkillMarkdownForSkillMesh(content, "SKILL.md");
   const entry = {
     id,
     path: `skills/${id}/SKILL.md`,

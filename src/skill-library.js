@@ -100,15 +100,19 @@ function normalizeExternalTools(value) {
 export function loadSkillFile(filePath) {
   const text = fs.readFileSync(filePath, "utf8");
   const { meta, body } = parseFrontmatter(text, filePath);
-  for (const field of ["id", "label", "description"]) {
-    if (typeof meta[field] !== "string" || !meta[field].trim()) {
-      throw new Error(`${filePath}: ${field} must be a non-empty string`);
-    }
+  const id = String(meta.id || meta.name || "").trim();
+  if (!id) {
+    throw new Error(`${filePath}: id or name must be a non-empty string`);
+  }
+  const label = String(meta.label || titleCaseSkillId(id)).trim();
+  const description = String(meta.description || "").trim();
+  if (!description) {
+    throw new Error(`${filePath}: description must be a non-empty string`);
   }
   return {
-    id: meta.id.trim(),
-    label: meta.label.trim(),
-    description: meta.description.trim(),
+    id,
+    label,
+    description,
     triggers: normalizeList(meta.triggers),
     tools: normalizeList(meta.tools),
     body,

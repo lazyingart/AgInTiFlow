@@ -64,6 +64,28 @@ assert(!listSkills({ includeBody: false }).some((skill) => skill.id === "mesh-an
 await setSkillMeshMode("share");
 const config = await loadSkillMeshConfig();
 assert(config.mode === "share", "share mode should persist");
+
+const codexStyleMarkdown = [
+  "---",
+  "name: paper-revision-skill",
+  "description: Plan-gated academic manuscript revision workflow for LaTeX papers, reviewer responses, proof corrections, redlines, PDF-backed audits, and submission packaging.",
+  "---",
+  "",
+  "Plan first, edit second, verify from compiled PDFs, and keep revision evidence under references/.",
+  "",
+].join("\n");
+const codexPack = await buildSkillPackFromMarkdown(codexStyleMarkdown, { valueScore: 90 });
+assert(codexPack.skills[0].id === "paper-revision-skill", "Codex-style name should become SkillMesh id");
+assert(codexPack.skills[0].content.includes("id: paper-revision-skill"), "Codex-style skill should be normalized with id");
+assert(codexPack.skills[0].content.includes("label: Paper Revision Skill"), "Codex-style skill should receive a label");
+await installSkillPack(codexPack, { enabled: true });
+assert(
+  selectSkillsForGoal("use the paper revision workflow to answer reviewer comments before editing latex", { limit: 8 }).some(
+    (skill) => skill.id === "paper-revision-skill"
+  ),
+  "Codex-style imported skill should be selectable"
+);
+
 const serviceUnit = buildSkillMeshServiceUnit({
   dataDir: path.join(tempRoot, "relay-service"),
   runScript: path.join(tempRoot, "relay-service", "aginti-skill-relay.run.sh"),
@@ -120,6 +142,7 @@ console.log(
         "metadata-sync",
         "soft-unreachable-node",
         "systemd-service-unit",
+        "codex-style-skill-import",
       ],
     },
     null,
