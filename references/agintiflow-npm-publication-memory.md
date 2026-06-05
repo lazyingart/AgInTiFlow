@@ -2,13 +2,25 @@
 
 Date: 2026-05-20
 
-Updated: 2026-06-01
+Updated: 2026-06-05
 
 This note records the working publication route for AgInTiFlow so future release work does not get blocked by stale local npm tokens or repeated discussion about why direct `npm publish` failed.
 
 ## Published Evidence
 
 Latest verified release:
+
+- Version: `0.20.193`
+- Commit: `256d37c`
+- GitHub Actions run: `https://github.com/lazyingart/AgInTiFlow/actions/runs/27003998581`
+- Workflow result: success
+- npm registry check: `npm view @lazyingart/agintiflow version dist-tags.latest --registry=https://registry.npmjs.org` returned `0.20.193`.
+- Temporary install verification: `npm install --prefix <tmp> -g @lazyingart/agintiflow@0.20.193` then `<tmp>/bin/aginti --version` returned `0.20.193`.
+- Installed verification: `npm install -g @lazyingart/agintiflow@0.20.193` then `aginti --version` returned `0.20.193`.
+- Webapp verification: `aginti webapp restart --port 3210` then `curl -fsS http://127.0.0.1:3210/health` returned `version":"0.20.193"` from the global npm package path.
+- Feature verification: full `npm test`, `npm pack --dry-run`, and focused `npm run smoke:coding-tools` passed, including `svg_cdata_validation_failure` and `svg_standalone_validation_pass`.
+
+Previous verified release:
 
 - Version: `0.20.192`
 - Commit: `fe571c0`
