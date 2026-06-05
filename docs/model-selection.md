@@ -133,7 +133,7 @@ It keeps smart routing enabled. If the Venice key is missing, run `/auth venice`
 
 ## Keys
 
-Keys are set per project and stored only in ignored `.aginti/.env`:
+Keys are saved account-wide in `~/.agintiflow/.env` by default. Use `--project` only when the current project needs an override in ignored `.aginti/.env`:
 
 ```bash
 aginti auth
@@ -142,6 +142,7 @@ aginti auth venice
 aginti keys status
 printf '%s' "$OPENROUTER_API_KEY" | aginti keys set openrouter --stdin
 printf '%s' "$VENICE_API_KEY" | aginti keys set venice --stdin
+printf '%s' "$OPENAI_API_KEY" | aginti keys set --project openai --stdin
 ```
 
 The web UI mirrors the same roles with dropdowns. Keep the left panel for daily controls: routing policy, provider/model, profile, goal, workspace, sandbox, and common tools. Use **Advanced settings** for model roles, browser start URL, wrapper/scout settings, Docker image, password/destructive toggles, and auxiliary image models. Runtime logs stay in the right column, followed by wrapper, workspace, and sandbox capability panels.

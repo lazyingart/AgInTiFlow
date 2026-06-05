@@ -85,7 +85,7 @@ aginti init --template aaps
 aginti init --template supervision
 ```
 
-On first interactive use, AgInTiFlow opens an auth wizard if no main model key is found. Pick DeepSeek, OpenAI, OpenRouter, Qwen, or Venice, paste the key, and it saves to the ignored project-local `.aginti/.env` file with restricted permissions. You can rerun setup any time:
+On first interactive use, AgInTiFlow opens an auth wizard if no main model key is found. Pick DeepSeek, OpenAI, OpenRouter, Qwen, or Venice, paste the key, and it saves account-wide to `~/.agintiflow/.env` with restricted permissions. Current project `.aginti/.env` files can still override account defaults when needed. You can rerun setup any time:
 
 ```bash
 aginti auth
@@ -93,6 +93,7 @@ aginti auth deepseek
 aginti auth openrouter
 aginti auth venice
 aginti login grsai
+aginti auth --project openai   # project override in .aginti/.env
 ```
 
 Provider signup and key pages:
@@ -328,9 +329,10 @@ AgInTiFlow stores canonical sessions centrally and keeps only project-local poin
 
 | Location | Purpose |
 | --- | --- |
+| `~/.agintiflow/.env` | Account-wide provider keys usable from any project. Local to the user account. |
 | `~/.agintiflow/sessions/<session-id>/` | Canonical state, events, browser state, artifacts, snapshots, canvas files. |
 | `<project>/.aginti-sessions/` | Project-local session pointers and web UI database. Ignored by git. |
-| `<project>/.aginti/.env` | Optional project-local API keys with restricted permissions. Ignored by git. |
+| `<project>/.aginti/.env` | Optional project-local API key overrides with restricted permissions. Ignored by git. |
 | `<project>/AGINTI.md` | Editable project instructions and durable local preferences. Safe to commit if it contains no secrets. |
 
 Safety defaults:
@@ -366,13 +368,14 @@ PACKAGE_INSTALL_POLICY=allow
 COMMAND_CWD=/path/to/project
 ```
 
-Project-local keys:
+Account-wide keys:
 
 ```bash
 aginti init
 printf '%s' "$DEEPSEEK_API_KEY" | aginti keys set deepseek --stdin
 printf '%s' "$OPENROUTER_API_KEY" | aginti keys set openrouter --stdin
 printf '%s' "$VENICE_API_KEY" | aginti keys set venice --stdin
+printf '%s' "$OPENAI_API_KEY" | aginti keys set --project openai --stdin  # optional project override
 ```
 
 More detail:

@@ -21,7 +21,9 @@ const envKeys = [
   "GRSAI_API_KEY",
 ];
 const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+const originalAgintiflowHome = process.env.AGINTIFLOW_HOME;
 for (const key of envKeys) delete process.env[key];
+process.env.AGINTIFLOW_HOME = path.join(tempRoot, ".agintiflow-home");
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -85,18 +87,32 @@ try {
   const veniceDefaults = getProviderDefaults("venice");
   assert(veniceDefaults.provider === "venice" && veniceDefaults.model === "venice-uncensored-1-2", "venice provider defaults are not available");
 
+  const projectOnlyRoot = path.join(tempRoot, "project-only");
+  await fs.mkdir(path.join(projectOnlyRoot, ".aginti"), { recursive: true });
+  await fs.writeFile(path.join(projectOnlyRoot, ".aginti", ".env"), 'OPENAI_API_KEY="project-only-openai-key"\n', "utf8");
+  let projectOnlyStatus = providerKeyStatus(projectOnlyRoot);
+  assert(projectOnlyStatus.openai && projectOnlyStatus.projectEnv, "project-only key was not loaded");
+  await fs.access(path.join(tempRoot, ".agintiflow-home", ".env"))
+    .then(() => {
+      throw new Error("project-only key was incorrectly promoted into account-wide env");
+    })
+    .catch((error) => {
+      if (error?.code !== "ENOENT") throw error;
+    });
+  delete process.env.OPENAI_API_KEY;
+
   process.env.DEEPSEEK_API_KEY = "ambient-deepseek-key";
   process.env.OPENROUTER_API_KEY = "ambient-openrouter-key";
   process.env.VENICE_API_KEY = "ambient-venice-key";
   process.env.GRSAI_API_KEY = "ambient-grsai-key";
   let status = providerKeyStatus(tempRoot);
   assert(status.deepseek && status.openrouter && status.venice && status.grsai, "ambient provider keys were not detected");
-  assert(status.localEnv, "ambient provider keys were not persisted into local .aginti/.env");
-  const localEnv = await fs.readFile(path.join(tempRoot, ".aginti", ".env"), "utf8");
-  assert(localEnv.includes("DEEPSEEK_API_KEY="), "ambient DeepSeek key was not saved locally");
-  assert(localEnv.includes("OPENROUTER_API_KEY="), "ambient OpenRouter key was not saved locally");
-  assert(localEnv.includes("VENICE_API_KEY="), "ambient Venice key was not saved locally");
-  assert(localEnv.includes("GRSAI_API_KEY="), "ambient GRS AI key was not saved locally");
+  assert(status.globalEnv, "ambient provider keys were not persisted into account-wide ~/.agintiflow/.env");
+  const globalEnv = await fs.readFile(path.join(tempRoot, ".agintiflow-home", ".env"), "utf8");
+  assert(globalEnv.includes("DEEPSEEK_API_KEY="), "ambient DeepSeek key was not saved globally");
+  assert(globalEnv.includes("OPENROUTER_API_KEY="), "ambient OpenRouter key was not saved globally");
+  assert(globalEnv.includes("VENICE_API_KEY="), "ambient Venice key was not saved globally");
+  assert(globalEnv.includes("GRSAI_API_KEY="), "ambient GRS AI key was not saved globally");
   delete process.env.DEEPSEEK_API_KEY;
   delete process.env.OPENROUTER_API_KEY;
   delete process.env.VENICE_API_KEY;
@@ -126,8 +142,12 @@ try {
 
   await runCli(["keys", "set", "openai", "--stdin"], "test-openai-key");
   await runCli(["keys", "set", "grsai", "--stdin"], "test-grsai-key");
+  await runCli(["keys", "set", "--project", "deepseek", "--stdin"], "project-deepseek-key");
   status = providerKeyStatus(tempRoot);
-  assert(status.openai && status.openrouter && status.grsai && status.qwen && status.venice, "stored auth keys were not detected");
+  assert(status.openai && status.openrouter && status.grsai && status.qwen && status.venice && status.deepseek, "stored auth keys were not detected");
+  assert(status.projectEnv, "project-scoped key was not recorded as project env");
+  const projectEnv = await fs.readFile(path.join(tempRoot, ".aginti", ".env"), "utf8");
+  assert(projectEnv.includes("DEEPSEEK_API_KEY="), "project-scoped DeepSeek key was not saved in .aginti/.env");
   const openaiPreview = providerKeyPreview(tempRoot, "openai");
   assert(openaiPreview.preview === "test…-key (15 chars)", "openai key preview was not masked correctly");
   assert(openaiPreview.preview !== "test-openai-key", "openai key preview leaked raw key");
@@ -136,6 +156,8 @@ try {
   assert(keysOutput.includes("openrouter=available"), "keys status did not include openrouter");
   assert(keysOutput.includes("qwen=available"), "keys status did not include qwen");
   assert(keysOutput.includes("venice=available"), "keys status did not include venice");
+  assert(keysOutput.includes("globalEnv=yes"), "keys status did not show global env");
+  assert(keysOutput.includes("projectEnv=yes"), "keys status did not show project env");
   assert(
     !keysOutput.includes("test-openai-key") &&
       !keysOutput.includes("test-openrouter-key") &&
@@ -157,7 +179,9 @@ try {
           "qwen-defaults",
           "openrouter-defaults",
           "venice-defaults",
-          "ambient-key-autopersist",
+          "project-key-not-auto-promoted",
+          "ambient-key-global-autopersist",
+          "project-key-override",
           "qwen-key-status",
           "openrouter-key-status",
           "venice-key-status",
@@ -173,5 +197,7 @@ try {
     if (originalEnv[key] === undefined) delete process.env[key];
     else process.env[key] = originalEnv[key];
   }
+  if (originalAgintiflowHome === undefined) delete process.env.AGINTIFLOW_HOME;
+  else process.env.AGINTIFLOW_HOME = originalAgintiflowHome;
   await fs.rm(tempRoot, { recursive: true, force: true });
 }

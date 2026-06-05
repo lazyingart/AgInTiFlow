@@ -13,7 +13,7 @@ editable vectors, use AgInTiFlow file tools to write deterministic SVG/LaTeX/HTM
 
 ## Setup
 
-Store a GRS AI or Venice key project-locally:
+Store a GRS AI or Venice image key account-wide:
 
 ```bash
 aginti login grsai
@@ -21,6 +21,7 @@ aginti login venice
 # or
 printf '%s' "$GRSAI" | aginti keys set grsai --stdin
 printf '%s' "$VENICE_API_KEY" | aginti keys set venice --stdin
+printf '%s' "$VENICE_API_KEY" | aginti keys set --project venice --stdin  # optional project override
 ```
 
 Inside interactive chat, use either spelling:
@@ -29,7 +30,7 @@ Inside interactive chat, use either spelling:
 /auxiliary grsai
 ```
 
-Keys are saved in `.aginti/.env` as `GRSAI` or `VENICE_API_KEY` with `0600` permissions. The CLI and web app only report whether a key exists; they never return raw values.
+Keys are saved in `~/.agintiflow/.env` by default as `GRSAI` or `VENICE_API_KEY` with `0600` permissions. Project `.aginti/.env` can override them. The CLI and web app only report whether a key exists; they never return raw values.
 
 ## Runtime Flow
 

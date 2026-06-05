@@ -110,6 +110,7 @@ export function projectPaths(projectRoot = process.cwd()) {
     sessionDbPath: path.join(root, PROJECT_SESSIONS_DIR_NAME, "web-state.sqlite"),
     legacySessionDbPath: path.join(root, LEGACY_PROJECT_SESSIONS_DIR_NAME, "web-state.sqlite"),
     agintiflowHome: globalPaths.home,
+    globalEnvPath: path.join(globalPaths.home, ".env"),
     globalSessionsDir: globalPaths.sessionsDir,
     globalSessionIndexPath: globalPaths.indexDbPath,
     gitignorePath: path.join(root, ".gitignore"),
@@ -257,18 +258,38 @@ function ensureSecretGitignoreLinesSync(gitignorePath) {
   fs.writeFileSync(gitignorePath, `${current}${prefix}${missing.join("\n")}\n`, "utf8");
 }
 
-function persistAmbientProviderKeysSync(paths) {
-  let parsed = {};
+function envTextFromParsed(parsed = {}) {
+  return Object.entries(parsed)
+    .filter(([key]) => LOCAL_ENV_KEYS.has(key))
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join("\n");
+}
+
+function readEnvFileSync(envPath) {
   try {
-    parsed = parseEnvText(fs.readFileSync(paths.envPath, "utf8"));
+    return parseEnvText(fs.readFileSync(envPath, "utf8"));
   } catch {
-    parsed = {};
+    return {};
   }
+}
+
+function writeEnvFileSync(envPath, parsed = {}) {
+  fs.mkdirSync(path.dirname(envPath), { recursive: true });
+  fs.writeFileSync(envPath, `${envTextFromParsed(parsed)}\n`, { mode: 0o600 });
+  try {
+    fs.chmodSync(envPath, 0o600);
+  } catch {
+    // chmod can fail on non-POSIX filesystems; the file still remains local to the user account.
+  }
+}
+
+function persistAmbientProviderKeysSync(paths, sourceEnv = process.env) {
+  const parsed = readEnvFileSync(paths.globalEnvPath);
 
   let changed = false;
   const persistedKeys = [];
   for (const keyName of AMBIENT_PROVIDER_KEYS) {
-    const value = String(process.env[keyName] || "").trim();
+    const value = String(sourceEnv[keyName] || "").trim();
     if (!value || parsed[keyName]) continue;
     parsed[keyName] = value;
     persistedKeys.push(keyName);
@@ -276,43 +297,46 @@ function persistAmbientProviderKeysSync(paths) {
   }
   if (!changed) return { persisted: false, keys: [] };
 
-  fs.mkdirSync(paths.controlDir, { recursive: true });
-  ensureSecretGitignoreLinesSync(paths.gitignorePath);
-  const output = Object.entries(parsed)
-    .filter(([key]) => LOCAL_ENV_KEYS.has(key))
-    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
-    .join("\n");
-  fs.writeFileSync(paths.envPath, `${output}\n`, { mode: 0o600 });
-  try {
-    fs.chmodSync(paths.envPath, 0o600);
-  } catch {
-    // chmod can fail on non-POSIX filesystems; the file still remains local and gitignored.
-  }
+  writeEnvFileSync(paths.globalEnvPath, parsed);
   return { persisted: true, keys: persistedKeys };
 }
 
 export function loadProjectEnv(projectRoot = process.cwd(), { override = false } = {}) {
   const paths = projectPaths(projectRoot);
-  const envPaths = [paths.rootEnvPath, paths.envPath];
+  const originalEnvKeys = new Set(
+    [...LOCAL_ENV_KEYS].filter((key) => String(process.env[key] || "").trim())
+  );
+  const ambientSourceEnv = {};
+  for (const key of AMBIENT_PROVIDER_KEYS) {
+    if (String(process.env[key] || "").trim()) ambientSourceEnv[key] = process.env[key];
+  }
+  const envPaths = [paths.globalEnvPath, paths.rootEnvPath, paths.envPath];
   const loadedPaths = [];
   for (const envPath of envPaths) {
     try {
       const parsed = parseEnvText(fs.readFileSync(envPath, "utf8"));
       if (Object.keys(parsed).length === 0) continue;
+      const isProjectEnv = envPath === paths.rootEnvPath || envPath === paths.envPath;
       for (const [key, value] of Object.entries(parsed)) {
-        if (override || !process.env[key]) process.env[key] = value;
+        if (override || !process.env[key] || (isProjectEnv && !originalEnvKeys.has(key))) {
+          process.env[key] = value;
+        }
       }
       loadedPaths.push(envPath);
     } catch {
       // Ignore missing or unreadable optional local env files.
     }
   }
-  const ambient = persistAmbientProviderKeysSync(paths);
-  if (ambient.persisted && !loadedPaths.includes(paths.envPath)) loadedPaths.push(paths.envPath);
+  const ambient = persistAmbientProviderKeysSync(paths, ambientSourceEnv);
+  if (ambient.persisted && !loadedPaths.includes(paths.globalEnvPath)) loadedPaths.unshift(paths.globalEnvPath);
   return {
     loaded: loadedPaths.length > 0,
     path: paths.envPath,
     paths: loadedPaths,
+    globalEnv: loadedPaths.includes(paths.globalEnvPath),
+    globalEnvPath: paths.globalEnvPath,
+    projectEnv: loadedPaths.includes(paths.rootEnvPath) || loadedPaths.includes(paths.envPath),
+    projectEnvPaths: loadedPaths.filter((item) => item === paths.rootEnvPath || item === paths.envPath),
     ambientPersisted: ambient.persisted,
     ambientKeys: ambient.keys,
   };
@@ -387,6 +411,7 @@ export async function initProject(projectRoot = process.cwd(), { template = "dis
     paths.envExamplePath,
     [
       "# Copy values into .aginti/.env. Never commit real secrets.",
+      "# Account-wide defaults can be saved with `aginti auth`; this project file overrides them.",
       "DEEPSEEK_API_KEY=",
       "OPENAI_API_KEY=",
       "OPENAI_BASE_URL=https://api.openai.com/v1",
@@ -467,7 +492,12 @@ export function providerKeyStatus(projectRoot = process.cwd()) {
     grsai: Boolean(process.env.GRSAI || process.env.GRSAI_API_KEY),
     mock: true,
     localEnv: env.loaded,
+    globalEnv: env.globalEnv,
+    projectEnv: env.projectEnv,
     localEnvPath: env.path,
+    globalEnvPath: env.globalEnvPath,
+    ambientPersisted: env.ambientPersisted,
+    ambientKeys: env.ambientKeys,
     envVars: {
       openai: ["OPENAI_API_KEY", "LLM_API_KEY"],
       deepseek: ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
@@ -522,7 +552,7 @@ export function providerKeyPreview(projectRoot = process.cwd(), provider = "") {
   };
 }
 
-export async function setProviderKey(projectRoot, provider, value) {
+export async function setProviderKey(projectRoot, provider, value, options = {}) {
   const normalizedProvider = String(provider || "").toLowerCase();
   const aliases = {
     auxiliary: "grsai",
@@ -555,31 +585,34 @@ export async function setProviderKey(projectRoot, provider, value) {
   if (!keyValue) throw new Error("Key value is required.");
 
   const paths = projectPaths(projectRoot);
-  await fsp.mkdir(paths.controlDir, { recursive: true });
-  await ensureLine(paths.gitignorePath, [
-    ".aginti/.env",
-    ".aginti/.env.*",
-    "!.aginti/.env.example",
-  ]);
+  const requestedScope = String(options.scope || process.env.AGINTI_KEY_SCOPE || process.env.AGINTIFLOW_KEY_SCOPE || "global").toLowerCase();
+  const scope = ["project", "local"].includes(requestedScope) ? "project" : "global";
+  const targetPath = scope === "project" ? paths.envPath : paths.globalEnvPath;
+  if (scope === "project") {
+    await fsp.mkdir(paths.controlDir, { recursive: true });
+    await ensureLine(paths.gitignorePath, [
+      ".aginti/.env",
+      ".aginti/.env.*",
+      "!.aginti/.env.example",
+    ]);
+  }
   let parsed = {};
   try {
-    parsed = parseEnvText(await fsp.readFile(paths.envPath, "utf8"));
+    parsed = parseEnvText(await fsp.readFile(targetPath, "utf8"));
   } catch {
     parsed = {};
   }
   parsed[keyName] = keyValue;
-  const output = Object.entries(parsed)
-    .filter(([key]) => LOCAL_ENV_KEYS.has(key))
-    .map(([key, envValue]) => `${key}=${JSON.stringify(envValue)}`)
-    .join("\n");
-  await fsp.writeFile(paths.envPath, `${output}\n`, { mode: 0o600 });
-  await fsp.chmod(paths.envPath, 0o600).catch(() => {});
+  await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+  await fsp.writeFile(targetPath, `${envTextFromParsed(parsed)}\n`, { mode: 0o600 });
+  await fsp.chmod(targetPath, 0o600).catch(() => {});
   loadProjectEnv(projectRoot, { override: true });
   return {
     ok: true,
     provider: canonicalProvider,
     keyName,
-    path: paths.envPath,
+    path: targetPath,
+    scope,
   };
 }
 
@@ -911,13 +944,18 @@ export async function doctorReport(projectRoot, packageVersion, config) {
       globalSessionsDir: paths.globalSessionsDir,
       globalSessionIndexPath: paths.globalSessionIndexPath,
       localEnvPresent: keyStatus.localEnv,
+      globalEnvPresent: keyStatus.globalEnv,
+      projectEnvPresent: keyStatus.projectEnv,
     },
     keys: {
       openai: keyStatus.openai,
       deepseek: keyStatus.deepseek,
+      openrouter: keyStatus.openrouter,
       qwen: keyStatus.qwen,
       venice: keyStatus.venice,
       grsai: keyStatus.grsai,
+      globalEnv: keyStatus.globalEnv,
+      projectEnv: keyStatus.projectEnv,
       mock: true,
     },
     sandbox: dockerStatus,

@@ -6,7 +6,7 @@ AgInTiFlow keeps deterministic mock smoke tests for CI, but Round 9 added an opt
 
 - Node.js 22+
 - A project folder initialized with `aginti init`
-- `DEEPSEEK_API_KEY` in the environment or project-local `.aginti/.env`
+- `DEEPSEEK_API_KEY` in the environment, account `~/.agintiflow/.env`, or project-local `.aginti/.env`
 - Optional web UI running from the same project folder
 
 Never print or commit API keys. The suite reports only provider availability.

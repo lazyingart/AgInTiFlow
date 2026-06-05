@@ -1091,7 +1091,7 @@ function printHelp() {
       tr("helpTitle"),
       `  ${command("/help", "Show this help.", "helpHelp")}`,
       `  ${command("/status", "Show active route, workspace, sandbox, and session.", "helpStatus")}`,
-      `  ${command("/login [deepseek|openai|openrouter|qwen|venice|grsai]", "Pick, paste, and save project-local API keys.", "helpLogin")}`,
+      `  ${command("/login [deepseek|openai|openrouter|qwen|venice|grsai]", "Pick, paste, and save account-wide API keys.", "helpLogin")}`,
       `  ${command("/auth [deepseek|openai|openrouter|qwen|venice|grsai]", "Alias for /login.", "helpLogin")}`,
       `  ${command("/instructions", "Show AGINTI.md project instructions status.", "helpInstructions")}`,
       `  ${command("/memory", "Alias for /instructions.", "helpInstructions")}`,
@@ -3506,8 +3506,9 @@ async function maybeOnboardDeepSeekKey(state) {
 
   printAgentMessage(
     [
-      "No main model API key is configured for this project.",
-      "Choose DeepSeek, OpenAI, OpenRouter, or Qwen, then paste a key to save in `.aginti/.env` with 0600 permissions.",
+      "No main model API key is configured for this account or project.",
+      "Choose DeepSeek, OpenAI, OpenRouter, Qwen, or Venice, then paste a key to save account-wide in `~/.agintiflow/.env` with 0600 permissions.",
+      "Use `aginti auth --project` when a project needs an override in `.aginti/.env`.",
       "After that, you can optionally paste the auxiliary image key. Press Esc to skip.",
     ].join("\n")
   );
@@ -3535,7 +3536,9 @@ function applyAuthWizardResult(result, state = null) {
   }
   if (result.saved.length > 0) {
     printAgentMessage(
-      result.saved.map((item) => `Saved ${item.keyName} to project-local ignored env. Raw key was not printed.`).join("\n")
+      result.saved
+        .map((item) => `Saved ${item.keyName} to ${item.scope === "project" ? "project-local ignored env" : "account-wide ignored env"}. Raw key was not printed.`)
+        .join("\n")
     );
   } else {
     printAgentMessage("No key saved.");

@@ -420,7 +420,7 @@ export async function promptAndSaveDeepSeekKey(projectRoot = process.cwd(), opti
   );
   if (!key) return { saved: false, skipped: true };
 
-  const result = await setProviderKey(projectRoot, "deepseek", key);
+  const result = await setProviderKey(projectRoot, "deepseek", key, { scope: options.scope || "global" });
   return {
     saved: true,
     provider: result.provider,
@@ -431,6 +431,8 @@ export async function promptAndSaveDeepSeekKey(projectRoot = process.cwd(), opti
 
 export async function runAuthWizard(projectRoot = process.cwd(), options = {}) {
   const status = providerKeyStatus(projectRoot);
+  const scope = ["project", "local"].includes(String(options.scope || "").toLowerCase()) ? "project" : "global";
+  const scopeLabel = scope === "project" ? "project .aginti/.env" : "account ~/.agintiflow/.env";
   const initialProvider = normalizeAuthProvider(options.provider || options.initialProvider || "deepseek", "deepseek");
   const directProvider =
     options.provider && ["deepseek", "openai", "openrouter", "qwen", "venice", "grsai"].includes(normalizeAuthProvider(options.provider, ""))
@@ -454,7 +456,7 @@ export async function runAuthWizard(projectRoot = process.cwd(), options = {}) {
     const current = preview.available ? `available: ${preview.preview}` : "missing";
     const keyHelp = authProviderKeyHelp(mainProvider);
     const title = `${providerLabel(mainProvider)} main API key`;
-    const prompt = `${keyHelp ? `${keyHelp}\n` : ""}${title} (${current}) [hidden]: `;
+    const prompt = `${keyHelp ? `${keyHelp}\n` : ""}${title} (${current}) [hidden, saves to ${scopeLabel}]: `;
     const secret = await promptSecret(prompt, {
       allowEscape: true,
       box: {
@@ -463,12 +465,12 @@ export async function runAuthWizard(projectRoot = process.cwd(), options = {}) {
         statusText: preview.available ? `Existing ${preview.keyName}: ${preview.preview}` : `Missing ${preview.keyName || "provider key"}`,
         currentPreview: preview.preview,
         actionText: preview.available
-          ? "Existing key is selected. Type to replace, Enter/Esc to keep existing."
-          : "Paste key and Enter to save, or Esc/Enter to skip.",
+          ? `Existing key is selected. Type to replace in ${scopeLabel}, Enter/Esc to keep existing.`
+          : `Paste key and Enter to save to ${scopeLabel}, or Esc/Enter to skip.`,
       },
     });
     if (secret.value) {
-      const result = await setProviderKey(projectRoot, mainProvider, secret.value);
+      const result = await setProviderKey(projectRoot, mainProvider, secret.value, { scope });
       saved.push(result);
     } else {
       skipped.push({ provider: mainProvider, reason: secret.skipped ? "skipped" : "empty" });
@@ -481,18 +483,18 @@ export async function runAuthWizard(projectRoot = process.cwd(), options = {}) {
     const preview = providerKeyPreview(projectRoot, "grsai");
     const current = preview.available ? `available: ${preview.preview}` : "optional";
     const title = `${AUXILIARY_AUTH_PROVIDER.label} auxiliary image key`;
-    const secret = await promptSecret(`${title} (${current}) [hidden]: `, {
+    const secret = await promptSecret(`${title} (${current}) [hidden, saves to ${scopeLabel}]: `, {
       allowEscape: true,
       box: {
         title,
         helpText: "Optional image generation key for GRS AI / Nano Banana.",
         statusText: preview.available ? `Existing ${preview.keyName}: ${preview.preview}` : "Optional; no auxiliary key saved.",
         currentPreview: preview.preview,
-        actionText: preview.available ? "Existing key is selected. Type to replace, Enter/Esc to keep existing." : "Paste key and Enter to save, or Esc/Enter to skip.",
+        actionText: preview.available ? `Existing key is selected. Type to replace in ${scopeLabel}, Enter/Esc to keep existing.` : `Paste key and Enter to save to ${scopeLabel}, or Esc/Enter to skip.`,
       },
     });
     if (secret.value) {
-      const result = await setProviderKey(projectRoot, "grsai", secret.value);
+      const result = await setProviderKey(projectRoot, "grsai", secret.value, { scope });
       saved.push(result);
     } else {
       skipped.push({ provider: "grsai", reason: "skipped" });
@@ -500,17 +502,17 @@ export async function runAuthWizard(projectRoot = process.cwd(), options = {}) {
   } else if (directProvider === "grsai") {
     const preview = providerKeyPreview(projectRoot, "grsai");
     const title = `${AUXILIARY_AUTH_PROVIDER.label} auxiliary image key`;
-    const secret = await promptSecret(`${title} [hidden]: `, {
+    const secret = await promptSecret(`${title} [hidden, saves to ${scopeLabel}]: `, {
       allowEscape: true,
       box: {
         title,
         helpText: "Optional image generation key for GRS AI / Nano Banana.",
         statusText: preview.available ? `Existing ${preview.keyName}: ${preview.preview}` : "Missing auxiliary key.",
         currentPreview: preview.preview,
-        actionText: preview.available ? "Existing key is selected. Type to replace, Enter/Esc to keep existing." : "Paste key and Enter to save, or Esc/Enter to skip.",
+        actionText: preview.available ? `Existing key is selected. Type to replace in ${scopeLabel}, Enter/Esc to keep existing.` : `Paste key and Enter to save to ${scopeLabel}, or Esc/Enter to skip.`,
       },
     });
-    if (secret.value) saved.push(await setProviderKey(projectRoot, "grsai", secret.value));
+    if (secret.value) saved.push(await setProviderKey(projectRoot, "grsai", secret.value, { scope }));
     else skipped.push({ provider: "grsai", reason: "skipped" });
   }
 

@@ -14,7 +14,18 @@ import { SessionStore } from "../src/session-store.js";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const execFile = promisify(execFileCallback);
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-auxiliary-"));
+const originalImageEnv = {
+  AGINTIFLOW_HOME: process.env.AGINTIFLOW_HOME,
+  GRSAI: process.env.GRSAI,
+  GRSAI_API_KEY: process.env.GRSAI_API_KEY,
+  VENICE_API_KEY: process.env.VENICE_API_KEY,
+  AGINTI_AUX_PROVIDER: process.env.AGINTI_AUX_PROVIDER,
+};
 process.env.AGINTIFLOW_HOME = path.join(tempRoot, ".agintiflow-home");
+delete process.env.GRSAI;
+delete process.env.GRSAI_API_KEY;
+delete process.env.VENICE_API_KEY;
+delete process.env.AGINTI_AUX_PROVIDER;
 const runtimeDir = path.join(tempRoot, "runtime");
 const workspace = path.join(tempRoot, "workspace");
 await fs.mkdir(workspace, { recursive: true });
@@ -24,8 +35,21 @@ function assert(condition, message) {
 }
 
 try {
-  await setProviderKey(workspace, "grsai", "test-grsai-key");
   await setProviderKey(workspace, "venice", "test-venice-key");
+  const autoVeniceDryRun = await generateImage(
+    {
+      prompt: "A small cyan robot holding a paintbrush, clean bright product illustration.",
+      outputDir: "artifacts/images/auto-venice-dry-run",
+      outputStem: "robot",
+      dryRun: true,
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  assert(autoVeniceDryRun.ok && autoVeniceDryRun.provider === "venice", "generate_image did not auto-select Venice when only Venice image key was available");
+  await setProviderKey(workspace, "grsai", "test-grsai-key");
   const keyStatus = providerKeyStatus(workspace);
   assert(keyStatus.grsai, "GRSAI key status was not detected");
   assert(keyStatus.venice, "Venice key status was not detected");
@@ -163,6 +187,7 @@ try {
           "image_skill_listed",
           "venice_image_skill_listed",
           "generate_image_dry_run",
+          "auto_venice_when_grsai_missing",
           "venice_generate_image_dry_run",
           "svg_request_png_fallback",
           "direct_image_cli_svg_request_png_fallback",
@@ -175,5 +200,9 @@ try {
     )
   );
 } finally {
+  for (const [key, value] of Object.entries(originalImageEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   await fs.rm(tempRoot, { recursive: true, force: true });
 }

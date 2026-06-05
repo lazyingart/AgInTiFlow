@@ -245,6 +245,8 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
       grsai: keyStatus.grsai,
       mock: true,
       localEnv: keyStatus.localEnv,
+      globalEnv: keyStatus.globalEnv,
+      projectEnv: keyStatus.projectEnv,
       envVars: keyStatus.envVars,
     },
     tools: {
@@ -327,7 +329,7 @@ export function printCapabilityReport(report) {
       report.keys.venice ? "available" : "missing"
     } grsai=${
       report.keys.grsai ? "available" : "missing"
-    } mock=available localEnv=${report.keys.localEnv}`
+    } mock=available globalEnv=${report.keys.globalEnv ? "yes" : "no"} projectEnv=${report.keys.projectEnv ? "yes" : "no"}`
   );
   for (const check of report.checks) {
     const suffix = check.version ? ` ${check.version}` : check.reason ? ` ${check.reason}` : check.hint ? ` ${check.hint}` : "";

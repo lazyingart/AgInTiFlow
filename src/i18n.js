@@ -121,7 +121,7 @@ const TRANSLATIONS = {
     helpTitle: "Commands:",
     helpHelp: "Show this help.",
     helpStatus: "Show active route, workspace, sandbox, and session.",
-    helpLogin: "Pick, paste, and save project-local API keys.",
+    helpLogin: "Pick, paste, and save account-wide API keys.",
     helpInstructions: "Show AGINTI.md project instructions status.",
     helpModels: "Show route/main/spare/wrapper/auxiliary model roles.",
     helpVenice: "Pick Venice route/main models, or restore DeepSeek defaults.",

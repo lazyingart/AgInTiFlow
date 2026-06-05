@@ -776,7 +776,7 @@ function exitOnUnknownOptions(parsed) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti docker [status|setup|install-host] OR aginti update OR aginti image [--json] [--dry-run] [--format png|webp|svg] "prompt" OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti mcp [status|config|inspect|tools|resources|read|prompts|prompt|call|restart] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [deepseek|openai|openrouter|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--dynamic-steps auto|on|off] [--routing smart|fast|complex|manual] [--provider deepseek|openai|openrouter|qwen|venice|mock] [--model MODEL] [--route-model MODEL --route-reasoning provider-default|minimal|low|medium|high|xhigh] [--main-model MODEL --main-reasoning provider-default|minimal|low|medium|high|xhigh] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--mcp|--no-mcp] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
+    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti docker [status|setup|install-host] OR aginti update OR aginti image [--json] [--dry-run] [--format png|webp|svg] "prompt" OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti mcp [status|config|inspect|tools|resources|read|prompts|prompt|call|restart] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [--project] [deepseek|openai|openrouter|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--dynamic-steps auto|on|off] [--routing smart|fast|complex|manual] [--provider deepseek|openai|openrouter|qwen|venice|mock] [--model MODEL] [--route-model MODEL --route-reasoning provider-default|minimal|low|medium|high|xhigh] [--main-model MODEL --main-reasoning provider-default|minimal|low|medium|high|xhigh] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--mcp|--no-mcp] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
   console.log("Permission shortcuts: -s safe asks before writes/setup; -s normal allows current-project writes and Docker setup; -s danger enables trusted host/full-access mode.");
   console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
@@ -1382,7 +1382,7 @@ function printDoctorReport(report) {
       report.keys.venice ? "available" : "missing"
     } grsai=${
       report.keys.grsai ? "available" : "missing"
-    } mock=available localEnv=${report.project.localEnvPresent}`
+    } mock=available globalEnv=${report.keys.globalEnv ? "yes" : "no"} projectEnv=${report.keys.projectEnv ? "yes" : "no"}`
   );
   console.log(
     `sandbox=${report.sandbox?.sandboxMode || "unknown"} docker=${
@@ -1412,8 +1412,8 @@ async function readStdin() {
 
 async function ensureDeepSeekKeyForOneShot(args) {
   if (!shouldPromptForDeepSeek(args, process.cwd())) return true;
-  console.log("No main model API key is configured for this project.");
-  console.log("Choose DeepSeek, OpenAI, OpenRouter, Qwen, or Venice, then paste a key to save in `.aginti/.env` with 0600 permissions.");
+  console.log("No main model API key is configured for this account or project.");
+  console.log("Choose DeepSeek, OpenAI, OpenRouter, Qwen, or Venice, then paste a key to save account-wide in `~/.agintiflow/.env` with 0600 permissions. Use `aginti auth --project` for a project override.");
   const result = await runAuthWizard(process.cwd(), { provider: args.provider || "" });
   printAuthWizardResult(result);
   if (result.saved.some((item) => item.provider !== "grsai")) {
@@ -1424,7 +1424,9 @@ async function ensureDeepSeekKeyForOneShot(args) {
 }
 
 async function handleKeyCommand(argv) {
-  const [verb = "status", provider = ""] = argv;
+  const scope = argv.includes("--project") || argv.includes("--local") ? "project" : "global";
+  const cleanArgv = argv.filter((item) => !["--project", "--local", "--global"].includes(item));
+  const [verb = "status", provider = ""] = cleanArgv;
   if (verb === "status") {
     const status = providerKeyStatus(process.cwd());
     console.log(
@@ -1432,9 +1434,10 @@ async function handleKeyCommand(argv) {
         status.openai ? "available" : "missing"
       } qwen=${status.qwen ? "available" : "missing"} venice=${
         status.venice ? "available" : "missing"
-      } openrouter=${status.openrouter ? "available" : "missing"} grsai=${status.grsai ? "available" : "missing"} mock=available localEnv=${status.localEnv}`
+      } openrouter=${status.openrouter ? "available" : "missing"} grsai=${status.grsai ? "available" : "missing"} mock=available globalEnv=${status.globalEnv ? "yes" : "no"} projectEnv=${status.projectEnv ? "yes" : "no"}`
     );
     console.log("env vars: DeepSeek=DEEPSEEK_API_KEY or LLM_API_KEY; OpenAI=OPENAI_API_KEY or LLM_API_KEY; OpenRouter=OPENROUTER_API_KEY; Qwen=QWEN_API_KEY; Venice=VENICE_API_KEY; image=GRSAI or GRSAI_API_KEY");
+    console.log("storage: `aginti keys set` saves account-wide to ~/.agintiflow/.env; add --project for current .aginti/.env override.");
     return;
   }
 
@@ -1445,19 +1448,19 @@ async function handleKeyCommand(argv) {
       console.error("No key saved.");
       process.exit(1);
     }
-    const result = await setProviderKey(process.cwd(), target, key);
-    console.log(`saved ${result.provider} key to project-local ignored env (${result.keyName})`);
+    const result = await setProviderKey(process.cwd(), target, key, { scope });
+    console.log(`saved ${result.provider} key to ${result.scope === "project" ? "project-local ignored env" : "account-wide ignored env"} (${result.keyName})`);
     return;
   }
 
-  console.error("Usage: aginti keys status OR aginti keys set deepseek|openai|openrouter|qwen|venice|grsai [--stdin]");
+  console.error("Usage: aginti keys status OR aginti keys set [--project|--global] deepseek|openai|openrouter|qwen|venice|grsai [--stdin]");
   process.exit(1);
 }
 
 function printAuthWizardResult(result) {
   if (result.saved.length > 0) {
     for (const item of result.saved) {
-      console.log(`saved ${item.provider} key to project-local ignored env (${item.keyName})`);
+      console.log(`saved ${item.provider} key to ${item.scope === "project" ? "project-local ignored env" : "account-wide ignored env"} (${item.keyName})`);
     }
   }
   if (result.saved.length === 0) console.log("No key saved.");
@@ -2184,9 +2187,11 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (commandArgv[0] === "auth" || commandArgv[0] === "login") {
-    const provider = normalizeAuthProvider(commandArgv[1] || "", "");
+    const scope = commandArgv.includes("--project") || commandArgv.includes("--local") ? "project" : "global";
+    const authArgv = commandArgv.slice(1).filter((item) => !["--project", "--local", "--global"].includes(item));
+    const provider = normalizeAuthProvider(authArgv[0] || "", "");
     if (commandArgv[0] === "auth" || (!provider && process.stdin.isTTY)) {
-      const result = await runAuthWizard(commandCwd, { provider });
+      const result = await runAuthWizard(commandCwd, { provider, scope });
       printAuthWizardResult(result);
       return;
     }
@@ -2198,8 +2203,8 @@ export async function main(argv = process.argv.slice(2)) {
       console.error("No key saved.");
       process.exit(1);
     }
-    const result = await setProviderKey(commandCwd, target, key);
-    console.log(`saved ${result.provider} key to project-local ignored env (${result.keyName})`);
+    const result = await setProviderKey(commandCwd, target, key, { scope });
+    console.log(`saved ${result.provider} key to ${result.scope === "project" ? "project-local ignored env" : "account-wide ignored env"} (${result.keyName})`);
     return;
   }
 

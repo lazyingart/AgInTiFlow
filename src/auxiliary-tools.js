@@ -324,14 +324,28 @@ function resultUrls(payload) {
 
 function normalizeImageProvider(value = "") {
   const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized || ["auto", "default"].includes(normalized)) return "";
   if (["venice", "venice-image", "venice-ai", "veniceai"].includes(normalized)) return "venice";
+  if (["grsai", "grs", "nano-banana", "nanobanana"].includes(normalized)) return "grsai";
+  if (["openai", "deepseek", "qwen", "openrouter", "mock"].includes(normalized)) {
+    throw new Error(
+      `Unsupported image provider "${normalized}". generate_image is raster-only through GRS AI or Venice image keys; text-model keys for ${normalized} do not enable image generation.`
+    );
+  }
+  throw new Error("Unsupported image provider. Use grsai, venice, or auto.");
+}
+
+function autoImageProvider() {
+  if (grsaiKey()) return "grsai";
+  if (veniceKey()) return "venice";
   return "grsai";
 }
 
 function defaultImageProvider(config = {}) {
-  return normalizeImageProvider(
+  const explicit = normalizeImageProvider(
     config.auxiliaryProvider || process.env.AGINTI_AUX_PROVIDER || process.env.VENICE_IMAGE_PROVIDER || process.env.GRSAI_IMAGE_PROVIDER || ""
   );
+  return explicit || autoImageProvider();
 }
 
 function veniceBaseUrl(value = "") {
@@ -343,7 +357,7 @@ function veniceBaseUrl(value = "") {
 async function generateVeniceImages({ prompt, args, target, outputStem, manifest, manifestPath, formatInfo, signal = null }) {
   const apiKey = veniceKey();
   if (!apiKey) {
-    throw new Error("Missing VENICE_API_KEY. Run `aginti login venice` or `aginti keys set venice --stdin`.");
+    throw new Error("Missing VENICE_API_KEY for image generation. Run `aginti login venice` or `aginti keys set venice --stdin`; text-model keys do not enable raster image generation.");
   }
 
   const model =
@@ -511,7 +525,19 @@ export async function generateImage(args = {}, config = {}) {
 
   const apiKey = grsaiKey();
   if (!apiKey) {
-    throw new Error("Missing GRSAI key. Run `aginti login grsai`, `aginti keys set grsai --stdin`, or `/auxiliary grsai`.");
+    if (veniceKey()) {
+      return generateVeniceImages({ prompt, args, target, outputStem, manifest, manifestPath, formatInfo, signal: config.abortSignal });
+    }
+    const textKeys = [
+      process.env.OPENAI_API_KEY || process.env.LLM_API_KEY ? "OpenAI/LLM" : "",
+      process.env.DEEPSEEK_API_KEY ? "DeepSeek" : "",
+      process.env.OPENROUTER_API_KEY ? "OpenRouter" : "",
+      process.env.QWEN_API_KEY ? "Qwen" : "",
+    ].filter(Boolean);
+    const suffix = textKeys.length
+      ? ` Text-model keys are available (${textKeys.join(", ")}), but raster image generation requires GRSAI or VENICE_API_KEY.`
+      : "";
+    throw new Error(`Missing image-generation key. Run \`aginti login grsai\`, \`aginti login venice\`, \`aginti keys set grsai --stdin\`, or \`/auxiliary grsai\`.${suffix}`);
   }
 
   const submitUrl = `${host}/v1/draw/nano-banana`;

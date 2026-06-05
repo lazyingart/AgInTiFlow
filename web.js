@@ -652,6 +652,8 @@ function publicKeyStatus(projectRoot = baseDir) {
     grsai: status.grsai,
     mock: true,
     localEnv: status.localEnv,
+    globalEnv: status.globalEnv,
+    projectEnv: status.projectEnv,
     envVars: status.envVars,
   };
 }
@@ -1444,6 +1446,8 @@ app.get("/api/config", async (_req, res) => {
       sharedSessionFolder: path.resolve(config.sessionsDir) === path.resolve(sessionsDir),
       globalSessionIndexPath: paths.globalSessionIndexPath,
       localEnvPresent: keyStatus.localEnv,
+      globalEnvPresent: keyStatus.globalEnv,
+      projectEnvPresent: keyStatus.projectEnv,
       platform: {
         ...platform,
         label: platformLabel(platform),
@@ -1648,6 +1652,7 @@ app.post("/api/keys/:provider", async (req, res) => {
       ok: true,
       provider: result.provider,
       keyName: result.keyName,
+      scope: result.scope,
       keyStatus: publicKeyStatus(baseDir),
     });
   } catch (error) {

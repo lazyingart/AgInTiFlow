@@ -223,7 +223,7 @@ if (!keyStatus.deepseek) {
       {
         ok: false,
         skipped: true,
-        reason: "DeepSeek key is not available by env or project-local .aginti/.env.",
+        reason: "DeepSeek key is not available by env, account ~/.agintiflow/.env, or project-local .aginti/.env.",
       },
       null,
       2
