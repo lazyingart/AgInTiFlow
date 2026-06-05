@@ -162,6 +162,33 @@ try {
     interruptedDeepSeekState.messages.at(-1)?.content === "Continue with this new request: /review",
     "interrupted repair dropped the new user request"
   );
+  const workspaceToolConfig = {
+    commandCwd: workspace,
+    allowFileTools: true,
+    workspaceWritePolicy: "allow",
+    sandboxMode: "host",
+  };
+  const cdataSvgResult = await executeWorkspaceTool(
+    "write_file",
+    {
+      path: "figures/cdata-wrapped.svg",
+      content: "<![CDATA[<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"></svg>]]>",
+    },
+    workspaceToolConfig
+  );
+  assert(cdataSvgResult.ok === false, "CDATA-wrapped SVG write should be marked not ok");
+  assert(cdataSvgResult.artifactValidation?.kind === "svg", "SVG validation result missing");
+  assert(/CDATA/i.test(cdataSvgResult.artifactValidation.errors.join(" ")), "CDATA SVG validation did not explain the wrapper problem");
+  const validSvgResult = await executeWorkspaceTool(
+    "write_file",
+    {
+      path: "figures/valid.svg",
+      content: "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"><rect width=\"10\" height=\"10\" /></svg>",
+    },
+    workspaceToolConfig
+  );
+  assert(validSvgResult.ok === true, "valid standalone SVG write should pass");
+  assert(validSvgResult.artifactValidation?.ok === true, "valid SVG validation did not pass");
   const blockedBatchResult = {
     ok: false,
     blocked: true,
@@ -1237,6 +1264,8 @@ try {
           "resume_session_write",
           "resume_runtime_time_context",
           "virtual_workspace_path",
+          "svg_cdata_validation_failure",
+          "svg_standalone_validation_pass",
           "apply_patch",
           "multi_file_patch",
           "unified_patch",

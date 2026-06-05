@@ -99,6 +99,95 @@ function compactPreview(value, limit = 180) {
   return text.length <= limit ? text : `${text.slice(0, limit)}...`;
 }
 
+function firstXmlElementName(source = "") {
+  let text = String(source || "").replace(/^\uFEFF/, "").trimStart();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const xmlDeclaration = text.match(/^<\?xml\b[^>]*\?>\s*/i);
+    if (xmlDeclaration) {
+      text = text.slice(xmlDeclaration[0].length).trimStart();
+      changed = true;
+      continue;
+    }
+    const comment = text.match(/^<!--[\s\S]*?-->\s*/);
+    if (comment) {
+      text = text.slice(comment[0].length).trimStart();
+      changed = true;
+      continue;
+    }
+    const doctype = text.match(/^<!DOCTYPE\b[^>]*>\s*/i);
+    if (doctype) {
+      text = text.slice(doctype[0].length).trimStart();
+      changed = true;
+    }
+  }
+  return text.match(/^<([A-Za-z_][\w:.-]*)\b/)?.[1] || "";
+}
+
+function validateXmlTagStack(source = "") {
+  const stack = [];
+  const errors = [];
+  const tagPattern = /<[^>]+>/g;
+  for (const match of String(source || "").matchAll(tagPattern)) {
+    const tag = match[0];
+    if (/^<\?/.test(tag) || /^<!--/.test(tag) || /^<!DOCTYPE\b/i.test(tag) || /^<!\[CDATA\[/i.test(tag)) continue;
+    const end = tag.match(/^<\/\s*([A-Za-z_][\w:.-]*)\s*>$/);
+    if (end) {
+      const expected = stack.pop();
+      if (expected !== end[1]) {
+        errors.push(`Mismatched closing tag </${end[1]}>${expected ? `, expected </${expected}>` : " with no open tag"}.`);
+      }
+      continue;
+    }
+    const start = tag.match(/^<\s*([A-Za-z_][\w:.-]*)\b/);
+    if (!start) {
+      errors.push(`Malformed XML tag near: ${compactPreview(tag, 80)}`);
+      continue;
+    }
+    if (/\/\s*>$/.test(tag)) continue;
+    stack.push(start[1]);
+  }
+  while (stack.length) errors.push(`Unclosed XML tag <${stack.pop()}>.`);
+  return errors;
+}
+
+function validateSvgArtifact(relativePath, content) {
+  if (path.extname(String(relativePath || "")).toLowerCase() !== ".svg") return null;
+  const source = String(content ?? "");
+  const trimmed = source.replace(/^\uFEFF/, "").trim();
+  const errors = [];
+  const warnings = [];
+  if (!trimmed) errors.push("SVG file is empty.");
+  if (/^<!\[CDATA\[[\s\S]*\]\]>\s*$/i.test(trimmed)) {
+    errors.push("SVG is wrapped in a top-level CDATA section; a standalone .svg must start with <svg or an XML declaration.");
+  }
+  if (/^<!\[CDATA\[/i.test(trimmed) && !/^<!\[CDATA\[[\s\S]*\]\]>\s*$/i.test(trimmed)) {
+    errors.push("SVG starts with CDATA instead of an XML/SVG root element.");
+  }
+  const root = firstXmlElementName(trimmed);
+  if (!root) {
+    errors.push("No XML root element found.");
+  } else if (root !== "svg") {
+    errors.push(`Root element is <${root}>; expected <svg>.`);
+  }
+  const cdataOpen = (trimmed.match(/<!\[CDATA\[/gi) || []).length;
+  const cdataClose = (trimmed.match(/\]\]>/g) || []).length;
+  if (cdataOpen !== cdataClose) errors.push("CDATA open/close markers are unbalanced.");
+  errors.push(...validateXmlTagStack(trimmed));
+  if (/<text\b/i.test(trimmed) && !/(viewBox|width|height)=/i.test(trimmed)) {
+    warnings.push("SVG contains text but no obvious sizing/viewBox metadata; render-preview before claiming visual fit.");
+  }
+  return {
+    kind: "svg",
+    ok: errors.length === 0,
+    parser: "builtin-svg-xml-guard",
+    root: root || "",
+    errors,
+    warnings,
+  };
+}
+
 function countOccurrences(text, search) {
   if (!search) return 0;
   let count = 0;
@@ -732,6 +821,7 @@ async function writeChange(target, nextContent, action, details = {}) {
   const afterBuffer = await fs.readFile(target.absolutePath);
   const afterText = afterBuffer.toString("utf8");
   const afterHash = hashBuffer(afterBuffer);
+  const artifactValidation = validateSvgArtifact(target.relativePath, afterText);
 
   return {
     ok: true,
@@ -744,6 +834,7 @@ async function writeChange(target, nextContent, action, details = {}) {
     created: !existed,
     diff: compactDiff(target.relativePath, beforeText, afterText),
     contentSha256: hashText(content),
+    ...(artifactValidation ? { artifactValidation } : {}),
     ...details,
   };
 }
@@ -784,10 +875,11 @@ async function writeFile(config, args) {
     mode,
   });
   return {
-    ok: true,
+    ok: change.artifactValidation ? change.artifactValidation.ok : true,
     toolName: "write_file",
     path: target.relativePath,
     change,
+    ...(change.artifactValidation ? { artifactValidation: change.artifactValidation } : {}),
   };
 }
 
@@ -1060,11 +1152,12 @@ async function applyPatchDocument(config, args) {
   }
 
   return {
-    ok: true,
+    ok: !changes.some((change) => change.artifactValidation && !change.artifactValidation.ok),
     toolName: "apply_patch",
     path: changes.length === 1 ? changes[0].path : "",
     changes,
     change: changes[0],
+    artifactValidations: changes.map((change) => change.artifactValidation).filter(Boolean),
     summary: `${changes.length} file change(s) applied`,
   };
 }

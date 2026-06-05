@@ -1535,7 +1535,7 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "write_file",
           description:
-            "Create or overwrite a small UTF-8 workspace file. Use mode=create with a descriptive non-conflicting filename for newly generated standalone content. Use mode=overwrite only when the user explicitly asks to replace/update that file, or after reading the file and the task is clearly to modify it. Secret paths, .git, node_modules writes, and outside-workspace paths are blocked. The runtime records before/after hashes and a compact diff.",
+            "Create or overwrite a small UTF-8 workspace file. Use mode=create with a descriptive non-conflicting filename for newly generated standalone content. Use mode=overwrite only when the user explicitly asks to replace/update that file, or after reading the file and the task is clearly to modify it. Secret paths, .git, node_modules writes, and outside-workspace paths are blocked. The runtime records before/after hashes and a compact diff. For .svg files, the runtime reports deterministic XML/SVG validation; if that validation is not ok, repair the file before claiming it is valid.",
           parameters: {
             type: "object",
             properties: {
