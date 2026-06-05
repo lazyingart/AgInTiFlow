@@ -10,6 +10,18 @@ This note records the working publication route for AgInTiFlow so future release
 
 Latest verified release:
 
+- Version: `0.20.192`
+- Commit: `fe571c0`
+- GitHub Actions run: `https://github.com/lazyingart/AgInTiFlow/actions/runs/27003317331`
+- Workflow result: success
+- npm registry check: `npm view @lazyingart/agintiflow version dist-tags.latest --registry=https://registry.npmjs.org` returned `0.20.192`.
+- Temporary install verification: `npm install --prefix <tmp> -g @lazyingart/agintiflow@0.20.192` then `<tmp>/bin/aginti --version` returned `0.20.192`.
+- Installed verification: `npm install -g @lazyingart/agintiflow@0.20.192` then `aginti --version` returned `0.20.192`.
+- Webapp verification: `aginti webapp restart --port 3210` then `curl -fsS http://127.0.0.1:3210/health` returned `version":"0.20.192"` from the global npm package path.
+- Feature verification: `npm run smoke:auth`, `npm run smoke:auxiliary-tools`, `npm run smoke:web-api`, `npm run check`, full `npm test`, and `npm pack --dry-run` passed before release; post-version-bump checks covered `npm run check`, `npm run smoke:auth`, `npm run smoke:auxiliary-tools`, and `npm pack --dry-run`.
+
+Previous verified release:
+
 - Version: `0.20.190`
 - Commit: `f192f8e`
 - GitHub Actions run: `https://github.com/lazyingart/AgInTiFlow/actions/runs/26736284533`
