@@ -531,6 +531,71 @@ function mockLongJobToolForGoal(goal = "") {
   });
 }
 
+function isMockAgentLinkGoal(goal = "") {
+  const text = String(goal || "");
+  if (
+    /\b(?:create|write|save|generate)\b/i.test(text) &&
+    /(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+|[A-Za-z0-9_.-]+\.(?:md|txt|js|ts|json|py|tex|html|css|svg|csv|yml|yaml))/.test(text)
+  ) {
+    return false;
+  }
+  return /\b(agentlink|agent link|peer session|other session|another session|session context|shared context|inbox|handoff|collaborat(?:e|ion)|coordinate)\b/i.test(
+    text
+  );
+}
+
+function mockAgentLinkToolForGoal(goal = "") {
+  const text = String(goal || "");
+  if (!isMockAgentLinkGoal(text)) return null;
+  if (/\b(status|health|diagnose|diagnostic)\b/i.test(text) && !/\b(peer|session|context|other|another|shared)\b/i.test(text)) {
+    return mockToolCall("agentlink_status", {});
+  }
+  if (/\b(board|messages?|evidence|contract)\b/i.test(text) && /\b(read|show|get|list)\b/i.test(text)) {
+    const boardId = text.match(/\bboard\s+([A-Za-z0-9._:-]+)/i)?.[1] || "default";
+    return mockToolCall("agentlink_get_board", { boardId, limit: 50 });
+  }
+  return mockToolCall("agentlink_list_peers", { limit: 20, includeAllSessions: true });
+}
+
+function compactComparableText(value = "") {
+  return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function sessionPeerFromAgentLinkPayload(payload = {}, currentGoal = "") {
+  const peers = Array.isArray(payload.peers) ? payload.peers : [];
+  const sessionPeers = peers.filter((peer) => peer.kind === "session" && peer.sessionId);
+  if (!sessionPeers.length) return null;
+  const comparableGoal = compactComparableText(currentGoal);
+  if (comparableGoal) {
+    const other = sessionPeers.find((peer) => {
+      const label = compactComparableText(`${peer.label || ""}\n${peer.role || ""}`);
+      return label !== comparableGoal && !label.includes(comparableGoal.slice(0, 120));
+    });
+    if (other) return other;
+  }
+  return sessionPeers[0] || null;
+}
+
+function summarizeAgentLinkMockResult(payload = {}) {
+  const summary = payload.summary || {};
+  const changes = Array.isArray(summary.recentChanges) ? summary.recentChanges : [];
+  const evidence = changes
+    .map((change) => [change.path ? `path=${change.path}` : "", change.afterHash ? `sha256=${change.afterHash}` : "", change.diff ? `diff=${change.diff}` : ""]
+      .filter(Boolean)
+      .join("\n"))
+    .filter(Boolean)
+    .join("\n\n");
+  return [
+    `session=${payload.sessionId || ""}`,
+    summary.goal ? `goal=${summary.goal}` : "",
+    `provider=${summary.provider || ""} model=${summary.model || ""}`,
+    changes.length ? `recentChanges=${changes.length}` : "recentChanges=0",
+    evidence ? `evidence:\n${evidence}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function mockPathForGoal(goal = "") {
   const text = String(goal);
   if (/\bAGINTI\.md\b|project instructions|remember (?:that|this)|durable preference/i.test(text)) return "AGINTI.md";
@@ -1839,6 +1904,26 @@ export async function requestNextStep(client, config, messages) {
   if (client.mock) {
     const toolPayload = latestToolPayload(messages);
     if (toolPayload) {
+      if (toolPayload.toolName === "agentlink_list_peers" && isMockAgentLinkGoal(config.goal)) {
+        const peer = sessionPeerFromAgentLinkPayload(toolPayload, config.goal);
+        if (peer?.sessionId) {
+          return mockChatResponse("Mock mode will summarize the discovered AgentLink session.", [
+            mockToolCall("agentlink_summarize_session", { sessionId: peer.sessionId, eventLimit: 50 }),
+          ]);
+        }
+        return mockChatResponse("Mock mode could not find another AgentLink session.", [
+          mockToolCall("finish", {
+            result: "AgentLink peer lookup completed, but no session peer was available.",
+          }),
+        ]);
+      }
+      if (toolPayload.toolName === "agentlink_summarize_session" && isMockAgentLinkGoal(config.goal)) {
+        return mockChatResponse("Mock mode finished from AgentLink safe session summary.", [
+          mockToolCall("finish", {
+            result: summarizeAgentLinkMockResult(toolPayload),
+          }),
+        ]);
+      }
       if (toolPayload.ok === false && !toolPayload.blocked) {
         return mockChatResponse("Mock mode detected a tool failure and will stop instead of masking it.", [
           mockToolCall("finish", {
@@ -1920,6 +2005,11 @@ export async function requestNextStep(client, config, messages) {
       return mockChatResponse("Mock mode will use the guarded shell tool for an explicitly local command task.", [
         mockToolCall("run_command", { command: mockCommandForGoal(config.goal) }),
       ]);
+    }
+
+    const agentLinkTool = mockAgentLinkToolForGoal(config.goal);
+    if (agentLinkTool) {
+      return mockChatResponse("Mock mode will exercise AgentLink coordination tools.", [agentLinkTool]);
     }
 
     if (config.allowAuxiliaryTools) {

@@ -4,6 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { agintiflowHome, globalSessionPaths, isSafeSessionId, listSessionIndex } from "./session-index.js";
 import { SessionStore } from "./session-store.js";
+import { redactSensitiveText } from "./redaction.js";
 
 export const AGENTLINK_TOOL_NAMES = [
   "agentlink_status",
@@ -27,6 +28,18 @@ function safeText(value = "", limit = MAX_TEXT_BYTES) {
   const text = String(value || "").trim();
   if (Buffer.byteLength(text, "utf8") <= limit) return text;
   return `${Buffer.from(text, "utf8").subarray(0, Math.max(limit - 40, 1)).toString("utf8").trim()}\n... [truncated]`;
+}
+
+function safeEvidenceText(value = "", limit = 1200) {
+  return safeText(redactSensitiveText(value), limit);
+}
+
+function stripBalancedQuotes(value = "") {
+  const text = String(value || "").trim();
+  if (text.length >= 2 && ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'")))) {
+    return text.slice(1, -1).trim();
+  }
+  return text;
 }
 
 function safeId(value = "", fallbackPrefix = "agentlink") {
@@ -456,6 +469,16 @@ export async function summarizeAgentLinkSession({ sessionId = "", eventLimit = 2
   } catch {
     artifacts = [];
   }
+  const recentChanges = events
+    .filter((event) => event.type === "file.changed" && event.data?.path)
+    .slice(-10)
+    .map((event) => ({
+      timestamp: event.timestamp,
+      path: safeEvidenceText(event.data.path, 500),
+      action: safeEvidenceText(event.data.action || "", 120),
+      afterHash: safeEvidenceText(event.data.afterHash || "", 120),
+      diff: safeEvidenceText(event.data.diff || "", 1200),
+    }));
   return {
     ok: true,
     sessionId: id,
@@ -476,6 +499,7 @@ export async function summarizeAgentLinkSession({ sessionId = "", eventLimit = 2
         toolName: event.data?.toolName || "",
         status: event.data?.status || "",
       })),
+      recentChanges,
       artifacts,
     },
     paths: {
@@ -636,10 +660,19 @@ export async function agentLinkCliCommand(argv = [], { cwd = process.cwd() } = {
     return { ok: true, boards: await listAgentLinkBoards({ limit: options.limit || 50, projectRoot: options.project || "" }, runtimeOptions) };
   }
   if (command === "create" || command === "new") {
+    let boardId = options.id || options.board || "";
+    let title = options.title || positionals.join(" ") || "";
+    if (!boardId && positionals.length >= 2 && /^[A-Za-z0-9._:-]*[-_.:][A-Za-z0-9._:-]*$/.test(positionals[0] || "")) {
+      boardId = positionals[0];
+      title = positionals.slice(1).join(" ");
+    } else if (!boardId && positionals.length === 1 && /^[A-Za-z0-9._:-]*[-_.:][A-Za-z0-9._:-]*$/.test(positionals[0] || "")) {
+      boardId = positionals[0];
+      title = positionals[0];
+    }
     return createAgentLinkBoard(
       {
-        boardId: options.id || options.board || "",
-        title: options.title || positionals.join(" ") || "",
+        boardId,
+        title,
         objective: options.objective || "",
         projectRoot: options.project || cwd,
         sessionId: options.session || "",
@@ -653,7 +686,7 @@ export async function agentLinkCliCommand(argv = [], { cwd = process.cwd() } = {
   if (command === "send" || command === "message") {
     const boardId = options.board || positionals.shift() || "default";
     const toSessionId = options["to-session"] || options.session || positionals.shift() || "";
-    const content = options.content || positionals.join(" ");
+    const content = stripBalancedQuotes(options.content || positionals.join(" "));
     return sendAgentLinkMessage(
       { boardId, toSessionId, toNodeId: options["to-node"] || "", content, kind: options.kind || "message", priority: options.priority || "normal" },
       runtimeOptions

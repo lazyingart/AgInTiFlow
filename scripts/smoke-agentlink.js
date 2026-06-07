@@ -16,6 +16,7 @@ import {
   sendAgentLinkMessage,
   summarizeAgentLinkSession,
 } from "../src/agentlink.js";
+import { createClient, requestNextStep } from "../src/model-client.js";
 import { listSkills, selectSkillsForGoal } from "../src/skill-library.js";
 import { SessionStore } from "../src/session-store.js";
 import { globalSessionPaths } from "../src/session-index.js";
@@ -40,6 +41,13 @@ try {
     stepsCompleted: 1,
   });
   await store.appendEvent("session.finished", { result: "synthetic done" });
+  await store.appendEvent("file.changed", {
+    toolName: "write_file",
+    action: "create_file",
+    path: "notes/agentlink-context.md",
+    afterHash: "abc123",
+    diff: "--- a/notes/agentlink-context.md\n+++ b/notes/agentlink-context.md\n@@ line 1 @@\n+AgentLink smoke fact: shared-color=cyan sample-id=AGLINK-SMOKE-001",
+  });
 
   const status = await agentLinkStatus({ commandCwd: tempRoot });
   assert.equal(status.ok, true);
@@ -100,6 +108,11 @@ try {
   assert.equal(summary.ok, true);
   assert.equal(summary.summary.goal, "Target session for AgentLink smoke.");
   assert(summary.summary.eventCount >= 1, "session summary did not include event count");
+  assert(summary.summary.recentChanges.some((change) => change.path === "notes/agentlink-context.md"), "session summary missed file-change evidence");
+  assert(
+    summary.summary.recentChanges.some((change) => String(change.diff || "").includes("AGLINK-SMOKE-001")),
+    "session summary missed redacted diff context"
+  );
   assert(!JSON.stringify(summary).includes("Please report status with evidence."), "session summary leaked raw inbox content");
 
   const toolResult = await executeAgentLinkTool("agentlink_get_board", { boardId: "smoke-board" }, { commandCwd: tempRoot }, { sessionId });
@@ -119,6 +132,70 @@ try {
   const parsed = JSON.parse(cli.stdout);
   assert.equal(parsed.feature, "agentlink");
 
+  const cliCreate = await execFileAsync(
+    process.execPath,
+    [
+      path.join(process.cwd(), "bin/aginti-cli.js"),
+      "--no-auto-update",
+      "agentlink",
+      "create",
+      "cli-board",
+      "CLI",
+      "board",
+      "title",
+      "--json",
+    ],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, AGINTIFLOW_HOME: process.env.AGINTIFLOW_HOME },
+      timeout: 10_000,
+    }
+  );
+  const parsedCreate = JSON.parse(cliCreate.stdout);
+  assert.equal(parsedCreate.board.boardId, "cli-board");
+  assert.equal(parsedCreate.board.title, "CLI board title");
+
+  const mockClient = createClient({ provider: "mock" });
+  const mockConfig = {
+    provider: "mock",
+    model: "mock-agent",
+    goal: "Use AgentLink to find the other session context and report the shared-color and sample-id.",
+    allowFileTools: true,
+    allowShellTool: false,
+    allowAuxiliaryTools: false,
+    allowWebSearch: false,
+    taskProfile: "auto",
+  };
+  const currentStore = new SessionStore(global.sessionsDir, "agentlink-current-smoke");
+  await currentStore.saveState({
+    sessionId: "agentlink-current-smoke",
+    status: "running",
+    provider: "mock",
+    model: "mock-agent",
+    goal: mockConfig.goal,
+    projectRoot: tempRoot,
+    commandCwd: tempRoot,
+    updatedAt: new Date(Date.now() + 1000).toISOString(),
+    stepsCompleted: 0,
+  });
+  const initialMessages = [{ role: "user", content: `Goal: ${mockConfig.goal}` }];
+  const firstMock = await requestNextStep(mockClient, mockConfig, initialMessages);
+  const firstTool = firstMock.choices[0].message.tool_calls[0];
+  assert.equal(firstTool.function.name, "agentlink_list_peers");
+  const peersPayload = await executeAgentLinkTool("agentlink_list_peers", JSON.parse(firstTool.function.arguments), { commandCwd: tempRoot }, {});
+  const secondMessages = [...initialMessages, firstMock.choices[0].message, { role: "tool", tool_call_id: firstTool.id, content: JSON.stringify(peersPayload) }];
+  const secondMock = await requestNextStep(mockClient, mockConfig, secondMessages);
+  const secondTool = secondMock.choices[0].message.tool_calls[0];
+  assert.equal(secondTool.function.name, "agentlink_summarize_session");
+  const summaryPayload = await executeAgentLinkTool("agentlink_summarize_session", JSON.parse(secondTool.function.arguments), { commandCwd: tempRoot }, {});
+  const thirdMessages = [...secondMessages, secondMock.choices[0].message, { role: "tool", tool_call_id: secondTool.id, content: JSON.stringify(summaryPayload) }];
+  const thirdMock = await requestNextStep(mockClient, mockConfig, thirdMessages);
+  const finishTool = thirdMock.choices[0].message.tool_calls[0];
+  assert.equal(finishTool.function.name, "finish");
+  const finishArgs = JSON.parse(finishTool.function.arguments);
+  assert.match(finishArgs.result, /shared-color=cyan/);
+  assert.match(finishArgs.result, /AGLINK-SMOKE-001/);
+
   console.log(
     JSON.stringify(
       {
@@ -131,9 +208,12 @@ try {
           "message-sent-to-session-inbox",
           "evidence-attached",
           "safe-session-summary",
+          "safe-file-change-context",
           "model-tool-bridge",
+          "mock-agentlink-routing",
           "built-in-skill-loaded",
           "cli-json-status",
+          "cli-create-id-title",
         ],
       },
       null,
