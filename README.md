@@ -160,6 +160,7 @@ aginti --language de
 | Disable SCS for simple work | `/scs off` or `aginti --no-scs "task"` |
 | Control dynamic step budgets | `--dynamic-steps auto\|on\|off` |
 | Work with AAPS workflows | `aginti aaps status`, `/aaps validate` |
+| Coordinate sessions | `aginti agentlink status`, `/link peers`, `/link board default` |
 | Inspect or call MCP servers | `aginti mcp status`, `/mcp tools <server>`, `/mcp call <server> <tool> '{"arg":"value"}'` |
 | Choose models | `/route`, `/model`, `/spare`, `/wrapper`, `/auxiliary model` |
 | Switch permissions | `-s safe`, `-s normal`, `-s danger`, or `/safe`, `/normal`, `/danger` |
@@ -245,6 +246,7 @@ The website keeps the visual walkthrough in a carousel so this README can stay f
 | Image reading and web research | `read_image` uses OpenAI vision for workspace images when `OPENAI_API_KEY` is configured, otherwise it can fall back to Codex CLI image attachments when available. It saves JSON and Markdown reports and can surface the report in the canvas. `web_research` preserves source lists, and optional OpenAI hosted web search or `research_wrapper` can be used for higher-confidence research. |
 | SCS mode | Default Student-Committee-Supervisor quality gate with independent planning, execution, and validation roles. |
 | AAPS adapter | Optional `@lazyingart/aaps` integration for `.aaps` workflow init, validate, parse, compile, dry-run, and run commands. |
+| AgentLink | Local-first collaboration between AgInTi sessions through boards, typed messages, action contracts, safe summaries, and evidence bundles. |
 | Image generation | Optional GRS AI and Venice image tools with saved manifests and canvas artifact previews. |
 | Skill library | Built-in Markdown skills plus project-local `.aginti/skills/<id>/SKILL.md` skills for reusable workflow knowledge that should not be hard-coded into the runtime. |
 | External skill packs | Whole Agent Skills repositories can be loaded as grouped packs without flattening. A sibling `../scientific-agent-skills` checkout is discovered as the `scientific` category, so commands like `aginti skills rdkit` and `aginti skills "single cell scanpy"` expose K-Dense Scientific Agent Skills when present. |
@@ -391,6 +393,7 @@ More detail:
 | Topic | Link |
 | --- | --- |
 | AAPS adapter | [docs/aaps.md](docs/aaps.md) |
+| AgentLink | [docs/agentlink.md](docs/agentlink.md) |
 | Model selection and roles | [docs/model-selection.md](docs/model-selection.md) |
 | SCS mode | [docs/student-committee-supervisor.md](docs/student-committee-supervisor.md) |
 | Large-codebase engineering | [docs/large-codebase-engineering.md](docs/large-codebase-engineering.md) |

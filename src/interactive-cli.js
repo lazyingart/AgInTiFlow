@@ -49,6 +49,7 @@ import {
 } from "./permission-modes.js";
 import { ensureAgintiWebApp, readWebAppPreference, stopAgintiWebApp, writeWebAppPreference } from "./web-autostart.js";
 import { mcpCliCommand, formatMcpCliResult } from "./mcp/tool-bridge.js";
+import { agentLinkCliCommand, formatAgentLinkCliResult } from "./agentlink.js";
 import { isWrapperAvailable } from "./tool-wrappers.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
@@ -91,6 +92,9 @@ const SLASH_COMMANDS = [
   "/memory",
   "/auxiliary",
   "/aaps",
+  "/agentlink",
+  "/link",
+  "/agents",
   "/mcp",
   "/new",
   "/resume",
@@ -1103,6 +1107,7 @@ function printHelp() {
       `  ${command("/wrapper [on|off|codex model reasoning]", "Configure optional external wrapper.", "helpWrapper")}`,
       `  ${command("/auxiliary [status|grsai|venice|model [provider/model]|on|off|image]", "Manage optional auxiliary skills, including image generation.", "helpAuxiliary")}`,
       `  ${command("/aaps [status|init|files|validate|compile|check|run]", "Manage AAPS workflows through the optional @lazyingart/aaps adapter.", "helpAaps")}`,
+      `  ${command("/link [status|peers|boards|send|claim|evidence]", "Coordinate with other AgInTi sessions through AgentLink.", "helpAgentLink")}`,
       `  ${command("/mcp [status|tools|call]", "Inspect or call configured MCP servers through the guarded bridge.", "helpMcp")}`,
       `  ${command("/new", "Start a fresh session on the next message.", "helpNew")}`,
       `  ${command("/resume <session-id>", "Continue a saved session.", "helpResume")}`,
@@ -3653,6 +3658,13 @@ async function handleCommand(line, state, packageDir) {
       state.webAppNotice = `webapp unavailable - use /webapp to retry; error: ${compactLine(result.error || "unknown", 72)}`;
       printSystemLine(state.webAppNotice);
     }
+    return true;
+  }
+  if (command === "agentlink" || command === "link" || command === "agents") {
+    const argv = value ? value.split(/\s+/).filter(Boolean) : ["status"];
+    const result = await agentLinkCliCommand(argv, { cwd: state.commandCwd || process.cwd() });
+    if (result.ok === false) printSystemLine(`agentlink error: ${result.error || "unknown error"}`);
+    else printAgentMessage(formatAgentLinkCliResult(result));
     return true;
   }
   if (command === "language" || command === "lang") {

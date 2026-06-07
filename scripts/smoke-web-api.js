@@ -135,6 +135,32 @@ try {
   if (!config.modelGroups?.["openrouter-openai"]) {
     throw new Error("OpenRouter company model groups are missing from /api/config");
   }
+  const agentLinkStatus = await fetchJson("/api/agentlink/status");
+  if (agentLinkStatus.feature !== "agentlink" || agentLinkStatus.rawSessionSharing !== false) {
+    throw new Error("AgentLink status endpoint returned an invalid payload");
+  }
+  const agentLinkBoard = await fetchJson("/api/agentlink/boards", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ boardId: "web-smoke", title: "Web AgentLink smoke", objective: "Exercise web AgentLink API." }),
+  });
+  if (agentLinkBoard.board?.boardId !== "web-smoke") throw new Error("AgentLink board create endpoint failed");
+  const agentLinkMessage = await fetchJson("/api/agentlink/boards/web-smoke/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content: "web smoke message", kind: "status" }),
+  });
+  if (!agentLinkMessage.message?.messageId) throw new Error("AgentLink message endpoint failed");
+  const agentLinkEvidence = await fetchJson("/api/agentlink/boards/web-smoke/evidence", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ summary: "web smoke evidence", path: "notes/workspace-smoke.md" }),
+  });
+  if (!agentLinkEvidence.evidence?.evidenceId) throw new Error("AgentLink evidence endpoint failed");
+  const agentLinkRead = await fetchJson("/api/agentlink/boards/web-smoke");
+  if (!agentLinkRead.messages?.length || !agentLinkRead.evidence?.length) {
+    throw new Error("AgentLink board read endpoint did not include messages and evidence");
+  }
   if (!config.workspace?.enabled) throw new Error("workspace file tools are not advertised by /api/config");
   if (config.preferences?.preferredWrapper !== "codex") throw new Error("Codex is not the default preferred wrapper");
   if (config.project?.root !== runtimeDir) throw new Error("web project root did not default to launch directory");
@@ -600,6 +626,13 @@ try {
           "/api/keys/status",
           "/api/capabilities",
           "/api/mcp",
+          "/api/agentlink/status",
+          "/api/agentlink/peers",
+          "/api/agentlink/boards",
+          "POST /api/agentlink/boards",
+          "/api/agentlink/boards/:boardId",
+          "POST /api/agentlink/boards/:boardId/messages",
+          "POST /api/agentlink/boards/:boardId/evidence",
           "POST /api/keys/:provider",
           "/api/sandbox/status",
           "/api/sandbox/preflight",

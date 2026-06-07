@@ -47,6 +47,17 @@ import { normalizeLanguage } from "./src/i18n.js";
 import { summarizeMcpConfig } from "./src/mcp/config.js";
 import { mcpCliCommand } from "./src/mcp/tool-bridge.js";
 import {
+  agentLinkStatus,
+  attachAgentLinkEvidence,
+  claimAgentLinkTask,
+  createAgentLinkBoard,
+  getAgentLinkBoard,
+  listAgentLinkBoards,
+  listAgentLinkPeers,
+  sendAgentLinkMessage,
+  summarizeAgentLinkSession,
+} from "./src/agentlink.js";
+import {
   buildArtifacts,
   countUnreadArtifacts,
   findArtifact,
@@ -1620,6 +1631,134 @@ app.post("/api/mcp", async (req, res) => {
     res.json(await mcpCliCommand(action.length ? action : ["status"], config));
   } catch (error) {
     res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get("/api/agentlink/status", async (_req, res) => {
+  try {
+    res.json(await agentLinkStatus({ projectRoot: baseDir, commandCwd: baseDir }));
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get("/api/agentlink/peers", async (req, res) => {
+  try {
+    res.json(
+      await listAgentLinkPeers({
+        limit: req.query.limit || 50,
+        projectRoot: baseDir,
+        commandCwd: baseDir,
+        includeAllSessions: req.query.allSessions !== "false",
+      })
+    );
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get("/api/agentlink/boards", async (req, res) => {
+  try {
+    res.json({ ok: true, boards: await listAgentLinkBoards({ limit: req.query.limit || 50 }, {}) });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/agentlink/boards", async (req, res) => {
+  try {
+    const result = await createAgentLinkBoard(
+      {
+        boardId: req.body?.boardId || req.body?.id || "",
+        title: req.body?.title || "",
+        objective: req.body?.objective || "",
+        projectRoot: req.body?.projectRoot || baseDir,
+        sessionId: req.body?.sessionId || "",
+      },
+      { cwd: baseDir }
+    );
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get("/api/agentlink/boards/:boardId", async (req, res) => {
+  try {
+    res.json(await getAgentLinkBoard({ boardId: req.params.boardId, limit: req.query.limit || 100 }, { cwd: baseDir }));
+  } catch (error) {
+    res.status(404).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/agentlink/boards/:boardId/messages", async (req, res) => {
+  try {
+    res.json(
+      await sendAgentLinkMessage(
+        {
+          boardId: req.params.boardId,
+          content: req.body?.content || req.body?.message || "",
+          kind: req.body?.kind || "message",
+          toSessionId: req.body?.toSessionId || "",
+          toNodeId: req.body?.toNodeId || "",
+          fromSessionId: req.body?.fromSessionId || "",
+          priority: req.body?.priority || "normal",
+        },
+        { cwd: baseDir }
+      )
+    );
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/agentlink/boards/:boardId/contracts", async (req, res) => {
+  try {
+    res.json(
+      await claimAgentLinkTask(
+        {
+          boardId: req.params.boardId,
+          contractId: req.body?.contractId || req.body?.id || "",
+          title: req.body?.title || "",
+          ownerSessionId: req.body?.ownerSessionId || "",
+          ownerNodeId: req.body?.ownerNodeId || "",
+          instructions: req.body?.instructions || "",
+          status: req.body?.status || "claimed",
+        },
+        { cwd: baseDir }
+      )
+    );
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post("/api/agentlink/boards/:boardId/evidence", async (req, res) => {
+  try {
+    res.json(
+      await attachAgentLinkEvidence(
+        {
+          boardId: req.params.boardId,
+          summary: req.body?.summary || "",
+          path: req.body?.path || "",
+          url: req.body?.url || "",
+          sessionId: req.body?.sessionId || "",
+          contractId: req.body?.contractId || "",
+          kind: req.body?.kind || "evidence",
+        },
+        { cwd: baseDir }
+      )
+    );
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get("/api/agentlink/sessions/:sessionId/summary", async (req, res) => {
+  try {
+    res.json(await summarizeAgentLinkSession({ sessionId: req.params.sessionId, eventLimit: req.query.limit || 20 }));
+  } catch (error) {
+    res.status(404).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 });
 

@@ -290,6 +290,7 @@ export async function buildCapabilityReport(projectRoot, packageVersion, config)
         available: skill.available,
       })),
       orchestration: {
+        agentLink: true,
         webSearch: config.allowWebSearch !== false,
         writingSpecialist: true,
         parallelScouts: config.allowParallelScouts !== false,

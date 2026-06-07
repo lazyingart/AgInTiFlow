@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.193",
+  "version": "0.20.194",
   "type": "module",
   "description": "AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-aware intelligence, software automation, and industrial workflows.",
   "license": "Apache-2.0",
@@ -92,13 +92,14 @@
   "scripts": {
     "start": "node run.js",
     "web": "node web.js",
-    "check": "node --check run.js && node --check web.js && node --check bin/aginti-cli.js && node --check src/*.js && node --check src/mcp/*.js && node --check public/app.js && node --check scripts/seed-supervised-homework.js && node --check scripts/smoke-mcp.js && node --check scripts/smoke-web-ui.js && node --check scripts/smoke-scs-evidence-visibility.js && node --check scripts/fixtures/mcp-stdio-smoke-server.mjs",
+    "check": "node --check run.js && node --check web.js && node --check bin/aginti-cli.js && node --check src/*.js && node --check src/mcp/*.js && node --check public/app.js && node --check scripts/seed-supervised-homework.js && node --check scripts/smoke-agentlink.js && node --check scripts/smoke-mcp.js && node --check scripts/smoke-web-ui.js && node --check scripts/smoke-scs-evidence-visibility.js && node --check scripts/fixtures/mcp-stdio-smoke-server.mjs",
     "setup:toolchain-docker": "scripts/setup-agent-toolchain-docker.sh",
     "smoke:coding-tools": "node scripts/smoke-coding-tools.js",
     "smoke:dynamic-step-budget": "node scripts/smoke-dynamic-step-budget.js",
     "smoke:aaps-adapter": "node scripts/smoke-aaps-adapter.js",
     "smoke:auxiliary-tools": "node scripts/smoke-auxiliary-tools.js",
     "smoke:auth": "node scripts/smoke-auth.js",
+    "smoke:agentlink": "node scripts/smoke-agentlink.js",
     "smoke:canvas-artifacts": "node scripts/smoke-canvas-artifacts.js",
     "smoke:cli-chat": "node scripts/smoke-cli-chat.js",
     "smoke:docker-command": "node scripts/smoke-docker-command.js",
@@ -127,7 +128,7 @@
     "storage:migrate": "node bin/aginti-cli.js storage migrate",
     "publish:env": "node scripts/npm-publish-from-env.js publish --access public",
     "publish:env:whoami": "node scripts/npm-publish-from-env.js whoami",
-    "test": "npm run check && npm run smoke:runtime-compat && npm run smoke:autoupdate && npm run smoke:web-api && npm run smoke:web-ui && npm run smoke:web-autostart && npm run smoke:webapp-command && npm run smoke:web-port-fallback && npm run smoke:docker-command && npm run smoke:coding-tools && npm run smoke:dynamic-step-budget && npm run smoke:aaps-adapter && npm run smoke:auxiliary-tools && npm run smoke:perception-research && npm run smoke:auth && npm run smoke:canvas-artifacts && npm run smoke:capabilities && npm run smoke:mcp && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:permission-modes && npm run smoke:skills && npm run smoke:skillmesh && npm run smoke:tmux-tools && npm run smoke:long-jobs && npm run smoke:cli-chat && npm run smoke:inbox",
+    "test": "npm run check && npm run smoke:runtime-compat && npm run smoke:autoupdate && npm run smoke:web-api && npm run smoke:web-ui && npm run smoke:web-autostart && npm run smoke:webapp-command && npm run smoke:web-port-fallback && npm run smoke:docker-command && npm run smoke:coding-tools && npm run smoke:dynamic-step-budget && npm run smoke:aaps-adapter && npm run smoke:auxiliary-tools && npm run smoke:perception-research && npm run smoke:auth && npm run smoke:agentlink && npm run smoke:canvas-artifacts && npm run smoke:capabilities && npm run smoke:mcp && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:permission-modes && npm run smoke:skills && npm run smoke:skillmesh && npm run smoke:tmux-tools && npm run smoke:long-jobs && npm run smoke:cli-chat && npm run smoke:inbox",
     "pack:dry-run": "npm pack --dry-run",
     "smoke:capabilities": "node scripts/smoke-capabilities.js"
   },

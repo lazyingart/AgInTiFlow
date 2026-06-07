@@ -42,6 +42,7 @@ import { summarizeMcpConfig } from "./mcp/config.js";
 import { isMcpBridgeTool } from "./mcp/policy.js";
 import { executeMcpBridgeTool } from "./mcp/tool-bridge.js";
 import { longJobStatus, startLongJob } from "./long-job-tools.js";
+import { executeAgentLinkTool, isAgentLinkTool } from "./agentlink.js";
 import { classifyGoalIntent, isDirectAnswerIntent } from "./goal-intent.js";
 import {
   DEFAULT_SCS_MODE,
@@ -1792,6 +1793,23 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       const eventResult = sanitizeToolResult(result);
       await store.appendEvent(result.ok === false ? "tool.failed" : "tool.completed", eventResult);
       observers.event(result.ok === false ? "tool.failed" : "tool.completed", eventResult);
+      return result;
+    }
+
+    if (isAgentLinkTool(toolCall.function.name)) {
+      const result = await executeAgentLinkTool(toolCall.function.name, args, config, state);
+      const eventResult = sanitizeToolResult(result);
+      await store.appendEvent(result.ok === false ? "tool.failed" : "tool.completed", eventResult);
+      observers.event(result.ok === false ? "tool.failed" : "tool.completed", eventResult);
+      if (result.ok !== false) {
+        await store.appendEvent("agentlink.activity", {
+          toolName: toolCall.function.name,
+          boardId: result.board?.boardId || result.message?.boardId || result.contract?.boardId || result.evidence?.boardId || "",
+          messageId: result.message?.messageId || "",
+          contractId: result.contract?.contractId || "",
+          evidenceId: result.evidence?.evidenceId || "",
+        });
+      }
       return result;
     }
 
