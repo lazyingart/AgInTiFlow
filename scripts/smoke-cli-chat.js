@@ -786,6 +786,10 @@ try {
   if (!zhHelpResult.stdout.includes("命令:") || !zhHelpResult.stdout.includes("输入普通任务")) {
     throw new Error("interactive --language zh-Hans did not localize CLI help");
   }
+  const zhLeadingLanguageStatus = await runCli(["--language", "zh-Hans", "chat"], "/status\n/exit\n");
+  if (!zhLeadingLanguageStatus.stdout.includes("language=zh-Hans")) {
+    throw new Error("leading --language zh-Hans was stripped before interactive status");
+  }
   const skillsResult = await runChat("/skills website\n/exit\n");
   if (!skillsResult.stdout.includes("website-app") || !skillsResult.stdout.includes("Website And App Builder")) {
     throw new Error("interactive /skills did not show matching built-in skills");
@@ -956,6 +960,7 @@ try {
           "prompt-redraw-fast-path",
           "committed-user-no-cwd-footer",
           "cli-i18n",
+          "leading-language-option",
           "user-prompt-label",
           "escape-policy",
           "composer-history-recall",

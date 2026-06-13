@@ -211,6 +211,7 @@ function fallbackHardContractPlan(goal = "", contract = {}, studentReason = "") 
   const exactInputPaths = normalizeStringList(contract.exactInputPaths, []);
   const requiredTextTerms = normalizeStringList(contract.requiredTextTerms, []);
   const forbiddenTextTerms = normalizeStringList(contract.forbiddenTextTerms, []);
+  const requiredToolCalls = normalizeStringList(contract.requiredToolCalls, []);
   return [
     "1. Execute the user's target work under the deterministic hard-contract fallback plan.",
     exactOutputPaths.length
@@ -219,9 +220,10 @@ function fallbackHardContractPlan(goal = "", contract = {}, studentReason = "") 
     exactInputPaths.length ? `3. Use these exact user-specified input/reference path(s): ${exactInputPaths.join(", ")}.` : "",
     requiredTextTerms.length ? `4. Ensure the output contains these required term(s): ${requiredTextTerms.join(", ")}.` : "",
     forbiddenTextTerms.length ? `5. Ensure the output does not contain these forbidden term(s): ${forbiddenTextTerms.join(", ")}.` : "",
-    "6. Run concrete validation commands or inspections for file existence and content before finish.",
-    studentReason ? `7. Preserve the validator concern while executing: ${compact(studentReason, 180)}` : "",
-    goal ? `8. Original goal remains authoritative: ${compact(goal, 220)}` : "",
+    requiredToolCalls.length ? `6. Call these explicitly required tool(s) before finish: ${requiredToolCalls.join(", ")}.` : "",
+    "7. Run concrete validation commands or inspections for file existence and content before finish.",
+    studentReason ? `8. Preserve the validator concern while executing: ${compact(studentReason, 180)}` : "",
+    goal ? `9. Original goal remains authoritative: ${compact(goal, 220)}` : "",
   ]
     .filter(Boolean)
     .join("\n");

@@ -179,6 +179,19 @@ try {
   assert(cdataSvgResult.ok === false, "CDATA-wrapped SVG write should be marked not ok");
   assert(cdataSvgResult.artifactValidation?.kind === "svg", "SVG validation result missing");
   assert(/CDATA/i.test(cdataSvgResult.artifactValidation.errors.join(" ")), "CDATA SVG validation did not explain the wrapper problem");
+  const invalidXmlSvgResult = await executeWorkspaceTool(
+    "write_file",
+    {
+      path: "figures/invalid-unescaped-text.svg",
+      content: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="40"><text x="4" y="24">latency < 50 ms</text></svg>',
+    },
+    workspaceToolConfig
+  );
+  assert(invalidXmlSvgResult.ok === false, "SVG write with unescaped text '<' should be marked not ok");
+  assert(
+    /XML parser rejected/i.test(invalidXmlSvgResult.artifactValidation?.errors?.join(" ") || ""),
+    "invalid SVG XML was not rejected by the XML parser"
+  );
   const validSvgResult = await executeWorkspaceTool(
     "write_file",
     {
@@ -1265,6 +1278,7 @@ try {
           "resume_runtime_time_context",
           "virtual_workspace_path",
           "svg_cdata_validation_failure",
+          "svg_unescaped_text_xml_validation_failure",
           "svg_standalone_validation_pass",
           "apply_patch",
           "multi_file_patch",

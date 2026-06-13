@@ -130,6 +130,66 @@ function mimeFromPath(filePath) {
   return "image/png";
 }
 
+function imageDimensionsFromBuffer(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) return null;
+
+  if (buffer.length >= 24 && buffer.readUInt32BE(0) === 0x89504e47 && buffer.toString("ascii", 12, 16) === "IHDR") {
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20), format: "png" };
+  }
+
+  if (buffer.toString("ascii", 0, 3) === "GIF" && buffer.length >= 10) {
+    return { width: buffer.readUInt16LE(6), height: buffer.readUInt16LE(8), format: "gif" };
+  }
+
+  if (buffer[0] === 0xff && buffer[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 9 < buffer.length) {
+      while (buffer[offset] === 0xff) offset += 1;
+      const marker = buffer[offset];
+      offset += 1;
+      if ([0xd8, 0xd9, 0x01].includes(marker) || (marker >= 0xd0 && marker <= 0xd7)) continue;
+      if (offset + 2 > buffer.length) break;
+      const length = buffer.readUInt16BE(offset);
+      if (length < 2 || offset + length > buffer.length) break;
+      if (
+        [0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker) &&
+        offset + 7 < buffer.length
+      ) {
+        return { width: buffer.readUInt16BE(offset + 5), height: buffer.readUInt16BE(offset + 3), format: "jpeg" };
+      }
+      offset += length;
+    }
+  }
+
+  if (buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") {
+    let offset = 12;
+    while (offset + 8 <= buffer.length) {
+      const chunk = buffer.toString("ascii", offset, offset + 4);
+      const size = buffer.readUInt32LE(offset + 4);
+      const data = offset + 8;
+      if (chunk === "VP8X" && data + 10 <= buffer.length) {
+        const width = 1 + buffer.readUIntLE(data + 4, 3);
+        const height = 1 + buffer.readUIntLE(data + 7, 3);
+        return { width, height, format: "webp" };
+      }
+      if (chunk === "VP8 " && data + 10 <= buffer.length && buffer[data + 3] === 0x9d && buffer[data + 4] === 0x01 && buffer[data + 5] === 0x2a) {
+        return {
+          width: buffer.readUInt16LE(data + 6) & 0x3fff,
+          height: buffer.readUInt16LE(data + 8) & 0x3fff,
+          format: "webp",
+        };
+      }
+      offset += 8 + size + (size % 2);
+    }
+  }
+
+  return null;
+}
+
+function dimensionsEqual(a, b) {
+  return Boolean(a && b && Number(a.width) === Number(b.width) && Number(a.height) === Number(b.height));
+}
+
 function parseJsonResponse(raw) {
   try {
     const parsed = JSON.parse(raw);
@@ -163,6 +223,33 @@ function redactPayload(payload) {
   return copy;
 }
 
+function extractFailureReason(payload = {}) {
+  const seen = new Set();
+  const reasons = [];
+  const interesting = /^(?:failure_reason|failureReason|fail_reason|failReason|reason|error|error_message|errorMessage|message|msg|detail|details|code|status)$/i;
+  const walk = (value, depth = 0, key = "") => {
+    if (value === null || value === undefined || depth > 4 || reasons.length >= 12) return;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      if (!interesting.test(key)) return;
+      const text = redactSensitiveText(String(value)).replace(/\s+/g, " ").trim();
+      if (text && !seen.has(`${key}:${text}`)) {
+        seen.add(`${key}:${text}`);
+        reasons.push(`${key}: ${text}`);
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.slice(0, 8).forEach((item) => walk(item, depth + 1, key));
+      return;
+    }
+    if (typeof value === "object") {
+      for (const [childKey, childValue] of Object.entries(value)) walk(childValue, depth + 1, childKey);
+    }
+  };
+  walk(payload);
+  return reasons.join("; ").slice(0, 1200) || "";
+}
+
 function grsaiKey() {
   return String(process.env.GRSAI || process.env.GRSAI_API_KEY || "").trim();
 }
@@ -181,8 +268,18 @@ export function listAuxiliarySkills() {
 async function referenceToUrl(item, config) {
   const value = String(item || "").trim();
   if (!value) return { url: "", redacted: "" };
-  if (/^https?:\/\//i.test(value)) return { url: value, redacted: value };
-  if (value.startsWith("data:")) return { url: value, redacted: `<data-uri length=${value.length}>` };
+  if (/^https?:\/\//i.test(value)) return { url: value, redacted: value, source: "url", dimensions: null };
+  if (value.startsWith("data:")) {
+    const match = value.match(/^data:([^;,]+);base64,([\s\S]+)$/i);
+    const buffer = match ? Buffer.from(match[2], "base64") : null;
+    return {
+      url: value,
+      redacted: `<data-uri length=${value.length}>`,
+      source: "data-uri",
+      bytes: buffer?.length || 0,
+      dimensions: buffer ? imageDimensionsFromBuffer(buffer) : null,
+    };
+  }
 
   const target = resolveWorkspacePath(config, value);
   const stat = await fs.stat(target.absolutePath);
@@ -192,6 +289,10 @@ async function referenceToUrl(item, config) {
   return {
     url: `data:${mimeFromPath(target.relativePath)};base64,${buffer.toString("base64")}`,
     redacted: `<${target.relativePath} data-uri bytes=${buffer.length}>`,
+    source: "workspace-file",
+    path: target.relativePath,
+    bytes: buffer.length,
+    dimensions: imageDimensionsFromBuffer(buffer),
   };
 }
 
@@ -302,6 +403,7 @@ async function downloadImage(url, destination, signal = null) {
   return {
     bytes: buffer.length,
     sha256: hashBuffer(buffer),
+    dimensions: imageDimensionsFromBuffer(buffer),
   };
 }
 
@@ -313,6 +415,7 @@ async function writeBase64Image(image, destination) {
   return {
     bytes: buffer.length,
     sha256: hashBuffer(buffer),
+    dimensions: imageDimensionsFromBuffer(buffer),
   };
 }
 
@@ -401,6 +504,12 @@ async function generateVeniceImages({ prompt, args, target, outputStem, manifest
     imagePaths.push(relativePath);
     downloads.push({ path: relativePath, ...info });
   }
+  const referenceDimensions = manifest.referenceDimensions || null;
+  const matchReferenceSize = Boolean(manifest.matchReferenceSize);
+  const geometryMismatch =
+    matchReferenceSize && referenceDimensions
+      ? downloads.find((item) => item.dimensions && !dimensionsEqual(item.dimensions, referenceDimensions))
+      : null;
 
   manifest.provider = "venice";
   manifest.host = base;
@@ -411,6 +520,9 @@ async function generateVeniceImages({ prompt, args, target, outputStem, manifest
   manifest.status = "succeeded";
   manifest.finishedAt = new Date().toISOString();
   manifest.downloadedFiles = downloads;
+  if (geometryMismatch) {
+    manifest.geometryNotice = `Reference size requested (${referenceDimensions.width}x${referenceDimensions.height}), but generated output ${geometryMismatch.path} is ${geometryMismatch.dimensions.width}x${geometryMismatch.dimensions.height}.`;
+  }
   if (resultPayload.id) manifest.taskId = String(resultPayload.id);
   await writeJson(manifestPath, manifest);
 
@@ -427,6 +539,7 @@ async function generateVeniceImages({ prompt, args, target, outputStem, manifest
     requestedFormat: formatInfo.requestedFormat,
     actualFormat: format,
     formatNotice: formatInfo.notice,
+    geometryNotice: manifest.geometryNotice || "",
     summary: `${imagePaths.length} image(s) generated through Venice${formatInfo.notice ? ` (${formatInfo.notice})` : ""}`,
   };
 }
@@ -456,6 +569,15 @@ export async function generateImage(args = {}, config = {}) {
     const converted = await referenceToUrl(item, config);
     if (converted.url) references.push(converted);
   }
+  const referenceMetadata = references.map((item) => ({
+    source: item.source || "",
+    path: item.path || "",
+    redacted: item.redacted || "",
+    bytes: item.bytes || 0,
+    dimensions: item.dimensions || null,
+  }));
+  const referenceDimensions = references.find((item) => item.dimensions)?.dimensions || null;
+  const matchReferenceSize = Boolean(args.matchReferenceSize || args.match_ref_size || args.matchRefSize);
 
   const provider = args.provider ? normalizeImageProvider(args.provider) : defaultImageProvider(config);
   const formatInfo = normalizeOutputFormat(args);
@@ -479,6 +601,7 @@ export async function generateImage(args = {}, config = {}) {
 
   const redactedPayload = redactPayload(payload);
   redactedPayload.urls = references.map((item) => item.redacted);
+  if (matchReferenceSize) redactedPayload.matchReferenceSize = true;
   const promptPath = path.join(target.absolutePath, "prompt.txt");
   const requestPath = path.join(target.absolutePath, "request_payload.redacted.json");
   const manifestPath = path.join(target.absolutePath, "task_manifest.json");
@@ -496,9 +619,18 @@ export async function generateImage(args = {}, config = {}) {
     outputDir: target.relativePath,
     promptFile: path.posix.join(target.relativePath, "prompt.txt"),
     requestPayloadRedacted: path.posix.join(target.relativePath, "request_payload.redacted.json"),
+    referenceImages: referenceMetadata,
+    referenceDimensions,
+    matchReferenceSize,
     status: args.dryRun ? "prepared" : "started",
     createdAt: new Date().toISOString(),
   };
+  if (matchReferenceSize && !referenceDimensions) {
+    manifest.geometryNotice = "Reference-size matching was requested, but no local reference image dimensions could be detected.";
+  } else if (matchReferenceSize) {
+    manifest.geometryNotice =
+      "Reference-size matching was requested. AgInTiFlow records and checks output dimensions, but the current image backends may not preserve exact source geometry.";
+  }
   await writeJson(manifestPath, manifest);
 
   if (args.dryRun) {
@@ -515,6 +647,7 @@ export async function generateImage(args = {}, config = {}) {
       requestedFormat: formatInfo.requestedFormat,
       actualFormat: formatInfo.actualFormat,
       formatNotice: formatInfo.notice,
+      geometryNotice: manifest.geometryNotice || "",
       summary: `Prepared redacted image-generation payload without calling the provider.${formatInfo.notice ? ` ${formatInfo.notice}` : ""}`,
     };
   }
@@ -568,10 +701,13 @@ export async function generateImage(args = {}, config = {}) {
 
   const status = resultPayload.status || resultPayload?.data?.status;
   if (status !== "succeeded") {
+    const failureReason = extractFailureReason(resultPayload) || `status: ${status || "unknown"}`;
     manifest.status = status || "failed";
+    manifest.failureReason = failureReason;
+    manifest.resultResponse = path.posix.join(target.relativePath, "result_response.json");
     manifest.finishedAt = new Date().toISOString();
     await writeJson(manifestPath, manifest);
-    throw new Error(`Image generation failed with status ${status || "unknown"}. See ${manifestPath}.`);
+    throw new Error(`Image generation failed with status ${status || "unknown"}: ${failureReason}. See ${manifestPath}.`);
   }
 
   const urls = resultUrls(resultPayload);
@@ -588,6 +724,10 @@ export async function generateImage(args = {}, config = {}) {
     imagePaths.push(relativePath);
     downloads.push({ path: relativePath, ...info });
   }
+  const geometryMismatch =
+    matchReferenceSize && referenceDimensions
+      ? downloads.find((item) => item.dimensions && !dimensionsEqual(item.dimensions, referenceDimensions))
+      : null;
 
   manifest.status = "succeeded";
   manifest.requestedFormat = formatInfo.requestedFormat;
@@ -595,6 +735,9 @@ export async function generateImage(args = {}, config = {}) {
   if (formatInfo.notice) manifest.formatNotice = formatInfo.notice;
   manifest.finishedAt = new Date().toISOString();
   manifest.downloadedFiles = downloads;
+  if (geometryMismatch) {
+    manifest.geometryNotice = `Reference size requested (${referenceDimensions.width}x${referenceDimensions.height}), but generated output ${geometryMismatch.path} is ${geometryMismatch.dimensions.width}x${geometryMismatch.dimensions.height}.`;
+  }
   await writeJson(manifestPath, manifest);
 
   return {
@@ -609,6 +752,7 @@ export async function generateImage(args = {}, config = {}) {
     requestedFormat: formatInfo.requestedFormat,
     actualFormat: manifest.actualFormat,
     formatNotice: formatInfo.notice,
+    geometryNotice: manifest.geometryNotice || "",
     summary: `${imagePaths.length} image(s) generated${formatInfo.notice ? ` (${formatInfo.notice})` : ""}`,
   };
 }

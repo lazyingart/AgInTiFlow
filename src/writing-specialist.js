@@ -87,8 +87,62 @@ function normalizeWritingRequest(args = {}) {
     length: normalizeText(args.length || args.targetLength || ""),
     formatIntent: normalizeText(args.formatIntent || args.outputFormat || ""),
     temperature: normalizeTemperature(args.temperature, kind),
-    provider: String(args.provider || process.env.AGINTI_WRITING_PROVIDER || "").trim(),
-    model: String(args.model || process.env.AGINTI_WRITING_MODEL || "").trim(),
+    provider: String(args.provider || "").trim(),
+    model: String(args.model || "").trim(),
+  };
+}
+
+function likelyLanguageFromText(request = {}) {
+  const explicit = String(request.language || "").trim();
+  if (explicit) return explicit;
+  const text = [request.writingBrief, request.target, request.audience, request.canon, request.styleGuide, request.priorDraft, request.constraints]
+    .join("\n")
+    .slice(0, 8000);
+  if (/[\u3040-\u30ff]/.test(text)) return "ja";
+  if (/[\uac00-\ud7af]/.test(text)) return "ko";
+  if (/[\u4e00-\u9fff]/.test(text)) return "zh-Hans";
+  return "en";
+}
+
+function languageEnvSuffix(language = "") {
+  const normalized = String(language || "").toLowerCase();
+  if (normalized.startsWith("zh")) return "ZH";
+  if (normalized.startsWith("ja")) return "JA";
+  if (normalized.startsWith("ko")) return "KO";
+  if (normalized.startsWith("en")) return "EN";
+  return "";
+}
+
+function hasProviderKey(provider = "") {
+  const normalized = String(provider || "").toLowerCase();
+  if (normalized === "openai") return Boolean(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY);
+  if (normalized === "deepseek") return Boolean(process.env.DEEPSEEK_API_KEY || process.env.LLM_API_KEY);
+  if (normalized === "openrouter") return Boolean(process.env.OPENROUTER_API_KEY);
+  if (normalized === "qwen") return Boolean(process.env.QWEN_API_KEY);
+  if (normalized === "venice") return Boolean(process.env.VENICE_API_KEY);
+  if (normalized === "mock") return true;
+  return false;
+}
+
+export function languageWriterDefaults(request = {}, config = {}) {
+  const language = likelyLanguageFromText(request);
+  const suffix = languageEnvSuffix(language);
+  const envProvider = String((suffix && process.env[`AGINTI_WRITING_PROVIDER_${suffix}`]) || process.env.AGINTI_WRITING_PROVIDER || "").trim();
+  const envModel = String((suffix && process.env[`AGINTI_WRITING_MODEL_${suffix}`]) || process.env.AGINTI_WRITING_MODEL || "").trim();
+  if (envProvider || envModel) {
+    return { provider: envProvider, model: envModel, language, reason: "writer-env" };
+  }
+  if (String(language || "").toLowerCase().startsWith("zh") && hasProviderKey("deepseek")) {
+    return { provider: "deepseek", model: process.env.DEEPSEEK_PRO_MODEL || "deepseek-v4-pro", language, reason: "zh-deepseek-default" };
+  }
+  if (String(language || "").toLowerCase().startsWith("en") && hasProviderKey("openai")) {
+    return { provider: "openai", model: process.env.OPENAI_DEFAULT_MODEL || process.env.LLM_MODEL || "gpt-5.4", language, reason: "en-openai-default" };
+  }
+  return {
+    provider: config.provider || "",
+    model: config.model || "",
+    language,
+    reason: "session-default",
   };
 }
 
@@ -193,8 +247,9 @@ export async function runWritingSpecialist(args = {}, config = {}, store = null)
     .update(JSON.stringify(redactValue(request)))
     .digest("hex");
   let result;
-  let model = request.model || config.model || "";
-  let provider = request.provider || config.provider || "";
+  const writerDefaults = languageWriterDefaults(request, config);
+  let model = request.model || writerDefaults.model || config.model || "";
+  let provider = request.provider || writerDefaults.provider || config.provider || "";
   let rawContent = "";
 
   try {
@@ -204,11 +259,13 @@ export async function runWritingSpecialist(args = {}, config = {}, store = null)
       result = mockWritingResult(request);
     } else {
       const providerDefaults = request.provider ? getProviderDefaults(request.provider) : {};
+      const selectedProviderDefaults = provider ? getProviderDefaults(provider) : {};
       const writingConfig = {
         ...config,
+        ...selectedProviderDefaults,
         ...providerDefaults,
         provider: provider || config.provider,
-        model: model || providerDefaults.model || config.model,
+        model: model || providerDefaults.model || selectedProviderDefaults.model || config.model,
       };
       model = writingConfig.model;
       provider = writingConfig.provider;
@@ -254,9 +311,11 @@ export async function runWritingSpecialist(args = {}, config = {}, store = null)
         task: request.task,
         kind: request.kind,
         language: request.language,
+        detectedLanguage: writerDefaults.language,
         target: request.target,
         length: request.length,
         provider: request.provider,
+        routeReason: writerDefaults.reason,
         formatIntent: request.formatIntent,
         requestFingerprint,
       },
@@ -273,8 +332,10 @@ export async function runWritingSpecialist(args = {}, config = {}, store = null)
         task: request.task,
         kind: request.kind,
         language: request.language,
+        detectedLanguage: writerDefaults.language,
         target: request.target,
         provider: request.provider,
+        routeReason: writerDefaults.reason,
         requestFingerprint,
       },
       error: redactSensitiveText(error instanceof Error ? error.message : String(error)),

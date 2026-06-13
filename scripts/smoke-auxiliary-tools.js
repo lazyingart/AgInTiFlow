@@ -73,6 +73,31 @@ try {
   await fs.access(path.join(workspace, "artifacts/images/dry-run/task_manifest.json"));
   const payloadText = await fs.readFile(path.join(workspace, "artifacts/images/dry-run/request_payload.redacted.json"), "utf8");
   assert(payloadText.includes("nano-banana-2"), "redacted image payload was not written");
+  const referencePng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAACJ7f8GAAAADElEQVR42mP8z8AARAAAIf4BfQKxMQAAAABJRU5ErkJggg==",
+    "base64"
+  );
+  await fs.mkdir(path.join(workspace, "refs"), { recursive: true });
+  await fs.writeFile(path.join(workspace, "refs/reference.png"), referencePng);
+  const referenceDryRun = await generateImage(
+    {
+      prompt: "Use the reference image geometry for a diagnostic dry run.",
+      outputDir: "artifacts/images/reference-dry-run",
+      outputStem: "reference",
+      referenceImages: ["refs/reference.png"],
+      matchReferenceSize: true,
+      dryRun: true,
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  assert(referenceDryRun.ok && /Reference-size matching/i.test(referenceDryRun.geometryNotice || ""), "reference dry run did not report geometry notice");
+  const referenceManifest = JSON.parse(await fs.readFile(path.join(workspace, "artifacts/images/reference-dry-run/task_manifest.json"), "utf8"));
+  assert(referenceManifest.referenceImages?.[0]?.dimensions?.width === 2, "reference manifest did not record source image width");
+  assert(referenceManifest.referenceImages?.[0]?.dimensions?.height === 3, "reference manifest did not record source image height");
+  assert(referenceManifest.matchReferenceSize === true, "reference manifest did not record matchReferenceSize");
   const veniceDryRun = await generateImage(
     {
       provider: "venice",
@@ -139,6 +164,12 @@ try {
   assert(cliImageResult.actualFormat === "png", "direct image CLI did not select PNG fallback");
   assert(/raster PNG/i.test(cliImageResult.formatNotice || ""), "direct image CLI did not explain SVG-to-PNG fallback");
   await fs.access(path.join(workspace, "artifacts/images/cli-svg-fallback/task_manifest.json"));
+  const cliImageHelp = await execFile(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), "--no-auto-update", "image", "--help"], {
+    cwd: repoRoot,
+    env: { ...process.env, AGINTIFLOW_HOME: process.env.AGINTIFLOW_HOME },
+  });
+  assert(cliImageHelp.stdout.includes("--reference"), "aginti image --help did not show reference-image options");
+  assert(cliImageHelp.stdout.includes("--match-reference-size"), "aginti image --help did not show match-reference-size");
 
   const blocked = await generateImage(
     {
@@ -187,10 +218,12 @@ try {
           "image_skill_listed",
           "venice_image_skill_listed",
           "generate_image_dry_run",
+          "reference_image_manifest_dimensions",
           "auto_venice_when_grsai_missing",
           "venice_generate_image_dry_run",
           "svg_request_png_fallback",
           "direct_image_cli_svg_request_png_fallback",
+          "direct_image_cli_subcommand_help",
           "generate_image_guardrail",
           "mock_agent_image_tool",
         ],

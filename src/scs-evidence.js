@@ -457,6 +457,33 @@ function inferForbiddenActions(goal = "") {
   return unique(forbidden).slice(0, 8);
 }
 
+function inferRequiredToolCalls(goal = "") {
+  const source = stripForbiddenLanguage(String(goal || ""));
+  const knownTools = [
+    "writing_specialist",
+    "json_specialist",
+    "read_image",
+    "generate_image",
+    "send_to_canvas",
+    "start_long_job",
+    "long_job_status",
+  ];
+  const required = [];
+  for (const toolName of knownTools) {
+    const index = source.indexOf(toolName);
+    if (index < 0) continue;
+    const window = source.slice(Math.max(0, index - 90), Math.min(source.length, index + toolName.length + 90));
+    const strongToolInstruction =
+      /\b(?:must|explicitly|again|call|invoke|require(?:d|s)?\s+(?:tool|call|use))\b/i.test(window) ||
+      /必须(?:调用|使用)|必須(?:調用|使用)|明确(?:调用|使用)|明確(?:調用|使用)|再次(?:调用|使用)|调用|調用/.test(window);
+    const specialistUseInstruction = /_specialist$/.test(toolName) && (/\buse\b/i.test(window) || /使用/.test(window));
+    if (strongToolInstruction || specialistUseInstruction) {
+      required.push(toolName);
+    }
+  }
+  return unique(required).slice(0, 8);
+}
+
 function stripForbiddenLanguage(goal = "") {
   return String(goal || "")
     .replace(/\b(do not|don't|dont|never|no need to|without)\s+([^.\n;]+)/gi, "")
@@ -466,7 +493,8 @@ function stripForbiddenLanguage(goal = "") {
 
 export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceCriteria = [] } = {}) {
   const requirementCategories = inferRequirementCategories(goal, taskProfile, acceptanceCriteria);
-  const requiresExternalEvidence = requirementCategories.length > 0 || goalRequiresEvidence(goal, taskProfile);
+  const requiredToolCalls = inferRequiredToolCalls(goal);
+  const requiresExternalEvidence = requirementCategories.length > 0 || requiredToolCalls.length > 0 || goalRequiresEvidence(goal, taskProfile);
   const requiredEvidence = requirementCategories.map((category) => ({
     id: category,
     category,
@@ -483,6 +511,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     forbiddenActions: inferForbiddenActions(goal),
     exactOutputPaths,
     exactInputPaths,
+    requiredToolCalls,
     requiredTextTerms: inferRequiredTextTerms(goal),
     forbiddenTextTerms: inferForbiddenTextTerms(goal),
     successCriteria: unique(acceptanceCriteria).slice(0, 10),
@@ -679,6 +708,7 @@ export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
   const messageEvidence = messages.flatMap(messageToEvidence);
   const items = [...eventEvidence, ...messageEvidence].slice(-80);
   const categories = unique(items.map((item) => item.category));
+  const toolNames = unique(items.map((item) => item.toolName).filter(Boolean));
   const blockers = [...events.map(eventToBlocker), ...messages.map(messageToBlocker)]
     .filter(Boolean)
     .slice(-20)
@@ -690,6 +720,7 @@ export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
     version: 1,
     itemCount: items.length,
     categories,
+    toolNames,
     blockerCount: blockers.length,
     blockers,
     items: items.map((item, index) => ({
@@ -702,6 +733,8 @@ export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
 export function evaluateScsEvidence(contract = {}, ledger = {}) {
   const required = Array.isArray(contract.requiredEvidence) ? contract.requiredEvidence : [];
   const ledgerCategories = new Set(Array.isArray(ledger.categories) ? ledger.categories : []);
+  const requiredToolCalls = Array.isArray(contract.requiredToolCalls) ? contract.requiredToolCalls : [];
+  const ledgerToolNames = new Set(Array.isArray(ledger.toolNames) ? ledger.toolNames : []);
   const satisfied = [];
   const missing = [];
   for (const requirement of required) {
@@ -711,17 +744,23 @@ export function evaluateScsEvidence(contract = {}, ledger = {}) {
       missing.push(requirement);
     }
   }
+  const missingToolCalls = requiredToolCalls.filter((toolName) => !ledgerToolNames.has(toolName));
   const hasAnyEvidence = Number(ledger.itemCount || 0) > 0;
-  const ok = !contract.requiresExternalEvidence || (missing.length === 0 && hasAnyEvidence);
+  const evidenceOk = !contract.requiresExternalEvidence || (missing.length === 0 && hasAnyEvidence);
+  const ok = evidenceOk && missingToolCalls.length === 0;
   return {
     ok,
     requiresExternalEvidence: Boolean(contract.requiresExternalEvidence),
     hasAnyEvidence,
     satisfied,
     missing,
+    requiredToolCalls,
+    missingToolCalls,
     reason: ok
       ? "Evidence satisfies the deterministic task contract."
-      : missing.length
+      : missingToolCalls.length
+        ? `Missing required tool calls: ${missingToolCalls.join(", ")}.`
+        : missing.length
         ? `Missing evidence categories: ${missing.map((item) => item.category).join(", ")}.`
         : "Task requires external evidence but the ledger is empty.",
   };
@@ -741,6 +780,7 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
       forbiddenActions: contract.forbiddenActions || [],
       exactOutputPaths: contract.exactOutputPaths || [],
       exactInputPaths: contract.exactInputPaths || [],
+      requiredToolCalls: contract.requiredToolCalls || [],
       requiredTextTerms: contract.requiredTextTerms || [],
       forbiddenTextTerms: contract.forbiddenTextTerms || [],
       successCriteria: contract.successCriteria || [],
@@ -748,6 +788,7 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
     evidenceLedger: {
       itemCount: ledger.itemCount || 0,
       categories: ledger.categories || [],
+      toolNames: ledger.toolNames || [],
       recentItems: (ledger.items || []).slice(-12).map((item) => ({
         id: item.id,
         category: item.category,
@@ -770,6 +811,7 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
       ok: Boolean(evaluation.ok),
       reason: evaluation.reason || "",
       missing: (evaluation.missing || []).map((item) => item.category),
+      missingToolCalls: evaluation.missingToolCalls || [],
       satisfied: (evaluation.satisfied || []).map((item) => item.category),
     },
   };
@@ -794,6 +836,7 @@ export function deterministicFinishBlocker(contract = {}, ledger = {}, evaluatio
     evidence: [
       `Required: ${(contract.requiredEvidence || []).map((item) => item.category).join(", ") || "external evidence"}`,
       `Present: ${(ledger.categories || []).join(", ") || "none"}`,
+      ...(evaluation.missingToolCalls?.length ? [`Required tool calls missing: ${evaluation.missingToolCalls.join(", ")}`] : []),
     ],
     nextRequiredAction:
       "Collect the missing concrete evidence, verify the requested state or artifact, then ask SCS to finish again; if impossible, report a real blocker with proof.",

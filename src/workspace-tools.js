@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { XMLValidator } from "fast-xml-parser";
 import { hasSensitiveText, redactSensitiveText } from "./redaction.js";
 
 export const WORKSPACE_TOOL_NAMES = ["inspect_project", "list_files", "read_file", "search_files", "write_file", "apply_patch"];
@@ -174,6 +175,13 @@ function validateSvgArtifact(relativePath, content) {
   const cdataOpen = (trimmed.match(/<!\[CDATA\[/gi) || []).length;
   const cdataClose = (trimmed.match(/\]\]>/g) || []).length;
   if (cdataOpen !== cdataClose) errors.push("CDATA open/close markers are unbalanced.");
+  const xmlValidation = trimmed ? XMLValidator.validate(trimmed, { allowBooleanAttributes: false }) : true;
+  if (xmlValidation !== true) {
+    const err = xmlValidation?.err || {};
+    errors.push(
+      `XML parser rejected SVG${err.line ? ` at line ${err.line}${err.col ? `:${err.col}` : ""}` : ""}: ${err.msg || "invalid XML syntax"}`
+    );
+  }
   errors.push(...validateXmlTagStack(trimmed));
   if (/<text\b/i.test(trimmed) && !/(viewBox|width|height)=/i.test(trimmed)) {
     warnings.push("SVG contains text but no obvious sizing/viewBox metadata; render-preview before claiming visual fit.");
@@ -181,7 +189,7 @@ function validateSvgArtifact(relativePath, content) {
   return {
     kind: "svg",
     ok: errors.length === 0,
-    parser: "builtin-svg-xml-guard",
+    parser: "fast-xml-parser+xml-stack-guard",
     root: root || "",
     errors,
     warnings,

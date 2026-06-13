@@ -24,6 +24,7 @@ import {
 import { buildScsEvidenceLedger, deriveScsTaskContract, evaluateScsEvidence } from "../src/scs-evidence.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { classifyGoalIntent, isDirectAnswerIntent } from "../src/goal-intent.js";
+import { languageWriterDefaults } from "../src/writing-specialist.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -111,6 +112,10 @@ const envSnapshot = {
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   LLM_BASE_URL: process.env.LLM_BASE_URL,
   AGINTI_MAIN_REASONING: process.env.AGINTI_MAIN_REASONING,
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
+  AGINTI_WRITING_PROVIDER_ZH: process.env.AGINTI_WRITING_PROVIDER_ZH,
+  AGINTI_WRITING_MODEL_ZH: process.env.AGINTI_WRITING_MODEL_ZH,
 };
 process.env.OPENAI_BASE_URL = "https://openai-compatible.example/v1";
 process.env.LLM_BASE_URL = "https://generic-compatible.example/v1";
@@ -123,6 +128,18 @@ process.env.AGINTI_MAIN_REASONING = "none";
 assert(getModelRoleDefaults().main.reasoning === "", "none main reasoning should normalize to omitted reasoning");
 assert(normalizeReasoningEffort("min") === "minimal", "min reasoning alias should normalize to minimal");
 assert(normalizeReasoningEffort("extra-high") === "xhigh", "extra-high reasoning alias should normalize to xhigh");
+process.env.DEEPSEEK_API_KEY = "test-deepseek-key";
+process.env.OPENAI_API_KEY = "test-openai-key";
+delete process.env.AGINTI_WRITING_PROVIDER_ZH;
+delete process.env.AGINTI_WRITING_MODEL_ZH;
+const zhWriterRoute = languageWriterDefaults({ language: "zh-Hans", writingBrief: "写一段小说。" }, { provider: "mock", model: "mock-agent" });
+assert(zhWriterRoute.provider === "deepseek" && zhWriterRoute.model === "deepseek-v4-pro", "Chinese writing should default to DeepSeek Pro when available");
+const enWriterRoute = languageWriterDefaults({ language: "en", writingBrief: "Write a scene." }, { provider: "mock", model: "mock-agent" });
+assert(enWriterRoute.provider === "openai" && enWriterRoute.model, "English writing should default to OpenAI when available");
+process.env.AGINTI_WRITING_PROVIDER_ZH = "qwen";
+process.env.AGINTI_WRITING_MODEL_ZH = "qwen-test-writer";
+const zhEnvWriterRoute = languageWriterDefaults({ language: "zh-Hans", writingBrief: "写一段小说。" }, { provider: "mock", model: "mock-agent" });
+assert(zhEnvWriterRoute.provider === "qwen" && zhEnvWriterRoute.model === "qwen-test-writer", "language-specific writer env should override auto routing");
 for (const [key, value] of Object.entries(envSnapshot)) {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;
@@ -578,6 +595,10 @@ const jsonObjectContract = deriveScsTaskContract({
 const virtualFileContract = deriveScsTaskContract({
   goal: "Create file: /workspace/virtual-output.txt with virtual Docker path support.",
 });
+const requiredWriterToolContract = deriveScsTaskContract({
+  goal: "Call writing_specialist again and create final/story.md.",
+  taskProfile: "writing",
+});
 const outputListContract = deriveScsTaskContract({
   goal: [
     "Create:",
@@ -648,6 +669,10 @@ assert(
   "virtual output filename should require file evidence without treating output in the filename as an artifact"
 );
 assert(
+  requiredWriterToolContract.requiredToolCalls.includes("writing_specialist"),
+  "SCS should infer explicitly required specialist tool calls"
+);
+assert(
   outputListContract.exactOutputPaths.includes("work/demo/generate_items.py") &&
     outputListContract.exactOutputPaths.includes("work/demo/review_items.py") &&
     outputListContract.exactOutputPaths.includes("build/demo/primary/color/book.pdf") &&
@@ -691,6 +716,28 @@ const checkedCodeEval = evaluateScsEvidence(
   })
 );
 assert(checkedCodeEval.ok, "code task should finish when file and command evidence are both present");
+const missingWriterToolEval = evaluateScsEvidence(
+  requiredWriterToolContract,
+  buildScsEvidenceLedger({
+    context: { events: [{ type: "file.changed", data: { path: "final/story.md" } }] },
+  })
+);
+assert(
+  !missingWriterToolEval.ok && missingWriterToolEval.missingToolCalls.includes("writing_specialist"),
+  "SCS should reject finish when required specialist call is missing"
+);
+const presentWriterToolEval = evaluateScsEvidence(
+  requiredWriterToolContract,
+  buildScsEvidenceLedger({
+    context: {
+      events: [
+        { type: "file.changed", data: { path: "final/story.md" } },
+        { type: "tool.completed", data: { toolName: "writing_specialist", ok: true, artifactPath: "artifacts/writer.json" } },
+      ],
+    },
+  })
+);
+assert(presentWriterToolEval.ok, "SCS should accept required specialist call when tool evidence is present");
 
 const blockedFileFinish = await reviewScsFinish(
   { mock: true },
@@ -740,6 +787,7 @@ console.log(
         "role-defaults",
         "openai-base-url",
         "provider-default-reasoning",
+        "writing-specialist-language-routing",
         "openai-chat-reasoning-payload",
         "goal-intent-direct-answer",
         "route-overrides",
@@ -754,6 +802,7 @@ console.log(
         "scs-student-validator-replan",
         "scs-evidence-stdout",
         "scs-contract-evidence-ledger",
+        "scs-required-tool-call-contract",
         "cli-models-command",
         "venice-shortcut",
       ],

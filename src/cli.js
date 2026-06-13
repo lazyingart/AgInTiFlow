@@ -825,6 +825,7 @@ function parseImageCommandArgs(argv = []) {
     imageSize: "",
     host: "",
     referenceImages: [],
+    matchReferenceSize: false,
     commandCwd: "",
     requestTimeoutMs: "",
     pollTimeoutMs: "",
@@ -858,6 +859,11 @@ function parseImageCommandArgs(argv = []) {
     }
     if (arg === "--dry-run" || arg === "--dryrun") {
       result.dryRun = true;
+      index += 1;
+      continue;
+    }
+    if (arg === "--match-reference-size" || arg === "--match-ref-size") {
+      result.matchReferenceSize = true;
       index += 1;
       continue;
     }
@@ -919,9 +925,10 @@ function parseImageCommandArgs(argv = []) {
 
 function printImageCommandUsage() {
   console.log(
-    'Usage: aginti image [generate] [--json] [--dry-run] [--provider grsai|venice] [--model MODEL] [--format png|webp|svg] [--output-dir DIR] [--output-stem STEM] [--aspect-ratio 1:1] [--image-size 1K|2K|4K|1024x1024] [--reference path-or-url] "prompt"'
+    'Usage: aginti image [generate] [--json] [--dry-run] [--provider grsai|venice] [--model MODEL] [--format png|webp|svg] [--output-dir DIR] [--output-stem STEM] [--aspect-ratio 1:1] [--image-size 1K|2K|4K|1024x1024] [--reference path-or-url] [--match-reference-size] "prompt"'
   );
   console.log("Direct image CLI calls the same generate_image tool as the web API. SVG/vector requests return PNG with requestedFormat/actualFormat/formatNotice.");
+  console.log("--reference accepts local paths, URLs, or data URIs. Diagnostics record reference/output dimensions when available.");
   console.log('Agent-mediated image work is still available as: aginti --image "draw a poster"');
 }
 
@@ -946,11 +953,13 @@ function printImageCommandResult(result = {}) {
     console.log(`format: ${requested}${requested === actual ? "" : ` -> ${actual}`}`);
   }
   if (result.formatNotice) console.log(`notice: ${result.formatNotice}`);
+  if (result.geometryNotice) console.log(`geometry: ${result.geometryNotice}`);
   if (result.path) console.log(`path: ${result.path}`);
   if (result.imagePaths?.length) console.log(`images: ${result.imagePaths.join(", ")}`);
   if (result.manifestPath) console.log(`manifest: ${result.manifestPath}`);
   if (result.promptPath) console.log(`prompt: ${result.promptPath}`);
   if (result.requestPayloadPath) console.log(`request: ${result.requestPayloadPath}`);
+  if (result.failureReason) console.log(`failure: ${result.failureReason}`);
   if (result.reason) console.log(`reason: ${result.reason}`);
 }
 
@@ -994,6 +1003,7 @@ async function handleImageCommand(argv, { commandCwd = process.cwd() } = {}) {
       imageSize: parsed.imageSize || undefined,
       host: parsed.host || undefined,
       referenceImages: parsed.referenceImages,
+      matchReferenceSize: parsed.matchReferenceSize,
       requestTimeoutMs: parsed.requestTimeoutMs || undefined,
       pollTimeoutMs: parsed.pollTimeoutMs || undefined,
       pollIntervalMs: parsed.pollIntervalMs || undefined,
@@ -1107,6 +1117,7 @@ function stripLeadingGlobalOptions(argv = []) {
   let index = 0;
   const options = {
     commandCwd: "",
+    language: "",
   };
   while (index < argv.length) {
     const arg = argv[index];
@@ -1115,7 +1126,15 @@ function stripLeadingGlobalOptions(argv = []) {
       continue;
     }
     if (arg === "--language" || arg === "--lang" || arg === "-L") {
-      index += readOption(argv, index) ? 2 : 1;
+      const first = readOption(argv, index);
+      const second = argv[index + 2] && !String(argv[index + 2]).startsWith("--") ? argv[index + 2] : "";
+      if (["cn", "zh"].includes(String(first || "").toLowerCase()) && ["s", "t"].includes(String(second || "").toLowerCase())) {
+        options.language = resolveLanguage(`${first}-${second}`);
+        index += 3;
+        continue;
+      }
+      options.language = resolveLanguage(first);
+      index += first ? 2 : 1;
       continue;
     }
     if (arg === "--cwd") {
@@ -1992,7 +2011,7 @@ async function handleStorageCommand(argv) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  if (argv[0] === "help" || argv.includes("--help") || argv.includes("-h")) {
+  if (argv[0] === "help" || argv[0] === "--help" || argv[0] === "-h") {
     printUsage();
     return;
   }
@@ -2268,7 +2287,7 @@ export async function main(argv = process.argv.slice(2)) {
       const parsedResumeOptions = parseArgs(resumeOptions.optionArgv);
       exitOnUnknownOptions(parsedResumeOptions);
       const webLaunch = await maybeEnsureDefaultWebApp(parsedResumeOptions, { commandCwd });
-      await startInteractiveCli(agentDefaults({ ...parsedResumeOptions, resume: sessionId, commandCwd: parsedResumeOptions.commandCwd || commandCwd }), {
+      await startInteractiveCli(agentDefaults({ ...parsedResumeOptions, language: parsedResumeOptions.language || stripped.options.language, resume: sessionId, commandCwd: parsedResumeOptions.commandCwd || commandCwd }), {
         packageDir,
         packageVersion: packageJson.version,
         webAppUrl: webLaunch.ok ? webLaunch.url : "",
@@ -2278,7 +2297,7 @@ export async function main(argv = process.argv.slice(2)) {
     }
     const parsedResumeArgs = parseArgs([...resumeOptions.optionArgv, prompt]);
     exitOnUnknownOptions(parsedResumeArgs);
-    const resumeArgs = agentDefaults({ ...parsedResumeArgs, resume: sessionId, goal: prompt, commandCwd: parsedResumeArgs.commandCwd || commandCwd });
+    const resumeArgs = agentDefaults({ ...parsedResumeArgs, language: parsedResumeArgs.language || stripped.options.language, resume: sessionId, goal: prompt, commandCwd: parsedResumeArgs.commandCwd || commandCwd });
     if (!(await ensureDeepSeekKeyForOneShot(resumeArgs))) process.exit(1);
     await maybeEnsureDefaultWebApp(resumeArgs, { commandCwd });
     const config = loadConfig(resumeArgs, { packageDir });
@@ -2287,7 +2306,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   const parsedArgs = parseArgs(commandArgv);
-  const args = { ...parsedArgs, commandCwd: parsedArgs.commandCwd || commandCwd };
+  const args = { ...parsedArgs, language: parsedArgs.language || stripped.options.language, commandCwd: parsedArgs.commandCwd || commandCwd };
   exitOnUnknownOptions(args);
 
   if (args.webapp) {
