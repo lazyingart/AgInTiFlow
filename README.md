@@ -152,6 +152,7 @@ aginti --language de
 | Goal | Command |
 | --- | --- |
 | Start interactive chat | `aginti` or `aginti chat` |
+| Run one clean machine turn | `printf '%s\n' 'task' \| aginti run --stdin --json --task-profile chatops --no-scs -s safe` |
 | Start local web app | Auto-starts with `aginti`; detached command is `aginti webapp`; disable/enable auto-start with `aginti webapp disable` / `aginti webapp enable`; stop with `aginti webapp stop`; restart with `aginti webapp restart`; foreground mode is `aginti web --port 3210` |
 | Save provider keys | `aginti auth`, `/auth`, `/login` |
 | Review current repo | `/review [focus]` |

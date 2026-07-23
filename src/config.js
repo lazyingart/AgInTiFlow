@@ -280,6 +280,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     globalSessionIndexPath: paths.globalSessionIndexPath,
     onLog: overrides.onLog,
     onEvent: overrides.onEvent,
+    onConsole: overrides.onConsole,
   };
 }
 

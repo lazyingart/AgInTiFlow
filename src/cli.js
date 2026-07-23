@@ -2011,6 +2011,10 @@ async function handleStorageCommand(argv) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
+  const machineRunRequested = argv.includes("run") && argv.includes("--json");
+  if (machineRunRequested && !argv.includes("--no-auto-update")) {
+    argv = [...argv, "--no-auto-update"];
+  }
   if (argv[0] === "help" || argv[0] === "--help" || argv[0] === "-h") {
     printUsage();
     return;
@@ -2265,6 +2269,80 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (commandArgv[0] === "queue") {
     await handleQueueCommand(commandArgv.slice(1));
+    return;
+  }
+
+  if (commandArgv[0] === "run") {
+    const runArgv = commandArgv.slice(1);
+    const stdinFlag = runArgv.includes("--stdin");
+    const jsonFlag = runArgv.includes("--json");
+    const optionArgv = runArgv.filter((arg) => !["--stdin", "--json"].includes(arg));
+    const parsedRunArgs = parseArgs(optionArgv);
+    exitOnUnknownOptions(parsedRunArgs);
+    const prompt = stdinFlag || !process.stdin.isTTY ? await readStdin() : parsedRunArgs.goal;
+    if (!prompt) {
+      if (jsonFlag) {
+        console.log(JSON.stringify({ ok: false, result: "", reason: "empty_prompt" }));
+        process.exitCode = 2;
+        return;
+      }
+      console.log("Usage: aginti run [--stdin] [options] [prompt]");
+      console.log("  --stdin    Read the task prompt from standard input (pipe/redirect)");
+      console.log("  --json     Emit one machine-readable result object and no runtime logs");
+      console.log("Examples:");
+      console.log('  echo "calculate 5 + 3" | aginti run --stdin');
+      console.log('  echo "hello" | aginti run --stdin --json --provider mock');
+      return;
+    }
+    const runArgs = agentDefaults({
+      ...parsedRunArgs,
+      language: parsedRunArgs.language || stripped.options.language,
+      goal: prompt,
+      commandCwd: parsedRunArgs.commandCwd || commandCwd,
+    });
+    if (!jsonFlag && !(await ensureDeepSeekKeyForOneShot(runArgs))) {
+      process.exitCode = 1;
+      return;
+    }
+    if (!jsonFlag) await maybeEnsureDefaultWebApp(runArgs, { commandCwd });
+    try {
+      const config = loadConfig(runArgs, {
+        packageDir,
+        ...(jsonFlag ? { onConsole: () => {} } : {}),
+      });
+      if (jsonFlag && !config.apiKey) {
+        throw new Error(`Missing API key for provider "${config.provider}".`);
+      }
+      const run = await runAgent(config);
+      if (jsonFlag) {
+        const result = String(run?.result || "").trim();
+        const failed = Boolean(run?.failed) || (Boolean(run?.stopped) && !result);
+        console.log(
+          JSON.stringify({
+            ok: Boolean(result) && !failed,
+            sessionId: String(run?.sessionId || ""),
+            result,
+            stopped: Boolean(run?.stopped),
+            failed,
+            reason: String(run?.reason || (result ? "" : "empty_result")),
+          })
+        );
+        if (failed || !result) process.exitCode = 1;
+      }
+    } catch (error) {
+      if (!jsonFlag) throw error;
+      console.log(
+        JSON.stringify({
+          ok: false,
+          sessionId: "",
+          result: "",
+          stopped: true,
+          failed: true,
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      );
+      process.exitCode = 1;
+    }
     return;
   }
 
