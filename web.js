@@ -41,6 +41,7 @@ import {
 } from "./src/project.js";
 import { buildCapabilityReport } from "./src/capabilities.js";
 import { generateImage } from "./src/auxiliary-tools.js";
+import { getPublicResearchWrapperStatus, runPublicResearchWrapper } from "./src/public-research-wrapper.js";
 import { listExternalSkillPacks, listSkills } from "./src/skill-library.js";
 import { platformInfo, platformLabel, platformSetupHints } from "./src/platform.js";
 import { normalizeLanguage } from "./src/i18n.js";
@@ -1599,6 +1600,23 @@ app.get("/api/capabilities", async (_req, res) => {
   });
   const report = await buildCapabilityReport(baseDir, packageJson.version, config);
   res.json(report);
+});
+
+app.get("/api/public-research/status", (_req, res) => {
+  res.json(getPublicResearchWrapperStatus());
+});
+
+app.post("/api/public-research", async (req, res) => {
+  try {
+    const result = await runPublicResearchWrapper(req.body || {});
+    if (result.ok) {
+      res.json(result);
+      return;
+    }
+    res.status(result.status || (result.blocked ? 429 : 503)).json(result);
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.get("/api/mcp", async (_req, res) => {
