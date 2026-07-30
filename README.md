@@ -154,6 +154,7 @@ aginti --language de
 | Start interactive chat | `aginti` or `aginti chat` |
 | Run one clean machine turn | `printf '%s\n' 'task' \| aginti run --stdin --json --task-profile chatops --no-scs -s safe` |
 | Start the narrow public-research backend | Project-local `./node_modules/.bin/aginti-public-research --port 3211`; see [deployment boundary](docs/public-research-wrapper.md) |
+| Start the authenticated text-only fallback | Project-local `./node_modules/.bin/aginti-safe-chat --port 3212`; see [safe-chat boundary](docs/safe-chat.md) |
 | Start local web app | Auto-starts with `aginti`; detached command is `aginti webapp`; disable/enable auto-start with `aginti webapp disable` / `aginti webapp enable`; stop with `aginti webapp stop`; restart with `aginti webapp restart`; foreground mode is `aginti web --port 3210` |
 | Save provider keys | `aginti auth`, `/auth`, `/login` |
 | Review current repo | `/review [focus]` |
@@ -402,6 +403,7 @@ More detail:
 | Runtime modes and autonomy | [docs/runtime-modes-and-autonomy.md](docs/runtime-modes-and-autonomy.md) |
 | Skills and tools | [docs/skills-and-tools.md](docs/skills-and-tools.md) |
 | Image reading and web research | [docs/perception-and-web-research.md](docs/perception-and-web-research.md) |
+| Server-owned text-only fallback | [docs/safe-chat.md](docs/safe-chat.md) |
 | Skill Mesh | [docs/skillmesh.md](docs/skillmesh.md) |
 | Housekeeping logs | [docs/housekeeping.md](docs/housekeeping.md) |
 | npm publishing | [docs/npm-publishing.md](docs/npm-publishing.md) |
