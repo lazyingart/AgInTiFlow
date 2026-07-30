@@ -224,9 +224,9 @@ try {
     throw new Error(`default route/main payload mismatch after Venice off: ${runPayloads.at(-1) || ""}`);
   }
   await waitForRunState(page, "running");
-  await page.waitForSelector(".event-plan", { timeout: 12000 });
-  if (!(await page.locator(".event-plan .markdown-body").first().innerText()).trim()) {
-    throw new Error("web run log did not render the plan as a formatted event card");
+  await page.waitForSelector(".event-focused", { timeout: 12000 });
+  if (!(await page.locator(".event-focused .chat-content").first().innerText()).trim()) {
+    throw new Error("web run log did not render the focused execution decision as a formatted event card");
   }
   await page.waitForFunction(
     () => {

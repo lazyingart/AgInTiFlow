@@ -16,6 +16,8 @@ import { resolveLanguage } from "./i18n.js";
 import { DEFAULT_SCS_MODE, normalizeScsMode, shouldActivateScs } from "./scs-controller.js";
 import { applyPermissionMode, normalizePermissionMode } from "./permission-modes.js";
 import { normalizeDynamicStepsMode } from "./step-budget-controller.js";
+import { maxStepsForExecutionPolicy, selectExecutionPolicy } from "./execution-policy.js";
+import { normalizeContextBudgetMode } from "./context-budget-controller.js";
 
 function parseBoolean(value, fallback) {
   if (value === undefined) return fallback;
@@ -125,6 +127,22 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     taskProfile,
     complexityScore: route.complexityScore,
   });
+  const requestedExecutionTier =
+    overrides.executionTier || args.executionTier || process.env.AGINTI_EXECUTION_TIER || "";
+  const executionPolicy = selectExecutionPolicy({
+    requestedTier: requestedExecutionTier,
+    routingMode,
+    taskProfile,
+    complexityScore: route.complexityScore,
+    scsActive,
+  });
+  const configuredMaxSteps = overrides.maxSteps ?? args.maxSteps ?? process.env.MAX_STEPS;
+  const maxStepsExplicit = configuredMaxSteps !== undefined && String(configuredMaxSteps).trim() !== "";
+  const maxSteps = maxStepsForExecutionPolicy(
+    parseNumber(configuredMaxSteps, defaultMaxSteps),
+    executionPolicy,
+    { explicit: maxStepsExplicit }
+  );
   const packageDir = path.resolve(overrides.packageDir || process.env.AGINTIFLOW_PACKAGE_DIR || baseDir);
   const permissionMode = normalizePermissionMode(
     overrides.permissionMode || args.permissionMode || process.env.AGINTI_PERMISSION_MODE || "normal"
@@ -164,6 +182,8 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     language,
     routeReason: route.reason,
     routeComplexityScore: route.complexityScore,
+    executionTier: executionPolicy.tier,
+    executionPolicy,
     enableScs: scsMode,
     scsActive,
     scsModelPolicy: scsActive ? "main" : "route",
@@ -201,7 +221,8 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     baseURL: overrides.baseURL || defaults.baseURL,
     model: activeModel || defaults.model,
     reasoning: activeReasoning,
-    maxSteps: parseNumber(overrides.maxSteps ?? args.maxSteps ?? process.env.MAX_STEPS, defaultMaxSteps),
+    maxSteps,
+    maxStepsExplicit,
     dynamicSteps: normalizeDynamicStepsMode(overrides.dynamicSteps ?? args.dynamicSteps ?? process.env.AGINTI_DYNAMIC_STEPS ?? "auto"),
     dynamicStepExtensionLimit: clampNumber(
       parseNumber(
@@ -217,6 +238,17 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     ),
     dynamicStepExtensionSize: parseNumber(
       overrides.dynamicStepExtensionSize ?? args.dynamicStepExtensionSize ?? process.env.AGINTI_STEP_EXTENSION_SIZE,
+      0
+    ),
+    contextBudgetMode: normalizeContextBudgetMode(
+      overrides.contextBudgetMode ?? args.contextBudgetMode ?? process.env.AGINTI_CONTEXT_BUDGET_MODE ?? "auto"
+    ),
+    contextBudgetChars: parseNumber(
+      overrides.contextBudgetChars ?? args.contextBudgetChars ?? process.env.AGINTI_CONTEXT_BUDGET_CHARS,
+      180000
+    ),
+    contextBudgetTargetChars: parseNumber(
+      overrides.contextBudgetTargetChars ?? args.contextBudgetTargetChars ?? process.env.AGINTI_CONTEXT_TARGET_CHARS,
       0
     ),
     headless: parseBoolean(overrides.headless ?? args.headless ?? process.env.HEADLESS, false),

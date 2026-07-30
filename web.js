@@ -267,6 +267,26 @@ function timelineEntryForEvent(event = {}) {
       at,
     };
   }
+  if (type === "plan.skipped") {
+    return {
+      role: "event",
+      eventType: type,
+      eventLabel: "focused",
+      data,
+      content: data.reason || "Focused execution started without a separate planning round.",
+      at,
+    };
+  }
+  if (type === "execution.policy_selected") {
+    return {
+      role: "event",
+      eventType: type,
+      eventLabel: "execution",
+      data,
+      content: `${data.tier || "focused"}${data.reason ? `: ${data.reason}` : ""}`,
+      at,
+    };
+  }
   if (type === "tool.started") {
     return {
       role: "event",
@@ -319,6 +339,16 @@ function timelineEntryForEvent(event = {}) {
       eventLabel: "budget",
       data,
       content: `${data.currentMaxSteps || data.initialMaxSteps || data.maxSteps || "unknown"} steps`,
+      at,
+    };
+  }
+  if (type === "history.compacted_for_context_budget") {
+    return {
+      role: "event",
+      eventType: type,
+      eventLabel: "context",
+      data,
+      content: `Compacted ${data.charsBefore || "?"} -> ${data.charsAfter || "?"} chars before step ${data.step || "?"}.`,
       at,
     };
   }

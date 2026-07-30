@@ -2196,6 +2196,21 @@ function renderPlanEvent(entry) {
   `;
 }
 
+function renderExecutionEvent(entry) {
+  const data = entry.data || {};
+  const tier = data.tier || (entry.eventType === "plan.skipped" ? "focused" : "execution");
+  const reason = data.reason || entry.content || "";
+  return `
+    <article class="event-card event-focused">
+      <div class="event-card-meta">
+        <span>${escapeHtml(tier)}</span>
+        <span>${entry.at ? escapeHtml(new Date(entry.at).toLocaleString()) : ""}</span>
+      </div>
+      ${reason ? `<div class="chat-content">${escapeHtml(reason)}</div>` : ""}
+    </article>
+  `;
+}
+
 function embeddedWorkspaceChangesFromText(value = "") {
   const lines = String(value || "").split(/\r?\n/);
   const changes = [];
@@ -2376,6 +2391,7 @@ function renderStatusEvent(entry) {
 function renderStructuredEvent(entry) {
   const message = entry.message || entry.eventType || "";
   if (message === "plan.created") return renderPlanEvent(entry);
+  if (message === "plan.skipped" || message === "execution.policy_selected") return renderExecutionEvent(entry);
   if (message === "command.output") return renderCommandOutputLog(entry);
   if (message === "file.changed") return renderWorkspaceChangeEvent(entry);
   if (message === "tool.blocked" && entry.data?.permissionAdvice) return renderPermissionApproval(entry);
@@ -2396,6 +2412,7 @@ function renderStructuredEvent(entry) {
   }
   if (
     message === "budget.initialized" ||
+    message === "history.compacted_for_context_budget" ||
     message === "conversation.continued" ||
     message === "conversation.queued_input_applied" ||
     message === "session.finished" ||

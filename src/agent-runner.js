@@ -63,6 +63,14 @@ import {
   decideStepBudgetExtension,
   serializeStepBudgetState,
 } from "./step-budget-controller.js";
+import { selectExecutionPolicy } from "./execution-policy.js";
+import {
+  createContextBudgetState,
+  decideContextCompaction,
+  estimateMessageChars,
+  recordContextCompaction,
+  serializeContextBudgetState,
+} from "./context-budget-controller.js";
 
 const BROWSER_TOOLS = new Set(["open_url", "open_workspace_file", "preview_workspace", "click", "type", "scroll", "press", "back"]);
 const WORKSPACE_TOOLS = new Set(WORKSPACE_TOOL_NAMES);
@@ -335,7 +343,7 @@ function summarizeToolHistory(messages = [], limit = 24) {
   return items.slice(-limit);
 }
 
-function summarizeOriginalRequests(messages = [], limit = 4) {
+function summarizeOriginalRequests(messages = [], limit = 6) {
   const requests = [];
   for (const message of messages) {
     if (message?.role !== "user") continue;
@@ -343,7 +351,7 @@ function summarizeOriginalRequests(messages = [], limit = 4) {
     if (!content.trim()) continue;
     if (/^Step \d+\/\d+ .*Latest runtime snapshot:/i.test(content)) continue;
     if (/^Previous assistant response retained as compacted history/i.test(content)) continue;
-    requests.push(compactSingleLine(content, 700));
+    requests.push(compactSingleLine(content, 1200));
   }
   return [...new Set(requests)].slice(0, limit);
 }
@@ -357,7 +365,7 @@ function modelTimeoutMsForConfig(config = {}) {
   return Number.isFinite(timeout) && timeout > 0 ? timeout : 180000;
 }
 
-export function buildModelTimeoutRetryMessages(state, config, snapshot, step, error) {
+function buildCompactedRuntimeMessages(state, config, snapshot, step, options = {}) {
   const messages = Array.isArray(state?.messages) ? state.messages : [];
   const systemMessages = messages.filter((message) => message?.role === "system").slice(0, 4);
   const requests = summarizeOriginalRequests(messages);
@@ -375,14 +383,17 @@ export function buildModelTimeoutRetryMessages(state, config, snapshot, step, er
     plan: state?.plan || "",
   };
   const compactedContent = [
-    "A previous agent-step model request timed out. Continue from this compacted, valid transcript.",
-    `Timeout: ${error?.name || "ModelTimeoutError"} ${compactSingleLine(error?.message || "", 260)}`,
+    options.heading || "Continue from this compacted, valid transcript.",
+    options.detail ? compactSingleLine(options.detail, 420) : "",
+    "",
+    "Authoritative current goal:",
+    compactMultiline(state?.goal || config.goal || "(no goal recorded)", 4000),
     "",
     "Original user request(s):",
     ...(requests.length ? requests.map((request, index) => `${index + 1}. ${request}`) : ["1. (No compact request found; continue from plan and tool evidence.)"]),
     "",
     "Current plan:",
-    compactSingleLine(state?.plan || "(no plan recorded)", 1200),
+    compactMultiline(state?.plan || "(no plan recorded)", 2400),
     "",
     "Recent tool/model evidence:",
     ...(toolHistory.length ? toolHistory.map((item) => `- ${item}`) : ["- No tool evidence recorded yet."]),
@@ -391,8 +402,11 @@ export function buildModelTimeoutRetryMessages(state, config, snapshot, step, er
     compactJson(snapshotSummary, 1600),
     "",
     "Recovery instruction:",
-    "Do not restart broad discovery. Use the evidence above, avoid repeating blocked broad shell commands, and either call the smallest remaining tool or finish with a concrete report/blocker.",
-  ].join("\n");
+    options.recoveryInstruction ||
+      "Do not restart broad discovery. Use the evidence above, avoid repeating blocked broad shell commands, and either call the smallest remaining tool or finish with a concrete report/blocker.",
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
 
   const compactMessages = [
     ...systemMessages,
@@ -410,6 +424,22 @@ export function buildModelTimeoutRetryMessages(state, config, snapshot, step, er
   }
 
   return compactMessages;
+}
+
+export function buildModelTimeoutRetryMessages(state, config, snapshot, step, error) {
+  return buildCompactedRuntimeMessages(state, config, snapshot, step, {
+    heading: "A previous agent-step model request timed out. Continue from this compacted, valid transcript.",
+    detail: `Timeout: ${error?.name || "ModelTimeoutError"} ${compactSingleLine(error?.message || "", 260)}`,
+  });
+}
+
+export function buildContextBudgetCompactionMessages(state, config, snapshot, step, decision = {}) {
+  return buildCompactedRuntimeMessages(state, config, snapshot, step, {
+    heading: "The runtime proactively compacted a long agent history before the provider context became inefficient or unstable.",
+    detail: decision.reason || "The configured context budget was exceeded.",
+    recoveryInstruction:
+      "Continue from the authoritative goal, plan, and evidence above. Re-read exact files when details matter, do not repeat completed work, and finish once the remaining acceptance criteria are verified.",
+  });
 }
 
 function isModelTimeoutError(error) {
@@ -577,6 +607,11 @@ async function createInitialState(config, sessionId) {
         loadedAt: now,
       },
       selectedSkills: selectedSkills.map((skill) => skill.id),
+      executionPolicy: config.executionPolicy || {
+        tier: config.executionTier || "focused",
+        requiresPlan: config.executionTier === "thorough",
+        reason: "",
+      },
     },
     chat: [
       {
@@ -591,7 +626,10 @@ async function createInitialState(config, sessionId) {
         content: [
           "You are a careful browser and shell agent with a small tool surface.",
           "Use only the provided tools.",
-          "The execution plan is not the final answer. After planning, actively use tools until the requested task is complete or genuinely blocked. If the user only sends a greeting, thanks, or another simple conversational turn, finish directly without creating files, running shell commands, opening browsers, or sending canvas artifacts.",
+          config.executionTier === "focused"
+            ? "Focused execution is active. Start with the smallest useful answer or tool action without a separate planning round. Stop as soon as the request is satisfied and verified in proportion to its risk."
+            : "Thorough execution is active. The execution plan is not the final answer; after planning, actively use tools until the requested task is complete or genuinely blocked.",
+          "If the user only sends a greeting, thanks, or another simple conversational turn, finish directly without creating files, running shell commands, opening browsers, or sending canvas artifacts.",
           "If the shell tool can satisfy a local task, prefer it before opening a browser.",
           "Do not open a browser page just because a start URL exists. Treat it as a suggestion only.",
           "Only reference element ids from the latest browser snapshot.",
@@ -2369,6 +2407,7 @@ export async function runAgent(config) {
       model: config.model,
       routingMode: config.routingMode,
       routeReason: config.routeReason,
+      executionTier: config.executionTier,
       scsActive: Boolean(config.scsActive),
       scsMode: config.enableScs || "off",
       goal: config.goal,
@@ -2407,6 +2446,7 @@ export async function runAgent(config) {
     model: config.model,
     routingMode: config.routingMode,
     routeReason: config.routeReason,
+    executionTier: config.executionTier,
     scsActive: Boolean(config.scsActive),
     scsMode: config.enableScs || "off",
   });
@@ -2422,12 +2462,23 @@ export async function runAgent(config) {
 
     state.meta = state.meta || {};
     state.meta.goalIntent = goalIntent;
+    const executionPolicy =
+      config.executionPolicy ||
+      selectExecutionPolicy({
+        routingMode: config.routingMode,
+        taskProfile: config.taskProfile,
+        complexityScore: config.routeComplexityScore,
+        scsActive: config.scsActive,
+      });
+    state.meta.executionPolicy = executionPolicy;
+    await store.appendEvent("execution.policy_selected", executionPolicy);
+    observers.event("execution.policy_selected", executionPolicy);
 
     const scoutsWillRun = shouldRunParallelScouts(config, state);
     if (!scoutsWillRun) {
       await maybePrepareSurgicalContext(config, state, store, observers);
     }
-    if (!state.plan) {
+    if (!state.plan && executionPolicy.requiresPlan) {
       if (config.scsActive) {
         await store.appendEvent("scs.plan.requested", {
           provider: config.provider,
@@ -2504,6 +2555,18 @@ export async function runAgent(config) {
         await store.appendEvent("plan.created", { plan });
         await store.saveState(state);
         observers.event("plan.created", { plan });
+      }
+    } else if (!state.plan) {
+      if (state.meta.planSkippedForGoal !== config.goal) {
+        state.meta.planSkippedForGoal = config.goal;
+        const detail = {
+          tier: executionPolicy.tier,
+          reason: executionPolicy.reason,
+          complexityScore: config.routeComplexityScore,
+        };
+        await store.appendEvent("plan.skipped", detail);
+        observers.event("plan.skipped", detail);
+        await store.saveState(state);
       }
     } else if (config.scsActive && !state.meta?.scs?.supervisorInstructionInjected) {
       state.meta.scs = state.meta.scs || {
@@ -2584,6 +2647,7 @@ export async function runAgent(config) {
       model: config.model,
       routingMode: config.routingMode,
       routeReason: config.routeReason,
+      executionTier: executionPolicy.tier,
       taskProfile: config.taskProfile,
       scsActive: Boolean(config.scsActive),
       scsMode: config.enableScs || "off",
@@ -2605,12 +2669,16 @@ export async function runAgent(config) {
       dynamicSteps: config.dynamicSteps,
       dynamicStepExtensionLimit: config.dynamicStepExtensionLimit,
       dynamicStepHardCap: config.dynamicStepHardCap,
+      contextBudgetMode: config.contextBudgetMode,
+      contextBudgetChars: config.contextBudgetChars,
+      contextBudgetTargetChars: config.contextBudgetTargetChars,
     });
 
     emitConsole(config, `Session: ${sessionId}`, { kind: "meta" });
     emitConsole(config, `Provider: ${config.provider}`, { kind: "meta" });
     emitConsole(config, `Model: ${config.model}`, { kind: "meta" });
     emitConsole(config, `Routing: ${config.routingMode} (${config.routeReason})`, { kind: "meta" });
+    emitConsole(config, `Execution: ${executionPolicy.tier} (${executionPolicy.reason})`, { kind: "meta" });
     if (config.scsActive) emitConsole(config, `SCS: ${config.enableScs || DEFAULT_SCS_MODE} using main-model policy`, { kind: "meta" });
     emitConsole(config, `Workspace: ${config.commandCwd}`, { kind: "meta" });
     emitConsole(config, `Sessions: ${config.sessionsDir}`, { kind: "meta" });
@@ -2646,6 +2714,13 @@ export async function runAgent(config) {
         `Step budget: ${stepBudget.initialMaxSteps} initial, cap ${stepBudget.hardCap}, monitor=${stepBudget.monitor}`,
         { kind: "meta" }
       );
+    }
+    const contextBudget = createContextBudgetState(config, state);
+    state.meta.contextBudget = serializeContextBudgetState(contextBudget);
+    await store.appendEvent("context_budget.initialized", state.meta.contextBudget);
+    observers.event("context_budget.initialized", state.meta.contextBudget);
+    if (contextBudget.enabled) {
+      emitConsole(config, `Context budget: ${contextBudget.maxChars} chars, proactive compaction enabled`, { kind: "meta" });
     }
 
     while (state.stepsCompleted < stepBudget.currentMaxSteps) {
@@ -2705,6 +2780,45 @@ export async function runAgent(config) {
           stepBudget: state.meta.stepBudget,
         })}`,
       });
+
+      const contextDecision = decideContextCompaction({ state, budget: contextBudget, step });
+      if (contextDecision.compact) {
+        const compactMessages = buildContextBudgetCompactionMessages(state, config, snapshot, step, contextDecision);
+        const charsAfter = estimateMessageChars(compactMessages);
+        if (charsAfter < contextDecision.charsBefore) {
+          state.messages = compactMessages;
+          state.meta.contextBudget = recordContextCompaction(contextBudget, {
+            step,
+            charsBefore: contextDecision.charsBefore,
+            charsAfter,
+          });
+          const detail = {
+            step,
+            reason: contextDecision.reason,
+            charsBefore: contextDecision.charsBefore,
+            charsAfter,
+            targetChars: contextDecision.targetChars,
+            compactions: contextBudget.compactions,
+          };
+          await store.appendEvent("history.compacted_for_context_budget", detail);
+          observers.event("history.compacted_for_context_budget", detail);
+          emitConsole(
+            config,
+            `Context compacted before step ${step}: ${contextDecision.charsBefore} -> ${charsAfter} chars.`,
+            { kind: "meta" }
+          );
+          await store.saveState(state);
+        } else {
+          const detail = {
+            step,
+            reason: "Compaction candidate did not reduce context size.",
+            charsBefore: contextDecision.charsBefore,
+            charsAfter,
+          };
+          await store.appendEvent("history.context_compaction_skipped", detail);
+          observers.event("history.context_compaction_skipped", detail);
+        }
+      }
 
       throwIfAborted(config);
       await store.appendEvent("model.requested", {
