@@ -1,8 +1,11 @@
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { hasSensitiveText, redactSensitiveText } from "./redaction.js";
+
+const STRICT_EXTERNAL_BOUNDARY = "external-strict";
 
 const DEFAULT_ALLOWED_DOMAINS = [
   "arxiv.org",
@@ -66,16 +69,27 @@ const DEFAULT_LIMITS = {
 let runningCount = 0;
 
 function commandExists(command, env = process.env) {
-  try {
-    if (process.platform === "win32") {
-      execFileSync("where", [command], { stdio: "ignore", env });
-    } else {
-      execFileSync("sh", ["-lc", `command -v ${command}`], { stdio: "ignore", env });
+  const pathEntries = String(env.PATH || "")
+    .split(path.delimiter)
+    .filter(Boolean);
+  const extensions =
+    process.platform === "win32"
+      ? String(env.PATHEXT || ".EXE;.CMD;.BAT;.COM")
+          .split(";")
+          .filter(Boolean)
+      : [""];
+  for (const entry of pathEntries) {
+    for (const extension of extensions) {
+      const candidate = path.join(entry, `${command}${extension}`);
+      try {
+        fsSync.accessSync(candidate, process.platform === "win32" ? fsSync.constants.F_OK : fsSync.constants.X_OK);
+        if (fsSync.statSync(candidate).isFile()) return true;
+      } catch {
+        // Keep searching the server-owned PATH.
+      }
     }
-    return true;
-  } catch {
-    return false;
   }
+  return false;
 }
 
 function truthy(value) {
@@ -111,6 +125,67 @@ function parseServerAllowlist(env = process.env) {
   return [...new Set(domains)];
 }
 
+function normalizeBoundaryMode(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function strictBoundaryConfigured(env = process.env) {
+  return normalizeBoundaryMode(env.AGINTI_PUBLIC_RESEARCH_BOUNDARY) === STRICT_EXTERNAL_BOUNDARY;
+}
+
+function resolvedRealPath(value) {
+  const resolved = path.resolve(String(value || ""));
+  try {
+    return fsSync.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function urlDomains(value) {
+  const domains = [];
+  const pattern = /https?:\/\/[^\s<>{}\[\]"'`]+/gi;
+  for (const match of String(value || "").matchAll(pattern)) {
+    const candidate = match[0].replace(/[),.;!?]+$/g, "");
+    try {
+      domains.push(new URL(candidate).hostname.toLowerCase().replace(/\.$/, ""));
+    } catch {
+      // Invalid URLs are ignored here; malformed citations fail the source requirement below.
+    }
+  }
+  return domains;
+}
+
+function domainAllowed(domain, allowedDomains) {
+  return allowedDomains.some((allowed) => domain === allowed || domain.endsWith(`.${allowed}`));
+}
+
+function validateResearchAnswer(answer, allowedDomains, env = process.env) {
+  if (hasSensitiveText(answer)) {
+    const error = new Error("Public research output was rejected by the secret guardrail.");
+    error.status = 502;
+    error.publicCode = "unsafe_output";
+    throw error;
+  }
+  const domains = urlDomains(answer);
+  const requireCitations = !/^(0|false|no|off)$/i.test(String(env.AGINTI_PUBLIC_RESEARCH_REQUIRE_CITATIONS || "true"));
+  if (requireCitations && domains.length === 0) {
+    const error = new Error("Public research output did not contain a verifiable allowlisted citation.");
+    error.status = 502;
+    error.publicCode = "missing_citation";
+    throw error;
+  }
+  const rejected = domains.filter((domain) => !domainAllowed(domain, allowedDomains));
+  if (rejected.length) {
+    const error = new Error("Public research output cited a domain outside the server allowlist.");
+    error.status = 502;
+    error.publicCode = "disallowed_citation";
+    throw error;
+  }
+}
+
 function resolveAllowedDomains(requestedDomains, serverDomains) {
   const serverSet = new Set(serverDomains);
   if (!Array.isArray(requestedDomains) || requestedDomains.length === 0) return serverDomains;
@@ -143,10 +218,12 @@ function sanitizeClientPayload(body = {}) {
 
 function makeStatus(env = process.env) {
   const enabled = truthy(env.AGINTI_PUBLIC_RESEARCH_ENABLED);
+  const boundaryMode = normalizeBoundaryMode(env.AGINTI_PUBLIC_RESEARCH_BOUNDARY);
+  const boundaryReady = strictBoundaryConfigured(env);
   const codexHome = String(env.AGINTI_PUBLIC_RESEARCH_CODEX_HOME || "").trim();
-  const realHome = path.resolve(os.homedir());
-  const resolvedCodexHome = codexHome ? path.resolve(codexHome) : "";
-  const defaultCodexHome = path.join(realHome, ".codex");
+  const realHome = resolvedRealPath(os.homedir());
+  const resolvedCodexHome = codexHome ? resolvedRealPath(codexHome) : "";
+  const defaultCodexHome = resolvedRealPath(path.join(realHome, ".codex"));
   const dedicatedCodexHome =
     Boolean(resolvedCodexHome) && resolvedCodexHome !== realHome && resolvedCodexHome !== defaultCodexHome;
   const codexAvailable = commandExists("codex", env);
@@ -161,6 +238,7 @@ function makeStatus(env = process.env) {
 
   let unavailableReason = "";
   if (!enabled) unavailableReason = "public research wrapper is disabled";
+  else if (!boundaryReady) unavailableReason = "strict external sandbox and network boundary is not attested";
   else if (!codexAvailable) unavailableReason = "Codex CLI is unavailable";
   else if (!dedicatedCodexHome) unavailableReason = "dedicated Codex home is not configured";
 
@@ -169,9 +247,14 @@ function makeStatus(env = process.env) {
     feature: "public-research-wrapper",
     route: "server-owned-codex",
     enabled,
-    available: enabled && codexAvailable && dedicatedCodexHome,
+    available: enabled && boundaryReady && codexAvailable && dedicatedCodexHome,
     unavailableReason,
     modelExposed: false,
+    boundary: {
+      mode: boundaryMode || "unconfigured",
+      required: STRICT_EXTERNAL_BOUNDARY,
+      enforcement: "deployment",
+    },
     running: runningCount,
     limits: {
       queryChars: DEFAULT_LIMITS.queryChars,
@@ -187,7 +270,12 @@ function makeStatus(env = process.env) {
       clientModelSelection: false,
       projectWorkspaceAccess: false,
       hostHomeAccess: false,
+      processPromptTransport: "stdin",
+      citations: "allowlisted-only",
+      isolationEnforcedBy: "external-sandbox",
+      networkEnforcedBy: "codex-web-search-filter+external-egress",
       secretInputs: "reject",
+      secretOutputs: "reject",
       unavailableBehavior: "fail-closed",
     },
   };
@@ -210,17 +298,22 @@ function buildCodexPrompt({ query, context, domains }) {
     .join("\n");
 }
 
-function makeCodexArgs({ prompt, outputFile, workspaceDir }, env = process.env) {
+function makeCodexArgs({ outputFile, workspaceDir, domains }, env = process.env) {
   const args = ["exec"];
   const model = String(env.AGINTI_PUBLIC_RESEARCH_CODEX_MODEL || "").trim();
   const reasoning = String(env.AGINTI_PUBLIC_RESEARCH_CODEX_REASONING || "").trim();
   if (model) args.push("--model", model);
   if (reasoning) args.push("-c", `model_reasoning_effort="${reasoning}"`);
+  const domainList = domains.map((domain) => JSON.stringify(domain)).join(",");
   args.push(
     "--ignore-user-config",
     "--ignore-rules",
     "-c",
     'shell_environment_policy.inherit="none"',
+    "-c",
+    'web_search="live"',
+    "-c",
+    `tools.web_search={allowed_domains=[${domainList}]}`,
     "--ephemeral",
     "--sandbox",
     "read-only",
@@ -230,7 +323,7 @@ function makeCodexArgs({ prompt, outputFile, workspaceDir }, env = process.env) 
     "--output-last-message",
     outputFile
   );
-  args.push("--", prompt);
+  args.push("-");
   return args;
 }
 
@@ -238,7 +331,7 @@ function makeProcessEnv({ tempDir, codexHome }, baseEnv = process.env) {
   const tempHome = path.join(tempDir, "home");
   const tempConfig = path.join(tempDir, "config");
   const tempCache = path.join(tempDir, "cache");
-  return {
+  const env = {
     PATH: baseEnv.PATH || "",
     HOME: tempHome,
     CODEX_HOME: codexHome,
@@ -250,6 +343,12 @@ function makeProcessEnv({ tempDir, codexHome }, baseEnv = process.env) {
     NO_COLOR: "1",
     TERM: baseEnv.TERM || "xterm-256color",
   };
+  for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"]) {
+    if (baseEnv[key]) env[key] = baseEnv[key];
+    const lower = key.toLowerCase();
+    if (baseEnv[lower]) env[lower] = baseEnv[lower];
+  }
+  return env;
 }
 
 function killChildTree(child, signal = "SIGTERM") {
@@ -272,7 +371,7 @@ function runCodex(spec, limits) {
       cwd: spec.workspaceDir,
       env: spec.env,
       detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
     let stderr = "";
@@ -298,7 +397,11 @@ function runCodex(spec, limits) {
     child.stderr?.on("data", (chunk) => {
       if (stderr.length < limits.stderrChars) stderr += chunk.toString().slice(0, limits.stderrChars - stderr.length);
     });
-    child.on("error", (error) => settle(() => reject(error)));
+    child.on("error", (error) => {
+      error.status = 503;
+      error.publicCode = "codex_spawn_failed";
+      settle(() => reject(error));
+    });
     child.on("close", (code, signal) => {
       if (timedOut) {
         const error = new Error(`Public research wrapper timed out after ${limits.timeoutMs}ms.`);
@@ -314,17 +417,26 @@ function runCodex(spec, limits) {
       }
       const error = new Error(`Public research wrapper exited with ${signal || code}.`);
       error.code = Number.isInteger(code) ? code : 1;
+      error.status = 502;
+      error.publicCode = "codex_execution_failed";
       error.stdout = stdout;
       error.stderr = stderr;
       settle(() => reject(error));
     });
+    child.stdin?.on("error", (error) => {
+      if (error?.code !== "EPIPE") settle(() => reject(error));
+    });
+    child.stdin?.end(spec.prompt);
   });
 }
 
 async function ensureDedicatedCodexHome(codexHome) {
   const stat = await fs.stat(codexHome).catch(() => null);
   if (!stat?.isDirectory()) {
-    throw new Error("Public research wrapper dedicated Codex home does not exist.");
+    const error = new Error("Public research wrapper dedicated Codex home does not exist.");
+    error.status = 503;
+    error.publicCode = "codex_home_unavailable";
+    throw error;
   }
 }
 
@@ -360,12 +472,18 @@ export async function runPublicResearchWrapper(body = {}, env = process.env) {
 
     const prompt = buildCodexPrompt({ query, context, domains });
     const processEnv = makeProcessEnv({ tempDir, codexHome }, env);
-    const args = makeCodexArgs({ prompt, outputFile, workspaceDir }, env);
-    const result = await runCodex({ args, env: processEnv, workspaceDir }, status.limits);
+    const args = makeCodexArgs({ outputFile, workspaceDir, domains }, env);
+    const result = await runCodex({ args, env: processEnv, workspaceDir, prompt }, status.limits);
     const lastMessage = await fs.readFile(outputFile, "utf8").catch(() => "");
-    const answer = redactSensitiveText(lastMessage || result.stdout).trim().slice(0, status.limits.outputChars);
-    const stderr = redactSensitiveText(result.stderr || "").trim().slice(0, status.limits.stderrChars);
-    if (!answer) throw new Error("Public research wrapper returned no answer.");
+    const rawAnswer = String(lastMessage || result.stdout).trim().slice(0, status.limits.outputChars);
+    if (!rawAnswer) {
+      const error = new Error("Public research wrapper returned no answer.");
+      error.status = 502;
+      error.publicCode = "empty_output";
+      throw error;
+    }
+    validateResearchAnswer(rawAnswer, domains, env);
+    const answer = redactSensitiveText(rawAnswer);
 
     return {
       ok: true,
@@ -373,13 +491,16 @@ export async function runPublicResearchWrapper(body = {}, env = process.env) {
       route: status.route,
       modelExposed: false,
       answer,
-      stderr: stderr || undefined,
       allowedDomains: domains,
       limits: status.limits,
       policy: status.policy,
     };
   } catch (error) {
-    const statusCode = Number.isInteger(error?.code) && error.code === 124 ? 504 : 400;
+    const statusCode = Number.isInteger(error?.status)
+      ? error.status
+      : Number.isInteger(error?.code) && error.code === 124
+        ? 504
+        : 400;
     return {
       ok: false,
       feature: status.feature,
@@ -387,8 +508,7 @@ export async function runPublicResearchWrapper(body = {}, env = process.env) {
       modelExposed: false,
       status: statusCode,
       error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
-      stdout: redactSensitiveText(error?.stdout || "").trim().slice(0, DEFAULT_LIMITS.outputChars) || undefined,
-      stderr: redactSensitiveText(error?.stderr || "").trim().slice(0, DEFAULT_LIMITS.stderrChars) || undefined,
+      code: error?.publicCode || (statusCode === 504 ? "timeout" : statusCode >= 500 ? "execution_failed" : "invalid_request"),
     };
   } finally {
     runningCount = Math.max(0, runningCount - 1);

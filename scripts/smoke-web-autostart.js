@@ -4,6 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { shouldStartPostinstallWebApp } from "../src/postinstall-policy.js";
 import { ensureAgintiWebApp } from "../src/web-autostart.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -13,6 +14,20 @@ const inheritedHome = path.join(runtimeDir, "leaked-cli-home");
 const preferredPort = 44500 + Math.floor(Math.random() * 1000);
 let childPid = 0;
 const originalHome = process.env.AGINTIFLOW_HOME;
+
+if (shouldStartPostinstallWebApp({}) || shouldStartPostinstallWebApp({ npm_config_global: "false" })) {
+  throw new Error("project-local dependency installs must not auto-start the webapp");
+}
+if (
+  !shouldStartPostinstallWebApp({ npm_config_global: "true" }) ||
+  !shouldStartPostinstallWebApp({ npm_config_location: "global" }) ||
+  !shouldStartPostinstallWebApp({ AGINTIFLOW_POSTINSTALL_WEBAPP: "1" })
+) {
+  throw new Error("global or explicitly opted-in installs must retain postinstall webapp startup");
+}
+if (shouldStartPostinstallWebApp({ npm_config_global: "true", AGINTIFLOW_SKIP_POSTINSTALL_WEBAPP: "1" })) {
+  throw new Error("postinstall skip flag must override global install startup");
+}
 
 function listenOccupier(port) {
   return new Promise((resolve, reject) => {

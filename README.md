@@ -109,7 +109,7 @@ Provider signup and key pages:
 
 The CLI quietly auto-starts or reuses the local web UI from the same project. It tries `http://127.0.0.1:3210` first, then `3211`, `3212`, and so on if the port is already occupied by another project. The active URL is shown in the CLI launch header. If startup is blocked, stale, or unavailable, the same header row shows the recovery hint; run `/webapp [port]` inside the CLI to retry, `/webapp stop [port]` to stop the compatible local webapp, or `/webapp restart [port]` to stop and relaunch the local webapp with the current project and canonical `~/.agintiflow` session home. Use `/webapp disable` or `aginti webapp disable` to persistently disable automatic webapp startup and update-time restarts; use `/webapp enable` or `aginti webapp enable` to restore them. After a successful `aginti update` or accepted startup auto-update, AgInTiFlow restarts the compatible local webapp only when webapp auto-start is enabled.
 
-Package installation also makes a best-effort, non-blocking webapp initialization. Install never fails because the optional local webapp could not start.
+Global CLI installation also makes a best-effort, non-blocking webapp initialization. Project dependency installs remain side-effect free by default; set `AGINTIFLOW_POSTINSTALL_WEBAPP=1` only when a local dependency install should start Studio. Installation never fails because the optional local webapp could not start.
 
 Launch the web UI explicitly when you want a foreground web server:
 
@@ -153,6 +153,7 @@ aginti --language de
 | --- | --- |
 | Start interactive chat | `aginti` or `aginti chat` |
 | Run one clean machine turn | `printf '%s\n' 'task' \| aginti run --stdin --json --task-profile chatops --no-scs -s safe` |
+| Start the narrow public-research backend | Project-local `./node_modules/.bin/aginti-public-research --port 3211`; see [deployment boundary](docs/public-research-wrapper.md) |
 | Start local web app | Auto-starts with `aginti`; detached command is `aginti webapp`; disable/enable auto-start with `aginti webapp disable` / `aginti webapp enable`; stop with `aginti webapp stop`; restart with `aginti webapp restart`; foreground mode is `aginti web --port 3210` |
 | Save provider keys | `aginti auth`, `/auth`, `/login` |
 | Review current repo | `/review [focus]` |
