@@ -255,7 +255,7 @@ export const TASK_PROFILES = {
     id: "image",
     label: "Image generation",
     prompt:
-      "For raster image, cover, poster, illustration, photo, and logo-concept tasks, write a clear visual prompt, use generate_image when the optional GRS AI or Venice image key is available, save outputs under artifacts/images, and send the selected image to the canvas. generate_image is raster-only: if SVG/vector is requested, either create deterministic SVG/LaTeX/HTML with file tools or return a PNG fallback with requestedFormat=svg and actualFormat=png. If keys are missing, ask the user to run /auxiliary grsai, aginti login grsai, or aginti login venice.",
+      "For raster image, cover, poster, illustration, photo, and logo-concept tasks, write a clear visual prompt and use generate_image only when auxiliary image generation is explicitly enabled and the selected GRS AI or Venice provider has its own key. Save outputs under artifacts/images and send the selected image to the canvas. generate_image is raster-only: if SVG/vector is requested, either create deterministic SVG/LaTeX/HTML with file tools or return a PNG fallback with requestedFormat=svg and actualFormat=png. If the selected provider key is missing, ask the user to run /auxiliary grsai, aginti login grsai, or aginti login venice; never switch providers because another key is present.",
     tools: ["auxiliary:image_generation", "files", "canvas"],
   },
   aaps: {

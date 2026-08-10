@@ -7,6 +7,8 @@ AgInTiFlow separates **skills** from **tools**:
 
 The optional image-generation skills are `image_generation` and `venice_image_generation`. Both use the deterministic `generate_image` tool.
 
+Hosted image generation is off by default. Enable the auxiliary mode explicitly with `/auxiliary on`, `/auxiliary image`, the corresponding UI toggle, or `allowAuxiliaryTools=true`. Merely storing `GRSAI` or `VENICE_API_KEY` does not expose or authorize `generate_image` in an agent run.
+
 `generate_image` is a raster-image tool. It does not produce true SVG/vector output. If a caller requests `svg`, the tool records
 `requestedFormat: "svg"`, generates a PNG fallback with `actualFormat: "png"`, and returns a `formatNotice`. If the task truly requires
 editable vectors, use AgInTiFlow file tools to write deterministic SVG/LaTeX/HTML instead of calling `generate_image`.
@@ -31,6 +33,8 @@ Inside interactive chat, use either spelling:
 ```
 
 Keys are saved in `~/.agintiflow/.env` by default as `GRSAI` or `VENICE_API_KEY` with `0600` permissions. Project `.aginti/.env` can override them. The CLI and web app only report whether a key exists; they never return raw values.
+
+Provider selection is independent of key discovery. The selected auxiliary provider remains GRS AI or Venice for the whole call. If its key is missing or the request fails, the tool stops visibly; it never switches to the other provider because that provider's ambient key happens to exist. When no provider is selected, the deterministic default is GRS AI.
 
 ## Runtime Flow
 
@@ -118,3 +122,5 @@ Generated images are sent to the canvas automatically when available.
 ## Guardrails
 
 Output paths must stay inside the project workspace. Secret paths, `.git`, `node_modules` writes, and oversized reference images are blocked. Reference images may be workspace files, HTTPS URLs, or data URLs.
+
+The mode gate is enforced inside `generate_image` as well as in progressive tool exposure, so a handcrafted model tool call cannot bypass a disabled auxiliary mode.

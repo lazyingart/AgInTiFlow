@@ -20,10 +20,10 @@ AgInTiFlow can also load whole external Agent Skills repositories as grouped
 skill packs. This is for large curated collections that should remain intact,
 with their own references, scripts, assets, and upstream history.
 
-The current default scientific pack integration looks for the sibling checkout:
+The current default scientific pack integration looks for a sibling checkout:
 
 ```bash
-/home/lachlan/ProjectsLFS/Agent/scientific-agent-skills
+../scientific-agent-skills
 ```
 
 When present, it appears as `source=external-pack category=scientific
@@ -91,9 +91,9 @@ Use the built-in `skill-creator` skill when the user asks AgInTiFlow to learn or
 
 For visual or current-information tasks, prefer:
 
-- `read_image` for screenshots, plots, diagrams, microscopy images, scanned text, and UI debugging.
-- `web_research` for sourced research artifacts with source URLs and optional domain restrictions.
-- `research_wrapper` for strict-JSON second opinions from the selected read-only wrapper, usually Codex `gpt-5.4-mini` medium.
+- `read_image` for screenshots, plots, diagrams, microscopy images, scanned text, and UI debugging. Local sessions use LocalLLM vision; hosted perception never activates from an ambient key.
+- `web_research` for sourced research artifacts with source URLs and optional domain restrictions. Snippet mode stays provider-neutral; hosted synthesis requires an explicit run permission.
+- `research_wrapper` for strict-JSON second opinions from the selected read-only wrapper, usually Codex `gpt-5.4-mini` medium. Wrapper tools must be enabled explicitly.
 
 See [Image Reading And Web Research](perception-and-web-research.md).
 
@@ -104,10 +104,14 @@ For substantial writing tasks, prefer:
 
 The writer receives only writing context: brief, canon, style guide, prior draft, target, audience, constraints, length, and downstream format intent. It should not receive shell/file/browser policy or agent-runtime details.
 
+The writer stays on the active session provider by default. Cross-provider writer routing requires `allowHostedWritingSpecialist=true` (or `AGINTI_ALLOW_HOSTED_WRITING_SPECIALIST=true`) for that run. A model-supplied provider argument, language-specific writer environment override, or ambient hosted API key is not permission; denied routes fail visibly before a hosted client is created.
+
 For schema-bound structured data, prefer:
 
 - `json_specialist` for one isolated extraction, annotation, conversion, or validation request.
 - `json_specialist_batch` for independent chunks that can be requested in parallel without shared writes.
+
+JSON specialist calls remain on the active session provider unless the run explicitly enables cross-provider specialist routing. A model-supplied provider argument and an ambient API key are not escalation authority.
 
 The JSON specialist receives only the task, focused instructions, minimal context, input, and JSON Schema. It tries provider-native structured output (`json_schema` or JSON object mode) when available, then falls back to prompt-and-validate parsing.
 

@@ -1,6 +1,6 @@
 # Productive Agent Roadmap
 
-AgInTiFlow should become a practical coding agent, not only a chat UI around a model. DeepSeek v4 pro is strong and cheap, so the advantage is to spend more inference on context, review, and verification while keeping the main executor focused.
+AgInTiFlow should become a practical coding agent, not only a chat UI around a model. The default LocalLLM Fast/Deep lanes keep that loop private and local; explicitly selected hosted models can add capacity without becoming hidden prerequisites or fallbacks. The advantage is to spend inference deliberately on context, review, and verification while keeping the main executor focused.
 
 ## Lessons From Other Agents
 
@@ -14,7 +14,7 @@ AgInTiFlow should become a practical coding agent, not only a chat UI around a m
 ## Current Strengths
 
 - Project-local CLI and web share sessions, preferences, artifacts, and `AGINTI.md`.
-- DeepSeek flash/pro routing, Docker workspace mode, web search, image generation, canvas artifacts, and guarded file tools are already wired.
+- LocalLLM Fast/Deep routing, Docker workspace mode, web search, opt-in auxiliary image generation, canvas artifacts, and guarded file tools are already wired. Hosted providers remain explicit upgrades, and ambient keys do not activate them.
 - `inspect_project`, `apply_patch`, command policy, git discipline, and the scout swarm give the model concrete tools instead of relying on memory.
 
 ## Missing Productive-Agent Pieces

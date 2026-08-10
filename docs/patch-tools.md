@@ -14,4 +14,4 @@ All paths must stay inside the configured workspace. Secret-like paths, `.git`, 
 
 For large codebases, the model should first use `list_files`, `search_files`, and `read_file` to identify the relevant files. It should then call `apply_patch`, run safe tests or linters when available, and summarize changed files and residual risk.
 
-Smart routing treats patch/refactor/edit/database tasks as complex work, so DeepSeek v4 pro is selected by default unless the user explicitly chooses another route.
+Smart routing treats patch/refactor/edit/database tasks as complex work, so the LocalLLM `localllm-deep` main lane is selected by default unless the user explicitly chooses another route.

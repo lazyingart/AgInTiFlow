@@ -14,6 +14,23 @@ const DEFAULT_OUTPUT_FORMAT = "png";
 const TRANSIENT_HTTP_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const MAX_PROMPT_BYTES = 120_000;
 const MAX_REFERENCE_BYTES = 4_000_000;
+const UNSUPPORTED_IMAGE_HOST_FIELDS = Object.freeze([
+  "baseURL",
+  "baseUrl",
+  "endpoint",
+  "apiBase",
+  "apiBaseUrl",
+  "api_base",
+]);
+
+export class AuxiliaryProviderHostError extends Error {
+  constructor({ code = "AUXILIARY_HOST_OVERRIDE_REFUSED", message, provider = "" }) {
+    super(message);
+    this.name = "AuxiliaryProviderHostError";
+    this.code = code;
+    this.provider = provider;
+  }
+}
 
 export const AUXILIARY_SKILLS = [
   {
@@ -340,6 +357,7 @@ async function requestJson(url, payload, apiKey, { timeoutMs = 300000, retries =
     try {
       const response = await fetch(url, {
         method: "POST",
+        redirect: "error",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
@@ -438,26 +456,104 @@ function normalizeImageProvider(value = "") {
   throw new Error("Unsupported image provider. Use grsai, venice, or auto.");
 }
 
-function autoImageProvider() {
-  if (grsaiKey()) return "grsai";
-  if (veniceKey()) return "venice";
-  return "grsai";
-}
-
 function defaultImageProvider(config = {}) {
   const explicit = normalizeImageProvider(
     config.auxiliaryProvider || process.env.AGINTI_AUX_PROVIDER || process.env.VENICE_IMAGE_PROVIDER || process.env.GRSAI_IMAGE_PROVIDER || ""
   );
-  return explicit || autoImageProvider();
+  return explicit || "grsai";
 }
 
-function veniceBaseUrl(value = "") {
-  return String(value || process.env.VENICE_API_BASE || process.env.VENICE_BASE_URL || DEFAULT_VENICE_BASE)
-    .trim()
-    .replace(/\/+$/, "");
+function normalizeAuxiliaryBaseUrl(value, provider) {
+  try {
+    const parsed = new URL(String(value || "").trim());
+    if (
+      !["http:", "https:"].includes(parsed.protocol) ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      throw new Error("invalid auxiliary base URL");
+    }
+    return parsed.toString().replace(/\/+$/, "");
+  } catch {
+    throw new AuxiliaryProviderHostError({
+      code: "AUXILIARY_BASE_URL_INVALID",
+      message: `The configured ${provider} image-provider endpoint is invalid. Configure an HTTP(S) base URL without credentials, query, or fragment.`,
+      provider,
+    });
+  }
 }
 
-async function generateVeniceImages({ prompt, args, target, outputStem, manifest, manifestPath, formatInfo, signal = null }) {
+function configuredImageBaseUrl(provider) {
+  const configured =
+    provider === "venice"
+      ? process.env.VENICE_API_BASE || process.env.VENICE_BASE_URL || DEFAULT_VENICE_BASE
+      : DEFAULT_GRS_HOST;
+  return normalizeAuxiliaryBaseUrl(configured, provider);
+}
+
+function hasSuppliedOverride(args, field) {
+  if (!Object.prototype.hasOwnProperty.call(args, field)) return false;
+  const value = args[field];
+  if (value === undefined || value === null) return false;
+  return typeof value !== "string" || Boolean(value.trim());
+}
+
+/**
+ * Resolve image-provider routing without trusting endpoint fields emitted by a
+ * model. A legacy `host` argument may name only the already configured origin;
+ * its path is ignored and the configured base remains authoritative.
+ */
+export function resolveAuxiliaryImageEndpoint(args = {}, config = {}) {
+  const provider = args.provider ? normalizeImageProvider(args.provider) : defaultImageProvider(config);
+  const baseURL = configuredImageBaseUrl(provider);
+  const unknownOverride = UNSUPPORTED_IMAGE_HOST_FIELDS.find((field) => hasSuppliedOverride(args, field));
+  if (unknownOverride) {
+    throw new AuxiliaryProviderHostError({
+      message: `Image-generation endpoint field "${unknownOverride}" is not accepted from tool arguments. Configure the selected provider endpoint outside the model request.`,
+      provider,
+    });
+  }
+
+  if (hasSuppliedOverride(args, "host")) {
+    if (typeof args.host !== "string") {
+      throw new AuxiliaryProviderHostError({
+        message: "Image-generation host override was refused because it is not a URL string.",
+        provider,
+      });
+    }
+    let requestedOrigin;
+    try {
+      const requested = new URL(args.host.trim());
+      if (
+        !["http:", "https:"].includes(requested.protocol) ||
+        requested.username ||
+        requested.password ||
+        requested.search ||
+        requested.hash
+      ) {
+        throw new Error("invalid host override");
+      }
+      requestedOrigin = requested.origin;
+    } catch {
+      throw new AuxiliaryProviderHostError({
+        message: "Image-generation host override was refused because it is not a safe HTTP(S) origin.",
+        provider,
+      });
+    }
+    if (requestedOrigin !== new URL(baseURL).origin) {
+      throw new AuxiliaryProviderHostError({
+        message: `Image-generation host override was refused because it does not match the configured ${provider} provider origin.`,
+        provider,
+      });
+    }
+  }
+
+  return { provider, baseURL };
+}
+
+async function generateVeniceImages({ prompt, args, baseURL, target, outputStem, manifest, manifestPath, formatInfo, signal = null }) {
   const apiKey = veniceKey();
   if (!apiKey) {
     throw new Error("Missing VENICE_API_KEY for image generation. Run `aginti login venice` or `aginti keys set venice --stdin`; text-model keys do not enable raster image generation.");
@@ -480,8 +576,7 @@ async function generateVeniceImages({ prompt, args, target, outputStem, manifest
   const requestPath = path.join(target.absolutePath, "request_payload.redacted.json");
   await writeJson(requestPath, payload);
 
-  const base = veniceBaseUrl(args.host);
-  const resultPayload = await requestJson(`${base}/image/generate`, payload, apiKey, {
+  const resultPayload = await requestJson(`${baseURL}/image/generate`, payload, apiKey, {
     timeoutMs: Number(args.requestTimeoutMs) || 300000,
     retries: 2,
     signal,
@@ -512,7 +607,7 @@ async function generateVeniceImages({ prompt, args, target, outputStem, manifest
       : null;
 
   manifest.provider = "venice";
-  manifest.host = base;
+  manifest.host = baseURL;
   manifest.model = model;
   manifest.requestedFormat = formatInfo.requestedFormat;
   manifest.actualFormat = format;
@@ -548,6 +643,20 @@ export async function generateImage(args = {}, config = {}) {
   const prompt = String(args.prompt || "").trim();
   if (!prompt) throw new Error("Image prompt is required.");
   if (Buffer.byteLength(prompt, "utf8") > MAX_PROMPT_BYTES) throw new Error("Image prompt is too large.");
+  if (config.allowAuxiliaryTools !== true) {
+    return {
+      ok: false,
+      blocked: true,
+      category: "permission",
+      toolName: "generate_image",
+      reason: "Hosted image generation is off. Enable the auxiliary image-generation mode explicitly before calling generate_image.",
+    };
+  }
+
+  // Resolve and validate the provider endpoint before creating artifacts,
+  // reading references, or obtaining a bearer token. Model/tool arguments may
+  // never redirect authenticated requests to an unconfigured origin.
+  const { provider, baseURL: host } = resolveAuxiliaryImageEndpoint(args, config);
 
   const outputDirInput = args.outputDir || `artifacts/images/${timestampSlug()}`;
   const target = resolveWorkspacePath(config, outputDirInput);
@@ -579,9 +688,7 @@ export async function generateImage(args = {}, config = {}) {
   const referenceDimensions = references.find((item) => item.dimensions)?.dimensions || null;
   const matchReferenceSize = Boolean(args.matchReferenceSize || args.match_ref_size || args.matchRefSize);
 
-  const provider = args.provider ? normalizeImageProvider(args.provider) : defaultImageProvider(config);
   const formatInfo = normalizeOutputFormat(args);
-  const host = provider === "venice" ? veniceBaseUrl(args.host) : String(args.host || DEFAULT_GRS_HOST).trim().replace(/\/+$/, "") || DEFAULT_GRS_HOST;
   const model =
     provider === "venice"
       ? String(args.model || config.auxiliaryModel || process.env.AGINTI_AUX_MODEL || process.env.VENICE_IMAGE_MODEL || DEFAULT_VENICE_IMAGE_MODEL).trim() ||
@@ -653,14 +760,21 @@ export async function generateImage(args = {}, config = {}) {
   }
 
   if (provider === "venice") {
-    return generateVeniceImages({ prompt, args, target, outputStem, manifest, manifestPath, formatInfo, signal: config.abortSignal });
+    return generateVeniceImages({
+      prompt,
+      args,
+      baseURL: host,
+      target,
+      outputStem,
+      manifest,
+      manifestPath,
+      formatInfo,
+      signal: config.abortSignal,
+    });
   }
 
   const apiKey = grsaiKey();
   if (!apiKey) {
-    if (veniceKey()) {
-      return generateVeniceImages({ prompt, args, target, outputStem, manifest, manifestPath, formatInfo, signal: config.abortSignal });
-    }
     const textKeys = [
       process.env.OPENAI_API_KEY || process.env.LLM_API_KEY ? "OpenAI/LLM" : "",
       process.env.DEEPSEEK_API_KEY ? "DeepSeek" : "",
@@ -670,7 +784,10 @@ export async function generateImage(args = {}, config = {}) {
     const suffix = textKeys.length
       ? ` Text-model keys are available (${textKeys.join(", ")}), but raster image generation requires GRSAI or VENICE_API_KEY.`
       : "";
-    throw new Error(`Missing image-generation key. Run \`aginti login grsai\`, \`aginti login venice\`, \`aginti keys set grsai --stdin\`, or \`/auxiliary grsai\`.${suffix}`);
+    const alternate = veniceKey()
+      ? " A Venice image key is available, but provider failover is disabled; select provider=venice explicitly to use it."
+      : "";
+    throw new Error(`Missing GRSAI image-generation key for the selected provider. Run \`aginti login grsai\`, \`aginti keys set grsai --stdin\`, or select provider=venice explicitly.${alternate}${suffix}`);
   }
 
   const submitUrl = `${host}/v1/draw/nano-banana`;

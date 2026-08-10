@@ -122,7 +122,21 @@ try {
   }
 
   const config = await fetchJson("/api/config");
+  if (!config.keyStatus?.localllm) throw new Error("LocalLLM provider is not advertised by /api/config");
   if (!config.keyStatus?.mock) throw new Error("mock provider is not advertised by /api/config");
+  const invalidProviderResponse = await fetch(`${baseUrl}/api/preferences`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: "not-a-provider" }),
+  });
+  const invalidProviderBody = await invalidProviderResponse.json().catch(() => ({}));
+  if (
+    invalidProviderResponse.status !== 400 ||
+    invalidProviderBody.code !== "INVALID_PROVIDER" ||
+    invalidProviderBody.provider !== "not-a-provider"
+  ) {
+    throw new Error(`unknown web provider did not fail closed: ${JSON.stringify(invalidProviderBody)}`);
+  }
   if (!Object.prototype.hasOwnProperty.call(config.keyStatus || {}, "openrouter")) {
     throw new Error("OpenRouter key status is not advertised by /api/config");
   }
@@ -131,6 +145,12 @@ try {
   }
   if (!config.modelCatalog?.openrouter?.some((model) => model.id === "openrouter/auto")) {
     throw new Error("OpenRouter model catalog is missing from /api/config");
+  }
+  if (
+    !config.modelCatalog?.localllm?.some((model) => model.id === "localllm-fast") ||
+    !config.modelCatalog?.localllm?.some((model) => model.id === "localllm-deep")
+  ) {
+    throw new Error("LocalLLM model catalog is missing fast/deep aliases from /api/config");
   }
   if (!config.modelGroups?.["openrouter-openai"]) {
     throw new Error("OpenRouter company model groups are missing from /api/config");
@@ -258,6 +278,7 @@ try {
   if (config.preferences?.enableScs !== "auto") throw new Error("web did not default to CLI-aligned SCS auto mode");
   if (config.preferences?.dynamicSteps !== "auto") throw new Error("web did not default to CLI-aligned dynamic steps auto mode");
   if (config.preferences?.veniceMode !== false) throw new Error("web should default Venice shortcut mode off");
+  if (config.preferences?.allowAuxiliaryTools !== false) throw new Error("hosted auxiliary tools should default off");
   if (Number(config.preferences?.maxSteps) < 24) throw new Error("web default max steps is too low");
   if (!Array.isArray(config.taskProfiles) || !config.taskProfiles.some((profile) => profile.id === "latex")) {
     throw new Error("task profiles are not advertised by /api/config");
@@ -274,7 +295,12 @@ try {
   if (!config.modelCatalog?.venice?.some((model) => model.id === "venice-uncensored-1-2")) {
     throw new Error("venice model catalog is not advertised by /api/config");
   }
-  if (config.modelRoles?.route?.model !== "deepseek-v4-flash" || config.modelRoles?.main?.model !== "deepseek-v4-pro") {
+  if (
+    config.modelRoles?.route?.provider !== "localllm" ||
+    config.modelRoles?.route?.model !== "localllm-fast" ||
+    config.modelRoles?.main?.provider !== "localllm" ||
+    config.modelRoles?.main?.model !== "localllm-deep"
+  ) {
     throw new Error("model role defaults are not advertised by /api/config");
   }
   if (!config.modelGroups?.["venice-gpt"] || !config.auxiliaryModelCatalog?.["venice-image"]) {
@@ -282,6 +308,7 @@ try {
   }
 
   const keyStatus = await fetchJson("/api/keys/status");
+  if (keyStatus.keyStatus?.localllm !== true) throw new Error("LocalLLM keyless status is missing");
   if (typeof keyStatus.keyStatus?.deepseek !== "boolean") throw new Error("key status endpoint is invalid");
   if (typeof keyStatus.keyStatus?.qwen !== "boolean") throw new Error("qwen key status is missing");
   if (typeof keyStatus.keyStatus?.venice !== "boolean") throw new Error("venice key status is missing");
@@ -396,10 +423,158 @@ try {
   const hello = await fs.readFile(path.join(runtimeDir, "notes", "hello.md"), "utf8");
   if (!hello.includes("Created by AgInTiFlow mock mode.")) throw new Error("mock file run did not create requested path");
   const fileChat = await fetchJson(`/api/sessions/${encodeURIComponent(fileRunStart.sessionId)}/chat`);
+  if (fileChat.runtime?.provider !== "mock" || fileChat.runtimeRevision !== 1) {
+    throw new Error(`saved session runtime metadata is missing or invalid: ${JSON.stringify(fileChat.runtime)}`);
+  }
   const fileChange = fileChat.timeline?.find((entry) => entry.role === "event" && entry.eventType === "file.changed");
   if (!fileChange?.data?.diff || !fileChange.data.diff.includes("+Created by AgInTiFlow mock mode.")) {
     throw new Error("chat timeline did not preserve structured file-change diff data");
   }
+
+  const staleContinuation = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(fileRunStart.sessionId)}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content: "This stale continuation must not run.", expectedRuntimeRevision: 99 }),
+  });
+  const staleContinuationBody = await staleContinuation.json().catch(() => ({}));
+  if (staleContinuation.status !== 409 || staleContinuationBody.code !== "SESSION_RUNTIME_CONFLICT") {
+    throw new Error(`stale session runtime continuation did not fail before execution: ${JSON.stringify(staleContinuationBody)}`);
+  }
+
+  const localRuntimeContinuation = await fetchJson(
+    `/api/sessions/${encodeURIComponent(fileRunStart.sessionId)}/messages`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "Explain briefly why a saved runtime should stay provider-neutral.",
+        expectedRuntimeRevision: fileChat.runtimeRevision,
+        provider: "openai",
+        model: "gpt-5.5",
+        routeProvider: "deepseek",
+        mainProvider: "openai",
+      }),
+    }
+  );
+  const continuedLocalRun = await waitForRun(localRuntimeContinuation.sessionId);
+  if (continuedLocalRun.status !== "finished" || continuedLocalRun.provider !== "mock") {
+    throw new Error(`saved mock runtime drifted to incoming hosted preferences: ${JSON.stringify(continuedLocalRun)}`);
+  }
+  const continuedState = await new SessionStore(projectPaths(runtimeDir).globalSessionsDir, fileRunStart.sessionId, {
+    ...sessionStoreOptions(runtimeDir),
+    projectSessionsDir: projectPaths(runtimeDir).sessionsDir,
+  }).loadState();
+  if (
+    continuedState?.provider !== "mock" ||
+    continuedState?.model !== "mock-agent" ||
+    continuedState?.meta?.runtimeConfig?.provider !== "mock"
+  ) {
+    throw new Error(`saved effective runtime drifted: ${JSON.stringify(continuedState?.meta?.runtimeConfig)}`);
+  }
+
+  const raceRunStart = await fetchJson("/api/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      provider: "mock",
+      routingMode: "manual",
+      model: "mock-agent",
+      goal: "Explain one benefit of revision checks.",
+      commandCwd: runtimeDir,
+      allowShellTool: false,
+      allowFileTools: false,
+      maxSteps: 4,
+      headless: true,
+    }),
+  });
+  await waitForRun(raceRunStart.sessionId);
+  const raceChat = await fetchJson(`/api/sessions/${encodeURIComponent(raceRunStart.sessionId)}/chat`);
+  const concurrentBodies = ["Concurrent continuation A", "Concurrent continuation B"];
+  const concurrentResponses = await Promise.all(
+    concurrentBodies.map((content) =>
+      fetch(`${baseUrl}/api/sessions/${encodeURIComponent(raceRunStart.sessionId)}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, expectedRuntimeRevision: raceChat.runtimeRevision }),
+      })
+    )
+  );
+  const concurrentStatuses = concurrentResponses.map((response) => response.status);
+  const concurrentResponseBodies = await Promise.all(
+    concurrentResponses.map((response) => response.json().catch(() => ({})))
+  );
+  const startedCount = concurrentResponseBodies.filter((body, index) => concurrentStatuses[index] === 200 && !body.queued).length;
+  const safelyDeferredCount = concurrentResponseBodies.filter(
+    (body, index) => concurrentStatuses[index] === 409 || (concurrentStatuses[index] === 200 && body.queued === true)
+  ).length;
+  if (startedCount !== 1 || safelyDeferredCount !== 1) {
+    throw new Error(
+      `concurrent continuations were not serialized or durably queued: ${JSON.stringify({ concurrentStatuses, concurrentResponseBodies })}`
+    );
+  }
+  await waitForRun(raceRunStart.sessionId);
+  const racedState = await new SessionStore(projectPaths(runtimeDir).globalSessionsDir, raceRunStart.sessionId, {
+    ...sessionStoreOptions(runtimeDir),
+    projectSessionsDir: projectPaths(runtimeDir).sessionsDir,
+  }).loadState();
+  const acceptedConcurrentTurns = (racedState?.messages || []).filter(
+    (message) => message.role === "user" && concurrentBodies.some((content) => String(message.content || "").includes(content))
+  );
+  const racedChat = await fetchJson(`/api/sessions/${encodeURIComponent(raceRunStart.sessionId)}/chat`);
+  const queuedConcurrentTurns = (racedChat.inbox || []).filter((item) => concurrentBodies.includes(item.content));
+  const queuedResponseCount = concurrentResponseBodies.filter((body) => body.queued === true).length;
+  const expectedDurableTurns = 1 + queuedResponseCount;
+  if (acceptedConcurrentTurns.length + queuedConcurrentTurns.length < expectedDurableTurns) {
+    throw new Error(
+      `concurrent continuation race was not safe: ${JSON.stringify({ accepted: acceptedConcurrentTurns.length, queued: queuedConcurrentTurns.length })}`
+    );
+  }
+
+  const approvalRaceStart = await fetchJson("/api/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      provider: "mock",
+      routingMode: "manual",
+      model: "mock-agent",
+      permissionMode: "safe",
+      goal: "Create notes/safe-web-approval-race.md with serialized approval content.",
+      commandCwd: runtimeDir,
+      allowShellTool: false,
+      allowFileTools: true,
+      maxSteps: 4,
+      headless: true,
+    }),
+  });
+  const approvalRaceBlocked = await waitForRun(approvalRaceStart.sessionId);
+  if (!approvalRaceBlocked.logs?.some((entry) => entry.message === "tool.blocked" && entry.data?.permissionAdvice)) {
+    throw new Error("permission/message race fixture did not produce pending permission advice");
+  }
+  const approvalRaceChat = await fetchJson(`/api/sessions/${encodeURIComponent(approvalRaceStart.sessionId)}/chat`);
+  const [approvalRaceResponse, messageRaceResponse] = await Promise.all([
+    fetch(`${baseUrl}/api/sessions/${encodeURIComponent(approvalRaceStart.sessionId)}/approve-permission`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "once", expectedRuntimeRevision: approvalRaceChat.runtimeRevision }),
+    }),
+    fetch(`${baseUrl}/api/sessions/${encodeURIComponent(approvalRaceStart.sessionId)}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "This continuation must not race the permission approval.",
+        expectedRuntimeRevision: approvalRaceChat.runtimeRevision,
+      }),
+    }),
+  ]);
+  const approvalRaceStatuses = [approvalRaceResponse.status, messageRaceResponse.status].sort((a, b) => a - b);
+  if (approvalRaceStatuses[0] !== 200 || approvalRaceStatuses[1] !== 409) {
+    const bodies = await Promise.all([
+      approvalRaceResponse.json().catch(() => ({})),
+      messageRaceResponse.json().catch(() => ({})),
+    ]);
+    throw new Error(`permission approval and message preparation were not serialized: ${JSON.stringify({ approvalRaceStatuses, bodies })}`);
+  }
+  await waitForRun(approvalRaceStart.sessionId);
 
   const safeRunStart = await fetchJson("/api/runs", {
     method: "POST",
@@ -425,14 +600,30 @@ try {
   const safePath = path.join(runtimeDir, "notes", "safe-web-approval.md");
   const beforeApprovalExists = await fs.stat(safePath).then(() => true).catch(() => false);
   if (beforeApprovalExists) throw new Error("safe mode created a file before approval");
+  const safeChat = await fetchJson(`/api/sessions/${encodeURIComponent(safeRunStart.sessionId)}/chat`);
   const approval = await fetchJson(`/api/sessions/${encodeURIComponent(safeRunStart.sessionId)}/approve-permission`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "once", provider: "mock", routingMode: "manual", model: "mock-agent" }),
+    body: JSON.stringify({
+      action: "once",
+      expectedRuntimeRevision: safeChat.runtimeRevision,
+      provider: "mock",
+      routingMode: "manual",
+      model: "mock-agent",
+    }),
   });
   if (!approval.ok || approval.permissionMode !== "normal") throw new Error("permission approval endpoint did not escalate to normal");
+  if (approval.runtimeRevision !== safeChat.runtimeRevision + 1) {
+    throw new Error("permission runtime patch did not advance the session revision exactly once");
+  }
   const approvedRun = await waitForRun(safeRunStart.sessionId);
-  if (approvedRun.status !== "finished") throw new Error("permission-approved continuation did not finish");
+  if (approvedRun.status !== "finished") {
+    throw new Error(
+      `permission-approved continuation did not finish: ${approvedRun.error || approvedRun.status}; logs=${JSON.stringify(
+        approvedRun.logs?.slice(-12) || []
+      )}`
+    );
+  }
   const safeApproved = await fs.readFile(safePath, "utf8");
   if (!safeApproved.includes("Created by AgInTiFlow mock mode.")) {
     throw new Error("permission-approved continuation did not create the requested file");

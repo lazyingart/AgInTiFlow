@@ -1,6 +1,7 @@
 import path from "node:path";
 import crypto from "node:crypto";
 import {
+  LOCALLLM_MODEL_TIERS,
   getModelRoleDefaults,
   getProviderDefaults,
   normalizeReasoningEffort,
@@ -8,7 +9,7 @@ import {
   selectModelRoute,
 } from "./model-routing.js";
 import { normalizePackageInstallPolicy, normalizeSandboxMode } from "./command-policy.js";
-import { isWrapperAvailable, normalizeWrapperName } from "./tool-wrappers.js";
+import { normalizeWrapperName } from "./tool-wrappers.js";
 import { loadProjectEnv, projectPaths, resolveProjectRoot } from "./project.js";
 import { normalizeTaskProfile } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
@@ -18,6 +19,7 @@ import { applyPermissionMode, normalizePermissionMode } from "./permission-modes
 import { normalizeDynamicStepsMode } from "./step-budget-controller.js";
 import { maxStepsForExecutionPolicy, selectExecutionPolicy } from "./execution-policy.js";
 import { normalizeContextBudgetMode } from "./context-budget-controller.js";
+import { BASELINE_PROVIDER, normalizeProviderBaseURL, normalizeProviderId } from "./provider-contract.js";
 
 function parseBoolean(value, fallback) {
   if (value === undefined) return fallback;
@@ -48,47 +50,113 @@ function configuredReasoning(overrides, args, key, envName) {
   return undefined;
 }
 
+function hostedProviderFromEnv() {
+  if (process.env.DEEPSEEK_API_KEY) return "deepseek";
+  if (process.env.OPENAI_API_KEY) return "openai";
+  if (process.env.OPENROUTER_API_KEY) return "openrouter";
+  if (process.env.QWEN_API_KEY) return "qwen";
+  if (process.env.VENICE_API_KEY) return "venice";
+  return BASELINE_PROVIDER;
+}
+
+function localFirstEnabled() {
+  return !/^(0|false|off|no)$/i.test(String(process.env.AGINTI_LOCAL_FIRST ?? "1").trim());
+}
+
+function resolveRequestedProvider(overrides, args) {
+  const explicitProvider = overrides.provider || args.provider || process.env.AGENT_PROVIDER || "";
+  if (explicitProvider) {
+    const normalized = normalizeProviderId(explicitProvider, "");
+    if (normalized) return normalized;
+    throw new Error(`Unknown provider "${explicitProvider}". Use localllm, deepseek, openai, openrouter, qwen, venice, or mock.`);
+  }
+  return localFirstEnabled() ? BASELINE_PROVIDER : hostedProviderFromEnv();
+}
+
+function requestedModelOverride(overrides, args, provider) {
+  const explicit = overrides.model || args.model || "";
+  if (explicit) return explicit;
+  return provider === BASELINE_PROVIDER ? "" : process.env.LLM_MODEL || "";
+}
+
 export function resolveRuntimeConfig(args, overrides = {}) {
   const baseDir = resolveProjectRoot(overrides.baseDir || process.cwd());
   const paths = projectPaths(baseDir);
   loadProjectEnv(baseDir);
-  const requestedProvider =
-    overrides.provider ||
-    args.provider ||
-    process.env.AGENT_PROVIDER ||
-    (process.env.DEEPSEEK_API_KEY
-      ? "deepseek"
-      : process.env.OPENAI_API_KEY
-        ? "openai"
-        : process.env.OPENROUTER_API_KEY
-          ? "openrouter"
-          : process.env.QWEN_API_KEY
-            ? "qwen"
-            : process.env.VENICE_API_KEY
-              ? "venice"
-              : "deepseek");
+  const requestedProvider = resolveRequestedProvider(overrides, args);
   const routingMode = normalizeRoutingMode(overrides.routingMode || args.routingMode || process.env.AGENT_ROUTING_MODE || "smart");
   const taskProfile = normalizeTaskProfile(overrides.taskProfile || args.taskProfile || process.env.AGINTI_TASK_PROFILE || "auto");
   const language = resolveLanguage(overrides.language || args.language || process.env.AGINTI_LANGUAGE || "");
-  const route = selectModelRoute({
-    routingMode,
+  // Capability/resource snapshots are trusted runtime inputs. They are deliberately
+  // not inferred from ambient cloud credentials or optimistic environment flags.
+  // The shipped auto-Max path starts on Deep here and can upgrade only after the
+  // runner performs authenticated model discovery and a fresh resource probe.
+  const localCapabilities =
+    overrides.localCapabilities && typeof overrides.localCapabilities === "object"
+      ? { ...overrides.localCapabilities }
+      : {};
+  const localResourcePolicy =
+    overrides.localResourcePolicy && typeof overrides.localResourcePolicy === "object"
+      ? { ...overrides.localResourcePolicy }
+      : {};
+  const localMaxModel =
+    overrides.localMaxModel ||
+    process.env.AGINTI_LOCALLLM_MAX_MODEL ||
+    LOCALLLM_MODEL_TIERS.max.model;
+  const allowLocalAutoMax = parseBoolean(
+    overrides.allowLocalAutoMax ??
+      args.allowLocalAutoMax ??
+      process.env.AGINTI_LOCALLLM_ALLOW_AUTO_MAX,
+    false
+  );
+  const requestedModel = requestedModelOverride(overrides, args, requestedProvider);
+  const sessionModelLocked = overrides.sessionModelLocked === true;
+  // Once the top-level provider has been resolved, it is the default trust
+  // boundary for every model role. Dedicated role settings remain stronger,
+  // but a stale ambient AGENT_PROVIDER must not repopulate missing roles and
+  // silently move an explicit LocalLLM run to a hosted SCS main model.
+  const routeProvider = overrides.routeProvider || args.routeProvider || process.env.AGINTI_ROUTE_PROVIDER || requestedProvider;
+  const mainProvider = overrides.mainProvider || args.mainProvider || process.env.AGINTI_MAIN_PROVIDER || requestedProvider;
+  const spareProvider = overrides.spareProvider || args.spareProvider || process.env.AGINTI_SPARE_PROVIDER || requestedProvider;
+  const selectedRoute = selectModelRoute({
+    routingMode: sessionModelLocked ? "manual" : routingMode,
     provider: requestedProvider,
-    model: overrides.model || args.model || process.env.LLM_MODEL || "",
+    model: requestedModel,
     goal: args.goal || "",
     taskProfile,
-    routeProvider: overrides.routeProvider || args.routeProvider || process.env.AGINTI_ROUTE_PROVIDER || "",
+    routeProvider,
     routeModel: overrides.routeModel || args.routeModel || process.env.AGINTI_ROUTE_MODEL || "",
-    mainProvider: overrides.mainProvider || args.mainProvider || process.env.AGINTI_MAIN_PROVIDER || "",
+    mainProvider,
     mainModel: overrides.mainModel || args.mainModel || process.env.AGINTI_MAIN_MODEL || "",
+    localCapabilities,
+    localResourcePolicy,
+    localModelOverrides: {
+      fastModel: overrides.localFastModel || "",
+      deepModel: overrides.localDeepModel || "",
+      maxModel: localMaxModel,
+      visionModel: overrides.localVisionModel || process.env.AGINTI_LOCALLLM_VISION_MODEL || "",
+    },
   });
+  // A resumed session's CAS snapshot stores the effective provider/model, not a
+  // fresh routing suggestion. Resolve it through the normal provider contract,
+  // but keep that concrete choice authoritative for this continuation. New smart
+  // runs omit this internal flag and remain complexity-routed.
+  const route = sessionModelLocked
+    ? {
+        ...selectedRoute,
+        routingMode,
+        reason: "Saved session runtime kept its authoritative provider/model selection.",
+        localSelection: selectedRoute.provider === BASELINE_PROVIDER ? "session-snapshot" : selectedRoute.localSelection,
+      }
+    : selectedRoute;
   const modelRoles = getModelRoleDefaults({
-    routeProvider: overrides.routeProvider || args.routeProvider || process.env.AGINTI_ROUTE_PROVIDER || "",
+    routeProvider,
     routeModel: overrides.routeModel || args.routeModel || process.env.AGINTI_ROUTE_MODEL || "",
     routeReasoning: configuredReasoning(overrides, args, "routeReasoning", "AGINTI_ROUTE_REASONING"),
-    mainProvider: overrides.mainProvider || args.mainProvider || process.env.AGINTI_MAIN_PROVIDER || "",
+    mainProvider,
     mainModel: overrides.mainModel || args.mainModel || process.env.AGINTI_MAIN_MODEL || "",
     mainReasoning: configuredReasoning(overrides, args, "mainReasoning", "AGINTI_MAIN_REASONING"),
-    spareProvider: overrides.spareProvider || args.spareProvider || process.env.AGINTI_SPARE_PROVIDER || "",
+    spareProvider,
     spareModel: overrides.spareModel || args.spareModel || process.env.AGINTI_SPARE_MODEL || "",
     spareReasoning: configuredReasoning(overrides, args, "spareReasoning", "AGINTI_SPARE_REASONING"),
     wrapperModel: overrides.wrapperModel || args.wrapperModel || process.env.AGINTI_WRAPPER_MODEL || "",
@@ -103,8 +171,12 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     taskProfile,
     complexityScore: route.complexityScore,
   });
-  const activeProvider = scsActive && route.provider !== "mock" ? modelRoles.main.provider : route.provider;
-  const activeModel = scsActive && route.provider !== "mock" ? modelRoles.main.model : route.model;
+  const preserveSpecializedLocalRoute =
+    scsActive && route.provider === BASELINE_PROVIDER && ["max", "vision"].includes(route.localTier || "");
+  const preserveSessionModel = scsActive && sessionModelLocked;
+  const useScsMainRole = scsActive && route.provider !== "mock" && !preserveSpecializedLocalRoute && !preserveSessionModel;
+  const activeProvider = useScsMainRole ? modelRoles.main.provider : route.provider;
+  const activeModel = useScsMainRole ? modelRoles.main.model : route.model;
   const explicitReasoning = normalizeReasoningEffort(
     overrides.reasoning ??
       args.reasoning ??
@@ -114,7 +186,9 @@ export function resolveRuntimeConfig(args, overrides = {}) {
       ""
   );
   const activeReasoning =
-    scsActive && route.provider !== "mock"
+    sessionModelLocked
+      ? explicitReasoning
+      : useScsMainRole
       ? modelRoles.main.reasoning
       : route.provider === modelRoles.main.provider && route.model === modelRoles.main.model
         ? modelRoles.main.reasoning
@@ -122,6 +196,10 @@ export function resolveRuntimeConfig(args, overrides = {}) {
           ? modelRoles.route.reasoning
           : explicitReasoning;
   const defaults = getProviderDefaults(activeProvider);
+  const activeBaseURL =
+    activeProvider === BASELINE_PROVIDER
+      ? normalizeProviderBaseURL(activeProvider, overrides.baseURL || defaults.baseURL)
+      : overrides.baseURL || defaults.baseURL;
   const defaultMaxSteps = recommendedMaxStepsForTask({
     goal: args.goal || "",
     taskProfile,
@@ -162,12 +240,45 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     process.env.AGINTI_PARALLEL_SCOUTS !== undefined;
   const allowParallelScouts = parseBoolean(
     overrides.allowParallelScouts ?? args.allowParallelScouts ?? process.env.AGINTI_PARALLEL_SCOUTS,
-    true
+    activeProvider !== BASELINE_PROVIDER
   );
   const preferredWrapper = normalizeWrapperName(
     overrides.preferredWrapper ?? args.preferredWrapper ?? process.env.PREFERRED_WRAPPER ?? process.env.AGENT_WRAPPER
   );
-  const wrapperDefaultEnabled = isWrapperAvailable(preferredWrapper) || isWrapperAvailable("codex");
+  const contextWindowTokens = clampNumber(
+    parseNumber(
+      overrides.contextWindowTokens ??
+        args.contextWindowTokens ??
+        (activeProvider === BASELINE_PROVIDER
+          ? process.env.AGINTI_LOCALLLM_CONTEXT_TOKENS
+          : process.env.AGINTI_CONTEXT_WINDOW_TOKENS),
+      activeProvider === BASELINE_PROVIDER ? 32768 : 0
+    ),
+    0,
+    262144
+  );
+  const maxOutputTokens = clampNumber(
+    parseNumber(
+      overrides.maxOutputTokens ??
+        args.maxOutputTokens ??
+        (activeProvider === BASELINE_PROVIDER
+          ? process.env.AGINTI_LOCALLLM_MAX_OUTPUT_TOKENS
+          : process.env.AGINTI_MAX_OUTPUT_TOKENS),
+      activeProvider === BASELINE_PROVIDER ? 8192 : 0
+    ),
+    0,
+    8192
+  );
+  const contextToolReserveTokens = clampNumber(
+    parseNumber(
+      overrides.contextToolReserveTokens ??
+        args.contextToolReserveTokens ??
+        process.env.AGINTI_LOCALLLM_TOOL_SCHEMA_TOKENS,
+      activeProvider === BASELINE_PROVIDER ? 4096 : 0
+    ),
+    0,
+    16384
+  );
 
   return {
     ...defaults,
@@ -182,11 +293,19 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     language,
     routeReason: route.reason,
     routeComplexityScore: route.complexityScore,
+    localTier: route.localTier || "",
+    localSelection: route.localSelection || "",
+    localUpgradeBlocked: route.localUpgradeBlocked || "",
+    localCapabilities,
+    localResourcePolicy,
+    localMaxModel,
+    allowLocalAutoMax,
+    requiresResourcePreflight: Boolean(route.requiresResourcePreflight),
     executionTier: executionPolicy.tier,
     executionPolicy,
     enableScs: scsMode,
     scsActive,
-    scsModelPolicy: scsActive ? "main" : "route",
+    scsModelPolicy: scsActive ? (preserveSpecializedLocalRoute || preserveSessionModel ? "selected" : "main") : "route",
     modelRoles,
     routeProvider: modelRoles.route.provider,
     routeModel: modelRoles.route.model,
@@ -215,12 +334,16 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     auxiliaryProvider: modelRoles.auxiliary.provider,
     auxiliaryModel: modelRoles.auxiliary.model,
     requestedProvider,
-    requestedModel: overrides.model || args.model || process.env.LLM_MODEL || "",
+    requestedModel,
     provider: activeProvider,
     apiKey: overrides.apiKey || defaults.apiKey,
-    baseURL: overrides.baseURL || defaults.baseURL,
+    baseURL: activeBaseURL,
     model: activeModel || defaults.model,
     reasoning: activeReasoning,
+    providerReadinessTimeoutMs: parseNumber(
+      overrides.providerReadinessTimeoutMs ?? args.providerReadinessTimeoutMs ?? process.env.AGINTI_PROVIDER_READINESS_TIMEOUT_MS,
+      3000
+    ),
     maxSteps,
     maxStepsExplicit,
     dynamicSteps: normalizeDynamicStepsMode(overrides.dynamicSteps ?? args.dynamicSteps ?? process.env.AGINTI_DYNAMIC_STEPS ?? "auto"),
@@ -251,6 +374,13 @@ export function resolveRuntimeConfig(args, overrides = {}) {
       overrides.contextBudgetTargetChars ?? args.contextBudgetTargetChars ?? process.env.AGINTI_CONTEXT_TARGET_CHARS,
       0
     ),
+    contextWindowTokens,
+    maxOutputTokens,
+    contextToolReserveTokens,
+    contextBudgetTargetTokens: parseNumber(
+      overrides.contextBudgetTargetTokens ?? args.contextBudgetTargetTokens ?? process.env.AGINTI_CONTEXT_TARGET_TOKENS,
+      0
+    ),
     headless: parseBoolean(overrides.headless ?? args.headless ?? process.env.HEADLESS, false),
     allowedDomains: Array.isArray(overrides.allowedDomains)
       ? overrides.allowedDomains
@@ -270,11 +400,35 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     ),
     allowWrapperTools: parseBoolean(
       overrides.allowWrapperTools ?? args.allowWrapperTools ?? process.env.ALLOW_WRAPPER_TOOLS,
-      wrapperDefaultEnabled
+      false
     ),
     allowAuxiliaryTools: parseBoolean(
       overrides.allowAuxiliaryTools ?? args.allowAuxiliaryTools ?? process.env.ALLOW_AUXILIARY_TOOLS,
-      true
+      false
+    ),
+    allowHostedImagePerception: parseBoolean(
+      overrides.allowHostedImagePerception ??
+        args.allowHostedImagePerception ??
+        process.env.AGINTI_ALLOW_HOSTED_IMAGE_PERCEPTION,
+      activeProvider === "openai"
+    ),
+    allowHostedWebResearch: parseBoolean(
+      overrides.allowHostedWebResearch ??
+        args.allowHostedWebResearch ??
+        process.env.AGINTI_ALLOW_HOSTED_WEB_RESEARCH,
+      activeProvider === "openai"
+    ),
+    allowHostedJsonSpecialist: parseBoolean(
+      overrides.allowHostedJsonSpecialist ??
+        args.allowHostedJsonSpecialist ??
+        process.env.AGINTI_ALLOW_HOSTED_JSON_SPECIALIST,
+      false
+    ),
+    allowHostedWritingSpecialist: parseBoolean(
+      overrides.allowHostedWritingSpecialist ??
+        args.allowHostedWritingSpecialist ??
+        process.env.AGINTI_ALLOW_HOSTED_WRITING_SPECIALIST,
+      false
     ),
     allowWebSearch: parseBoolean(overrides.allowWebSearch ?? args.allowWebSearch ?? process.env.ALLOW_WEB_SEARCH, true),
     allowMcpTools: parseBoolean(overrides.allowMcpTools ?? args.allowMcpTools ?? process.env.AGINTI_ALLOW_MCP_TOOLS, true),

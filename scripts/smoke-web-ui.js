@@ -73,6 +73,22 @@ let browser;
 
 try {
   await waitForHealth();
+  const initialHtml = await fetch(baseUrl).then((response) => response.text());
+  if (!/<option value="localllm" selected>LocalLLM<\/option>/.test(initialHtml)) {
+    throw new Error("static web fallback does not select LocalLLM before JavaScript loads");
+  }
+  if (!/<option value="localllm-fast">LocalLLM Fast<\/option>/.test(initialHtml)) {
+    throw new Error("static web fallback does not expose the LocalLLM Fast model");
+  }
+  if (!initialHtml.includes("LocalLLM Fast/Deep") || initialHtml.includes("DeepSeek flash/pro")) {
+    throw new Error("static web fallback route label still advertises a hosted default");
+  }
+  if (!initialHtml.includes("Stored account-wide in ~/.agintiflow/.env") || !initialHtml.includes("Save account key")) {
+    throw new Error("static web fallback key-storage copy does not match account-wide storage");
+  }
+  if (!/id="commandCwd"[\s\S]*?value="\."[\s\S]*?placeholder="\/path\/to\/project"/.test(initialHtml)) {
+    throw new Error("static web fallback hard-codes a workstation-specific project path");
+  }
   await fs.mkdir(path.join(runtimeDir, ".aginti"), { recursive: true });
   await fs.mkdir(path.join(runtimeDir, "notes"), { recursive: true });
   await fs.mkdir(path.join(runtimeDir, "data"), { recursive: true });
@@ -146,8 +162,9 @@ try {
   await page.waitForSelector('[data-workspace-file="notes/workspace-ui.md"]', { timeout: 10000 });
   await page.locator("#run-defaults-card summary").click();
   if (await page.locator("#veniceModeToggle").isChecked()) throw new Error("Venice quick mode should default off");
-  if ((await page.locator("#routeProvider").inputValue()) !== "deepseek") throw new Error("route provider should default to DeepSeek");
-  if ((await page.locator("#mainProvider").inputValue()) !== "deepseek") throw new Error("main provider should default to DeepSeek");
+  if (await page.locator("#allowAuxiliaryTools").isChecked()) throw new Error("hosted auxiliary tools should default off");
+  if ((await page.locator("#routeProvider").inputValue()) !== "localllm") throw new Error("route provider should default to LocalLLM");
+  if ((await page.locator("#mainProvider").inputValue()) !== "localllm") throw new Error("main provider should default to LocalLLM");
 
   await page.selectOption("#enableScs", "auto");
   await page.locator("label:has(#aapsModeToggle)").click();
@@ -171,12 +188,12 @@ try {
   }
   await page.locator("label:has(#veniceModeToggle)").click();
   if (await page.locator("#veniceModeToggle").isChecked()) throw new Error("Venice quick mode did not turn off");
-  if ((await page.locator("#provider").inputValue()) !== "deepseek") throw new Error("Venice off did not restore primary provider");
-  if ((await page.locator("#model").inputValue()) !== "deepseek-v4-flash") throw new Error("Venice off did not restore primary model");
-  if ((await page.locator("#routeProvider").inputValue()) !== "deepseek") throw new Error("Venice off did not restore route provider");
-  if ((await page.locator("#routeModel").inputValue()) !== "deepseek-v4-flash") throw new Error("Venice off did not restore route model");
-  if ((await page.locator("#mainProvider").inputValue()) !== "deepseek") throw new Error("Venice off did not restore main provider");
-  if ((await page.locator("#mainModel").inputValue()) !== "deepseek-v4-pro") throw new Error("Venice off did not restore main model");
+  if ((await page.locator("#provider").inputValue()) !== "localllm") throw new Error("Venice off did not restore primary provider");
+  if ((await page.locator("#model").inputValue()) !== "localllm-fast") throw new Error("Venice off did not restore primary model");
+  if ((await page.locator("#routeProvider").inputValue()) !== "localllm") throw new Error("Venice off did not restore route provider");
+  if ((await page.locator("#routeModel").inputValue()) !== "localllm-fast") throw new Error("Venice off did not restore route model");
+  if ((await page.locator("#mainProvider").inputValue()) !== "localllm") throw new Error("Venice off did not restore main provider");
+  if ((await page.locator("#mainModel").inputValue()) !== "localllm-deep") throw new Error("Venice off did not restore main model");
   const quickBoxes = await Promise.all([
     page.locator(".quick-mode-select").boundingBox(),
     page.locator("label:has(#aapsModeToggle)").boundingBox(),
@@ -220,7 +237,7 @@ try {
   if (firstPayload.allowShellTool !== false) {
     throw new Error(`shell tool should be disabled for deterministic renderer smoke: ${runPayloads.at(-1) || ""}`);
   }
-  if (firstPayload.veniceMode !== false || firstPayload.routeProvider !== "deepseek" || firstPayload.mainProvider !== "deepseek") {
+  if (firstPayload.veniceMode !== false || firstPayload.routeProvider !== "localllm" || firstPayload.mainProvider !== "localllm") {
     throw new Error(`default route/main payload mismatch after Venice off: ${runPayloads.at(-1) || ""}`);
   }
   await waitForRunState(page, "running");
@@ -298,7 +315,7 @@ try {
   await page.click("#open-settings");
   await page.waitForSelector("#settings-modal[open]");
   const routeProviders = await optionValues(page, "#routeProvider");
-  for (const provider of ["deepseek", "openai", "openrouter", "qwen", "venice", "mock"]) {
+  for (const provider of ["localllm", "deepseek", "openai", "openrouter", "qwen", "venice", "mock"]) {
     if (!routeProviders.includes(provider)) throw new Error(`settings route provider dropdown is missing ${provider}`);
   }
   const wrapperOptions = await optionValues(page, "#preferredWrapper");
@@ -313,6 +330,9 @@ try {
         ok: true,
         runtimeDir,
         checks: [
+          "static-fallback-localllm-defaults",
+          "static-fallback-account-key-copy",
+          "static-fallback-portable-project-path",
           "composer-starts-new-run",
           "old-goal-form-hidden",
           "working-directory-search-top",
@@ -328,7 +348,7 @@ try {
           "run-defaults-folded",
           "venice-mode-default-off",
           "venice-mode-model-sync",
-          "venice-mode-off-restores-deepseek",
+          "venice-mode-off-restores-localllm",
           "quick-scs-aaps-venice-controls",
           "quick-mode-control-alignment",
           "dynamic-steps-dropdown",

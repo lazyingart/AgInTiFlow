@@ -1,3 +1,5 @@
+import { escapeHtml, renderMarkdown } from "./markdown-renderer.js";
+
 const supportedLanguages = [
   "en",
   "ar",
@@ -22,9 +24,9 @@ const translations = {
     projectStatusTitle: "Project folder",
     setupTitle: "Provider setup",
     setupHelp:
-      "DeepSeek/OpenAI/Qwen/Venice keys are missing. Use mock mode, export an env var, or save an account-wide model key.",
+      "LocalLLM is available without a key. Add hosted keys only when you want DeepSeek/OpenAI/OpenRouter/Qwen/Venice upgrades.",
     setupEnvHelp:
-      "Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, QWEN_API_KEY, VENICE_API_KEY, LLM_API_KEY, and optional GRSAI/VENICE_API_KEY for image generation. Saved keys live in ~/.agintiflow/.env; project .aginti/.env can override.",
+      "LocalLLM baseline: http://127.0.0.1:8008/v1, placeholder key local-dev-key, route localllm-fast, main localllm-deep. Use LOCALLLM_BASE_URL/LOCALLLM_MODEL only for explicit loopback overrides; use DEEPSEEK_API_KEY, OPENAI_API_KEY, QWEN_API_KEY, VENICE_API_KEY, or LLM_API_KEY for hosted upgrades.",
     setupKeyLinksLabel: "Get keys:",
     deepseekKeyLink: "DeepSeek API keys",
     openaiKeyLink: "OpenAI API keys",
@@ -35,14 +37,14 @@ const translations = {
     keySaveFailed: "Failed to save account key.",
     taskProfileLabel: "Task profile",
     routingModeLabel: "Routing policy",
-    routingSmartOption: "Smart: flash/pro/wrappers",
-    routingFastOption: "DeepSeek v4 flash",
-    routingComplexOption: "DeepSeek v4 pro",
+    routingSmartOption: "Smart: route/main/wrappers",
+    routingFastOption: "Fast route model",
+    routingComplexOption: "Main model",
     routingManualOption: "Manual provider/model",
     routingHintSmart:
-      "Smart routing uses DeepSeek v4 flash for short work, DeepSeek v4 pro for complex tasks, and the selected wrapper only when wrapper tools are enabled.",
-    routingHintFast: "Fast route: DeepSeek v4 flash for normal browser, shell, and short coding tasks.",
-    routingHintComplex: "Complex route: DeepSeek v4 pro for deeper implementation, debugging, and design work.",
+      "Smart routing uses the route model for short work, the main model for complex tasks, and the selected wrapper only when wrapper tools are enabled.",
+    routingHintFast: "Fast route: use the configured route model for normal browser, shell, and short coding tasks.",
+    routingHintComplex: "Complex route: use the configured main model for deeper implementation, debugging, and design work.",
     routingHintManual: "Manual route uses the provider and model fields exactly as entered.",
     modelRouteStatus: "Active route",
     providerLabel: "Provider",
@@ -98,7 +100,7 @@ const translations = {
     auxiliaryToolLabel: "Enable auxiliary skills",
     mcpToolLabel: "Enable MCP bridge",
     webSearchLabel: "Enable web search",
-    parallelScoutsLabel: "Parallel DeepSeek scouts",
+    parallelScoutsLabel: "Parallel model scouts",
     parallelScoutCountLabel: "Scout count",
     dynamicStepsLabel: "Dynamic steps",
     dynamicStepsAutoOption: "Auto",
@@ -821,6 +823,7 @@ const placeholderNodes = [...document.querySelectorAll("[data-i18n-placeholder]"
 const ariaLabelNodes = [...document.querySelectorAll("[data-i18n-aria-label]")];
 
 const defaults = {
+  localllm: "localllm-fast",
   openai: "gpt-5.4-mini",
   openrouter: "openrouter/auto",
   deepseek: "deepseek-v4-flash",
@@ -838,6 +841,7 @@ let auxiliaryModelCatalog = {};
 let taskProfiles = [];
 let projectInfo = null;
 let currentSessionId = "";
+let currentRuntimeRevision = null;
 let currentRunStatus = "";
 let pollTimer = null;
 let saveTimer = null;
@@ -985,6 +989,7 @@ function renderKeyStatus(status = lastKeyStatus) {
   lastKeyStatus = status;
   if (!status) return;
   const providers = [
+    ["LocalLLM", status.localllm],
     ["OpenAI", status.openai],
     ["OpenRouter", status.openrouter],
     ["DeepSeek", status.deepseek],
@@ -1613,6 +1618,7 @@ function fieldValue(field) {
 }
 
 const providerLabels = {
+  localllm: "LocalLLM",
   deepseek: "DeepSeek",
   openai: "OpenAI",
   openrouter: "OpenRouter",
@@ -1639,7 +1645,7 @@ function setChoiceOptions(select, options, selectedValue = "", fallbackValue = "
 }
 
 function configuredTextProviders({ includeMock = true } = {}) {
-  const base = ["deepseek", "openai", "openrouter", "qwen", "venice"];
+  const base = ["localllm", "deepseek", "openai", "openrouter", "qwen", "venice"];
   if (includeMock) base.push("mock");
   if (Object.keys(modelCatalog || {}).length === 0) return base;
   return base.filter((provider) => provider === "mock" || Array.isArray(modelCatalog[provider]));
@@ -1647,10 +1653,10 @@ function configuredTextProviders({ includeMock = true } = {}) {
 
 function refreshProviderDropdowns() {
   setChoiceOptions(setupProviderField, ["deepseek", "openai", "openrouter", "qwen", "venice", "grsai"], setupProviderField?.value || "deepseek", "deepseek");
-  setChoiceOptions(providerField, configuredTextProviders({ includeMock: true }), providerField?.value || "deepseek", "deepseek");
-  setChoiceOptions(routeProviderField, configuredTextProviders({ includeMock: true }), routeProviderField?.value || "deepseek", "deepseek");
-  setChoiceOptions(mainProviderField, configuredTextProviders({ includeMock: false }), mainProviderField?.value || "deepseek", "deepseek");
-  setChoiceOptions(spareProviderField, configuredTextProviders({ includeMock: false }), spareProviderField?.value || "openai", "openai");
+  setChoiceOptions(providerField, configuredTextProviders({ includeMock: true }), providerField?.value || "localllm", "localllm");
+  setChoiceOptions(routeProviderField, configuredTextProviders({ includeMock: true }), routeProviderField?.value || "localllm", "localllm");
+  setChoiceOptions(mainProviderField, configuredTextProviders({ includeMock: false }), mainProviderField?.value || "localllm", "localllm");
+  setChoiceOptions(spareProviderField, configuredTextProviders({ includeMock: false }), spareProviderField?.value || "localllm", "localllm");
   setChoiceOptions(auxiliaryProviderField, ["grsai", "venice"], auxiliaryProviderField?.value || "grsai", "grsai");
   const wrappers = lastWrappers.length
     ? lastWrappers.map((wrapper) => ({ id: wrapper.name, label: wrapper.label || wrapper.name }))
@@ -1670,14 +1676,15 @@ function modelDefaultValues() {
   return new Set(Object.values(defaults).filter(Boolean));
 }
 
-function fallbackModelForProvider(provider = "deepseek", role = "primary") {
+function fallbackModelForProvider(provider = "localllm", role = "primary") {
+  if (provider === "localllm") return defaults.localllm || "localllm-fast";
   if (provider === "deepseek" && role === "main") return "deepseek-v4-pro";
   if (provider === "deepseek") return "deepseek-v4-flash";
   if (provider === "openai" && role === "spare") return "gpt-5.4";
   return defaults[provider] || providerModelOptions(provider)[0]?.id || "";
 }
 
-function coerceModelForProvider(provider = "deepseek", currentModel = "", fallbackModel = "") {
+function coerceModelForProvider(provider = "localllm", currentModel = "", fallbackModel = "") {
   const current = String(currentModel || "").trim();
   const fallback = String(fallbackModel || fallbackModelForProvider(provider)).trim();
   const providerModelIds = modelIdsForProvider(provider);
@@ -1747,28 +1754,28 @@ function setSelectOptions(select, options, selectedValue = "", fallbackValue = "
 
 function refreshModelDropdowns() {
   refreshProviderDropdowns();
-  const provider = providerField?.value || "deepseek";
+  const provider = providerField?.value || "localllm";
   setSelectOptions(
     modelField,
     providerModelOptions(provider),
     coerceModelForProvider(provider, fieldValue(modelField), fallbackModelForProvider(provider, "primary")),
     fallbackModelForProvider(provider, "primary")
   );
-  const routeProvider = routeProviderField?.value || "deepseek";
+  const routeProvider = routeProviderField?.value || "localllm";
   setSelectOptions(
     routeModelField,
     providerModelOptions(routeProvider),
     coerceModelForProvider(routeProvider, fieldValue(routeModelField), fallbackModelForProvider(routeProvider, "route")),
     fallbackModelForProvider(routeProvider, "route")
   );
-  const mainProvider = mainProviderField?.value || "deepseek";
+  const mainProvider = mainProviderField?.value || "localllm";
   setSelectOptions(
     mainModelField,
     providerModelOptions(mainProvider),
     coerceModelForProvider(mainProvider, fieldValue(mainModelField), fallbackModelForProvider(mainProvider, "main")),
     fallbackModelForProvider(mainProvider, "main")
   );
-  const spareProvider = spareProviderField?.value || "openai";
+  const spareProvider = spareProviderField?.value || "localllm";
   setSelectOptions(
     spareModelField,
     providerModelOptions(spareProvider),
@@ -1799,8 +1806,8 @@ function syncQuickModeControls() {
   if (quickModeStatusEl) {
     const scs = enableScsField?.value || "auto";
     const profile = taskProfileField?.value || "auto";
-    const route = `${routeProviderField?.value || "deepseek"}/${fieldValue(routeModelField) || "auto"}`;
-    const main = `${mainProviderField?.value || "deepseek"}/${fieldValue(mainModelField) || "auto"}`;
+    const route = `${routeProviderField?.value || "localllm"}/${fieldValue(routeModelField) || "auto"}`;
+    const main = `${mainProviderField?.value || "localllm"}/${fieldValue(mainModelField) || "auto"}`;
     quickModeStatusEl.textContent = `scs=${scs} · profile=${profile} · route ${route} · main ${main}`;
   }
 }
@@ -1828,18 +1835,22 @@ function applyVeniceMode(enabled) {
     if (mainModelField) setSelectOptions(mainModelField, providerModelOptions("venice"), model, defaults.venice);
   } else {
     routingModeField.value = "smart";
-    if (providerField?.value === "venice") providerField.value = "deepseek";
-    if (routeProviderField?.value === "venice") routeProviderField.value = "deepseek";
-    if (mainProviderField?.value === "venice") mainProviderField.value = "deepseek";
+    const baselineProvider = routingPresets.fast?.provider || "localllm";
+    const baselineRoute = routingPresets.fast?.model || defaults[baselineProvider] || "localllm-fast";
+    const baselineMainProvider = routingPresets.complex?.provider || baselineProvider;
+    const baselineMain = routingPresets.complex?.model || defaults[baselineMainProvider] || baselineRoute;
+    if (providerField?.value === "venice") providerField.value = baselineProvider;
+    if (routeProviderField?.value === "venice") routeProviderField.value = baselineProvider;
+    if (mainProviderField?.value === "venice") mainProviderField.value = baselineMainProvider;
     refreshModelDropdowns();
-    if (modelField && providerField?.value === "deepseek") {
-      setSelectOptions(modelField, providerModelOptions("deepseek"), "deepseek-v4-flash", "deepseek-v4-flash");
+    if (modelField && providerField?.value === baselineProvider) {
+      setSelectOptions(modelField, providerModelOptions(baselineProvider), baselineRoute, baselineRoute);
     }
-    if (routeModelField && routeProviderField?.value === "deepseek") {
-      setSelectOptions(routeModelField, providerModelOptions("deepseek"), "deepseek-v4-flash", "deepseek-v4-flash");
+    if (routeModelField && routeProviderField?.value === baselineProvider) {
+      setSelectOptions(routeModelField, providerModelOptions(baselineProvider), baselineRoute, baselineRoute);
     }
-    if (mainModelField && mainProviderField?.value === "deepseek") {
-      setSelectOptions(mainModelField, providerModelOptions("deepseek"), "deepseek-v4-pro", "deepseek-v4-pro");
+    if (mainModelField && mainProviderField?.value === baselineMainProvider) {
+      setSelectOptions(mainModelField, providerModelOptions(baselineMainProvider), baselineMain, baselineMain);
     }
   }
   updateRoutingHint();
@@ -1859,20 +1870,20 @@ function renderModelRoles() {
   const roles = {
     route: {
       ...(modelRoles.route || {}),
-      provider: routeProviderField?.value || modelRoles.route?.provider || "deepseek",
-      model: routeModelField?.value || modelRoles.route?.model || "deepseek-v4-flash",
+      provider: routeProviderField?.value || modelRoles.route?.provider || "localllm",
+      model: routeModelField?.value || modelRoles.route?.model || "localllm-fast",
       reasoning: routeReasoningField?.value ?? modelRoles.route?.reasoning ?? "",
     },
     main: {
       ...(modelRoles.main || {}),
-      provider: mainProviderField?.value || modelRoles.main?.provider || "deepseek",
-      model: mainModelField?.value || modelRoles.main?.model || "deepseek-v4-pro",
+      provider: mainProviderField?.value || modelRoles.main?.provider || "localllm",
+      model: mainModelField?.value || modelRoles.main?.model || "localllm-deep",
       reasoning: mainReasoningField?.value ?? modelRoles.main?.reasoning ?? "",
     },
     spare: {
       ...(modelRoles.spare || {}),
-      provider: spareProviderField?.value || modelRoles.spare?.provider || "openai",
-      model: spareModelField?.value || modelRoles.spare?.model || "gpt-5.4",
+      provider: spareProviderField?.value || modelRoles.spare?.provider || "localllm",
+      model: spareModelField?.value || modelRoles.spare?.model || "localllm-deep",
       reasoning: spareReasoningField?.value ?? modelRoles.spare?.reasoning ?? "medium",
     },
     wrapper: {
@@ -1901,14 +1912,14 @@ function renderModelRoles() {
 }
 
 function renderModelOptions() {
-  const provider = providerField.value || "deepseek";
+  const provider = providerField.value || "localllm";
   const options = providerModelOptions(provider);
   refreshModelDropdowns();
   if (modelRoutePillEl) {
     const mode = routingModeField.value || "smart";
     const primary = fieldValue(modelField) || defaults[provider] || "";
-    const routeLabel = `${routeProviderField?.value || "deepseek"}/${routeModelField?.value || "deepseek-v4-flash"}`;
-    const mainLabel = `${mainProviderField?.value || "deepseek"}/${mainModelField?.value || "deepseek-v4-pro"}`;
+    const routeLabel = `${routeProviderField?.value || "localllm"}/${routeModelField?.value || "localllm-fast"}`;
+    const mainLabel = `${mainProviderField?.value || "localllm"}/${mainModelField?.value || "localllm-deep"}`;
     modelRoutePillEl.textContent =
       mode === "manual"
         ? `${provider} · ${primary}`
@@ -1944,7 +1955,7 @@ function updateRoutingHint() {
   }[mode];
   routingHintEl.textContent = t(hintKey);
 
-  if (mode !== "manual" && providerField.value === "deepseek") {
+  if (mode !== "manual" && providerField.value === (routingPresets.fast?.provider || "localllm")) {
     const preset =
       mode === "complex"
         ? {
@@ -1956,7 +1967,7 @@ function updateRoutingHint() {
             model: routeModelField?.value || routingPresets.fast?.model,
           };
     if (preset) {
-      providerField.value = preset.provider === "deepseek" ? "deepseek" : providerField.value;
+      providerField.value = preset.provider || providerField.value;
       modelField.value = preset.model || modelField.value;
     }
   }
@@ -2079,14 +2090,14 @@ function formPayload() {
     routingMode: routingModeField.value,
     provider: providerField.value,
     model: fieldValue(modelField),
-    routeProvider: routeProviderField?.value || "deepseek",
-    routeModel: fieldValue(routeModelField) || "deepseek-v4-flash",
+    routeProvider: routeProviderField?.value || "localllm",
+    routeModel: fieldValue(routeModelField) || "localllm-fast",
     routeReasoning: routeReasoningField?.value ?? "",
-    mainProvider: mainProviderField?.value || "deepseek",
-    mainModel: fieldValue(mainModelField) || "deepseek-v4-pro",
+    mainProvider: mainProviderField?.value || "localllm",
+    mainModel: fieldValue(mainModelField) || "localllm-deep",
     mainReasoning: mainReasoningField?.value ?? "",
-    spareProvider: spareProviderField?.value || "openai",
-    spareModel: fieldValue(spareModelField) || "gpt-5.4",
+    spareProvider: spareProviderField?.value || "localllm",
+    spareModel: fieldValue(spareModelField) || "localllm-deep",
     spareReasoning: spareReasoningField?.value ?? "medium",
     wrapperModel: fieldValue(wrapperModelField) || "gpt-5.5",
     wrapperReasoning: wrapperReasoningField?.value || "medium",
@@ -2103,7 +2114,7 @@ function formPayload() {
     headless: document.querySelector("#headless").checked,
     allowShellTool: document.querySelector("#allowShellTool").checked,
     allowFileTools: document.querySelector("#allowFileTools").checked,
-    allowAuxiliaryTools: allowAuxiliaryToolsField?.checked ?? true,
+    allowAuxiliaryTools: allowAuxiliaryToolsField?.checked ?? false,
     allowWebSearch: allowWebSearchField?.checked ?? true,
     allowMcpTools: allowMcpToolsField?.checked ?? true,
     allowParallelScouts: allowParallelScoutsField?.checked ?? true,
@@ -2515,13 +2526,6 @@ function renderLogs(run) {
   logsEl.scrollTop = logsEl.scrollHeight;
 }
 
-function escapeHtml(value) {
-  return String(value || "").replace(
-    /[&<>"']/g,
-    (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]
-  );
-}
-
 function renderDiffHtml(value, maxChars = 1200) {
   return String(value || "")
     .slice(0, maxChars)
@@ -2536,208 +2540,6 @@ function renderDiffHtml(value, maxChars = 1200) {
       return escaped;
     })
     .join("\n");
-}
-
-function safeLinkHref(value) {
-  const raw = String(value || "").trim();
-  try {
-    const parsed = new URL(raw, window.location.origin);
-    return ["http:", "https:", "mailto:"].includes(parsed.protocol) ? parsed.href : "";
-  } catch {
-    return "";
-  }
-}
-
-function renderInlineMarkdown(value) {
-  const placeholders = [];
-  const protect = (html) => {
-    const index = placeholders.push(html) - 1;
-    return `\u0000${index}\u0000`;
-  };
-
-  let text = String(value || "");
-  text = text.replace(/`([^`\n]+)`/g, (_match, code) => protect(`<code>${escapeHtml(code)}</code>`));
-  text = text.replace(/\[([^\]\n]+)]\(([^)\s]+)\)/g, (_match, label, href) => {
-    const safeHref = safeLinkHref(href);
-    if (!safeHref) return escapeHtml(label);
-    return protect(
-      `<a href="${escapeHtml(safeHref)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`
-    );
-  });
-
-  let html = escapeHtml(text);
-  html = html
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/__([^_\n]+)__/g, "<strong>$1</strong>")
-    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
-    .replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
-
-  return html.replace(/\u0000(\d+)\u0000/g, (_match, index) => placeholders[Number(index)] || "");
-}
-
-function splitTableRow(line) {
-  return String(line || "")
-    .trim()
-    .replace(/^\|/, "")
-    .replace(/\|$/, "")
-    .split("|")
-    .map((cell) => cell.trim());
-}
-
-function isMarkdownTableSeparator(line) {
-  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(String(line || ""));
-}
-
-function renderMarkdownTable(headerLine, rows) {
-  const headers = splitTableRow(headerLine);
-  const bodyRows = rows.map(splitTableRow);
-  return `
-    <div class="markdown-table-wrap">
-      <table>
-        <thead>
-          <tr>${headers.map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join("")}</tr>
-        </thead>
-        <tbody>
-          ${bodyRows
-            .map((row) => `<tr>${headers.map((_header, index) => `<td>${renderInlineMarkdown(row[index] || "")}</td>`).join("")}</tr>`)
-            .join("")}
-        </tbody>
-      </table>
-    </div>
-  `;
-}
-
-function isMarkdownBlockStart(line, nextLine = "") {
-  const trimmed = String(line || "").trim();
-  return (
-    /^```/.test(trimmed) ||
-    /^#{1,6}\s+/.test(trimmed) ||
-    /^[-*_]{3,}$/.test(trimmed) ||
-    /^>\s?/.test(trimmed) ||
-    /^[-*+]\s+/.test(trimmed) ||
-    /^\d+\.\s+/.test(trimmed) ||
-    (trimmed.includes("|") && isMarkdownTableSeparator(nextLine))
-  );
-}
-
-function unwrapRenderableMarkdownFence(value = "") {
-  const raw = String(value || "");
-  const trimmed = raw.trim();
-  const match = trimmed.match(/^```(?:markdown|md)\s*\n([\s\S]*?)\n```\s*$/i);
-  return match ? match[1] : raw;
-}
-
-function renderMarkdown(value) {
-  const lines = unwrapRenderableMarkdownFence(value).replace(/\r\n?/g, "\n").split("\n");
-  const html = [];
-  let paragraph = [];
-  let listType = "";
-  let listItems = [];
-
-  const flushParagraph = () => {
-    if (!paragraph.length) return;
-    html.push(`<p>${renderInlineMarkdown(paragraph.join(" ").trim())}</p>`);
-    paragraph = [];
-  };
-
-  const flushList = () => {
-    if (!listItems.length) return;
-    const tag = listType === "ol" ? "ol" : "ul";
-    html.push(`<${tag}>${listItems.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</${tag}>`);
-    listType = "";
-    listItems = [];
-  };
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const trimmed = line.trim();
-
-    if (!trimmed) {
-      flushParagraph();
-      flushList();
-      continue;
-    }
-
-    const fence = trimmed.match(/^```([A-Za-z0-9_-]+)?\s*$/);
-    if (fence) {
-      flushParagraph();
-      flushList();
-      const language = fence[1] || "";
-      const code = [];
-      index += 1;
-      while (index < lines.length && !/^```\s*$/.test(lines[index].trim())) {
-        code.push(lines[index]);
-        index += 1;
-      }
-      html.push(
-        `<pre class="markdown-code"><code data-language="${escapeHtml(language)}">${escapeHtml(code.join("\n"))}</code></pre>`
-      );
-      continue;
-    }
-
-    const heading = trimmed.match(/^(#{1,6})\s+(.+?)\s*#*$/);
-    if (heading) {
-      flushParagraph();
-      flushList();
-      const level = heading[1].length;
-      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
-      continue;
-    }
-
-    if (/^[-*_]{3,}$/.test(trimmed)) {
-      flushParagraph();
-      flushList();
-      html.push("<hr>");
-      continue;
-    }
-
-    if (trimmed.includes("|") && isMarkdownTableSeparator(lines[index + 1])) {
-      flushParagraph();
-      flushList();
-      const header = line;
-      const rows = [];
-      index += 2;
-      while (index < lines.length && lines[index].trim().includes("|")) {
-        rows.push(lines[index]);
-        index += 1;
-      }
-      index -= 1;
-      html.push(renderMarkdownTable(header, rows));
-      continue;
-    }
-
-    if (/^>\s?/.test(trimmed)) {
-      flushParagraph();
-      flushList();
-      const quote = [];
-      while (index < lines.length && /^>\s?/.test(lines[index].trim())) {
-        quote.push(lines[index].trim().replace(/^>\s?/, ""));
-        index += 1;
-      }
-      index -= 1;
-      html.push(`<blockquote>${renderMarkdown(quote.join("\n"))}</blockquote>`);
-      continue;
-    }
-
-    const unordered = trimmed.match(/^[-*+]\s+(.+)$/);
-    const ordered = trimmed.match(/^\d+\.\s+(.+)$/);
-    if (unordered || ordered) {
-      flushParagraph();
-      const nextType = ordered ? "ol" : "ul";
-      if (listType && listType !== nextType) flushList();
-      listType = nextType;
-      listItems.push((unordered || ordered)[1]);
-      continue;
-    }
-
-    if (listItems.length) flushList();
-    paragraph.push(trimmed);
-    if (index + 1 >= lines.length || isMarkdownBlockStart(lines[index + 1], lines[index + 2])) flushParagraph();
-  }
-
-  flushParagraph();
-  flushList();
-  return html.join("");
 }
 
 function renderChat(chatEntries) {
@@ -3003,16 +2805,23 @@ async function flushAfterFinishQueue() {
   renderPendingMessages();
 
   try {
+    if (!Number.isSafeInteger(currentRuntimeRevision)) await refreshChat();
+    if (!Number.isSafeInteger(currentRuntimeRevision)) throw new Error("Reload the saved session before continuing it.");
     const response = await fetch(`/api/sessions/${encodeURIComponent(currentSessionId)}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ...formPayload(),
         content: next.content,
+        expectedRuntimeRevision: currentRuntimeRevision,
       }),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || t("failedContinue"));
+    if (!response.ok) {
+      if (response.status === 409) await refreshChat();
+      throw new Error(data.error || t("failedContinue"));
+    }
+    if (Number.isSafeInteger(data.runtimeRevision)) currentRuntimeRevision = data.runtimeRevision;
     if (!data.queued) setRunStatus("running", { sessionId: data.sessionId, announce: true });
     else {
       currentSessionId = data.sessionId;
@@ -3527,6 +3336,9 @@ async function stopCurrentRun() {
 
 async function approvePermission(action) {
   if (!currentSessionId) return;
+  if (action !== "no" && !Number.isSafeInteger(currentRuntimeRevision)) {
+    await refreshChat();
+  }
   chatStatusEl.textContent = t("sendingStatus");
   const response = await fetch(`/api/sessions/${encodeURIComponent(currentSessionId)}/approve-permission`, {
     method: "POST",
@@ -3534,13 +3346,16 @@ async function approvePermission(action) {
     body: JSON.stringify({
       ...formPayload(),
       action,
+      ...(action === "no" ? {} : { expectedRuntimeRevision: currentRuntimeRevision }),
     }),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 409) await refreshChat();
     chatStatusEl.textContent = data.error || t("permissionApprovalFailed");
     return;
   }
+  if (Number.isSafeInteger(data.runtimeRevision)) currentRuntimeRevision = data.runtimeRevision;
   if (data.permissionMode && action === "always" && permissionModeField) {
     permissionModeField.value = data.permissionMode;
     applyPermissionModeToForm(data.permissionMode);
@@ -3571,6 +3386,7 @@ async function refreshChat() {
   }
 
   const data = await response.json();
+  currentRuntimeRevision = Number.isSafeInteger(data.runtimeRevision) ? data.runtimeRevision : null;
   pendingInboxItems = data.inbox || [];
   pendingAfterFinishItems = loadAfterFinishQueue(currentSessionId);
   renderPendingMessages();
@@ -3696,6 +3512,7 @@ async function deleteManagedSession() {
 
 function clearCurrentSessionScope({ focus = true } = {}) {
   currentSessionId = "";
+  currentRuntimeRevision = null;
   setRunStatus("", { sessionId: "" });
   pendingInboxItems = [];
   pendingAfterFinishItems = [];
@@ -3745,6 +3562,7 @@ async function startRunFromGoal(goal, { clearComposer = false } = {}) {
   }
 
   currentSessionId = data.sessionId;
+  currentRuntimeRevision = Number.isSafeInteger(data.runtimeRevision) ? data.runtimeRevision : null;
   setRunStatus("running", { sessionId: data.sessionId, announce: true });
   sessionSelectEl.value = currentSessionId;
   runMetaEl.textContent = `${runStatusLabel("running")} · ${currentSessionId}`;
@@ -4172,6 +3990,7 @@ form.addEventListener("submit", async (event) => {
 
 sessionSelectEl.addEventListener("change", async () => {
   currentSessionId = sessionSelectEl.value;
+  currentRuntimeRevision = null;
   if (!currentSessionId) {
     clearCurrentSessionScope({ focus: false });
     return;
@@ -4195,6 +4014,12 @@ chatFormEl.addEventListener("submit", async (event) => {
     return;
   }
 
+  if (!Number.isSafeInteger(currentRuntimeRevision)) await refreshChat();
+  if (!Number.isSafeInteger(currentRuntimeRevision)) {
+    chatStatusEl.textContent = "Reload the saved session before continuing it.";
+    return;
+  }
+
   chatStatusEl.textContent = t("sendingStatus");
 
   const response = await fetch(`/api/sessions/${encodeURIComponent(currentSessionId)}/messages`, {
@@ -4203,16 +4028,19 @@ chatFormEl.addEventListener("submit", async (event) => {
     body: JSON.stringify({
       ...formPayload(),
       content,
+      expectedRuntimeRevision: currentRuntimeRevision,
     }),
   });
 
   const data = await response.json();
   if (!response.ok) {
+    if (response.status === 409) await refreshChat();
     chatStatusEl.textContent = data.error || t("failedContinue");
     return;
   }
 
   currentSessionId = data.sessionId;
+  if (Number.isSafeInteger(data.runtimeRevision)) currentRuntimeRevision = data.runtimeRevision;
   if (!data.queued) setRunStatus("running", { sessionId: data.sessionId, announce: true });
   else updateStopRunButton();
   chatInputEl.value = "";
@@ -4239,11 +4067,12 @@ async function loadConfig() {
   auxiliaryModelCatalog = data.auxiliaryModelCatalog || {};
   taskProfiles = data.taskProfiles || [];
   projectInfo = data.project || null;
+  defaults.localllm = data.defaults?.localllm?.model || defaults.localllm;
   defaults.openai = data.defaults?.openai?.model || defaults.openai;
   defaults.openrouter = data.defaults?.openrouter?.model || defaults.openrouter;
   defaults.qwen = data.defaults?.qwen?.model || defaults.qwen;
   defaults.venice = data.defaults?.venice?.model || defaults.venice;
-  defaults.deepseek = routingPresets.fast?.model || data.defaults?.deepseek?.model || defaults.deepseek;
+  defaults.deepseek = data.defaults?.deepseek?.model || defaults.deepseek;
   defaults.mock = data.defaults?.mock?.model || defaults.mock;
 
   applyLanguage(prefs.language || normalizeLanguage(navigator.language || "en"), { persist: false });
@@ -4251,12 +4080,12 @@ async function loadConfig() {
   refreshProviderDropdowns();
 
   routingModeField.value = prefs.routingMode || "smart";
-  providerField.value = prefs.provider || "deepseek";
-  if (routeProviderField) routeProviderField.value = prefs.routeProvider || modelRoles.route?.provider || "deepseek";
+  providerField.value = prefs.provider || "localllm";
+  if (routeProviderField) routeProviderField.value = prefs.routeProvider || modelRoles.route?.provider || "localllm";
   if (routeReasoningField) routeReasoningField.value = prefs.routeReasoning ?? modelRoles.route?.reasoning ?? "";
-  if (mainProviderField) mainProviderField.value = prefs.mainProvider || modelRoles.main?.provider || "deepseek";
+  if (mainProviderField) mainProviderField.value = prefs.mainProvider || modelRoles.main?.provider || "localllm";
   if (mainReasoningField) mainReasoningField.value = prefs.mainReasoning ?? modelRoles.main?.reasoning ?? "";
-  if (spareProviderField) spareProviderField.value = prefs.spareProvider || modelRoles.spare?.provider || "openai";
+  if (spareProviderField) spareProviderField.value = prefs.spareProvider || modelRoles.spare?.provider || "localllm";
   if (spareReasoningField) spareReasoningField.value = prefs.spareReasoning ?? modelRoles.spare?.reasoning ?? "medium";
   if (wrapperReasoningField) wrapperReasoningField.value = prefs.wrapperReasoning || modelRoles.wrapper?.reasoning || "medium";
   if (auxiliaryProviderField) auxiliaryProviderField.value = prefs.auxiliaryProvider || modelRoles.auxiliary?.provider || "grsai";
@@ -4268,33 +4097,33 @@ async function loadConfig() {
   );
   setSelectOptions(
     routeModelField,
-    providerModelOptions(routeProviderField?.value || "deepseek"),
+    providerModelOptions(routeProviderField?.value || "localllm"),
     coerceModelForProvider(
-      routeProviderField?.value || "deepseek",
+      routeProviderField?.value || "localllm",
       prefs.routeModel || modelRoles.route?.model,
-      fallbackModelForProvider(routeProviderField?.value || "deepseek", "route")
+      fallbackModelForProvider(routeProviderField?.value || "localllm", "route")
     ),
-    fallbackModelForProvider(routeProviderField?.value || "deepseek", "route")
+    fallbackModelForProvider(routeProviderField?.value || "localllm", "route")
   );
   setSelectOptions(
     mainModelField,
-    providerModelOptions(mainProviderField?.value || "deepseek"),
+    providerModelOptions(mainProviderField?.value || "localllm"),
     coerceModelForProvider(
-      mainProviderField?.value || "deepseek",
+      mainProviderField?.value || "localllm",
       prefs.mainModel || modelRoles.main?.model,
-      fallbackModelForProvider(mainProviderField?.value || "deepseek", "main")
+      fallbackModelForProvider(mainProviderField?.value || "localllm", "main")
     ),
-    fallbackModelForProvider(mainProviderField?.value || "deepseek", "main")
+    fallbackModelForProvider(mainProviderField?.value || "localllm", "main")
   );
   setSelectOptions(
     spareModelField,
-    providerModelOptions(spareProviderField?.value || "openai"),
+    providerModelOptions(spareProviderField?.value || "localllm"),
     coerceModelForProvider(
-      spareProviderField?.value || "openai",
+      spareProviderField?.value || "localllm",
       prefs.spareModel || modelRoles.spare?.model,
-      fallbackModelForProvider(spareProviderField?.value || "openai", "spare")
+      fallbackModelForProvider(spareProviderField?.value || "localllm", "spare")
     ),
-    fallbackModelForProvider(spareProviderField?.value || "openai", "spare")
+    fallbackModelForProvider(spareProviderField?.value || "localllm", "spare")
   );
   setSelectOptions(wrapperModelField, wrapperModelOptions(), prefs.wrapperModel || modelRoles.wrapper?.model, "gpt-5.5");
   setSelectOptions(
@@ -4314,7 +4143,7 @@ async function loadConfig() {
   packageInstallPolicyField.value = prefs.packageInstallPolicy || "allow";
   document.querySelector("#allowShellTool").checked = prefs.allowShellTool ?? true;
   document.querySelector("#allowFileTools").checked = prefs.allowFileTools ?? true;
-  if (allowAuxiliaryToolsField) allowAuxiliaryToolsField.checked = prefs.allowAuxiliaryTools ?? true;
+  if (allowAuxiliaryToolsField) allowAuxiliaryToolsField.checked = prefs.allowAuxiliaryTools ?? false;
   if (allowWebSearchField) allowWebSearchField.checked = prefs.allowWebSearch ?? true;
   if (allowMcpToolsField) allowMcpToolsField.checked = prefs.allowMcpTools ?? true;
   if (allowParallelScoutsField) allowParallelScoutsField.checked = prefs.allowParallelScouts ?? true;

@@ -13,7 +13,7 @@
 ![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)
 ![Playwright](https://img.shields.io/badge/Browser-Playwright-2EAD33?logo=playwright&logoColor=white)
 ![CLI + Web](https://img.shields.io/badge/Interface-CLI%20%2B%20Web-0ea5e9)
-![Text Models](https://img.shields.io/badge/Text-DeepSeek%20%2B%20Venice%20%2B%20OpenAI%20%2B%20Qwen-2563eb)
+![Text Models](https://img.shields.io/badge/Text-LocalLLM%20%2B%20Optional%20Hosted-2563eb)
 ![Aux Image](https://img.shields.io/badge/Aux%20Image-GRS%20AI%20%2B%20Venice-ec4899)
 ![Sandbox](https://img.shields.io/badge/Shell-Docker%20Sandbox-f97316)
 ![Status](https://img.shields.io/badge/Status-Prototype-7c3aed)
@@ -23,6 +23,8 @@
 AgInTiFlow là một project-aware agent workspace cho hybrid wet-dry R&D, hardware-aware intelligence, software automation và industrial workflows. Từ lập kế hoạch thí nghiệm đến phân tích dữ liệu, từ điều khiển phần cứng đến production scripts, và từ microscopy, drones, robots đến reports, nó giúp agent làm việc qua API, Web hoặc CLI với SCS supervision, AAPS workflows, guarded execution và durable evidence.
 
 Nói ngắn gọn: chạy `aginti` trong một dự án, giao nhiệm vụ, xem kế hoạch, kiểm tra từng tool call, tiếp tục lại sau, và giữ kết quả trong workspace.
+
+> **Lưu ý về độ mới:** Bản dịch này có thể chậm hơn một số chi tiết trong [README tiếng Anh hiện tại](../README.md) và [tài liệu local-first runtime](../docs/local-first-agent-runtime.md). Mặc định là LocalLLM tại `http://127.0.0.1:8008/v1`, dùng `localllm-fast` và `localllm-deep`. Hosted provider chỉ là upgrade tùy chọn được chọn rõ ràng; key trong môi trường không tự chọn provider và không gây fallback tự động. Auxiliary image generation cũng tắt cho đến khi được bật rõ ràng.
 
 **Liên kết**
 
@@ -45,9 +47,9 @@ Phần lớn công cụ agent hoặc là một hộp chat với trạng thái �
 
 | Nguyên tắc | Ý nghĩa thực tế |
 | --- | --- |
-| Trí tuệ rẻ thay đổi kiến trúc | DeepSeek V4 Flash và Pro khiến việc dùng thêm call cho routing, scouting, review và recovery trở nên thực tế, thay vì ép một call đắt tiền làm tất cả. |
+| Trí tuệ cục bộ thay đổi kiến trúc | Baseline dùng gateway LocalLLM bên cạnh cho route/main riêng tư và cục bộ; Hosted model vẫn là upgrade phải chọn rõ ràng. |
 | Có thể kiểm tra tốt hơn bí ẩn | Plan, tool call, file diff, command output, canvas artifact và session event đều được lưu và có thể resume. |
-| Mô hình theo vai trò | route, main, spare, wrapper và auxiliary image là các vai trò riêng. Bạn có thể dùng route model rẻ, main model mạnh hơn, route OpenAI/Qwen/Venice tùy chọn, và image tools GRS AI/Venice. |
+| Mô hình theo vai trò | route, main, spare, wrapper và auxiliary image là các vai trò riêng. LocalLLM cung cấp Fast/Deep mặc định; DeepSeek, OpenAI, OpenRouter, Qwen và Venice phải được chọn rõ ràng. |
 | Scouts trước việc lớn | Parallel scouts có thể lập bản đồ architecture, tests, risks, symbols và integration points với chi phí thấp trước khi executor chính sửa file. |
 | SCS cho việc rủi ro cao | Student-Committee-Supervisor mode thêm typed gate: committee phác thảo, student phê duyệt/giám sát, supervisor thực thi. Dùng `/scs` hoặc `--scs auto`. |
 | AAPS cho workflow lớn | AAPS mô tả agentic pipeline script từ trên xuống; AgInTiFlow có thể là backend tương tác để validate, compile và execute các workflow đó. |
@@ -64,14 +66,17 @@ aginti init
 aginti
 ```
 
-Ở lần dùng tương tác đầu tiên, nếu không tìm thấy key cho main model, AgInTiFlow mở auth wizard. Chọn DeepSeek, OpenAI, Qwen hoặc Venice, dán key, và key sẽ được lưu vào file `.aginti/.env` cục bộ của dự án với quyền hạn chế và bị git ignore. Bạn có thể chạy lại bất cứ lúc nào:
+Theo mặc định, AgInTiFlow kết nối không cần Hosted key tới service LocalLLM bên cạnh tại `http://127.0.0.1:8008/v1`: `localllm-fast` cho route và `localllm-deep` cho main. Để dùng DeepSeek, OpenAI, OpenRouter, Qwen hoặc Venice, hãy chọn provider rõ ràng rồi chạy auth wizard. Lỗi LocalLLM dừng run với thông báo rõ ràng và không bao giờ tự gửi task lên cloud:
 
 ```bash
 aginti auth
 aginti auth deepseek
+aginti auth openrouter
 aginti auth venice
 aginti login grsai
 ```
+
+Hosted key đã lưu chỉ dùng để xác thực và không đổi active provider. Auxiliary image tools vẫn tắt cho đến khi dùng rõ ràng `/auxiliary on`, `/auxiliary image` hoặc toggle tương ứng.
 
 Chạy Web UI từ cùng dự án:
 
@@ -162,12 +167,12 @@ aginti --resume <session-id> \
 | File tools | `inspect_project`, `list_files`, `read_file`, `search_files`, `write_file`, `apply_patch`, `open_workspace_file`, `preview_workspace`. |
 | Shell tools | Host hoặc Docker workspace shell execution có guard, package-install policy và command safety checks. |
 | Browser tools | Playwright browser actions với lazy startup và optional domain allowlists. |
-| Model routing | Default DeepSeek fast/pro, manual OpenAI/Qwen/Venice/mock routes, spare models, wrapper models và auxiliary image models. |
+| Model routing | LocalLLM Fast/Deep là mặc định. DeepSeek, OpenAI, OpenRouter, Qwen, Venice và mock là route rõ ràng; key môi trường không gây Hosted fallback. |
 | Patch workflow | Codex-style patch envelopes, unified diffs, exact replacements, hashes, compact diffs và path guardrails. |
 | Parallel scouts | Optional scout calls cho architecture, implementation, review, tests, git flow, research, symbol tracing và dependency risk. |
 | SCS mode | Optional Student-Committee-Supervisor quality gate cho tác vụ phức tạp hoặc rủi ro. |
 | AAPS adapter | Optional `@lazyingart/aaps` integration cho `.aaps` workflow init, validate, parse, compile, dry-run và run. |
-| Image generation | Optional GRS AI và Venice image tools với manifests đã lưu và canvas artifact previews. |
+| Image generation | GRS AI và Venice tắt mặc định và cần bật rõ ràng; lưu key không tự bật chúng hoặc chọn provider thay thế. |
 | Skill library | Built-in Markdown skills cho code, websites, Android/iOS, Python, Rust, Java, LaTeX, writing, reviews, GitHub, AAPS và nhiều hơn. |
 | Skill Mesh | Optional strict skill recording/sharing cho reusable skill packs đã review. Nếu không dùng, AgInTiFlow chạy bình thường không background sharing. |
 | Multilingual UI | CLI và docs hỗ trợ English, Japanese, Simplified/Traditional Chinese, Korean, French, Spanish, Arabic, Vietnamese, German và Russian. |
@@ -178,11 +183,11 @@ AgInTiFlow không xem “the model” là một global setting duy nhất. Nó c
 
 | Role | Default | Mục đích |
 | --- | --- | --- |
-| Route | `deepseek/deepseek-v4-flash` | Planner rẻ, triage, short tasks, routing decisions. |
-| Main | `deepseek/deepseek-v4-pro` | Coding phức tạp, debugging, writing, research, long tasks. |
-| Spare | `openai/gpt-5.4` medium | Optional fallback hoặc cross-check route. |
+| Route | `localllm/localllm-fast` | Local planner, triage, short tasks và routing decisions. |
+| Main | `localllm/localllm-deep` | Local executor cho coding phức tạp, debugging, writing, research và long tasks. |
+| Spare | `localllm/localllm-deep` medium | Local cross-check lane; Hosted spare phải được chọn rõ ràng. |
 | Wrapper | `codex/gpt-5.5` medium | Optional external coding-agent advisor. |
-| Auxiliary | `grsai/nano-banana-2` | Image generation và helper tools không phải text. |
+| Auxiliary | `grsai/nano-banana-2` (off) | Image generation và non-text tools chỉ sau khi bật rõ ràng; không failover provider dựa trên key. |
 
 Selectors hữu ích:
 
@@ -196,7 +201,7 @@ Selectors hữu ích:
 /venice
 ```
 
-Venice routes có thể dùng cho optional uncensored hoặc creative work ít hạn chế hơn. DeepSeek vẫn là default kinh tế cho workflow engineering bình thường. Xem [../docs/model-selection.md](../docs/model-selection.md) và [../references/venice-model-reference.md](../references/venice-model-reference.md).
+Venice có thể dùng tùy chọn cho uncensored hoặc creative work ít hạn chế hơn. LocalLLM vẫn là baseline cục bộ; DeepSeek và các Hosted provider khác chỉ là upgrade phải chọn rõ ràng. Xem [../docs/model-selection.md](../docs/model-selection.md), [../docs/local-first-agent-runtime.md](../docs/local-first-agent-runtime.md) và [../references/venice-model-reference.md](../references/venice-model-reference.md).
 
 ## AAPS và workflow lớn
 
@@ -268,12 +273,19 @@ Runtime notes chi tiết ở [../docs/runtime-modes-and-autonomy.md](../docs/run
 Biến môi trường thường dùng:
 
 ```bash
+AGENT_PROVIDER=localllm
+LOCALLLM_BASE_URL=http://127.0.0.1:8008/v1
+LOCALLLM_API_KEY=local-dev-key
+AGINTI_LOCALLLM_ROUTE_MODEL=localllm-fast
+AGINTI_LOCALLLM_MAIN_MODEL=localllm-deep
+
+# Hosted upgrade tùy chọn và phải chọn rõ ràng; không bao giờ tự động fallback từ LocalLLM.
 DEEPSEEK_API_KEY=...
 OPENAI_API_KEY=...
+OPENROUTER_API_KEY=...
 QWEN_API_KEY=...
 VENICE_API_KEY=...
 GRSAI_API_KEY=...
-AGENT_PROVIDER=deepseek
 AGENT_ROUTING_MODE=smart
 AGINTI_TASK_PROFILE=auto
 AGINTI_LANGUAGE=en

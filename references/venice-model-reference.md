@@ -2,9 +2,11 @@
 
 Captured from the user-provided Venice/GRS model catalog on 2026-05-02. This file intentionally stores model names and public pricing notes only. It must never contain API keys or local `.env` values.
 
+Venice is an explicit hosted-provider option, never AgInTiFlow's default or an automatic fallback. The default runtime remains the sibling LocalLLM loopback gateway at `http://127.0.0.1:8008/v1`, with `localllm-fast` for route work and `localllm-deep` for main work. Ambient or saved Venice/GRS credentials authenticate only; they do not change the active text provider, enable auxiliary tools, or authorize credential-driven provider failover. See [the local-first runtime contract](../docs/local-first-agent-runtime.md).
+
 ## Runtime Environment
 
-AgInTiFlow treats Venice as an OpenAI-compatible provider for text/chat work:
+When Venice is selected explicitly, AgInTiFlow treats it as an OpenAI-compatible provider for text/chat work. The variables below configure that provider but do not select it:
 
 ```env
 VENICE_API_BASE=https://api.venice.ai/api/v1
@@ -13,7 +15,7 @@ VENICE_MODEL=venice-uncensored-1-2
 VENICE_IMAGE_MODEL=nano-banana-2
 ```
 
-Store `VENICE_API_KEY` only in ignored local files such as `.aginti/.env` or a shell environment.
+Store `VENICE_API_KEY` only in ignored local files such as `.aginti/.env` or a shell environment. Saving the key does not activate Venice text routing or auxiliary image generation.
 
 ## Recommended Text Buckets
 
@@ -109,13 +111,13 @@ Use Venice as the primary manual model:
 aginti --provider venice --routing manual --model venice-uncensored-1-2 "write a project note"
 ```
 
-Use Venice image models through the auxiliary image tool:
+Use Venice image models only after explicitly enabling the auxiliary image tool. Auxiliary generation is off by default:
 
 ```bash
 aginti --image --allow-auxiliary-tools "generate a bright clean logo concept using Venice image models"
 ```
 
-For smart coding, keep the default DeepSeek route unless the user explicitly selects Venice:
+For smart coding, keep the default LocalLLM Fast/Deep route unless the user explicitly selects Venice or another hosted upgrade:
 
 ```bash
 aginti --routing smart "fix this repository and run tests"

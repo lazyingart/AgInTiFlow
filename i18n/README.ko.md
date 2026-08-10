@@ -13,7 +13,7 @@
 ![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)
 ![Playwright](https://img.shields.io/badge/Browser-Playwright-2EAD33?logo=playwright&logoColor=white)
 ![CLI + Web](https://img.shields.io/badge/Interface-CLI%20%2B%20Web-0ea5e9)
-![Text Models](https://img.shields.io/badge/Text-DeepSeek%20%2B%20Venice%20%2B%20OpenAI%20%2B%20Qwen-2563eb)
+![Text Models](https://img.shields.io/badge/Text-LocalLLM%20%2B%20Optional%20Hosted-2563eb)
 ![Aux Image](https://img.shields.io/badge/Aux%20Image-GRS%20AI%20%2B%20Venice-ec4899)
 ![Sandbox](https://img.shields.io/badge/Shell-Docker%20Sandbox-f97316)
 ![Status](https://img.shields.io/badge/Status-Prototype-7c3aed)
@@ -23,6 +23,8 @@
 AgInTiFlow는 hybrid wet-dry R&D, hardware-aware intelligence, software automation, industrial workflow를 위한 project-aware agent workspace입니다. 실험 계획부터 데이터 분석까지, 하드웨어 제어부터 production script까지, microscopy, drone, robot부터 report까지, SCS supervision, AAPS workflow, guarded execution, durable evidence와 함께 API, Web, CLI로 에이전트가 작업하게 합니다.
 
 짧게 말하면, 프로젝트 안에서 `aginti`를 실행하고 작업을 맡긴 뒤 계획과 모든 도구 호출을 확인하며, 나중에 다시 이어서 실행하고 결과물을 작업공간에 남길 수 있습니다.
+
+> **번역 최신성 안내:** 이 번역은 [최신 영문 README](../README.md)와 [local-first runtime 문서](../docs/local-first-agent-runtime.md)의 일부 세부사항보다 늦을 수 있습니다. 기본값은 `http://127.0.0.1:8008/v1`의 LocalLLM이며 `localllm-fast`와 `localllm-deep`을 사용합니다. Hosted provider는 사용자가 명시적으로 고르는 선택적 upgrade입니다. 환경에 key가 있다는 이유로 선택되거나 자동 fallback되지 않습니다. 보조 이미지 생성도 명시적으로 켤 때까지 꺼져 있습니다.
 
 **링크**
 
@@ -45,9 +47,9 @@ AgInTiFlow는 hybrid wet-dry R&D, hardware-aware intelligence, software automati
 
 | 원칙 | 실제 의미 |
 | --- | --- |
-| 저렴한 지능은 구조를 바꿉니다 | DeepSeek V4 Flash/Pro 덕분에 라우팅, scout, 리뷰, 복구에 추가 호출을 쓰는 것이 현실적입니다. 비싼 한 번의 호출에 모든 것을 넣을 필요가 없습니다. |
+| 로컬 지능은 구조를 바꿉니다 | 기본 경로는 인접한 LocalLLM gateway를 사용해 route와 main을 로컬·비공개로 실행하며, Hosted model은 명시적인 upgrade로 남습니다. |
 | 불투명함보다 검사 가능성 | 계획, 도구 호출, 파일 diff, 명령 출력, canvas artifact, session event가 저장되고 다시 이어갈 수 있습니다. |
-| 역할 기반 모델 | route, main, spare, wrapper, auxiliary image 역할이 분리됩니다. 저렴한 route 모델, 강한 main 모델, OpenAI/Qwen/Venice route, GRS AI/Venice 이미지 도구를 조합할 수 있습니다. |
+| 역할 기반 모델 | route, main, spare, wrapper, auxiliary image 역할이 분리됩니다. LocalLLM Fast/Deep이 기본이며 DeepSeek, OpenAI, OpenRouter, Qwen, Venice는 명시적으로 선택합니다. |
 | 큰 작업 전 scouts | 병렬 scouts가 아키텍처, 테스트, 위험, 심볼, 통합 지점을 저렴하게 파악한 뒤 main executor가 편집합니다. |
 | 고위험 작업에는 SCS | Student-Committee-Supervisor 모드는 typed gate를 추가합니다. committee가 초안을 만들고, student가 승인/감시하며, supervisor가 실행합니다. `/scs` 또는 `--scs auto`를 사용합니다. |
 | 대형 워크플로에는 AAPS | AAPS는 top-down agentic pipeline script를 설명합니다. AgInTiFlow는 이를 검증, 컴파일, 실행하는 interactive backend가 될 수 있습니다. |
@@ -64,14 +66,17 @@ aginti init
 aginti
 ```
 
-처음 대화형으로 사용할 때 main model key가 없으면 AgInTiFlow가 인증 wizard를 엽니다. DeepSeek, OpenAI, Qwen, Venice 중 하나를 선택하고 key를 붙여 넣으면, git에서 무시되는 프로젝트 로컬 `.aginti/.env`에 제한된 권한으로 저장합니다. 언제든 다시 실행할 수 있습니다.
+AgInTiFlow는 기본적으로 Hosted key 없이 `http://127.0.0.1:8008/v1`의 인접 LocalLLM service에 연결합니다. route는 `localllm-fast`, main은 `localllm-deep`입니다. DeepSeek, OpenAI, OpenRouter, Qwen, Venice를 사용할 때만 provider를 명시적으로 선택하고 auth wizard를 실행합니다. LocalLLM 실패는 명확한 오류로 중단되며 작업을 자동으로 cloud에 보내지 않습니다.
 
 ```bash
 aginti auth
 aginti auth deepseek
+aginti auth openrouter
 aginti auth venice
 aginti login grsai
 ```
+
+저장된 Hosted key는 인증에만 사용되며 active provider를 바꾸지 않습니다. 보조 이미지 도구는 `/auxiliary on`, `/auxiliary image` 또는 동등한 toggle을 명시적으로 사용할 때까지 꺼져 있습니다.
 
 같은 프로젝트에서 Web UI를 실행합니다.
 
@@ -162,12 +167,12 @@ aginti --resume <session-id> \
 | File tools | `inspect_project`, `list_files`, `read_file`, `search_files`, `write_file`, `apply_patch`, `open_workspace_file`, `preview_workspace`. |
 | Shell tools | package install policy와 command safety check가 있는 host 또는 Docker workspace shell 실행. |
 | Browser tools | lazy startup과 optional domain allowlist를 가진 Playwright browser action. |
-| Model routing | DeepSeek fast/pro default, manual OpenAI/Qwen/Venice/mock route, spare model, wrapper model, auxiliary image model. |
+| Model routing | LocalLLM Fast/Deep이 기본입니다. DeepSeek, OpenAI, OpenRouter, Qwen, Venice, mock은 명시적 route이며 환경 key로 Hosted fallback되지 않습니다. |
 | Patch workflow | Codex-style patch envelope, unified diff, exact replacement, hash, compact diff, path guardrail. |
 | Parallel scouts | architecture, implementation, review, test, git flow, research, symbol tracing, dependency risk를 위한 optional scout call. |
 | SCS mode | 복잡하거나 위험한 task를 위한 optional Student-Committee-Supervisor quality gate. |
 | AAPS adapter | `.aaps` workflow init, validate, parse, compile, dry-run, run을 위한 optional `@lazyingart/aaps` integration. |
-| Image generation | saved manifest와 canvas artifact preview가 있는 optional GRS AI/Venice image tools. |
+| Image generation | GRS AI와 Venice는 기본적으로 꺼져 있고 명시적인 활성화가 필요합니다. key를 저장하는 것만으로 활성화하거나 대체 provider를 고르지 않습니다. |
 | Skill library | code, website, Android/iOS, Python, Rust, Java, LaTeX, writing, review, GitHub, AAPS 등을 위한 built-in Markdown skills. |
 | Skill Mesh | 검토된 reusable skill pack의 optional strict skill recording/sharing. 사용하지 않으면 background sharing 없이 정상 동작합니다. |
 | Multilingual UI | CLI와 docs는 English, Japanese, Simplified/Traditional Chinese, Korean, French, Spanish, Arabic, Vietnamese, German, Russian를 지원합니다. |
@@ -178,11 +183,11 @@ AgInTiFlow는 “모델”을 하나의 전역 설정으로 보지 않습니다.
 
 | 역할 | 기본값 | 목적 |
 | --- | --- | --- |
-| Route | `deepseek/deepseek-v4-flash` | 저비용 planning, triage, short task, routing decision. |
-| Main | `deepseek/deepseek-v4-pro` | 복잡한 coding, debugging, writing, research, long task. |
-| Spare | `openai/gpt-5.4` medium | optional fallback 또는 cross-check route. |
+| Route | `localllm/localllm-fast` | 로컬 planning, triage, short task, routing decision. |
+| Main | `localllm/localllm-deep` | 복잡한 coding, debugging, writing, research, long task의 로컬 executor. |
+| Spare | `localllm/localllm-deep` medium | 로컬 cross-check lane이며 Hosted spare는 명시적으로 선택해야 합니다. |
 | Wrapper | `codex/gpt-5.5` medium | optional external coding-agent advisor. |
-| Auxiliary | `grsai/nano-banana-2` | image generation 및 기타 non-text helper tools. |
+| Auxiliary | `grsai/nano-banana-2` (off) | 명시적으로 활성화한 image generation과 non-text tools만 사용하며 key 기반 provider failover는 없습니다. |
 
 자주 쓰는 selector:
 
@@ -196,7 +201,7 @@ AgInTiFlow는 “모델”을 하나의 전역 설정으로 보지 않습니다.
 /venice
 ```
 
-Venice route는 optional uncensored 또는 덜 제한적인 creative work에 사용할 수 있습니다. 일반 engineering workflow의 경제적 기본값은 DeepSeek입니다. [../docs/model-selection.md](../docs/model-selection.md) 및 [../references/venice-model-reference.md](../references/venice-model-reference.md)를 참고하세요.
+Venice는 optional uncensored 또는 덜 제한적인 creative work에 사용할 수 있습니다. LocalLLM이 로컬 기본값이며 DeepSeek 등 Hosted provider는 명시적 upgrade로만 사용됩니다. [../docs/model-selection.md](../docs/model-selection.md), [../docs/local-first-agent-runtime.md](../docs/local-first-agent-runtime.md), [../references/venice-model-reference.md](../references/venice-model-reference.md)를 참고하세요.
 
 ## AAPS와 대형 워크플로
 
@@ -268,12 +273,19 @@ AgInTiFlow는 canonical session을 중앙에 저장하고 project-local pointer�
 주요 환경 변수:
 
 ```bash
+AGENT_PROVIDER=localllm
+LOCALLLM_BASE_URL=http://127.0.0.1:8008/v1
+LOCALLLM_API_KEY=local-dev-key
+AGINTI_LOCALLLM_ROUTE_MODEL=localllm-fast
+AGINTI_LOCALLLM_MAIN_MODEL=localllm-deep
+
+# 선택적으로 명시한 hosted upgrade이며 LocalLLM의 자동 fallback이 아닙니다.
 DEEPSEEK_API_KEY=...
 OPENAI_API_KEY=...
+OPENROUTER_API_KEY=...
 QWEN_API_KEY=...
 VENICE_API_KEY=...
 GRSAI_API_KEY=...
-AGENT_PROVIDER=deepseek
 AGENT_ROUTING_MODE=smart
 AGINTI_TASK_PROFILE=auto
 AGINTI_LANGUAGE=en

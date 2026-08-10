@@ -1,0 +1,291 @@
+const responseContracts = new WeakMap();
+const contractMarker = Symbol("aginti.tool-contract");
+const trustedMockDryRunMarker = Symbol("aginti.tool-contract.trusted-mock-dry-run");
+const TRUSTED_MOCK_DRY_RUN_TOOLS = new Set(["generate_image", "read_image"]);
+
+const MAX_VALIDATION_ERRORS = 8;
+const MAX_VALIDATION_NODES = 50_000;
+
+function cloneValue(value) {
+  return structuredClone(value);
+}
+
+function deepFreeze(value, seen = new Set()) {
+  if (!value || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value)) deepFreeze(child, seen);
+  return Object.freeze(value);
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function schemaTypeMatches(value, expectedType) {
+  switch (expectedType) {
+    case "array":
+      return Array.isArray(value);
+    case "boolean":
+      return typeof value === "boolean";
+    case "integer":
+      return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value);
+    case "null":
+      return value === null;
+    case "number":
+      return typeof value === "number" && Number.isFinite(value);
+    case "object":
+      return isPlainObject(value);
+    case "string":
+      return typeof value === "string";
+    default:
+      return false;
+  }
+}
+
+function sameJsonValue(left, right) {
+  if (Object.is(left, right)) return true;
+  if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
+
+function addSchemaError(context, code, path, message) {
+  context.invalid = true;
+  if (context.errors.length >= MAX_VALIDATION_ERRORS) return;
+  context.errors.push({ code, path, message });
+}
+
+function validateSchemaValue(value, schema, path, context, depth = 0) {
+  context.nodes += 1;
+  if (context.nodes > MAX_VALIDATION_NODES || depth > 32) {
+    addSchemaError(context, "SCHEMA_VALIDATION_LIMIT", path, "exceeded the bounded schema-validation limit");
+    return;
+  }
+  if (!isPlainObject(schema)) {
+    addSchemaError(context, "TOOL_SCHEMA_INVALID", path, "has no valid JSON schema");
+    return;
+  }
+
+  if (Object.hasOwn(schema, "const") && !sameJsonValue(value, schema.const)) {
+    addSchemaError(context, "ARGUMENT_CONST_MISMATCH", path, "does not match the required constant");
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => sameJsonValue(value, candidate))) {
+    addSchemaError(context, "ARGUMENT_ENUM_MISMATCH", path, "is not one of the allowed values");
+  }
+
+  const expectedTypes = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : [];
+  if (expectedTypes.length > 0 && !expectedTypes.some((expectedType) => schemaTypeMatches(value, expectedType))) {
+    addSchemaError(context, "ARGUMENT_WRONG_TYPE", path, `must be ${expectedTypes.join(" or ")}`);
+    return;
+  }
+
+  if (typeof value === "string") {
+    if (Number.isInteger(schema.minLength) && value.length < schema.minLength) {
+      addSchemaError(context, "ARGUMENT_STRING_TOO_SHORT", path, `must contain at least ${schema.minLength} characters`);
+    }
+    if (Number.isInteger(schema.maxLength) && value.length > schema.maxLength) {
+      addSchemaError(context, "ARGUMENT_STRING_TOO_LONG", path, `must contain at most ${schema.maxLength} characters`);
+    }
+    if (typeof schema.pattern === "string") {
+      try {
+        if (!new RegExp(schema.pattern).test(value)) {
+          addSchemaError(context, "ARGUMENT_PATTERN_MISMATCH", path, "does not match the required pattern");
+        }
+      } catch {
+        addSchemaError(context, "TOOL_SCHEMA_INVALID", path, "uses an invalid pattern");
+      }
+    }
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (typeof schema.minimum === "number" && value < schema.minimum) {
+      addSchemaError(context, "ARGUMENT_NUMBER_TOO_SMALL", path, `must be at least ${schema.minimum}`);
+    }
+    if (typeof schema.maximum === "number" && value > schema.maximum) {
+      addSchemaError(context, "ARGUMENT_NUMBER_TOO_LARGE", path, `must be at most ${schema.maximum}`);
+    }
+  }
+
+  if (Array.isArray(value)) {
+    if (Number.isInteger(schema.minItems) && value.length < schema.minItems) {
+      addSchemaError(context, "ARGUMENT_ARRAY_TOO_SHORT", path, `must contain at least ${schema.minItems} items`);
+    }
+    if (Number.isInteger(schema.maxItems) && value.length > schema.maxItems) {
+      addSchemaError(context, "ARGUMENT_ARRAY_TOO_LONG", path, `must contain at most ${schema.maxItems} items`);
+    }
+    if (isPlainObject(schema.items)) {
+      for (let index = 0; index < value.length; index += 1) {
+        validateSchemaValue(value[index], schema.items, `${path}[${index}]`, context, depth + 1);
+        if (context.nodes > MAX_VALIDATION_NODES) break;
+      }
+    }
+  }
+
+  if (!isPlainObject(value)) return;
+  const properties = isPlainObject(schema.properties) ? schema.properties : {};
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  for (const property of required) {
+    if (typeof property === "string" && !Object.hasOwn(value, property)) {
+      addSchemaError(context, "ARGUMENT_REQUIRED_PROPERTY_MISSING", `${path}.${property}`, "is required");
+    }
+  }
+  for (const [property, childValue] of Object.entries(value)) {
+    if (Object.hasOwn(properties, property)) {
+      validateSchemaValue(childValue, properties[property], `${path}.${property}`, context, depth + 1);
+      continue;
+    }
+    if (schema.additionalProperties === false) {
+      addSchemaError(context, "ARGUMENT_ADDITIONAL_PROPERTY", path, "contains an additional property that is not allowed");
+    } else if (isPlainObject(schema.additionalProperties)) {
+      validateSchemaValue(childValue, schema.additionalProperties, `${path}.*`, context, depth + 1);
+    }
+  }
+}
+
+function batchReason(code) {
+  switch (code) {
+    case "TOOL_CONTRACT_MISSING":
+      return "The model response had no authenticated per-turn tool contract and was not dispatched.";
+    case "TOOL_CALL_BATCH_INVALID":
+      return "The model returned an invalid tool-call batch and none of the calls were dispatched.";
+    case "TOO_MANY_TOOL_CALLS":
+      return "The model returned more than one tool call even though parallel tool calls are disabled; none were dispatched.";
+    case "TOOL_CALL_ID_EMPTY":
+    case "TOOL_CALL_ID_DUPLICATE":
+      return "The model returned invalid tool-call identifiers and none of the calls were dispatched.";
+    case "TOOL_NOT_OFFERED":
+      return "The model requested a tool that was not offered for this turn and it was not dispatched.";
+    case "TOOL_ARGUMENTS_INVALID_JSON":
+      return "The model returned tool arguments that were not valid JSON and they were not dispatched.";
+    case "TOOL_ARGUMENTS_SCHEMA_INVALID":
+      return "The model returned tool arguments that did not match the offered schema and they were not dispatched.";
+    default:
+      return "The model returned an invalid tool call and it was not dispatched.";
+  }
+}
+
+export function createToolContract(tools = [], { trustedMockDryRun = false } = {}) {
+  if (!Array.isArray(tools)) throw new TypeError("Tool contract descriptors must be an array.");
+  const descriptors = deepFreeze(cloneValue(tools));
+  const names = new Set();
+  for (const descriptor of descriptors) {
+    const name = descriptor?.type === "function" ? descriptor.function?.name : "";
+    if (!name || names.has(name)) throw new TypeError("Tool contract descriptors require unique function names.");
+    names.add(name);
+  }
+  const contract = { tools: descriptors };
+  Object.defineProperty(contract, contractMarker, { value: true });
+  Object.defineProperty(contract, trustedMockDryRunMarker, { value: trustedMockDryRun === true });
+  return Object.freeze(contract);
+}
+
+export function attachToolContract(response, tools = [], options = {}) {
+  if (!response || typeof response !== "object") return response;
+  responseContracts.set(response, createToolContract(tools, options));
+  return response;
+}
+
+export function toolContractFromResponse(response) {
+  if (!response || typeof response !== "object") return null;
+  return responseContracts.get(response) || null;
+}
+
+export function validateToolCallBatch(toolCalls, contract, { maxToolCalls = 1 } = {}) {
+  const errors = [];
+  const addError = (code, callIndex, message) => {
+    if (errors.length < MAX_VALIDATION_ERRORS) errors.push({ code, callIndex, message });
+  };
+
+  if (!contract || contract[contractMarker] !== true || !Array.isArray(contract.tools)) {
+    addError("TOOL_CONTRACT_MISSING", -1, "No trusted per-turn tool contract was attached to the model response.");
+  }
+  if (!Array.isArray(toolCalls)) {
+    addError("TOOL_CALL_BATCH_INVALID", -1, "tool_calls must be an array.");
+  }
+
+  const calls = Array.isArray(toolCalls) ? toolCalls : [];
+  if (calls.length > Math.max(1, Number(maxToolCalls) || 1)) {
+    addError("TOO_MANY_TOOL_CALLS", -1, "Only one tool call is permitted per model turn.");
+  }
+
+  const ids = new Set();
+  const parsedCalls = [];
+  for (let index = 0; index < calls.length; index += 1) {
+    const call = calls[index];
+    const id = typeof call?.id === "string" ? call.id.trim() : "";
+    if (!id) {
+      addError("TOOL_CALL_ID_EMPTY", index, "Tool call id must be a nonempty string.");
+    } else if (ids.has(id)) {
+      addError("TOOL_CALL_ID_DUPLICATE", index, "Tool call ids must be unique within a turn.");
+    } else {
+      ids.add(id);
+    }
+    if (call?.type !== "function" || !isPlainObject(call?.function)) {
+      addError("TOOL_CALL_INVALID", index, "Tool call must use the function call shape.");
+      continue;
+    }
+
+    const name = typeof call.function.name === "string" ? call.function.name : "";
+    const descriptor = contract?.[contractMarker] === true
+      ? contract.tools.find((candidate) => candidate?.type === "function" && candidate.function?.name === name)
+      : null;
+    if (!name || !descriptor) {
+      addError("TOOL_NOT_OFFERED", index, "Tool name must exactly match a tool offered for this turn.");
+      continue;
+    }
+
+    if (typeof call.function.arguments !== "string") {
+      addError("TOOL_ARGUMENTS_INVALID_JSON", index, "Tool arguments must be a JSON string.");
+      continue;
+    }
+    let args;
+    try {
+      args = JSON.parse(call.function.arguments);
+    } catch {
+      addError("TOOL_ARGUMENTS_INVALID_JSON", index, "Tool arguments must contain valid JSON.");
+      continue;
+    }
+
+    let schemaArgs = args;
+    if (
+      contract?.[trustedMockDryRunMarker] === true &&
+      TRUSTED_MOCK_DRY_RUN_TOOLS.has(name) &&
+      isPlainObject(args) &&
+      Object.hasOwn(args, "dryRun")
+    ) {
+      if (args.dryRun !== true) {
+        addError("TRUSTED_MOCK_ARGUMENT_INVALID", index, "The trusted mock dry-run marker must be true.");
+        continue;
+      }
+      schemaArgs = { ...args };
+      delete schemaArgs.dryRun;
+    }
+
+    const schemaContext = { errors: [], invalid: false, nodes: 0 };
+    validateSchemaValue(schemaArgs, descriptor.function?.parameters, "$", schemaContext);
+    if (schemaContext.invalid) {
+      addError("TOOL_ARGUMENTS_SCHEMA_INVALID", index, "Tool arguments did not match the offered schema.");
+      for (const schemaError of schemaContext.errors) {
+        if (errors.length >= MAX_VALIDATION_ERRORS) break;
+        errors.push({ ...schemaError, callIndex: index });
+      }
+      continue;
+    }
+    parsedCalls.push({ id, name, args, descriptor });
+  }
+
+  if (errors.length > 0) {
+    const code = errors[0].code;
+    return {
+      ok: false,
+      category: "tool-contract-violation",
+      code,
+      reason: batchReason(code),
+      errors,
+    };
+  }
+  return { ok: true, calls: parsedCalls };
+}

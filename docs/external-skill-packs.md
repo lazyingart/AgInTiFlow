@@ -6,7 +6,7 @@ them into AgInTiFlow's built-in `skills/` directory.
 
 ## Scientific Agent Skills
 
-When `/home/lachlan/ProjectsLFS/Agent/scientific-agent-skills` exists,
+When a sibling `../scientific-agent-skills` checkout exists,
 AgInTiFlow automatically discovers it as:
 
 - pack: `scientific-agent-skills`

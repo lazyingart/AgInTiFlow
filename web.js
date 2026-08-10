@@ -46,6 +46,21 @@ import { listExternalSkillPacks, listSkills } from "./src/skill-library.js";
 import { platformInfo, platformLabel, platformSetupHints } from "./src/platform.js";
 import { normalizeLanguage } from "./src/i18n.js";
 import { summarizeMcpConfig } from "./src/mcp/config.js";
+import {
+  BASELINE_PROVIDER,
+  ProviderConfigurationError,
+  normalizeProviderId,
+  providerRequiresApiKey,
+  publicProviderContracts,
+  textProviderIds,
+} from "./src/provider-contract.js";
+import {
+  SESSION_RUNTIME_CONFLICT,
+  SessionRuntimeError,
+  resolveSessionRuntime,
+  sessionRuntimeFromState,
+  sessionRuntimeOverrides,
+} from "./src/session-runtime.js";
 import { mcpCliCommand } from "./src/mcp/tool-bridge.js";
 import {
   agentLinkStatus,
@@ -70,6 +85,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const packageDir = __dirname;
+const katexDistDir = path.dirname(fileURLToPath(import.meta.resolve("katex")));
 const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
 const baseDir = path.resolve(process.env.AGINTIFLOW_RUNTIME_DIR || process.cwd());
 const storagePaths = projectPaths(baseDir);
@@ -82,7 +98,19 @@ const app = express();
 let port = Number(process.env.PORT || 3210);
 const host = process.env.HOST || "127.0.0.1";
 const runs = new Map();
+const sessionPreparations = new Set();
 const db = new WebDatabase(baseDir);
+
+async function withSessionPreparation(sessionId, task) {
+  if (sessionPreparations.has(sessionId)) return false;
+  sessionPreparations.add(sessionId);
+  try {
+    await task();
+    return true;
+  } finally {
+    sessionPreparations.delete(sessionId);
+  }
+}
 
 function sessionStore(sessionId) {
   return new SessionStore(sessionsDir, sessionId, {
@@ -502,11 +530,30 @@ function serializeRun(run) {
 function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
   const modelPresets = getModelPresets();
   const modelRoles = getModelRoleDefaults();
-  const providerCandidate = body.provider || current.provider || "deepseek";
-  const provider = ["openai", "openrouter", "deepseek", "qwen", "venice", "mock"].includes(providerCandidate) ? providerCandidate : "deepseek";
+  const providerCandidate = body.provider || current.provider || BASELINE_PROVIDER;
+  const provider = normalizeProviderId(providerCandidate, "");
+  if (!provider) {
+    throw new ProviderConfigurationError({
+      code: "INVALID_PROVIDER",
+      message: `Unknown provider "${String(providerCandidate || "").trim()}".`,
+      action: "Use localllm, deepseek, openai, openrouter, qwen, venice, or mock.",
+      provider: String(providerCandidate || "unknown"),
+    });
+  }
   const routingMode =
     provider === "mock" ? "manual" : normalizeRoutingMode(body.routingMode || current.routingMode || "smart");
   const providerDefaults = getProviderDefaults(provider);
+  const textRoleProvider = (field, candidate, fallback) => {
+    const raw = String(candidate || fallback || "").trim();
+    const normalized = normalizeProviderId(raw, "");
+    if (normalized) return normalized;
+    throw new ProviderConfigurationError({
+      code: "INVALID_PROVIDER",
+      message: `Unknown ${field} provider "${raw}".`,
+      action: "Use localllm, deepseek, openai, openrouter, qwen, venice, or mock.",
+      provider: raw || "unknown",
+    });
+  };
   const parsedMaxSteps = Number(body.maxSteps);
   const parsedWrapperTimeoutMs = Number(body.wrapperTimeoutMs);
   const parsedParallelScoutCount = Number(body.parallelScoutCount);
@@ -540,28 +587,31 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
         : current.provider !== provider
           ? providerDefaults.model
           : current.model || modelPresets.fast.model || providerDefaults.model,
-    routeProvider:
-      typeof body.routeProvider === "string" && body.routeProvider.trim()
-        ? body.routeProvider.trim()
-        : current.routeProvider || modelRoles.route.provider,
+    routeProvider: textRoleProvider(
+      "route",
+      typeof body.routeProvider === "string" && body.routeProvider.trim() ? body.routeProvider : current.routeProvider,
+      modelRoles.route.provider
+    ),
     routeModel:
       typeof body.routeModel === "string" && body.routeModel.trim()
         ? body.routeModel.trim()
         : current.routeModel || modelRoles.route.model,
     routeReasoning: normalizeReasoningPreference("routeReasoning", modelRoles.route.reasoning),
-    mainProvider:
-      typeof body.mainProvider === "string" && body.mainProvider.trim()
-        ? body.mainProvider.trim()
-        : current.mainProvider || modelRoles.main.provider,
+    mainProvider: textRoleProvider(
+      "main",
+      typeof body.mainProvider === "string" && body.mainProvider.trim() ? body.mainProvider : current.mainProvider,
+      modelRoles.main.provider
+    ),
     mainModel:
       typeof body.mainModel === "string" && body.mainModel.trim()
         ? body.mainModel.trim()
         : current.mainModel || modelRoles.main.model,
     mainReasoning: normalizeReasoningPreference("mainReasoning", modelRoles.main.reasoning),
-    spareProvider:
-      typeof body.spareProvider === "string" && body.spareProvider.trim()
-        ? body.spareProvider.trim()
-        : current.spareProvider || modelRoles.spare.provider,
+    spareProvider: textRoleProvider(
+      "spare",
+      typeof body.spareProvider === "string" && body.spareProvider.trim() ? body.spareProvider : current.spareProvider,
+      modelRoles.spare.provider
+    ),
     spareModel:
       typeof body.spareModel === "string" && body.spareModel.trim()
         ? body.spareModel.trim()
@@ -607,7 +657,7 @@ function normalizePreferencePayload(body = {}, current = db.getPreferences()) {
           ? permissionDefaults.allowFileTools
           : current.allowFileTools !== false,
     allowAuxiliaryTools:
-      typeof body.allowAuxiliaryTools === "boolean" ? body.allowAuxiliaryTools : current.allowAuxiliaryTools !== false,
+      typeof body.allowAuxiliaryTools === "boolean" ? body.allowAuxiliaryTools : current.allowAuxiliaryTools === true,
     allowWebSearch:
       typeof body.allowWebSearch === "boolean" ? body.allowWebSearch : current.allowWebSearch !== false,
     allowMcpTools:
@@ -686,6 +736,7 @@ function publicProviderDefault(provider) {
 function publicKeyStatus(projectRoot = baseDir) {
   const status = providerKeyStatus(projectRoot);
   return {
+    localllm: status.localllm,
     openai: status.openai,
     openrouter: status.openrouter,
     deepseek: status.deepseek,
@@ -1080,6 +1131,10 @@ function buildRunConfig(body, overrides = {}) {
       allowShellTool: merged.allowShellTool,
       allowFileTools: merged.allowFileTools,
       allowAuxiliaryTools: merged.allowAuxiliaryTools,
+      allowHostedImagePerception: merged.allowHostedImagePerception,
+      allowHostedWebResearch: merged.allowHostedWebResearch,
+      allowHostedJsonSpecialist: merged.allowHostedJsonSpecialist,
+      allowHostedWritingSpecialist: merged.allowHostedWritingSpecialist,
       allowWebSearch: merged.allowWebSearch,
       allowMcpTools: merged.allowMcpTools,
       allowParallelScouts: merged.allowParallelScouts,
@@ -1106,6 +1161,21 @@ function buildRunConfig(body, overrides = {}) {
   );
 }
 
+function resolveWebContinuationRuntime(state, body = {}) {
+  if (body.expectedRuntimeRevision === undefined || body.expectedRuntimeRevision === null || body.expectedRuntimeRevision === "") {
+    throw new SessionRuntimeError(
+      "SESSION_RUNTIME_REVISION_REQUIRED",
+      "expectedRuntimeRevision is required when continuing a saved session. Reload the session and retry."
+    );
+  }
+  return resolveSessionRuntime({
+    state,
+    incomingConfig: {},
+    runtimePatch: Object.prototype.hasOwnProperty.call(body, "runtimePatch") ? body.runtimePatch : undefined,
+    expectedRevision: body.expectedRuntimeRevision,
+  });
+}
+
 function parseToolContent(message) {
   try {
     return JSON.parse(message.content);
@@ -1124,8 +1194,8 @@ function deriveSessionRecordFromState(state, existing = null) {
 
   return {
     sessionId: state.sessionId,
-    provider: state.provider || existing?.provider || "deepseek",
-    model: state.model || existing?.model || getProviderDefaults(state.provider || existing?.provider || "deepseek").model,
+    provider: state.provider || existing?.provider || BASELINE_PROVIDER,
+    model: state.model || existing?.model || getProviderDefaults(state.provider || existing?.provider || BASELINE_PROVIDER).model,
     goal: state.goal || existing?.goal || "",
     title: state.title || existing?.title || "",
     commandCwd: state.commandCwd || existing?.commandCwd || baseDir,
@@ -1215,6 +1285,7 @@ async function loadChat(sessionId) {
 
   const inbox = await store.loadInbox().catch(() => []);
   const chat = deriveChatFromState(state, meta);
+  const runtime = state ? sessionRuntimeFromState(state) : null;
   return {
     sessionId,
     goal: state?.goal || meta?.goal || "",
@@ -1222,6 +1293,8 @@ async function loadChat(sessionId) {
     provider: state?.provider || meta?.provider || "",
     model: state?.model || meta?.model || "",
     status: meta?.status || "",
+    runtime,
+    runtimeRevision: runtime?.revision || null,
     inbox,
     chat,
     events: events.slice(-120),
@@ -1468,6 +1541,15 @@ function wireRun(record, config) {
 }
 
 app.use(express.json({ limit: "1mb" }));
+app.use(
+  "/vendor/katex",
+  express.static(katexDistDir, {
+    index: false,
+    setHeaders(response) {
+      response.setHeader("X-Content-Type-Options", "nosniff");
+    },
+  })
+);
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/logos", express.static(path.join(__dirname, "logos")));
 
@@ -1497,6 +1579,7 @@ app.get("/api/config", async (_req, res) => {
       },
     },
     defaults: {
+      localllm: publicProviderDefault("localllm"),
       openai: publicProviderDefault("openai"),
       openrouter: publicProviderDefault("openrouter"),
       deepseek: publicProviderDefault("deepseek"),
@@ -1508,6 +1591,8 @@ app.get("/api/config", async (_req, res) => {
     },
     modelCatalog: PROVIDER_MODEL_CATALOG,
     modelGroups: MODEL_PROVIDER_GROUPS,
+    providerContracts: publicProviderContracts(),
+    textProviders: textProviderIds({ includeMock: true }),
     auxiliaryModelCatalog: AUXILIARY_MODEL_CATALOG,
     modelRoles: getModelRoleDefaults(preferences),
     taskProfiles: listTaskProfiles(),
@@ -2041,21 +2126,23 @@ app.patch("/api/sessions/:sessionId/inbox/:itemId", async (req, res) => {
     return;
   }
 
-  const items = await loaded.store.loadInbox();
-  const index = items.findIndex((item) => item.id === req.params.itemId);
-  if (index < 0) {
+  const mutation = await loaded.store.mutateInbox((items) => {
+    const index = items.findIndex((item) => item.id === req.params.itemId);
+    if (index < 0) return { items, value: null };
+    const item = {
+      ...items[index],
+      content,
+      updatedAt: new Date().toISOString(),
+      editedBy: "web",
+    };
+    items[index] = item;
+    return { items, value: item };
+  });
+  const item = mutation.value;
+  if (!item) {
     res.status(404).json({ error: "Queued message not found. It may already have been consumed by the agent." });
     return;
   }
-
-  const item = {
-    ...items[index],
-    content,
-    updatedAt: new Date().toISOString(),
-    editedBy: "web",
-  };
-  items[index] = item;
-  await loaded.store.saveInbox(items);
   await loaded.store
     .appendEvent("conversation.queued_input_edited", {
       itemId: item.id,
@@ -2079,14 +2166,18 @@ app.delete("/api/sessions/:sessionId/inbox/:itemId", async (req, res) => {
     return;
   }
 
-  const items = await loaded.store.loadInbox();
-  const item = items.find((candidate) => candidate.id === req.params.itemId);
+  const mutation = await loaded.store.mutateInbox((items) => {
+    const item = items.find((candidate) => candidate.id === req.params.itemId);
+    return {
+      items: item ? items.filter((candidate) => candidate.id !== req.params.itemId) : items,
+      value: item || null,
+    };
+  });
+  const item = mutation.value;
   if (!item) {
     res.status(404).json({ error: "Queued message not found. It may already have been consumed by the agent." });
     return;
   }
-
-  await loaded.store.saveInbox(items.filter((candidate) => candidate.id !== req.params.itemId));
   await loaded.store
     .appendEvent("conversation.queued_input_removed", {
       itemId: item.id,
@@ -2185,7 +2276,7 @@ app.post("/api/runs", async (req, res) => {
   const config = buildRunConfig(body);
   db.savePreferences(normalizePreferencePayload(body, db.getPreferences()));
 
-  if (!config.apiKey) {
+  if (providerRequiresApiKey(config.provider) && !config.apiKey) {
     res.status(400).json({ error: `Missing API key for ${config.provider}.` });
     return;
   }
@@ -2193,7 +2284,7 @@ app.post("/api/runs", async (req, res) => {
   const run = createRunRecord(config, goal);
   runs.set(run.sessionId, run);
   wireRun(run, config);
-  res.json({ sessionId: run.sessionId });
+  res.json({ sessionId: run.sessionId, runtimeRevision: 1 });
 });
 
 app.post("/api/sessions/:sessionId/messages", async (req, res) => {
@@ -2234,45 +2325,59 @@ app.post("/api/sessions/:sessionId/messages", async (req, res) => {
     return;
   }
 
-  try {
-    await ensureNotRunning(sessionId);
-  } catch (error) {
-    res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
-    return;
-  }
+  const prepared = await withSessionPreparation(sessionId, async () => {
+    try {
+      await ensureNotRunning(sessionId);
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
 
-  const meta = db.getSession(sessionId);
-  if (!meta) {
-    res.status(404).json({ error: "Session not found." });
-    return;
-  }
+    const meta = db.getSession(sessionId);
+    if (!meta) {
+      res.status(404).json({ error: "Session not found." });
+      return;
+    }
 
-  const body = {
-    ...db.getPreferences(),
-    ...req.body,
-    goal: content,
-  };
+    const store = sessionStore(sessionId);
+    const state = await store.loadState();
+    if (!state) {
+      res.status(404).json({ error: "Saved session state was not found." });
+      return;
+    }
 
-  const config = buildRunConfig(body, {
-    resume: sessionId,
-    sessionId,
-    provider: body.provider || meta.provider,
-    model: body.model || meta.model,
+    const runtime = resolveWebContinuationRuntime(state, req.body || {});
+    const runtimeOverrides = sessionRuntimeOverrides(runtime.snapshot);
+    const body = { goal: content };
+    const config = buildRunConfig(body, {
+      ...runtimeOverrides,
+      resume: sessionId,
+      sessionId,
+    });
+    config.expectedRuntimeRevision = req.body.expectedRuntimeRevision;
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "runtimePatch")) {
+      config.runtimePatch = req.body.runtimePatch;
+    }
+
+    if (providerRequiresApiKey(config.provider) && !config.apiKey) {
+      res.status(400).json({ error: `Missing API key for ${config.provider}.` });
+      return;
+    }
+
+    const existing = runs.get(sessionId);
+    if (existing?.status === "running") {
+      res.status(409).json({ error: "Session became active while the continuation was being prepared." });
+      return;
+    }
+    const stored = existing || (await loadStoredRun(sessionId));
+    const run = createRunRecord(config, content, stored?.logs || []);
+    runs.set(sessionId, run);
+    wireRun(run, config);
+    res.json({ sessionId, runtimeRevision: runtime.snapshot.revision });
   });
-
-  if (!config.apiKey) {
-    res.status(400).json({ error: `Missing API key for ${config.provider}.` });
-    return;
+  if (!prepared && !res.headersSent) {
+    res.status(409).json({ error: "Another continuation is already being prepared for this session." });
   }
-
-  db.savePreferences(normalizePreferencePayload(body, db.getPreferences()));
-
-  const existing = runs.get(sessionId);
-  const stored = existing || (await loadStoredRun(sessionId));
-  const run = createRunRecord(config, content, stored?.logs || []);
-  runs.set(sessionId, run);
-  wireRun(run, config);
-  res.json({ sessionId });
 });
 
 app.post("/api/sessions/:sessionId/approve-permission", async (req, res) => {
@@ -2288,86 +2393,104 @@ app.post("/api/sessions/:sessionId/approve-permission", async (req, res) => {
     return;
   }
 
-  try {
-    await ensureNotRunning(sessionId);
-  } catch (error) {
-    res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
-    return;
-  }
+  const prepared = await withSessionPreparation(sessionId, async () => {
+    try {
+      await ensureNotRunning(sessionId);
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
 
-  const meta = db.getSession(sessionId);
-  if (!meta) {
-    res.status(404).json({ error: "Session not found." });
-    return;
-  }
+    const meta = db.getSession(sessionId);
+    if (!meta) {
+      res.status(404).json({ error: "Session not found." });
+      return;
+    }
 
-  const advice = await latestPermissionAdvice(sessionId);
-  if (!advice) {
-    res.status(404).json({ error: "No pending permission advice found for this session." });
-    return;
-  }
+    const advice = await latestPermissionAdvice(sessionId);
+    if (!advice) {
+      res.status(404).json({ error: "No pending permission advice found for this session." });
+      return;
+    }
 
-  const store = sessionStore(sessionId);
-  if (action === "no") {
-    await store.appendEvent("permission.approval_declined", {
-      source: "web",
-      category: advice.category || "",
-    });
-    const existing = runs.get(sessionId);
-    if (existing) {
-      existing.logs.push({
-        at: new Date().toISOString(),
-        kind: "event",
-        message: "permission.approval_declined",
-        data: { source: "web", category: advice.category || "" },
+    const store = sessionStore(sessionId);
+    if (action === "no") {
+      await store.appendEvent("permission.approval_declined", {
+        source: "web",
+        category: advice.category || "",
       });
+      const existing = runs.get(sessionId);
+      if (existing) {
+        existing.logs.push({
+          at: new Date().toISOString(),
+          kind: "event",
+          message: "permission.approval_declined",
+          data: { source: "web", category: advice.category || "" },
+        });
+      }
+      res.json({ ok: true, sessionId, action });
+      return;
     }
-    res.json({ ok: true, sessionId, action });
-    return;
-  }
 
-  const targetMode = normalizePermissionMode(req.body?.permissionMode || permissionModeForApprovalCategory(advice.category || ""));
-  const preferences = normalizePreferencePayload(
-    {
-      ...db.getPreferences(),
-      ...req.body,
+    const targetMode = normalizePermissionMode(req.body?.permissionMode || permissionModeForApprovalCategory(advice.category || ""));
+    const permissionPatch = applyPermissionMode({}, targetMode, { override: true });
+    const state = await store.loadState();
+    if (!state) {
+      res.status(404).json({ error: "Saved session state was not found." });
+      return;
+    }
+    const runtime = resolveWebContinuationRuntime(state, {
+      expectedRuntimeRevision: req.body?.expectedRuntimeRevision,
+      runtimePatch: permissionPatch,
+    });
+    const goal = permissionApprovalPrompt(action, advice, meta.goal);
+    const config = buildRunConfig(
+      { goal },
+      {
+        ...sessionRuntimeOverrides(runtime.snapshot),
+        resume: sessionId,
+        sessionId,
+      }
+    );
+    config.expectedRuntimeRevision = req.body.expectedRuntimeRevision;
+    config.runtimePatch = permissionPatch;
+
+    if (action === "always") {
+      const preferences = normalizePreferencePayload(permissionPatch, db.getPreferences());
+      db.savePreferences(preferences);
+    }
+
+    if (providerRequiresApiKey(config.provider) && !config.apiKey) {
+      res.status(400).json({ error: `Missing API key for ${config.provider}.` });
+      return;
+    }
+
+    await store.appendEvent("permission.approval_granted", {
+      source: "web",
+      action,
+      category: advice.category || "",
       permissionMode: targetMode,
-      goal: permissionApprovalPrompt(action, advice, meta.goal),
-    },
-    db.getPreferences()
-  );
-  if (action === "always") db.savePreferences(preferences);
+    });
 
-  const config = buildRunConfig(
-    {
-      ...preferences,
-      goal: permissionApprovalPrompt(action, advice, meta.goal),
-    },
-    {
-      resume: sessionId,
-      sessionId,
-      provider: preferences.provider || meta.provider,
-      model: preferences.model || meta.model,
+    const stored = await loadStoredRun(sessionId);
+    if (runs.get(sessionId)?.status === "running") {
+      res.status(409).json({ error: "Session became active while permission approval was being prepared." });
+      return;
     }
-  );
-
-  if (!config.apiKey) {
-    res.status(400).json({ error: `Missing API key for ${config.provider}.` });
-    return;
-  }
-
-  await store.appendEvent("permission.approval_granted", {
-    source: "web",
-    action,
-    category: advice.category || "",
-    permissionMode: targetMode,
+    const run = createRunRecord(config, config.goal, stored?.logs || []);
+    runs.set(sessionId, run);
+    wireRun(run, config);
+    res.json({
+      ok: true,
+      sessionId,
+      action,
+      permissionMode: targetMode,
+      runtimeRevision: runtime.snapshot.revision,
+    });
   });
-
-  const stored = await loadStoredRun(sessionId);
-  const run = createRunRecord(config, config.goal, stored?.logs || []);
-  runs.set(sessionId, run);
-  wireRun(run, config);
-  res.json({ ok: true, sessionId, action, permissionMode: targetMode });
+  if (!prepared && !res.headersSent) {
+    res.status(409).json({ error: "Another continuation or permission approval is already being prepared for this session." });
+  }
 });
 
 app.get("/api/runs/:sessionId", async (req, res) => {
@@ -2426,6 +2549,25 @@ app.get("/health", (_req, res) => {
     packageDir,
     storageDriver: db.driver || "sqlite",
   });
+});
+
+app.use((error, _req, res, _next) => {
+  if (error instanceof SessionRuntimeError) {
+    res.status(error.code === SESSION_RUNTIME_CONFLICT ? 409 : 400).json({
+      ok: false,
+      name: error.name,
+      code: error.code,
+      error: error.message,
+      details: error.details || {},
+    });
+    return;
+  }
+  if (error instanceof ProviderConfigurationError) {
+    res.status(400).json(error.toJSON());
+    return;
+  }
+  console.error(error);
+  res.status(500).json({ error: "Internal server error." });
 });
 
 await fs.mkdir(sessionsDir, { recursive: true });

@@ -7,8 +7,9 @@ import { deleteSessionIndex, renameSessionIndex, upsertSessionIndex } from "./se
 import { loadDatabaseSync } from "./sqlite.js";
 import { permissionModeDefaults } from "./permission-modes.js";
 import { DEFAULT_SCS_MODE } from "./scs-controller.js";
+import { BASELINE_PROVIDER } from "./provider-contract.js";
 
-const PREFERENCES_SCHEMA_VERSION = 12;
+const PREFERENCES_SCHEMA_VERSION = 16;
 
 function jsonStatePath(dbPath) {
   return dbPath.replace(/\.sqlite$/i, ".json");
@@ -49,7 +50,7 @@ function defaultPreferences(baseDir) {
   return {
     preferencesSchemaVersion: PREFERENCES_SCHEMA_VERSION,
     routingMode: "smart",
-    provider: "deepseek",
+    provider: BASELINE_PROVIDER,
     model: presets.fast.model,
     routeProvider: roles.route.provider,
     routeModel: roles.route.model,
@@ -71,9 +72,9 @@ function defaultPreferences(baseDir) {
     commandCwd: path.resolve(baseDir),
     allowShellTool: true,
     allowFileTools: true,
-    allowAuxiliaryTools: true,
+    allowAuxiliaryTools: false,
     allowWebSearch: true,
-    allowParallelScouts: true,
+    allowParallelScouts: false,
     enableScs: process.env.AGINTI_SCS_MODE || DEFAULT_SCS_MODE,
     dynamicSteps: process.env.AGINTI_DYNAMIC_STEPS || "auto",
     veniceMode: false,
@@ -256,6 +257,45 @@ export class WebDatabase {
           preferences.routeReasoning = preferences.routeReasoning ?? roles.route.reasoning;
           preferences.mainReasoning = preferences.mainReasoning ?? roles.main.reasoning;
         }
+        if ((parsed.preferencesSchemaVersion || 1) < 13 && !/^(0|false|off|no)$/i.test(String(process.env.AGINTI_LOCAL_FIRST ?? "1"))) {
+          const roles = getModelRoleDefaults();
+          const oldDeepSeekDefaults =
+            (parsed.provider || preferences.provider) === "deepseek" &&
+            (parsed.routeProvider || preferences.routeProvider) === "deepseek" &&
+            (parsed.mainProvider || preferences.mainProvider) === "deepseek" &&
+            (!parsed.model || parsed.model === "deepseek-v4-flash") &&
+            (!parsed.routeModel || parsed.routeModel === "deepseek-v4-flash") &&
+            (!parsed.mainModel || parsed.mainModel === "deepseek-v4-pro");
+          if (oldDeepSeekDefaults && !process.env.AGENT_PROVIDER) {
+            preferences.provider = BASELINE_PROVIDER;
+            preferences.model = roles.route.model;
+            preferences.routeProvider = roles.route.provider;
+            preferences.routeModel = roles.route.model;
+            preferences.routeReasoning = roles.route.reasoning;
+            preferences.mainProvider = roles.main.provider;
+            preferences.mainModel = roles.main.model;
+            preferences.mainReasoning = roles.main.reasoning;
+          }
+        }
+        if ((parsed.preferencesSchemaVersion || 1) < 14 && preferences.provider === BASELINE_PROVIDER) {
+          preferences.allowParallelScouts = false;
+        }
+        if (
+          (parsed.preferencesSchemaVersion || 1) < 15 &&
+          preferences.provider === BASELINE_PROVIDER &&
+          (parsed.spareProvider || "openai") === "openai" &&
+          (!parsed.spareModel || parsed.spareModel === "gpt-5.4")
+        ) {
+          const roles = getModelRoleDefaults();
+          preferences.spareProvider = roles.spare.provider;
+          preferences.spareModel = roles.spare.model;
+          preferences.spareReasoning = roles.spare.reasoning;
+        }
+        if ((parsed.preferencesSchemaVersion || 1) < 16) {
+          // Hosted image generation is opt-in. Older schemas stored the former
+          // implicit-on default and cannot distinguish it from user intent.
+          preferences.allowAuxiliaryTools = false;
+        }
         this.savePreferences(preferences);
       }
       if (
@@ -264,10 +304,11 @@ export class WebDatabase {
         preferences.provider !== "venice" &&
         (preferences.routeProvider === "venice" || preferences.mainProvider === "venice")
       ) {
-        preferences.routeProvider = "deepseek";
-        preferences.routeModel = "deepseek-v4-flash";
-        preferences.mainProvider = "deepseek";
-        preferences.mainModel = "deepseek-v4-pro";
+        const roles = getModelRoleDefaults();
+        preferences.routeProvider = roles.route.provider;
+        preferences.routeModel = roles.route.model;
+        preferences.mainProvider = roles.main.provider;
+        preferences.mainModel = roles.main.model;
         this.savePreferences(preferences);
       }
       return preferences;

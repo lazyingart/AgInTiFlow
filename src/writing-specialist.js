@@ -1,6 +1,10 @@
 import crypto from "node:crypto";
 import { createChatCompletion, createClient } from "./model-client.js";
-import { getProviderDefaults } from "./model-routing.js";
+import {
+  normalizeProviderId,
+  providerRequiresApiKey,
+  resolveProviderDefaults,
+} from "./provider-contract.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
 
 const CREATIVE_KINDS = new Set(["novel", "story", "scene", "screenplay", "script", "poem", "fiction"]);
@@ -113,36 +117,87 @@ function languageEnvSuffix(language = "") {
   return "";
 }
 
-function hasProviderKey(provider = "") {
-  const normalized = String(provider || "").toLowerCase();
-  if (normalized === "openai") return Boolean(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY);
-  if (normalized === "deepseek") return Boolean(process.env.DEEPSEEK_API_KEY || process.env.LLM_API_KEY);
-  if (normalized === "openrouter") return Boolean(process.env.OPENROUTER_API_KEY);
-  if (normalized === "qwen") return Boolean(process.env.QWEN_API_KEY);
-  if (normalized === "venice") return Boolean(process.env.VENICE_API_KEY);
-  if (normalized === "mock") return true;
-  return false;
+function normalizeKnownProvider(value = "", source = "writing specialist") {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const normalized = normalizeProviderId(raw, "");
+  if (!normalized) {
+    throw new Error(`Unknown ${source} provider "${compact(raw, 120)}".`);
+  }
+  return normalized;
+}
+
+function writerProviderEnvironment() {
+  return Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("LLM_")));
+}
+
+function writerProviderDefaults(provider = "localllm") {
+  const normalized = normalizeKnownProvider(provider, "writing specialist");
+  const defaults = resolveProviderDefaults(normalized, writerProviderEnvironment());
+  if (normalized === "deepseek") {
+    return {
+      ...defaults,
+      model: process.env.DEEPSEEK_PRO_MODEL || "deepseek-v4-pro",
+    };
+  }
+  if (normalized === "openai") {
+    return {
+      ...defaults,
+      model: process.env.OPENAI_DEFAULT_MODEL || "gpt-5.4",
+    };
+  }
+  return defaults;
+}
+
+function providerCredentialName(provider = "") {
+  if (provider === "openai") return "OPENAI_API_KEY";
+  if (provider === "deepseek") return "DEEPSEEK_API_KEY";
+  if (provider === "openrouter") return "OPENROUTER_API_KEY";
+  if (provider === "qwen") return "QWEN_API_KEY";
+  if (provider === "venice") return "VENICE_API_KEY";
+  return "a provider-specific API key";
+}
+
+function assertWritingProviderPermission(provider, sessionProvider, config = {}) {
+  if (provider === sessionProvider || config.allowHostedWritingSpecialist === true) return;
+  const error = new Error(
+    `Writing specialist provider override ${sessionProvider} -> ${provider} is disabled. Select ${provider} as the active provider or explicitly enable allowHostedWritingSpecialist; ambient credentials and model-supplied provider arguments never authorize a provider change.`
+  );
+  error.name = "HostedToolPermissionError";
+  error.code = "HOSTED_TOOL_PROVIDER_NOT_ALLOWED";
+  throw error;
 }
 
 export function languageWriterDefaults(request = {}, config = {}) {
   const language = likelyLanguageFromText(request);
   const suffix = languageEnvSuffix(language);
-  const envProvider = String((suffix && process.env[`AGINTI_WRITING_PROVIDER_${suffix}`]) || process.env.AGINTI_WRITING_PROVIDER || "").trim();
+  const requestProviderRaw = String(request.provider || "").trim();
+  const envProviderRaw = String((suffix && process.env[`AGINTI_WRITING_PROVIDER_${suffix}`]) || process.env.AGINTI_WRITING_PROVIDER || "").trim();
   const envModel = String((suffix && process.env[`AGINTI_WRITING_MODEL_${suffix}`]) || process.env.AGINTI_WRITING_MODEL || "").trim();
-  if (envProvider || envModel) {
-    return { provider: envProvider, model: envModel, language, reason: "writer-env" };
+  const sessionProvider = normalizeKnownProvider(config.provider || "localllm", "active session");
+  const requestProvider = normalizeKnownProvider(requestProviderRaw, "requested writing specialist");
+  const envProvider = normalizeKnownProvider(envProviderRaw, "configured writing specialist");
+  const provider = requestProvider || envProvider || sessionProvider;
+  assertWritingProviderPermission(provider, sessionProvider, config);
+  const defaults = writerProviderDefaults(provider);
+  const sessionCredential = provider === sessionProvider ? String(config.apiKey || "").trim() : "";
+  if (providerRequiresApiKey(provider) && !sessionCredential && !defaults.apiKey) {
+    throw new Error(
+      `Writing provider "${provider}" requires ${providerCredentialName(provider)}; generic LLM_* credentials are not used for writer routing.`
+    );
   }
-  if (String(language || "").toLowerCase().startsWith("zh") && hasProviderKey("deepseek")) {
-    return { provider: "deepseek", model: process.env.DEEPSEEK_PRO_MODEL || "deepseek-v4-pro", language, reason: "zh-deepseek-default" };
-  }
-  if (String(language || "").toLowerCase().startsWith("en") && hasProviderKey("openai")) {
-    return { provider: "openai", model: process.env.OPENAI_DEFAULT_MODEL || process.env.LLM_MODEL || "gpt-5.4", language, reason: "en-openai-default" };
-  }
+  const reason = requestProvider ? "request-provider" : envProvider || envModel ? "writer-env" : "session-default";
   return {
-    provider: config.provider || "",
-    model: config.model || "",
+    provider,
+    model:
+      String(request.model || "").trim() ||
+      envModel ||
+      (provider === sessionProvider ? String(config.model || "").trim() : "") ||
+      defaults.model ||
+      "",
     language,
-    reason: "session-default",
+    reason,
+    sessionProvider,
   };
 }
 
@@ -247,29 +302,45 @@ export async function runWritingSpecialist(args = {}, config = {}, store = null)
     .update(JSON.stringify(redactValue(request)))
     .digest("hex");
   let result;
-  const writerDefaults = languageWriterDefaults(request, config);
-  let model = request.model || writerDefaults.model || config.model || "";
-  let provider = request.provider || writerDefaults.provider || config.provider || "";
+  let writerDefaults = {
+    language: likelyLanguageFromText(request),
+    reason: "unresolved",
+    sessionProvider: "",
+  };
+  let model = request.model || config.model || "";
+  let provider = request.provider || config.provider || "localllm";
   let rawContent = "";
 
   try {
-    if (config.provider === "mock" || provider === "mock") {
+    writerDefaults = languageWriterDefaults(request, config);
+    model = writerDefaults.model;
+    provider = writerDefaults.provider;
+    if (provider === "mock") {
       provider = "mock";
       model = request.model || config.model || "mock-agent";
       result = mockWritingResult(request);
     } else {
-      const providerDefaults = request.provider ? getProviderDefaults(request.provider) : {};
-      const selectedProviderDefaults = provider ? getProviderDefaults(provider) : {};
+      const selectedProviderDefaults = writerProviderDefaults(provider);
+      const retainsSessionProvider = provider === writerDefaults.sessionProvider;
       const writingConfig = {
-        ...config,
-        ...selectedProviderDefaults,
-        ...providerDefaults,
-        provider: provider || config.provider,
-        model: model || providerDefaults.model || selectedProviderDefaults.model || config.model,
+        ...(retainsSessionProvider
+          ? { ...selectedProviderDefaults, ...config }
+          : { ...config, ...selectedProviderDefaults }),
+        provider,
+        model: model || selectedProviderDefaults.model,
+        apiKey: retainsSessionProvider
+          ? config.apiKey || selectedProviderDefaults.apiKey
+          : selectedProviderDefaults.apiKey,
+        baseURL: retainsSessionProvider
+          ? config.baseURL || selectedProviderDefaults.baseURL
+          : selectedProviderDefaults.baseURL,
       };
       model = writingConfig.model;
       provider = writingConfig.provider;
-      const client = createClient(writingConfig);
+      const client =
+        typeof config.writingClientFactory === "function"
+          ? config.writingClientFactory({ ...writingConfig })
+          : createClient(writingConfig);
       const response = await createChatCompletion(
         client,
         {
@@ -325,6 +396,7 @@ export async function runWritingSpecialist(args = {}, config = {}, store = null)
   } catch (error) {
     return {
       ok: false,
+      blocked: error?.code === "HOSTED_TOOL_PROVIDER_NOT_ALLOWED",
       toolName: "writing_specialist",
       provider,
       model,

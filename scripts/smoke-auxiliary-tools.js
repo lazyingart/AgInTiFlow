@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { runAgent } from "../src/agent-runner.js";
 import { generateImage, listAuxiliarySkills } from "../src/auxiliary-tools.js";
 import { resolveRuntimeConfig } from "../src/config.js";
+import { checkToolUse } from "../src/guardrails.js";
 import { providerKeyStatus, setProviderKey } from "../src/project.js";
 import { SessionStore } from "../src/session-store.js";
 
@@ -19,12 +20,17 @@ const originalImageEnv = {
   GRSAI: process.env.GRSAI,
   GRSAI_API_KEY: process.env.GRSAI_API_KEY,
   VENICE_API_KEY: process.env.VENICE_API_KEY,
+  VENICE_API_BASE: process.env.VENICE_API_BASE,
+  VENICE_BASE_URL: process.env.VENICE_BASE_URL,
   AGINTI_AUX_PROVIDER: process.env.AGINTI_AUX_PROVIDER,
 };
+const originalFetch = globalThis.fetch;
 process.env.AGINTIFLOW_HOME = path.join(tempRoot, ".agintiflow-home");
 delete process.env.GRSAI;
 delete process.env.GRSAI_API_KEY;
 delete process.env.VENICE_API_KEY;
+delete process.env.VENICE_API_BASE;
+delete process.env.VENICE_BASE_URL;
 delete process.env.AGINTI_AUX_PROVIDER;
 const runtimeDir = path.join(tempRoot, "runtime");
 const workspace = path.join(tempRoot, "workspace");
@@ -36,7 +42,12 @@ function assert(condition, message) {
 
 try {
   await setProviderKey(workspace, "venice", "test-venice-key");
-  const autoVeniceDryRun = await generateImage(
+  const disabledByDefault = await generateImage(
+    { prompt: "Disabled mode smoke.", outputDir: "artifacts/images/disabled", dryRun: true },
+    { commandCwd: workspace, allowFileTools: true }
+  );
+  assert(disabledByDefault.blocked && disabledByDefault.category === "permission", "generate_image did not require explicit auxiliary enablement");
+  const credentialNeutralDryRun = await generateImage(
     {
       prompt: "A small cyan robot holding a paintbrush, clean bright product illustration.",
       outputDir: "artifacts/images/auto-venice-dry-run",
@@ -46,9 +57,31 @@ try {
     {
       commandCwd: workspace,
       allowFileTools: true,
+      allowAuxiliaryTools: true,
     }
   );
-  assert(autoVeniceDryRun.ok && autoVeniceDryRun.provider === "venice", "generate_image did not auto-select Venice when only Venice image key was available");
+  assert(
+    credentialNeutralDryRun.ok && credentialNeutralDryRun.provider === "grsai",
+    "ambient Venice credentials changed the default image provider"
+  );
+  let missingSelectedProvider = null;
+  try {
+    await generateImage(
+      {
+        provider: "grsai",
+        prompt: "Provider boundary smoke.",
+        outputDir: "artifacts/images/no-provider-failover",
+      },
+      {
+        commandCwd: workspace,
+        allowFileTools: true,
+        allowAuxiliaryTools: true,
+      }
+    );
+  } catch (error) {
+    missingSelectedProvider = error;
+  }
+  assert(/provider failover is disabled/i.test(missingSelectedProvider?.message || ""), "missing GRS AI key did not stop before ambient Venice failover");
   await setProviderKey(workspace, "grsai", "test-grsai-key");
   const keyStatus = providerKeyStatus(workspace);
   assert(keyStatus.grsai, "GRSAI key status was not detected");
@@ -56,6 +89,68 @@ try {
   assert(keyStatus.envVars.grsai.includes("GRSAI"), "GRSAI env var name was not reported");
   assert(listAuxiliarySkills().some((skill) => skill.id === "image_generation"), "image_generation skill missing");
   assert(listAuxiliarySkills().some((skill) => skill.id === "venice_image_generation"), "venice_image_generation skill missing");
+
+  const attackerHost = "https://credential-collector.invalid/provider";
+  const interceptedRequests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    interceptedRequests.push({ url: String(url), authorization: options?.headers?.Authorization || "" });
+    throw new Error("intercepted fetch should not be reached by a refused host override");
+  };
+  try {
+    for (const provider of ["grsai", "venice"]) {
+      const maliciousArgs = {
+        provider,
+        prompt: `Refuse the ${provider} model-supplied host override.`,
+        outputDir: `artifacts/images/${provider}-host-boundary`,
+        host: attackerHost,
+      };
+      const toolGuard = checkToolUse({
+        toolName: "generate_image",
+        args: maliciousArgs,
+        snapshot: {},
+        config: {
+          commandCwd: workspace,
+          allowFileTools: true,
+          allowAuxiliaryTools: true,
+        },
+      });
+      assert(!toolGuard.allowed && /configured .* provider origin/i.test(toolGuard.reason || ""), `${provider} guardrail accepted a model-supplied attacker host`);
+
+      let refused = null;
+      try {
+        await generateImage(maliciousArgs, {
+          commandCwd: workspace,
+          allowFileTools: true,
+          allowAuxiliaryTools: true,
+        });
+      } catch (error) {
+        refused = error;
+      }
+      assert(refused?.code === "AUXILIARY_HOST_OVERRIDE_REFUSED", `${provider} direct image path did not return the typed host refusal`);
+      assert(!String(refused?.stack || refused?.message || "").includes("test-grsai-key"), `${provider} refusal exposed the GRS AI credential`);
+      assert(!String(refused?.stack || refused?.message || "").includes("test-venice-key"), `${provider} refusal exposed the Venice credential`);
+    }
+
+    const textFallbackGuard = checkToolUse({
+      toolName: "generate_image",
+      args: {
+        provider: "grsai",
+        prompt: "Reject a host alias that is absent from the native tool schema.",
+        outputDir: "artifacts/images/text-fallback-host-boundary",
+        baseURL: attackerHost,
+      },
+      snapshot: {},
+      config: {
+        commandCwd: workspace,
+        allowFileTools: true,
+        allowAuxiliaryTools: true,
+      },
+    });
+    assert(!textFallbackGuard.allowed && /not accepted from tool arguments/i.test(textFallbackGuard.reason || ""), "text-fallback endpoint alias bypassed the auxiliary host guardrail");
+    assert(interceptedRequests.length === 0, `refused image hosts reached fetch: ${JSON.stringify(interceptedRequests)}`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 
   const dryRun = await generateImage(
     {
@@ -67,6 +162,7 @@ try {
     {
       commandCwd: workspace,
       allowFileTools: true,
+      allowAuxiliaryTools: true,
     }
   );
   assert(dryRun.ok && dryRun.dryRun, "generate_image dry run failed");
@@ -91,6 +187,7 @@ try {
     {
       commandCwd: workspace,
       allowFileTools: true,
+      allowAuxiliaryTools: true,
     }
   );
   assert(referenceDryRun.ok && /Reference-size matching/i.test(referenceDryRun.geometryNotice || ""), "reference dry run did not report geometry notice");
@@ -109,6 +206,7 @@ try {
     {
       commandCwd: workspace,
       allowFileTools: true,
+      allowAuxiliaryTools: true,
     }
   );
   assert(veniceDryRun.ok && veniceDryRun.provider === "venice", "venice generate_image dry run failed");
@@ -124,6 +222,7 @@ try {
     {
       commandCwd: workspace,
       allowFileTools: true,
+      allowAuxiliaryTools: true,
     }
   );
   assert(svgFallbackDryRun.ok && svgFallbackDryRun.requestedFormat === "svg", "SVG fallback did not record requestedFormat");
@@ -180,6 +279,7 @@ try {
     {
       commandCwd: workspace,
       allowFileTools: true,
+      allowAuxiliaryTools: true,
     }
   );
   assert(blocked.blocked, "generate_image did not block sensitive output path");
@@ -217,9 +317,13 @@ try {
           "venice_key_status",
           "image_skill_listed",
           "venice_image_skill_listed",
+          "image_generation_default_off",
           "generate_image_dry_run",
           "reference_image_manifest_dimensions",
-          "auto_venice_when_grsai_missing",
+          "ambient_key_does_not_select_provider",
+          "missing_selected_provider_does_not_fail_over",
+          "provider_host_override_zero_fetch",
+          "text_fallback_host_alias_refused",
           "venice_generate_image_dry_run",
           "svg_request_png_fallback",
           "direct_image_cli_svg_request_png_fallback",
@@ -237,5 +341,6 @@ try {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
+  globalThis.fetch = originalFetch;
   await fs.rm(tempRoot, { recursive: true, force: true });
 }

@@ -6,15 +6,26 @@ AgInTiFlow treats model choice as a role-based control plane. A provider supplie
 
 | Role | CLI command | Default | Purpose |
 | --- | --- | --- | --- |
-| Route | `/route` | `deepseek/deepseek-v4-flash` | Fast planner, triage, short tasks, and routing decisions. |
-| Main | `/model` or `/main` | `deepseek/deepseek-v4-pro` | Complex executor for coding, debugging, writing, and long tasks. |
-| Spare | `/spare` | `openai/gpt-5.4` with `medium` reasoning | Optional fallback or cross-check model. |
+| Route | `/route` | `localllm/localllm-fast` | Local fast planner, triage, short tasks, and routing decisions. |
+| Main | `/model` or `/main` | `localllm/localllm-deep` | Local complex executor for coding, debugging, writing, and long tasks. |
+| Spare | `/spare` | `localllm/localllm-deep` with `medium` reasoning | Local cross-check lane; hosted spares require explicit selection. |
 | Wrapper | `/wrapper` | `codex gpt-5.5 medium` | External coding assistant when wrapper tools are enabled. |
-| Auxiliary | `/auxiliary` | `grsai/nano-banana-2` | Image/media tools; Venice image models are optional. |
+| Auxiliary | `/auxiliary` | `grsai/nano-banana-2` (tool off) | Explicitly enabled image/media tools; Venice image models are optional. |
 
-Smart routing still works as before: normal work goes to the route model, and complex work goes to the main model. Manual provider/model selection remains available for one-off runs.
+Smart routing sends normal work to the LocalLLM route model and complex work to the LocalLLM main model. Manual hosted provider/model selection remains available for explicit one-off upgrades. A local error fails closed instead of changing providers.
 
-Long writing tasks use an additional tool boundary: `writing_specialist`. The main model still plans the run, manages files, formats Markdown/LaTeX/Final Draft output, compiles/checks artifacts, and finishes. The specialist gets only the writing brief, canon, style guide, prior draft, target, audience, constraints, and format intent, then returns prose plus a formatter handoff. This avoids polluting fiction/manuscript drafting with shell, browser, safety, and agent-runtime context. Set `AGINTI_WRITING_PROVIDER` or `AGINTI_WRITING_MODEL` to route this isolated writer separately from the main agent.
+The local tier policy uses the workstation's installed aliases without treating model presence as permission to load a heavy model:
+
+| Alias | Installed role | Automatic policy |
+| --- | --- | --- |
+| `localllm-fast` | Qwen3 8B Q4 routing and bounded work | Default for simple work. |
+| `localllm-deep` | Qwen3 30B-A3B Q4 substantive coding/agent work | Default for complex work. |
+| `localllm-max` | Qwen3 30B-A3B Q8 highest-fidelity local text/code | Explicit selection; automatic use additionally requires opt-in, authenticated availability, fresh resource readiness, and no shared-workstation pressure. |
+| `localllm-vision-xl` | Qwen3-VL 30B-A3B Q4 image understanding | The automatic policy requires a trusted image-input signal plus confirmed capability. The shipped CLI/web currently use readiness-checked `read_image` or explicit selection; prompt keywords alone do not activate it. |
+
+Installed aliases are not loaded during routing. Automatic Max is off by default; set `AGINTI_LOCALLLM_ALLOW_AUTO_MAX=true` to opt in. An opted-in high-complexity run starts on Deep, confirms the Max alias through authenticated `/v1/models`, and only then samples current resources. Unknown or pressured resource state stays on Deep. Explicit Max also cannot bypass the live gate: immediately before client creation, each new or resumed run rechecks at least 24 GiB available RAM, swap use at or below 75%, and 40 GiB aggregate free NVIDIA memory. A blocked explicit gate creates no model client and performs no inference.
+
+Long writing tasks use an additional tool boundary: `writing_specialist`. The main model still plans the run, manages files, formats Markdown/LaTeX/Final Draft output, compiles/checks artifacts, and finishes. The specialist gets only the writing brief, canon, style guide, prior draft, target, audience, constraints, and format intent, then returns prose plus a formatter handoff. It follows the active LocalLLM provider by default even when hosted keys exist. Cross-provider writing requires both an explicit target (`AGINTI_WRITING_PROVIDER` or a per-run provider override) and `AGINTI_ALLOW_HOSTED_WRITING_SPECIALIST=true` (or the equivalent per-run permission flag); language detection and ambient credentials never grant that permission.
 
 ## CLI Commands
 
@@ -23,8 +34,8 @@ aginti models
 aginti --list-models
 aginti --list-routes
 
-# one-shot overrides
-aginti --route-model deepseek-v4-flash --main-model deepseek-v4-pro "fix this project"
+# local-first defaults and one-shot overrides
+aginti --route-model localllm-fast --main-model localllm-deep "fix this project"
 aginti --provider openrouter --model openrouter/auto --routing manual "try a gateway route"
 aginti --provider openrouter --model anthropic/claude-sonnet-4.6 --routing manual "draft a design review"
 aginti --provider venice --model venice-uncensored-1-2 --routing manual "draft a note"
@@ -43,6 +54,8 @@ Interactive commands:
 /route
 /model
 /spare
+/route localllm/localllm-fast
+/model localllm/localllm-deep
 /route deepseek/deepseek-v4-flash
 /model deepseek/deepseek-v4-pro
 /spare openai/gpt-5.4 medium
@@ -62,6 +75,7 @@ Provider families:
 
 | Family | Models |
 | --- | --- |
+| LocalLLM | `localllm-fast`, `localllm-deep`, `localllm-max`, `localllm-vision-xl`; Max and Vision retain the gates above |
 | DeepSeek | `deepseek-v4-flash`, `deepseek-v4-pro` |
 | Venice | `venice-uncensored-1-2`, `venice-uncensored`, `gemma-4-uncensored` |
 | OpenAI | `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5.2`; each has low/medium/high/xhigh reasoning |
@@ -90,11 +104,11 @@ Disable Venice
 
 For scripts or non-interactive terminals, `/venice` uses Venice 1.2 for both roles. You can also set both roles directly with `/venice 1.2`, `/venice 1.1`, or `/venice gemma`. Use two values to set route and main separately, for example `/venice 1.2 gemma`.
 
-Use `/venice off` to switch back to the DeepSeek defaults:
+Use `/venice off` to switch back to the LocalLLM defaults:
 
 ```text
-/route deepseek/deepseek-v4-flash
-/model deepseek/deepseek-v4-pro
+/route localllm/localllm-fast
+/model localllm/localllm-deep
 ```
 
 It keeps smart routing enabled. If the Venice key is missing, run `/auth venice`.
@@ -103,7 +117,8 @@ It keeps smart routing enabled. If the Venice key is missing, run `/auth venice`
 
 | Bucket | Provider | Typical use |
 | --- | --- | --- |
-| `deepseek` | DeepSeek | Default route/main because V4 Flash and V4 Pro are cheap and strong. |
+| `localllm` | LocalLLM | Default private route/main through the sibling loopback gateway. |
+| `deepseek` | DeepSeek | Explicit hosted route for economical stronger-model work. |
 | `openai` | OpenAI | Spare/frontier checks, Codex-family work, and explicit manual routes. |
 | `openrouter` | OpenRouter | OpenAI-compatible gateway with auto/free/code routers. |
 | `openrouter-openai` | OpenRouter | OpenAI-family models through OpenRouter. |
@@ -132,6 +147,8 @@ It keeps smart routing enabled. If the Venice key is missing, run `/auth venice`
 | Venice Image | `wan-2-7-pro-edit`, `nano-banana-2`, `gpt-image-2`, `grok-imagine-image`, `qwen-image-2-pro`, `bria-bg-remover`, `recraft-v4`, `flux-2-pro`, and related image/edit routes |
 
 ## Keys
+
+The LocalLLM baseline uses `http://127.0.0.1:8008/v1` and the installation's loopback key (`local-dev-key` in the documented local setup). `AGINTI_LOCALLLM_MODEL` or `LOCALLLM_MODEL` is the shared local text override; role-specific `AGINTI_LOCALLLM_ROUTE_MODEL` and `AGINTI_LOCALLLM_MAIN_MODEL` take precedence. Optional `AGINTI_LOCALLLM_MAX_MODEL` and `AGINTI_LOCALLLM_VISION_MODEL` name the gated heavyweight aliases. LocalLLM overrides must remain loopback URLs. Generic `LLM_*` values do not redefine the local provider.
 
 Keys are saved account-wide in `~/.agintiflow/.env` by default. Use `--project` only when the current project needs an override in ignored `.aginti/.env`:
 

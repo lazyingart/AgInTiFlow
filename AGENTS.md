@@ -20,7 +20,7 @@
 - `npm run smoke:coding-tools`: verify mock workspace writes, patches, and path guardrail blocks.
 - `npm pack --dry-run`: inspect npm package contents before release.
 
-Use `AGENT_PROVIDER=openai`, `AGENT_PROVIDER=deepseek`, or `AGENT_PROVIDER=mock` when running locally.
+Use `AGENT_PROVIDER=localllm` for the default loopback LocalLLM runtime. Select `AGENT_PROVIDER=openai`, `AGENT_PROVIDER=deepseek`, or another hosted provider only as an explicit upgrade; saved or ambient hosted keys authenticate that choice but never select it or create a fallback. Use `AGENT_PROVIDER=mock` for deterministic offline tests.
 
 ## Coding Style & Naming Conventions
 

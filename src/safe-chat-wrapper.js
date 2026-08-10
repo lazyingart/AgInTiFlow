@@ -1,9 +1,15 @@
 import OpenAI from "openai";
+import {
+  BASELINE_PROVIDER,
+  isLoopbackBaseURL,
+  normalizeProviderBaseURL,
+  normalizeProviderId,
+  providerRequiresApiKey,
+  resolveProviderDefaults,
+} from "./provider-contract.js";
 import { hasSensitiveText, redactSensitiveText } from "./redaction.js";
 
 const FEATURE = "safe-chat";
-const DEFAULT_BASE_URL = "https://api.deepseek.com/v1";
-const DEFAULT_MODEL = "deepseek-v4-flash";
 
 const DEFAULT_LIMITS = Object.freeze({
   promptChars: 4000,
@@ -106,22 +112,30 @@ function boundedInteger(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGE
   return Math.min(Math.max(Math.floor(parsed), min), max);
 }
 
-function safeBaseUrl(value) {
-  const raw = String(value || DEFAULT_BASE_URL).trim();
+function safeProvider(env = process.env) {
+  return normalizeProviderId(env.AGINTI_SAFE_CHAT_PROVIDER || env.AGENT_PROVIDER || BASELINE_PROVIDER);
+}
+
+function legacyProviderEnv(env, provider, suffix) {
+  if (provider === "deepseek") return env[`AGINTI_SAFE_CHAT_DEEPSEEK_${suffix}`] || "";
+  if (provider === "openai") return env[`AGINTI_SAFE_CHAT_OPENAI_${suffix}`] || "";
+  if (provider === "openrouter") return env[`AGINTI_SAFE_CHAT_OPENROUTER_${suffix}`] || "";
+  if (provider === "qwen") return env[`AGINTI_SAFE_CHAT_QWEN_${suffix}`] || "";
+  if (provider === "venice") return env[`AGINTI_SAFE_CHAT_VENICE_${suffix}`] || "";
+  if (provider === "localllm") return env[`AGINTI_SAFE_CHAT_LOCALLLM_${suffix}`] || env[`AGINTI_SAFE_CHAT_LOCAL_LLM_${suffix}`] || "";
+  return "";
+}
+
+function safeBaseUrl(provider, value, env) {
+  const explicit = String(value || "").trim();
+  const normalized = normalizeProviderId(provider);
+  if (normalized === "localllm" && explicit && !isLoopbackBaseURL(explicit)) return "";
+  const baseURL = normalizeProviderBaseURL(normalized, value, env);
+  if (!baseURL || normalized === "localllm") return baseURL;
   try {
-    const parsed = new URL(raw);
-    if (
-      parsed.protocol !== "https:" ||
-      parsed.username ||
-      parsed.password ||
-      parsed.search ||
-      parsed.hash ||
-      parsed.hostname.toLowerCase() !== "api.deepseek.com" ||
-      (parsed.port && parsed.port !== "443")
-    ) {
-      return "";
-    }
-    return parsed.toString().replace(/\/+$/, "");
+    const parsed = new URL(baseURL);
+    if (parsed.protocol !== "https:" || isLoopbackBaseURL(baseURL)) return "";
+    return baseURL;
   } catch {
     return "";
   }
@@ -133,11 +147,26 @@ function safeModel(value) {
 }
 
 function serverConfig(env = process.env) {
+  const provider = safeProvider(env);
+  const defaults = resolveProviderDefaults(provider, env);
+  const apiKey = String(
+    env.AGINTI_SAFE_CHAT_API_KEY ||
+      legacyProviderEnv(env, provider, "API_KEY") ||
+      defaults.apiKey ||
+      ""
+  ).trim();
+  const baseURL = safeBaseUrl(
+    provider,
+    env.AGINTI_SAFE_CHAT_BASE_URL || legacyProviderEnv(env, provider, "BASE_URL") || defaults.baseURL,
+    env
+  );
+  const model = safeModel(env.AGINTI_SAFE_CHAT_MODEL || legacyProviderEnv(env, provider, "MODEL") || defaults.model);
   return {
     enabled: truthy(env.AGINTI_SAFE_CHAT_ENABLED),
-    apiKey: String(env.AGINTI_SAFE_CHAT_DEEPSEEK_API_KEY || env.DEEPSEEK_API_KEY || "").trim(),
-    baseURL: safeBaseUrl(env.AGINTI_SAFE_CHAT_DEEPSEEK_BASE_URL || env.DEEPSEEK_BASE_URL || DEFAULT_BASE_URL),
-    model: safeModel(env.AGINTI_SAFE_CHAT_DEEPSEEK_MODEL || env.DEEPSEEK_FAST_MODEL || DEFAULT_MODEL),
+    provider,
+    apiKey,
+    baseURL,
+    model,
     limits: {
       promptChars: DEFAULT_LIMITS.promptChars,
       historyChars: DEFAULT_LIMITS.historyChars,
@@ -274,9 +303,9 @@ function makeStatus(env = process.env) {
   const config = serverConfig(env);
   let unavailableReason = "";
   if (!config.enabled) unavailableReason = "safe chat is disabled";
-  else if (!config.apiKey) unavailableReason = "server-owned DeepSeek credentials are unavailable";
-  else if (!config.baseURL) unavailableReason = "server-owned DeepSeek endpoint is invalid";
-  else if (!config.model) unavailableReason = "server-owned DeepSeek model is unavailable";
+  else if (providerRequiresApiKey(config.provider) && !config.apiKey) unavailableReason = "server-owned provider credentials are unavailable";
+  else if (!config.baseURL && config.provider !== "mock") unavailableReason = "server-owned provider endpoint is invalid";
+  else if (!config.model) unavailableReason = "server-owned provider model is unavailable";
 
   return {
     ok: true,
@@ -526,6 +555,7 @@ export async function runSafeChat(body = {}, options = {}) {
     const request = sanitizeClientPayload(body, config.limits);
     const clientFactory = options.clientFactory || defaultClientFactory;
     const client = clientFactory({
+      provider: config.provider,
       apiKey: config.apiKey,
       baseURL: config.baseURL,
       model: config.model,

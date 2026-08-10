@@ -7,7 +7,7 @@ This document defines how to let AgInTiFlow work on its own source code under Co
 AgInTiFlow is ready for supervised self-development on small and medium tasks. It has the required primitives:
 
 - Project-local sessions and web/CLI sync.
-- DeepSeek flash/pro routing with mock fallback.
+- LocalLLM Fast/Deep routing by default, with mock and hosted providers available only through explicit selection and no automatic cloud fallback.
 - Workspace file tools, deterministic `apply_patch`, and compact diffs.
 - Docker workspace mode for package installs and checks.
 - Host tmux tools for durable monitored sessions.
@@ -21,7 +21,7 @@ It is not ready for fully unsupervised release or system-level work. Codex shoul
 Start AgInTiFlow in a separate tmux session from the source repo:
 
 ```bash
-tmux new-session -d -s agintiflow-selfdev -c /home/lachlan/ProjectsLFS/Agent/AgInTiFlow
+tmux new-session -d -s agintiflow-selfdev -c "$PWD"
 tmux send-keys -t agintiflow-selfdev 'aginti --profile large-codebase --parallel-scouts --scout-count 5' Enter
 ```
 

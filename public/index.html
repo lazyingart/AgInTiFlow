@@ -5,7 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AgInTiFlow</title>
     <link rel="icon" type="image/png" href="/logos/logo.png" />
+    <link rel="stylesheet" href="/vendor/katex/katex.min.css" />
     <link rel="stylesheet" href="/styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "katex": "/vendor/katex/katex.mjs"
+        }
+      }
+    </script>
   </head>
   <body>
     <main class="page">
@@ -49,12 +57,12 @@
               id="commandCwd"
               name="commandCwd"
               type="search"
-              value="/home/lachlan/ProjectsLFS/Agent"
+              value="."
               list="command-cwd-suggestions"
               autocomplete="off"
               spellcheck="false"
               data-i18n-placeholder="commandCwdPlaceholder"
-              placeholder="/home/lachlan/ProjectsLFS/Agent"
+              placeholder="/path/to/project"
             />
             <datalist id="command-cwd-suggestions"></datalist>
           </label>
@@ -65,10 +73,10 @@
           <div>
             <strong data-i18n="setupTitle">Provider setup</strong>
             <p class="subtle" data-i18n="setupHelp">
-              DeepSeek/OpenAI/OpenRouter/Qwen/Venice keys are missing. Use mock mode, export an env var, or save a project-local key.
+              LocalLLM is the default private provider. Hosted keys are needed only after you explicitly select DeepSeek, OpenAI, OpenRouter, Qwen, or Venice.
             </p>
             <p class="subtle" data-i18n="setupEnvHelp">
-              Env vars: DEEPSEEK_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, QWEN_API_KEY, VENICE_API_KEY, or LLM_API_KEY. Mock mode remains available for local tests.
+              LocalLLM: http://127.0.0.1:8008/v1, route localllm-fast, main localllm-deep. Local failure never silently changes to a hosted provider; mock mode remains available for offline tests.
             </p>
             <p class="subtle key-links">
               <span data-i18n="setupKeyLinksLabel">Get keys:</span>
@@ -95,11 +103,11 @@
             </label>
             <label>
               <span data-i18n="setupKeyLabel">API key</span>
-              <input id="setup-api-key" type="password" autocomplete="off" placeholder="Stored in .aginti/.env" />
+              <input id="setup-api-key" type="password" autocomplete="off" placeholder="Stored account-wide in ~/.agintiflow/.env" />
             </label>
           </div>
           <div class="actions">
-            <button id="save-api-key" type="button" class="secondary" data-i18n="saveKeyButton">Save local key</button>
+            <button id="save-api-key" type="button" class="secondary" data-i18n="saveKeyButton">Save account key</button>
             <span id="setup-status" class="subtle"></span>
           </div>
         </section>
@@ -122,9 +130,9 @@
           <label>
             <span data-i18n="routingModeLabel">Routing policy</span>
             <select id="routingMode" name="routingMode">
-              <option value="smart" data-i18n="routingSmartOption">Smart: fast unless complex</option>
-              <option value="fast" data-i18n="routingFastOption">DeepSeek v4 flash</option>
-              <option value="complex" data-i18n="routingComplexOption">DeepSeek v4 pro</option>
+              <option value="smart" data-i18n="routingSmartOption">Smart: route/main/wrappers</option>
+              <option value="fast" data-i18n="routingFastOption">Fast route model</option>
+              <option value="complex" data-i18n="routingComplexOption">Main model</option>
               <option value="manual" data-i18n="routingManualOption">Manual provider/model</option>
             </select>
           </label>
@@ -133,6 +141,7 @@
             <label>
             <span data-i18n="providerLabel">Provider</span>
             <select id="provider" name="provider">
+              <option value="localllm" selected>LocalLLM</option>
               <option value="deepseek">DeepSeek</option>
               <option value="openai">OpenAI</option>
               <option value="openrouter">OpenRouter</option>
@@ -145,14 +154,14 @@
             <label>
               <span data-i18n="modelLabel">Model</span>
               <select id="model" name="model">
-                <option value="deepseek-v4-flash">DeepSeek v4 flash</option>
+                <option value="localllm-fast">LocalLLM Fast</option>
               </select>
             </label>
           </div>
 
           <p id="routing-hint" class="subtle route-hint"></p>
           <p id="model-route-status" class="subtle route-hint"></p>
-          <p id="model-route-pill" class="route-pill">DeepSeek flash/pro</p>
+          <p id="model-route-pill" class="route-pill">LocalLLM Fast/Deep</p>
 
           <label>
             <span data-i18n="taskProfileLabel">Task profile</span>
@@ -416,6 +425,7 @@
             <label>
               <span>Route</span>
               <select id="routeProvider" name="routeProvider">
+                <option value="localllm">LocalLLM</option>
                 <option value="deepseek">DeepSeek</option>
                 <option value="openai">OpenAI</option>
                 <option value="openrouter">OpenRouter</option>
@@ -424,7 +434,7 @@
                 <option value="mock">Mock</option>
               </select>
               <select id="routeModel" name="routeModel">
-                <option value="deepseek-v4-flash">DeepSeek v4 flash</option>
+                <option value="localllm-fast">LocalLLM Fast</option>
               </select>
               <select id="routeReasoning" name="routeReasoning">
                 <option value="">Provider default</option>
@@ -438,6 +448,7 @@
             <label>
               <span>Main</span>
               <select id="mainProvider" name="mainProvider">
+                <option value="localllm">LocalLLM</option>
                 <option value="deepseek">DeepSeek</option>
                 <option value="openai">OpenAI</option>
                 <option value="openrouter">OpenRouter</option>
@@ -445,7 +456,7 @@
                 <option value="venice">Venice</option>
               </select>
               <select id="mainModel" name="mainModel">
-                <option value="deepseek-v4-pro">DeepSeek v4 pro</option>
+                <option value="localllm-deep">LocalLLM Deep</option>
               </select>
               <select id="mainReasoning" name="mainReasoning">
                 <option value="">Provider default</option>
@@ -459,6 +470,7 @@
             <label>
               <span>Spare</span>
               <select id="spareProvider" name="spareProvider">
+                <option value="localllm">LocalLLM</option>
                 <option value="openai">OpenAI</option>
                 <option value="openrouter">OpenRouter</option>
                 <option value="deepseek">DeepSeek</option>
@@ -466,7 +478,7 @@
                 <option value="venice">Venice</option>
               </select>
               <select id="spareModel" name="spareModel">
-                <option value="gpt-5.4">GPT-5.4</option>
+                <option value="localllm-deep">LocalLLM Deep</option>
               </select>
               <select id="spareReasoning" name="spareReasoning">
                 <option value="">Provider default</option>
@@ -540,7 +552,7 @@
               <span data-i18n="headlessLabel">Headless browser</span>
             </label>
             <label class="switch-label">
-              <input id="allowAuxiliaryTools" name="allowAuxiliaryTools" type="checkbox" checked />
+              <input id="allowAuxiliaryTools" name="allowAuxiliaryTools" type="checkbox" />
               <span class="switch" aria-hidden="true"></span>
               <span data-i18n="auxiliaryToolLabel">Enable auxiliary skills</span>
             </label>

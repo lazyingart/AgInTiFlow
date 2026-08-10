@@ -13,7 +13,7 @@
 ![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)
 ![Playwright](https://img.shields.io/badge/Browser-Playwright-2EAD33?logo=playwright&logoColor=white)
 ![CLI + Web](https://img.shields.io/badge/Interface-CLI%20%2B%20Web-0ea5e9)
-![Text Models](https://img.shields.io/badge/Text-DeepSeek%20%2B%20Venice%20%2B%20OpenAI%20%2B%20Qwen-2563eb)
+![Text Models](https://img.shields.io/badge/Text-LocalLLM%20%2B%20Optional%20Hosted-2563eb)
 ![Aux Image](https://img.shields.io/badge/Aux%20Image-GRS%20AI%20%2B%20Venice-ec4899)
 ![Sandbox](https://img.shields.io/badge/Shell-Docker%20Sandbox-f97316)
 ![Status](https://img.shields.io/badge/Status-Prototype-7c3aed)
@@ -23,6 +23,8 @@
 AgInTiFlow est un espace de travail d'agents project-aware pour la R&D hybride wet-dry, l'intelligence hardware-aware, l'automatisation logicielle et les workflows industriels. De la planification de laboratoire à l'analyse de données, du contrôle matériel aux scripts de production, et de la microscopie, des drones et des robots aux rapports, il aide les agents à travailler via API, Web ou CLI avec supervision SCS, workflows AAPS, exécution protégée et preuves durables.
 
 En bref : lancez `aginti` dans un projet, donnez-lui une tâche, inspectez son plan, voyez chaque appel d’outil, reprenez plus tard et gardez les sorties dans votre workspace.
+
+> **Avis de fraîcheur :** Cette traduction peut être en retard sur certains détails du [README anglais actuel](../README.md) et de la [référence d’exécution local-first](../docs/local-first-agent-runtime.md). Par défaut, AgInTiFlow utilise LocalLLM sur `http://127.0.0.1:8008/v1`, avec `localllm-fast` et `localllm-deep`. Les fournisseurs hébergés sont des upgrades facultatifs et explicites : les clés ambiantes ne les sélectionnent pas et ne déclenchent aucun fallback automatique. La génération d’images auxiliaire reste désactivée jusqu’à son activation explicite.
 
 **Liens**
 
@@ -45,9 +47,9 @@ La plupart des outils d’agents sont soit une boîte de chat à état caché, s
 
 | Principe | Effet concret |
 | --- | --- |
-| L’intelligence bon marché change l’architecture | DeepSeek V4 Flash et Pro rendent réaliste l’usage d’appels supplémentaires pour routing, scouts, review et recovery, au lieu de tout forcer dans un appel coûteux. |
+| L’intelligence locale change l’architecture | La base utilise la passerelle LocalLLM voisine pour les routes et l’exécution principale privées et locales ; les modèles hébergés restent des upgrades explicites. |
 | Inspectable plutôt que mystérieux | Plans, appels d’outils, diffs de fichiers, sorties de commandes, artifacts canvas et événements de session sont sauvegardés et reprenables. |
-| Modèles par rôles | Route, main, spare, wrapper et auxiliary image sont séparés. On peut combiner route models bon marché, main models plus puissants, routes OpenAI/Qwen/Venice et outils image GRS AI/Venice. |
+| Modèles par rôles | Route, main, spare, wrapper et auxiliary image sont séparés. LocalLLM fournit Fast/Deep par défaut ; DeepSeek, OpenAI, OpenRouter, Qwen et Venice sont sélectionnés explicitement. |
 | Scouts avant gros travail | Des scouts parallèles cartographient architecture, tests, risques, symboles et points d’intégration avant que l’exécuteur principal modifie les fichiers. |
 | SCS pour le travail risqué | Student-Committee-Supervisor ajoute une porte typée : committee rédige, student approuve/surveille, supervisor exécute. Utilisez `/scs` ou `--scs auto`. |
 | AAPS pour grands workflows | AAPS décrit des scripts de pipeline agentic top-down ; AgInTiFlow peut servir de backend interactif pour les valider, compiler et exécuter. |
@@ -64,14 +66,17 @@ aginti init
 aginti
 ```
 
-Au premier usage interactif, si aucune clé de modèle principal n’est trouvée, AgInTiFlow ouvre un assistant d’authentification. Choisissez DeepSeek, OpenAI, Qwen ou Venice, collez la clé, et elle sera sauvegardée dans `.aginti/.env`, ignoré par git, avec permissions restreintes. Vous pouvez relancer la configuration à tout moment :
+Par défaut, AgInTiFlow se connecte sans clé hébergée au service LocalLLM voisin sur `http://127.0.0.1:8008/v1` : `localllm-fast` pour route et `localllm-deep` pour main. Pour utiliser DeepSeek, OpenAI, OpenRouter, Qwen ou Venice, sélectionnez explicitement le fournisseur et lancez l’assistant d’authentification. Un échec LocalLLM arrête l’exécution avec une erreur claire et n’envoie jamais automatiquement la tâche vers le cloud :
 
 ```bash
 aginti auth
 aginti auth deepseek
+aginti auth openrouter
 aginti auth venice
 aginti login grsai
 ```
+
+Une clé hébergée sauvegardée sert uniquement à l’authentification et ne change pas le fournisseur actif. Les outils d’image auxiliaires restent désactivés jusqu’à `/auxiliary on`, `/auxiliary image` ou l’option équivalente.
 
 Lancez l’interface Web depuis le même projet :
 
@@ -162,12 +167,12 @@ Les anciennes captures de lancement sont conservées dans le dépôt source sous
 | File tools | `inspect_project`, `list_files`, `read_file`, `search_files`, `write_file`, `apply_patch`, `open_workspace_file`, `preview_workspace`. |
 | Shell tools | Exécution shell protégée en host ou Docker workspace avec politique d’installation et contrôles de commande. |
 | Browser tools | Actions Playwright avec démarrage paresseux et allowlists de domaines optionnelles. |
-| Model routing | Defaults DeepSeek fast/pro, routes manuelles OpenAI/Qwen/Venice/mock, spare models, wrapper models et auxiliary image models. |
+| Model routing | LocalLLM Fast/Deep sont les valeurs par défaut. DeepSeek, OpenAI, OpenRouter, Qwen, Venice et mock sont des routes explicites ; les clés ambiantes ne provoquent aucun fallback hébergé. |
 | Patch workflow | Enveloppes patch style Codex, unified diffs, remplacements exacts, hashes, diffs compacts et garde-fous de chemin. |
 | Parallel scouts | Appels scout optionnels pour architecture, implémentation, review, tests, git flow, recherche, symbol tracing et risques dépendances. |
 | SCS mode | Porte qualité optionnelle Student-Committee-Supervisor pour tâches complexes ou risquées. |
 | AAPS adapter | Intégration optionnelle `@lazyingart/aaps` pour init, validate, parse, compile, dry-run et run de workflows `.aaps`. |
-| Image generation | Outils optionnels GRS AI et Venice avec manifests sauvegardés et previews canvas. |
+| Image generation | GRS AI et Venice sont désactivés par défaut et exigent une activation explicite ; sauvegarder une clé ne les active pas et ne choisit aucun fournisseur de remplacement. |
 | Skill library | Skills Markdown intégrées pour code, sites, Android/iOS, Python, Rust, Java, LaTeX, rédaction, reviews, GitHub, AAPS, etc. |
 | Skill Mesh | Enregistrement/partage strict optionnel de packs de skills réutilisables et revus. Sans usage, AgInTiFlow fonctionne normalement sans partage en arrière-plan. |
 | UI multilingue | CLI et docs en anglais, japonais, chinois simplifié/traditionnel, coréen, français, espagnol, arabe, vietnamien, allemand et russe. |
@@ -178,11 +183,11 @@ AgInTiFlow ne traite pas “le modèle” comme un seul réglage global. Il y a 
 
 | Rôle | Défaut | Usage |
 | --- | --- | --- |
-| Route | `deepseek/deepseek-v4-flash` | Planification peu coûteuse, triage, tâches courtes, décisions de routing. |
-| Main | `deepseek/deepseek-v4-pro` | Coding complexe, debugging, rédaction, recherche, longues tâches. |
-| Spare | `openai/gpt-5.4` medium | Fallback optionnel ou route de cross-check. |
+| Route | `localllm/localllm-fast` | Planification locale, triage, tâches courtes et décisions de routing. |
+| Main | `localllm/localllm-deep` | Exécuteur local pour coding complexe, debugging, rédaction, recherche et longues tâches. |
+| Spare | `localllm/localllm-deep` medium | Route locale de cross-check ; un spare hébergé doit être sélectionné explicitement. |
 | Wrapper | `codex/gpt-5.5` medium | Conseiller externe optionnel de coding-agent. |
-| Auxiliary | `grsai/nano-banana-2` | Génération d’images et autres outils non textuels. |
+| Auxiliary | `grsai/nano-banana-2` (off) | Images et outils non textuels uniquement après activation explicite ; aucun failover guidé par les clés. |
 
 Sélecteurs utiles :
 
@@ -196,7 +201,7 @@ Sélecteurs utiles :
 /venice
 ```
 
-Les routes Venice peuvent servir aux travaux créatifs optionnels uncensored ou moins restreints. DeepSeek reste le défaut économique pour les workflows d’ingénierie normaux. Voir [../docs/model-selection.md](../docs/model-selection.md) et [../references/venice-model-reference.md](../references/venice-model-reference.md).
+Venice peut servir facultativement aux travaux créatifs uncensored ou moins restreints. LocalLLM reste la base locale ; DeepSeek et les autres fournisseurs hébergés sont uniquement des upgrades explicites. Voir [../docs/model-selection.md](../docs/model-selection.md), [../docs/local-first-agent-runtime.md](../docs/local-first-agent-runtime.md) et [../references/venice-model-reference.md](../references/venice-model-reference.md).
 
 ## AAPS et grands workflows
 
@@ -268,12 +273,19 @@ Notes runtime détaillées : [../docs/runtime-modes-and-autonomy.md](../docs/run
 Variables d’environnement courantes :
 
 ```bash
+AGENT_PROVIDER=localllm
+LOCALLLM_BASE_URL=http://127.0.0.1:8008/v1
+LOCALLLM_API_KEY=local-dev-key
+AGINTI_LOCALLLM_ROUTE_MODEL=localllm-fast
+AGINTI_LOCALLLM_MAIN_MODEL=localllm-deep
+
+# Upgrades hébergés facultatifs et explicites ; jamais de fallback LocalLLM automatique.
 DEEPSEEK_API_KEY=...
 OPENAI_API_KEY=...
+OPENROUTER_API_KEY=...
 QWEN_API_KEY=...
 VENICE_API_KEY=...
 GRSAI_API_KEY=...
-AGENT_PROVIDER=deepseek
 AGENT_ROUTING_MODE=smart
 AGINTI_TASK_PROFILE=auto
 AGINTI_LANGUAGE=en

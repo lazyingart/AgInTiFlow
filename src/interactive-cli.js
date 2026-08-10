@@ -51,6 +51,11 @@ import { ensureAgintiWebApp, readWebAppPreference, stopAgintiWebApp, writeWebApp
 import { mcpCliCommand, formatMcpCliResult } from "./mcp/tool-bridge.js";
 import { agentLinkCliCommand, formatAgentLinkCliResult } from "./agentlink.js";
 import { isWrapperAvailable } from "./tool-wrappers.js";
+import {
+  SESSION_RUNTIME_FIELDS,
+  resolveSessionRuntime,
+  sessionRuntimeOverrides,
+} from "./session-runtime.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
@@ -1100,7 +1105,7 @@ function printHelp() {
       `  ${command("/instructions", "Show AGINTI.md project instructions status.", "helpInstructions")}`,
       `  ${command("/memory", "Alias for /instructions.", "helpInstructions")}`,
       `  ${command("/models", "Show route/main/spare/wrapper/auxiliary model roles.", "helpModels")}`,
-      `  ${command("/venice [off|model]", "Pick Venice route/main models, or restore DeepSeek defaults.", "helpVenice")}`,
+      `  ${command("/venice [off|model]", "Pick Venice route/main models, or restore LocalLLM defaults.", "helpVenice")}`,
       `  ${command("/route [mode|provider/model]", "Open route selector, or set routing/fast route model.", "helpRoute")}`,
       `  ${command("/model [provider/model]", "Open main-model selector, or set the active/main model.", "helpModel")}`,
       `  ${command("/spare [provider/model] [reasoning]", "Open spare selector, or set e.g. /spare openai/gpt-5.4 medium.", "helpSpare")}`,
@@ -1125,7 +1130,7 @@ function printHelp() {
       `  ${command("/scs [on|auto|off|status]", "Toggle Student-Committee-Supervisor gated execution.", "helpEnableScs")}`,
       `  ${command("/scouts on|off|<1-10>", "Enable parallel DeepSeek scouts and set scout count.", "helpScouts")}`,
       `  ${command("/routing <mode>", "Set routing: smart, fast, complex, manual.", "helpRouting")}`,
-      `  ${command("/provider [name]", "Open provider selector, or set deepseek/openai/openrouter/qwen/venice/mock.", "helpProvider")}`,
+      `  ${command("/provider [name]", "Open provider selector, or set localllm/deepseek/openai/openrouter/qwen/venice/mock.", "helpProvider")}`,
       `  ${command("/safe | /normal | /danger", "Switch permission posture for this session.", "helpPermissionMode")}`,
       `  ${command("/docker [status|setup|on|off]", "Inspect or prepare the Docker sandbox/toolchain.", "helpDocker")}`,
       `  ${command("/latex on", "Use the LaTeX/PDF profile in Docker with a larger step budget.", "helpLatex")}`,
@@ -1968,8 +1973,9 @@ class LiveRunInput {
   async removeInboxItems(ids = []) {
     if (ids.length === 0) return;
     const idSet = new Set(ids);
-    const inbox = await this.store.loadInbox().catch(() => []);
-    await this.store.saveInbox(inbox.filter((item) => !idSet.has(item.id))).catch(() => {});
+    await this.store
+      .mutateInbox((items) => items.filter((item) => !idSet.has(item.id)))
+      .catch(() => {});
   }
 
   async submitAsap() {
@@ -2187,6 +2193,7 @@ function printStatus(state) {
   printSystemLine(`project=${process.cwd()}`);
   printSystemLine(`cwd=${state.commandCwd || process.cwd()} ${modeFooterStatus(state)}`);
   printSystemLine(`session=${state.sessionId || "new"}`);
+  if (state.runtimeRevision) printSystemLine(`runtimeRevision=${state.runtimeRevision} source=saved`);
   const progress =
     state.currentStep && state.currentMaxSteps ? ` progress=${state.currentStep}/${state.currentMaxSteps}` : state.currentStep ? ` progress=${state.currentStep}` : "";
   printSystemLine(`status=${state.status || "idle"}${progress}${state.activeGoal ? ` workingOn=${state.activeGoal}` : ""}`);
@@ -2194,9 +2201,9 @@ function printStatus(state) {
   if (state.lastEvent) printSystemLine(`last=${state.lastEvent}`);
   printSystemLine(`provider=${state.provider || "auto"} routing=${state.routingMode} model=${state.model || "auto"}`);
   printSystemLine(
-    `roles route=${state.routeProvider || "deepseek"}/${state.routeModel || "deepseek-v4-flash"} main=${
-      state.mainProvider || "deepseek"
-    }/${state.mainModel || "deepseek-v4-pro"} spare=${state.spareProvider || "openai"}/${state.spareModel || "gpt-5.4"}`
+    `roles route=${state.routeProvider || "localllm"}/${state.routeModel || "localllm-fast"} main=${
+      state.mainProvider || "localllm"
+    }/${state.mainModel || "localllm-deep"} spare=${state.spareProvider || "localllm"}/${state.spareModel || "localllm-deep"}`
   );
   printSystemLine(`profile=${state.taskProfile} maxSteps=${state.maxSteps}`);
   printSystemLine(
@@ -2323,6 +2330,58 @@ function autoSessionTitle(state) {
 async function latestSession() {
   const sessions = await listProjectSessions(process.cwd(), 1);
   return sessions[0] || null;
+}
+
+function runtimeValuesEqual(left, right) {
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && JSON.stringify(left) === JSON.stringify(right);
+  }
+  return left === right;
+}
+
+function interactiveRuntimePatch(state) {
+  if (!state.runtimeSnapshot) return undefined;
+  const patch = {};
+  for (const field of SESSION_RUNTIME_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(state, field)) continue;
+    if (!runtimeValuesEqual(state[field], state.runtimeSnapshot[field])) patch[field] = state[field];
+  }
+  return Object.keys(patch).length > 0 ? patch : undefined;
+}
+
+function interactiveRuntimeArgs(state) {
+  return Object.fromEntries(
+    SESSION_RUNTIME_FIELDS
+      .filter((field) => Object.prototype.hasOwnProperty.call(state, field))
+      .map((field) => [field, state[field]])
+  );
+}
+
+async function hydrateInteractiveSessionRuntime(
+  state,
+  sessionId,
+  { runtimePatch, expectedRuntimeRevision } = {}
+) {
+  const paths = projectPaths(process.cwd());
+  const store = new SessionStore(paths.globalSessionsDir, sessionId, sessionStoreOptions(process.cwd(), sessionId));
+  const savedState = await store.loadState();
+  if (!savedState) throw new Error(`No saved session found for "${sessionId}".`);
+
+  const current = resolveSessionRuntime({ state: savedState });
+  const hasPatch = runtimePatch && Object.keys(runtimePatch).length > 0;
+  const resolved = resolveSessionRuntime({
+    state: savedState,
+    runtimePatch: hasPatch ? runtimePatch : undefined,
+    expectedRevision: expectedRuntimeRevision ?? current.snapshot.revision,
+  });
+  Object.assign(state, resolved.runtimeOverrides);
+  state.sessionId = sessionId;
+  state.runtimeSnapshot = current.snapshot;
+  state.runtimeRevision = current.snapshot.revision;
+  state.aapsMode = state.taskProfile === "aaps" ? "on" : "off";
+  state.veniceMode = [state.provider, state.routeProvider, state.mainProvider].includes("venice") ? "on" : "off";
+  setCliLanguage(state.language);
+  return resolved;
 }
 
 function printHistoryEntry(entry) {
@@ -2661,13 +2720,17 @@ function createState(args = {}) {
     workspaceWritePolicy: args.workspaceWritePolicy || permissionDefaults.workspaceWritePolicy || "allow",
     allowShellTool: args.allowShellTool ?? permissionDefaults.allowShellTool ?? true,
     allowFileTools: args.allowFileTools ?? permissionDefaults.allowFileTools ?? true,
-    allowAuxiliaryTools: args.allowAuxiliaryTools ?? true,
+    allowAuxiliaryTools: args.allowAuxiliaryTools ?? false,
+    allowHostedImagePerception: args.allowHostedImagePerception ?? false,
+    allowHostedWebResearch: args.allowHostedWebResearch ?? false,
+    allowHostedJsonSpecialist: args.allowHostedJsonSpecialist ?? false,
+    allowHostedWritingSpecialist: args.allowHostedWritingSpecialist ?? false,
     allowWebSearch: args.allowWebSearch ?? true,
     allowMcpTools: args.allowMcpTools ?? true,
-    allowParallelScouts: args.allowParallelScouts ?? true,
+    allowParallelScouts: args.allowParallelScouts ?? false,
     enableScs: normalizeScsMode(args.enableScs || process.env.AGINTI_SCS_MODE || DEFAULT_SCS_MODE),
     parallelScoutCount: args.parallelScoutCount || 3,
-    allowWrapperTools: args.allowWrapperTools ?? isWrapperAvailable(args.preferredWrapper || "codex"),
+    allowWrapperTools: args.allowWrapperTools ?? false,
     allowDestructive: args.allowDestructive ?? permissionDefaults.allowDestructive ?? false,
     allowPasswords: args.allowPasswords ?? permissionDefaults.allowPasswords ?? false,
     allowOutsideWorkspaceFileTools:
@@ -2679,8 +2742,8 @@ function createState(args = {}) {
     mainProvider: args.mainProvider || "",
     mainModel: args.mainModel || "",
     mainReasoning: isReasoningLevel(args.mainReasoning) ? reasoningConfigValue(args.mainReasoning) : "",
-    spareProvider: args.spareProvider || "openai",
-    spareModel: args.spareModel || "gpt-5.4",
+    spareProvider: args.spareProvider || "localllm",
+    spareModel: args.spareModel || "localllm-deep",
     spareReasoning: isReasoningLevel(args.spareReasoning) ? reasoningConfigValue(args.spareReasoning) : args.spareReasoning || "medium",
     wrapperModel: args.wrapperModel || "gpt-5.5",
     wrapperReasoning: args.wrapperReasoning || "medium",
@@ -2700,6 +2763,10 @@ function createState(args = {}) {
     dynamicStepHardCap: args.dynamicStepHardCap,
     dynamicStepExtensionSize: args.dynamicStepExtensionSize,
     sessionId: args.resume || "",
+    runtimeSnapshot: null,
+    runtimeRevision: 0,
+    initialRuntimePatch: args.runtimePatch,
+    initialExpectedRuntimeRevision: args.expectedRuntimeRevision,
     webAppUrl: args.webAppUrl || "",
     webAppNotice: args.webAppNotice || "",
   };
@@ -2723,16 +2790,17 @@ function parseProviderModel(value, fallbackProvider = "") {
 }
 
 function useDeepSeekDefaults(state) {
+  const roles = getModelRoleDefaults();
   state.routingMode = "smart";
-  state.provider = "deepseek";
+  state.provider = roles.route.provider || "localllm";
   state.model = "";
   state.veniceMode = "off";
-  state.routeProvider = "deepseek";
-  state.routeModel = "deepseek-v4-flash";
-  state.routeReasoning = "";
-  state.mainProvider = "deepseek";
-  state.mainModel = "deepseek-v4-pro";
-  state.mainReasoning = "";
+  state.routeProvider = roles.route.provider || "localllm";
+  state.routeModel = roles.route.model || "localllm-fast";
+  state.routeReasoning = roles.route.reasoning || "";
+  state.mainProvider = roles.main.provider || "localllm";
+  state.mainModel = roles.main.model || "localllm-deep";
+  state.mainReasoning = roles.main.reasoning || "";
 }
 
 function veniceTextModelChoices() {
@@ -2757,10 +2825,10 @@ function veniceTextModelChoices() {
     },
     {
       action: "disable",
-      provider: "deepseek",
-      model: "deepseek-v4-flash",
+      provider: "localllm",
+      model: "localllm-fast",
       label: "Disable Venice",
-      description: "restore DeepSeek route/main defaults",
+      description: "restore configured route/main defaults",
     },
   ];
 }
@@ -2791,7 +2859,7 @@ function resolveVeniceTextModel(value = "") {
 
 function useVeniceModels(state, routeModel = "venice-uncensored-1-2", mainModel = routeModel) {
   state.routingMode = "smart";
-  state.provider = "deepseek";
+  state.provider = "venice";
   state.model = "";
   state.veniceMode = "on";
   state.routeProvider = "venice";
@@ -2842,7 +2910,7 @@ function printModelRoles(state) {
       ...roleLines,
       "",
       "Set roles",
-      "/route deepseek/deepseek-v4-flash",
+      "/route localllm/localllm-fast",
       "/model deepseek/deepseek-v4-pro",
       "/spare openai/gpt-5.4 medium",
       "/wrapper codex gpt-5.5 medium",
@@ -2885,6 +2953,7 @@ function reasoningConfigValue(value = "") {
 }
 
 function modelSelectorGroup(provider, model = {}) {
+  if (provider === "localllm") return "LocalLLM";
   if (provider === "deepseek") return "DeepSeek";
   if (provider === "openai") return "OpenAI";
   if (provider === "openrouter") {
@@ -2916,6 +2985,11 @@ function modelSelectorGroup(provider, model = {}) {
 }
 
 const TEXT_MODEL_GROUPS = [
+  {
+    id: "localllm",
+    label: "LocalLLM",
+    description: "OpenAI-compatible loopback provider for local-first baseline runs.",
+  },
   {
     id: "deepseek",
     label: "DeepSeek",
@@ -3030,6 +3104,7 @@ function modelGroupChoices() {
 
 function modelsForSelectorGroup(groupId = "") {
   const group = String(groupId || "");
+  if (group === "localllm") return (PROVIDER_MODEL_CATALOG.localllm || []).filter((model) => !model.hidden);
   if (group === "deepseek") return (PROVIDER_MODEL_CATALOG.deepseek || []).filter((model) => !model.hidden);
   if (group === "openai") return (PROVIDER_MODEL_CATALOG.openai || []).filter((model) => !model.hidden);
   if (group === "openrouter" || group.startsWith("openrouter-")) {
@@ -3126,6 +3201,12 @@ function auxiliaryModelRoleChoices(groupId = "") {
 
 function providerChoices() {
   return [
+    {
+      provider: "localllm",
+      model: "localllm-fast",
+      label: "LocalLLM",
+      description: "sibling LocalLLM gateway baseline; no user API key required",
+    },
     {
       provider: "deepseek",
       model: "deepseek-v4-flash",
@@ -3295,18 +3376,18 @@ async function pickModelRole(role, state) {
     role === "route"
       ? state.routeProvider || "deepseek"
       : role === "spare"
-        ? state.spareProvider || "openai"
+        ? state.spareProvider || "localllm"
         : role === "auxiliary"
           ? state.auxiliaryProvider || "grsai"
-          : state.mainProvider || state.provider || "deepseek";
+          : state.mainProvider || state.provider || "localllm";
   const currentModel =
     role === "route"
-      ? state.routeModel || "deepseek-v4-flash"
+      ? state.routeModel || "localllm-fast"
       : role === "spare"
-        ? state.spareModel || "gpt-5.4"
+        ? state.spareModel || "localllm-deep"
         : role === "auxiliary"
           ? state.auxiliaryModel || "nano-banana-2"
-          : state.mainModel || "deepseek-v4-pro";
+          : state.mainModel || "localllm-deep";
 
   const groupOptions = role === "auxiliary" ? auxiliaryGroupChoices() : modelGroupChoices();
   const currentModelEntry =
@@ -3408,7 +3489,7 @@ async function pickModelRole(role, state) {
   }
 
   state.routingMode = "smart";
-  state.provider = "deepseek";
+  state.provider = role === "spare" ? state.provider || "localllm" : selected.provider || "localllm";
   state.model = "";
   if (role === "route") {
     state.routeProvider = selected.provider;
@@ -3454,7 +3535,7 @@ async function pickVeniceRouteAndMain(state) {
     );
     if (route.action === "disable") {
       useDeepSeekDefaults(state);
-      printSystemLine("venice=off routing=smart route=deepseek/deepseek-v4-flash main=deepseek/deepseek-v4-pro");
+      printSystemLine(`venice=off routing=smart route=${state.routeProvider}/${state.routeModel} main=${state.mainProvider}/${state.mainModel}`);
       return true;
     }
 
@@ -3474,7 +3555,7 @@ async function pickVeniceRouteAndMain(state) {
     if (!main) return false;
     if (main.action === "disable") {
       useDeepSeekDefaults(state);
-      printSystemLine("venice=off routing=smart route=deepseek/deepseek-v4-flash main=deepseek/deepseek-v4-pro");
+      printSystemLine(`venice=off routing=smart route=${state.routeProvider}/${state.routeModel} main=${state.mainProvider}/${state.mainModel}`);
       return true;
     }
 
@@ -3486,7 +3567,7 @@ async function pickVeniceRouteAndMain(state) {
 
 async function pickProvider(state) {
   const options = providerChoices();
-  const currentProvider = state.provider || "deepseek";
+  const currentProvider = state.provider || "localllm";
   const initialIndex = Math.max(
     options.findIndex((item) => item.provider === currentProvider),
     0
@@ -3501,7 +3582,7 @@ async function pickProvider(state) {
 
   state.provider = selected.provider;
   state.model = selected.model;
-  state.routingMode = selected.provider === "deepseek" ? "smart" : "manual";
+  state.routingMode = selected.provider === "localllm" || selected.provider === "deepseek" ? "smart" : "manual";
   printSystemLine(`provider=${state.provider} model=${state.model} routing=${state.routingMode}`);
   return true;
 }
@@ -3529,16 +3610,23 @@ async function maybeOnboardDeepSeekKey(state) {
   printAgentMessage("No main key saved. Continuing in local mock mode. Use `/auth` later to save DeepSeek, OpenAI, OpenRouter, Qwen, or Venice.");
 }
 
-function applyAuthWizardResult(result, state = null) {
+export function applyAuthWizardState(result = {}, state = null) {
   if (state) {
-    const main = result.saved.find((item) => item.provider !== "grsai");
-    if (main) state.provider = main.provider;
-    if (state.routingMode === "manual" && state.model === "mock-agent") {
-      state.routingMode = "smart";
-      state.model = "";
+    const saved = Array.isArray(result.saved) ? result.saved : [];
+    const main = saved.find((item) => item.provider !== "grsai");
+    if (main) {
+      state.provider = main.provider;
+      if (state.routingMode === "manual" && state.model === "mock-agent") {
+        state.routingMode = "smart";
+        state.model = "";
+      }
     }
-    if (result.saved.some((item) => item.provider === "grsai")) state.allowAuxiliaryTools = true;
   }
+  return state;
+}
+
+function applyAuthWizardResult(result, state = null) {
+  applyAuthWizardState(result, state);
   if (result.saved.length > 0) {
     printAgentMessage(
       result.saved
@@ -3597,7 +3685,7 @@ async function handleCommand(line, state, packageDir) {
     printStatus(state);
     const keys = providerKeyStatus(process.cwd());
     printSystemLine(
-      `keys deepseek=${keys.deepseek ? "available" : "missing"} openai=${keys.openai ? "available" : "missing"} openrouter=${
+      `keys localllm=${keys.localllm ? "available" : "missing"} deepseek=${keys.deepseek ? "available" : "missing"} openai=${keys.openai ? "available" : "missing"} openrouter=${
         keys.openrouter ? "available" : "missing"
       } grsai=${
         keys.grsai ? "available" : "missing"
@@ -3832,23 +3920,27 @@ async function handleCommand(line, state, packageDir) {
   }
   if (command === "new") {
     state.sessionId = "";
+    state.runtimeSnapshot = null;
+    state.runtimeRevision = 0;
     printAgentMessage("Next message will start a new session.");
     return true;
   }
   if (command === "resume") {
-    if (!value || value === "latest") {
-      const latest = await latestSession();
-      if (!latest) {
-        printAgentMessage("No project-local sessions found. Use /new or type a request to start one.");
-      } else {
-        state.sessionId = latest.sessionId;
-        printAgentMessage(`Resuming latest ${formatSessionLine(latest)}`);
-        await printResumeHistory(state);
-      }
-    } else {
-      state.sessionId = value;
-      printAgentMessage(`Resuming ${state.sessionId}`);
+    const selected = !value || value === "latest" ? await latestSession() : { sessionId: value };
+    if (!selected?.sessionId) {
+      printAgentMessage("No project-local sessions found. Use /new or type a request to start one.");
+      return true;
+    }
+    try {
+      await hydrateInteractiveSessionRuntime(state, selected.sessionId);
+      printAgentMessage(
+        `${!value || value === "latest" ? "Resuming latest " : "Resuming "}${
+          selected.provider ? formatSessionLine(selected) : state.sessionId
+        }\nruntime revision=${state.runtimeRevision} provider=${state.provider}/${state.model}`
+      );
       await printResumeHistory(state);
+    } catch (error) {
+      printAgentMessage(error instanceof Error ? error.message : String(error));
     }
     return true;
   }
@@ -3966,14 +4058,16 @@ async function handleCommand(line, state, packageDir) {
     const previousProfile = state.taskProfile;
     const previousMaxSteps = state.maxSteps;
     const previousWrapperTools = state.allowWrapperTools;
+    const previousHostedImagePerception = state.allowHostedImagePerception;
     try {
       state.taskProfile = "image";
       state.maxSteps = Math.max(state.maxSteps, 12);
       if (provider === "codex") state.allowWrapperTools = true;
+      if (provider === "openai") state.allowHostedImagePerception = true;
       await runPrompt(
         [
           `Use the read_image tool on ${target}.`,
-          provider ? `Use read_image provider=${provider}.` : "Use read_image provider=auto so it can use OpenAI vision or Codex fallback.",
+          provider ? `Use read_image provider=${provider}.` : "Use read_image provider=auto and keep the active provider boundary.",
           questionParts.length ? `Question: ${questionParts.join(" ")}` : "Question: describe the image accurately and report visible text, issues, and uncertainty.",
           "Do not infer from the filename. Report the read_image JSON and Markdown artifact paths.",
         ].join("\n"),
@@ -3984,6 +4078,7 @@ async function handleCommand(line, state, packageDir) {
       state.taskProfile = previousProfile;
       state.maxSteps = previousMaxSteps;
       state.allowWrapperTools = previousWrapperTools;
+      state.allowHostedImagePerception = previousHostedImagePerception;
     }
     return true;
   }
@@ -4101,7 +4196,7 @@ async function handleCommand(line, state, packageDir) {
     if (mode === "on") {
       state.allowParallelScouts = false;
     }
-    printSystemLine(`scs=${state.enableScs}${state.enableScs !== "off" ? ` main=${state.mainProvider || "deepseek"}/${state.mainModel || "deepseek-v4-pro"}` : ""}`);
+    printSystemLine(`scs=${state.enableScs}${state.enableScs !== "off" ? ` main=${state.mainProvider || "localllm"}/${state.mainModel || "localllm-deep"}` : ""}`);
     if (state.enableScs === "on") {
       printAgentMessage("SCS enabled. Next run uses the main model for committee planning, student gates, and supervisor execution.");
     } else if (state.enableScs === "auto") {
@@ -4120,13 +4215,13 @@ async function handleCommand(line, state, packageDir) {
     const action = value || (canUseSelector ? "select" : "on");
     if (action === "off" || action === "deepseek" || action === "default") {
       useDeepSeekDefaults(state);
-      printSystemLine("venice=off routing=smart route=deepseek/deepseek-v4-flash main=deepseek/deepseek-v4-pro");
+      printSystemLine(`venice=off routing=smart route=${state.routeProvider}/${state.routeModel} main=${state.mainProvider}/${state.mainModel}`);
       return true;
     }
     if (action === "select" && canUseSelector) {
       const changed = await pickVeniceRouteAndMain(state);
       if (!changed) {
-        printSystemLine(`route=${state.routeProvider || "deepseek"}/${state.routeModel || "deepseek-v4-flash"} main=${state.mainProvider || "deepseek"}/${state.mainModel || "deepseek-v4-pro"}`);
+        printSystemLine(`route=${state.routeProvider || "localllm"}/${state.routeModel || "localllm-fast"} main=${state.mainProvider || "localllm"}/${state.mainModel || "localllm-deep"}`);
         return true;
       }
       const keys = providerKeyStatus(process.cwd());
@@ -4164,11 +4259,11 @@ async function handleCommand(line, state, packageDir) {
     if (!value) {
       if (input.isTTY && output.isTTY && typeof input.setRawMode === "function") {
         const changed = await pickModelRole("route", state);
-        if (!changed) printSystemLine(`route=${state.routeProvider || "deepseek"}/${state.routeModel || "deepseek-v4-flash"}`);
+        if (!changed) printSystemLine(`route=${state.routeProvider || "localllm"}/${state.routeModel || "localllm-fast"}`);
         return true;
       }
       printAgentMessage(
-        `Route model: ${state.routeProvider || "deepseek"}/${state.routeModel || "deepseek-v4-flash"}\nUse /route deepseek/deepseek-v4-flash or /route fast|smart|complex.`
+        `Route model: ${state.routeProvider || "localllm"}/${state.routeModel || "localllm-fast"}\nUse /route localllm/localllm-fast or /route fast|smart|complex.`
       );
       return true;
     }
@@ -4179,8 +4274,8 @@ async function handleCommand(line, state, packageDir) {
     }
     const parts = value.split(/\s+/).filter(Boolean);
     const selected = parseProviderModel(parts[0] || value, state.routeProvider || "deepseek");
-    state.routeProvider = selected.provider || "deepseek";
-    state.routeModel = selected.model || state.routeModel || "deepseek-v4-flash";
+    state.routeProvider = selected.provider || "localllm";
+    state.routeModel = selected.model || state.routeModel || "localllm-fast";
     if (isReasoningLevel(parts[1])) state.routeReasoning = reasoningConfigValue(parts[1]);
     printSystemLine(`route=${state.routeProvider}/${state.routeModel}${formatReasoningSuffix(state.routeReasoning)}`);
     return true;
@@ -4189,11 +4284,11 @@ async function handleCommand(line, state, packageDir) {
     if (!value) {
       if (input.isTTY && output.isTTY && typeof input.setRawMode === "function") {
         const changed = await pickModelRole("main", state);
-        if (!changed) printSystemLine(`main=${state.mainProvider || state.provider || "deepseek"}/${state.mainModel || state.model || "deepseek-v4-pro"}`);
+        if (!changed) printSystemLine(`main=${state.mainProvider || state.provider || "localllm"}/${state.mainModel || state.model || "localllm-deep"}`);
         return true;
       }
       printAgentMessage(
-        `Main model: ${state.mainProvider || state.provider || "deepseek"}/${state.mainModel || state.model || "deepseek-v4-pro"}\nUse /model deepseek/deepseek-v4-pro or /model auto.`
+        `Main model: ${state.mainProvider || state.provider || "localllm"}/${state.mainModel || state.model || "localllm-deep"}\nUse /model localllm/localllm-deep or /model auto.`
       );
       return true;
     }
@@ -4210,10 +4305,10 @@ async function handleCommand(line, state, packageDir) {
       return true;
     }
     const parts = value.split(/\s+/).filter(Boolean);
-    const selected = parseProviderModel(parts[0] || value, state.mainProvider || state.provider || "deepseek");
+    const selected = parseProviderModel(parts[0] || value, state.mainProvider || state.provider || "localllm");
     if (command === "main" || selected.provider) {
-      state.mainProvider = selected.provider || "deepseek";
-      state.mainModel = selected.model || "deepseek-v4-pro";
+      state.mainProvider = selected.provider || "localllm";
+      state.mainModel = selected.model || "localllm-deep";
       if (isReasoningLevel(parts[1])) state.mainReasoning = reasoningConfigValue(parts[1]);
       if (command === "model") {
         state.provider = state.mainProvider;
@@ -4237,9 +4332,9 @@ async function handleCommand(line, state, packageDir) {
       return true;
     }
     const parts = value.split(/\s+/).filter(Boolean);
-    const selected = parseProviderModel(parts[0] || "", state.spareProvider || "openai");
-    state.spareProvider = selected.provider || "openai";
-    state.spareModel = selected.model || state.spareModel || "gpt-5.4";
+    const selected = parseProviderModel(parts[0] || "", state.spareProvider || "localllm");
+    state.spareProvider = selected.provider || "localllm";
+    state.spareModel = selected.model || state.spareModel || "localllm-deep";
     if (isReasoningLevel(parts[1])) state.spareReasoning = reasoningConfigValue(parts[1]);
     printSystemLine(`spare=${state.spareProvider}/${state.spareModel}${formatReasoningSuffix(state.spareReasoning)}`);
     return true;
@@ -4372,6 +4467,8 @@ async function handleCommand(line, state, packageDir) {
 
 async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) {
   const controller = new AbortController();
+  const runtimePatch = interactiveRuntimePatch(state);
+  const expectedRuntimeRevision = state.runtimeSnapshot ? state.runtimeRevision : undefined;
   const runMaxSteps = Math.max(
     state.maxSteps,
     recommendedMaxStepsForTask({
@@ -4381,6 +4478,7 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
   );
   const config = loadConfig(
     {
+      ...interactiveRuntimeArgs(state),
       provider: state.provider,
       model: state.model,
       routingMode: state.routingMode,
@@ -4392,6 +4490,10 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
       allowShellTool: state.allowShellTool,
       allowFileTools: state.allowFileTools,
       allowAuxiliaryTools: state.allowAuxiliaryTools,
+      allowHostedImagePerception: state.allowHostedImagePerception,
+      allowHostedWebResearch: state.allowHostedWebResearch,
+      allowHostedJsonSpecialist: state.allowHostedJsonSpecialist,
+      allowHostedWritingSpecialist: state.allowHostedWritingSpecialist,
       allowWebSearch: state.allowWebSearch,
       allowMcpTools: state.allowMcpTools,
       allowParallelScouts: state.allowParallelScouts,
@@ -4404,8 +4506,10 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
       preferredWrapper: state.preferredWrapper,
       routeProvider: state.routeProvider,
       routeModel: state.routeModel,
+      routeReasoning: state.routeReasoning,
       mainProvider: state.mainProvider,
       mainModel: state.mainModel,
+      mainReasoning: state.mainReasoning,
       spareProvider: state.spareProvider,
       spareModel: state.spareModel,
       spareReasoning: state.spareReasoning,
@@ -4426,6 +4530,10 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
     },
     { packageDir, baseDir: process.cwd() }
   );
+  if (expectedRuntimeRevision !== undefined) {
+    config.expectedRuntimeRevision = expectedRuntimeRevision;
+    if (runtimePatch) config.runtimePatch = runtimePatch;
+  }
 
   state.sessionId = config.resume || config.sessionId || state.sessionId;
   state.status = "running";
@@ -4543,6 +4651,16 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
     clearRunForceExit();
   }
   if (runError) {
+    // runAgent durably accepts a continuation and any CAS runtime patch before
+    // provider readiness. Refresh even on failure so the next interactive turn
+    // uses the persisted revision instead of getting stuck on a stale CAS.
+    try {
+      await hydrateInteractiveSessionRuntime(state, state.sessionId);
+    } catch (refreshError) {
+      printSystemLine(
+        `runtime refresh failed; use /resume ${state.sessionId}: ${compactLine(refreshError?.message || refreshError, 96)}`
+      );
+    }
     state.status = isAbortError(runError) ? "stopped" : "failed";
     state.activeGoal = "";
     printSystemLine(`status=${state.status} session=${state.sessionId}`);
@@ -4552,6 +4670,12 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
     throw runError;
   }
   state.sessionId = result.sessionId || state.sessionId;
+  try {
+    await hydrateInteractiveSessionRuntime(state, state.sessionId);
+  } catch (error) {
+    clearActiveRunControl(controller);
+    throw error;
+  }
   state.status = result.stopped ? "stopped" : "idle";
   state.activeGoal = "";
   printSystemLine(`status=${state.status} session=${state.sessionId}`);
@@ -4578,6 +4702,14 @@ async function runPrompt(prompt, state, packageDir, { approvalDepth = 0 } = {}) 
 
 export async function startInteractiveCli(args = {}, { packageDir, packageVersion, webAppUrl = "", webAppNotice = "" } = {}) {
   const state = createState({ ...args, webAppUrl, webAppNotice });
+  if (state.sessionId) {
+    await hydrateInteractiveSessionRuntime(state, state.sessionId, {
+      runtimePatch: state.initialRuntimePatch,
+      expectedRuntimeRevision: state.initialExpectedRuntimeRevision,
+    });
+  }
+  delete state.initialRuntimePatch;
+  delete state.initialExpectedRuntimeRevision;
   const detachProcessInterrupts = installProcessInterruptHandlers();
   setCliLanguage(state.language);
   const rl =

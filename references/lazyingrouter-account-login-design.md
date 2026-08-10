@@ -4,6 +4,8 @@ Date: 2026-05-31
 
 Purpose: define the later-stage integration where a user logs into LazyingRouter once, authorizes AgInTiFlow, and then uses AgInTiFlow without pasting OpenAI, DeepSeek, OpenRouter, Venice, GRS AI, or other upstream provider keys.
 
+Runtime freshness note: this document describes an optional future hosted account flow. The current default is the loopback LocalLLM Fast/Deep runtime documented in [Local-First Agent Runtime](../docs/local-first-agent-runtime.md). LazyingRouter must be selected and authorized explicitly; saved or ambient hosted credentials must never activate it, enable auxiliary image generation, or create a cloud fallback.
+
 ## Product Goal
 
 AgInTiFlow should support two credential modes:
@@ -34,7 +36,7 @@ Relevant files:
 
 - `src/auth-onboarding.js`: defines `MAIN_AUTH_PROVIDERS`, normalizes auth provider names, and prompts for pasted provider keys.
 - `src/project.js`: stores direct provider keys in ignored `.aginti/.env` with local permission control.
-- `src/config.js`: picks the active provider from environment variables such as `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `QWEN_API_KEY`, and `VENICE_API_KEY`.
+- `src/config.js`: resolves the explicitly selected provider. The default is `AGENT_PROVIDER=localllm`; hosted environment variables supply credentials only and do not select a provider or create fallback order.
 - `src/model-routing.js`: returns provider defaults for `deepseek`, `openai`, `openrouter`, `qwen`, `venice`, and `mock`.
 - `src/model-client.js`: creates an OpenAI SDK client from `apiKey` and `baseURL`.
 - `web.js`: exposes key status and provider-key save APIs, and has a provider allow-list in preference normalization.
@@ -49,7 +51,7 @@ The current direct-key flow is:
 1. User runs `aginti auth`, `aginti login <provider>`, or `aginti keys set <provider> --stdin`.
 2. AgInTiFlow asks the user to paste a provider API key.
 3. `setProviderKey()` writes that secret into project-local `.aginti/.env`.
-4. `resolveRuntimeConfig()` selects a provider and builds `{provider, apiKey, baseURL, model}`.
+4. `resolveRuntimeConfig()` keeps the LocalLLM default or resolves the provider selected explicitly, then builds `{provider, apiKey, baseURL, model}`. Discovering a hosted key does not change that choice.
 5. `createClient()` sends requests through the OpenAI SDK.
 
 This flow should stay available. It is useful for development, private labs, and users who intentionally bring their own keys.
@@ -88,7 +90,7 @@ AgInTiFlow model routing should remain role-based. LazyingRouter is supply and b
 
 Use a simple device authorization flow instead of asking the user to copy keys.
 
-1. User runs `aginti login lazyingrouter`, clicks "Login with LazyingRouter" in web settings, or starts AgInTiFlow with no direct provider key.
+1. User explicitly runs `aginti login lazyingrouter` or clicks "Login with LazyingRouter" in web settings.
 2. AgInTiFlow generates or reuses a local install id and calls:
 
 ```http
@@ -204,7 +206,7 @@ Add provider identity:
 - Add `LAZYINGROUTER_*` keys to `LOCAL_ENV_KEYS` and provider key candidates in `src/project.js`.
 - Add key status fields and preview masking in `providerKeyStatus()` and `providerKeyPreview()`.
 - Add a `getProviderDefaults("lazyingrouter")` branch in `src/model-routing.js`.
-- Update `resolveRuntimeConfig()` in `src/config.js` to choose LazyingRouter when `LAZYINGROUTER_API_KEY` exists.
+- Update `resolveRuntimeConfig()` in `src/config.js` to support LazyingRouter only when it is selected explicitly; `LAZYINGROUTER_API_KEY` alone must never choose it.
 - Update web preference allow-lists in `web.js`.
 - Add command and interactive handlers for login/logout/status.
 
@@ -226,7 +228,7 @@ Text/chat integration can be v1 because LazyingRouter already exposes OpenAI-com
 Image generation should be a separate v1.1 or v2 item unless LazyingRouter exposes an image endpoint with stable semantics. Current AgInTiFlow image generation depends on direct GRS AI and Venice keys in `src/auxiliary-tools.js`. Later options:
 
 - LazyingRouter exposes `/v1/images/generations`, then AgInTiFlow routes image generation through LazyingRouter when provider is `lazyingrouter`.
-- AgInTiFlow keeps direct image provider keys as optional advanced configuration.
+- AgInTiFlow keeps direct image provider keys as optional advanced configuration; image tools remain off until the user explicitly enables them.
 - LazyingRouter returns a clear unsupported error for SVG/vector and can offer PNG generation when available.
 
 ## Security Rules
@@ -253,7 +255,6 @@ Minimum TDV cases:
 
 ## Open Design Decisions
 
-1. Default precedence: if both `LAZYINGROUTER_API_KEY` and direct upstream keys exist, the recommended default is LazyingRouter unless the user explicitly selects direct provider mode.
+1. Provider selection: LocalLLM remains the default regardless of which hosted keys exist. A user must explicitly select LazyingRouter or a direct hosted provider; credentials never establish precedence or fallback order.
 2. Token funding: LazyingRouter must decide whether app tokens draw directly from user wallet/subscription or use allocated token quota. AgInTiFlow should not care as long as status and error semantics are stable.
-3. Image generation: decide whether LazyingRouter will proxy image providers or leave direct auxiliary keys as the default advanced path.
-
+3. Image generation: decide whether LazyingRouter will proxy image providers or leave direct auxiliary keys as an optional advanced path. Either way, auxiliary image generation remains disabled until explicitly enabled.

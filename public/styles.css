@@ -1899,6 +1899,54 @@ button.danger {
   color: inherit;
 }
 
+.markdown-body .math-rendered,
+.markdown-body .math-fallback {
+  color: inherit;
+}
+
+.markdown-body .math-inline {
+  display: inline-block;
+  max-width: 100%;
+  padding-inline: 0.08em;
+  vertical-align: -0.08em;
+}
+
+.markdown-body .math-display {
+  display: block;
+  max-width: 100%;
+  margin: 0.3rem 0 0.9rem;
+  padding: 0.45rem 0.2rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.markdown-body .math-display:focus-visible {
+  border-radius: 8px;
+  outline: 2px solid #0f766e;
+  outline-offset: 2px;
+}
+
+.markdown-body .math-display .katex-display {
+  min-width: max-content;
+  margin: 0;
+}
+
+.markdown-body .math-fallback {
+  border-color: rgba(180, 83, 9, 0.28);
+  background: rgba(254, 243, 199, 0.62);
+  color: #92400e;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+@media (forced-colors: active) {
+  .markdown-body .math-fallback {
+    border: 1px solid CanvasText;
+  }
+}
+
 .markdown-body blockquote {
   padding: 0.2rem 0 0.2rem 0.9rem;
   border-left: 4px solid rgba(15, 118, 110, 0.32);

@@ -16,7 +16,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const bearerToken = "safe-chat-smoke-bearer-value";
 const providerKey = "safe-chat-smoke-provider-key";
 const providerModel = "server-owned-smoke-model";
-const providerBaseUrl = "https://api.deepseek.com/v1";
+const providerBaseUrl = "http://127.0.0.1:8008/v1";
 const fakeApiAssignment = ["api", "_key=", "provider-secret-that-must-not-leak"].join("");
 const fakeJwt = [
   "eyJhbGciOiJIUzI1NiJ9",
@@ -33,10 +33,11 @@ const credentialedProviderUrl = [
 
 const enabledEnv = {
   AGINTI_SAFE_CHAT_ENABLED: "1",
+  AGINTI_SAFE_CHAT_PROVIDER: "localllm",
   AGINTI_SAFE_CHAT_BEARER_TOKEN: bearerToken,
-  AGINTI_SAFE_CHAT_DEEPSEEK_API_KEY: providerKey,
-  AGINTI_SAFE_CHAT_DEEPSEEK_MODEL: providerModel,
-  AGINTI_SAFE_CHAT_DEEPSEEK_BASE_URL: providerBaseUrl,
+  AGINTI_SAFE_CHAT_API_KEY: providerKey,
+  AGINTI_SAFE_CHAT_MODEL: providerModel,
+  AGINTI_SAFE_CHAT_BASE_URL: providerBaseUrl,
   AGINTI_SAFE_CHAT_TIMEOUT_MS: "1000",
   AGINTI_SAFE_CHAT_MAX_CONCURRENCY: "1",
   AGINTI_SAFE_CHAT_MAX_TOKENS: "512",
@@ -103,12 +104,24 @@ async function wrapperChecks() {
   assert.equal(disabled.modelExposed, false);
   assert.equal(disabled.providerExposed, false);
 
-  const missingKey = getSafeChatStatus({ AGINTI_SAFE_CHAT_ENABLED: "1" });
+  const localDefault = getSafeChatStatus({ AGINTI_SAFE_CHAT_ENABLED: "1" });
+  assert.equal(localDefault.available, true);
+  assert.equal(localDefault.modelExposed, false);
+  assert.equal(localDefault.providerExposed, false);
+
+  assert.throws(
+    () => getSafeChatStatus({ AGINTI_SAFE_CHAT_ENABLED: "1", AGINTI_SAFE_CHAT_PROVIDER: "ollama" }),
+    (error) => error?.code === "PROVIDER_UNKNOWN",
+    "safe chat must reject unknown/raw engine provider labels instead of silently selecting LocalLLM"
+  );
+
+  const missingKey = getSafeChatStatus({ AGINTI_SAFE_CHAT_ENABLED: "1", AGINTI_SAFE_CHAT_PROVIDER: "deepseek" });
   assert.equal(missingKey.available, false);
   assert.match(missingKey.unavailableReason, /credentials/i);
 
   const invalidEndpoint = getSafeChatStatus({
     AGINTI_SAFE_CHAT_ENABLED: "1",
+    AGINTI_SAFE_CHAT_PROVIDER: "deepseek",
     AGINTI_SAFE_CHAT_DEEPSEEK_API_KEY: providerKey,
     AGINTI_SAFE_CHAT_DEEPSEEK_BASE_URL: "http://127.0.0.1:9999",
   });
@@ -117,34 +130,39 @@ async function wrapperChecks() {
 
   const privateEndpoint = getSafeChatStatus({
     AGINTI_SAFE_CHAT_ENABLED: "1",
+    AGINTI_SAFE_CHAT_PROVIDER: "deepseek",
     AGINTI_SAFE_CHAT_DEEPSEEK_API_KEY: providerKey,
     AGINTI_SAFE_CHAT_DEEPSEEK_BASE_URL: "https://127.0.0.1/v1",
   });
   assert.equal(privateEndpoint.available, false);
 
   for (const rejectedBaseUrl of [
-    "https://deepseek-smoke.invalid/v1",
-    "https://api.deepseek.com./v1",
+    "http://api.deepseek.com/v1",
+    "https://127.0.0.1/v1",
     credentialedProviderUrl,
-    "https://api.deepseek.com:8443/v1",
     "https://api.deepseek.com/v1?token=secret",
     "https://api.deepseek.com/v1#fragment",
   ]) {
     const rejected = getSafeChatStatus({
       AGINTI_SAFE_CHAT_ENABLED: "1",
+      AGINTI_SAFE_CHAT_PROVIDER: "deepseek",
       AGINTI_SAFE_CHAT_DEEPSEEK_API_KEY: providerKey,
       AGINTI_SAFE_CHAT_DEEPSEEK_BASE_URL: rejectedBaseUrl,
     });
     assert.equal(rejected.available, false, `unsafe base URL was accepted: ${rejectedBaseUrl}`);
   }
   const explicitDefaultPort = getSafeChatStatus({
-    ...enabledEnv,
+    AGINTI_SAFE_CHAT_ENABLED: "1",
+    AGINTI_SAFE_CHAT_PROVIDER: "deepseek",
+    AGINTI_SAFE_CHAT_DEEPSEEK_API_KEY: providerKey,
+    AGINTI_SAFE_CHAT_DEEPSEEK_MODEL: providerModel,
     AGINTI_SAFE_CHAT_DEEPSEEK_BASE_URL: "https://api.deepseek.com:443/v1",
   });
   assert.equal(explicitDefaultPort.available, true);
 
   const invalidModel = getSafeChatStatus({
     AGINTI_SAFE_CHAT_ENABLED: "1",
+    AGINTI_SAFE_CHAT_PROVIDER: "deepseek",
     AGINTI_SAFE_CHAT_DEEPSEEK_API_KEY: providerKey,
     AGINTI_SAFE_CHAT_DEEPSEEK_MODEL: "bad model value",
   });

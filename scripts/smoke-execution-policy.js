@@ -9,6 +9,8 @@ import {
   createContextBudgetState,
   decideContextCompaction,
   estimateMessageChars,
+  estimateMessageTokens,
+  estimateToolSchemaTokens,
   recordContextCompaction,
 } from "../src/context-budget-controller.js";
 import { maxStepsForExecutionPolicy, selectExecutionPolicy } from "../src/execution-policy.js";
@@ -90,6 +92,40 @@ try {
   assert(simpleEvents.some((event) => event.type === "plan.skipped"), "focused runtime did not record plan.skipped");
   assert(!simpleEvents.some((event) => event.type === "plan.requested"), "focused runtime still made a planning request");
 
+  const localConfig = resolveRuntimeConfig(
+    { provider: "localllm", routingMode: "manual", model: "localllm-deep", goal: "Implement and verify a parser." },
+    { baseDir: runtimeDir, packageDir: repoRoot, provider: "localllm", routingMode: "manual", model: "localllm-deep" }
+  );
+  assert(localConfig.contextWindowTokens === 32768, "LocalLLM did not receive its conservative context window");
+  assert(localConfig.maxOutputTokens === 8192, "LocalLLM output was not bounded and reserved");
+  assert(localConfig.contextToolReserveTokens === 4096, "LocalLLM tool schemas have no context reserve");
+  assert(!localConfig.allowParallelScouts, "LocalLLM silently enabled hosted parallel scouts");
+  assert(!localConfig.allowWrapperTools, "LocalLLM silently enabled hosted agent wrappers");
+
+  const hostedWrapperDefault = resolveRuntimeConfig(
+    { provider: "openai", routingMode: "manual", model: "gpt-5.4-mini", goal: "Explain one function." },
+    { baseDir: runtimeDir, packageDir: repoRoot, provider: "openai", routingMode: "manual", model: "gpt-5.4-mini" }
+  );
+  assert(!hostedWrapperDefault.allowWrapperTools, "an installed wrapper silently enabled itself for a hosted provider");
+  const hostedWrapperOptIn = resolveRuntimeConfig(
+    {
+      provider: "openai",
+      routingMode: "manual",
+      model: "gpt-5.4-mini",
+      goal: "Ask the explicitly enabled wrapper for advice.",
+      allowWrapperTools: true,
+    },
+    {
+      baseDir: runtimeDir,
+      packageDir: repoRoot,
+      provider: "openai",
+      routingMode: "manual",
+      model: "gpt-5.4-mini",
+      allowWrapperTools: true,
+    }
+  );
+  assert(hostedWrapperOptIn.allowWrapperTools, "explicit wrapper permission was not preserved");
+
   const complexConfig = resolveRuntimeConfig(
     {
       provider: "mock",
@@ -117,10 +153,14 @@ try {
   );
   assert(complexConfig.executionTier === "thorough", "complex runtime did not select thorough execution");
   const complexRun = await runAgent(complexConfig);
-  assert(!complexRun.stopped && !complexRun.failed, "thorough runtime did not finish");
+  assert(complexRun.stopped && complexRun.reason === "model_did_not_execute", "thorough runtime did not stop truthfully without execution tools");
   const complexEvents = await new SessionStore(complexConfig.sessionsDir, complexRun.sessionId).loadEvents();
   assert(complexEvents.some((event) => event.type === "plan.requested"), "thorough runtime skipped its planning request");
   assert(complexEvents.some((event) => event.type === "plan.created"), "thorough runtime did not persist its plan");
+  assert(
+    complexEvents.some((event) => event.type === "completion.evidence_rejected"),
+    "thorough runtime did not record missing execution evidence"
+  );
 
   const longToolOutput = "verified-output ".repeat(1400);
   const contextState = {
@@ -173,6 +213,26 @@ try {
     charsAfter,
   });
   assert(recorded.compactions === 1 && recorded.lastCompactedStep === 6, "context compaction state was not recorded");
+
+  const denseState = { meta: {}, messages: [{ role: "user", content: "高密度上下文".repeat(1200) }] };
+  const denseBudget = createContextBudgetState(
+    {
+      contextBudgetMode: "auto",
+      contextBudgetChars: 1_000_000,
+      contextWindowTokens: 12000,
+      maxOutputTokens: 4000,
+      contextToolReserveTokens: 3000,
+    },
+    denseState
+  );
+  const denseDecision = decideContextCompaction({ state: denseState, budget: denseBudget, step: 1 });
+  assert(denseBudget.maxInputTokens === 5000, "token reserves were not subtracted from the LocalLLM window");
+  assert(estimateMessageTokens(denseState.messages) > denseBudget.maxInputTokens, "dense Unicode estimator was not conservative");
+  assert(denseDecision.compact && /token input budget/.test(denseDecision.reason), "dense Unicode did not trigger token-aware compaction");
+  assert(
+    estimateToolSchemaTokens([{ type: "function", function: { name: "fixture", description: "schema ".repeat(600) } }]) > 1000,
+    "tool-schema estimator ignored serialized schema cost"
+  );
 
   console.log("smoke-execution-policy ok");
 } finally {

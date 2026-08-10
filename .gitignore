@@ -6,6 +6,7 @@ node_modules/
 .aginti/.env.*
 !.aginti/.env.example
 .aginti/codebase-map.json
+/.aginti/long-jobs/
 .npmrc
 .aaps-work/
 .aginti-work/
@@ -17,3 +18,7 @@ yarn-error.log*
 .aginti-sessions/
 playwright-report/
 test-results/
+/aginti-*.log
+/aginti-*.txt
+/artifacts/
+/mock-output.txt

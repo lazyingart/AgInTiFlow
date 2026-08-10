@@ -11,6 +11,7 @@ import {
   buildPromptRenderSequence,
   ComposerHistory,
   activeRunSlashCommandAction,
+  applyAuthWizardState,
   canonicalSlashPromptBuffer,
   classifyEscapeAction,
   formatElapsedDuration,
@@ -18,7 +19,13 @@ import {
   shouldIgnorePromptSubmission,
   stripMarkdown,
 } from "../src/interactive-cli.js";
-import { formatSessionChoices, parseArgs, parseResumeCommandArgs, splitResumeCommandArgv } from "../src/cli.js";
+import {
+  buildResumeRuntimePatch,
+  formatSessionChoices,
+  parseArgs,
+  parseResumeCommandArgs,
+  splitResumeCommandArgv,
+} from "../src/cli.js";
 import { dockerPolicyTimeoutMs, dockerUserCommand } from "../src/docker-sandbox.js";
 import { formatBehaviorContractForPrompt } from "../src/behavior-contract.js";
 import { SUPPORTED_LANGUAGES, t } from "../src/i18n.js";
@@ -74,7 +81,7 @@ function runChat(inputText) {
   );
 }
 
-function runCli(args, inputText) {
+function runCli(args, inputText, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [binPath, ...args], {
       cwd: tempRoot,
@@ -86,6 +93,7 @@ function runCli(args, inputText) {
         AGINTIFLOW_NO_WEB_AUTO_START: "1",
         AGINTIFLOW_PREVIEW_TTL_MS: "1000",
         AGINTI_LANGUAGE: "en",
+        ...(options.env || {}),
       },
     });
 
@@ -123,6 +131,189 @@ function runCli(args, inputText) {
 
     child.stdin.end(inputText);
   });
+}
+
+async function waitForOutput(readOutput, pattern, timeoutMs = 10000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const value = readOutput();
+    if (pattern.test(value)) return value;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const tail = String(readOutput() || "").slice(-4000);
+  throw new Error(`timed out waiting for CLI output ${pattern}\noutput tail:\n${tail}`);
+}
+
+async function runStaleRuntimeCasSmoke(sessionId, statePath) {
+  const secret = "must-not-persist-stale-cli-secret";
+  const child = spawn(process.execPath, [binPath, "resume", sessionId], {
+    cwd: tempRoot,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      AGINTIFLOW_RUNTIME_DIR: "",
+      AGINTIFLOW_HOME: agintiflowHome,
+      AGINTIFLOW_NO_WEB_AUTO_START: "1",
+      AGINTIFLOW_PREVIEW_TTL_MS: "1000",
+      AGINTI_LANGUAGE: "en",
+      AGENT_PROVIDER: "openai",
+      OPENAI_API_KEY: secret,
+      LLM_API_KEY: secret,
+    },
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += String(chunk);
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+  const closed = new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => resolve(code));
+  });
+
+  try {
+    const before = JSON.parse(await fs.readFile(statePath, "utf8"));
+    const expectedRevision = before.meta.runtimeConfig.revision;
+    await waitForOutput(() => `${stdout}\n${stderr}`, new RegExp(`runtimeRevision=${expectedRevision}\\b`));
+
+    const concurrent = JSON.parse(await fs.readFile(statePath, "utf8"));
+    const chatLength = Array.isArray(concurrent.chat) ? concurrent.chat.length : 0;
+    concurrent.meta.runtimeConfig.revision += 1;
+    await fs.writeFile(statePath, `${JSON.stringify(concurrent, null, 2)}\n`, "utf8");
+
+    const rejectedPrompt = "stale runtime prompt must not reach inference";
+    child.stdin.end(`${rejectedPrompt}\n/exit\n`);
+    const code = await closed;
+    if (code !== 0) throw new Error(`stale CAS CLI exited ${code}\n${stdout}\n${stderr}`);
+    if (!`${stdout}\n${stderr}`.includes("Session runtime revision conflict")) {
+      throw new Error(`stale interactive resume did not report the runtime CAS conflict\n${stdout}\n${stderr}`);
+    }
+    const after = JSON.parse(await fs.readFile(statePath, "utf8"));
+    if ((after.chat || []).length !== chatLength || JSON.stringify(after.chat || []).includes(rejectedPrompt)) {
+      throw new Error("stale interactive resume reached inference or mutated chat before the CAS failure");
+    }
+    if (JSON.stringify(after).includes(secret)) {
+      throw new Error("stale interactive resume persisted credential material");
+    }
+  } finally {
+    if (child.exitCode === null) child.kill("SIGTERM");
+  }
+}
+
+async function runFailedPreflightRuntimeRefreshSmoke(sessionId, statePath) {
+  const before = JSON.parse(await fs.readFile(statePath, "utf8"));
+  const beforeRevision = before.meta.runtimeConfig.revision;
+  const failedPrompt = "persist this prompt even though the selected provider has no key";
+  const recoveredPrompt = "Continue locally after the failed provider preflight.";
+  const child = spawn(
+    process.execPath,
+    [binPath, "chat", "--provider", "mock", "--routing", "manual", "--sandbox-mode", "host"],
+    {
+      cwd: tempRoot,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        AGINTIFLOW_RUNTIME_DIR: "",
+        AGINTIFLOW_HOME: agintiflowHome,
+        AGINTIFLOW_NO_WEB_AUTO_START: "1",
+        AGINTIFLOW_PREVIEW_TTL_MS: "1000",
+        AGINTI_LANGUAGE: "en",
+        OPENAI_API_KEY: "",
+        LLM_API_KEY: "",
+      },
+    }
+  );
+  let stdout = "";
+  let stderr = "";
+  let combinedOutput = "";
+  child.stdout.on("data", (chunk) => {
+    const value = String(chunk);
+    stdout += value;
+    combinedOutput += value;
+  });
+  child.stderr.on("data", (chunk) => {
+    const value = String(chunk);
+    stderr += value;
+    combinedOutput += value;
+  });
+  const output = () => combinedOutput;
+  const closed = new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => resolve(code));
+  });
+
+  try {
+    await waitForOutput(output, /status=idle/);
+    let outputCursor = output().length;
+    child.stdin.write(`/resume ${sessionId}\n`);
+    await waitForOutput(
+      () => output().slice(outputCursor),
+      new RegExp(`runtime revision=${beforeRevision}\\b[\\s\\S]*user>`)
+    );
+    outputCursor = output().length;
+    child.stdin.write("/provider openai\n");
+    await waitForOutput(() => output().slice(outputCursor), /provider=openai\b[\s\S]*user>/);
+    outputCursor = output().length;
+    child.stdin.write(`${failedPrompt}\n`);
+    await waitForOutput(
+      () => output().slice(outputCursor),
+      /(?:API_KEY_REQUIRED|Missing API key for provider)[\s\S]*user>/
+    );
+    outputCursor = output().length;
+    child.stdin.write("/status\n");
+    await waitForOutput(
+      () => output().slice(outputCursor),
+      new RegExp(`runtimeRevision=${beforeRevision + 1}\\b[\\s\\S]*user>`)
+    );
+    outputCursor = output().length;
+    child.stdin.write("/provider mock\n");
+    await waitForOutput(() => output().slice(outputCursor), /provider=mock\b[\s\S]*user>/);
+    outputCursor = output().length;
+    child.stdin.write(`${recoveredPrompt}\n`);
+    await waitForOutput(() => output().slice(outputCursor), /Mock run complete[\s\S]*user>/);
+    child.stdin.end("/exit\n");
+    const code = await closed;
+    if (code !== 0) throw new Error(`interactive failure recovery exited ${code}\n${output()}`);
+  } finally {
+    if (child.exitCode === null) child.kill("SIGTERM");
+  }
+
+  const renderedOutput = output();
+  if (!renderedOutput.includes("API_KEY_REQUIRED") || !renderedOutput.includes("Missing API key for provider")) {
+    throw new Error(`interactive provider preflight failure was not visible\n${renderedOutput}`);
+  }
+  if (renderedOutput.includes("Session runtime revision conflict")) {
+    throw new Error(`interactive runtime revision remained stale after preflight failure\n${renderedOutput}`);
+  }
+
+  const after = JSON.parse(await fs.readFile(statePath, "utf8"));
+  if (
+    after.meta.runtimeConfig.revision !== beforeRevision + 2 ||
+    after.meta.runtimeConfig.provider !== "mock" ||
+    after.meta.runtimeConfig.model !== "mock-agent"
+  ) {
+    throw new Error(
+      `interactive failure recovery did not hydrate and advance the persisted runtime revisions: ${JSON.stringify({
+        beforeRevision,
+        afterRevision: after.meta.runtimeConfig.revision,
+        provider: after.meta.runtimeConfig.provider,
+        model: after.meta.runtimeConfig.model,
+        output: renderedOutput.slice(-2000),
+      })}`
+    );
+  }
+  const serializedChat = JSON.stringify(after.chat || []);
+  if (!serializedChat.includes(failedPrompt) || !serializedChat.includes(recoveredPrompt) || !serializedChat.includes("Mock run complete")) {
+    throw new Error("interactive failure recovery lost the failed prompt or the successful follow-up");
+  }
+  const eventsPath = path.join(path.dirname(statePath), "events.jsonl");
+  const events = await fs.readFile(eventsPath, "utf8");
+  if (!events.includes('"type":"session.failed"') || !events.includes('"code":"API_KEY_REQUIRED"')) {
+    throw new Error("interactive missing-key failure did not persist a typed session.failed event");
+  }
 }
 
 function shellQuote(value = "") {
@@ -589,6 +780,21 @@ try {
   if (activeRunSlashCommandAction("continue writing") !== "") {
     throw new Error("active normal input should still pipe into the running task");
   }
+  const auxiliaryCredentialState = {
+    provider: "mock",
+    model: "mock-agent",
+    routingMode: "manual",
+    allowAuxiliaryTools: false,
+  };
+  applyAuthWizardState({ saved: [{ provider: "grsai", keyName: "GRSAI" }] }, auxiliaryCredentialState);
+  if (
+    auxiliaryCredentialState.allowAuxiliaryTools !== false ||
+    auxiliaryCredentialState.provider !== "mock" ||
+    auxiliaryCredentialState.model !== "mock-agent" ||
+    auxiliaryCredentialState.routingMode !== "manual"
+  ) {
+    throw new Error("saving an auxiliary provider credential changed agent routing or enabled image tools without an explicit opt-in");
+  }
   const composerHistory = new ComposerHistory([
     "first prompt",
     "second prompt\nwith code",
@@ -712,6 +918,36 @@ try {
   ) {
     throw new Error("resume subcommand options after the session id should remain options, not prompt text");
   }
+  const resumeRuntimeOptions = [
+    "--provider",
+    "mock",
+    "--model",
+    "mock-agent",
+    "--route-reasoning",
+    "high",
+    "--no-web-search",
+    "--no-auxiliary-tools",
+    "--permission-mode",
+    "safe",
+  ];
+  const resumeRuntimePatch = buildResumeRuntimePatch(resumeRuntimeOptions, parseArgs(resumeRuntimeOptions));
+  if (
+    resumeRuntimePatch.provider !== "mock" ||
+    resumeRuntimePatch.model !== "mock-agent" ||
+    resumeRuntimePatch.routeReasoning !== "high" ||
+    resumeRuntimePatch.allowWebSearch !== false ||
+    resumeRuntimePatch.allowAuxiliaryTools !== false ||
+    resumeRuntimePatch.permissionMode !== "safe" ||
+    resumeRuntimePatch.workspaceWritePolicy !== "prompt" ||
+    resumeRuntimePatch.useDockerSandbox !== true ||
+    Object.prototype.hasOwnProperty.call(resumeRuntimePatch, "apiKey") ||
+    Object.prototype.hasOwnProperty.call(resumeRuntimePatch, "baseURL")
+  ) {
+    throw new Error("explicit resume options did not become a provider-neutral, credential-free runtime patch");
+  }
+  if (Object.keys(buildResumeRuntimePatch([], parseArgs([]))).length !== 0) {
+    throw new Error("ordinary resume should not turn ambient/default CLI values into a runtime patch");
+  }
   const resumePromptAfterDash = parseResumeCommandArgs(["web-agent-smoke", "--provider", "mock", "--", "--provider should be prompt"]);
   if (
     resumePromptAfterDash.sessionId !== "web-agent-smoke" ||
@@ -805,7 +1041,8 @@ try {
   const statusFooterResult = await runChat("/status\n");
   if (
     !statusFooterResult.stdout.includes(`cwd=${tempRoot} scs=auto aaps=off venice=off`) ||
-    !statusFooterResult.stdout.includes("permission=")
+    !statusFooterResult.stdout.includes("permission=") ||
+    !statusFooterResult.stdout.includes("auxiliary=false")
   ) {
     throw new Error("interactive /status did not include scs/aaps/venice mode state on the cwd line");
   }
@@ -859,9 +1096,10 @@ try {
     !abbreviatedVeniceResult.stdout.includes("venice=on") ||
     !abbreviatedVeniceResult.stdout.includes("route=venice/venice-uncensored-1-2") ||
     !veniceOffResult.stdout.includes("venice=off") ||
-    !veniceOffResult.stdout.includes("route=deepseek/deepseek-v4-flash")
+    !veniceOffResult.stdout.includes("route=localllm/localllm-fast") ||
+    !veniceOffResult.stdout.includes("main=localllm/localllm-deep")
   ) {
-    throw new Error("interactive /ve prefix did not toggle Venice roles and restore DeepSeek defaults");
+    throw new Error("interactive /ve prefix did not toggle Venice roles and restore LocalLLM defaults");
   }
   await runChat("remember that this project prefers pytest smoke tests in AGINTI.md\n/exit\n");
   const updatedInstructions = await fs.readFile(path.join(tempRoot, "AGINTI.md"), "utf8");
@@ -880,6 +1118,8 @@ try {
   if (!result.stdout.includes("status=idle session=")) {
     throw new Error("interactive chat did not print final run status");
   }
+  const resumedSessionId = [...result.stdout.matchAll(/status=idle session=([^\s]+)/g)].at(-1)?.[1] || "";
+  if (!resumedSessionId) throw new Error("interactive chat did not expose a resumable session id");
   if (!/aginti>\s*\r?\n\s*\|\s+Mock run complete\./.test(result.stdout)) {
     throw new Error("assistant response did not render with a fresh-line response gutter");
   }
@@ -913,6 +1153,59 @@ try {
   if (latest.stdout.includes("showing=")) {
     throw new Error("resume history should render full saved messages instead of compact previews");
   }
+
+  const resumeStatePath = path.join(agintiflowHome, "sessions", resumedSessionId, "state.json");
+  const runtimeBeforeAmbientResume = JSON.parse(await fs.readFile(resumeStatePath, "utf8"));
+  const ambientSecret = "must-not-persist-cli-resume-secret";
+  const ordinaryResume = await runCli(
+    ["resume", resumedSessionId, "--", "Continue this saved mock session without changing its runtime."],
+    "",
+    {
+      env: {
+        AGENT_PROVIDER: "openai",
+        LLM_MODEL: "ambient-cloud-model",
+        OPENAI_API_KEY: ambientSecret,
+        LLM_API_KEY: ambientSecret,
+      },
+    }
+  );
+  const runtimeAfterAmbientResume = JSON.parse(await fs.readFile(resumeStatePath, "utf8"));
+  if (
+    runtimeAfterAmbientResume.meta.runtimeConfig.provider !== "mock" ||
+    runtimeAfterAmbientResume.meta.runtimeConfig.model !== "mock-agent" ||
+    runtimeAfterAmbientResume.meta.runtimeConfig.revision !== runtimeBeforeAmbientResume.meta.runtimeConfig.revision ||
+    ordinaryResume.stdout.includes("No main model API key") ||
+    JSON.stringify(runtimeAfterAmbientResume).includes(ambientSecret)
+  ) {
+    throw new Error("ordinary one-shot resume drifted to ambient provider/model/key settings");
+  }
+
+  await runCli(
+    ["resume", resumedSessionId, "--no-web-search", "--no-auxiliary-tools", "--", "Continue with explicitly reduced tools."],
+    ""
+  );
+  const runtimeAfterExplicitResume = JSON.parse(await fs.readFile(resumeStatePath, "utf8"));
+  if (
+    runtimeAfterExplicitResume.meta.runtimeConfig.revision !== runtimeAfterAmbientResume.meta.runtimeConfig.revision + 1 ||
+    runtimeAfterExplicitResume.meta.runtimeConfig.allowWebSearch !== false ||
+    runtimeAfterExplicitResume.meta.runtimeConfig.allowAuxiliaryTools !== false
+  ) {
+    throw new Error("explicit one-shot resume flags did not apply exactly once through the runtime CAS patch");
+  }
+
+  const slashResume = await runCli(
+    ["chat", "--provider", "localllm", "--routing", "manual", "--sandbox-mode", "host"],
+    `/resume ${resumedSessionId}\n`
+  );
+  if (
+    !slashResume.stdout.includes(`runtime revision=${runtimeAfterExplicitResume.meta.runtimeConfig.revision} provider=mock/mock-agent`) ||
+    slashResume.stdout.includes(`runtime revision=${runtimeAfterExplicitResume.meta.runtimeConfig.revision} provider=localllm/`)
+  ) {
+    throw new Error(`interactive /resume did not hydrate and display the saved safe runtime status\n${slashResume.stdout}\n${slashResume.stderr}`);
+  }
+
+  await runStaleRuntimeCasSmoke(resumedSessionId, resumeStatePath);
+  await runFailedPreflightRuntimeRefreshSmoke(resumedSessionId, resumeStatePath);
 
   const explicitCwd = path.join(tempRoot, "explicit-cwd");
   await fs.mkdir(explicitCwd, { recursive: true });
@@ -970,11 +1263,13 @@ try {
           "aginti-md",
           "instructions-command",
           "auxiliary-command-spelling",
+          "auxiliary-auth-default-off",
           "skills-command",
           "review-command",
           "scs-command-toggle",
           "permission-mode-slash-commands",
           "resume-command-options",
+          "resume-runtime-patch-whitelist",
           "resume-selector-newest-first",
           "resume-selector-pagination",
           "slash-prefix-autoselect",
@@ -991,6 +1286,12 @@ try {
           "resume-history-metadata",
           "resume-history-prompt-labels",
           "resume-history-full",
+          "resume-ambient-runtime-isolation",
+          "resume-explicit-runtime-cas-patch",
+          "slash-resume-runtime-hydration",
+          "resume-stale-cas-before-inference",
+          "resume-preflight-failure-runtime-refresh",
+          "resume-credentials-not-persisted",
         ],
       },
       null,

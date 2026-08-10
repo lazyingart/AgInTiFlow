@@ -8,6 +8,7 @@ import {
   getModelPresets,
   getModelRoleDefaults,
   modelsForProviderGroup,
+  normalizeReasoningEffort,
   reasoningEffortLabel,
 } from "./model-routing.js";
 import { getDockerSandboxStatus, runDockerPreflight } from "./docker-sandbox.js";
@@ -21,6 +22,7 @@ import {
   listProjectSessionRemovalCandidates,
   listProjectSessions,
   loadProjectEnv,
+  projectPaths,
   renameProjectSession,
   removeProjectSessions,
   providerKeyStatus,
@@ -28,7 +30,7 @@ import {
   showProjectSession,
   sessionStoreOptions,
 } from "./project.js";
-import { listTaskProfiles } from "./task-profiles.js";
+import { listTaskProfiles, normalizeTaskProfile } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 import { normalizeAuthProvider, promptHidden, runAuthWizard, shouldPromptForDeepSeek } from "./auth-onboarding.js";
 import { listSkills, selectSkillsForGoal } from "./skill-library.js";
@@ -40,7 +42,9 @@ import { handleSkillMeshCommand } from "./skillmesh.js";
 import { handleAapsCliCommand } from "./aaps-adapter.js";
 import { formatInstructionTemplateList, normalizeInstructionTemplate } from "./behavior-contract.js";
 import { applyPermissionMode, normalizePermissionMode } from "./permission-modes.js";
-import { DEFAULT_SCS_MODE } from "./scs-controller.js";
+import { DEFAULT_SCS_MODE, normalizeScsMode } from "./scs-controller.js";
+import { normalizeDynamicStepsMode } from "./step-budget-controller.js";
+import { isSessionRuntimeField, resolveSessionRuntime } from "./session-runtime.js";
 import { ensureAgintiWebApp, readWebAppPreference, stopAgintiWebApp, writeWebAppPreference } from "./web-autostart.js";
 import { dockerHostInstallPlan, formatDockerSetupText, summarizeDockerSetup } from "./docker-setup.js";
 import { mcpCliCommand, formatMcpCliResult } from "./mcp/tool-bridge.js";
@@ -140,8 +144,10 @@ const CLI_VALUE_OPTIONS = new Set([
   "--model",
   "--route-provider",
   "--route-model",
+  "--route-reasoning",
   "--main-provider",
   "--main-model",
+  "--main-reasoning",
   "--spare-provider",
   "--spare-model",
   "--spare-reasoning",
@@ -342,6 +348,118 @@ export function parseResumeCommandArgs(resumeArgv = [], leadingOptionArgv = []) 
     sessionId: positional[0] || "",
     prompt: promptParts.join(" ").trim(),
     unknownOptions,
+  };
+}
+
+function cliOptionNames(optionArgv = []) {
+  return new Set(optionArgv.filter((item) => String(item || "").startsWith("-") && item !== "--"));
+}
+
+function normalizeResumeReasoning(value = "") {
+  const text = String(value || "").trim().toLowerCase();
+  if (["default", "provider-default", "provider_default", "providerdefault", "auto", "none", "off"].includes(text)) {
+    return "";
+  }
+  return normalizeReasoningEffort(text, text);
+}
+
+/**
+ * Translate only explicitly supplied CLI options into the durable, secret-free
+ * session runtime contract. Ambient environment/default values are deliberately
+ * absent so an ordinary resume cannot drift to another provider or policy.
+ */
+export function buildResumeRuntimePatch(optionArgv = [], parsedArgs = parseArgs(optionArgv)) {
+  const options = cliOptionNames(optionArgv);
+  const patch = {};
+  const has = (...names) => names.some((name) => options.has(name));
+  const add = (field, value, enabled = true) => {
+    if (!enabled || !isSessionRuntimeField(field) || value === undefined || value === null || value === "") return;
+    patch[field] = value;
+  };
+
+  add("provider", parsedArgs.provider, has("--provider"));
+  add("model", parsedArgs.model, has("--model"));
+  add("routingMode", parsedArgs.routingMode, has("--routing"));
+  add("routeProvider", parsedArgs.routeProvider, has("--route-provider"));
+  add("routeModel", parsedArgs.routeModel, has("--route-model"));
+  add("routeReasoning", normalizeResumeReasoning(parsedArgs.routeReasoning), has("--route-reasoning"));
+  add("mainProvider", parsedArgs.mainProvider, has("--main-provider"));
+  add("mainModel", parsedArgs.mainModel, has("--main-model"));
+  add("mainReasoning", normalizeResumeReasoning(parsedArgs.mainReasoning), has("--main-reasoning"));
+  add("spareProvider", parsedArgs.spareProvider, has("--spare-provider"));
+  add("spareModel", parsedArgs.spareModel, has("--spare-model"));
+  add("spareReasoning", normalizeResumeReasoning(parsedArgs.spareReasoning), has("--spare-reasoning"));
+  add("preferredWrapper", parsedArgs.preferredWrapper, has("--wrapper", "--preferred-wrapper"));
+  add("wrapperModel", parsedArgs.wrapperModel, has("--wrapper-model"));
+  add("wrapperReasoning", normalizeResumeReasoning(parsedArgs.wrapperReasoning), has("--wrapper-reasoning"));
+  add("auxiliaryProvider", parsedArgs.auxiliaryProvider, has("--aux-provider", "--auxiliary-provider"));
+  add("auxiliaryModel", parsedArgs.auxiliaryModel, has("--aux-model", "--auxiliary-model"));
+  add("language", resolveLanguage(parsedArgs.language), has("--language", "--lang", "-L"));
+  add("taskProfile", normalizeTaskProfile(parsedArgs.taskProfile), has("--profile", "--task-profile", "--latex", "--image", "--image-gen", "--image-generation"));
+  add("enableScs", normalizeScsMode(parsedArgs.enableScs), has("--scs", "--enable-scs", "--disable-scs", "--no-scs"));
+  add("maxSteps", parsedArgs.maxSteps, has("--max-steps", "--latex"));
+  add("dynamicSteps", normalizeDynamicStepsMode(parsedArgs.dynamicSteps), has("--dynamic-steps"));
+  add("dynamicStepExtensionLimit", parsedArgs.dynamicStepExtensionLimit, has("--dynamic-step-limit"));
+  add("dynamicStepHardCap", parsedArgs.dynamicStepHardCap, has("--dynamic-step-hard-cap"));
+  add("dynamicStepExtensionSize", parsedArgs.dynamicStepExtensionSize, has("--dynamic-step-size"));
+  add("headless", parsedArgs.headless, has("--headless"));
+  add("allowShellTool", parsedArgs.allowShellTool, has("--allow-shell", "--no-shell"));
+  add("allowFileTools", parsedArgs.allowFileTools, has("--allow-file-tools", "--no-file-tools"));
+  add("allowWrapperTools", parsedArgs.allowWrapperTools, has("--allow-wrappers"));
+  add("allowAuxiliaryTools", parsedArgs.allowAuxiliaryTools, has("--allow-auxiliary-tools", "--allow-auxiliary", "--no-auxiliary-tools", "--no-auxiliary", "--image", "--image-gen", "--image-generation"));
+  add("allowWebSearch", parsedArgs.allowWebSearch, has("--web-search", "--no-web-search"));
+  add("allowMcpTools", parsedArgs.allowMcpTools, has("--mcp", "--allow-mcp", "--allow-mcp-tools", "--no-mcp", "--no-mcp-tools"));
+  add("allowParallelScouts", parsedArgs.allowParallelScouts, has("--parallel-scouts", "--no-parallel-scouts"));
+  add("parallelScoutCount", parsedArgs.parallelScoutCount, has("--scout-count"));
+  add("allowDestructive", parsedArgs.allowDestructive, has("--allow-destructive", "--trusted-host-shell"));
+  add("useDockerSandbox", parsedArgs.useDockerSandbox, has("--docker-sandbox"));
+  add("commandCwd", path.resolve(parsedArgs.commandCwd), has("--cwd"));
+
+  if (has("--permission-mode", "--safety", "-s")) {
+    for (const field of [
+      "permissionMode",
+      "sandboxMode",
+      "packageInstallPolicy",
+      "workspaceWritePolicy",
+      "allowShellTool",
+      "allowFileTools",
+      "allowDestructive",
+      "allowPasswords",
+      "allowOutsideWorkspaceFileTools",
+      "useDockerSandbox",
+    ]) {
+      add(field, parsedArgs[field]);
+    }
+  }
+  if (has("--sandbox-mode", "--approve-package-installs", "--latex", "--docker-sandbox")) {
+    add("sandboxMode", parsedArgs.sandboxMode);
+    add("useDockerSandbox", parsedArgs.sandboxMode !== "host");
+  }
+  if (has("--package-install-policy", "--approve-package-installs", "--latex")) {
+    add("packageInstallPolicy", parsedArgs.packageInstallPolicy);
+  }
+
+  return patch;
+}
+
+async function prepareResumeRuntime(sessionId, parsedArgs, optionArgv = [], { projectRoot = process.cwd() } = {}) {
+  const paths = projectPaths(projectRoot);
+  const store = new SessionStore(paths.globalSessionsDir, sessionId, sessionStoreOptions(projectRoot, sessionId));
+  const savedState = await store.loadState();
+  if (!savedState) throw new Error(`No saved session found for "${sessionId}".`);
+
+  const current = resolveSessionRuntime({ state: savedState });
+  const runtimePatch = buildResumeRuntimePatch(optionArgv, parsedArgs);
+  const hasPatch = Object.keys(runtimePatch).length > 0;
+  const resolved = resolveSessionRuntime({
+    state: savedState,
+    runtimePatch: hasPatch ? runtimePatch : undefined,
+    expectedRevision: current.snapshot.revision,
+  });
+  return {
+    runtimeOverrides: resolved.runtimeOverrides,
+    runtimePatch: hasPatch ? runtimePatch : undefined,
+    expectedRuntimeRevision: current.snapshot.revision,
   };
 }
 
@@ -777,7 +895,7 @@ function exitOnUnknownOptions(parsed) {
 
 function printUsage() {
   console.log(
-    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti docker [status|setup|install-host] OR aginti update OR aginti image [--json] [--dry-run] [--format png|webp|svg] "prompt" OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti agentlink [status|peers|boards|create|board|send|claim|evidence|summary] OR aginti mcp [status|config|inspect|tools|resources|read|prompts|prompt|call|restart] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [--project] [deepseek|openai|openrouter|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--dynamic-steps auto|on|off] [--routing smart|fast|complex|manual] [--provider deepseek|openai|openrouter|qwen|venice|mock] [--model MODEL] [--route-model MODEL --route-reasoning provider-default|minimal|low|medium|high|xhigh] [--main-model MODEL --main-reasoning provider-default|minimal|low|medium|high|xhigh] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--mcp|--no-mcp] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
+    'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti docker [status|setup|install-host] OR aginti update OR aginti image [--json] [--dry-run] [--format png|webp|svg] "prompt" OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti agentlink [status|peers|boards|create|board|send|claim|evidence|summary] OR aginti mcp [status|config|inspect|tools|resources|read|prompts|prompt|call|restart] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [--project] [localllm|deepseek|openai|openrouter|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--dynamic-steps auto|on|off] [--routing smart|fast|complex|manual] [--provider localllm|deepseek|openai|openrouter|qwen|venice|mock] [--model MODEL] [--route-model MODEL --route-reasoning provider-default|minimal|low|medium|high|xhigh] [--main-model MODEL --main-reasoning provider-default|minimal|low|medium|high|xhigh] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--mcp|--no-mcp] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
   console.log("Permission shortcuts: -s safe asks before writes/setup; -s normal allows current-project writes and Docker setup; -s danger enables trusted host/full-access mode.");
   console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
@@ -1190,6 +1308,7 @@ async function restartWebAppAfterUpdate({ commandCwd = process.cwd(), language =
 
 function providerLabel(provider) {
   const normalized = String(provider || "").toLowerCase();
+  if (["localllm", "local", "local-llm", "local_llm"].includes(normalized)) return "LocalLLM";
   if (normalized === "openai") return "OpenAI";
   if (normalized === "openrouter" || normalized === "or" || normalized === "open-router") return "OpenRouter";
   if (normalized === "qwen") return "Qwen";
@@ -1224,10 +1343,10 @@ function agentDefaults(args) {
     language: resolveLanguage(args.language || process.env.AGINTI_LANGUAGE || ""),
     allowShellTool: args.allowShellTool ?? permissionDefaults.allowShellTool ?? true,
     allowFileTools: args.allowFileTools ?? permissionDefaults.allowFileTools ?? true,
-    allowAuxiliaryTools: args.allowAuxiliaryTools ?? true,
+    allowAuxiliaryTools: args.allowAuxiliaryTools ?? false,
     allowWebSearch: args.allowWebSearch ?? true,
     allowMcpTools: args.allowMcpTools ?? true,
-    allowParallelScouts: args.allowParallelScouts ?? true,
+    allowParallelScouts: args.allowParallelScouts ?? false,
     enableScs: args.enableScs || process.env.AGINTI_SCS_MODE || DEFAULT_SCS_MODE,
     parallelScoutCount: args.parallelScoutCount || (Number.isFinite(envScoutCount) && envScoutCount > 0 ? envScoutCount : 3),
     sandboxMode: args.sandboxMode || envSandboxMode || permissionDefaults.sandboxMode || "docker-workspace",
@@ -1433,13 +1552,13 @@ async function readStdin() {
 async function ensureDeepSeekKeyForOneShot(args) {
   if (!shouldPromptForDeepSeek(args, process.cwd())) return true;
   console.log("No main model API key is configured for this account or project.");
-  console.log("Choose DeepSeek, OpenAI, OpenRouter, Qwen, or Venice, then paste a key to save account-wide in `~/.agintiflow/.env` with 0600 permissions. Use `aginti auth --project` for a project override.");
+  console.log("Choose DeepSeek, OpenAI, OpenRouter, Qwen, or Venice, then paste a key to save account-wide in `~/.agintiflow/.env` with 0600 permissions. LocalLLM uses http://127.0.0.1:8008/v1 with placeholder key local-dev-key by default; set LOCALLLM_BASE_URL/LOCALLLM_MODEL only for explicit loopback overrides.");
   const result = await runAuthWizard(process.cwd(), { provider: args.provider || "" });
   printAuthWizardResult(result);
   if (result.saved.some((item) => item.provider !== "grsai")) {
     return true;
   }
-  console.error("No main key saved. Run `aginti auth` later, or use `--provider mock` for local tests.");
+  console.error("No main key saved. Run `aginti auth` later, or use `--provider localllm`/`--provider mock` for local tests.");
   return false;
 }
 
@@ -1450,13 +1569,13 @@ async function handleKeyCommand(argv) {
   if (verb === "status") {
     const status = providerKeyStatus(process.cwd());
     console.log(
-      `keys: deepseek=${status.deepseek ? "available" : "missing"} openai=${
+      `keys: localllm=${status.localllm ? "available" : "missing"} deepseek=${status.deepseek ? "available" : "missing"} openai=${
         status.openai ? "available" : "missing"
       } qwen=${status.qwen ? "available" : "missing"} venice=${
         status.venice ? "available" : "missing"
       } openrouter=${status.openrouter ? "available" : "missing"} grsai=${status.grsai ? "available" : "missing"} mock=available globalEnv=${status.globalEnv ? "yes" : "no"} projectEnv=${status.projectEnv ? "yes" : "no"}`
     );
-    console.log("env vars: DeepSeek=DEEPSEEK_API_KEY or LLM_API_KEY; OpenAI=OPENAI_API_KEY or LLM_API_KEY; OpenRouter=OPENROUTER_API_KEY; Qwen=QWEN_API_KEY; Venice=VENICE_API_KEY; image=GRSAI or GRSAI_API_KEY");
+    console.log("env vars: LocalLLM=LOCALLLM_BASE_URL/LOCALLLM_MODEL; DeepSeek=DEEPSEEK_API_KEY or LLM_API_KEY; OpenAI=OPENAI_API_KEY or LLM_API_KEY; OpenRouter=OPENROUTER_API_KEY; Qwen=QWEN_API_KEY; Venice=VENICE_API_KEY; image=GRSAI or GRSAI_API_KEY");
     console.log("storage: `aginti keys set` saves account-wide to ~/.agintiflow/.env; add --project for current .aginti/.env override.");
     return;
   }
@@ -1473,7 +1592,7 @@ async function handleKeyCommand(argv) {
     return;
   }
 
-  console.error("Usage: aginti keys status OR aginti keys set [--project|--global] deepseek|openai|openrouter|qwen|venice|grsai [--stdin]");
+  console.error("Usage: aginti keys status OR aginti keys set [--project|--global] localllm|deepseek|openai|openrouter|qwen|venice|grsai [--stdin]");
   process.exit(1);
 }
 
@@ -2361,11 +2480,27 @@ export async function main(argv = process.argv.slice(2)) {
       process.exit(1);
     }
     if (!sessionId) return;
+    const parsedResumeArgs = parseArgs(resumeOptions.optionArgv);
+    exitOnUnknownOptions(parsedResumeArgs);
+    let preparedRuntime;
+    try {
+      preparedRuntime = await prepareResumeRuntime(sessionId, parsedResumeArgs, resumeOptions.optionArgv);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
+    const safeResumeArgs = agentDefaults({
+      ...parsedResumeArgs,
+      ...preparedRuntime.runtimeOverrides,
+      language: preparedRuntime.runtimeOverrides.language || parsedResumeArgs.language || stripped.options.language,
+      resume: sessionId,
+      commandCwd: preparedRuntime.runtimeOverrides.commandCwd || parsedResumeArgs.commandCwd || commandCwd,
+      runtimePatch: preparedRuntime.runtimePatch,
+      expectedRuntimeRevision: preparedRuntime.expectedRuntimeRevision,
+    });
     if (!prompt) {
-      const parsedResumeOptions = parseArgs(resumeOptions.optionArgv);
-      exitOnUnknownOptions(parsedResumeOptions);
-      const webLaunch = await maybeEnsureDefaultWebApp(parsedResumeOptions, { commandCwd });
-      await startInteractiveCli(agentDefaults({ ...parsedResumeOptions, language: parsedResumeOptions.language || stripped.options.language, resume: sessionId, commandCwd: parsedResumeOptions.commandCwd || commandCwd }), {
+      const webLaunch = await maybeEnsureDefaultWebApp(safeResumeArgs, { commandCwd });
+      await startInteractiveCli(safeResumeArgs, {
         packageDir,
         packageVersion: packageJson.version,
         webAppUrl: webLaunch.ok ? webLaunch.url : "",
@@ -2373,12 +2508,12 @@ export async function main(argv = process.argv.slice(2)) {
       });
       return;
     }
-    const parsedResumeArgs = parseArgs([...resumeOptions.optionArgv, prompt]);
-    exitOnUnknownOptions(parsedResumeArgs);
-    const resumeArgs = agentDefaults({ ...parsedResumeArgs, language: parsedResumeArgs.language || stripped.options.language, resume: sessionId, goal: prompt, commandCwd: parsedResumeArgs.commandCwd || commandCwd });
+    const resumeArgs = { ...safeResumeArgs, goal: prompt };
     if (!(await ensureDeepSeekKeyForOneShot(resumeArgs))) process.exit(1);
     await maybeEnsureDefaultWebApp(resumeArgs, { commandCwd });
     const config = loadConfig(resumeArgs, { packageDir });
+    config.expectedRuntimeRevision = preparedRuntime.expectedRuntimeRevision;
+    if (preparedRuntime.runtimePatch) config.runtimePatch = preparedRuntime.runtimePatch;
     await runAgent(config);
     return;
   }
@@ -2449,8 +2584,18 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (args.interactive || (!args.goal && !args.resume && process.stdin.isTTY)) {
-    const webLaunch = await maybeEnsureDefaultWebApp(args, { commandCwd });
-    await startInteractiveCli(agentDefaults(args), {
+    let interactiveArgs = agentDefaults(args);
+    if (args.resume) {
+      const preparedRuntime = await prepareResumeRuntime(args.resume, args, commandArgv);
+      interactiveArgs = agentDefaults({
+        ...args,
+        ...preparedRuntime.runtimeOverrides,
+        runtimePatch: preparedRuntime.runtimePatch,
+        expectedRuntimeRevision: preparedRuntime.expectedRuntimeRevision,
+      });
+    }
+    const webLaunch = await maybeEnsureDefaultWebApp(interactiveArgs, { commandCwd });
+    await startInteractiveCli(interactiveArgs, {
       packageDir,
       packageVersion: packageJson.version,
       webAppUrl: webLaunch.ok ? webLaunch.url : "",
@@ -2498,9 +2643,23 @@ export async function main(argv = process.argv.slice(2)) {
     process.exit(1);
   }
 
-  const finalArgs = agentDefaults(args);
+  let preparedRuntime = null;
+  let finalArgs = agentDefaults(args);
+  if (args.resume) {
+    preparedRuntime = await prepareResumeRuntime(args.resume, args, commandArgv);
+    finalArgs = agentDefaults({
+      ...args,
+      ...preparedRuntime.runtimeOverrides,
+      runtimePatch: preparedRuntime.runtimePatch,
+      expectedRuntimeRevision: preparedRuntime.expectedRuntimeRevision,
+    });
+  }
   if (!(await ensureDeepSeekKeyForOneShot(finalArgs))) process.exit(1);
   await maybeEnsureDefaultWebApp(finalArgs, { commandCwd });
   const config = loadConfig(finalArgs, { packageDir });
+  if (preparedRuntime) {
+    config.expectedRuntimeRevision = preparedRuntime.expectedRuntimeRevision;
+    if (preparedRuntime.runtimePatch) config.runtimePatch = preparedRuntime.runtimePatch;
+  }
   await runAgent(config);
 }

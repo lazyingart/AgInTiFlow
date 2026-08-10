@@ -1,10 +1,11 @@
 import crypto from "node:crypto";
 import { createChatCompletion, createClient } from "./model-client.js";
 import { getProviderDefaults } from "./model-routing.js";
+import { normalizeProviderId, providerStructuredOutputAttempts } from "./provider-contract.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
 
 const MAX_INLINE_PREVIEW = 1600;
-const JSON_PROVIDERS = new Set(["openai", "openrouter", "deepseek", "qwen", "venice", "mock"]);
+const JSON_PROVIDERS = new Set(["localllm", "openai", "openrouter", "deepseek", "qwen", "venice", "mock"]);
 
 function compact(value = "", limit = MAX_INLINE_PREVIEW) {
   const text = redactSensitiveText(String(value || "").trim());
@@ -216,11 +217,11 @@ function mockValueForSchema(schema) {
 }
 
 function attemptsForRequest(request, provider) {
+  const normalizedProvider = normalizeProviderId(provider);
   if (request.responseFormat === "prompt") return ["prompt"];
   if (request.responseFormat === "json_schema") return ["json_schema", "prompt"];
   if (request.responseFormat === "json_object") return ["json_object", "prompt"];
-  if (["openai", "openrouter", "deepseek", "qwen"].includes(provider)) return ["json_schema", "json_object", "prompt"];
-  return ["json_object", "prompt"];
+  return providerStructuredOutputAttempts(normalizedProvider).filter((attempt) => attempt !== "mock");
 }
 
 function responseFormatForAttempt(request, attempt) {
@@ -247,6 +248,27 @@ function errorLooksLikeUnsupportedResponseFormat(error) {
 
 function parsedRawPreview(rawContent = "") {
   return rawContent ? compact(rawContent, 1200) : "";
+}
+
+function resolveJsonProvider(request, config) {
+  const active = normalizeProviderId(config.provider || "localllm", "");
+  if (!active || !JSON_PROVIDERS.has(active)) {
+    throw new Error(`Unknown active JSON specialist provider: ${config.provider || ""}`);
+  }
+  const requestedRaw = request.provider || active;
+  const requested = normalizeProviderId(requestedRaw, "");
+  if (!requested || !JSON_PROVIDERS.has(requested)) {
+    throw new Error(`Unknown JSON specialist provider: ${requestedRaw}`);
+  }
+  if (requested !== active && config.allowHostedJsonSpecialist !== true) {
+    const error = new Error(
+      `JSON specialist provider override ${active} -> ${requested} is disabled. Select ${requested} as the active provider or explicitly enable allowHostedJsonSpecialist; ambient credentials never authorize a provider change.`
+    );
+    error.name = "HostedToolPermissionError";
+    error.code = "HOSTED_TOOL_PROVIDER_NOT_ALLOWED";
+    throw error;
+  }
+  return requested;
 }
 
 export async function runJsonSpecialist(args = {}, config = {}, store = null) {
@@ -285,19 +307,18 @@ export async function runJsonSpecialist(args = {}, config = {}, store = null) {
       result = mockValueForSchema(request.schema);
       validationErrors = validateSchema(result, request.schema);
     } else {
-      if (provider && !JSON_PROVIDERS.has(provider)) {
-        throw new Error(`Unknown JSON specialist provider: ${provider}`);
-      }
-      const providerDefaults = request.provider ? getProviderDefaults(request.provider) : {};
+      provider = resolveJsonProvider(request, config);
+      const providerChanged = provider !== normalizeProviderId(config.provider || "localllm", "");
+      const providerDefaults = providerChanged ? getProviderDefaults(provider) : {};
       const jsonConfig = {
         ...config,
         ...providerDefaults,
         provider: provider || config.provider,
-        model: model || providerDefaults.model || config.model,
+        model: request.model || (providerChanged ? providerDefaults.model : config.model) || providerDefaults.model,
       };
       model = jsonConfig.model;
       provider = jsonConfig.provider;
-      const client = createClient(jsonConfig);
+      const client = typeof config.jsonClientFactory === "function" ? config.jsonClientFactory({ ...jsonConfig }) : createClient(jsonConfig);
       const attempts = attemptsForRequest(request, provider);
       for (const attempt of attempts) {
         const responseFormat = responseFormatForAttempt(request, attempt);
@@ -377,6 +398,7 @@ export async function runJsonSpecialist(args = {}, config = {}, store = null) {
   } catch (error) {
     return {
       ok: false,
+      blocked: error?.code === "HOSTED_TOOL_PROVIDER_NOT_ALLOWED",
       toolName: "json_specialist",
       provider,
       model,

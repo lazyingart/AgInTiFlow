@@ -13,7 +13,7 @@
 ![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)
 ![Playwright](https://img.shields.io/badge/Browser-Playwright-2EAD33?logo=playwright&logoColor=white)
 ![CLI + Web](https://img.shields.io/badge/Interface-CLI%20%2B%20Web-0ea5e9)
-![Text Models](https://img.shields.io/badge/Text-DeepSeek%20%2B%20Venice%20%2B%20OpenAI%20%2B%20Qwen-2563eb)
+![Text Models](https://img.shields.io/badge/Text-LocalLLM%20%2B%20Optional%20Hosted-2563eb)
 ![Aux Image](https://img.shields.io/badge/Aux%20Image-GRS%20AI%20%2B%20Venice-ec4899)
 ![Sandbox](https://img.shields.io/badge/Shell-Docker%20Sandbox-f97316)
 ![Status](https://img.shields.io/badge/Status-Prototype-7c3aed)
@@ -49,12 +49,12 @@ Most agent tools are either a chat box with hidden state or an expensive one-mod
 
 | Principle | What it means in practice |
 | --- | --- |
-| Cheap intelligence changes the architecture | DeepSeek V4 Flash and Pro make it practical to spend more calls on routing, scouting, review, and recovery instead of forcing one expensive call to do everything. |
+| Local intelligence changes the architecture | The baseline uses the sibling LocalLLM gateway for private route and main lanes. Stronger hosted models remain explicit upgrades, not hidden fallbacks. |
 | Inspectable beats mysterious | Plans, tool calls, file diffs, command output, canvas artifacts, and session events are saved and resumable. |
 | Disciplined by default | `AGINTI.md` starts with a behavior contract: surface ambiguity, keep edits surgical, avoid speculative complexity, verify outcomes, and respect permission blockers. |
-| Role-based models | Route, main, spare, wrapper, and auxiliary image roles are separate. You can use cheap route models, stronger main models, optional OpenAI/Qwen/Venice routes, and GRS AI/Venice image tools. |
-| Writing without agent noise | `writing_specialist` drafts novels, books, scripts, essays, and paper prose in an isolated writing-only context, then the main agent handles files, formatting, citations, checks, and artifacts. |
-| Visual and web evidence | `read_image` reads screenshots/figures with typed JSON and Markdown perception artifacts, uses OpenAI vision when configured, and falls back to `codex exec --image` when Codex is available. `web_research` saves sourced research artifacts, and `research_wrapper` can ask Codex `gpt-5.4-mini` medium for a strict-JSON second opinion. |
+| Role-based models | Route, main, spare, wrapper, and auxiliary image roles are separate. LocalLLM supplies the default fast/deep lanes; DeepSeek, OpenAI, OpenRouter, Qwen, and Venice are optional explicit routes. |
+| Writing without agent noise | `writing_specialist` drafts novels, books, scripts, essays, and paper prose in an isolated writing-only context on the active provider. Cross-provider writing requires explicit permission; ambient keys and model arguments cannot silently switch a LocalLLM session to a hosted model. The main agent then handles files, formatting, citations, checks, and artifacts. |
+| Visual and web evidence | `read_image` uses the loopback LocalLLM vision model in local sessions and never falls through to a hosted provider. `web_research` saves sourced snippet artifacts for local synthesis. OpenAI perception/research and wrapper second opinions require explicit provider/tool permission. |
 | Scouts before big work | Parallel scouts can cheaply map architecture, tests, risks, symbols, and integration points before the main executor edits anything. |
 | SCS by default | Student-Committee-Supervisor mode adds a typed gate: committee drafts, student approves/monitors, supervisor executes. Use `/scs off` or `--no-scs` only when speed matters more than validation. |
 | AAPS for large workflows | AAPS describes top-down agentic pipeline scripts; AgInTiFlow can act as the interactive backend that validates, compiles, and executes those workflows. |
@@ -85,7 +85,9 @@ aginti init --template aaps
 aginti init --template supervision
 ```
 
-On first interactive use, AgInTiFlow opens an auth wizard if no main model key is found. Pick DeepSeek, OpenAI, OpenRouter, Qwen, or Venice, paste the key, and it saves account-wide to `~/.agintiflow/.env` with restricted permissions. Current project `.aginti/.env` files can still override account defaults when needed. You can rerun setup any time:
+By default, AgInTiFlow connects to the sibling LocalLLM gateway at `http://127.0.0.1:8008/v1`, using `localllm-fast` for routing and the installed 30B-A3B Q4 `localllm-deep` for substantive coding and agent work. The Q8 `localllm-max` remains resource-gated on every new or resumed run (24 GiB available RAM, no more than 75% swap use, and 40 GiB aggregate free NVIDIA memory). The automatic Vision policy requires both a trusted image-input signal and confirmed model capability; the shipped CLI/web currently use the readiness-checked local `read_image` tool or an explicit `localllm-vision-xl` selection rather than inferring vision from prompt keywords. Routing does not load a model. Startup checks the LocalLLM service, its Ollama runtime, selected aliases, and any required Max headroom before inference. A local failure stops with an actionable error; it never silently sends the task to a hosted provider.
+
+Hosted providers are optional, explicit upgrades. When you select DeepSeek, OpenAI, OpenRouter, Qwen, or Venice, the auth wizard can save that provider's key account-wide in `~/.agintiflow/.env` with restricted permissions. Current project `.aginti/.env` files can still override account defaults when needed. You can rerun setup any time:
 
 ```bash
 aginti auth
@@ -100,6 +102,7 @@ Provider signup and key pages:
 
 | Provider | Register / key page | API base URL used by AgInTiFlow |
 | --- | --- | --- |
+| LocalLLM | Local sibling service; no signup | `http://127.0.0.1:8008/v1` |
 | DeepSeek | [https://platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) | `https://api.deepseek.com` |
 | OpenRouter | [https://openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) | `https://openrouter.ai/api/v1` |
 | Venice | [https://venice.ai/settings/api](https://venice.ai/settings/api) | `https://api.venice.ai/api/v1` |
@@ -180,7 +183,7 @@ aginti --language de
 | Sync reviewed skills | `aginti skillmesh status`, `aginti skillmesh sync` |
 | Update CLI | `aginti update` |
 
-Interactive chat supports slash completion, Up/Down selectors, a newest-first resume selector with direct Space pagination, multiline input with `Ctrl+J`, full resume history, Markdown rendering, visible run status, ASAP pipe messages during a run, and clean interruption/resume with `Ctrl+C`. Installed interactive commands also check npm for a newer AgInTiFlow release and show an update/skip selector; source checkouts and non-TTY automation are left alone.
+Interactive chat supports slash completion, Up/Down selectors, a newest-first resume selector with direct Space pagination, multiline input with `Ctrl+J`, full resume history, Markdown rendering, visible run status, ASAP pipe messages during a run, and clean interruption/resume with `Ctrl+C`. A resumed session keeps its versioned provider/model/tool-policy snapshot; current preferences do not silently change it, and explicit changes use revision checks. Installed interactive commands also check npm for a newer AgInTiFlow release and show an update/skip selector; source checkouts and non-TTY automation are left alone.
 
 AgInTiFlow treats `maxSteps` as an initial budget, not a silent infinite loop. By default, real-provider runs can receive a bounded extension only near the limit, only when recent tool/file/artifact evidence shows concrete progress, and never to bypass permission, package, host, or secret guardrails. Use `--dynamic-steps off` for a strict hard stop, or `--dynamic-steps on` to test the budget gate in mock/offline runs.
 
@@ -242,15 +245,15 @@ The website keeps the visual walkthrough in a carousel so this README can stay f
 | File tools | `inspect_project`, `list_files`, `read_file`, `search_files`, `write_file`, `apply_patch`, `open_workspace_file`, `preview_workspace`, and `read_image`. |
 | Shell tools | Guarded host or Docker workspace shell execution with package-install policy and command safety checks. |
 | Browser tools | Playwright browser actions with lazy startup and optional domain allowlists. |
-| Model routing | DeepSeek fast/pro defaults, manual OpenAI/Qwen/Venice/mock routes, spare models, wrapper models, and auxiliary image models. |
+| Model routing | LocalLLM Fast/Deep defaults, explicit and resource-gated Max, image-capability-gated Vision XL, explicit DeepSeek/OpenAI/OpenRouter/Qwen/Venice/mock routes, and optional spare/wrapper/auxiliary models. |
 | Writing specialist | A dedicated writing-only LLM call for prose, chapters, scripts, books, essays, research-paper sections, and revisions, with formatter handoff notes for Markdown/LaTeX/Final Draft. |
 | Patch workflow | Codex-style patch envelopes, unified diffs, exact replacements, hashes, compact diffs, and path guardrails. |
 | Parallel scouts | Optional scout calls for architecture, implementation, review, tests, git flow, research, symbol tracing, and dependency risk. |
-| Image reading and web research | `read_image` uses OpenAI vision for workspace images when `OPENAI_API_KEY` is configured, otherwise it can fall back to Codex CLI image attachments when available. It saves JSON and Markdown reports and can surface the report in the canvas. `web_research` preserves source lists, and optional OpenAI hosted web search or `research_wrapper` can be used for higher-confidence research. |
+| Image reading and web research | LocalLLM sessions send pixels only to the loopback vision endpoint. `web_research` preserves source lists for the active model to synthesize. Hosted OpenAI and wrapper paths are explicit opt-ins, never credential-driven fallbacks. |
 | SCS mode | Default Student-Committee-Supervisor quality gate with independent planning, execution, and validation roles. |
 | AAPS adapter | Optional `@lazyingart/aaps` integration for `.aaps` workflow init, validate, parse, compile, dry-run, and run commands. |
 | AgentLink | Local-first collaboration between AgInTi sessions through boards, typed messages, action contracts, safe summaries, and evidence bundles. |
-| Image generation | Optional GRS AI and Venice image tools with saved manifests and canvas artifact previews. |
+| Image generation | Optional, default-off GRS AI and Venice image tools with saved manifests and canvas previews. Credentials authenticate the selected provider but never select or fail over providers. |
 | Skill library | Built-in Markdown skills plus project-local `.aginti/skills/<id>/SKILL.md` skills for reusable workflow knowledge that should not be hard-coded into the runtime. |
 | External skill packs | Whole Agent Skills repositories can be loaded as grouped packs without flattening. A sibling `../scientific-agent-skills` checkout is discovered as the `scientific` category, so commands like `aginti skills rdkit` and `aginti skills "single cell scanpy"` expose K-Dense Scientific Agent Skills when present. |
 | Skill Mesh | Optional strict skill recording/sharing for reviewed reusable skill packs. If unused, AgInTiFlow runs normally without background sharing. |
@@ -262,11 +265,11 @@ AgInTiFlow does not treat "the model" as one global setting. It has roles:
 
 | Role | Default | Purpose |
 | --- | --- | --- |
-| Route | `deepseek/deepseek-v4-flash` | Cheap planner, triage, short tasks, routing decisions. |
-| Main | `deepseek/deepseek-v4-pro` | Complex coding, debugging, writing, research, long tasks. |
-| Spare | `openai/gpt-5.4` medium | Optional fallback or cross-check route. |
+| Route | `localllm/localllm-fast` | Local planner, triage, short tasks, and routing decisions. |
+| Main | `localllm/localllm-deep` | Local complex executor for coding, debugging, writing, research, and long tasks. |
+| Spare | `localllm/localllm-deep` medium | Local cross-check lane; a hosted spare requires explicit selection. |
 | Wrapper | `codex/gpt-5.5` medium | Optional external coding-agent advisor; `research_wrapper` defaults to `gpt-5.4-mini` medium for image/web second opinions. |
-| Auxiliary | `grsai/nano-banana-2` | Image generation and other non-text helper tools. |
+| Auxiliary | `grsai/nano-banana-2` (off) | Explicitly enabled image generation and other non-text helper tools; no credential-driven provider failover. |
 
 Useful selectors:
 
@@ -280,7 +283,7 @@ Useful selectors:
 /venice
 ```
 
-Venice routes can be used for optional uncensored or less restricted creative work. DeepSeek remains the economic default for normal engineering workflows. See [docs/model-selection.md](docs/model-selection.md) and [references/venice-model-reference.md](references/venice-model-reference.md).
+Venice routes can be used for optional uncensored or less restricted creative work. DeepSeek and the other hosted providers remain explicit upgrades for tasks that benefit from them. See [docs/model-selection.md](docs/model-selection.md), [docs/local-first-agent-runtime.md](docs/local-first-agent-runtime.md), and [references/venice-model-reference.md](references/venice-model-reference.md).
 OpenRouter is available as a first-class OpenAI-compatible provider with one key and company-grouped model buckets such as OpenRouter OpenAI, Anthropic, Google, DeepSeek, Qwen, Meta, Mistral, Moonshot, and xAI.
 
 ## AAPS And Large Workflows
@@ -356,6 +359,13 @@ Detailed runtime notes are in [docs/runtime-modes-and-autonomy.md](docs/runtime-
 Common environment variables:
 
 ```bash
+AGENT_PROVIDER=localllm
+LOCALLLM_BASE_URL=http://127.0.0.1:8008/v1
+LOCALLLM_API_KEY=local-dev-key
+AGINTI_LOCALLLM_ROUTE_MODEL=localllm-fast
+AGINTI_LOCALLLM_MAIN_MODEL=localllm-deep
+
+# Optional explicit hosted upgrades; never automatic LocalLLM fallbacks.
 DEEPSEEK_API_KEY=...
 OPENAI_API_KEY=...
 OPENROUTER_API_KEY=...
@@ -364,7 +374,6 @@ OPENROUTER_MODEL=openrouter/auto
 QWEN_API_KEY=...
 VENICE_API_KEY=...
 GRSAI_API_KEY=...
-AGENT_PROVIDER=deepseek
 AGENT_ROUTING_MODE=smart
 AGINTI_TASK_PROFILE=auto
 AGINTI_LANGUAGE=en
@@ -398,6 +407,7 @@ More detail:
 | AAPS adapter | [docs/aaps.md](docs/aaps.md) |
 | AgentLink | [docs/agentlink.md](docs/agentlink.md) |
 | Model selection and roles | [docs/model-selection.md](docs/model-selection.md) |
+| Local-first provider and agent boundary | [docs/local-first-agent-runtime.md](docs/local-first-agent-runtime.md) |
 | SCS mode | [docs/student-committee-supervisor.md](docs/student-committee-supervisor.md) |
 | Large-codebase engineering | [docs/large-codebase-engineering.md](docs/large-codebase-engineering.md) |
 | Runtime modes and autonomy | [docs/runtime-modes-and-autonomy.md](docs/runtime-modes-and-autonomy.md) |

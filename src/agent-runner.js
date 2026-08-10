@@ -44,6 +44,30 @@ import { executeMcpBridgeTool } from "./mcp/tool-bridge.js";
 import { longJobStatus, startLongJob } from "./long-job-tools.js";
 import { executeAgentLinkTool, isAgentLinkTool } from "./agentlink.js";
 import { classifyGoalIntent, isDirectAnswerIntent } from "./goal-intent.js";
+import { normalizeProviderBaseURL, normalizeProviderId, providerRequiresApiKey } from "./provider-contract.js";
+import { ProviderReadinessError, probeProviderRuntime } from "./provider-runtime.js";
+import { probeLocalMaxResources } from "./local-resource-policy.js";
+import {
+  applyLocalAutoMaxUpgrade,
+  captureLocalAutoMaxPolicy,
+  resolveLocalAutoMaxUpgrade,
+  restoreLocalAutoMaxPolicy,
+} from "./local-auto-max.js";
+import { resolveRuntimeConfig } from "./config.js";
+import {
+  captureSessionRuntime,
+  isSessionRuntimeField,
+  resolveSessionRuntime,
+} from "./session-runtime.js";
+import {
+  buildScsEvidenceLedger,
+  deriveScsTaskContract,
+  deterministicFinishBlocker,
+  evaluateScsEvidence,
+  evaluateScsSemanticContract,
+  finishResultClaimsBlocker,
+  hasScsBlockerEvidence,
+} from "./scs-evidence.js";
 import {
   DEFAULT_SCS_MODE,
   buildSupervisorInstruction,
@@ -64,10 +88,12 @@ import {
   serializeStepBudgetState,
 } from "./step-budget-controller.js";
 import { selectExecutionPolicy } from "./execution-policy.js";
+import { toolContractFromResponse, validateToolCallBatch } from "./tool-contract.js";
 import {
   createContextBudgetState,
   decideContextCompaction,
   estimateMessageChars,
+  estimateMessageTokens,
   recordContextCompaction,
   serializeContextBudgetState,
 } from "./context-budget-controller.js";
@@ -600,6 +626,8 @@ async function createInitialState(config, sessionId) {
     stepsCompleted: 0,
     meta: {
       lastUrl: "",
+      runtimeConfig: captureSessionRuntime(config),
+      localAutoMaxPolicy: captureLocalAutoMaxPolicy(config),
       projectInstructions: {
         path: projectInstructions.path,
         exists: projectInstructions.exists,
@@ -1500,7 +1528,11 @@ function safeParseToolArgs(toolCall) {
 }
 
 export function shouldShortCircuitToolBatch(toolResult) {
-  return Boolean(toolResult?.blocked && toolResult?.permissionAdvice);
+  return Boolean(
+    (toolResult?.blocked && toolResult?.permissionAdvice) ||
+      toolResult?.category === "malformed-tool-arguments" ||
+      toolResult?.category === "tool-contract-violation"
+  );
 }
 
 export function skippedAfterBlockedToolResult(toolCall, blockedResult) {
@@ -1729,6 +1761,7 @@ async function injectQueuedUserMessages(store, state, observers) {
       role: "user",
       content: `Additional user message received while this run was active:\n${content}`,
     });
+    store.markInboxApplied(item);
     await store.appendEvent("conversation.queued_input_applied", {
       id: item.id || "",
       prompt: content,
@@ -1747,10 +1780,37 @@ async function injectQueuedUserMessages(store, state, observers) {
 
 async function executeTool(browserState, toolCall, snapshot, config, store, observers, state) {
   throwIfAborted(config);
-  const args = JSON.parse(toolCall.function.arguments || "{}");
-  const safeArgs = sanitizeToolArgs(toolCall.function.name, args);
+  const toolName = toolCall.function.name;
+  let args;
+  try {
+    args = JSON.parse(toolCall.function.arguments || "{}");
+  } catch (error) {
+    state.meta = state.meta || {};
+    const malformedCount = Number(state.meta.malformedToolArgumentCount || 0) + 1;
+    state.meta.malformedToolArgumentCount = malformedCount;
+    const result = {
+      ok: false,
+      blocked: true,
+      recoverable: true,
+      malformedCount,
+      stopRun: malformedCount >= 2,
+      reason: "Tool arguments were not valid JSON and were not dispatched.",
+      category: "malformed-tool-arguments",
+      error: error instanceof Error ? error.message : String(error),
+      toolName,
+      args: {},
+    };
+    await store.appendEvent("tool.failed", result);
+    observers.event("tool.failed", {
+      toolName,
+      reason: result.reason,
+      category: result.category,
+    });
+    return result;
+  }
+  const safeArgs = sanitizeToolArgs(toolName, args);
   const guard = checkToolUse({
-    toolName: toolCall.function.name,
+    toolName,
     args,
     snapshot,
     config,
@@ -1758,14 +1818,14 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
 
   if (!guard.allowed) {
     const permissionAdvice = buildPermissionAdvice({
-      toolName: toolCall.function.name,
+      toolName,
       args: safeArgs,
       guard,
       config,
       state,
     });
     await store.appendEvent("tool.blocked", {
-      toolName: toolCall.function.name,
+      toolName,
       args: safeArgs,
       reason: guard.reason,
       category: guard.category,
@@ -1773,7 +1833,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       permissionAdvice,
     });
     observers.event("tool.blocked", {
-      toolName: toolCall.function.name,
+      toolName,
       args: safeArgs,
       reason: guard.reason,
       category: guard.category,
@@ -1787,7 +1847,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       category: guard.category,
       needsApproval: guard.needsApproval,
       permissionAdvice,
-      toolName: toolCall.function.name,
+      toolName,
       args: safeArgs,
     };
   }
@@ -2373,24 +2433,457 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
   }
 }
 
-export async function runAgent(config) {
-  if (!config.apiKey) {
-    throw new Error(`Missing API key for provider "${config.provider}".`);
+function completionContractKey(config = {}) {
+  return crypto
+    .createHash("sha256")
+    .update(`${String(config.goal || "")}\n${String(config.taskProfile || "auto")}`)
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function currentContinuationEvidence(state = {}, events = []) {
+  const eventList = Array.isArray(events) ? events : [];
+  let eventBoundary = -1;
+  for (let index = eventList.length - 1; index >= 0; index -= 1) {
+    if (eventList[index]?.type === "conversation.continued") {
+      eventBoundary = index;
+      break;
+    }
   }
 
+  const messages = Array.isArray(state.messages) ? state.messages : [];
+  let messageBoundary = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user" && /^Continue with this new request:/i.test(String(message.content || ""))) {
+      messageBoundary = index;
+      break;
+    }
+  }
+
+  return {
+    events: eventBoundary >= 0 ? eventList.slice(eventBoundary + 1) : eventList,
+    state: {
+      ...state,
+      messages: messageBoundary >= 0 ? messages.slice(messageBoundary + 1) : messages,
+    },
+  };
+}
+
+async function evaluateCompletionEvidence({ config, state, store }) {
+  const contract = deriveScsTaskContract({
+    goal: config.goal || state.goal || "",
+    taskProfile: config.taskProfile || state.meta?.taskProfile || "auto",
+    acceptanceCriteria: state.meta?.scs?.acceptanceCriteria || [],
+  });
+  if (!contract.requiresExternalEvidence) {
+    return {
+      ok: true,
+      contract,
+      ledger: { itemCount: 0, categories: [], toolNames: [] },
+      evaluation: { ok: true, reason: "This response does not require external execution evidence." },
+      semantic: { ok: true, checked: false, reason: "No deterministic artifact contract is required." },
+    };
+  }
+
+  const scoped = currentContinuationEvidence(state, await store.loadEvents());
+  const ledger = buildScsEvidenceLedger({
+    state: scoped.state,
+    context: {
+      events: scoped.events,
+      taskProfile: config.taskProfile,
+      goal: config.goal,
+    },
+  });
+  const evidence = evaluateScsEvidence(contract, ledger);
+  const semantic = evaluateScsSemanticContract(contract, { commandCwd: config.commandCwd });
+  const ok = Boolean(evidence.ok && semantic.ok);
+  const evaluation = ok
+    ? evidence
+    : {
+        ...evidence,
+        ok: false,
+        reason: !evidence.ok ? evidence.reason : semantic.reason || "The requested artifact could not be verified.",
+      };
+  return { ok, contract, ledger, evaluation, semantic };
+}
+
+async function completionEvidenceDecision({ config, state, store, observers, step, mode, candidateResult = "" }) {
+  if (config.scsActive) return { action: "accept" };
+  const assessment = await evaluateCompletionEvidence({ config, state, store });
+  if (assessment.ok) return { action: "accept", assessment };
+  if (finishResultClaimsBlocker(candidateResult) && hasScsBlockerEvidence(assessment.ledger)) {
+    return { action: "accept", assessment, acceptedBlocker: true };
+  }
+
+  state.meta = state.meta || {};
+  const key = completionContractKey(config);
+  const prior = state.meta.completionEvidenceRepair || {};
+  const attempts = prior.key === key ? Number(prior.attempts || 0) : 0;
+  const blocker = deterministicFinishBlocker(assessment.contract, assessment.ledger, assessment.evaluation);
+  const detail = {
+    step,
+    mode,
+    reason: blocker?.reason || assessment.evaluation.reason || "Required execution evidence is missing.",
+    requiredEvidence: (assessment.contract.requiredEvidence || []).map((item) => item.category),
+    presentEvidence: assessment.ledger.categories || [],
+    missingToolCalls: assessment.evaluation.missingToolCalls || [],
+    semantic: {
+      checked: Boolean(assessment.semantic.checked),
+      ok: Boolean(assessment.semantic.ok),
+      reason: assessment.semantic.reason || "",
+    },
+  };
+  await store.appendEvent("completion.evidence_rejected", detail);
+  observers.event("completion.evidence_rejected", detail);
+
+  if (attempts < 1) {
+    state.meta.completionEvidenceRepair = { key, attempts: attempts + 1, step };
+    const instruction = [
+      "The proposed completion was rejected because the requested action is not supported by concrete runtime evidence.",
+      `Reason: ${detail.reason}`,
+      detail.requiredEvidence.length ? `Required evidence: ${detail.requiredEvidence.join(", ")}.` : "",
+      "Use only an enabled relevant tool to perform and verify the task. Do not repeat a prose-only answer or call finish until the evidence exists.",
+      "If execution is impossible, report the concrete permission, environment, or dependency blocker instead of claiming success.",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    state.messages.push({ role: "user", content: instruction });
+    await store.appendEvent("completion.repair_requested", { ...detail, instruction });
+    observers.event("completion.repair_requested", detail);
+    return { action: "retry", assessment, detail };
+  }
+
+  const result = [
+    "I could not verify that the requested action was executed, so I stopped instead of claiming success.",
+    detail.reason,
+    "Retry with an enabled execution tool or resolve the reported environment/permission blocker.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return { action: "stop", assessment, detail, result };
+}
+
+async function stopForMissingCompletionEvidence({ config, state, store, observers, sessionId, step, decision }) {
+  state.stepsCompleted = step;
+  state.updatedAt = new Date().toISOString();
+  await store.appendEvent("session.stopped", {
+    reason: "model_did_not_execute",
+    step,
+    detail: decision.detail,
+  });
+  observers.event("session.stopped", {
+    reason: "model_did_not_execute",
+    sessionId,
+  });
+  await store.saveState(state);
+  emitConsole(config, decision.result, { kind: "error", error: true });
+  return {
+    sessionId,
+    result: decision.result,
+    stopped: true,
+    reason: "model_did_not_execute",
+  };
+}
+
+async function recordToolContractViolation({ config, state, store, observers, validation }) {
+  state.meta = state.meta || {};
+  const goalKey = hashForLog(config.goal || state.goal || "");
+  const prior = state.meta.toolContractViolation || {};
+  const violationCount = prior.goalKey === goalKey ? Number(prior.count || 0) + 1 : 1;
+  state.meta.toolContractViolation = {
+    goalKey,
+    count: violationCount,
+    lastCode: validation.code || "TOOL_CALL_INVALID",
+  };
+  const result = {
+    ok: false,
+    blocked: true,
+    recoverable: violationCount < 2,
+    stopRun: violationCount >= 2,
+    violationCount,
+    reason: validation.reason || "The model returned an invalid tool call and it was not dispatched.",
+    category: "tool-contract-violation",
+    code: validation.code || "TOOL_CALL_INVALID",
+    errors: Array.isArray(validation.errors)
+      ? validation.errors.slice(0, 8).map((error) => ({
+          code: String(error?.code || "TOOL_CALL_INVALID"),
+          callIndex: Number.isInteger(error?.callIndex) ? error.callIndex : -1,
+          path: typeof error?.path === "string" ? error.path : undefined,
+          message: String(error?.message || "Invalid tool call."),
+        }))
+      : [],
+    toolName: "tool_call_batch",
+    args: {},
+  };
+  await store.appendEvent("tool.failed", result);
+  observers.event("tool.failed", {
+    toolName: result.toolName,
+    reason: result.reason,
+    category: result.category,
+    code: result.code,
+    violationCount,
+  });
+  return result;
+}
+
+function toolContractRepairMessage(toolResult) {
+  return [
+    "The previous tool-call batch was rejected before dispatch.",
+    `Reason code: ${toolResult.code || "TOOL_CALL_INVALID"}.`,
+    "Retry once with exactly one function tool call from the tools offered in the current turn.",
+    "Use a unique nonempty tool-call id and arguments that are valid JSON and exactly match that tool's schema.",
+    "Do not add hidden fields such as dryRun or call a tool that was not offered.",
+  ].join(" ");
+}
+
+async function stopForRepeatedToolContractViolations({ config, state, store, observers, sessionId, step, toolResult }) {
+  const result = [
+    "I stopped because the model violated the per-turn tool contract twice in this run.",
+    "No call from either invalid batch was dispatched.",
+    "Retry with a model/provider that follows the offered tool names, call identifiers, batch limit, and argument schemas.",
+  ].join(" ");
+  const detail = {
+    step,
+    code: toolResult.code || "TOOL_CALL_INVALID",
+    category: "tool-contract-violation",
+    reason: toolResult.reason || "",
+  };
+  state.stepsCompleted = step;
+  state.updatedAt = new Date().toISOString();
+  await store.appendEvent("session.stopped", {
+    reason: "tool_contract_violation",
+    step,
+    detail,
+  });
+  observers.event("session.stopped", {
+    reason: "tool_contract_violation",
+    sessionId,
+  });
+  await store.saveState(state);
+  emitConsole(config, result, { kind: "error", error: true });
+  return {
+    sessionId,
+    result,
+    stopped: true,
+    reason: "tool_contract_violation",
+  };
+}
+
+async function stopForRepeatedMalformedToolArguments({ config, state, store, observers, sessionId, step, toolResult }) {
+  const result = [
+    "I stopped because the model returned malformed tool arguments twice in this run.",
+    "No malformed tool call was dispatched.",
+    "Retry with a model/provider that can emit valid OpenAI tool-call JSON, or use a simpler request.",
+  ].join(" ");
+  const detail = {
+    step,
+    toolName: toolResult.toolName || "unknown",
+    category: toolResult.category || "malformed-tool-arguments",
+    reason: toolResult.reason || "",
+  };
+  state.stepsCompleted = step;
+  state.updatedAt = new Date().toISOString();
+  await store.appendEvent("session.stopped", {
+    reason: "malformed_tool_arguments",
+    step,
+    detail,
+  });
+  observers.event("session.stopped", {
+    reason: "malformed_tool_arguments",
+    sessionId,
+  });
+  await store.saveState(state);
+  emitConsole(config, result, { kind: "error", error: true });
+  return {
+    sessionId,
+    result,
+    stopped: true,
+    reason: "malformed_tool_arguments",
+  };
+}
+
+function localModelRole(config, role) {
+  return normalizeProviderId(config?.[`${role}Provider`], "") === "localllm" ? config?.[`${role}Model`] || "" : "";
+}
+
+export async function preflightProviderRuntime(config = {}) {
+  if (normalizeProviderId(config.provider, "") !== "localllm") return null;
+
+  if (config.providerReadinessMode === "deterministic-test") {
+    if (typeof config.clientFactory !== "function" || config.clientFactory.agintiDeterministicTest !== true) {
+      throw new ProviderReadinessError({
+        code: "UNSAFE_PREFLIGHT_BYPASS",
+        message: "The deterministic-test readiness bypass requires an explicitly marked deterministic client factory.",
+        action: "Remove the bypass for production runs, or mark only a deterministic in-memory test client factory.",
+        provider: "localllm",
+        stage: "configuration",
+      });
+    }
+    return {
+      ok: true,
+      status: "skipped",
+      provider: "localllm",
+      locality: "in-memory",
+      reason: "deterministic-injected-test-client",
+    };
+  }
+
+  const readiness = await probeProviderRuntime({
+    provider: "localllm",
+    baseURL: config.baseURL,
+    apiKey: config.apiKey,
+    routeModel: localModelRole(config, "route"),
+    mainModel: localModelRole(config, "main"),
+    selectedModel: config.model,
+    timeoutMs: config.providerReadinessTimeoutMs,
+    signal: config.abortSignal,
+  });
+  if (!config.requiresResourcePreflight) return readiness;
+
+  const collectResources =
+    typeof config.localResourceProbe === "function" ? config.localResourceProbe : probeLocalMaxResources;
+  const resources = await collectResources({ signal: config.abortSignal });
+  if (
+    resources?.ready !== true ||
+    String(resources?.status || "").trim().toLowerCase() !== "ready" ||
+    resources?.sharedWorkstationPressure !== false
+  ) {
+    throw new ProviderReadinessError({
+      code: "LOCAL_RESOURCE_PRESSURE",
+      message: "LocalLLM Max was not started because the shared workstation does not have the required free RAM, swap headroom, and aggregate GPU memory.",
+      action: "Keep the task on localllm-deep, or free only this project's obsolete workloads and retry after the resource check is ready.",
+      provider: "localllm",
+      stage: "resources",
+      details: resources,
+    });
+  }
+  return { ...readiness, resources };
+}
+
+const RESUME_OPERATIONAL_CONFIG_FIELDS = Object.freeze([
+  "clientFactory",
+  "localResourceProbe",
+  "allowLocalAutoMax",
+  "localMaxModel",
+  "abortSignal",
+  "providerReadinessMode",
+  "modelTimeoutMs",
+  "shellTimeoutMs",
+  "onLog",
+  "onEvent",
+  "onConsole",
+  "sessionsDir",
+  "projectSessionsDir",
+  "sessionDbPath",
+  "globalSessionIndexPath",
+]);
+
+const AUTO_MAX_RUNTIME_CONTROL_FIELDS = new Set([
+  "provider",
+  "model",
+  "routingMode",
+  "routeProvider",
+  "routeModel",
+  "mainProvider",
+  "mainModel",
+]);
+
+function rebuildResumedRuntimeConfig(incomingConfig, runtimeOverrides, sessionId) {
+  const rebuilt = resolveRuntimeConfig(
+    {
+      goal: incomingConfig.goal || "",
+      startUrl: incomingConfig.startUrl || "",
+      resume: sessionId,
+      sessionId,
+    },
+    {
+      ...runtimeOverrides,
+      // Only durable session reconstruction locks the concrete effective model.
+      // Fresh smart runs must remain free to route by their current task.
+      sessionModelLocked: true,
+      baseDir: incomingConfig.baseDir,
+      packageDir: incomingConfig.packageDir,
+      sessionId,
+      providerReadinessTimeoutMs: incomingConfig.providerReadinessTimeoutMs,
+      localCapabilities: incomingConfig.localCapabilities,
+      localResourcePolicy: incomingConfig.localResourcePolicy,
+      onLog: incomingConfig.onLog,
+      onEvent: incomingConfig.onEvent,
+      onConsole: incomingConfig.onConsole,
+    }
+  );
+
+  for (const field of RESUME_OPERATIONAL_CONFIG_FIELDS) {
+    if (incomingConfig[field] !== undefined) rebuilt[field] = incomingConfig[field];
+  }
+
+  // Credentials never enter the durable snapshot. A currently resolved key may
+  // be reused only when it belongs to the same effective provider; otherwise the
+  // fresh provider-specific resolver above is authoritative.
+  if (
+    incomingConfig.apiKey &&
+    normalizeProviderId(incomingConfig.provider, "") === normalizeProviderId(rebuilt.provider, "")
+  ) {
+    rebuilt.apiKey = incomingConfig.apiKey;
+  }
+  if (
+    incomingConfig.baseURL &&
+    normalizeProviderId(incomingConfig.provider, "") === normalizeProviderId(rebuilt.provider, "")
+  ) {
+    const sameProviderBaseURL = normalizeProviderBaseURL(rebuilt.provider, incomingConfig.baseURL);
+    if (sameProviderBaseURL) rebuilt.baseURL = sameProviderBaseURL;
+  }
+  return rebuilt;
+}
+
+function preInferenceFailureDetail(error, config) {
+  const rawCode = String(error?.code || "PROVIDER_PREFLIGHT_FAILED").trim();
+  const code = /^[A-Z][A-Z0-9_]{1,63}$/.test(rawCode) ? rawCode : "PROVIDER_PREFLIGHT_FAILED";
+  return {
+    reason: "provider_preflight_failed",
+    code,
+    stage: String(error?.stage || "preflight").slice(0, 64),
+    error: redactSensitiveText(error instanceof Error ? error.message : String(error || "Provider preflight failed.")),
+    action: redactSensitiveText(String(error?.action || "Repair the selected provider and resume this saved session.")),
+    provider: config.provider,
+    model: config.model,
+  };
+}
+
+async function recordPreInferenceFailure({ error, config, state, store, observers, sessionId }) {
+  if (isAbortError(error, config)) {
+    state.updatedAt = new Date().toISOString();
+    await store.saveState(state).catch(() => {});
+    await store.appendEvent("session.stopped", { reason: "user_interrupt", stage: "preflight" }).catch(() => {});
+    observers.event("session.stopped", { reason: "user_interrupt", stage: "preflight", sessionId });
+    return;
+  }
+
+  const detail = preInferenceFailureDetail(error, config);
+  const result = [
+    `I saved this request, but ${config.provider}/${config.model} could not begin inference (${detail.code}).`,
+    detail.action,
+    "Resume this session after the provider is ready; no hosted fallback or tool action was attempted.",
+  ].join(" ");
+  state.stepsCompleted = state.stepsCompleted || 0;
+  state.updatedAt = new Date().toISOString();
+  state.messages.push({ role: "assistant", content: result });
+  appendChatEntry(state, "assistant", result);
+  await store.saveState(state).catch(() => {});
+  await store.appendEvent("session.failed", detail).catch(() => {});
+  observers.event("session.failed", { ...detail, sessionId });
+  emitConsole(config, result, { kind: "error", error: true });
+}
+
+export async function runAgent(config) {
+  const incomingConfig = config;
   const sessionId = config.resume || config.sessionId || `web-agent-${crypto.randomUUID()}`;
   const store = new SessionStore(config.sessionsDir, sessionId, {
     projectRoot: config.baseDir,
     commandCwd: config.commandCwd,
     projectSessionsDir: config.projectSessionsDir,
   });
-  const client = createClient(config);
-  const observers = createObservers(config);
-  const browserState = createBrowserState();
-
-  if (config.allowFileTools || config.allowShellTool) {
-    await fs.mkdir(config.commandCwd, { recursive: true });
-  }
   await store.ensure();
 
   let state = await store.loadState();
@@ -2398,6 +2891,42 @@ export async function runAgent(config) {
   if (config.resume && !state) {
     throw new Error(`No saved session found for "${config.resume}".`);
   }
+
+  let runtimeResolutionEvent = null;
+  if (state) {
+    const runtime = resolveSessionRuntime({
+      state,
+      incomingConfig,
+      runtimePatch: incomingConfig.runtimePatch,
+      expectedRevision: incomingConfig.expectedRuntimeRevision,
+    });
+    state.meta = state.meta || {};
+    state.meta.runtimeConfig = runtime.snapshot;
+    config = rebuildResumedRuntimeConfig(incomingConfig, runtime.runtimeOverrides, sessionId);
+    const patchedRuntimeFields = runtime.patched
+      ? Object.keys(incomingConfig.runtimePatch || {}).filter((field) => isSessionRuntimeField(field))
+      : [];
+    if (patchedRuntimeFields.some((field) => AUTO_MAX_RUNTIME_CONTROL_FIELDS.has(field))) {
+      state.meta.localAutoMaxPolicy = captureLocalAutoMaxPolicy(config);
+    } else {
+      config = restoreLocalAutoMaxPolicy(config, state.meta.localAutoMaxPolicy);
+    }
+    runtimeResolutionEvent = {
+      type: runtime.source === "legacy" ? "session.runtime_migrated" : "session.runtime_resolved",
+      data: {
+        schemaVersion: runtime.snapshot.schemaVersion,
+        revision: runtime.snapshot.revision,
+        source: runtime.source,
+        patched: runtime.patched,
+        changedFields: patchedRuntimeFields,
+        provider: runtime.snapshot.provider,
+        model: runtime.snapshot.model,
+      },
+    };
+  }
+
+  const observers = createObservers(config);
+  const browserState = createBrowserState();
 
   if (!state) {
     state = await createInitialState(config, sessionId);
@@ -2429,6 +2958,67 @@ export async function runAgent(config) {
       });
     }
     await store.saveState(state);
+  }
+
+  if (runtimeResolutionEvent) {
+    await store.appendEvent(runtimeResolutionEvent.type, runtimeResolutionEvent.data);
+  }
+
+  let client;
+  try {
+    if (config.allowFileTools || config.allowShellTool) {
+      await fs.mkdir(config.commandCwd, { recursive: true });
+    }
+    if (providerRequiresApiKey(config.provider) && !config.apiKey) {
+      const error = new Error(`Missing API key for provider "${config.provider}".`);
+      error.code = "API_KEY_REQUIRED";
+      error.stage = "configuration";
+      error.action = `Configure the provider-specific API key for ${config.provider}, then resume this saved session.`;
+      throw error;
+    }
+
+    throwIfAborted(config);
+    const readiness = await preflightProviderRuntime(config);
+    const autoMaxDecision = await resolveLocalAutoMaxUpgrade(config, readiness, {
+      resourceProbe:
+        typeof config.localResourceProbe === "function"
+          ? config.localResourceProbe
+          : probeLocalMaxResources,
+    });
+    if (autoMaxDecision.attempted) {
+      const priorModel = config.model;
+      config = applyLocalAutoMaxUpgrade(config, autoMaxDecision);
+      const autoMaxEvent = {
+        outcome: autoMaxDecision.outcome,
+        fromModel: priorModel,
+        candidateModel: autoMaxDecision.model || config.localMaxModel || "localllm-max",
+        activeModel: config.model,
+        complexityScore: Number(
+          config.localAutoMaxEligibilityComplexityScore ?? config.routeComplexityScore ?? 0
+        ),
+        resourceStatus: String(autoMaxDecision.resources?.status || "unknown").slice(0, 32),
+        sharedWorkstationPressure:
+          typeof autoMaxDecision.resources?.sharedWorkstationPressure === "boolean"
+            ? autoMaxDecision.resources.sharedWorkstationPressure
+            : null,
+      };
+      if (autoMaxDecision.outcome === "selected") {
+        state.provider = config.provider;
+        state.model = config.model;
+        state.meta = state.meta || {};
+        state.meta.runtimeConfig = captureSessionRuntime(config, {
+          revision: state.meta.runtimeConfig?.revision || 1,
+        });
+        state.updatedAt = new Date().toISOString();
+        await store.saveState(state);
+      }
+      await store.appendEvent("provider.local_auto_max", autoMaxEvent);
+      observers.event("provider.local_auto_max", { ...autoMaxEvent, sessionId });
+    }
+    client = config.clientFactory ? await config.clientFactory(config) : createClient(config);
+  } catch (error) {
+    await recordPreInferenceFailure({ error, config, state, store, observers, sessionId });
+    throw error;
   }
 
   ensureChatState(state);
@@ -2672,6 +3262,9 @@ export async function runAgent(config) {
       contextBudgetMode: config.contextBudgetMode,
       contextBudgetChars: config.contextBudgetChars,
       contextBudgetTargetChars: config.contextBudgetTargetChars,
+      contextWindowTokens: config.contextWindowTokens,
+      maxOutputTokens: config.maxOutputTokens,
+      contextToolReserveTokens: config.contextToolReserveTokens,
     });
 
     emitConsole(config, `Session: ${sessionId}`, { kind: "meta" });
@@ -2720,7 +3313,10 @@ export async function runAgent(config) {
     await store.appendEvent("context_budget.initialized", state.meta.contextBudget);
     observers.event("context_budget.initialized", state.meta.contextBudget);
     if (contextBudget.enabled) {
-      emitConsole(config, `Context budget: ${contextBudget.maxChars} chars, proactive compaction enabled`, { kind: "meta" });
+      const tokenBudget = contextBudget.maxInputTokens
+        ? `; ${contextBudget.maxInputTokens} estimated input tokens after ${contextBudget.toolReserveTokens} tool + ${contextBudget.outputReserveTokens} output reserves`
+        : "";
+      emitConsole(config, `Context budget: ${contextBudget.maxChars} chars${tokenBudget}, proactive compaction enabled`, { kind: "meta" });
     }
 
     while (state.stepsCompleted < stepBudget.currentMaxSteps) {
@@ -2785,19 +3381,25 @@ export async function runAgent(config) {
       if (contextDecision.compact) {
         const compactMessages = buildContextBudgetCompactionMessages(state, config, snapshot, step, contextDecision);
         const charsAfter = estimateMessageChars(compactMessages);
+        const tokensAfter = estimateMessageTokens(compactMessages);
         if (charsAfter < contextDecision.charsBefore) {
           state.messages = compactMessages;
           state.meta.contextBudget = recordContextCompaction(contextBudget, {
             step,
             charsBefore: contextDecision.charsBefore,
             charsAfter,
+            tokensBefore: contextDecision.tokensBefore,
+            tokensAfter,
           });
           const detail = {
             step,
             reason: contextDecision.reason,
             charsBefore: contextDecision.charsBefore,
             charsAfter,
+            tokensBefore: contextDecision.tokensBefore,
+            tokensAfter,
             targetChars: contextDecision.targetChars,
+            targetTokens: contextDecision.targetTokens,
             compactions: contextBudget.compactions,
           };
           await store.appendEvent("history.compacted_for_context_budget", detail);
@@ -2875,15 +3477,19 @@ export async function runAgent(config) {
         throw new Error("Model returned no assistant message.");
       }
 
-      state.messages.push(preserveAssistantMessage(assistantMessage));
+      const rawToolCalls = assistantMessage.tool_calls;
+      const toolCalls = Array.isArray(rawToolCalls) ? rawToolCalls : [];
+      const toolBatchValidation = rawToolCalls === undefined || rawToolCalls === null
+        ? { ok: true, calls: [] }
+        : validateToolCallBatch(rawToolCalls, toolContractFromResponse(response), { maxToolCalls: 1 });
 
       await store.appendEvent("model.responded", {
         step,
         content: redactSensitiveText(assistantMessage.content || ""),
-        toolCalls: (assistantMessage.tool_calls || []).map((call) => ({
-          id: call.id,
-          name: call.function.name,
-          arguments: redactSensitiveText(call.function.arguments),
+        toolCalls: toolCalls.map((call) => ({
+          id: call?.id,
+          name: call?.function?.name,
+          arguments: redactSensitiveText(call?.function?.arguments || ""),
         })),
       });
       observers.event("model.responded", {
@@ -2891,7 +3497,39 @@ export async function runAgent(config) {
         content: redactSensitiveText(assistantMessage.content || ""),
       });
 
-      const toolCalls = assistantMessage.tool_calls || [];
+      if (!toolBatchValidation.ok) {
+        const toolResult = await recordToolContractViolation({
+          config,
+          state,
+          store,
+          observers,
+          validation: toolBatchValidation,
+        });
+        if (String(assistantMessage.content || "").trim()) {
+          state.messages.push(preserveAssistantMessage({ ...assistantMessage, tool_calls: undefined }));
+        }
+        if (toolResult.stopRun) {
+          return await stopForRepeatedToolContractViolations({
+            config,
+            state,
+            store,
+            observers,
+            sessionId,
+            step,
+            toolResult,
+          });
+        }
+        state.messages.push({
+          role: "user",
+          content: toolContractRepairMessage(toolResult),
+        });
+        state.stepsCompleted = step;
+        state.updatedAt = new Date().toISOString();
+        await store.saveState(state);
+        continue;
+      }
+
+      state.messages.push(preserveAssistantMessage(assistantMessage));
 
       if (toolCalls.length === 0) {
         const queuedCount = await injectQueuedUserMessages(store, state, observers);
@@ -2901,6 +3539,32 @@ export async function runAgent(config) {
           await maybeExtendStepBudget({ client, config, state, store, observers, stepBudget, step, trigger: "queued-input" });
           await store.saveState(state);
           continue;
+        }
+        const completionDecision = await completionEvidenceDecision({
+          config,
+          state,
+          store,
+          observers,
+          step,
+          mode: "assistant-content",
+          candidateResult: assistantMessage.content || "",
+        });
+        if (completionDecision.action === "retry") {
+          state.stepsCompleted = step;
+          state.updatedAt = new Date().toISOString();
+          await store.saveState(state);
+          continue;
+        }
+        if (completionDecision.action === "stop") {
+          return await stopForMissingCompletionEvidence({
+            config,
+            state,
+            store,
+            observers,
+            sessionId,
+            step,
+            decision: completionDecision,
+          });
         }
         const fallback = redactSensitiveText(assistantMessage.content?.trim() || "No tool call returned.");
         if (config.scsActive) {
@@ -2967,6 +3631,7 @@ export async function runAgent(config) {
       }
 
       let continueForQueuedInput = false;
+      let continueForCompletionRepair = false;
       const postBatchToolResults = [];
       for (let toolIndex = 0; toolIndex < toolCalls.length; toolIndex += 1) {
         const toolCall = toolCalls[toolIndex];
@@ -3007,6 +3672,18 @@ export async function runAgent(config) {
           });
         }
 
+        if (toolResult.stopRun && toolResult.category === "malformed-tool-arguments") {
+          return await stopForRepeatedMalformedToolArguments({
+            config,
+            state,
+            store,
+            observers,
+            sessionId,
+            step,
+            toolResult,
+          });
+        }
+
         if (shouldShortCircuitToolBatch(toolResult)) {
           for (const skippedToolCall of toolCalls.slice(toolIndex + 1)) {
             const skippedResult = skippedAfterBlockedToolResult(skippedToolCall, toolResult);
@@ -3032,6 +3709,33 @@ export async function runAgent(config) {
         }
 
         if (toolResult.done) {
+          const completionDecision = await completionEvidenceDecision({
+            config,
+            state,
+            store,
+            observers,
+            step,
+            mode: "finish-tool",
+            candidateResult: toolResult.result || "",
+          });
+          if (completionDecision.action === "retry") {
+            state.stepsCompleted = step;
+            state.updatedAt = new Date().toISOString();
+            await store.saveState(state);
+            continueForCompletionRepair = true;
+            break;
+          }
+          if (completionDecision.action === "stop") {
+            return await stopForMissingCompletionEvidence({
+              config,
+              state,
+              store,
+              observers,
+              sessionId,
+              step,
+              decision: completionDecision,
+            });
+          }
           if (config.scsActive) {
             const decision = await reviewScsFinish(client, config, state, toolResult.result, {
               events: await store.loadEvents(),
@@ -3108,6 +3812,8 @@ export async function runAgent(config) {
           };
         }
       }
+
+      if (continueForCompletionRepair) continue;
 
       for (const toolResult of postBatchToolResults) {
         await applyToolLoopGuard(state, toolResult, store, observers);
@@ -3283,6 +3989,7 @@ export async function runAgent(config) {
       reason: "user_interrupt",
     };
   } finally {
+    await store.releaseInboxClaims().catch(() => {});
     await closeBrowser(browserState, store);
     await flushHousekeeping();
   }

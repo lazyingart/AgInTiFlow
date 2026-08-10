@@ -404,13 +404,17 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   ) {
     categories.add("file");
   }
-  if (
+  const directCommandSignal =
     textHas(
       text,
-      /\b(run|command|check|lint|typecheck|build|compile|install|verify|validate|npm|node|python|pytest|make|xelatex|latexmk|ffmpeg)\b|\btest(?:ing)?\s+(?:the|this|that|it|app|site|code|function|workflow|script|build)\b/
-    ) ||
-    /运行|测试|检查|验证|编译|安装/.test(text)
-  ) {
+      /\b(run|command|lint|typecheck|build|compile|install|npm|node|python|pytest|make|xelatex|latexmk|ffmpeg)\b|\btest(?:ing)?\s+(?:the|this|that|it|app|site|code|function|workflow|script|build)\b/
+    ) || /运行|测试|编译|安装/.test(text);
+  const validationSignal = textHas(text, /\b(check|verify|validate)\b/) || /检查|验证/.test(text);
+  // A generic "verify outputs" reminder on a simple document/file request is
+  // satisfied by the file + semantic evidence checks below. Requiring a shell
+  // command as well makes permission-resumed writes repeat an already-successful
+  // create. Substantive code validation still requires command evidence.
+  if (directCommandSignal || (validationSignal && codeProfileRequiresCommand(positiveGoal))) {
     categories.add("command");
   }
   if (textHas(text, /\b(artifact|canvas|pdf|image|video|screenshot|cover|plot|chart|figure|docx|archive|copy to|export|generated|generate|draft)\b/) || /输出|产物|图片|视频|截图|封面|生成/.test(text)) {

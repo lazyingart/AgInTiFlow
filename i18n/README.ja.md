@@ -13,7 +13,7 @@
 ![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)
 ![Playwright](https://img.shields.io/badge/Browser-Playwright-2EAD33?logo=playwright&logoColor=white)
 ![CLI + Web](https://img.shields.io/badge/Interface-CLI%20%2B%20Web-0ea5e9)
-![Text Models](https://img.shields.io/badge/Text-DeepSeek%20%2B%20Venice%20%2B%20OpenAI%20%2B%20Qwen-2563eb)
+![Text Models](https://img.shields.io/badge/Text-LocalLLM%20%2B%20Optional%20Hosted-2563eb)
 ![Aux Image](https://img.shields.io/badge/Aux%20Image-GRS%20AI%20%2B%20Venice-ec4899)
 ![Sandbox](https://img.shields.io/badge/Shell-Docker%20Sandbox-f97316)
 ![Status](https://img.shields.io/badge/Status-Prototype-7c3aed)
@@ -23,6 +23,8 @@
 AgInTiFlow は、ハイブリッド wet-dry R&D、hardware-aware intelligence、ソフトウェア自動化、産業ワークフローのための project-aware agent workspace です。実験計画からデータ解析、ハードウェア制御から生産スクリプト、顕微鏡画像・ドローン・ロボットからレポートまで、SCS 監督、AAPS ワークフロー、保護された実行、永続的な証拠を備えて、API、Web、CLI からエージェントが作業できるようにします。
 
 要するに、プロジェクト内で `aginti` を実行し、タスクを渡し、計画とツール呼び出しを確認し、後で再開し、成果物をワークスペースに残せます。
+
+> **翻訳の更新状況:** この翻訳は、[最新の英語 README](../README.md) と [local-first runtime リファレンス](../docs/local-first-agent-runtime.md) の一部詳細より遅れている場合があります。デフォルトは `http://127.0.0.1:8008/v1` の LocalLLM で、`localllm-fast` と `localllm-deep` を使います。Hosted provider は明示的に選ぶ任意の upgrade です。環境にキーがあるだけでは選択されず、自動 fallback も行いません。補助画像生成も明示的に有効化するまでオフです。
 
 **リンク**
 
@@ -45,9 +47,9 @@ AgInTiFlow は、ハイブリッド wet-dry R&D、hardware-aware intelligence、
 
 | 原則 | 実際の意味 |
 | --- | --- |
-| 安い知能はアーキテクチャを変える | DeepSeek V4 Flash/Pro により、ルーティング、スカウト、レビュー、回復に追加呼び出しを使えるようになります。高価な一回の呼び出しにすべてを押し込む必要がありません。 |
+| ローカル知能はアーキテクチャを変える | ベースラインは隣接する LocalLLM gateway を使い、route と main をローカルかつプライベートに実行します。Hosted model は明示的な upgrade のままです。 |
 | 謎より検査可能性 | 計画、ツール呼び出し、ファイル diff、コマンド出力、キャンバス成果物、セッションイベントは保存され、再開できます。 |
-| ロール別モデル | route、main、spare、wrapper、auxiliary image は別ロールです。安いルートモデル、強いメインモデル、OpenAI/Qwen/Venice ルート、GRS AI/Venice 画像ツールを組み合わせられます。 |
+| ロール別モデル | route、main、spare、wrapper、auxiliary image は別ロールです。LocalLLM の Fast/Deep がデフォルトで、DeepSeek、OpenAI、OpenRouter、Qwen、Venice は明示的に選択します。 |
 | 大きな作業の前に scouts | 並列 scouts がアーキテクチャ、テスト、リスク、シンボル、統合点を安く調査してから、メイン実行器が編集します。 |
 | 高リスク作業には SCS | Student-Committee-Supervisor モードは型付きゲートを追加します。committee が起案し、student が承認/監視し、supervisor が実行します。`/scs` または `--scs auto` を使います。 |
 | 大規模ワークフローには AAPS | AAPS はトップダウンのエージェントパイプラインスクリプトを記述します。AgInTiFlow はその検証、コンパイル、実行を行う対話型バックエンドになります。 |
@@ -64,14 +66,17 @@ aginti init
 aginti
 ```
 
-初回の対話実行でメインモデルキーが見つからない場合、AgInTiFlow は認証ウィザードを開きます。DeepSeek、OpenAI、Qwen、Venice のいずれかを選び、キーを貼り付けると、git から無視されるプロジェクトローカルの `.aginti/.env` に制限付き権限で保存します。いつでも再実行できます。
+AgInTiFlow はデフォルトで Hosted key を必要とせず、`http://127.0.0.1:8008/v1` の隣接 LocalLLM service に接続します。route は `localllm-fast`、main は `localllm-deep` です。DeepSeek、OpenAI、OpenRouter、Qwen、Venice を使う場合だけ provider を明示的に選び、auth wizard を実行します。LocalLLM の失敗時は明確なエラーで停止し、タスクを自動的に cloud へ送りません。
 
 ```bash
 aginti auth
 aginti auth deepseek
+aginti auth openrouter
 aginti auth venice
 aginti login grsai
 ```
+
+保存済み Hosted key は認証にだけ使われ、active provider を変更しません。補助画像ツールは `/auxiliary on`、`/auxiliary image`、または同等の toggle を明示的に使うまでオフです。
 
 同じプロジェクトから Web UI を起動します。
 
@@ -162,12 +167,12 @@ aginti --resume <session-id> \
 | ファイルツール | `inspect_project`, `list_files`, `read_file`, `search_files`, `write_file`, `apply_patch`, `open_workspace_file`, `preview_workspace`。 |
 | Shell ツール | host または Docker workspace の保護された shell 実行。パッケージ導入ポリシーとコマンド安全チェック付き。 |
 | ブラウザツール | Playwright ブラウザ操作。遅延起動と任意のドメイン allowlist。 |
-| モデルルーティング | DeepSeek fast/pro デフォルト、手動 OpenAI/Qwen/Venice/mock、spare、wrapper、補助画像モデル。 |
+| モデルルーティング | LocalLLM Fast/Deep がデフォルトです。DeepSeek、OpenAI、OpenRouter、Qwen、Venice、mock は明示的な route で、環境キーによる Hosted fallback はありません。 |
 | Patch ワークフロー | Codex 形式 patch envelope、unified diff、正確な置換、hash、コンパクト diff、パスガード。 |
 | 並列 scouts | アーキテクチャ、実装、レビュー、テスト、git、研究、シンボル追跡、依存リスクを調べる任意の scout 呼び出し。 |
 | SCS モード | 複雑またはリスクの高いタスク向けの Student-Committee-Supervisor 品質ゲート。 |
 | AAPS adapter | `.aaps` ワークフローの init、validate、parse、compile、dry-run、run 用の任意 `@lazyingart/aaps` 統合。 |
-| 画像生成 | GRS AI と Venice の任意画像ツール。manifest 保存とキャンバスプレビュー付き。 |
+| 画像生成 | GRS AI と Venice はデフォルトでオフです。明示的な有効化が必要で、キーを保存しただけでは有効化や代替 provider の選択を行いません。 |
 | スキルライブラリ | コード、Web、Android/iOS、Python、Rust、Java、LaTeX、執筆、レビュー、GitHub、AAPS などの Markdown スキル。 |
 | Skill Mesh | レビュー済み再利用スキルパックの厳格な記録/共有。使わない場合はバックグラウンド共有なしで通常動作します。 |
 | 多言語 UI | CLI とドキュメントは英語、日本語、簡体/繁体中国語、韓国語、フランス語、スペイン語、アラビア語、ベトナム語、ドイツ語、ロシア語をサポートします。 |
@@ -178,11 +183,11 @@ AgInTiFlow は「モデル」を単一のグローバル設定として扱いま
 
 | ロール | デフォルト | 用途 |
 | --- | --- | --- |
-| Route | `deepseek/deepseek-v4-flash` | 低コストな計画、トリアージ、短いタスク、ルーティング判断。 |
-| Main | `deepseek/deepseek-v4-pro` | 複雑なコーディング、デバッグ、執筆、研究、長いタスク。 |
-| Spare | `openai/gpt-5.4` medium | 任意の fallback またはクロスチェック。 |
+| Route | `localllm/localllm-fast` | ローカルの計画、トリアージ、短いタスク、ルーティング判断。 |
+| Main | `localllm/localllm-deep` | 複雑なコーディング、デバッグ、執筆、研究、長いタスクのローカル実行。 |
+| Spare | `localllm/localllm-deep` medium | ローカルのクロスチェック。Hosted spare は明示的な選択が必要です。 |
 | Wrapper | `codex/gpt-5.5` medium | 任意の外部 coding-agent アドバイザ。 |
-| Auxiliary | `grsai/nano-banana-2` | 画像生成とその他の非テキスト補助ツール。 |
+| Auxiliary | `grsai/nano-banana-2` (off) | 明示的に有効化した画像生成と非テキストツールのみ。キーによる provider failover はありません。 |
 
 よく使うセレクタ：
 
@@ -196,7 +201,7 @@ AgInTiFlow は「モデル」を単一のグローバル設定として扱いま
 /venice
 ```
 
-Venice ルートは任意の uncensored または制限の少ない創作作業に使えます。通常のエンジニアリングでは DeepSeek が経済的デフォルトです。詳しくは [../docs/model-selection.md](../docs/model-selection.md) と [../references/venice-model-reference.md](../references/venice-model-reference.md) を参照してください。
+Venice は任意の uncensored または制限の少ない創作作業に使えます。LocalLLM がローカルのデフォルトであり、DeepSeek などの Hosted provider は明示的な upgrade に限られます。詳しくは [../docs/model-selection.md](../docs/model-selection.md)、[../docs/local-first-agent-runtime.md](../docs/local-first-agent-runtime.md)、[../references/venice-model-reference.md](../references/venice-model-reference.md) を参照してください。
 
 ## AAPS と大規模ワークフロー
 
@@ -268,12 +273,19 @@ AgInTiFlow は canonical session を中央に保存し、プロジェクト側�
 よく使う環境変数：
 
 ```bash
+AGENT_PROVIDER=localllm
+LOCALLLM_BASE_URL=http://127.0.0.1:8008/v1
+LOCALLLM_API_KEY=local-dev-key
+AGINTI_LOCALLLM_ROUTE_MODEL=localllm-fast
+AGINTI_LOCALLLM_MAIN_MODEL=localllm-deep
+
+# 任意かつ明示的な hosted upgrade。LocalLLM から自動 fallback しません。
 DEEPSEEK_API_KEY=...
 OPENAI_API_KEY=...
+OPENROUTER_API_KEY=...
 QWEN_API_KEY=...
 VENICE_API_KEY=...
 GRSAI_API_KEY=...
-AGENT_PROVIDER=deepseek
 AGENT_ROUTING_MODE=smart
 AGINTI_TASK_PROFILE=auto
 AGINTI_LANGUAGE=en

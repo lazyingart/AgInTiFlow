@@ -1,3 +1,5 @@
+import { BASELINE_PROVIDER, normalizeProviderId, resolveProviderDefaults } from "./provider-contract.js";
+
 const COMPLEXITY_KEYWORDS = [
   "architecture",
   "refactor",
@@ -79,6 +81,205 @@ export const ROUTING_MODES = ["smart", "fast", "complex", "manual"];
 export const REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
 export const REASONING_PROVIDER_DEFAULT_LABEL = "Provider default";
 
+export const LOCALLLM_AUTO_MAX_MIN_COMPLEXITY = 8;
+
+export const LOCALLLM_RESOURCE_STATES = Object.freeze({
+  UNKNOWN: "unknown",
+  READY: "ready",
+  PRESSURED: "pressured",
+});
+
+export const LOCALLLM_MODEL_TIERS = Object.freeze({
+  fast: Object.freeze({
+    id: "fast",
+    model: "localllm-fast",
+    label: "LocalLLM Fast",
+    role: "simple routing",
+    target: "Qwen3 8B Q4",
+    autoPolicy: "default-simple",
+    capabilities: Object.freeze(["text", "tools", "code"]),
+  }),
+  deep: Object.freeze({
+    id: "deep",
+    model: "localllm-deep",
+    label: "LocalLLM Deep",
+    role: "substantive agent and coding work",
+    target: "Qwen3 30B-A3B Instruct Q4_K_M",
+    autoPolicy: "default-complex",
+    capabilities: Object.freeze(["text", "tools", "code", "reasoning"]),
+  }),
+  max: Object.freeze({
+    id: "max",
+    model: "localllm-max",
+    label: "LocalLLM Max",
+    role: "highest-fidelity local text and code",
+    target: "Qwen3 30B-A3B Instruct Q8_0",
+    autoPolicy: "explicit-opt-in-and-confirmed-headroom",
+    capabilities: Object.freeze(["text", "tools", "code", "reasoning"]),
+  }),
+  vision: Object.freeze({
+    id: "vision",
+    model: "localllm-vision-xl",
+    label: "LocalLLM Vision XL",
+    role: "image understanding",
+    target: "Qwen3-VL 30B-A3B Instruct Q4_K_M",
+    autoPolicy: "vision-intent-and-image-capability",
+    capabilities: Object.freeze(["text", "vision"]),
+  }),
+});
+
+const LOCALLLM_TIER_BY_MODEL = new Map(
+  Object.values(LOCALLLM_MODEL_TIERS).map((tier) => [tier.model, tier])
+);
+
+const VISION_TASK_HINTS = [
+  /\b(describe|inspect|analy[sz]e|examine|read|compare|understand|identify|recognize|ocr)\b.{0,64}\b(image|photo|picture|screenshot|diagram|scan)\b/i,
+  /\b(image|photo|picture|screenshot|diagram|scan)\b.{0,64}\b(describe|inspect|analy[sz]e|examine|read|compare|understand|identify|recognize|ocr)\b/i,
+  /(?:分析|查看|检查|描述|识别|读取|比较).{0,24}(?:图片|图像|照片|截图|图表|扫描件)/u,
+  /(?:图片|图像|照片|截图|图表|扫描件).{0,24}(?:分析|查看|检查|描述|识别|读取|比较)/u,
+];
+
+export function localLLMModelTier(model = "") {
+  return LOCALLLM_TIER_BY_MODEL.get(String(model || "").trim()) || null;
+}
+
+export function normalizeLocalLLMResourceState(value = "") {
+  const normalized = String(value || "").trim().toLowerCase();
+  return Object.values(LOCALLLM_RESOURCE_STATES).includes(normalized)
+    ? normalized
+    : LOCALLLM_RESOURCE_STATES.UNKNOWN;
+}
+
+export function hasLocalLLMVisionIntent(goal = "", taskProfile = "auto") {
+  const profile = String(taskProfile || "").trim().toLowerCase();
+  if (["vision", "image-understanding", "image_analysis", "ocr"].includes(profile)) return true;
+  return VISION_TASK_HINTS.some((hint) => hint.test(String(goal || "")));
+}
+
+function localLLMModelForTier(tier, overrides = {}) {
+  const sharedOverride =
+    process.env.AGINTI_LOCALLLM_MODEL || process.env.LOCALLLM_MODEL || process.env.LOCAL_LLM_MODEL || "";
+  if (tier === "fast") {
+    return overrides.fastModel || process.env.AGINTI_LOCALLLM_ROUTE_MODEL || sharedOverride || LOCALLLM_MODEL_TIERS.fast.model;
+  }
+  if (tier === "deep") {
+    return overrides.deepModel || process.env.AGINTI_LOCALLLM_MAIN_MODEL || sharedOverride || LOCALLLM_MODEL_TIERS.deep.model;
+  }
+  if (tier === "max") {
+    return overrides.maxModel || process.env.AGINTI_LOCALLLM_MAX_MODEL || LOCALLLM_MODEL_TIERS.max.model;
+  }
+  if (tier === "vision") {
+    return overrides.visionModel || process.env.AGINTI_LOCALLLM_VISION_MODEL || LOCALLLM_MODEL_TIERS.vision.model;
+  }
+  return "";
+}
+
+function localLLMTierResult(tier, {
+  model = "",
+  reason = "",
+  selection = "smart",
+  blockedUpgrade = "",
+} = {}) {
+  const metadata = LOCALLLM_MODEL_TIERS[tier];
+  const selectedModel = model || metadata?.model || "";
+  const configuredTier = localLLMModelTier(selectedModel);
+  const configuredTierOverride = Boolean(configuredTier && configuredTier.id !== tier);
+  const effectiveTier = configuredTier?.id || tier;
+  return {
+    provider: "localllm",
+    tier: effectiveTier,
+    model: selectedModel,
+    reason: configuredTierOverride
+      ? `Explicit configured LocalLLM ${configuredTier.id} model overrides the automatic ${tier} tier.`
+      : reason,
+    selection: configuredTierOverride ? "configured-model" : selection,
+    blockedUpgrade: ["max", "vision"].includes(effectiveTier) ? "" : blockedUpgrade,
+    requiresResourcePreflight: effectiveTier === "max",
+  };
+}
+
+/**
+ * Select a LocalLLM alias without probing hardware or loading a model.
+ *
+ * Automatic Max selection intentionally requires four affirmative signals:
+ * a sufficiently complex task, model availability, explicit operator opt-in,
+ * and a resource snapshot that says ready with no shared-workstation pressure.
+ * Unknown/missing resource state is fail-closed and stays on Deep.
+ */
+export function selectLocalLLMModelTier({
+  goal = "",
+  taskProfile = "auto",
+  complexityScore,
+  requestedModel = "",
+  localCapabilities = {},
+  localResourcePolicy = {},
+  modelOverrides = {},
+} = {}) {
+  const explicitModel = String(requestedModel || "").trim();
+  if (explicitModel) {
+    const explicitTier = localLLMModelTier(explicitModel);
+    return localLLMTierResult(explicitTier?.id || "custom", {
+      model: explicitModel,
+      reason: explicitTier
+        ? `Explicit LocalLLM ${explicitTier.id} model selected.`
+        : "Explicit custom LocalLLM model selected.",
+      selection: "explicit",
+    });
+  }
+
+  const score = Number.isFinite(Number(complexityScore))
+    ? Number(complexityScore)
+    : scoreTaskComplexity(goal, taskProfile);
+  const visionIntent = hasLocalLLMVisionIntent(goal, taskProfile);
+  const imageCapabilityReady =
+    localCapabilities.imageInput === true && localCapabilities.visionModelAvailable === true;
+
+  if (visionIntent && imageCapabilityReady) {
+    return localLLMTierResult("vision", {
+      model: localLLMModelForTier("vision", modelOverrides),
+      reason: "Vision intent and an available image-input capability selected LocalLLM Vision XL.",
+      selection: "vision-capability",
+    });
+  }
+
+  const resourceState = normalizeLocalLLMResourceState(localResourcePolicy.status);
+  const maxAutoReady =
+    score >= LOCALLLM_AUTO_MAX_MIN_COMPLEXITY &&
+    localCapabilities.maxModelAvailable === true &&
+    localResourcePolicy.allowMaxAuto === true &&
+    resourceState === LOCALLLM_RESOURCE_STATES.READY &&
+    localResourcePolicy.sharedWorkstationPressure === false;
+
+  if (maxAutoReady) {
+    return localLLMTierResult("max", {
+      model: localLLMModelForTier("max", modelOverrides),
+      reason: `Opted-in LocalLLM Max route selected with confirmed resource headroom; complexity score ${score}.`,
+      selection: "resource-policy",
+    });
+  }
+
+  if (score >= 3) {
+    return localLLMTierResult("deep", {
+      model: localLLMModelForTier("deep", modelOverrides),
+      reason: `Substantive LocalLLM work selected Deep; complexity score ${score}.`,
+      selection: "complexity",
+      blockedUpgrade:
+        visionIntent && !imageCapabilityReady
+          ? "vision-capability-signal-required"
+          : score >= LOCALLLM_AUTO_MAX_MIN_COMPLEXITY && !maxAutoReady
+            ? "max-auto-policy-not-satisfied"
+            : "",
+    });
+  }
+
+  return localLLMTierResult("fast", {
+    model: localLLMModelForTier("fast", modelOverrides),
+    reason: `Simple LocalLLM work selected Fast; complexity score ${score}.`,
+    selection: "complexity",
+    blockedUpgrade: visionIntent && !imageCapabilityReady ? "vision-capability-signal-required" : "",
+  });
+}
+
 export function normalizeReasoningEffort(value = "", fallback = "") {
   const text = String(value ?? "").trim().toLowerCase();
   const normalizedFallback = REASONING_EFFORTS.includes(String(fallback || "").trim().toLowerCase())
@@ -96,11 +297,17 @@ export function reasoningEffortLabel(value = "") {
 }
 
 export const MODEL_PROVIDER_GROUPS = {
+  localllm: {
+    label: "LocalLLM",
+    provider: "localllm",
+    role: "local baseline",
+    description: "OpenAI-compatible loopback route through the sibling LocalLLM gateway. Use LOCALLLM_BASE_URL/LOCALLLM_MODEL for explicit local overrides.",
+  },
   deepseek: {
     label: "DeepSeek",
     provider: "deepseek",
-    role: "default route/main",
-    description: "Primary low-cost coding route. Flash is used for fast planning; Pro is used for complex execution.",
+    role: "hosted upgrade",
+    description: "Optional low-cost hosted coding route. Flash is used for fast planning; Pro is used for complex execution.",
   },
   openai: {
     label: "OpenAI",
@@ -258,6 +465,36 @@ export const AUXILIARY_MODEL_CATALOG = {
 };
 
 export const PROVIDER_MODEL_CATALOG = {
+  localllm: [
+    {
+      ...LOCALLLM_MODEL_TIERS.fast,
+      id: LOCALLLM_MODEL_TIERS.fast.model,
+      tier: LOCALLLM_MODEL_TIERS.fast.id,
+      context: "256K",
+      description: "Fast local lane for simple conversation, classification, and routing.",
+    },
+    {
+      ...LOCALLLM_MODEL_TIERS.deep,
+      id: LOCALLLM_MODEL_TIERS.deep.model,
+      tier: LOCALLLM_MODEL_TIERS.deep.id,
+      context: "256K",
+      description: "Default 30B-A3B Q4 lane for substantive agent, coding, debugging, and design work.",
+    },
+    {
+      ...LOCALLLM_MODEL_TIERS.max,
+      id: LOCALLLM_MODEL_TIERS.max.model,
+      tier: LOCALLLM_MODEL_TIERS.max.id,
+      context: "256K",
+      description: "Explicit highest-fidelity Q8 lane; automatic use requires opt-in and confirmed resource headroom.",
+    },
+    {
+      ...LOCALLLM_MODEL_TIERS.vision,
+      id: LOCALLLM_MODEL_TIERS.vision.model,
+      tier: LOCALLLM_MODEL_TIERS.vision.id,
+      context: "256K",
+      description: "30B-A3B vision lane for tasks with image input and confirmed vision-model availability.",
+    },
+  ],
   deepseek: [
     {
       id: "deepseek-v4-flash",
@@ -828,68 +1065,37 @@ export const PROVIDER_MODEL_CATALOG = {
   ],
 };
 
-export function getProviderDefaults(provider = "deepseek") {
-  if (provider === "mock") {
-    return {
-      provider: "mock",
-      apiKey: "mock-local",
-      baseURL: "",
-      model: process.env.MOCK_MODEL || "mock-agent",
-    };
-  }
-
-  if (provider === "openai") {
-    return {
-      provider: "openai",
-      apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || "",
-      baseURL: process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || "https://api.openai.com/v1",
-      model: process.env.OPENAI_DEFAULT_MODEL || process.env.LLM_MODEL || "gpt-5.4-mini",
-    };
-  }
-
-  if (provider === "qwen") {
-    return {
-      provider: "qwen",
-      apiKey: process.env.QWEN_API_KEY || "",
-      baseURL: process.env.QWEN_BASE_URL || process.env.LLM_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      model: process.env.QWEN_DEFAULT_MODEL || process.env.LLM_MODEL || "qwen-plus",
-    };
-  }
-
-  if (provider === "openrouter") {
-    return {
-      provider: "openrouter",
-      apiKey: process.env.OPENROUTER_API_KEY || "",
-      baseURL: process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1",
-      model: process.env.OPENROUTER_MODEL || process.env.OPENROUTER_DEFAULT_MODEL || process.env.LLM_MODEL || "openrouter/auto",
-    };
-  }
-
-  if (provider === "venice") {
-    return {
-      provider: "venice",
-      apiKey: process.env.VENICE_API_KEY || "",
-      baseURL: process.env.VENICE_API_BASE || process.env.VENICE_BASE_URL || "https://api.venice.ai/api/v1",
-      model: process.env.VENICE_MODEL || process.env.VENICE_DEFAULT_MODEL || process.env.LLM_MODEL || "venice-uncensored-1-2",
-    };
-  }
-
-  return {
-    provider: "deepseek",
-    apiKey: process.env.LLM_API_KEY || process.env.DEEPSEEK_API_KEY || "",
-    baseURL: process.env.LLM_BASE_URL || "https://api.deepseek.com/v1",
-    model: process.env.DEEPSEEK_FAST_MODEL || process.env.LLM_MODEL || "deepseek-v4-flash",
-  };
+export function getProviderDefaults(provider = BASELINE_PROVIDER) {
+  return resolveProviderDefaults(provider);
 }
 
-function providerDefaultModel(provider, fallback) {
-  if (provider === "deepseek" && fallback) return fallback;
-  return getProviderDefaults(provider).model || fallback;
+function normalizeConfiguredProvider(value, fallback = BASELINE_PROVIDER) {
+  const raw = String(value || "").trim();
+  if (!raw) return fallback;
+  const normalized = normalizeProviderId(raw, "");
+  if (normalized) return normalized;
+  throw new Error(`Unknown provider "${raw}". Use localllm, deepseek, openai, openrouter, qwen, venice, or mock.`);
+}
+
+function providerDefaultModel(provider, fallback, role = "default") {
+  const normalized = normalizeProviderId(provider);
+  if (normalized === "localllm") {
+    const sharedOverride =
+      process.env.AGINTI_LOCALLLM_MODEL || process.env.LOCALLLM_MODEL || process.env.LOCAL_LLM_MODEL || "";
+    if (role === "main") {
+      return process.env.AGINTI_LOCALLLM_MAIN_MODEL || sharedOverride || LOCALLLM_MODEL_TIERS.deep.model;
+    }
+    if (role === "route") {
+      return process.env.AGINTI_LOCALLLM_ROUTE_MODEL || sharedOverride || LOCALLLM_MODEL_TIERS.fast.model;
+    }
+  }
+  if (normalized === "deepseek" && fallback) return fallback;
+  return getProviderDefaults(normalized).model || fallback;
 }
 
 export function getModelPresets(overrides = {}) {
-  const routeProvider = overrides.routeProvider || process.env.AGINTI_ROUTE_PROVIDER || "deepseek";
-  const mainProvider = overrides.mainProvider || process.env.AGINTI_MAIN_PROVIDER || "deepseek";
+  const routeProvider = normalizeConfiguredProvider(overrides.routeProvider || process.env.AGINTI_ROUTE_PROVIDER || process.env.AGENT_PROVIDER, BASELINE_PROVIDER);
+  const mainProvider = normalizeConfiguredProvider(overrides.mainProvider || process.env.AGINTI_MAIN_PROVIDER || process.env.AGENT_PROVIDER, routeProvider);
   return {
     fast: {
       id: "fast",
@@ -898,8 +1104,8 @@ export function getModelPresets(overrides = {}) {
       model:
         overrides.routeModel ||
         process.env.AGINTI_ROUTE_MODEL ||
-        process.env.DEEPSEEK_FAST_MODEL ||
-        providerDefaultModel(routeProvider, "deepseek-v4-flash"),
+        (routeProvider === "deepseek" ? process.env.DEEPSEEK_FAST_MODEL : "") ||
+        providerDefaultModel(routeProvider, routeProvider === "deepseek" ? "deepseek-v4-flash" : "", "route"),
       description: "Default fast route for normal browser, shell, and short coding tasks.",
     },
     complex: {
@@ -909,9 +1115,23 @@ export function getModelPresets(overrides = {}) {
       model:
         overrides.mainModel ||
         process.env.AGINTI_MAIN_MODEL ||
-        process.env.DEEPSEEK_PRO_MODEL ||
-        providerDefaultModel(mainProvider, "deepseek-v4-pro"),
-      description: "Higher-capacity DeepSeek route for multi-step coding and design tasks.",
+        (mainProvider === "deepseek" ? process.env.DEEPSEEK_PRO_MODEL : "") ||
+        providerDefaultModel(mainProvider, mainProvider === "deepseek" ? "deepseek-v4-pro" : "", "main"),
+      description: "Higher-capacity route for multi-step coding and design tasks.",
+    },
+    localMax: {
+      id: "localMax",
+      label: LOCALLLM_MODEL_TIERS.max.label,
+      provider: "localllm",
+      model: overrides.maxModel || process.env.AGINTI_LOCALLLM_MAX_MODEL || LOCALLLM_MODEL_TIERS.max.model,
+      description: "Explicit highest-fidelity local route; auto-routing is resource-policy gated.",
+    },
+    localVision: {
+      id: "localVision",
+      label: LOCALLLM_MODEL_TIERS.vision.label,
+      provider: "localllm",
+      model: overrides.visionModel || process.env.AGINTI_LOCALLLM_VISION_MODEL || LOCALLLM_MODEL_TIERS.vision.model,
+      description: "Local vision route for confirmed image-input tasks.",
     },
     mock: {
       id: "mock",
@@ -1053,8 +1273,16 @@ export function getModelPresets(overrides = {}) {
 
 export function getModelRoleDefaults(overrides = {}) {
   const presets = getModelPresets(overrides);
-  const spareProvider = overrides.spareProvider || process.env.AGINTI_SPARE_PROVIDER || "openai";
-  const spareModel = overrides.spareModel || process.env.AGINTI_SPARE_MODEL || "gpt-5.4";
+  const spareProvider = normalizeConfiguredProvider(
+    overrides.spareProvider || process.env.AGINTI_SPARE_PROVIDER || presets.complex.provider,
+    presets.complex.provider
+  );
+  const spareModel =
+    overrides.spareModel ||
+    process.env.AGINTI_SPARE_MODEL ||
+    (spareProvider === presets.complex.provider
+      ? presets.complex.model
+      : providerDefaultModel(spareProvider, "", "main"));
   const auxiliaryProvider = overrides.auxiliaryProvider || process.env.AGINTI_AUX_PROVIDER || "grsai";
   const auxiliaryModel = overrides.auxiliaryModel || process.env.AGINTI_AUX_MODEL || process.env.VENICE_IMAGE_MODEL || "nano-banana-2";
   return {
@@ -1065,7 +1293,7 @@ export function getModelRoleDefaults(overrides = {}) {
       provider: presets.fast.provider,
       model: presets.fast.model,
       reasoning: normalizeReasoningEffort(overrides.routeReasoning ?? process.env.AGINTI_ROUTE_REASONING ?? ""),
-      description: "Fast planner and triage model. Default: DeepSeek V4 Flash.",
+      description: "Fast planner and triage model. Default: LocalLLM loopback.",
     },
     main: {
       id: "main",
@@ -1074,7 +1302,7 @@ export function getModelRoleDefaults(overrides = {}) {
       provider: presets.complex.provider,
       model: presets.complex.model,
       reasoning: normalizeReasoningEffort(overrides.mainReasoning ?? process.env.AGINTI_MAIN_REASONING ?? ""),
-      description: "Complex executor for coding, debugging, writing, and long tasks. Default: DeepSeek V4 Pro.",
+      description: "Complex executor for coding, debugging, writing, and long tasks. Default: LocalLLM loopback.",
     },
     spare: {
       id: "spare",
@@ -1083,7 +1311,7 @@ export function getModelRoleDefaults(overrides = {}) {
       provider: spareProvider,
       model: spareModel,
       reasoning: normalizeReasoningEffort(overrides.spareReasoning ?? process.env.AGINTI_SPARE_REASONING ?? "medium", "medium"),
-      description: "Fallback or cross-check model. Default: OpenAI GPT-5.4 medium reasoning.",
+      description: "Explicit fallback or cross-check model. Defaults to the active main provider, so local-first runs stay local.",
     },
     wrapper: {
       id: "wrapper",
@@ -1136,9 +1364,25 @@ export function normalizeRoutingMode(value) {
   return ROUTING_MODES.includes(value) ? value : "smart";
 }
 
+function localRoutePolicyFields(model, selection = "role") {
+  const tier = localLLMModelTier(model);
+  if (!tier) {
+    return {
+      localTier: "custom",
+      localSelection: selection,
+      requiresResourcePreflight: false,
+    };
+  }
+  return {
+    localTier: tier.id,
+    localSelection: selection,
+    requiresResourcePreflight: tier.id === "max",
+  };
+}
+
 export function selectModelRoute({
   routingMode = "smart",
-  provider = "deepseek",
+  provider = BASELINE_PROVIDER,
   model = "",
   goal = "",
   taskProfile = "auto",
@@ -1146,10 +1390,20 @@ export function selectModelRoute({
   routeModel = "",
   mainProvider = "",
   mainModel = "",
+  localCapabilities = {},
+  localResourcePolicy = {},
+  localModelOverrides = {},
 } = {}) {
   const mode = normalizeRoutingMode(routingMode);
-  const requestedProvider = String(provider || "deepseek").toLowerCase();
-  const presets = getModelPresets({ routeProvider, routeModel, mainProvider, mainModel });
+  const requestedProvider = normalizeConfiguredProvider(provider, BASELINE_PROVIDER);
+  const presets = getModelPresets({
+    routeProvider: routeProvider || requestedProvider,
+    routeModel,
+    mainProvider: mainProvider || requestedProvider,
+    mainModel,
+    maxModel: localModelOverrides.maxModel,
+    visionModel: localModelOverrides.visionModel,
+  });
 
   if (requestedProvider === "mock") {
     const defaults = getProviderDefaults("mock");
@@ -1162,7 +1416,26 @@ export function selectModelRoute({
     };
   }
 
-  if (mode === "smart" && requestedProvider !== "deepseek") {
+  const explicitLocalTier = requestedProvider === "localllm" ? localLLMModelTier(model) : null;
+  if (mode === "smart" && ["max", "vision"].includes(explicitLocalTier?.id)) {
+    const decision = selectLocalLLMModelTier({ requestedModel: model });
+    return {
+      routingMode: "manual",
+      provider: "localllm",
+      model: decision.model,
+      reason: decision.reason,
+      complexityScore: scoreTaskComplexity(goal, taskProfile),
+      localTier: decision.tier,
+      localSelection: decision.selection,
+      requiresResourcePreflight: decision.requiresResourcePreflight,
+    };
+  }
+
+  if (
+    mode === "smart" &&
+    requestedProvider !== presets.fast.provider &&
+    requestedProvider !== presets.complex.provider
+  ) {
     const defaults = getProviderDefaults(requestedProvider);
     return {
       routingMode: "manual",
@@ -1175,36 +1448,70 @@ export function selectModelRoute({
 
   if (mode === "manual") {
     const defaults = getProviderDefaults(requestedProvider);
+    const selectedModel = model || defaults.model;
     return {
       routingMode: mode,
       provider: defaults.provider,
-      model: model || defaults.model,
+      model: selectedModel,
       reason: "Manual provider/model selection.",
       complexityScore: scoreTaskComplexity(goal, taskProfile),
+      ...(defaults.provider === "localllm" ? localRoutePolicyFields(selectedModel, "explicit") : {}),
     };
   }
 
   if (mode === "complex") {
+    const selectedModel = presets.complex.model;
     return {
       routingMode: mode,
       provider: presets.complex.provider,
-      model: presets.complex.model,
+      model: selectedModel,
       reason: "Complex route selected explicitly.",
       complexityScore: scoreTaskComplexity(goal, taskProfile),
+      ...(presets.complex.provider === "localllm" ? localRoutePolicyFields(selectedModel, "explicit-role") : {}),
     };
   }
 
   if (mode === "fast") {
+    const selectedModel = presets.fast.model;
     return {
       routingMode: mode,
       provider: presets.fast.provider,
-      model: presets.fast.model,
+      model: selectedModel,
       reason: "Fast route selected explicitly.",
       complexityScore: scoreTaskComplexity(goal, taskProfile),
+      ...(presets.fast.provider === "localllm" ? localRoutePolicyFields(selectedModel, "explicit-role") : {}),
     };
   }
 
   const complexityScore = scoreTaskComplexity(goal, taskProfile);
+
+  if (presets.fast.provider === "localllm" && presets.complex.provider === "localllm") {
+    const decision = selectLocalLLMModelTier({
+      goal,
+      taskProfile,
+      complexityScore,
+      localCapabilities,
+      localResourcePolicy,
+      modelOverrides: {
+        fastModel: localModelOverrides.fastModel || presets.fast.model,
+        deepModel: localModelOverrides.deepModel || presets.complex.model,
+        maxModel: localModelOverrides.maxModel || presets.localMax.model,
+        visionModel: localModelOverrides.visionModel || presets.localVision.model,
+      },
+    });
+    return {
+      routingMode: mode,
+      provider: decision.provider,
+      model: decision.model,
+      reason: decision.reason,
+      complexityScore,
+      localTier: decision.tier,
+      localSelection: decision.selection,
+      localUpgradeBlocked: decision.blockedUpgrade,
+      requiresResourcePreflight: decision.requiresResourcePreflight,
+    };
+  }
+
   const selected = complexityScore >= 3 ? presets.complex : presets.fast;
   return {
     routingMode: mode,

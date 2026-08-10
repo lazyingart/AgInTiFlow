@@ -7,7 +7,9 @@ import { redactSensitiveText } from "./redaction.js";
 import { isWrapperAvailable, normalizeWrapperName, runAgentWrapper, runCodexImageWrapper } from "./tool-wrappers.js";
 import { searchWeb } from "./web-search.js";
 import { resolveWorkspacePath } from "./workspace-tools.js";
-import { normalizeReasoningEffort } from "./model-routing.js";
+import { LOCALLLM_MODEL_TIERS, normalizeReasoningEffort } from "./model-routing.js";
+import { normalizeProviderBaseURL, normalizeProviderId, resolveProviderDefaults } from "./provider-contract.js";
+import { probeProviderRuntime } from "./provider-runtime.js";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_IMAGE_COUNT = 4;
@@ -52,12 +54,61 @@ function compactText(value, limit = 12000) {
 
 function openAiApiKey(config = {}) {
   if (config.provider === "openai" && config.apiKey) return config.apiKey;
-  return process.env.OPENAI_API_KEY || process.env.LLM_API_KEY || "";
+  return process.env.OPENAI_API_KEY || "";
 }
 
 function openAiBaseUrl(config = {}) {
   if (config.provider === "openai" && config.baseURL) return config.baseURL;
   return process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
+}
+
+function activeProvider(config = {}) {
+  return normalizeProviderId(config.provider || "localllm", "localllm");
+}
+
+function hostedToolError(kind, flag) {
+  const error = new Error(
+    `${kind} is disabled for this provider boundary. Select OpenAI as the active provider or explicitly enable ${flag}; ambient OpenAI credentials never authorize hosted tool use.`
+  );
+  error.name = "HostedToolPermissionError";
+  error.code = "HOSTED_TOOL_PROVIDER_NOT_ALLOWED";
+  return error;
+}
+
+function assertHostedToolAllowed(config = {}, kind, flag) {
+  if (activeProvider(config) === "openai" || config[flag] === true) return;
+  throw hostedToolError(kind, flag);
+}
+
+function createPerceptionClient(config, connection) {
+  if (typeof config.perceptionClientFactory === "function") {
+    return config.perceptionClientFactory({ ...connection });
+  }
+  return new OpenAI({
+    apiKey: connection.apiKey,
+    baseURL: connection.baseURL,
+  });
+}
+
+function localVisionConnection(config = {}) {
+  const defaults = resolveProviderDefaults("localllm");
+  const useActiveConnection = activeProvider(config) === "localllm";
+  return {
+    provider: "localllm",
+    apiKey: useActiveConnection ? config.apiKey || defaults.apiKey : defaults.apiKey,
+    baseURL: normalizeProviderBaseURL("localllm", useActiveConnection ? config.baseURL || defaults.baseURL : defaults.baseURL),
+  };
+}
+
+function chatCompletionText(response) {
+  const content = response?.choices?.[0]?.message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => (typeof part === "string" ? part : part?.text || part?.content || ""))
+    .filter(Boolean)
+    .join("\n")
+    .trim();
 }
 
 function uniqueList(values = []) {
@@ -327,8 +378,9 @@ function buildImageReadPrompt(args, images) {
 }
 
 async function callOpenAiImageRead(args, images, config) {
+  assertHostedToolAllowed(config, "OpenAI image perception", "allowHostedImagePerception");
   const apiKey = openAiApiKey(config);
-  if (!apiKey) throw new Error("Missing OPENAI_API_KEY. Configure OpenAI to enable read_image, or use research_wrapper for text-only advisory fallback.");
+  if (!apiKey) throw new Error("Missing OPENAI_API_KEY for explicitly enabled OpenAI image perception.");
   const preferredModel = String(args.model || config.perceptionModel || process.env.AGINTI_PERCEPTION_MODEL || "gpt-5.4-mini").trim();
   const fallbackModels = normalizeList(args.fallbackModels || process.env.AGINTI_PERCEPTION_FALLBACK_MODELS || "gpt-4o-mini");
   const models = uniqueList([preferredModel, ...fallbackModels]);
@@ -336,7 +388,8 @@ async function callOpenAiImageRead(args, images, config) {
   const detail = ["low", "high", "auto"].includes(String(args.detail || "").toLowerCase())
     ? String(args.detail).toLowerCase()
     : "auto";
-  const client = new OpenAI({
+  const client = createPerceptionClient(config, {
+    provider: "openai",
     apiKey,
     baseURL: openAiBaseUrl(config),
   });
@@ -392,6 +445,60 @@ async function callOpenAiImageRead(args, images, config) {
     model: usedModel,
     reasoning: usedReasoning,
     detail,
+    rawText: compactText(rawText),
+    parsed: firstJsonObject(rawText),
+  };
+}
+
+async function callLocalLLMImageRead(args, images, config) {
+  const connection = localVisionConnection(config);
+  const model = String(
+    args.model ||
+      config.localVisionModel ||
+      config.localCapabilities?.visionModel ||
+      process.env.AGINTI_LOCALLLM_VISION_MODEL ||
+      LOCALLLM_MODEL_TIERS.vision.model
+  ).trim();
+  const readinessProbe =
+    typeof config.providerReadinessProbe === "function" ? config.providerReadinessProbe : probeProviderRuntime;
+  await readinessProbe({
+    provider: "localllm",
+    baseURL: connection.baseURL,
+    apiKey: connection.apiKey,
+    selectedModel: model,
+    timeoutMs: config.providerReadinessTimeoutMs,
+    signal: config.abortSignal,
+  });
+  const client = createPerceptionClient(config, connection);
+  const response = await client.chat.completions.create(
+    {
+      model,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: buildImageReadPrompt(args, images) },
+            ...images.map((image) => ({
+              type: "image_url",
+              image_url: { url: image.dataUrl },
+            })),
+          ],
+        },
+      ],
+      response_format: { type: "json_object" },
+      max_tokens: clampInteger(args.maxOutputTokens, 512, 6000, 1800),
+    },
+    {
+      timeout: Number(config.modelTimeoutMs || process.env.AGINTI_MODEL_TIMEOUT_MS || 180000),
+      ...(config.abortSignal ? { signal: config.abortSignal } : {}),
+    }
+  );
+  const rawText = chatCompletionText(response);
+  return {
+    provider: "localllm-chat-completions",
+    model,
+    reasoning: "",
+    detail: "auto",
     rawText: compactText(rawText),
     parsed: firstJsonObject(rawText),
   };
@@ -458,8 +565,8 @@ async function callCodexImageRead(args, images, config, store, priorError = null
       },
     };
   }
-  if (config.allowWrapperTools === false && args.provider !== "codex") {
-    throw new Error("Codex image fallback is disabled because wrapper tools are off.");
+  if (config.allowWrapperTools !== true) {
+    throw new Error("Codex image reading is disabled because wrapper tools are off. Enable wrappers explicitly before using provider=codex.");
   }
   if (!isWrapperAvailable("codex")) {
     throw new Error("Codex image fallback is unavailable because the Codex CLI was not found on PATH.");
@@ -474,7 +581,7 @@ async function callCodexImageRead(args, images, config, store, priorError = null
     {
       prompt: [
         codexImageReadPrompt(args, images),
-        priorError ? `OpenAI vision fallback reason: ${redactSensitiveText(priorError instanceof Error ? priorError.message : String(priorError))}` : "",
+        priorError ? `Prior image-reader error: ${redactSensitiveText(priorError instanceof Error ? priorError.message : String(priorError))}` : "",
       ]
         .filter(Boolean)
         .join("\n\n"),
@@ -498,17 +605,27 @@ async function callCodexImageRead(args, images, config, store, priorError = null
 }
 
 async function callImageRead(args, images, config, store) {
-  const provider = String(args.provider || args.engine || "auto").trim().toLowerCase();
+  const requested = String(args.provider || args.engine || "auto").trim().toLowerCase();
   if (args.dryRun) {
     return { provider: "dry-run", rawText: "", parsed: { summary: "read_image dry run", answer: "dry run" } };
   }
-  if (provider === "codex") return callCodexImageRead(args, images, config, store);
-  if (provider === "openai") return callOpenAiImageRead(args, images, config);
-  try {
-    return await callOpenAiImageRead(args, images, config);
-  } catch (error) {
-    return callCodexImageRead(args, images, config, store, error);
+  const localAliases = new Set(["localllm", "local", "local-llm", "local_llm"]);
+  let provider = requested;
+  if (["", "auto", "default"].includes(provider)) {
+    const current = activeProvider(config);
+    if (current === "localllm") provider = "localllm";
+    else if (current === "openai") provider = "openai";
+    else if (config.allowHostedImagePerception === true) provider = "openai";
+    else {
+      throw new Error(
+        `read_image has no automatic backend for active provider ${current}. Select provider=localllm, or explicitly enable OpenAI image perception or a wrapper backend.`
+      );
+    }
   }
+  if (localAliases.has(provider)) return callLocalLLMImageRead(args, images, config);
+  if (provider === "openai") return callOpenAiImageRead(args, images, config);
+  if (provider === "codex") return callCodexImageRead(args, images, config, store);
+  throw new Error(`Unsupported read_image provider: ${provider}. Use auto, localllm, openai, or codex.`);
 }
 
 export async function readImage(args = {}, config = {}, store = null) {
@@ -540,6 +657,7 @@ export async function readImage(args = {}, config = {}, store = null) {
   } catch (error) {
     payload = {
       ok: false,
+      blocked: error?.code === "HOSTED_TOOL_PROVIDER_NOT_ALLOWED",
       toolName: "read_image",
       error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
       images: loadedImages.map(({ dataUrl, absolutePath, ...image }) => image),
@@ -574,8 +692,9 @@ function extractResponseSources(response) {
 }
 
 async function callOpenAiWebResearch(args, config) {
+  assertHostedToolAllowed(config, "OpenAI hosted web research", "allowHostedWebResearch");
   const apiKey = openAiApiKey(config);
-  if (!apiKey) throw new Error("Missing OPENAI_API_KEY for OpenAI hosted web research.");
+  if (!apiKey) throw new Error("Missing OPENAI_API_KEY for explicitly enabled OpenAI hosted web research.");
   const preferredModel = String(args.model || config.webResearchModel || process.env.AGINTI_WEB_RESEARCH_MODEL || "gpt-5.4-mini").trim();
   const fallbackModels = normalizeList(args.fallbackModels || process.env.AGINTI_WEB_RESEARCH_FALLBACK_MODELS || "gpt-4o-mini");
   const models = uniqueList([preferredModel, ...fallbackModels]);
@@ -588,7 +707,8 @@ async function callOpenAiWebResearch(args, config) {
   const filters = {};
   if (domains.length) filters.allowed_domains = domains;
   if (blockedDomains.length) filters.blocked_domains = blockedDomains;
-  const client = new OpenAI({
+  const client = createPerceptionClient(config, {
+    provider: "openai",
     apiKey,
     baseURL: openAiBaseUrl(config),
   });
@@ -700,6 +820,9 @@ export async function webResearch(args = {}, config = {}, store = null) {
   if (Buffer.byteLength(query, "utf8") > MAX_QUERY_BYTES) {
     return { ok: false, toolName: "web_research", error: "Research query is too large." };
   }
+  if (!["snippets", "openai"].includes(mode)) {
+    return { ok: false, toolName: "web_research", error: "Unsupported research mode. Use snippets or openai." };
+  }
 
   const snippetResult = await searchWeb(
     {
@@ -729,7 +852,7 @@ export async function webResearch(args = {}, config = {}, store = null) {
       snippet: result.snippet,
     })),
     note:
-      "Default web_research mode uses lightweight search snippets. Use mode=openai for hosted sourced synthesis or research_wrapper for a read-only wrapper second opinion.",
+      "Default web_research mode uses lightweight search snippets. Hosted OpenAI synthesis and wrapper advice require separate explicit enablement.",
   };
 
   if (mode === "openai") {
@@ -743,8 +866,12 @@ export async function webResearch(args = {}, config = {}, store = null) {
       payload.sources = openai.sources.length ? openai.sources : payload.sources;
       payload.note = "OpenAI hosted web_search completed; lightweight snippet results are preserved under search.";
     } catch (error) {
+      payload.ok = false;
+      payload.blocked = error?.code === "HOSTED_TOOL_PROVIDER_NOT_ALLOWED";
+      payload.error = redactSensitiveText(error instanceof Error ? error.message : String(error));
       payload.openaiError = redactSensitiveText(error instanceof Error ? error.message : String(error));
-      payload.note = "OpenAI hosted web_search failed; returned lightweight snippet fallback.";
+      payload.fallbackAvailable = Boolean(snippetResult.ok);
+      payload.note = "OpenAI hosted web_search did not run successfully. Lightweight snippets are preserved as fallback evidence, not reported as hosted synthesis success.";
     }
   }
 
@@ -783,6 +910,9 @@ export async function researchWrapper(args = {}, config = {}, store = null) {
   const wrapper = normalizeWrapperName(args.wrapper || config.preferredWrapper || "codex");
   const metadata = {};
   try {
+    if (config.allowWrapperTools !== true) {
+      throw new Error("research_wrapper is disabled. Enable wrapper tools explicitly before invoking an external wrapper.");
+    }
     if (args.imagePath || args.imagePaths || args.images || args.paths || args.url) {
       const images = await loadImageInputs(args, config);
       metadata.images = images.map(({ dataUrl, absolutePath, ...image }) => image);

@@ -13,7 +13,7 @@
 ![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)
 ![Playwright](https://img.shields.io/badge/Browser-Playwright-2EAD33?logo=playwright&logoColor=white)
 ![CLI + Web](https://img.shields.io/badge/Interface-CLI%20%2B%20Web-0ea5e9)
-![Text Models](https://img.shields.io/badge/Text-DeepSeek%20%2B%20Venice%20%2B%20OpenAI%20%2B%20Qwen-2563eb)
+![Text Models](https://img.shields.io/badge/Text-LocalLLM%20%2B%20Optional%20Hosted-2563eb)
 ![Aux Image](https://img.shields.io/badge/Aux%20Image-GRS%20AI%20%2B%20Venice-ec4899)
 ![Sandbox](https://img.shields.io/badge/Shell-Docker%20Sandbox-f97316)
 ![Status](https://img.shields.io/badge/Status-Prototype-7c3aed)
@@ -23,6 +23,8 @@
 AgInTiFlow 是一個 project-aware agent 工作空間，面向混合乾濕研發、硬體感知智能、軟體自動化與工業工作流。從實驗規劃到資料分析，從硬體控制到生產腳本，從顯微成像、無人機和機器人到報告，它幫助智能體透過 API、Web 或 CLI 工作，並配合 SCS 監督、AAPS 工作流、受保護執行與持久證據。
 
 簡短理解：在專案目錄執行 `aginti`，交給它一個任務，檢查它的計畫，看見每一次工具呼叫，之後還能恢復會話，並把輸出保留在你的工作區裡。
+
+> **翻譯時效提示：** 此譯文的部分細節可能落後於[目前英文 README](../README.md)與[本地優先執行環境說明](../docs/local-first-agent-runtime.md)。預設使用 `http://127.0.0.1:8008/v1` 上的 LocalLLM，並採用 `localllm-fast` 與 `localllm-deep`。Hosted provider 只是必須明確選擇的可選升級；環境中已有密鑰不會選擇 provider，也不會觸發自動 fallback。輔助圖像生成同樣預設關閉，必須明確啟用。
 
 **連結**
 
@@ -45,9 +47,9 @@ AgInTiFlow 是一個 project-aware agent 工作空間，面向混合乾濕研發
 
 | 原則 | 實際含義 |
 | --- | --- |
-| 便宜的智能會改變架構 | DeepSeek V4 Flash 和 Pro 讓路由、偵察、審查、恢復這些額外呼叫變得實際，而不是強迫一次昂貴呼叫完成所有事情。 |
+| 本地智能會改變架構 | 基線使用相鄰的 LocalLLM gateway，在本地私密執行 route 與 main；Hosted model 保持為明確選擇的升級。 |
 | 可檢查勝過神秘 | 計畫、工具呼叫、檔案 diff、命令輸出、畫布產物和會話事件都會保存並可恢復。 |
-| 基於角色的模型 | route、main、spare、wrapper、auxiliary image 是分開角色。你可以使用便宜路由模型、更強主模型、可選 OpenAI/Qwen/Venice 路線，以及 GRS AI/Venice 圖像工具。 |
+| 基於角色的模型 | route、main、spare、wrapper、auxiliary image 是分開角色。LocalLLM Fast/Deep 是預設值；DeepSeek、OpenAI、OpenRouter、Qwen、Venice 都要明確選擇。 |
 | 大任務前先 scouts | 並行 scouts 可以低成本繪製架構、測試、風險、符號和整合點，再讓主執行器編輯檔案。 |
 | SCS 用於高風險工作 | Student-Committee-Supervisor 模式增加類型化關卡：committee 起草，student 批准/監控，supervisor 執行。使用 `/scs` 或 `--scs auto`。 |
 | AAPS 用於大型流程 | AAPS 描述自頂向下的智能體流水線腳本；AgInTiFlow 可作為互動式後端驗證、編譯與執行這些流程。 |
@@ -64,14 +66,17 @@ aginti init
 aginti
 ```
 
-第一次互動式使用時，如果找不到主模型密鑰，AgInTiFlow 會開啟認證精靈。選擇 DeepSeek、OpenAI、Qwen 或 Venice，貼上密鑰，它會保存到被忽略的專案本地 `.aginti/.env` 檔案，並使用受限權限。你可以隨時重新執行設定：
+預設情況下，AgInTiFlow 不需 Hosted key，連接 `http://127.0.0.1:8008/v1` 上相鄰的 LocalLLM 服務：route 使用 `localllm-fast`，main 使用 `localllm-deep`。只有使用 DeepSeek、OpenAI、OpenRouter、Qwen 或 Venice 時，才明確選擇 provider 並執行認證精靈。LocalLLM 失敗會以清晰錯誤停止，不會自動把任務傳送到雲端：
 
 ```bash
 aginti auth
 aginti auth deepseek
+aginti auth openrouter
 aginti auth venice
 aginti login grsai
 ```
+
+已保存的 Hosted key 只用於認證，不會改變 active provider。輔助圖像工具在明確使用 `/auxiliary on`、`/auxiliary image` 或對應開關之前保持關閉。
 
 從同一專案啟動 Web UI：
 
@@ -162,12 +167,12 @@ aginti --resume <session-id> \
 | 檔案工具 | `inspect_project`, `list_files`, `read_file`, `search_files`, `write_file`, `apply_patch`, `open_workspace_file`, `preview_workspace`。 |
 | Shell 工具 | 受保護的 host 或 Docker workspace shell 執行，帶套件安裝策略和命令安全檢查。 |
 | 瀏覽器工具 | Playwright 瀏覽器操作，延遲啟動，並可配置 domain allowlist。 |
-| 模型路由 | DeepSeek fast/pro 預設值，手動 OpenAI/Qwen/Venice/mock 路線，spare 模型、wrapper 模型和輔助圖像模型。 |
+| 模型路由 | LocalLLM Fast/Deep 是預設值。DeepSeek、OpenAI、OpenRouter、Qwen、Venice、mock 都是明確選擇的路線；環境密鑰不會觸發 Hosted fallback。 |
 | Patch 工作流 | Codex 風格 patch envelope、統一 diff、精確替換、hash、緊湊 diff 和路徑保護。 |
 | 並行 scouts | 可選 scout 呼叫，用於架構、實作、審查、測試、git 流程、研究、符號追蹤和依賴風險。 |
 | SCS 模式 | 可選 Student-Committee-Supervisor 品質關卡，用於複雜或高風險任務。 |
 | AAPS adapter | 可選 `@lazyingart/aaps` 整合，用於 `.aaps` 流程 init、validate、parse、compile、dry-run 和 run。 |
-| 圖像生成 | 可選 GRS AI 和 Venice 圖像工具，帶保存的 manifest 和畫布產物預覽。 |
+| 圖像生成 | GRS AI 與 Venice 預設關閉並需明確啟用；僅保存密鑰不會啟用工具，也不會選擇替代 provider。 |
 | 技能庫 | 內建 Markdown 技能，覆蓋程式碼、網站、Android/iOS、Python、Rust、Java、LaTeX、寫作、審查、GitHub、AAPS 等。 |
 | Skill Mesh | 可選、嚴格的技能記錄/共享，用於經審查的可複用技能包。不使用時，AgInTiFlow 正常執行，不進行背景共享。 |
 | 多語言 UI | CLI 與文件支援英語、日語、簡體/繁體中文、韓語、法語、西班牙語、阿拉伯語、越南語、德語和俄語。 |
@@ -178,11 +183,11 @@ AgInTiFlow 不把「模型」當成一個全域設定。它有多個角色：
 
 | 角色 | 預設值 | 用途 |
 | --- | --- | --- |
-| Route | `deepseek/deepseek-v4-flash` | 低成本規劃、分流、短任務和路由決策。 |
-| Main | `deepseek/deepseek-v4-pro` | 複雜編碼、除錯、寫作、研究和長任務。 |
-| Spare | `openai/gpt-5.4` medium | 可選 fallback 或交叉檢查路線。 |
+| Route | `localllm/localllm-fast` | 本地規劃、分流、短任務和路由決策。 |
+| Main | `localllm/localllm-deep` | 複雜編碼、除錯、寫作、研究和長任務的本地執行器。 |
+| Spare | `localllm/localllm-deep` medium | 本地交叉檢查路線；Hosted spare 必須明確選擇。 |
 | Wrapper | `codex/gpt-5.5` medium | 可選外部 coding agent 顧問。 |
-| Auxiliary | `grsai/nano-banana-2` | 圖像生成和其他非文字輔助工具。 |
+| Auxiliary | `grsai/nano-banana-2` (off) | 僅在明確啟用後提供圖像生成和非文字工具，不按密鑰進行 provider failover。 |
 
 常用選擇器：
 
@@ -196,7 +201,7 @@ AgInTiFlow 不把「模型」當成一個全域設定。它有多個角色：
 /venice
 ```
 
-Venice 路線可用於可選的 uncensored 或限制較少的創意工作。DeepSeek 仍然是普通工程工作流的經濟預設值。見 [../docs/model-selection.md](../docs/model-selection.md) 和 [../references/venice-model-reference.md](../references/venice-model-reference.md)。
+Venice 可用於可選的 uncensored 或限制較少的創意工作。LocalLLM 保持本地預設基線；DeepSeek 等 Hosted provider 只是明確選擇的升級。見 [../docs/model-selection.md](../docs/model-selection.md)、[../docs/local-first-agent-runtime.md](../docs/local-first-agent-runtime.md) 與 [../references/venice-model-reference.md](../references/venice-model-reference.md)。
 
 ## AAPS 與大型流程
 
@@ -268,12 +273,19 @@ AgInTiFlow 將 canonical session 集中儲存，只在專案本地保留指標�
 常用環境變數：
 
 ```bash
+AGENT_PROVIDER=localllm
+LOCALLLM_BASE_URL=http://127.0.0.1:8008/v1
+LOCALLLM_API_KEY=local-dev-key
+AGINTI_LOCALLLM_ROUTE_MODEL=localllm-fast
+AGINTI_LOCALLLM_MAIN_MODEL=localllm-deep
+
+# 可選且必須明確選擇的 hosted upgrade；絕不會從 LocalLLM 自動 fallback。
 DEEPSEEK_API_KEY=...
 OPENAI_API_KEY=...
+OPENROUTER_API_KEY=...
 QWEN_API_KEY=...
 VENICE_API_KEY=...
 GRSAI_API_KEY=...
-AGENT_PROVIDER=deepseek
 AGENT_ROUTING_MODE=smart
 AGINTI_TASK_PROFILE=auto
 AGINTI_LANGUAGE=en

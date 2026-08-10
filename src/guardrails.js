@@ -5,6 +5,8 @@ import { checkTmuxToolUse, TMUX_TOOL_NAMES } from "./tmux-tools.js";
 import { checkLongJobToolUse, LONG_JOB_TOOL_NAMES } from "./long-job-tools.js";
 import { checkMcpToolUse, isMcpBridgeTool } from "./mcp/policy.js";
 import { AGENTLINK_TOOL_NAMES, checkAgentLinkToolUse } from "./agentlink.js";
+import { normalizeProviderId } from "./provider-contract.js";
+import { resolveAuxiliaryImageEndpoint } from "./auxiliary-tools.js";
 
 const DESTRUCTIVE_KEYWORDS = [
   "delete",
@@ -21,6 +23,7 @@ const DESTRUCTIVE_KEYWORDS = [
 ];
 
 const KNOWN_WRAPPERS = new Set(["codex", "claude", "gemini", "copilot", "qwen"]);
+const KNOWN_SPECIALIST_PROVIDERS = new Set(["localllm", "deepseek", "openai", "openrouter", "qwen", "venice", "mock"]);
 const MAX_CANVAS_CONTENT_BYTES = 120_000;
 const DESTRUCTIVE_PROMPT_HINTS = [
   "delete",
@@ -34,6 +37,24 @@ const DESTRUCTIVE_PROMPT_HINTS = [
   "deploy",
   "publish",
 ];
+
+function checkSpecialistProviderBoundary({ rawProvider, config = {}, permissionFlag, label, category }) {
+  const raw = String(rawProvider || "").trim();
+  if (!raw) return null;
+  const requested = normalizeProviderId(raw, "");
+  if (!requested || !KNOWN_SPECIALIST_PROVIDERS.has(requested)) {
+    return { allowed: false, reason: `Unknown ${label} provider: ${raw}`, category };
+  }
+  const active = normalizeProviderId(config.provider || "localllm", "");
+  if (requested !== active && config[permissionFlag] !== true) {
+    return {
+      allowed: false,
+      reason: `${label} provider override ${active || "unknown"} -> ${requested} is disabled for this run. Select ${requested} as the active provider or explicitly enable ${permissionFlag}.`,
+      category,
+    };
+  }
+  return null;
+}
 
 function isTransientDockerPreviewCommand(command) {
   return /\bpython3?\s+-m\s+http\.server\b|\bnpx\s+(?:--yes\s+)?(?:serve|http-server)\b|\bnpm\s+exec\s+(?:serve|http-server)\b|\bphp\s+-S\s+127\.0\.0\.1:/i.test(
@@ -134,12 +155,52 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
     if (Buffer.byteLength(query, "utf8") > 1000) {
       return { allowed: false, reason: "Research query is too large.", category: "web-search" };
     }
+    const mode = String(args.mode || "snippets").trim().toLowerCase();
+    if (!["snippets", "openai"].includes(mode)) {
+      return { allowed: false, reason: `Unknown web research mode: ${mode}`, category: "web-search" };
+    }
+    const activeProvider = normalizeProviderId(config.provider || "localllm", "localllm");
+    if (mode === "openai" && activeProvider !== "openai" && config.allowHostedWebResearch !== true) {
+      return {
+        allowed: false,
+        reason: "Hosted OpenAI web research is disabled for this provider boundary. Select OpenAI as the active provider or explicitly enable allowHostedWebResearch.",
+        category: "web-search",
+      };
+    }
     return { allowed: true };
   }
 
   if (toolName === "read_image") {
     if (!config.allowFileTools) {
       return { allowed: false, reason: "Image reading requires workspace file tools to be enabled.", category: "perception-tools" };
+    }
+    const provider = String(args.provider || args.engine || "auto").trim().toLowerCase();
+    const knownProviders = new Set(["", "auto", "default", "localllm", "local", "local-llm", "local_llm", "openai", "codex"]);
+    if (!knownProviders.has(provider)) {
+      return { allowed: false, reason: `Unknown image-reading provider: ${provider}`, category: "perception-tools" };
+    }
+    const activeProvider = normalizeProviderId(config.provider || "localllm", "localllm");
+    if (provider === "openai" && activeProvider !== "openai" && config.allowHostedImagePerception !== true) {
+      return {
+        allowed: false,
+        reason: "Hosted OpenAI image perception is disabled for this provider boundary. Select OpenAI as the active provider or explicitly enable allowHostedImagePerception.",
+        category: "perception-tools",
+      };
+    }
+    if (provider === "codex" && config.allowWrapperTools !== true) {
+      return { allowed: false, reason: "Codex image perception requires wrapper tools to be explicitly enabled.", category: "perception-tools" };
+    }
+    if (
+      !args.dryRun &&
+      ["", "auto", "default"].includes(provider) &&
+      !["localllm", "openai"].includes(activeProvider) &&
+      config.allowHostedImagePerception !== true
+    ) {
+      return {
+        allowed: false,
+        reason: `No automatic image-reading backend is enabled for active provider ${activeProvider}. Select localllm or explicitly enable a hosted image backend.`,
+        category: "perception-tools",
+      };
     }
     const values = []
       .concat(args.imagePaths || args.images || args.paths || args.imagePath || args.path || args.url || [])
@@ -290,9 +351,14 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
     const brief = String(args.writingBrief || args.brief || args.prompt || "").trim();
     if (!brief) return { allowed: false, reason: "Writing specialist requires writingBrief.", category: "writing-specialist" };
     const provider = String(args.provider || process.env.AGINTI_WRITING_PROVIDER || "").trim();
-    if (provider && !["deepseek", "openai", "openrouter", "qwen", "venice", "mock"].includes(provider)) {
-      return { allowed: false, reason: `Unknown writing specialist provider: ${provider}`, category: "writing-specialist" };
-    }
+    const providerBoundary = checkSpecialistProviderBoundary({
+      rawProvider: provider,
+      config,
+      permissionFlag: "allowHostedWritingSpecialist",
+      label: "Writing specialist",
+      category: "writing-specialist",
+    });
+    if (providerBoundary) return providerBoundary;
     const payloadBytes = Buffer.byteLength(
       [
         brief,
@@ -326,9 +392,14 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
       return { allowed: false, reason: "JSON specialist requires schema or schemaJson.", category: "json-specialist" };
     }
     const provider = String(args.provider || process.env.AGINTI_JSON_PROVIDER || "").trim();
-    if (provider && !["deepseek", "openai", "openrouter", "qwen", "venice", "mock"].includes(provider)) {
-      return { allowed: false, reason: `Unknown JSON specialist provider: ${provider}`, category: "json-specialist" };
-    }
+    const providerBoundary = checkSpecialistProviderBoundary({
+      rawProvider: provider,
+      config,
+      permissionFlag: "allowHostedJsonSpecialist",
+      label: "JSON specialist",
+      category: "json-specialist",
+    });
+    if (providerBoundary) return providerBoundary;
     const payloadBytes = Buffer.byteLength(
       [
         task,
@@ -365,9 +436,14 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
       return { allowed: false, reason: "JSON specialist batch concurrency is limited to 16.", category: "json-specialist" };
     }
     const provider = String(args.provider || args.defaults?.provider || process.env.AGINTI_JSON_PROVIDER || "").trim();
-    if (provider && !["deepseek", "openai", "openrouter", "qwen", "venice", "mock"].includes(provider)) {
-      return { allowed: false, reason: `Unknown JSON specialist provider: ${provider}`, category: "json-specialist" };
-    }
+    const providerBoundary = checkSpecialistProviderBoundary({
+      rawProvider: provider,
+      config,
+      permissionFlag: "allowHostedJsonSpecialist",
+      label: "JSON specialist",
+      category: "json-specialist",
+    });
+    if (providerBoundary) return providerBoundary;
     const payloadBytes = Buffer.byteLength(JSON.stringify({ defaults: args.defaults || {}, items }), "utf8");
     if (payloadBytes > 360_000) {
       return {
@@ -388,6 +464,16 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
     if (!prompt) return { allowed: false, reason: "Image prompt is required.", category: "auxiliary-tools" };
     if (Buffer.byteLength(prompt, "utf8") > MAX_CANVAS_CONTENT_BYTES) {
       return { allowed: false, reason: "Image prompt is too large.", category: "auxiliary-tools" };
+    }
+
+    try {
+      resolveAuxiliaryImageEndpoint(args, config);
+    } catch (error) {
+      return {
+        allowed: false,
+        reason: error instanceof Error ? error.message : "Image-generation endpoint override was refused.",
+        category: "auxiliary-tools",
+      };
     }
 
     const outputDir = String(args.outputDir || "artifacts/images/generated").trim();

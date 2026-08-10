@@ -8,6 +8,7 @@ import { getDockerSandboxStatus } from "./docker-sandbox.js";
 import { platformInfo, platformLabel, platformSetupHints } from "./platform.js";
 import { nodeSqliteRecoveryLines, nodeSqliteStatus } from "./sqlite.js";
 import { buildAgintiInstructions, normalizeInstructionTemplate } from "./behavior-contract.js";
+import { normalizeProviderId, providerRequiresApiKey } from "./provider-contract.js";
 import {
   LEGACY_PROJECT_SESSIONS_DIR_NAME,
   PROJECT_SESSIONS_DIR_NAME,
@@ -23,6 +24,24 @@ const execFileAsync = promisify(execFile);
 const LOCAL_ENV_KEYS = new Set([
   "AGENT_PROVIDER",
   "AGENT_ROUTING_MODE",
+  "AGINTI_LOCAL_FIRST",
+  "AGINTI_LOCALLLM_API_KEY",
+  "AGINTI_LOCALLLM_BASE_URL",
+  "AGINTI_LOCALLLM_MODEL",
+  "AGINTI_LOCALLLM_ROUTE_MODEL",
+  "AGINTI_LOCALLLM_MAIN_MODEL",
+  "AGINTI_LOCALLLM_MAX_MODEL",
+  "AGINTI_LOCALLLM_VISION_MODEL",
+  "AGINTI_LOCALLLM_CONTEXT_TOKENS",
+  "AGINTI_LOCALLLM_MAX_OUTPUT_TOKENS",
+  "AGINTI_LOCALLLM_TOOL_SCHEMA_TOKENS",
+  "AGINTI_LOCALLLM_ALLOW_AUTO_MAX",
+  "LOCALLLM_API_KEY",
+  "LOCALLLM_BASE_URL",
+  "LOCALLLM_MODEL",
+  "LOCAL_LLM_API_KEY",
+  "LOCAL_LLM_BASE_URL",
+  "LOCAL_LLM_MODEL",
   "DEEPSEEK_API_KEY",
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",
@@ -52,6 +71,10 @@ const LOCAL_ENV_KEYS = new Set([
   "AGINTI_WRAPPER_REASONING",
   "AGINTI_AUX_PROVIDER",
   "AGINTI_AUX_MODEL",
+  "AGINTI_ALLOW_HOSTED_IMAGE_PERCEPTION",
+  "AGINTI_ALLOW_HOSTED_WEB_RESEARCH",
+  "AGINTI_ALLOW_HOSTED_JSON_SPECIALIST",
+  "AGINTI_ALLOW_HOSTED_WRITING_SPECIALIST",
   "AGINTI_WRITING_PROVIDER",
   "AGINTI_WRITING_MODEL",
   "AGINTI_WRITING_PROVIDER_ZH",
@@ -78,6 +101,7 @@ const LOCAL_ENV_KEYS = new Set([
 ]);
 
 const PROVIDER_KEY_CANDIDATES = {
+  localllm: ["AGINTI_LOCALLLM_API_KEY", "LOCALLLM_API_KEY", "LOCAL_LLM_API_KEY"],
   openai: ["OPENAI_API_KEY", "LLM_API_KEY"],
   deepseek: ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
   openrouter: ["OPENROUTER_API_KEY"],
@@ -85,17 +109,6 @@ const PROVIDER_KEY_CANDIDATES = {
   venice: ["VENICE_API_KEY"],
   grsai: ["GRSAI", "GRSAI_API_KEY"],
 };
-
-const AMBIENT_PROVIDER_KEYS = [
-  "DEEPSEEK_API_KEY",
-  "OPENAI_API_KEY",
-  "OPENROUTER_API_KEY",
-  "QWEN_API_KEY",
-  "VENICE_API_KEY",
-  "GRSAI",
-  "GRSAI_API_KEY",
-  "LLM_API_KEY",
-];
 
 export function resolveProjectRoot(input = process.cwd()) {
   return path.resolve(input || process.cwd());
@@ -275,51 +288,11 @@ function envTextFromParsed(parsed = {}) {
     .join("\n");
 }
 
-function readEnvFileSync(envPath) {
-  try {
-    return parseEnvText(fs.readFileSync(envPath, "utf8"));
-  } catch {
-    return {};
-  }
-}
-
-function writeEnvFileSync(envPath, parsed = {}) {
-  fs.mkdirSync(path.dirname(envPath), { recursive: true });
-  fs.writeFileSync(envPath, `${envTextFromParsed(parsed)}\n`, { mode: 0o600 });
-  try {
-    fs.chmodSync(envPath, 0o600);
-  } catch {
-    // chmod can fail on non-POSIX filesystems; the file still remains local to the user account.
-  }
-}
-
-function persistAmbientProviderKeysSync(paths, sourceEnv = process.env) {
-  const parsed = readEnvFileSync(paths.globalEnvPath);
-
-  let changed = false;
-  const persistedKeys = [];
-  for (const keyName of AMBIENT_PROVIDER_KEYS) {
-    const value = String(sourceEnv[keyName] || "").trim();
-    if (!value || parsed[keyName]) continue;
-    parsed[keyName] = value;
-    persistedKeys.push(keyName);
-    changed = true;
-  }
-  if (!changed) return { persisted: false, keys: [] };
-
-  writeEnvFileSync(paths.globalEnvPath, parsed);
-  return { persisted: true, keys: persistedKeys };
-}
-
 export function loadProjectEnv(projectRoot = process.cwd(), { override = false } = {}) {
   const paths = projectPaths(projectRoot);
   const originalEnvKeys = new Set(
     [...LOCAL_ENV_KEYS].filter((key) => String(process.env[key] || "").trim())
   );
-  const ambientSourceEnv = {};
-  for (const key of AMBIENT_PROVIDER_KEYS) {
-    if (String(process.env[key] || "").trim()) ambientSourceEnv[key] = process.env[key];
-  }
   const envPaths = [paths.globalEnvPath, paths.rootEnvPath, paths.envPath];
   const loadedPaths = [];
   for (const envPath of envPaths) {
@@ -337,8 +310,6 @@ export function loadProjectEnv(projectRoot = process.cwd(), { override = false }
       // Ignore missing or unreadable optional local env files.
     }
   }
-  const ambient = persistAmbientProviderKeysSync(paths, ambientSourceEnv);
-  if (ambient.persisted && !loadedPaths.includes(paths.globalEnvPath)) loadedPaths.unshift(paths.globalEnvPath);
   return {
     loaded: loadedPaths.length > 0,
     path: paths.envPath,
@@ -347,8 +318,10 @@ export function loadProjectEnv(projectRoot = process.cwd(), { override = false }
     globalEnvPath: paths.globalEnvPath,
     projectEnv: loadedPaths.includes(paths.rootEnvPath) || loadedPaths.includes(paths.envPath),
     projectEnvPaths: loadedPaths.filter((item) => item === paths.rootEnvPath || item === paths.envPath),
-    ambientPersisted: ambient.persisted,
-    ambientKeys: ambient.keys,
+    // Kept for API compatibility. Environment discovery is read-only; only
+    // explicit `keys set` / `auth` actions may write credential files.
+    ambientPersisted: false,
+    ambientKeys: [],
   };
 }
 
@@ -422,6 +395,16 @@ export async function initProject(projectRoot = process.cwd(), { template = "dis
     [
       "# Copy values into .aginti/.env. Never commit real secrets.",
       "# Account-wide defaults can be saved with `aginti auth`; this project file overrides them.",
+      "AGINTI_LOCALLLM_BASE_URL=http://127.0.0.1:8008/v1",
+      "AGINTI_LOCALLLM_API_KEY=local-dev-key",
+      "AGINTI_LOCALLLM_ROUTE_MODEL=localllm-fast",
+      "AGINTI_LOCALLLM_MAIN_MODEL=localllm-deep",
+      "AGINTI_LOCALLLM_MAX_MODEL=localllm-max",
+      "AGINTI_LOCALLLM_VISION_MODEL=localllm-vision-xl",
+      "AGINTI_LOCALLLM_CONTEXT_TOKENS=32768",
+      "AGINTI_LOCALLLM_MAX_OUTPUT_TOKENS=8192",
+      "AGINTI_LOCALLLM_TOOL_SCHEMA_TOKENS=4096",
+      "AGINTI_LOCALLLM_ALLOW_AUTO_MAX=false",
       "DEEPSEEK_API_KEY=",
       "OPENAI_API_KEY=",
       "OPENAI_BASE_URL=https://api.openai.com/v1",
@@ -447,9 +430,15 @@ export async function initProject(projectRoot = process.cwd(), { template = "dis
       "AGINTI_MAIN_PROVIDER=",
       "AGINTI_MAIN_MODEL=",
       "AGINTI_MAIN_REASONING=provider-default",
-      "AGINTI_SPARE_PROVIDER=openai",
-      "AGINTI_SPARE_MODEL=gpt-5.4",
+      "AGINTI_SPARE_PROVIDER=localllm",
+      "AGINTI_SPARE_MODEL=localllm-deep",
       "AGINTI_SPARE_REASONING=medium",
+      "AGINTI_ALLOW_HOSTED_IMAGE_PERCEPTION=false",
+      "AGINTI_ALLOW_HOSTED_WEB_RESEARCH=false",
+      "AGINTI_ALLOW_HOSTED_JSON_SPECIALIST=false",
+      "AGINTI_WRITING_PROVIDER=",
+      "AGINTI_WRITING_MODEL=",
+      "AGINTI_ALLOW_HOSTED_WRITING_SPECIALIST=false",
       "",
     ].join("\n")
   );
@@ -494,6 +483,7 @@ export async function initProject(projectRoot = process.cwd(), { template = "dis
 export function providerKeyStatus(projectRoot = process.cwd()) {
   const env = loadProjectEnv(projectRoot);
   return {
+    localllm: true,
     openai: Boolean(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY),
     deepseek: Boolean(process.env.DEEPSEEK_API_KEY || process.env.LLM_API_KEY),
     openrouter: Boolean(process.env.OPENROUTER_API_KEY),
@@ -509,6 +499,7 @@ export function providerKeyStatus(projectRoot = process.cwd()) {
     ambientPersisted: env.ambientPersisted,
     ambientKeys: env.ambientKeys,
     envVars: {
+      localllm: ["AGINTI_LOCALLLM_BASE_URL", "LOCALLLM_BASE_URL", "LOCAL_LLM_BASE_URL", "AGINTI_LOCALLLM_MODEL", "LOCALLLM_MODEL", "LOCAL_LLM_MODEL"],
       openai: ["OPENAI_API_KEY", "LLM_API_KEY"],
       deepseek: ["DEEPSEEK_API_KEY", "LLM_API_KEY"],
       openrouter: ["OPENROUTER_API_KEY"],
@@ -536,10 +527,23 @@ export function providerKeyPreview(projectRoot = process.cwd(), provider = "") {
     or: "openrouter",
     router: "openrouter",
     "open-router": "openrouter",
+    local: "localllm",
+    "local-llm": "localllm",
+    local_llm: "localllm",
+    localllm: "localllm",
     v: "venice",
     venice: "venice",
   };
-  const canonical = aliases[normalized] || normalized;
+  const canonical = aliases[normalized] || normalizeProviderId(normalized, normalized);
+  if (canonical === "localllm" && !providerRequiresApiKey(canonical)) {
+    return {
+      available: true,
+      provider: canonical,
+      keyName: "",
+      preview: "no API key required",
+      length: 0,
+    };
+  }
   const keys = PROVIDER_KEY_CANDIDATES[canonical] || [];
   for (const keyName of keys) {
     const value = process.env[keyName];
@@ -571,12 +575,18 @@ export async function setProviderKey(projectRoot, provider, value, options = {})
     or: "openrouter",
     router: "openrouter",
     "open-router": "openrouter",
+    local: "localllm",
+    "local-llm": "localllm",
+    local_llm: "localllm",
+    localllm: "localllm",
     v: "venice",
     venice: "venice",
   };
   const canonicalProvider = aliases[normalizedProvider] || normalizedProvider;
   const keyName =
-    canonicalProvider === "openai"
+    canonicalProvider === "localllm"
+      ? "AGINTI_LOCALLLM_API_KEY"
+      : canonicalProvider === "openai"
       ? "OPENAI_API_KEY"
       : canonicalProvider === "qwen"
         ? "QWEN_API_KEY"
@@ -587,8 +597,8 @@ export async function setProviderKey(projectRoot, provider, value, options = {})
             : canonicalProvider === "grsai"
               ? "GRSAI"
               : "DEEPSEEK_API_KEY";
-  if (!["deepseek", "openai", "openrouter", "qwen", "venice", "grsai"].includes(canonicalProvider)) {
-    throw new Error("Provider must be deepseek, openai, openrouter, qwen, venice, or grsai.");
+  if (!["localllm", "deepseek", "openai", "openrouter", "qwen", "venice", "grsai"].includes(canonicalProvider)) {
+    throw new Error("Provider must be localllm, deepseek, openai, openrouter, qwen, venice, or grsai.");
   }
 
   const keyValue = String(value || "").trim();

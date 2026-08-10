@@ -13,11 +13,11 @@ Local agent references informed the design:
 - Claw-style `doctor` discipline: check health and environment before treating system symptoms as code bugs.
 - Claude/Codex-style context discipline: read project instructions, manifests, entry points, and failing tests before touching broad files.
 
-The shared pattern is not “put the whole repo in context.” It is: build a cheap map, choose the next exact evidence, edit with deterministic patches, verify, then compact what changed. AgInTiFlow uses cheap DeepSeek calls to add more independent eyes around that loop, not to replace it.
+The shared pattern is not “put the whole repo in context.” It is: build a cheap map, choose the next exact evidence, edit with deterministic patches, verify, then compact what changed. AgInTiFlow can use bounded scout calls on the explicitly selected provider to add more independent eyes around that loop, not to replace it.
 
 ## Skill vs Tool
 
-The `large-codebase` profile is a skill: it changes the model’s engineering behavior. It tells DeepSeek v4 pro to orient first, plan minimally, patch incrementally, and verify.
+The `large-codebase` profile is a skill: it changes the model’s engineering behavior. It tells the active main model—LocalLLM Deep by default—to orient first, plan minimally, patch incrementally, and verify.
 
 The `inspect_project` function is a tool: it deterministically scans the workspace and returns:
 
@@ -48,7 +48,7 @@ Mature coding agents avoid keeping an entire growing project in the prompt. AgIn
 - Project map: `inspect_project` summaries, language counts, source/test directories, and recommended reads.
 - Active evidence: exact search hits, selected files, failing command output, and compact git status/diff.
 - Patch context: only the nearby code needed for `apply_patch`, plus before/after hashes and compact diffs.
-- Scout synthesis: cheap parallel DeepSeek scouts produce bounded advice, then a coordinator summary is injected instead of every long transcript becoming permanent context.
+- Scout synthesis: bounded parallel scouts use the explicitly selected provider, then a coordinator summary is injected instead of every long transcript becoming permanent context.
 
 This keeps the main executor sober: it knows where it is in the repo, but it still re-reads exact files before editing and validates with commands rather than trusting stale memory.
 
@@ -84,7 +84,7 @@ aginti --profile large-codebase "fix the failing tests"
 
 or choose **Large codebase engineering** in the web task-profile dropdown.
 
-Smart routing sends this profile to DeepSeek v4 pro even when the user prompt is short.
+Smart routing sends this profile to LocalLLM Deep even when the user prompt is short. Hosted providers are used only when selected explicitly; their presence in saved or ambient credentials does not activate them or create a fallback.
 
 ## Auto Profile Behavior
 
@@ -100,11 +100,11 @@ aginti "fix the Rust workspace build"
 aginti "repair the Docker setup and run the Node tests"
 ```
 
-These route to DeepSeek v4 pro when the complexity score is high enough.
+These route to LocalLLM Deep when the complexity score is high enough.
 
 ## Parallel Scout Mode
 
-DeepSeek calls are cheap enough that complex tasks can use several short advisory calls before the main executor starts. When enabled, AgInTiFlow runs bounded scouts in parallel:
+Complex tasks can use several short advisory calls before the main executor starts. When explicitly enabled, AgInTiFlow runs bounded scouts in parallel on the selected provider:
 
 - Architect: decomposes the task and identifies first files/logs/commands.
 - Implementer: predicts patch boundaries and focused checks.
@@ -139,7 +139,7 @@ aginti --no-web-search "work fully offline"
 
 ## Cross-Language Playbook
 
-AgInTiFlow gives DeepSeek stack-specific reminders without hardcoding a solution:
+AgInTiFlow gives the active executor stack-specific reminders without hardcoding a solution:
 
 - JS/TS: inspect package scripts and lockfiles, then run focused `node`, `tsc`, or test commands.
 - Python: inspect `pyproject.toml` or requirements, prefer project-local venv/conda/Docker, then run focused pytest/module checks.

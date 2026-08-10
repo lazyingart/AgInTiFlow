@@ -3,6 +3,7 @@ import { emitKeypressEvents } from "node:readline";
 import { stdin as input, stdout as output } from "node:process";
 import { Writable } from "node:stream";
 import { providerKeyPreview, providerKeyStatus, setProviderKey } from "./project.js";
+import { BASELINE_PROVIDER, normalizeProviderId, providerRequiresApiKey } from "./provider-contract.js";
 
 const useColor = Boolean(input.isTTY && output.isTTY && process.env.AGINTIFLOW_NO_COLOR !== "1");
 const ansi = {
@@ -26,14 +27,14 @@ export const MAIN_AUTH_PROVIDERS = [
     id: "deepseek",
     label: "DeepSeek",
     keyName: "DEEPSEEK_API_KEY",
-    description: "default fast/pro route",
+    description: "optional hosted fast/pro upgrade",
     keyUrl: "https://platform.deepseek.com/api_keys",
   },
   {
     id: "openai",
     label: "OpenAI",
     keyName: "OPENAI_API_KEY",
-    description: "OpenAI-compatible fallback",
+    description: "optional hosted frontier upgrade",
     keyUrl: "https://platform.openai.com/api-keys",
   },
   {
@@ -68,6 +69,10 @@ const AUXILIARY_AUTH_PROVIDER = {
 };
 
 const AUTH_ALIASES = {
+  local: "localllm",
+  "local-llm": "localllm",
+  local_llm: "localllm",
+  localllm: "localllm",
   auxiliary: "grsai",
   image: "grsai",
   imagegen: "grsai",
@@ -86,8 +91,8 @@ const AUTH_ALIASES = {
 };
 
 export function normalizeAuthProvider(provider = "", fallback = "deepseek") {
-  const normalized = AUTH_ALIASES[String(provider || "").trim().toLowerCase()] || String(provider || "").trim().toLowerCase();
-  return ["deepseek", "openai", "openrouter", "qwen", "venice", "grsai"].includes(normalized) ? normalized : fallback;
+  const normalized = AUTH_ALIASES[String(provider || "").trim().toLowerCase()] || normalizeProviderId(provider, "");
+  return ["localllm", "deepseek", "openai", "openrouter", "qwen", "venice", "grsai"].includes(normalized) ? normalized : fallback;
 }
 
 function providerLabel(provider = "") {
@@ -406,8 +411,9 @@ export async function chooseAuthProvider({
 }
 
 export function shouldPromptForDeepSeek(args = {}, projectRoot = process.cwd()) {
-  const provider = String(args.provider || "").toLowerCase();
-  if (provider === "mock" || provider === "openai" || provider === "openrouter" || provider === "qwen" || provider === "venice") return false;
+  const provider = normalizeProviderId(args.provider || process.env.AGENT_PROVIDER || BASELINE_PROVIDER);
+  if (provider === "mock" || !providerRequiresApiKey(provider)) return false;
+  if (provider === "openai" || provider === "openrouter" || provider === "qwen" || provider === "venice") return false;
   if (process.env.AGINTIFLOW_NO_AUTH_PROMPT === "1") return false;
   if (!input.isTTY || !output.isTTY) return false;
   const status = providerKeyStatus(projectRoot);
@@ -435,9 +441,16 @@ export async function runAuthWizard(projectRoot = process.cwd(), options = {}) {
   const scopeLabel = scope === "project" ? "project .aginti/.env" : "account ~/.agintiflow/.env";
   const initialProvider = normalizeAuthProvider(options.provider || options.initialProvider || "deepseek", "deepseek");
   const directProvider =
-    options.provider && ["deepseek", "openai", "openrouter", "qwen", "venice", "grsai"].includes(normalizeAuthProvider(options.provider, ""))
+    options.provider && ["localllm", "deepseek", "openai", "openrouter", "qwen", "venice", "grsai"].includes(normalizeAuthProvider(options.provider, ""))
       ? normalizeAuthProvider(options.provider)
       : "";
+  if (directProvider === "localllm") {
+    return {
+      saved: [],
+      skipped: [{ provider: "localllm", reason: "no API key required for the loopback provider" }],
+      status,
+    };
+  }
   const mainProvider =
     directProvider === "grsai"
       ? ""

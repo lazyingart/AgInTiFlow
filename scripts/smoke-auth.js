@@ -107,18 +107,20 @@ try {
   process.env.GRSAI_API_KEY = "ambient-grsai-key";
   let status = providerKeyStatus(tempRoot);
   assert(status.deepseek && status.openrouter && status.venice && status.grsai, "ambient provider keys were not detected");
-  assert(status.globalEnv, "ambient provider keys were not persisted into account-wide ~/.agintiflow/.env");
-  const globalEnv = await fs.readFile(path.join(tempRoot, ".agintiflow-home", ".env"), "utf8");
-  assert(globalEnv.includes("DEEPSEEK_API_KEY="), "ambient DeepSeek key was not saved globally");
-  assert(globalEnv.includes("OPENROUTER_API_KEY="), "ambient OpenRouter key was not saved globally");
-  assert(globalEnv.includes("VENICE_API_KEY="), "ambient Venice key was not saved globally");
-  assert(globalEnv.includes("GRSAI_API_KEY="), "ambient GRS AI key was not saved globally");
+  assert(!status.globalEnv && !status.ambientPersisted, "ambient provider keys were silently persisted account-wide");
+  await fs.access(path.join(tempRoot, ".agintiflow-home", ".env"))
+    .then(() => {
+      throw new Error("ambient provider keys created an account-wide credential file");
+    })
+    .catch((error) => {
+      if (error?.code !== "ENOENT") throw error;
+    });
   delete process.env.DEEPSEEK_API_KEY;
   delete process.env.OPENROUTER_API_KEY;
   delete process.env.VENICE_API_KEY;
   delete process.env.GRSAI_API_KEY;
   status = providerKeyStatus(tempRoot);
-  assert(status.deepseek && status.openrouter && status.venice && status.grsai, "persisted provider keys were not reloaded after ambient env was cleared");
+  assert(!status.deepseek && !status.openrouter && !status.venice && !status.grsai, "ambient keys survived after their process environment was cleared");
 
   await setProviderKey(tempRoot, "qwen", "test-qwen-key");
   await setProviderKey(tempRoot, "openrouter", "test-openrouter-key");
@@ -180,7 +182,7 @@ try {
           "openrouter-defaults",
           "venice-defaults",
           "project-key-not-auto-promoted",
-          "ambient-key-global-autopersist",
+          "ambient-key-discovery-is-read-only",
           "project-key-override",
           "qwen-key-status",
           "openrouter-key-status",

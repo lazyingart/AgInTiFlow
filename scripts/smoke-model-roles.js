@@ -13,6 +13,7 @@ import {
 } from "../src/model-routing.js";
 import { createChatCompletion, normalizeTextToolCallResponse, parseTextToolCalls, usesTextToolProtocol } from "../src/model-client.js";
 import { modelRoleChoices, selectorVisibleWindow } from "../src/interactive-cli.js";
+import { normalizeProviderId, resolveProviderDefaults } from "../src/provider-contract.js";
 import {
   buildScsEvidencePack,
   buildSupervisorInstruction,
@@ -27,6 +28,18 @@ import { classifyGoalIntent, isDirectAnswerIntent } from "../src/goal-intent.js"
 import { languageWriterDefaults } from "../src/writing-specialist.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+for (const key of [
+  "AGENT_PROVIDER",
+  "AGINTI_ROUTE_PROVIDER",
+  "AGINTI_ROUTE_MODEL",
+  "AGINTI_MAIN_PROVIDER",
+  "AGINTI_MAIN_MODEL",
+  "AGINTI_SPARE_PROVIDER",
+  "AGINTI_SPARE_MODEL",
+]) {
+  delete process.env[key];
+}
+process.env.AGINTI_LOCAL_FIRST = "1";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -101,19 +114,26 @@ function runInteractive(input) {
 }
 
 const roles = getModelRoleDefaults();
-assert(roles.route.provider === "deepseek", "route provider default should be deepseek");
-assert(roles.route.model === "deepseek-v4-flash", "route model default should be deepseek-v4-flash");
-assert(roles.main.model === "deepseek-v4-pro", "main model default should be deepseek-v4-pro");
-assert(roles.spare.provider === "openai" && roles.spare.model === "gpt-5.4", "spare model default should be OpenAI GPT-5.4");
+assert(roles.route.provider === "localllm", "route provider default should be localllm");
+assert(roles.route.model === "localllm-fast", "route model default should be localllm-fast");
+assert(roles.main.provider === "localllm", "main provider default should be localllm");
+assert(roles.main.model === "localllm-deep", "main model default should be localllm-deep");
+assert(
+  roles.spare.provider === "localllm" && roles.spare.model === "localllm-deep",
+  "local-first spare model should stay on LocalLLM Deep unless explicitly changed"
+);
 assert(roles.wrapper.provider === "codex" && roles.wrapper.model === "gpt-5.5", "wrapper default should be Codex GPT-5.5");
 assert(roles.auxiliary.provider === "grsai" && roles.auxiliary.model === "nano-banana-2", "auxiliary default should be GRS AI Nano Banana");
 
 const envSnapshot = {
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   LLM_BASE_URL: process.env.LLM_BASE_URL,
+  LLM_MODEL: process.env.LLM_MODEL,
   AGINTI_MAIN_REASONING: process.env.AGINTI_MAIN_REASONING,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
+  LOCALLLM_BASE_URL: process.env.LOCALLLM_BASE_URL,
+  LOCALLLM_MODEL: process.env.LOCALLLM_MODEL,
   AGINTI_WRITING_PROVIDER_ZH: process.env.AGINTI_WRITING_PROVIDER_ZH,
   AGINTI_WRITING_MODEL_ZH: process.env.AGINTI_WRITING_MODEL_ZH,
 };
@@ -122,6 +142,40 @@ process.env.LLM_BASE_URL = "https://generic-compatible.example/v1";
 assert(getProviderDefaults("openai").baseURL === "https://openai-compatible.example/v1", "OPENAI_BASE_URL should override LLM_BASE_URL for OpenAI provider");
 delete process.env.OPENAI_BASE_URL;
 assert(getProviderDefaults("openai").baseURL === "https://generic-compatible.example/v1", "LLM_BASE_URL should remain OpenAI fallback when OPENAI_BASE_URL is unset");
+process.env.LLM_BASE_URL = "https://generic-compatible.example/v1";
+process.env.LLM_MODEL = "hosted-generic-model";
+assert(getProviderDefaults("localllm").baseURL === "http://127.0.0.1:8008/v1", "LocalLLM must not inherit generic LLM_BASE_URL");
+assert(getProviderDefaults("localllm").model === "localllm-fast", "LocalLLM must not inherit generic LLM_MODEL");
+process.env.LOCALLLM_BASE_URL = "http://127.0.0.1:1234/v1";
+process.env.LOCALLLM_MODEL = "local-smoke-model";
+assert(getProviderDefaults("local").provider === "localllm", "local provider alias should normalize to localllm");
+assert(getProviderDefaults("local-llm").provider === "localllm", "local-llm provider alias should normalize to localllm");
+assert(getProviderDefaults("local_llm").provider === "localllm", "local_llm provider alias should normalize to localllm");
+assert(normalizeProviderId("ollama", "") === "", "raw ollama must not alias to canonical LocalLLM");
+assert(normalizeProviderId("lmstudio", "") === "", "raw lmstudio must not alias to canonical LocalLLM");
+assert(normalizeProviderId("ollama") === "", "default provider normalization must not reinterpret raw ollama as LocalLLM");
+let rejectedUnknownProvider = false;
+try {
+  getProviderDefaults("ollama");
+} catch (error) {
+  rejectedUnknownProvider = error?.code === "PROVIDER_UNKNOWN";
+}
+assert(rejectedUnknownProvider, "exported provider defaults must reject unknown/raw engine labels instead of silently selecting LocalLLM");
+assert(
+  resolveProviderDefaults("deepseek", { DEEPSEEK_API_KEY: "deepseek-specific", LLM_API_KEY: "stale-generic" }).apiKey ===
+    "deepseek-specific",
+  "DeepSeek-specific credentials must take precedence over a stale generic LLM_API_KEY"
+);
+assert(
+  resolveProviderDefaults("openai", { OPENAI_API_KEY: "openai-specific", LLM_API_KEY: "stale-generic" }).apiKey ===
+    "openai-specific",
+  "OpenAI-specific credentials must take precedence over a stale generic LLM_API_KEY"
+);
+assert(getProviderDefaults("localllm").baseURL === "http://127.0.0.1:1234/v1", "LocalLLM should accept loopback LOCALLLM_BASE_URL");
+assert(getProviderDefaults("localllm").model === "local-smoke-model", "LocalLLM should honor LOCALLLM_MODEL");
+delete process.env.LOCALLLM_BASE_URL;
+delete process.env.LOCALLLM_MODEL;
+delete process.env.LLM_MODEL;
 process.env.AGINTI_MAIN_REASONING = "provider-default";
 assert(getModelRoleDefaults().main.reasoning === "", "provider-default main reasoning should normalize to omitted reasoning");
 process.env.AGINTI_MAIN_REASONING = "none";
@@ -133,13 +187,16 @@ process.env.OPENAI_API_KEY = "test-openai-key";
 delete process.env.AGINTI_WRITING_PROVIDER_ZH;
 delete process.env.AGINTI_WRITING_MODEL_ZH;
 const zhWriterRoute = languageWriterDefaults({ language: "zh-Hans", writingBrief: "写一段小说。" }, { provider: "mock", model: "mock-agent" });
-assert(zhWriterRoute.provider === "deepseek" && zhWriterRoute.model === "deepseek-v4-pro", "Chinese writing should default to DeepSeek Pro when available");
+assert(zhWriterRoute.provider === "mock" && zhWriterRoute.model === "mock-agent", "Chinese writing must not escape the active provider through ambient keys");
 const enWriterRoute = languageWriterDefaults({ language: "en", writingBrief: "Write a scene." }, { provider: "mock", model: "mock-agent" });
-assert(enWriterRoute.provider === "openai" && enWriterRoute.model, "English writing should default to OpenAI when available");
-process.env.AGINTI_WRITING_PROVIDER_ZH = "qwen";
-process.env.AGINTI_WRITING_MODEL_ZH = "qwen-test-writer";
-const zhEnvWriterRoute = languageWriterDefaults({ language: "zh-Hans", writingBrief: "写一段小说。" }, { provider: "mock", model: "mock-agent" });
-assert(zhEnvWriterRoute.provider === "qwen" && zhEnvWriterRoute.model === "qwen-test-writer", "language-specific writer env should override auto routing");
+assert(enWriterRoute.provider === "mock" && enWriterRoute.model === "mock-agent", "English writing must not escape the active provider through ambient keys");
+process.env.AGINTI_WRITING_PROVIDER_ZH = "deepseek";
+process.env.AGINTI_WRITING_MODEL_ZH = "deepseek-test-writer";
+const zhEnvWriterRoute = languageWriterDefaults(
+  { language: "zh-Hans", writingBrief: "写一段小说。" },
+  { provider: "mock", model: "mock-agent", allowHostedWritingSpecialist: true }
+);
+assert(zhEnvWriterRoute.provider === "deepseek" && zhEnvWriterRoute.model === "deepseek-test-writer", "explicit language-specific writer env should override session routing");
 for (const [key, value] of Object.entries(envSnapshot)) {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;
@@ -169,11 +226,12 @@ assert(fastRoute.model === "deepseek-v4-flash", "fast route did not use route mo
 
 const simpleSmartRoute = selectModelRoute({
   routingMode: "smart",
-  provider: "deepseek",
+  provider: "localllm",
   goal: "say hello",
   taskProfile: "auto",
 });
-assert(simpleSmartRoute.model === "deepseek-v4-flash", "simple smart route should use the route model");
+assert(simpleSmartRoute.provider === "localllm", "simple smart route should use LocalLLM provider");
+assert(simpleSmartRoute.model === "localllm-fast", "simple smart route should use the route model");
 assert(
   !shouldActivateScs("auto", {
     goal: "say hello",
@@ -185,11 +243,12 @@ assert(
 
 const moderateSmartRoute = selectModelRoute({
   routingMode: "smart",
-  provider: "deepseek",
+  provider: "localllm",
   goal: "implement a focused refactor design for one module",
   taskProfile: "auto",
 });
-assert(moderateSmartRoute.model === "deepseek-v4-pro", "moderate smart route should use the main model");
+assert(moderateSmartRoute.provider === "localllm", "moderate smart route should use LocalLLM provider");
+assert(moderateSmartRoute.model === "localllm-deep", "moderate smart route should use the main model");
 assert(
   !shouldActivateScs("auto", {
     goal: "implement a focused refactor design for one module",
@@ -201,11 +260,12 @@ assert(
 
 const highRiskSmartRoute = selectModelRoute({
   routingMode: "smart",
-  provider: "deepseek",
+  provider: "localllm",
   goal: "debug failing tests and fix the build in a large repo, then commit and push",
   taskProfile: "auto",
 });
-assert(highRiskSmartRoute.model === "deepseek-v4-pro", "high-risk smart route should use the main model");
+assert(highRiskSmartRoute.provider === "localllm", "high-risk smart route should use LocalLLM provider");
+assert(highRiskSmartRoute.model === "localllm-deep", "high-risk smart route should use the main model");
 assert(
   shouldActivateScs("auto", {
     goal: "debug failing tests and fix the build in a large repo, then commit and push",
@@ -221,31 +281,34 @@ assert(
 
 const simpleRuntimeConfig = resolveRuntimeConfig({
   goal: "say hello",
-  provider: "deepseek",
+  provider: "localllm",
   routingMode: "smart",
   taskProfile: "auto",
 });
 assert(simpleRuntimeConfig.enableScs === "auto", "runtime config should default SCS mode to auto");
 assert(simpleRuntimeConfig.scsActive === false, "simple runtime config should not activate SCS");
-assert(simpleRuntimeConfig.model === "deepseek-v4-flash", "simple runtime config should use route model");
+assert(simpleRuntimeConfig.provider === "localllm", "simple runtime config should use LocalLLM provider");
+assert(simpleRuntimeConfig.model === "localllm-fast", "simple runtime config should use route model");
 
 const moderateRuntimeConfig = resolveRuntimeConfig({
   goal: "implement a focused refactor design for one module",
-  provider: "deepseek",
+  provider: "localllm",
   routingMode: "smart",
   taskProfile: "auto",
 });
 assert(moderateRuntimeConfig.scsActive === false, "moderate main-model work should not automatically activate SCS");
-assert(moderateRuntimeConfig.model === "deepseek-v4-pro", "moderate runtime config should use main model");
+assert(moderateRuntimeConfig.provider === "localllm", "moderate runtime config should use LocalLLM provider");
+assert(moderateRuntimeConfig.model === "localllm-deep", "moderate runtime config should use main model");
 
 const highRiskRuntimeConfig = resolveRuntimeConfig({
   goal: "debug failing tests and fix the build in a large repo, then commit and push",
-  provider: "deepseek",
+  provider: "localllm",
   routingMode: "smart",
   taskProfile: "auto",
 });
 assert(highRiskRuntimeConfig.scsActive === true, "high-risk runtime config should activate SCS");
-assert(highRiskRuntimeConfig.model === "deepseek-v4-pro", "SCS runtime config should use main model");
+assert(highRiskRuntimeConfig.provider === "localllm", "SCS runtime config should use LocalLLM provider by default");
+assert(highRiskRuntimeConfig.model === "localllm-deep", "SCS runtime config should use main model");
 
 const customGatewayRuntimeConfig = resolveRuntimeConfig({
   goal: "use a custom OpenAI-compatible model alias",
@@ -306,6 +369,9 @@ await createChatCompletion(
 assert(retryAttempts === 2, "OpenAI-compatible reasoning retry should retry once without reasoning_effort");
 
 assert(MODEL_PROVIDER_GROUPS["venice-gpt"].provider === "venice", "venice-gpt group missing");
+assert(MODEL_PROVIDER_GROUPS["localllm"].provider === "localllm", "localllm group missing");
+assert(modelsForProviderGroup("localllm").some((item) => item.id === "localllm-fast"), "localllm group missing localllm-fast");
+assert(modelsForProviderGroup("localllm").some((item) => item.id === "localllm-deep"), "localllm group missing localllm-deep");
 assert(modelsForProviderGroup("venice").some((item) => item.id === "venice-uncensored-1-2"), "venice group missing Venice 1.2");
 assert(modelsForProviderGroup("venice-gemma").some((item) => item.id === "google-gemma-4-31b-it"), "venice-gemma bucket missing Gemma 4 instruct");
 assert(!modelsForProviderGroup("venice-gemma").some((item) => item.id === "gemma-4-uncensored"), "venice-gemma bucket should not include Gemma 4 Uncensored shortcut");
@@ -331,6 +397,8 @@ assert(JSON.stringify(routeChoices) === JSON.stringify(spareChoices), "route and
 for (const expected of [
   "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-pro",
+  "localllm/localllm-fast",
+  "localllm/localllm-deep",
   "venice/venice-uncensored-1-2",
   "venice/venice-uncensored",
   "venice/gemma-4-uncensored",
@@ -428,6 +496,7 @@ assert(usesTextToolProtocol({ provider: "venice", model: "gemma-4-uncensored" })
 assert(usesTextToolProtocol({ provider: "venice", model: "e2ee-venice-uncensored-24b-p" }), "Venice 1.1 should use text tool protocol");
 assert(usesTextToolProtocol({ provider: "venice", model: "venice-uncensored" }), "Venice legacy 1.1 should use text tool protocol");
 assert(!usesTextToolProtocol({ provider: "venice", model: "venice-uncensored-1-2" }), "Venice 1.2 should keep native tool calls first");
+assert(!usesTextToolProtocol({ provider: "localllm", model: "localllm-fast" }), "LocalLLM should prefer native OpenAI tool calls");
 const scsInstruction = buildSupervisorInstruction({ plan: "Create one file.", acceptanceCriteria: ["File exists."] });
 assert(scsInstruction.includes("Student-Committee-Supervisor"), "SCS supervisor instruction should define the acronym");
 assert(!scsInstruction.includes("Syntax-Checker Sentinel"), "SCS supervisor instruction should not allow alternate acronym expansions");
@@ -776,8 +845,9 @@ const interactiveGemmaOutput = await runInteractive("/venice 1.1 gemma\n");
 assert(interactiveGemmaOutput.includes("route=venice/venice-uncensored"), "/venice 1.1 did not set Venice 1.1 route role");
 assert(interactiveGemmaOutput.includes("main=venice/gemma-4-uncensored"), "/venice gemma did not set Gemma 4 main role");
 const interactiveOffOutput = await runInteractive("/venice off\n");
-assert(interactiveOffOutput.includes("venice=off"), "/venice off did not restore DeepSeek roles");
-assert(interactiveOffOutput.includes("route=deepseek/deepseek-v4-flash"), "/venice off did not restore DeepSeek route role");
+assert(interactiveOffOutput.includes("venice=off"), "/venice off did not restore baseline roles");
+assert(interactiveOffOutput.includes("route=localllm/localllm-fast"), "/venice off did not restore LocalLLM route role");
+assert(interactiveOffOutput.includes("main=localllm/localllm-deep"), "/venice off did not restore LocalLLM main role");
 
 console.log(
   JSON.stringify(
