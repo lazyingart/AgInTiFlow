@@ -8,6 +8,30 @@ AgInTiFlow keeps CLI and web runs equivalent by using a project-local session in
 - Canonical session store: `~/.agintiflow/sessions/<session-id>/`.
 - Runtime inbox: `~/.agintiflow/sessions/<session-id>/inbox.jsonl`.
 
+## Persistence Guarantees
+
+Long-lived processes reuse one SQLite session-index connection and prepared
+statement set per resolved `AGINTIFLOW_HOME`. The index enables WAL mode and a
+bounded busy timeout so CLI, web, and bridge processes can update the
+rebuildable index without repeatedly reopening and migrating the database.
+Call `closeSessionIndexConnections()` in tests or embedding hosts that switch
+runtime homes inside one process.
+
+Each `SessionStore` memoizes directory/pointer initialization and serializes
+its event appends. Concurrent callers therefore retain call order without
+recreating the session pointer for every event. `state.json` remains an atomic,
+fsynced save boundary. A missing state file is resumably absent; malformed JSON
+raises `SESSION_STATE_CORRUPT` instead of silently looking like a new session.
+
+## Machine Run Input
+
+`aginti run` uses deterministic input precedence: explicit `--stdin` reads
+standard input, otherwise a positional prompt wins, and piped standard input is
+used only when no positional prompt exists. This keeps positional automation
+working in subprocesses whose stdin is non-interactive while preserving both
+explicit and implicit pipe workflows. `aginti --version` is handled by the
+lightweight launcher without loading the full agent and web runtime.
+
 When a run is active, the web chat and `aginti queue <session-id> "..."` append messages to the inbox instead of trying to mutate the running process directly. The web API exposes `GET /api/sessions/:id/inbox`, `POST /api/sessions/:id/inbox`, `PATCH /api/sessions/:id/inbox/:itemId`, and `DELETE /api/sessions/:id/inbox/:itemId` so browser users can inspect, edit, or remove pending pipe messages before the runner consumes them. The runner drains the inbox at safe boundaries: before each model step and after tool execution. This mirrors the event-queue style used by mature agent UIs while keeping the backend decoupled from any specific frontend.
 
 The interactive CLI keeps the input panel visible while a run is working. Enter sends the current draft as an ASAP pipe message and displays it as `→`; the runner drains those messages before normal inbox items and before after-finish queued prompts. Tab stores the draft as an after-finish queue item and displays it as `↳`; those prompts run only after the current run completes. Alt+Up moves the last pending `→` message back into the editor, and Shift+Left moves the last pending `↳` message back into the editor. Idle Esc is ignored so it does not redraw the prompt into the transcript. During a run, Esc waits when `→` pipe messages are still pending and stops the run only when no ASAP pipe message is pending; Ctrl+C always stops. The current command cwd is rendered below the input panel in both idle and running states.

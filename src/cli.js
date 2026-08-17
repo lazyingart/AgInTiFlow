@@ -2398,7 +2398,12 @@ export async function main(argv = process.argv.slice(2)) {
     const optionArgv = runArgv.filter((arg) => !["--stdin", "--json"].includes(arg));
     const parsedRunArgs = parseArgs(optionArgv);
     exitOnUnknownOptions(parsedRunArgs);
-    const prompt = stdinFlag || !process.stdin.isTTY ? await readStdin() : parsedRunArgs.goal;
+    let prompt = parsedRunArgs.goal;
+    if (stdinFlag) {
+      prompt = await readStdin();
+    } else if (!prompt && !process.stdin.isTTY) {
+      prompt = await readStdin();
+    }
     if (!prompt) {
       if (jsonFlag) {
         console.log(JSON.stringify({ ok: false, result: "", reason: "empty_prompt" }));

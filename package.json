@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.198",
+  "version": "0.20.199",
   "type": "module",
   "description": "AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-aware intelligence, software automation, and industrial workflows.",
   "license": "Apache-2.0",
@@ -86,6 +86,7 @@
     "scripts/local-first-agent-eval.mjs",
     "scripts/fixtures/local-first-agent-eval-fixtures.mjs",
     "scripts/smoke-run-stdin.js",
+    "scripts/smoke-runtime-core.js",
     "scripts/smoke-mcp.js",
     "scripts/fixtures/mcp-stdio-smoke-server.mjs",
     "scripts/smoke-model-roles.js",
@@ -121,7 +122,7 @@
   "scripts": {
     "start": "node run.js",
     "web": "node web.js",
-    "check": "node --check run.js && node --check web.js && node --check bin/aginti-cli.js && node --check bin/aginti-public-research.js && node --check bin/aginti-safe-chat.js && node --check src/*.js && node --check src/mcp/*.js && node --check public/*.js && node --check scripts/postinstall-webapp.js && node --check scripts/seed-supervised-homework.js && node --check scripts/smoke-agentlink.js && node --check scripts/smoke-execution-policy.js && node --check scripts/smoke-math-rendering.js && node --check scripts/smoke-mcp.js && node --check scripts/smoke-public-research-wrapper.js && node --check scripts/smoke-safe-chat.js && node --check scripts/smoke-web-ui.js && node --check scripts/smoke-scs-evidence-visibility.js && node --check scripts/fixtures/mcp-stdio-smoke-server.mjs",
+    "check": "node --check run.js && node --check web.js && node --check bin/aginti-cli.js && node --check bin/aginti-public-research.js && node --check bin/aginti-safe-chat.js && node --check src/*.js && node --check src/mcp/*.js && node --check public/*.js && node --check scripts/postinstall-webapp.js && node --check scripts/seed-supervised-homework.js && node --check scripts/smoke-agentlink.js && node --check scripts/smoke-execution-policy.js && node --check scripts/smoke-math-rendering.js && node --check scripts/smoke-mcp.js && node --check scripts/smoke-public-research-wrapper.js && node --check scripts/smoke-runtime-core.js && node --check scripts/smoke-safe-chat.js && node --check scripts/smoke-web-ui.js && node --check scripts/smoke-scs-evidence-visibility.js && node --check scripts/fixtures/mcp-stdio-smoke-server.mjs",
     "setup:toolchain-docker": "scripts/setup-agent-toolchain-docker.sh",
     "smoke:coding-tools": "node scripts/smoke-coding-tools.js",
     "smoke:dynamic-step-budget": "node scripts/smoke-dynamic-step-budget.js",
@@ -140,6 +141,7 @@
     "smoke:inbox": "node scripts/smoke-inbox.js",
     "smoke:long-jobs": "node scripts/smoke-long-jobs.js",
     "smoke:run-stdin": "node scripts/smoke-run-stdin.js",
+    "smoke:runtime-core": "node scripts/smoke-runtime-core.js",
     "smoke:localllm-auto-max": "node scripts/smoke-localllm-auto-max.js",
     "smoke:local-resource-policy": "node scripts/smoke-local-resource-policy.js",
     "smoke:context-budget-recovery": "node scripts/smoke-context-budget-recovery.js",
@@ -172,7 +174,7 @@
     "storage:migrate": "node bin/aginti-cli.js storage migrate",
     "publish:env": "node scripts/npm-publish-from-env.js publish --access public",
     "publish:env:whoami": "node scripts/npm-publish-from-env.js whoami",
-    "test": "npm run check && npm run smoke:localllm-provider && npm run smoke:localllm-model-tiers && npm run smoke:localllm-auto-max && npm run smoke:local-resource-policy && npm run smoke:context-budget-recovery && npm run smoke:session-runtime && npm run smoke:progressive-tools && npm run smoke:truthful-completion && npm run smoke:writing-specialist-routing && npm run eval:local-first-agent && npm run smoke:runtime-compat && npm run smoke:autoupdate && npm run smoke:web-api && npm run smoke:math-rendering && npm run smoke:web-ui && npm run smoke:web-autostart && npm run smoke:webapp-command && npm run smoke:web-port-fallback && npm run smoke:docker-command && npm run smoke:coding-tools && npm run smoke:dynamic-step-budget && npm run smoke:execution-policy && npm run smoke:aaps-adapter && npm run smoke:auxiliary-tools && npm run smoke:perception-research && npm run smoke:public-research && npm run smoke:safe-chat && npm run smoke:auth && npm run smoke:agentlink && npm run smoke:canvas-artifacts && npm run smoke:capabilities && npm run smoke:mcp && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:permission-modes && npm run smoke:skills && npm run smoke:skillmesh && npm run smoke:tmux-tools && npm run smoke:long-jobs && npm run smoke:run-stdin && npm run smoke:cli-chat && npm run smoke:inbox",
+    "test": "npm run check && npm run smoke:localllm-provider && npm run smoke:localllm-model-tiers && npm run smoke:localllm-auto-max && npm run smoke:local-resource-policy && npm run smoke:context-budget-recovery && npm run smoke:session-runtime && npm run smoke:runtime-core && npm run smoke:progressive-tools && npm run smoke:truthful-completion && npm run smoke:writing-specialist-routing && npm run eval:local-first-agent && npm run smoke:runtime-compat && npm run smoke:autoupdate && npm run smoke:web-api && npm run smoke:math-rendering && npm run smoke:web-ui && npm run smoke:web-autostart && npm run smoke:webapp-command && npm run smoke:web-port-fallback && npm run smoke:docker-command && npm run smoke:coding-tools && npm run smoke:dynamic-step-budget && npm run smoke:execution-policy && npm run smoke:aaps-adapter && npm run smoke:auxiliary-tools && npm run smoke:perception-research && npm run smoke:public-research && npm run smoke:safe-chat && npm run smoke:auth && npm run smoke:agentlink && npm run smoke:canvas-artifacts && npm run smoke:capabilities && npm run smoke:mcp && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:permission-modes && npm run smoke:skills && npm run smoke:skillmesh && npm run smoke:tmux-tools && npm run smoke:long-jobs && npm run smoke:run-stdin && npm run smoke:cli-chat && npm run smoke:inbox",
     "pack:dry-run": "npm pack --dry-run",
     "smoke:capabilities": "node scripts/smoke-capabilities.js"
   },

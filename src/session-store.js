@@ -75,6 +75,26 @@ async function appendDurably(filePath, content) {
   if (!existed) await syncDirectory(directoryPath);
 }
 
+async function loadStateFile(filePath) {
+  let raw;
+  try {
+    raw = await fs.readFile(filePath, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    const corruptionError = new Error(`Session state is not valid JSON: ${filePath}`);
+    corruptionError.name = "SessionStateCorruptionError";
+    corruptionError.code = "SESSION_STATE_CORRUPT";
+    corruptionError.cause = error;
+    throw corruptionError;
+  }
+}
+
 function inboxItemKey(item = {}) {
   const id = String(item.id || "").trim();
   if (id) return `id:${id}`;
@@ -167,11 +187,23 @@ export class SessionStore {
       DEFAULT_INBOX_COMPACTION_BYTE_THRESHOLD
     );
     this.inboxLockTimeoutMs = positiveInteger(options.inboxLockTimeoutMs, DEFAULT_INBOX_LOCK_TIMEOUT_MS);
+    this.ensurePromise = null;
+    this.eventAppendTail = Promise.resolve();
   }
 
   async ensure() {
-    await fs.mkdir(this.artifactsDir, { recursive: true });
-    await this.writePointer().catch(() => {});
+    if (!this.ensurePromise) {
+      this.ensurePromise = (async () => {
+        await fs.mkdir(this.artifactsDir, { recursive: true });
+        await this.writePointer().catch(() => {});
+      })();
+    }
+    try {
+      await this.ensurePromise;
+    } catch (error) {
+      this.ensurePromise = null;
+      throw error;
+    }
   }
 
   async writePointer(state = {}) {
@@ -196,20 +228,10 @@ export class SessionStore {
   }
 
   async loadState() {
-    try {
-      const raw = await fs.readFile(this.statePath, "utf8");
-      return JSON.parse(raw);
-    } catch {
-      if (this.legacySessionDir) {
-        try {
-          const raw = await fs.readFile(path.join(this.legacySessionDir, "state.json"), "utf8");
-          return JSON.parse(raw);
-        } catch {
-          return null;
-        }
-      }
-      return null;
-    }
+    const currentState = await loadStateFile(this.statePath);
+    if (currentState !== null) return currentState;
+    if (!this.legacySessionDir) return null;
+    return loadStateFile(path.join(this.legacySessionDir, "state.json"));
   }
 
   async saveState(state) {
@@ -248,20 +270,24 @@ export class SessionStore {
   }
 
   async appendEvent(type, data = {}) {
-    await this.ensure();
-    const event = {
-      timestamp: new Date().toISOString(),
-      type,
-      data,
-    };
-    const line = JSON.stringify(event);
-    await fs.appendFile(this.eventsPath, `${line}\n`, "utf8");
-    enqueueHousekeepingEvent({
-      sessionId: this.sessionId,
-      projectRoot: this.projectRoot,
-      commandCwd: this.commandCwd,
-      event,
+    const operation = this.eventAppendTail.then(async () => {
+      await this.ensure();
+      const event = {
+        timestamp: new Date().toISOString(),
+        type,
+        data,
+      };
+      const line = JSON.stringify(event);
+      await fs.appendFile(this.eventsPath, `${line}\n`, "utf8");
+      enqueueHousekeepingEvent({
+        sessionId: this.sessionId,
+        projectRoot: this.projectRoot,
+        commandCwd: this.commandCwd,
+        event,
+      });
     });
+    this.eventAppendTail = operation.catch(() => {});
+    return operation;
   }
 
   async loadEvents() {
@@ -681,8 +707,11 @@ export class SessionStore {
   }
 
   async remove() {
+    await this.eventAppendTail.catch(() => {});
     await fs.rm(this.sessionDir, { recursive: true, force: true });
     if (this.pointerDir) await fs.rm(this.pointerDir, { recursive: true, force: true }).catch(() => {});
     deleteSessionIndex(this.sessionId);
+    this.ensurePromise = null;
+    this.eventAppendTail = Promise.resolve();
   }
 }
