@@ -495,29 +495,48 @@ function stripForbiddenLanguage(goal = "") {
     .replace(/禁止([^。\n；]+)/g, "");
 }
 
+function scopedChatopsEvidenceGoal(goal = "", taskProfile = "") {
+  if (String(taskProfile || "").trim().toLowerCase() !== "chatops") return String(goal || "");
+  const match = String(goal || "").match(/^AGINTI_EVIDENCE_SCOPE_JSON:\s*(\{[^\n]+\})\s*$/m);
+  if (!match) return String(goal || "");
+  try {
+    const payload = JSON.parse(match[1]);
+    if (!payload || typeof payload !== "object") return String(goal || "");
+    const mode = String(payload.mode || "").trim().toLowerCase();
+    if (mode === "chat-response") {
+      return "Answer the current chat turn directly without external execution.";
+    }
+    const request = String(payload.request || "").trim();
+    return request || String(goal || "");
+  } catch {
+    return String(goal || "");
+  }
+}
+
 export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceCriteria = [] } = {}) {
-  const requirementCategories = inferRequirementCategories(goal, taskProfile, acceptanceCriteria);
-  const requiredToolCalls = inferRequiredToolCalls(goal);
-  const requiresExternalEvidence = requirementCategories.length > 0 || requiredToolCalls.length > 0 || goalRequiresEvidence(goal, taskProfile);
+  const evidenceGoal = scopedChatopsEvidenceGoal(goal, taskProfile);
+  const requirementCategories = inferRequirementCategories(evidenceGoal, taskProfile, acceptanceCriteria);
+  const requiredToolCalls = inferRequiredToolCalls(evidenceGoal);
+  const requiresExternalEvidence = requirementCategories.length > 0 || requiredToolCalls.length > 0 || goalRequiresEvidence(evidenceGoal, taskProfile);
   const requiredEvidence = requirementCategories.map((category) => ({
     id: category,
     category,
     description: CATEGORY_LABELS[category] || category,
   }));
-  const exactOutputPaths = inferExactOutputPaths(goal);
-  const exactInputPaths = inferExactInputPaths(goal).filter((item) => !exactOutputPaths.includes(item));
+  const exactOutputPaths = inferExactOutputPaths(evidenceGoal);
+  const exactInputPaths = inferExactInputPaths(evidenceGoal).filter((item) => !exactOutputPaths.includes(item));
   return {
     version: 1,
-    outcome: compact(goal || "Complete the requested task.", 500),
+    outcome: compact(evidenceGoal || "Complete the requested task.", 500),
     taskProfile: String(taskProfile || "auto"),
     requiresExternalEvidence,
     requiredEvidence,
-    forbiddenActions: inferForbiddenActions(goal),
+    forbiddenActions: inferForbiddenActions(evidenceGoal),
     exactOutputPaths,
     exactInputPaths,
     requiredToolCalls,
-    requiredTextTerms: inferRequiredTextTerms(goal),
-    forbiddenTextTerms: inferForbiddenTextTerms(goal),
+    requiredTextTerms: inferRequiredTextTerms(evidenceGoal),
+    forbiddenTextTerms: inferForbiddenTextTerms(evidenceGoal),
     successCriteria: unique(acceptanceCriteria).slice(0, 10),
   };
 }

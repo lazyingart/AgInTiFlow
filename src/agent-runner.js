@@ -326,7 +326,11 @@ function compactJson(value, limit = 1200) {
 function compactMultiline(value = "", limit = 3600) {
   const text = redactSensitiveText(String(value || ""));
   if (!limit || text.length <= limit) return text;
-  return `${text.slice(0, Math.max(0, limit - 80)).trimEnd()}\n... [truncated ${text.length - limit + 80} chars]`;
+  const marker = `\n... [${text.length - limit} chars omitted] ...\n`;
+  const available = Math.max(0, limit - marker.length);
+  const head = Math.floor(available * 0.35);
+  const tail = Math.max(0, available - head);
+  return `${text.slice(0, head).trimEnd()}${marker}${text.slice(-tail).trimStart()}`;
 }
 
 function safeParseToolContent(content) {
@@ -379,7 +383,9 @@ function summarizeOriginalRequests(messages = [], limit = 6) {
     if (/^Previous assistant response retained as compacted history/i.test(content)) continue;
     requests.push(compactSingleLine(content, 1200));
   }
-  return [...new Set(requests)].slice(0, limit);
+  const unique = [...new Set(requests)];
+  if (unique.length <= limit) return unique;
+  return [unique[0], ...unique.slice(-(limit - 1))];
 }
 
 function countMessageChars(messages = []) {
@@ -393,7 +399,13 @@ function modelTimeoutMsForConfig(config = {}) {
 
 function buildCompactedRuntimeMessages(state, config, snapshot, step, options = {}) {
   const messages = Array.isArray(state?.messages) ? state.messages : [];
-  const systemMessages = messages.filter((message) => message?.role === "system").slice(0, 4);
+  const systemMessages = messages
+    .filter((message) => message?.role === "system")
+    .slice(0, 3)
+    .map((message) => ({
+      ...message,
+      content: compactMultiline(message.content, 12000),
+    }));
   const requests = summarizeOriginalRequests(messages);
   const toolHistory = summarizeToolHistory(messages);
   const snapshotSummary = {
@@ -470,6 +482,10 @@ export function buildContextBudgetCompactionMessages(state, config, snapshot, st
 
 function isModelTimeoutError(error) {
   return error?.name === "ModelTimeoutError" || /timed out after \d+ms/i.test(String(error?.message || ""));
+}
+
+function isLocalContextBudgetError(error) {
+  return error?.name === "LocalContextBudgetError" || error?.code === "LOCALLLM_CONTEXT_BUDGET_EXCEEDED";
 }
 
 export function repairModelMessageHistory(state, config = {}) {
@@ -3438,39 +3454,83 @@ export async function runAgent(config) {
         response = await requestNextStep(client, config, state.messages);
       } catch (error) {
         const retryKey = `step-${step}`;
-        const retriedSteps = state.meta.modelTimeoutRetries || {};
-        if (!isModelTimeoutError(error) || retriedSteps[retryKey]) throw error;
+        const contextRetriedSteps = state.meta.localContextBudgetRetries || {};
+        if (isLocalContextBudgetError(error) && !contextRetriedSteps[retryKey]) {
+          const compactMessages = buildContextBudgetCompactionMessages(
+            state,
+            config,
+            snapshot,
+            step,
+            {
+              reason: redactSensitiveText(
+                error instanceof Error ? error.message : String(error)
+              ),
+            }
+          );
+          const detail = {
+            step,
+            provider: config.provider,
+            model: config.model,
+            messageCharsBefore: countMessageChars(state.messages),
+            messageCharsAfter: countMessageChars(compactMessages),
+            messageTokensBefore: estimateMessageTokens(state.messages),
+            messageTokensAfter: estimateMessageTokens(compactMessages),
+            error: redactSensitiveText(
+              error instanceof Error ? error.message : String(error)
+            ),
+          };
+          state.messages = compactMessages;
+          state.meta.localContextBudgetRetries = {
+            ...contextRetriedSteps,
+            [retryKey]: true,
+          };
+          state.meta.lastLocalContextBudgetRecovery = detail;
+          await store.appendEvent("model.local_context_budget_exceeded", detail);
+          await store.appendEvent("history.compacted_for_local_context_retry", detail);
+          observers.event("model.local_context_budget_exceeded", detail);
+          observers.event("history.compacted_for_local_context_retry", detail);
+          emitConsole(
+            config,
+            `Local provider context exceeded its configured window at step ${step}; compacted authoritative context and retrying once.`,
+            { kind: "meta" }
+          );
+          await store.saveState(state);
+          response = await requestNextStep(client, config, state.messages);
+        } else {
+          const retriedSteps = state.meta.modelTimeoutRetries || {};
+          if (!isModelTimeoutError(error) || retriedSteps[retryKey]) throw error;
 
-        const timeoutMs = modelTimeoutMsForConfig(config);
-        const retryTimeoutMs = Math.max(timeoutMs * 2, 180000);
-        const compactMessages = buildModelTimeoutRetryMessages(state, config, snapshot, step, error);
-        const detail = {
-          step,
-          provider: config.provider,
-          model: config.model,
-          timeoutMs,
-          retryTimeoutMs,
-          messageCharsBefore: countMessageChars(state.messages),
-          messageCharsAfter: countMessageChars(compactMessages),
-          error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
-        };
-        state.messages = compactMessages;
-        state.meta.modelTimeoutRetries = {
-          ...retriedSteps,
-          [retryKey]: true,
-        };
-        state.meta.lastModelTimeout = detail;
-        await store.appendEvent("model.timeout", detail);
-        await store.appendEvent("history.compacted_for_model_retry", detail);
-        observers.event("model.timeout", detail);
-        observers.event("history.compacted_for_model_retry", detail);
-        emitConsole(
-          config,
-          `Model request timed out after ${timeoutMs}ms; compacted history and retrying once with ${retryTimeoutMs}ms.`,
-          { kind: "meta" }
-        );
-        await store.saveState(state);
-        response = await requestNextStep(client, { ...config, modelTimeoutMs: retryTimeoutMs }, state.messages);
+          const timeoutMs = modelTimeoutMsForConfig(config);
+          const retryTimeoutMs = Math.max(timeoutMs * 2, 180000);
+          const compactMessages = buildModelTimeoutRetryMessages(state, config, snapshot, step, error);
+          const detail = {
+            step,
+            provider: config.provider,
+            model: config.model,
+            timeoutMs,
+            retryTimeoutMs,
+            messageCharsBefore: countMessageChars(state.messages),
+            messageCharsAfter: countMessageChars(compactMessages),
+            error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+          };
+          state.messages = compactMessages;
+          state.meta.modelTimeoutRetries = {
+            ...retriedSteps,
+            [retryKey]: true,
+          };
+          state.meta.lastModelTimeout = detail;
+          await store.appendEvent("model.timeout", detail);
+          await store.appendEvent("history.compacted_for_model_retry", detail);
+          observers.event("model.timeout", detail);
+          observers.event("history.compacted_for_model_retry", detail);
+          emitConsole(
+            config,
+            `Model request timed out after ${timeoutMs}ms; compacted history and retrying once with ${retryTimeoutMs}ms.`,
+            { kind: "meta" }
+          );
+          await store.saveState(state);
+          response = await requestNextStep(client, { ...config, modelTimeoutMs: retryTimeoutMs }, state.messages);
+        }
       }
       const assistantMessage = response.choices[0]?.message;
       if (!assistantMessage) {

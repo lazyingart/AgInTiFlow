@@ -49,6 +49,37 @@ export function estimateTextTokens(value = "") {
   return Math.ceil(ascii / 3) + Math.ceil(nonAscii * 1.5);
 }
 
+export function compactTextForTokenBudget(value = "", maxTokens = 0, options = {}) {
+  const text = String(value ?? "");
+  const budget = positiveInteger(maxTokens, 0);
+  if (!budget || estimateTextTokens(text) <= budget) return text;
+
+  const headFraction = Math.min(0.8, Math.max(0.2, Number(options.headFraction ?? 0.35)));
+  const buildCandidate = (keptChars) => {
+    const kept = Math.max(0, Math.min(text.length, Math.floor(keptChars)));
+    const headChars = Math.floor(kept * headFraction);
+    const tailChars = Math.max(0, kept - headChars);
+    const omitted = Math.max(0, text.length - headChars - tailChars);
+    const marker = `\n\n[... ${omitted} chars omitted to fit the provider context ...]\n\n`;
+    return `${text.slice(0, headChars).trimEnd()}${marker}${text.slice(text.length - tailChars).trimStart()}`;
+  };
+
+  let low = 0;
+  let high = text.length;
+  let best = "[... content omitted to fit the provider context ...]";
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = buildCandidate(middle);
+    if (estimateTextTokens(candidate) <= budget) {
+      best = candidate;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return best;
+}
+
 export function estimateMessageTokens(messages = []) {
   return (Array.isArray(messages) ? messages : []).reduce((total, message) => {
     let count = 6 + estimateTextTokens(message?.role || "") + estimateTextTokens(message?.content || "");

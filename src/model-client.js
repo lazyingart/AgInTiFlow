@@ -19,7 +19,11 @@ import {
   providerSupportsReasoningEffort,
 } from "./provider-contract.js";
 import { selectProgressiveTools } from "./progressive-tool-selection.js";
-import { estimateMessageTokens, estimateToolSchemaTokens } from "./context-budget-controller.js";
+import {
+  compactTextForTokenBudget,
+  estimateMessageTokens,
+  estimateToolSchemaTokens,
+} from "./context-budget-controller.js";
 import { attachToolContract } from "./tool-contract.js";
 
 export function createClient(config) {
@@ -834,6 +838,14 @@ export async function createPlan(client, config, state) {
   const planMaxTokens = normalizeProviderId(config.provider, "") === "localllm"
     ? Math.min(2048, Number(config.maxOutputTokens || 2048))
     : 0;
+  const localContextWindow = Number(config.contextWindowTokens || 32768);
+  const planGoal = planMaxTokens > 0
+    ? compactTextForTokenBudget(
+        state.goal,
+        Math.max(2048, Math.min(8192, Math.floor(localContextWindow * 0.3))),
+        { headFraction: 0.3 }
+      )
+    : state.goal;
   const planPayload = {
       model: config.model,
       temperature: 0,
@@ -846,7 +858,7 @@ export async function createPlan(client, config, state) {
       {
         role: "user",
         content: [
-          `Goal: ${state.goal}`,
+          `Goal: ${planGoal}`,
           state.startUrl ? `Suggested start URL: ${state.startUrl}` : "",
           config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
           config.allowShellTool
@@ -912,9 +924,33 @@ export async function createPlan(client, config, state) {
       },
       ],
       ...(planMaxTokens > 0 ? { max_tokens: planMaxTokens } : {}),
-    };
+  };
   const planConfig = planMaxTokens > 0 ? { ...config, maxOutputTokens: planMaxTokens } : config;
-  assertLocalRequestWithinContext(planPayload, planConfig, "plan request");
+  try {
+    assertLocalRequestWithinContext(planPayload, planConfig, "plan request");
+  } catch (error) {
+    if (error?.name !== "LocalContextBudgetError") throw error;
+    const minimalGoal = compactTextForTokenBudget(state.goal, 4096, { headFraction: 0.3 });
+    planPayload.messages = [
+      {
+        role: "system",
+        content:
+          "Plan one exact agent task in 3 to 6 concise steps. Use the established project routines and tools; do not redesign a mature workflow. Preserve current intent, later interruptions, safety gates, and requested artifacts.",
+      },
+      {
+        role: "user",
+        content: [
+          `Goal: ${minimalGoal}`,
+          `Task profile: ${taskProfile.label}. ${taskProfile.prompt}`,
+          projectInstructions?.exists
+            ? `Project instructions are available at ${projectInstructions.path}; read them when executing.`
+            : "Read AGENTS.md/README and the exact routine contract when present.",
+          "Return a numbered plan only.",
+        ].join("\n"),
+      },
+    ];
+    assertLocalRequestWithinContext(planPayload, planConfig, "compacted plan request");
+  }
   const response = await createChatCompletion(client, planPayload, planConfig, "plan request");
 
   return redactSensitiveText(response.choices[0]?.message?.content?.trim() || "1. Inspect the page.\n2. Use the smallest safe action.\n3. Finish with a concise answer.");
