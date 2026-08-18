@@ -103,6 +103,10 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     overrides.localMaxModel ||
     process.env.AGINTI_LOCALLLM_MAX_MODEL ||
     LOCALLLM_MODEL_TIERS.max.model;
+  const localCodeModel =
+    overrides.localCodeModel ||
+    process.env.AGINTI_LOCALLLM_CODE_MODEL ||
+    LOCALLLM_MODEL_TIERS.code.model;
   const allowLocalAutoMax = parseBoolean(
     overrides.allowLocalAutoMax ??
       args.allowLocalAutoMax ??
@@ -133,6 +137,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     localModelOverrides: {
       fastModel: overrides.localFastModel || "",
       deepModel: overrides.localDeepModel || "",
+      codeModel: localCodeModel,
       maxModel: localMaxModel,
       visionModel: overrides.localVisionModel || process.env.AGINTI_LOCALLLM_VISION_MODEL || "",
     },
@@ -172,7 +177,9 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     complexityScore: route.complexityScore,
   });
   const preserveSpecializedLocalRoute =
-    scsActive && route.provider === BASELINE_PROVIDER && ["max", "vision"].includes(route.localTier || "");
+    scsActive &&
+    route.provider === BASELINE_PROVIDER &&
+    (route.localCodeCandidate === true || ["code", "max", "vision"].includes(route.localTier || ""));
   const preserveSessionModel = scsActive && sessionModelLocked;
   const useScsMainRole = scsActive && route.provider !== "mock" && !preserveSpecializedLocalRoute && !preserveSessionModel;
   const activeProvider = useScsMainRole ? modelRoles.main.provider : route.provider;
@@ -296,6 +303,9 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     localTier: route.localTier || "",
     localSelection: route.localSelection || "",
     localUpgradeBlocked: route.localUpgradeBlocked || "",
+    localCodeCandidate: route.localCodeCandidate === true,
+    localCodeModel: route.localCodeModel || localCodeModel,
+    localCodeFallbackModel: route.localCodeFallbackModel || LOCALLLM_MODEL_TIERS.deep.model,
     localCapabilities,
     localResourcePolicy,
     localMaxModel,

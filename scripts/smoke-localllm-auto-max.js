@@ -16,24 +16,16 @@ import {
 } from "../src/local-auto-max.js";
 import { LOCALLLM_AUTO_MAX_MIN_COMPLEXITY } from "../src/model-routing.js";
 
-const ENV_KEYS = [
-  "AGINTIFLOW_HOME",
-  "AGENT_PROVIDER",
-  "AGINTI_LOCALLLM_ALLOW_AUTO_MAX",
-  "AGINTI_LOCALLLM_MAX_MODEL",
-  "AGINTI_ROUTE_PROVIDER",
-  "AGINTI_ROUTE_MODEL",
-  "AGINTI_MAIN_PROVIDER",
-  "AGINTI_MAIN_MODEL",
-  "LLM_MODEL",
-];
-const envSnapshot = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+const CONFIG_ENV_PATTERN = /^(?:AGENT|AGINTI|AGINTIFLOW|LOCALLLM|LOCAL_LLM|LLM|DEEPSEEK|OPENAI|OPENROUTER|QWEN|VENICE|GRSAI|BRAVE|ALLOW_|WRAPPER_|MAX_STEPS$|SANDBOX_MODE$|USE_DOCKER_SANDBOX$|PACKAGE_INSTALL_POLICY$|COMMAND_CWD$|PREFERRED_WRAPPER$)/u;
 const TEST_BEARER_TOKEN = "smoke-auto-max-local-bearer";
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const smokeRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-auto-max-"));
+const smokeProject = path.join(smokeRoot, "project");
+await fs.mkdir(smokeProject, { recursive: true });
 const complexGoal = [
-  "Architect and implement a complex multi-file repository migration.",
-  "Debug the root cause, repair the regression, update the database and CI configuration,",
-  "review security and performance, then run the complete test suite.",
+  "Analyze a complex multi-file repository architecture and migration strategy.",
+  "Compare the root cause, database, CI, security, performance, Docker, Kubernetes, and systemd tradeoffs,",
+  "then produce a detailed design review without changing source files.",
 ].join(" ");
 
 function readiness(models = ["localllm-fast", "localllm-deep", "localllm-max"]) {
@@ -182,11 +174,14 @@ async function createIntegrationConfig({
 }
 
 try {
-  for (const key of ENV_KEYS) delete process.env[key];
+  for (const key of Object.keys(process.env)) {
+    if (CONFIG_ENV_PATTERN.test(key)) delete process.env[key];
+  }
+  process.env.AGINTIFLOW_HOME = path.join(smokeRoot, "home");
 
   const disabledConfig = resolveRuntimeConfig(
     { goal: complexGoal, taskProfile: "large-codebase" },
-    { baseDir: process.cwd(), provider: "localllm", routingMode: "smart" }
+    { baseDir: smokeProject, provider: "localllm", routingMode: "smart" }
   );
   assert.ok(disabledConfig.routeComplexityScore >= LOCALLLM_AUTO_MAX_MIN_COMPLEXITY);
   assert.equal(disabledConfig.model, "localllm-deep");
@@ -196,7 +191,7 @@ try {
   process.env.AGINTI_LOCALLLM_ALLOW_AUTO_MAX = "true";
   const optedInConfig = resolveRuntimeConfig(
     { goal: complexGoal, taskProfile: "large-codebase" },
-    { baseDir: process.cwd(), provider: "localllm", routingMode: "smart" }
+    { baseDir: smokeProject, provider: "localllm", routingMode: "smart" }
   );
   assert.equal(optedInConfig.model, "localllm-deep", "phase one must remain on Deep before authenticated discovery");
   assert.equal(optedInConfig.allowLocalAutoMax, true);
@@ -255,7 +250,7 @@ try {
   const explicitMax = resolveRuntimeConfig(
     { goal: complexGoal, taskProfile: "large-codebase", model: "localllm-max" },
     {
-      baseDir: process.cwd(),
+      baseDir: smokeProject,
       provider: "localllm",
       routingMode: "smart",
       model: "localllm-max",
@@ -266,7 +261,7 @@ try {
 
   const simpleConfig = resolveRuntimeConfig(
     { goal: "Say hello." },
-    { baseDir: process.cwd(), provider: "localllm", routingMode: "smart", allowLocalAutoMax: true }
+    { baseDir: smokeProject, provider: "localllm", routingMode: "smart", allowLocalAutoMax: true }
   );
   let simpleResourceChecks = 0;
   const simpleDecision = await resolveLocalAutoMaxUpgrade(simpleConfig, readiness(), {
@@ -278,10 +273,9 @@ try {
   assert.equal(simpleDecision.outcome, LOCALLLM_AUTO_MAX_OUTCOMES.INELIGIBLE);
   assert.equal(simpleResourceChecks, 0, "low-complexity work must never probe Max resources");
 
-  const integrationRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-auto-max-"));
-  process.env.AGINTIFLOW_HOME = path.join(integrationRoot, "home");
-  try {
-    await withLocalFixture(async ({ baseURL, observations: fixtureObservations }) => {
+  const integrationRoot = path.join(smokeRoot, "integration");
+  await fs.mkdir(integrationRoot, { recursive: true });
+  await withLocalFixture(async ({ baseURL, observations: fixtureObservations }) => {
       let selectedResourceChecks = 0;
       const selectedProbe = async () => {
         selectedResourceChecks += 1;
@@ -379,15 +373,12 @@ try {
       );
       assert.equal(fixtureObservations.modelRequests, 4);
       assert.equal(fixtureObservations.authenticatedModelRequests, 4);
-    });
-  } finally {
-    await fs.rm(integrationRoot, { recursive: true, force: true });
-  }
+  });
 } finally {
-  for (const [key, value] of Object.entries(envSnapshot)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
+  for (const key of Object.keys(process.env)) {
+    if (CONFIG_ENV_PATTERN.test(key)) delete process.env[key];
   }
+  await fs.rm(smokeRoot, { recursive: true, force: true });
 }
 
 console.log("LocalLLM automatic Max two-phase policy smoke passed (offline; no model loads).\n");

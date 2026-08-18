@@ -54,6 +54,12 @@ import {
   resolveLocalAutoMaxUpgrade,
   restoreLocalAutoMaxPolicy,
 } from "./local-auto-max.js";
+import {
+  applyLocalCodeRoute,
+  captureLocalCodePolicy,
+  resolveLocalCodeRoute,
+  restoreLocalCodePolicy,
+} from "./local-code-routing.js";
 import { resolveRuntimeConfig } from "./config.js";
 import {
   captureSessionRuntime,
@@ -727,6 +733,7 @@ async function createInitialState(config, sessionId) {
       goalContract: initialGoalContract(config.goal, now),
       runtimeConfig: captureSessionRuntime(config),
       localAutoMaxPolicy: captureLocalAutoMaxPolicy(config),
+      localCodePolicy: captureLocalCodePolicy(config),
       projectInstructions: {
         path: projectInstructions.path,
         exists: projectInstructions.exists,
@@ -3109,7 +3116,7 @@ const RESUME_OPERATIONAL_CONFIG_FIELDS = Object.freeze([
   "globalSessionIndexPath",
 ]);
 
-const AUTO_MAX_RUNTIME_CONTROL_FIELDS = new Set([
+const LOCAL_ROUTE_RUNTIME_CONTROL_FIELDS = new Set([
   "provider",
   "model",
   "routingMode",
@@ -3238,10 +3245,12 @@ export async function runAgent(config) {
     const patchedRuntimeFields = runtime.patched
       ? Object.keys(incomingConfig.runtimePatch || {}).filter((field) => isSessionRuntimeField(field))
       : [];
-    if (patchedRuntimeFields.some((field) => AUTO_MAX_RUNTIME_CONTROL_FIELDS.has(field))) {
+    if (patchedRuntimeFields.some((field) => LOCAL_ROUTE_RUNTIME_CONTROL_FIELDS.has(field))) {
       state.meta.localAutoMaxPolicy = captureLocalAutoMaxPolicy(config);
+      state.meta.localCodePolicy = captureLocalCodePolicy(config);
     } else {
       config = restoreLocalAutoMaxPolicy(config, state.meta.localAutoMaxPolicy);
+      config = restoreLocalCodePolicy(config, state.meta.localCodePolicy);
     }
     runtimeResolutionEvent = {
       type: runtime.source === "legacy" ? "session.runtime_migrated" : "session.runtime_resolved",
@@ -3320,6 +3329,32 @@ export async function runAgent(config) {
 
     throwIfAborted(config);
     const readiness = await preflightProviderRuntime(config);
+    const codeRouteDecision = resolveLocalCodeRoute(config, readiness);
+    if (codeRouteDecision.attempted) {
+      const priorModel = config.model;
+      config = applyLocalCodeRoute(config, codeRouteDecision);
+      const codeRouteEvent = {
+        outcome: codeRouteDecision.outcome,
+        fromModel: priorModel,
+        candidateModel: codeRouteDecision.model || config.localCodeModel || "localllm-code",
+        fallbackModel: codeRouteDecision.fallbackModel || config.localCodeFallbackModel || "localllm-deep",
+        activeModel: config.model,
+        authenticatedDiscovery:
+          readiness?.checks?.authentication?.ok === true && readiness?.checks?.models?.ok === true,
+      };
+      if (codeRouteDecision.outcome === "selected") {
+        state.provider = config.provider;
+        state.model = config.model;
+        state.meta = state.meta || {};
+        state.meta.runtimeConfig = captureSessionRuntime(config, {
+          revision: state.meta.runtimeConfig?.revision || 1,
+        });
+        state.updatedAt = new Date().toISOString();
+        await store.saveState(state);
+      }
+      await store.appendEvent("provider.local_code_route", codeRouteEvent);
+      observers.event("provider.local_code_route", { ...codeRouteEvent, sessionId });
+    }
     const autoMaxDecision = await resolveLocalAutoMaxUpgrade(config, readiness, {
       resourceProbe:
         typeof config.localResourceProbe === "function"

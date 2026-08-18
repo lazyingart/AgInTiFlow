@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { isLocalLLMBaseURL } from "../src/provider-contract.js";
 import {
@@ -7,40 +10,23 @@ import {
   LOCALLLM_MODEL_TIERS,
   PROVIDER_MODEL_CATALOG,
   getModelPresets,
+  hasLocalLLMCodeIntent,
   hasLocalLLMVisionIntent,
   localLLMModelTier,
   selectLocalLLMModelTier,
   selectModelRoute,
 } from "../src/model-routing.js";
 
-const ENV_KEYS = [
-  "AGENT_PROVIDER",
-  "AGINTI_ROUTE_PROVIDER",
-  "AGINTI_ROUTE_MODEL",
-  "AGINTI_MAIN_PROVIDER",
-  "AGINTI_MAIN_MODEL",
-  "AGINTI_LOCALLLM_MODEL",
-  "AGINTI_LOCALLLM_ROUTE_MODEL",
-  "AGINTI_LOCALLLM_MAIN_MODEL",
-  "AGINTI_LOCALLLM_MAX_MODEL",
-  "AGINTI_LOCALLLM_VISION_MODEL",
-  "LOCALLLM_MODEL",
-  "LOCAL_LLM_MODEL",
-  "DEEPSEEK_API_KEY",
-  "OPENAI_API_KEY",
-  "OPENROUTER_API_KEY",
-  "QWEN_API_KEY",
-  "VENICE_API_KEY",
-  "LLM_BASE_URL",
-  "LLM_MODEL",
-];
-
-const envSnapshot = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+const CONFIG_ENV_PATTERN = /^(?:AGENT|AGINTI|AGINTIFLOW|LOCALLLM|LOCAL_LLM|LLM|DEEPSEEK|OPENAI|OPENROUTER|QWEN|VENICE|GRSAI|BRAVE|ALLOW_|WRAPPER_|MAX_STEPS$|SANDBOX_MODE$|USE_DOCKER_SANDBOX$|PACKAGE_INSTALL_POLICY$|COMMAND_CWD$|PREFERRED_WRAPPER$)/u;
+const smokeRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-model-tiers-"));
 const originalFetch = globalThis.fetch;
 let networkCalls = 0;
 
 try {
-  for (const key of ENV_KEYS) delete process.env[key];
+  for (const key of Object.keys(process.env)) {
+    if (CONFIG_ENV_PATTERN.test(key)) delete process.env[key];
+  }
+  process.env.AGINTIFLOW_HOME = path.join(smokeRoot, "home");
   globalThis.fetch = async () => {
     networkCalls += 1;
     throw new Error("LocalLLM tier selection must stay pure and offline");
@@ -48,13 +34,14 @@ try {
 
   assert.equal(LOCALLLM_MODEL_TIERS.fast.model, "localllm-fast");
   assert.equal(LOCALLLM_MODEL_TIERS.deep.model, "localllm-deep");
+  assert.equal(LOCALLLM_MODEL_TIERS.code.model, "localllm-code");
   assert.equal(LOCALLLM_MODEL_TIERS.max.model, "localllm-max");
   assert.equal(LOCALLLM_MODEL_TIERS.vision.model, "localllm-vision-xl");
   assert.equal(localLLMModelTier("localllm-max")?.target, "Qwen3 30B-A3B Instruct Q8_0");
   assert.deepEqual(
     PROVIDER_MODEL_CATALOG.localllm.map((item) => item.id),
-    ["localllm-fast", "localllm-deep", "localllm-max", "localllm-vision-xl"],
-    "LocalLLM model catalog should expose all four stable aliases"
+    ["localllm-fast", "localllm-deep", "localllm-code", "localllm-max", "localllm-vision-xl"],
+    "LocalLLM model catalog should expose all five stable text/vision aliases"
   );
 
   const simple = selectModelRoute({
@@ -74,13 +61,21 @@ try {
   assert.ok(substantiveCode.complexityScore >= 3, "code fixture must remain substantive");
   assert.equal(substantiveCode.model, "localllm-deep", "substantive coding must never downgrade to localllm-fast");
   assert.equal(substantiveCode.localTier, "deep");
+  assert.equal(substantiveCode.localSelection, "code-readiness-pending");
+  assert.equal(substantiveCode.localCodeCandidate, true);
+  assert.equal(substantiveCode.localCodeModel, "localllm-code");
+
+  assert.equal(hasLocalLLMCodeIntent("Explain this function without changing it.", "code"), false);
+  assert.equal(hasLocalLLMCodeIntent("Implement the parser and add regression tests.", "code"), true);
+  assert.equal(hasLocalLLMCodeIntent("Write an essay about how programmers refactor code.", "writing"), false);
+  assert.equal(hasLocalLLMCodeIntent("Research methods for debugging Python services.", "research"), false);
 
   const complexGoal = "Architect and repair a complex multi-file compiler regression, update the database and CI, review security, then run every test.";
   process.env.AGENT_PROVIDER = "openai";
   process.env.OPENAI_API_KEY = "offline-ambient-openai-key";
   const explicitLocalAgainstAmbientHosted = resolveRuntimeConfig(
     { provider: "localllm", goal: complexGoal },
-    { baseDir: process.cwd(), provider: "localllm", routingMode: "smart", enableScs: "auto" }
+    { baseDir: smokeRoot, provider: "localllm", routingMode: "smart", enableScs: "auto" }
   );
   assert.equal(explicitLocalAgainstAmbientHosted.scsActive, true, "ambient-provider fixture must exercise SCS");
   assert.equal(explicitLocalAgainstAmbientHosted.requestedProvider, "localllm");
@@ -95,7 +90,7 @@ try {
   const explicitRoleProviders = resolveRuntimeConfig(
     { provider: "localllm", goal: complexGoal },
     {
-      baseDir: process.cwd(),
+      baseDir: smokeRoot,
       provider: "localllm",
       routingMode: "smart",
       enableScs: "auto",
@@ -116,15 +111,15 @@ try {
 
   const omittedModelComplex = resolveRuntimeConfig(
     { goal: complexGoal },
-    { baseDir: process.cwd(), provider: "localllm", routingMode: "smart", enableScs: "off" }
+    { baseDir: smokeRoot, provider: "localllm", routingMode: "smart", enableScs: "off" }
   );
   assert.equal(omittedModelComplex.model, "localllm-deep", "a fresh smart run with no model must still route by complexity");
-  assert.equal(omittedModelComplex.localSelection, "complexity");
+  assert.equal(omittedModelComplex.localSelection, "code-readiness-pending");
 
   const unlockedDefaultFast = resolveRuntimeConfig(
     { goal: complexGoal },
     {
-      baseDir: process.cwd(),
+      baseDir: smokeRoot,
       provider: "localllm",
       model: "localllm-fast",
       routingMode: "smart",
@@ -140,7 +135,7 @@ try {
   const lockedDeepOnSimple = resolveRuntimeConfig(
     { goal: "Inspect README.md and summarize it." },
     {
-      baseDir: process.cwd(),
+      baseDir: smokeRoot,
       provider: "localllm",
       model: "localllm-deep",
       routingMode: "smart",
@@ -156,7 +151,7 @@ try {
   const lockedFastOnComplex = resolveRuntimeConfig(
     { goal: complexGoal },
     {
-      baseDir: process.cwd(),
+      baseDir: smokeRoot,
       provider: "localllm",
       model: "localllm-fast",
       routingMode: "smart",
@@ -173,7 +168,7 @@ try {
   const lockedMaxOnSimple = resolveRuntimeConfig(
     { goal: "Inspect README.md and summarize it." },
     {
-      baseDir: process.cwd(),
+      baseDir: smokeRoot,
       provider: "localllm",
       model: "localllm-max",
       routingMode: "smart",
@@ -208,10 +203,15 @@ try {
   });
   assert.equal(missingPressureSnapshot.model, "localllm-deep", "unknown pressure must fail closed to Deep");
 
+  const highComplexityAnalysisGoal = [
+    "Analyze the architecture, root cause, security, performance, database, Docker, Kubernetes, systemd, CI,",
+    "and migration tradeoffs across a complex multi-file repository. Produce a detailed design review.",
+  ].join(" ");
+  assert.equal(hasLocalLLMCodeIntent(highComplexityAnalysisGoal, "large-codebase"), false);
   const optedInMax = selectModelRoute({
     provider: "localllm",
     routingMode: "smart",
-    goal: "Architect and repair a complex multi-file compiler regression with tests.",
+    goal: highComplexityAnalysisGoal,
     taskProfile: "large-codebase",
     localCapabilities: { maxModelAvailable: true },
     localResourcePolicy: {
@@ -227,11 +227,11 @@ try {
 
   const resolvedAutoMax = resolveRuntimeConfig(
     {
-      goal: "Architect and repair a complex multi-file compiler regression with tests.",
+      goal: highComplexityAnalysisGoal,
       taskProfile: "large-codebase",
     },
     {
-      baseDir: process.cwd(),
+      baseDir: smokeRoot,
       provider: "localllm",
       routingMode: "smart",
       localCapabilities: { maxModelAvailable: true },
@@ -264,13 +264,23 @@ try {
   assert.equal(smartExplicitMax.model, "localllm-max", "an explicit Max model must not be replaced by smart routing");
   assert.equal(smartExplicitMax.routingMode, "manual");
 
+  const smartExplicitCode = selectModelRoute({
+    provider: "localllm",
+    model: "localllm-code",
+    routingMode: "smart",
+    goal: "Explain the current architecture.",
+  });
+  assert.equal(smartExplicitCode.model, "localllm-code", "an explicit coding alias must remain exact");
+  assert.equal(smartExplicitCode.routingMode, "manual");
+  assert.equal(smartExplicitCode.localTier, "code");
+
   const resolvedExplicitMax = resolveRuntimeConfig(
     {
       goal: "Architect and repair a complex multi-file compiler regression with tests.",
       taskProfile: "large-codebase",
     },
     {
-      baseDir: process.cwd(),
+      baseDir: smokeRoot,
       provider: "localllm",
       model: "localllm-max",
       routingMode: "smart",
@@ -279,17 +289,19 @@ try {
   assert.equal(resolvedExplicitMax.scsActive, true);
   assert.equal(resolvedExplicitMax.model, "localllm-max", "SCS must preserve an explicitly selected Max model");
 
-  const explicitMainMax = selectModelRoute({
+  const configuredMainMaxCode = selectModelRoute({
     provider: "localllm",
     routingMode: "smart",
     mainModel: "localllm-max",
     goal: "Implement and validate a multi-file compiler refactor.",
     taskProfile: "large-codebase",
   });
-  assert.equal(explicitMainMax.model, "localllm-max", "an explicit main-role Max alias should remain selectable");
-  assert.equal(explicitMainMax.localTier, "max");
-  assert.equal(explicitMainMax.localSelection, "configured-model");
-  assert.equal(explicitMainMax.requiresResourcePreflight, true);
+  assert.equal(configuredMainMaxCode.model, "localllm-deep", "a configured main-role Max alias became the pending code fallback");
+  assert.equal(configuredMainMaxCode.localTier, "deep");
+  assert.equal(configuredMainMaxCode.localSelection, "code-readiness-pending");
+  assert.equal(configuredMainMaxCode.localCodeCandidate, true);
+  assert.equal(configuredMainMaxCode.localCodeFallbackModel, "localllm-deep");
+  assert.equal(configuredMainMaxCode.requiresResourcePreflight, false);
 
   const visionGoal = "Inspect the attached screenshot and identify the rendering defect.";
   assert.equal(hasLocalLLMVisionIntent(visionGoal), true);
@@ -334,6 +346,7 @@ try {
   });
   assert.equal(cloudAmbientRoute.provider, "localllm", "ambient hosted keys must not change the local provider");
   assert.equal(cloudAmbientRoute.model, "localllm-deep", "ambient hosted model settings must not change the local tier");
+  assert.equal(cloudAmbientRoute.localCodeModel, "localllm-code");
 
   process.env.AGINTI_LOCALLLM_MODEL = "local-shared-explicit";
   let presets = getModelPresets({ routeProvider: "localllm", mainProvider: "localllm" });
@@ -342,13 +355,16 @@ try {
 
   process.env.AGINTI_LOCALLLM_ROUTE_MODEL = "local-role-fast";
   process.env.AGINTI_LOCALLLM_MAIN_MODEL = "local-role-deep";
+  process.env.AGINTI_LOCALLLM_CODE_MODEL = "local-role-code";
   presets = getModelPresets({ routeProvider: "localllm", mainProvider: "localllm" });
   assert.equal(presets.fast.model, "local-role-fast", "role-specific route override should win over the shared override");
   assert.equal(presets.complex.model, "local-role-deep", "role-specific main override should win over the shared override");
+  assert.equal(presets.localCode.model, "local-role-code", "coding alias override should remain independent from route/main");
 
   delete process.env.AGINTI_LOCALLLM_MODEL;
   delete process.env.AGINTI_LOCALLLM_ROUTE_MODEL;
   delete process.env.AGINTI_LOCALLLM_MAIN_MODEL;
+  delete process.env.AGINTI_LOCALLLM_CODE_MODEL;
   process.env.LOCALLLM_MODEL = "local-standard-explicit";
   presets = getModelPresets({ routeProvider: "localllm", mainProvider: "localllm" });
   assert.equal(presets.fast.model, "local-standard-explicit", "LOCALLLM_MODEL should apply to the route role");
@@ -358,8 +374,8 @@ try {
   console.log("LocalLLM model tier smoke test passed (offline; no model or network calls).\n");
 } finally {
   globalThis.fetch = originalFetch;
-  for (const [key, value] of Object.entries(envSnapshot)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
+  for (const key of Object.keys(process.env)) {
+    if (CONFIG_ENV_PATTERN.test(key)) delete process.env[key];
   }
+  await fs.rm(smokeRoot, { recursive: true, force: true });
 }

@@ -20,10 +20,11 @@ The local tier policy uses the workstation's installed aliases without treating 
 | --- | --- | --- |
 | `localllm-fast` | Qwen3 8B Q4 routing and bounded work | Default for simple work. |
 | `localllm-deep` | Qwen3 30B-A3B Q4 substantive coding/agent work | Default for complex work. |
+| `localllm-code` | Provider-neutral coding capability (the sibling catalog currently maps it to Qwen3-Coder 30B-A3B Q4) | Smart selection only for high-confidence implementation work and only after authenticated availability; otherwise Deep. |
 | `localllm-max` | Qwen3 30B-A3B Q8 highest-fidelity local text/code | Explicit selection; automatic use additionally requires opt-in, authenticated availability, fresh resource readiness, and no shared-workstation pressure. |
 | `localllm-vision-xl` | Qwen3-VL 30B-A3B Q4 image understanding | The automatic policy requires a trusted image-input signal plus confirmed capability. The shipped CLI/web currently use readiness-checked `read_image` or explicit selection; prompt keywords alone do not activate it. |
 
-Installed aliases are not loaded during routing. Automatic Max is off by default; set `AGINTI_LOCALLLM_ALLOW_AUTO_MAX=true` to opt in. An opted-in high-complexity run starts on Deep, confirms the Max alias through authenticated `/v1/models`, and only then samples current resources. Unknown or pressured resource state stays on Deep. Explicit Max also cannot bypass the live gate: immediately before client creation, each new or resumed run rechecks at least 24 GiB available RAM, swap use at or below 75%, and 40 GiB aggregate free NVIDIA memory. A blocked explicit gate creates no model client and performs no inference.
+Installed aliases are not loaded during routing. A genuine coding/implementation request starts on Deep, checks the authenticated model inventory, and selects the exact `AGINTI_LOCALLLM_CODE_MODEL` value only when present. Missing or unverified capability stays on Deep; the decision and effective model are recorded so fallback sessions can re-evaluate and selected sessions resume on the same model. Explanation-only code questions and non-code writing/research/documentation/design keep their existing route. Automatic Max is off by default; set `AGINTI_LOCALLLM_ALLOW_AUTO_MAX=true` to opt in. An opted-in high-complexity non-code run starts on Deep, confirms the Max alias through authenticated `/v1/models`, and only then samples current resources. Unknown or pressured resource state stays on Deep. Explicit Max also cannot bypass the live gate: immediately before client creation, each new or resumed run rechecks at least 24 GiB available RAM, swap use at or below 75%, and 40 GiB aggregate free NVIDIA memory. A blocked explicit gate creates no model client and performs no inference.
 
 Long writing tasks use an additional tool boundary: `writing_specialist`. The main model still plans the run, manages files, formats Markdown/LaTeX/Final Draft output, compiles/checks artifacts, and finishes. The specialist gets only the writing brief, canon, style guide, prior draft, target, audience, constraints, and format intent, then returns prose plus a formatter handoff. It follows the active LocalLLM provider by default even when hosted keys exist. Cross-provider writing requires both an explicit target (`AGINTI_WRITING_PROVIDER` or a per-run provider override) and `AGINTI_ALLOW_HOSTED_WRITING_SPECIALIST=true` (or the equivalent per-run permission flag); language detection and ambient credentials never grant that permission.
 
@@ -75,7 +76,7 @@ Provider families:
 
 | Family | Models |
 | --- | --- |
-| LocalLLM | `localllm-fast`, `localllm-deep`, `localllm-max`, `localllm-vision-xl`; Max and Vision retain the gates above |
+| LocalLLM | `localllm-fast`, `localllm-deep`, `localllm-code`, `localllm-max`, `localllm-vision-xl`; Code, Max, and Vision retain the gates above |
 | DeepSeek | `deepseek-v4-flash`, `deepseek-v4-pro` |
 | Venice | `venice-uncensored-1-2`, `venice-uncensored`, `gemma-4-uncensored` |
 | OpenAI | `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5.2`; each has low/medium/high/xhigh reasoning |
@@ -148,7 +149,7 @@ It keeps smart routing enabled. If the Venice key is missing, run `/auth venice`
 
 ## Keys
 
-The LocalLLM baseline uses `http://127.0.0.1:8008/v1` and the installation's loopback key (`local-dev-key` in the documented local setup). `AGINTI_LOCALLLM_MODEL` or `LOCALLLM_MODEL` is the shared local text override; role-specific `AGINTI_LOCALLLM_ROUTE_MODEL` and `AGINTI_LOCALLLM_MAIN_MODEL` take precedence. Optional `AGINTI_LOCALLLM_MAX_MODEL` and `AGINTI_LOCALLLM_VISION_MODEL` name the gated heavyweight aliases. LocalLLM overrides must remain loopback URLs. Generic `LLM_*` values do not redefine the local provider.
+The LocalLLM baseline uses `http://127.0.0.1:8008/v1` and the installation's loopback key (`local-dev-key` in the documented local setup). `AGINTI_LOCALLLM_MODEL` or `LOCALLLM_MODEL` is the shared local text override; role-specific `AGINTI_LOCALLLM_ROUTE_MODEL` and `AGINTI_LOCALLLM_MAIN_MODEL` take precedence. `AGINTI_LOCALLLM_CODE_MODEL` names the independently configurable coding capability alias; AgInTiFlow never needs the underlying engine tag. Optional `AGINTI_LOCALLLM_MAX_MODEL` and `AGINTI_LOCALLLM_VISION_MODEL` name the other gated heavyweight aliases. LocalLLM overrides must remain loopback URLs. Generic `LLM_*` values do not redefine the local provider.
 
 Keys are saved account-wide in `~/.agintiflow/.env` by default. Use `--project` only when the current project needs an override in ignored `.aginti/.env`:
 

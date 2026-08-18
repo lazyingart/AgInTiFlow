@@ -85,7 +85,7 @@ aginti init --template aaps
 aginti init --template supervision
 ```
 
-By default, AgInTiFlow connects to the sibling LocalLLM gateway at `http://127.0.0.1:8008/v1`, using `localllm-fast` for routing and the installed 30B-A3B Q4 `localllm-deep` for substantive coding and agent work. The Q8 `localllm-max` remains resource-gated on every new or resumed run (24 GiB available RAM, no more than 75% swap use, and 40 GiB aggregate free NVIDIA memory). The automatic Vision policy requires both a trusted image-input signal and confirmed model capability; the shipped CLI/web currently use the readiness-checked local `read_image` tool or an explicit `localllm-vision-xl` selection rather than inferring vision from prompt keywords. Routing does not load a model. Startup checks the LocalLLM service, its Ollama runtime, selected aliases, and any required Max headroom before inference. A local failure stops with an actionable error; it never silently sends the task to a hosted provider.
+By default, AgInTiFlow connects to the sibling LocalLLM gateway at `http://127.0.0.1:8008/v1`, using `localllm-fast` for routing and the installed 30B-A3B Q4 `localllm-deep` for substantive general agent work. High-confidence coding and repository implementation requests begin on Deep, then switch to the provider-neutral `localllm-code` capability alias only after bearer-authenticated `/v1/models` discovery confirms that exact configured alias. If it is absent, the run stays on Deep; writing, research, documentation, design, explanation-only code questions, explicit providers, and manual model choices are not silently rerouted. Set `AGINTI_LOCALLLM_CODE_MODEL` to another LocalLLM capability alias without coupling AgInTiFlow to an engine tag. The Q8 `localllm-max` remains resource-gated on every new or resumed run (24 GiB available RAM, no more than 75% swap use, and 40 GiB aggregate free NVIDIA memory). The automatic Vision policy requires both a trusted image-input signal and confirmed model capability; the shipped CLI/web currently use the readiness-checked local `read_image` tool or an explicit `localllm-vision-xl` selection rather than inferring vision from prompt keywords. Routing does not load a model. Startup checks the LocalLLM service, its Ollama runtime, selected aliases, and any required Max headroom before inference. A local failure stops with an actionable error; it never silently sends the task to a hosted provider.
 
 Hosted providers are optional, explicit upgrades. When you select DeepSeek, OpenAI, OpenRouter, Qwen, or Venice, the auth wizard can save that provider's key account-wide in `~/.agintiflow/.env` with restricted permissions. Current project `.aginti/.env` files can still override account defaults when needed. You can rerun setup any time:
 
@@ -253,7 +253,7 @@ The website keeps the visual walkthrough in a carousel so this README can stay f
 | File tools | `inspect_project`, `list_files`, `read_file`, `search_files`, `write_file`, `apply_patch`, `open_workspace_file`, `preview_workspace`, and `read_image`. |
 | Shell tools | Guarded host or Docker workspace shell execution with package-install policy and command safety checks. |
 | Browser tools | Playwright browser actions with lazy startup and optional domain allowlists. |
-| Model routing | LocalLLM Fast/Deep defaults, explicit and resource-gated Max, image-capability-gated Vision XL, explicit DeepSeek/OpenAI/OpenRouter/Qwen/Venice/mock routes, and optional spare/wrapper/auxiliary models. |
+| Model routing | LocalLLM Fast/Deep defaults, authenticated implementation-only Code capability, explicit and resource-gated Max, image-capability-gated Vision XL, explicit DeepSeek/OpenAI/OpenRouter/Qwen/Venice/mock routes, and optional spare/wrapper/auxiliary models. |
 | Writing specialist | A dedicated writing-only LLM call for prose, chapters, scripts, books, essays, research-paper sections, and revisions, with formatter handoff notes for Markdown/LaTeX/Final Draft. |
 | Patch workflow | Codex-style patch envelopes, unified diffs, exact replacements, hashes, compact diffs, and path guardrails. |
 | Parallel scouts | Optional scout calls for architecture, implementation, review, tests, git flow, research, symbol tracing, and dependency risk. |
@@ -275,6 +275,7 @@ AgInTiFlow does not treat "the model" as one global setting. It has roles:
 | --- | --- | --- |
 | Route | `localllm/localllm-fast` | Local planner, triage, short tasks, and routing decisions. |
 | Main | `localllm/localllm-deep` | Local complex executor for coding, debugging, writing, research, and long tasks. |
+| Code capability | `localllm/localllm-code` | Smart implementation-only upgrade after authenticated alias discovery; unavailable aliases fall back to Deep. |
 | Spare | `localllm/localllm-deep` medium | Local cross-check lane; a hosted spare requires explicit selection. |
 | Wrapper | `codex/gpt-5.5` medium | Optional external coding-agent advisor; `research_wrapper` defaults to `gpt-5.4-mini` medium for image/web second opinions. |
 | Auxiliary | `grsai/nano-banana-2` (off) | Explicitly enabled image generation and other non-text helper tools; no credential-driven provider failover. |
@@ -372,6 +373,7 @@ LOCALLLM_BASE_URL=http://127.0.0.1:8008/v1
 LOCALLLM_API_KEY=local-dev-key
 AGINTI_LOCALLLM_ROUTE_MODEL=localllm-fast
 AGINTI_LOCALLLM_MAIN_MODEL=localllm-deep
+AGINTI_LOCALLLM_CODE_MODEL=localllm-code
 
 # Optional explicit hosted upgrades; never automatic LocalLLM fallbacks.
 DEEPSEEK_API_KEY=...

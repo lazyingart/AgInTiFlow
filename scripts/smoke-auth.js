@@ -4,26 +4,22 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { authProviderKeyHelp, authProviderKeyUrl, normalizeAuthProvider } from "../src/auth-onboarding.js";
-import { getProviderDefaults } from "../src/model-routing.js";
-import { maskProviderKey, providerKeyPreview, providerKeyStatus, setProviderKey } from "../src/project.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-auth-"));
-const envKeys = [
-  "DEEPSEEK_API_KEY",
-  "OPENAI_API_KEY",
-  "OPENROUTER_API_KEY",
-  "LLM_API_KEY",
-  "QWEN_API_KEY",
-  "VENICE_API_KEY",
-  "GRSAI",
-  "GRSAI_API_KEY",
-];
-const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
-const originalAgintiflowHome = process.env.AGINTIFLOW_HOME;
-for (const key of envKeys) delete process.env[key];
+const CONFIG_ENV_PATTERN = /^(?:AGENT|AGINTI|AGINTIFLOW|LOCALLLM|LOCAL_LLM|LLM|DEEPSEEK|OPENAI|OPENROUTER|QWEN|VENICE|GRSAI|BRAVE|ALLOW_|WRAPPER_|MAX_STEPS$|SANDBOX_MODE$|USE_DOCKER_SANDBOX$|PACKAGE_INSTALL_POLICY$|COMMAND_CWD$|PREFERRED_WRAPPER$)/u;
+for (const key of Object.keys(process.env)) {
+  if (CONFIG_ENV_PATTERN.test(key)) delete process.env[key];
+}
 process.env.AGINTIFLOW_HOME = path.join(tempRoot, ".agintiflow-home");
+const [authOnboarding, modelRouting, project] = await Promise.all([
+  import("../src/auth-onboarding.js"),
+  import("../src/model-routing.js"),
+  import("../src/project.js"),
+]);
+const { authProviderKeyHelp, authProviderKeyUrl, normalizeAuthProvider } = authOnboarding;
+const { getProviderDefaults } = modelRouting;
+const { loadProjectEnv, maskProviderKey, providerKeyPreview, providerKeyStatus, setProviderKey } = project;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -35,7 +31,12 @@ async function runCli(args, stdin = "") {
       cwd: tempRoot,
       stdio: ["pipe", "pipe", "pipe"],
       env: {
-        ...process.env,
+        PATH: process.env.PATH || "/usr/bin:/bin",
+        HOME: tempRoot,
+        USERPROFILE: tempRoot,
+        LANG: "C.UTF-8",
+        LC_ALL: "C.UTF-8",
+        AGINTIFLOW_HOME: process.env.AGINTIFLOW_HOME,
         AGINTIFLOW_RUNTIME_DIR: "",
       },
     });
@@ -89,7 +90,17 @@ try {
 
   const projectOnlyRoot = path.join(tempRoot, "project-only");
   await fs.mkdir(path.join(projectOnlyRoot, ".aginti"), { recursive: true });
-  await fs.writeFile(path.join(projectOnlyRoot, ".aginti", ".env"), 'OPENAI_API_KEY="project-only-openai-key"\n', "utf8");
+  await fs.writeFile(
+    path.join(projectOnlyRoot, ".aginti", ".env"),
+    ['OPENAI_API_KEY="project-only-openai-key"', 'AGINTI_LOCALLLM_CODE_MODEL="project-code-alias"', ""].join("\n"),
+    "utf8"
+  );
+  const projectOnlyEnv = loadProjectEnv(projectOnlyRoot);
+  assert(projectOnlyEnv.projectEnv, "project-only LocalLLM code model env was not parsed");
+  assert(
+    process.env.AGINTI_LOCALLLM_CODE_MODEL === "project-code-alias",
+    "AGINTI_LOCALLLM_CODE_MODEL was not loaded from the project env"
+  );
   let projectOnlyStatus = providerKeyStatus(projectOnlyRoot);
   assert(projectOnlyStatus.openai && projectOnlyStatus.projectEnv, "project-only key was not loaded");
   await fs.access(path.join(tempRoot, ".agintiflow-home", ".env"))
@@ -100,6 +111,7 @@ try {
       if (error?.code !== "ENOENT") throw error;
     });
   delete process.env.OPENAI_API_KEY;
+  delete process.env.AGINTI_LOCALLLM_CODE_MODEL;
 
   process.env.DEEPSEEK_API_KEY = "ambient-deepseek-key";
   process.env.OPENROUTER_API_KEY = "ambient-openrouter-key";
@@ -182,6 +194,7 @@ try {
           "openrouter-defaults",
           "venice-defaults",
           "project-key-not-auto-promoted",
+          "project-code-model-env",
           "ambient-key-discovery-is-read-only",
           "project-key-override",
           "qwen-key-status",
@@ -195,11 +208,8 @@ try {
     )
   );
 } finally {
-  for (const key of envKeys) {
-    if (originalEnv[key] === undefined) delete process.env[key];
-    else process.env[key] = originalEnv[key];
+  for (const key of Object.keys(process.env)) {
+    if (CONFIG_ENV_PATTERN.test(key)) delete process.env[key];
   }
-  if (originalAgintiflowHome === undefined) delete process.env.AGINTIFLOW_HOME;
-  else process.env.AGINTIFLOW_HOME = originalAgintiflowHome;
   await fs.rm(tempRoot, { recursive: true, force: true });
 }

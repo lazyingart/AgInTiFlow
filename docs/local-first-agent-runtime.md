@@ -30,6 +30,7 @@ health:          http://127.0.0.1:8008/healthz
 models:          authenticated GET /v1/models
 route lane:      localllm-fast
 main lane:       localllm-deep
+coding lane:     localllm-code (authenticated, implementation-only capability upgrade)
 maximum lane:    localllm-max
 vision:          localllm-vision-xl
 embedding:       localllm-embed (sibling-service alias; not an AgInTi text-routing tier)
@@ -39,7 +40,7 @@ The default bearer value used by the local deployment is an interoperability pla
 
 Readiness requires both `health.ok === true` and `health.ollama.ok === true`, followed by an authenticated `/v1/models` check that confirms the requested alias exists. Health alone is not sufficient.
 
-The installed local ladder is capability- and resource-aware. `localllm-fast` handles short routing and bounded work; substantive coding and agent tasks use the 30B-A3B Q4 `localllm-deep` lane. The 30B-A3B Q8 `localllm-max` lane remains explicitly selectable, but every new or resumed Max run performs a fresh pre-inference gate after authenticated alias discovery. It requires at least 24 GiB available host RAM, swap use no higher than 75%, and 40 GiB aggregate free NVIDIA memory (Q8 weights plus working reserve). Missing GPU telemetry fails closed. Automatic Max is off by default and requires `AGINTI_LOCALLLM_ALLOW_AUTO_MAX=true`; an eligible run confirms the configured Max alias and fresh headroom before upgrading the actual model client from Deep. If the optional upgrade cannot be proven safe, it continues on Deep rather than failing. The automatic Vision policy requires both a trusted image-input signal and confirmed model capability. The shipped CLI/web currently reach vision through the local `read_image` tool or explicit `localllm-vision-xl` selection; both paths readiness-check the selected alias, and prompt keywords alone never activate Vision XL.
+The installed local ladder is capability- and resource-aware. `localllm-fast` handles short routing and bounded work; substantive general agent tasks use the 30B-A3B Q4 `localllm-deep` lane. High-confidence implementation work begins on Deep and may upgrade to the independently configured `AGINTI_LOCALLLM_CODE_MODEL` alias only when the same bearer-authenticated `/v1/models` response reports it. Missing or unverified availability stays on Deep, never a hosted provider. The implementation classifier excludes writing, research, paper, book, novel, design, documentation, slides, education, and image profiles, and requires an implementation action rather than a bare code mention or explanation request. The effective selection and a secret-free candidate policy are durable: selected coding sessions resume exactly, while a Deep fallback may re-evaluate authenticated availability on a later resume. Manual models and explicit providers remain exact. The 30B-A3B Q8 `localllm-max` lane remains explicitly selectable, but every new or resumed Max run performs a fresh pre-inference gate after authenticated alias discovery. It requires at least 24 GiB available host RAM, swap use no higher than 75%, and 40 GiB aggregate free NVIDIA memory (Q8 weights plus working reserve). Missing GPU telemetry fails closed. Automatic Max is off by default and requires `AGINTI_LOCALLLM_ALLOW_AUTO_MAX=true`; an eligible non-code run confirms the configured Max alias and fresh headroom before upgrading the actual model client from Deep. If the optional upgrade cannot be proven safe, it continues on Deep rather than failing. The automatic Vision policy requires both a trusted image-input signal and confirmed model capability. The shipped CLI/web currently reach vision through the local `read_image` tool or explicit `localllm-vision-xl` selection; both paths readiness-check the selected alias, and prompt keywords alone never activate Vision XL.
 
 ## Provider-neutral capabilities
 
@@ -171,6 +172,7 @@ Offline deterministic tests run on every change:
 - timeout before output, cancellation, and no post-cancel dispatch;
 - context calculation includes tool schemas and output reserve;
 - no silent hosted fallback;
+- implementation-only coding alias selection requires authenticated exact availability, with Deep fallback and durable resume behavior;
 - session resume preserves provider, model, capability profile, and executed-tool ledger.
 
 Live compatibility tests are opt-in because they load local models:
@@ -180,6 +182,7 @@ Live compatibility tests are opt-in because they load local models:
 | `localllm-pocket` / 4B (direct sibling-service compatibility alias, not an automatic AgInTi tier) | direct answer, one-tool selection, malformed-output recovery, truthful blocker |
 | `localllm-fast` / 8B | focused code inspection/edit/test loop, cancellation, resumed turn |
 | `localllm-deep` / 30B-A3B Q4 | multi-step plan, repair after failed tool evidence, long-context compaction |
+| `localllm-code` / configured coding capability | repository implementation/tool loop, exact-alias readiness, Deep fallback, resumed selection |
 | `localllm-max` / 30B-A3B Q8 | explicit opt-in, resource preflight, highest-fidelity local code task |
 | `localllm-vision-xl` / 30B-A3B Q4 | attached-image understanding with no keyword-only activation |
 | DeepSeek/OpenAI | same fixtures, plus explicit escalation and stronger-model quality comparison |
