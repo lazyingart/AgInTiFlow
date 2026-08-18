@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.200",
+  "version": "0.20.201",
   "type": "module",
   "description": "AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-aware intelligence, software automation, and industrial workflows.",
   "license": "Apache-2.0",
@@ -92,6 +92,7 @@
     "scripts/smoke-model-roles.js",
     "scripts/smoke-platform.js",
     "scripts/smoke-perception-research.js",
+    "scripts/smoke-deep-research.js",
     "scripts/smoke-permission-modes.js",
     "scripts/smoke-public-research-wrapper.js",
     "scripts/smoke-safe-chat.js",
@@ -154,6 +155,7 @@
     "smoke:model-roles": "node scripts/smoke-model-roles.js",
     "smoke:platform": "node scripts/smoke-platform.js",
     "smoke:perception-research": "node scripts/smoke-perception-research.js",
+    "smoke:deep-research": "node scripts/smoke-deep-research.js",
     "smoke:permission-modes": "node scripts/smoke-permission-modes.js",
     "smoke:public-research": "node scripts/smoke-public-research-wrapper.js",
     "smoke:safe-chat": "node scripts/smoke-safe-chat.js",
@@ -175,7 +177,7 @@
     "storage:migrate": "node bin/aginti-cli.js storage migrate",
     "publish:env": "node scripts/npm-publish-from-env.js publish --access public",
     "publish:env:whoami": "node scripts/npm-publish-from-env.js whoami",
-    "test": "npm run check && npm run smoke:localllm-provider && npm run smoke:localllm-model-tiers && npm run smoke:localllm-auto-max && npm run smoke:local-resource-policy && npm run smoke:context-budget-recovery && npm run smoke:session-runtime && npm run smoke:runtime-core && npm run smoke:progressive-tools && npm run smoke:truthful-completion && npm run smoke:writing-specialist-routing && npm run eval:local-first-agent && npm run eval:provider-attribution && npm run smoke:runtime-compat && npm run smoke:autoupdate && npm run smoke:web-api && npm run smoke:math-rendering && npm run smoke:web-ui && npm run smoke:web-autostart && npm run smoke:webapp-command && npm run smoke:web-port-fallback && npm run smoke:docker-command && npm run smoke:coding-tools && npm run smoke:dynamic-step-budget && npm run smoke:execution-policy && npm run smoke:aaps-adapter && npm run smoke:auxiliary-tools && npm run smoke:perception-research && npm run smoke:public-research && npm run smoke:safe-chat && npm run smoke:auth && npm run smoke:agentlink && npm run smoke:canvas-artifacts && npm run smoke:capabilities && npm run smoke:mcp && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:permission-modes && npm run smoke:skills && npm run smoke:skillmesh && npm run smoke:tmux-tools && npm run smoke:long-jobs && npm run smoke:run-stdin && npm run smoke:cli-chat && npm run smoke:inbox",
+    "test": "npm run check && npm run smoke:localllm-provider && npm run smoke:localllm-model-tiers && npm run smoke:localllm-auto-max && npm run smoke:local-resource-policy && npm run smoke:context-budget-recovery && npm run smoke:session-runtime && npm run smoke:runtime-core && npm run smoke:progressive-tools && npm run smoke:truthful-completion && npm run smoke:writing-specialist-routing && npm run eval:local-first-agent && npm run eval:provider-attribution && npm run smoke:runtime-compat && npm run smoke:autoupdate && npm run smoke:web-api && npm run smoke:math-rendering && npm run smoke:web-ui && npm run smoke:web-autostart && npm run smoke:webapp-command && npm run smoke:web-port-fallback && npm run smoke:docker-command && npm run smoke:coding-tools && npm run smoke:dynamic-step-budget && npm run smoke:execution-policy && npm run smoke:aaps-adapter && npm run smoke:auxiliary-tools && npm run smoke:perception-research && npm run smoke:deep-research && npm run smoke:public-research && npm run smoke:safe-chat && npm run smoke:auth && npm run smoke:agentlink && npm run smoke:canvas-artifacts && npm run smoke:capabilities && npm run smoke:mcp && npm run smoke:model-roles && npm run smoke:platform && npm run smoke:permission-modes && npm run smoke:skills && npm run smoke:skillmesh && npm run smoke:tmux-tools && npm run smoke:long-jobs && npm run smoke:run-stdin && npm run smoke:cli-chat && npm run smoke:inbox",
     "pack:dry-run": "npm pack --dry-run",
     "smoke:capabilities": "node scripts/smoke-capabilities.js"
   },

@@ -10,7 +10,7 @@ export const TASK_PROFILES = {
     id: "chatops",
     label: "Chat transport",
     prompt:
-      "Act as a source-isolated backend for another application's chat transport. The current request is the sole authority. Answer ordinary conversation directly and use tools only when the request actually requires evidence or an artifact. Never borrow an unrelated old task, file, session result, or workspace artifact. Never expose runtime metadata, plans, validators, supervision contracts, tool logs, model names, sandbox details, or internal failure reports as the answer. If the caller requires JSON or a named message protocol, return exactly that shape. For research, open traceable primary or authoritative sources, distinguish evidence from inference, and state uncertainty. For artifact work, write only requested outputs in the current workspace and verify them before returning their exact paths. If a permission, sandbox, login, source, or tool boundary prevents completion, return one concise task-specific limitation and safe next action without pretending the task succeeded.",
+      "Act as a source-isolated backend for another application's chat transport. The current request is the sole authority. Answer ordinary conversation directly and use tools only when the request actually requires evidence or an artifact. Never borrow an unrelated old task, file, session result, or workspace artifact. Never expose runtime metadata, plans, validators, supervision contracts, tool logs, model names, sandbox details, or internal failure reports as the answer. If the caller requires JSON or a named message protocol, return exactly that shape. For research, use quick search for simple facts and deep_research only for genuinely multi-source questions; open traceable primary or authoritative sources, distinguish evidence from inference, and state uncertainty. For artifact work, write only requested outputs in the current workspace and verify them before returning their exact paths. If a permission, sandbox, login, source, or tool boundary prevents completion, return one concise task-specific limitation and safe next action without pretending the task succeeded.",
     tools: ["web_search", "files", "shell", "canvas", "inspect_project"],
   },
   code: {
@@ -45,7 +45,7 @@ export const TASK_PROFILES = {
     id: "research",
     label: "Research",
     prompt:
-      "Bias toward careful research while remaining able to write, code, plot, or format results. Clarify the research question, gather current sources when needed with web_search, distinguish evidence from inference, save durable notes or summaries with citations, and surface important artifacts through canvas.",
+      "Bias toward careful research while remaining able to write, code, plot, or format results. Clarify the question and choose the smallest sufficient route: web_search for discovery, read_web_page for exact source text, web_research for a small source unit, and deep_research for multi-source reviews or contested questions. Prefer primary evidence, preserve dates/disagreement/negative findings, distinguish evidence from inference, reject invented citations, save durable reports, and surface important artifacts through canvas.",
     tools: ["web_search", "files", "canvas", "shell"],
   },
   paper: {

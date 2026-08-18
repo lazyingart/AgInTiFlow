@@ -54,7 +54,7 @@ Most agent tools are either a chat box with hidden state or an expensive one-mod
 | Disciplined by default | `AGINTI.md` starts with a behavior contract: surface ambiguity, keep edits surgical, avoid speculative complexity, verify outcomes, and respect permission blockers. |
 | Role-based models | Route, main, spare, wrapper, and auxiliary image roles are separate. LocalLLM supplies the default fast/deep lanes; DeepSeek, OpenAI, OpenRouter, Qwen, and Venice are optional explicit routes. |
 | Writing without agent noise | `writing_specialist` drafts novels, books, scripts, essays, and paper prose in an isolated writing-only context on the active provider. Cross-provider writing requires explicit permission; ambient keys and model arguments cannot silently switch a LocalLLM session to a hosted model. The main agent then handles files, formatting, citations, checks, and artifacts. |
-| Visual and web evidence | `read_image` uses the loopback LocalLLM vision model in local sessions and never falls through to a hosted provider. `web_research` saves sourced snippet artifacts for local synthesis. OpenAI perception/research and wrapper second opinions require explicit provider/tool permission. |
+| Visual and web evidence | `read_image` keeps local pixels local. Fast search has provider fallback; exact page reads preserve hashes and metadata; `deep_research` adds resumable planning, parallel retrieval, exact-quote evidence, gap filling, synthesis, and citation auditing on the active provider. |
 | Scouts before big work | Parallel scouts can cheaply map architecture, tests, risks, symbols, and integration points before the main executor edits anything. |
 | SCS by default | Student-Committee-Supervisor mode adds a typed gate: committee drafts, student approves/monitors, supervisor executes. Use `/scs off` or `--no-scs` only when speed matters more than validation. |
 | AAPS for large workflows | AAPS describes top-down agentic pipeline scripts; AgInTiFlow can act as the interactive backend that validates, compiles, and executes those workflows. |
@@ -174,6 +174,7 @@ aginti --language de
 | Generate images | `/auxiliary image`, then ask for an image |
 | Read screenshots/images | `/image-read path/to/screenshot.png "what changed?"` |
 | Research with sources | `/web-research latest Android Gradle plugin official docs` |
+| Run deep research | `/deep-research standard compare current research-agent citation methods` |
 | Enable research wrapper | `/research-wrapper gpt-5.4-mini medium` |
 | Resume current project | `aginti resume` (`1` is newest/latest; Space shows more) |
 | Browse all sessions | `aginti resume --all-sessions` |
@@ -256,7 +257,7 @@ The website keeps the visual walkthrough in a carousel so this README can stay f
 | Writing specialist | A dedicated writing-only LLM call for prose, chapters, scripts, books, essays, research-paper sections, and revisions, with formatter handoff notes for Markdown/LaTeX/Final Draft. |
 | Patch workflow | Codex-style patch envelopes, unified diffs, exact replacements, hashes, compact diffs, and path guardrails. |
 | Parallel scouts | Optional scout calls for architecture, implementation, review, tests, git flow, research, symbol tracing, and dependency risk. |
-| Image reading and web research | LocalLLM sessions send pixels only to the loopback vision endpoint. `web_research` preserves source lists for the active model to synthesize. Hosted OpenAI and wrapper paths are explicit opt-ins, never credential-driven fallbacks. |
+| Image reading and web research | LocalLLM sessions keep pixels on the loopback vision endpoint. `web_search`, `read_web_page`, and `deep_research` provide fast discovery, exact source extraction, resumable evidence gathering, and claim-level citation audits. Hosted paths remain explicit opt-ins. |
 | SCS mode | Default Student-Committee-Supervisor quality gate with independent planning, execution, and validation roles. |
 | AAPS adapter | Optional `@lazyingart/aaps` integration for `.aaps` workflow init, validate, parse, compile, dry-run, and run commands. |
 | AgentLink | Local-first collaboration between AgInTi sessions through boards, typed messages, action contracts, safe summaries, and evidence bundles. |
@@ -404,6 +405,7 @@ More detail:
 - [docs/model-selection.md](docs/model-selection.md)
 - [docs/auxiliary-image-generation.md](docs/auxiliary-image-generation.md)
 - [docs/perception-and-web-research.md](docs/perception-and-web-research.md)
+- [docs/deep-research-engine.md](docs/deep-research-engine.md)
 - [docs/cli-i18n.md](docs/cli-i18n.md)
 - [docs/skillmesh.md](docs/skillmesh.md)
 
@@ -420,6 +422,7 @@ More detail:
 | Runtime modes and autonomy | [docs/runtime-modes-and-autonomy.md](docs/runtime-modes-and-autonomy.md) |
 | Skills and tools | [docs/skills-and-tools.md](docs/skills-and-tools.md) |
 | Image reading and web research | [docs/perception-and-web-research.md](docs/perception-and-web-research.md) |
+| Deep research engine | [docs/deep-research-engine.md](docs/deep-research-engine.md) |
 | Server-owned text-only fallback | [docs/safe-chat.md](docs/safe-chat.md) |
 | Skill Mesh | [docs/skillmesh.md](docs/skillmesh.md) |
 | Housekeeping logs | [docs/housekeeping.md](docs/housekeeping.md) |

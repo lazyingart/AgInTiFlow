@@ -115,6 +115,7 @@ const SLASH_COMMANDS = [
   "/webapp",
   "/web",
   "/web-research",
+  "/deep-research",
   "/image-read",
   "/research-wrapper",
   "/scs",
@@ -1125,6 +1126,7 @@ function printHelp() {
       `  ${command("/webapp [port|start|stop|restart|reuse|enable|disable|status]", "Start, reuse, stop, restart, or configure the local webapp.", "helpWebapp")}`,
       `  ${command("/web-search on|off", "Enable or disable the web_search tool.", "helpWebSearch")}`,
       `  ${command("/web-research <query>", "Run a sourced web_research turn with persisted evidence.", "helpWebSearch")}`,
+      `  ${command("/deep-research [quick|standard|deep] <query>", "Run resumable multi-source research with citation auditing.", "helpWebSearch")}`,
       `  ${command("/image-read [--codex|--openai] <path> [question]", "Run read_image on a workspace screenshot/image.", "helpWebSearch")}`,
       `  ${command("/research-wrapper [on|off|model reasoning]", "Configure strict JSON wrapper research, default gpt-5.4-mini medium.", "helpWrapper")}`,
       `  ${command("/scs [on|auto|off|status]", "Toggle Student-Committee-Supervisor gated execution.", "helpEnableScs")}`,
@@ -2637,7 +2639,7 @@ function toolStatusDetails(data = {}) {
   if ((tool === "send_to_canvas" || tool === "create_artifact") && (args.title || args.kind)) {
     return `${tool}: ${compactLine([args.title || "canvas artifact", args.kind || "", args.selected ? "selected" : ""].filter(Boolean).join(" · "), 72)}`;
   }
-  if ((tool === "open_url" || tool === "web_research" || tool === "web_search") && (args.url || args.query || args.q)) {
+  if (["open_url", "web_search", "read_web_page", "web_research", "deep_research"].includes(tool) && (args.url || args.query || args.q)) {
     return `${tool}: ${compactLine(args.url || args.query || args.q, 58)}`;
   }
   return tool;
@@ -4097,6 +4099,37 @@ async function handleCommand(line, state, packageDir) {
           "Use the web_research tool for this query. Prefer mode=snippets unless hosted OpenAI web research is explicitly needed.",
           `Query: ${value}`,
           "Return a concise answer with source URLs and the web_research artifact path.",
+        ].join("\n"),
+        state,
+        packageDir
+      );
+    } finally {
+      state.taskProfile = previousProfile;
+      state.maxSteps = previousMaxSteps;
+    }
+    return true;
+  }
+  if (command === "deep-research") {
+    const parts = value.split(/\s+/).filter(Boolean);
+    const requestedDepth = ["quick", "standard", "deep"].includes(String(parts[0] || "").toLowerCase())
+      ? String(parts.shift()).toLowerCase()
+      : "standard";
+    const query = parts.join(" ").trim();
+    if (!query) {
+      printAgentMessage("Usage: /deep-research [quick|standard|deep] <query>");
+      return true;
+    }
+    const previousProfile = state.taskProfile;
+    const previousMaxSteps = state.maxSteps;
+    try {
+      state.taskProfile = "research";
+      state.maxSteps = Math.max(state.maxSteps, requestedDepth === "deep" ? 30 : 24);
+      await runPrompt(
+        [
+          `Use deep_research depth=${requestedDepth} and sourcePolicy=primary for this question.`,
+          `Query: ${query}`,
+          "Use the active provider. Preserve the research ID, coverage/citation audit, JSON artifact, and readable Markdown report.",
+          "Return the concise substantive answer with citations and report path, not internal execution logs.",
         ].join("\n"),
         state,
         packageDir

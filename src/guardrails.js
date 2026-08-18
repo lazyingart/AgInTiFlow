@@ -146,6 +146,23 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
     return { allowed: true };
   }
 
+  if (toolName === "read_web_page") {
+    if (config.allowWebSearch === false) {
+      return { allowed: false, reason: "Web page reading is disabled because web search is disabled for this run.", category: "web-search" };
+    }
+    const url = String(args.url || "").trim();
+    if (!/^https?:\/\//i.test(url)) {
+      return { allowed: false, reason: "A public http/https source URL is required.", category: "web-search" };
+    }
+    if (!isDomainAllowed(url, Array.isArray(args.domains) && args.domains.length ? args.domains : config.allowedDomains)) {
+      return { allowed: false, reason: `Domain is outside the research allowlist: ${url}`, category: "web-search" };
+    }
+    if (Number(args.maxChars) > 40_000 || Number(args.maxPassages) > 16) {
+      return { allowed: false, reason: "Requested page extraction exceeds the bounded research limits.", category: "web-search" };
+    }
+    return { allowed: true };
+  }
+
   if (toolName === "web_research") {
     if (config.allowWebSearch === false) {
       return { allowed: false, reason: "Web research is disabled because web search is disabled for this run.", category: "web-search" };
@@ -166,6 +183,25 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
         reason: "Hosted OpenAI web research is disabled for this provider boundary. Select OpenAI as the active provider or explicitly enable allowHostedWebResearch.",
         category: "web-search",
       };
+    }
+    return { allowed: true };
+  }
+
+  if (toolName === "deep_research") {
+    if (config.allowWebSearch === false) {
+      return { allowed: false, reason: "Deep research is disabled because web search is disabled for this run.", category: "web-search" };
+    }
+    const query = String(args.query || args.question || "").trim();
+    if (!query) return { allowed: false, reason: "Research query is required.", category: "web-search" };
+    if (Buffer.byteLength(query, "utf8") > 4000) {
+      return { allowed: false, reason: "Research query is too large.", category: "web-search" };
+    }
+    const depth = String(args.depth || "standard").trim().toLowerCase();
+    if (!["quick", "standard", "deep"].includes(depth)) {
+      return { allowed: false, reason: `Unknown deep research depth: ${depth}`, category: "web-search" };
+    }
+    if (Number(args.maxQueries) > 12 || Number(args.maxSources) > 24) {
+      return { allowed: false, reason: "Deep research request exceeds the bounded query/source budget.", category: "web-search" };
     }
     return { allowed: true };
   }

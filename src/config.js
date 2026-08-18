@@ -431,6 +431,10 @@ export function resolveRuntimeConfig(args, overrides = {}) {
       false
     ),
     allowWebSearch: parseBoolean(overrides.allowWebSearch ?? args.allowWebSearch ?? process.env.ALLOW_WEB_SEARCH, true),
+    webSearchProvider: String(
+      overrides.webSearchProvider ?? args.webSearchProvider ?? process.env.AGINTI_WEB_SEARCH_PROVIDER ?? "auto"
+    ).trim().toLowerCase(),
+    braveSearchApiKey: String(overrides.braveSearchApiKey ?? process.env.BRAVE_SEARCH_API_KEY ?? "").trim(),
     allowMcpTools: parseBoolean(overrides.allowMcpTools ?? args.allowMcpTools ?? process.env.AGINTI_ALLOW_MCP_TOOLS, true),
     allowParallelScouts: scsActive && !explicitParallelScouts ? false : allowParallelScouts,
     parallelScoutCount: clampNumber(

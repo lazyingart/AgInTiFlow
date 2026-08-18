@@ -41,7 +41,9 @@ const COMPACT_TOOL_BUNDLES = Object.freeze({
   ]),
   research: Object.freeze([
     "web_search",
+    "read_web_page",
     "web_research",
+    "deep_research",
     "open_url",
     "read_file",
     "write_file",
@@ -134,17 +136,17 @@ const COMPACT_TOOL_BUNDLES = Object.freeze({
 const MIXED_DISCOVERY_BUNDLES = new Set(["mcp", "research", "agentlink"]);
 const DISCOVERY_STARTER_TOOL_NAMES = Object.freeze({
   mcp: Object.freeze(["mcp_list_servers", "mcp_list_tools", "mcp_call_tool"]),
-  research: Object.freeze(["web_search", "web_research"]),
+  research: Object.freeze(["web_search", "web_research", "deep_research"]),
   agentlink: Object.freeze(["agentlink_status", "agentlink_list_peers", "agentlink_create_board"]),
 });
 const DISCOVERY_FOLLOWUP_TOOL_NAMES = Object.freeze({
   mcp: Object.freeze(["mcp_list_resources", "mcp_read_resource"]),
-  research: Object.freeze(["open_url"]),
+  research: Object.freeze(["read_web_page", "open_url"]),
   agentlink: Object.freeze(["agentlink_get_board", "agentlink_send_message"]),
 });
 const DISCOVERY_CONTINUATION_TOOL_NAMES = Object.freeze({
   mcp: Object.freeze(["mcp_list_tools", "mcp_call_tool", "mcp_list_resources", "mcp_read_resource"]),
-  research: Object.freeze(["web_search", "web_research", "open_url"]),
+  research: Object.freeze(["web_search", "read_web_page", "web_research", "deep_research", "open_url"]),
   agentlink: Object.freeze([
     "agentlink_get_board",
     "agentlink_send_message",
@@ -154,7 +156,7 @@ const DISCOVERY_CONTINUATION_TOOL_NAMES = Object.freeze({
 });
 const DISCOVERY_COMPLETION_TOOL_NAMES = Object.freeze({
   mcp: Object.freeze(COMPACT_TOOL_BUNDLES.mcp.filter((name) => name !== "finish")),
-  research: Object.freeze(["web_search", "web_research", "open_url"]),
+  research: Object.freeze(["web_search", "read_web_page", "web_research", "deep_research", "open_url"]),
   agentlink: Object.freeze(COMPACT_TOOL_BUNDLES.agentlink.filter((name) => name !== "finish")),
 });
 const IMPLEMENTATION_CRITICAL_TOOL_NAMES = Object.freeze([
@@ -259,7 +261,7 @@ const SHELL_TOOL_NAMES = new Set([
   "run_command",
 ]);
 const BROWSER_TOOL_NAMES = new Set(["open_url", "click", "type", "scroll", "press", "back", "wait"]);
-const WEB_SEARCH_TOOL_NAMES = new Set(["web_search", "web_research"]);
+const WEB_SEARCH_TOOL_NAMES = new Set(["web_search", "read_web_page", "web_research", "deep_research"]);
 const WRAPPER_TOOL_NAMES = new Set(["delegate_agent", "research_wrapper"]);
 const AUXILIARY_TOOL_NAMES = new Set(["generate_image"]);
 const IMAGE_TOOL_NAMES = new Set(["read_image", "generate_image"]);

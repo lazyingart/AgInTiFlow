@@ -115,7 +115,9 @@ const knownNames = [
   "wait",
   "writing_specialist",
   "web_search",
+  "read_web_page",
   "web_research",
+  "deep_research",
   "mcp_list_servers",
   "mcp_list_tools",
   "mcp_call_tool",
@@ -178,7 +180,9 @@ const researchTools = selectProgressiveTools(allTools, {
   profile: "research",
 });
 assert(names(researchTools).includes("web_search"), "research bundle omitted web_search");
+assert(names(researchTools).includes("read_web_page"), "research bundle omitted read_web_page");
 assert(names(researchTools).includes("web_research"), "research bundle omitted web_research");
+assert(names(researchTools).includes("deep_research"), "research bundle omitted deep_research");
 assert(!names(researchTools).includes("click"), "research bundle exposed unrelated browser interaction tools");
 
 const writingTools = selectProgressiveTools(allTools, {
@@ -659,7 +663,9 @@ for (const disabledName of [
   "read_file",
   "read_image",
   "web_search",
+  "read_web_page",
   "web_research",
+  "deep_research",
   "mcp_call_tool",
   "delegate_agent",
   "research_wrapper",

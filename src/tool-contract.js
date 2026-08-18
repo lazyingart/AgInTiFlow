@@ -10,6 +10,7 @@ const SAFE_SEQUENTIAL_READ_TOOLS = new Set([
   "search_files",
   "read_image",
   "web_search",
+  "read_web_page",
   "web_research",
   "long_job_status",
   "tmux_list_sessions",
