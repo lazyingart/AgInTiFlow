@@ -221,6 +221,8 @@ const CLI_FLAG_OPTIONS = new Set([
   "--sandbox-status",
   "--sandbox-preflight",
   "--scs",
+  "--stdin",
+  "--json",
 ]);
 
 function collectCliOption(argv, index) {
@@ -302,11 +304,13 @@ export function splitResumeCommandArgv(argv = []) {
 }
 
 export function parseResumeCommandArgs(resumeArgv = [], leadingOptionArgv = []) {
-  const optionArgv = [...leadingOptionArgv];
+  const optionArgv = leadingOptionArgv.filter((arg) => !["--stdin", "--json"].includes(arg));
   const positional = [];
   const promptParts = [];
   const unknownOptions = [];
   let allSessions = false;
+  let stdin = leadingOptionArgv.includes("--stdin");
+  let json = leadingOptionArgv.includes("--json");
   let promptMode = false;
 
   for (let index = 0; index < resumeArgv.length;) {
@@ -323,6 +327,12 @@ export function parseResumeCommandArgs(resumeArgv = [], leadingOptionArgv = []) 
     }
     if (arg === "--all-sessions") {
       allSessions = true;
+      index += 1;
+      continue;
+    }
+    if (arg === "--stdin" || arg === "--json") {
+      if (arg === "--stdin") stdin = true;
+      if (arg === "--json") json = true;
       index += 1;
       continue;
     }
@@ -344,11 +354,53 @@ export function parseResumeCommandArgs(resumeArgv = [], leadingOptionArgv = []) 
 
   return {
     allSessions,
+    stdin,
+    json,
     optionArgv,
     sessionId: positional[0] || "",
     prompt: promptParts.join(" ").trim(),
     unknownOptions,
   };
+}
+
+export function machineRunPayload(run, fallbackSessionId = "", metadata = {}) {
+  const result = String(run?.result || "").trim();
+  const stopped = Boolean(run?.stopped);
+  const failed = Boolean(run?.failed) || stopped;
+  return {
+    ok: Boolean(result) && !failed,
+    sessionId: String(run?.sessionId || fallbackSessionId || ""),
+    provider: String(metadata.provider || run?.provider || ""),
+    model: String(metadata.model || run?.model || ""),
+    resumed: Boolean(metadata.resumed ?? run?.resumed),
+    goalRevision: Number(run?.goalRevision || 0),
+    goalStatus: String(run?.goalStatus || ""),
+    result,
+    stopped,
+    failed,
+    reason: String(run?.reason || (result ? "" : "empty_result")),
+  };
+}
+
+function printMachineRunResult(run, fallbackSessionId = "", metadata = {}) {
+  const payload = machineRunPayload(run, fallbackSessionId, metadata);
+  console.log(JSON.stringify(payload));
+  if (!payload.ok) process.exitCode = 1;
+  return payload;
+}
+
+function printMachineRunFailure(error, sessionId = "", metadata = {}) {
+  return printMachineRunResult(
+    {
+      sessionId,
+      result: "",
+      stopped: true,
+      failed: true,
+      reason: error instanceof Error ? error.message : String(error),
+    },
+    sessionId,
+    metadata
+  );
 }
 
 function cliOptionNames(optionArgv = []) {
@@ -1833,7 +1885,10 @@ async function handleSessionsCommand(argv) {
     }
     for (const session of sessions) {
       const goal = session.goal ? ` ${session.goal.slice(0, 90)}` : "";
-      console.log(`${session.sessionId} ${session.provider}/${session.model} ${session.updatedAt}${goal}`);
+      const goalState = session.goalStatus
+        ? ` goal=${session.goalStatus}@r${session.goalRevision || 0}`
+        : "";
+      console.log(`${session.sessionId} ${session.provider}/${session.model} ${session.updatedAt}${goalState}${goal}`);
     }
     return;
   }
@@ -2130,7 +2185,8 @@ async function handleStorageCommand(argv) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  const machineRunRequested = argv.includes("run") && argv.includes("--json");
+  const machineRunRequested =
+    argv.includes("--json") && (argv.includes("run") || argv.includes("resume"));
   if (machineRunRequested && !argv.includes("--no-auto-update")) {
     argv = [...argv, "--no-auto-update"];
   }
@@ -2434,53 +2490,53 @@ export async function main(argv = process.argv.slice(2)) {
         packageDir,
         ...(jsonFlag ? { onConsole: () => {} } : {}),
       });
-      if (jsonFlag && !config.apiKey) {
-        throw new Error(`Missing API key for provider "${config.provider}".`);
-      }
       const run = await runAgent(config);
       if (jsonFlag) {
-        const result = String(run?.result || "").trim();
-        const failed = Boolean(run?.failed) || (Boolean(run?.stopped) && !result);
-        console.log(
-          JSON.stringify({
-            ok: Boolean(result) && !failed,
-            sessionId: String(run?.sessionId || ""),
-            result,
-            stopped: Boolean(run?.stopped),
-            failed,
-            reason: String(run?.reason || (result ? "" : "empty_result")),
-          })
-        );
-        if (failed || !result) process.exitCode = 1;
+        printMachineRunResult(run, runArgs.sessionId, {
+          provider: config.provider,
+          model: config.model,
+          resumed: false,
+        });
       }
     } catch (error) {
       if (!jsonFlag) throw error;
-      console.log(
-        JSON.stringify({
-          ok: false,
-          sessionId: "",
-          result: "",
-          stopped: true,
-          failed: true,
-          reason: error instanceof Error ? error.message : String(error),
-        })
-      );
-      process.exitCode = 1;
+      printMachineRunFailure(error, runArgs.sessionId, {
+        provider: runArgs.provider,
+        model: runArgs.model,
+        resumed: false,
+      });
     }
     return;
   }
 
   if (resumeCommand) {
     const resumeOptions = parseResumeCommandArgs(resumeCommand.resumeArgv, resumeCommand.leadingOptionArgv);
+    const jsonFlag = Boolean(resumeOptions.json);
     if (resumeOptions.unknownOptions?.length) {
+      if (jsonFlag) {
+        printMachineRunFailure(
+          new Error(`Unknown CLI option(s): ${resumeOptions.unknownOptions.join(", ")}`),
+          resumeOptions.sessionId
+        );
+        return;
+      }
       printUnknownCliOptions(resumeOptions.unknownOptions);
       process.exit(1);
     }
     let sessionId = resumeOptions.sessionId;
-    const prompt = resumeOptions.prompt;
+    let prompt = resumeOptions.prompt;
+    if (resumeOptions.stdin) {
+      prompt = await readStdin();
+    } else if (!prompt && jsonFlag && !process.stdin.isTTY) {
+      prompt = await readStdin();
+    }
     try {
       sessionId = await resolveResumeSessionId(sessionId, { allSessions: resumeOptions.allSessions });
     } catch (error) {
+      if (jsonFlag) {
+        printMachineRunFailure(error, sessionId);
+        return;
+      }
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     }
@@ -2491,6 +2547,10 @@ export async function main(argv = process.argv.slice(2)) {
     try {
       preparedRuntime = await prepareResumeRuntime(sessionId, parsedResumeArgs, resumeOptions.optionArgv);
     } catch (error) {
+      if (jsonFlag) {
+        printMachineRunFailure(error, sessionId);
+        return;
+      }
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     }
@@ -2504,6 +2564,10 @@ export async function main(argv = process.argv.slice(2)) {
       expectedRuntimeRevision: preparedRuntime.expectedRuntimeRevision,
     });
     if (!prompt) {
+      if (jsonFlag) {
+        printMachineRunFailure(new Error("empty_prompt"), sessionId);
+        return;
+      }
       const webLaunch = await maybeEnsureDefaultWebApp(safeResumeArgs, { commandCwd });
       await startInteractiveCli(safeResumeArgs, {
         packageDir,
@@ -2514,12 +2578,31 @@ export async function main(argv = process.argv.slice(2)) {
       return;
     }
     const resumeArgs = { ...safeResumeArgs, goal: prompt };
-    if (!(await ensureDeepSeekKeyForOneShot(resumeArgs))) process.exit(1);
-    await maybeEnsureDefaultWebApp(resumeArgs, { commandCwd });
-    const config = loadConfig(resumeArgs, { packageDir });
-    config.expectedRuntimeRevision = preparedRuntime.expectedRuntimeRevision;
-    if (preparedRuntime.runtimePatch) config.runtimePatch = preparedRuntime.runtimePatch;
-    await runAgent(config);
+    if (!jsonFlag && !(await ensureDeepSeekKeyForOneShot(resumeArgs))) process.exit(1);
+    if (!jsonFlag) await maybeEnsureDefaultWebApp(resumeArgs, { commandCwd });
+    try {
+      const config = loadConfig(resumeArgs, {
+        packageDir,
+        ...(jsonFlag ? { onConsole: () => {} } : {}),
+      });
+      config.expectedRuntimeRevision = preparedRuntime.expectedRuntimeRevision;
+      if (preparedRuntime.runtimePatch) config.runtimePatch = preparedRuntime.runtimePatch;
+      const run = await runAgent(config);
+      if (jsonFlag) {
+        printMachineRunResult(run, sessionId, {
+          provider: config.provider,
+          model: config.model,
+          resumed: true,
+        });
+      }
+    } catch (error) {
+      if (!jsonFlag) throw error;
+      printMachineRunFailure(error, sessionId, {
+        provider: resumeArgs.provider,
+        model: resumeArgs.model,
+        resumed: true,
+      });
+    }
     return;
   }
 

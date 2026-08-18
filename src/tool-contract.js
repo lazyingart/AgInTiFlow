@@ -3,8 +3,31 @@ const contractMarker = Symbol("aginti.tool-contract");
 const trustedMockDryRunMarker = Symbol("aginti.tool-contract.trusted-mock-dry-run");
 const TRUSTED_MOCK_DRY_RUN_TOOLS = new Set(["generate_image", "read_image"]);
 
+const SAFE_SEQUENTIAL_READ_TOOLS = new Set([
+  "inspect_project",
+  "list_files",
+  "read_file",
+  "search_files",
+  "read_image",
+  "web_search",
+  "web_research",
+  "long_job_status",
+  "tmux_list_sessions",
+  "tmux_capture_pane",
+  "mcp_list_servers",
+  "mcp_list_tools",
+  "mcp_list_resources",
+  "mcp_read_resource",
+  "mcp_list_prompts",
+  "mcp_get_prompt",
+  "agentlink_status",
+  "agentlink_list_peers",
+  "agentlink_get_board",
+]);
+
 const MAX_VALIDATION_ERRORS = 8;
 const MAX_VALIDATION_NODES = 50_000;
+const MAX_SAFE_SEQUENTIAL_READ_CALLS = 4;
 
 function cloneValue(value) {
   return structuredClone(value);
@@ -152,7 +175,7 @@ function batchReason(code) {
     case "TOOL_CALL_BATCH_INVALID":
       return "The model returned an invalid tool-call batch and none of the calls were dispatched.";
     case "TOO_MANY_TOOL_CALLS":
-      return "The model returned more than one tool call even though parallel tool calls are disabled; none were dispatched.";
+      return "The model returned more tool calls than the current safety policy permits; none were dispatched.";
     case "TOOL_CALL_ID_EMPTY":
     case "TOOL_CALL_ID_DUPLICATE":
       return "The model returned invalid tool-call identifiers and none of the calls were dispatched.";
@@ -193,6 +216,19 @@ export function toolContractFromResponse(response) {
   return responseContracts.get(response) || null;
 }
 
+export function safeSequentialToolBatchLimit(toolCalls) {
+  const calls = Array.isArray(toolCalls) ? toolCalls : [];
+  if (calls.length <= 1) return 1;
+  const names = calls.map((call) => (
+    call?.type === "function" && typeof call?.function?.name === "string"
+      ? call.function.name
+      : ""
+  ));
+  return names.length === calls.length && names.every((name) => SAFE_SEQUENTIAL_READ_TOOLS.has(name))
+    ? MAX_SAFE_SEQUENTIAL_READ_CALLS
+    : 1;
+}
+
 export function validateToolCallBatch(toolCalls, contract, { maxToolCalls = 1 } = {}) {
   const errors = [];
   const addError = (code, callIndex, message) => {
@@ -207,8 +243,13 @@ export function validateToolCallBatch(toolCalls, contract, { maxToolCalls = 1 } 
   }
 
   const calls = Array.isArray(toolCalls) ? toolCalls : [];
-  if (calls.length > Math.max(1, Number(maxToolCalls) || 1)) {
-    addError("TOO_MANY_TOOL_CALLS", -1, "Only one tool call is permitted per model turn.");
+  const boundedMaxToolCalls = Math.max(1, Number(maxToolCalls) || 1);
+  if (calls.length > boundedMaxToolCalls) {
+    addError(
+      "TOO_MANY_TOOL_CALLS",
+      -1,
+      `At most ${boundedMaxToolCalls} tool call${boundedMaxToolCalls === 1 ? " is" : "s are"} permitted per model turn.`
+    );
   }
 
   const ids = new Set();

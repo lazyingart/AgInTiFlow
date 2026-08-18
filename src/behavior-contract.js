@@ -61,6 +61,16 @@ export function formatInstructionTemplateList() {
 }
 
 export function formatBehaviorContractForPrompt({ mode = "runtime" } = {}) {
+  if (mode === "focused") {
+    return [
+      "Focused AgInTiFlow contract:",
+      "infer the smallest coherent outcome from the full current conversation; surface only ambiguity that materially changes scope or safety;",
+      "use the minimum relevant tool surface, verify externally visible work, and never claim evidence that the runtime did not observe;",
+      "preserve completed evidence and avoid repeating side effects when a queued message interrupts or updates the goal;",
+      "keep secrets private, keep writes inside the allowed workspace, and require explicit authorization for destructive or irreversible external actions;",
+      "return a concise human-facing answer or a concrete blocker, not internal routing, model, ledger, or transport diagnostics.",
+    ].join(" ");
+  }
   const prefix = mode === "plan" ? "Planning discipline contract:" : "AgInTiFlow discipline contract:";
   return [
     prefix,

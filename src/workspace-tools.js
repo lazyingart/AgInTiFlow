@@ -13,6 +13,9 @@ const MAX_WRITE_BYTES = 220_000;
 const MAX_PATCH_BYTES = 260_000;
 const MAX_LIST_ENTRIES = 360;
 const MAX_SEARCH_RESULTS = 80;
+const MAX_SEARCH_FILES = 4_000;
+const MAX_SEARCH_BYTES = 64 * 1024 * 1024;
+const MAX_SEARCH_DURATION_MS = 8_000;
 const MAX_INSPECT_ENTRIES = 1400;
 const DEFAULT_MAX_DEPTH = 4;
 const SKIP_DIRS = new Set([
@@ -27,9 +30,13 @@ const SKIP_DIRS = new Set([
   ".next",
   ".nuxt",
   ".cache",
+  ".private",
   ".venv",
   "venv",
   "__pycache__",
+  "output",
+  "outputs",
+  "artifacts",
 ]);
 const IMPORTANT_MANIFESTS = new Set([
   "package.json",
@@ -582,9 +589,33 @@ async function searchFiles(config, args) {
   const needle = caseSensitive ? query : query.toLowerCase();
   const maxResults = Math.min(Math.max(Number(args.maxResults) || MAX_SEARCH_RESULTS, 1), MAX_SEARCH_RESULTS);
   const results = [];
+  const deadline = Date.now() + MAX_SEARCH_DURATION_MS;
+  let filesScanned = 0;
+  let bytesScanned = 0;
+  let truncated = false;
+  let truncationReason = "";
+
+  function searchBudgetAvailable() {
+    if (Date.now() > deadline) {
+      truncated = true;
+      truncationReason = truncationReason || "time_limit";
+      return false;
+    }
+    if (filesScanned >= MAX_SEARCH_FILES) {
+      truncated = true;
+      truncationReason = truncationReason || "file_limit";
+      return false;
+    }
+    if (bytesScanned >= MAX_SEARCH_BYTES) {
+      truncated = true;
+      truncationReason = truncationReason || "byte_limit";
+      return false;
+    }
+    return true;
+  }
 
   async function visit(currentPath, depth = 0) {
-    if (results.length >= maxResults || depth > DEFAULT_MAX_DEPTH + 2) return;
+    if (results.length >= maxResults || depth > DEFAULT_MAX_DEPTH + 2 || !searchBudgetAvailable()) return;
     const stat = await fs.stat(currentPath).catch(() => null);
     if (!stat) return;
 
@@ -598,12 +629,19 @@ async function searchFiles(config, args) {
       for (const child of children) {
         if (SKIP_DIRS.has(child.name)) continue;
         await visit(path.join(currentPath, child.name), depth + 1);
-        if (results.length >= maxResults) break;
+        if (results.length >= maxResults || !searchBudgetAvailable()) break;
       }
       return;
     }
 
     if (!stat.isFile() || stat.size > MAX_READ_BYTES) return;
+    if (bytesScanned + stat.size > MAX_SEARCH_BYTES) {
+      truncated = true;
+      truncationReason = truncationReason || "byte_limit";
+      return;
+    }
+    filesScanned += 1;
+    bytesScanned += stat.size;
     const buffer = await fs.readFile(currentPath).catch(() => null);
     if (!buffer || buffer.includes(0)) return;
     const lines = buffer.toString("utf8").split(/\r?\n/);
@@ -627,7 +665,10 @@ async function searchFiles(config, args) {
     query: compactPreview(query, 120),
     path: target.relativePath,
     results,
-    truncated: results.length >= maxResults,
+    truncated: results.length >= maxResults || truncated,
+    truncationReason: results.length >= maxResults ? "result_limit" : truncationReason,
+    filesScanned,
+    bytesScanned,
   };
 }
 

@@ -88,7 +88,11 @@ import {
   serializeStepBudgetState,
 } from "./step-budget-controller.js";
 import { selectExecutionPolicy } from "./execution-policy.js";
-import { toolContractFromResponse, validateToolCallBatch } from "./tool-contract.js";
+import {
+  safeSequentialToolBatchLimit,
+  toolContractFromResponse,
+  validateToolCallBatch,
+} from "./tool-contract.js";
 import {
   createContextBudgetState,
   decideContextCompaction,
@@ -102,6 +106,8 @@ const BROWSER_TOOLS = new Set(["open_url", "open_workspace_file", "preview_works
 const WORKSPACE_TOOLS = new Set(WORKSPACE_TOOL_NAMES);
 const STATIC_PREVIEW_SERVER_PATH = fileURLToPath(new URL("./static-preview-server.js", import.meta.url));
 const previewServers = new Map();
+const GOAL_HISTORY_LIMIT = 24;
+const GOAL_PREVIEW_LIMIT = 2000;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -617,6 +623,72 @@ export function repairModelMessageHistory(state, config = {}) {
   };
 }
 
+function usesFocusedRuntimePrompt(config = {}) {
+  return config.executionTier === "focused" && !config.scsActive;
+}
+
+function focusedCapabilityContext(config = {}) {
+  return [
+    config.allowFileTools
+      ? `Workspace files: enabled at ${config.commandCwd}; use relative paths, inspect/read before editing when needed, and verify requested outputs.`
+      : "Workspace files: disabled.",
+    config.allowShellTool
+      ? `Shell: enabled in ${config.commandCwd} (${config.useDockerSandbox ? config.sandboxMode : "host"}); use narrow commands and durable jobs for long work.`
+      : "Shell: disabled.",
+    config.allowWebSearch ? "Web research: enabled; use it only when current or sourced evidence is needed." : "Web research: disabled.",
+    config.allowMcpTools !== false ? mcpPromptContext(config) : "MCP: disabled.",
+    config.allowWrapperTools
+      ? `Advisory wrapper: ${normalizeWrapperName(config.preferredWrapper)} (${wrapperStatusText()}).`
+      : "Advisory wrappers: disabled.",
+    config.allowAuxiliaryTools ? "Auxiliary generation tools: enabled when the requested artifact needs them." : "Auxiliary tools: disabled.",
+    "Browser and canvas tools are available, but open or publish to them only when the request benefits from that surface.",
+  ].join("\n");
+}
+
+function buildFocusedRuntimeMessages({
+  config,
+  taskProfile,
+  skillContext,
+  projectInstructionContext,
+  temporalContext,
+}) {
+  const profilePrompt = compactMultiline(taskProfile.prompt || "", 520);
+  return [
+    {
+      role: "system",
+      content: [
+        "You are AgInTiFlow, a persistent tool-capable agent.",
+        "Answer ordinary conversation directly. For executable work, act through the smallest relevant routine or tool, verify in proportion to risk, then stop.",
+        "Treat queued user input as a safe-boundary interruption: preserve every material requirement, merge related consecutive messages, revise the durable goal, and never repeat a completed external side effect.",
+        "Established project routines are capabilities to invoke, not workflows to reimplement. Discover more context only when the current task needs it.",
+        formatBehaviorContractForPrompt({ mode: "focused" }),
+        languageInstruction(config.language || "en"),
+        temporalContext,
+        focusedCapabilityContext(config),
+        `Task profile: ${taskProfile.label}. ${profilePrompt}`,
+        skillContext,
+        projectInstructionContext,
+        "AGINTI.md is durable project memory. Update it only when the user asks to remember or change project instructions, and never store secrets there.",
+        "When work is complete, call finish with one concise useful result. If a provider returns an empty turn, do not repeat completed tools; summarize verified evidence or leave the session resumable with a concrete blocker.",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    },
+    {
+      role: "user",
+      content: [
+        `Goal: ${config.goal}`,
+        config.startUrl ? `Optional start URL: ${config.startUrl}` : "",
+        config.allowedDomains.length ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
+        config.allowFileTools || config.allowShellTool ? `Working directory: ${config.commandCwd}` : "",
+        "Complete the request now; do not stop at a plan when an enabled routine or tool can finish it.",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    },
+  ];
+}
+
 async function createInitialState(config, sessionId) {
   const now = new Date().toISOString();
   const taskProfile = getTaskProfile(config.taskProfile);
@@ -628,6 +700,15 @@ async function createInitialState(config, sessionId) {
   const projectInstructionContext = formatProjectInstructions(projectInstructions);
   const platform = platformInfo();
   const temporalContext = runtimeTemporalContext(new Date(now));
+  const focusedMessages = usesFocusedRuntimePrompt(config)
+    ? buildFocusedRuntimeMessages({
+        config,
+        taskProfile,
+        skillContext,
+        projectInstructionContext,
+        temporalContext,
+      })
+    : null;
   return {
     sessionId,
     createdAt: now,
@@ -642,6 +723,7 @@ async function createInitialState(config, sessionId) {
     stepsCompleted: 0,
     meta: {
       lastUrl: "",
+      goalContract: initialGoalContract(config.goal, now),
       runtimeConfig: captureSessionRuntime(config),
       localAutoMaxPolicy: captureLocalAutoMaxPolicy(config),
       projectInstructions: {
@@ -664,7 +746,7 @@ async function createInitialState(config, sessionId) {
         at: now,
       },
     ],
-    messages: [
+    messages: focusedMessages || [
       {
         role: "system",
         content: [
@@ -1191,6 +1273,104 @@ function appendChatEntry(state, role, content) {
   });
 }
 
+function goalPreview(value = "") {
+  const text = redactSensitiveText(String(value || "")).trim();
+  if (text.length <= GOAL_PREVIEW_LIMIT) return text;
+  return `${text.slice(0, GOAL_PREVIEW_LIMIT)}\n[goal preview truncated]`;
+}
+
+function initialGoalContract(goal = "", at = new Date().toISOString()) {
+  const normalized = String(goal || "").trim();
+  const revision = normalized ? 1 : 0;
+  return {
+    version: 2,
+    revision,
+    status: "active",
+    currentHash: hashForLog(normalized),
+    currentPreview: goalPreview(normalized),
+    updatedAt: at,
+    history: normalized
+      ? [{ revision: 1, kind: "initial", at, hash: hashForLog(normalized), preview: goalPreview(normalized) }]
+      : [],
+    lifecycle: [{ revision, status: "active", reason: "initial", at }],
+  };
+}
+
+function updateGoalContract(state, nextGoal = "", at = new Date().toISOString()) {
+  const normalized = String(nextGoal || "").trim();
+  if (!normalized) return null;
+  state.meta = state.meta || {};
+  const previousGoal = String(state.goal || "").trim();
+  const previousPlan = String(state.plan || "").trim();
+  const prior = state.meta.goalContract && typeof state.meta.goalContract === "object"
+    ? state.meta.goalContract
+    : initialGoalContract(previousGoal, state.updatedAt || state.createdAt || at);
+  const revision = Math.max(0, Number(prior.revision || 0)) + 1;
+  const entry = {
+    revision,
+    kind: "continuation",
+    at,
+    hash: hashForLog(normalized),
+    preview: goalPreview(normalized),
+    previousHash: hashForLog(previousGoal),
+    previousPlanHash: hashForLog(previousPlan),
+  };
+  state.meta.goalContract = {
+    version: 2,
+    revision,
+    status: "active",
+    currentHash: entry.hash,
+    currentPreview: entry.preview,
+    updatedAt: at,
+    history: [...(Array.isArray(prior.history) ? prior.history : []), entry].slice(-GOAL_HISTORY_LIMIT),
+    lifecycle: [
+      ...(Array.isArray(prior.lifecycle) ? prior.lifecycle : []),
+      { revision, status: "active", reason: "continuation", at },
+    ].slice(-GOAL_HISTORY_LIMIT),
+  };
+  return {
+    revision,
+    previousGoal,
+    previousPlan,
+    previousHash: entry.previousHash,
+    currentHash: entry.hash,
+  };
+}
+
+function updateGoalStatus(state, status, reason = "", at = new Date().toISOString()) {
+  state.meta = state.meta || {};
+  const prior = state.meta.goalContract && typeof state.meta.goalContract === "object"
+    ? state.meta.goalContract
+    : initialGoalContract(state.goal || "", state.updatedAt || state.createdAt || at);
+  const revision = Math.max(0, Number(prior.revision || 0));
+  const normalizedStatus = ["active", "completed", "paused", "failed"].includes(status) ? status : "paused";
+  const previousLifecycle = Array.isArray(prior.lifecycle) ? prior.lifecycle : [];
+  const last = previousLifecycle.at(-1);
+  const lifecycle = last?.revision === revision && last?.status === normalizedStatus && last?.reason === reason
+    ? previousLifecycle
+    : [...previousLifecycle, { revision, status: normalizedStatus, reason: String(reason || ""), at }].slice(-GOAL_HISTORY_LIMIT);
+  state.meta.goalContract = {
+    ...prior,
+    version: 2,
+    revision,
+    status: normalizedStatus,
+    updatedAt: at,
+    lifecycle,
+  };
+  return {
+    revision,
+    status: normalizedStatus,
+    reason: String(reason || ""),
+  };
+}
+
+function goalRunMetadata(state) {
+  return {
+    goalRevision: Number(state?.meta?.goalContract?.revision || 0),
+    goalStatus: String(state?.meta?.goalContract?.status || ""),
+  };
+}
+
 async function finishWithDirectAnswer({ config, state, store, observers, sessionId, intent }) {
   const result = redactSensitiveText(intent.directAnswer || "I'm here. How can I help?");
   state.meta = state.meta || {};
@@ -1201,6 +1381,7 @@ async function finishWithDirectAnswer({ config, state, store, observers, session
     content: result,
   });
   appendChatEntry(state, "assistant", result);
+  updateGoalStatus(state, "completed", "direct_answer", state.updatedAt);
   await store.saveState(state);
   await store.appendEvent("intent.classified", intent);
   await store.appendEvent("session.finished", {
@@ -1222,11 +1403,12 @@ async function finishWithDirectAnswer({ config, state, store, observers, session
   return {
     sessionId,
     result,
+    ...goalRunMetadata(state),
   };
 }
 
 async function applyContinuationPrompt(state, config, observers) {
-  if (!config.resume || !config.goal) return;
+  if (!config.resume || !config.goal) return null;
 
   const taskProfile = getTaskProfile(config.taskProfile);
   const engineeringGuidance = engineeringGuidanceForTask(config.goal, config.taskProfile);
@@ -1235,6 +1417,7 @@ async function applyContinuationPrompt(state, config, observers) {
   const skillContext = formatSkillsForPrompt(selectedSkills);
   const projectInstructions = await readProjectInstructions(config.baseDir || config.commandCwd || process.cwd());
   state.meta = state.meta || {};
+  const goalUpdate = updateGoalContract(state, config.goal);
   state.meta.projectInstructions = {
     path: projectInstructions.path,
     exists: projectInstructions.exists,
@@ -1252,10 +1435,37 @@ async function applyContinuationPrompt(state, config, observers) {
   state.updatedAt = new Date().toISOString();
   const platform = platformInfo();
   const temporalContext = runtimeTemporalContext(new Date(state.updatedAt));
+  const focusedContinuation = usesFocusedRuntimePrompt(config)
+    ? [
+        `Continue with this new request: ${config.goal}`,
+        "Interpret it against the complete saved conversation. It may continue, correct, interrupt, narrow, expand, or replace prior work.",
+        "Preserve all material requirements and verified evidence, merge related consecutive input, and do not repeat completed external side effects.",
+        goalUpdate?.previousGoal && goalUpdate.previousGoal !== config.goal
+          ? `Previous active goal: ${goalPreview(goalUpdate.previousGoal)}`
+          : "",
+        goalUpdate?.previousPlan ? `Previous plan checkpoint: ${goalPreview(goalUpdate.previousPlan)}` : "",
+        `Durable goal revision: ${goalUpdate?.revision || state.meta.goalContract?.revision || 1}.`,
+        languageInstruction(config.language || "en"),
+        temporalContext,
+        config.startUrl ? `Optional start URL: ${config.startUrl}` : "",
+        config.allowFileTools || config.allowShellTool ? `Working directory: ${config.commandCwd}` : "",
+        `Task profile: ${taskProfile.label}. ${compactMultiline(taskProfile.prompt || "", 520)}`,
+        skillContext,
+        formatProjectInstructions(projectInstructions),
+        "Use the smallest relevant established routine or tool, verify the current outcome, and finish with a concise human-facing result or concrete blocker.",
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : "";
   state.messages.push({
     role: "user",
-    content: [
+    content: focusedContinuation || [
       `Continue with this new request: ${config.goal}`,
+      "Goal continuity: interpret this request against the complete saved conversation. It may continue, correct, interrupt, narrow, expand, or replace prior work. Preserve completed evidence, do not repeat finished side effects, and cover every still-material user requirement before finishing.",
+      goalUpdate?.previousGoal && goalUpdate.previousGoal !== config.goal
+        ? `Previous active goal: ${goalPreview(goalUpdate.previousGoal)}`
+        : "",
+      goalUpdate?.previousPlan ? `Previous plan checkpoint: ${goalPreview(goalUpdate.previousPlan)}` : "",
       languageInstruction(config.language || "en"),
       temporalContext,
       config.startUrl ? `Suggested start URL: ${config.startUrl}` : "",
@@ -1287,7 +1497,9 @@ async function applyContinuationPrompt(state, config, observers) {
   observers.event("conversation.continued", {
     sessionId: state.sessionId,
     prompt: config.goal,
+    goalRevision: goalUpdate?.revision || 0,
   });
+  return goalUpdate;
 }
 
 async function saveBrowserState(browserState, store) {
@@ -1713,7 +1925,17 @@ async function captureSyntheticSnapshot(store, step, config) {
   const snapshot = {
     title: "No browser page open",
     url: "",
-    pageText: [
+    pageText: (usesFocusedRuntimePrompt(config)
+      ? [
+          "No browser page is open; do not open one unless the goal needs it.",
+          config.allowFileTools ? `Workspace file tools are ready in ${config.commandCwd}.` : "Workspace file tools are disabled.",
+          config.allowShellTool
+            ? `Shell is ready in ${config.commandCwd}; use a durable long job instead of model polling for slow commands.`
+            : "Shell is disabled.",
+          config.allowWebSearch ? "Web research is available when current or sourced evidence is required." : "",
+          "Use verified evidence, accept queued interruptions at safe boundaries, and finish as soon as the current goal is satisfied.",
+        ]
+      : [
       "No browser page is currently open.",
       config.startUrl ? `Suggested start URL: ${config.startUrl}` : "",
       "Validation reminder: grep exits 1 on zero matches; guard expected clean-zero grep checks or split evidence commands.",
@@ -1744,7 +1966,7 @@ async function captureSyntheticSnapshot(store, step, config) {
       "For LaTeX/PDF requests, check latexmk/pdflatex first, publish the source and compiled PDF artifacts when available, and avoid reinstalling TeX when an existing toolchain works.",
       "Use open_url only if the task actually needs the web.",
       "For generated local HTML/SVG/PDF/site output, use open_workspace_file or preview_workspace instead of shelling a transient local server.",
-    ]
+    ])
       .filter(Boolean)
       .join(" "),
     elements: [],
@@ -2580,9 +2802,61 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
   return { action: "stop", assessment, detail, result };
 }
 
+function verifiedCompletionFallback(assessment = {}) {
+  const contract = assessment.contract || {};
+  const ledger = assessment.ledger || {};
+  const paths = Array.isArray(contract.exactOutputPaths) ? contract.exactOutputPaths.filter(Boolean) : [];
+  const categories = Array.isArray(ledger.categories) ? ledger.categories.filter(Boolean) : [];
+  const tools = Array.isArray(ledger.toolNames) ? ledger.toolNames.filter(Boolean) : [];
+  return [
+    "Completed the requested work and verified it from runtime evidence.",
+    paths.length ? `Verified output: ${paths.join(", ")}.` : "",
+    categories.length ? `Evidence: ${categories.join(", ")}.` : "",
+    tools.length ? `Validated actions: ${tools.join(", ")}.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+async function repairEmptyCompletion({ config, state, store, observers, step, assessment }) {
+  state.meta = state.meta || {};
+  const key = completionContractKey(config);
+  const prior = state.meta.emptyCompletionRepair || {};
+  const attempts = prior.key === key ? Number(prior.attempts || 0) : 0;
+  const last = state.messages?.at(-1);
+  if (last?.role === "assistant" && !String(last.content || "").trim() && !(last.tool_calls || []).length) {
+    state.messages.pop();
+  }
+  if (attempts < 1) {
+    state.meta.emptyCompletionRepair = { key, attempts: attempts + 1, step };
+    const instruction = [
+      "Your previous turn contained neither user-facing text nor a tool call.",
+      "Do not repeat completed tools or expose transport diagnostics.",
+      "Use the verified tool evidence already in this session and return one concise, useful final answer now; call finish when it is offered.",
+    ].join(" ");
+    state.messages.push({ role: "user", content: instruction });
+    const detail = { step, key, evidenceVerified: Boolean(assessment?.ok) };
+    await store.appendEvent("completion.empty_response_repair_requested", detail);
+    observers.event("completion.empty_response_repair_requested", detail);
+    return { action: "retry" };
+  }
+  if (assessment?.ok && assessment.contract?.requiresExternalEvidence) {
+    const result = verifiedCompletionFallback(assessment);
+    const detail = { step, key, result, evidenceVerified: true };
+    await store.appendEvent("completion.verified_fallback", detail);
+    observers.event("completion.verified_fallback", detail);
+    return { action: "fallback", result };
+  }
+  return {
+    action: "stop",
+    result: "The model returned no usable answer after one repair attempt. The session is saved and can be resumed with another provider.",
+  };
+}
+
 async function stopForMissingCompletionEvidence({ config, state, store, observers, sessionId, step, decision }) {
   state.stepsCompleted = step;
   state.updatedAt = new Date().toISOString();
+  updateGoalStatus(state, "paused", "model_did_not_execute", state.updatedAt);
   await store.appendEvent("session.stopped", {
     reason: "model_did_not_execute",
     step,
@@ -2599,6 +2873,7 @@ async function stopForMissingCompletionEvidence({ config, state, store, observer
     result: decision.result,
     stopped: true,
     reason: "model_did_not_execute",
+    ...goalRunMetadata(state),
   };
 }
 
@@ -2667,6 +2942,7 @@ async function stopForRepeatedToolContractViolations({ config, state, store, obs
   };
   state.stepsCompleted = step;
   state.updatedAt = new Date().toISOString();
+  updateGoalStatus(state, "paused", "tool_contract_violation", state.updatedAt);
   await store.appendEvent("session.stopped", {
     reason: "tool_contract_violation",
     step,
@@ -2683,6 +2959,7 @@ async function stopForRepeatedToolContractViolations({ config, state, store, obs
     result,
     stopped: true,
     reason: "tool_contract_violation",
+    ...goalRunMetadata(state),
   };
 }
 
@@ -2700,6 +2977,7 @@ async function stopForRepeatedMalformedToolArguments({ config, state, store, obs
   };
   state.stepsCompleted = step;
   state.updatedAt = new Date().toISOString();
+  updateGoalStatus(state, "paused", "malformed_tool_arguments", state.updatedAt);
   await store.appendEvent("session.stopped", {
     reason: "malformed_tool_arguments",
     step,
@@ -2716,6 +2994,7 @@ async function stopForRepeatedMalformedToolArguments({ config, state, store, obs
     result,
     stopped: true,
     reason: "malformed_tool_arguments",
+    ...goalRunMetadata(state),
   };
 }
 
@@ -2870,6 +3149,7 @@ function preInferenceFailureDetail(error, config) {
 async function recordPreInferenceFailure({ error, config, state, store, observers, sessionId }) {
   if (isAbortError(error, config)) {
     state.updatedAt = new Date().toISOString();
+    updateGoalStatus(state, "paused", "user_interrupt_preflight", state.updatedAt);
     await store.saveState(state).catch(() => {});
     await store.appendEvent("session.stopped", { reason: "user_interrupt", stage: "preflight" }).catch(() => {});
     observers.event("session.stopped", { reason: "user_interrupt", stage: "preflight", sessionId });
@@ -2884,6 +3164,7 @@ async function recordPreInferenceFailure({ error, config, state, store, observer
   ].join(" ");
   state.stepsCompleted = state.stepsCompleted || 0;
   state.updatedAt = new Date().toISOString();
+  updateGoalStatus(state, "failed", detail.reason || "provider_preflight_failed", state.updatedAt);
   state.messages.push({ role: "assistant", content: result });
   appendChatEntry(state, "assistant", result);
   await store.saveState(state).catch(() => {});
@@ -2956,6 +3237,7 @@ export async function runAgent(config) {
       scsActive: Boolean(config.scsActive),
       scsMode: config.enableScs || "off",
       goal: config.goal,
+      goalRevision: state.meta?.goalContract?.revision || 1,
     });
     await store.appendEvent("skills.selected", {
       taskProfile: config.taskProfile,
@@ -2966,11 +3248,19 @@ export async function runAgent(config) {
   } else {
     await store.appendEvent("session.resumed", { sessionId });
     const continuationPrompt = config.goal || "";
-    await applyContinuationPrompt(state, config, observers);
+    const goalUpdate = await applyContinuationPrompt(state, config, observers);
     if (continuationPrompt) {
       await store.appendEvent("conversation.continued", {
         sessionId,
         prompt: redactSensitiveText(continuationPrompt),
+        goalRevision: goalUpdate?.revision || 0,
+      });
+      await store.appendEvent("goal.updated", {
+        sessionId,
+        revision: goalUpdate?.revision || 0,
+        previousHash: goalUpdate?.previousHash || "",
+        currentHash: goalUpdate?.currentHash || "",
+        previousPlanHash: hashForLog(goalUpdate?.previousPlan || ""),
       });
     }
     await store.saveState(state);
@@ -3361,7 +3651,18 @@ export async function runAgent(config) {
 
       state.messages.push({
         role: "user",
-        content: `Step ${step}/${stepBudget.currentMaxSteps} (${stepBudget.currentMaxSteps - step} steps remain after this one). Latest runtime snapshot:\n${JSON.stringify({
+        content: `Step ${step}/${stepBudget.currentMaxSteps} (${stepBudget.currentMaxSteps - step} steps remain after this one). Latest runtime snapshot:\n${JSON.stringify(usesFocusedRuntimePrompt(config) ? {
+          title: snapshot.title,
+          url: snapshot.url,
+          pageText: snapshot.pageText,
+          browserOpen: Boolean(browserState.page),
+          shellToolAvailable: config.allowShellTool,
+          fileToolsAvailable: config.allowFileTools,
+          commandCwd: config.commandCwd,
+          plan: state.plan || "",
+          goalRevision: state.meta?.goalContract?.revision || 1,
+          remainingSteps: stepBudget.currentMaxSteps - step,
+        } : {
           title: snapshot.title,
           url: snapshot.url,
           pageText: snapshot.pageText,
@@ -3541,7 +3842,9 @@ export async function runAgent(config) {
       const toolCalls = Array.isArray(rawToolCalls) ? rawToolCalls : [];
       const toolBatchValidation = rawToolCalls === undefined || rawToolCalls === null
         ? { ok: true, calls: [] }
-        : validateToolCallBatch(rawToolCalls, toolContractFromResponse(response), { maxToolCalls: 1 });
+        : validateToolCallBatch(rawToolCalls, toolContractFromResponse(response), {
+            maxToolCalls: safeSequentialToolBatchLimit(rawToolCalls),
+          });
 
       await store.appendEvent("model.responded", {
         step,
@@ -3626,7 +3929,40 @@ export async function runAgent(config) {
             decision: completionDecision,
           });
         }
-        const fallback = redactSensitiveText(assistantMessage.content?.trim() || "No tool call returned.");
+        let fallback = redactSensitiveText(assistantMessage.content?.trim() || "");
+        if (!fallback) {
+          const emptyDecision = await repairEmptyCompletion({
+            config,
+            state,
+            store,
+            observers,
+            step,
+            assessment: completionDecision.assessment,
+          });
+          if (emptyDecision.action === "retry") {
+            state.stepsCompleted = step;
+            state.updatedAt = new Date().toISOString();
+            await store.saveState(state);
+            continue;
+          }
+          if (emptyDecision.action === "stop") {
+            state.stepsCompleted = step;
+            state.updatedAt = new Date().toISOString();
+            updateGoalStatus(state, "paused", "empty_model_response", state.updatedAt);
+            await store.appendEvent("session.stopped", { reason: "empty_model_response", step });
+            observers.event("session.stopped", { reason: "empty_model_response", sessionId });
+            await store.saveState(state);
+            emitConsole(config, emptyDecision.result, { kind: "error", error: true });
+            return {
+              sessionId,
+              result: emptyDecision.result,
+              stopped: true,
+              reason: "empty_model_response",
+              ...goalRunMetadata(state),
+            };
+          }
+          fallback = emptyDecision.result;
+        }
         if (config.scsActive) {
           const decision = await reviewScsFinish(client, config, state, fallback, {
             events: await store.loadEvents(),
@@ -3672,6 +4008,7 @@ export async function runAgent(config) {
           emitConsole(config, `SCS: finish approved (${Math.round((decision.confidence || 0) * 100)}%).`, { kind: "meta" });
         }
         appendChatEntry(state, "assistant", fallback);
+        updateGoalStatus(state, "completed", "assistant_content");
         await store.appendEvent("session.finished", {
           result: fallback,
           mode: "assistant-content",
@@ -3687,6 +4024,7 @@ export async function runAgent(config) {
         return {
           sessionId,
           result: fallback,
+          ...goalRunMetadata(state),
         };
       }
 
@@ -3856,6 +4194,7 @@ export async function runAgent(config) {
             content: toolResult.result,
           });
           appendChatEntry(state, "assistant", toolResult.result);
+          updateGoalStatus(state, "completed", "finish_tool", state.updatedAt);
           await store.saveState(state);
           await store.appendEvent("session.finished", {
             result: toolResult.result,
@@ -3869,6 +4208,7 @@ export async function runAgent(config) {
           return {
             sessionId,
             result: toolResult.result,
+            ...goalRunMetadata(state),
           };
         }
       }
@@ -3986,6 +4326,9 @@ export async function runAgent(config) {
       await store.saveState(state);
     }
 
+    state.updatedAt = new Date().toISOString();
+    updateGoalStatus(state, "paused", "max_steps_reached", state.updatedAt);
+    await store.saveState(state);
     await store.appendEvent("session.stopped", {
       reason: "max_steps_reached",
       maxSteps: stepBudget.currentMaxSteps,
@@ -4003,6 +4346,7 @@ export async function runAgent(config) {
       result: "",
       stopped: true,
       reason: "max_steps_reached",
+      ...goalRunMetadata(state),
     };
   } catch (error) {
     if (isModelTimeoutError(error)) {
@@ -4015,6 +4359,7 @@ export async function runAgent(config) {
       };
       state.stepsCompleted = state.stepsCompleted || 0;
       state.updatedAt = new Date().toISOString();
+      updateGoalStatus(state, "failed", "model_timeout", state.updatedAt);
       await store.saveState(state).catch(() => {});
       await store.appendEvent("session.failed", detail).catch(() => {});
       observers.event("session.failed", {
@@ -4029,11 +4374,23 @@ export async function runAgent(config) {
         stopped: true,
         failed: true,
         reason: "model_timeout",
+        ...goalRunMetadata(state),
       };
     }
-    if (!isAbortError(error, config)) throw error;
+    if (!isAbortError(error, config)) {
+      state.stepsCompleted = state.stepsCompleted || 0;
+      state.updatedAt = new Date().toISOString();
+      updateGoalStatus(state, "failed", "runtime_error", state.updatedAt);
+      await store.saveState(state).catch(() => {});
+      await store.appendEvent("session.failed", {
+        reason: "runtime_error",
+        error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+      }).catch(() => {});
+      throw error;
+    }
     state.stepsCompleted = state.stepsCompleted || 0;
     state.updatedAt = new Date().toISOString();
+    updateGoalStatus(state, "paused", "user_interrupt", state.updatedAt);
     await store.saveState(state).catch(() => {});
     await store.appendEvent("session.stopped", {
       reason: "user_interrupt",
@@ -4047,6 +4404,7 @@ export async function runAgent(config) {
       result: "",
       stopped: true,
       reason: "user_interrupt",
+      ...goalRunMetadata(state),
     };
   } finally {
     await store.releaseInboxClaims().catch(() => {});

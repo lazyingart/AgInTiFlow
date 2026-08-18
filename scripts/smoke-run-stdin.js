@@ -4,6 +4,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { machineRunPayload } from "../src/cli.js";
+import { showProjectSession } from "../src/project.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const home = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-run-stdin-"));
@@ -25,8 +27,18 @@ const machineOptions = [
   "host",
 ];
 
-async function runMachine(label, runArgs, stdin = "") {
-  const command = [cliPath, "run", ...runArgs];
+const stoppedPayload = machineRunPayload({
+  sessionId: "stopped-session",
+  result: "I stopped safely instead of claiming success.",
+  stopped: true,
+  reason: "tool_contract_violation",
+});
+if (stoppedPayload.ok !== false || stoppedPayload.failed !== true || stoppedPayload.stopped !== true) {
+  throw new Error(`stopped machine run was reported as success: ${JSON.stringify(stoppedPayload)}`);
+}
+
+async function runMachine(label, commandArgs, stdin = "") {
+  const command = [cliPath, ...commandArgs];
   const output = await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, command, {
       cwd: home,
@@ -70,25 +82,76 @@ async function runMachine(label, runArgs, stdin = "") {
     throw new Error(`${label} leaked interactive metadata\n${output.stdout}`);
   }
   if (output.stderr.trim()) throw new Error(`${label} leaked stderr\n${output.stderr}`);
+  return payload;
 }
 
 try {
   await runMachine(
     "explicit stdin machine run",
-    ["--stdin", ...machineOptions],
+    ["run", "--stdin", ...machineOptions],
     "Reply briefly that the explicit stdin transport smoke completed."
   );
   await runMachine(
     "positional prompt machine run",
-    [...machineOptions, "Reply briefly that the positional prompt smoke completed."]
+    ["run", ...machineOptions, "Reply briefly that the positional prompt smoke completed."]
   );
   await runMachine(
     "implicit piped stdin machine run",
-    machineOptions,
+    ["run", ...machineOptions],
     "Reply briefly that the implicit piped stdin smoke completed."
   );
+  const initial = await runMachine(
+    "initial resumable machine run",
+    ["run", "--stdin", ...machineOptions],
+    "Remember the marker AGINTI_MACHINE_RESUME and reply briefly."
+  );
+  const resumed = await runMachine(
+    "resumed stdin machine run",
+    ["resume", initial.sessionId, "--stdin", "--json"],
+    "Reply briefly that this saved session resumed successfully."
+  );
+  if (resumed.sessionId !== initial.sessionId) {
+    throw new Error(`machine resume changed session id: ${initial.sessionId} -> ${resumed.sessionId}`);
+  }
+  if (initial.provider !== "mock" || resumed.provider !== "mock" || resumed.resumed !== true) {
+    throw new Error(`machine payload omitted provider/resume diagnostics: ${JSON.stringify({ initial, resumed })}`);
+  }
+  if (
+    initial.goalRevision !== 1 ||
+    initial.goalStatus !== "completed" ||
+    resumed.goalRevision !== 2 ||
+    resumed.goalStatus !== "completed"
+  ) {
+    throw new Error(`machine payload omitted durable goal lifecycle: ${JSON.stringify({ initial, resumed })}`);
+  }
+  const stored = await showProjectSession(home, initial.sessionId);
+  if (stored?.goalRevision !== 2 || stored?.goalStatus !== "completed") {
+    throw new Error(`durable goal revision/lifecycle was not completed: ${stored?.goalRevision}/${stored?.goalStatus}`);
+  }
+  if (!stored.events.some((event) => event.type === "goal.updated" && event.data?.revision === 2)) {
+    throw new Error("durable goal update event was not recorded");
+  }
+  const state = JSON.parse(
+    await fs.readFile(path.join(home, ".agintiflow", "sessions", initial.sessionId, "state.json"), "utf8")
+  );
+  if (
+    state.meta?.goalContract?.history?.length !== 2 ||
+    state.meta?.goalContract?.lifecycle?.length !== 4 ||
+    state.meta.goalContract.lifecycle.at(-1)?.status !== "completed" ||
+    state.meta.goalContract.lifecycle.at(-2)?.status !== "active" ||
+    state.meta.goalContract.currentPreview !== state.goal ||
+    state.meta.goalContract.currentHash !== state.meta.goalContract.history.at(-1)?.hash
+  ) {
+    throw new Error("durable goal ledger did not retain both revisions and the authoritative current goal");
+  }
+  const continuation = state.messages.find(
+    (message) => message.role === "user" && String(message.content || "").startsWith("Continue with this new request:")
+  );
+  if (!continuation || continuation.content.length >= 8_000) {
+    throw new Error(`focused continuation did not use bounded context: ${continuation?.content?.length || 0}`);
+  }
 } finally {
   await fs.rm(home, { recursive: true, force: true });
 }
 
-console.log("run input precedence smoke passed");
+console.log("run and resume input precedence smoke passed");

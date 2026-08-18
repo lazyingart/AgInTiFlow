@@ -918,6 +918,23 @@ try {
   ) {
     throw new Error("resume subcommand options after the session id should remain options, not prompt text");
   }
+  const machineResume = parseResumeCommandArgs([
+    "web-agent-smoke",
+    "--stdin",
+    "--json",
+    "--provider",
+    "mock",
+  ]);
+  if (
+    machineResume.sessionId !== "web-agent-smoke" ||
+    !machineResume.stdin ||
+    !machineResume.json ||
+    machineResume.optionArgv.includes("--stdin") ||
+    machineResume.optionArgv.includes("--json") ||
+    parseArgs(machineResume.optionArgv).provider !== "mock"
+  ) {
+    throw new Error("resume machine transport flags should be parsed outside the durable runtime patch");
+  }
   const resumeRuntimeOptions = [
     "--provider",
     "mock",

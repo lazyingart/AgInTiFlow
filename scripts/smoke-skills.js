@@ -110,6 +110,12 @@ assert(selectedIds("review this PR architecture without editing").includes("code
 assert(selectedIds("supervise a student agent in tmux and verify its artifacts", "supervision").includes("supervision-student"), "supervision prompt did not select supervision-student");
 assert(selectedIds("supervision").includes("supervision-student"), "single-word supervision prompt did not select supervision-student");
 assert(!selectedIds("supervision").includes("r-stan"), "single-word supervision prompt incorrectly selected r-stan");
+assert(
+  selectedIds(
+    "Create acceptance.txt containing exactly AGINTI_STANDALONE_OK followed by one newline, then read it back."
+  ).length === 0,
+  "generic file work selected unrelated domain skills"
+);
 
 const prompt = formatSkillsForPrompt(selectSkillsForGoal("write latex manuscript with figures", { taskProfile: "latex", limit: 3 }));
 assert(prompt.includes("A skill is Markdown guidance"), "skill prompt does not explain skill semantics");

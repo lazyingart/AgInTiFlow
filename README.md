@@ -178,6 +178,13 @@ aginti --language de
 | Resume current project | `aginti resume` (`1` is newest/latest; Space shows more) |
 | Browse all sessions | `aginti resume --all-sessions` |
 | Queue into a running session | `aginti queue <session-id> "extra instruction"` |
+| Inspect durable goal revisions | `aginti sessions list` and `aginti sessions show <session-id>` |
+
+The runtime uses durable goal lifecycles, safe-boundary inbox interruption,
+progressive tool/context disclosure, bounded read batching, evidence-gated
+completion, and provider attribution. See
+[State-of-the-Art Agent Runtime](docs/state-of-the-art-agent-runtime.md) for the
+embedding and acceptance contract.
 | Clean empty sessions | `aginti --remove-empty-sessions` |
 | Check capabilities | `aginti capabilities`, `aginti doctor --capabilities` |
 | Sync reviewed skills | `aginti skillmesh status`, `aginti skillmesh sync` |

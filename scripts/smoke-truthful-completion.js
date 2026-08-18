@@ -139,6 +139,34 @@ try {
   assert.match(explanation.result.result, /stops recursive calls/i);
   assert(explanation.events.some((event) => event.type === "session.finished"));
   assert(!explanation.events.some((event) => event.type === "completion.evidence_rejected"));
+  assert(
+    String(explanation.state.messages.find((message) => message.role === "system")?.content || "").length < 10_000,
+    "focused runtime prompt did not use progressive disclosure"
+  );
+  assert(
+    Math.max(
+      ...explanation.state.messages
+        .filter((message) => /^Step \d+\/\d+ .*Latest runtime snapshot:/i.test(String(message.content || "")))
+        .map((message) => String(message.content || "").length)
+    ) < 2_000,
+    "focused runtime snapshot repeated the full capability manual"
+  );
+
+  const quotedChatClassification = await runCase({
+    id: "quoted-chat-classification",
+    taskProfile: "chatops",
+    goal: [
+      "Context:",
+      "- Message 1: Generate a new video from the supplied video, but do not publish.",
+      "- Message 2: Return the generated MP4 to the same chat.",
+      'Return exactly one JSON object and no prose: {"intent":"generation_only","publish":false}.',
+    ].join("\n"),
+    responses: [assistant('{"intent":"generation_only","publish":false}')],
+  });
+  assert.equal(quotedChatClassification.calls.length, 1);
+  assert.equal(quotedChatClassification.result.stopped, undefined);
+  assert.equal(quotedChatClassification.result.result, '{"intent":"generation_only","publish":false}');
+  assert(!quotedChatClassification.events.some((event) => event.type === "completion.evidence_rejected"));
 
   const proseOnlyAction = await runCase({
     id: "prose-only-action",
@@ -187,6 +215,45 @@ try {
   assert(verifiedAction.events.some((event) => event.type === "tool.completed" && event.data?.toolName === "run_command"));
   assert(verifiedAction.events.some((event) => event.type === "session.finished"));
   assert(!verifiedAction.events.some((event) => event.type === "completion.repair_requested"));
+
+  const verifiedEmptyCompletion = await runCase({
+    id: "verified-empty-completion",
+    goal: "Execute the shell command pwd and report the output.",
+    taskProfile: "shell",
+    allowShellTool: true,
+    responses: [
+      assistant("", [toolCall("run-empty", "run_command", { command: "pwd" })]),
+      assistant(""),
+      assistant(""),
+    ],
+  });
+  assert.equal(verifiedEmptyCompletion.calls.length, 3);
+  assert.equal(verifiedEmptyCompletion.result.stopped, undefined);
+  assert.match(verifiedEmptyCompletion.result.result, /verified.*runtime evidence/i);
+  assert.equal(
+    verifiedEmptyCompletion.events.filter((event) => event.type === "completion.empty_response_repair_requested").length,
+    1
+  );
+  assert.equal(
+    verifiedEmptyCompletion.events.filter((event) => event.type === "completion.verified_fallback").length,
+    1
+  );
+  assert(!verifiedEmptyCompletion.result.result.includes("No tool call returned"));
+
+  const unusableEmptyChat = await runCase({
+    id: "unusable-empty-chat",
+    goal: "Explain why recursion needs a base case.",
+    responses: [assistant(""), assistant("")],
+  });
+  assert.equal(unusableEmptyChat.calls.length, 2);
+  assert.equal(unusableEmptyChat.result.stopped, true);
+  assert.equal(unusableEmptyChat.result.reason, "empty_model_response");
+  assert.equal(
+    unusableEmptyChat.events.filter((event) => event.type === "completion.empty_response_repair_requested").length,
+    1
+  );
+  assert(!unusableEmptyChat.events.some((event) => event.type === "session.finished"));
+  assert(!unusableEmptyChat.result.result.includes("No tool call returned"));
 
   const resumedAction = await runCase({
     id: "verified-action",

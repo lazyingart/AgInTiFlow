@@ -34,6 +34,30 @@ lightweight launcher without loading the full agent and web runtime.
 
 When a run is active, the web chat and `aginti queue <session-id> "..."` append messages to the inbox instead of trying to mutate the running process directly. The web API exposes `GET /api/sessions/:id/inbox`, `POST /api/sessions/:id/inbox`, `PATCH /api/sessions/:id/inbox/:itemId`, and `DELETE /api/sessions/:id/inbox/:itemId` so browser users can inspect, edit, or remove pending pipe messages before the runner consumes them. The runner drains the inbox at safe boundaries: before each model step and after tool execution. This mirrors the event-queue style used by mature agent UIs while keeping the backend decoupled from any specific frontend.
 
+Embedding hosts can continue the same durable context without scraping terminal
+output:
+
+```bash
+printf '%s' 'Follow up using the existing evidence.' \
+  | aginti resume SESSION_ID --stdin --json
+```
+
+Machine resume emits the same single JSON object as `aginti run --json`, keeps
+the original session ID, restores the saved provider/model/tool/runtime policy,
+and never starts the web UI or writes interactive status lines. Explicit resume
+options may still patch durable runtime fields, but `--stdin` and `--json` are
+transport flags and are not persisted. This is the supported boundary for
+LabCanvas, chat bridges, schedulers, and other embedding hosts that need one
+isolated reusable agent session per conversation.
+
+The object includes `goalRevision` and `goalStatus`. A first request starts at
+revision 1. Every nonempty resume prompt advances the revision while retaining
+the bounded prior-goal ledger. Accepted completion marks that revision
+`completed`; a safe interruption or exhausted bounded run marks it `paused`;
+provider/runtime failure marks it `failed`. The next continuation reactivates
+the same session instead of replaying prior work. `aginti sessions show
+SESSION_ID` exposes both the revision history and lifecycle transitions.
+
 The interactive CLI keeps the input panel visible while a run is working. Enter sends the current draft as an ASAP pipe message and displays it as `→`; the runner drains those messages before normal inbox items and before after-finish queued prompts. Tab stores the draft as an after-finish queue item and displays it as `↳`; those prompts run only after the current run completes. Alt+Up moves the last pending `→` message back into the editor, and Shift+Left moves the last pending `↳` message back into the editor. Idle Esc is ignored so it does not redraw the prompt into the transcript. During a run, Esc waits when `→` pipe messages are still pending and stops the run only when no ASAP pipe message is pending; Ctrl+C always stops. The current command cwd is rendered below the input panel in both idle and running states.
 
 The web UI uses a related but browser-appropriate pattern. Enter sends and Shift+Enter adds a newline. `Pipe to run` writes an ASAP inbox item shared with CLI. `Queue after finish` keeps a browser-local next prompt and starts it after the current web-owned run finishes. Both lanes render in a pending panel with Edit and Remove buttons instead of terminal-only keybindings.

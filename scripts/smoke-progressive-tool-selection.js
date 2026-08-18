@@ -18,6 +18,7 @@ import { SessionStore } from "../src/session-store.js";
 import {
   attachToolContract,
   createToolContract,
+  safeSequentialToolBatchLimit,
   toolContractFromResponse,
   validateToolCallBatch,
 } from "../src/tool-contract.js";
@@ -814,6 +815,81 @@ assert(
     strictContract
   ).ok,
   "valid offered tool call did not satisfy its exact schema"
+);
+
+const safeReadDescriptors = [
+  {
+    type: "function",
+    function: {
+      name: "read_file",
+      description: "Read a file.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_files",
+      description: "Search files.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" }, query: { type: "string" } },
+        required: ["path", "query"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_files",
+      description: "List files.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+        additionalProperties: false,
+      },
+    },
+  },
+];
+const safeReadCalls = [
+  contractCall("safe-read", "read_file", { path: "AGENTS.md" }),
+  contractCall("safe-search", "search_files", { path: ".", query: "lazyedit" }),
+  contractCall("safe-list", "list_files", { path: "." }),
+];
+const safeReadContract = createToolContract(safeReadDescriptors);
+assert(safeSequentialToolBatchLimit(safeReadCalls) === 4, "safe read batch did not receive the bounded sequential allowance");
+assert(
+  validateToolCallBatch(safeReadCalls, safeReadContract, {
+    maxToolCalls: safeSequentialToolBatchLimit(safeReadCalls),
+  }).ok,
+  "valid safe read batch did not pass the exact per-turn contract"
+);
+const mixedReadWriteCalls = [
+  safeReadCalls[0],
+  contractCall("unsafe-write", "write_file", { path: "blocked.txt", content: "bad" }),
+];
+assert(safeSequentialToolBatchLimit(mixedReadWriteCalls) === 1, "mixed read/write batch escaped the single-call limit");
+assert(
+  !validateToolCallBatch(mixedReadWriteCalls, createToolContract([...safeReadDescriptors, strictWriteDescriptor]), {
+    maxToolCalls: safeSequentialToolBatchLimit(mixedReadWriteCalls),
+  }).ok,
+  "mixed read/write batch unexpectedly passed"
+);
+const oversizedReadCalls = Array.from({ length: 5 }, (_, index) =>
+  contractCall(`read-${index}`, "read_file", { path: `file-${index}.txt` })
+);
+assert(
+  !validateToolCallBatch(oversizedReadCalls, safeReadContract, {
+    maxToolCalls: safeSequentialToolBatchLimit(oversizedReadCalls),
+  }).ok,
+  "oversized read batch escaped the bounded allowance"
 );
 
 for (const [label, call, expectedCode] of [

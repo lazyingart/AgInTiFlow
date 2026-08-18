@@ -26,6 +26,13 @@ const chatContract = deriveScsTaskContract({
   taskProfile: "chatops",
 });
 assert.equal(chatContract.requiresExternalEvidence, false, "chat transport control prose incorrectly required file evidence");
+const planContract = deriveScsTaskContract({
+  goal:
+    'AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"plan-response","request":"Identify the LazyEdit video routine without changing files."}\n' +
+    "Control text mentions video, files, commands, artifacts, screenshots, and verification.",
+  taskProfile: "auto",
+});
+assert.equal(planContract.requiresExternalEvidence, false, "read-only planning control prose incorrectly required execution evidence");
 const artifactContract = deriveScsTaskContract({
   goal:
     'AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Create and compile the requested PDF."}\n' +

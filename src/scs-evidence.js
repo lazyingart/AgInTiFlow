@@ -496,14 +496,30 @@ function stripForbiddenLanguage(goal = "") {
 }
 
 function scopedChatopsEvidenceGoal(goal = "", taskProfile = "") {
-  if (String(taskProfile || "").trim().toLowerCase() !== "chatops") return String(goal || "");
   const match = String(goal || "").match(/^AGINTI_EVIDENCE_SCOPE_JSON:\s*(\{[^\n]+\})\s*$/m);
-  if (!match) return String(goal || "");
+  if (!match) {
+    const text = String(goal || "");
+    const lines = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const finalInstruction = lines.slice(-3).join(" ");
+    const hasQuotedChatContext =
+      /^(?:context|conversation|messages?|recent\s+messages?|chat\s+context)\s*:/im.test(text) ||
+      /^(?:message|msg|turn)\s*\d*\s*:/im.test(text);
+    const requestsResponseOnly =
+      /\b(?:return|reply|respond|answer|classify|route|output|emit)\b/i.test(finalInstruction) &&
+      /\b(?:exactly|only|json|object|classification|answer|response|no\s+prose)\b/i.test(finalInstruction);
+    if (hasQuotedChatContext && requestsResponseOnly) {
+      return "Answer or classify the supplied chat context directly without external execution.";
+    }
+    return text;
+  }
   try {
     const payload = JSON.parse(match[1]);
     if (!payload || typeof payload !== "object") return String(goal || "");
     const mode = String(payload.mode || "").trim().toLowerCase();
-    if (mode === "chat-response") {
+    if (["chat-response", "plan-response", "read-only-answer"].includes(mode)) {
       return "Answer the current chat turn directly without external execution.";
     }
     const request = String(payload.request || "").trim();

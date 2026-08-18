@@ -378,16 +378,69 @@ export function listSkills({
   return skills.sort((a, b) => a.id.localeCompare(b.id));
 }
 
+const DESCRIPTION_STOP_WORDS = new Set([
+  "about",
+  "after",
+  "also",
+  "before",
+  "content",
+  "create",
+  "exact",
+  "file",
+  "files",
+  "from",
+  "general",
+  "into",
+  "output",
+  "path",
+  "paths",
+  "project",
+  "read",
+  "report",
+  "request",
+  "task",
+  "that",
+  "their",
+  "this",
+  "tool",
+  "tools",
+  "user",
+  "when",
+  "with",
+  "work",
+  "write",
+]);
+
+function descriptionTerms(value = "") {
+  return [
+    ...new Set(
+      String(value)
+        .toLowerCase()
+        .split(/[^a-z0-9+#.-]+/)
+        .filter((item) => item.length > 3 && !DESCRIPTION_STOP_WORDS.has(item))
+    ),
+  ];
+}
+
 function scoreSkill(skill, text, taskProfile) {
   let score = 0;
   if (skill.id === taskProfile) score += 10;
   if (skill.triggers.includes(taskProfile)) score += 6;
   for (const trigger of skill.triggers) {
     const needle = trigger.toLowerCase();
-    if (needle && textHasTrigger(text, needle)) score += Math.max(2, Math.min(6, Math.ceil(needle.length / 6)));
+    if (!needle) continue;
+    if (textHasTrigger(text, needle)) {
+      score += Math.max(2, Math.min(6, Math.ceil(needle.length / 6)));
+      continue;
+    }
+    const triggerTerms = descriptionTerms(needle);
+    if (triggerTerms.length >= 2 && triggerTerms.every((term) => textHasTrigger(text, term))) {
+      score += Math.max(2, Math.min(4, triggerTerms.length));
+    }
   }
-  for (const token of skill.description.toLowerCase().split(/[^a-z0-9+#.-]+/).filter((item) => item.length > 3)) {
-    if (textHasTrigger(text, token)) score += 0.25;
+  const descriptionMatches = descriptionTerms(skill.description).filter((token) => textHasTrigger(text, token));
+  if (descriptionMatches.length >= 3) {
+    score += Math.min(3, descriptionMatches.length * 0.35);
   }
   return score;
 }
