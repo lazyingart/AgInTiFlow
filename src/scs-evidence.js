@@ -519,7 +519,7 @@ function scopedChatopsEvidenceGoal(goal = "", taskProfile = "") {
     const payload = JSON.parse(match[1]);
     if (!payload || typeof payload !== "object") return String(goal || "");
     const mode = String(payload.mode || "").trim().toLowerCase();
-    if (["chat-response", "plan-response", "read-only-answer"].includes(mode)) {
+    if (["chat-response", "host-managed-response", "plan-response", "read-only-answer"].includes(mode)) {
       return "Answer the current chat turn directly without external execution.";
     }
     const request = String(payload.request || "").trim();

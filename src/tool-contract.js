@@ -29,6 +29,7 @@ const SAFE_SEQUENTIAL_READ_TOOLS = new Set([
 const MAX_VALIDATION_ERRORS = 8;
 const MAX_VALIDATION_NODES = 50_000;
 const MAX_SAFE_SEQUENTIAL_READ_CALLS = 4;
+const MAX_RECOVERABLE_SEQUENTIAL_CALLS = 4;
 
 function cloneValue(value) {
   return structuredClone(value);
@@ -330,4 +331,43 @@ export function validateToolCallBatch(toolCalls, contract, { maxToolCalls = 1 } 
     };
   }
   return { ok: true, calls: parsedCalls };
+}
+
+export function resolveDispatchableToolCallBatch(toolCalls, contract) {
+  const calls = Array.isArray(toolCalls) ? toolCalls : [];
+  const validation = validateToolCallBatch(calls, contract, {
+    maxToolCalls: safeSequentialToolBatchLimit(calls),
+  });
+  if (validation.ok) {
+    return {
+      ...validation,
+      acceptedToolCalls: calls,
+      deferredToolCalls: [],
+      recoveredSequentially: false,
+    };
+  }
+
+  const errors = Array.isArray(validation.errors) ? validation.errors : [];
+  const onlyExceededBatchLimit =
+    errors.length > 0 && errors.every((error) => error?.code === "TOO_MANY_TOOL_CALLS");
+  if (
+    !onlyExceededBatchLimit ||
+    calls.length <= 1 ||
+    calls.length > MAX_RECOVERABLE_SEQUENTIAL_CALLS
+  ) {
+    return validation;
+  }
+
+  const firstCallValidation = validateToolCallBatch([calls[0]], contract, {
+    maxToolCalls: 1,
+  });
+  if (!firstCallValidation.ok) return validation;
+
+  return {
+    ...firstCallValidation,
+    acceptedToolCalls: [calls[0]],
+    deferredToolCalls: calls.slice(1),
+    recoveredSequentially: true,
+    originalCode: validation.code,
+  };
 }

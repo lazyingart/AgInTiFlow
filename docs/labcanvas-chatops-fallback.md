@@ -27,10 +27,30 @@ AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"chat-response","request":"Produce only the 
 or:
 
 ```text
+AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"host-managed-response","request":"Return the report body; LabCanvas compiles and delivers it."}
+```
+
+or:
+
+```text
 AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Create the requested PDF from the supplied evidence."}
 ```
 
-For `chat-response`, ordinary conversation and routing do not require file or command evidence. For `task`, evidence requirements are inferred only from the exact request, not from surrounding wrapper prose. Artifact requests still require real artifacts.
+For `chat-response`, ordinary conversation and routing do not require file or command evidence. `host-managed-response` is for content-only subtasks such as a LaTeX body, translation, completion audit, or scheduled lesson where LabCanvas owns persistence, compilation, validation, and delivery. For `task`, evidence requirements are inferred only from the exact request, not from surrounding wrapper prose. Artifact requests still require real artifacts.
+
+## Provider Tool-Batch Recovery
+
+AgInTi requests one effectful tool call at a time, but some OpenAI-compatible
+providers may still emit a small batch. A bounded batch of otherwise valid
+calls is handled sequentially: AgInTi dispatches only the first call, records
+`tool.batch_deferred`, and asks the model to continue from the resulting state.
+Deferred calls are never executed automatically. Per-tool schema, permission,
+secret, path, and irreversible-action checks remain authoritative.
+
+Malformed calls, duplicate IDs, unavailable tools, hidden arguments, or an
+oversized batch still stop with `tool_contract_violation`. A host may resume
+the same saved session with another provider after that categorized stop; it
+must not replay the original request or duplicate earlier side effects.
 
 ## Local Context Recovery
 
@@ -43,4 +63,3 @@ npm run check
 npm run smoke:context-budget-recovery
 npm run smoke:truthful-completion
 ```
-

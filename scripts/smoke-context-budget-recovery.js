@@ -33,6 +33,17 @@ const planContract = deriveScsTaskContract({
   taskProfile: "auto",
 });
 assert.equal(planContract.requiresExternalEvidence, false, "read-only planning control prose incorrectly required execution evidence");
+const hostManagedContract = deriveScsTaskContract({
+  goal:
+    'AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"host-managed-response","request":"Return the LaTeX body; the host compiles and delivers it."}\n' +
+    "Control text mentions files, artifacts, compilation, and delivery.",
+  taskProfile: "chatops",
+});
+assert.equal(
+  hostManagedContract.requiresExternalEvidence,
+  false,
+  "host-managed response incorrectly required the agent to duplicate caller-owned artifact work"
+);
 const artifactContract = deriveScsTaskContract({
   goal:
     'AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Create and compile the requested PDF."}\n' +

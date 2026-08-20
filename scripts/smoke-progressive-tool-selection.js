@@ -18,6 +18,7 @@ import { SessionStore } from "../src/session-store.js";
 import {
   attachToolContract,
   createToolContract,
+  resolveDispatchableToolCallBatch,
   safeSequentialToolBatchLimit,
   toolContractFromResponse,
   validateToolCallBatch,
@@ -888,6 +889,14 @@ assert(
   }).ok,
   "mixed read/write batch unexpectedly passed"
 );
+const recoveredMixedBatch = resolveDispatchableToolCallBatch(
+  mixedReadWriteCalls,
+  createToolContract([...safeReadDescriptors, strictWriteDescriptor])
+);
+assert(recoveredMixedBatch.ok, "valid mixed batch could not recover through bounded sequential deferral");
+assert(recoveredMixedBatch.recoveredSequentially, "mixed batch recovery was not recorded");
+assert(recoveredMixedBatch.acceptedToolCalls.length === 1, "mixed batch recovery dispatched more than one call");
+assert(recoveredMixedBatch.deferredToolCalls.length === 1, "mixed batch recovery did not defer the extra call");
 const oversizedReadCalls = Array.from({ length: 5 }, (_, index) =>
   contractCall(`read-${index}`, "read_file", { path: `file-${index}.txt` })
 );
@@ -968,6 +977,9 @@ async function runToolContractCase({
   allowShellTool = false,
   toolSurfaceMaxTools = 12,
   targets = [],
+  expectedTargets = [],
+  followupToolCalls = null,
+  expectSequentialRecovery = false,
 }) {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), `agintiflow-tool-contract-${id}-`));
   const workspace = path.join(tempRoot, "workspace");
@@ -988,7 +1000,10 @@ async function runToolContractCase({
           if (textFallback) {
             return { choices: [{ message: { role: "assistant", content: responseText } }] };
           }
-          return assistantWithToolCalls(toolCalls);
+          const selectedToolCalls = Array.isArray(followupToolCalls) && requests.length > 1
+            ? followupToolCalls
+            : toolCalls;
+          return assistantWithToolCalls(selectedToolCalls);
         },
       },
     },
@@ -1082,6 +1097,23 @@ async function runToolContractCase({
     const events = await store.loadEvents();
     const contractFailures = events.filter((event) => event.type === "tool.failed" && event.data?.category === "tool-contract-violation");
     assert(clientFactoryCalls === 1, `${id} did not complete readiness and construct exactly one deterministic client`);
+    if (expectSequentialRecovery) {
+      assert(result.stopped !== true, `${id} stopped instead of completing the recovered sequential batch`);
+      assert(contractFailures.length === 0, `${id} recorded a contract failure for a recoverable valid batch`);
+      assert(
+        events.some((event) => event.type === "tool.batch_deferred" && event.data?.deferredCount === toolCalls.length - 1),
+        `${id} did not record bounded sequential deferral`
+      );
+      for (const target of expectedTargets) {
+        const exists = await fs.access(path.join(workspace, target)).then(() => true).catch(() => false);
+        assert(exists, `${id} did not create expected artifact ${target}`);
+      }
+      for (const target of targets) {
+        const exists = await fs.access(path.join(workspace, target)).then(() => true).catch(() => false);
+        assert(!exists, `${id} dispatched deferred artifact ${target}`);
+      }
+      return { result, requests, events, contractFailures, clientFactoryCalls };
+    }
     assert(
       result.stopped === true && result.reason === "tool_contract_violation",
       `${id} did not stop after one bounded repair: ${JSON.stringify({
@@ -1151,16 +1183,19 @@ assert(
 
 const multiCall = await runToolContractCase({
   id: "native-multi-call",
-  goal: "Create multi-one.txt and multi-two.txt.",
+  goal: "Create multi-one.txt containing safe.",
   toolCalls: [
-    contractCall("multi-one", "write_file", { path: "multi-one.txt", content: "unsafe", mode: "create" }),
-    contractCall("multi-two", "write_file", { path: "multi-two.txt", content: "unsafe", mode: "create" }),
+    contractCall("multi-one", "write_file", { path: "multi-one.txt", content: "safe", mode: "create" }),
+    contractCall("multi-two", "write_file", { path: "multi-two.txt", content: "deferred", mode: "create" }),
   ],
-  targets: ["multi-one.txt", "multi-two.txt"],
+  followupToolCalls: [contractCall("finish-recovered", "finish", { result: "Created and verified multi-one.txt." })],
+  expectSequentialRecovery: true,
+  expectedTargets: ["multi-one.txt"],
+  targets: ["multi-two.txt"],
 });
 assert(
-  multiCall.contractFailures.every((event) => event.data?.errors?.some((error) => error.code === "TOO_MANY_TOOL_CALLS")),
-  "multi-call batch did not enforce the one-call cap"
+  multiCall.events.some((event) => event.type === "tool.completed" && event.data?.toolName === "write_file"),
+  "recoverable multi-call batch did not dispatch its first valid call"
 );
 
 const duplicateId = await runToolContractCase({

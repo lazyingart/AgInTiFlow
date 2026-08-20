@@ -96,9 +96,8 @@ import {
 } from "./step-budget-controller.js";
 import { selectExecutionPolicy } from "./execution-policy.js";
 import {
-  safeSequentialToolBatchLimit,
+  resolveDispatchableToolCallBatch,
   toolContractFromResponse,
-  validateToolCallBatch,
 } from "./tool-contract.js";
 import {
   createContextBudgetState,
@@ -3909,17 +3908,18 @@ export async function runAgent(config) {
       }
 
       const rawToolCalls = assistantMessage.tool_calls;
-      const toolCalls = Array.isArray(rawToolCalls) ? rawToolCalls : [];
+      const reportedToolCalls = Array.isArray(rawToolCalls) ? rawToolCalls : [];
       const toolBatchValidation = rawToolCalls === undefined || rawToolCalls === null
-        ? { ok: true, calls: [] }
-        : validateToolCallBatch(rawToolCalls, toolContractFromResponse(response), {
-            maxToolCalls: safeSequentialToolBatchLimit(rawToolCalls),
-          });
+        ? { ok: true, calls: [], acceptedToolCalls: [], deferredToolCalls: [] }
+        : resolveDispatchableToolCallBatch(rawToolCalls, toolContractFromResponse(response));
+      const toolCalls = toolBatchValidation.ok
+        ? (toolBatchValidation.acceptedToolCalls || reportedToolCalls)
+        : reportedToolCalls;
 
       await store.appendEvent("model.responded", {
         step,
         content: redactSensitiveText(assistantMessage.content || ""),
-        toolCalls: toolCalls.map((call) => ({
+        toolCalls: reportedToolCalls.map((call) => ({
           id: call?.id,
           name: call?.function?.name,
           arguments: redactSensitiveText(call?.function?.arguments || ""),
@@ -3962,7 +3962,27 @@ export async function runAgent(config) {
         continue;
       }
 
-      state.messages.push(preserveAssistantMessage(assistantMessage));
+      if (toolBatchValidation.recoveredSequentially) {
+        const deferredToolCalls = toolBatchValidation.deferredToolCalls || [];
+        const detail = {
+          step,
+          reportedCount: reportedToolCalls.length,
+          dispatchedCount: toolCalls.length,
+          deferredCount: deferredToolCalls.length,
+          dispatchedTool: String(toolCalls[0]?.function?.name || ""),
+          deferredTools: deferredToolCalls.map((call) => String(call?.function?.name || "")).filter(Boolean),
+        };
+        await store.appendEvent("tool.batch_deferred", detail);
+        observers.event("tool.batch_deferred", detail);
+      }
+
+      state.messages.push(
+        preserveAssistantMessage(
+          toolBatchValidation.recoveredSequentially
+            ? { ...assistantMessage, tool_calls: toolCalls }
+            : assistantMessage
+        )
+      );
 
       if (toolCalls.length === 0) {
         const queuedCount = await injectQueuedUserMessages(store, state, observers);
