@@ -29,7 +29,7 @@ import {
 } from "./integration-native-executor.js";
 
 export const INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_VERSION =
-  "aginti-integration-thread-session-repository-v3";
+  "aginti-integration-thread-session-repository-v4";
 export const INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_PROPERTY =
   "integrationRuntimeRepositoryAttestation";
 export const INTEGRATION_EVENT_APPEND_ATTESTATION_VERSION = "aginti-public-event-append-attestation-v1";
@@ -74,6 +74,7 @@ const REQUIRED_REPOSITORY_METHODS = Object.freeze([
   "getActiveIntegrationRunForThread",
   "createIntegrationRun",
   "markIntegrationRunDispatching",
+  "authorizeIntegrationRunNativeStart",
   "abortIntegrationRunBeforeLaunch",
   "getIntegrationRun",
   "markIntegrationRunCancelling",
@@ -102,6 +103,7 @@ const REPOSITORY_ATTESTATION_KEYS = Object.freeze([
   "durableThreadSessionMapping",
   "dispatchLeases",
   "dispatchOutbox",
+  "nativeStartAuthorization",
   "preLaunchAbort",
   "terminalOutbox",
   "completionOutboxBundles",
@@ -234,7 +236,7 @@ const COMPLETION_OUTBOX_METADATA_KEYS = Object.freeze([
   "orderedBundleDigest",
 ]);
 const COMPLETION_OUTBOX_CURSOR_KEYS = Object.freeze(["firstSeq", "lastSeq", "lastHash", "prunedThroughSeq"]);
-const PRE_LAUNCH_ABORT_ATTEMPT_VERSION = "aginti-pre-launch-abort-attempt-v2";
+const PRE_LAUNCH_ABORT_ATTEMPT_VERSION = "aginti-pre-launch-abort-attempt-v3";
 const PRE_LAUNCH_ABORT_RESPONSE_VERSION = "aginti-pre-launch-abort-response-v1";
 const PRE_LAUNCH_ABORT_ATTEMPT_KEYS = Object.freeze([
   "schemaVersion",
@@ -249,6 +251,7 @@ const PRE_LAUNCH_ABORT_ATTEMPT_KEYS = Object.freeze([
   "previousThreadRevision",
   "expectedNativeRuntimeRevision",
   "threadPreservationDigest",
+  "nativeStartReceiptMustBeAbsent",
   "createdAt",
   "dispatchAttempted",
   "dispatchLeaseId",
@@ -264,6 +267,46 @@ const PRE_LAUNCH_ABORT_RESPONSE_KEYS = Object.freeze([
   "aborted",
   "idempotent",
   "attemptDigest",
+  "run",
+  "thread",
+]);
+const NATIVE_START_AUTHORIZATION_VERSION = "aginti-native-start-authorization-v1";
+const NATIVE_START_AUTHORIZATION_KEYS = Object.freeze([
+  "schemaVersion",
+  "mode",
+  "principalId",
+  "browserSessionId",
+  "browserSessionPolicy",
+  "threadId",
+  "runId",
+  "nativeSessionId",
+  "previousRunId",
+  "previousRunRevision",
+  "previousRunRuntimeRevision",
+  "threadRevision",
+  "threadPreservationDigest",
+  "createdAt",
+  "startedAt",
+  "expectedNativeRuntimeRevision",
+  "targetNativeRuntimeRevision",
+  "expectedRunRevision",
+  "targetRunRevision",
+  "dispatchLeaseId",
+  "dispatchOutbox",
+  "dispatchedAt",
+  "processOwner",
+  "authorizedAt",
+  "authorizationId",
+  "authorizationDigest",
+]);
+const NATIVE_START_AUTHORIZATION_RESPONSE_KEYS = Object.freeze([
+  "schemaVersion",
+  "outcome",
+  "authorized",
+  "idempotent",
+  "authorizationId",
+  "authorizationDigest",
+  "receipt",
   "run",
   "thread",
 ]);
@@ -475,6 +518,7 @@ function validateRepositoryAttestation(value, { requireRetainedDescriptorStorage
     proof.durableThreadSessionMapping !== true ||
     proof.dispatchLeases !== true ||
     proof.dispatchOutbox !== true ||
+    proof.nativeStartAuthorization !== true ||
     proof.preLaunchAbort !== true ||
     proof.terminalOutbox !== true ||
     proof.completionOutboxBundles !== true ||
@@ -1563,6 +1607,250 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
     return contractDigest(unsigned);
   }
 
+  function nativeStartAuthorizationDigestFor(authorization = {}) {
+    const {
+      authorizationId: _authorizationId,
+      authorizationDigest: _authorizationDigest,
+      ...unsigned
+    } = authorization;
+    return contractDigest(unsigned);
+  }
+
+  function nativeStartAuthorizationIdForDigest(digest) {
+    if (typeof digest !== "string" || !/^[a-f0-9]{64}$/u.test(digest)) {
+      failUnavailable("Native start authorization digest is invalid.");
+    }
+    return `nstart_${digest.slice(0, 48)}`;
+  }
+
+  function validateNativeStartAuthorizationRecord(record = {}, label = "native start authorization") {
+    assertExactDataKeys(record, NATIVE_START_AUTHORIZATION_KEYS, [], label);
+    const clone = canonicalPlainJsonClone(record, label);
+    if (clone.schemaVersion !== NATIVE_START_AUTHORIZATION_VERSION) {
+      failUnavailable("Native start authorization schema is invalid.");
+    }
+    if (clone.mode !== "start" && clone.mode !== "resume") failUnavailable("Native start authorization mode is invalid.");
+    assertPrincipalId(clone.principalId);
+    assertBrowserSessionId(clone.browserSessionId);
+    if (clone.browserSessionPolicy !== "same-browser-session") failUnavailable("Native start authorization browser policy is invalid.");
+    validateIntegrationThreadId(clone.threadId);
+    validateIntegrationRunId(clone.runId);
+    assertNativeSessionId(clone.nativeSessionId);
+    if (clone.mode === "start") {
+      if (
+        clone.previousRunId !== null ||
+        clone.previousRunRevision !== null ||
+        clone.previousRunRuntimeRevision !== null
+      ) {
+        failUnavailable("Start native authorization must not bind a previous run.");
+      }
+    } else {
+      validateIntegrationRunId(clone.previousRunId);
+      assertRevision(clone.previousRunRevision, "previous run");
+      assertRuntimeRevision(clone.previousRunRuntimeRevision, "previous run runtime");
+    }
+    assertRevision(clone.threadRevision, "native start authorization thread");
+    if (typeof clone.threadPreservationDigest !== "string" || !/^[a-f0-9]{64}$/u.test(clone.threadPreservationDigest)) {
+      failUnavailable("Native start authorization thread preservation digest is invalid.");
+    }
+    assertCanonicalIso(clone.createdAt, "native start authorization createdAt");
+    assertCanonicalIso(clone.startedAt, "native start authorization startedAt");
+    if (clone.startedAt !== clone.createdAt) failUnavailable("Native start authorization start timestamp is invalid.");
+    const expectedNativeRevision = assertRuntimeRevision(
+      clone.expectedNativeRuntimeRevision,
+      "native start authorization expected runtime"
+    );
+    if (clone.mode === "resume" && clone.previousRunRuntimeRevision !== expectedNativeRevision) {
+      failUnavailable("Resume native authorization previous runtime revision did not match the dispatched runtime.");
+    }
+    const targetNativeRevision = assertRuntimeRevision(
+      clone.targetNativeRuntimeRevision,
+      "native start authorization target runtime"
+    );
+    if (clone.mode === "start" && targetNativeRevision !== expectedNativeRevision) {
+      failUnavailable("Start native authorization target runtime revision is invalid.");
+    }
+    if (clone.mode === "resume" && targetNativeRevision !== expectedNativeRevision + 1) {
+      failUnavailable("Resume native authorization target runtime revision is invalid.");
+    }
+    if (assertRevision(clone.expectedRunRevision, "native start authorization run") !== 2) {
+      failUnavailable("Native start authorization must bind dispatched run revision 2.");
+    }
+    if (assertRevision(clone.targetRunRevision, "native start authorization run target") !== 3) {
+      failUnavailable("Native start authorization must advance the run to revision 3.");
+    }
+    if (typeof clone.dispatchLeaseId !== "string" || !/^[a-f0-9]{64}$/u.test(clone.dispatchLeaseId)) {
+      failUnavailable("Native start authorization dispatch lease is invalid.");
+    }
+    if (clone.dispatchOutbox !== true) failUnavailable("Native start authorization dispatch outbox flag is invalid.");
+    assertCanonicalIso(clone.dispatchedAt, "native start authorization dispatchedAt");
+    assertProcessOwnerEnvelope(clone.processOwner, "native start authorization");
+    assertCanonicalIso(clone.authorizedAt, "native start authorization authorizedAt");
+    if (clone.authorizedAt !== clone.dispatchedAt) {
+      failUnavailable("Native start authorization must use a durable dispatch timestamp.");
+    }
+    const digest = nativeStartAuthorizationDigestFor(clone);
+    if (clone.authorizationDigest !== digest) failUnavailable("Native start authorization digest is invalid.");
+    if (clone.authorizationId !== nativeStartAuthorizationIdForDigest(digest)) {
+      failUnavailable("Native start authorization id is invalid.");
+    }
+    return clone;
+  }
+
+  function buildNativeStartAuthorization({ mode, scope, thread, run, previousRun = null, targetNativeRuntimeRevision }) {
+    const threadSnapshot = snapshotThreadRecord(thread, "native start authorization thread");
+    const runSnapshot = snapshotRunRecord(run, "native start authorization run");
+    if (!Object.prototype.hasOwnProperty.call(runSnapshot, "nativeStartReceipt") || runSnapshot.nativeStartReceipt !== null) {
+      failUnavailable("Dispatched run must not already contain a native start receipt.");
+    }
+    if (runSnapshot.status !== "running" || assertRevision(runSnapshot.revision, "dispatched run") !== 2) {
+      failUnavailable("Native start authorization requires a dispatched running revision 2 run.");
+    }
+    assertRunFields(runSnapshot, {
+      runId: runSnapshot.id,
+      threadId: threadSnapshot.id,
+      nativeSessionId: threadSnapshot.nativeSessionId,
+      principalId: scope.principalId,
+      browserSessionId: scope.browserSessionId,
+      status: "running",
+      runtimeRevision: threadRuntimeRevision(threadSnapshot, "native start authorization thread"),
+      createdAt: runSnapshot.createdAt,
+      startedAt: runSnapshot.createdAt,
+      dispatchLeaseId: runSnapshot.dispatchLeaseId,
+      dispatchOutbox: true,
+      dispatchedAt: runSnapshot.dispatchedAt,
+      processOwner: runSnapshot.processOwner,
+    }, "native start authorization run");
+    const previousRunSnapshot = previousRun ? snapshotRunRecord(previousRun, "native start authorization previous run") : null;
+    const previousRunId = runSnapshot.previousRunId ?? null;
+    const base = {
+      schemaVersion: NATIVE_START_AUTHORIZATION_VERSION,
+      mode,
+      principalId: scope.principalId,
+      browserSessionId: scope.browserSessionId,
+      browserSessionPolicy: "same-browser-session",
+      threadId: threadSnapshot.id,
+      runId: runSnapshot.id,
+      nativeSessionId: threadSnapshot.nativeSessionId,
+      previousRunId,
+      previousRunRevision: previousRunSnapshot ? assertRevision(previousRunSnapshot.revision, "previous run") : null,
+      previousRunRuntimeRevision: previousRunSnapshot
+        ? assertRuntimeRevision(previousRunSnapshot.authority?.runtimeRevision, "previous run runtime")
+        : null,
+      threadRevision: assertRevision(threadSnapshot.revision, "native start authorization thread"),
+      threadPreservationDigest: threadPreservationDigestFor(threadSnapshot, "native start authorization thread"),
+      createdAt: runSnapshot.createdAt,
+      startedAt: runSnapshot.startedAt,
+      expectedNativeRuntimeRevision: assertRuntimeRevision(runSnapshot.authority?.runtimeRevision, "native start authorization runtime"),
+      targetNativeRuntimeRevision: assertRuntimeRevision(targetNativeRuntimeRevision, "native start authorization target runtime"),
+      expectedRunRevision: assertRevision(runSnapshot.revision, "native start authorization run"),
+      targetRunRevision: assertRevision(runSnapshot.revision, "native start authorization run") + 1,
+      dispatchLeaseId: runSnapshot.dispatchLeaseId,
+      dispatchOutbox: runSnapshot.dispatchOutbox,
+      dispatchedAt: runSnapshot.dispatchedAt,
+      processOwner: assertProcessOwnerEnvelope(runSnapshot.processOwner, "native start authorization"),
+      authorizedAt: runSnapshot.dispatchedAt,
+      authorizationId: "",
+      authorizationDigest: ZERO_DIGEST,
+    };
+    if (mode === "start" && previousRunSnapshot) failUnavailable("Start native authorization cannot bind a previous run.");
+    if (mode === "resume") {
+      if (!previousRunSnapshot || previousRunId !== previousRunSnapshot.id) notFound("Run");
+      if (previousRunSnapshot.threadId !== threadSnapshot.id || previousRunSnapshot.nativeSessionId !== threadSnapshot.nativeSessionId) {
+        failUnavailable("Resume native authorization previous run lineage is invalid.");
+      }
+    }
+    const digest = nativeStartAuthorizationDigestFor(base);
+    return validateNativeStartAuthorizationRecord(Object.freeze({
+      ...base,
+      authorizationId: nativeStartAuthorizationIdForDigest(digest),
+      authorizationDigest: digest,
+    }));
+  }
+
+  function assertNativeStartReceipt(receipt, authorization, label = "native start receipt") {
+    const sealed = validateNativeStartAuthorizationRecord(receipt, label);
+    if (sealed.authorizationDigest !== authorization.authorizationDigest) {
+      failUnavailable("Native start receipt digest did not match the authorization.");
+    }
+    if (contractDigest(sealed) !== contractDigest(authorization)) {
+      failUnavailable("Native start receipt did not match the authorization.");
+    }
+    return sealed;
+  }
+
+  function validateNativeStartAuthorizationResponse(result, authorization) {
+    let response = result;
+    if (result && typeof result === "object" && Object.prototype.hasOwnProperty.call(result, "authorization")) {
+      assertExactDataKeys(result, ["authorization"], [], "native start authorization response wrapper");
+      response = result.authorization;
+    }
+    assertExactDataKeys(response, NATIVE_START_AUTHORIZATION_RESPONSE_KEYS, [], "native start authorization response");
+    const cloned = canonicalPlainJsonClone(response, "native start authorization response");
+    if (cloned.schemaVersion !== NATIVE_START_AUTHORIZATION_VERSION) {
+      failUnavailable("Native start authorization response schema is invalid.");
+    }
+    if (cloned.authorizationId !== authorization.authorizationId || cloned.authorizationDigest !== authorization.authorizationDigest) {
+      failUnavailable("Native start authorization response did not match the request.");
+    }
+    if (cloned.outcome !== "authorized" && cloned.outcome !== "already-authorized") {
+      failUnavailable("Native start authorization response outcome is invalid.");
+    }
+    if (cloned.authorized !== true || cloned.idempotent !== (cloned.outcome === "already-authorized")) {
+      failUnavailable("Native start authorization response flags are invalid.");
+    }
+    const receipt = assertNativeStartReceipt(cloned.receipt, authorization);
+    const run = snapshotRunRecord(cloned.run, "authorized native start run");
+    const thread = snapshotThreadRecord(cloned.thread, "authorized native start thread");
+    if (!run || !thread) failUnavailable("Native start authorization response must include run and thread.");
+    assertRunFields(run, {
+      runId: authorization.runId,
+      threadId: authorization.threadId,
+      nativeSessionId: authorization.nativeSessionId,
+      principalId: authorization.principalId,
+      browserSessionId: authorization.browserSessionId,
+      status: "running",
+      runtimeRevision: authorization.expectedNativeRuntimeRevision,
+      createdAt: authorization.createdAt,
+      startedAt: authorization.startedAt,
+      dispatchLeaseId: authorization.dispatchLeaseId,
+      dispatchOutbox: true,
+      dispatchedAt: authorization.dispatchedAt,
+      processOwner: authorization.processOwner,
+    }, "authorized native start run");
+    if (
+      run.previousRunId !== authorization.previousRunId ||
+      run.revision !== authorization.targetRunRevision ||
+      run.hidden !== false ||
+      run.tombstone !== false ||
+      run.cancelRequestedAt !== null ||
+      run.completedAt !== null ||
+      run.output !== "" ||
+      run.error !== null
+    ) {
+      failUnavailable("Authorized native start run did not match the authorization.");
+    }
+    assertNativeStartReceipt(run.nativeStartReceipt, authorization, "authorized run native start receipt");
+    if (
+      thread.id !== authorization.threadId ||
+      thread.nativeSessionId !== authorization.nativeSessionId ||
+      thread.principalId !== authorization.principalId ||
+      thread.browserSessionId !== authorization.browserSessionId ||
+      thread.browserSessionPolicy !== "same-browser-session" ||
+      thread.status !== "running" ||
+      thread.lastRunId !== authorization.runId ||
+      thread.updatedAt !== authorization.createdAt ||
+      thread.revision !== authorization.threadRevision ||
+      threadRuntimeRevision(thread, "authorized native start thread") !== authorization.expectedNativeRuntimeRevision
+    ) {
+      failUnavailable("Authorized native start thread did not match the authorization.");
+    }
+    if (threadPreservationDigestFor(thread, "authorized native start thread") !== authorization.threadPreservationDigest) {
+      failUnavailable("Authorized native start thread preservation digest did not match.");
+    }
+    return Object.freeze({ outcome: cloned.outcome, receipt, run, thread });
+  }
+
   function sealPreLaunchAbortAttempt(attempt = {}) {
     assertExactDataKeys(attempt, PRE_LAUNCH_ABORT_ATTEMPT_KEYS, [], "pre-launch abort attempt");
     const clone = canonicalPlainJsonClone(attempt, "pre-launch abort attempt");
@@ -1580,6 +1868,9 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
     assertRuntimeRevision(clone.expectedNativeRuntimeRevision, "pre-launch abort native runtime");
     if (typeof clone.threadPreservationDigest !== "string" || !/^[a-f0-9]{64}$/u.test(clone.threadPreservationDigest)) {
       failUnavailable("Pre-launch abort thread preservation digest is invalid.");
+    }
+    if (clone.nativeStartReceiptMustBeAbsent !== true) {
+      failUnavailable("Pre-launch abort must explicitly require native start receipt absence.");
     }
     assertCanonicalIso(clone.createdAt, "pre-launch abort createdAt");
     if (typeof clone.dispatchAttempted !== "boolean") failUnavailable("Pre-launch abort dispatch flag is invalid.");
@@ -1617,6 +1908,7 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
       previousThreadRevision,
       expectedNativeRuntimeRevision: expectedRuntimeRevision,
       threadPreservationDigest: threadPreservationDigestFor(thread, "pre-launch abort original thread"),
+      nativeStartReceiptMustBeAbsent: true,
       createdAt,
       dispatchAttempted: false,
       dispatchLeaseId: null,
@@ -1685,6 +1977,7 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
       run.status !== "aborted_before_launch" ||
       run.hidden !== true ||
       run.tombstone !== true ||
+      run.nativeStartReceipt !== null ||
       run.completedAt !== null ||
       run.output !== "" ||
       run.error !== null ||
@@ -1755,6 +2048,21 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
       "pre-launch abort response envelope"
     );
     return validatePreLaunchAbortResponse(result, attempt);
+  }
+
+  async function authorizeNativeStart(authorization, beforeRepositoryCall) {
+    if (beforeRepositoryCall) beforeRepositoryCall();
+    const result = snapshotRepositoryEnvelope(
+      await callRepository("authorizeIntegrationRunNativeStart", { authorization }),
+      "native start authorization response envelope"
+    );
+    const authorized = validateNativeStartAuthorizationResponse(result, authorization);
+    if (authorized.outcome === "already-authorized") {
+      authorityFail("RECOVERY_HOLD", "Native start authorization already exists and requires retained-descriptor recovery.", {
+        status: 503,
+      });
+    }
+    return authorized;
   }
 
   function prepareLaunch({ mode, thread, runId, inputText, scope }) {
@@ -1957,45 +2265,67 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
       runRegistry.releaseRun(run.id);
       throw error;
     }
-    const worker = (async () => {
-      try {
-        const result = await executeNativeAgintiRun(prepared.config);
-        const classification = classifyRunAgentResult(result, {
-          nativeSessionId: prepared.nativeSessionId,
-          abortSignal: prepared.controller.signal,
-        });
-        prepared.closeObserver();
+    let released = false;
+    function releaseAuthorizedNativeExecution(authorizedRunInput) {
+      if (released) failUnavailable("Native AgInTi execution was already released.");
+      const authorizedRun = snapshotRunRecord(authorizedRunInput, "authorized native execution run");
+      if (authorizedRun.id !== run.id || authorizedRun.threadId !== run.threadId || authorizedRun.nativeSessionId !== run.nativeSessionId) {
+        failUnavailable("Authorized native execution run did not match the dispatch.");
+      }
+      released = true;
+      const worker = (async () => {
         try {
-          await prepared.drainEvents();
-        } catch (error) {
-          error.persistedRuntimeRevision = result.persistedRuntimeRevision;
-          error.integrationObserverError = true;
-          throw error;
-        }
-        return await finishWithOutbox(run.id, scope, classification, prepared, { suppressOutboxErrors: true });
-      } catch (error) {
-        prepared.closeObserver();
-        let observerError = null;
-        if (error?.integrationObserverError !== true) {
+          const result = await executeNativeAgintiRun(prepared.config);
+          const classification = classifyRunAgentResult(result, {
+            nativeSessionId: prepared.nativeSessionId,
+            abortSignal: prepared.controller.signal,
+          });
+          prepared.closeObserver();
           try {
             await prepared.drainEvents();
-          } catch (drainError) {
-            observerError = drainError;
+          } catch (error) {
+            error.persistedRuntimeRevision = result.persistedRuntimeRevision;
+            error.integrationObserverError = true;
+            throw error;
           }
+          return await finishWithOutbox(authorizedRun.id, scope, classification, prepared, { suppressOutboxErrors: true });
+        } catch (error) {
+          prepared.closeObserver();
+          let observerError = null;
+          if (error?.integrationObserverError !== true) {
+            try {
+              await prepared.drainEvents();
+            } catch (drainError) {
+              observerError = drainError;
+            }
+          }
+          const classification = classifyRunAgentError(aggregateRuntimeObserverError(error, observerError), {
+            abortSignal: prepared.controller.signal,
+          });
+          return await finishWithOutbox(authorizedRun.id, scope, classification, prepared, { suppressOutboxErrors: true });
+        } finally {
+          prepared.closeObserver();
+          projector.clearRun(prepared.eventScope);
+          prepared.cleanup();
+          runRegistry.releaseRun(authorizedRun.id);
         }
-        const classification = classifyRunAgentError(aggregateRuntimeObserverError(error, observerError), {
-          abortSignal: prepared.controller.signal,
-        });
-        return await finishWithOutbox(run.id, scope, classification, prepared, { suppressOutboxErrors: true });
-      } finally {
-        prepared.closeObserver();
-        projector.clearRun(prepared.eventScope);
-        prepared.cleanup();
-        runRegistry.releaseRun(run.id);
-      }
-    })();
-    worker.then(deferred.resolve, deferred.reject);
-    return deferred.promise;
+      })();
+      worker.then(deferred.resolve, deferred.reject);
+      return deferred.promise;
+    }
+    function abandon(error) {
+      if (released) return;
+      prepared.closeObserver();
+      projector.clearRun(prepared.eventScope);
+      prepared.cleanup();
+      runRegistry.releaseRun(run.id);
+      deferred.reject(error);
+    }
+    return Object.freeze({
+      promise: deferred.promise,
+      releaseAuthorizedNativeExecution,
+      abandon,
+    });
   }
 
   function getIntegrationRuntimeProof() {
@@ -2148,6 +2478,9 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
       const previousThreadRevision = assertRevision(thread.revision, "thread");
       const createdAt = nowIso();
       let createAttempted = false;
+      let authorizationStarted = false;
+      let nativeStartReceiptObserved = false;
+      let nativeLaunch = null;
       let abortAttempt = buildPreLaunchAbortBase({
         mode: "start",
         scope,
@@ -2243,13 +2576,33 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
           dispatchedAt,
           processOwner: owner,
         }, "dispatched run");
+        if (dispatched.nativeStartReceipt !== null) {
+          nativeStartReceiptObserved = true;
+          failUnavailable("Dispatched run must not already contain a native start receipt.");
+        }
         const publicRun = await runPublicRecord(dispatched, scope, eventLedgerStore, runId);
-        launchExecutor({ run: dispatched, scope, prepared });
+        const authorization = buildNativeStartAuthorization({
+          mode: "start",
+          scope,
+          thread: createdThread,
+          run: dispatched,
+          targetNativeRuntimeRevision: prepared.completedRuntimeRevision,
+        });
+        nativeLaunch = launchExecutor({ run: dispatched, scope, prepared });
+        const authorized = await authorizeNativeStart(authorization, () => {
+          authorizationStarted = true;
+        });
+        nativeLaunch.releaseAuthorizedNativeExecution(authorized.run);
         return Object.freeze({ run: publicRun });
       } catch (error) {
-        prepared.cleanup();
-        prepared.closeObserver();
-        if (createAttempted) {
+        if (nativeLaunch) {
+          nativeLaunch.abandon(error);
+        } else {
+          prepared.cleanup();
+          prepared.closeObserver();
+          projector.clearRun(prepared.eventScope);
+        }
+        if (createAttempted && !authorizationStarted && !nativeStartReceiptObserved) {
           try {
             await abortIntegrationRunBeforeLaunch(abortAttempt);
           } catch (abortError) {
@@ -2326,6 +2679,9 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
       const previousThreadRevision = assertRevision(thread.revision, "thread");
       const createdAt = nowIso();
       let createAttempted = false;
+      let authorizationStarted = false;
+      let nativeStartReceiptObserved = false;
+      let nativeLaunch = null;
       let abortAttempt = buildPreLaunchAbortBase({
         mode: "resume",
         scope,
@@ -2421,13 +2777,34 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
           dispatchedAt,
           processOwner: owner,
         }, "dispatched resumed run");
+        if (dispatched.nativeStartReceipt !== null) {
+          nativeStartReceiptObserved = true;
+          failUnavailable("Dispatched run must not already contain a native start receipt.");
+        }
         const publicRun = await runPublicRecord(dispatched, scope, eventLedgerStore, runId);
-        launchExecutor({ run: dispatched, scope, prepared });
+        const authorization = buildNativeStartAuthorization({
+          mode: "resume",
+          scope,
+          thread: createdThread,
+          run: dispatched,
+          previousRun: previous,
+          targetNativeRuntimeRevision: prepared.completedRuntimeRevision,
+        });
+        nativeLaunch = launchExecutor({ run: dispatched, scope, prepared });
+        const authorized = await authorizeNativeStart(authorization, () => {
+          authorizationStarted = true;
+        });
+        nativeLaunch.releaseAuthorizedNativeExecution(authorized.run);
         return Object.freeze({ run: publicRun });
       } catch (error) {
-        prepared.cleanup();
-        prepared.closeObserver();
-        if (createAttempted) {
+        if (nativeLaunch) {
+          nativeLaunch.abandon(error);
+        } else {
+          prepared.cleanup();
+          prepared.closeObserver();
+          projector.clearRun(prepared.eventScope);
+        }
+        if (createAttempted && !authorizationStarted && !nativeStartReceiptObserved) {
           try {
             await abortIntegrationRunBeforeLaunch(abortAttempt);
           } catch (abortError) {

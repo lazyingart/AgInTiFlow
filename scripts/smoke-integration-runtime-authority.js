@@ -46,7 +46,9 @@ const CONTEXT_DIGEST = "c".repeat(64);
 const SNAPSHOT_HASH = "d".repeat(64);
 const ARTIFACT_ID = `art_${"e".repeat(64)}`;
 const COMPLETION_OUTBOX_METADATA_VERSION = "aginti-completion-outbox-bundle-v1";
+const PRE_LAUNCH_ABORT_ATTEMPT_VERSION = "aginti-pre-launch-abort-attempt-v3";
 const PRE_LAUNCH_ABORT_RESPONSE_VERSION = "aginti-pre-launch-abort-response-v1";
+const NATIVE_START_AUTHORIZATION_VERSION = "aginti-native-start-authorization-v1";
 const SMOKE_ROOT = "/home/lachlan/ProjectsLFS/Agent/AgInTiFlow/.integration-runtime-authority-smoke-root";
 
 function delay(ms) {
@@ -67,6 +69,23 @@ function seal(value) {
 function sealShallow(value) {
   const unsigned = { ...value };
   return Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function nativeStartAuthorizationDigestFor(authorization = {}) {
+  const {
+    authorizationId: _authorizationId,
+    authorizationDigest: _authorizationDigest,
+    ...unsigned
+  } = authorization;
+  return contractDigest(unsigned);
+}
+
+function nativeStartAuthorizationIdForDigest(digest) {
+  return `nstart_${digest.slice(0, 48)}`;
 }
 
 function cloneFrozenWith(source, descriptors = {}, prototype = Object.prototype) {
@@ -291,6 +310,7 @@ function runRecord(overrides = {}) {
     tombstone: false,
     abortAttemptDigest: null,
     abortAt: null,
+    nativeStartReceipt: null,
     output: "",
     error: null,
     authority: {
@@ -401,6 +421,19 @@ function makeRepository({
     failNextDispatch: false,
     failDispatchAfterCommit: false,
     malformedDispatchRun: false,
+    forgedDispatchNativeStartReceipt: false,
+    failAuthorizeBeforeCommit: false,
+    failAuthorizeAfterCommit: false,
+    forceAuthorizeAlreadyAuthorized: false,
+    forgedAuthorizeReceipt: false,
+    forgedAuthorizeRunRevision: null,
+    forgedAuthorizeOwnerTimestamp: false,
+    forgedAuthorizeTimestamp: false,
+    forgedAuthorizeRunAlias: "",
+    forgedAuthorizeThreadAlias: "",
+    forgedAuthorizeDescriptor: "",
+    mutateAuthorizeResponseAliasAfterReturn: false,
+    authorizeDescriptorTrapCount: 0,
     failNextPreLaunchAbort: false,
     corruptAbortLease: false,
     forgedAbortRunRevision: null,
@@ -447,6 +480,7 @@ function makeRepository({
     durableThreadSessionMapping: true,
     dispatchLeases: true,
     dispatchOutbox: true,
+    nativeStartAuthorization: true,
     preLaunchAbort: true,
     terminalOutbox: true,
     completionOutboxBundles: true,
@@ -529,6 +563,84 @@ function makeRepository({
       hash = checked.hash;
       return record;
     });
+  }
+
+  function authorizationResponse(outcome, authorization, run, thread) {
+    let receipt = cloneJson(run.nativeStartReceipt || authorization);
+    if (state.forgedAuthorizeReceipt) {
+      receipt = { ...receipt, authorizationDigest: "f".repeat(64) };
+    }
+    if (state.forgedAuthorizeTimestamp) {
+      receipt = { ...receipt, authorizedAt: "2026-01-01T00:00:00.000Z" };
+    }
+    let responseRun = { ...run, nativeStartReceipt: receipt };
+    if (state.forgedAuthorizeRunRevision !== null) responseRun.revision = state.forgedAuthorizeRunRevision;
+    if (state.forgedAuthorizeOwnerTimestamp && responseRun.processOwner) {
+      responseRun.processOwner = {
+        ...responseRun.processOwner,
+        acquiredAt: "2026-01-01T00:00:00.000Z",
+        heartbeatAt: "2026-01-01T00:00:01.000Z",
+      };
+    }
+    if (state.forgedAuthorizeRunAlias === "native") responseRun.nativeSessionId = "aginti:forged-native";
+    if (state.forgedAuthorizeRunAlias === "thread") responseRun.threadId = "thr_00000000-0000-4000-8000-000000000092";
+    if (state.forgedAuthorizeRunAlias === "startedAt") responseRun.startedAt = "2026-01-01T00:00:00.000Z";
+    let responseThread = { ...thread };
+    if (state.forgedAuthorizeThreadAlias === "native") responseThread.nativeSessionId = "aginti:forged-native";
+    if (state.forgedAuthorizeThreadAlias === "revision") responseThread.revision += 1;
+    if (state.forgedAuthorizeThreadAlias === "updatedAt") responseThread.updatedAt = "2026-01-01T00:00:00.000Z";
+    if (state.forgedAuthorizeThreadAlias === "context") {
+      responseThread.authority = { ...responseThread.authority, contextDigest: "6".repeat(64) };
+    }
+    const response = {
+      schemaVersion: NATIVE_START_AUTHORIZATION_VERSION,
+      outcome,
+      authorized: true,
+      idempotent: outcome === "already-authorized",
+      authorizationId: authorization.authorizationId,
+      authorizationDigest: authorization.authorizationDigest,
+      receipt,
+      run: responseRun,
+      thread: responseThread,
+    };
+    if (state.mutateAuthorizeResponseAliasAfterReturn) {
+      setTimeout(() => {
+        response.run.nativeSessionId = "aginti:mutated-after-return";
+        response.thread.revision += 10;
+      }, 0);
+    }
+    if (state.forgedAuthorizeDescriptor === "proxy") {
+      return new Proxy(response, {
+        get(target, property, receiver) {
+          state.authorizeDescriptorTrapCount += 1;
+          return Reflect.get(target, property, receiver);
+        },
+      });
+    }
+    if (state.forgedAuthorizeDescriptor === "accessor") {
+      Object.defineProperty(response, "run", {
+        enumerable: true,
+        configurable: true,
+        get() {
+          state.authorizeDescriptorTrapCount += 1;
+          return responseRun;
+        },
+      });
+    }
+    if (state.forgedAuthorizeDescriptor === "non-enumerable") {
+      Object.defineProperty(response, "thread", {
+        enumerable: false,
+        configurable: true,
+        writable: true,
+        value: responseThread,
+      });
+    }
+    if (state.forgedAuthorizeDescriptor === "symbol") response[Symbol("private")] = true;
+    if (state.forgedAuthorizeDescriptor === "extra") response.raw = "private";
+    if (state.forgedAuthorizeDescriptor === "outer-wrapper-extra") {
+      return { authorization: response, extra: "private" };
+    }
+    return response;
   }
 
   const methods = {
@@ -656,6 +768,11 @@ function makeRepository({
       mutateRunAlias(state.runs.get(payload.runId), state.mutateCreateAliasAfterReturn);
       mutateThreadAlias(state.threads.get(payload.threadId), state.mutateCreateAliasAfterReturn);
       const run = ownedRun(payload);
+      if (!run || !Object.prototype.hasOwnProperty.call(run, "nativeStartReceipt") || run.nativeStartReceipt !== null) {
+        const error = new Error("native start receipt already exists");
+        error.code = "NATIVE_START_AUTHORIZATION_REFUSED";
+        throw error;
+      }
       if (
         !run ||
         run.revision !== payload.expectedRevision ||
@@ -684,8 +801,99 @@ function makeRepository({
         throw error;
       }
       if (state.malformedDispatchRun) return { run: { ...run, nativeSessionId: "aginti:wrong" } };
+      if (state.forgedDispatchNativeStartReceipt) return { run: { ...run, nativeStartReceipt: { forged: true } } };
       if (state.substituteDispatchThread) return { run: { ...run, threadId: "thr_00000000-0000-4000-8000-000000000001" } };
       return { run };
+    },
+    async authorizeIntegrationRunNativeStart(payload) {
+      calls.push(["authorizeIntegrationRunNativeStart", payload]);
+      const authorization = payload.authorization;
+      assert.equal(Object.isFrozen(payload), true);
+      assert.equal(Object.isFrozen(authorization), true);
+      assert.equal(Object.isFrozen(authorization.processOwner), true);
+      assert.equal(Object.isFrozen(authorization.processOwner.processIdentity), true);
+      const digest = nativeStartAuthorizationDigestFor(authorization);
+      if (
+        authorization.schemaVersion !== NATIVE_START_AUTHORIZATION_VERSION ||
+        authorization.authorizationDigest !== digest ||
+        authorization.authorizationId !== nativeStartAuthorizationIdForDigest(digest) ||
+        authorization.browserSessionPolicy !== "same-browser-session" ||
+        authorization.expectedRunRevision !== 2 ||
+        authorization.targetRunRevision !== 3 ||
+        authorization.dispatchOutbox !== true ||
+        authorization.authorizedAt !== authorization.dispatchedAt
+      ) {
+        const error = new Error("native start authorization invalid");
+        error.code = "NATIVE_START_AUTHORIZATION_REFUSED";
+        throw error;
+      }
+      const run = ownedRun(authorization);
+      const thread = ownedThread(authorization);
+      if (!run || !thread) {
+        const error = new Error("native start authorization target mismatch");
+        error.code = "NATIVE_START_AUTHORIZATION_REFUSED";
+        throw error;
+      }
+      if (run.nativeStartReceipt) {
+        if (run.nativeStartReceipt.authorizationDigest !== authorization.authorizationDigest) {
+          const error = new Error("native start authorization digest mismatch");
+          error.code = "NATIVE_START_AUTHORIZATION_REFUSED";
+          throw error;
+        }
+        return authorizationResponse("already-authorized", authorization, run, thread);
+      }
+      if (state.failAuthorizeBeforeCommit) {
+        state.failAuthorizeBeforeCommit = false;
+        const error = new Error("native start authorization failed before commit");
+        error.code = "NATIVE_START_AUTHORIZATION_FAILED";
+        throw error;
+      }
+      const previousRun = authorization.previousRunId ? state.runs.get(authorization.previousRunId) : null;
+      if (
+        run.status !== "running" ||
+        run.revision !== authorization.expectedRunRevision ||
+        run.threadId !== authorization.threadId ||
+        run.nativeSessionId !== authorization.nativeSessionId ||
+        run.previousRunId !== authorization.previousRunId ||
+        run.createdAt !== authorization.createdAt ||
+        run.startedAt !== authorization.startedAt ||
+        run.dispatchLeaseId !== authorization.dispatchLeaseId ||
+        run.dispatchOutbox !== true ||
+        run.dispatchedAt !== authorization.dispatchedAt ||
+        run.authority.runtimeRevision !== authorization.expectedNativeRuntimeRevision ||
+        contractDigest(run.processOwner) !== contractDigest(authorization.processOwner) ||
+        thread.status !== "running" ||
+        thread.lastRunId !== run.id ||
+        thread.revision !== authorization.threadRevision ||
+        thread.updatedAt !== authorization.createdAt ||
+        thread.nativeSessionId !== authorization.nativeSessionId ||
+        threadPreservationDigestFor(thread) !== authorization.threadPreservationDigest ||
+        thread.authority.runtimeRevision !== authorization.expectedNativeRuntimeRevision ||
+        (authorization.mode === "start" && authorization.previousRunId !== null) ||
+        (authorization.mode === "resume" &&
+          (!previousRun ||
+            !["completed", "failed", "cancelled"].includes(previousRun.status) ||
+            previousRun.revision !== authorization.previousRunRevision ||
+            previousRun.authority.runtimeRevision !== authorization.previousRunRuntimeRevision ||
+            previousRun.authority.runtimeRevision !== authorization.expectedNativeRuntimeRevision ||
+            previousRun.threadId !== authorization.threadId ||
+            previousRun.nativeSessionId !== authorization.nativeSessionId))
+      ) {
+        const error = new Error("native start authorization state mismatch");
+        error.code = "NATIVE_START_AUTHORIZATION_REFUSED";
+        throw error;
+      }
+      Object.assign(run, {
+        nativeStartReceipt: cloneJson(authorization),
+        revision: authorization.targetRunRevision,
+      });
+      if (state.failAuthorizeAfterCommit) {
+        state.failAuthorizeAfterCommit = false;
+        const error = new Error("native start authorization acknowledgement lost");
+        error.code = "NATIVE_START_AUTHORIZATION_ACK_LOST";
+        throw error;
+      }
+      return authorizationResponse(state.forceAuthorizeAlreadyAuthorized ? "already-authorized" : "authorized", authorization, run, thread);
     },
     async abortIntegrationRunBeforeLaunch(payload) {
       calls.push(["abortIntegrationRunBeforeLaunch", payload]);
@@ -697,6 +905,11 @@ function makeRepository({
         throw error;
       }
       const attempt = payload.attempt;
+      if (attempt.schemaVersion !== PRE_LAUNCH_ABORT_ATTEMPT_VERSION || attempt.nativeStartReceiptMustBeAbsent !== true) {
+        const error = new Error("pre-launch abort receipt precondition missing");
+        error.code = "PRE_LAUNCH_ABORT_REFUSED";
+        throw error;
+      }
       const response = (action, aborted, idempotent, run, thread) => {
         const responseAction = state.forgedAbortAction || action;
         let responseRun = run;
@@ -735,6 +948,11 @@ function makeRepository({
       };
       const run = state.runs.get(attempt.runId);
       if (!run) return response("not-created", false, false, null, null);
+      if (run.nativeStartReceipt !== null) {
+        const error = new Error("pre-launch abort native start receipt exists");
+        error.code = "PRE_LAUNCH_ABORT_REFUSED";
+        throw error;
+      }
       const thread = state.threads.get(attempt.threadId);
       if (
         !thread ||
@@ -1388,6 +1606,7 @@ function assertPreLaunchAbortApplied(fixture, { threadId, runId, previousRunId =
   assert.equal(run.status, "aborted_before_launch");
   assert.equal(run.completedAt, null);
   assert.equal(run.startedAt, run.createdAt);
+  assert.equal(run.nativeStartReceipt, null);
   assert.equal(run.output, "");
   assert.equal(run.error, null);
   assert.equal(run.authority.runtimeRevision, expectedRuntimeRevision);
@@ -1942,6 +2161,284 @@ async function main() {
     await assert.rejects(() => dispatchAfter.authority.startIntegrationRun({ threadId: dispatchAfterThread.id, input: { text: "Dispatch" } }, context()));
     const dispatchAfterRun = [...dispatchAfter.repo.state.runs.values()][0];
     assertPreLaunchAbortApplied(dispatchAfter, { threadId: dispatchAfterThread.id, runId: dispatchAfterRun.id, dispatched: true });
+
+    const claimFailure = makeAuthority();
+    const claimFailureThread = (await claimFailure.authority.createIntegrationThread({ title: "Claim failure" }, context())).thread;
+    const OriginalAbortController = globalThis.AbortController;
+    class ClaimRejectingAbortController extends OriginalAbortController {
+      constructor() {
+        super();
+        Object.defineProperty(this, "abort", {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: null,
+        });
+      }
+    }
+    globalThis.AbortController = ClaimRejectingAbortController;
+    try {
+      await expectCode(
+        () => claimFailure.authority.startIntegrationRun({ threadId: claimFailureThread.id, input: { text: "Claim" } }, context()),
+        "AGENT_UNAVAILABLE"
+      );
+    } finally {
+      globalThis.AbortController = OriginalAbortController;
+    }
+    const claimFailureRun = [...claimFailure.repo.state.runs.values()][0];
+    assert.equal(callsNamed(claimFailure, "authorizeIntegrationRunNativeStart").length, 0);
+    assert.equal(callsNamed(claimFailure, "abortIntegrationRunBeforeLaunch").length, 1);
+    assertPreLaunchAbortApplied(claimFailure, { threadId: claimFailureThread.id, runId: claimFailureRun.id, dispatched: true });
+
+    const attachFailure = makeAuthority();
+    const attachFailureThread = (await attachFailure.authority.createIntegrationThread({ title: "Attach failure" }, context())).thread;
+    const promiseSpeciesDescriptor = Object.getOwnPropertyDescriptor(Promise, Symbol.species);
+    const NativePromise = Promise;
+    function ThrowingPromiseSpecies(executor) {
+      if (String(new Error().stack || "").includes("integration-run-registry.js")) {
+        throw new Error("species constructor must not attach");
+      }
+      return new NativePromise(executor);
+    }
+    Object.defineProperty(Promise, Symbol.species, {
+      configurable: true,
+      value: ThrowingPromiseSpecies,
+    });
+    try {
+      await expectCode(
+        () => attachFailure.authority.startIntegrationRun({ threadId: attachFailureThread.id, input: { text: "Attach" } }, context()),
+        "AGENT_UNAVAILABLE"
+      );
+    } finally {
+      if (promiseSpeciesDescriptor) Object.defineProperty(Promise, Symbol.species, promiseSpeciesDescriptor);
+      else delete Promise[Symbol.species];
+    }
+    const attachFailureRun = [...attachFailure.repo.state.runs.values()][0];
+    assert.equal(callsNamed(attachFailure, "authorizeIntegrationRunNativeStart").length, 0);
+    assert.equal(callsNamed(attachFailure, "abortIntegrationRunBeforeLaunch").length, 1);
+    assertPreLaunchAbortApplied(attachFailure, { threadId: attachFailureThread.id, runId: attachFailureRun.id, dispatched: true });
+
+    const forgedDispatchReceipt = makeAuthority();
+    const forgedDispatchReceiptThread = (await forgedDispatchReceipt.authority.createIntegrationThread({ title: "Forged dispatch receipt" }, context())).thread;
+    forgedDispatchReceipt.repo.state.forgedDispatchNativeStartReceipt = true;
+    await expectCode(
+      () => forgedDispatchReceipt.authority.startIntegrationRun({ threadId: forgedDispatchReceiptThread.id, input: { text: "Receipt" } }, context()),
+      "AGENT_UNAVAILABLE"
+    );
+    const forgedDispatchReceiptRun = [...forgedDispatchReceipt.repo.state.runs.values()][0];
+    assert.equal(callsNamed(forgedDispatchReceipt, "authorizeIntegrationRunNativeStart").length, 0);
+    assert.equal(callsNamed(forgedDispatchReceipt, "abortIntegrationRunBeforeLaunch").length, 0);
+    assert.equal(forgedDispatchReceiptRun.status, "running");
+    assert.equal(forgedDispatchReceiptRun.revision, 2);
+    assert.equal(forgedDispatchReceiptRun.nativeStartReceipt, null);
+    assertNoPreLaunchTerminalSideEffects(forgedDispatchReceipt, forgedDispatchReceiptRun.id);
+
+    const authorizeBefore = makeAuthority();
+    const authorizeBeforeThread = (await authorizeBefore.authority.createIntegrationThread({ title: "Authorize before commit" }, context())).thread;
+    authorizeBefore.repo.state.failAuthorizeBeforeCommit = true;
+    await expectCode(
+      () => authorizeBefore.authority.startIntegrationRun({ threadId: authorizeBeforeThread.id, input: { text: "Authorize" } }, context()),
+      "NATIVE_START_AUTHORIZATION_FAILED"
+    );
+    const authorizeBeforeRun = [...authorizeBefore.repo.state.runs.values()][0];
+    assert.equal(callsNamed(authorizeBefore, "authorizeIntegrationRunNativeStart").length, 1);
+    assert.equal(callsNamed(authorizeBefore, "abortIntegrationRunBeforeLaunch").length, 0);
+    const authorizeBeforePayload = lastCallPayload(authorizeBefore, "authorizeIntegrationRunNativeStart");
+    assert.equal(Object.isFrozen(authorizeBeforePayload), true);
+    assert.equal(Object.isFrozen(authorizeBeforePayload.authorization), true);
+    assert.equal(Object.isFrozen(authorizeBeforePayload.authorization.processOwner), true);
+    assert.equal(Object.isFrozen(authorizeBeforePayload.authorization.processOwner.processIdentity), true);
+    const originalAuthorizeOwnerToken = authorizeBeforePayload.authorization.processOwner.token;
+    assert.notEqual(authorizeBeforePayload.authorization.processOwner, authorizeBeforeRun.processOwner);
+    authorizeBeforeRun.processOwner = { ...authorizeBeforeRun.processOwner, token: "2".repeat(32) };
+    assert.equal(authorizeBeforePayload.authorization.processOwner.token, originalAuthorizeOwnerToken);
+    assert.equal(authorizeBeforeRun.status, "running");
+    assert.equal(authorizeBeforeRun.revision, 2);
+    assert.equal(authorizeBeforeRun.nativeStartReceipt, null);
+    await delay(0);
+    assertNoPreLaunchTerminalSideEffects(authorizeBefore, authorizeBeforeRun.id);
+
+    const authorizeAfter = makeAuthority();
+    const authorizeAfterThread = (await authorizeAfter.authority.createIntegrationThread({ title: "Authorize after commit" }, context())).thread;
+    authorizeAfter.repo.state.failAuthorizeAfterCommit = true;
+    await expectCode(
+      () => authorizeAfter.authority.startIntegrationRun({ threadId: authorizeAfterThread.id, input: { text: "Authorize" } }, context()),
+      "NATIVE_START_AUTHORIZATION_ACK_LOST"
+    );
+    const authorizeAfterRun = [...authorizeAfter.repo.state.runs.values()][0];
+    assert.equal(callsNamed(authorizeAfter, "abortIntegrationRunBeforeLaunch").length, 0);
+    assert.equal(authorizeAfterRun.status, "running");
+    assert.equal(authorizeAfterRun.revision, 3);
+    assert.equal(authorizeAfterRun.nativeStartReceipt.authorizationDigest, lastCallPayload(authorizeAfter, "authorizeIntegrationRunNativeStart").authorization.authorizationDigest);
+    await delay(0);
+    assertNoPreLaunchTerminalSideEffects(authorizeAfter, authorizeAfterRun.id);
+    const authorizeAfterPayload = lastCallPayload(authorizeAfter, "authorizeIntegrationRunNativeStart");
+    const authorizeAfterReplay = await authorizeAfter.repo.repository.authorizeIntegrationRunNativeStart(authorizeAfterPayload);
+    assert.equal(authorizeAfterReplay.outcome, "already-authorized");
+    await assert.rejects(
+      () =>
+        authorizeAfter.repo.repository.markIntegrationRunDispatching({
+          runId: authorizeAfterRun.id,
+          threadId: authorizeAfterRun.threadId,
+          principalId: PRINCIPAL,
+          browserSessionId: BROWSER_SESSION,
+          expectedRevision: authorizeAfterRun.revision,
+          expectedNativeRuntimeRevision: 1,
+          dispatchLeaseId: "a".repeat(64),
+          dispatchOutbox: true,
+          processOwner: fakeProcessOwner(),
+          dispatchedAt: now(),
+        }),
+      (error) => error?.code === "NATIVE_START_AUTHORIZATION_REFUSED"
+    );
+    const falseyReceiptRedispatch = makeAuthority();
+    const falseyReceiptThread = (await falseyReceiptRedispatch.authority.createIntegrationThread({ title: "Falsey receipt dispatch" }, context())).thread;
+    const falseyReceiptRun = runRecord({
+      id: "run_00000000-0000-4000-8000-000000000091",
+      threadId: falseyReceiptThread.id,
+      nativeSessionId: falseyReceiptRedispatch.repo.state.threads.get(falseyReceiptThread.id).nativeSessionId,
+      status: "starting",
+      revision: 1,
+      nativeStartReceipt: false,
+    });
+    falseyReceiptRedispatch.repo.state.runs.set(falseyReceiptRun.id, falseyReceiptRun);
+    await assert.rejects(
+      () =>
+        falseyReceiptRedispatch.repo.repository.markIntegrationRunDispatching({
+          runId: falseyReceiptRun.id,
+          threadId: falseyReceiptRun.threadId,
+          principalId: PRINCIPAL,
+          browserSessionId: BROWSER_SESSION,
+          expectedRevision: 1,
+          expectedNativeRuntimeRevision: 1,
+          dispatchLeaseId: "b".repeat(64),
+          dispatchOutbox: true,
+          processOwner: fakeProcessOwner(),
+          dispatchedAt: now(),
+        }),
+      (error) => error?.code === "NATIVE_START_AUTHORIZATION_REFUSED"
+    );
+    const differentAuthorization = {
+      ...authorizeAfterPayload.authorization,
+      threadPreservationDigest: "9".repeat(64),
+      authorizationId: "",
+      authorizationDigest: ZERO_DIGEST,
+    };
+    differentAuthorization.authorizationDigest = nativeStartAuthorizationDigestFor(differentAuthorization);
+    differentAuthorization.authorizationId = nativeStartAuthorizationIdForDigest(differentAuthorization.authorizationDigest);
+    deepFreeze(differentAuthorization);
+    await assert.rejects(
+      () => authorizeAfter.repo.repository.authorizeIntegrationRunNativeStart(Object.freeze({ authorization: differentAuthorization })),
+      (error) => error?.code === "NATIVE_START_AUTHORIZATION_REFUSED"
+    );
+    await assert.rejects(
+      () => authorizeAfter.repo.repository.abortIntegrationRunBeforeLaunch({
+        attempt: {
+          schemaVersion: PRE_LAUNCH_ABORT_ATTEMPT_VERSION,
+          mode: "start",
+          principalId: PRINCIPAL,
+          browserSessionId: BROWSER_SESSION,
+          browserSessionPolicy: "same-browser-session",
+          threadId: authorizeAfterRun.threadId,
+          runId: authorizeAfterRun.id,
+          nativeSessionId: authorizeAfterRun.nativeSessionId,
+          previousRunId: null,
+          previousThreadRevision: 1,
+          expectedNativeRuntimeRevision: 1,
+          threadPreservationDigest: threadPreservationDigestFor(authorizeAfter.repo.state.threads.get(authorizeAfterRun.threadId)),
+          nativeStartReceiptMustBeAbsent: true,
+          createdAt: authorizeAfterRun.createdAt,
+          dispatchAttempted: true,
+          dispatchLeaseId: authorizeAfterRun.dispatchLeaseId,
+          dispatchOutbox: true,
+          dispatchedAt: authorizeAfterRun.dispatchedAt,
+          processOwner: authorizeAfterRun.processOwner,
+          abortAt: authorizeAfterRun.createdAt,
+          attemptDigest: ZERO_DIGEST,
+        },
+      }),
+      (error) => error?.code === "PRE_LAUNCH_ABORT_REFUSED"
+    );
+
+    const alreadyAuthorized = makeAuthority();
+    const alreadyAuthorizedThread = (await alreadyAuthorized.authority.createIntegrationThread({ title: "Already authorized" }, context())).thread;
+    alreadyAuthorized.repo.state.forceAuthorizeAlreadyAuthorized = true;
+    await expectCode(
+      () => alreadyAuthorized.authority.startIntegrationRun({ threadId: alreadyAuthorizedThread.id, input: { text: "Already" } }, context()),
+      "RECOVERY_HOLD"
+    );
+    const alreadyAuthorizedRun = [...alreadyAuthorized.repo.state.runs.values()][0];
+    assert.equal(alreadyAuthorizedRun.revision, 3);
+    assert.ok(alreadyAuthorizedRun.nativeStartReceipt);
+    assert.equal(callsNamed(alreadyAuthorized, "abortIntegrationRunBeforeLaunch").length, 0);
+    await delay(0);
+    assertNoPreLaunchTerminalSideEffects(alreadyAuthorized, alreadyAuthorizedRun.id);
+
+    const ownerDeathHold = makeAuthority();
+    assert.equal(ownerDeathHold.repo.repository[INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_PROPERTY].retainedDescriptorStorageAuthority, false);
+    const ownerDeathThread = (await ownerDeathHold.authority.createIntegrationThread({ title: "Owner death recovery hold" }, context())).thread;
+    ownerDeathHold.repo.state.forceAuthorizeAlreadyAuthorized = true;
+    await expectCode(
+      () => ownerDeathHold.authority.startIntegrationRun({ threadId: ownerDeathThread.id, input: { text: "Owner death" } }, context()),
+      "RECOVERY_HOLD"
+    );
+    const ownerDeathRun = [...ownerDeathHold.repo.state.runs.values()][0];
+    assert.equal(ownerDeathRun.nativeStartReceipt.authorizationDigest, lastCallPayload(ownerDeathHold, "authorizeIntegrationRunNativeStart").authorization.authorizationDigest);
+    assert.equal(callsNamed(ownerDeathHold, "abortIntegrationRunBeforeLaunch").length, 0);
+    await delay(0);
+    assertNoPreLaunchTerminalSideEffects(ownerDeathHold, ownerDeathRun.id);
+
+    for (const [flag, value] of [
+      ["forgedAuthorizeReceipt", true],
+      ["forgedAuthorizeRunRevision", 4],
+      ["forgedAuthorizeOwnerTimestamp", true],
+      ["forgedAuthorizeTimestamp", true],
+      ["forgedAuthorizeRunAlias", "native"],
+      ["forgedAuthorizeRunAlias", "startedAt"],
+      ["forgedAuthorizeThreadAlias", "revision"],
+      ["forgedAuthorizeThreadAlias", "updatedAt"],
+      ["forgedAuthorizeThreadAlias", "context"],
+    ]) {
+      const forgedAuthorize = makeAuthority();
+      const forgedAuthorizeThread = (await forgedAuthorize.authority.createIntegrationThread({ title: `Forged authorize ${flag}` }, context())).thread;
+      forgedAuthorize.repo.state[flag] = value;
+      await expectCode(
+        () => forgedAuthorize.authority.startIntegrationRun({ threadId: forgedAuthorizeThread.id, input: { text: flag } }, context()),
+        "AGENT_UNAVAILABLE"
+      );
+      const forgedAuthorizeRun = [...forgedAuthorize.repo.state.runs.values()][0];
+      assert.equal(callsNamed(forgedAuthorize, "abortIntegrationRunBeforeLaunch").length, 0);
+      await delay(0);
+      assertNoPreLaunchTerminalSideEffects(forgedAuthorize, forgedAuthorizeRun.id);
+    }
+
+    for (const mode of ["proxy", "accessor", "non-enumerable", "symbol", "extra", "outer-wrapper-extra"]) {
+      const descriptorAttack = makeAuthority();
+      const descriptorAttackThread = (await descriptorAttack.authority.createIntegrationThread({ title: `Authorize descriptor ${mode}` }, context())).thread;
+      descriptorAttack.repo.state.forgedAuthorizeDescriptor = mode;
+      await expectCode(
+        () => descriptorAttack.authority.startIntegrationRun({ threadId: descriptorAttackThread.id, input: { text: mode } }, context()),
+        "AGENT_UNAVAILABLE"
+      );
+      const descriptorAttackRun = [...descriptorAttack.repo.state.runs.values()][0];
+      assert.equal(callsNamed(descriptorAttack, "abortIntegrationRunBeforeLaunch").length, 0);
+      if (mode === "accessor") assert.equal(descriptorAttack.repo.state.authorizeDescriptorTrapCount, 0);
+      await delay(0);
+      assertNoPreLaunchTerminalSideEffects(descriptorAttack, descriptorAttackRun.id);
+    }
+
+    const responseAlias = makeAuthority();
+    const responseAliasThread = (await responseAlias.authority.createIntegrationThread({ title: "Authorize response alias" }, context())).thread;
+    responseAlias.repo.state.forceAuthorizeAlreadyAuthorized = true;
+    responseAlias.repo.state.mutateAuthorizeResponseAliasAfterReturn = true;
+    await expectCode(
+      () => responseAlias.authority.startIntegrationRun({ threadId: responseAliasThread.id, input: { text: "Alias" } }, context()),
+      "RECOVERY_HOLD"
+    );
+    const responseAliasRun = [...responseAlias.repo.state.runs.values()][0];
+    assert.equal(callsNamed(responseAlias, "abortIntegrationRunBeforeLaunch").length, 0);
+    await delay(5);
+    assertNoPreLaunchTerminalSideEffects(responseAlias, responseAliasRun.id);
 
     for (const [label, action] of [
       ["aborted", ""],
@@ -2902,10 +3399,29 @@ async function main() {
     assert.notEqual(launchEnd, -1);
     const launchBody = authoritySource.slice(launchStart, launchEnd);
     const attachPosition = launchBody.indexOf("runRegistry.attachPromise(run.id, deferred.promise)");
+    const releasePosition = launchBody.indexOf("function releaseAuthorizedNativeExecution");
     const executePosition = launchBody.indexOf("executeNativeAgintiRun(prepared.config)");
     assert.ok(attachPosition > 0);
+    assert.ok(releasePosition > attachPosition);
     assert.ok(executePosition > attachPosition);
+    assert.ok(executePosition > releasePosition);
     assert.equal(launchBody.includes("const promise = (async () =>"), false);
+    for (const [methodName, nextMethodName] of [
+      ["async startIntegrationRun", "async getIntegrationRunStatus"],
+      ["async resumeIntegrationRun", "async listIntegrationArtifacts"],
+    ]) {
+      const methodStart = authoritySource.indexOf(methodName);
+      const methodEnd = authoritySource.indexOf(nextMethodName, methodStart + methodName.length);
+      assert.notEqual(methodStart, -1);
+      assert.notEqual(methodEnd, -1);
+      const methodBody = authoritySource.slice(methodStart, methodEnd);
+      const launchCall = methodBody.indexOf("nativeLaunch = launchExecutor");
+      const authorizeCall = methodBody.indexOf("authorizeNativeStart(authorization");
+      const releaseCall = methodBody.indexOf("nativeLaunch.releaseAuthorizedNativeExecution");
+      assert.ok(launchCall > 0);
+      assert.ok(authorizeCall > launchCall);
+      assert.ok(releaseCall > authorizeCall);
+    }
 
     const invalidRegistry = createIntegrationRunRegistry();
     const invalidRunId = "run_00000000-0000-4000-8000-000000000018";
