@@ -61,6 +61,12 @@ import {
   resolveLocalCodeRoute,
   restoreLocalCodePolicy,
 } from "./local-code-routing.js";
+import {
+  activateLocalFailureRecovery,
+  applyLocalFailureRecovery,
+  decideLocalFailureRecovery,
+  localFailureRecoveryInstruction,
+} from "./local-failure-recovery.js";
 import { resolveRuntimeConfig } from "./config.js";
 import {
   captureSessionRuntime,
@@ -2526,9 +2532,10 @@ export function recordExactOutputProgress(state = {}, toolResult = {}, config = 
 }
 
 export function nextStepRuntimeConfig(config = {}, state = {}) {
+  const runtimeConfig = applyLocalFailureRecovery(config, state);
   if (state.meta?.artifactProgress?.complete) {
     return {
-      ...config,
+      ...runtimeConfig,
       artifactValidationPhase: true,
       convergenceOutputPhase: false,
       artifactValidationNeedsRepair: state.meta.artifactProgress.needsRepair === true,
@@ -2542,10 +2549,10 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     };
   }
   const staticTotal = Number(state.meta?.toolLoop?.staticTotal || 0);
-  if (staticTotal < STATIC_DISCOVERY_CONVERGENCE_LIMIT) return config;
+  if (staticTotal < STATIC_DISCOVERY_CONVERGENCE_LIMIT) return runtimeConfig;
   const requiresPerSourceChecks = state.meta?.scs?.taskContract?.requiresPerSourceChecks === true;
   return {
-    ...config,
+    ...runtimeConfig,
     convergenceOutputPhase: true,
     convergenceAllowRunCommand: requiresPerSourceChecks,
   };
@@ -4168,11 +4175,15 @@ async function recordToolContractViolation({ config, state, store, observers, va
     total: totalViolationCount,
     lastCode: validation.code || "TOOL_CALL_INVALID",
   };
+  const localRecovery = decideLocalFailureRecovery(config, state);
+  const deferStopToLocalRecovery =
+    violationCount >= 2 && localRecovery.active === true && localRecovery.activated === true;
   const result = {
     ok: false,
     blocked: true,
-    recoverable: violationCount < 2,
-    stopRun: violationCount >= 2,
+    recoverable: violationCount < 2 || deferStopToLocalRecovery,
+    stopRun: violationCount >= 2 && !deferStopToLocalRecovery,
+    localFailureRecoveryPending: deferStopToLocalRecovery,
     violationCount,
     reason: validation.reason || "The model returned an invalid tool call and it was not dispatched.",
     category: "tool-contract-violation",
@@ -5030,6 +5041,37 @@ export async function runAgent(config) {
       const step = state.stepsCompleted + 1;
       throwIfAborted(config);
       await injectQueuedUserMessages(store, state, observers);
+      const localFailureRecovery = activateLocalFailureRecovery(config, state);
+      if (localFailureRecovery.active) {
+        config = applyLocalFailureRecovery(config, state);
+      }
+      if (localFailureRecovery.activated) {
+        state.provider = config.provider;
+        state.model = config.model;
+        state.meta.runtimeConfig = captureSessionRuntime(config, {
+          revision: state.meta.runtimeConfig?.revision || 1,
+        });
+        const recoveryInstruction = localFailureRecoveryInstruction(localFailureRecovery);
+        state.messages.push({ role: "user", content: recoveryInstruction });
+        const detail = {
+          step,
+          fromModel: localFailureRecovery.fromModel,
+          model: localFailureRecovery.model,
+          failureCount: localFailureRecovery.failureCount,
+          repeatedSignatureCount: localFailureRecovery.repeatedSignatureCount,
+          contractViolationCount: localFailureRecovery.contractViolationCount || 0,
+          failedTools: localFailureRecovery.failedTools || [],
+          reason: localFailureRecovery.reason,
+        };
+        await store.appendEvent("provider.local_failure_recovery", detail);
+        observers.event("provider.local_failure_recovery", detail);
+        emitConsole(
+          config,
+          `Local route recovery: ${localFailureRecovery.fromModel} -> ${localFailureRecovery.model} after repeated tool failures.`,
+          { kind: "meta" }
+        );
+        await store.saveState(state);
+      }
       const snapshot = await buildSnapshot(browserState, store, step, config);
       state.meta.lastUrl = snapshot.url || state.meta.lastUrl;
       await saveBrowserState(browserState, store).catch(() => {});

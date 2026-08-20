@@ -532,6 +532,117 @@ function completedToolNames(messages) {
   return completed;
 }
 
+const PRIMARY_PROJECT_INSTRUCTION_PATH_PATTERN = /(?:^|\/)(?:AGENTS?\.md|AGINTI\.md|README(?:\.[^/]+)?)$/i;
+const PROJECT_INSTRUCTION_PATH_PATTERN = /(?:^|\/)(?:AGENTS?\.md|AGINTI\.md|README(?:\.[^/]+)?|TASK(?:\.[^/]+)?|CONTRIBUTING\.md)$/i;
+const DATA_PROJECT_CONTEXT_PATH_PATTERN =
+  /(?:^|\/)(?:config|tests?|specs?|src|scripts?|analysis|pipeline)(?:\/|$)|(?:^|\/)(?:pyproject\.toml|package\.json|requirements[^/]*\.txt|[^/]+\.(?:py|r|R|jl|ipynb|sql))$/i;
+
+function parseJsonObject(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function completedToolRecords(messages) {
+  const callsById = new Map();
+  const records = [];
+  for (const message of currentTaskMessages(messages)) {
+    if (message?.role === "assistant" && Array.isArray(message.tool_calls)) {
+      for (const call of message.tool_calls) {
+        const id = String(call?.id || "").trim();
+        const name = String(call?.function?.name || "").trim();
+        if (!id || !FUNCTION_NAME_PATTERN.test(name)) continue;
+        callsById.set(id, {
+          name,
+          args: parseJsonObject(call?.function?.arguments),
+        });
+      }
+      continue;
+    }
+    if (message?.role !== "tool") continue;
+    const call = callsById.get(String(message.tool_call_id || "").trim());
+    if (!call) continue;
+    records.push({ ...call, result: parseJsonObject(message.content) });
+  }
+  return records;
+}
+
+function dataProjectDiscoveryState(messages) {
+  const records = completedToolRecords(messages);
+  const inspection = [...records]
+    .reverse()
+    .find((record) => record.name === "inspect_project" && record.result?.ok !== false);
+  if (!inspection) return { phase: "inspect", paths: [] };
+
+  const topLevelFiles = Array.isArray(inspection.result?.topLevel)
+    ? inspection.result.topLevel.filter((item) => item?.type === "file").map((item) => item?.path)
+    : [];
+  const discoveredPaths = [
+    ...(Array.isArray(inspection.result?.recommendedReads) ? inspection.result.recommendedReads : []),
+    ...(Array.isArray(inspection.result?.manifestFiles)
+      ? inspection.result.manifestFiles.map((item) => item?.path)
+      : []),
+    ...(Array.isArray(inspection.result?.testFiles) ? inspection.result.testFiles.map((item) => item?.path) : []),
+    ...(Array.isArray(inspection.result?.files) ? inspection.result.files.map((item) => item?.path) : []),
+    ...topLevelFiles,
+  ]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .filter((item, index, items) => items.indexOf(item) === index);
+  const readPaths = records
+    .filter((record) => record.name === "read_file" && record.result?.ok !== false)
+    .map((record) => String(record.result?.path || record.args?.path || "").trim())
+    .filter(Boolean);
+
+  const primaryInstructionCandidates = discoveredPaths.filter((item) =>
+    PRIMARY_PROJECT_INSTRUCTION_PATH_PATTERN.test(item)
+  );
+  const instructionCandidates =
+    primaryInstructionCandidates.length > 0
+      ? primaryInstructionCandidates
+      : discoveredPaths.filter((item) => PROJECT_INSTRUCTION_PATH_PATTERN.test(item));
+  const dataContextCandidates = discoveredPaths.filter((item) => DATA_PROJECT_CONTEXT_PATH_PATTERN.test(item));
+  const instructionRead =
+    instructionCandidates.length === 0 || readPaths.some((item) => instructionCandidates.includes(item));
+  if (!instructionRead) return { phase: "read-instructions", paths: instructionCandidates.slice(0, 24) };
+
+  const dataContextRead =
+    dataContextCandidates.length === 0 || readPaths.some((item) => DATA_PROJECT_CONTEXT_PATH_PATTERN.test(item));
+  if (!dataContextRead) return { phase: "read-context", paths: dataContextCandidates.slice(0, 24) };
+  return { phase: "ready", paths: [] };
+}
+
+function constrainReadFilePaths(tool, paths, phase) {
+  if (!tool || paths.length === 0) return tool;
+  const pathSchema = tool.function?.parameters?.properties?.path || { type: "string" };
+  return {
+    ...tool,
+    function: {
+      ...tool.function,
+      description:
+        phase === "read-instructions"
+          ? "Read one exact project instruction file discovered by inspect_project before data mutation or commands are enabled."
+          : "Read one exact existing analyzer, configuration, or test file discovered by inspect_project before data mutation or commands are enabled.",
+      parameters: {
+        ...tool.function.parameters,
+        properties: {
+          ...tool.function.parameters.properties,
+          path: {
+            ...pathSchema,
+            enum: paths,
+            description: "Exact workspace-relative path discovered by inspect_project.",
+          },
+        },
+      },
+    },
+  };
+}
+
 function roundRobinToolNames(groups) {
   const names = [];
   const maxLength = Math.max(0, ...groups.map((group) => group.length));
@@ -724,6 +835,41 @@ export function selectProgressiveTools(
   if (config.artifactValidationPhase === true) {
     const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
     return artifactValidationToolNames(config).map((name) => available.get(name)).filter(Boolean);
+  }
+
+  if (profileId(config, profile) === "data" && toolSurfacePolicy(config, profile) !== "full") {
+    const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    const discovery = dataProjectDiscoveryState(messages);
+    if (discovery.phase === "inspect") {
+      return [available.get("inspect_project"), finish].filter(Boolean);
+    }
+    if (discovery.phase !== "ready") {
+      const readFile = constrainReadFilePaths(available.get("read_file"), discovery.paths, discovery.phase);
+      return [readFile, finish].filter(Boolean);
+    }
+  }
+
+  if (config.localFailureRecoveryActive === true) {
+    const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    const requestedLimit = finitePositiveInteger(
+      config.toolSurfaceMaxTools ?? config.localToolMaxTools,
+      DEFAULT_LOCAL_TOOL_LIMIT
+    );
+    const toolLimit = Math.min(requestedLimit, LOCAL_TOOL_HARD_CAP);
+    const charTarget = finitePositiveInteger(
+      config.toolSurfaceMaxChars ?? config.localToolSchemaCharTarget,
+      DEFAULT_LOCAL_TOOL_SCHEMA_CHAR_TARGET
+    );
+    const selected = [];
+    for (const name of ["read_file", "apply_patch", "write_file", "run_command", "search_files", "inspect_project"]) {
+      if (selected.length + 1 >= toolLimit) break;
+      const tool = available.get(name);
+      if (!tool) continue;
+      const candidate = [...selected, tool, finish];
+      if (serializedChars(candidate) > charTarget) continue;
+      selected.push(tool);
+    }
+    return [...selected, finish];
   }
 
   const phaseEnabled = config.convergenceOutputPhase === true

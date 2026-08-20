@@ -90,6 +90,13 @@ assert(selectedIds("debug a C# dotnet web API").includes("dotnet-csharp"), ".NET
 assert(selectedIds("fix a PHP Laravel composer project").includes("php"), "PHP prompt did not select php");
 assert(selectedIds("repair a Ruby Rails app with RSpec").includes("ruby"), "Ruby prompt did not select ruby");
 assert(selectedIds("clean a CSV dataset and make plots").includes("data-analysis"), "data prompt did not select data-analysis");
+const focusedDataSkills = selectedIds(
+  "these experiment exports are a mess; clean them, make a useful plot and report",
+  "data"
+);
+assert(focusedDataSkills.includes("data-analysis"), "explicit data profile omitted its core analysis skill");
+assert(!focusedDataSkills.includes("novel-writing"), "explicit data profile selected unrelated novel guidance");
+assert(!focusedDataSkills.includes("media-transcription-report"), "explicit data profile selected unrelated media guidance");
 assert(selectedIds("convert scanned PDF EPUB and image sources to markdown with OCR").includes("source-ingestion"), "source ingestion prompt did not select source-ingestion");
 assert(selectedIds("use json schema to fetch valid structured json for each chunk in parallel").includes("structured-json"), "structured JSON prompt did not select structured-json");
 assert(selectedIds("write README API docs and a tutorial").includes("docs-knowledge"), "docs prompt did not select docs-knowledge");

@@ -3990,7 +3990,7 @@ async function handleCommand(line, state, packageDir) {
   }
   if (command === "skills" || command === "skill") {
     const skills = value
-      ? selectSkillsForGoal(value, { taskProfile: state.taskProfile, limit: 12, includeBody: false, projectRoot: state.commandCwd || process.cwd() })
+      ? selectSkillsForGoal(value, { taskProfile: "auto", limit: 12, includeBody: false, projectRoot: state.commandCwd || process.cwd() })
       : listSkills({ includeBody: false, projectRoot: state.commandCwd || process.cwd() });
     if (skills.length === 0) {
       printAgentMessage("No matching skills found.");

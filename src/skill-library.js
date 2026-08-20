@@ -517,10 +517,15 @@ function textHasTrigger(text, needle) {
 export function selectSkillsForGoal(goal = "", { taskProfile = "auto", limit = 6, includeBody = true, projectRoot = process.cwd() } = {}) {
   const text = `${goal} ${taskProfile}`.toLowerCase();
   const skills = listSkills({ includeBody, projectRoot });
-  const scored = skills
+  const ranked = skills
     .map((skill) => ({ skill, score: scoreSkill(skill, text, taskProfile) }))
     .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || a.skill.id.localeCompare(b.skill.id))
+    .sort((a, b) => b.score - a.score || a.skill.id.localeCompare(b.skill.id));
+  const explicitProfile = Boolean(taskProfile && taskProfile !== "auto");
+  const bestScore = ranked[0]?.score || 0;
+  const relevanceFloor = explicitProfile && bestScore >= 6 ? Math.max(2, bestScore * 0.5) : 0;
+  const scored = ranked
+    .filter((item) => item.score >= relevanceFloor)
     .map((item) => item.skill);
   return scored.slice(0, Math.max(1, limit));
 }

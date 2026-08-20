@@ -87,7 +87,7 @@ export const TASK_PROFILES = {
     id: "data",
     label: "Data analysis",
     prompt:
-      "Bias toward reproducible data analysis, cleanup, ETL, visualization, and report generation while staying able to write scripts or docs. Inspect data shape and schema first, preserve raw inputs, create cleaned outputs with descriptive filenames, run deterministic scripts/notebooks where available, save plots/reports as durable artifacts, and explain assumptions and data quality issues.",
+      "Bias toward reproducible data analysis, cleanup, ETL, visualization, and report generation while staying able to write scripts or docs. Before touching data, inspect the project and read its AGINTI/AGENTS/README instructions plus relevant existing analysis code, configuration, and tests. Local mutation and command tools intentionally remain unavailable until this bounded discovery is complete. Treat raw/source/input exports as immutable evidence unless the user explicitly authorizes an in-place source change; implement normalization in reproducible code and write generated results under the project's declared output paths. Inspect data shape, schema, units, missing values, duplicates, aliases, and audit requirements before drawing conclusions. Run the existing analyzer and focused tests, save plots/reports as durable artifacts, verify requested paths and statistics externally, and explain assumptions, limitations, and data quality issues.",
     tools: ["inspect_project", "files", "shell", "canvas", "sandbox"],
   },
   qa: {

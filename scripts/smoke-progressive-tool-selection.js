@@ -204,6 +204,136 @@ sameNames(
 assert(!names(artifactValidationTools).includes("search_files"), "artifact validation phase reopened broad search");
 assert(!names(artifactValidationTools).includes("open_url"), "artifact validation phase reopened browser discovery");
 
+const localFailureRecoveryTools = selectProgressiveTools(allTools, {
+  config: { provider: "localllm", localFailureRecoveryActive: true },
+  goal: "Recover from repeated failed edits without restarting the task.",
+  profile: "code",
+  messages: [
+    { role: "assistant", tool_calls: [{ id: "failed-edit", function: { name: "apply_patch", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "failed-edit", content: '{"ok":false}' },
+  ],
+});
+sameNames(
+  localFailureRecoveryTools,
+  ["read_file", "apply_patch", "write_file", "run_command", "search_files", "inspect_project", "finish"],
+  "local failure recovery did not restore the bounded repair surface"
+);
+
+const dataDiscoveryStarterTools = selectProgressiveTools(allTools, {
+  config: { provider: "localllm" },
+  goal: "Clean these experiment exports and leave a reproducible analysis.",
+  profile: "data",
+});
+sameNames(
+  dataDiscoveryStarterTools,
+  ["inspect_project", "finish"],
+  "local data task exposed mutation tools before project inspection"
+);
+
+const dataInspectionMessages = [
+  { role: "user", content: "Goal: Clean these experiment exports and leave a reproducible analysis." },
+  {
+    role: "assistant",
+    tool_calls: [{ id: "data-inspect", function: { name: "inspect_project", arguments: '{"path":"."}' } }],
+  },
+  {
+    role: "tool",
+    tool_call_id: "data-inspect",
+    content: JSON.stringify({
+      ok: true,
+      recommendedReads: ["README.md", "tests/test_analysis.py"],
+      manifestFiles: [{ path: "README.md" }],
+      testFiles: [{ path: "tests/test_analysis.py" }],
+      topLevel: [
+        { path: "analysis.py", type: "file" },
+        { path: "TASK.md", type: "file" },
+      ],
+    }),
+  },
+];
+const dataContextTools = selectProgressiveTools(allTools, {
+  config: { provider: "localllm" },
+  goal: "Clean these experiment exports and leave a reproducible analysis.",
+  profile: "data",
+  messages: dataInspectionMessages,
+});
+sameNames(
+  dataContextTools,
+  ["read_file", "finish"],
+  "local data task exposed mutation tools before reading project contracts"
+);
+assertStrict.deepEqual(
+  enumFor(dataContextTools, "read_file", "path"),
+  ["README.md"],
+  "local data instruction phase did not constrain read_file to discovered instruction paths"
+);
+
+const dataImplementationMessages = [
+  ...dataInspectionMessages,
+  {
+    role: "assistant",
+    tool_calls: [{ id: "data-readme", function: { name: "read_file", arguments: '{"path":"README.md"}' } }],
+  },
+  { role: "tool", tool_call_id: "data-readme", content: '{"ok":true,"path":"README.md"}' },
+];
+const dataImplementationTools = selectProgressiveTools(allTools, {
+  config: { provider: "localllm" },
+  goal: "Clean these experiment exports and leave a reproducible analysis.",
+  profile: "data",
+  messages: dataImplementationMessages,
+});
+sameNames(
+  dataImplementationTools,
+  ["read_file", "finish"],
+  "local data task exposed mutation tools before reading an analyzer/config/test surface"
+);
+assertStrict.deepEqual(
+  enumFor(dataImplementationTools, "read_file", "path"),
+  ["tests/test_analysis.py", "analysis.py"],
+  "local data context phase did not constrain read_file to discovered analysis paths"
+);
+
+const dataReadyMessages = [
+  ...dataImplementationMessages,
+  {
+    role: "assistant",
+    tool_calls: [
+      { id: "data-test", function: { name: "read_file", arguments: '{"path":"tests/test_analysis.py"}' } },
+    ],
+  },
+  { role: "tool", tool_call_id: "data-test", content: '{"ok":true,"path":"tests/test_analysis.py"}' },
+];
+const dataReadyTools = selectProgressiveTools(allTools, {
+  config: { provider: "localllm" },
+  goal: "Clean these experiment exports and leave a reproducible analysis.",
+  profile: "data",
+  messages: dataReadyMessages,
+});
+sameNames(dataReadyTools, LOCAL_COMPACT_CODE_TOOL_NAMES, "local data task did not unlock after bounded discovery");
+
+const dataRecoveryBeforeDiscoveryTools = selectProgressiveTools(allTools, {
+  config: { provider: "localllm", localFailureRecoveryActive: true },
+  goal: "Recover this data task after a failed mutation.",
+  profile: "data",
+});
+sameNames(
+  dataRecoveryBeforeDiscoveryTools,
+  ["inspect_project", "finish"],
+  "local recovery bypassed the incomplete data discovery gate"
+);
+
+const dataRecoveryAfterDiscoveryTools = selectProgressiveTools(allTools, {
+  config: { provider: "localllm", localFailureRecoveryActive: true },
+  goal: "Recover this data task after a failed mutation.",
+  profile: "data",
+  messages: dataReadyMessages,
+});
+sameNames(
+  dataRecoveryAfterDiscoveryTools,
+  ["read_file", "apply_patch", "write_file", "run_command", "search_files", "inspect_project", "finish"],
+  "local recovery remained trapped after data discovery completed"
+);
+
 const artifactRepairTools = selectProgressiveTools(allTools, {
   config: { provider: "localllm", artifactValidationPhase: true, artifactValidationNeedsRepair: true },
   goal: "Repair the exact report from deterministic preflight evidence.",
