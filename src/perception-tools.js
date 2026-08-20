@@ -300,7 +300,7 @@ function imageMimeForPath(inputPath, contentType = "") {
 }
 
 async function loadLocalImage(inputPath, config) {
-  const target = resolveWorkspacePath(config, inputPath);
+  const target = resolveWorkspacePath(config, inputPath, { allowReadOnlyRoots: true });
   const stat = await fs.stat(target.absolutePath);
   if (!stat.isFile()) throw new Error(`Image path is not a file: ${target.relativePath}`);
   if (stat.size > MAX_IMAGE_BYTES) throw new Error(`Image is too large: ${target.relativePath} (${stat.size} bytes)`);

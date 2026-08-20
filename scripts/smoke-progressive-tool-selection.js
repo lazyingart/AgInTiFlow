@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  ARTIFACT_VALIDATION_TOOL_NAMES,
   DEFAULT_LOCAL_TOOL_SCHEMA_CHAR_TARGET,
   LOCAL_COMPACT_CODE_TOOL_NAMES,
   LOCAL_COMPACT_GENERAL_TOOL_NAMES,
@@ -166,6 +167,139 @@ const codeTools = selectProgressiveTools(allTools, {
 });
 sameNames(codeTools, LOCAL_COMPACT_CODE_TOOL_NAMES, "code profile did not select the canonical compact set");
 
+const convergenceTools = selectProgressiveTools(allTools, {
+  config: { provider: "localllm", convergenceOutputPhase: true },
+  goal: "Inspect the established routines, then write the requested readiness report.",
+  profile: "code",
+});
+assert(names(convergenceTools).includes("write_file"), "convergence phase omitted write_file");
+assert(names(convergenceTools).includes("apply_patch"), "convergence phase omitted apply_patch");
+assert(names(convergenceTools).includes("finish"), "convergence phase omitted finish");
+assert(
+  !names(convergenceTools).some((name) => ["inspect_project", "list_files", "read_file", "search_files", "read_image", "run_command"].includes(name)),
+  "convergence phase still exposed bounded-out discovery tools"
+);
+const convergenceCheckTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    convergenceOutputPhase: true,
+    convergenceAllowRunCommand: true,
+  },
+  goal: "Run the required source-derived doctor checks, then write the readiness report.",
+  profile: "code",
+});
+assert(names(convergenceCheckTools).includes("run_command"), "convergence hid a task-required bounded command check");
+assert(!names(convergenceCheckTools).includes("read_file"), "convergence check mode reopened broad file discovery");
+
+const artifactValidationTools = selectProgressiveTools(allTools, {
+  config: { provider: "localllm", artifactValidationPhase: true },
+  goal: "The exact report exists. Validate it once, then finish.",
+  profile: "code",
+});
+sameNames(
+  artifactValidationTools,
+  ARTIFACT_VALIDATION_TOOL_NAMES,
+  "artifact validation phase did not expose the exact validate-correct-deliver-finish surface"
+);
+assert(!names(artifactValidationTools).includes("search_files"), "artifact validation phase reopened broad search");
+assert(!names(artifactValidationTools).includes("open_url"), "artifact validation phase reopened browser discovery");
+
+const artifactRepairTools = selectProgressiveTools(allTools, {
+  config: { provider: "localllm", artifactValidationPhase: true, artifactValidationNeedsRepair: true },
+  goal: "Repair the exact report from deterministic preflight evidence.",
+  profile: "code",
+});
+assertStrict.equal(names(artifactRepairTools)[0], "apply_patch", "artifact repair did not prioritize the patch tool");
+assert(names(artifactRepairTools).includes("finish"), "artifact repair surface omitted finish");
+assert(!names(artifactRepairTools).includes("run_command"), "artifact repair exposed command checks before content was valid");
+
+const embeddedArtifactRepairTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    artifactValidationPhase: true,
+    artifactValidationNeedsRepair: true,
+    artifactValidationOutputEmbedded: true,
+  },
+  goal: "Repair the exact report whose full content is embedded in the validation packet.",
+  profile: "code",
+});
+assert(!names(embeddedArtifactRepairTools).includes("read_file"), "embedded artifact repair redundantly exposed read_file");
+assert(!names(embeddedArtifactRepairTools).includes("write_file"), "embedded artifact repair allowed a drifting whole-file rewrite");
+assert(names(embeddedArtifactRepairTools).includes("apply_patch"), "embedded artifact repair omitted apply_patch");
+
+const focusedArtifactRepairTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    artifactValidationPhase: true,
+    artifactValidationNeedsRepair: true,
+    artifactValidationRepairAttempts: 1,
+  },
+  goal: "Apply a focused repair after the first whole-artifact correction.",
+  profile: "code",
+});
+assertStrict.equal(names(focusedArtifactRepairTools)[0], "apply_patch", "later artifact repair did not retain patch priority");
+assert(!names(focusedArtifactRepairTools).includes("write_file"), "later artifact repair still allowed whole-artifact rewrites");
+assert(!names(focusedArtifactRepairTools).includes("run_command"), "later artifact repair exposed unrelated command checks");
+
+const repairWithMissingCheckTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    artifactValidationPhase: true,
+    artifactValidationNeedsRepair: true,
+    artifactValidationNeedsCommand: true,
+    artifactValidationRepairAttempts: 1,
+  },
+  goal: "Collect the missing doctor evidence, then apply a focused report repair.",
+  profile: "code",
+});
+assertStrict.equal(
+  names(repairWithMissingCheckTools)[0],
+  "run_command",
+  "artifact repair was prioritized ahead of its missing execution evidence"
+);
+assert(names(repairWithMissingCheckTools).includes("apply_patch"), "combined evidence/repair surface omitted patching");
+assert(!names(repairWithMissingCheckTools).includes("write_file"), "combined later repair reopened whole-file rewriting");
+
+const artifactCommandTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    artifactValidationPhase: true,
+    artifactValidationNeedsCommand: true,
+    artifactValidationUsedTools: ["read_file"],
+  },
+  goal: "Run one bounded verification command, then finish.",
+  profile: "code",
+});
+assertStrict.equal(names(artifactCommandTools)[0], "run_command", "artifact command evidence was not prioritized");
+assert(!names(artifactCommandTools).includes("read_file"), "already-used artifact read remained exposed");
+
+const artifactSourceReadTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    artifactValidationPhase: true,
+    artifactValidationNeedsSourceRead: true,
+  },
+  goal: "Inspect one exact missing source, then finish.",
+  profile: "code",
+});
+assertStrict.equal(names(artifactSourceReadTools)[0], "read_file", "missing source evidence did not prioritize an exact read");
+
+const embeddedArtifactSourceReadTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    artifactValidationPhase: true,
+    artifactValidationNeedsSourceRead: true,
+    artifactValidationOutputEmbedded: true,
+  },
+  goal: "Inspect one exact missing source while the output itself is already embedded.",
+  profile: "code",
+});
+assertStrict.equal(
+  names(embeddedArtifactSourceReadTools)[0],
+  "read_file",
+  "embedding the output incorrectly hid a genuinely missing source read"
+);
+
 const browserTools = selectProgressiveTools(allTools, {
   config: { provider: "localllm" },
   goal: "Open the browser, fill in the form, and take a screenshot.",
@@ -185,6 +319,24 @@ assert(names(researchTools).includes("read_web_page"), "research bundle omitted 
 assert(names(researchTools).includes("web_research"), "research bundle omitted web_research");
 assert(names(researchTools).includes("deep_research"), "research bundle omitted deep_research");
 assert(!names(researchTools).includes("click"), "research bundle exposed unrelated browser interaction tools");
+
+const explicitDeepResearchStarter = selectProgressiveTools(allTools, {
+  config: { provider: "deepseek" },
+  goal: "Write a deep web research report comparing at least three primary papers and one PDF.",
+  profile: "research",
+});
+sameNames(
+  explicitDeepResearchStarter,
+  ["deep_research", "finish"],
+  "explicit deep research did not start on the bounded provider-neutral tool surface"
+);
+const explicitDeepResearchFollowup = selectProgressiveTools(allTools, {
+  config: { provider: "deepseek" },
+  goal: "Write a deep web research report comparing at least three primary papers and one PDF.",
+  profile: "research",
+  messages: [{ role: "assistant", tool_calls: [{ id: "deep-1", function: { name: "deep_research", arguments: "{}" } }] }],
+});
+assert(names(explicitDeepResearchFollowup).includes("web_search"), "deep-research follow-up did not restore targeted recovery tools");
 
 const writingTools = selectProgressiveTools(allTools, {
   config: { provider: "localllm" },
@@ -689,6 +841,7 @@ sameNames(
   LOCAL_COMPACT_GENERAL_TOOL_NAMES,
   "unknown profile did not fall back to the compact general set"
 );
+assert(!names(unknownProfileTools).includes("read_image"), "general fallback exposed vision without image intent");
 
 const messageInferredTools = selectProgressiveTools(allTools, {
   config: { provider: "localllm" },
@@ -906,6 +1059,18 @@ assert(
   }).ok,
   "oversized read batch escaped the bounded allowance"
 );
+const recoveredOversizedReadBatch = resolveDispatchableToolCallBatch(oversizedReadCalls, safeReadContract);
+assert(recoveredOversizedReadBatch.ok, "oversized safe read batch was not recoverable in a bounded chunk");
+assert(recoveredOversizedReadBatch.recoveredSequentially, "oversized safe read recovery was not recorded");
+assert(recoveredOversizedReadBatch.acceptedToolCalls.length === 4, "oversized safe read recovery dispatched the wrong chunk size");
+assert(recoveredOversizedReadBatch.deferredToolCalls.length === 1, "oversized safe read recovery lost its deferred suffix");
+const excessiveReadBatch = Array.from({ length: 13 }, (_, index) =>
+  contractCall(`excessive-read-${index}`, "read_file", { path: `file-${index}.txt` })
+);
+assert(
+  !resolveDispatchableToolCallBatch(excessiveReadBatch, safeReadContract).ok,
+  "unbounded safe read batch escaped the reported-call cap"
+);
 
 for (const [label, call, expectedCode] of [
   [
@@ -980,12 +1145,18 @@ async function runToolContractCase({
   expectedTargets = [],
   followupToolCalls = null,
   expectSequentialRecovery = false,
+  expectSuccess = false,
+  expectedContractFailures = 0,
+  maxSteps = 3,
+  responseFactory = null,
+  setupWorkspace = null,
 }) {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), `agintiflow-tool-contract-${id}-`));
   const workspace = path.join(tempRoot, "workspace");
   const sessionsDir = path.join(tempRoot, "sessions");
   const projectSessionsDir = path.join(workspace, ".aginti-sessions");
   await fs.mkdir(workspace, { recursive: true });
+  if (typeof setupWorkspace === "function") await setupWorkspace(workspace);
   const requests = [];
   let clientFactoryCalls = 0;
   const responseText = `[TOOL_CALLS]${toolCalls[0]?.function?.name || "finish"}[ARGS]${toolCalls[0]?.function?.arguments || "{}"}`;
@@ -994,6 +1165,9 @@ async function runToolContractCase({
       completions: {
         create: async (payload) => {
           requests.push(payload);
+          if (typeof responseFactory === "function") {
+            return responseFactory({ payload, requests, workspace });
+          }
           if (textFallback && Array.isArray(payload.tools)) {
             throw new Error("invalid request parameters: tools");
           }
@@ -1076,7 +1250,7 @@ async function runToolContractCase({
     enableScs: "off",
     executionPolicy: { tier: "focused", requiresPlan: false, reason: "Focused deterministic contract smoke." },
     routeComplexityScore: 0,
-    maxSteps: 3,
+    maxSteps,
     maxStepsExplicit: true,
     dynamicSteps: "off",
     contextBudgetMode: "off",
@@ -1097,6 +1271,18 @@ async function runToolContractCase({
     const events = await store.loadEvents();
     const contractFailures = events.filter((event) => event.type === "tool.failed" && event.data?.category === "tool-contract-violation");
     assert(clientFactoryCalls === 1, `${id} did not complete readiness and construct exactly one deterministic client`);
+    if (expectSuccess) {
+      assert(result.stopped !== true, `${id} stopped instead of recovering: ${JSON.stringify(result)}`);
+      assert(
+        contractFailures.length === expectedContractFailures,
+        `${id} recorded ${contractFailures.length} tool-contract failures; expected ${expectedContractFailures}`
+      );
+      for (const target of expectedTargets) {
+        const exists = await fs.access(path.join(workspace, target)).then(() => true).catch(() => false);
+        assert(exists, `${id} did not preserve expected workspace file ${target}`);
+      }
+      return { result, requests, events, contractFailures, clientFactoryCalls };
+    }
     if (expectSequentialRecovery) {
       assert(result.stopped !== true, `${id} stopped instead of completing the recovered sequential batch`);
       assert(contractFailures.length === 0, `${id} recorded a contract failure for a recoverable valid batch`);
@@ -1223,6 +1409,148 @@ assert(
   "empty tool-call ids were not rejected before dispatch"
 );
 
+let malformedTextAttempts = 0;
+const malformedTextRecovery = await runToolContractCase({
+  id: "text-malformed-bounded-retry",
+  provider: "localllm",
+  profile: "code",
+  goal: "Create readiness.md containing Recovered, verify it, and finish.",
+  toolCalls: [contractCall("unused", "finish", { result: "Recovered." })],
+  expectSuccess: true,
+  expectedTargets: ["readiness.md"],
+  responseFactory: ({ payload }) => {
+    if (Array.isArray(payload.tools)) throw new Error("invalid request parameters: tools");
+    malformedTextAttempts += 1;
+    if (malformedTextAttempts === 1) {
+      return {
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: 'Requested tools: write_file({"path":"readiness.md","content":"unfinished',
+              },
+            },
+          ],
+        };
+    }
+    return malformedTextAttempts === 2
+      ? {
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: '[TOOL_CALLS]write_file[ARGS]{"path":"readiness.md","content":"Recovered\\n","mode":"create"}',
+              },
+            },
+          ],
+        }
+      : {
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: '[TOOL_CALLS]finish[ARGS]{"result":"Recovered after one bounded textual syntax retry."}',
+              },
+            },
+          ],
+        };
+  },
+});
+assert(malformedTextAttempts === 3, "malformed text-tool response did not retry once and then finish normally");
+assert(
+  malformedTextRecovery.events.filter((event) => event.type === "model.text_tool_retry_requested").length === 1,
+  "malformed text-tool response did not record one protocol-level retry"
+);
+assert(
+  !malformedTextRecovery.events.some((event) => event.type === "tool.started" && event.data?.toolName === "wait"),
+  "malformed text-tool recovery dispatched a fabricated wait call"
+);
+
+let nonconsecutiveViolationStep = 0;
+const nonconsecutiveViolationRecovery = await runToolContractCase({
+  id: "native-nonconsecutive-contract-recovery",
+  profile: "code",
+  goal: "Create recovered.md containing Recovered and finish.",
+  toolCalls: [contractCall("unused", "finish", { result: "Recovered." })],
+  expectSuccess: true,
+  expectedContractFailures: 2,
+  expectedTargets: ["recovered.md"],
+  maxSteps: 4,
+  responseFactory: () => {
+    nonconsecutiveViolationStep += 1;
+    if (nonconsecutiveViolationStep === 1) {
+      return assistantWithToolCalls([
+        contractCall("invalid-before-success", "write_file", {
+          path: "recovered.md",
+          content: "unsafe",
+          mode: "create",
+          dryRun: false,
+        }),
+      ]);
+    }
+    if (nonconsecutiveViolationStep === 2) {
+      return assistantWithToolCalls([
+        contractCall("valid-write", "write_file", {
+          path: "recovered.md",
+          content: "Recovered\n",
+          mode: "create",
+        }),
+      ]);
+    }
+    if (nonconsecutiveViolationStep === 3) {
+      return assistantWithToolCalls([
+        contractCall("invalid-after-success", "open_url", { url: "https://example.com" }),
+      ]);
+    }
+    return assistantWithToolCalls([
+      contractCall("finish-after-recovery", "finish", { result: "Created recovered.md." }),
+    ]);
+  },
+});
+assert(
+  nonconsecutiveViolationRecovery.events.filter((event) => event.type === "tool.contract_recovered").length === 2,
+  "successful intervening turns did not reset consecutive tool-contract violations"
+);
+
+let textAsImageStep = 0;
+const textAsImageRecovery = await runToolContractCase({
+  id: "text-file-requested-as-image",
+  provider: "localllm",
+  profile: "image",
+  goal: "Inspect notes.md, report its exact readiness statement, and finish.",
+  toolCalls: [contractCall("unused", "read_image", { path: "notes.md" })],
+  expectSuccess: true,
+  expectedTargets: ["notes.md"],
+  setupWorkspace: async (workspace) => {
+    await fs.writeFile(path.join(workspace, "notes.md"), "# Readiness\nVerified routine evidence.\n", "utf8");
+  },
+  responseFactory: () => {
+    textAsImageStep += 1;
+    return textAsImageStep === 1
+      ? assistantWithToolCalls([contractCall("text-as-image", "read_image", { path: "notes.md" })])
+      : assistantWithToolCalls([contractCall("finish-text-read", "finish", { result: "Verified routine evidence." })]);
+  },
+});
+assert(
+  textAsImageRecovery.events.some(
+    (event) =>
+      event.type === "tool.auto_corrected" &&
+      event.data?.requestedToolName === "read_image" &&
+      event.data?.toolName === "read_file"
+  ),
+  "plain text requested through read_image was not corrected to read_file"
+);
+assert(
+  textAsImageRecovery.events.some(
+    (event) => event.type === "tool.completed" && event.data?.toolName === "read_file" && event.data?.autoCorrected === true
+  ),
+  "corrected plain-text read did not complete with provenance"
+);
+assert(
+  !textAsImageRecovery.events.some((event) => event.type === "tool.failed" && event.data?.toolName === "read_image"),
+  "plain-text correction still invoked failing image perception"
+);
+
 assert(
   (() => {
     try {
@@ -1284,6 +1612,8 @@ console.log(
         "strict-single-call-batch",
         "duplicate-call-id",
         "empty-call-id",
+        "malformed-text-tool-protocol-retry",
+        "text-as-image-type-correction",
       ],
       localDefaultToolLimit: 12,
       localHardCap: LOCAL_TOOL_HARD_CAP,

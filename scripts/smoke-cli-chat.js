@@ -888,6 +888,20 @@ try {
   ) {
     throw new Error("dynamic step-budget CLI options did not parse correctly");
   }
+  const readRootArgs = parseArgs([
+    "--read-root",
+    "/tmp/reference-one",
+    "--read-root",
+    "/tmp/reference-two",
+    "inspect established routines",
+  ]);
+  if (
+    readRootArgs.readOnlyRoots.length !== 2 ||
+    !readRootArgs.readOnlyRoots.every((item) => item.startsWith("/tmp/reference-")) ||
+    readRootArgs.goal !== "inspect established routines"
+  ) {
+    throw new Error("repeatable --read-root options did not parse correctly");
+  }
   const unknownOptionArgs = parseArgs(["--provider", "mock", "--allow-web-search", "research this"]);
   if (unknownOptionArgs.unknownOptions[0] !== "--allow-web-search" || unknownOptionArgs.goal !== "research this") {
     throw new Error("unknown option-like arguments before the prompt should be reported, not silently folded into the goal");
@@ -946,6 +960,8 @@ try {
     "--no-auxiliary-tools",
     "--permission-mode",
     "safe",
+    "--read-root",
+    "/tmp/reference-one",
   ];
   const resumeRuntimePatch = buildResumeRuntimePatch(resumeRuntimeOptions, parseArgs(resumeRuntimeOptions));
   if (
@@ -957,6 +973,7 @@ try {
     resumeRuntimePatch.permissionMode !== "safe" ||
     resumeRuntimePatch.workspaceWritePolicy !== "prompt" ||
     resumeRuntimePatch.useDockerSandbox !== true ||
+    resumeRuntimePatch.readOnlyRoots?.[0] !== "/tmp/reference-one" ||
     Object.prototype.hasOwnProperty.call(resumeRuntimePatch, "apiKey") ||
     Object.prototype.hasOwnProperty.call(resumeRuntimePatch, "baseURL")
   ) {

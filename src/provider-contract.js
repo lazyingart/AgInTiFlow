@@ -74,7 +74,7 @@ export const PROVIDER_CONTRACTS = Object.freeze({
     defaultBaseURL: "https://api.deepseek.com/v1",
     defaultModel: "deepseek-v4-flash",
     toolProtocol: "native",
-    structuredOutput: "json_schema",
+    structuredOutput: "json_object",
     supportsReasoningEffort: false,
     textToolFallback: false,
   }),

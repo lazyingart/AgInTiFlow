@@ -30,6 +30,7 @@ const MAX_VALIDATION_ERRORS = 8;
 const MAX_VALIDATION_NODES = 50_000;
 const MAX_SAFE_SEQUENTIAL_READ_CALLS = 4;
 const MAX_RECOVERABLE_SEQUENTIAL_CALLS = 4;
+const MAX_REPORTED_SAFE_READ_CALLS = 12;
 
 function cloneValue(value) {
   return structuredClone(value);
@@ -231,6 +232,19 @@ export function safeSequentialToolBatchLimit(toolCalls) {
     : 1;
 }
 
+function isSafeSequentialReadBatch(toolCalls) {
+  const calls = Array.isArray(toolCalls) ? toolCalls : [];
+  return (
+    calls.length > 0 &&
+    calls.every(
+      (call) =>
+        call?.type === "function" &&
+        typeof call?.function?.name === "string" &&
+        SAFE_SEQUENTIAL_READ_TOOLS.has(call.function.name)
+    )
+  );
+}
+
 export function validateToolCallBatch(toolCalls, contract, { maxToolCalls = 1 } = {}) {
   const errors = [];
   const addError = (code, callIndex, message) => {
@@ -350,23 +364,31 @@ export function resolveDispatchableToolCallBatch(toolCalls, contract) {
   const errors = Array.isArray(validation.errors) ? validation.errors : [];
   const onlyExceededBatchLimit =
     errors.length > 0 && errors.every((error) => error?.code === "TOO_MANY_TOOL_CALLS");
+  const safeReadBatch = isSafeSequentialReadBatch(calls);
+  const recoverableCallLimit = safeReadBatch
+    ? MAX_REPORTED_SAFE_READ_CALLS
+    : MAX_RECOVERABLE_SEQUENTIAL_CALLS;
   if (
     !onlyExceededBatchLimit ||
     calls.length <= 1 ||
-    calls.length > MAX_RECOVERABLE_SEQUENTIAL_CALLS
+    calls.length > recoverableCallLimit
   ) {
     return validation;
   }
 
-  const firstCallValidation = validateToolCallBatch([calls[0]], contract, {
-    maxToolCalls: 1,
+  const acceptedCount = safeReadBatch
+    ? Math.min(MAX_SAFE_SEQUENTIAL_READ_CALLS, calls.length)
+    : 1;
+  const acceptedCalls = calls.slice(0, acceptedCount);
+  const acceptedValidation = validateToolCallBatch(acceptedCalls, contract, {
+    maxToolCalls: acceptedCount,
   });
-  if (!firstCallValidation.ok) return validation;
+  if (!acceptedValidation.ok) return validation;
 
   return {
-    ...firstCallValidation,
-    acceptedToolCalls: [calls[0]],
-    deferredToolCalls: calls.slice(1),
+    ...acceptedValidation,
+    acceptedToolCalls: acceptedCalls,
+    deferredToolCalls: calls.slice(acceptedCount),
     recoveredSequentially: true,
     originalCode: validation.code,
   };

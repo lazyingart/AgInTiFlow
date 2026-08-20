@@ -121,6 +121,39 @@ const runtimeMessages = buildContextBudgetCompactionMessages(
     messages: [
       { role: "system", content: "SYSTEM-HEAD\n" + "policy ".repeat(10000) + "\nSYSTEM-TAIL" },
       { role: "user", content: "first request" },
+      {
+        role: "user",
+        content:
+          "The runtime proactively compacted a long agent history before the provider context became inefficient or unstable. OLD-COMPACTION-MUST-NOT-RECUR",
+      },
+      {
+        role: "tool",
+        content: JSON.stringify({
+          ok: true,
+          toolName: "read_file",
+          path: "/evidence/Musia/SKILL.md",
+          bytes: 2048,
+          content: [
+            "---",
+            "name: musia-music-production",
+            "description: Create and review songs through the established Musia production workflow.",
+            "---",
+            "# Musia Music Production",
+            "Use the existing CLI and preserve the reviewed song artifacts.",
+          ].join("\n"),
+          commandEvidence: [{ command: "node bin/musia.js doctor --json" }],
+          pathEvidence: [{ path: "bin/musia.js" }],
+        }),
+      },
+      {
+        role: "tool",
+        content: JSON.stringify({
+          ok: true,
+          toolName: "list_files",
+          path: "/evidence/LALACHAN/scripts",
+          entries: [{ path: "scripts/xyq_cdp_browser.py" }, { path: "scripts/wait_downloaded_mp4.sh" }],
+        }),
+      },
       { role: "user", content: "latest interruption: send the finished PDF to this exact chat" },
     ],
   },
@@ -135,5 +168,13 @@ assert.ok(runtimeText.includes(TAIL));
 assert.ok(runtimeText.includes("latest interruption"));
 assert.ok(runtimeText.includes("SYSTEM-HEAD"));
 assert.ok(runtimeText.includes("SYSTEM-TAIL"));
+assert.ok(runtimeText.includes("Retained source evidence"));
+assert.ok(runtimeText.includes("/evidence/Musia/SKILL.md"));
+assert.ok(runtimeText.includes("Create and review songs through the established Musia production workflow"));
+assert.ok(runtimeText.includes("# Musia Music Production"));
+assert.ok(runtimeText.includes("node bin/musia.js doctor --json"));
+assert.ok(runtimeText.includes("scripts/xyq_cdp_browser.py"));
+assert.ok(!runtimeText.includes("OLD-COMPACTION-MUST-NOT-RECUR"));
+assert.match(runtimeText, /Do not reread a listed source solely because compaction occurred/);
 
 console.log("context budget recovery smoke passed");

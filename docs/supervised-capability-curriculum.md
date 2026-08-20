@@ -2,6 +2,11 @@
 
 AgInTiFlow should be trained and verified by supervising real tasks, not by trusting the agent's final summary. Each curriculum run uses a clean project under `~/ProjectsLFS/Aginti-Test/`, runs AgInTiFlow through a persistent tmux session, and verifies artifacts from outside the agent.
 
+Use `scripts/supervision-ledger.js` and
+`docs/supervision-campaign-ledger.md` for the machine-readable campaign record.
+The Markdown homework ledger remains the compact human handoff; it does not
+replace the SQLite evidence record.
+
 ## Verification Contract
 
 Every supervised task must end with independent checks:

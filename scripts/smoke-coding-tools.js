@@ -5,9 +5,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildModelTimeoutRetryMessages,
+  modelTimeoutRetryRoute,
   repairModelMessageHistory,
   runAgent,
   sanitizeToolResult,
+  toolResultForModel,
   shouldShortCircuitToolBatch,
   shellDiagnosticHint,
   skippedAfterBlockedToolResult,
@@ -168,6 +170,69 @@ try {
     workspaceWritePolicy: "allow",
     sandboxMode: "host",
   };
+  const externalReadRoot = path.join(tempRoot, "external-reference");
+  await fs.mkdir(externalReadRoot, { recursive: true });
+  await fs.writeFile(path.join(externalReadRoot, "README.md"), "# External reference\nverified routine\n", "utf8");
+  const blockedExternalRead = await executeWorkspaceTool(
+    "read_file",
+    { path: path.join(externalReadRoot, "README.md") },
+    workspaceToolConfig
+  );
+  assert(blockedExternalRead.blocked, "outside read unexpectedly bypassed explicit read-root policy");
+  const readRootConfig = { ...workspaceToolConfig, readOnlyRoots: [externalReadRoot] };
+  const allowedExternalRead = await executeWorkspaceTool(
+    "read_file",
+    { path: path.join(externalReadRoot, "README.md") },
+    readRootConfig
+  );
+  assert(allowedExternalRead.ok, "explicit read root did not allow a structured read");
+  assert(allowedExternalRead.content.includes("verified routine"), "explicit read-root content was not returned");
+  const blockedExternalWrite = await executeWorkspaceTool(
+    "write_file",
+    { path: path.join(externalReadRoot, "should-not-write.md"), content: "blocked\n", mode: "create" },
+    readRootConfig
+  );
+  assert(blockedExternalWrite.blocked, "read root incorrectly authorized an outside-workspace write");
+  const selectedSkillPath = path.join(externalReadRoot, "SKILL.md");
+  await fs.writeFile(selectedSkillPath, "# Selected skill\nexact file only\n", "utf8");
+  const selectedSkillConfig = { ...workspaceToolConfig, skillReadOnlyRoots: [selectedSkillPath] };
+  const selectedSkillRead = await executeWorkspaceTool(
+    "read_file",
+    { path: selectedSkillPath },
+    selectedSkillConfig
+  );
+  assert(selectedSkillRead.ok, "selected skill file did not receive exact read-only authorization");
+  const selectedSkillSiblingRead = await executeWorkspaceTool(
+    "read_file",
+    { path: path.join(externalReadRoot, "README.md") },
+    selectedSkillConfig
+  );
+  assert(selectedSkillSiblingRead.blocked, "selected skill authorization leaked to sibling files");
+  const recursiveGrepPolicy = evaluateCommandPolicy("grep -r 'make a song' /tmp/reference", {
+    allowShellTool: true,
+    sandboxMode: "host",
+    packageInstallPolicy: "block",
+    commandCwd: workspace,
+  });
+  assert(!recursiveGrepPolicy.allowed, "recursive grep should be blocked as unbounded discovery");
+  assert(recursiveGrepPolicy.category === "unbounded-discovery", "recursive grep used the wrong policy category");
+  assert(recursiveGrepPolicy.recoverable, "recursive grep block should be automatically recoverable");
+  const boundedRgPolicy = evaluateCommandPolicy("rg -n --max-count 20 'make a song' /tmp/reference", {
+    allowShellTool: true,
+    sandboxMode: "host",
+    packageInstallPolicy: "block",
+    commandCwd: workspace,
+  });
+  assert(boundedRgPolicy.allowed, "targeted bounded rg should remain allowed");
+  const boundedAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: { command: "grep -r 'make a song' /tmp/reference" },
+    guard: recursiveGrepPolicy,
+    config: { allowShellTool: true, sandboxMode: "host", commandCwd: workspace },
+    state: { sessionId: "bounded-search-smoke" },
+  });
+  assert(boundedAdvice.autoRecover, "unbounded discovery advice should tell the agent to recover automatically");
+  assert(/Do not ask the user/i.test(boundedAdvice.instruction), "bounded recovery advice should not require user approval");
   const cdataSvgResult = await executeWorkspaceTool(
     "write_file",
     {
@@ -373,6 +438,66 @@ try {
     allowDestructive: false,
     commandCwd: workspace,
   };
+  const hostReadRootPolicy = {
+    ...hostWorkspacePolicy,
+    readOnlyRoots: [externalReadRoot],
+  };
+  const readRootDoctorPolicy = evaluateCommandPolicy(
+    `cd ${externalReadRoot} && node bin/musia.js doctor --json 2>&1 | head -80`,
+    hostReadRootPolicy
+  );
+  assert(readRootDoctorPolicy.allowed, "explicit read root blocked a bounded read-only doctor command");
+  assert(readRootDoctorPolicy.category === "read-only", "read-root doctor command was not read-only");
+  assert(readRootDoctorPolicy.readOnlyRoot === externalReadRoot, "read-root doctor command lost root provenance");
+  const relativeReadRootDoctorPolicy = evaluateCommandPolicy(
+    "cd ../external-reference && node bin/musia.js doctor --json",
+    hostReadRootPolicy
+  );
+  assert(relativeReadRootDoctorPolicy.allowed, "relative path to an explicit read root was not recognized");
+  const readRootHelpPolicy = evaluateCommandPolicy(
+    `cd ${externalReadRoot} && python3 scripts/tool.py --help 2>&1 | head -40`,
+    hostReadRootPolicy
+  );
+  assert(readRootHelpPolicy.allowed, "explicit read root blocked a bounded Python help command");
+  const readRootCondaHelpPolicy = evaluateCommandPolicy(
+    `cd ${externalReadRoot} && conda run -n lazyedit python scripts/tool.py --help 2>&1 | head -40`,
+    hostReadRootPolicy
+  );
+  assert(readRootCondaHelpPolicy.allowed, "explicit read root blocked a bounded Conda Python help command");
+  assert(readRootCondaHelpPolicy.category === "read-only", "Conda Python help command was not read-only");
+  const readRootCondaMutationPolicy = evaluateCommandPolicy(
+    `cd ${externalReadRoot} && conda run -n lazyedit python scripts/tool.py generate`,
+    hostReadRootPolicy
+  );
+  assert(!readRootCondaMutationPolicy.allowed, "explicit read root authorized a mutating Conda tool invocation");
+  const multilineReadRootPolicy = evaluateCommandPolicy(
+    [
+      `cd ${externalReadRoot} && node bin/musia.js doctor --json`,
+      `cd ${externalReadRoot} && python3 scripts/tool.py --help`,
+    ].join("\n"),
+    hostReadRootPolicy
+  );
+  assert(multilineReadRootPolicy.allowed, "newline-separated bounded read-root checks were treated as broad shell");
+  assert(multilineReadRootPolicy.category === "read-only", "multiline read-root checks lost read-only classification");
+  const redirectedReadRootInspectionPolicy = evaluateCommandPolicy(
+    `cd ${externalReadRoot} 2>&1 && echo "=== PWD ===" && pwd && git status --short 2>&1 | head -20 && ls -la 2>&1 | head -40 && cat package.json 2>&1 | head -60`,
+    hostReadRootPolicy
+  );
+  assert(
+    redirectedReadRootInspectionPolicy.allowed,
+    "a benign stderr redirect after cd made a bounded read-root inspection look like broad host shell"
+  );
+  assert(
+    redirectedReadRootInspectionPolicy.category === "read-only",
+    "redirected read-root inspection lost its read-only classification"
+  );
+  const readRootMutationPolicy = evaluateCommandPolicy(
+    `cd ${externalReadRoot} && node bin/musia.js generate`,
+    hostReadRootPolicy
+  );
+  assert(!readRootMutationPolicy.allowed, "explicit read root authorized a non-inspection command");
+  const readRootTestPolicy = evaluateCommandPolicy(`cd ${externalReadRoot} && npm test`, hostReadRootPolicy);
+  assert(!readRootTestPolicy.allowed, "explicit read root authorized a test that could write caches or builds");
   const readonlyProbePolicy = evaluateCommandPolicy(
     'which pdflatex 2>&1; which latexmk 2>&1; echo "---"; find /workspace -name \'*.tex\' -maxdepth 3 2>/dev/null; echo "exit: $?"',
     dockerWorkspaceNoInstallsPolicy
@@ -722,6 +847,12 @@ try {
   );
   await fs.writeFile(path.join(workspace, "src/index.js"), "export function answer() { return 42; }\n", "utf8");
   await fs.writeFile(path.join(workspace, "test/index.test.js"), "import test from 'node:test';\n", "utf8");
+  await fs.mkdir(path.join(workspace, "scripts"), { recursive: true });
+  await fs.mkdir(path.join(workspace, ".conda/cache"), { recursive: true });
+  await fs.mkdir(path.join(workspace, ".runtime-generated/cache"), { recursive: true });
+  await fs.writeFile(path.join(workspace, "scripts/routine_entry.py"), "print('ready')\n", "utf8");
+  await fs.writeFile(path.join(workspace, ".conda/cache/routine_entry.py"), "private cache noise\n", "utf8");
+  await fs.writeFile(path.join(workspace, ".runtime-generated/cache/noise.txt"), "generated runtime noise\n", "utf8");
   const longSmallFile = [
     "# Small file read smoke",
     "line 001",
@@ -760,6 +891,40 @@ try {
   assert(sanitizedSmallRead.content === longSmallFile, "small read_file result did not keep full content for the model");
   assert(sanitizedSmallRead.contentTruncated === false, "small read_file result should not be marked truncated");
   assert(!("contentPreview" in sanitizedSmallRead), "small read_file result should not replace full content with preview");
+  const largeModelRead = toolResultForModel({
+    ok: true,
+    toolName: "read_file",
+    path: "large-skill.md",
+    startLine: 1,
+    content: Array.from({ length: 1600 }, (_, index) => `skill line ${index + 1}`).join("\n"),
+  });
+  assert(largeModelRead.contentTruncated, "large model-facing read was not bounded");
+  assert(largeModelRead.content.length <= 12100, "large model-facing read exceeded the context cap");
+  assert(largeModelRead.nextStartLine > 1, "large model-facing read omitted its continuation line");
+  const largeModelList = toolResultForModel({
+    ok: true,
+    toolName: "list_files",
+    entries: Array.from({ length: 150 }, (_, index) => ({ path: `file-${index}.txt` })),
+  });
+  assert(largeModelList.entries.length === 80, "model-facing list was not capped");
+  assert(largeModelList.entryCount === 150 && largeModelList.entriesTruncated, "model-facing list omitted truncation evidence");
+  const largeModelEvidence = toolResultForModel({
+    ok: true,
+    toolName: "read_file",
+    path: "large-skill.md",
+    commandEvidence: Array.from({ length: 40 }, (_, index) => ({ signature: `tool command ${index}` })),
+    pathEvidence: Array.from({ length: 80 }, (_, index) => ({ path: `references/path-${index}.md` })),
+  });
+  assert(largeModelEvidence.commandEvidence.length === 16, "model-facing command provenance was not bounded");
+  assert(
+    largeModelEvidence.commandEvidenceCount === 40 && largeModelEvidence.commandEvidenceTruncated,
+    "model-facing command provenance omitted retained-count metadata"
+  );
+  assert(largeModelEvidence.pathEvidence.length === 32, "model-facing path provenance was not bounded");
+  assert(
+    largeModelEvidence.pathEvidenceCount === 80 && largeModelEvidence.pathEvidenceTruncated,
+    "model-facing path provenance omitted retained-count metadata"
+  );
   const limitedReadResult = await executeWorkspaceTool(
     "read_file",
     { path: "small-read-smoke.md", startLine: 2, lineLimit: 3 },
@@ -798,6 +963,29 @@ try {
   assert(inspected.sourceDirs.some((item) => item.path === "src"), "inspect_project did not identify src directory");
   assert(inspected.testFiles.some((item) => item.path === "test/index.test.js"), "inspect_project did not identify test file");
   assert(inspected.recommendedReads.includes("package.json"), "inspect_project did not recommend package.json");
+  const boundedList = await executeWorkspaceTool(
+    "list_files",
+    { path: ".", maxDepth: 4, limit: 200 },
+    { commandCwd: workspace, allowFileTools: true }
+  );
+  assert(!boundedList.entries.some((item) => item.path.startsWith(".conda")), "list_files traversed a cache-heavy .conda tree");
+  assert(
+    !boundedList.entries.some((item) => item.path.startsWith(".runtime-generated")),
+    "list_files traversed an unrecognized hidden runtime directory"
+  );
+  const filenameSearch = await executeWorkspaceTool(
+    "search_files",
+    { path: ".", query: "routine_entry.py", maxResults: 5 },
+    { commandCwd: workspace, allowFileTools: true }
+  );
+  assert(
+    filenameSearch.results.some((item) => item.path === "scripts/routine_entry.py" && item.line === 0),
+    "search_files did not return a direct filename match"
+  );
+  assert(
+    !filenameSearch.results.some((item) => item.path.startsWith(".conda")),
+    "search_files traversed a cache-heavy .conda tree"
+  );
   const nodeProfile = getTaskProfile("node");
   assert(/package\.json/.test(nodeProfile.prompt), "node profile does not require package manifest awareness");
   assert(/bin entry/i.test(nodeProfile.prompt), "node profile does not guide new CLI tools toward bin entries");
@@ -900,6 +1088,60 @@ try {
   assert(
     compactRetryMessages.some((message) => /blocked=general-shell/.test(message.content || "")),
     "timeout retry messages did not retain blocked tool evidence"
+  );
+  const deepSeekTimeoutRoute = modelTimeoutRetryRoute({
+    provider: "deepseek",
+    model: "deepseek-v4-pro",
+    modelTimeoutMs: 180000,
+  });
+  assert(
+    deepSeekTimeoutRoute.model === "deepseek-v4-flash" && deepSeekTimeoutRoute.switchedModel,
+    "DeepSeek timeout retry did not stay in-provider and switch to the fast route"
+  );
+  assert(
+    deepSeekTimeoutRoute.retryTimeoutMs === 135000,
+    "DeepSeek fast timeout retry retained the old doubled stall window"
+  );
+  const localTimeoutRoute = modelTimeoutRetryRoute({
+    provider: "localllm",
+    model: "localllm-deep",
+    modelTimeoutMs: 120000,
+  });
+  assert(
+    localTimeoutRoute.model === "localllm-fast" && localTimeoutRoute.retryTimeoutMs === 90000,
+    "LocalLLM timeout retry did not switch to its same-boundary fast route"
+  );
+  const artifactTimeoutMessages = buildModelTimeoutRetryMessages(
+    {
+      meta: {
+        artifactProgress: {
+          complete: true,
+          needsRepair: true,
+          defectCount: 2,
+        },
+      },
+      messages: [
+        { role: "system", content: "artifact repair system" },
+        { role: "user", content: "Exact output report.md:\n# Report\nUnsupported command: invented-cli run" },
+        { role: "user", content: "Deterministic preflight: remove invented-cli run; remaining defects: 2." },
+      ],
+    },
+    { taskProfile: "research", commandCwd: workspace },
+    { title: "No browser page open", url: "" },
+    9,
+    planTimeoutError
+  );
+  assert(
+    artifactTimeoutMessages.some((message) => /Exact output report\.md/.test(message.content || "")),
+    "artifact timeout retry discarded the embedded exact output"
+  );
+  assert(
+    artifactTimeoutMessages.some((message) => /remove invented-cli run/.test(message.content || "")),
+    "artifact timeout retry discarded deterministic preflight defects"
+  );
+  assert(
+    artifactTimeoutMessages.every((message) => message.role !== "tool" && !Array.isArray(message.tool_calls)),
+    "artifact timeout retry retained invalid native tool history"
   );
   const fakeScoutPrompts = [];
   const fakeScoutClient = {
@@ -1065,6 +1307,41 @@ try {
   const unifiedText = await fs.readFile(path.join(workspace, "unified-target.txt"), "utf8");
   assert(unified.ok && unifiedText === "alpha\nnew\nomega\n", "unified apply_patch did not update expected file");
 
+  await fs.writeFile(path.join(workspace, "repair-report.md"), "old report\n", "utf8");
+  const ordinaryAddExistingError = await executeWorkspaceTool(
+    "apply_patch",
+    {
+      patch: ["*** Begin Patch", "*** Add File: repair-report.md", "+new report", "*** End Patch"].join("\n"),
+    },
+    { commandCwd: workspace, allowFileTools: true }
+  )
+    .then(() => "")
+    .catch((error) => String(error?.message || error));
+  assert(
+    /cannot add an existing file/i.test(ordinaryAddExistingError),
+    "ordinary apply_patch unexpectedly replaced an existing file"
+  );
+  const repairReplace = await executeWorkspaceTool(
+    "apply_patch",
+    {
+      patch: ["*** Begin Patch", "*** Add File: repair-report.md", "+new report", "*** End Patch"].join("\n"),
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+      artifactValidationReplacePaths: ["repair-report.md"],
+    }
+  );
+  assert(repairReplace.ok, "artifact repair did not atomically replace its exact output");
+  assert(
+    (await fs.readFile(path.join(workspace, "repair-report.md"), "utf8")).trim() === "new report",
+    "atomic exact-output replacement wrote the wrong content"
+  );
+  assert(
+    repairReplace.change?.action === "apply_patch_replace",
+    "atomic exact-output replacement did not preserve distinct audit provenance"
+  );
+
   const blockedPatch = await executeWorkspaceTool(
     "apply_patch",
     {
@@ -1196,6 +1473,26 @@ try {
     }
   );
   assert(redactedContentResult.ok, "write_file should allow already-redacted secret placeholders");
+
+  const credentialStatusReportResult = await executeWorkspaceTool(
+    "write_file",
+    {
+      path: "notes/credential-status-report.md",
+      content: [
+        "Runtime readiness:",
+        "- openai_api_key = false",
+        "- deepseek_api_key: not-set",
+        "- hf_token = [REDACTED]",
+        "",
+      ].join("\n"),
+      mode: "create",
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  assert(credentialStatusReportResult.ok, "write_file blocked safe credential availability statuses");
 
   const secretPatchResult = await executeWorkspaceTool(
     "apply_patch",

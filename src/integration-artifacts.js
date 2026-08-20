@@ -1,0 +1,241 @@
+import {
+  AGENT_WORKER_SCHEMA_VERSION,
+  INTEGRATION_ARTIFACT_KINDS,
+  IntegrationValidationError,
+  contractDigest,
+  integrationBoundedText,
+  integrationExactKeys,
+  integrationInvalid,
+  validateIntegrationArtifactId,
+} from "./integration-policy.js";
+import { redactSensitiveText } from "./redaction.js";
+
+export const MAX_INTEGRATION_PUBLIC_ARTIFACT_BYTES = 48 * 1024;
+
+const PLOT_TYPES = new Set(["line", "bar", "scatter", "area"]);
+const ABSOLUTE_PATH_PATTERN =
+  /(?:^|[\s("'`])(?:\/(?:workspace|home|users|root|etc|usr|var|opt|srv|run|tmp|proc|sys|dev|mnt|media|aginti-(?:home|cache|env))(?:\/[^\s"'`<>)\]]*)?|[A-Za-z]:\\[^\s"'`<>)\]]*)/giu;
+
+function stableArtifactId(...parts) {
+  return `art_${contractDigest(parts).slice(0, 64)}`;
+}
+
+function redactPublicText(value) {
+  return redactSensitiveText(value).replace(ABSOLUTE_PATH_PATTERN, (match) => {
+    const prefix = /^[\s("'`]/u.test(match) ? match[0] : "";
+    return `${prefix}[REDACTED_PATH]`;
+  });
+}
+
+function finiteNumber(value, label) {
+  if (typeof value !== "number" || !Number.isFinite(value)) integrationInvalid(`${label} must be a finite number`);
+  return value;
+}
+
+function validateLabel(value, label, maximum = 120) {
+  const text = integrationBoundedText(redactPublicText(value), label, maximum, { minimum: 1, presentational: true }).trim();
+  if (!text) integrationInvalid(`${label} must contain a non-whitespace character`);
+  return text;
+}
+
+export function validateIntegrationPlotSpec(value) {
+  const spec = integrationExactKeys(
+    value,
+    ["schemaVersion", "type", "xLabel", "yLabel", "labels", "series"],
+    "plot spec",
+    ["schemaVersion", "type", "series"]
+  );
+  if (spec.schemaVersion !== AGENT_WORKER_SCHEMA_VERSION) integrationInvalid("plot spec schemaVersion must be 1");
+  if (!PLOT_TYPES.has(spec.type)) integrationInvalid("plot type is unsupported");
+  if (!Array.isArray(spec.series) || spec.series.length < 1 || spec.series.length > 8) {
+    integrationInvalid("plot series must contain 1-8 entries");
+  }
+
+  const categorical = spec.type !== "scatter";
+  let labels;
+  if (categorical) {
+    if (!Array.isArray(spec.labels) || spec.labels.length < 1 || spec.labels.length > 128) {
+      integrationInvalid("line, bar, and area plots require 1-128 labels");
+    }
+    labels = spec.labels.map((item, index) => validateLabel(item, `plot labels[${index}]`, 160));
+  } else {
+    if (spec.labels !== undefined) integrationInvalid("scatter plots do not accept labels");
+    labels = undefined;
+  }
+
+  let totalPoints = 0;
+  const names = new Set();
+  const series = spec.series.map((item, index) => {
+    const entry = integrationExactKeys(
+      item,
+      categorical ? ["name", "data"] : ["name", "points"],
+      `plot series[${index}]`,
+      categorical ? ["name", "data"] : ["name", "points"]
+    );
+    const name = validateLabel(entry.name, `plot series[${index}].name`);
+    if (names.has(name)) integrationInvalid("plot series names must be unique");
+    names.add(name);
+    if (categorical) {
+      if (!Array.isArray(entry.data) || entry.data.length !== labels.length) {
+        integrationInvalid(`plot series[${index}].data must match labels length`);
+      }
+      totalPoints += entry.data.length;
+      return Object.freeze({
+        name,
+        data: Object.freeze(entry.data.map((point, pointIndex) => finiteNumber(point, `plot series[${index}].data[${pointIndex}]`))),
+      });
+    }
+    if (!Array.isArray(entry.points) || entry.points.length < 1) integrationInvalid(`plot series[${index}].points must not be empty`);
+    totalPoints += entry.points.length;
+    return Object.freeze({
+      name,
+      points: Object.freeze(
+        entry.points.map((point, pointIndex) => {
+          const normalized = integrationExactKeys(point, ["x", "y"], `plot series[${index}].points[${pointIndex}]`, ["x", "y"]);
+          return Object.freeze({
+            x: finiteNumber(normalized.x, `plot series[${index}].points[${pointIndex}].x`),
+            y: finiteNumber(normalized.y, `plot series[${index}].points[${pointIndex}].y`),
+          });
+        })
+      ),
+    });
+  });
+  if (totalPoints > 500) integrationInvalid("plot contains more than 500 total points");
+
+  return Object.freeze({
+    schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
+    type: spec.type,
+    ...(spec.xLabel === undefined ? {} : { xLabel: validateLabel(spec.xLabel, "plot xLabel") }),
+    ...(spec.yLabel === undefined ? {} : { yLabel: validateLabel(spec.yLabel, "plot yLabel") }),
+    ...(labels === undefined ? {} : { labels: Object.freeze(labels) }),
+    series: Object.freeze(series),
+  });
+}
+
+function validateTableCell(value, label) {
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "number") return finiteNumber(value, label);
+  return integrationBoundedText(redactPublicText(value), label, 2_000, { presentational: true });
+}
+
+export function validateIntegrationTableSpec(value) {
+  const spec = integrationExactKeys(value, ["schemaVersion", "columns", "rows"], "table spec", [
+    "schemaVersion",
+    "columns",
+    "rows",
+  ]);
+  if (spec.schemaVersion !== AGENT_WORKER_SCHEMA_VERSION) integrationInvalid("table spec schemaVersion must be 1");
+  if (!Array.isArray(spec.columns) || spec.columns.length < 1 || spec.columns.length > 12) integrationInvalid("table columns must contain 1-12 entries");
+  if (!Array.isArray(spec.rows) || spec.rows.length > 200) integrationInvalid("table rows may contain at most 200 entries");
+  const keys = new Set();
+  const columns = spec.columns.map((column, index) => {
+    const entry = integrationExactKeys(column, ["key", "label"], `table columns[${index}]`, ["key", "label"]);
+    if (typeof entry.key !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,47}$/u.test(entry.key) || keys.has(entry.key)) {
+      integrationInvalid(`table columns[${index}].key is invalid or duplicated`);
+    }
+    keys.add(entry.key);
+    return Object.freeze({ key: entry.key, label: validateLabel(entry.label, `table columns[${index}].label`) });
+  });
+  const rows = spec.rows.map((row, rowIndex) => {
+    const object = integrationExactKeys(row, [...keys], `table rows[${rowIndex}]`);
+    return Object.freeze(Object.fromEntries(columns.map(({ key }) => [key, validateTableCell(object[key] ?? null, `table rows[${rowIndex}].${key}`)])));
+  });
+  return Object.freeze({ schemaVersion: AGENT_WORKER_SCHEMA_VERSION, columns: Object.freeze(columns), rows: Object.freeze(rows) });
+}
+
+export function validateIntegrationMarkdownSpec(value) {
+  const spec = integrationExactKeys(value, ["schemaVersion", "markdown"], "markdown spec", ["schemaVersion", "markdown"]);
+  if (spec.schemaVersion !== AGENT_WORKER_SCHEMA_VERSION) integrationInvalid("markdown spec schemaVersion must be 1");
+  const markdown = integrationBoundedText(redactPublicText(spec.markdown), "markdown", 32_000);
+  if (/<\/?[A-Za-z][^>]*>|!\[[^\]]*\]\s*\(|\[[^\]]+\]\s*\([^)]*\)|(?:https?|data|file|javascript)\s*:|(?:^|[\s("'`])\/(?:workspace|home|users|root|etc|usr|var|opt|srv|run|tmp|proc|sys|dev|mnt|media|aginti-(?:home|cache|env))(?:\/|\b)|(?:^|[\s("'`])[A-Za-z]:\\/imu.test(markdown)) {
+    integrationInvalid("markdown artifacts may not contain HTML, links, images, URL schemes, or private runtime paths", {
+      code: "UNSAFE_PRESENTATION",
+    });
+  }
+  return Object.freeze({ schemaVersion: AGENT_WORKER_SCHEMA_VERSION, markdown });
+}
+
+function normalizeArtifactKind(input = {}) {
+  const kind = String(input.kind || input.type || "").trim();
+  if (INTEGRATION_ARTIFACT_KINDS.includes(kind)) return kind;
+  if (kind === "plot.v1") return "plot";
+  if (kind === "table.v1") return "table";
+  if (kind === "markdown.v1" || kind === "md") return "markdown";
+  return "";
+}
+
+function normalizeArtifactSpec(kind, input = {}) {
+  if (input.spec) return input.spec;
+  if (kind === "markdown") {
+    return {
+      schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
+      markdown: input.markdown ?? input.content ?? "",
+    };
+  }
+  if (kind === "table") {
+    return {
+      schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
+      columns: input.columns || input.table?.columns || [],
+      rows: input.rows || input.table?.rows || [],
+    };
+  }
+  if (kind === "plot") {
+    return {
+      schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
+      ...(input.plot || input),
+    };
+  }
+  return {};
+}
+
+export function sanitizeIntegrationArtifact(input = {}) {
+  const artifact = integrationExactKeys(
+    input,
+    ["id", "title", "kind", "type", "spec", "markdown", "content", "columns", "rows", "table", "plot"],
+    "artifact"
+  );
+  const kind = normalizeArtifactKind(artifact);
+  if (!kind) integrationInvalid("artifact kind is unsupported");
+  const title = validateLabel(artifact.title || (kind === "markdown" ? "Markdown" : "Artifact"), "artifact title");
+  const spec =
+    kind === "plot"
+      ? validateIntegrationPlotSpec(normalizeArtifactSpec(kind, artifact))
+      : kind === "table"
+        ? validateIntegrationTableSpec(normalizeArtifactSpec(kind, artifact))
+        : validateIntegrationMarkdownSpec(normalizeArtifactSpec(kind, artifact));
+  const id = validateIntegrationArtifactId(artifact.id || stableArtifactId({ kind, title, spec }));
+  const normalized = { id, title, kind, spec };
+  if (Buffer.byteLength(JSON.stringify(normalized)) > MAX_INTEGRATION_PUBLIC_ARTIFACT_BYTES) {
+    integrationInvalid("artifact exceeds its 48 KiB public contract", { code: "ARTIFACT_TOO_LARGE" });
+  }
+  return Object.freeze(normalized);
+}
+
+export function buildIntegrationArtifacts(options = {}) {
+  const candidates = [];
+  for (const artifact of options.artifacts || []) candidates.push(artifact);
+
+  const byId = new Map();
+  for (const candidate of candidates) {
+    try {
+      const sanitized = sanitizeIntegrationArtifact(candidate);
+      byId.set(sanitized.id, sanitized);
+    } catch {
+      // Unsafe or non-public artifacts are intentionally omitted.
+    }
+  }
+
+  return Object.freeze({
+    schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
+    artifacts: Object.freeze([...byId.values()].slice(-32)),
+  });
+}
+
+export function findIntegrationArtifact(artifacts = [], artifactId = "") {
+  const id = validateIntegrationArtifactId(artifactId);
+  const found = artifacts.find((artifact) => artifact.id === id);
+  if (!found) {
+    throw new IntegrationValidationError("NOT_FOUND", "Artifact not found.", { status: 404, details: { artifactId: id } });
+  }
+  return sanitizeIntegrationArtifact(found);
+}

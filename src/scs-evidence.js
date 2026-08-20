@@ -258,6 +258,29 @@ function inferExactInputPaths(goal = "") {
   return uniqueLimited(paths, 24);
 }
 
+function inferDeclaredSourceRoots(goal = "") {
+  const roots = [];
+  for (const match of String(goal || "").matchAll(/`([^`\n]{1,280})`/g)) {
+    const candidate = String(match[1] || "").trim();
+    if (
+      /^(?:~\/|\.{1,2}\/|\/)[^\s]+$/.test(candidate) &&
+      !/\.(?:md|txt|json|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx)$/i.test(candidate)
+    ) {
+      roots.push(candidate.replace(/\/+$/, ""));
+    }
+  }
+  return uniqueLimited(roots, 12);
+}
+
+function requiresPerSourceChecks(goal = "") {
+  const text = String(goal || "");
+  return (
+    /\b(?:run|execute)\b[^.\n;]{0,100}\b(?:help|status|doctor|read[- ]only)\b[^.\n;]{0,100}\b(?:checks?|commands?)\b/i.test(text) ||
+    /\b(?:help|status|doctor|read[- ]only)\b[^.\n;]{0,100}\b(?:checks?|commands?)\b[^.\n;]{0,100}\b(?:where available|for each|per (?:stage|source|repository|repo))\b/i.test(text) ||
+    /(?:运行|執行)[^。\n；]{0,100}(?:帮助|幫助|状态|狀態|只读|唯讀)[^。\n；]{0,100}(?:检查|檢查|命令)/.test(text)
+  );
+}
+
 function stripForbiddenTextClauses(text = "") {
   return String(text || "")
     .replace(/(?:不要(?:写|寫)成|不得(?:写|寫)成|禁止(?:写|寫)成)\s*[^，,。；;\n]+/g, "")
@@ -267,6 +290,10 @@ function stripForbiddenTextClauses(text = "") {
 
 function inferRequiredTextTerms(goal = "") {
   const terms = [];
+  const outputPaths = inferExactOutputPaths(goal);
+  const outputPathTerms = new Set(
+    outputPaths.flatMap((item) => [String(item).trim(), path.basename(String(item).trim())]).filter(Boolean)
+  );
   const lines = String(goal || "").split(/\n+/);
   for (const line of lines) {
     const positiveSegment = String(line || "").split(
@@ -280,7 +307,9 @@ function inferRequiredTextTerms(goal = "") {
       terms.push(...quotedTerms(requiredSegment));
     }
   }
-  return uniqueLimited(terms, 24);
+  // A quoted filename in "save as `report.md`" is an output location, not
+  // required prose inside that report. Path existence is validated separately.
+  return uniqueLimited(terms.filter((term) => !outputPathTerms.has(String(term).trim())), 24);
 }
 
 function inferForbiddenTextTerms(goal = "") {
@@ -302,10 +331,20 @@ function blockerFromPayload(payload = {}, source = "tool") {
   const toolName = String(payload.toolName || payload.name || "");
   const args = payload.args && typeof payload.args === "object" ? payload.args : {};
   const advice = payload.permissionAdvice && typeof payload.permissionAdvice === "object" ? payload.permissionAdvice : {};
+  const category = String(payload.category || advice.category || "blocked-tool");
+  const code = String(payload.code || "");
+  if (
+    payload.recoverable === true ||
+    advice.autoRecover === true ||
+    ["tool-contract-violation", "repeated-read-only-call", "static-discovery-limit"].includes(category) ||
+    ["TOO_MANY_TOOL_CALLS", "MALFORMED_TOOL_ARGUMENTS"].includes(code)
+  ) {
+    return null;
+  }
   return {
     source,
     toolName,
-    category: compact(payload.category || advice.category || "blocked-tool", 120),
+    category: compact(category, 120),
     target: compact(payload.path || payload.outputPath || args.path || args.command || "", 240),
     reason: compact(payload.reason || payload.error || advice.reason || "Tool was blocked or requires approval.", 500),
     needsApproval: Boolean(payload.needsApproval || advice.needsApproval),
@@ -387,6 +426,33 @@ function profileRequirementsForGoal(taskProfile = "", goal = "") {
   return defaults.filter((category) => category !== "command");
 }
 
+function isReadOnlyReadinessTask(goal = "") {
+  const text = String(goal || "");
+  const readinessSignal =
+    /\b(?:inspect|audit|assess|document|report on|verify)\s+(?:whether|if|the\s+(?:current\s+)?(?:readiness|capability|workflow|interface))\b/i.test(text) ||
+    /\b(?:readiness|capability)\s+(?:audit|check|report|assessment)\b/i.test(text) ||
+    /\bwhether\s+(?:i|we|the\s+(?:agent|system))\s+can\b/i.test(text) ||
+    /只读检查|只讀檢查|就绪检查|就緒檢查|能力检查|能力檢查|检查是否|檢查是否/.test(text);
+  const noActionSignal =
+    /\b(?:do not|don't|dont|never|without)\b[^.\n;]{0,260}\b(?:generate|submit|upload|publish|deploy|log in|login|restart|edit|modify|delete|purchase|pay)\b/i.test(text) ||
+    /(?:不要|禁止)[^。\n；]{0,260}(?:生成|提交|上传|上傳|发布|發布|部署|登录|登入|重启|重啟|编辑|編輯|修改|删除|刪除|购买|購買|支付)/.test(text);
+  return readinessSignal && noActionSignal;
+}
+
+function requiresSourceGrounding(goal = "") {
+  const text = String(goal || "");
+  return (
+    isReadOnlyReadinessTask(text) ||
+    /\b(?:exact|current|mature|proven|verified|source[- ]grounded|documented)\b[^.\n;]{0,120}\b(?:commands?|interfaces?|workflows?|routines?|readiness|capabilit(?:y|ies))\b/i.test(
+      text
+    ) ||
+    /\b(?:verify|inspect|audit|check)\b[^.\n;]{0,120}\b(?:rather than guess|without guessing|from (?:the )?(?:source|docs?|help))\b/i.test(
+      text
+    ) ||
+    (/准确|精确|当前|成熟|已验证|有依据|不要猜|避免猜测/.test(text) && /命令|接口|流程|例程|就绪|能力/.test(text))
+  );
+}
+
 function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCriteria = []) {
   const positiveGoal = stripForbiddenLanguage(goal);
   const text = normalizedText(positiveGoal);
@@ -431,6 +497,17 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   }
   if (textHas(text, /\b(publish|deploy|submit|upload to|generate video|external service|npm publish|release)\b/) || /发布|部署|提交|生成视频|外部服务/.test(text)) {
     categories.add("publish");
+  }
+
+  if (isReadOnlyReadinessTask(goal)) {
+    categories.delete("publish");
+    categories.delete("browser");
+    categories.delete("visual");
+    categories.delete("git");
+    const concreteArtifactOutput = inferExactOutputPaths(goal).some((item) =>
+      /\.(?:pdf|docx|pptx|xlsx|png|jpe?g|webp|svg|mp4|mov|zip|7z)$/i.test(item)
+    );
+    if (!concreteArtifactOutput) categories.delete("artifact");
   }
 
   if (profile === "review") {
@@ -541,6 +618,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
   }));
   const exactOutputPaths = inferExactOutputPaths(evidenceGoal);
   const exactInputPaths = inferExactInputPaths(evidenceGoal).filter((item) => !exactOutputPaths.includes(item));
+  const declaredSourceRoots = inferDeclaredSourceRoots(evidenceGoal);
   return {
     version: 1,
     outcome: compact(evidenceGoal || "Complete the requested task.", 500),
@@ -550,7 +628,11 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     forbiddenActions: inferForbiddenActions(evidenceGoal),
     exactOutputPaths,
     exactInputPaths,
+    declaredSourceRoots,
+    readOnlyReadiness: isReadOnlyReadinessTask(evidenceGoal),
+    requiresPerSourceChecks: requiresPerSourceChecks(evidenceGoal),
     requiredToolCalls,
+    requiresSourceGrounding: requiresSourceGrounding(evidenceGoal),
     requiredTextTerms: inferRequiredTextTerms(evidenceGoal),
     forbiddenTextTerms: inferForbiddenTextTerms(evidenceGoal),
     successCriteria: unique(acceptanceCriteria).slice(0, 10),
@@ -567,7 +649,1070 @@ function resolveContractPath(commandCwd = process.cwd(), rawPath = "") {
   return path.resolve(commandCwd || process.cwd(), text);
 }
 
-export function evaluateScsSemanticContract(contract = {}, { commandCwd = process.cwd() } = {}) {
+const STANDARD_SHELL_COMMANDS = new Set([
+  ".",
+  "alias",
+  "cat",
+  "cd",
+  "chmod",
+  "cp",
+  "echo",
+  "eval",
+  "exec",
+  "export",
+  "find",
+  "head",
+  "ls",
+  "mkdir",
+  "printf",
+  "pwd",
+  "return",
+  "rg",
+  "sed",
+  "set",
+  "shift",
+  "source",
+  "stat",
+  "tail",
+  "test",
+  "trap",
+  "umask",
+  "unalias",
+  "unset",
+  "wc",
+]);
+
+const NON_COMMAND_FIRST_TOKENS = new Set([
+  "complete",
+  "completed",
+  "done",
+  "error",
+  "failed",
+  "failure",
+  "info",
+  "output",
+  "processing",
+  "ready",
+  "result",
+  "status",
+  "success",
+  "total",
+  "warning",
+]);
+
+const SCRIPT_INTERPRETERS = new Set(["bash", "bun", "node", "python", "python3", "sh", "zsh"]);
+const INLINE_COMMAND_EXECUTABLES = new Set([
+  ...SCRIPT_INTERPRETERS,
+  "conda",
+  "curl",
+  "deno",
+  "ffmpeg",
+  "git",
+  "npm",
+  "npx",
+  "pdflatex",
+  "pip",
+  "pip3",
+  "pnpm",
+  "tmux",
+  "wget",
+  "yarn",
+]);
+
+function unquoteShellToken(value = "") {
+  return String(value || "").replace(/^['"]|['"]$/g, "");
+}
+
+function shellCommandSegments(value = "") {
+  const segments = [];
+  let current = "";
+  let quote = "";
+  let escaped = false;
+  const source = String(value || "");
+  const flush = () => {
+    const segment = current.trim();
+    if (segment) segments.push(segment);
+    current = "";
+  };
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (escaped) {
+      current += character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      current += character;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      current += character;
+      if (character === quote) quote = "";
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      current += character;
+      continue;
+    }
+    const pair = source.slice(index, index + 2);
+    if (pair === "&&" || pair === "||") {
+      flush();
+      index += 1;
+      continue;
+    }
+    if (character === ";" || character === "|") {
+      flush();
+      continue;
+    }
+    current += character;
+  }
+  flush();
+  return segments;
+}
+
+function commandSubcommands(tokens = [], startIndex = 0, limit = 2) {
+  const subcommands = [];
+  for (let index = startIndex; index < tokens.length && subcommands.length < limit; index += 1) {
+    const token = unquoteShellToken(tokens[index]);
+    if (!token || token.startsWith("-")) break;
+    if (
+      /^[A-Z][A-Z0-9_-]*$/.test(token) ||
+      token.startsWith("$") ||
+      token.startsWith("<") ||
+      token.includes("/") ||
+      /\.[a-z0-9]{1,8}$/i.test(token) ||
+      !/^[a-z0-9_-]+$/i.test(token)
+    ) {
+      break;
+    }
+    subcommands.push(token.toLowerCase());
+  }
+  return subcommands;
+}
+
+function shellLogicalLines(value = "") {
+  const logical = [];
+  let pending = "";
+  for (const rawLine of String(value || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    pending = `${pending}${pending ? " " : ""}${line.replace(/\\\s*$/, "")}`.trim();
+    if (/\\\s*$/.test(line)) continue;
+    logical.push(pending);
+    pending = "";
+  }
+  if (pending) logical.push(pending);
+  return logical;
+}
+
+const SUBSTANTIVE_RUNTIME_READ_COMMANDS = new Set([
+  "cat",
+  "find",
+  "grep",
+  "head",
+  "ls",
+  "rg",
+  "sed",
+  "stat",
+  "tail",
+  "test",
+  "wc",
+]);
+
+function isSubstantiveRuntimeCheck(segment = "") {
+  if (commandSignature(segment)) return true;
+  const tokens = String(segment || "").trim().match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+  while (tokens.length && /^(?:sudo|env)$/i.test(tokens[0])) tokens.shift();
+  while (tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) tokens.shift();
+  if (tokens.length < 2) return false;
+  return SUBSTANTIVE_RUNTIME_READ_COMMANDS.has(unquoteShellToken(tokens[0]).toLowerCase());
+}
+
+function commandSignature(value = "") {
+  let text = String(value || "")
+    .trim()
+    .replace(/^\s*(?:[-*]\s+|\$\s+|>\s+)/, "")
+    .replace(/\s+/g, " ");
+  if (!text || /^https?:\/\//i.test(text) || /^(?:output|result|status|path|file)\s*:/i.test(text)) return "";
+  if (/(?:^|\s)(?:\.\.\.|…)(?:\s|$)/.test(text)) return "";
+  const tokens = text.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+  while (tokens.length && /^(?:sudo|env)$/i.test(tokens[0])) tokens.shift();
+  while (tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) tokens.shift();
+  if (!tokens.length) return "";
+  const firstRaw = unquoteShellToken(tokens[0]);
+  const first = firstRaw.toLowerCase();
+  if (
+    firstRaw.startsWith("-") ||
+    /^\d/.test(firstRaw) ||
+    (!firstRaw.includes("/") && /\.[a-z0-9]{1,8}$/i.test(firstRaw)) ||
+    !/^[./~a-z0-9_-]+$/i.test(first) ||
+    STANDARD_SHELL_COMMANDS.has(first) ||
+    NON_COMMAND_FIRST_TOKENS.has(first) ||
+    (!firstRaw.includes("/") && /^[A-Z]/.test(firstRaw))
+  ) {
+    return "";
+  }
+  const second = unquoteShellToken(tokens[1]);
+  if (!second) return "";
+  if (second === "--help" || second === "-h") return `${first} ${second}`;
+  if (SCRIPT_INTERPRETERS.has(first)) {
+    if (["-c", "-e", "--eval"].includes(second)) return `${first} ${second}`;
+    if (second === "-m") {
+      const moduleName = unquoteShellToken(tokens[2]);
+      return moduleName ? `${first} -m ${moduleName}`.toLowerCase() : "";
+    }
+    const scriptIndex = tokens.findIndex((token, index) => index > 0 && !String(token).startsWith("-"));
+    if (scriptIndex < 1) return "";
+    const script = unquoteShellToken(tokens[scriptIndex]);
+    if (!script || script === "..." || !/^[./~a-z0-9_-]+$/i.test(script)) return "";
+    const subcommands = commandSubcommands(tokens, scriptIndex + 1);
+    return [first, script, ...subcommands].join(" ").toLowerCase();
+  }
+  if (first === "conda" && second === "run") {
+    let innerIndex = 2;
+    while (innerIndex < tokens.length) {
+      const token = unquoteShellToken(tokens[innerIndex]);
+      if (["-n", "--name", "-p", "--prefix"].includes(token)) {
+        innerIndex += 2;
+        continue;
+      }
+      if (token.startsWith("-")) {
+        innerIndex += 1;
+        continue;
+      }
+      break;
+    }
+    const inner = commandSignature(tokens.slice(innerIndex).join(" "));
+    return inner ? `conda run ${inner}` : "conda run";
+  }
+  if (first === "deno" && second === "run") {
+    const scriptIndex = tokens.findIndex((token, index) => index > 1 && !String(token).startsWith("-"));
+    const script = scriptIndex > 1 ? unquoteShellToken(tokens[scriptIndex]) : "";
+    const subcommands = script ? commandSubcommands(tokens, scriptIndex + 1) : [];
+    return script ? [first, "run", script, ...subcommands].join(" ").toLowerCase() : `${first} run`;
+  }
+  if (["npm", "pnpm", "yarn"].includes(first) && ["run", "run-script"].includes(second)) {
+    const script = unquoteShellToken(tokens[2]);
+    return script && !script.startsWith("-") ? `${first} ${second} ${script}`.toLowerCase() : `${first} ${second}`;
+  }
+  if (second.startsWith("-")) return first;
+  const subcommands = commandSubcommands(tokens, 1);
+  return subcommands.length ? [first, ...subcommands].join(" ") : "";
+}
+
+function looksLikeInlineCommandSnippet(value = "") {
+  const tokens = String(value || "").match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+  if (tokens.length < 2) return false;
+  const first = unquoteShellToken(tokens[0]).toLowerCase();
+  if (INLINE_COMMAND_EXECUTABLES.has(first) || first.includes("/") || /\.(?:bash|c?js|mjs|py|sh)$/.test(first)) {
+    return true;
+  }
+  return !unquoteShellToken(tokens[1]).startsWith("-") && Boolean(commandSignature(value));
+}
+
+function markdownCommandClaims(content = "") {
+  const claims = [];
+  const fencedRanges = [];
+  const source = String(content || "");
+  const fencePattern = /```([^\n`]*)\n([\s\S]*?)```/g;
+  for (const match of source.matchAll(fencePattern)) {
+    const language = String(match[1] || "").trim().toLowerCase();
+    if (/^(?:bash|sh|shell|zsh)$/.test(language)) {
+      claims.push(...shellLogicalLines(match[2]));
+    } else if (/^(?:console|terminal)$/.test(language)) {
+      claims.push(
+        ...String(match[2] || "")
+          .split(/\r?\n/)
+          .filter((line) => /^\s*[$>]\s+/.test(line))
+          .map((line) => line.replace(/^\s*[$>]\s+/, ""))
+      );
+    }
+    fencedRanges.push([match.index, match.index + match[0].length]);
+  }
+  const outsideFences = [...source];
+  for (const [start, end] of fencedRanges) outsideFences.fill(" ", start, end);
+  for (const match of outsideFences.join("").matchAll(/`([^`\n]{2,300})`/g)) {
+    const snippet = String(match[1] || "").trim();
+    if (looksLikeInlineCommandSnippet(snippet)) claims.push(snippet);
+  }
+  const bySignature = new Map();
+  for (const claim of claims) {
+    for (const segment of shellCommandSegments(claim)) {
+      const signature = commandSignature(segment);
+      if (signature && !bySignature.has(signature)) bySignature.set(signature, { claim: segment, signature });
+    }
+  }
+  return [...bySignature.values()];
+}
+
+export function extractMarkdownCommandEvidence(content = "", source = "", limit = 40) {
+  return markdownCommandClaims(content)
+    .slice(0, Math.max(1, Number(limit) || 40))
+    .map((item) => ({
+      signature: item.signature,
+      command: String(item.claim || "").trim(),
+      source: String(source || ""),
+    }));
+}
+
+const PATH_CLAIM_EXTENSIONS = new Set([
+  "3mf",
+  "c",
+  "cpp",
+  "csv",
+  "docx",
+  "env",
+  "h",
+  "html",
+  "ini",
+  "jpeg",
+  "jpg",
+  "js",
+  "json",
+  "md",
+  "mov",
+  "mp3",
+  "mp4",
+  "pdf",
+  "png",
+  "py",
+  "sh",
+  "step",
+  "stl",
+  "svg",
+  "tex",
+  "toml",
+  "ts",
+  "tsx",
+  "txt",
+  "wav",
+  "webp",
+  "xml",
+  "yaml",
+  "yml",
+  "zip",
+]);
+
+function cleanPathToken(value = "") {
+  let token = unquoteShellToken(String(value || "").trim())
+    .replace(/^[`([{]+/, "")
+    .replace(/`+[.,;:]?$/, "")
+    .replace(/[\])},:;]+$/, "")
+    .trim();
+  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) token = token.slice(token.indexOf("=") + 1);
+  return unquoteShellToken(token).trim();
+}
+
+function looksLikePathClaim(value = "") {
+  const token = cleanPathToken(value);
+  if (
+    !token ||
+    token === "/" ||
+    /^(?:\.{3}|…)(?:\/|$)/.test(token) ||
+    /^(?:Africa|America|Antarctica|Arctic|Asia|Atlantic|Australia|Europe|Indian|Pacific)\/[A-Za-z0-9_+.-]+$/.test(token) ||
+    /(?:^|\/)\.{3}(?:\/|$)/.test(token) ||
+    /[{}]/.test(token) ||
+    /[*?]/.test(token) ||
+    token.startsWith("-") ||
+    /^https?:\/\//i.test(token) ||
+    /^(?:[<>|&]|\$)$/.test(token)
+  ) return false;
+  if (/^(?:~\/|\.{1,2}\/|\/|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?\/)/.test(token)) return true;
+  if (token.endsWith("/") && token.includes("/")) return true;
+  const extension = token.match(/\.([A-Za-z0-9]{1,8})$/)?.[1]?.toLowerCase() || "";
+  if (extension && PATH_CLAIM_EXTENSIONS.has(extension)) return true;
+  if (/^[A-Za-z][A-Za-z0-9_-]*(?:\/[A-Za-z][A-Za-z0-9_-]*)+$/.test(token)) return false;
+  return token.includes("/");
+}
+
+function pathClaimsFromSnippet(value = "") {
+  const claims = [];
+  const source = String(value || "").trim();
+  if (!source) return claims;
+  if (looksLikePathClaim(source) && !/\s/.test(source)) claims.push(cleanPathToken(source));
+  const tokens = source.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+  for (const token of tokens) {
+    const cleaned = cleanPathToken(token);
+    if (looksLikePathClaim(cleaned)) claims.push(cleaned);
+  }
+  return claims;
+}
+
+function markdownPathClaims(content = "") {
+  const source = String(content || "");
+  const claims = [];
+  for (const match of source.matchAll(/```[^\n`]*\n([\s\S]*?)```/g)) {
+    claims.push(...pathClaimsFromSnippet(match[1]));
+  }
+  for (const match of source.matchAll(/`([^`\n]{1,500})`/g)) {
+    claims.push(...pathClaimsFromSnippet(match[1]));
+  }
+  for (const match of source.matchAll(/(?:^|[\s("'])((?:~\/|\.{1,2}\/|\/)[^\s"'`),;]{1,300})/gm)) {
+    const cleaned = cleanPathToken(match[1]);
+    if (looksLikePathClaim(cleaned)) claims.push(cleaned);
+  }
+  const uniqueClaims = new Map();
+  for (const claim of claims) {
+    const cleaned = cleanPathToken(claim);
+    if (cleaned && !uniqueClaims.has(cleaned)) uniqueClaims.set(cleaned, { path: cleaned });
+  }
+  return [...uniqueClaims.values()];
+}
+
+export function extractMarkdownPathEvidence(content = "", source = "", limit = 80) {
+  return markdownPathClaims(content)
+    .slice(0, Math.max(1, Number(limit) || 80))
+    .map((item) => ({ path: item.path, source: String(source || "") }));
+}
+
+function normalizedOutputEvidence(value = "") {
+  return String(value || "")
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .trim();
+}
+
+function markdownOutputClaims(content = "") {
+  const claims = [];
+  const pattern = /(?:^|\n)\s*(?:command\s+output|output|stdout|result|输出|結果|结果)\s*:?\s*\n```(?:text|plaintext|console|terminal)?\s*\n([\s\S]*?)```/gim;
+  for (const match of String(content || "").matchAll(pattern)) {
+    const output = normalizedOutputEvidence(match[1]);
+    if (output.length >= 8) claims.push({ output, preview: compact(output, 240) });
+  }
+  return claims;
+}
+
+function hasObservedRunCommandResult(payload = {}) {
+  if (!payload || typeof payload !== "object" || payload.blocked) return false;
+  if (String(payload.toolName || payload.name || "") !== "run_command") return false;
+  return (
+    Number.isInteger(payload.exitCode) ||
+    Object.prototype.hasOwnProperty.call(payload, "stdout") ||
+    Object.prototype.hasOwnProperty.call(payload, "stderr")
+  );
+}
+
+function runtimeOutputEvidence({ events = [], state = {} } = {}) {
+  const outputs = [];
+  const consume = (payload = {}) => {
+    if (!hasObservedRunCommandResult(payload)) return;
+    const output = normalizedOutputEvidence(payload.stdout || payload.result || "");
+    if (output) outputs.push(output);
+  };
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event?.type === "tool.completed") consume(event.data);
+  }
+  for (const message of Array.isArray(state?.messages) ? state.messages : []) {
+    if (message?.role !== "tool") continue;
+    try {
+      consume(JSON.parse(message.content || "{}"));
+    } catch {
+      // Ignore malformed historical tool messages.
+    }
+  }
+  return outputs;
+}
+
+function evidenceExcludedPathKeys({ events = [], state = {}, explicitPaths = [], commandCwd = process.cwd() } = {}) {
+  const excluded = new Set();
+  const addPath = (value = "", cwd = commandCwd) => {
+    for (const key of pathComparisonKeys(value, cwd)) excluded.add(key);
+  };
+  const addChange = (change = {}, cwd = commandCwd) => {
+    if (!change || typeof change !== "object") return;
+    addPath(change.path || change.file || "", change.commandCwd || cwd);
+    addPath(change.newPath || change.outputPath || change.artifactPath || "", change.commandCwd || cwd);
+  };
+  const consumeToolPayload = (payload = {}, cwd = commandCwd) => {
+    if (!payload || typeof payload !== "object" || payload.ok === false || payload.blocked) return;
+    const toolName = String(payload.toolName || payload.name || "");
+    const hasChanges = payload.change || (Array.isArray(payload.changes) && payload.changes.length);
+    if (!["write_file", "apply_patch"].includes(toolName) && !hasChanges) return;
+    const payloadCwd = payload.commandCwd || cwd;
+    addPath(payload.path || payload.args?.path || "", payloadCwd);
+    addChange(payload.change, payloadCwd);
+    for (const change of Array.isArray(payload.changes) ? payload.changes : []) addChange(change, payloadCwd);
+  };
+
+  for (const item of Array.isArray(explicitPaths) ? explicitPaths : []) addPath(item);
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event?.type === "file.changed") addChange(event.data, event?.data?.commandCwd || commandCwd);
+    if (event?.type === "tool.completed") consumeToolPayload(event.data);
+  }
+  for (const message of Array.isArray(state?.messages) ? state.messages : []) {
+    if (message?.role !== "tool") continue;
+    try {
+      consumeToolPayload(JSON.parse(message.content || "{}"));
+    } catch {
+      // Ignore malformed historical tool messages.
+    }
+  }
+  return excluded;
+}
+
+function sourceEvidenceCommands({ events = [], state = {}, excludedPaths = [], commandCwd = process.cwd() } = {}) {
+  const excluded = evidenceExcludedPathKeys({
+    events,
+    state,
+    explicitPaths: excludedPaths,
+    commandCwd,
+  });
+  const commands = new Map();
+  const addCommand = (item, source = "") => {
+    if (!item?.signature || commands.has(item.signature)) return;
+    commands.set(item.signature, {
+      signature: item.signature,
+      command: String(item.claim || "").trim(),
+      source: String(source || ""),
+    });
+  };
+  const addMarkdownCommands = (content = "", source = "") => {
+    for (const item of markdownCommandClaims(content)) addCommand(item, source);
+  };
+  const addRetainedCommands = (items = [], fallbackSource = "") => {
+    for (const item of Array.isArray(items) ? items : []) {
+      const command = String(item?.command || item?.claim || "").trim();
+      const signature = String(item?.signature || commandSignature(command)).trim();
+      if (signature && command) {
+        addCommand({ claim: command, signature }, item?.source || fallbackSource);
+      }
+    }
+  };
+  const addShellCommands = (content = "", source = "runtime") => {
+    for (const line of shellLogicalLines(content)) {
+      for (const segment of shellCommandSegments(line)) {
+        const signature = commandSignature(segment);
+        if (signature) addCommand({ claim: segment, signature }, source);
+      }
+    }
+  };
+  const consume = (payload = {}) => {
+    if (!payload || typeof payload !== "object" || payload.blocked) return;
+    const toolName = String(payload.toolName || payload.name || "");
+    const observedRunCommand = hasObservedRunCommandResult(payload);
+    if (payload.ok === false && !observedRunCommand) return;
+    const payloadPath = payload.path || payload.args?.path || "";
+    const payloadPathKeys = pathComparisonKeys(payloadPath, commandCwd);
+    if (toolName === "read_file" && payloadPath && !payloadPathKeys.some((key) => excluded.has(key))) {
+      addRetainedCommands(payload.commandEvidence, payloadPath);
+      addMarkdownCommands(payload.content || payload.contentPreview || "", payloadPath);
+    }
+    if (toolName === "run_command") {
+      addShellCommands(payload.args?.command || "", "observed runtime command");
+      if (payload.ok === false) return;
+      const sourcePaths = readOnlyCommandSourcePaths(payload.args?.command || "", commandCwd);
+      const sourceIsExcluded = sourcePaths.some((sourcePath) =>
+        pathComparisonKeys(sourcePath, commandCwd).some((key) => excluded.has(key))
+      );
+      if (
+        sourcePaths.length &&
+        !sourceIsExcluded &&
+        isPureReadOnlySourceDisplayCommand(payload.args?.command || "")
+      ) {
+        addMarkdownCommands(
+          payload.stdout || payload.result || "",
+          `read-only command output: ${sourcePaths.join(", ")}`
+        );
+      }
+    }
+  };
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event?.type === "tool.completed") consume(event.data);
+  }
+  for (const message of Array.isArray(state?.messages) ? state.messages : []) {
+    if (message?.role !== "tool") continue;
+    try {
+      consume(JSON.parse(message.content || "{}"));
+    } catch {
+      // Ignore malformed historical tool messages.
+    }
+  }
+  return commands;
+}
+
+function pathComparisonKeys(value = "", commandCwd = process.cwd()) {
+  const cleaned = cleanPathToken(value).replace(/\/+$/, "");
+  if (!cleaned) return [];
+  const keys = new Set([cleaned]);
+  if (!/^\$\{?[A-Za-z_]/.test(cleaned)) {
+    try {
+      keys.add(resolveContractPath(commandCwd, cleaned).replace(/\/+$/, ""));
+    } catch {
+      // Preserve the literal key when a platform-specific path cannot resolve.
+    }
+  }
+  return [...keys];
+}
+
+function pathTemplateSegments(value = "") {
+  return cleanPathToken(value)
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "")
+    .split("/")
+    .filter(Boolean)
+    .map((segment) =>
+      segment
+        .replace(/<[^>]+>/g, "*")
+        .replace(/\b(?:RUN_NAME|SONG(?:_ID)?|VIDEO(?:_ID)?|PAGE_ID|THREAD_URL|INPUT_AUDIO|TARGET_LINES|SHA256|PROMPT|YYYY(?:-MM(?:-DD)?)?)\b/g, "*")
+        .replace(/\*+/g, "*")
+    );
+}
+
+function pathTemplateSegmentCompatible(left = "", right = "") {
+  if (left === right) return true;
+  if (!left.includes("*") && !right.includes("*")) return false;
+  const toPattern = (value) =>
+    new RegExp(`^${String(value).replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".+")}$`);
+  return toPattern(left).test(right.replace(/\*/g, "placeholder")) ||
+    toPattern(right).test(left.replace(/\*/g, "placeholder"));
+}
+
+function pathTemplateRangeCompatible(left = [], right = []) {
+  if (left.length !== right.length) return false;
+  return left.every((segment, index) => pathTemplateSegmentCompatible(segment, right[index]));
+}
+
+function pathTemplateIsSameParentOrSuffix(claim = "", evidence = "") {
+  const claimSegments = pathTemplateSegments(claim);
+  const evidenceSegments = pathTemplateSegments(evidence);
+  if (!claimSegments.length || !evidenceSegments.length) return false;
+  if (
+    claimSegments.length <= evidenceSegments.length &&
+    pathTemplateRangeCompatible(claimSegments, evidenceSegments.slice(0, claimSegments.length))
+  ) return true;
+  if (claimSegments.length <= evidenceSegments.length) {
+    const suffix = evidenceSegments.slice(-claimSegments.length);
+    if (pathTemplateRangeCompatible(claimSegments, suffix)) return true;
+  }
+  return false;
+}
+
+function readOnlyCommandSourcePaths(command = "", commandCwd = process.cwd()) {
+  const sources = [];
+  let activeDirectory = commandCwd;
+  for (const line of shellLogicalLines(command)) {
+    for (const segment of shellCommandSegments(line)) {
+      const tokens = segment.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+      if (!tokens.length) continue;
+      const first = unquoteShellToken(tokens[0]).toLowerCase();
+      if (first === "cd") {
+        const target = cleanPathToken(tokens[1] || "");
+        if (target) activeDirectory = resolveContractPath(activeDirectory, target);
+        continue;
+      }
+      if (!["cat", "head", "sed", "tail"].includes(first)) continue;
+      for (let index = 1; index < tokens.length; index += 1) {
+        const token = cleanPathToken(tokens[index]);
+        if (!token || token.startsWith("-") || /^[0-9,+$]+[a-z]*$/i.test(token)) continue;
+        if (first === "sed" && /^\d+(?:,\d+)?[a-z]$/i.test(token)) continue;
+        if (!looksLikePathClaim(token)) continue;
+        sources.push(resolveContractPath(activeDirectory, token));
+      }
+    }
+  }
+  return [...new Set(sources)];
+}
+
+function isPureReadOnlySourceDisplayCommand(command = "") {
+  let sawReader = false;
+  for (const line of shellLogicalLines(command)) {
+    for (const segment of shellCommandSegments(line)) {
+      const tokens = segment.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+      if (!tokens.length) continue;
+      const first = unquoteShellToken(tokens[0]).toLowerCase();
+      if (first === "cd") continue;
+      if (!["cat", "head", "sed", "tail"].includes(first)) return false;
+      if (/(?:^|\s)(?:>|>>|\d+>)/.test(segment)) return false;
+      sawReader = true;
+    }
+  }
+  return sawReader;
+}
+
+function resolveEvidenceEntryPath(rootPath = "", entryPath = "") {
+  const root = String(rootPath || ".");
+  const entry = String(entryPath || "").replace(/^\.\//, "");
+  if (!entry) return root;
+  if (path.isAbsolute(entry)) return entry;
+  const rootBase = path.basename(path.normalize(root));
+  if (entry === rootBase || entry.startsWith(`${rootBase}/`)) {
+    return path.join(path.dirname(root), entry);
+  }
+  return path.join(root, entry);
+}
+
+function sourceEvidencePaths({ events = [], state = {}, contract = {}, commandCwd = process.cwd() } = {}) {
+  const excluded = evidenceExcludedPathKeys({
+    events,
+    state,
+    explicitPaths: contract.exactOutputPaths || [],
+    commandCwd,
+  });
+  const paths = new Map();
+  const addPath = (value = "", source = "") => {
+    const cleaned = cleanPathToken(value);
+    if (!cleaned) return;
+    const keys = pathComparisonKeys(cleaned, commandCwd);
+    if (keys.some((key) => excluded.has(key))) return;
+    const canonical = keys[keys.length - 1] || cleaned;
+    if (!paths.has(canonical)) paths.set(canonical, { path: cleaned, source: String(source || "") });
+    for (const key of keys) {
+      if (!paths.has(key)) paths.set(key, { path: cleaned, source: String(source || "") });
+    }
+  };
+  const addMarkdownPaths = (content = "", source = "") => {
+    for (const item of markdownPathClaims(content)) addPath(item.path, source);
+    for (const match of String(content || "").matchAll(/https?:\/\/[^\s"'`<>]+/gi)) {
+      try {
+        const pathname = new URL(match[0]).pathname;
+        if (pathname && pathname !== "/") addPath(pathname, source || "inspected URL");
+      } catch {
+        // Ignore malformed URL fragments in inspected text.
+      }
+    }
+  };
+  const addSingleDirectoryListing = (command = "", stdout = "") => {
+    const segments = shellLogicalLines(command).flatMap((line) => shellCommandSegments(line));
+    const listings = segments.filter((segment) => /^\s*ls(?:\s|$)/i.test(segment));
+    if (listings.length !== 1) return;
+    const tokens = listings[0].match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+    const targetToken = [...tokens.slice(1)].reverse().find((token) => !unquoteShellToken(token).startsWith("-"));
+    const target = targetToken ? resolveContractPath(commandCwd, cleanPathToken(targetToken)) : commandCwd;
+    for (const rawLine of String(stdout || "").split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || /^total\s+\d+$/i.test(line) || line === "." || line === "..") continue;
+      let name = line;
+      if (/^[bcdlps-][rwxStTs-]{9}\s/.test(line)) {
+        const fields = line.split(/\s+/);
+        if (fields.length < 9) continue;
+        name = fields.slice(8).join(" ").replace(/\s+->\s+.*$/, "");
+      }
+      if (!name || name.startsWith("===")) continue;
+      addPath(path.join(target, name), `directory listing: ${target}`);
+    }
+  };
+  const consume = (payload = {}) => {
+    if (!payload || typeof payload !== "object" || payload.blocked) return;
+    const toolName = String(payload.toolName || payload.name || "");
+    if (payload.ok === false && !hasObservedRunCommandResult(payload)) return;
+    const payloadPath = payload.path || payload.args?.path || "";
+    const payloadPathKeys = pathComparisonKeys(payloadPath, commandCwd);
+    const sourceIsExcluded = payloadPathKeys.some((key) => excluded.has(key));
+    if (toolName === "read_file" && sourceIsExcluded) return;
+    if (["read_file", "list_files", "search_files", "inspect_project"].includes(toolName)) {
+      addPath(payloadPath, `${toolName} result`);
+    }
+    if (toolName === "read_file") {
+      for (const item of Array.isArray(payload.pathEvidence) ? payload.pathEvidence : []) {
+        addPath(item?.path, item?.source || payloadPath);
+      }
+      addMarkdownPaths(payload.content || payload.contentPreview || "", payloadPath);
+    }
+    if (toolName === "list_files") {
+      for (const entry of Array.isArray(payload.entries) ? payload.entries : []) {
+        const entryPath = String(entry?.path || "");
+        addPath(resolveEvidenceEntryPath(payloadPath, entryPath), payloadPath);
+      }
+    }
+    if (toolName === "search_files") {
+      for (const result of Array.isArray(payload.results) ? payload.results : []) {
+        const resultPath = String(result?.path || "");
+        addPath(resolveEvidenceEntryPath(payloadPath, resultPath), payloadPath);
+      }
+    }
+    if (toolName === "run_command") {
+      for (const item of markdownPathClaims(`\`${String(payload.args?.command || "")}\``)) {
+        addPath(item.path, "observed runtime command");
+      }
+      for (const match of String(payload.args?.command || "").matchAll(/https?:\/\/[^\s"']+/gi)) {
+        try {
+          const pathname = new URL(match[0]).pathname;
+          if (pathname && pathname !== "/") addPath(pathname, "observed runtime URL");
+        } catch {
+          // Ignore malformed URL fragments in a shell command.
+        }
+      }
+      addSingleDirectoryListing(payload.args?.command || "", payload.stdout || payload.result || "");
+      const sourcePaths = readOnlyCommandSourcePaths(payload.args?.command || "", commandCwd);
+      const sourceIsExcluded = sourcePaths.some((sourcePath) =>
+        pathComparisonKeys(sourcePath, commandCwd).some((key) => excluded.has(key))
+      );
+      if (!sourceIsExcluded) {
+        for (const item of pathClaimsFromSnippet(payload.stdout || payload.result || "")) {
+          addPath(item, sourcePaths.length ? `read-only command output: ${sourcePaths.join(", ")}` : "observed runtime output");
+        }
+      }
+    }
+  };
+  addPath(commandCwd, "runtime workspace");
+  for (const root of contract.declaredSourceRoots || []) addPath(root, "task-declared source");
+  for (const inputPath of contract.exactInputPaths || []) addPath(inputPath, "task-declared input");
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event?.type === "tool.completed") consume(event.data);
+  }
+  for (const message of Array.isArray(state?.messages) ? state.messages : []) {
+    if (message?.role !== "tool") continue;
+    try {
+      consume(JSON.parse(message.content || "{}"));
+    } catch {
+      // Ignore malformed historical tool messages.
+    }
+  }
+  return paths;
+}
+
+function sourceScopeCoverage(contract = {}, { events = [], state = {}, commandCwd = process.cwd() } = {}) {
+  const roots = (contract.declaredSourceRoots || []).map((rawPath) => ({
+    rawPath,
+    absolutePath: resolveContractPath(commandCwd, rawPath).replace(/\/+$/, ""),
+  }));
+  if (!roots.length) return { checked: false, missingSourceReads: [], missingSourceChecks: [] };
+  const observedPayloads = [];
+  const consume = (payload = {}) => {
+    if (!payload || typeof payload !== "object" || payload.blocked) return;
+    if (payload.ok === false && !hasObservedRunCommandResult(payload)) return;
+    observedPayloads.push(payload);
+  };
+  for (const event of Array.isArray(events) ? events : []) {
+    if (["tool.completed", "tool.failed"].includes(event?.type)) consume(event.data);
+  }
+  for (const message of Array.isArray(state?.messages) ? state.messages : []) {
+    if (message?.role !== "tool") continue;
+    try {
+      consume(JSON.parse(message.content || "{}"));
+    } catch {
+      // Ignore malformed historical tool messages.
+    }
+  }
+  const pathIsUnderRoot = (value = "", root) => {
+    if (!value) return false;
+    const absolute = resolveContractPath(commandCwd, value).replace(/\/+$/, "");
+    return absolute === root.absolutePath || absolute.startsWith(`${root.absolutePath}${path.sep}`);
+  };
+  const commandCoversRoot = (command = "", root, { requireSubstantive = false } = {}) => {
+    const text = String(command || "");
+    if (!requireSubstantive) return text.includes(root.rawPath) || text.includes(root.absolutePath);
+    let activeDirectory = commandCwd;
+    for (const line of shellLogicalLines(text)) {
+      for (const segment of shellCommandSegments(line)) {
+        const cdMatch = segment.match(/^\s*\(?\s*cd\s+([^\s)]+)/i);
+        if (cdMatch) {
+          activeDirectory = resolveContractPath(activeDirectory, cleanPathToken(cdMatch[1]));
+          continue;
+        }
+        if (!isSubstantiveRuntimeCheck(segment)) continue;
+        const segmentMentionsRoot = segment.includes(root.rawPath) || segment.includes(root.absolutePath);
+        const active = path.resolve(activeDirectory).replace(/\/+$/, "");
+        if (segmentMentionsRoot || active === root.absolutePath || active.startsWith(`${root.absolutePath}${path.sep}`)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  const missingSourceReads = roots
+    .filter((root) =>
+      !observedPayloads.some((payload) => {
+        const toolName = String(payload.toolName || payload.name || "");
+        if (["read_file", "list_files", "search_files", "inspect_project"].includes(toolName)) {
+          return pathIsUnderRoot(payload.path || payload.args?.path || "", root);
+        }
+        if (toolName === "run_command") {
+          return commandCoversRoot(payload.args?.command || "", root);
+        }
+        return false;
+      })
+    )
+    .map((root) => root.rawPath);
+  const missingSourceChecks = contract.requiresPerSourceChecks
+    ? roots
+        .filter((root) =>
+          !observedPayloads.some(
+            (payload) =>
+              String(payload.toolName || payload.name || "") === "run_command" &&
+              commandCoversRoot(payload.args?.command || "", root, { requireSubstantive: true })
+          )
+        )
+        .map((root) => root.rawPath)
+    : [];
+  return {
+    checked: true,
+    roots: roots.map((root) => root.rawPath),
+    missingSourceReads,
+    missingSourceChecks,
+  };
+}
+
+function evaluateSourceGrounding(contract = {}, files = [], options = {}) {
+  if (!contract.requiresSourceGrounding) {
+    return { ok: true, checked: false, reason: "This task does not require source-grounded command auditing." };
+  }
+  const claims = files.flatMap((file) => (file.exists ? markdownCommandClaims(file.content) : []));
+  const exactOutputKeys = new Set(
+    (contract.exactOutputPaths || []).flatMap((item) => pathComparisonKeys(item, options.commandCwd))
+  );
+  const pathClaims = files
+    .flatMap((file) => (file.exists ? markdownPathClaims(file.content) : []))
+    .filter((item) => !pathComparisonKeys(item.path, options.commandCwd).some((key) => exactOutputKeys.has(key)));
+  const outputClaims = files.flatMap((file) => (file.exists ? markdownOutputClaims(file.content) : []));
+  const evidenceCommands = sourceEvidenceCommands({
+    events: options.events,
+    state: options.state,
+    excludedPaths: contract.exactOutputPaths || [],
+    commandCwd: options.commandCwd,
+  });
+  const evidenceCommandSignatures = [...evidenceCommands.keys()];
+  const commandClaimIsGrounded = (signature = "") => {
+    if (evidenceCommands.has(signature)) return true;
+    if (String(signature).split(/\s+/).length < 2) return false;
+    return evidenceCommandSignatures.some(
+      (candidate) => candidate.startsWith(`${signature} `) || candidate.endsWith(` ${signature}`)
+    );
+  };
+  const unsupportedCommandClaims = claims.filter((item) => !commandClaimIsGrounded(item.signature));
+  const evidencePaths = sourceEvidencePaths({
+    events: options.events,
+    state: options.state,
+    contract,
+    commandCwd: options.commandCwd,
+  });
+  const uniqueEvidencePathValues = [
+    ...new Set([...evidencePaths.values()].map((item) => cleanPathToken(item.path).replace(/\/+$/, ""))),
+  ];
+  const declaredRootPrefixes = (contract.declaredSourceRoots || [])
+    .map((item) => resolveContractPath(options.commandCwd, item).replace(/\/+$/, ""))
+    .filter(Boolean);
+  const sourceRelativeClaim = (cleaned = "") => {
+    const resolved = resolveContractPath(options.commandCwd, cleaned).replace(/\/+$/, "");
+    for (const root of declaredRootPrefixes) {
+      if (resolved === root) return "";
+      if (resolved.startsWith(`${root}${path.sep}`)) return resolved.slice(root.length + 1);
+    }
+    const firstSegment = pathTemplateSegments(cleaned)[0] || "";
+    const root = declaredRootPrefixes.find((item) => path.basename(item) === firstSegment);
+    return root ? pathTemplateSegments(cleaned).slice(1).join("/") : "";
+  };
+  const uniqueEvidenceBasenames = new Map();
+  for (const candidate of uniqueEvidencePathValues) {
+    const basename = path.basename(cleanPathToken(candidate).replace(/\/+$/, ""));
+    if (!basename) continue;
+    uniqueEvidenceBasenames.set(basename, Number(uniqueEvidenceBasenames.get(basename) || 0) + 1);
+  }
+  const pathClaimIsGrounded = (item) => {
+    if (pathComparisonKeys(item.path, options.commandCwd).some((key) => evidencePaths.has(key))) return true;
+    const cleaned = cleanPathToken(item.path).replace(/\/+$/, "");
+    const segments = cleaned.split("/").filter(Boolean);
+    if (segments.length === 1) {
+      return uniqueEvidencePathValues.some(
+        (candidate) => path.basename(cleanPathToken(candidate).replace(/\/+$/, "")) === cleaned
+      );
+    }
+    if (
+      PATH_CLAIM_EXTENSIONS.has((path.extname(cleaned).slice(1) || "").toLowerCase()) &&
+      uniqueEvidenceBasenames.get(path.basename(cleaned)) === 1
+    ) return true;
+    if (cleaned.startsWith("../") || cleaned.startsWith("./")) return false;
+    const claimedAbsolute = resolveContractPath(options.commandCwd, cleaned).replace(/\/+$/, "");
+    if (
+      uniqueEvidencePathValues.some((candidate) => {
+        const candidateAbsolute = resolveContractPath(options.commandCwd, candidate).replace(/\/+$/, "");
+        return candidateAbsolute.startsWith(`${claimedAbsolute}${path.sep}`) ||
+          pathTemplateIsSameParentOrSuffix(cleaned, candidate);
+      })
+    ) return true;
+    const relativeToDeclaredRoot = sourceRelativeClaim(cleaned);
+    if (
+      relativeToDeclaredRoot &&
+      uniqueEvidencePathValues.some((candidate) => pathTemplateIsSameParentOrSuffix(relativeToDeclaredRoot, candidate))
+    ) return true;
+    const suffix = `/${cleaned}`;
+    return uniqueEvidencePathValues.filter((candidate) => candidate.endsWith(suffix)).length === 1;
+  };
+  const unsupportedPathClaims = pathClaims.filter((item) => !pathClaimIsGrounded(item));
+  const runtimeOutputs = runtimeOutputEvidence(options);
+  const unsupportedOutputClaims = outputClaims.filter(
+    (item) => !runtimeOutputs.some((output) => output.includes(item.output))
+  );
+  const scopeCoverage = sourceScopeCoverage(contract, options);
+  const commandGroups = new Map();
+  for (const item of evidenceCommands.values()) {
+    const source = String(item.source || "unknown");
+    if (!commandGroups.has(source)) commandGroups.set(source, []);
+    commandGroups.get(source).push(item);
+  }
+  const groundedCommandExamples = [];
+  while (groundedCommandExamples.length < 32 && [...commandGroups.values()].some((items) => items.length)) {
+    for (const items of commandGroups.values()) {
+      const item = items.shift();
+      if (item) groundedCommandExamples.push(item);
+      if (groundedCommandExamples.length >= 32) break;
+    }
+  }
+  const pathGroups = new Map();
+  for (const item of new Map([...evidencePaths.values()].map((entry) => [entry.path, entry])).values()) {
+    const source = String(item.source || "unknown");
+    if (!pathGroups.has(source)) pathGroups.set(source, []);
+    pathGroups.get(source).push(item);
+  }
+  const groundedPathExamples = [];
+  while (groundedPathExamples.length < 32 && [...pathGroups.values()].some((items) => items.length)) {
+    for (const items of pathGroups.values()) {
+      const item = items.shift();
+      if (item) groundedPathExamples.push(item);
+      if (groundedPathExamples.length >= 32) break;
+    }
+  }
+  return {
+    ok:
+      unsupportedCommandClaims.length === 0 &&
+      unsupportedPathClaims.length === 0 &&
+      unsupportedOutputClaims.length === 0 &&
+      scopeCoverage.missingSourceReads.length === 0 &&
+      scopeCoverage.missingSourceChecks.length === 0,
+    checked: true,
+    claims,
+    pathClaims,
+    outputClaims,
+    unsupportedCommandClaims,
+    unsupportedPathClaims,
+    unsupportedOutputClaims,
+    groundedCommandExamples,
+    groundedPathExamples,
+    ...scopeCoverage,
+    reason: [
+      unsupportedCommandClaims.length
+        ? `Command claims were not found in inspected source/help/runtime evidence: ${unsupportedCommandClaims
+            .map((item) => item.signature)
+            .join(", ")}.`
+        : "",
+      unsupportedPathClaims.length
+        ? `Path claims were not found in the task, inspected source, file listings, or observed runtime commands: ${unsupportedPathClaims
+            .map((item) => item.path)
+            .join(", ")}.`
+        : "",
+      unsupportedOutputClaims.length
+        ? `Claimed command output was not present in observed runtime stdout: ${unsupportedOutputClaims
+            .map((item) => item.preview)
+            .join(" | ")}.`
+        : "",
+      scopeCoverage.missingSourceReads.length
+        ? `No observed source inspection covered: ${scopeCoverage.missingSourceReads.join(", ")}.`
+        : "",
+      scopeCoverage.missingSourceChecks.length
+        ? `No observed substantive read-only check covered: ${scopeCoverage.missingSourceChecks.join(", ")}.`
+        : "",
+    ].filter(Boolean).join(" ") || "Every nonstandard command, path, and command-output claim is grounded in inspected evidence.",
+  };
+}
+
+export function evaluateScsSemanticContract(
+  contract = {},
+  { commandCwd = process.cwd(), events = [], state = {} } = {}
+) {
   const exactOutputPaths = Array.isArray(contract.exactOutputPaths) ? contract.exactOutputPaths : [];
   const requiredTextTerms = Array.isArray(contract.requiredTextTerms) ? contract.requiredTextTerms : [];
   const forbiddenTextTerms = Array.isArray(contract.forbiddenTextTerms) ? contract.forbiddenTextTerms : [];
@@ -597,7 +1742,12 @@ export function evaluateScsSemanticContract(contract = {}, { commandCwd = proces
   const combinedContent = files.map((file) => file.content).join("\n");
   const missingRequiredText = requiredTextTerms.filter((term) => !combinedContent.includes(term));
   const presentForbiddenText = forbiddenTextTerms.filter((term) => combinedContent.includes(term));
-  const ok = missingFiles.length === 0 && missingRequiredText.length === 0 && presentForbiddenText.length === 0;
+  const sourceGrounding = evaluateSourceGrounding(contract, files, { commandCwd, events, state });
+  const ok =
+    missingFiles.length === 0 &&
+    missingRequiredText.length === 0 &&
+    presentForbiddenText.length === 0 &&
+    sourceGrounding.ok;
   return {
     ok,
     checked: true,
@@ -607,6 +1757,14 @@ export function evaluateScsSemanticContract(contract = {}, { commandCwd = proces
     missingFiles,
     missingRequiredText,
     presentForbiddenText,
+    sourceGrounding,
+    unsupportedCommandClaims: sourceGrounding.unsupportedCommandClaims || [],
+    unsupportedPathClaims: sourceGrounding.unsupportedPathClaims || [],
+    unsupportedOutputClaims: sourceGrounding.unsupportedOutputClaims || [],
+    groundedCommandExamples: sourceGrounding.groundedCommandExamples || [],
+    groundedPathExamples: sourceGrounding.groundedPathExamples || [],
+    missingSourceReads: sourceGrounding.missingSourceReads || [],
+    missingSourceChecks: sourceGrounding.missingSourceChecks || [],
     inspectedFiles: files.map((file) => ({
       path: file.rawPath,
       exists: file.exists,
@@ -618,6 +1776,7 @@ export function evaluateScsSemanticContract(contract = {}, { commandCwd = proces
           missingFiles.length ? `Missing exact output files: ${missingFiles.join(", ")}` : "",
           missingRequiredText.length ? `Missing required text terms: ${missingRequiredText.join(", ")}` : "",
           presentForbiddenText.length ? `Forbidden text terms present: ${presentForbiddenText.join(", ")}` : "",
+          !sourceGrounding.ok ? sourceGrounding.reason : "",
         ]
           .filter(Boolean)
           .join("; "),
@@ -672,6 +1831,7 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
     payload.stderr,
     payload.result,
     payload.path,
+    payload.reportPath,
     payload.outputPath,
     payload.artifactPath
   );
@@ -687,11 +1847,34 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
     });
   };
 
-  if (["write_file", "apply_patch"].includes(toolName) || payload.path || Array.isArray(payload.changes)) {
-    push("file", `${toolName || "tool"} produced file/workspace evidence`, payload.path || args.path || "");
+  if (["write_file", "apply_patch"].includes(toolName) || payload.path || payload.reportPath || Array.isArray(payload.changes)) {
+    push(
+      "file",
+      `${toolName || "tool"} produced file/workspace evidence`,
+      payload.path || payload.reportPath || args.path || ""
+    );
   }
   if (toolName === "run_command" || payload.stdout || Number.isInteger(payload.exitCode)) {
     push("command", `exit=${payload.exitCode ?? 0} stdout=${compact(payload.stdout || "", 260)}`, args.command || "");
+  }
+  if (
+    toolName === "deep_research" &&
+    payload.status === "completed" &&
+    payload.reportPath &&
+    payload.artifactPath &&
+    payload.audit &&
+    payload.coverage
+  ) {
+    push(
+      "command",
+      [
+        "deep_research deterministic audit completed",
+        `citationCoverage=${Number(payload.audit.citationCoverage || 0)}`,
+        `verifiedClaims=${Number(payload.coverage.verifiedClaimCount || 0)}`,
+        `quoteVerificationRate=${Number(payload.coverage.quoteVerificationRate || 0)}`,
+      ].join(" "),
+      payload.reportPath
+    );
   }
   if (["start_long_job", "long_job_status"].includes(toolName)) {
     push(
@@ -820,6 +2003,7 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
       exactOutputPaths: contract.exactOutputPaths || [],
       exactInputPaths: contract.exactInputPaths || [],
       requiredToolCalls: contract.requiredToolCalls || [],
+      requiresSourceGrounding: Boolean(contract.requiresSourceGrounding),
       requiredTextTerms: contract.requiredTextTerms || [],
       forbiddenTextTerms: contract.forbiddenTextTerms || [],
       successCriteria: contract.successCriteria || [],
@@ -857,8 +2041,14 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
 }
 
 export function finishResultClaimsBlocker(result = "") {
-  return /blocked|guardrail|permission|approval|denied|forbidden|cannot|can't|unable|requires|needs approval|need approval|quota|usage limit|rate limit|login|credential|api key|missing key|captcha|external blocker|policy/i.test(
-    String(result || "")
+  const text = String(result || "")
+    .replace(
+      /\b(?:no|not|without)\s+(?:external\s+)?(?:service|login|credential|approval|permission|api key|blocker)s?\s+(?:is|are\s+)?required\b/gi,
+      ""
+    )
+    .replace(/\b(?:does not|doesn't|do not|don't)\s+require\b[^.\n;]*/gi, "");
+  return /\b(?:blocked|denied|forbidden|cannot|can't|unable|captcha|quota exhausted|usage limit|rate limit|missing (?:credential|api key)|external blocker)\b|\b(?:requires?|needs?)\s+(?:human\s+)?(?:approval|permission|login|credentials?|an? api key|captcha)\b/i.test(
+    text
   );
 }
 

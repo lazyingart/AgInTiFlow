@@ -1,3 +1,4 @@
+import path from "node:path";
 import { redactSensitiveText, redactValue } from "./redaction.js";
 
 export const DYNAMIC_STEP_MODES = ["off", "auto", "on"];
@@ -118,16 +119,104 @@ export function summarizeRecentToolResults(state = {}, limit = 8) {
   return messages.map(parseToolMessage).filter(Boolean).slice(-limit);
 }
 
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function isStaticDiscoveryToolCall(toolName, args = {}) {
+  if (["inspect_project", "list_files", "read_file", "search_files", "read_image"].includes(toolName)) return true;
+  if (toolName !== "run_command") return false;
+  const command = String(args.command || "").trim();
+  if (!command) return false;
+  if (/\s--?(?:help|version)\b/i.test(command)) return true;
+  if (/\b(?:watch|poll|status|queue|sleep)\b|tail\s+-f|\bcurl\b|\bps\b|tmux\s+capture-pane/i.test(command)) return false;
+  return /^(?:env\s+)?(?:ls\b|find\b|rg\b|grep\b|cat\b|head\b|sed\s+-n\b|wc\b|stat\b|file\b|realpath\b|readlink\b|jq\b)/i.test(
+    command
+  );
+}
+
+function canonicalDiscoveryPath(value, commandCwd = process.cwd()) {
+  const raw = String(value || ".").trim() || ".";
+  return path.resolve(commandCwd || process.cwd(), raw);
+}
+
+function simpleLsPath(command = "", commandCwd = process.cwd()) {
+  const match = String(command || "")
+    .trim()
+    .match(/^(?:env\s+)?ls(?:\s+-[A-Za-z]+)*\s+([^;&|<>]+)$/i);
+  if (!match) return "";
+  const rawPath = match[1].trim().replace(/^(['"])(.*)\1$/, "$2");
+  if (!rawPath || /\s/.test(rawPath)) return "";
+  return canonicalDiscoveryPath(rawPath, commandCwd);
+}
+
+export function staticToolCallSignature(toolName, args = {}, context = {}) {
+  const commandCwd = context.commandCwd || process.cwd();
+  if (toolName === "list_files") {
+    return `filesystem-list:${canonicalDiscoveryPath(args.path, commandCwd)}`;
+  }
+  if (toolName === "inspect_project") {
+    return `project-inspect:${canonicalDiscoveryPath(args.path, commandCwd)}`;
+  }
+  if (toolName === "read_file") {
+    return `file-read:${stableStringify({
+      path: canonicalDiscoveryPath(args.path, commandCwd),
+      startLine: Number(args.startLine || 1),
+      lineLimit: Number(args.lineLimit || args.limit || 0),
+    })}`;
+  }
+  if (toolName === "search_files") {
+    return `file-search:${stableStringify({
+      path: canonicalDiscoveryPath(args.path, commandCwd),
+      query: String(args.query || "").trim(),
+      caseSensitive: Boolean(args.caseSensitive),
+    })}`;
+  }
+  if (toolName === "run_command") {
+    const lsPath = simpleLsPath(args.command, commandCwd);
+    if (lsPath) return `filesystem-list:${lsPath}`;
+  }
+  return `${toolName}:${stableStringify(args || {})}`;
+}
+
+function isStaticDiscoveryResult(result = {}) {
+  if (!result || result.ok === false || result.blocked || result.done) return false;
+  return isStaticDiscoveryToolCall(result.toolName, result.args || {});
+}
+
+export function summarizeRepeatedStaticDiscovery(recentToolResults = [], context = {}) {
+  const signatures = recentToolResults
+    .filter(isStaticDiscoveryResult)
+    .map((result) => staticToolCallSignature(result.toolName, result.args || {}, context));
+  const counts = new Map();
+  for (const signature of signatures) counts.set(signature, (counts.get(signature) || 0) + 1);
+  const repeated = [...counts.entries()].filter(([, count]) => count > 1);
+  return {
+    total: signatures.length,
+    unique: counts.size,
+    duplicateCount: repeated.reduce((sum, [, count]) => sum + count - 1, 0),
+    repeated: repeated.map(([signature, count]) => ({ signature: compact(signature, 220), count })),
+  };
+}
+
 function hasConcreteProgress(recentToolResults = [], events = []) {
   if (
     events
       .slice(-24)
-      .some((event) => event?.type === "file.changed" || event?.type === "canvas.item" || event?.type === "tool.completed")
+      .some((event) => event?.type === "file.changed" || event?.type === "canvas.item" || event?.type === "image.generated")
   ) {
     return true;
   }
   return recentToolResults.some((result) => {
     if (result.ok === false || result.blocked || result.done) return false;
+    if (isStaticDiscoveryToolCall(result.toolName, result.args || {})) return false;
     if (!PROGRESS_TOOL_NAMES.has(result.toolName)) return false;
     if (result.toolName === "run_command") return Boolean(result.stdout || result.stderr || result.exitCode === 0);
     return Boolean(
@@ -231,6 +320,18 @@ export function decideStepBudgetExtension({ config = {}, state = {}, budget = {}
       ...base,
       reason: `Recent blocker requires a different permission/setup path, not more steps: ${blocker}`,
       evidence: recentToolResults.slice(-3).map((result) => `${result.toolName || "tool"} ok=${result.ok !== false} blocked=${Boolean(result.blocked)}`),
+    });
+  }
+
+  const repeatedDiscovery = summarizeRepeatedStaticDiscovery(recentToolResults, {
+    commandCwd: config.commandCwd,
+  });
+  if (repeatedDiscovery.duplicateCount >= 3) {
+    return decisionPayload("deny_extension", {
+      ...base,
+      reason:
+        "Recent steps repeated the same static discovery calls without a file, artifact, or state transition. More steps would extend a loop rather than finish the task.",
+      evidence: repeatedDiscovery.repeated.map((item) => `${item.count}x ${item.signature}`),
     });
   }
 

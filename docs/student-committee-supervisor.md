@@ -26,12 +26,15 @@ Inside interactive chat:
 
 ## Role Contract
 
-SCS uses the selected main model for every internal role.
+SCS uses the selected main model for execution. Hosted providers use a model
+student by default. LocalLLM uses the same typed student contract with
+deterministic runtime validation so periodic checks do not repeatedly occupy
+the local inference queue.
 
 | Role | Right | Boundary |
 | --- | --- | --- |
 | Committee | Draft one next-phase plan with acceptance criteria and stop conditions. | Cannot approve plans or call tools. |
-| Student | Act as the independent validator: approve/veto the phase plan, review failure evidence, and approve/reject finish. | Cannot call tools, approve its own work, or override runtime safety. |
+| Student | Act as the independent validator: approve/veto the phase plan, review failure evidence, and approve/reject finish. The implementation may be a model or the deterministic contract/evidence engine. | Cannot call tools, approve its own work, or override runtime safety. |
 | Supervisor | Execute the approved phase with the existing browser, shell, file, canvas, and wrapper tools. | Cannot replace the strategic plan without student review. |
 
 The runtime remains the real authority for command policy, filesystem guardrails, secret redaction, session persistence, and user interruption.
@@ -45,10 +48,12 @@ When SCS is active:
 - The normal `createPlan()` path is replaced by a committee draft plus student approval.
 - An approved supervisor instruction is injected into the execution loop.
 - Failed, blocked, suspicious, or mismatched tools trigger a bounded student validator review.
-- Every fourth execution step triggers a bounded progress review for long runs.
+- Every fourth execution step triggers a bounded progress review for long runs. LocalLLM evaluates this directly from the runtime ledger without another inference call.
 - `finish` and assistant-content completion pass through a final student gate.
 - A deterministic task contract and evidence ledger are built under the student gate. The contract records required evidence categories such as file, command, artifact, browser, visual, git, or publish evidence. The ledger classifies recent tool and event evidence into those categories.
 - The final gate compares the contract, approved plan, executor finish claim, and evidence ledger. A model approval cannot override missing deterministic evidence for evidence-bearing tasks unless the run is reporting a real external blocker.
+- Audit, handoff, and readiness reports that publish command examples are source-grounded. Nonstandard command signatures must appear in an inspected Markdown code block, successful runtime command, or authoritative help output; prose that merely mentions a product or workflow cannot validate invented CLI syntax.
+- Recoverable runtime controls such as malformed-tool retries, bounded discovery caps, and repeated-read guards remain execution feedback rather than external blockers. They cannot be used to justify a false "blocked but complete" finish.
 - If the student validator rejects progress or finish, the runtime asks the committee for a new phase plan and sends that plan back through the student gate before the supervisor continues.
 - Decisions are persisted as `scs.*` events and the phase pack is saved as a session artifact.
 
@@ -58,6 +63,13 @@ The current implementation is deliberately bounded:
 - Student monitor calls are capped.
 - Finish rejections are capped to avoid deadlock.
 - If the monitor cannot produce strict JSON, AgInTiFlow uses a conservative fallback decision and records the parser warning.
+
+`AGINTI_SCS_VALIDATION_MODE=auto` is the default. `auto` selects deterministic
+validation for LocalLLM and model validation for hosted providers. Use `model`
+or `deterministic` only when explicitly testing one implementation. LocalLLM
+committee planning has one bounded attempt and a deterministic hard-contract
+fallback, so an unavailable or slow route model cannot turn validation into a
+multi-minute retry loop.
 
 ## Auto Mode
 

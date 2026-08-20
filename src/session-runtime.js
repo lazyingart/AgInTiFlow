@@ -9,6 +9,7 @@ export const SESSION_RUNTIME_CONFLICT = "SESSION_RUNTIME_CONFLICT";
 
 const EXECUTION_TIERS = new Set(["focused", "thorough"]);
 const SCS_MODES = new Set(["off", "on", "auto"]);
+const SCS_VALIDATION_MODES = new Set(["auto", "model", "deterministic"]);
 const DYNAMIC_STEP_MODES = new Set(["off", "on", "auto"]);
 const PERMISSION_MODES = new Set(["safe", "normal", "danger"]);
 const SANDBOX_MODES = new Set(["host", "docker-readonly", "docker-workspace"]);
@@ -66,6 +67,7 @@ const DEFAULTS = Object.freeze({
   language: "",
   executionTier: "focused",
   enableScs: "auto",
+  scsValidationMode: "auto",
   maxSteps: 24,
   dynamicSteps: "auto",
   dynamicStepExtensionLimit: 1,
@@ -101,6 +103,7 @@ const DEFAULTS = Object.freeze({
   contextBudgetTargetTokens: 0,
   commandCwd: "",
   allowedDomains: Object.freeze([]),
+  readOnlyRoots: Object.freeze([]),
 });
 
 export const SESSION_RUNTIME_FIELDS = Object.freeze([
@@ -126,6 +129,7 @@ export const SESSION_RUNTIME_FIELDS = Object.freeze([
   "language",
   "executionTier",
   "enableScs",
+  "scsValidationMode",
   "maxSteps",
   "dynamicSteps",
   "dynamicStepExtensionLimit",
@@ -147,6 +151,7 @@ export const SESSION_RUNTIME_FIELDS = Object.freeze([
   "contextBudgetTargetTokens",
   "commandCwd",
   "allowedDomains",
+  "readOnlyRoots",
 ]);
 
 const RUNTIME_FIELD_SET = new Set(SESSION_RUNTIME_FIELDS);
@@ -341,6 +346,12 @@ function canonicalSnapshot(config = {}, revision = 1) {
     language: safeEnum(config.language, "language", LANGUAGES, DEFAULTS.language),
     executionTier: safeEnum(config.executionTier, "executionTier", EXECUTION_TIERS, DEFAULTS.executionTier),
     enableScs: safeEnum(config.enableScs, "enableScs", SCS_MODES, DEFAULTS.enableScs),
+    scsValidationMode: safeEnum(
+      config.scsValidationMode,
+      "scsValidationMode",
+      SCS_VALIDATION_MODES,
+      DEFAULTS.scsValidationMode
+    ),
     maxSteps: safeNumber(config.maxSteps, "maxSteps", DEFAULTS.maxSteps),
     dynamicSteps: safeEnum(config.dynamicSteps, "dynamicSteps", DYNAMIC_STEP_MODES, DEFAULTS.dynamicSteps),
     dynamicStepExtensionLimit: safeNumber(
@@ -395,6 +406,11 @@ function canonicalSnapshot(config = {}, revision = 1) {
   });
   snapshot.allowedDomains = safeStringArray(config.allowedDomains, "allowedDomains", {
     fallback: DEFAULTS.allowedDomains,
+  });
+  snapshot.readOnlyRoots = safeStringArray(config.readOnlyRoots, "readOnlyRoots", {
+    fallback: DEFAULTS.readOnlyRoots,
+    maxItems: 32,
+    maxLength: 4096,
   });
   return snapshot;
 }
@@ -483,6 +499,7 @@ function validatePatchField(field, value, current) {
   if (field === "language") return safeEnum(value, field, LANGUAGES, current[field]);
   if (field === "executionTier") return safeEnum(value, field, EXECUTION_TIERS, current[field]);
   if (field === "enableScs") return safeEnum(value, field, SCS_MODES, current[field]);
+  if (field === "scsValidationMode") return safeEnum(value, field, SCS_VALIDATION_MODES, current[field]);
   if (field === "dynamicSteps") return safeEnum(value, field, DYNAMIC_STEP_MODES, current[field]);
   if (field === "permissionMode") return safeEnum(value, field, PERMISSION_MODES, current[field]);
   if (field === "sandboxMode") return safeEnum(value, field, SANDBOX_MODES, current[field]);
@@ -491,6 +508,7 @@ function validatePatchField(field, value, current) {
   if (field === "contextBudgetMode") return safeEnum(value, field, CONTEXT_BUDGET_MODES, current[field]);
   if (field === "commandCwd") return safeString(value, field, { maxLength: 4096 });
   if (field === "allowedDomains") return safeStringArray(value, field);
+  if (field === "readOnlyRoots") return safeStringArray(value, field, { maxItems: 32, maxLength: 4096 });
   if (BOOLEAN_FIELDS.includes(field)) return safeBoolean(value, field, current[field]);
   if (NUMBER_FIELDS[field]) return safeNumber(value, field, current[field]);
   return current[field];

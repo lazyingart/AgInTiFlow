@@ -22,3 +22,5 @@ test-results/
 /aginti-*.txt
 /artifacts/
 /mock-output.txt
+/.integration-runtime-authority-smoke-root/
+/supervision/*.sqlite*

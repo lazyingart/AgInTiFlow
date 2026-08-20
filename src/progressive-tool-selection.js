@@ -1,3 +1,5 @@
+import { shouldStartWithDeepResearch } from "./research-routing.js";
+
 const FUNCTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 export const DEFAULT_LOCAL_TOOL_LIMIT = 12;
@@ -17,7 +19,6 @@ export const LOCAL_COMPACT_CODE_TOOL_NAMES = Object.freeze([
 
 export const LOCAL_COMPACT_GENERAL_TOOL_NAMES = Object.freeze([
   ...LOCAL_COMPACT_CODE_TOOL_NAMES.slice(0, -1),
-  "read_image",
   "open_url",
   "web_search",
   "send_to_canvas",
@@ -40,10 +41,10 @@ const COMPACT_TOOL_BUNDLES = Object.freeze({
     "finish",
   ]),
   research: Object.freeze([
+    "deep_research",
     "web_search",
     "read_web_page",
     "web_research",
-    "deep_research",
     "open_url",
     "read_file",
     "write_file",
@@ -136,7 +137,7 @@ const COMPACT_TOOL_BUNDLES = Object.freeze({
 const MIXED_DISCOVERY_BUNDLES = new Set(["mcp", "research", "agentlink"]);
 const DISCOVERY_STARTER_TOOL_NAMES = Object.freeze({
   mcp: Object.freeze(["mcp_list_servers", "mcp_list_tools", "mcp_call_tool"]),
-  research: Object.freeze(["web_search", "web_research", "deep_research"]),
+  research: Object.freeze(["deep_research", "web_search", "web_research"]),
   agentlink: Object.freeze(["agentlink_status", "agentlink_list_peers", "agentlink_create_board"]),
 });
 const DISCOVERY_FOLLOWUP_TOOL_NAMES = Object.freeze({
@@ -176,6 +177,56 @@ const VERIFICATION_FIRST_CODE_TOOL_NAMES = Object.freeze([
   "list_files",
 ]);
 const MUTATION_TOOL_NAMES = new Set(["write_file", "apply_patch"]);
+const CONVERGENCE_DISCOVERY_TOOL_NAMES = new Set([
+  "inspect_project",
+  "list_files",
+  "read_file",
+  "search_files",
+  "read_image",
+  "run_command",
+]);
+export const ARTIFACT_VALIDATION_TOOL_NAMES = Object.freeze([
+  "finish",
+  "read_file",
+  "run_command",
+  "apply_patch",
+  "write_file",
+  "send_to_canvas",
+  "open_workspace_file",
+  "preview_workspace",
+]);
+
+function artifactValidationToolNames(config = {}) {
+  const used = new Set(
+    Array.isArray(config.artifactValidationUsedTools)
+      ? config.artifactValidationUsedTools.map((item) => String(item || ""))
+      : []
+  );
+  const needsRepair = config.artifactValidationNeedsRepair === true;
+  const needsCommand = config.artifactValidationNeedsCommand === true;
+  const needsSourceRead = config.artifactValidationNeedsSourceRead === true;
+  const outputEmbedded = config.artifactValidationOutputEmbedded === true;
+  const repairAttempts = Math.max(0, Number(config.artifactValidationRepairAttempts || 0));
+  const outputReadTools = outputEmbedded ? [] : ["read_file"];
+  const repairTools = outputEmbedded
+    ? ["apply_patch", "finish"]
+    : repairAttempts > 0
+    ? ["apply_patch", ...outputReadTools, "finish"]
+    : ["apply_patch", "write_file", ...outputReadTools, "finish"];
+  const ordered = needsCommand
+    ? ["run_command", ...(needsRepair ? repairTools : ["finish", ...outputReadTools, "apply_patch", "write_file"])]
+    : needsSourceRead
+      ? needsRepair
+        ? repairAttempts > 0
+          ? ["read_file", "apply_patch", "finish"]
+          : ["read_file", "apply_patch", "write_file", "finish"]
+        : ["read_file", "finish", "run_command", "apply_patch", "write_file"]
+      : needsRepair
+        ? repairTools
+        : ["finish", ...outputReadTools, "run_command", "apply_patch", "write_file"];
+  for (const name of ["send_to_canvas", "open_workspace_file", "preview_workspace"]) ordered.push(name);
+  return ordered.filter((name) => name === "finish" || !used.has(name));
+}
 
 const CODE_PROFILES = new Set([
   "code",
@@ -670,9 +721,27 @@ export function selectProgressiveTools(
     throw new TypeError("An enabled, valid finish function tool must exist in the input tool array");
   }
 
-  if (toolSurfacePolicy(config, profile) === "full") return enabled.map(({ tool }) => tool);
+  if (config.artifactValidationPhase === true) {
+    const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    return artifactValidationToolNames(config).map((name) => available.get(name)).filter(Boolean);
+  }
 
-  const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+  const phaseEnabled = config.convergenceOutputPhase === true
+    ? enabled.filter(
+        ({ name }) =>
+          !CONVERGENCE_DISCOVERY_TOOL_NAMES.has(name) ||
+          (name === "run_command" && config.convergenceAllowRunCommand === true)
+      )
+    : enabled;
+
+  if (shouldStartWithDeepResearch(goal || config.goal, messages)) {
+    const deepResearch = phaseEnabled.find(({ name }) => name === "deep_research")?.tool;
+    if (deepResearch) return [deepResearch, finish];
+  }
+
+  if (toolSurfacePolicy(config, profile) === "full") return phaseEnabled.map(({ tool }) => tool);
+
+  const available = new Map(phaseEnabled.map(({ name, tool }) => [name, tool]));
   const requestedLimit = finitePositiveInteger(
     config.toolSurfaceMaxTools ?? config.localToolMaxTools,
     DEFAULT_LOCAL_TOOL_LIMIT

@@ -73,6 +73,12 @@ function normalizeResponseFormat(value = "") {
   return "auto";
 }
 
+function normalizeThinkingMode(value = "auto") {
+  const raw = value && typeof value === "object" ? value.type : value;
+  const normalized = String(raw || "auto").trim().toLowerCase();
+  return ["auto", "enabled", "disabled"].includes(normalized) ? normalized : "auto";
+}
+
 function normalizeJsonRequest(args = {}) {
   const normalizedSchema = normalizeSchema(args.schemaJson || args.schema);
   const task = redactSensitiveText(String(args.task || args.prompt || "").trim());
@@ -95,6 +101,7 @@ function normalizeJsonRequest(args = {}) {
     schemaName,
     strict: args.strict === undefined ? normalizedSchema.strict : args.strict !== false,
     responseFormat: normalizeResponseFormat(args.responseFormat),
+    thinkingMode: normalizeThinkingMode(args.thinkingMode ?? args.thinking),
     fallbackOnInvalid: args.fallbackOnInvalid !== false,
     temperature,
     maxTokens,
@@ -331,6 +338,9 @@ export async function runJsonSpecialist(args = {}, config = {}, store = null) {
             { role: "user", content: jsonUserPrompt(request, attempt) },
           ],
           ...(responseFormat ? { response_format: responseFormat } : {}),
+          ...(normalizeProviderId(provider, "") === "deepseek" && request.thinkingMode !== "auto"
+            ? { thinking: { type: request.thinkingMode } }
+            : {}),
         };
         try {
           const response = await createChatCompletion(client, payload, jsonConfig, `json specialist ${attempt} request`);

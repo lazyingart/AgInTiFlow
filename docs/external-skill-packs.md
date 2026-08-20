@@ -47,6 +47,36 @@ AgInTiFlow supports both its native frontmatter (`id`, `label`, `description`,
 `triggers`, `tools`) and the broader Agent Skills dialect used by K-Dense
 (`name`, `description`, `allowed-tools`, nested `metadata`).
 
+## Standard Local Agent Skills
+
+AgInTiFlow also discovers user-owned Agent Skills from these standard local
+locations when they exist:
+
+- `~/.agents/skills`
+- `~/.codex/skills`
+- `~/.claude/skills`
+
+This is read-only interoperability. AgInTiFlow loads only `SKILL.md`, treats its
+contents as guidance rather than executable authority, and still applies the
+normal tool, command, permission, and irreversible-action policies. Built-in,
+project-local, and reviewed SkillMesh skills continue to win on ID collisions.
+
+Override the standard roots with a path-delimited list:
+
+```bash
+AGINTIFLOW_AGENT_SKILL_PACKS=/path/to/agent-skills:/path/to/more-skills aginti skills
+```
+
+Disable ambient discovery for a hardened or fully isolated runtime:
+
+```bash
+AGINTIFLOW_DISCOVER_AGENT_SKILLS=false aginti skills
+```
+
+Selected skill context includes a bounded excerpt, section index, and the
+read-only `SKILL.md` source path. This lets a tool-capable agent inspect the full
+routine before a multi-stage task without bloating every ordinary chat turn.
+
 ## Design Rules
 
 - External packs are optional. Missing packs do not block startup.

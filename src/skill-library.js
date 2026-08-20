@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { agintiflowHome } from "./session-index.js";
@@ -9,6 +10,8 @@ const DEFAULT_PROMPT_CHARS = 5200;
 const PROJECT_SKILLS_RELATIVE_DIR = path.join(".aginti", "skills");
 const EXTERNAL_SKILL_PACKS_ENV = "AGINTIFLOW_SKILL_PACKS";
 const SCIENTIFIC_SKILL_PACK_ENV = "AGINTIFLOW_SCIENTIFIC_SKILLS_ROOT";
+const AGENT_SKILL_PACKS_ENV = "AGINTIFLOW_AGENT_SKILL_PACKS";
+const DISCOVER_AGENT_SKILLS_ENV = "AGINTIFLOW_DISCOVER_AGENT_SKILLS";
 
 function parseScalar(value = "") {
   const trimmed = String(value || "").trim();
@@ -235,10 +238,38 @@ function defaultScientificSkillPackRoots() {
   ].filter(Boolean);
 }
 
+function envFlag(value, fallback = true) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  return fallback;
+}
+
+function defaultAgentSkillPackRoots() {
+  if (!envFlag(process.env[DISCOVER_AGENT_SKILLS_ENV], true)) return [];
+  const configured = splitExternalPackPaths(process.env[AGENT_SKILL_PACKS_ENV]);
+  if (configured.length > 0) return configured;
+  const home = os.homedir();
+  return [
+    path.join(home, ".agents", "skills"),
+    path.join(home, ".codex", "skills"),
+    path.join(home, ".claude", "skills"),
+  ];
+}
+
+function inferExternalPackId(root) {
+  const basename = path.basename(root);
+  const parent = path.basename(path.dirname(root)).replace(/^\./, "");
+  if (basename.toLowerCase() === "skills" && parent) return `${parent}-skills`;
+  return basename;
+}
+
 export function listExternalSkillPacks() {
   const roots = [
     ...splitExternalPackPaths(process.env[EXTERNAL_SKILL_PACKS_ENV]),
     ...defaultScientificSkillPackRoots(),
+    ...defaultAgentSkillPackRoots(),
   ];
   const seen = new Set();
   const packs = [];
@@ -249,10 +280,15 @@ export function listExternalSkillPacks() {
     const skillsDir = inferExternalSkillsDir(root);
     if (!skillsDir) continue;
     const category = inferExternalPackCategory(root);
-    const basename = path.basename(root);
+    const basename = inferExternalPackId(root);
     packs.push({
       id: basename,
-      label: basename === "scientific-agent-skills" ? "Scientific Agent Skills" : inferExternalPackLabel(root),
+      label:
+        basename === "scientific-agent-skills"
+          ? "Scientific Agent Skills"
+          : basename.endsWith("-skills")
+            ? titleCaseSkillId(basename)
+            : inferExternalPackLabel(root),
       category,
       root,
       skillsDir,
@@ -411,6 +447,18 @@ const DESCRIPTION_STOP_WORDS = new Set([
   "write",
 ]);
 
+const SKILL_ID_STOP_WORDS = new Set([
+  "agent",
+  "aginti",
+  "development",
+  "production",
+  "skill",
+  "system",
+  "tool",
+  "tools",
+  "workflow",
+]);
+
 function descriptionTerms(value = "") {
   return [
     ...new Set(
@@ -426,6 +474,13 @@ function scoreSkill(skill, text, taskProfile) {
   let score = 0;
   if (skill.id === taskProfile) score += 10;
   if (skill.triggers.includes(taskProfile)) score += 6;
+  const idTerms = String(skill.id || "")
+    .toLowerCase()
+    .split(/[^a-z0-9+#.]+/)
+    .filter((term) => term.length >= 3 && !SKILL_ID_STOP_WORDS.has(term));
+  for (const term of idTerms) {
+    if (textHasTrigger(text, term)) score += 2;
+  }
   for (const trigger of skill.triggers) {
     const needle = trigger.toLowerCase();
     if (!needle) continue;
@@ -479,6 +534,19 @@ function compactBody(body = "", limit = 620) {
   return `${text.slice(0, limit - 20).trim()}\n...`;
 }
 
+function bodyHeadings(body = "", limit = 10) {
+  return String(body || "")
+    .split(/\r?\n/)
+    .map((line) => line.match(/^#{1,4}\s+(.+?)\s*$/)?.[1]?.trim() || "")
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function skillSourceHint(skill) {
+  if (!skill?.path) return "";
+  return `Full guidance: ${skill.path} (read-only; inspect this file before executing a multi-stage or irreversible routine).`;
+}
+
 export function formatSkillsForPrompt(skills = [], { maxChars = DEFAULT_PROMPT_CHARS } = {}) {
   if (!Array.isArray(skills) || skills.length === 0) return "";
   const chunks = [
@@ -491,6 +559,8 @@ export function formatSkillsForPrompt(skills = [], { maxChars = DEFAULT_PROMPT_C
         `Description: ${skill.description}`,
         skill.pack ? `Source pack: ${skill.pack.label} (${skill.category || "external"})` : "",
         skill.tools?.length ? `Preferred tools: ${skill.tools.join(", ")}` : "",
+        skillSourceHint(skill),
+        bodyHeadings(skill.body).length ? `Sections: ${bodyHeadings(skill.body).join("; ")}` : "",
         skill.body ? compactBody(skill.body) : "",
       ]
         .filter(Boolean)

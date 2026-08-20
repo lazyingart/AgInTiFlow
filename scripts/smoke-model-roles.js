@@ -17,8 +17,13 @@ import { normalizeProviderId, resolveProviderDefaults } from "../src/provider-co
 import {
   buildScsEvidencePack,
   buildSupervisorInstruction,
+  createScsPlan,
   deterministicPlanActionContradiction,
+  deterministicPlanRoutineIssue,
   reviewScsFinish,
+  reviewScsProgress,
+  resolveScsJsonLane,
+  resolveScsValidationMode,
   shouldActivateScs,
   shouldRequestScsReplan,
 } from "../src/scs-controller.js";
@@ -476,7 +481,11 @@ const malformedRequestedToolResponse = normalizeTextToolCallResponse({
   ],
 });
 const malformedMessage = malformedRequestedToolResponse.choices[0].message;
-assert(malformedMessage.tool_calls?.[0]?.function?.name === "wait", "malformed requested tool text should trigger a safe retry tool");
+assert(malformedMessage.tool_calls?.length === 0, "malformed requested tool text should not fabricate a tool call");
+assert(
+  malformedMessage.aginti_text_tool_retry?.reason === "malformed-or-truncated-text-tool-call",
+  "malformed requested tool text should request a bounded protocol-level retry"
+);
 assert(!malformedMessage.content.includes("write_file("), "malformed requested tool text should not be surfaced as assistant content");
 const cleanedMalformedSuffix = normalizeTextToolCallResponse({
   choices: [
@@ -497,6 +506,116 @@ assert(usesTextToolProtocol({ provider: "venice", model: "e2ee-venice-uncensored
 assert(usesTextToolProtocol({ provider: "venice", model: "venice-uncensored" }), "Venice legacy 1.1 should use text tool protocol");
 assert(!usesTextToolProtocol({ provider: "venice", model: "venice-uncensored-1-2" }), "Venice 1.2 should keep native tool calls first");
 assert(!usesTextToolProtocol({ provider: "localllm", model: "localllm-fast" }), "LocalLLM should prefer native OpenAI tool calls");
+const localScsCommitteeLane = resolveScsJsonLane(
+  {
+    provider: "localllm",
+    model: "localllm-deep",
+    routeProvider: "localllm",
+    routeModel: "localllm-fast",
+    maxOutputTokens: 8192,
+    modelTimeoutMs: 180000,
+  },
+  "SCS committee"
+);
+assert(localScsCommitteeLane.model === "localllm-deep", "SCS committee did not reuse the selected resident LocalLLM");
+assert(localScsCommitteeLane.role === "executor", "resident LocalLLM SCS lane did not report its executor role");
+assert(localScsCommitteeLane.maxOutputTokens === 1536, "SCS committee output was not bounded");
+assert(localScsCommitteeLane.modelTimeoutMs === 45000, "Local SCS committee timeout was not bounded");
+const localScsValidatorLane = resolveScsJsonLane(
+  {
+    provider: "localllm",
+    model: "localllm-deep",
+    routeProvider: "localllm",
+    routeModel: "localllm-fast",
+    maxOutputTokens: 8192,
+  },
+  "SCS student validator"
+);
+assert(localScsValidatorLane.maxOutputTokens === 768, "SCS validator output was not bounded");
+assert(localScsValidatorLane.model === "localllm-deep", "SCS validator did not reuse the selected resident LocalLLM");
+assert(resolveScsValidationMode({ provider: "localllm" }) === "deterministic", "LocalLLM should use runtime validation in auto mode");
+assert(resolveScsValidationMode({ provider: "deepseek" }) === "model", "hosted providers should keep model validation in auto mode");
+assert(
+  resolveScsValidationMode({ provider: "localllm", scsValidationMode: "model" }) === "model",
+  "explicit SCS validation mode was not authoritative"
+);
+
+let localScsPlanningCalls = 0;
+const localScsClient = {
+  chat: {
+    completions: {
+      create: async () => {
+        localScsPlanningCalls += 1;
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  role: "committee",
+                  phase_goal: "Inspect the routine and write the readiness report.",
+                  plan: [
+                    "Read the selected source guidance.",
+                    "Write LOCAL_SCS_READINESS.md from observed evidence.",
+                    "Read LOCAL_SCS_READINESS.md once and finish.",
+                  ],
+                  acceptance_criteria: ["Exact output path is used: LOCAL_SCS_READINESS.md"],
+                  allowed_tools: ["read_file", "write_file", "finish"],
+                  stop_conditions: ["A required source path is inaccessible."],
+                }),
+              },
+            },
+          ],
+        };
+      },
+    },
+  },
+};
+const localScsPlan = await createScsPlan(
+  localScsClient,
+  {
+    provider: "localllm",
+    model: "localllm-deep",
+    routeProvider: "localllm",
+    routeModel: "localllm-fast",
+    enableScs: "auto",
+    scsValidationMode: "auto",
+  },
+  {
+    goal: "Inspect the current routine and write `LOCAL_SCS_READINESS.md` in this folder. Do not publish or open a browser.",
+    messages: [],
+    meta: {},
+  },
+  { taskProfile: "supervision", selectedSkills: [], readOnlyRoots: [] }
+);
+assert(localScsPlanningCalls === 1, "LocalLLM SCS made a redundant student or committee call");
+assert(localScsPlan.scs.validatorMode === "deterministic", "LocalLLM SCS did not record deterministic validation");
+assert(localScsPlan.scs.validatorModel === "runtime/deterministic", "LocalLLM SCS reported a model validator");
+
+const noReviewClient = {
+  chat: { completions: { create: async () => { throw new Error("deterministic SCS review called a model"); } } },
+};
+const deterministicProgress = await reviewScsProgress(
+  noReviewClient,
+  { provider: "localllm", model: "localllm-deep", scsValidationMode: "auto", taskProfile: "supervision" },
+  {
+    goal: "Continue a source-grounded readiness audit.",
+    messages: [],
+    meta: { scs: { monitorReviews: 0 } },
+  },
+  { taskProfile: "supervision", events: [] }
+);
+assert(deterministicProgress.decision === "accept_phase", "deterministic progress review did not return a bounded decision");
+const crossProviderScsLane = resolveScsJsonLane(
+  {
+    provider: "deepseek",
+    model: "deepseek-chat",
+    routeProvider: "localllm",
+    routeModel: "localllm-fast",
+  },
+  "SCS committee"
+);
+assert(crossProviderScsLane.model === "deepseek-chat", "SCS reused a route model through the wrong provider client");
+assert(crossProviderScsLane.role === "executor", "Cross-provider SCS lane reported an unsafe route role");
 const scsInstruction = buildSupervisorInstruction({ plan: "Create one file.", acceptanceCriteria: ["File exists."] });
 assert(scsInstruction.includes("Student-Committee-Supervisor"), "SCS supervisor instruction should define the acronym");
 assert(!scsInstruction.includes("Syntax-Checker Sentinel"), "SCS supervisor instruction should not allow alternate acronym expansions");
@@ -504,6 +623,73 @@ assert(scsInstruction.includes("student is the independent validator"), "SCS sup
 assert(shouldRequestScsReplan({ decision: "finish_rejected" }), "finish rejection should trigger committee replan");
 assert(shouldRequestScsReplan({ decision: "rethink_plan" }), "student rethink should trigger committee replan");
 assert(!shouldRequestScsReplan({ decision: "finish_allowed" }), "finish approval should not trigger committee replan");
+const routineAwareInstruction = buildSupervisorInstruction({
+  plan: "Inspect the established routine, then write the report.",
+  acceptanceCriteria: ["Report exists."],
+  routineContext: {
+    commandCwd: "/tmp/workspace",
+    readOnlyRoots: ["/tmp/Musia"],
+    selectedSkills: [
+      {
+        id: "musia-music-production",
+        path: "/tmp/skills/musia-music-production/SKILL.md",
+        description: "Established music workflow.",
+      },
+    ],
+  },
+});
+assert(routineAwareInstruction.includes("already active structured-read scopes"), "SCS supervisor omitted active read-root semantics");
+assert(routineAwareInstruction.includes("never executable commands"), "SCS supervisor omitted skill guidance semantics");
+const inventedSkillCommandIssue = deterministicPlanRoutineIssue(
+  {
+    plan: "Run `musia-music-production --check`, then write MEDIA_ROUTINE_READINESS.md.",
+    acceptanceCriteria: ["MEDIA_ROUTINE_READINESS.md exists."],
+  },
+  {
+    readOnlyRoots: ["/tmp/Musia"],
+    selectedSkills: [{ id: "musia-music-production", path: "/tmp/skills/musia-music-production/SKILL.md" }],
+  },
+  "Inspect the existing workflow."
+);
+assert(inventedSkillCommandIssue?.decision === "veto_plan", "SCS plan gate accepted a selected skill ID as an executable");
+const misplacedReadRootIssue = deterministicPlanRoutineIssue(
+  { plan: "Run `aginti help --read-root /tmp/Musia` and collect output." },
+  { readOnlyRoots: ["/tmp/Musia"], selectedSkills: [] },
+  "Inspect the existing workflow."
+);
+assert(misplacedReadRootIssue?.decision === "veto_plan", "SCS plan gate accepted --read-root as an in-task command flag");
+assert(
+  !deterministicPlanRoutineIssue(
+    { plan: "Read /tmp/skills/musia-music-production/SKILL.md, inspect /tmp/Musia/package.json, and use only documented entry points." },
+    {
+      readOnlyRoots: ["/tmp/Musia"],
+      selectedSkills: [{ id: "musia-music-production", path: "/tmp/skills/musia-music-production/SKILL.md" }],
+    },
+    "Inspect the existing workflow."
+  ),
+  "SCS plan gate rejected a sourced routine-aware plan"
+);
+const readinessBrowserIssue = deterministicPlanRoutineIssue(
+  {
+    plan:
+      "Read the exact skill files, then use open_url to access the editor and click through the live UI before writing MEDIA_ROUTINE_READINESS.md.",
+  },
+  { readOnlyRoots: ["/tmp/Musia"], selectedSkills: [] },
+  [
+    "Inspect whether I can use the existing media workflow.",
+    "Do not generate, submit, upload, publish, log in, restart services, or edit sibling repositories.",
+    "Write MEDIA_ROUTINE_READINESS.md using safe read-only help or status checks.",
+  ].join("\n")
+);
+assert(readinessBrowserIssue?.decision === "veto_plan", "Read-only readiness gate accepted an unnecessary live UI plan");
+assert(
+  !deterministicPlanRoutineIssue(
+    { plan: "Open the requested browser page, inspect its visible state, and save the requested screenshot." },
+    { readOnlyRoots: [], selectedSkills: [] },
+    "Inspect the browser UI state and take a screenshot without submitting anything."
+  ),
+  "Readiness gate rejected an explicitly requested live UI inspection"
+);
 const longStdout = [
   "=== Student-Committee-Supervisor present ===",
   "3:SCS stands for **Student-Committee-Supervisor**",
@@ -533,6 +719,23 @@ const uploadContract = deriveScsTaskContract({
     "Upload five images in the browser composer and verify visible thumbnails: /tmp/reference-a.png /tmp/reference-b.png /tmp/reference-c.png. Do not submit.",
   taskProfile: "website",
 });
+const readinessOnlyContract = deriveScsTaskContract({
+  goal: [
+    "Inspect whether I can make a song, turn it into a video, and publish it through the existing tools.",
+    "Do not generate, submit, upload, publish, log in, restart services, or edit sibling repositories in this test.",
+    "Write MEDIA_ROUTINE_READINESS.md and run safe read-only help checks.",
+  ].join("\n"),
+  taskProfile: "auto",
+});
+assert(
+  readinessOnlyContract.requiredEvidence.some((item) => item.category === "file") &&
+    readinessOnlyContract.requiredEvidence.some((item) => item.category === "command"),
+  "read-only readiness contract omitted report/check evidence"
+);
+assert(
+  !readinessOnlyContract.requiredEvidence.some((item) => ["publish", "browser", "visual", "artifact"].includes(item.category)),
+  "read-only readiness contract required a forbidden external action or target artifact"
+);
 assert(
   uploadContract.exactInputPaths.includes("/tmp/reference-a.png") &&
     uploadContract.exactInputPaths.includes("/tmp/reference-b.png") &&

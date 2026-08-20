@@ -15,36 +15,68 @@ real value.
 The implementation follows the strongest production patterns without making
 every query an unbounded agent swarm:
 
-1. **Plan**: the active provider decomposes the question into non-overlapping
-   subquestions, search queries, preferred source types, and exclusions.
-2. **Search**: queries run with bounded concurrency. The no-key default falls
-   back from DuckDuckGo HTML to Bing RSS. An explicitly configured Brave Search
-   route is optional. Multi-domain corpora receive separate bounded `site:`
+1. **Plan**: a fast routing model on the active provider decomposes the question
+   into non-overlapping subquestions, search queries, preferred source types,
+   and exclusions. If that structured call fails, the main model gets one
+   bounded retry; the workflow never switches providers implicitly.
+2. **Search**: queries run with bounded concurrency. Quick lookup uses the
+   no-key DuckDuckGo-to-Bing fallback. Standard/deep research uses a bounded
+   ensemble that merges DuckDuckGo and Bing indexes, plus Brave only when it is
+   explicitly configured. Canonical duplicates found by multiple providers are
+   promoted and retain per-provider rank evidence. Multi-domain corpora receive separate bounded `site:`
    queries matched to entity-specific subquestions instead of one fragile OR
-   expression.
-3. **Rank, diversify, and deduplicate**: canonical URLs remove tracking state;
-   primary, official, scholarly, and high-relevance results rank ahead of
-   summaries, while a bounded diversity penalty prevents one domain from
-   crowding every selected source.
+   expression. If an exact `site:` query returns no candidates, the engine
+   retries the same planner query once without the search-operator hint while
+   retaining the domain allowlist. This recovery stays inside the original
+   research run and is recorded in its checkpoint.
+3. **Rank, diversify, and deduplicate**: canonical URLs remove tracking state.
+   Topical overlap, independent provider rediscovery, discovery by multiple
+   planned queries, and domain-constrained intent rank candidates. Official or
+   scholarly status is a quality signal, not a substitute for relevance, so a
+   generic university citation guide cannot crowd out a paper merely because it
+   is hosted on an academic domain. Dictionary, translation, and citation-generator
+   pages are excluded when stronger policy-compliant evidence exists. Under a
+   strict `primary`, `official`, or `scholarly` policy, four relevant compliant
+   candidates are enough to exclude generic supplementary commentary entirely.
+   When at least four strongly topical compliant candidates exist, marginally
+   related academic pages are excluded as well;
+   a sparse set may add only enough relevant supplementary context to reach
+   that small floor. Source budgets are ceilings rather than targets, and a
+   bounded diversity penalty prevents one domain from crowding every selected
+   source.
 4. **Read exact sources**: `read_web_page` validates every redirect before the
    next request, rejects private DNS resolutions, streams bounded bytes, strips
    scripts/navigation, extracts article/main text and metadata, records hashes,
-   and marks all retrieved text as untrusted evidence.
+   and marks all retrieved text as untrusted evidence. Verified PDF response
+   bytes are passed to a bounded local `pdftotext` process when available, so
+   papers can contribute exact passages without sending the PDF to another
+   provider. When the original request requires a paper, selected arXiv, ACL
+   Anthology, OpenReview, and Nature landing pages are resolved to bounded PDF
+   candidates before evidence extraction.
 5. **Extract evidence**: isolated structured-output calls identify relevant
-   subquestions, claims, exact quotations, confidence, and limitations.
+   subquestions, claims, exact quotations, confidence, and limitations. The
+   active provider's fast routing model handles the parallel first pass. Only
+   failed sources are retried, at lower concurrency and a larger output budget,
+   with that provider's stronger main model. Every extracted claim receives a
+   stable evidence ID such as `S2-C3`.
 6. **Verify**: deterministic code checks that quoted passages occur in the
    exact retrieved source. Unverified quotations do not enter synthesis.
 7. **Fill gaps**: standard/deep runs may issue one bounded follow-up pass for
    uncovered subquestions when query and source budgets remain.
-8. **Synthesize**: the active provider receives verified evidence rather than
-   arbitrary page text. Every substantive paragraph and finding carries source
-   IDs.
-9. **Audit**: deterministic code removes invented source IDs and unsupported
-   synthesis statements whose cited sources produced no verified evidence,
-   then reports claim, quotation, citation, question, domain, and
-   primary-source coverage.
+8. **Synthesize**: the active provider's main model receives verified evidence
+   rather than arbitrary page text. Every substantive paragraph and finding
+   cites exact evidence IDs instead of merely naming a source. A failed main
+   synthesis gets one same-provider fast-model fallback.
+9. **Audit**: deterministic code removes unknown or unverified evidence IDs,
+   derives visible source citations from accepted evidence records, removes
+   unsupported synthesis statements, then reports claim, quotation, citation,
+   question, domain, PDF, and independent primary-source coverage. A second
+   audit checks the cleaned synthesis; rejected provider IDs remain diagnostic
+   warnings but do not make the delivered report's final audit look dirty.
 10. **Persist**: every stage checkpoints one JSON state file. The final cited
-    Markdown report is saved beside it and sent to the canvas.
+    Markdown report is saved beside it by default, or written directly to a
+    guarded workspace-relative `outputPath` when the caller requests a durable
+    filename, then sent to the canvas.
 
 This combines the orchestrator/worker and separate citation-pass lessons
 described by [Anthropic's production research
@@ -67,6 +99,33 @@ The caller may reduce these budgets, but hard caps remain 12 queries and 24
 sources. Search/page concurrency is bounded to six and defaults to three or
 four.
 
+Explicit evidence requirements are derived from both the tool arguments and
+the authoritative original user goal. A planner may shorten the research
+question, but cannot silently drop requirements such as “compare at least three
+independent primary sources,” “read a paper/PDF when available,” or “include
+negative evidence.” These requirements are fingerprinted and checkpointed.
+
+Planning and evidence extraction deliberately use the configured routing model
+when it belongs to a hosted active provider. Synthesis uses the configured main
+model. For LocalLLM, when the outer agent has already selected and loaded its
+main model, every research stage reuses that resident model unless a dedicated
+extraction model was explicitly configured. This avoids a costly GPU residency
+swap; local evidence extraction is bounded to two concurrent calls by default.
+Failed evidence calls are retried selectively rather than repeating every
+successful source.
+
+The same residency rule applies to the outer SCS committee plan for a LocalLLM
+research task. It reuses the selected executor model instead of waiting on a
+second local route-model queue before the bounded research workflow can start.
+
+Planner-produced concise queries take precedence over the original user brief.
+The raw brief is retained as a search query only when it is already concise;
+long conversational instructions are research context, not a literal search
+engine query. For DeepSeek, bounded JSON transformations explicitly use
+non-thinking mode. The multi-stage workflow supplies the reasoning structure,
+while disabling hidden reasoning prevents a small extraction object from
+spending its entire output budget before emitting JSON.
+
 ## Usage
 
 Interactive:
@@ -83,7 +142,11 @@ An agent can call:
   "query": "What evidence supports the current design choices?",
   "depth": "standard",
   "sourcePolicy": "primary",
-  "domains": ["docs.example.org", "arxiv.org"]
+  "requirePdf": true,
+  "minIndependentSources": 3,
+  "includeNegativeEvidence": true,
+  "domains": ["docs.example.org", "arxiv.org"],
+  "outputPath": "reports/design-evidence.md"
 }
 ```
 
@@ -94,6 +157,12 @@ is marked failed, preserves its attempts, and retries retrieval on resume
 instead of caching an empty report as success. Checkpoint schema changes
 invalidate old cached runs automatically.
 
+`outputPath` is optional and must name a Markdown file inside the active
+workspace. Repository internals such as `.git`, dependency trees such as
+`node_modules`, path escapes, and symlink escapes are rejected. This lets the
+bounded engine satisfy an exact report filename without granting the outer
+agent access to private session artifacts.
+
 ## Artifacts
 
 Each session stores:
@@ -103,6 +172,9 @@ artifacts/deep-research-RESEARCH_ID.json
 artifacts/deep-research-RESEARCH_ID.md
 ```
 
+When `outputPath` is supplied, the JSON checkpoint remains private to the
+session while the report is also written to that exact guarded workspace path.
+
 The JSON includes:
 
 - objective, plan, query/source budgets, and source policy;
@@ -111,6 +183,8 @@ The JSON includes:
 - readable source text and ranked passages;
 - extracted claims, exact quotations, limitations, and question mappings;
 - missing questions, source diversity, and quote-verification rates;
+- explicit evidence requirements, parsed-PDF attempts, and independent verified
+  primary/scholarly source counts;
 - final synthesis and citation audit;
 - stage/status fields used for crash-safe resume.
 
@@ -120,6 +194,13 @@ The default `auto` policy uses public no-key providers:
 
 ```text
 DuckDuckGo HTML -> Bing RSS
+```
+
+The `multi` policy used by standard/deep research queries all available
+no-key indexes and merges their canonical results:
+
+```text
+DuckDuckGo HTML + Bing RSS (+ Brave when explicitly configured)
 ```
 
 For an explicitly configured Brave Search account:
@@ -140,17 +221,31 @@ through configuration or a tool argument.
 - Domain allowlists and blocklists apply to search results, direct reads, and
   redirect targets.
 - Tracking parameters and fragments are removed before deduplication.
+- arXiv abstract, HTML, versioned, and PDF URLs for the same paper collapse to
+  one canonical paper identity before source budgeting.
+- Strict source policies do not fill unused capacity with blogs or social posts
+  once at least four relevant policy-compliant sources are available. This is a
+  quality floor, not a requirement to consume the configured source ceiling.
+- When a PDF is explicitly required, evidence extraction does not begin until a
+  discovered PDF has yielded readable text. A hard requirement fails closed;
+  “when available” is allowed to proceed only when no bounded PDF candidate was
+  discoverable.
 - Page bytes are bounded while streaming; extracted characters are bounded too.
 - HTML scripts, forms, navigation, footers, and similar noise are removed.
 - Retrieved text is always labeled untrusted and never treated as tool or agent
   instructions.
-- PDFs are hash-verified but not misrepresented as parsed by the dependency-free
-  page reader. A document/PDF tool remains responsible for full PDF extraction.
+- PDFs are always hash-verified. When local `pdftotext` is available, bounded
+  text and relevant passages are extracted from those exact bytes; otherwise
+  the result stays explicitly unreadable and preserves the extraction error.
 - Synthesis sees only verified evidence records. Unknown citation IDs and
   citations to sources without verified evidence are removed and reported.
 - Provider selection remains explicit. Deep research uses the active provider;
   it does not silently escape LocalLLM or DeepSeek because another API key is
   present.
+- Structured-output mode follows the active provider contract. DeepSeek and
+  LocalLLM use JSON-object output with a prompt fallback; providers that truly
+  support JSON Schema may use it. Unsupported response formats are not probed
+  on every research call.
 
 ## Quality Signals
 
@@ -160,6 +255,8 @@ prose:
 - question coverage;
 - readable source count;
 - primary/scholarly source count;
+- independent verified primary/scholarly source count;
+- parsed-PDF count and PDF requirement status;
 - independent-domain count;
 - exact-quote verification rate;
 - statement-level citation coverage;

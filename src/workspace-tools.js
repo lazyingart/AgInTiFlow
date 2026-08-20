@@ -12,6 +12,7 @@ const MAX_LINE_LIMIT_READ_BYTES = 5_000_000;
 const MAX_WRITE_BYTES = 220_000;
 const MAX_PATCH_BYTES = 260_000;
 const MAX_LIST_ENTRIES = 360;
+const DEFAULT_LIST_ENTRIES = 120;
 const MAX_SEARCH_RESULTS = 80;
 const MAX_SEARCH_FILES = 4_000;
 const MAX_SEARCH_BYTES = 64 * 1024 * 1024;
@@ -30,6 +31,11 @@ const SKIP_DIRS = new Set([
   ".next",
   ".nuxt",
   ".cache",
+  ".conda",
+  ".runtime",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
   ".private",
   ".venv",
   "venv",
@@ -85,6 +91,12 @@ function normalizeRelative(relativePath) {
   return normalized || ".";
 }
 
+function shouldSkipTraversalEntry(entry) {
+  if (!entry) return true;
+  if (SKIP_DIRS.has(entry.name)) return true;
+  return entry.isDirectory() && entry.name.startsWith(".") && entry.name !== ".github";
+}
+
 function workspaceRoot(config) {
   return path.resolve(config.commandCwd || process.cwd());
 }
@@ -92,6 +104,17 @@ function workspaceRoot(config) {
 function isInside(root, target) {
   const relative = path.relative(root, target);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function matchingReadOnlyRoot(config, target) {
+  const roots = [
+    ...(Array.isArray(config.readOnlyRoots) ? config.readOnlyRoots : []),
+    ...(Array.isArray(config.skillReadOnlyRoots) ? config.skillReadOnlyRoots : []),
+  ];
+  return roots
+    .map((item) => path.resolve(String(item || "")))
+    .filter(Boolean)
+    .find((root) => isInside(root, target));
 }
 
 function hashText(value) {
@@ -233,13 +256,24 @@ function normalizeWorkspaceInputPath(rawPath) {
   return rawPath;
 }
 
-export function resolveWorkspacePath(config, inputPath = ".") {
+export function resolveWorkspacePath(config, inputPath = ".", { allowReadOnlyRoots = false } = {}) {
   const root = workspaceRoot(config);
   const rawPath = sanitizePathInput(inputPath);
   const workspacePath = normalizeWorkspaceInputPath(rawPath);
   const absolutePath = path.resolve(root, workspacePath);
 
   if (!isInside(root, absolutePath)) {
+    const readOnlyRoot = allowReadOnlyRoots ? matchingReadOnlyRoot(config, absolutePath) : "";
+    if (readOnlyRoot) {
+      return {
+        root: readOnlyRoot,
+        absolutePath,
+        relativePath: absolutePath,
+        outsideWorkspace: true,
+        readOnly: true,
+        readOnlyRoot,
+      };
+    }
     if (config.allowOutsideWorkspaceFileTools && config.sandboxMode === "host" && config.allowDestructive) {
       return {
         root,
@@ -317,6 +351,12 @@ function stripSafeCredentialReferences(content) {
   const codeKeyName = String.raw`(?:api[_-]?key|apiKey|token|secret|password|passwd|npmToken|authToken|grsai|veniceApiKey|venice_api_key)`;
   const codeExpression = String.raw`[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\([^"'\n]*\))?`;
   const envName = String.raw`[A-Z][A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PASSWD|GRSAI|VENICE)[A-Z0-9_]*`;
+  const safeStatus = String.raw`(?:false|true|null|none|unset|missing|not[-_ ]?set|\[REDACTED\])`;
+
+  text = text.replace(
+    new RegExp(String.raw`\b${keyName}\s*[:=]\s*${safeStatus}\b`, "gi"),
+    "credential_status=[STATUS]"
+  );
 
   text = text.replace(new RegExp(String.raw`(["'])${envName}=\1`, "g"), "$1ENV_NAME=$1");
   text = text.replace(
@@ -404,7 +444,9 @@ export function checkWorkspaceToolUse(toolName, args, config) {
       if (!contentPolicy.allowed) return contentPolicy;
       return { allowed: true };
     }
-    const target = resolveWorkspacePath(config, args.path || ".");
+    const target = resolveWorkspacePath(config, args.path || ".", {
+      allowReadOnlyRoots: !WORKSPACE_WRITE_TOOL_NAMES.includes(toolName),
+    });
     const policy = pathPolicy(toolName, target.relativePath);
     if (!policy.allowed) return policy;
     if (WORKSPACE_WRITE_TOOL_NAMES.includes(toolName)) {
@@ -425,6 +467,8 @@ export function summarizeWorkspaceTools(config) {
   return {
     enabled: Boolean(config.allowFileTools),
     workspace: workspaceRoot(config),
+    readOnlyRoots: Array.isArray(config.readOnlyRoots) ? [...config.readOnlyRoots] : [],
+    selectedSkillFiles: Array.isArray(config.skillReadOnlyRoots) ? [...config.skillReadOnlyRoots] : [],
     tools: [...WORKSPACE_TOOL_NAMES, "open_workspace_file", "preview_workspace"],
     writeTools: WORKSPACE_WRITE_TOOL_NAMES,
     limits: {
@@ -506,9 +550,9 @@ async function fileInfo(absolutePath, root) {
 }
 
 async function listFiles(config, args) {
-  const target = resolveWorkspacePath(config, args.path || ".");
+  const target = resolveWorkspacePath(config, args.path || ".", { allowReadOnlyRoots: true });
   const maxDepth = Math.min(Math.max(Number(args.maxDepth) || DEFAULT_MAX_DEPTH, 1), 8);
-  const limit = Math.min(Math.max(Number(args.limit) || MAX_LIST_ENTRIES, 1), MAX_LIST_ENTRIES);
+  const limit = Math.min(Math.max(Number(args.limit) || DEFAULT_LIST_ENTRIES, 1), MAX_LIST_ENTRIES);
   const entries = [];
 
   async function walk(currentPath, depth) {
@@ -523,7 +567,7 @@ async function listFiles(config, args) {
     const children = await fs.readdir(currentPath, { withFileTypes: true }).catch(() => []);
     children.sort((a, b) => a.name.localeCompare(b.name));
     for (const child of children) {
-      if (SKIP_DIRS.has(child.name)) continue;
+      if (shouldSkipTraversalEntry(child)) continue;
       await walk(path.join(currentPath, child.name), depth + 1);
       if (entries.length >= limit) break;
     }
@@ -558,7 +602,7 @@ async function readTextFile(target, { allowLargeLineLimited = false } = {}) {
 }
 
 async function readFile(config, args) {
-  const target = resolveWorkspacePath(config, args.path);
+  const target = resolveWorkspacePath(config, args.path, { allowReadOnlyRoots: true });
   const requestedLineLimit = Number(args.lineLimit || args.limit || 0);
   const lineLimit = Number.isFinite(requestedLineLimit) && requestedLineLimit > 0 ? Math.min(requestedLineLimit, 1000) : 0;
   const { stat, content, hash } = await readTextFile(target, { allowLargeLineLimited: lineLimit > 0 });
@@ -581,7 +625,7 @@ async function readFile(config, args) {
 }
 
 async function searchFiles(config, args) {
-  const target = resolveWorkspacePath(config, args.path || ".");
+  const target = resolveWorkspacePath(config, args.path || ".", { allowReadOnlyRoots: true });
   const query = String(args.query || "").trim();
   if (query.length < 2) throw new Error("Search query must be at least 2 characters.");
 
@@ -625,16 +669,34 @@ async function searchFiles(config, args) {
 
     if (stat.isDirectory()) {
       const children = await fs.readdir(currentPath, { withFileTypes: true }).catch(() => []);
-      children.sort((a, b) => a.name.localeCompare(b.name));
+      const priority = (entry) => {
+        const name = caseSensitive ? entry.name : entry.name.toLowerCase();
+        if (name.includes(needle)) return 0;
+        if (entry.isDirectory() && SOURCE_DIR_NAMES.has(entry.name)) return 1;
+        if (entry.isDirectory()) return 2;
+        if (IMPORTANT_MANIFESTS.has(entry.name)) return 3;
+        return 4;
+      };
+      children.sort((a, b) => priority(a) - priority(b) || a.name.localeCompare(b.name));
       for (const child of children) {
-        if (SKIP_DIRS.has(child.name)) continue;
+        if (shouldSkipTraversalEntry(child)) continue;
         await visit(path.join(currentPath, child.name), depth + 1);
         if (results.length >= maxResults || !searchBudgetAvailable()) break;
       }
       return;
     }
 
-    if (!stat.isFile() || stat.size > MAX_READ_BYTES) return;
+    if (!stat.isFile()) return;
+    const fileName = caseSensitive ? path.basename(currentPath) : path.basename(currentPath).toLowerCase();
+    if (fileName.includes(needle)) {
+      results.push({
+        path: relativePath,
+        line: 0,
+        text: "[filename match]",
+      });
+      if (results.length >= maxResults) return;
+    }
+    if (stat.size > MAX_READ_BYTES) return;
     if (bytesScanned + stat.size > MAX_SEARCH_BYTES) {
       truncated = true;
       truncationReason = truncationReason || "byte_limit";
@@ -673,7 +735,7 @@ async function searchFiles(config, args) {
 }
 
 async function inspectProject(config, args) {
-  const target = resolveWorkspacePath(config, args.path || ".");
+  const target = resolveWorkspacePath(config, args.path || ".", { allowReadOnlyRoots: true });
   const maxDepth = Math.min(Math.max(Number(args.maxDepth) || 6, 1), 10);
   const limit = Math.min(Math.max(Number(args.limit) || MAX_INSPECT_ENTRIES, 80), MAX_INSPECT_ENTRIES);
   const includeFiles = Boolean(args.includeFiles);
@@ -717,7 +779,7 @@ async function inspectProject(config, args) {
       const children = await fs.readdir(currentPath, { withFileTypes: true }).catch(() => []);
       children.sort((a, b) => a.name.localeCompare(b.name));
       for (const child of children) {
-        if (SKIP_DIRS.has(child.name)) continue;
+        if (shouldSkipTraversalEntry(child)) continue;
         await visit(path.join(currentPath, child.name), depth + 1);
         if (truncated) break;
       }
@@ -1157,8 +1219,16 @@ async function applyPatchDocument(config, args) {
           if (error?.code === "ENOENT") return false;
           throw error;
         });
-      if (exists) throw new Error(`Patch cannot add an existing file: ${target.relativePath}`);
-      planned.push({ operation, target, afterText: String(operation.content ?? "") });
+      const replaceAllowed = (config.artifactValidationReplacePaths || [])
+        .map((item) => path.normalize(String(item || "")))
+        .includes(path.normalize(target.relativePath));
+      if (exists && !replaceAllowed) throw new Error(`Patch cannot add an existing file: ${target.relativePath}`);
+      planned.push({
+        operation,
+        target,
+        afterText: String(operation.content ?? ""),
+        replaceExisting: exists && replaceAllowed,
+      });
       continue;
     }
 
@@ -1197,7 +1267,12 @@ async function applyPatchDocument(config, args) {
       await fs.unlink(target.absolutePath);
       continue;
     }
-    changes.push(await writeChange(target, item.afterText, operation.type === "add" ? "apply_patch_add" : "apply_patch_update", { patchFormat: "multi-file" }));
+    const action = item.replaceExisting
+      ? "apply_patch_replace"
+      : operation.type === "add"
+        ? "apply_patch_add"
+        : "apply_patch_update";
+    changes.push(await writeChange(target, item.afterText, action, { patchFormat: "multi-file" }));
   }
 
   return {

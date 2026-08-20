@@ -67,7 +67,7 @@ assert(config.mode === "share", "share mode should persist");
 
 const codexStyleMarkdown = [
   "---",
-  "name: paper-revision-skill",
+  "name: mesh-paper-revision-smoke",
   "description: Plan-gated academic manuscript revision workflow for LaTeX papers, reviewer responses, proof corrections, redlines, PDF-backed audits, and submission packaging.",
   "---",
   "",
@@ -75,13 +75,13 @@ const codexStyleMarkdown = [
   "",
 ].join("\n");
 const codexPack = await buildSkillPackFromMarkdown(codexStyleMarkdown, { valueScore: 90 });
-assert(codexPack.skills[0].id === "paper-revision-skill", "Codex-style name should become SkillMesh id");
-assert(codexPack.skills[0].content.includes("id: paper-revision-skill"), "Codex-style skill should be normalized with id");
-assert(codexPack.skills[0].content.includes("label: Paper Revision Skill"), "Codex-style skill should receive a label");
+assert(codexPack.skills[0].id === "mesh-paper-revision-smoke", "Codex-style name should become SkillMesh id");
+assert(codexPack.skills[0].content.includes("id: mesh-paper-revision-smoke"), "Codex-style skill should be normalized with id");
+assert(codexPack.skills[0].content.includes("label: Mesh Paper Revision Smoke"), "Codex-style skill should receive a label");
 await installSkillPack(codexPack, { enabled: true });
 assert(
   selectSkillsForGoal("use the paper revision workflow to answer reviewer comments before editing latex", { limit: 8 }).some(
-    (skill) => skill.id === "paper-revision-skill"
+    (skill) => skill.id === "mesh-paper-revision-smoke"
   ),
   "Codex-style imported skill should be selectable"
 );

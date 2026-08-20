@@ -159,6 +159,7 @@ const CLI_VALUE_OPTIONS = new Set([
   "--auxiliary-model",
   "--routing",
   "--cwd",
+  "--read-root",
   "--permission-mode",
   "--safety",
   "-s",
@@ -466,6 +467,7 @@ export function buildResumeRuntimePatch(optionArgv = [], parsedArgs = parseArgs(
   add("allowDestructive", parsedArgs.allowDestructive, has("--allow-destructive", "--trusted-host-shell"));
   add("useDockerSandbox", parsedArgs.useDockerSandbox, has("--docker-sandbox"));
   add("commandCwd", path.resolve(parsedArgs.commandCwd), has("--cwd"));
+  add("readOnlyRoots", parsedArgs.readOnlyRoots, has("--read-root"));
 
   if (has("--permission-mode", "--safety", "-s")) {
     for (const field of [
@@ -538,6 +540,7 @@ export function parseArgs(argv) {
     auxiliaryModel: "",
     routingMode: "",
     commandCwd: "",
+    readOnlyRoots: [],
     sandboxMode: "",
     permissionMode: "",
     packageInstallPolicy: "",
@@ -758,6 +761,12 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "--read-root") {
+      const root = readOption(argv, i);
+      if (root) result.readOnlyRoots.push(path.resolve(root));
+      i += 1;
+      continue;
+    }
     if (arg === "-s" || arg === "--safety" || arg === "--permission-mode") {
       const mode = normalizePermissionMode(readOption(argv, i), "");
       if (mode) applyPermissionMode(result, mode, { override: false });
@@ -949,6 +958,7 @@ function printUsage() {
   console.log(
     'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti docker [status|setup|install-host] OR aginti update OR aginti image [--json] [--dry-run] [--format png|webp|svg] "prompt" OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti agentlink [status|peers|boards|create|board|send|claim|evidence|summary] OR aginti mcp [status|config|inspect|tools|resources|read|prompts|prompt|call|restart] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [--project] [localllm|deepseek|openai|openrouter|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--dynamic-steps auto|on|off] [--routing smart|fast|complex|manual] [--provider localllm|deepseek|openai|openrouter|qwen|venice|mock] [--model MODEL] [--route-model MODEL --route-reasoning provider-default|minimal|low|medium|high|xhigh] [--main-model MODEL --main-reasoning provider-default|minimal|low|medium|high|xhigh] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--mcp|--no-mcp] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers --wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
+  console.log("Cross-repository reads: repeat --read-root /absolute/reference/repository (read-only; writes stay under --cwd).");
   console.log("Permission shortcuts: -s safe asks before writes/setup; -s normal allows current-project writes and Docker setup; -s danger enables trusted host/full-access mode.");
   console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
 }
@@ -1377,6 +1387,11 @@ function agentDefaults(args) {
   const taskProfile = args.taskProfile || process.env.AGINTI_TASK_PROFILE || (args.latex ? "latex" : "auto");
   const permissionMode = normalizePermissionMode(args.permissionMode || process.env.AGINTI_PERMISSION_MODE || "normal");
   const permissionDefaults = permissionMode ? applyPermissionMode({}, permissionMode, { override: true }) : {};
+  const environmentReadRoots = String(process.env.AGINTI_READ_ROOTS || "")
+    .split(path.delimiter)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => path.resolve(item));
   const defaults = {
     ...args,
     permissionMode,
@@ -1408,6 +1423,7 @@ function agentDefaults(args) {
     allowPasswords: args.allowPasswords ?? permissionDefaults.allowPasswords ?? false,
     allowOutsideWorkspaceFileTools:
       args.allowOutsideWorkspaceFileTools ?? permissionDefaults.allowOutsideWorkspaceFileTools ?? false,
+    readOnlyRoots: Array.isArray(args.readOnlyRoots) && args.readOnlyRoots.length > 0 ? args.readOnlyRoots : environmentReadRoots,
     useDockerSandbox:
       args.useDockerSandbox ??
       permissionDefaults.useDockerSandbox ??

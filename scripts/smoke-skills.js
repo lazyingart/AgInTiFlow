@@ -204,6 +204,73 @@ if (previousExternalPacks === undefined) delete process.env.AGINTIFLOW_SKILL_PAC
 else process.env.AGINTIFLOW_SKILL_PACKS = previousExternalPacks;
 fs.rmSync(externalPackRoot, { recursive: true, force: true });
 
+const agentPackRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agintiflow-agent-skills-"));
+for (const [id, description, marker] of [
+  [
+    "parametric-cad-design",
+    "Design, revise, validate, render, and export parametric CAD holders and printable mechanical parts.",
+    "CAD_ROUTINE_MARKER",
+  ],
+  [
+    "musia-music-production",
+    "Generate, review, correct, and hand off original songs and music through the mature Musia workflow.",
+    "MUSIA_ROUTINE_MARKER",
+  ],
+  [
+    "lalachan-xyq-browser-video",
+    "Generate and monitor LALACHAN Xiaoyunque videos through the established browser workflow.",
+    "LALACHAN_ROUTINE_MARKER",
+  ],
+  [
+    "lazyedit-publish-workflow",
+    "Process and explicitly publish verified videos through the mature LazyEdit and AutoPublish workflow.",
+    "LAZYEDIT_ROUTINE_MARKER",
+  ],
+]) {
+  fs.mkdirSync(path.join(agentPackRoot, id), { recursive: true });
+  fs.writeFileSync(
+    path.join(agentPackRoot, id, "SKILL.md"),
+    `---\nname: ${id}\ndescription: ${description}\n---\n# ${id}\n\n## Core Rule\n\n${marker}: use the established project routine and verify its artifact.\n\n## Recovery\n\nResume the same task without replaying completed side effects.\n`,
+    "utf8"
+  );
+}
+const previousAgentPacks = process.env.AGINTIFLOW_AGENT_SKILL_PACKS;
+const previousAgentDiscovery = process.env.AGINTIFLOW_DISCOVER_AGENT_SKILLS;
+process.env.AGINTIFLOW_AGENT_SKILL_PACKS = agentPackRoot;
+process.env.AGINTIFLOW_DISCOVER_AGENT_SKILLS = "1";
+const agentPacks = listExternalSkillPacks();
+assert(
+  agentPacks.some((pack) => pack.root === agentPackRoot),
+  "standard local Agent Skills pack did not register"
+);
+assert(
+  selectSkillsForGoal("Design a CAD holder and render it", { includeBody: false, limit: 8 }).some(
+    (skill) => skill.id === "parametric-cad-design"
+  ),
+  "standard Agent Skills CAD routine was not selected"
+);
+const mediaSkills = selectSkillsForGoal(
+  "Generate music in Musia, make a LALACHAN video, then prepare it in LazyEdit without publishing",
+  { includeBody: true, limit: 8 }
+);
+assert(mediaSkills.some((skill) => skill.id === "musia-music-production"), "Musia routine was not selected");
+assert(mediaSkills.some((skill) => skill.id === "lalachan-xyq-browser-video"), "LALACHAN routine was not selected");
+assert(mediaSkills.some((skill) => skill.id === "lazyedit-publish-workflow"), "LazyEdit routine was not selected");
+const agentPrompt = formatSkillsForPrompt(mediaSkills);
+assert(agentPrompt.includes("Full guidance:"), "selected Agent Skill omitted its full source path");
+assert(agentPrompt.includes("Sections:"), "selected Agent Skill omitted its section index");
+assert(agentPrompt.includes("MUSIA_ROUTINE_MARKER"), "selected Agent Skill omitted its operational excerpt");
+process.env.AGINTIFLOW_DISCOVER_AGENT_SKILLS = "0";
+assert(
+  !listExternalSkillPacks().some((pack) => pack.root === agentPackRoot),
+  "standard Agent Skills discovery could not be disabled"
+);
+if (previousAgentPacks === undefined) delete process.env.AGINTIFLOW_AGENT_SKILL_PACKS;
+else process.env.AGINTIFLOW_AGENT_SKILL_PACKS = previousAgentPacks;
+if (previousAgentDiscovery === undefined) delete process.env.AGINTIFLOW_DISCOVER_AGENT_SKILLS;
+else process.env.AGINTIFLOW_DISCOVER_AGENT_SKILLS = previousAgentDiscovery;
+fs.rmSync(agentPackRoot, { recursive: true, force: true });
+
 const cli = await execFileAsync(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), "skills", "website"], {
   cwd: repoRoot,
   timeout: 10000,

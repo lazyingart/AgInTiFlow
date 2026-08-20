@@ -14,7 +14,12 @@ import { loadProjectEnv, projectPaths, resolveProjectRoot } from "./project.js";
 import { normalizeTaskProfile } from "./task-profiles.js";
 import { recommendedMaxStepsForTask } from "./engineering-guidance.js";
 import { resolveLanguage } from "./i18n.js";
-import { DEFAULT_SCS_MODE, normalizeScsMode, shouldActivateScs } from "./scs-controller.js";
+import {
+  DEFAULT_SCS_MODE,
+  normalizeScsMode,
+  normalizeScsValidationMode,
+  shouldActivateScs,
+} from "./scs-controller.js";
 import { applyPermissionMode, normalizePermissionMode } from "./permission-modes.js";
 import { normalizeDynamicStepsMode } from "./step-budget-controller.js";
 import { maxStepsForExecutionPolicy, selectExecutionPolicy } from "./execution-policy.js";
@@ -41,6 +46,15 @@ function parseList(value) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function parsePathList(value) {
+  if (!value) return [];
+  return String(value)
+    .split(path.delimiter)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => path.resolve(item));
 }
 
 function configuredReasoning(overrides, args, key, envName) {
@@ -171,6 +185,9 @@ export function resolveRuntimeConfig(args, overrides = {}) {
   });
 
   const scsMode = normalizeScsMode(overrides.enableScs ?? args.enableScs ?? process.env.AGINTI_SCS_MODE ?? DEFAULT_SCS_MODE);
+  const scsValidationMode = normalizeScsValidationMode(
+    overrides.scsValidationMode ?? args.scsValidationMode ?? process.env.AGINTI_SCS_VALIDATION_MODE ?? "auto"
+  );
   const scsActive = shouldActivateScs(scsMode, {
     goal: args.goal || "",
     taskProfile,
@@ -316,6 +333,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     enableScs: scsMode,
     scsActive,
     scsModelPolicy: scsActive ? (preserveSpecializedLocalRoute || preserveSessionModel ? "selected" : "main") : "route",
+    scsValidationMode,
     modelRoles,
     routeProvider: modelRoles.route.provider,
     routeModel: modelRoles.route.model,
@@ -395,6 +413,13 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     allowedDomains: Array.isArray(overrides.allowedDomains)
       ? overrides.allowedDomains
       : parseList(process.env.ALLOWED_DOMAINS),
+    readOnlyRoots: (
+      Array.isArray(overrides.readOnlyRoots)
+        ? overrides.readOnlyRoots
+        : Array.isArray(args.readOnlyRoots) && args.readOnlyRoots.length > 0
+          ? args.readOnlyRoots
+          : parsePathList(process.env.AGINTI_READ_ROOTS)
+    ).map((item) => path.resolve(item)),
     allowPasswords: parseBoolean(overrides.allowPasswords ?? args.allowPasswords ?? process.env.ALLOW_PASSWORDS, permissionDefaults.allowPasswords || false),
     allowDestructive: parseBoolean(
       overrides.allowDestructive ?? args.allowDestructive ?? process.env.ALLOW_DESTRUCTIVE,

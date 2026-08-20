@@ -37,6 +37,7 @@ const localConfig = {
   language: "en",
   executionTier: "thorough",
   enableScs: "auto",
+  scsValidationMode: "deterministic",
   maxSteps: 40,
   dynamicSteps: "auto",
   dynamicStepExtensionLimit: 2,
@@ -72,6 +73,7 @@ const localConfig = {
   contextBudgetTargetTokens: 120_000,
   commandCwd: "/tmp/aginti-session-runtime-smoke",
   allowedDomains: ["docs.example.test", "api.example.test"],
+  readOnlyRoots: ["/tmp/reference-one", "/tmp/reference-two"],
   apiKey: SECRET,
   baseURL: `https://${SECRET}.invalid/v1`,
   onLog: () => SECRET,
@@ -96,8 +98,10 @@ assert.equal(initial.wrapperModel, "qwen3-coder-plus");
 assert.equal(initial.wrapperReasoning, "high");
 assert.equal(initial.auxiliaryProvider, "venice");
 assert.equal(initial.auxiliaryModel, "qwen-image-2-pro");
+assert.equal(initial.scsValidationMode, "deterministic");
 assert.equal(initial.commandCwd, localConfig.commandCwd);
 assert.deepEqual(initial.allowedDomains, localConfig.allowedDomains);
+assert.deepEqual(initial.readOnlyRoots, localConfig.readOnlyRoots);
 
 const serializedInitial = JSON.stringify(initial);
 assert.ok(!serializedInitial.includes(SECRET), "captured runtime leaked a credential or excluded callback value");
@@ -145,7 +149,9 @@ assert.equal(resumed.runtimeOverrides.allowHostedImagePerception, false, "hosted
 assert.equal(resumed.runtimeOverrides.allowHostedWebResearch, false, "hosted research permission drifted on resume");
 assert.equal(resumed.runtimeOverrides.allowHostedJsonSpecialist, false, "hosted JSON permission drifted on resume");
 assert.equal(resumed.runtimeOverrides.allowHostedWritingSpecialist, false, "hosted writer permission drifted on resume");
+assert.equal(resumed.runtimeOverrides.scsValidationMode, "deterministic", "saved SCS validation policy drifted on resume");
 assert.deepEqual(resumed.runtimeOverrides.allowedDomains, localConfig.allowedDomains, "saved network scope was not preserved");
+assert.deepEqual(resumed.runtimeOverrides.readOnlyRoots, localConfig.readOnlyRoots, "saved read-only roots were not preserved");
 assert.equal(resumed.credentialProvider, "localllm", "caller was not told which provider credentials to rebuild");
 assert.ok(!JSON.stringify(resumed).includes(SECRET), "resume result leaked incoming credentials");
 

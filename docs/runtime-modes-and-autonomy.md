@@ -29,9 +29,17 @@ Codex exposes these concerns as `--sandbox read-only|workspace-write|danger-full
 
 - `-s safe|normal|danger` and `/safe`, `/normal`, `/danger`
 - `--sandbox-mode host|docker-readonly|docker-workspace`
+- repeatable `--read-root /absolute/reference/repository` for structured read-only cross-repository inspection
 - `--package-install-policy block|prompt|allow`
 - `--allow-shell|--no-shell`
 - `--allow-destructive`
+
+Read roots are narrower than danger mode. `inspect_project`, `list_files`,
+`search_files`, `read_file`, and `read_image` may inspect an explicitly named
+root, while every write still remains inside `--cwd`. Use read roots for
+established sibling routines and reference repositories. Do not replace them
+with recursive `grep`; use bounded workspace search or targeted `rg` with an
+explicit path, relevant globs, and a result limit.
 
 ## Docker Package Installs
 

@@ -14,6 +14,7 @@ const NETWORK_FAILURE_PATTERNS = [
 ];
 
 const LOCALHOST_TARGET_PATTERN = /\b(127\.0\.0\.1|localhost|::1)\b/i;
+const READ_ONLY_FILE_TOOLS = new Set(["inspect_project", "list_files", "read_file", "search_files", "read_image"]);
 
 const DOCKER_WORKSPACE_PATH_FAILURE_PATTERNS = [
   /\/home\/[^:\n]+:\s+No such file or directory/i,
@@ -83,6 +84,23 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
   };
 
   if (category === "workspace-path") {
+    if (READ_ONLY_FILE_TOOLS.has(toolName)) {
+      return {
+        ...base,
+        autoRecover: Boolean(config.allowShellTool && config.sandboxMode === "host"),
+        summary:
+          "The read-only path is outside the workspace and outside the run's explicit read roots. Do not repeat the same file-tool call.",
+        instruction:
+          config.allowShellTool && config.sandboxMode === "host"
+            ? "Continue automatically with one bounded read-only shell probe, or resume with an explicit --read-root for repeated structured reads. Do not ask for destructive permission and do not use recursive grep."
+            : "Resume with an explicit --read-root for the required repository, or keep inspection inside the current workspace. This does not require destructive permission.",
+        options: [
+          "Immediate recovery: in host mode, use narrow read-only commands such as `test -d`, `sed -n`, `rg --files <exact-root>`, or `rg -n --max-count <N> <pattern> <exact-root>`.",
+          "Structured recovery: rerun or resume with one repeatable `--read-root <absolute-path>` per repository that may be inspected.",
+          "Keep writes in the configured workspace; read roots never authorize edits outside it.",
+        ],
+      };
+    }
     return {
       ...base,
       summary:
@@ -99,6 +117,22 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
         destructive: true,
         prompt: "Continue after the user approved writing outside the previous workspace. Keep a clear audit trail and do not touch unrelated files.",
       }),
+    };
+  }
+
+  if (category === "unbounded-discovery") {
+    return {
+      ...base,
+      autoRecover: true,
+      summary:
+        "The command was read-only but unbounded. This is a recoverable search-shape problem, not a permission blocker.",
+      instruction:
+        "Continue automatically with a bounded search. Do not ask the user for approval and do not retry recursive grep.",
+      options: [
+        "Use `search_files` with a precise path and bounded result count.",
+        "Use `rg -n --max-count <N> <pattern> <exact-file-or-directory>` with relevant `-g` filters.",
+        "Inspect README, manifests, documented entry points, or `--help` output before searching implementation details.",
+      ],
     };
   }
 

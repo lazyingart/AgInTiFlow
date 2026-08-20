@@ -25,8 +25,10 @@ const READ_ONLY_PATTERNS = [
   /^sed\s+-n\s+['"0-9,:p\s-]+\s+[-\w./~*]+$/,
   /^git\s+(status|branch|log|show|diff(?:\s+--stat)?|remote\s+-v)(?:\s+.+)?$/,
   /^node\s+(?:-v|--version)$/,
+  /^node\s+[-\w./]+\.(?:c?js|mjs)\s+(?:--help|help|doctor|status|health)(?:\s+[-\w./:=]+)*$/,
   /^npm\s+(?:-v|--version)$/,
   /^python(?:3)?\s+--version$/,
+  /^(?:[-/\w.]+\/)?python(?:3)?\s+[-\w./]+\.py\s+(?:--help|help|doctor|status|health)(?:\s+[-\w./:=]+)*$/,
   /^python(?:3)?\s+-m\s+json\.tool$/,
   /^pip(?:3)?\s+--version$/,
   /^conda\s+--version$/,
@@ -38,6 +40,7 @@ const READ_ONLY_PATTERNS = [
   /^(?:[-/\w.]+\/)?emulator\s+-list-avds$/,
   /^(?:[-/\w.]+\/)?sdkmanager\s+--list(?:\s+[-\w./:=]+)*$/,
   /^(?:pdflatex|latexmk)\s+--version$/,
+  /^(?:(?:[-/\w.]+\/)?python(?:3)?\s+)?[-\w./]*xyq_cdp_browser\.py\s+--cdp-url\s+(?:"[^"\n]+"|'[^'\n]+'|[-\w./:@]+)\s+list-pages$/,
   /^test\s+-[efdx]\s+[-\w./~]+$/,
   /^true$/,
   /^false$/,
@@ -61,6 +64,13 @@ function isReadOnlyFindCommand(command = "") {
   const unquoted = stripQuotedSegments(normalized);
   if (/[|<>;&`$]/.test(unquoted)) return false;
   return /^find\s+(?:[-./~\w]+|\/workspace)(?:\s+[-\w]+(?:\s+(?:"[^"\n]*"|'[^'\n]*'|[^\s|<>;&`$]+))?)*$/.test(normalized);
+}
+
+function isUnboundedRecursiveGrep(command = "") {
+  const normalized = stripBenignRedirections(command);
+  if (!/^grep\s+/.test(normalized)) return false;
+  return /(?:^|\s)--(?:recursive|dereference-recursive)(?:\s|=|$)/.test(normalized) ||
+    /(?:^|\s)-[A-Za-z]*[rR][A-Za-z]*(?:\s|$)/.test(normalized);
 }
 
 const TEST_PATTERNS = [
@@ -383,6 +393,32 @@ function classifyGitWorkflow(normalized) {
   };
 }
 
+function classifyCondaRun(normalized) {
+  const tokens = String(normalized || "").match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+  if (tokens[0] !== "conda" || tokens[1] !== "run") return null;
+  let index = 2;
+  while (index < tokens.length) {
+    const token = String(tokens[index] || "");
+    if (["-n", "--name", "-p", "--prefix"].includes(token)) {
+      if (!tokens[index + 1] || !/^[-\w./]+$/.test(String(tokens[index + 1]))) return null;
+      index += 2;
+      continue;
+    }
+    if (["--no-capture-output", "--live-stream"].includes(token)) {
+      index += 1;
+      continue;
+    }
+    break;
+  }
+  const inner = tokens.slice(index).join(" ").trim();
+  if (!inner) return null;
+  const innerClassification = classifyPipelineSequence(inner) || classifySimpleCommand(inner);
+  return {
+    ...innerClassification,
+    reason: `Conda run delegates to a ${innerClassification.category} command: ${inner}`,
+  };
+}
+
 function classifySimpleCommand(normalized) {
   const benignRedirectCommand = stripBenignRedirections(normalized);
   if (ALWAYS_BLOCKED_PATTERNS.some((pattern) => pattern.test(normalized))) {
@@ -395,6 +431,8 @@ function classifySimpleCommand(normalized) {
   if (gitCleanDryRun) return gitCleanDryRun;
   const gitWorkflowClassification = classifyGitWorkflow(normalized);
   if (gitWorkflowClassification) return gitWorkflowClassification;
+  const condaRunClassification = classifyCondaRun(normalized);
+  if (condaRunClassification) return condaRunClassification;
   if (matchAny(UNSAFE_GIT_PATTERNS, normalized)) {
     return {
       category: "destructive",
@@ -432,6 +470,16 @@ function classifySimpleCommand(normalized) {
   if (envExportClassification) return envExportClassification;
   const echoRedirectClassification = classifySafeEchoRedirect(normalized);
   if (echoRedirectClassification) return echoRedirectClassification;
+
+  if (isUnboundedRecursiveGrep(normalized)) {
+    return {
+      category: "unbounded-discovery",
+      needsNetwork: false,
+      writesWorkspace: false,
+      reason:
+        "Recursive grep is blocked as unbounded discovery. Use a bounded workspace search tool or targeted `rg` with an explicit path, globs, and result limit.",
+    };
+  }
 
   const commandForPatternMatching = stripSafeInlineEnvAssignments(benignRedirectCommand);
   const unquoted = stripQuotedSegments(commandForPatternMatching);
@@ -512,13 +560,25 @@ function splitTopLevelShellSequence(command = "") {
       quote = char;
       continue;
     }
-    if (char === ";" || (char === "&" && text[index + 1] === "&") || (char === "|" && text[index + 1] === "|")) {
+    const newlineSeparator = char === "\n" || char === "\r";
+    if (char === "&" && text[index + 1] === "&" && /^\s*cd\s+/i.test(current)) {
+      current += "&&";
+      index += 1;
+      continue;
+    }
+    if (newlineSeparator || char === ";" || (char === "&" && text[index + 1] === "&") || (char === "|" && text[index + 1] === "|")) {
       const part = current.trim();
-      if (!part) return null;
+      if (!part) {
+        if (newlineSeparator) {
+          if (char === "\r" && text[index + 1] === "\n") index += 1;
+          continue;
+        }
+        return null;
+      }
       parts.push(part);
       current = "";
       hadSeparator = true;
-      if (char === "&" || char === "|") index += 1;
+      if (char === "&" || char === "|" || (char === "\r" && text[index + 1] === "\n")) index += 1;
       continue;
     }
     current += char;
@@ -645,7 +705,7 @@ function classifyPipelineSequence(normalized) {
 }
 
 function classifyCdCommand(normalized) {
-  const match = normalized.match(/^cd\s+([-\w./]+)\s+&&\s+(.+)$/);
+  const match = normalized.match(/^cd\s+([-\w./]+)(?:\s+(?:2>&1|1>&2|2>\/dev\/null|1>\/dev\/null|>\/dev\/null))?\s+&&\s+(.+)$/);
   if (!match) return null;
   const [, dir, inner] = match;
   const virtualWorkspacePath = isSafeVirtualWorkspaceDir(dir);
@@ -657,6 +717,69 @@ function classifyCdCommand(normalized) {
   return { ...innerClassification, cdDir: dir, virtualWorkspacePath };
 }
 
+function configuredReadOnlyRoot(config = {}, dir = "") {
+  const commandCwd = path.resolve(config.commandCwd || process.cwd());
+  const candidate = path.resolve(commandCwd, String(dir || ""));
+  const roots = (Array.isArray(config.readOnlyRoots) ? config.readOnlyRoots : [])
+    .map((root) => path.resolve(String(root || "")))
+    .filter(Boolean);
+  return roots.find((root) => isInsideDirectory(root, candidate)) || "";
+}
+
+function classifyReadOnlyRootCd(normalized, config = {}) {
+  const match = normalized.match(/^cd\s+([-\w./]+)(?:\s+(?:2>&1|1>&2|2>\/dev\/null|1>\/dev\/null|>\/dev\/null))?\s+&&\s+(.+)$/);
+  if (!match) return null;
+  const [, dir, inner] = match;
+  const readOnlyRoot = configuredReadOnlyRoot(config, dir);
+  if (!readOnlyRoot) return null;
+
+  const innerClassification = classifyShellSequence(inner.trim()) ||
+    classifyPipelineSequence(inner.trim()) ||
+    classifySimpleCommand(inner.trim());
+  const safeCategory = ["read-only", "network-fetch"].includes(innerClassification.category);
+  if (!safeCategory || innerClassification.writesWorkspace) {
+    return {
+      category: "blocked",
+      reason: `Explicit read root permits inspection only; this command is not a bounded read-only check: ${inner.trim()}`,
+      readOnlyRoot,
+      cdDir: dir,
+    };
+  }
+  return {
+    ...innerClassification,
+    writesWorkspace: false,
+    cdDir: dir,
+    readOnlyRoot,
+    explicitReadOnlyRoot: true,
+    reason: `Bounded ${innerClassification.category} check inside explicit read root: ${readOnlyRoot}`,
+  };
+}
+
+function classifyReadOnlyRootSequence(normalized, config = {}) {
+  const parts = splitTopLevelShellSequence(normalized);
+  if (!parts) return null;
+  const classifications = parts.map((part) => classifyReadOnlyRootCd(part, config));
+  if (classifications.some((classification) => !classification)) return null;
+  const blocked = classifications.find((classification) => classification.category === "blocked");
+  if (blocked) return blocked;
+  if (classifications.some((classification) => classification.writesWorkspace)) return null;
+  if (!classifications.every((classification) => ["read-only", "network-fetch"].includes(classification.category))) {
+    return null;
+  }
+  const readOnlyRoots = [...new Set(classifications.map((classification) => classification.readOnlyRoot).filter(Boolean))];
+  return {
+    category: classifications.some((classification) => classification.category === "network-fetch")
+      ? "network-fetch"
+      : "read-only",
+    needsNetwork: classifications.some((classification) => classification.needsNetwork),
+    writesWorkspace: false,
+    explicitReadOnlyRoot: true,
+    readOnlyRoot: readOnlyRoots.length === 1 ? readOnlyRoots[0] : "",
+    readOnlyRoots,
+    reason: `Bounded checks across explicit read roots: ${readOnlyRoots.join(", ")}`,
+  };
+}
+
 export function classifyCommand(command) {
   const normalized = String(command || "").trim();
   if (!normalized) return { category: "blocked", reason: "Command is empty." };
@@ -666,7 +789,9 @@ export function classifyCommand(command) {
 
 export function evaluateCommandPolicy(command, config = {}) {
   const normalizedForPolicy = relativizeWorkspaceAbsolutePaths(command, config.commandCwd);
-  const classification = classifyCommand(normalizedForPolicy);
+  const classification = classifyReadOnlyRootCd(normalizedForPolicy, config) ||
+    classifyReadOnlyRootSequence(normalizedForPolicy, config) ||
+    classifyCommand(normalizedForPolicy);
   const normalizedCommand = String(command || "").trim();
   const sandboxMode = normalizeSandboxMode(config.sandboxMode);
   const packageInstallPolicy = normalizePackageInstallPolicy(config.packageInstallPolicy);
@@ -706,6 +831,17 @@ export function evaluateCommandPolicy(command, config = {}) {
       allowed: false,
       category: classification.category,
       reason: "Shell tool is disabled for this run.",
+      sandboxMode,
+      packageInstallPolicy,
+    };
+  }
+
+  if (classification.category === "unbounded-discovery") {
+    return {
+      allowed: false,
+      ...classification,
+      recoverable: true,
+      needsApproval: false,
       sandboxMode,
       packageInstallPolicy,
     };
