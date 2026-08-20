@@ -1,4 +1,5 @@
 import path from "node:path";
+import { types as utilTypes } from "node:util";
 import {
   assertFixedIntegrationPolicy,
   buildFixedIntegrationRuntimeOverrides,
@@ -12,13 +13,26 @@ import { redactSensitiveText } from "./redaction.js";
 import { SessionStore } from "./session-store.js";
 import { SESSION_RUNTIME_FIELDS, captureSessionRuntime } from "./session-runtime.js";
 import { runAgent } from "./agent-runner.js";
+import {
+  assertRegisteredIntegrationSessionConfig,
+  registerIntegrationSessionConfig,
+  runWithIntegrationSessionScope,
+} from "./integration-session-persistence.js";
 
 export const NATIVE_INTEGRATION_EXECUTOR_PROOF_VERSION = "aginti-native-run-agent-executor-v1";
 export const NATIVE_RUNTIME_ROOTS_ATTESTATION_VERSION = "aginti-native-runtime-roots-v1";
 
 const ZERO_DIGEST = "0".repeat(64);
 const ABSOLUTE_PATH_PATTERN =
-  /(?:^|[\s("'`])(?:\/(?:workspace|home|users|root|etc|usr|var|opt|srv|run|tmp|proc|sys|dev|mnt|media|aginti-(?:home|cache|env))(?:\/[^\s"'`<>)\]]*)?|[A-Za-z]:\\[^\s"'`<>)\]]*)/giu;
+  /(?:^|[\s("'`<>\[{=])(?:file:\/\/\/[^\s"'`<>)\]}]+|\/(?!\/)[^\s"'`<>)\]}]+|[A-Za-z]:[\\/][^\s"'`<>)\]}]+|\\\\[^\\/\s"'`<>)\]}]+\\[^\s"'`<>)\]}]+)/giu;
+const PUBLIC_FAILURE_CODES = new Set([
+  "AGINTI_RUNTIME_ERROR",
+  "CANCELLED",
+  "PROVIDER_PREFLIGHT_FAILED",
+  "MODEL_TIMEOUT",
+  "MAX_STEPS",
+  "SESSION_RUNTIME_TAKEOVER_BLOCKED",
+]);
 const DANGEROUS_ROOTS = new Set([
   "/",
   "/home",
@@ -173,6 +187,9 @@ function pathsDisjoint(left, right) {
 }
 
 export function validateNativeRuntimeRootsAttestation(value = {}) {
+  if (value && typeof value === "object" && utilTypes.isProxy(value)) {
+    fail("Native runtime roots attestation must not be a Proxy.");
+  }
   thenableReject(value, "native runtime roots attestation");
   if (!Object.isFrozen(value)) fail("Native runtime roots attestation must be frozen.");
   const roots = integrationExactKeys(
@@ -258,6 +275,7 @@ export function buildFixedNativeRunAgentConfig(input = {}) {
   if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
     fail("Native executor requires an explicit expected runtime revision.");
   }
+  if (input.mode === "start" && expectedRevision !== 1) fail("Start requires native runtime revision 1.");
   const fixed = {
     ...buildFixedIntegrationRuntimeOverrides(policy, { sessionId: nativeSessionId }),
     goal: inputText,
@@ -267,6 +285,7 @@ export function buildFixedNativeRunAgentConfig(input = {}) {
     baseDir: roots.baseDir,
     commandCwd: roots.commandCwd,
     expectedIntegrationRuntimeRevision: expectedRevision,
+    integrationRuntimeRootsDigest: roots.digest,
     ...(input.mode === "resume" ? { resume: nativeSessionId } : {}),
   };
   if (input.mode === "resume") {
@@ -283,6 +302,7 @@ export function buildFixedNativeRunAgentConfig(input = {}) {
     "baseDir",
     "commandCwd",
     "expectedIntegrationRuntimeRevision",
+    "integrationRuntimeRootsDigest",
     ...(input.mode === "resume" ? ["resume"] : []),
     ...(input.mode === "resume" ? ["expectedRuntimeRevision", "runtimePatch"] : []),
   ].sort();
@@ -295,7 +315,25 @@ export function buildFixedNativeRunAgentConfig(input = {}) {
   if (frozen.abortSignal !== input.abortSignal || frozen.onEvent !== input.onEvent) {
     fail("Fixed runtime config lost callback identity.");
   }
-  return frozen;
+  const expectedBeforeRevision = input.mode === "resume" ? expectedRevision : 0;
+  const expectedAfterRevision = input.mode === "resume" ? expectedRevision + 1 : 1;
+  const expectedBeforeRuntimeDigest =
+    input.mode === "resume" ? contractDigest(expectedFixedSessionRuntimeSnapshot(frozen, expectedBeforeRevision)) : ZERO_DIGEST;
+  const expectedAfterRuntimeDigest = contractDigest(expectedFixedSessionRuntimeSnapshot(frozen, expectedAfterRevision));
+  return registerIntegrationSessionConfig(frozen, {
+    nativeSessionId,
+    mode: input.mode,
+    policyLock: frozen.integrationPolicyLock,
+    policyFingerprint: frozen.integrationPolicyFingerprint,
+    runtimeRootsDigest: roots.digest,
+    sessionsDir: roots.sessionsDir,
+    baseDir: roots.baseDir,
+    commandCwd: roots.commandCwd,
+    expectedBeforeRevision,
+    expectedAfterRevision,
+    expectedBeforeRuntimeDigest,
+    expectedAfterRuntimeDigest,
+  });
 }
 
 function canonicalClone(value, label = "value") {
@@ -331,9 +369,13 @@ function assertPolicyBinding(state = {}, config = {}, label = "session state") {
   const runtime = meta.runtimeConfig || {};
   const lock = meta.integrationPolicyLock || runtime.integrationPolicyLock || "";
   const fingerprint = meta.integrationPolicyFingerprint || runtime.integrationPolicyFingerprint || "";
+  const rootsDigest = meta.integrationRuntimeRootsDigest || runtime.integrationRuntimeRootsDigest || "";
   if (lock && lock !== config.integrationPolicyLock) fail(`${label} integration policy lock diverged.`);
   if (fingerprint && fingerprint !== config.integrationPolicyFingerprint) fail(`${label} integration policy fingerprint diverged.`);
-  if (!lock || !fingerprint) {
+  if (rootsDigest && rootsDigest !== config.integrationRuntimeRootsDigest) {
+    fail(`${label} integration runtime roots diverged.`);
+  }
+  if (!lock || !fingerprint || !rootsDigest) {
     authorityFail("SESSION_RUNTIME_TAKEOVER_BLOCKED", `${label} does not contain the fixed integration policy binding.`, {
       status: 503,
     });
@@ -349,8 +391,9 @@ async function readNativeSessionState(config = {}) {
 }
 
 export async function preflightNativeSessionRuntime(config = {}) {
-  if (!isIntegrationMarkedConfig(config)) return Object.freeze({ skipped: true });
-  const expectedRevision = Number(config.expectedIntegrationRuntimeRevision || 1);
+  assertRegisteredIntegrationSessionConfig(config);
+  if (!isIntegrationMarkedConfig(config)) fail("Integration native execution requires a fixed marked config.");
+  const expectedRevision = Number(config.expectedIntegrationRuntimeRevision);
   if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) fail("Expected integration runtime revision is invalid.");
   const state = await readNativeSessionState(config);
   if (config.resume) {
@@ -362,6 +405,7 @@ export async function preflightNativeSessionRuntime(config = {}) {
         status: 503,
       });
     }
+    assertRuntimeSnapshotEquals(current, expectedFixedSessionRuntimeSnapshot(config, expectedRevision), "preflight runtime snapshot");
     if (config.expectedRuntimeRevision !== expectedRevision) fail("Resume did not bind the expected runtime revision.");
     const target = expectedFixedSessionRuntimeSnapshot(config, expectedRevision + 1);
     if (contractDigest(config.runtimePatch) !== contractDigest(exhaustiveRuntimePatchFromSnapshot(target))) {
@@ -370,30 +414,47 @@ export async function preflightNativeSessionRuntime(config = {}) {
     return Object.freeze({ skipped: false, mode: "resume", beforeRevision: current.revision, expectedAfterRevision: expectedRevision + 1 });
   }
   if (state) {
-    assertPolicyBinding(state, config, "preflight session state");
-    assertRuntimeSnapshotEquals(state.meta?.runtimeConfig, expectedFixedSessionRuntimeSnapshot(config, expectedRevision), "preflight runtime snapshot");
+    authorityFail("SESSION_RUNTIME_TAKEOVER_BLOCKED", "Start requires pristine absent native session state.", {
+      status: 503,
+    });
   }
   return Object.freeze({ skipped: false, mode: "start", expectedAfterRevision: expectedRevision });
 }
 
 export async function postflightNativeSessionRuntime(config = {}, preflight = {}) {
-  if (!isIntegrationMarkedConfig(config) || preflight.skipped) return Object.freeze({ skipped: true });
+  assertRegisteredIntegrationSessionConfig(config);
+  if (!isIntegrationMarkedConfig(config) || preflight.skipped) fail("Integration native postflight requires a fixed marked config.");
   const state = await readNativeSessionState(config);
   if (!state) fail("Native AgInTi session state disappeared after execution.");
   assertPolicyBinding(state, config, "postflight session state");
+  if (!Number.isSafeInteger(preflight.expectedAfterRevision) || preflight.expectedAfterRevision < 1) {
+    fail("Integration native postflight expected revision is invalid.");
+  }
   const expected = expectedFixedSessionRuntimeSnapshot(
     config,
-    preflight.expectedAfterRevision || Number(config.expectedIntegrationRuntimeRevision || 1)
+    preflight.expectedAfterRevision
   );
   assertRuntimeSnapshotEquals(state.meta?.runtimeConfig, expected, "postflight runtime snapshot");
   return Object.freeze({ skipped: false, revision: expected.revision });
 }
 
 export async function executeNativeAgintiRun(config) {
+  assertRegisteredIntegrationSessionConfig(config);
   const preflight = await preflightNativeSessionRuntime(config);
-  const result = await runAgent(config);
-  await postflightNativeSessionRuntime(config, preflight);
-  return result;
+  let result;
+  let runError = null;
+  try {
+    result = await runWithIntegrationSessionScope(config, () => runAgent(config));
+  } catch (error) {
+    if (error?.code === "INTEGRATION_SESSION_SCOPE_INVALID") throw error;
+    runError = error;
+  }
+  const postflight = await postflightNativeSessionRuntime(config, preflight);
+  if (runError) {
+    runError.persistedRuntimeRevision = postflight.revision;
+    throw runError;
+  }
+  return Object.freeze({ ...result, persistedRuntimeRevision: postflight.revision });
 }
 
 function publicResultText(result = {}) {
@@ -409,14 +470,20 @@ function publicResultText(result = {}) {
 }
 
 function safeFailure(code = "AGINTI_RUNTIME_ERROR", message = "AgInTi runtime execution failed.") {
-  const safeCode = String(code || "AGINTI_RUNTIME_ERROR")
-    .replace(/[^A-Z0-9_]/gu, "_")
-    .slice(0, 96) || "AGINTI_RUNTIME_ERROR";
+  const candidate = String(code || "AGINTI_RUNTIME_ERROR").trim().toUpperCase();
+  const safeCode = PUBLIC_FAILURE_CODES.has(candidate) ? candidate : "AGINTI_RUNTIME_ERROR";
   const safeMessage = integrationBoundedText(redactPublicText(message), "run error message", 600, {
     minimum: 1,
     presentational: true,
   });
   return Object.freeze({ code: safeCode, message: safeMessage });
+}
+
+function assertPersistedRuntimeRevision(value, label) {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    fail(`${label} must carry the exact persisted native runtime revision.`);
+  }
+  return value;
 }
 
 export function outputEventForRunResult(classification = {}, options = {}) {
@@ -450,11 +517,13 @@ function isFailureReason(reason) {
 
 export function classifyRunAgentResult(result = {}, options = {}) {
   const nativeSessionId = assertNativeSessionId(options.nativeSessionId);
+  const persistedRuntimeRevision = assertPersistedRuntimeRevision(result?.persistedRuntimeRevision, "runAgent result");
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     return Object.freeze({
       status: "failed",
       output: "",
       error: safeFailure("AGINTI_RUNTIME_ERROR", "AgInTi runtime returned an invalid result."),
+      persistedRuntimeRevision,
       digest: contractDigest({ invalid: true }),
     });
   }
@@ -478,6 +547,7 @@ export function classifyRunAgentResult(result = {}, options = {}) {
       status: "failed",
       output: "",
       error: safeFailure(result.code || result.error?.code || "AGINTI_RUNTIME_ERROR"),
+      persistedRuntimeRevision,
       digest: contractDigest({ status: "failed", sessionId: nativeSessionId, reason, ok: result.ok === false }),
     });
   }
@@ -491,6 +561,7 @@ export function classifyRunAgentResult(result = {}, options = {}) {
       status: "cancelled",
       output: "",
       error: safeFailure("CANCELLED", "Run cancelled."),
+      persistedRuntimeRevision,
       digest: contractDigest({ status: "cancelled", sessionId: nativeSessionId, reason }),
     });
   }
@@ -499,6 +570,7 @@ export function classifyRunAgentResult(result = {}, options = {}) {
     status: "completed",
     output,
     error: null,
+    persistedRuntimeRevision,
     digest: contractDigest({
       status: "completed",
       sessionId: nativeSessionId,
@@ -508,11 +580,13 @@ export function classifyRunAgentResult(result = {}, options = {}) {
 }
 
 export function classifyRunAgentError(error, options = {}) {
+  const persistedRuntimeRevision = assertPersistedRuntimeRevision(error?.persistedRuntimeRevision, "runAgent error");
   if (options.abortSignal?.aborted || error?.name === "AbortError" || error?.code === "ABORT_ERR" || error?.code === "CANCELLED") {
     return Object.freeze({
       status: "cancelled",
       output: "",
       error: safeFailure("CANCELLED", "Run cancelled."),
+      persistedRuntimeRevision,
       digest: contractDigest({ status: "cancelled", error: "abort" }),
     });
   }
@@ -520,6 +594,7 @@ export function classifyRunAgentError(error, options = {}) {
     status: "failed",
     output: "",
     error: safeFailure(error?.code || error?.publicCode || "AGINTI_RUNTIME_ERROR"),
+    persistedRuntimeRevision,
     digest: contractDigest({ status: "failed", code: error?.code || "", name: error?.name || "" }),
   });
 }

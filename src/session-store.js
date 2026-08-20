@@ -3,6 +3,14 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { deleteSessionIndex, globalSessionPaths, isSafeSessionId, upsertSessionIndex } from "./session-index.js";
 import { enqueueHousekeepingEvent } from "./housekeeping.js";
+import {
+  assertIntegrationSessionOperationAllowed,
+  claimIntegrationSessionStore,
+  markIntegrationStatePersisted,
+  prepareIntegrationStateForSave,
+  runIntegrationSessionOperation,
+  validateIntegrationLoadedState,
+} from "./integration-session-persistence.js";
 
 const DIRECTORY_SYNC_UNSUPPORTED_CODES = new Set(["EBADF", "EINVAL", "EISDIR", "ENOTSUP", "EPERM"]);
 const DEFAULT_INBOX_COMPACTION_RECORD_THRESHOLD = 128;
@@ -154,6 +162,8 @@ function delay(milliseconds) {
 }
 
 export class SessionStore {
+  #integrationSessionClaim;
+
   constructor(baseDir, sessionId, options = {}) {
     this.baseDir = path.resolve(baseDir);
     this.sessionId = sessionId;
@@ -189,278 +199,327 @@ export class SessionStore {
     this.inboxLockTimeoutMs = positiveInteger(options.inboxLockTimeoutMs, DEFAULT_INBOX_LOCK_TIMEOUT_MS);
     this.ensurePromise = null;
     this.eventAppendTail = Promise.resolve();
+    this.#integrationSessionClaim = claimIntegrationSessionStore(this);
   }
 
-  async ensure() {
-    if (!this.ensurePromise) {
-      this.ensurePromise = (async () => {
-        await fs.mkdir(this.artifactsDir, { recursive: true });
-        await this.writePointer().catch(() => {});
-      })();
-    }
-    try {
-      await this.ensurePromise;
-    } catch (error) {
-      this.ensurePromise = null;
-      throw error;
-    }
+  withIntegrationOperation(label, operation) {
+    return runIntegrationSessionOperation(this.#integrationSessionClaim, label, operation);
   }
 
-  async writePointer(state = {}) {
-    if (!this.pointerPath) return;
-    await fs.mkdir(this.pointerDir, { recursive: true });
-    const existing = await fs.readFile(this.pointerPath, "utf8").then(JSON.parse).catch(() => ({}));
-    const now = new Date().toISOString();
-    const payload = {
-      sessionId: this.sessionId,
-      projectRoot: this.projectRoot,
-      commandCwd: state.commandCwd || existing.commandCwd || this.projectRoot,
-      sessionDir: this.sessionDir,
-      artifactsDir: this.artifactsDir,
-      createdAt: state.createdAt || state.startedAt || existing.createdAt || now,
-      updatedAt: state.updatedAt || existing.updatedAt || now,
-      title: state.title || existing.title || "",
-      goal: state.goal || existing.goal || "",
-      provider: state.provider || existing.provider || "",
-      model: state.model || existing.model || "",
-    };
-    await atomicWriteFile(this.pointerPath, `${JSON.stringify(payload, null, 2)}\n`);
+  assertIntegrationOperation(label) {
+    assertIntegrationSessionOperationAllowed(this.#integrationSessionClaim, label);
   }
 
-  async loadState() {
-    const currentState = await loadStateFile(this.statePath);
-    if (currentState !== null) return currentState;
-    if (!this.legacySessionDir) return null;
-    return loadStateFile(path.join(this.legacySessionDir, "state.json"));
-  }
-
-  async saveState(state) {
-    await this.ensure();
-    await atomicWriteFile(this.statePath, `${JSON.stringify(state, null, 2)}\n`);
-    await this.writePointer(state).catch(() => {});
-    try {
-      upsertSessionIndex({
-        ...state,
-        sessionId: this.sessionId,
-        projectRoot: this.projectRoot,
-        projectSessionsDir: this.projectSessionsDir,
-        sessionDir: this.sessionDir,
-        status: state.status || "saved",
-      });
-    } catch {
-      // Session state remains durable even if the optional global index is unavailable.
-    }
-    // A drained item is acknowledged only after the state containing it is durable.
-    // If the process dies before this point, a new store instance will replay it.
-    await this.acknowledgeDrainedInbox();
-  }
-
-  async savePlan(planText) {
-    await this.ensure();
-    await fs.writeFile(this.planPath, `${planText.trim()}\n`, "utf8");
-  }
-
-  async saveJsonArtifact(filename, data) {
-    await this.ensure();
-    const safeName = path.basename(String(filename || "artifact.json"));
-    const outputName = safeName.endsWith(".json") ? safeName : `${safeName}.json`;
-    const filePath = path.join(this.artifactsDir, outputName);
-    await fs.writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-    return filePath;
-  }
-
-  async appendEvent(type, data = {}) {
-    const operation = this.eventAppendTail.then(async () => {
-      await this.ensure();
-      const event = {
-        timestamp: new Date().toISOString(),
-        type,
-        data,
-      };
-      const line = JSON.stringify(event);
-      await fs.appendFile(this.eventsPath, `${line}\n`, "utf8");
-      enqueueHousekeepingEvent({
-        sessionId: this.sessionId,
-        projectRoot: this.projectRoot,
-        commandCwd: this.commandCwd,
-        event,
-      });
+  ensure() {
+    return this.withIntegrationOperation("ensure", async () => {
+      if (!this.ensurePromise) {
+        this.ensurePromise = (async () => {
+          await fs.mkdir(this.artifactsDir, { recursive: true });
+          if (!this.#integrationSessionClaim) await this.writePointer().catch(() => {});
+        })();
+      }
+      try {
+        await this.ensurePromise;
+      } catch (error) {
+        this.ensurePromise = null;
+        throw error;
+      }
     });
-    this.eventAppendTail = operation.catch(() => {});
-    return operation;
   }
 
-  async loadEvents() {
-    try {
-      const raw = await fs.readFile(this.eventsPath, "utf8");
-      return raw
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => JSON.parse(line));
-    } catch {
-      if (this.legacySessionDir) {
+  writePointer(state = {}) {
+    return this.withIntegrationOperation("writePointer", async () => {
+      if (this.#integrationSessionClaim) return;
+      if (!this.pointerPath) return;
+      await fs.mkdir(this.pointerDir, { recursive: true });
+      const existing = await fs.readFile(this.pointerPath, "utf8").then(JSON.parse).catch(() => ({}));
+      const now = new Date().toISOString();
+      const payload = {
+        sessionId: this.sessionId,
+        projectRoot: this.projectRoot,
+        commandCwd: state.commandCwd || existing.commandCwd || this.projectRoot,
+        sessionDir: this.sessionDir,
+        artifactsDir: this.artifactsDir,
+        createdAt: state.createdAt || state.startedAt || existing.createdAt || now,
+        updatedAt: state.updatedAt || existing.updatedAt || now,
+        title: state.title || existing.title || "",
+        goal: state.goal || existing.goal || "",
+        provider: state.provider || existing.provider || "",
+        model: state.model || existing.model || "",
+      };
+      await atomicWriteFile(this.pointerPath, `${JSON.stringify(payload, null, 2)}\n`);
+    });
+  }
+
+  loadState() {
+    return this.withIntegrationOperation("loadState", async () => {
+      if (this.#integrationSessionClaim) {
+        const state = await loadStateFile(this.statePath);
+        return validateIntegrationLoadedState(this.#integrationSessionClaim, state);
+      }
+      const currentState = await loadStateFile(this.statePath);
+      if (currentState !== null) return currentState;
+      if (!this.legacySessionDir) return null;
+      return loadStateFile(path.join(this.legacySessionDir, "state.json"));
+    });
+  }
+
+  saveState(state) {
+    return this.withIntegrationOperation("saveState", async () => {
+      const durableState = prepareIntegrationStateForSave(this.#integrationSessionClaim, state);
+      await this.ensure();
+      await atomicWriteFile(this.statePath, `${JSON.stringify(durableState, null, 2)}\n`);
+      markIntegrationStatePersisted(this.#integrationSessionClaim, durableState);
+      if (!this.#integrationSessionClaim) {
+        await this.writePointer(durableState).catch(() => {});
         try {
-          const raw = await fs.readFile(path.join(this.legacySessionDir, "events.jsonl"), "utf8");
-          return raw
-            .split("\n")
-            .map((line) => line.trim())
-            .filter(Boolean)
-            .map((line) => JSON.parse(line));
+          upsertSessionIndex({
+            ...durableState,
+            sessionId: this.sessionId,
+            projectRoot: this.projectRoot,
+            projectSessionsDir: this.projectSessionsDir,
+            sessionDir: this.sessionDir,
+            status: durableState.status || "saved",
+          });
         } catch {
-          return [];
+          // Session state remains durable even if the optional global index is unavailable.
         }
       }
-      return [];
-    }
+      // A drained item is acknowledged only after the state containing it is durable.
+      // If the process dies before this point, a new store instance will replay it.
+      await this.acknowledgeDrainedInbox();
+    });
   }
 
-  async removeStaleInboxLock() {
-    let stat;
-    let owner = null;
-    try {
-      stat = await fs.stat(this.inboxLockPath);
-      owner = await fs.readFile(this.inboxLockPath, "utf8").then(JSON.parse).catch(() => null);
-    } catch (error) {
-      if (error?.code === "ENOENT") return true;
-      throw error;
-    }
-
-    const ageMs = Math.max(Date.now() - stat.mtimeMs, 0);
-    const ownerDead = Number.isInteger(owner?.pid) && !isProcessAlive(owner.pid);
-    if (!ownerDead && ageMs < INBOX_LOCK_HARD_STALE_MS) return false;
-
-    const stalePath = `${this.inboxLockPath}.stale.${process.pid}.${crypto.randomUUID()}`;
-    try {
-      await fs.rename(this.inboxLockPath, stalePath);
-      await fs.unlink(stalePath).catch(() => {});
-      await syncDirectory(this.sessionDir);
-      return true;
-    } catch (error) {
-      if (error?.code === "ENOENT") return true;
-      throw error;
-    }
+  savePlan(planText) {
+    return this.withIntegrationOperation("savePlan", async () => {
+      await this.ensure();
+      await fs.writeFile(this.planPath, `${planText.trim()}\n`, "utf8");
+    });
   }
 
-  async acquireInboxLock() {
-    await fs.mkdir(this.sessionDir, { recursive: true });
-    const token = crypto.randomUUID();
-    const ownerPath = path.join(this.sessionDir, `.inbox-lock-owner.${process.pid}.${token}`);
-    const owner = {
-      token,
-      pid: process.pid,
-      createdAt: new Date().toISOString(),
-    };
-    await atomicWriteFile(ownerPath, `${JSON.stringify(owner)}\n`);
-    const deadline = Date.now() + this.inboxLockTimeoutMs;
-    let acquired = false;
+  saveJsonArtifact(filename, data) {
+    return this.withIntegrationOperation("saveJsonArtifact", async () => {
+      await this.ensure();
+      const safeName = path.basename(String(filename || "artifact.json"));
+      const outputName = safeName.endsWith(".json") ? safeName : `${safeName}.json`;
+      const filePath = path.join(this.artifactsDir, outputName);
+      await fs.writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+      return filePath;
+    });
+  }
 
-    try {
-      while (!acquired) {
-        try {
-          await fs.link(ownerPath, this.inboxLockPath);
-          await syncDirectory(this.sessionDir);
-          acquired = true;
-        } catch (error) {
-          if (error?.code !== "EEXIST") throw error;
-          if (await this.removeStaleInboxLock()) continue;
-          if (Date.now() >= deadline) {
-            const timeoutError = new Error(`Timed out waiting for the session inbox mutation lock for ${this.sessionId}.`);
-            timeoutError.code = "INBOX_LOCK_TIMEOUT";
-            throw timeoutError;
-          }
-          await delay(INBOX_LOCK_RETRY_MS);
+  appendEvent(type, data = {}) {
+    return this.withIntegrationOperation("appendEvent", async () => {
+      const operation = this.eventAppendTail.then(async () => {
+        await this.ensure();
+        const event = {
+          timestamp: new Date().toISOString(),
+          type,
+          data,
+        };
+        const line = JSON.stringify(event);
+        await fs.appendFile(this.eventsPath, `${line}\n`, "utf8");
+        if (!this.#integrationSessionClaim) {
+          enqueueHousekeepingEvent({
+            sessionId: this.sessionId,
+            projectRoot: this.projectRoot,
+            commandCwd: this.commandCwd,
+            event,
+          });
         }
-      }
-    } finally {
-      await fs.unlink(ownerPath).catch(() => {});
-    }
-
-    return async () => {
-      const current = await fs.readFile(this.inboxLockPath, "utf8").then(JSON.parse).catch(() => null);
-      if (current?.token !== token) return;
-      await fs.unlink(this.inboxLockPath).catch((error) => {
-        if (error?.code !== "ENOENT") throw error;
       });
-      await syncDirectory(this.sessionDir);
-    };
+      this.eventAppendTail = operation.catch(() => {});
+      return operation;
+    });
   }
 
-  async withInboxLock(operation) {
-    const release = await this.acquireInboxLock();
-    try {
-      return await operation();
-    } finally {
-      await release();
-    }
-  }
-
-  async readJsonLinesUnlocked(filePath) {
-    try {
-      const raw = await fs.readFile(filePath, "utf8");
-      return decodeJsonLines(raw, { allowIncompleteFinal: true });
-    } catch (error) {
-      if (error?.code === "ENOENT") return decodeJsonLines("");
-      throw error;
-    }
-  }
-
-  async appendJsonRecordsUnlocked(filePath, records = []) {
-    const nextRecords = records.filter(Boolean);
-    if (nextRecords.length === 0) return;
-    const decoded = await this.readJsonLinesUnlocked(filePath);
-    if (decoded.incompleteFinal) {
-      await atomicWriteFile(filePath, serializeJsonLines([...decoded.values, ...nextRecords]));
-      return;
-    }
-    const separator = decoded.raw && !decoded.raw.endsWith("\n") ? "\n" : "";
-    await appendDurably(filePath, `${separator}${serializeJsonLines(nextRecords)}`);
-  }
-
-  async readInboxDataUnlocked() {
-    const [queue, claims, acknowledgements] = await Promise.all([
-      this.readJsonLinesUnlocked(this.inboxPath),
-      this.readJsonLinesUnlocked(this.inboxClaimsPath),
-      this.readJsonLinesUnlocked(this.inboxAcknowledgementsPath),
-    ]);
-    const acknowledgedKeys = new Set(
-      acknowledgements.values.map((entry) => String(entry?.key || "").trim()).filter(Boolean)
-    );
-    const activeItems = [];
-    const activeKeys = new Set();
-    for (const item of queue.values) {
-      const key = inboxItemKey(item);
-      if (acknowledgedKeys.has(key) || activeKeys.has(key)) continue;
-      activeKeys.add(key);
-      activeItems.push(item);
-    }
-    const allClaimRecords = new Map();
-    for (const claim of claims.values) {
-      const key = String(claim?.key || "").trim();
-      if (!key || !activeKeys.has(key) || acknowledgedKeys.has(key)) continue;
-      if (claim.released) {
-        allClaimRecords.delete(key);
-      } else {
-        allClaimRecords.set(key, claim);
+  loadEvents() {
+    return this.withIntegrationOperation("loadEvents", async () => {
+      try {
+        const raw = await fs.readFile(this.eventsPath, "utf8");
+        return raw
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+      } catch {
+        if (this.legacySessionDir) {
+          try {
+            const raw = await fs.readFile(path.join(this.legacySessionDir, "events.jsonl"), "utf8");
+            return raw
+              .split("\n")
+              .map((line) => line.trim())
+              .filter(Boolean)
+              .map((line) => JSON.parse(line));
+          } catch {
+            return [];
+          }
+        }
+        return [];
       }
-    }
-    const claimRecords = new Map([...allClaimRecords].filter(([, claim]) => isInboxClaimLive(claim)));
-    return {
-      queue,
-      claims,
-      acknowledgements,
-      acknowledgedKeys,
-      activeItems,
-      activeKeys,
-      allClaimRecords,
-      claimRecords,
-      claimedKeys: new Set(claimRecords.keys()),
-      rawRecordCount: queue.values.length + claims.values.length + acknowledgements.values.length,
-      rawByteCount:
-        Buffer.byteLength(queue.raw, "utf8") +
-        Buffer.byteLength(claims.raw, "utf8") +
-        Buffer.byteLength(acknowledgements.raw, "utf8"),
-    };
+    });
+  }
+
+  removeStaleInboxLock() {
+    return this.withIntegrationOperation("removeStaleInboxLock", async () => {
+      let stat;
+      let owner = null;
+      try {
+        stat = await fs.stat(this.inboxLockPath);
+        owner = await fs.readFile(this.inboxLockPath, "utf8").then(JSON.parse).catch(() => null);
+      } catch (error) {
+        if (error?.code === "ENOENT") return true;
+        throw error;
+      }
+
+      const ageMs = Math.max(Date.now() - stat.mtimeMs, 0);
+      const ownerDead = Number.isInteger(owner?.pid) && !isProcessAlive(owner.pid);
+      if (!ownerDead && ageMs < INBOX_LOCK_HARD_STALE_MS) return false;
+
+      const stalePath = `${this.inboxLockPath}.stale.${process.pid}.${crypto.randomUUID()}`;
+      try {
+        await fs.rename(this.inboxLockPath, stalePath);
+        await fs.unlink(stalePath).catch(() => {});
+        await syncDirectory(this.sessionDir);
+        return true;
+      } catch (error) {
+        if (error?.code === "ENOENT") return true;
+        throw error;
+      }
+    });
+  }
+
+  acquireInboxLock() {
+    return this.withIntegrationOperation("acquireInboxLock", async () => {
+      await fs.mkdir(this.sessionDir, { recursive: true });
+      const token = crypto.randomUUID();
+      const ownerPath = path.join(this.sessionDir, `.inbox-lock-owner.${process.pid}.${token}`);
+      const owner = {
+        token,
+        pid: process.pid,
+        createdAt: new Date().toISOString(),
+      };
+      await atomicWriteFile(ownerPath, `${JSON.stringify(owner)}\n`);
+      const deadline = Date.now() + this.inboxLockTimeoutMs;
+      let acquired = false;
+
+      try {
+        while (!acquired) {
+          try {
+            await fs.link(ownerPath, this.inboxLockPath);
+            await syncDirectory(this.sessionDir);
+            acquired = true;
+          } catch (error) {
+            if (error?.code !== "EEXIST") throw error;
+            if (await this.removeStaleInboxLock()) continue;
+            if (Date.now() >= deadline) {
+              const timeoutError = new Error(`Timed out waiting for the session inbox mutation lock for ${this.sessionId}.`);
+              timeoutError.code = "INBOX_LOCK_TIMEOUT";
+              throw timeoutError;
+            }
+            await delay(INBOX_LOCK_RETRY_MS);
+          }
+        }
+      } finally {
+        await fs.unlink(ownerPath).catch(() => {});
+      }
+
+      return async () =>
+        this.withIntegrationOperation("releaseInboxLock", async () => {
+          const current = await fs.readFile(this.inboxLockPath, "utf8").then(JSON.parse).catch(() => null);
+          if (current?.token !== token) return;
+          await fs.unlink(this.inboxLockPath).catch((error) => {
+            if (error?.code !== "ENOENT") throw error;
+          });
+          await syncDirectory(this.sessionDir);
+        });
+    });
+  }
+
+  withInboxLock(operation) {
+    return this.withIntegrationOperation("withInboxLock", async () => {
+      const release = await this.acquireInboxLock();
+      try {
+        return await operation();
+      } finally {
+        await release();
+      }
+    });
+  }
+
+  readJsonLinesUnlocked(filePath) {
+    return this.withIntegrationOperation("readJsonLinesUnlocked", async () => {
+      try {
+        const raw = await fs.readFile(filePath, "utf8");
+        return decodeJsonLines(raw, { allowIncompleteFinal: true });
+      } catch (error) {
+        if (error?.code === "ENOENT") return decodeJsonLines("");
+        throw error;
+      }
+    });
+  }
+
+  appendJsonRecordsUnlocked(filePath, records = []) {
+    return this.withIntegrationOperation("appendJsonRecordsUnlocked", async () => {
+      const nextRecords = records.filter(Boolean);
+      if (nextRecords.length === 0) return;
+      const decoded = await this.readJsonLinesUnlocked(filePath);
+      if (decoded.incompleteFinal) {
+        await atomicWriteFile(filePath, serializeJsonLines([...decoded.values, ...nextRecords]));
+        return;
+      }
+      const separator = decoded.raw && !decoded.raw.endsWith("\n") ? "\n" : "";
+      await appendDurably(filePath, `${separator}${serializeJsonLines(nextRecords)}`);
+    });
+  }
+
+  readInboxDataUnlocked() {
+    return this.withIntegrationOperation("readInboxDataUnlocked", async () => {
+      const [queue, claims, acknowledgements] = await Promise.all([
+        this.readJsonLinesUnlocked(this.inboxPath),
+        this.readJsonLinesUnlocked(this.inboxClaimsPath),
+        this.readJsonLinesUnlocked(this.inboxAcknowledgementsPath),
+      ]);
+      const acknowledgedKeys = new Set(
+        acknowledgements.values.map((entry) => String(entry?.key || "").trim()).filter(Boolean)
+      );
+      const activeItems = [];
+      const activeKeys = new Set();
+      for (const item of queue.values) {
+        const key = inboxItemKey(item);
+        if (acknowledgedKeys.has(key) || activeKeys.has(key)) continue;
+        activeKeys.add(key);
+        activeItems.push(item);
+      }
+      const allClaimRecords = new Map();
+      for (const claim of claims.values) {
+        const key = String(claim?.key || "").trim();
+        if (!key || !activeKeys.has(key) || acknowledgedKeys.has(key)) continue;
+        if (claim.released) {
+          allClaimRecords.delete(key);
+        } else {
+          allClaimRecords.set(key, claim);
+        }
+      }
+      const claimRecords = new Map([...allClaimRecords].filter(([, claim]) => isInboxClaimLive(claim)));
+      return {
+        queue,
+        claims,
+        acknowledgements,
+        acknowledgedKeys,
+        activeItems,
+        activeKeys,
+        allClaimRecords,
+        claimRecords,
+        claimedKeys: new Set(claimRecords.keys()),
+        rawRecordCount: queue.values.length + claims.values.length + acknowledgements.values.length,
+        rawByteCount:
+          Buffer.byteLength(queue.raw, "utf8") +
+          Buffer.byteLength(claims.raw, "utf8") +
+          Buffer.byteLength(acknowledgements.raw, "utf8"),
+      };
+    });
   }
 
   visibleInboxItems(data) {
@@ -470,31 +529,33 @@ export class SessionStore {
     });
   }
 
-  async rewriteActiveInboxUnlocked(items, claimRecords = new Map()) {
-    const activeItems = [];
-    const activeKeys = new Set();
-    for (const item of items.filter(Boolean)) {
-      const key = inboxItemKey(item);
-      if (activeKeys.has(key)) continue;
-      activeKeys.add(key);
-      activeItems.push(item);
-    }
-    const activeClaims = [];
-    for (const [key, claim] of claimRecords) {
-      if (!activeKeys.has(key)) continue;
-      activeClaims.push({
-        key,
-        consumerId: String(claim?.consumerId || "").slice(0, 128),
-        pid: Number.isInteger(Number(claim?.pid)) ? Number(claim.pid) : 0,
-        claimedAt: claim?.claimedAt || new Date().toISOString(),
-      });
-    }
+  rewriteActiveInboxUnlocked(items, claimRecords = new Map()) {
+    return this.withIntegrationOperation("rewriteActiveInboxUnlocked", async () => {
+      const activeItems = [];
+      const activeKeys = new Set();
+      for (const item of items.filter(Boolean)) {
+        const key = inboxItemKey(item);
+        if (activeKeys.has(key)) continue;
+        activeKeys.add(key);
+        activeItems.push(item);
+      }
+      const activeClaims = [];
+      for (const [key, claim] of claimRecords) {
+        if (!activeKeys.has(key)) continue;
+        activeClaims.push({
+          key,
+          consumerId: String(claim?.consumerId || "").slice(0, 128),
+          pid: Number.isInteger(Number(claim?.pid)) ? Number(claim.pid) : 0,
+          claimedAt: claim?.claimedAt || new Date().toISOString(),
+        });
+      }
 
-    // This order is crash-safe: old acknowledgements cannot hide any item in
-    // the already-filtered active queue, and readers hold the same lock.
-    await atomicWriteFile(this.inboxPath, serializeJsonLines(activeItems));
-    await atomicWriteFile(this.inboxClaimsPath, serializeJsonLines(activeClaims));
-    await atomicWriteFile(this.inboxAcknowledgementsPath, "");
+      // This order is crash-safe: old acknowledgements cannot hide any item in
+      // the already-filtered active queue, and readers hold the same lock.
+      await atomicWriteFile(this.inboxPath, serializeJsonLines(activeItems));
+      await atomicWriteFile(this.inboxClaimsPath, serializeJsonLines(activeClaims));
+      await atomicWriteFile(this.inboxAcknowledgementsPath, "");
+    });
   }
 
   shouldCompactInbox(data) {
@@ -507,119 +568,134 @@ export class SessionStore {
     );
   }
 
-  async compactInboxUnlocked(data = null) {
-    const current = data || (await this.readInboxDataUnlocked());
-    await this.rewriteActiveInboxUnlocked(current.activeItems, current.claimRecords);
-  }
-
-  async appendInbox(content, metadata = {}) {
-    await this.ensure();
-    const text = String(content || "").trim();
-    if (!text) return null;
-    const item = {
-      id: metadata.id || `inbox-${crypto.randomUUID()}`,
-      timestamp: new Date().toISOString(),
-      content: text,
-      priority: metadata.priority || "normal",
-      ...metadata,
-    };
-    await this.withInboxLock(() => this.appendJsonRecordsUnlocked(this.inboxPath, [item]));
-    return item;
-  }
-
-  async loadInboxAcknowledgements() {
-    await this.ensure();
-    return this.withInboxLock(async () => (await this.readInboxDataUnlocked()).acknowledgedKeys);
-  }
-
-  async loadInbox() {
-    await this.ensure();
-    const items = await this.withInboxLock(async () => {
-      const data = await this.readInboxDataUnlocked();
-      return this.visibleInboxItems(data);
-    });
-    this.lastLoadedInboxKeys = new Set(items.map(inboxItemKey));
-    return items;
-  }
-
-  async saveInbox(items = []) {
-    await this.ensure();
-    const desiredItems = items.filter(Boolean);
-    return this.withInboxLock(async () => {
-      const data = await this.readInboxDataUnlocked();
-      const baseline = this.lastLoadedInboxKeys;
-      const desiredUnclaimed = desiredItems.filter((item) => {
-        const key = inboxItemKey(item);
-        return data.activeKeys.has(key) && !data.claimedKeys.has(key);
-      });
-      const desiredKeys = new Set(desiredUnclaimed.map(inboxItemKey));
-      const lateItems = this.visibleInboxItems(data).filter((item) => {
-        const key = inboxItemKey(item);
-        return !desiredKeys.has(key) && (!baseline || !baseline.has(key));
-      });
-      const claimedItems = data.activeItems.filter((item) => data.claimedKeys.has(inboxItemKey(item)));
-      const nextVisible = [...desiredUnclaimed, ...lateItems];
-      await this.rewriteActiveInboxUnlocked([...nextVisible, ...claimedItems], data.claimRecords);
-      this.lastLoadedInboxKeys = new Set(nextVisible.map(inboxItemKey));
-      return nextVisible;
+  compactInboxUnlocked(data = null) {
+    return this.withIntegrationOperation("compactInboxUnlocked", async () => {
+      const current = data || (await this.readInboxDataUnlocked());
+      await this.rewriteActiveInboxUnlocked(current.activeItems, current.claimRecords);
     });
   }
 
-  async mutateInbox(mutator) {
-    await this.ensure();
-    if (typeof mutator !== "function") throw new TypeError("Inbox mutation requires a callback.");
-    return this.withInboxLock(async () => {
-      const data = await this.readInboxDataUnlocked();
-      const visibleItems = this.visibleInboxItems(data).map((item) => ({ ...item }));
-      const mutation = await mutator(visibleItems);
-      const nextVisible = Array.isArray(mutation) ? mutation : mutation?.items;
-      if (!Array.isArray(nextVisible)) throw new TypeError("Inbox mutation must return an items array.");
-      const claimedItems = data.activeItems.filter((item) => data.claimedKeys.has(inboxItemKey(item)));
-      await this.rewriteActiveInboxUnlocked([...nextVisible, ...claimedItems], data.claimRecords);
-      this.lastLoadedInboxKeys = new Set(nextVisible.map(inboxItemKey));
-      return {
-        items: nextVisible,
-        value: Array.isArray(mutation) ? undefined : mutation?.value,
+  appendInbox(content, metadata = {}) {
+    return this.withIntegrationOperation("appendInbox", async () => {
+      await this.ensure();
+      const text = String(content || "").trim();
+      if (!text) return null;
+      const item = {
+        id: metadata.id || `inbox-${crypto.randomUUID()}`,
+        timestamp: new Date().toISOString(),
+        content: text,
+        priority: metadata.priority || "normal",
+        ...metadata,
       };
+      await this.withInboxLock(() => this.appendJsonRecordsUnlocked(this.inboxPath, [item]));
+      return item;
     });
   }
 
-  async drainInbox() {
-    await this.ensure();
-    const items = await this.withInboxLock(async () => {
-      const data = await this.readInboxDataUnlocked();
-      const drainable = data.activeItems.filter((item) => {
-        const key = inboxItemKey(item);
-        if (this.drainedInboxKeys.has(key)) return false;
-        const claim = data.allClaimRecords.get(key);
-        if (!claim) return true;
-        if (claim.consumerId === this.inboxConsumerId) return true;
-        return !isInboxClaimLive(claim);
-      });
-      const claimedAt = new Date().toISOString();
-      const newClaims = drainable
-        .map(inboxItemKey)
-        .filter((key) => {
-          const claim = data.allClaimRecords.get(key);
-          return !claim || claim.consumerId !== this.inboxConsumerId || !isInboxClaimLive(claim);
-        })
-        .map((key) => ({
-          key,
-          consumerId: this.inboxConsumerId,
-          pid: process.pid,
-          claimedAt,
-        }));
-      await this.appendJsonRecordsUnlocked(this.inboxClaimsPath, newClaims);
-      for (const item of drainable) this.drainedInboxKeys.add(inboxItemKey(item));
-      return drainable;
+  loadInboxAcknowledgements() {
+    return this.withIntegrationOperation("loadInboxAcknowledgements", async () => {
+      await this.ensure();
+      return this.withInboxLock(async () => (await this.readInboxDataUnlocked()).acknowledgedKeys);
     });
-    return items.sort((a, b) => {
-      const priority = (item) => (item.priority === "asap" ? 0 : 1);
-      return priority(a) - priority(b) || String(a.timestamp || "").localeCompare(String(b.timestamp || ""));
+  }
+
+  loadInbox() {
+    return this.withIntegrationOperation("loadInbox", async () => {
+      await this.ensure();
+      const items = await this.withInboxLock(async () => {
+        const data = await this.readInboxDataUnlocked();
+        return this.visibleInboxItems(data);
+      });
+      this.lastLoadedInboxKeys = new Set(items.map(inboxItemKey));
+      return items;
+    });
+  }
+
+  saveInbox(items = []) {
+    return this.withIntegrationOperation("saveInbox", async () => {
+      await this.ensure();
+      const desiredItems = items.filter(Boolean);
+      return this.withInboxLock(async () => {
+        const data = await this.readInboxDataUnlocked();
+        const baseline = this.lastLoadedInboxKeys;
+        const desiredUnclaimed = desiredItems.filter((item) => {
+          const key = inboxItemKey(item);
+          return data.activeKeys.has(key) && !data.claimedKeys.has(key);
+        });
+        const desiredKeys = new Set(desiredUnclaimed.map(inboxItemKey));
+        const lateItems = this.visibleInboxItems(data).filter((item) => {
+          const key = inboxItemKey(item);
+          return !desiredKeys.has(key) && (!baseline || !baseline.has(key));
+        });
+        const claimedItems = data.activeItems.filter((item) => data.claimedKeys.has(inboxItemKey(item)));
+        const nextVisible = [...desiredUnclaimed, ...lateItems];
+        await this.rewriteActiveInboxUnlocked([...nextVisible, ...claimedItems], data.claimRecords);
+        this.lastLoadedInboxKeys = new Set(nextVisible.map(inboxItemKey));
+        return nextVisible;
+      });
+    });
+  }
+
+  mutateInbox(mutator) {
+    return this.withIntegrationOperation("mutateInbox", async () => {
+      await this.ensure();
+      if (typeof mutator !== "function") throw new TypeError("Inbox mutation requires a callback.");
+      return this.withInboxLock(async () => {
+        const data = await this.readInboxDataUnlocked();
+        const visibleItems = this.visibleInboxItems(data).map((item) => ({ ...item }));
+        const mutation = await mutator(visibleItems);
+        const nextVisible = Array.isArray(mutation) ? mutation : mutation?.items;
+        if (!Array.isArray(nextVisible)) throw new TypeError("Inbox mutation must return an items array.");
+        const claimedItems = data.activeItems.filter((item) => data.claimedKeys.has(inboxItemKey(item)));
+        await this.rewriteActiveInboxUnlocked([...nextVisible, ...claimedItems], data.claimRecords);
+        this.lastLoadedInboxKeys = new Set(nextVisible.map(inboxItemKey));
+        return {
+          items: nextVisible,
+          value: Array.isArray(mutation) ? undefined : mutation?.value,
+        };
+      });
+    });
+  }
+
+  drainInbox() {
+    return this.withIntegrationOperation("drainInbox", async () => {
+      await this.ensure();
+      const items = await this.withInboxLock(async () => {
+        const data = await this.readInboxDataUnlocked();
+        const drainable = data.activeItems.filter((item) => {
+          const key = inboxItemKey(item);
+          if (this.drainedInboxKeys.has(key)) return false;
+          const claim = data.allClaimRecords.get(key);
+          if (!claim) return true;
+          if (claim.consumerId === this.inboxConsumerId) return true;
+          return !isInboxClaimLive(claim);
+        });
+        const claimedAt = new Date().toISOString();
+        const newClaims = drainable
+          .map(inboxItemKey)
+          .filter((key) => {
+            const claim = data.allClaimRecords.get(key);
+            return !claim || claim.consumerId !== this.inboxConsumerId || !isInboxClaimLive(claim);
+          })
+          .map((key) => ({
+            key,
+            consumerId: this.inboxConsumerId,
+            pid: process.pid,
+            claimedAt,
+          }));
+        await this.appendJsonRecordsUnlocked(this.inboxClaimsPath, newClaims);
+        for (const item of drainable) this.drainedInboxKeys.add(inboxItemKey(item));
+        return drainable;
+      });
+      return items.sort((a, b) => {
+        const priority = (item) => (item.priority === "asap" ? 0 : 1);
+        return priority(a) - priority(b) || String(a.timestamp || "").localeCompare(String(b.timestamp || ""));
+      });
     });
   }
 
   markInboxApplied(itemOrId) {
+    this.assertIntegrationOperation("markInboxApplied");
     const key =
       typeof itemOrId === "string"
         ? `id:${String(itemOrId).trim()}`
@@ -629,89 +705,100 @@ export class SessionStore {
     return true;
   }
 
-  async acknowledgeDrainedInbox() {
-    const drainedAtSave = new Set(this.drainedInboxKeys);
-    const keys = [...this.appliedInboxAcknowledgements].filter((key) => drainedAtSave.has(key));
-    if (drainedAtSave.size > 0) {
-      const now = new Date().toISOString();
+  acknowledgeDrainedInbox() {
+    return this.withIntegrationOperation("acknowledgeDrainedInbox", async () => {
+      const drainedAtSave = new Set(this.drainedInboxKeys);
+      const keys = [...this.appliedInboxAcknowledgements].filter((key) => drainedAtSave.has(key));
+      if (drainedAtSave.size > 0) {
+        const now = new Date().toISOString();
+        await this.withInboxLock(async () => {
+          const before = await this.readInboxDataUnlocked();
+          const ownedKeys = [...drainedAtSave].filter(
+            (key) => before.allClaimRecords.get(key)?.consumerId === this.inboxConsumerId
+          );
+          const ownedKeySet = new Set(ownedKeys);
+          const appliedKeys = keys.filter((key) => ownedKeySet.has(key));
+          const unappliedKeys = ownedKeys.filter((key) => !this.appliedInboxAcknowledgements.has(key));
+          await this.appendJsonRecordsUnlocked(
+            this.inboxAcknowledgementsPath,
+            appliedKeys.map((key) => ({ key, acknowledgedAt: now }))
+          );
+          await this.appendJsonRecordsUnlocked(
+            this.inboxClaimsPath,
+            unappliedKeys.map((key) => ({
+              key,
+              consumerId: this.inboxConsumerId,
+              pid: process.pid,
+              released: true,
+              releasedAt: now,
+            }))
+          );
+          const data = await this.readInboxDataUnlocked();
+          if (this.shouldCompactInbox(data)) await this.compactInboxUnlocked(data);
+        });
+        for (const key of keys) this.appliedInboxAcknowledgements.delete(key);
+      }
+      // Any claimed-but-unapplied item remains durable and becomes eligible for a
+      // retry in this process after the state boundary, as well as after a crash.
+      for (const key of drainedAtSave) this.drainedInboxKeys.delete(key);
+    });
+  }
+
+  releaseInboxClaims() {
+    return this.withIntegrationOperation("releaseInboxClaims", async () => {
+      const keys = [...this.drainedInboxKeys];
+      if (keys.length === 0) return;
+      const releasedAt = new Date().toISOString();
       await this.withInboxLock(async () => {
-        const before = await this.readInboxDataUnlocked();
-        const ownedKeys = [...drainedAtSave].filter(
-          (key) => before.allClaimRecords.get(key)?.consumerId === this.inboxConsumerId
-        );
-        const ownedKeySet = new Set(ownedKeys);
-        const appliedKeys = keys.filter((key) => ownedKeySet.has(key));
-        const unappliedKeys = ownedKeys.filter((key) => !this.appliedInboxAcknowledgements.has(key));
-        await this.appendJsonRecordsUnlocked(
-          this.inboxAcknowledgementsPath,
-          appliedKeys.map((key) => ({ key, acknowledgedAt: now }))
+        const data = await this.readInboxDataUnlocked();
+        const ownedKeys = keys.filter(
+          (key) => data.allClaimRecords.get(key)?.consumerId === this.inboxConsumerId
         );
         await this.appendJsonRecordsUnlocked(
           this.inboxClaimsPath,
-          unappliedKeys.map((key) => ({
+          ownedKeys.map((key) => ({
             key,
             consumerId: this.inboxConsumerId,
             pid: process.pid,
             released: true,
-            releasedAt: now,
+            releasedAt,
           }))
         );
-        const data = await this.readInboxDataUnlocked();
-        if (this.shouldCompactInbox(data)) await this.compactInboxUnlocked(data);
+        const after = await this.readInboxDataUnlocked();
+        if (this.shouldCompactInbox(after)) await this.compactInboxUnlocked(after);
       });
-      for (const key of keys) this.appliedInboxAcknowledgements.delete(key);
-    }
-    // Any claimed-but-unapplied item remains durable and becomes eligible for a
-    // retry in this process after the state boundary, as well as after a crash.
-    for (const key of drainedAtSave) this.drainedInboxKeys.delete(key);
-  }
-
-  async releaseInboxClaims() {
-    const keys = [...this.drainedInboxKeys];
-    if (keys.length === 0) return;
-    const releasedAt = new Date().toISOString();
-    await this.withInboxLock(async () => {
-      const data = await this.readInboxDataUnlocked();
-      const ownedKeys = keys.filter(
-        (key) => data.allClaimRecords.get(key)?.consumerId === this.inboxConsumerId
-      );
-      await this.appendJsonRecordsUnlocked(
-        this.inboxClaimsPath,
-        ownedKeys.map((key) => ({
-          key,
-          consumerId: this.inboxConsumerId,
-          pid: process.pid,
-          released: true,
-          releasedAt,
-        }))
-      );
-      const after = await this.readInboxDataUnlocked();
-      if (this.shouldCompactInbox(after)) await this.compactInboxUnlocked(after);
+      for (const key of keys) {
+        this.drainedInboxKeys.delete(key);
+        this.appliedInboxAcknowledgements.delete(key);
+      }
     });
-    for (const key of keys) {
-      this.drainedInboxKeys.delete(key);
-      this.appliedInboxAcknowledgements.delete(key);
-    }
   }
 
-  async saveSnapshot(step, snapshot) {
-    await this.ensure();
-    const filename = `step-${String(step).padStart(3, "0")}.snapshot.json`;
-    const filePath = path.join(this.artifactsDir, filename);
-    await fs.writeFile(filePath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
-    return filePath;
+  saveSnapshot(step, snapshot) {
+    return this.withIntegrationOperation("saveSnapshot", async () => {
+      await this.ensure();
+      const filename = `step-${String(step).padStart(3, "0")}.snapshot.json`;
+      const filePath = path.join(this.artifactsDir, filename);
+      await fs.writeFile(filePath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+      return filePath;
+    });
   }
 
   screenshotPath(step) {
     return path.join(this.artifactsDir, `step-${String(step).padStart(3, "0")}.png`);
   }
 
-  async remove() {
-    await this.eventAppendTail.catch(() => {});
-    await fs.rm(this.sessionDir, { recursive: true, force: true });
-    if (this.pointerDir) await fs.rm(this.pointerDir, { recursive: true, force: true }).catch(() => {});
-    deleteSessionIndex(this.sessionId);
-    this.ensurePromise = null;
-    this.eventAppendTail = Promise.resolve();
+  remove() {
+    return this.withIntegrationOperation("remove", async () => {
+      await this.eventAppendTail.catch(() => {});
+      await fs.rm(this.sessionDir, { recursive: true, force: true });
+      if (!this.#integrationSessionClaim) {
+        if (this.pointerDir) await fs.rm(this.pointerDir, { recursive: true, force: true }).catch(() => {});
+        deleteSessionIndex(this.sessionId);
+      }
+      this.ensurePromise = null;
+      this.eventAppendTail = Promise.resolve();
+    });
   }
+
 }

@@ -4,8 +4,14 @@ import {
   validateIntegrationThreadId,
 } from "./integration-policy.js";
 import { authorityFail } from "./integration-durable-common.js";
+import { types as utilTypes } from "node:util";
 
 export const INTEGRATION_RUN_REGISTRY_ATTESTATION_VERSION = "aginti-live-run-registry-v1";
+
+const PromisePrototype = Promise.prototype;
+const PromisePrototypeThen = Promise.prototype.then;
+const ReflectApply = Reflect.apply;
+const ReflectOwnKeys = Reflect.ownKeys;
 
 function assertPrincipalId(value) {
   if (typeof value !== "string" || !/^[A-Za-z0-9._~-]{16,128}$/u.test(value)) {
@@ -53,6 +59,27 @@ export function createIntegrationRunRegistry() {
   const runs = new Map();
   const threadActiveRun = new Map();
 
+  function releaseExactRecord(runId, record) {
+    const current = runs.get(runId);
+    if (current !== record) return Object.freeze({ released: false });
+    runs.delete(runId);
+    if (threadActiveRun.get(record.threadId) === runId) threadActiveRun.delete(record.threadId);
+    return Object.freeze({ released: true, runId });
+  }
+
+  function assertNativePromise(promise) {
+    if (promise && (typeof promise === "object" || typeof promise === "function") && utilTypes.isProxy(promise)) {
+      authorityFail("AGENT_UNAVAILABLE", "Live run registry requires a native run promise.");
+    }
+    if (!utilTypes.isPromise(promise) || Object.getPrototypeOf(promise) !== PromisePrototype) {
+      authorityFail("AGENT_UNAVAILABLE", "Live run registry requires a native run promise.");
+    }
+    if (ReflectOwnKeys(promise).length !== 0) {
+      authorityFail("AGENT_UNAVAILABLE", "Live run registry promise must not expose own fields.");
+    }
+    return promise;
+  }
+
   function claimRun(claimInput = {}) {
     const claim = normalizeClaim(claimInput);
     const active = threadActiveRun.get(claim.threadId);
@@ -83,18 +110,23 @@ export function createIntegrationRunRegistry() {
     const runId = validateIntegrationRunId(runIdInput);
     const record = runs.get(runId);
     if (!record) notFound("Run");
-    if (!(promise instanceof Promise)) {
-      authorityFail("AGENT_UNAVAILABLE", "Live run registry requires a native run promise.");
+    if (record.promise) {
+      authorityFail("RUN_CONFLICT", "Integration run already has a native run promise.", { status: 409 });
     }
-    record.promise = promise.finally(() => {
-      const current = runs.get(runId);
-      if (current === record) {
-        runs.delete(runId);
-        if (threadActiveRun.get(record.threadId) === runId) threadActiveRun.delete(record.threadId);
-      }
-    });
-    record.promise.catch(() => {});
-    return record.promise;
+    try {
+      const nativePromise = assertNativePromise(promise);
+      const release = () => {
+        releaseExactRecord(runId, record);
+      };
+      const observer = ReflectApply(PromisePrototypeThen, nativePromise, [release, release]);
+      ReflectApply(PromisePrototypeThen, observer, [undefined, () => {}]);
+      record.promise = nativePromise;
+      return nativePromise;
+    } catch (error) {
+      releaseExactRecord(runId, record);
+      if (error?.code || error?.publicCode) throw error;
+      authorityFail("AGENT_UNAVAILABLE", "Live run registry could not attach the native run promise.");
+    }
   }
 
   function getRun(runIdInput, scope = {}) {
@@ -135,9 +167,7 @@ export function createIntegrationRunRegistry() {
     const runId = validateIntegrationRunId(runIdInput);
     const record = runs.get(runId);
     if (!record) return Object.freeze({ released: false });
-    runs.delete(runId);
-    if (threadActiveRun.get(record.threadId) === runId) threadActiveRun.delete(record.threadId);
-    return Object.freeze({ released: true, runId });
+    return releaseExactRecord(runId, record);
   }
 
   function hasActiveThreadRun(threadIdInput) {

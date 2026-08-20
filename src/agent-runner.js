@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "playwright";
 import { createClient, createPlan, requestNextStep } from "./model-client.js";
 import { SessionStore } from "./session-store.js";
+import { assertIntegrationRunAgentInvocation } from "./integration-session-persistence.js";
 import { captureSnapshot } from "./snapshot.js";
 import { checkToolUse } from "./guardrails.js";
 import { ensureDockerSandboxReady, runDockerSandboxCommand } from "./docker-sandbox.js";
@@ -236,8 +237,9 @@ function withSelectedSkillReadOnlyRoots(config = {}, state = {}) {
 function throwIfAborted(config) {
   if (config.abortSignal?.aborted) {
     const reason = config.abortSignal.reason;
-    const error = reason instanceof Error ? reason : new Error("Run interrupted by user.");
-    error.name = error.name || "AbortError";
+    if (reason instanceof Error) throw reason;
+    const error = new Error("Run interrupted by user.");
+    error.name = "AbortError";
     throw error;
   }
 }
@@ -4524,6 +4526,7 @@ async function recordPreInferenceFailure({ error, config, state, store, observer
 }
 
 export async function runAgent(config) {
+  assertIntegrationRunAgentInvocation(config);
   const incomingConfig = config;
   const sessionId = config.resume || config.sessionId || `web-agent-${crypto.randomUUID()}`;
   const store = new SessionStore(config.sessionsDir, sessionId, {

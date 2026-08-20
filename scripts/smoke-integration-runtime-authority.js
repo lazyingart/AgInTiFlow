@@ -35,6 +35,7 @@ import {
   postflightNativeSessionRuntime,
   preflightNativeSessionRuntime,
 } from "../src/integration-native-executor.js";
+import { runAgent } from "../src/agent-runner.js";
 
 const PRINCIPAL = "principalAAAAAAAA";
 const OTHER_PRINCIPAL = "principalBBBBBBBB";
@@ -44,6 +45,8 @@ const ZERO_DIGEST = "0".repeat(64);
 const CONTEXT_DIGEST = "c".repeat(64);
 const SNAPSHOT_HASH = "d".repeat(64);
 const ARTIFACT_ID = `art_${"e".repeat(64)}`;
+const COMPLETION_OUTBOX_METADATA_VERSION = "aginti-completion-outbox-bundle-v1";
+const PRE_LAUNCH_ABORT_RESPONSE_VERSION = "aginti-pre-launch-abort-response-v1";
 const SMOKE_ROOT = "/home/lachlan/ProjectsLFS/Agent/AgInTiFlow/.integration-runtime-authority-smoke-root";
 
 function delay(ms) {
@@ -122,6 +125,123 @@ function fakeProcessOwner(timestamp = now()) {
   });
 }
 
+function plainProcessOwner(owner) {
+  return JSON.parse(JSON.stringify(owner));
+}
+
+function poisonProcessOwner(owner, mode, state) {
+  const plain = plainProcessOwner(owner);
+  if (mode === "mutable") return plain;
+  if (mode === "owner-proxy") {
+    return new Proxy(plain, {
+      get(target, property, receiver) {
+        state.processOwnerTrapCount += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+  }
+  if (mode === "identity-proxy") {
+    plain.processIdentity = new Proxy(plain.processIdentity, {
+      get(target, property, receiver) {
+        state.processOwnerTrapCount += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    return plain;
+  }
+  if (mode === "owner-accessor") {
+    Object.defineProperty(plain, "pid", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        state.processOwnerTrapCount += 1;
+        return 1;
+      },
+    });
+    return plain;
+  }
+  if (mode === "identity-accessor") {
+    Object.defineProperty(plain.processIdentity, "bootId", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        state.processOwnerTrapCount += 1;
+        return "01234567-89ab-cdef-0123-456789abcdef";
+      },
+    });
+    return plain;
+  }
+  if (mode === "owner-custom-proto-then") {
+    const proto = Object.create(Object.prototype, {
+      then: {
+        enumerable: true,
+        get() {
+          state.processOwnerTrapCount += 1;
+          return () => {};
+        },
+      },
+    });
+    Object.setPrototypeOf(plain, proto);
+    return plain;
+  }
+  if (mode === "identity-custom-proto-then") {
+    const proto = Object.create(Object.prototype, {
+      then: {
+        enumerable: true,
+        get() {
+          state.processOwnerTrapCount += 1;
+          return () => {};
+        },
+      },
+    });
+    Object.setPrototypeOf(plain.processIdentity, proto);
+    return plain;
+  }
+  if (mode === "identity-inherited-boot") {
+    const inherited = plain.processIdentity.bootId;
+    delete plain.processIdentity.bootId;
+    Object.setPrototypeOf(plain.processIdentity, { bootId: inherited });
+    return plain;
+  }
+  if (mode === "owner-extra-string") {
+    plain.extra = true;
+    return plain;
+  }
+  if (mode === "owner-extra-symbol") {
+    plain[Symbol("extra")] = true;
+    return plain;
+  }
+  if (mode === "identity-extra-string") {
+    plain.processIdentity.extra = true;
+    return plain;
+  }
+  if (mode === "identity-extra-symbol") {
+    plain.processIdentity[Symbol("extra")] = true;
+    return plain;
+  }
+  if (mode === "pid-string") {
+    plain.pid = "1";
+    return plain;
+  }
+  if (mode === "token-object") {
+    plain.token = { toString() { state.processOwnerTrapCount += 1; return "1".repeat(32); } };
+    return plain;
+  }
+  if (mode === "boot-uppercase") {
+    plain.processIdentity.bootId = plain.processIdentity.bootId.toUpperCase();
+    return plain;
+  }
+  if (mode === "boot-object") {
+    plain.processIdentity.bootId = { toString() { state.processOwnerTrapCount += 1; return "01234567-89ab-cdef-0123-456789abcdef"; } };
+    return plain;
+  }
+  if (mode === "ticks-number") {
+    plain.processIdentity.startTimeTicks = 1;
+    return plain;
+  }
+  return owner;
+}
+
 function threadRecord(overrides = {}) {
   return {
     id: overrides.id,
@@ -163,6 +283,14 @@ function runRecord(overrides = {}) {
     startedAt: now(),
     completedAt: null,
     cancelRequestedAt: null,
+    dispatchLeaseId: null,
+    dispatchOutbox: false,
+    dispatchedAt: null,
+    processOwner: null,
+    hidden: false,
+    tombstone: false,
+    abortAttemptDigest: null,
+    abortAt: null,
     output: "",
     error: null,
     authority: {
@@ -196,6 +324,64 @@ function plotArtifact(overrides = {}) {
   };
 }
 
+function immutableOutboxDigestView(record) {
+  return Object.freeze({
+    outboxId: record.outboxId,
+    principalId: record.principalId,
+    browserSessionId: record.browserSessionId,
+    browserSessionPolicy: record.browserSessionPolicy,
+    threadId: record.threadId,
+    runId: record.runId,
+    type: record.type,
+    payload: record.payload,
+    createdAt: record.createdAt,
+    expectedPreviousSeq: record.expectedPreviousSeq,
+    expectedPreviousHash: record.expectedPreviousHash,
+    expectedEventHash: record.expectedEventHash,
+  });
+}
+
+function completionOutboxMetadata({ run, thread, records, cursor }) {
+  return {
+    schemaVersion: COMPLETION_OUTBOX_METADATA_VERSION,
+    principalId: run.principalId,
+    browserSessionId: run.browserSessionId,
+    browserSessionPolicy: "same-browser-session",
+    threadId: run.threadId,
+    runId: run.id,
+    status: run.status,
+    completedAt: run.completedAt,
+    runtimeRevision: run.authority.runtimeRevision,
+    completionRevision: run.revision,
+    threadRevision: thread.revision,
+    originalCursor: {
+      firstSeq: cursor.firstSeq ?? 1,
+      lastSeq: cursor.lastSeq,
+      lastHash: cursor.lastHash,
+      prunedThroughSeq: cursor.prunedThroughSeq ?? 0,
+    },
+    outboxIds: records.map((record) => record.outboxId),
+    eventTypes: records.map((record) => record.type),
+    eventHashes: records.map((record) => record.expectedEventHash),
+    orderedBundleDigest: contractDigest(records.map(immutableOutboxDigestView)),
+  };
+}
+
+function threadPreservationDigestFor(thread) {
+  return contractDigest({
+    id: thread.id,
+    nativeSessionId: thread.nativeSessionId,
+    principalId: thread.principalId,
+    browserSessionId: thread.browserSessionId,
+    browserSessionPolicy: thread.browserSessionPolicy,
+    title: thread.title,
+    createdAt: thread.createdAt,
+    authority: thread.authority,
+    replay: thread.replay,
+    messages: thread.messages || [],
+  });
+}
+
 function makeRepository({
   retainedDescriptorStorageAuthority = false,
   roots = runtimeRoots(),
@@ -208,12 +394,43 @@ function makeRepository({
     artifacts: new Map(),
     outbox: new Map(),
     failNextUpdate: false,
+    failCreateBeforeCommit: false,
+    failCreateAfterCommit: false,
+    malformedCreateRun: false,
+    malformedCreateThread: false,
     failNextDispatch: false,
+    failDispatchAfterCommit: false,
+    malformedDispatchRun: false,
+    failNextPreLaunchAbort: false,
+    corruptAbortLease: false,
+    forgedAbortRunRevision: null,
+    forgedAbortAction: "",
+    forgedAbortRunCreatedAt: "",
+    forgedAbortRunStartedAt: "",
+    forgedAbortThreadUpdatedAt: "",
+    forgedAbortThreadContextDigest: "",
+    forgedAbortThreadReplay: false,
+    forgedAbortThreadMessages: false,
+    forgedAbortOwnerTimestamp: false,
+    preLaunchAbortError: null,
+    mutateGetThreadAliasAfterReturn: "",
+    mutateActiveRunAliasAfterReturn: "",
+    mutatePriorRunAliasDuringGetThread: "",
+    mutateCreateAliasAfterReturn: "",
     failNextCancel: false,
     failNextOutboxMark: false,
+    failOutboxMarkTypes: new Set(),
+    bundleMode: "",
     substituteDispatchThread: false,
     substituteCancelCompleted: false,
     omitCancelProcessOwner: false,
+    proxyCancelProcessIdentity: false,
+    cancelProcessOwnerMode: "",
+    processOwnerTrapCount: 0,
+    substituteFinishThread: false,
+    reorderFinishOutbox: false,
+    substituteFinishOutboxScope: false,
+    corruptFinishOutboxCursor: false,
   };
   const attestation = seal({
     schemaVersion: INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_VERSION,
@@ -230,7 +447,9 @@ function makeRepository({
     durableThreadSessionMapping: true,
     dispatchLeases: true,
     dispatchOutbox: true,
+    preLaunchAbort: true,
     terminalOutbox: true,
+    completionOutboxBundles: true,
     outboxDelivery: true,
     startupReconciliation: true,
     processIdentity: true,
@@ -252,7 +471,28 @@ function makeRepository({
 
   function ownedRun(payload) {
     const run = state.runs.get(payload.runId);
-    return run && run.principalId === payload.principalId && run.browserSessionId === payload.browserSessionId ? run : null;
+    return run && !run.hidden && run.principalId === payload.principalId && run.browserSessionId === payload.browserSessionId ? run : null;
+  }
+
+  function mutateThreadAlias(thread, mode) {
+    if (!thread) return;
+    if (mode === "native") thread.nativeSessionId = "aginti:mutated-native";
+    else if (mode === "lastRun") thread.lastRunId = "run_00000000-0000-4000-8000-000000000099";
+    else if (mode === "revision") thread.revision += 10;
+    else if (mode === "status") thread.status = "running";
+    else if (mode === "context") thread.authority = { ...thread.authority, contextDigest: "9".repeat(64) };
+    else if (mode === "replay") thread.replay = { prunedMessageCount: 1, anchorDigest: "8".repeat(64) };
+    else if (mode === "messages") thread.messages = [{ role: "assistant", content: "mutated" }];
+    else if (mode === "updatedAt") thread.updatedAt = "2026-01-01T00:00:00.000Z";
+  }
+
+  function mutateRunAlias(run, mode) {
+    if (!run) return;
+    if (mode === "native") run.nativeSessionId = "aginti:mutated-run-native";
+    else if (mode === "thread") run.threadId = "thr_00000000-0000-4000-8000-000000000099";
+    else if (mode === "status") run.status = "completed";
+    else if (mode === "revision") run.revision += 10;
+    else if (mode === "createdAt") run.createdAt = "2026-01-01T00:00:00.000Z";
   }
 
   function makeOutboxRecords(run, payload) {
@@ -319,7 +559,11 @@ function makeRepository({
     },
     async getIntegrationThread(payload) {
       calls.push(["getIntegrationThread", payload]);
-      return { thread: ownedThread(payload) };
+      mutateRunAlias(state.lastReturnedRunAlias, state.mutatePriorRunAliasDuringGetThread);
+      const thread = ownedThread(payload);
+      mutateThreadAlias(thread, state.mutateGetThreadAliasAfterReturn);
+      state.lastReturnedThreadAlias = thread;
+      return { thread };
     },
     async updateIntegrationThread(payload) {
       calls.push(["updateIntegrationThread", payload]);
@@ -346,10 +590,12 @@ function makeRepository({
     },
     async getActiveIntegrationRunForThread(payload) {
       calls.push(["getActiveIntegrationRunForThread", payload]);
+      mutateThreadAlias(state.lastReturnedThreadAlias, state.mutateActiveRunAliasAfterReturn);
       return {
         run:
           [...state.runs.values()].find(
             (run) =>
+              !run.hidden &&
               run.threadId === payload.threadId &&
               run.principalId === payload.principalId &&
               run.browserSessionId === payload.browserSessionId &&
@@ -360,6 +606,12 @@ function makeRepository({
     async createIntegrationRun(payload) {
       calls.push(["createIntegrationRun", payload]);
       const thread = ownedThread(payload);
+      if (state.failCreateBeforeCommit) {
+        state.failCreateBeforeCommit = false;
+        const error = new Error("create failed before commit");
+        error.code = "REVISION_CONFLICT";
+        throw error;
+      }
       if (
         !thread ||
         thread.revision !== payload.expectedThreadRevision ||
@@ -389,10 +641,20 @@ function makeRepository({
       });
       state.runs.set(run.id, run);
       Object.assign(thread, { lastRunId: run.id, status: "running", revision: thread.revision + 1, updatedAt: payload.createdAt });
-      return { run };
+      if (state.failCreateAfterCommit) {
+        state.failCreateAfterCommit = false;
+        const error = new Error("create failed after commit");
+        error.code = "CREATE_ACK_LOST";
+        throw error;
+      }
+      if (state.malformedCreateRun) return { run: { ...run, id: "run_00000000-0000-4000-8000-000000000099" }, thread };
+      if (state.malformedCreateThread) return { run, thread: { ...thread, lastRunId: "run_00000000-0000-4000-8000-000000000099" } };
+      return { run, thread };
     },
     async markIntegrationRunDispatching(payload) {
       calls.push(["markIntegrationRunDispatching", payload]);
+      mutateRunAlias(state.runs.get(payload.runId), state.mutateCreateAliasAfterReturn);
+      mutateThreadAlias(state.threads.get(payload.threadId), state.mutateCreateAliasAfterReturn);
       const run = ownedRun(payload);
       if (
         !run ||
@@ -406,7 +668,7 @@ function makeRepository({
         throw error;
       }
       Object.assign(run, {
-        threadId: state.substituteDispatchThread ? "thr_00000000-0000-4000-8000-000000000001" : run.threadId,
+        threadId: run.threadId,
         status: "running",
         dispatchLeaseId: payload.dispatchLeaseId,
         dispatchOutbox: payload.dispatchOutbox,
@@ -414,11 +676,137 @@ function makeRepository({
         dispatchedAt: payload.dispatchedAt,
         revision: run.revision + 1,
       });
+      if (state.corruptAbortLease) run.dispatchLeaseId = "f".repeat(64);
+      if (state.failDispatchAfterCommit) {
+        state.failDispatchAfterCommit = false;
+        const error = new Error("dispatch failed after commit");
+        error.code = "DISPATCH_ACK_LOST";
+        throw error;
+      }
+      if (state.malformedDispatchRun) return { run: { ...run, nativeSessionId: "aginti:wrong" } };
+      if (state.substituteDispatchThread) return { run: { ...run, threadId: "thr_00000000-0000-4000-8000-000000000001" } };
       return { run };
+    },
+    async abortIntegrationRunBeforeLaunch(payload) {
+      calls.push(["abortIntegrationRunBeforeLaunch", payload]);
+      if (state.preLaunchAbortError) throw state.preLaunchAbortError;
+      if (state.failNextPreLaunchAbort) {
+        state.failNextPreLaunchAbort = false;
+        const error = new Error("pre-launch abort failed");
+        error.code = "PRE_LAUNCH_ABORT_FAILED";
+        throw error;
+      }
+      const attempt = payload.attempt;
+      const response = (action, aborted, idempotent, run, thread) => {
+        const responseAction = state.forgedAbortAction || action;
+        let responseRun = run;
+        if (run) {
+          responseRun = { ...run };
+          if (state.forgedAbortRunRevision !== null) responseRun.revision = state.forgedAbortRunRevision;
+          if (state.forgedAbortRunCreatedAt) responseRun.createdAt = state.forgedAbortRunCreatedAt;
+          if (state.forgedAbortRunStartedAt) responseRun.startedAt = state.forgedAbortRunStartedAt;
+          if (state.forgedAbortOwnerTimestamp && responseRun.processOwner) {
+            responseRun.processOwner = {
+              ...responseRun.processOwner,
+              acquiredAt: "2026-01-01T00:00:00.000Z",
+              heartbeatAt: "2026-01-01T00:00:01.000Z",
+            };
+          }
+        }
+        let responseThread = thread;
+        if (thread) {
+          responseThread = { ...thread };
+          if (state.forgedAbortThreadUpdatedAt) responseThread.updatedAt = state.forgedAbortThreadUpdatedAt;
+          if (state.forgedAbortThreadContextDigest) {
+            responseThread.authority = { ...responseThread.authority, contextDigest: state.forgedAbortThreadContextDigest };
+          }
+          if (state.forgedAbortThreadReplay) responseThread.replay = { prunedMessageCount: 99, anchorDigest: "7".repeat(64) };
+          if (state.forgedAbortThreadMessages) responseThread.messages = [{ role: "assistant", content: "forged" }];
+        }
+        return {
+          schemaVersion: PRE_LAUNCH_ABORT_RESPONSE_VERSION,
+          action: responseAction,
+          aborted: responseAction === "not-created" ? false : aborted,
+          idempotent: responseAction === "already-aborted" ? true : responseAction === "aborted" ? false : idempotent,
+          attemptDigest: attempt.attemptDigest,
+          run: responseRun,
+          thread: responseThread,
+        };
+      };
+      const run = state.runs.get(attempt.runId);
+      if (!run) return response("not-created", false, false, null, null);
+      const thread = state.threads.get(attempt.threadId);
+      if (
+        !thread ||
+        run.principalId !== attempt.principalId ||
+        run.browserSessionId !== attempt.browserSessionId ||
+        run.threadId !== attempt.threadId ||
+        run.nativeSessionId !== attempt.nativeSessionId ||
+        run.previousRunId !== attempt.previousRunId ||
+        run.authority.runtimeRevision !== attempt.expectedNativeRuntimeRevision ||
+        thread.lastRunId !== attempt.runId && run.status !== "aborted_before_launch"
+      ) {
+        const error = new Error("pre-launch abort target mismatch");
+        error.code = "PRE_LAUNCH_ABORT_REFUSED";
+        throw error;
+      }
+      if (threadPreservationDigestFor(thread) !== attempt.threadPreservationDigest) {
+        const error = new Error("pre-launch abort thread digest mismatch");
+        error.code = "PRE_LAUNCH_ABORT_REFUSED";
+        throw error;
+      }
+      if (run.status === "aborted_before_launch") {
+        if (run.abortAttemptDigest !== attempt.attemptDigest) {
+          const error = new Error("pre-launch abort digest mismatch");
+          error.code = "PRE_LAUNCH_ABORT_REFUSED";
+          throw error;
+        }
+        return response("already-aborted", true, true, run, thread);
+      }
+      if (run.status === "starting") {
+        assert.equal(run.revision, 1);
+      } else if (run.status === "running") {
+        if (
+          attempt.dispatchAttempted !== true ||
+          run.revision !== 2 ||
+          run.dispatchLeaseId !== attempt.dispatchLeaseId ||
+          run.dispatchOutbox !== true ||
+          run.dispatchedAt !== attempt.dispatchedAt ||
+          contractDigest(run.processOwner) !== contractDigest(attempt.processOwner)
+        ) {
+          const error = new Error("pre-launch abort dispatch lease mismatch");
+          error.code = "PRE_LAUNCH_ABORT_REFUSED";
+          throw error;
+        }
+      } else {
+        const error = new Error("pre-launch abort status mismatch");
+        error.code = "PRE_LAUNCH_ABORT_REFUSED";
+        throw error;
+      }
+      Object.assign(run, {
+        status: "aborted_before_launch",
+        hidden: true,
+        tombstone: true,
+        completedAt: null,
+        output: "",
+        error: null,
+        abortAttemptDigest: attempt.attemptDigest,
+        abortAt: attempt.abortAt,
+        revision: run.revision + 1,
+      });
+      Object.assign(thread, {
+        status: "idle",
+        lastRunId: attempt.previousRunId,
+        updatedAt: attempt.abortAt,
+        revision: thread.revision + 1,
+      });
+      return response("aborted", true, false, run, thread);
     },
     async getIntegrationRun(payload) {
       calls.push(["getIntegrationRun", payload]);
-      return { run: ownedRun(payload) };
+      const run = ownedRun(payload);
+      state.lastReturnedRunAlias = run;
+      return { run };
     },
     async markIntegrationRunCancelling(payload) {
       calls.push(["markIntegrationRunCancelling", payload]);
@@ -432,7 +820,13 @@ function makeRepository({
       Object.assign(run, {
         cancelRequestedAt: payload.cancelRequestedAt,
         status: state.substituteCancelCompleted ? "completed" : run.status,
-        processOwner: state.omitCancelProcessOwner ? undefined : payload.processOwner,
+        processOwner: state.omitCancelProcessOwner
+          ? undefined
+          : poisonProcessOwner(
+              payload.processOwner,
+              state.proxyCancelProcessIdentity ? "identity-proxy" : state.cancelProcessOwnerMode,
+              state
+            ),
         revision: run.revision + 1,
       });
       return { run };
@@ -473,7 +867,98 @@ function makeRepository({
           revision: thread.revision + 1,
         });
       }
-      return { run, outboxEvents: makeOutboxRecords(run, payload) };
+      const originalOutboxEvents = makeOutboxRecords(run, payload);
+      Object.assign(run, {
+        authority: {
+          ...run.authority,
+          completionOutbox: completionOutboxMetadata({
+            run,
+            thread,
+            records: originalOutboxEvents,
+            cursor: payload.expectedCursor,
+          }),
+        },
+      });
+      let outboxEvents = originalOutboxEvents;
+      if (state.reorderFinishOutbox) outboxEvents = [...outboxEvents].reverse();
+      if (state.substituteFinishOutboxScope && outboxEvents[0]) {
+        outboxEvents = [{ ...outboxEvents[0], threadId: "thr_00000000-0000-4000-8000-000000000096" }, ...outboxEvents.slice(1)];
+      }
+      if (state.corruptFinishOutboxCursor && outboxEvents[0]) {
+        outboxEvents = [{ ...outboxEvents[0], expectedPreviousSeq: outboxEvents[0].expectedPreviousSeq + 1 }, ...outboxEvents.slice(1)];
+      }
+      const returnedThread = state.substituteFinishThread
+        ? { ...thread, id: "thr_00000000-0000-4000-8000-000000000097" }
+        : thread;
+      return { run, thread: returnedThread, outboxEvents };
+    },
+    async getIntegrationCompletionOutboxBundle(payload) {
+      calls.push(["getIntegrationCompletionOutboxBundle", payload]);
+      const run = ownedRun(payload);
+      if (!run || run.threadId !== payload.threadId) return { outboxEvents: [] };
+      let outboxEvents = [...state.outbox.values()]
+        .filter(
+          (record) =>
+            record.principalId === payload.principalId &&
+            record.browserSessionId === payload.browserSessionId &&
+            record.threadId === payload.threadId &&
+            record.runId === payload.runId
+        )
+        .sort((left, right) => left.expectedPreviousSeq - right.expectedPreviousSeq);
+      if (state.bundleMode === "truncated") outboxEvents = outboxEvents.slice(1);
+      if (state.bundleMode === "reordered") outboxEvents = [...outboxEvents].reverse();
+      if (state.bundleMode === "regenerated") {
+        outboxEvents = outboxEvents.map((record, index) => ({
+          ...record,
+          outboxId: `${record.outboxId}_shifted_${index}`,
+        }));
+      }
+      if (state.bundleMode === "extra" && outboxEvents[0]) {
+        outboxEvents = [{ ...outboxEvents[0], raw: "private" }, ...outboxEvents.slice(1)];
+      }
+      if (state.bundleMode === "accessor" && outboxEvents[0]) {
+        const record = { ...outboxEvents[0] };
+        Object.defineProperty(record, "payload", {
+          configurable: true,
+          enumerable: true,
+          get() {
+            return {};
+          },
+        });
+        outboxEvents = [record, ...outboxEvents.slice(1)];
+      }
+      if (state.bundleMode === "proxy" && outboxEvents[0]) {
+        outboxEvents = [new Proxy(outboxEvents[0], {}), ...outboxEvents.slice(1)];
+      }
+      if (state.bundleMode === "sparse-array") {
+        const sparse = [];
+        sparse.length = outboxEvents.length;
+        if (outboxEvents[1]) sparse[1] = outboxEvents[1];
+        outboxEvents = sparse;
+      }
+      if (state.bundleMode === "accessor-array" && outboxEvents[0]) {
+        const accessorArray = [...outboxEvents];
+        Object.defineProperty(accessorArray, "0", {
+          configurable: true,
+          enumerable: true,
+          get() {
+            return outboxEvents[0];
+          },
+        });
+        outboxEvents = accessorArray;
+      }
+      if (state.bundleMode === "custom-array") {
+        const customArray = [...outboxEvents];
+        Object.setPrototypeOf(customArray, {});
+        outboxEvents = customArray;
+      }
+      if (state.bundleMode === "proxy-array") {
+        outboxEvents = new Proxy([...outboxEvents], {});
+      }
+      if (state.bundleMode === "foreign" && outboxEvents[0]) {
+        outboxEvents = [{ ...outboxEvents[0], threadId: "thr_00000000-0000-4000-8000-000000000098" }, ...outboxEvents.slice(1)];
+      }
+      return { outboxEvents };
     },
     async reconcileIntegrationDispatches(payload) {
       calls.push(["reconcileIntegrationDispatches", payload]);
@@ -501,8 +986,9 @@ function makeRepository({
     async markIntegrationOutboxDelivered(payload) {
       calls.push(["markIntegrationOutboxDelivered", payload]);
       const record = state.outbox.get(payload.outboxId);
-      if (state.failNextOutboxMark) {
+      if (state.failNextOutboxMark || state.failOutboxMarkTypes.has(record?.type)) {
         state.failNextOutboxMark = false;
+        if (record?.type) state.failOutboxMarkTypes.delete(record.type);
         const error = new Error("mark delivery failed");
         error.code = "OUTBOX_MARK_FAILED";
         throw error;
@@ -583,6 +1069,8 @@ function makeEventLedgerStore({
   proofLookupByOutboxId,
   failAppends = 0,
   extraPublicEventField = false,
+  corruptLookupByOutboxId = false,
+  onLoadEventsAfter = null,
 } = {}) {
   const ledgers = new Map();
   const byOutboxId = new Map();
@@ -636,18 +1124,24 @@ function makeEventLedgerStore({
         previousHash,
       });
       assert.equal(event.hash, eventInput.expectedEventHash);
-      const stored = Object.freeze({
-        ...event,
-        outboxId: eventInput.outboxId,
-        principalId: scope.principalId,
-        browserSessionId: scope.browserSessionId,
-      });
+      const stored = event;
       events.push(stored);
       ledgers.set(key, events);
       byOutboxId.set(eventInput.outboxId, stored);
       return stored;
     },
     lookupByOutboxId(_scope, input) {
+      if (corruptLookupByOutboxId) {
+        return createPublicIntegrationEvent({
+          threadId: _scope.threadId,
+          runId: _scope.runId,
+          seq: 1,
+          type: "run.status",
+          payload: { status: "running" },
+          createdAt: now(),
+          previousHash: ZERO_DIGEST,
+        });
+      }
       return byOutboxId.get(input.outboxId) || null;
     },
     ledgerForRun(scope) {
@@ -675,6 +1169,7 @@ function makeEventLedgerStore({
           return (ledgers.get(scope.runId) || []).find((event) => event.seq === seq) || null;
         },
         async loadEventsAfter(afterSeq) {
+          if (typeof onLoadEventsAfter === "function") onLoadEventsAfter({ runId: scope.runId, afterSeq });
           return (ledgers.get(scope.runId) || []).filter((event) => event.seq > afterSeq);
         },
       };
@@ -701,6 +1196,7 @@ function makeEventLedgerStore({
         appendPublicEvent: true,
         appendByOutboxId,
         lookupByOutboxId,
+        terminalFinality: true,
         durable: true,
         persisted: true,
         monotonic: true,
@@ -786,7 +1282,7 @@ function context(overrides = {}) {
 }
 
 async function expectCode(action, code) {
-  await assert.rejects(action, (error) => error?.code === code || error?.publicCode === code);
+  await assert.rejects(async () => action(), (error) => error?.code === code || error?.publicCode === code);
 }
 
 async function writeNativeState(config, state) {
@@ -795,35 +1291,176 @@ async function writeNativeState(config, state) {
   await fs.writeFile(path.join(sessionDir, "state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
+async function prepareCompletedOutputBundle(fixture, { title, runId, output = "Recovered output." }) {
+  const thread = (await fixture.authority.createIntegrationThread({ title }, context())).thread;
+  const rawRun = runRecord({
+    id: runId,
+    threadId: thread.id,
+    nativeSessionId: fixture.repo.state.threads.get(thread.id).nativeSessionId,
+    status: "running",
+    revision: 2,
+    output: "",
+    completedAt: null,
+  });
+  fixture.repo.state.runs.set(rawRun.id, rawRun);
+  const completedAt = now();
+  const classification = classifyRunAgentResult(
+    { sessionId: rawRun.nativeSessionId, ok: true, result: output, persistedRuntimeRevision: 2 },
+    { nativeSessionId: rawRun.nativeSessionId }
+  );
+  const result = await fixture.repo.repository.finishIntegrationRunWithOutbox({
+    runId: rawRun.id,
+    threadId: rawRun.threadId,
+    nativeSessionId: rawRun.nativeSessionId,
+    principalId: PRINCIPAL,
+    browserSessionId: BROWSER_SESSION,
+    expectedRevision: 2,
+    expectedNativeRuntimeRevision: 1,
+    completedNativeRuntimeRevision: 2,
+    status: "completed",
+    output: classification.output,
+    error: null,
+    completedAt,
+    processOwner: fakeProcessOwner(completedAt),
+    expectedCursor: { firstSeq: 1, lastSeq: 0, lastHash: ZERO_DIGEST, prunedThroughSeq: 0 },
+    outputEvent: outputEventForRunResult(classification, { createdAt: completedAt }),
+    terminalEvent: { type: "run.completed", payload: {}, createdAt: completedAt },
+    resultDigest: classification.digest,
+  });
+  const [outputRecord, terminalRecord] = result.outboxEvents;
+  assert.equal(outputRecord.type, "output.delta");
+  assert.equal(terminalRecord.type, "run.completed");
+  return { thread, run: result.run, outputRecord, terminalRecord };
+}
+
+async function publishOutboxRecordOnly(fixture, scope, record) {
+  const event = await fixture.ledger.appendByOutboxId(scope, {
+    outboxId: record.outboxId,
+    type: record.type,
+    payload: record.payload || {},
+    createdAt: record.createdAt,
+    expectedPreviousSeq: record.expectedPreviousSeq,
+    expectedPreviousHash: record.expectedPreviousHash,
+    expectedEventHash: record.expectedEventHash,
+  });
+  await fixture.repo.repository.markIntegrationOutboxDelivered({
+    outboxId: record.outboxId,
+    principalId: scope.principalId,
+    browserSessionId: scope.browserSessionId,
+    threadId: scope.threadId,
+    runId: scope.runId,
+    eventSeq: event.seq,
+    eventHash: event.hash,
+    eventDigest: contractDigest(event),
+  });
+  return event;
+}
+
+function attachCompletionMetadata(fixture, run, records, cursor = { firstSeq: 1, lastSeq: 0, lastHash: ZERO_DIGEST, prunedThroughSeq: 0 }) {
+  const thread = fixture.repo.state.threads.get(run.threadId);
+  run.authority = {
+    ...run.authority,
+    completionOutbox: completionOutboxMetadata({ run, thread, records, cursor }),
+  };
+}
+
+function callsNamed(fixture, name) {
+  return fixture.repo.calls.filter(([callName]) => callName === name);
+}
+
+function lastCallPayload(fixture, name) {
+  const calls = callsNamed(fixture, name);
+  return calls.length ? calls.at(-1)[1] : null;
+}
+
+function assertNoPreLaunchTerminalSideEffects(fixture, runId) {
+  assert.equal(callsNamed(fixture, "finishIntegrationRunWithOutbox").length, 0);
+  assert.equal(callsNamed(fixture, "markIntegrationOutboxDelivered").length, 0);
+  assert.equal(fixture.repo.state.outbox.size, 0);
+  assert.equal(fixture.ledger.eventsForRun(runId).length, 0);
+}
+
+function assertPreLaunchAbortApplied(fixture, { threadId, runId, previousRunId = null, expectedRuntimeRevision = 1, dispatched = false }) {
+  const thread = fixture.repo.state.threads.get(threadId);
+  const run = fixture.repo.state.runs.get(runId);
+  assert.equal(run.hidden, true);
+  assert.equal(run.tombstone, true);
+  assert.equal(run.status, "aborted_before_launch");
+  assert.equal(run.completedAt, null);
+  assert.equal(run.startedAt, run.createdAt);
+  assert.equal(run.output, "");
+  assert.equal(run.error, null);
+  assert.equal(run.authority.runtimeRevision, expectedRuntimeRevision);
+  assert.equal(run.revision, dispatched ? 3 : 2);
+  assert.equal(thread.lastRunId, previousRunId);
+  assert.equal(thread.status, "idle");
+  assert.equal(thread.nativeSessionId, run.nativeSessionId);
+  assert.equal(thread.authority.runtimeRevision, expectedRuntimeRevision);
+  assert.equal(thread.authority.contextDigest, CONTEXT_DIGEST);
+  assert.deepEqual(thread.messages, []);
+  assert.equal(dispatched ? run.dispatchLeaseId !== null : run.dispatchLeaseId === null, true);
+  assertNoPreLaunchTerminalSideEffects(fixture, runId);
+}
+
+async function assertHiddenRunNotPublic(fixture, runId) {
+  await expectCode(() => fixture.authority.getIntegrationRunStatus({ runId }, context()), "NOT_FOUND");
+}
+
 async function main() {
   const unhandled = [];
   const onUnhandled = (reason) => unhandled.push(reason);
   process.on("unhandledRejection", onUnhandled);
+  await fs.rm(SMOKE_ROOT, { recursive: true, force: true });
+  await fs.mkdir(SMOKE_ROOT, { recursive: true });
 
   try {
-    assert.equal(classifyRunAgentResult({ sessionId: "aginti:one", ok: true, result: "Direct answer." }, { nativeSessionId: "aginti:one" }).status, "completed");
-    assert.equal(classifyRunAgentResult({ sessionId: "aginti:one", stopped: true, reason: "user_interrupt" }, { nativeSessionId: "aginti:one" }).status, "cancelled");
-    assert.equal(classifyRunAgentResult({ sessionId: "aginti:one", ok: false, reason: "provider_error" }, { nativeSessionId: "aginti:one" }).status, "failed");
-    assert.equal(classifyRunAgentResult({ sessionId: "aginti:one", stopped: true, reason: "max_steps_reached" }, { nativeSessionId: "aginti:one" }).status, "failed");
-    assert.equal(classifyRunAgentResult({ sessionId: "aginti:one", stopped: true, reason: "model_timeout" }, { nativeSessionId: "aginti:one" }).status, "failed");
-    assert.equal(classifyRunAgentResult({ sessionId: "aginti:one", stopped: true, reason: "some_other_stop" }, { nativeSessionId: "aginti:one" }).status, "failed");
-    assert.equal(classifyRunAgentResult({ sessionId: "aginti:one", stopped: true, ok: false, reason: "user_interrupt" }, { nativeSessionId: "aginti:one" }).status, "failed");
-    assert.throws(() => classifyRunAgentResult({ sessionId: "aginti:two", ok: true }, { nativeSessionId: "aginti:one" }), /RUN_AGENT_SESSION_MISMATCH|sessionId/);
+    const withRevision = (result, persistedRuntimeRevision = 1) => ({ ...result, persistedRuntimeRevision });
+    assert.equal(classifyRunAgentResult(withRevision({ sessionId: "aginti:one", ok: true, result: "Direct answer." }), { nativeSessionId: "aginti:one" }).status, "completed");
+    assert.equal(classifyRunAgentResult(withRevision({ sessionId: "aginti:one", stopped: true, reason: "user_interrupt" }), { nativeSessionId: "aginti:one" }).status, "cancelled");
+    assert.equal(classifyRunAgentResult(withRevision({ sessionId: "aginti:one", ok: false, reason: "provider_error" }), { nativeSessionId: "aginti:one" }).status, "failed");
+    assert.equal(classifyRunAgentResult(withRevision({ sessionId: "aginti:one", stopped: true, reason: "max_steps_reached" }), { nativeSessionId: "aginti:one" }).status, "failed");
+    assert.equal(classifyRunAgentResult(withRevision({ sessionId: "aginti:one", stopped: true, reason: "model_timeout" }), { nativeSessionId: "aginti:one" }).status, "failed");
+    assert.equal(classifyRunAgentResult(withRevision({ sessionId: "aginti:one", stopped: true, reason: "some_other_stop" }), { nativeSessionId: "aginti:one" }).status, "failed");
+    assert.equal(classifyRunAgentResult(withRevision({ sessionId: "aginti:one", stopped: true, ok: false, reason: "user_interrupt" }), { nativeSessionId: "aginti:one" }).status, "failed");
+    assert.throws(() => classifyRunAgentResult(withRevision({ sessionId: "aginti:two", ok: true }), { nativeSessionId: "aginti:one" }), /RUN_AGENT_SESSION_MISMATCH|sessionId/);
     const abortController = new AbortController();
     abortController.abort(new Error("cancelled"));
-    assert.equal(classifyRunAgentError(new Error("boom"), { abortSignal: abortController.signal }).status, "cancelled");
-    const outputEvent = outputEventForRunResult(classifyRunAgentResult({ sessionId: "aginti:one", ok: true, result: "Direct answer." }, { nativeSessionId: "aginti:one" }));
+    const cancelledError = new Error("boom");
+    cancelledError.persistedRuntimeRevision = 1;
+    assert.equal(classifyRunAgentError(cancelledError, { abortSignal: abortController.signal }).status, "cancelled");
+    const failedError = new Error("timeout");
+    failedError.code = "MODEL_TIMEOUT";
+    failedError.persistedRuntimeRevision = 2;
+    const failedClassification = classifyRunAgentError(failedError, {});
+    assert.equal(failedClassification.status, "failed");
+    assert.equal(failedClassification.persistedRuntimeRevision, 2);
+    const outputEvent = outputEventForRunResult(classifyRunAgentResult(withRevision({ sessionId: "aginti:one", ok: true, result: "Direct answer." }), { nativeSessionId: "aginti:one" }));
     assert.equal(outputEvent.payload.text, "Direct answer.");
+    const projectedPathText = classifyRunAgentResult(
+      withRevision({
+        sessionId: "aginti:one",
+        ok: true,
+        result:
+          "paths /scratch/a /nix/store/pkg /boot/vmlinuz /lib/libc.so /foo C:\\Users\\alice\\secret \\\\server\\share\\secret file:///tmp/secret keep 1/2 and https://example.test/a",
+      }),
+      { nativeSessionId: "aginti:one" }
+    ).output;
+    for (const token of ["/scratch", "/nix/store", "/boot", "/lib", "/foo", "C:\\Users", "\\\\server", "file:///tmp"]) {
+      assert.equal(projectedPathText.includes(token), false);
+    }
+    assert.match(projectedPathText, /\[REDACTED_PATH\]/u);
+    assert.match(projectedPathText, /1\/2/u);
+    assert.match(projectedPathText, /https:\/\/example\.test\/a/u);
     const completionCreatedAt = now();
     const timedOutputEvent = outputEventForRunResult(
-      classifyRunAgentResult({ sessionId: "aginti:one", ok: true, result: "Direct answer." }, { nativeSessionId: "aginti:one" }),
+      classifyRunAgentResult(withRevision({ sessionId: "aginti:one", ok: true, result: "Direct answer." }), { nativeSessionId: "aginti:one" }),
       { createdAt: completionCreatedAt }
     );
     assert.equal(timedOutputEvent.createdAt, completionCreatedAt);
     assert.throws(
       () =>
         outputEventForRunResult(
-          classifyRunAgentResult({ sessionId: "aginti:one", ok: true, result: "Direct answer." }, { nativeSessionId: "aginti:one" }),
+          classifyRunAgentResult(withRevision({ sessionId: "aginti:one", ok: true, result: "Direct answer." }), { nativeSessionId: "aginti:one" }),
           { createdAt: "not-iso" }
         ),
       /createdAt|canonical/iu
@@ -906,7 +1543,18 @@ async function main() {
       meta: {
         integrationPolicyLock: resumeConfig.integrationPolicyLock,
         integrationPolicyFingerprint: resumeConfig.integrationPolicyFingerprint,
+        integrationRuntimeRootsDigest: resumeConfig.integrationRuntimeRootsDigest,
         runtimeConfig: hostileStoredRuntime,
+      },
+    });
+    await expectCode(() => preflightNativeSessionRuntime(resumeConfig), "SESSION_RUNTIME_TAKEOVER_BLOCKED");
+    await writeNativeState(resumeConfig, {
+      sessionId: resumeConfig.sessionId,
+      meta: {
+        integrationPolicyLock: resumeConfig.integrationPolicyLock,
+        integrationPolicyFingerprint: resumeConfig.integrationPolicyFingerprint,
+        integrationRuntimeRootsDigest: resumeConfig.integrationRuntimeRootsDigest,
+        runtimeConfig: expectedFixedSessionRuntimeSnapshot(resumeConfig, 1),
       },
     });
     const preflight = await preflightNativeSessionRuntime(resumeConfig);
@@ -917,12 +1565,26 @@ async function main() {
       meta: {
         integrationPolicyLock: resumeConfig.integrationPolicyLock,
         integrationPolicyFingerprint: resumeConfig.integrationPolicyFingerprint,
+        integrationRuntimeRootsDigest: resumeConfig.integrationRuntimeRootsDigest,
         runtimeConfig: expectedFixedSessionRuntimeSnapshot(resumeConfig, 2),
       },
     });
     assert.equal((await postflightNativeSessionRuntime(resumeConfig, preflight)).revision, 2);
 
-    const missingLockConfig = { ...resumeConfig, sessionId: "aginti:missing-lock", resume: "aginti:missing-lock" };
+    const missingLockConfig = buildFixedNativeRunAgentConfig({
+      mode: "resume",
+      policy: fixedPolicy,
+      nativeSessionId: "aginti:missing-lock",
+      inputText: "Resume",
+      abortSignal: new AbortController().signal,
+      onEvent() {},
+      repositoryRoots: runtimeRoots({
+        sessionsDir: `${SMOKE_ROOT}/state/missing-lock-sessions`,
+        baseDir: `${SMOKE_ROOT}/workspace-missing-lock`,
+        commandCwd: `${SMOKE_ROOT}/workspace-missing-lock`,
+      }),
+      expectedRuntimeRevision: 1,
+    });
     await writeNativeState(missingLockConfig, {
       sessionId: missingLockConfig.sessionId,
       meta: { runtimeConfig: expectedFixedSessionRuntimeSnapshot(missingLockConfig, 1) },
@@ -1057,7 +1719,14 @@ async function main() {
     assert.equal(proof.noMcp, true);
     assert.equal(proof.noWeb, true);
     assert.equal(proof.publicArtifactsOnly, false);
-    assert.doesNotThrow(() => makeAuthority({ retained: true, appendProof: true, ledgerOptions: { omitLookupByOutboxId: true } }));
+    assert.throws(
+      () => makeAuthority({ retained: true, appendProof: true, ledgerOptions: { omitLookupByOutboxId: true } }),
+      /lookupByOutboxId|event ledger|event append|unavailable/iu
+    );
+    assert.throws(
+      () => makeAuthority({ retained: true, appendProof: true, ledgerOptions: { proofLookupByOutboxId: false } }),
+      /event append|unavailable/iu
+    );
     assert.throws(
       () =>
         makeAuthority({
@@ -1210,20 +1879,290 @@ async function main() {
     assert.equal(repo.state.threads.get(thread.id).revision, 2);
     assert.equal(repo.state.threads.get(thread.id).nativeSessionId, beforeNativeSessionId);
 
-    const dispatchFailure = makeAuthority();
-    const dispatchThread = (await dispatchFailure.authority.createIntegrationThread({ title: "Dispatch fail" }, context())).thread;
-    dispatchFailure.repo.state.failNextDispatch = true;
-    await assert.rejects(() => dispatchFailure.authority.startIntegrationRun({ threadId: dispatchThread.id, input: { text: "Dispatch" } }, context()));
-    assert.equal([...dispatchFailure.repo.state.runs.values()][0].status, "failed");
-    assert.equal(dispatchFailure.repo.calls.find(([name]) => name === "createIntegrationRun")[1].expectedNativeRuntimeRevision, 1);
-    assert.equal(dispatchFailure.repo.calls.find(([name]) => name === "markIntegrationRunDispatching")[1].expectedNativeRuntimeRevision, 1);
-    assert.equal(dispatchFailure.repo.calls.some(([name]) => name === "finishIntegrationRunWithOutbox"), true);
+    const createBefore = makeAuthority();
+    const createBeforeThread = (await createBefore.authority.createIntegrationThread({ title: "Create before" }, context())).thread;
+    const createBeforeRawThread = createBefore.repo.state.threads.get(createBeforeThread.id);
+    createBefore.repo.state.failCreateBeforeCommit = true;
+    await assert.rejects(() => createBefore.authority.startIntegrationRun({ threadId: createBeforeThread.id, input: { text: "Create" } }, context()));
+    assert.equal(createBefore.repo.state.runs.size, 0);
+    assert.equal(createBeforeRawThread.lastRunId, null);
+    assert.equal(createBeforeRawThread.status, "idle");
+    assert.equal(createBeforeRawThread.revision, 1);
+    assert.equal(lastCallPayload(createBefore, "abortIntegrationRunBeforeLaunch").attempt.dispatchAttempted, false);
+    assert.equal(callsNamed(createBefore, "abortIntegrationRunBeforeLaunch").length, 1);
+    assert.equal(callsNamed(createBefore, "finishIntegrationRunWithOutbox").length, 0);
 
-    const substitution = makeAuthority();
-    const substitutionThread = (await substitution.authority.createIntegrationThread({ title: "Substitute" }, context())).thread;
-    substitution.repo.state.substituteDispatchThread = true;
-    await assert.rejects(() => substitution.authority.startIntegrationRun({ threadId: substitutionThread.id, input: { text: "Substitute" } }, context()));
-    assert.equal(substitution.repo.calls.some(([name]) => name === "finishIntegrationRunWithOutbox"), true);
+    const createAfter = makeAuthority();
+    const createAfterThread = (await createAfter.authority.createIntegrationThread({ title: "Create after" }, context())).thread;
+    createAfter.repo.state.failCreateAfterCommit = true;
+    await assert.rejects(() => createAfter.authority.startIntegrationRun({ threadId: createAfterThread.id, input: { text: "Create" } }, context()));
+    const createAfterRun = [...createAfter.repo.state.runs.values()][0];
+    assertPreLaunchAbortApplied(createAfter, { threadId: createAfterThread.id, runId: createAfterRun.id });
+    await assertHiddenRunNotPublic(createAfter, createAfterRun.id);
+    const createAfterAbortPayload = lastCallPayload(createAfter, "abortIntegrationRunBeforeLaunch");
+    const createAfterAgain = await createAfter.repo.repository.abortIntegrationRunBeforeLaunch(createAfterAbortPayload);
+    assert.equal(createAfterAgain.action, "already-aborted");
+    assert.equal(createAfterAgain.idempotent, true);
+    createAfter.repo.state.failNextDispatch = true;
+    await assert.rejects(() => createAfter.authority.startIntegrationRun({ threadId: createAfterThread.id, input: { text: "Retry" } }, context()));
+    assert.equal([...createAfter.repo.state.runs.values()].filter((run) => run.status === "aborted_before_launch").length, 2);
+
+    for (const [flag, pattern] of [
+      ["malformedCreateRun", /created run|id|unavailable/iu],
+      ["malformedCreateThread", /updated thread|lastRunId|unavailable/iu],
+      ["malformedDispatchRun", /dispatched run|native session|unavailable/iu],
+      ["substituteDispatchThread", /dispatched run|thread|unavailable/iu],
+    ]) {
+      const malformed = makeAuthority();
+      const malformedThread = (await malformed.authority.createIntegrationThread({ title: `Malformed ${flag}` }, context())).thread;
+      malformed.repo.state[flag] = true;
+      await assert.rejects(
+        () => malformed.authority.startIntegrationRun({ threadId: malformedThread.id, input: { text: flag } }, context()),
+        (error) => pattern.test(`${error?.code || ""} ${error?.message || ""}`)
+      );
+      const malformedRun = [...malformed.repo.state.runs.values()][0];
+      assertPreLaunchAbortApplied(malformed, {
+        threadId: malformedThread.id,
+        runId: malformedRun.id,
+        dispatched: flag === "malformedDispatchRun" || flag === "substituteDispatchThread",
+      });
+    }
+
+    const dispatchBefore = makeAuthority();
+    const dispatchBeforeThread = (await dispatchBefore.authority.createIntegrationThread({ title: "Dispatch before" }, context())).thread;
+    dispatchBefore.repo.state.failNextDispatch = true;
+    await assert.rejects(() => dispatchBefore.authority.startIntegrationRun({ threadId: dispatchBeforeThread.id, input: { text: "Dispatch" } }, context()));
+    const dispatchBeforeRun = [...dispatchBefore.repo.state.runs.values()][0];
+    assert.equal(lastCallPayload(dispatchBefore, "abortIntegrationRunBeforeLaunch").attempt.dispatchAttempted, true);
+    assertPreLaunchAbortApplied(dispatchBefore, { threadId: dispatchBeforeThread.id, runId: dispatchBeforeRun.id, dispatched: false });
+
+    const dispatchAfter = makeAuthority();
+    const dispatchAfterThread = (await dispatchAfter.authority.createIntegrationThread({ title: "Dispatch after" }, context())).thread;
+    dispatchAfter.repo.state.failDispatchAfterCommit = true;
+    await assert.rejects(() => dispatchAfter.authority.startIntegrationRun({ threadId: dispatchAfterThread.id, input: { text: "Dispatch" } }, context()));
+    const dispatchAfterRun = [...dispatchAfter.repo.state.runs.values()][0];
+    assertPreLaunchAbortApplied(dispatchAfter, { threadId: dispatchAfterThread.id, runId: dispatchAfterRun.id, dispatched: true });
+
+    for (const [label, action] of [
+      ["aborted", ""],
+      ["already-aborted", "already-aborted"],
+    ]) {
+      const forgedStarting = makeAuthority();
+      const forgedStartingThread = (await forgedStarting.authority.createIntegrationThread({ title: `Forged starting ${label}` }, context())).thread;
+      forgedStarting.repo.state.failCreateAfterCommit = true;
+      forgedStarting.repo.state.forgedAbortRunRevision = 3;
+      forgedStarting.repo.state.forgedAbortAction = action;
+      await expectCode(
+        () => forgedStarting.authority.startIntegrationRun({ threadId: forgedStartingThread.id, input: { text: "Forge" } }, context()),
+        "AGENT_UNAVAILABLE"
+      );
+      const forgedStartingRun = [...forgedStarting.repo.state.runs.values()][0];
+      assertNoPreLaunchTerminalSideEffects(forgedStarting, forgedStartingRun.id);
+
+      const forgedDispatched = makeAuthority();
+      const forgedDispatchedThread = (await forgedDispatched.authority.createIntegrationThread({ title: `Forged dispatched ${label}` }, context())).thread;
+      forgedDispatched.repo.state.failDispatchAfterCommit = true;
+      forgedDispatched.repo.state.forgedAbortRunRevision = 4;
+      forgedDispatched.repo.state.forgedAbortAction = action;
+      await expectCode(
+        () => forgedDispatched.authority.startIntegrationRun({ threadId: forgedDispatchedThread.id, input: { text: "Forge" } }, context()),
+        "AGENT_UNAVAILABLE"
+      );
+      const forgedDispatchedRun = [...forgedDispatched.repo.state.runs.values()][0];
+      assertNoPreLaunchTerminalSideEffects(forgedDispatched, forgedDispatchedRun.id);
+    }
+
+    for (const [flag, value] of [
+      ["forgedAbortRunCreatedAt", "2026-01-01T00:00:00.000Z"],
+      ["forgedAbortRunStartedAt", "2026-01-01T00:00:00.000Z"],
+      ["forgedAbortThreadUpdatedAt", "2026-01-01T00:00:00.000Z"],
+      ["forgedAbortThreadContextDigest", "6".repeat(64)],
+      ["forgedAbortThreadReplay", true],
+      ["forgedAbortThreadMessages", true],
+    ]) {
+      const forgedAbort = makeAuthority();
+      const forgedAbortThread = (await forgedAbort.authority.createIntegrationThread({ title: `Forged ${flag}` }, context())).thread;
+      forgedAbort.repo.state.failCreateAfterCommit = true;
+      forgedAbort.repo.state[flag] = value;
+      await expectCode(
+        () => forgedAbort.authority.startIntegrationRun({ threadId: forgedAbortThread.id, input: { text: flag } }, context()),
+        "AGENT_UNAVAILABLE"
+      );
+      const forgedAbortRun = [...forgedAbort.repo.state.runs.values()][0];
+      assertNoPreLaunchTerminalSideEffects(forgedAbort, forgedAbortRun.id);
+    }
+
+    const forgedOwnerTime = makeAuthority();
+    const forgedOwnerThread = (await forgedOwnerTime.authority.createIntegrationThread({ title: "Forged owner time" }, context())).thread;
+    forgedOwnerTime.repo.state.failDispatchAfterCommit = true;
+    forgedOwnerTime.repo.state.forgedAbortOwnerTimestamp = true;
+    await expectCode(
+      () => forgedOwnerTime.authority.startIntegrationRun({ threadId: forgedOwnerThread.id, input: { text: "Owner" } }, context()),
+      "AGENT_UNAVAILABLE"
+    );
+    const forgedOwnerRun = [...forgedOwnerTime.repo.state.runs.values()][0];
+    assertNoPreLaunchTerminalSideEffects(forgedOwnerTime, forgedOwnerRun.id);
+
+    const abortFailure = makeAuthority();
+    const abortFailureThread = (await abortFailure.authority.createIntegrationThread({ title: "Abort failure" }, context())).thread;
+    abortFailure.repo.state.failCreateAfterCommit = true;
+    abortFailure.repo.state.failNextPreLaunchAbort = true;
+    await assert.rejects(
+      () => abortFailure.authority.startIntegrationRun({ threadId: abortFailureThread.id, input: { text: "Abort failure" } }, context()),
+      (error) => error?.code === "PRE_LAUNCH_ABORT_FAILED"
+    );
+    const abortFailureRun = [...abortFailure.repo.state.runs.values()][0];
+    assert.equal(abortFailureRun.hidden, false);
+    assertNoPreLaunchTerminalSideEffects(abortFailure, abortFailureRun.id);
+
+    const abortPassthrough = makeAuthority();
+    const abortPassthroughThread = (await abortPassthrough.authority.createIntegrationThread({ title: "Abort passthrough" }, context())).thread;
+    let abortErrorTrapCount = 0;
+    const abortError = {};
+    Object.defineProperty(abortError, "cause", {
+      enumerable: true,
+      configurable: false,
+      get() {
+        abortErrorTrapCount += 1;
+        throw new Error("cause getter must not run");
+      },
+    });
+    Object.preventExtensions(abortError);
+    abortPassthrough.repo.state.failCreateAfterCommit = true;
+    abortPassthrough.repo.state.preLaunchAbortError = Object.freeze(abortError);
+    try {
+      await abortPassthrough.authority.startIntegrationRun({ threadId: abortPassthroughThread.id, input: { text: "Abort passthrough" } }, context());
+      assert.fail("pre-launch abort passthrough must reject");
+    } catch (error) {
+      assert.equal(error, abortPassthrough.repo.state.preLaunchAbortError);
+    }
+    assert.equal(abortErrorTrapCount, 0);
+    const abortPassthroughRun = [...abortPassthrough.repo.state.runs.values()][0];
+    assertNoPreLaunchTerminalSideEffects(abortPassthrough, abortPassthroughRun.id);
+
+    const wrongLease = makeAuthority();
+    const wrongLeaseThread = (await wrongLease.authority.createIntegrationThread({ title: "Wrong lease" }, context())).thread;
+    wrongLease.repo.state.failDispatchAfterCommit = true;
+    wrongLease.repo.state.corruptAbortLease = true;
+    await assert.rejects(
+      () => wrongLease.authority.startIntegrationRun({ threadId: wrongLeaseThread.id, input: { text: "Wrong lease" } }, context()),
+      (error) => error?.code === "PRE_LAUNCH_ABORT_REFUSED"
+    );
+    const wrongLeaseRun = [...wrongLease.repo.state.runs.values()][0];
+    assert.equal(wrongLeaseRun.status, "running");
+    assert.equal(wrongLeaseRun.hidden, false);
+    assertNoPreLaunchTerminalSideEffects(wrongLease, wrongLeaseRun.id);
+
+    const activeAliasMutation = makeAuthority();
+    const activeAliasThread = (await activeAliasMutation.authority.createIntegrationThread({ title: "Active alias mutation" }, context())).thread;
+    const activeAliasRaw = activeAliasMutation.repo.state.threads.get(activeAliasThread.id);
+    const activeAliasOriginalNative = activeAliasRaw.nativeSessionId;
+    activeAliasMutation.repo.state.mutateActiveRunAliasAfterReturn = "native";
+    await expectCode(
+      () => activeAliasMutation.authority.startIntegrationRun({ threadId: activeAliasThread.id, input: { text: "Alias" } }, context()),
+      "PRE_LAUNCH_ABORT_REFUSED"
+    );
+    const activeAliasAbort = lastCallPayload(activeAliasMutation, "abortIntegrationRunBeforeLaunch");
+    assert.equal(activeAliasAbort.attempt.nativeSessionId, activeAliasOriginalNative);
+    const activeAliasRun = [...activeAliasMutation.repo.state.runs.values()][0];
+    assertNoPreLaunchTerminalSideEffects(activeAliasMutation, activeAliasRun.id);
+
+    const getThreadAliasMutation = makeAuthority();
+    const getThreadAliasThread = (await getThreadAliasMutation.authority.createIntegrationThread({ title: "Get thread alias mutation" }, context())).thread;
+    getThreadAliasMutation.repo.state.mutateGetThreadAliasAfterReturn = "lastRun";
+    await expectCode(
+      () => getThreadAliasMutation.authority.startIntegrationRun({ threadId: getThreadAliasThread.id, input: { text: "Alias" } }, context()),
+      "AGENT_UNAVAILABLE"
+    );
+    assert.equal(callsNamed(getThreadAliasMutation, "createIntegrationRun").length, 0);
+
+    const processOwnerAliasMutation = makeAuthority();
+    const processOwnerAliasThread = (await processOwnerAliasMutation.authority.createIntegrationThread({ title: "Process owner alias mutation" }, context())).thread;
+    const processOwnerRaw = processOwnerAliasMutation.repo.state.threads.get(processOwnerAliasThread.id);
+    const processOwnerOriginalNative = processOwnerRaw.nativeSessionId;
+    processOwnerAliasMutation.repo.state.mutateCreateAliasAfterReturn = "native";
+    await expectCode(
+      () => processOwnerAliasMutation.authority.startIntegrationRun({ threadId: processOwnerAliasThread.id, input: { text: "Alias" } }, context()),
+      "PRE_LAUNCH_ABORT_REFUSED"
+    );
+    const processOwnerAbort = lastCallPayload(processOwnerAliasMutation, "abortIntegrationRunBeforeLaunch");
+    assert.equal(processOwnerAbort.attempt.nativeSessionId, processOwnerOriginalNative);
+    const processOwnerAliasRun = [...processOwnerAliasMutation.repo.state.runs.values()][0];
+    assertNoPreLaunchTerminalSideEffects(processOwnerAliasMutation, processOwnerAliasRun.id);
+
+    const resumeRollback = makeAuthority();
+    const resumeThread = (await resumeRollback.authority.createIntegrationThread({ title: "Resume rollback" }, context())).thread;
+    const resumeRawThread = resumeRollback.repo.state.threads.get(resumeThread.id);
+    const priorRun = runRecord({
+      id: "run_00000000-0000-4000-8000-000000000047",
+      threadId: resumeThread.id,
+      nativeSessionId: resumeRawThread.nativeSessionId,
+      status: "completed",
+      revision: 3,
+      completedAt: now(),
+      output: "Prior terminal.",
+      authority: {
+        kind: "aginti",
+        snapshotHash: SNAPSHOT_HASH,
+        runtimeRevision: 2,
+        contextDigest: CONTEXT_DIGEST,
+      },
+    });
+    resumeRollback.repo.state.runs.set(priorRun.id, priorRun);
+    Object.assign(resumeRawThread, {
+      lastRunId: priorRun.id,
+      status: "idle",
+      authority: { ...resumeRawThread.authority, runtimeRevision: 2 },
+      revision: resumeRawThread.revision + 1,
+    });
+    resumeRollback.repo.state.failCreateAfterCommit = true;
+    await assert.rejects(() => resumeRollback.authority.resumeIntegrationRun({ runId: priorRun.id, input: { text: "Resume" } }, context()));
+    const abortedResumeRun = [...resumeRollback.repo.state.runs.values()].find((run) => run.id !== priorRun.id);
+    assertPreLaunchAbortApplied(resumeRollback, {
+      threadId: resumeThread.id,
+      runId: abortedResumeRun.id,
+      previousRunId: priorRun.id,
+      expectedRuntimeRevision: 2,
+    });
+    assert.equal(resumeRawThread.lastRunId, priorRun.id);
+    resumeRollback.repo.state.failNextDispatch = true;
+    await assert.rejects(() => resumeRollback.authority.resumeIntegrationRun({ runId: priorRun.id, input: { text: "Resume again" } }, context()));
+    assert.equal([...resumeRollback.repo.state.runs.values()].filter((run) => run.status === "aborted_before_launch").length, 2);
+
+    const priorAliasMutation = makeAuthority();
+    const priorAliasThread = (await priorAliasMutation.authority.createIntegrationThread({ title: "Prior alias mutation" }, context())).thread;
+    const priorAliasRawThread = priorAliasMutation.repo.state.threads.get(priorAliasThread.id);
+    const priorAliasNative = priorAliasRawThread.nativeSessionId;
+    const priorAliasRun = runRecord({
+      id: "run_00000000-0000-4000-8000-000000000048",
+      threadId: priorAliasThread.id,
+      nativeSessionId: priorAliasNative,
+      status: "completed",
+      revision: 3,
+      completedAt: now(),
+      output: "Prior terminal.",
+      authority: {
+        kind: "aginti",
+        snapshotHash: SNAPSHOT_HASH,
+        runtimeRevision: 2,
+        contextDigest: CONTEXT_DIGEST,
+      },
+    });
+    priorAliasMutation.repo.state.runs.set(priorAliasRun.id, priorAliasRun);
+    Object.assign(priorAliasRawThread, {
+      lastRunId: priorAliasRun.id,
+      status: "idle",
+      authority: { ...priorAliasRawThread.authority, runtimeRevision: 2 },
+      revision: priorAliasRawThread.revision + 1,
+    });
+    priorAliasMutation.repo.state.failCreateAfterCommit = true;
+    priorAliasMutation.repo.state.mutatePriorRunAliasDuringGetThread = "native";
+    await assert.rejects(() => priorAliasMutation.authority.resumeIntegrationRun({ runId: priorAliasRun.id, input: { text: "Resume alias" } }, context()));
+    const priorAliasAbort = lastCallPayload(priorAliasMutation, "abortIntegrationRunBeforeLaunch");
+    assert.equal(priorAliasAbort.attempt.previousRunId, priorAliasRun.id);
+    assert.equal(priorAliasAbort.attempt.nativeSessionId, priorAliasNative);
+    const priorAliasAbortedRun = [...priorAliasMutation.repo.state.runs.values()].find((run) => run.id !== priorAliasRun.id);
+    assertNoPreLaunchTerminalSideEffects(priorAliasMutation, priorAliasAbortedRun.id);
 
     const fakeParentSignal = {
       aborted: false,
@@ -1258,7 +2197,7 @@ async function main() {
       nativeSessionId: outboxFixture.repo.state.threads.get(outboxThread.id).nativeSessionId,
       status: "completed",
       revision: 3,
-      output: "Already persisted.",
+      output: "",
       completedAt: now(),
     });
     outboxFixture.repo.state.runs.set(rawRun.id, rawRun);
@@ -1271,10 +2210,11 @@ async function main() {
       createdAt: rawRun.completedAt,
       previousHash: ZERO_DIGEST,
     });
-    outboxFixture.repo.state.outbox.set("out_recover", {
+    const recoverRecord = {
       outboxId: "out_recover",
       principalId: PRINCIPAL,
       browserSessionId: BROWSER_SESSION,
+      browserSessionPolicy: "same-browser-session",
       threadId: rawRun.threadId,
       runId: rawRun.id,
       type: "run.completed",
@@ -1284,10 +2224,52 @@ async function main() {
       expectedPreviousHash: ZERO_DIGEST,
       expectedEventHash: terminal.hash,
       delivered: false,
-    });
+    };
+    outboxFixture.repo.state.outbox.set(recoverRecord.outboxId, recoverRecord);
+    attachCompletionMetadata(outboxFixture, rawRun, [recoverRecord]);
     const reconciled = await outboxFixture.authority.reconcileIntegrationDispatches(context());
     assert.equal(reconciled.deliveredOutboxEvents, 1);
     assert.equal(outboxFixture.ledger.eventsForRun(rawRun.id).at(-1).type, "run.completed");
+
+    const foreignOutbox = makeAuthority({ appendProof: true });
+    const foreignOutboxThread = (await foreignOutbox.authority.createIntegrationThread({ title: "Foreign outbox" }, context())).thread;
+    const foreignOutboxRun = runRecord({
+      id: "run_00000000-0000-4000-8000-000000000027",
+      threadId: foreignOutboxThread.id,
+      nativeSessionId: foreignOutbox.repo.state.threads.get(foreignOutboxThread.id).nativeSessionId,
+      status: "completed",
+      revision: 3,
+      output: "",
+      completedAt: now(),
+    });
+    foreignOutbox.repo.state.runs.set(foreignOutboxRun.id, foreignOutboxRun);
+    const foreignOutboxTerminal = createPublicIntegrationEvent({
+      threadId: foreignOutboxRun.threadId,
+      runId: foreignOutboxRun.id,
+      seq: 1,
+      type: "run.completed",
+      payload: {},
+      createdAt: foreignOutboxRun.completedAt,
+      previousHash: ZERO_DIGEST,
+    });
+    const foreignRecord = {
+      outboxId: "out_foreign_scope",
+      principalId: PRINCIPAL,
+      browserSessionId: BROWSER_SESSION,
+      browserSessionPolicy: "same-browser-session",
+      threadId: "thr_00000000-0000-4000-8000-000000000099",
+      runId: foreignOutboxRun.id,
+      type: "run.completed",
+      payload: {},
+      createdAt: foreignOutboxRun.completedAt,
+      expectedPreviousSeq: 0,
+      expectedPreviousHash: ZERO_DIGEST,
+      expectedEventHash: foreignOutboxTerminal.hash,
+      delivered: false,
+    };
+    foreignOutbox.repo.state.outbox.set(foreignRecord.outboxId, foreignRecord);
+    attachCompletionMetadata(foreignOutbox, foreignOutboxRun, [{ ...foreignRecord, threadId: foreignOutboxRun.threadId }]);
+    await expectCode(() => foreignOutbox.authority.reconcileIntegrationDispatches(context()), "NOT_FOUND");
 
     const outboxRetry = makeAuthority({ appendProof: true });
     const retryThread = (await outboxRetry.authority.createIntegrationThread({ title: "Outbox retry" }, context())).thread;
@@ -1297,7 +2279,7 @@ async function main() {
       nativeSessionId: outboxRetry.repo.state.threads.get(retryThread.id).nativeSessionId,
       status: "completed",
       revision: 3,
-      output: "Already persisted.",
+      output: "",
       completedAt: now(),
     });
     outboxRetry.repo.state.runs.set(retryRun.id, retryRun);
@@ -1310,10 +2292,11 @@ async function main() {
       createdAt: retryRun.completedAt,
       previousHash: ZERO_DIGEST,
     });
-    outboxRetry.repo.state.outbox.set("out_retry", {
+    const retryRecord = {
       outboxId: "out_retry",
       principalId: PRINCIPAL,
       browserSessionId: BROWSER_SESSION,
+      browserSessionPolicy: "same-browser-session",
       threadId: retryRun.threadId,
       runId: retryRun.id,
       type: "run.completed",
@@ -1323,7 +2306,9 @@ async function main() {
       expectedPreviousHash: ZERO_DIGEST,
       expectedEventHash: retryTerminal.hash,
       delivered: false,
-    });
+    };
+    outboxRetry.repo.state.outbox.set(retryRecord.outboxId, retryRecord);
+    attachCompletionMetadata(outboxRetry, retryRun, [retryRecord]);
     outboxRetry.repo.state.failNextOutboxMark = true;
     await assert.rejects(() => outboxRetry.authority.reconcileIntegrationDispatches(context()));
     assert.equal(outboxRetry.ledger.eventsForRun(retryRun.id).length, 1);
@@ -1341,6 +2326,151 @@ async function main() {
     assert.equal(fresh.deliveredOutboxEvents, 1);
     assert.equal(outboxRetry.ledger.eventsForRun(retryRun.id).length, 1);
 
+    const partialSame = makeAuthority({ appendProof: true });
+    const partialSameBundle = await prepareCompletedOutputBundle(partialSame, {
+      title: "Partial same",
+      runId: "run_00000000-0000-4000-8000-000000000031",
+      output: "Recovered output same.",
+    });
+    const partialSameScope = {
+      principalId: PRINCIPAL,
+      browserSessionId: BROWSER_SESSION,
+      browserSessionPolicy: "same-browser-session",
+      threadId: partialSameBundle.run.threadId,
+      runId: partialSameBundle.run.id,
+    };
+    await publishOutboxRecordOnly(partialSame, partialSameScope, partialSameBundle.outputRecord);
+    partialSame.repo.state.failOutboxMarkTypes.add("run.completed");
+    await assert.rejects(() => partialSame.authority.reconcileIntegrationDispatches(context()));
+    assert.deepEqual(partialSame.ledger.eventsForRun(partialSameBundle.run.id).map((event) => event.type), [
+      "output.delta",
+      "run.completed",
+    ]);
+    const partialSameRecovered = await partialSame.authority.reconcileIntegrationDispatches(context());
+    assert.equal(partialSameRecovered.deliveredOutboxEvents, 2);
+    assert.deepEqual(partialSame.ledger.eventsForRun(partialSameBundle.run.id).map((event) => event.type), [
+      "output.delta",
+      "run.completed",
+    ]);
+    assert.equal(partialSame.repo.state.outbox.get(partialSameBundle.outputRecord.outboxId).delivered, true);
+    assert.equal(partialSame.repo.state.outbox.get(partialSameBundle.terminalRecord.outboxId).delivered, true);
+
+    const partialFresh = makeAuthority({ appendProof: true });
+    const partialFreshBundle = await prepareCompletedOutputBundle(partialFresh, {
+      title: "Partial fresh",
+      runId: "run_00000000-0000-4000-8000-000000000032",
+      output: "Recovered output fresh.",
+    });
+    const partialFreshScope = {
+      principalId: PRINCIPAL,
+      browserSessionId: BROWSER_SESSION,
+      browserSessionPolicy: "same-browser-session",
+      threadId: partialFreshBundle.run.threadId,
+      runId: partialFreshBundle.run.id,
+    };
+    await publishOutboxRecordOnly(partialFresh, partialFreshScope, partialFreshBundle.outputRecord);
+    partialFresh.repo.state.failOutboxMarkTypes.add("run.completed");
+    await assert.rejects(() => partialFresh.authority.reconcileIntegrationDispatches(context()));
+    const partialFreshAuthority = createAgintiIntegrationRuntimeAuthority({
+      threadSessionRepository: partialFresh.repo.repository,
+      eventLedgerStore: partialFresh.ledger,
+      cancellationAttestation: makeCancellationAttestation(),
+      hardenedSandboxAttestation: makeSandboxAttestation(),
+    });
+    const partialFreshRecovered = await partialFreshAuthority.reconcileIntegrationDispatches(context());
+    assert.equal(partialFreshRecovered.deliveredOutboxEvents, 2);
+    assert.deepEqual(partialFresh.ledger.eventsForRun(partialFreshBundle.run.id).map((event) => event.type), [
+      "output.delta",
+      "run.completed",
+    ]);
+    const partialFreshHashes = partialFresh.ledger.eventsForRun(partialFreshBundle.run.id).map((event) => event.hash);
+    partialFresh.repo.state.outbox.get(partialFreshBundle.terminalRecord.outboxId).delivered = false;
+    const idempotentReplay = await partialFresh.authority.reconcileIntegrationDispatches(context());
+    assert.equal(idempotentReplay.deliveredOutboxEvents, 2);
+    assert.deepEqual(partialFresh.ledger.eventsForRun(partialFreshBundle.run.id).map((event) => event.hash), partialFreshHashes);
+    assert.equal(partialFresh.repo.state.outbox.get(partialFreshBundle.outputRecord.outboxId).delivered, true);
+    assert.equal(partialFresh.repo.state.outbox.get(partialFreshBundle.terminalRecord.outboxId).delivered, true);
+
+    const shiftedAfterOutput = makeAuthority({ appendProof: true });
+    const shiftedBundle = await prepareCompletedOutputBundle(shiftedAfterOutput, {
+      title: "Shifted after output",
+      runId: "run_00000000-0000-4000-8000-000000000039",
+      output: "Output already durable.",
+    });
+    const shiftedScope = {
+      principalId: PRINCIPAL,
+      browserSessionId: BROWSER_SESSION,
+      browserSessionPolicy: "same-browser-session",
+      threadId: shiftedBundle.run.threadId,
+      runId: shiftedBundle.run.id,
+    };
+    await publishOutboxRecordOnly(shiftedAfterOutput, shiftedScope, shiftedBundle.outputRecord);
+    shiftedAfterOutput.repo.state.bundleMode = "regenerated";
+    await assert.rejects(
+      () => shiftedAfterOutput.authority.reconcileIntegrationDispatches(context()),
+      /metadata|bundle|outbox|durable/iu
+    );
+    assert.deepEqual(shiftedAfterOutput.ledger.eventsForRun(shiftedBundle.run.id).map((event) => event.type), [
+      "output.delta",
+    ]);
+    assert.equal(shiftedAfterOutput.repo.state.outbox.get(shiftedBundle.outputRecord.outboxId).delivered, true);
+    assert.equal(shiftedAfterOutput.repo.state.outbox.get(shiftedBundle.terminalRecord.outboxId).delivered, false);
+
+    const corruptExistingMapping = makeAuthority({
+      appendProof: true,
+      ledgerOptions: { corruptLookupByOutboxId: true },
+    });
+    const corruptExistingBundle = await prepareCompletedOutputBundle(corruptExistingMapping, {
+      title: "Existing outbox mapping",
+      runId: "run_00000000-0000-4000-8000-000000000041",
+      output: "Must not partially publish.",
+    });
+    await assert.rejects(
+      () => corruptExistingMapping.authority.reconcileIntegrationDispatches(context()),
+      /outbox|ledger|substituted|event/iu
+    );
+    assert.equal(corruptExistingMapping.ledger.eventsForRun(corruptExistingBundle.run.id).length, 0);
+    assert.equal(corruptExistingMapping.repo.state.outbox.get(corruptExistingBundle.outputRecord.outboxId).delivered, false);
+    assert.equal(corruptExistingMapping.repo.state.outbox.get(corruptExistingBundle.terminalRecord.outboxId).delivered, false);
+
+    for (const [mode, pattern] of [
+      ["truncated", /bundle|outbox|count|identifier/iu],
+      ["reordered", /outbox|completion|expected|count/iu],
+      ["regenerated", /metadata|bundle|outbox|durable/iu],
+      ["extra", /outbox|keys|metadata|durable/iu],
+      ["accessor", /outbox|accessor|keys|durable/iu],
+      ["proxy", /outbox|proxy|durable/iu],
+      ["sparse-array", /outbox|array|dense|durable/iu],
+      ["accessor-array", /outbox|array|data|durable/iu],
+      ["custom-array", /outbox|array|prototype|durable/iu],
+      ["proxy-array", /outbox|proxy|durable/iu],
+      ["foreign", /NOT_FOUND|events|outbox/iu],
+    ]) {
+      const corruptBundle = makeAuthority({ appendProof: true });
+      const corrupt = await prepareCompletedOutputBundle(corruptBundle, {
+        title: `Corrupt ${mode}`,
+        runId: `run_00000000-0000-4000-8000-0000000000${({
+          truncated: "33",
+          reordered: "34",
+          regenerated: "35",
+          extra: "36",
+          accessor: "37",
+          proxy: "38",
+          "sparse-array": "42",
+          "accessor-array": "43",
+          "custom-array": "44",
+          "proxy-array": "45",
+          foreign: "46",
+        })[mode]}`,
+      });
+      corruptBundle.repo.state.bundleMode = mode;
+      await assert.rejects(
+        () => corruptBundle.authority.reconcileIntegrationDispatches(context()),
+        (error) => pattern.test(`${error?.code || ""} ${error?.message || ""}`)
+      );
+      assert.equal(corruptBundle.ledger.eventsForRun(corrupt.run.id).length, 0);
+    }
+
     const ordinaryRecovery = makeAuthority({ appendProof: true });
     const ordinaryThread = (await ordinaryRecovery.authority.createIntegrationThread({ title: "Ordinary recovery" }, context())).thread;
     await ordinaryRecovery.authority.listIntegrationThreads({ limit: 5 }, context());
@@ -1350,7 +2480,7 @@ async function main() {
       nativeSessionId: ordinaryRecovery.repo.state.threads.get(ordinaryThread.id).nativeSessionId,
       status: "completed",
       revision: 3,
-      output: "Already persisted.",
+      output: "",
       completedAt: now(),
     });
     ordinaryRecovery.repo.state.runs.set(ordinaryRun.id, ordinaryRun);
@@ -1363,10 +2493,11 @@ async function main() {
       createdAt: ordinaryRun.completedAt,
       previousHash: ZERO_DIGEST,
     });
-    ordinaryRecovery.repo.state.outbox.set("out_ordinary_recovery", {
+    const ordinaryRecord = {
       outboxId: "out_ordinary_recovery",
       principalId: PRINCIPAL,
       browserSessionId: BROWSER_SESSION,
+      browserSessionPolicy: "same-browser-session",
       threadId: ordinaryRun.threadId,
       runId: ordinaryRun.id,
       type: "run.completed",
@@ -1376,7 +2507,9 @@ async function main() {
       expectedPreviousHash: ZERO_DIGEST,
       expectedEventHash: ordinaryTerminal.hash,
       delivered: false,
-    });
+    };
+    ordinaryRecovery.repo.state.outbox.set(ordinaryRecord.outboxId, ordinaryRecord);
+    attachCompletionMetadata(ordinaryRecovery, ordinaryRun, [ordinaryRecord]);
     ordinaryRecovery.repo.state.failNextOutboxMark = true;
     await assert.rejects(() => ordinaryRecovery.authority.getIntegrationRunStatus({ runId: ordinaryRun.id }, context()));
     assert.equal(ordinaryRecovery.ledger.eventsForRun(ordinaryRun.id).length, 1);
@@ -1399,7 +2532,7 @@ async function main() {
     directAnswer.repo.state.runs.set(directRun.id, directRun);
     const directCompletedAt = now();
     const directClassification = classifyRunAgentResult(
-      { sessionId: directRun.nativeSessionId, ok: true, result: "Direct answer." },
+      { sessionId: directRun.nativeSessionId, ok: true, result: "Direct answer.", persistedRuntimeRevision: 2 },
       { nativeSessionId: directRun.nativeSessionId }
     );
     const finishResult = await directAnswer.repo.repository.finishIntegrationRunWithOutbox({
@@ -1434,12 +2567,69 @@ async function main() {
     assert.equal(directAnswer.ledger.eventsForRun(directRun.id)[0].createdAt, directCompletedAt);
     assert.equal(directAnswer.ledger.eventsForRun(directRun.id)[1].createdAt, directCompletedAt);
 
+    const unsafeRunFixture = makeAuthority({ appendProof: true });
+    const unsafeRunThread = (await unsafeRunFixture.authority.createIntegrationThread({ title: "Unsafe run" }, context())).thread;
+    const unsafeOutputRun = runRecord({
+      id: "run_00000000-0000-4000-8000-000000000028",
+      threadId: unsafeRunThread.id,
+      nativeSessionId: unsafeRunFixture.repo.state.threads.get(unsafeRunThread.id).nativeSessionId,
+      status: "completed",
+      revision: 3,
+      output: "unsafe /scratch/a /nix/store/pkg /boot/vmlinuz /lib/libc.so /foo C:\\Users\\alice\\secret \\\\server\\share\\secret file:///tmp/secret",
+      completedAt: now(),
+      authority: { ...runRecord().authority, runtimeRevision: 2 },
+    });
+    unsafeRunFixture.repo.state.runs.set(unsafeOutputRun.id, unsafeOutputRun);
+    await expectCode(
+      () => unsafeRunFixture.authority.getIntegrationRunStatus({ runId: unsafeOutputRun.id }, context()),
+      "UNSAFE_PRESENTATION"
+    );
+    const unsafeErrorMessageRun = runRecord({
+      id: "run_00000000-0000-4000-8000-000000000030",
+      threadId: unsafeRunThread.id,
+      nativeSessionId: unsafeRunFixture.repo.state.threads.get(unsafeRunThread.id).nativeSessionId,
+      status: "failed",
+      revision: 3,
+      output: "",
+      error: { code: "AGINTI_RUNTIME_ERROR", message: "failed near /foo and file:///tmp/secret" },
+      completedAt: now(),
+      authority: { ...runRecord().authority, runtimeRevision: 2 },
+    });
+    unsafeRunFixture.repo.state.runs.set(unsafeErrorMessageRun.id, unsafeErrorMessageRun);
+    await expectCode(
+      () => unsafeRunFixture.authority.getIntegrationRunStatus({ runId: unsafeErrorMessageRun.id }, context()),
+      "UNSAFE_PRESENTATION"
+    );
+    const unsafeErrorRun = runRecord({
+      id: "run_00000000-0000-4000-8000-000000000029",
+      threadId: unsafeRunThread.id,
+      nativeSessionId: unsafeRunFixture.repo.state.threads.get(unsafeRunThread.id).nativeSessionId,
+      status: "failed",
+      revision: 3,
+      output: "",
+      error: { code: "SECRET_TOKEN", message: "provider token leaked" },
+      completedAt: now(),
+      authority: { ...runRecord().authority, runtimeRevision: 2 },
+    });
+    unsafeRunFixture.repo.state.runs.set(unsafeErrorRun.id, unsafeErrorRun);
+    await expectCode(
+      () => unsafeRunFixture.authority.getIntegrationRunStatus({ runId: unsafeErrorRun.id }, context()),
+      "AGENT_UNAVAILABLE"
+    );
+
     const artifactFixture = makeAuthority();
     const artifactThread = (await artifactFixture.authority.createIntegrationThread({ title: "Artifacts" }, context())).thread;
     artifactFixture.repo.state.artifacts.set(ARTIFACT_ID, plotArtifact({ threadId: artifactThread.id, runId: rawRun.id, published: false }));
     assert.equal((await artifactFixture.authority.listIntegrationArtifacts({ threadId: artifactThread.id }, context())).artifacts.length, 0);
     await artifactFixture.repo.repository.publishIntegrationArtifactOutbox({ artifactId: ARTIFACT_ID });
     assert.equal((await artifactFixture.authority.listIntegrationArtifacts({ threadId: artifactThread.id }, context())).artifacts.length, 1);
+    const unsafeArtifactId = "art_".concat("e".repeat(64));
+    artifactFixture.repo.state.artifacts.set(unsafeArtifactId, {
+      ...plotArtifact({ id: unsafeArtifactId, threadId: artifactThread.id, runId: rawRun.id, published: true }),
+      title: "/foo",
+    });
+    await expectCode(() => artifactFixture.authority.listIntegrationArtifacts({ threadId: artifactThread.id }, context()), "UNSAFE_PRESENTATION");
+    artifactFixture.repo.state.artifacts.delete(unsafeArtifactId);
     artifactFixture.repo.state.artifacts.set("art_".concat("f".repeat(64)), {
       ...plotArtifact({ id: "art_".concat("f".repeat(64)), threadId: artifactThread.id, runId: rawRun.id, published: true }),
       url: "http://127.0.0.1/private",
@@ -1482,6 +2672,20 @@ async function main() {
         { principalId: PRINCIPAL, browserSessionId: BROWSER_SESSION, threadId: thread.id, runId: rollbackRunId }
       )
     );
+    const observerFailureRunId = "run_00000000-0000-4000-8000-000000000036";
+    const observerFailureLedger = makeEventLedgerStore({ failAppends: 1 });
+    const observerFailureProjector = createIntegrationCoreEventProjector({ eventLedgerStore: observerFailureLedger });
+    let observerTail = Promise.resolve();
+    observerTail = observerTail.then(() =>
+      observerFailureProjector.appendCoreEvent(
+        "output.delta",
+        { text: "Accepted event must not be lost." },
+        { principalId: PRINCIPAL, browserSessionId: BROWSER_SESSION, threadId: thread.id, runId: observerFailureRunId }
+      )
+    );
+    observerTail.catch(() => {});
+    await assert.rejects(() => observerTail, /append failed/iu);
+    assert.equal(observerFailureLedger.eventsForRun(observerFailureRunId).length, 0);
     const rollbackStarted = await rollbackProjector.appendCoreEvent(
       "tool.started",
       { toolName: "run_command", callId: "raw-retry-start" },
@@ -1498,8 +2702,15 @@ async function main() {
     );
     assert.equal(rollbackCompleted.payload.callId, rollbackStarted.payload.callId);
     const terminalClearRunId = "run_00000000-0000-4000-8000-000000000025";
-    const terminalClearLedger = makeEventLedgerStore();
+    const terminalLoadCalls = [];
+    const terminalClearLedger = makeEventLedgerStore({ onLoadEventsAfter: (call) => terminalLoadCalls.push(call) });
     const terminalClearProjector = createIntegrationCoreEventProjector({ eventLedgerStore: terminalClearLedger });
+    assert.equal(Object.prototype.hasOwnProperty.call(terminalClearProjector, "appendProjectedEvent"), false);
+    await terminalClearProjector.appendCoreEvent(
+      "run.status",
+      { status: "running" },
+      { principalId: PRINCIPAL, browserSessionId: BROWSER_SESSION, threadId: thread.id, runId: terminalClearRunId }
+    );
     await terminalClearProjector.appendCoreEvent(
       "tool.started",
       { toolName: "run_command" },
@@ -1509,11 +2720,25 @@ async function main() {
       "run.completed",
       { principalId: PRINCIPAL, browserSessionId: BROWSER_SESSION, threadId: thread.id, runId: terminalClearRunId }
     );
-    assert.equal(await terminalClearProjector.appendCoreEvent(
-      "tool.progress",
-      { toolName: "run_command" },
-      { principalId: PRINCIPAL, browserSessionId: BROWSER_SESSION, threadId: thread.id, runId: terminalClearRunId }
-    ), null);
+    terminalLoadCalls.length = 0;
+    await assert.rejects(() =>
+      terminalClearProjector.appendCoreEvent(
+        "run.status",
+        { status: "running" },
+        { principalId: PRINCIPAL, browserSessionId: BROWSER_SESSION, threadId: thread.id, runId: terminalClearRunId }
+      )
+    );
+    assert.deepEqual(terminalLoadCalls.map((call) => call.afterSeq), [2]);
+    const terminalReloadProjector = createIntegrationCoreEventProjector({ eventLedgerStore: terminalClearLedger });
+    terminalLoadCalls.length = 0;
+    await assert.rejects(() =>
+      terminalReloadProjector.appendCoreEvent(
+        "run.status",
+        { status: "running" },
+        { principalId: PRINCIPAL, browserSessionId: BROWSER_SESSION, threadId: thread.id, runId: terminalClearRunId }
+      )
+    );
+    assert.deepEqual(terminalLoadCalls.map((call) => call.afterSeq), [2]);
     assert.equal(await projector.appendCoreEvent(
       "session.finished",
       { result: "forged terminal" },
@@ -1603,56 +2828,237 @@ async function main() {
       () => cancelMissingOwner.authority.cancelIntegrationRun({ runId: cancelMissingOwnerRaw.id }, context()),
       "AGENT_UNAVAILABLE"
     );
+    const cancelMutableOwner = makeAuthority();
+    const cancelMutableThread = (await cancelMutableOwner.authority.createIntegrationThread({ title: "Cancel mutable owner" }, context())).thread;
+    const cancelMutableRaw = runRecord({
+      id: "run_00000000-0000-4000-8000-000000000048",
+      threadId: cancelMutableThread.id,
+      nativeSessionId: cancelMutableOwner.repo.state.threads.get(cancelMutableThread.id).nativeSessionId,
+      status: "running",
+      revision: 2,
+    });
+    cancelMutableOwner.repo.state.runs.set(cancelMutableRaw.id, cancelMutableRaw);
+    cancelMutableOwner.repo.state.cancelProcessOwnerMode = "mutable";
+    const mutableCancel = await cancelMutableOwner.authority.cancelIntegrationRun({ runId: cancelMutableRaw.id }, context());
+    assert.equal(mutableCancel.run.cancelRequestedAt !== null, true);
+
+    for (const mode of [
+      "owner-proxy",
+      "identity-proxy",
+      "owner-accessor",
+      "identity-accessor",
+      "owner-custom-proto-then",
+      "identity-custom-proto-then",
+      "identity-inherited-boot",
+      "owner-extra-string",
+      "owner-extra-symbol",
+      "identity-extra-string",
+      "identity-extra-symbol",
+      "pid-string",
+      "token-object",
+      "boot-uppercase",
+      "boot-object",
+      "ticks-number",
+    ]) {
+      const poisonedOwner = makeAuthority();
+      const poisonedThread = (await poisonedOwner.authority.createIntegrationThread({ title: `Cancel ${mode}` }, context())).thread;
+      const poisonedRun = runRecord({
+        id: `run_00000000-0000-4000-8000-${String(49 + mode.length).padStart(12, "0")}`,
+        threadId: poisonedThread.id,
+        nativeSessionId: poisonedOwner.repo.state.threads.get(poisonedThread.id).nativeSessionId,
+        status: "running",
+        revision: 2,
+      });
+      poisonedOwner.repo.state.runs.set(poisonedRun.id, poisonedRun);
+      poisonedOwner.repo.state.cancelProcessOwnerMode = mode;
+      await expectCode(
+        () => poisonedOwner.authority.cancelIntegrationRun({ runId: poisonedRun.id }, context()),
+        "AGENT_UNAVAILABLE"
+      );
+      assert.equal(poisonedOwner.repo.state.processOwnerTrapCount, 0);
+    }
+
+    const cancelNestedProxy = makeAuthority();
+    const cancelNestedThread = (await cancelNestedProxy.authority.createIntegrationThread({ title: "Cancel nested proxy" }, context())).thread;
+    const cancelNestedRaw = runRecord({
+      id: "run_00000000-0000-4000-8000-000000000030",
+      threadId: cancelNestedThread.id,
+      nativeSessionId: cancelNestedProxy.repo.state.threads.get(cancelNestedThread.id).nativeSessionId,
+      status: "running",
+      revision: 2,
+    });
+    cancelNestedProxy.repo.state.runs.set(cancelNestedRaw.id, cancelNestedRaw);
+    cancelNestedProxy.repo.state.proxyCancelProcessIdentity = true;
+    await expectCode(
+      () => cancelNestedProxy.authority.cancelIntegrationRun({ runId: cancelNestedRaw.id }, context()),
+      "AGENT_UNAVAILABLE"
+    );
+    assert.equal(cancelNestedProxy.repo.state.processOwnerTrapCount, 0);
+
+    const authoritySource = await fs.readFile(new URL("../src/integration-runtime-authority.js", import.meta.url), "utf8");
+    const launchStart = authoritySource.indexOf("function launchExecutor");
+    const launchEnd = authoritySource.indexOf("function getIntegrationRuntimeProof", launchStart);
+    assert.notEqual(launchStart, -1);
+    assert.notEqual(launchEnd, -1);
+    const launchBody = authoritySource.slice(launchStart, launchEnd);
+    const attachPosition = launchBody.indexOf("runRegistry.attachPromise(run.id, deferred.promise)");
+    const executePosition = launchBody.indexOf("executeNativeAgintiRun(prepared.config)");
+    assert.ok(attachPosition > 0);
+    assert.ok(executePosition > attachPosition);
+    assert.equal(launchBody.includes("const promise = (async () =>"), false);
+
+    const invalidRegistry = createIntegrationRunRegistry();
+    const invalidRunId = "run_00000000-0000-4000-8000-000000000018";
+    const invalidThreadId = "thr_00000000-0000-4000-8000-000000000018";
+    invalidRegistry.claimRun({ runId: invalidRunId, threadId: invalidThreadId, principalId: PRINCIPAL, browserSessionId: BROWSER_SESSION, controller: new AbortController() });
+    let proxyTrapCount = 0;
+    const proxiedPromise = new Proxy(Promise.resolve("no traps"), {
+      get(target, property, receiver) {
+        proxyTrapCount += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    await expectCode(() => invalidRegistry.attachPromise(invalidRunId, proxiedPromise), "AGENT_UNAVAILABLE");
+    assert.equal(proxyTrapCount, 0);
+    assert.equal(invalidRegistry.snapshot().activeRuns, 0);
+    invalidRegistry.claimRun({ runId: invalidRunId, threadId: invalidThreadId, principalId: PRINCIPAL, browserSessionId: BROWSER_SESSION, controller: new AbortController() });
+    let poisonedThenTrap = 0;
+    const poisonedOwnThen = Promise.resolve("poisoned");
+    Object.defineProperty(poisonedOwnThen, "then", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        poisonedThenTrap += 1;
+        return Promise.prototype.then;
+      },
+    });
+    await expectCode(() => invalidRegistry.attachPromise(invalidRunId, poisonedOwnThen), "AGENT_UNAVAILABLE");
+    assert.equal(poisonedThenTrap, 0);
+    assert.equal(invalidRegistry.snapshot().activeRuns, 0);
+
+    const invalidPromiseCandidates = [
+      Object.create(Promise.prototype),
+      (() => {
+        class SubclassPromise extends Promise {}
+        return new SubclassPromise((resolve) => resolve("subclass"));
+      })(),
+      (() => {
+        const promise = Promise.resolve("extra");
+        promise.extra = true;
+        return promise;
+      })(),
+      (() => {
+        const promise = Promise.resolve("symbol");
+        promise[Symbol("extra")] = true;
+        return promise;
+      })(),
+      (() => {
+        const promise = Promise.resolve("finally");
+        Object.defineProperty(promise, "finally", { enumerable: true, configurable: true, value: () => {} });
+        return promise;
+      })(),
+      (() => {
+        const promise = Promise.resolve("catch");
+        Object.defineProperty(promise, "catch", { enumerable: true, configurable: true, value: () => {} });
+        return promise;
+      })(),
+      (() => {
+        const promise = Promise.resolve("constructor");
+        Object.defineProperty(promise, "constructor", { enumerable: true, configurable: true, value: Promise });
+        return promise;
+      })(),
+    ];
+    for (let index = 0; index < invalidPromiseCandidates.length; index += 1) {
+      const candidate = invalidPromiseCandidates[index];
+      const registry = createIntegrationRunRegistry();
+      const runId = `run_00000000-0000-4000-8000-${String(100 + index).padStart(12, "0")}`;
+      const threadId = `thr_00000000-0000-4000-8000-${runId.slice(-12)}`;
+      registry.claimRun({ runId, threadId, principalId: PRINCIPAL, browserSessionId: BROWSER_SESSION, controller: new AbortController() });
+      await expectCode(() => registry.attachPromise(runId, candidate), "AGENT_UNAVAILABLE");
+      assert.equal(registry.snapshot().activeRuns, 0);
+    }
+
+    const resolvingRegistry = createIntegrationRunRegistry();
+    const resolvingRunId = "run_00000000-0000-4000-8000-000000000019";
+    const resolvingThreadId = "thr_00000000-0000-4000-8000-000000000019";
+    resolvingRegistry.claimRun({ runId: resolvingRunId, threadId: resolvingThreadId, principalId: PRINCIPAL, browserSessionId: BROWSER_SESSION, controller: new AbortController() });
+    const resolvingPromise = Promise.resolve("resolved");
+    assert.equal(resolvingRegistry.attachPromise(resolvingRunId, resolvingPromise), resolvingPromise);
+    await resolvingPromise;
+    await delay(0);
+    assert.equal(resolvingRegistry.snapshot().activeRuns, 0);
 
     const rejectingRegistry = createIntegrationRunRegistry();
     const registryController = new AbortController();
-    const registryRunId = "run_00000000-0000-4000-8000-000000000018";
-    const registryThreadId = "thr_00000000-0000-4000-8000-000000000018";
+    const registryRunId = "run_00000000-0000-4000-8000-000000000020";
+    const registryThreadId = "thr_00000000-0000-4000-8000-000000000020";
     rejectingRegistry.claimRun({ runId: registryRunId, threadId: registryThreadId, principalId: PRINCIPAL, browserSessionId: BROWSER_SESSION, controller: registryController });
-    rejectingRegistry.attachPromise(registryRunId, Promise.reject(new Error("registry rejection")));
+    const rejectingPromise = Promise.reject(new Error("registry rejection"));
+    assert.equal(rejectingRegistry.attachPromise(registryRunId, rejectingPromise), rejectingPromise);
     await assert.rejects(() => rejectingRegistry.getRun(registryRunId, context()).promise);
     await delay(0);
     assert.equal(rejectingRegistry.snapshot().activeRuns, 0);
     assert.equal(unhandled.length, 0);
 
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-native-executor-smoke-"));
-    const runAgentResult = await executeNativeAgintiRun({
-      provider: "mock",
-      model: "mock-agent",
-      goal: "hello",
-      sessionId: "aginti-smoke-direct",
-      sessionsDir: path.join(tempRoot, ".sessions"),
-      baseDir: tempRoot,
-      commandCwd: tempRoot,
-      allowShellTool: false,
-      allowFileTools: false,
-      allowWrapperTools: false,
-      allowAuxiliaryTools: false,
-      allowWebSearch: false,
-      allowMcpTools: false,
-      allowParallelScouts: false,
-      allowHostedImagePerception: false,
-      allowHostedWebResearch: false,
-      allowHostedJsonSpecialist: false,
-      allowHostedWritingSpecialist: false,
-      allowAgentLinkTools: false,
-      allowCoordinationTools: false,
-      allowBrowserTools: false,
-      allowCanvasTools: false,
-      useDockerSandbox: false,
-      allowedDomains: [],
-      readOnlyRoots: [],
-      readOnlyHostMounts: [],
-      packageInstallPolicy: "block",
-      sandboxMode: "host",
-      maxSteps: 1,
-      onConsole() {},
+    const secondAttachRegistry = createIntegrationRunRegistry();
+    const secondRunId = "run_00000000-0000-4000-8000-000000000021";
+    const secondThreadId = "thr_00000000-0000-4000-8000-000000000021";
+    secondAttachRegistry.claimRun({ runId: secondRunId, threadId: secondThreadId, principalId: PRINCIPAL, browserSessionId: BROWSER_SESSION, controller: new AbortController() });
+    let releaseFirst;
+    const firstPromise = new Promise((resolve) => {
+      releaseFirst = resolve;
     });
-    assert.equal(runAgentResult.sessionId, "aginti-smoke-direct");
+    secondAttachRegistry.attachPromise(secondRunId, firstPromise);
+    await expectCode(() => secondAttachRegistry.attachPromise(secondRunId, Promise.resolve("second")), "RUN_CONFLICT");
+    assert.equal(secondAttachRegistry.snapshot().activeRuns, 1);
+    releaseFirst("done");
+    await firstPromise;
+    await delay(0);
+    assert.equal(secondAttachRegistry.snapshot().activeRuns, 0);
+
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-native-executor-smoke-"));
+    try {
+      const runAgentResult = await runAgent({
+        provider: "mock",
+        model: "mock-agent",
+        goal: "hello",
+        sessionId: "aginti-smoke-direct",
+        sessionsDir: path.join(tempRoot, ".sessions"),
+        baseDir: tempRoot,
+        commandCwd: tempRoot,
+        allowShellTool: false,
+        allowFileTools: false,
+        allowWrapperTools: false,
+        allowAuxiliaryTools: false,
+        allowWebSearch: false,
+        allowMcpTools: false,
+        allowParallelScouts: false,
+        allowHostedImagePerception: false,
+        allowHostedWebResearch: false,
+        allowHostedJsonSpecialist: false,
+        allowHostedWritingSpecialist: false,
+        allowAgentLinkTools: false,
+        allowCoordinationTools: false,
+        allowBrowserTools: false,
+        allowCanvasTools: false,
+        useDockerSandbox: false,
+        allowedDomains: [],
+        readOnlyRoots: [],
+        readOnlyHostMounts: [],
+        packageInstallPolicy: "block",
+        sandboxMode: "host",
+        maxSteps: 1,
+        onConsole() {},
+      });
+      assert.equal(runAgentResult.sessionId, "aginti-smoke-direct");
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
+    }
 
     process.stdout.write("integration runtime authority smoke: ok\n");
   } finally {
     process.removeListener("unhandledRejection", onUnhandled);
+    await fs.rm(SMOKE_ROOT, { recursive: true, force: true }).catch(() => {});
   }
 }
 

@@ -59,7 +59,7 @@ const FORBIDDEN_KEYS = new Set([
   "url",
 ]);
 const ABSOLUTE_PATH_OR_SECRET_PATTERN =
-  /(?:^|[\s("'`])(?:\/(?:workspace|home|users|root|etc|usr|var|opt|srv|run|tmp|proc|sys|dev|mnt|media|aginti-(?:home|cache|env))(?:\/|\b)|[A-Za-z]:\\|(?:api[_-]?key|token|secret|password)\s*[:=])/iu;
+  /(?:^|[\s("'`<>\[{=])(?:file:\/\/\/[^\s"'`<>)\]}]+|\/(?!\/)[^\s"'`<>)\]}]+|[A-Za-z]:[\\/][^\s"'`<>)\]}]+|\\\\[^\\/\s"'`<>)\]}]+\\[^\s"'`<>)\]}]+|(?:api[_-]?key|token|secret|password)\s*[:=])/iu;
 const EVENT_LEDGER_STORE_REQUIRED_KEYS = Object.freeze([
   "owner",
   "authority",
@@ -383,29 +383,103 @@ export function createIntegrationCoreEventProjector(options = {}) {
     }
   }
 
+  function toolStateKey(scope) {
+    return `${scope.principalId}\n${scope.browserSessionId}\n${scope.threadId}\n${scope.runId}`;
+  }
+
+  function validateLedgerHeadCursor(headInput, label) {
+    const seq = Number(headInput?.seq ?? 0);
+    const hash = String(headInput?.hash ?? "0".repeat(64));
+    if (
+      !Number.isSafeInteger(seq) ||
+      seq < 0 ||
+      !/^[a-f0-9]{64}$/u.test(hash) ||
+      ((seq === 0) !== (hash === "0".repeat(64)))
+    ) {
+      authorityFail("PUBLIC_EVENT_LEDGER_CORRUPT", `${label} cursor is invalid.`);
+    }
+    return Object.freeze({ seq, hash });
+  }
+
+  function assertPublicEventEnvelopeHash(event, label) {
+    const checked = createPublicIntegrationEvent({
+      threadId: event.threadId,
+      runId: event.runId,
+      seq: event.seq,
+      type: event.type,
+      payload: event.payload,
+      createdAt: event.createdAt,
+      previousHash: event.previousHash,
+    });
+    if (
+      event.schemaVersion !== checked.schemaVersion ||
+      event.id !== checked.id ||
+      event.hash !== checked.hash ||
+      contractDigest(event) !== contractDigest(checked)
+    ) {
+      authorityFail("PUBLIC_EVENT_LEDGER_CORRUPT", `${label} hash is invalid.`);
+    }
+  }
+
+  async function loadLedgerHeadAndLastEvent(ledger, scope) {
+    if (
+      !ledger ||
+      typeof ledger.loadHead !== "function" ||
+      typeof ledger.loadCursor !== "function" ||
+      typeof ledger.loadEventsAfter !== "function"
+    ) {
+      authorityFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Public event ledger head is unavailable.");
+    }
+    const head = validateLedgerHeadCursor(await ledger.loadHead(), "Public event ledger head");
+    if (head.seq === 0) return Object.freeze({ head, lastEvent: null });
+    const cursor = validateLedgerHeadCursor(await ledger.loadCursor(head.seq), "Public event ledger head event");
+    if (cursor.seq !== head.seq || cursor.hash !== head.hash) {
+      authorityFail("PUBLIC_EVENT_LEDGER_CORRUPT", "Public event ledger head cursor does not match the last event.");
+    }
+    const events = await ledger.loadEventsAfter(head.seq - 1);
+    if (!Array.isArray(events) || events.length !== 1) {
+      authorityFail("PUBLIC_EVENT_LEDGER_CORRUPT", "Public event ledger did not return the exact last event.");
+    }
+    const [lastEvent] = events;
+    assertExactPublicEventView(lastEvent, "Public event ledger last event");
+    if (
+      lastEvent.threadId !== scope.threadId ||
+      lastEvent.runId !== scope.runId ||
+      lastEvent.seq !== head.seq ||
+      lastEvent.hash !== head.hash
+    ) {
+      authorityFail("PUBLIC_EVENT_LEDGER_CORRUPT", "Public event ledger last event does not match the requested head.");
+    }
+    if (
+      (lastEvent.principalId !== undefined && lastEvent.principalId !== scope.principalId) ||
+      (lastEvent.browserSessionId !== undefined && lastEvent.browserSessionId !== scope.browserSessionId)
+    ) {
+      authorityFail("PUBLIC_EVENT_LEDGER_CORRUPT", "Public event ledger last event substituted scope.");
+    }
+    assertPublicEventEnvelopeHash(lastEvent, "Public event ledger last event");
+    return Object.freeze({ head, lastEvent });
+  }
+
   async function appendProjectedEvent(projectedInput, scopeInput) {
     const scope = assertScope(scopeInput);
     const projected = projectedInput;
     if (!projected) return null;
+    const projectedIsTerminal = TERMINAL_TYPES.has(projected.type);
+    if ((projected.terminal === true) !== projectedIsTerminal) {
+      authorityFail("UNSUPPORTED_CORE_EVENT", "Projected event terminal flag does not match its public type.", { status: 400 });
+    }
+    const stateKey = toolStateKey(scope);
     const ledger =
       typeof eventLedgerStore.ledgerForRun === "function"
         ? eventLedgerStore.ledgerForRun(scope)
         : null;
     assertLedgerScope(ledger || {}, scope);
-    const head =
-      ledger && typeof ledger.loadHead === "function"
-        ? await ledger.loadHead()
-        : { seq: 0, hash: "0".repeat(64) };
-    const previousSeq = Number(head?.seq || 0);
-    const previousHash = String(head?.hash || "0".repeat(64));
-    if (
-      !Number.isSafeInteger(previousSeq) ||
-      previousSeq < 0 ||
-      !/^[a-f0-9]{64}$/u.test(previousHash) ||
-      ((previousSeq === 0) !== (previousHash === "0".repeat(64)))
-    ) {
-      authorityFail("PUBLIC_EVENT_LEDGER_CORRUPT", "Public event ledger head cursor is invalid.");
+    const { head, lastEvent } = await loadLedgerHeadAndLastEvent(ledger, scope);
+    if (lastEvent && TERMINAL_TYPES.has(lastEvent.type)) {
+      authorityFail("PUBLIC_EVENT_LEDGER_CORRUPT", "Public event ledger terminal finality blocks later run events.");
     }
+    const previousSeq = head.seq;
+    const previousHash = head.hash;
     if (
       projected.expectedPreviousSeq !== undefined &&
       (projected.expectedPreviousSeq !== previousSeq || projected.expectedPreviousHash !== previousHash)
@@ -418,11 +492,23 @@ export function createIntegrationCoreEventProjector(options = {}) {
       createdAt: projected.createdAt,
     });
     assertExactPublicEventView(event, "Public event ledger append");
+    const checked = createPublicIntegrationEvent({
+      threadId: event.threadId,
+      runId: event.runId,
+      seq: event.seq,
+      type: event.type,
+      payload: event.payload,
+      createdAt: event.createdAt,
+      previousHash: event.previousHash,
+    });
     if (
       event.threadId !== scope.threadId ||
       event.runId !== scope.runId ||
+      event.schemaVersion !== checked.schemaVersion ||
+      event.id !== checked.id ||
       event.seq !== previousSeq + 1 ||
       event.previousHash !== previousHash ||
+      event.hash !== checked.hash ||
       event.type !== projected.type ||
       event.createdAt !== projected.createdAt ||
       contractDigest(event.payload) !== contractDigest(projected.payload)
@@ -435,16 +521,7 @@ export function createIntegrationCoreEventProjector(options = {}) {
     ) {
       authorityFail("PUBLIC_EVENT_LEDGER_CORRUPT", "Public event ledger append substituted the requested scope.");
     }
-    const checked = createPublicIntegrationEvent({
-      threadId: event.threadId,
-      runId: event.runId,
-      seq: event.seq,
-      type: event.type,
-      payload: event.payload,
-      createdAt: event.createdAt,
-      previousHash: event.previousHash,
-    });
-    if (checked.hash !== event.hash) {
+    if (checked.hash !== event.hash || contractDigest(checked) !== contractDigest(event)) {
       authorityFail("PUBLIC_EVENT_LEDGER_CORRUPT", "Appended public event hash is invalid.");
     }
     if (ledger && typeof ledger.loadHead === "function") {
@@ -453,36 +530,39 @@ export function createIntegrationCoreEventProjector(options = {}) {
         authorityFail("PUBLIC_EVENT_LEDGER_CORRUPT", "Public event ledger head did not advance to the appended event.");
       }
     }
-    if (projected.terminal) toolStateByRun.delete(scope.runId);
+    if (projected.terminal) {
+      toolStateByRun.delete(stateKey);
+    }
     return Object.freeze({ ...checked, terminal: projected.terminal });
   }
 
   async function appendCoreEvent(type, data, scopeInput) {
     const scope = assertScope(scopeInput);
     const rawType = String(type || "");
+    const stateKey = toolStateKey(scope);
     const needsToolState = TOOL_EVENT_TYPES.has(rawType);
-    const hadState = toolStateByRun.has(scope.runId);
-    let toolState = needsToolState ? toolStateByRun.get(scope.runId) : undefined;
+    const hadState = toolStateByRun.has(stateKey);
+    let toolState = needsToolState ? toolStateByRun.get(stateKey) : undefined;
     if (needsToolState && !toolState) {
       toolState = { nextOrdinal: 0, activeByTool: new Map() };
-      toolStateByRun.set(scope.runId, toolState);
+      toolStateByRun.set(stateKey, toolState);
     }
     const snapshot = needsToolState ? snapshotToolState(toolState) : null;
     let projected = null;
     try {
       projected = projectCoreEvent(type, data, { now, runId: scope.runId, ...(needsToolState ? { toolState } : {}) });
     } catch (error) {
-      if (needsToolState) restoreToolState(scope.runId, hadState, snapshot);
+      if (needsToolState) restoreToolState(stateKey, hadState, snapshot);
       throw error;
     }
     if (!projected) {
-      if (needsToolState) restoreToolState(scope.runId, hadState, snapshot);
+      if (needsToolState) restoreToolState(stateKey, hadState, snapshot);
       return null;
     }
     try {
       return await appendProjectedEvent(projected, scope);
     } catch (error) {
-      if (needsToolState) restoreToolState(scope.runId, hadState, snapshot);
+      if (needsToolState) restoreToolState(stateKey, hadState, snapshot);
       throw error;
     }
   }
@@ -496,8 +576,12 @@ export function createIntegrationCoreEventProjector(options = {}) {
     owner: "aginti",
     authority: "aginti",
     appendCoreEvent,
-    appendProjectedEvent,
     appendAuthorityTerminalEvent,
+    clearRun(scopeInput, options = {}) {
+      const scope = assertScope(scopeInput);
+      const stateKey = toolStateKey(scope);
+      toolStateByRun.delete(stateKey);
+    },
     projectCoreEvent(type, data, scope = {}) {
       return projectCoreEvent(type, data, { now, runId: scope.runId || "" });
     },
