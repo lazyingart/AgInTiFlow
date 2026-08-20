@@ -18,6 +18,12 @@ const MAX_PAGE_BYTES = 5 * 1024 * 1024;
 const MAX_PAGE_CHARS = 40_000;
 const MAX_REDIRECTS = 5;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const SCHOLARLY_QUERY_STOPWORDS = new Set([
+  "about", "agent", "agents", "analysis", "and", "article", "articles", "compare", "current", "deep",
+  "evidence", "find", "for", "from", "latest", "literature", "paper", "papers", "primary", "recent",
+  "report", "research", "review", "scholarly", "source", "sources", "study", "studies", "that", "the",
+  "this", "using", "what", "when", "which", "with",
+]);
 const execFileAsync = promisify(execFile);
 const TRACKING_PARAMETERS = new Set([
   "fbclid",
@@ -53,6 +59,178 @@ function normalizeList(value) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function uniqueStrings(values = []) {
+  return [...new Set(values.map((item) => String(item || "").trim()).filter(Boolean))];
+}
+
+function normalizeDoi(value = "") {
+  const raw = String(value || "");
+  let decoded = raw;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    // Keep malformed provider text bounded and non-fatal. Invalid DOI text
+    // simply produces no scholarly identity below.
+  }
+  decoded = decoded.replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "");
+  const doi = decoded.match(/\b(10\.\d{4,9}\/[\w.()/:;-]+)\b/i)?.[1] || "";
+  return doi.toLowerCase().replace(/[).,;]+$/, "");
+}
+
+function normalizeArxivId(value = "") {
+  const match = String(value || "").match(
+    /(?:arxiv\.org\/(?:abs|html|pdf)\/|^)([a-z-]+\/\d{7}|\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?(?:$|[?#/])/i
+  );
+  return match?.[1]?.toLowerCase() || "";
+}
+
+function normalizedScholarlyTitle(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240);
+}
+
+export function scholarlyWorkAliases(value = {}) {
+  const aliases = [];
+  const explicit = String(value.workIdentity || "").trim().toLowerCase();
+  if (/^(?:doi|arxiv|openalex):/.test(explicit)) aliases.push(explicit);
+  const doi = normalizeDoi(value.doi || value.url || value.canonicalUrl || "");
+  if (doi) aliases.push(`doi:${doi}`);
+  const arxivId = normalizeArxivId(value.arxivId || value.url || value.canonicalUrl || "");
+  if (arxivId) aliases.push(`arxiv:${arxivId}`);
+  const openAlexId = String(value.openAlexId || "").match(/(?:openalex\.org\/)?(W\d+)/i)?.[1];
+  if (openAlexId) aliases.push(`openalex:${openAlexId.toLowerCase()}`);
+  if (aliases.length) {
+    const title = normalizedScholarlyTitle(value.title);
+    if (title.length >= 24) aliases.push(`title:${title}`);
+  }
+  return uniqueStrings(aliases);
+}
+
+export function scholarlyWorkIdentity(value = {}) {
+  return scholarlyWorkAliases(value)[0] || "";
+}
+
+export function scholarlyWorksConflict(left = {}, right = {}) {
+  const leftDoi = normalizeDoi(left.doi || left.workIdentity || left.url || left.canonicalUrl || "");
+  const rightDoi = normalizeDoi(right.doi || right.workIdentity || right.url || right.canonicalUrl || "");
+  if (leftDoi && rightDoi && leftDoi !== rightDoi) return true;
+  const leftArxiv = normalizeArxivId(
+    String(left.arxivId || left.workIdentity || left.url || left.canonicalUrl || "").replace(/^arxiv:/i, "")
+  );
+  const rightArxiv = normalizeArxivId(
+    String(right.arxivId || right.workIdentity || right.url || right.canonicalUrl || "").replace(/^arxiv:/i, "")
+  );
+  return Boolean(leftArxiv && rightArxiv && leftArxiv !== rightArxiv);
+}
+
+export function findScholarlyWorkMatch(records = [], value = {}) {
+  const aliases = uniqueStrings([
+    ...scholarlyWorkAliases(value),
+    value.canonicalUrl || value.url,
+  ]);
+  const directAliases = aliases.filter((alias) => !alias.startsWith("title:"));
+  const directMatches = records.filter(
+    (record) =>
+      !scholarlyWorksConflict(record, value) &&
+      directAliases.some((alias) => (record.workAliases || []).includes(alias))
+  );
+  if (directMatches.length) return directMatches[0];
+  const titleAlias = aliases.find((alias) => alias.startsWith("title:"));
+  if (!titleAlias) return null;
+  const titleMatches = records.filter(
+    (record) => !scholarlyWorksConflict(record, value) && (record.workAliases || []).includes(titleAlias)
+  );
+  return titleMatches.length === 1 ? titleMatches[0] : null;
+}
+
+function scholarlyQueryTerms(query = "") {
+  const terms = uniqueStrings(String(query || "").toLowerCase().match(/[\p{L}\p{N}-]{3,}/gu) || [])
+    .filter((term) => !SCHOLARLY_QUERY_STOPWORDS.has(term));
+  const fallback = uniqueStrings(String(query || "").toLowerCase().match(/[\p{L}\p{N}-]{3,}/gu) || []);
+  return (terms.length ? terms : fallback).slice(0, 6);
+}
+
+function arxivSearchExpression(query = "") {
+  const terms = scholarlyQueryTerms(query);
+  return terms.length ? terms.map((term) => `all:${term.replace(/[^\p{L}\p{N}-]+/gu, "")}`).join(" AND ") : "all:research";
+}
+
+function crossrefDate(value = {}) {
+  const parts = value?.["date-parts"]?.[0];
+  if (!Array.isArray(parts) || !Number(parts[0])) return "";
+  const [year, month = 1, day = 1] = parts.map(Number);
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function parseCrossrefJson(body = "") {
+  const payload = JSON.parse(String(body || "{}"));
+  return (payload?.message?.items || []).map((item) => {
+    const doi = normalizeDoi(item.DOI || item.URL || "");
+    const title = Array.isArray(item.title) ? item.title[0] : item.title;
+    const authors = (item.author || [])
+      .map((author) => [author.given, author.family].filter(Boolean).join(" "))
+      .filter(Boolean)
+      .slice(0, 12);
+    const pdfUrls = uniqueStrings((item.link || [])
+      .filter((link) => /pdf/i.test(`${link?.["content-type"] || ""} ${link?.URL || ""}`))
+      .map((link) => link.URL));
+    return {
+      title: title || doi || "Crossref work",
+      url: item.URL || (doi ? `https://doi.org/${doi}` : ""),
+      snippet: decodeHtml(item.abstract || [authors.join(", "), item?.["container-title"]?.[0], item.type].filter(Boolean).join("; ")),
+      publishedAt: crossrefDate(item.published || item["published-online"] || item.issued),
+      doi,
+      workIdentity: doi ? `doi:${doi}` : "",
+      authors,
+      venue: item?.["container-title"]?.[0] || "",
+      sourceType: item.type || "scholarly-work",
+      pdfUrls,
+      alternativeUrls: uniqueStrings([item.URL, ...pdfUrls]),
+      scholarlyIndex: "crossref",
+    };
+  });
+}
+
+function parseArxivAtom(xml = "") {
+  const parser = new XMLParser({
+    ignoreAttributes: false,
+    removeNSPrefix: true,
+    processEntities: true,
+    trimValues: true,
+  });
+  const payload = parser.parse(String(xml || ""));
+  const rawEntries = payload?.feed?.entry;
+  const entries = Array.isArray(rawEntries) ? rawEntries : rawEntries ? [rawEntries] : [];
+  return entries.map((entry) => {
+    const links = Array.isArray(entry.link) ? entry.link : entry.link ? [entry.link] : [];
+    const landing = links.find((link) => link?.["@_rel"] === "alternate")?.["@_href"] || entry.id || "";
+    const pdfUrl = links.find((link) => /pdf/i.test(`${link?.["@_type"] || ""} ${link?.["@_title"] || ""}`))?.["@_href"] || "";
+    const arxivId = normalizeArxivId(landing || entry.id || "");
+    const doi = normalizeDoi(entry.doi || "");
+    const rawAuthors = Array.isArray(entry.author) ? entry.author : entry.author ? [entry.author] : [];
+    const authors = rawAuthors.map((author) => String(author?.name || author || "").trim()).filter(Boolean).slice(0, 12);
+    return {
+      title: String(entry.title || arxivId || "arXiv work").replace(/\s+/g, " ").trim(),
+      url: landing ? canonicalizeWebUrl(landing) : arxivId ? `https://arxiv.org/abs/${arxivId}` : "",
+      snippet: String(entry.summary || "").replace(/\s+/g, " ").trim(),
+      publishedAt: String(entry.published || entry.updated || "").slice(0, 32),
+      doi,
+      arxivId,
+      workIdentity: doi ? `doi:${doi}` : arxivId ? `arxiv:${arxivId}` : "",
+      authors,
+      venue: "arXiv",
+      sourceType: "preprint",
+      pdfUrls: uniqueStrings([pdfUrl && canonicalizeResourceUrl(pdfUrl)]),
+      alternativeUrls: uniqueStrings([landing && canonicalizeWebUrl(landing), pdfUrl && canonicalizeResourceUrl(pdfUrl), doi && `https://doi.org/${doi}`]),
+      scholarlyIndex: "arxiv",
+    };
+  });
 }
 
 function normalizeDomain(hostname = "") {
@@ -151,6 +329,21 @@ export function canonicalizeWebUrl(urlString = "") {
   }
 }
 
+function canonicalizeResourceUrl(urlString = "") {
+  try {
+    const parsed = new URL(String(urlString || ""));
+    parsed.hash = "";
+    for (const key of [...parsed.searchParams.keys()]) {
+      if (TRACKING_PARAMETERS.has(key.toLowerCase()) || /^utm_/i.test(key)) parsed.searchParams.delete(key);
+    }
+    if ((parsed.protocol === "https:" && parsed.port === "443") || (parsed.protocol === "http:" && parsed.port === "80")) parsed.port = "";
+    parsed.hostname = parsed.hostname.toLowerCase();
+    return parsed.href;
+  } catch {
+    return String(urlString || "").trim();
+  }
+}
+
 function normalizeDuckDuckGoHref(href = "") {
   const decoded = decodeHtml(href);
   try {
@@ -173,6 +366,12 @@ function normalizeSearchResults(results = [], { maxResults, allowedDomains, bloc
     if (seen.has(url)) continue;
     seen.add(url);
     const parsed = new URL(url);
+    const alternativeUrls = uniqueStrings([...(result?.alternativeUrls || []), ...(result?.pdfUrls || [])])
+      .map((item) => /\.pdf(?:$|[?#])/i.test(item) ? canonicalizeResourceUrl(item) : canonicalizeWebUrl(item))
+      .filter((item) => sourceUrlAllowed(item, allowedDomains, blockedDomains));
+    const pdfUrls = uniqueStrings(result?.pdfUrls || [])
+      .map((item) => canonicalizeResourceUrl(item))
+      .filter((item) => sourceUrlAllowed(item, allowedDomains, blockedDomains));
     normalized.push({
       rank: normalized.length + 1,
       title: decodeHtml(result?.title || "").slice(0, 240),
@@ -182,6 +381,18 @@ function normalizeSearchResults(results = [], { maxResults, allowedDomains, bloc
       snippet: decodeHtml(result?.snippet || result?.description || "").slice(0, 700),
       publishedAt: String(result?.publishedAt || "").slice(0, 64),
       provider,
+      doi: normalizeDoi(result?.doi || url),
+      arxivId: normalizeArxivId(result?.arxivId || url),
+      workIdentity: scholarlyWorkIdentity(result),
+      authors: uniqueStrings(result?.authors || []).slice(0, 12),
+      venue: decodeHtml(result?.venue || "").slice(0, 240),
+      sourceType: String(result?.sourceType || "").slice(0, 80),
+      scholarlyIndex: String(result?.scholarlyIndex || "").slice(0, 40),
+      workAliases: scholarlyWorkAliases(result),
+      variantUrls: [url],
+      workVariantCount: 1,
+      alternativeUrls,
+      pdfUrls,
     });
     if (normalized.length >= maxResults) break;
   }
@@ -261,6 +472,26 @@ async function fetchSearchProvider(provider, query, args, config) {
     url = search.href;
     headers.Accept = "application/json";
     headers["X-Subscription-Token"] = apiKey;
+  } else if (provider === "crossref") {
+    const search = new URL("https://api.crossref.org/works");
+    search.searchParams.set("query.bibliographic", query);
+    search.searchParams.set("rows", String(Math.min(Math.max(Number(args.maxResults) || 5, 1), MAX_RESULTS)));
+    search.searchParams.set("select", "DOI,title,author,published,published-online,issued,URL,type,abstract,container-title,link,score");
+    if (Number(args.recencyDays) > 0) {
+      const since = new Date(Date.now() - Number(args.recencyDays) * 86_400_000).toISOString().slice(0, 10);
+      search.searchParams.set("filter", `from-pub-date:${since}`);
+    }
+    url = search.href;
+    headers.Accept = "application/json";
+  } else if (provider === "arxiv") {
+    const search = new URL("https://export.arxiv.org/api/query");
+    search.searchParams.set("search_query", arxivSearchExpression(query));
+    search.searchParams.set("start", "0");
+    search.searchParams.set("max_results", String(Math.min(Math.max(Number(args.maxResults) || 5, 1), MAX_RESULTS)));
+    search.searchParams.set("sortBy", Number(args.recencyDays) > 0 ? "submittedDate" : "relevance");
+    search.searchParams.set("sortOrder", "descending");
+    url = search.href;
+    headers.Accept = "application/atom+xml";
   } else {
     throw new Error(`Unsupported search provider: ${provider}`);
   }
@@ -275,6 +506,8 @@ async function fetchSearchProvider(provider, query, args, config) {
   let results;
   if (provider === "duckduckgo-html") results = parseDuckDuckGoHtml(body);
   else if (provider === "bing-rss") results = parseBingRss(body);
+  else if (provider === "crossref") results = parseCrossrefJson(body);
+  else if (provider === "arxiv") results = parseArxivAtom(body);
   else {
     const payload = JSON.parse(body);
     results = (payload?.web?.results || []).map((item) => ({
@@ -354,6 +587,18 @@ function providerOrder(requested, config = {}) {
   if (["duckduckgo", "ddg", "duckduckgo-html"].includes(normalized)) return ["duckduckgo-html"];
   if (["bing", "bing-rss"].includes(normalized)) return ["bing-rss"];
   if (normalized === "brave") return ["brave"];
+  if (normalized === "crossref") return ["crossref"];
+  if (normalized === "arxiv") return ["arxiv"];
+  if (["scholarly", "academic"].includes(normalized)) return ["crossref", "arxiv"];
+  if (["research", "research-ensemble"].includes(normalized)) {
+    return [
+      "duckduckgo-html",
+      "bing-rss",
+      ...(String(config.braveSearchApiKey || "").trim() ? ["brave"] : []),
+      "crossref",
+      "arxiv",
+    ];
+  }
   if (["multi", "all", "ensemble"].includes(normalized)) {
     return ["duckduckgo-html", "bing-rss", ...(String(config.braveSearchApiKey || "").trim() ? ["brave"] : [])];
   }
@@ -362,16 +607,38 @@ function providerOrder(requested, config = {}) {
 
 function aggregateSearchRequested(requested, config = {}) {
   const normalized = String(requested || config.webSearchProvider || "auto").trim().toLowerCase();
-  return ["multi", "all", "ensemble"].includes(normalized);
+  return ["multi", "all", "ensemble", "scholarly", "academic", "research", "research-ensemble"].includes(normalized);
+}
+
+function aggregateSearchLabel(requested, config = {}) {
+  const normalized = String(requested || config.webSearchProvider || "auto").trim().toLowerCase();
+  if (["scholarly", "academic"].includes(normalized)) return "scholarly";
+  if (["research", "research-ensemble"].includes(normalized)) return "research";
+  return "multi";
+}
+
+function preferredResultUrl(result = {}) {
+  const values = uniqueStrings([result.url, ...(result.alternativeUrls || []), ...(result.pdfUrls || [])]);
+  const score = (value) => {
+    if (/arxiv\.org\/abs\//i.test(value)) return 8;
+    if (/aclanthology\.org|openreview\.net\/forum/i.test(value)) return 7;
+    if (/\.pdf(?:$|[?#])/i.test(value)) return 5;
+    if (/doi\.org/i.test(value)) return 3;
+    return 4;
+  };
+  return values.sort((left, right) => score(right) - score(left))[0] || result.url || "";
 }
 
 function mergeProviderResults(resultSets = [], maxResults = MAX_RESULTS) {
-  const byUrl = new Map();
+  const mergedResults = [];
   for (const { provider, results } of resultSets) {
     for (const result of results || []) {
-      const key = result.canonicalUrl || result.url;
-      if (!key) continue;
-      const existing = byUrl.get(key);
+      const aliases = uniqueStrings([
+        ...scholarlyWorkAliases(result),
+        result.canonicalUrl || result.url,
+      ]);
+      if (!aliases.length) continue;
+      const existing = findScholarlyWorkMatch(mergedResults, result);
       if (existing) {
         existing.providers = [...new Set([...(existing.providers || []), provider])];
         existing.providerRanks[provider] = result.rank;
@@ -380,17 +647,52 @@ function mergeProviderResults(resultSets = [], maxResults = MAX_RESULTS) {
           existing.snippet = result.snippet;
         }
         if (!existing.publishedAt && result.publishedAt) existing.publishedAt = result.publishedAt;
+        existing.doi ||= result.doi || "";
+        existing.arxivId ||= result.arxivId || "";
+        existing.workIdentity ||= result.workIdentity || scholarlyWorkIdentity(result);
+        existing.workAliases = uniqueStrings([...(existing.workAliases || []), ...aliases]);
+        existing.authors = uniqueStrings([...(existing.authors || []), ...(result.authors || [])]).slice(0, 12);
+        existing.venue ||= result.venue || "";
+        existing.sourceType ||= result.sourceType || "";
+        existing.scholarlyIndexes = uniqueStrings([...(existing.scholarlyIndexes || []), result.scholarlyIndex]);
+        existing.pdfUrls = uniqueStrings([...(existing.pdfUrls || []), ...(result.pdfUrls || [])]);
+        existing.alternativeUrls = uniqueStrings([
+          ...(existing.alternativeUrls || []),
+          existing.url,
+          result.url,
+          ...(result.alternativeUrls || []),
+          ...(result.pdfUrls || []),
+        ]);
+        existing.variantUrls = uniqueStrings([
+          ...(existing.variantUrls || [existing.url]),
+          ...(result.variantUrls || [result.url]),
+        ]);
+        existing.workVariantCount = existing.variantUrls.length;
+        const preferredUrl = preferredResultUrl(existing);
+        if (preferredUrl && preferredUrl !== existing.url) {
+          existing.url = preferredUrl;
+          existing.canonicalUrl = canonicalizeWebUrl(preferredUrl);
+          existing.domain = normalizeDomain(new URL(existing.canonicalUrl).hostname);
+        }
         continue;
       }
-      byUrl.set(key, {
+      const workIdentity = scholarlyWorkIdentity(result);
+      const record = {
         ...result,
+        workIdentity,
+        workAliases: aliases,
         providers: [provider],
+        scholarlyIndexes: uniqueStrings([result.scholarlyIndex]),
+        variantUrls: uniqueStrings(result.variantUrls || [result.url]),
+        workVariantCount: uniqueStrings(result.variantUrls || [result.url]).length,
+        alternativeUrls: uniqueStrings([result.url, ...(result.alternativeUrls || []), ...(result.pdfUrls || [])]),
         providerRanks: { [provider]: result.rank },
         reciprocalRankScore: 1 / Math.max(Number(result.rank || 10), 1),
-      });
+      };
+      mergedResults.push(record);
     }
   }
-  return [...byUrl.values()]
+  return mergedResults
     .sort((left, right) => {
       const leftScore = left.reciprocalRankScore + Math.max((left.providers?.length || 1) - 1, 0) * 0.5;
       const rightScore = right.reciprocalRankScore + Math.max((right.providers?.length || 1) - 1, 0) * 0.5;
@@ -444,26 +746,29 @@ export async function searchWeb(args = {}, config = {}) {
   const attempts = [];
   let successfulEmpty = null;
   if (aggregate) {
-    const outcomes = await Promise.all(
-      providers.map(async (provider) => {
-        try {
-          const attempt = await fetchSearchProvider(provider, query, { ...args, maxResults }, config);
-          const results = normalizeSearchResults(attempt.results, {
-            maxResults: MAX_RESULTS,
-            allowedDomains,
-            blockedDomains,
-            provider,
-          });
-          return { provider, ok: true, attempt, results };
-        } catch (error) {
-          return {
-            provider,
-            ok: false,
-            error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
-          };
-        }
-      })
-    );
+    const queryProvider = async (provider) => {
+      try {
+        const attempt = await fetchSearchProvider(provider, query, { ...args, maxResults }, config);
+        const results = normalizeSearchResults(attempt.results, {
+          maxResults: MAX_RESULTS,
+          allowedDomains,
+          blockedDomains,
+          provider,
+        });
+        return { provider, ok: true, attempt, results };
+      } catch (error) {
+        return {
+          provider,
+          ok: false,
+          error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+        };
+      }
+    };
+    // arXiv asks clients to avoid bursty repeated API traffic. General and
+    // metadata indexes may run together, then the single arXiv lane runs once.
+    const parallelProviders = providers.filter((provider) => provider !== "arxiv");
+    const outcomes = await Promise.all(parallelProviders.map(queryProvider));
+    if (providers.includes("arxiv")) outcomes.push(await queryProvider("arxiv"));
     const successful = [];
     for (const outcome of outcomes) {
       if (outcome.ok) {
@@ -479,7 +784,7 @@ export async function searchWeb(args = {}, config = {}) {
         ok: true,
         toolName: "web_search",
         query: redactSensitiveText(query),
-        provider: "multi",
+        provider: aggregateSearchLabel(args.provider, config),
         providersTried: attempts,
         searchUrls: successful.map((item) => item.searchUrl).filter(Boolean),
         results,
@@ -490,7 +795,7 @@ export async function searchWeb(args = {}, config = {}) {
       ok: false,
       toolName: "web_search",
       query: redactSensitiveText(query),
-      provider: "multi",
+      provider: aggregateSearchLabel(args.provider, config),
       providersTried: attempts,
       error: attempts.at(-1)?.error || "All configured search providers failed.",
     };
@@ -608,6 +913,22 @@ function extractHtmlDocument(html = "") {
   return { title, author, publishedAt: decodeHtml(publishedAt), canonical: decodeHtml(canonical), text };
 }
 
+function isAccessChallengePage({ url = "", title = "", content = "" } = {}) {
+  let pathname = "";
+  try {
+    pathname = new URL(url).pathname.toLowerCase();
+  } catch {
+    // A malformed final URL is handled by the normal reader response below.
+  }
+  const normalizedTitle = String(title || "").replace(/\s+/g, " ").trim();
+  const sample = `${normalizedTitle}\n${String(content || "").slice(0, 2400)}`.toLowerCase();
+  return (
+    /(?:^|\/)(?:challenge|captcha)(?:\/|$)/.test(pathname) ||
+    /^(?:verifying your browser|just a moment|attention required|access denied)(?:\b|\s*[-|:])/i.test(normalizedTitle) ||
+    /\b(?:verify you are human|checking your browser before accessing|enable javascript and cookies to continue|performing security verification)\b/i.test(sample)
+  );
+}
+
 function safeCanonicalUrl(canonical, finalUrl, allowedDomains, blockedDomains) {
   if (!canonical) return finalUrl;
   try {
@@ -663,6 +984,7 @@ export async function readWebPage(args = {}, config = {}) {
       },
     }, allowedDomains, blockedDomains, resolveHostImpl);
     const finalUrl = canonicalizeWebUrl(resolvedUrl);
+    const resourceUrl = canonicalizeResourceUrl(resolvedUrl);
     if (!response.ok) {
       return { ok: false, toolName: "read_web_page", url: finalUrl, status: response.status, error: `Page returned HTTP ${response.status}.` };
     }
@@ -673,7 +995,8 @@ export async function readWebPage(args = {}, config = {}) {
       ok: true,
       toolName: "read_web_page",
       requestedUrl: canonicalizeWebUrl(requestedUrl),
-      url: finalUrl,
+      url: contentType === "application/pdf" ? resourceUrl : finalUrl,
+      canonicalUrl: finalUrl,
       status: response.status,
       contentType,
       byteLength: bytes.length,
@@ -720,10 +1043,24 @@ export async function readWebPage(args = {}, config = {}) {
       document = { title: pathTitle(finalUrl), author: "", publishedAt: "", canonical: "", text: decoded };
     }
     const content = String(document.text || "").replace(/\u0000/g, "").trim().slice(0, maxChars);
+    const title = document.title || pathTitle(finalUrl);
+    if (isAccessChallengePage({ url: finalUrl, title, content })) {
+      return {
+        ...base,
+        readable: false,
+        title,
+        author: "",
+        publishedAt: "",
+        content: "",
+        truncated: false,
+        passages: [],
+        note: "Access challenge page detected; no source content was accepted as evidence.",
+      };
+    }
     return {
       ...base,
       readable: Boolean(content),
-      title: document.title || pathTitle(finalUrl),
+      title,
       author: document.author || "",
       publishedAt: document.publishedAt || "",
       canonicalUrl: safeCanonicalUrl(document.canonical, finalUrl, allowedDomains, blockedDomains),

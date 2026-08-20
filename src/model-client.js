@@ -1248,7 +1248,11 @@ export async function requestNextStep(client, config, messages) {
           properties: {
             query: { type: "string", description: "Search query. Do not include secrets or tokens." },
             maxResults: { type: "integer", description: "Number of results, 1 to 10. Defaults to 5." },
-            provider: { type: "string", enum: ["auto", "multi", "duckduckgo", "bing", "brave"], description: "Optional search provider. Auto uses no-key fallback; multi merges independent provider indexes." },
+            provider: {
+              type: "string",
+              enum: ["auto", "multi", "research", "scholarly", "duckduckgo", "bing", "brave", "crossref", "arxiv"],
+              description: "Optional search strategy. Multi merges general indexes; research adds scholarly indexes; scholarly merges Crossref and arXiv; crossref/arxiv select one exact index.",
+            },
             domains: { type: "array", items: { type: "string" }, description: "Optional allowed domains." },
             blockedDomains: { type: "array", items: { type: "string" }, description: "Optional blocked domains." },
             recencyDays: { type: "integer", description: "Optional freshness window in days when supported." },
@@ -1331,7 +1335,11 @@ export async function requestNextStep(client, config, messages) {
             blockedDomains: { type: "array", items: { type: "string" }, description: "Optional blocked domains." },
             recencyDays: { type: "integer", description: "Optional freshness window in days when supported." },
             language: { type: "string", description: "Optional search language code." },
-            searchProvider: { type: "string", enum: ["auto", "multi", "duckduckgo", "bing", "brave"], description: "Search strategy. Standard/deep research defaults to multi-provider ensemble; quick defaults to auto fallback." },
+            searchProvider: {
+              type: "string",
+              enum: ["auto", "multi", "research", "scholarly", "duckduckgo", "bing", "brave", "crossref", "arxiv"],
+              description: "Search strategy. Standard/deep defaults to general multi-search, adds one bounded scholarly pass for paper-oriented work, and may retry that lane once for an unresolved evidence gap; research combines both lanes explicitly.",
+            },
             maxQueries: { type: "integer", description: "Optional bounded query budget, 1 to 12." },
             maxSources: { type: "integer", description: "Optional bounded source budget, 2 to 24." },
             researchId: { type: "string", description: "Resume a prior same-query research checkpoint." },

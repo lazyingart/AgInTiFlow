@@ -5,10 +5,16 @@ import path from "node:path";
 import { runJsonSpecialist, runJsonSpecialistBatch } from "./json-specialist.js";
 import { normalizeProviderId } from "./provider-contract.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
-import { readWebPage, searchWeb } from "./web-search.js";
+import {
+  findScholarlyWorkMatch,
+  readWebPage,
+  scholarlyWorkAliases,
+  scholarlyWorkIdentity,
+  searchWeb,
+} from "./web-search.js";
 import { resolveWorkspacePath } from "./workspace-tools.js";
 
-const RESEARCH_VERSION = 9;
+const RESEARCH_VERSION = 12;
 const DEPTH_BUDGETS = Object.freeze({
   quick: Object.freeze({ maxQueries: 3, maxSources: 6, concurrency: 3, gapPasses: 0 }),
   standard: Object.freeze({ maxQueries: 6, maxSources: 12, concurrency: 4, gapPasses: 1 }),
@@ -111,10 +117,21 @@ function researchRequirements(args = {}, config = {}) {
   const requestedMinimum = clampInteger(args.minIndependentSources, 0, 8, 0);
   const inferredMinimum = Math.max(explicitMinimumSources(originalGoal), explicitMinimumSources(query));
   const requirePdf = args.requirePdf === true || pdfAction;
+  const scholarlyDiscovery =
+    sourcePolicy(args.sourcePolicy) === "scholarly" ||
+    requirePdf ||
+    /\b(?:academic|arxiv|citation|clinical trial|doi|journal|literature review|meta-analysis|paper|papers|peer-reviewed|preprint|scholarly|systematic review)\b/i.test(intent) ||
+    /学术|學術|论文|論文|文献综述|文獻綜述|期刊|引用|系统综述|系統綜述/.test(intent);
+  const officialDiscovery =
+    sourcePolicy(args.sourcePolicy) === "official" ||
+    /\b(?:first[- ]party|official (?:documentation|engineering|implementation|technical|writeups?)|system card|vendor engineering)\b/i.test(intent) ||
+    /官方(?:文档|文檔|工程|技术|技術)|第一方|系统卡|系統卡/.test(intent);
   return {
     requirePdf,
     pdfMode: requirePdf ? (pdfWhenAvailable ? "when-available" : "required") : "optional",
     minIndependentSources: Math.max(requestedMinimum, inferredMinimum),
+    scholarlyDiscovery,
+    officialDiscovery,
     includeNegativeEvidence:
       args.includeNegativeEvidence === true ||
       /\b(?:negative|conflicting|contradictory|counter[- ]?evidence|disagreement|limitations?|falsifying|unresolved)\b/i.test(intent) ||
@@ -356,6 +373,9 @@ async function buildPlan(query, args, config, store, budget, policy, requirement
       requirements.includeNegativeEvidence
         ? "Include a distinct route for negative, conflicting, limiting, or falsifying evidence."
         : "Include disagreement, limitations, or falsifying evidence when relevant.",
+      requirements.officialDiscovery
+        ? "The request explicitly requires first-party engineering evidence. Include a dedicated concise query naming plausible first-party organizations or projects; the word 'official' alone is not enough."
+        : "Do not invent a first-party source requirement when the request does not ask for one.",
       "Queries must be concise and independently useful. Include disagreement, limitations, or falsifying evidence when relevant.",
       "Do not answer the research question yet.",
     ].join(" "),
@@ -480,11 +500,33 @@ function assignQueriesToDomains(queries, domains) {
     }));
 }
 
-async function searchQueries(queries, args, config, budget) {
+function scholarlyQueryScore(query = "") {
+  return (String(query || "").match(/\b(?:academic|arxiv|benchmark|citation|doi|journal|paper|papers|scholarly|study|studies)\b/gi) || []).length;
+}
+
+function officialQueryScore(query = "") {
+  return (String(query || "").match(/\b(?:architecture|authority|engineering|implementation|official|quality|source|system)\b/gi) || []).length;
+}
+
+function officialEngineeringQuery(query = "") {
+  const stopwords = new Set([
+    "about", "accuracy", "and", "authority", "benchmark", "compare", "current", "documentation",
+    "engineering", "evidence", "first", "for", "from", "how", "implementation", "official", "paper",
+    "papers", "party", "primary", "quality", "recent", "report", "selection", "source", "sources",
+    "state", "technical", "the", "what", "with", "writeup", "writeups",
+  ]);
+  const terms = (String(query || "").toLowerCase().match(/[\p{L}\p{N}-]{3,}/gu) || [])
+    .filter((term, index, values) => !stopwords.has(term) && values.indexOf(term) === index)
+    .slice(0, 4);
+  const topic = terms.join(" ") || "research system";
+  return boundedSearchQuery(`${topic} official system card engineering blog architecture`);
+}
+
+async function searchQueries(queries, args, config, budget, requirements = {}) {
   const domains = normalizeList(args.domains || args.allowedDomains);
   const assignments = assignQueriesToDomains(queries, domains);
   const searchProvider = args.searchProvider || (budget.depth === "quick" ? "auto" : "multi");
-  return mapConcurrent(assignments, budget.concurrency, async (assignment, index) => {
+  const searches = await mapConcurrent(assignments, budget.concurrency, async (assignment, index) => {
     const request = {
       maxResults: Math.min(8, Math.max(4, Math.ceil(budget.maxSources / Math.max(queries.length, 1)) + 2)),
       domains,
@@ -532,14 +574,146 @@ async function searchQueries(queries, args, config, budget) {
       results: result.results || [],
     };
   });
+
+  // General indexes remain the broad discovery path. When the request is
+  // scholarly, add exactly one metadata/preprint pass to the most paper-like
+  // planned query. This improves recall and work identity without multiplying
+  // every query or creating bursty arXiv traffic.
+  if (requirements.scholarlyDiscovery && !String(args.searchProvider || "").trim() && searches.length) {
+    const scholarlyIndex = searches
+      .map((search, index) => ({ index, score: scholarlyQueryScore(search.query), length: search.query.length }))
+      .sort((left, right) => right.score - left.score || left.length - right.length)[0]?.index ?? 0;
+    const target = searches[scholarlyIndex];
+    const scholarly = await searchWeb(
+      {
+        query: target.query,
+        maxResults: Math.min(10, Math.max(6, Math.ceil(budget.maxSources / 2))),
+        domains,
+        blockedDomains: args.blockedDomains,
+        provider: "scholarly",
+        recencyDays: args.recencyDays,
+        language: args.language,
+        timeoutMs: args.searchTimeoutMs,
+      },
+      config
+    );
+    target.scholarlyAugmentation = {
+      attempted: true,
+      ok: Boolean(scholarly.ok),
+      provider: scholarly.provider || "scholarly",
+      resultCount: scholarly.results?.length || 0,
+      error: scholarly.error || "",
+    };
+    target.providersTried = [...(target.providersTried || []), ...(scholarly.providersTried || [])];
+    target.results = [...(target.results || []), ...(scholarly.results || [])];
+    if (scholarly.ok) target.provider = `${target.provider || "multi"}+scholarly`;
+  }
+  if (requirements.officialDiscovery && !String(args.searchProvider || "").trim() && searches.length) {
+    const officialIndex = searches
+      .map((search, index) => ({ index, score: officialQueryScore(search.query), length: search.query.length }))
+      .sort((left, right) => right.score - left.score || left.length - right.length)[0]?.index ?? 0;
+    const target = searches[officialIndex];
+    const officialQuery = officialEngineeringQuery(target.query);
+    const official = await searchWeb(
+      {
+        query: officialQuery,
+        maxResults: Math.min(8, Math.max(5, Math.ceil(budget.maxSources / 3) + 2)),
+        domains,
+        blockedDomains: args.blockedDomains,
+        provider: "multi",
+        recencyDays: args.recencyDays,
+        language: args.language,
+        timeoutMs: args.searchTimeoutMs,
+      },
+      config
+    );
+    target.officialAugmentation = {
+      attempted: true,
+      ok: Boolean(official.ok),
+      query: officialQuery,
+      provider: official.provider || "multi",
+      resultCount: official.results?.length || 0,
+      error: official.error || "",
+    };
+    target.providersTried = [...(target.providersTried || []), ...(official.providersTried || [])];
+    target.results = [
+      ...(target.results || []),
+      ...(official.results || []).map((result) => ({
+        ...result,
+        discoveryQuery: officialQuery,
+        sourceIntent: "first-party",
+      })),
+    ];
+    if (official.ok) target.provider = `${target.provider || "multi"}+official`;
+  }
+  return searches;
 }
 
 function scholarlyDomain(domain = "", url = "") {
   return (
-    /(^|\.)(arxiv\.org|aclanthology\.org|openreview\.net|pubmed\.ncbi\.nlm\.nih\.gov|doi\.org|acm\.org|ieee\.org|nature\.com|science\.org)$/.test(domain) ||
-    /\.(edu|ac\.[a-z]{2})$/.test(domain) ||
-    /\/(paper|papers|publication|publications|doi|abs)\b/i.test(url)
+    /(^|\.)(arxiv\.org|aclanthology\.org|openreview\.net|pubmed\.ncbi\.nlm\.nih\.gov|pmc\.ncbi\.nlm\.nih\.gov|doi\.org|acm\.org|ieee\.org|nature\.com|science\.org|biorxiv\.org|medrxiv\.org|journals\.plos\.org|link\.springer\.com|academic\.oup\.com)$/.test(domain) ||
+    /\.(edu|ac\.[a-z]{2})$/.test(domain)
   );
+}
+
+function repositoryCandidate(result = {}) {
+  return /(^|\.)(github\.com|gitlab\.com)$/.test(String(result.domain || "").toLowerCase());
+}
+
+function scholarlyCandidate(result = {}) {
+  const indexes = unique([...(result.scholarlyIndexes || []), result.scholarlyIndex])
+    .map((index) => String(index || "").toLowerCase());
+  return scholarlyDomain(result.domain, result.url) || indexes.some((index) => ["arxiv", "crossref"].includes(index));
+}
+
+function firstPartyCandidate(result = {}) {
+  if (repositoryCandidate(result) || scholarlyCandidate(result)) return false;
+  const domain = String(result.domain || "").toLowerCase();
+  let pathname = "";
+  try {
+    pathname = new URL(String(result.url || "")).pathname.toLowerCase();
+  } catch {
+    // Invalid URLs are rejected before ranking; retain a false classification.
+  }
+  const domainParts = domain.split(".").filter(Boolean);
+  const commonSuffixes = new Set(["ac", "ai", "app", "co", "com", "dev", "edu", "gov", "io", "mil", "net", "org"]);
+  const brandedTopLevelDomains = new Set(["amazon", "apple", "aws", "google", "microsoft"]);
+  const suffix = domainParts.at(-1) || "";
+  const secondLevel = domainParts.at(-2) || "";
+  const brand =
+    domainParts.length >= 3 && suffix.length === 2 && commonSuffixes.has(secondLevel)
+      ? domainParts.at(-3)
+      : brandedTopLevelDomains.has(suffix)
+        ? suffix
+        : secondLevel;
+  const titleAndSnippet = `${result.title || ""} ${result.snippet || ""}`.toLowerCase();
+  const brandedOfficialArtifact =
+    /\b(?:introducing|official|system card|technical report|whitepaper)\b/i.test(titleAndSnippet) &&
+    brand.length >= 4 &&
+    titleAndSnippet.includes(brand);
+  const cdnOfficialArtifact =
+    /^cdn\./.test(domain) && /(?:system[-_]?card|technical[-_]?report|whitepaper)/.test(pathname);
+  const discoveryIntentMatchesBrand =
+    result.sourceIntent === "first-party" && brand.length >= 4 && titleAndSnippet.includes(brand);
+  const discoveryIntentLooksTechnical =
+    result.sourceIntent === "first-party" &&
+    domainParts.length >= 3 &&
+    /\b(?:architecture|engineering|how (?:we|it) (?:built|works)|implementation|retrieval system|system card|technical (?:article|blog|report|writeup|write-up))\b/i.test(titleAndSnippet);
+  return (
+    /\.(gov|mil)$/.test(domain) ||
+    /^(?:api|developer|developers|docs|engineering|research)\./.test(domain) ||
+    /\/(?:docs?|documentation|developer|engineering|system[-_]?cards?|whitepapers?)(?:\/|[-_.]|$)/.test(pathname) ||
+    brandedOfficialArtifact ||
+    cdnOfficialArtifact ||
+    discoveryIntentMatchesBrand ||
+    discoveryIntentLooksTechnical
+  );
+}
+
+function discoveryIndexCandidate(result = {}) {
+  const domain = String(result.domain || "").toLowerCase();
+  return /(^|\.)(semanticscholar\.org|researchgate\.net)$/.test(domain) ||
+    (/^huggingface\.co$/.test(domain) && /\/papers\//i.test(String(result.url || "")));
 }
 
 function lowEvidenceCandidate(result = {}) {
@@ -552,20 +726,14 @@ function lowEvidenceCandidate(result = {}) {
 }
 
 function officialSource(result = {}) {
-  const domain = String(result.domain || "").toLowerCase();
-  const url = String(result.url || "");
-  return (
-    /\.(gov|mil)$/.test(domain) ||
-    scholarlyDomain(domain, url) ||
-    /(^|\.)(github\.com|gitlab\.com)$/.test(domain) ||
-    /\b(docs?|documentation|developer|standards?|specification|whitepaper|system-card)\b/i.test(`${result.title || ""} ${url}`)
-  );
+  if (repositoryCandidate(result)) return false;
+  return scholarlyCandidate(result) || firstPartyCandidate(result);
 }
 
 const RANKING_STOPWORDS = new Set([
-  "about", "actual", "after", "against", "among", "and", "are", "available", "best", "compare", "current",
+  "about", "actual", "actually", "after", "against", "among", "and", "are", "available", "best", "compare", "current",
   "does", "engineering", "first", "for", "from", "full", "have", "how", "independent", "into", "least",
-  "most", "pages", "paper", "papers", "party", "practice", "practices", "primary", "read", "report", "reports",
+  "good", "investigate", "make", "makes", "most", "named", "pages", "paper", "papers", "party", "practice", "practices", "primary", "read", "report", "reports",
   "research", "scholarly", "should", "source", "sources", "technical", "that", "the", "their", "these", "this",
   "through", "using", "what", "when", "where", "which", "with",
 ]);
@@ -576,29 +744,77 @@ function meaningfulQueryTerms(query = "") {
     .slice(0, 24);
 }
 
+function independentPrimaryGapQueries(plan = {}, deficit = 1) {
+  const plannedQueries = unique([
+    ...(plan.queries || []),
+    ...(plan.subquestions || []).map((item) => item.query),
+  ]).filter(Boolean);
+  const ranked = plannedQueries
+    .map((query) => ({
+      query,
+      score: scholarlyQueryScore(query),
+      termCount: meaningfulQueryTerms(query).length,
+    }))
+    .sort((left, right) => right.score - left.score || right.termCount - left.termCount || left.query.length - right.query.length);
+  const queries = [];
+  for (const item of ranked) {
+    const topic = meaningfulQueryTerms(item.query).slice(0, 12).join(" ");
+    if (!topic) continue;
+    queries.push(boundedSearchQuery(`${topic} primary benchmark paper DOI arXiv`));
+    if (queries.length >= Math.max(1, deficit)) break;
+  }
+  if (!queries.length) {
+    const topic = meaningfulQueryTerms(plan.objective || "").slice(0, 10).join(" ") || "research benchmark";
+    queries.push(boundedSearchQuery(`${topic} primary benchmark paper DOI arXiv`));
+  }
+  return unique(queries).slice(0, Math.max(1, deficit));
+}
+
 function rankCandidates(searches, policy, query) {
   const terms = meaningfulQueryTerms(query);
-  const byUrl = new Map();
   const candidates = [];
   for (const search of searches) {
     const discoveryTerms = meaningfulQueryTerms(search.query || search.searchQuery || "");
     for (const result of search.results || []) {
-      const key = result.canonicalUrl || result.url;
-      if (!key) continue;
+      const aliases = unique([
+        ...scholarlyWorkAliases(result),
+        result.canonicalUrl || result.url,
+      ]);
+      if (!aliases.length) continue;
+      const resultDiscoveryQuery = result.discoveryQuery || search.query || search.searchQuery || "";
+      const resultDiscoveryTerms = meaningfulQueryTerms(resultDiscoveryQuery);
       const haystack = `${result.title || ""} ${result.snippet || ""}`.toLowerCase();
       const originalHits = terms.reduce((sum, term) => sum + (haystack.includes(term) ? 1 : 0), 0);
-      const discoveryHits = discoveryTerms.reduce((sum, term) => sum + (haystack.includes(term) ? 1 : 0), 0);
+      const activeDiscoveryTerms = resultDiscoveryTerms.length ? resultDiscoveryTerms : discoveryTerms;
+      const discoveryHits = activeDiscoveryTerms.reduce((sum, term) => sum + (haystack.includes(term) ? 1 : 0), 0);
       const useDiscoveryTerms = discoveryHits > originalHits;
       const lexicalHits = Math.max(originalHits, discoveryHits);
-      const queryTermCount = useDiscoveryTerms ? discoveryTerms.length : terms.length;
-      if (byUrl.has(key)) {
-        const existing = byUrl.get(key);
+      const queryTermCount = useDiscoveryTerms ? activeDiscoveryTerms.length : terms.length;
+      const existing = findScholarlyWorkMatch(candidates, result);
+      if (existing) {
         const previousDiscoveries = existing.discoveredBy || [];
-        const discovery = search.searchQuery || search.query;
+        const discovery = resultDiscoveryQuery;
         existing.discoveredBy = unique([...previousDiscoveries, discovery]);
         if (existing.discoveredBy.length > previousDiscoveries.length) existing.score += 1.5;
         existing.providers = unique([...(existing.providers || []), ...(result.providers || [result.provider].filter(Boolean))]);
         existing.providerConsensusCount = existing.providers.length;
+        existing.workIdentity ||= result.workIdentity || scholarlyWorkIdentity(result);
+        existing.workAliases = unique([...(existing.workAliases || []), ...aliases]);
+        existing.doi ||= result.doi || "";
+        existing.arxivId ||= result.arxivId || "";
+        existing.pdfUrls = unique([...(existing.pdfUrls || []), ...(result.pdfUrls || [])]);
+        existing.alternativeUrls = unique([
+          ...(existing.alternativeUrls || []),
+          result.url,
+          ...(result.alternativeUrls || []),
+          ...(result.pdfUrls || []),
+        ]);
+        existing.variantUrls = unique([
+          ...(existing.variantUrls || [existing.url]),
+          ...(result.variantUrls || [result.url]),
+        ]);
+        existing.workVariantCount = existing.variantUrls.length;
+        existing.scholarlyIndexes = unique([...(existing.scholarlyIndexes || []), ...(result.scholarlyIndexes || []), result.scholarlyIndex]);
         if (lexicalHits > Number(existing.lexicalHits || 0)) {
           existing.lexicalHits = lexicalHits;
           existing.queryTermCount = queryTermCount;
@@ -607,7 +823,10 @@ function rankCandidates(searches, policy, query) {
       }
       let score = lexicalHits;
       const official = officialSource(result);
-      const scholarly = scholarlyDomain(result.domain, result.url);
+      const scholarly = scholarlyCandidate(result);
+      const firstParty = firstPartyCandidate(result);
+      const repository = repositoryCandidate(result);
+      const discoveryIndex = discoveryIndexCandidate(result);
       const lowEvidence = lowEvidenceCandidate(result);
       if (official) score += 5;
       if (scholarly) score += 4;
@@ -618,21 +837,29 @@ function rankCandidates(searches, policy, query) {
       const providers = unique(result.providers || [result.provider].filter(Boolean));
       score += Math.max(providers.length - 1, 0) * 2;
       score += Math.min(Math.max(Number(result.reciprocalRankScore || 0), 0), 2);
+      if (repository) score += 1.5;
+      if (discoveryIndex) score -= 6;
       if (lowEvidence) score -= 16;
       const candidate = {
         ...result,
         score,
         official,
         scholarly,
+        firstParty,
+        repository,
+        discoveryIndex,
         lowEvidence,
         lexicalHits,
         queryTermCount,
         providers,
         providerConsensusCount: providers.length,
         domainHint: search.domainHint || "",
-        discoveredBy: [search.searchQuery || search.query],
+        discoveredBy: [resultDiscoveryQuery],
+        workIdentity: result.workIdentity || scholarlyWorkIdentity(result),
+        workAliases: aliases,
+        variantUrls: unique(result.variantUrls || [result.url]),
+        workVariantCount: unique(result.variantUrls || [result.url]).length,
       };
-      byUrl.set(key, candidate);
       candidates.push(candidate);
     }
   }
@@ -660,7 +887,7 @@ function candidateIsStronglyRelevant(candidate = {}) {
   );
 }
 
-function selectDiverseCandidates(candidates, limit, policy = "primary") {
+function selectDiverseCandidates(candidates, limit, policy = "primary", requirements = {}) {
   const usable = candidates.filter((candidate) => !candidate.lowEvidence);
   const relevant = usable.filter(candidateIsRelevant);
   const preferred = relevant.filter((candidate) => {
@@ -681,6 +908,7 @@ function selectDiverseCandidates(candidates, limit, policy = "primary") {
   // amount of supplementary context instead of failing with one or two pages.
   const preferredFloor = Math.min(limit, 4);
   const strictPolicy = policy !== "any";
+  if (strictPolicy && preferred.length === 0) return [];
   const strongPreferred = preferred.filter(candidateIsStronglyRelevant);
   const pool = strongPreferred.length >= preferredFloor && strictPolicy
     ? strongPreferred
@@ -697,6 +925,14 @@ function selectDiverseCandidates(candidates, limit, policy = "primary") {
   const remaining = [...pool];
   const domainCounts = new Map();
   const selected = [];
+  if (requirements.officialDiscovery && selectionLimit > 0) {
+    const firstPartyIndex = remaining.findIndex((candidate) => candidate.firstParty);
+    if (firstPartyIndex >= 0) {
+      const [candidate] = remaining.splice(firstPartyIndex, 1);
+      selected.push({ ...candidate, diversityAdjustedScore: Number(candidate.score || 0) });
+      domainCounts.set(candidate.domain || "", 1);
+    }
+  }
   while (remaining.length && selected.length < selectionLimit) {
     let bestIndex = 0;
     let bestAdjustedScore = Number.NEGATIVE_INFINITY;
@@ -716,38 +952,89 @@ function selectDiverseCandidates(candidates, limit, policy = "primary") {
   return selected;
 }
 
-async function readCandidates(candidates, args, config, budget, startIndex = 0) {
-  const selected = selectDiverseCandidates(candidates, budget.maxSources, sourcePolicy(args.sourcePolicy));
-  const pages = await mapConcurrent(selected, budget.concurrency, (candidate) =>
-    readWebPage(
+async function readCandidate(candidate, args, config) {
+  const urls = unique([
+    candidate.url,
+    ...(candidate.alternativeUrls || []),
+    ...(candidate.pdfUrls || []),
+  ]).slice(0, 4);
+  const attempts = [];
+  let lastPage = {};
+  for (const url of urls) {
+    const pdfCandidate = /\.pdf(?:$|[?#])/i.test(url) || (candidate.pdfUrls || []).includes(url);
+    const page = await readWebPage(
       {
-        url: candidate.url,
+        url,
         query: args.query,
         domains: args.domains || args.allowedDomains,
         blockedDomains: args.blockedDomains,
+        ...(pdfCandidate ? { maxBytes: Number(args.maxPdfBytes) || 5 * 1024 * 1024 } : {}),
         maxChars: args.maxSourceChars || 20_000,
         maxPassages: 10,
         timeoutMs: args.pageTimeoutMs,
       },
       config
-    )
+    );
+    lastPage = page || {};
+    attempts.push({
+      url,
+      ok: Boolean(page?.ok && page?.readable),
+      error: page?.ok ? page?.note || "" : page?.error || "unreadable source",
+    });
+    if (page?.ok && page?.readable) return { page, attempts };
+  }
+  return { page: lastPage, attempts };
+}
+
+async function readCandidates(candidates, args, config, budget, startIndex = 0) {
+  const selected = selectDiverseCandidates(
+    candidates,
+    budget.maxSources,
+    sourcePolicy(args.sourcePolicy),
+    { officialDiscovery: Boolean(args.officialDiscovery) }
   );
+  const reads = await mapConcurrent(selected, budget.concurrency, (candidate) => readCandidate(candidate, args, config));
   return selected.map((candidate, index) => {
-    const page = pages[index] || {};
+    const page = reads[index]?.page || {};
+    const resolvedUrl = page.url || candidate.url;
+    let resolvedDomain = candidate.domain || "";
+    try {
+      resolvedDomain = new URL(resolvedUrl).hostname.replace(/^www\./i, "").toLowerCase();
+    } catch {
+      // Keep the search-result domain when a provider returned malformed URL metadata.
+    }
     return {
       id: `S${startIndex + index + 1}`,
       title: page.title || candidate.title || `Source ${startIndex + index + 1}`,
-      url: page.url || candidate.url,
-      domain: candidate.domain || "",
+      url: resolvedUrl,
+      landingPageUrl: candidate.url,
+      domain: resolvedDomain,
+      discoveredDomain: candidate.domain || "",
       snippet: candidate.snippet || "",
       publishedAt: page.publishedAt || candidate.publishedAt || "",
       author: page.author || "",
       official: Boolean(candidate.official),
       scholarly: Boolean(candidate.scholarly),
+      firstParty: Boolean(candidate.firstParty),
       score: candidate.score,
       discoveredBy: candidate.discoveredBy || [],
       providers: candidate.providers || [],
       providerConsensusCount: candidate.providerConsensusCount || 0,
+      scholarlyIndexes: candidate.scholarlyIndexes || [],
+      workIdentity: candidate.workIdentity || scholarlyWorkIdentity(candidate),
+      workAliases: candidate.workAliases || scholarlyWorkAliases(candidate),
+      variantUrls: candidate.variantUrls || [candidate.url],
+      workVariantCount: Number(candidate.workVariantCount || 1),
+      doi: candidate.doi || "",
+      arxivId: candidate.arxivId || "",
+      authors: candidate.authors || [],
+      venue: candidate.venue || "",
+      sourceType: candidate.sourceType || "",
+      repository: Boolean(candidate.repository),
+      discoveryIndex: Boolean(candidate.discoveryIndex),
+      alternativeUrls: candidate.alternativeUrls || [],
+      pdfUrls: candidate.pdfUrls || [],
+      readAttempts: reads[index]?.attempts || [],
       readable: Boolean(page.ok && page.readable),
       readError: page.ok ? page.note || "" : page.error || "unreadable source",
       contentType: page.contentType || "",
@@ -764,7 +1051,10 @@ async function readCandidates(candidates, args, config, budget, startIndex = 0) 
 }
 
 function pdfCandidateUrls(source = {}) {
-  const values = [];
+  const values = unique([
+    ...(source.pdfUrls || []),
+    ...(source.alternativeUrls || []).filter((url) => /\.pdf(?:$|[?#])/i.test(String(url || ""))),
+  ]);
   try {
     const parsed = new URL(String(source.url || ""));
     const pathname = parsed.pathname.replace(/\/+$/, "");
@@ -966,15 +1256,19 @@ async function extractEvidence(sources, plan, args, config, store, budget) {
       relevant: Boolean(result.relevant),
       summary: compact(result.summary, 1200),
       relevantQuestionIds: unique(result.relevantQuestionIds).filter((id) => questionIds.has(id)),
-      claims: (result.claims || []).slice(0, 12).map((claim, claimIndex) => ({
-        evidenceId: `${source.id}-C${claimIndex + 1}`,
-        claim: compact(claim.claim, 1200),
-        quote: compact(claim.quote, 1200),
-        confidence: ["high", "medium", "low"].includes(String(claim.confidence).toLowerCase())
-          ? String(claim.confidence).toLowerCase()
-          : "medium",
-        quoteVerified: quoteVerified(claim.quote, source),
-      })),
+      claims: (result.claims || []).slice(0, 12).map((claim, claimIndex) => {
+        const matched = quoteVerified(claim.quote, source);
+        return {
+          evidenceId: `${source.id}-C${claimIndex + 1}`,
+          claim: compact(claim.claim, 1200),
+          quote: compact(claim.quote, 1200),
+          confidence: ["high", "medium", "low"].includes(String(claim.confidence).toLowerCase())
+            ? String(claim.confidence).toLowerCase()
+            : "medium",
+          quoteVerified: Boolean(source.readable && matched),
+          searchExcerptMatched: Boolean(!source.readable && matched),
+        };
+      }),
       limitations: unique(result.limitations).slice(0, 8),
       extractionModel: item?.model || "",
       extractionRetried: Boolean(item?.extractionRetried),
@@ -987,10 +1281,20 @@ async function extractEvidence(sources, plan, args, config, store, budget) {
 }
 
 function sourceIdentity(source = {}) {
+  if (source.workIdentity) return source.workIdentity;
+  const scholarlyIdentity = scholarlyWorkIdentity(source);
+  if (scholarlyIdentity) return scholarlyIdentity;
   const url = String(source.url || "");
   const arxivId = url.match(/(?:arxiv\.org\/(?:abs|html|pdf)\/|\/)(\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?(?:$|[?#/])/i)?.[1];
   if (arxivId) return `arxiv:${arxivId}`;
-  const doi = decodeURIComponent(url).match(/\b(10\.\d{4,9}\/[\w.()/:;-]+)\b/i)?.[1];
+  let decodedUrl = url;
+  try {
+    decodedUrl = decodeURIComponent(url);
+  } catch {
+    // Search indexes occasionally return malformed percent escapes. Preserve
+    // the source as URL/title evidence instead of aborting the entire audit.
+  }
+  const doi = decodedUrl.match(/\b(10\.\d{4,9}\/[\w.()/:;-]+)\b/i)?.[1];
   if (doi) return `doi:${doi.toLowerCase().replace(/[).,;]+$/, "")}`;
   const title = String(source.title || "")
     .toLowerCase()
@@ -1006,12 +1310,14 @@ function coverageAudit(plan, sources, evidence) {
   const coveredQuestionIds = new Set();
   let claimCount = 0;
   let verifiedClaimCount = 0;
+  let searchExcerptMatchedClaimCount = 0;
   for (const item of evidence) {
     const hasEvidence = item.claims?.some((claim) => claim.quoteVerified);
     if (hasEvidence) item.relevantQuestionIds.forEach((id) => coveredQuestionIds.add(id));
     for (const claim of item.claims || []) {
       claimCount += 1;
       if (claim.quoteVerified) verifiedClaimCount += 1;
+      if (claim.searchExcerptMatched) searchExcerptMatchedClaimCount += 1;
     }
   }
   const missingQuestions = plan.subquestions.filter((question) => !coveredQuestionIds.has(question.id));
@@ -1022,8 +1328,24 @@ function coverageAudit(plan, sources, evidence) {
   );
   const independentPrimarySources = new Set(
     sources
-      .filter((source) => verifiedSourceIds.has(source.id) && (source.official || source.scholarly))
+      .filter(
+        (source) => source.readable && verifiedSourceIds.has(source.id) && (source.official || source.scholarly)
+      )
       .map(sourceIdentity)
+  );
+  const verifiedPrimarySources = sources.filter(
+    (source) => source.readable && verifiedSourceIds.has(source.id) && (source.official || source.scholarly)
+  );
+  const verifiedDomains = new Set(
+    sources.filter((source) => source.readable && verifiedSourceIds.has(source.id)).map((source) => source.domain).filter(Boolean)
+  );
+  const verifiedFirstPartySources = sources.filter(
+    (source) => source.readable && verifiedSourceIds.has(source.id) && source.firstParty
+  );
+  const searchExcerptSourceIds = new Set(
+    evidence
+      .filter((item) => item.claims?.some((claim) => claim.searchExcerptMatched))
+      .map((item) => item.sourceId)
   );
   return {
     questionCoverage: plan.subquestions.length ? coveredQuestionIds.size / plan.subquestions.length : 1,
@@ -1035,9 +1357,19 @@ function coverageAudit(plan, sources, evidence) {
     quoteVerificationRate: claimCount ? verifiedClaimCount / claimCount : 0,
     readableSourceCount: sources.filter((source) => source.readable).length,
     primarySourceCount: sources.filter((source) => source.official || source.scholarly).length,
+    verifiedPrimarySourceCount: verifiedPrimarySources.length,
+    firstPartySourceCount: sources.filter((source) => source.firstParty).length,
+    verifiedFirstPartySourceCount: verifiedFirstPartySources.length,
+    searchExcerptEvidenceSourceCount: searchExcerptSourceIds.size,
+    searchExcerptMatchedClaimCount,
     independentPrimarySourceCount: independentPrimarySources.size,
+    duplicateWorkVariantCount: sources.reduce(
+      (sum, source) => sum + Math.max(Number(source.workVariantCount || 1) - 1, 0),
+      0
+    ),
     pdfSourceCount: sources.filter((source) => source.pdfTextExtracted).length,
     independentDomainCount: new Set(sources.map((source) => source.domain).filter(Boolean)).size,
+    verifiedIndependentDomainCount: verifiedDomains.size,
     sourceIds: [...sourceById.keys()],
   };
 }
@@ -1181,15 +1513,18 @@ function deterministicSynthesis(query, plan, sources, evidence, audit) {
 async function synthesize(query, plan, sources, evidence, audit, requirements, args, config, store) {
   const fallback = deterministicSynthesis(query, plan, sources, evidence, audit);
   if (args.dryRun || config.deepResearchDryRun || config.provider === "mock") return fallback;
-  const verifiedEvidence = evidence.map((item) => ({
-    sourceId: item.sourceId,
-    summary: item.summary,
-    relevantQuestionIds: item.relevantQuestionIds,
-    claims: item.claims
+  const verifiedEvidence = evidence.map((item) => {
+    const claims = item.claims
       .filter((claim) => claim.quoteVerified)
-      .map(({ evidenceId, claim, quote, confidence }) => ({ evidenceId, claim, quote, confidence })),
-    limitations: item.limitations,
-  }));
+      .map(({ evidenceId, claim, quote, confidence }) => ({ evidenceId, claim, quote, confidence }));
+    return {
+      sourceId: item.sourceId,
+      summary: claims.length ? item.summary : "",
+      relevantQuestionIds: claims.length ? item.relevantQuestionIds : [],
+      claims,
+      limitations: item.limitations,
+    };
+  });
   const { routeModel, mainModel } = researchModels(config);
   const request = {
     task: "Synthesize a source-grounded deep-research report.",
@@ -1322,6 +1657,21 @@ function citationText(sourceIds = []) {
 
 function renderMarkdown(state) {
   const synthesis = state.synthesis;
+  const verifiedSourceIds = new Set(
+    (state.evidence || [])
+      .filter((item) => item.claims?.some((claim) => claim.quoteVerified))
+      .map((item) => item.sourceId)
+  );
+  const searchExcerptSourceIds = new Set(
+    (state.evidence || [])
+      .filter((item) => item.claims?.some((claim) => claim.searchExcerptMatched))
+      .map((item) => item.sourceId)
+  );
+  const searchProviders = unique(
+    (state.searches || []).flatMap((search) =>
+      (search.providersTried || []).map((provider) => typeof provider === "string" ? provider : provider?.provider)
+    )
+  );
   const lines = [
     `# ${synthesis.title || `Research report: ${state.query}`}`,
     "",
@@ -1362,7 +1712,17 @@ function renderMarkdown(state) {
   }
   lines.push("## Sources", "");
   for (const source of state.sources) {
-    const labels = [source.official ? "primary/official" : "", source.scholarly ? "scholarly" : ""].filter(Boolean).join(", ");
+    const labels = [
+      source.firstParty ? "first-party official" : "",
+      source.scholarly ? "scholarly" : "",
+      source.repository ? "implementation repository" : "",
+      source.readable ? "readable" : "unreadable",
+      verifiedSourceIds.has(source.id)
+        ? "quote-verified evidence"
+        : searchExcerptSourceIds.has(source.id)
+          ? "search-excerpt-only, not cited"
+          : "no verified evidence",
+    ].filter(Boolean).join(", ");
     const pdf = source.pdfTextExtracted && source.pdfUrl ? `; [parsed PDF](${source.pdfUrl})` : "";
     lines.push(`- [${source.id}] [${source.title}](${source.url})${labels ? ` — ${labels}` : ""}${source.publishedAt ? `; ${source.publishedAt}` : ""}${pdf}`);
   }
@@ -1371,12 +1731,17 @@ function renderMarkdown(state) {
     "## Research Audit",
     "",
     `- Search queries: ${state.searches.length}`,
+    `- Search providers: ${searchProviders.join(", ") || "not recorded"}`,
     `- Sources inspected: ${state.sources.length}`,
     `- Readable sources: ${state.coverage.readableSourceCount}`,
     `- Primary/scholarly sources: ${state.coverage.primarySourceCount}`,
     `- Independent verified primary/scholarly sources: ${state.coverage.independentPrimarySourceCount || 0}`,
+    `- Verified first-party engineering/official sources: ${state.coverage.verifiedFirstPartySourceCount || 0}`,
+    `- Search-excerpt-only source matches (not cited): ${state.coverage.searchExcerptEvidenceSourceCount || 0}`,
+    `- Duplicate scholarly work variants merged/audited: ${state.coverage.duplicateWorkVariantCount || 0}`,
     `- PDFs parsed: ${state.coverage.pdfSourceCount || 0}`,
     `- Independent domains: ${state.coverage.independentDomainCount}`,
+    `- Verified independent domains: ${state.coverage.verifiedIndependentDomainCount || 0}`,
     `- Citation coverage: ${(state.audit.citationCoverage * 100).toFixed(0)}%`,
     `- Unsupported synthesis statements removed: ${state.audit.rejectedStatementCount || 0}`,
     `- Exact-quote verification: ${(state.coverage.quoteVerificationRate * 100).toFixed(0)}%`,
@@ -1573,13 +1938,24 @@ export async function deepResearch(args = {}, config = {}, store = null) {
     if (!state.searches.length) {
       const gapQueryReserve = budget.gapPasses > 0 ? Math.min(2, Math.max(budget.maxQueries - 1, 0)) : 0;
       const initialQueryBudget = Math.max(1, budget.maxQueries - gapQueryReserve);
-      state.searches = await searchQueries(state.plan.queries.slice(0, initialQueryBudget), { ...args, query }, config, budget);
+      state.searches = await searchQueries(
+        state.plan.queries.slice(0, initialQueryBudget),
+        { ...args, query, sourcePolicy: policy },
+        config,
+        budget,
+        requirements
+      );
       state.stage = "searched";
       await saveState(state, paths, store);
     }
     if (!state.sources.length) {
       const candidates = rankCandidates(state.searches, policy, query);
-      state.sources = await readCandidates(candidates, { ...args, query, sourcePolicy: policy }, config, budget);
+      state.sources = await readCandidates(
+        candidates,
+        { ...args, query, sourcePolicy: policy, officialDiscovery: requirements.officialDiscovery },
+        config,
+        budget
+      );
       state.stage = "sources-read";
       await saveState(state, paths, store);
       if (!state.sources.length) {
@@ -1627,28 +2003,58 @@ export async function deepResearch(args = {}, config = {}, store = null) {
     if (
       budget.gapPasses > 0 &&
       (state.coverage.missingQuestions?.length ||
-        state.coverage.independentPrimarySourceCount < requirements.minIndependentSources) &&
+        state.coverage.independentPrimarySourceCount < requirements.minIndependentSources ||
+        (requirements.officialDiscovery && state.coverage.verifiedFirstPartySourceCount < 1)) &&
       state.sources.length < budget.maxSources &&
       !state.gapPassCompleted
     ) {
       const remainingQueries = Math.max(budget.maxQueries - state.searches.length, 0);
-      const gapQueries = state.coverage.missingQuestions
-        .map((question) => boundedSearchQuery(`${question.query || question.question} primary source official evidence`))
+      const primaryDeficit = Math.max(
+        Number(requirements.minIndependentSources || 0) - Number(state.coverage.independentPrimarySourceCount || 0),
+        0
+      );
+      const gapQueries = []
         .concat(
-          state.coverage.independentPrimarySourceCount < requirements.minIndependentSources
-            ? [boundedSearchQuery(`${query} independent primary scholarly paper evidence`)]
+          requirements.officialDiscovery && state.coverage.verifiedFirstPartySourceCount < 1
+            ? [officialEngineeringQuery(state.plan.queries.find((item) => officialQueryScore(item) > 0) || state.plan.queries[0] || query)]
             : []
+        )
+        .concat(primaryDeficit > 0 ? independentPrimaryGapQueries(state.plan, primaryDeficit) : [])
+        .concat(
+          state.coverage.missingQuestions.map((question) => {
+            const topic = meaningfulQueryTerms(question.query || question.question).slice(0, 12).join(" ");
+            return boundedSearchQuery(`${topic || "research question"} primary source official evidence`);
+          })
         )
         .filter((item, index, items) => item && items.indexOf(item) === index)
         .slice(0, remainingQueries);
       if (gapQueries.length) {
-        const gapSearches = await searchQueries(gapQueries, { ...args, query }, config, budget);
+        const gapSearches = await searchQueries(
+          gapQueries,
+          { ...args, query, sourcePolicy: policy, officialDiscovery: requirements.officialDiscovery },
+          config,
+          budget,
+          {
+            ...requirements,
+            // One bounded recovery pass may retry scholarly/official discovery
+            // after the initial pass when the corresponding readable evidence
+            // contract is still open. This is recovery, not query fan-out.
+            scholarlyDiscovery: requirements.scholarlyDiscovery && primaryDeficit > 0,
+            officialDiscovery:
+              requirements.officialDiscovery && state.coverage.verifiedFirstPartySourceCount < 1,
+          }
+        );
         const knownUrls = new Set(state.sources.map((source) => source.url));
-        const candidates = rankCandidates(gapSearches, policy, query).filter((candidate) => !knownUrls.has(candidate.url));
+        const knownWorkAliases = new Set(state.sources.flatMap((source) => source.workAliases || []));
+        const candidates = rankCandidates(gapSearches, policy, query).filter(
+          (candidate) =>
+            !knownUrls.has(candidate.url) &&
+            !(candidate.workAliases || []).some((alias) => knownWorkAliases.has(alias))
+        );
         const remainingBudget = { ...budget, maxSources: budget.maxSources - state.sources.length };
         let gapSources = await readCandidates(
           candidates,
-          { ...args, query, sourcePolicy: policy },
+          { ...args, query, sourcePolicy: policy, officialDiscovery: requirements.officialDiscovery },
           config,
           remainingBudget,
           state.sources.length
@@ -1701,6 +2107,15 @@ export async function deepResearch(args = {}, config = {}, store = null) {
       throw new Error(
         `The report requires at least ${requirements.minIndependentSources} independent verified primary or scholarly sources; ` +
           `${state.coverage.independentPrimarySourceCount} were verified.`
+      );
+    }
+    if (
+      !(args.dryRun || config.deepResearchDryRun || config.provider === "mock") &&
+      requirements.officialDiscovery &&
+      state.coverage.verifiedFirstPartySourceCount < 1
+    ) {
+      throw new Error(
+        "The report explicitly requires a readable, quote-verified first-party engineering or official source; none was verified."
       );
     }
 

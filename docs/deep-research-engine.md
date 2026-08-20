@@ -22,14 +22,36 @@ every query an unbounded agent swarm:
 2. **Search**: queries run with bounded concurrency. Quick lookup uses the
    no-key DuckDuckGo-to-Bing fallback. Standard/deep research uses a bounded
    ensemble that merges DuckDuckGo and Bing indexes, plus Brave only when it is
-   explicitly configured. Canonical duplicates found by multiple providers are
-   promoted and retain per-provider rank evidence. Multi-domain corpora receive separate bounded `site:`
+   explicitly configured. A paper-oriented request receives one initial bounded
+   scholarly discovery pass against Crossref and arXiv, attached to the most
+   paper-like planned query. If the independently verified source minimum is
+   still open, the single gap pass may retry that lane once with a different
+   planner-derived query. This improves paper recall and metadata identity
+   without multiplying every query or creating bursty arXiv traffic.
+   When the request explicitly asks for official engineering or first-party
+   implementation evidence, one separate bounded query targets engineering,
+   documentation, system-card, and whitepaper surfaces. The selector reserves
+   one relevant first-party candidate when available instead of letting a large
+   paper set erase the requested source class. Search snippets can guide
+   discovery, but they cannot satisfy verified first-party coverage or enter
+   synthesis as cited evidence.
+   Canonical duplicates found by multiple providers are promoted and retain
+   per-provider rank evidence. Multi-domain corpora receive separate bounded `site:`
    queries matched to entity-specific subquestions instead of one fragile OR
    expression. If an exact `site:` query returns no candidates, the engine
    retries the same planner query once without the search-operator hint while
    retaining the domain allowlist. This recovery stays inside the original
    research run and is recorded in its checkpoint.
 3. **Rank, diversify, and deduplicate**: canonical URLs remove tracking state.
+   Scholarly records additionally carry DOI, arXiv ID, normalized title,
+   provider, venue, author, PDF, and alternate-URL provenance. DOI publisher,
+   arXiv abstract, and arXiv PDF variants of one work collapse before source
+   budgeting, while the audit records how many variants were merged. A title
+   match is only a fallback and never merges records with conflicting DOI or
+   arXiv identities. A source
+   repository is useful implementation evidence but is not automatically an
+   official or scholarly paper merely because it is hosted on GitHub or has
+   `paper` in its path.
    Topical overlap, independent provider rediscovery, discovery by multiple
    planned queries, and domain-constrained intent rank candidates. Official or
    scholarly status is a quality signal, not a substitute for relevance, so a
@@ -41,7 +63,8 @@ every query an unbounded agent swarm:
    When at least four strongly topical compliant candidates exist, marginally
    related academic pages are excluded as well;
    a sparse set may add only enough relevant supplementary context to reach
-   that small floor. Source budgets are ceilings rather than targets, and a
+   that small floor, but a strict policy with zero compliant candidates fails
+   closed instead of accepting generic filler. Source budgets are ceilings rather than targets, and a
    bounded diversity penalty prevents one domain from crowding every selected
    source.
 4. **Read exact sources**: `read_web_page` validates every redirect before the
@@ -50,9 +73,16 @@ every query an unbounded agent swarm:
    and marks all retrieved text as untrusted evidence. Verified PDF response
    bytes are passed to a bounded local `pdftotext` process when available, so
    papers can contribute exact passages without sending the PDF to another
-   provider. When the original request requires a paper, selected arXiv, ACL
-   Anthology, OpenReview, and Nature landing pages are resolved to bounded PDF
-   candidates before evidence extraction.
+   provider. If one exact scholarly landing page is inaccessible, the reader
+   tries only the same work's verified alternate landing/PDF URLs before giving
+   up; it never substitutes a nearby paper. When the original request requires
+   a paper, selected provider-supplied PDFs and arXiv, ACL Anthology,
+   OpenReview, and Nature landing pages are resolved to bounded PDF candidates
+   before evidence extraction. Direct PDF candidates receive the bounded 5 MiB
+   document allowance rather than the generic 2 MiB HTML-page allowance; larger
+   files still fail closed with the exact size error. Browser-verification,
+   CAPTCHA, and access-challenge HTML is marked unreadable instead of counting
+   its warning text as source evidence.
 5. **Extract evidence**: isolated structured-output calls identify relevant
    subquestions, claims, exact quotations, confidence, and limitations. The
    active provider's fast routing model handles the parallel first pass. Only
@@ -62,7 +92,9 @@ every query an unbounded agent swarm:
 6. **Verify**: deterministic code checks that quoted passages occur in the
    exact retrieved source. Unverified quotations do not enter synthesis.
 7. **Fill gaps**: standard/deep runs may issue one bounded follow-up pass for
-   uncovered subquestions when query and source budgets remain.
+   uncovered subquestions, insufficient independent readable primary evidence,
+   or a requested first-party class that has not produced readable,
+   quote-verified evidence, when query and source budgets remain.
 8. **Synthesize**: the active provider's main model receives verified evidence
    rather than arbitrary page text. Every substantive paragraph and finding
    cites exact evidence IDs instead of merely naming a source. A failed main
@@ -185,6 +217,10 @@ The JSON includes:
 - missing questions, source diversity, and quote-verification rates;
 - explicit evidence requirements, parsed-PDF attempts, and independent verified
   primary/scholarly source counts;
+- DOI/arXiv work identities, alternate read attempts, and merged-variant counts;
+- requested and verified first-party engineering source coverage;
+- evidence that came only from search excerpts, kept distinct from readable
+  source verification;
 - final synthesis and citation audit;
 - stage/status fields used for crash-safe resume.
 
@@ -202,6 +238,28 @@ no-key indexes and merges their canonical results:
 ```text
 DuckDuckGo HTML + Bing RSS (+ Brave when explicitly configured)
 ```
+
+Paper-oriented `deep_research` requests keep that broad lane and add one
+bounded scholarly lane initially; an unresolved independent-source contract
+may trigger one additional scholarly call in the single gap pass:
+
+```text
+Crossref metadata + arXiv metadata/preprint links
+```
+
+For direct `web_search` use, `provider=scholarly` selects only Crossref and
+arXiv, while `provider=research` combines the general and scholarly lanes.
+`provider=crossref` and `provider=arxiv` remain available for a deliberately
+index-specific lookup. These public endpoints require no API key; provider
+failures remain visible in `providersTried` rather than being hidden.
+
+An explicit request for official engineering writeups adds one source-class
+query such as an engineering architecture or system-card lookup. This is not a
+hardcoded vendor list: the planner names relevant first-party organizations
+when it knows them, while deterministic routing preserves the requested source
+class and records whether a readable first-party source actually supported a
+quote-verified claim. A result-page excerpt alone is reported separately and
+does not close that requirement.
 
 For an explicitly configured Brave Search account:
 
@@ -223,6 +281,10 @@ through configuration or a tool argument.
 - Tracking parameters and fragments are removed before deduplication.
 - arXiv abstract, HTML, versioned, and PDF URLs for the same paper collapse to
   one canonical paper identity before source budgeting.
+- DOI and arXiv variants are merged at the work level when identifiers or a
+  sufficiently specific normalized scholarly title agree. Conflicting DOI or
+  arXiv identities always remain separate even when titles match. Distinct
+  variant URLs remain in the audit and exact-source fallback ledger.
 - Strict source policies do not fill unused capacity with blogs or social posts
   once at least four relevant policy-compliant sources are available. This is a
   quality floor, not a requirement to consume the configured source ceiling.
@@ -231,7 +293,10 @@ through configuration or a tool argument.
   “when available” is allowed to proceed only when no bounded PDF candidate was
   discoverable.
 - Page bytes are bounded while streaming; extracted characters are bounded too.
+- Direct PDF candidates use a bounded 5 MiB read allowance; ordinary pages keep
+  the lower 2 MiB allowance.
 - HTML scripts, forms, navigation, footers, and similar noise are removed.
+- Access-challenge pages are explicitly rejected as unreadable evidence.
 - Retrieved text is always labeled untrusted and never treated as tool or agent
   instructions.
 - PDFs are always hash-verified. When local `pdftotext` is available, bounded
@@ -256,6 +321,10 @@ prose:
 - readable source count;
 - primary/scholarly source count;
 - independent verified primary/scholarly source count;
+- duplicate scholarly variants merged before source budgeting;
+- verified first-party engineering/official source count when requested;
+- search-excerpt-only source-match count, which is diagnostic and never enters
+  synthesis or satisfies readable first-party or independent-primary verification;
 - parsed-PDF count and PDF requirement status;
 - independent-domain count;
 - exact-quote verification rate;
