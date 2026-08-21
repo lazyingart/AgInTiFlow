@@ -102,6 +102,8 @@ async function runModuleMockChild() {
     captureOpenHandles: false,
     openedHandles: [],
     failCloseSuffix: "",
+    failStatSuffix: "",
+    mutateOwnerStatSuffix: "",
   };
   const mockFs = { ...realFs };
   mockFs.lstat = async (target, ...args) => {
@@ -122,17 +124,40 @@ async function runModuleMockChild() {
     const handle = await realFs.open(target, ...args);
     const targetPath = String(target);
     if (state.captureOpenHandles) state.openedHandles.push(Object.freeze({ targetPath, handle }));
-    if (!state.failCloseSuffix || !targetPath.endsWith(state.failCloseSuffix)) return handle;
+    const failClose = Boolean(state.failCloseSuffix && targetPath.endsWith(state.failCloseSuffix));
+    const failStat = Boolean(state.failStatSuffix && targetPath.endsWith(state.failStatSuffix));
+    const mutateOwner = Boolean(
+      state.mutateOwnerStatSuffix && targetPath.endsWith(state.mutateOwnerStatSuffix)
+    );
+    if (!failClose && !failStat && !mutateOwner) return handle;
     const close = handle.close.bind(handle);
     let injected = false;
     return {
       get fd() {
         return handle.fd;
       },
-      stat: handle.stat.bind(handle),
+      async stat(...statArgs) {
+        if (failStat) {
+          throw Object.assign(new Error("synthetic retained child fstat failure"), {
+            code: "INTEGRATION_STORAGE_TEST_FSTAT_FAILURE",
+          });
+        }
+        const stat = await handle.stat(...statArgs);
+        if (!mutateOwner) return stat;
+        return Object.freeze({
+          dev: stat.dev,
+          ino: stat.ino,
+          mode: stat.mode,
+          uid: stat.uid + 1n,
+          gid: stat.gid,
+          nlink: stat.nlink,
+          ctimeNs: stat.ctimeNs,
+          isDirectory: stat.isDirectory.bind(stat),
+        });
+      },
       async close() {
         await close();
-        if (!injected) {
+        if (failClose && !injected) {
           injected = true;
           throw Object.assign(new Error("synthetic retained directory close failure"), {
             code: "INTEGRATION_STORAGE_TEST_CLOSE_FAILURE",
@@ -257,6 +282,38 @@ async function runModuleMockChild() {
     await expectCode(() => concurrentValidation, "INTEGRATION_STORAGE_POISONED");
     await expectCode(() => concurrentPoisonAuthority.recheckNamedBinding(), "INTEGRATION_STORAGE_POISONED");
     state.pause = null;
+
+    const liveFstatRoot = path.join(smokeRoot, "live-fstat-root");
+    await makeOwnerDirectory(liveFstatRoot);
+    await makeOwnerDirectory(path.join(liveFstatRoot, "child"));
+    const liveFstatAuthority = await openMockedAuthority({
+      rootPath: liveFstatRoot,
+      role: "live-fstat",
+      ownerUid: UID,
+      ownerGid: GID,
+      label: "live child fstat poison",
+    });
+    opened.push(liveFstatAuthority);
+    state.failStatSuffix = "/child";
+    await expectCode(() => liveFstatAuthority.openDirectory(["child"]), "INTEGRATION_STORAGE_POISONED");
+    state.failStatSuffix = "";
+    await expectCode(() => liveFstatAuthority.identity(), "INTEGRATION_STORAGE_POISONED");
+
+    const liveOwnerRoot = path.join(smokeRoot, "live-owner-root");
+    await makeOwnerDirectory(liveOwnerRoot);
+    await makeOwnerDirectory(path.join(liveOwnerRoot, "child"));
+    const liveOwnerAuthority = await openMockedAuthority({
+      rootPath: liveOwnerRoot,
+      role: "live-owner",
+      ownerUid: UID,
+      ownerGid: GID,
+      label: "live child owner poison",
+    });
+    opened.push(liveOwnerAuthority);
+    state.mutateOwnerStatSuffix = "/child";
+    await expectCode(() => liveOwnerAuthority.openDirectory(["child"]), "INTEGRATION_STORAGE_POISONED");
+    state.mutateOwnerStatSuffix = "";
+    await expectCode(() => liveOwnerAuthority.identity(), "INTEGRATION_STORAGE_POISONED");
 
     const closedChildRoot = path.join(smokeRoot, "closed-child-root");
     await makeOwnerDirectory(closedChildRoot);
@@ -605,6 +662,24 @@ async function main() {
     await expectCode(() => liveChild.identity(), "INTEGRATION_STORAGE_POISONED");
     await expectCode(() => liveChild.identity(), "INTEGRATION_STORAGE_POISONED");
     await expectCode(() => liveChildAuthority.identity(), "INTEGRATION_STORAGE_POISONED");
+
+    const liveChildAdmissionRoot = path.join(smokeRoot, "live-child-admission-root");
+    await makeOwnerDirectory(liveChildAdmissionRoot);
+    await makeOwnerDirectory(path.join(liveChildAdmissionRoot, "child"));
+    const liveChildAdmissionAuthority = await openIntegrationStorageAuthority({
+      rootPath: liveChildAdmissionRoot,
+      role: "live-child-admission",
+      ownerUid: UID,
+      ownerGid: GID,
+      label: "live child admission mode poison",
+    });
+    opened.push(liveChildAdmissionAuthority);
+    await fs.chmod(path.join(liveChildAdmissionRoot, "child"), 0o755);
+    await expectCode(
+      () => liveChildAdmissionAuthority.openDirectory(["child"]),
+      "INTEGRATION_STORAGE_POISONED"
+    );
+    await expectCode(() => liveChildAdmissionAuthority.identity(), "INTEGRATION_STORAGE_POISONED");
 
     let optionsProxyTrapCount = 0;
     const optionsProxy = new Proxy({ rootPath: rootA, role: "role-a", ownerUid: UID, ownerGid: GID }, {

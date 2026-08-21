@@ -2204,9 +2204,25 @@ async function openOneChildDirectory(parent, segment) {
   try {
     handle = await fs.open(childPath, OPEN_DIRECTORY_FLAGS);
     assertDirectoryOpen(parent);
-    const stat = await handle.stat({ bigint: true });
+    let stat = null;
+    try {
+      stat = await handle.stat({ bigint: true });
+    } catch (error) {
+      parent.root.poisoned = true;
+      parent.root.poisonReason = "Retained child directory fstat failed.";
+      fail("INTEGRATION_STORAGE_POISONED", parent.root.poisonReason, {
+        causeCode: error?.code || "",
+      });
+    }
     assertDirectoryOpen(parent);
-    assertOwnerOnlyDirectoryStat(stat, parent.root, "retained child directory");
+    try {
+      assertLiveOwnerOnlyDirectoryStat(stat, parent.root, "retained child directory");
+    } catch (error) {
+      parent.root.poisoned = true;
+      parent.root.poisonReason = error?.message || "Retained child directory metadata diverged.";
+      throw error;
+    }
+    assertDirectoryOpen(parent);
     return makeDirectorySurface(
       parent.root,
       handle,
