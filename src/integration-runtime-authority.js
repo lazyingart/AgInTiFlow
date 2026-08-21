@@ -27,11 +27,15 @@ import {
   outputEventForRunResult,
   validateNativeRuntimeRootsAttestation,
 } from "./integration-native-executor.js";
+import {
+  assertIntegrationRuntimeRepositoryAttestation as validateRepositoryAttestation,
+  assertIntegrationRuntimeRepositorySurface as validateRepository,
+} from "./integration-runtime-repository-contract.js";
+export {
+  INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_PROPERTY,
+  INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_VERSION,
+} from "./integration-runtime-repository-contract.js";
 
-export const INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_VERSION =
-  "aginti-integration-thread-session-repository-v5";
-export const INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_PROPERTY =
-  "integrationRuntimeRepositoryAttestation";
 export const INTEGRATION_EVENT_APPEND_ATTESTATION_VERSION = "aginti-public-event-append-attestation-v1";
 export const INTEGRATION_EVENT_APPEND_ATTESTATION_PROPERTY = "integrationEventAppendAttestation";
 export const INTEGRATION_RUNTIME_CANCELLATION_ATTESTATION_VERSION =
@@ -71,62 +75,6 @@ const FORBIDDEN_ADAPTER_METHODS = Object.freeze([
   "executeTool",
   "executeDocker",
 ]);
-const REQUIRED_REPOSITORY_METHODS = Object.freeze([
-  "listIntegrationThreads",
-  "createIntegrationThread",
-  "getIntegrationThread",
-  "updateIntegrationThread",
-  "deleteIntegrationThread",
-  "getActiveIntegrationRunForThread",
-  "createIntegrationRun",
-  "markIntegrationRunDispatching",
-  "authorizeIntegrationRunNativeStart",
-  "abortIntegrationRunBeforeLaunch",
-  "getIntegrationRun",
-  "markIntegrationRunCancelling",
-  "finishIntegrationRunWithOutbox",
-  "getIntegrationCompletionOutboxBundle",
-  "reconcileIntegrationDispatches",
-  "listPendingIntegrationOutboxEvents",
-  "markIntegrationOutboxDelivered",
-  "listIntegrationArtifacts",
-  "getIntegrationArtifact",
-  "stageIntegrationArtifactOutbox",
-  "publishIntegrationArtifactOutbox",
-]);
-const REPOSITORY_ATTESTATION_KEYS = Object.freeze([
-  "schemaVersion",
-  "owner",
-  "authority",
-  "descriptorBound",
-  "nativeSessionMapping",
-  "onePublicThreadToOneNativeSession",
-  "principalBound",
-  "browserSessionBound",
-  "optimisticRevisions",
-  "casRevisions",
-  "immutableNativeSessionId",
-  "durableThreadSessionMapping",
-  "dispatchLeases",
-  "dispatchOutbox",
-  "nativeStartAuthorization",
-  "receiptRecoveryHold",
-  "exactReconciliationResults",
-  "preLaunchAbort",
-  "terminalOutbox",
-  "completionOutboxBundles",
-  "outboxDelivery",
-  "startupReconciliation",
-  "processIdentity",
-  "artifactTransactionalOutbox",
-  "publishedArtifactsOnly",
-  "exactOwnership",
-  "noPathThreadMapStore",
-  "durable",
-  "retainedDescriptorStorageAuthority",
-  "runtimeRoots",
-  "digest",
-]);
 const EVENT_APPEND_ATTESTATION_KEYS = Object.freeze([
   "schemaVersion",
   "owner",
@@ -158,10 +106,6 @@ const SANDBOX_ATTESTATION_KEYS = Object.freeze([
   "enabled",
   "digest",
   "isolationAttestation",
-]);
-const REPOSITORY_SHAPE_KEYS = Object.freeze([
-  INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_PROPERTY,
-  ...REQUIRED_REPOSITORY_METHODS,
 ]);
 const EVENT_LEDGER_STORE_REQUIRED_KEYS = Object.freeze([
   "owner",
@@ -548,74 +492,6 @@ function assertFrozenAttestation(value, label, keys) {
     failUnavailable(`${label} digest is invalid.`);
   }
   return proof;
-}
-
-function validateRepositoryAttestation(value, { requireRetainedDescriptorStorage = false } = {}) {
-  const proof = assertFrozenAttestation(value, "repository attestation", REPOSITORY_ATTESTATION_KEYS);
-  rejectThenableDependency(proof.runtimeRoots, "repository runtime roots attestation");
-  validateNativeRuntimeRootsAttestation(proof.runtimeRoots);
-  if (
-    proof.schemaVersion !== INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_VERSION ||
-    proof.owner !== "aginti" ||
-    proof.authority !== "aginti" ||
-    proof.descriptorBound !== true ||
-    proof.nativeSessionMapping !== "repository" ||
-    proof.onePublicThreadToOneNativeSession !== true ||
-    proof.principalBound !== true ||
-    proof.browserSessionBound !== true ||
-    proof.optimisticRevisions !== true ||
-    proof.casRevisions !== true ||
-    proof.immutableNativeSessionId !== true ||
-    proof.durableThreadSessionMapping !== true ||
-    proof.dispatchLeases !== true ||
-    proof.dispatchOutbox !== true ||
-    proof.nativeStartAuthorization !== true ||
-    proof.receiptRecoveryHold !== true ||
-    proof.exactReconciliationResults !== true ||
-    proof.preLaunchAbort !== true ||
-    proof.terminalOutbox !== true ||
-    proof.completionOutboxBundles !== true ||
-    proof.outboxDelivery !== true ||
-    proof.startupReconciliation !== true ||
-    proof.processIdentity !== true ||
-    proof.artifactTransactionalOutbox !== true ||
-    proof.publishedArtifactsOnly !== true ||
-    proof.exactOwnership !== true ||
-    proof.noPathThreadMapStore !== true ||
-    proof.durable !== true ||
-    typeof proof.retainedDescriptorStorageAuthority !== "boolean"
-  ) {
-    failUnavailable("Integration repository attestation is unavailable.");
-  }
-  if (requireRetainedDescriptorStorage && proof.retainedDescriptorStorageAuthority !== true) {
-    failUnavailable("Retained-descriptor storage authority is not proven.");
-  }
-  return proof;
-}
-
-function validateRepository(repository) {
-  if (repository && (typeof repository === "object" || typeof repository === "function") && utilTypes.isProxy(repository)) {
-    failUnavailable("thread/session repository must not be a Proxy.");
-  }
-  rejectThenableDependency(repository, "thread/session repository");
-  assertExactFrozenShape(repository, {
-    label: "thread/session repository",
-    requiredKeys: REPOSITORY_SHAPE_KEYS,
-  });
-  assertNoSemanticMethods(repository, "thread/session repository");
-  const attestation = validateRepositoryAttestation(
-    ownDataDescriptor(repository, INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_PROPERTY, "thread/session repository").value
-  );
-  const methods = {};
-  for (const method of REQUIRED_REPOSITORY_METHODS) {
-    const descriptor = ownDataDescriptor(repository, method, "thread/session repository");
-    if (descriptor.writable !== false || descriptor.configurable !== false) {
-      failUnavailable(`thread/session repository.${method} must be immutable.`);
-    }
-    if (typeof descriptor.value !== "function") failUnavailable(`thread/session repository.${method} is unavailable.`);
-    methods[method] = descriptor.value.bind(repository);
-  }
-  return Object.freeze({ attestation, methods: Object.freeze(methods) });
 }
 
 function validateEventAppendProof(eventLedgerStore) {

@@ -1,11 +1,8 @@
-import path from "node:path";
-import { types as utilTypes } from "node:util";
 import {
   assertFixedIntegrationPolicy,
   buildFixedIntegrationRuntimeOverrides,
   contractDigest,
   integrationBoundedText,
-  integrationExactKeys,
 } from "./integration-policy.js";
 import { validateIntegrationEventPayload } from "./integration-events.js";
 import { authorityFail } from "./integration-durable-common.js";
@@ -18,9 +15,13 @@ import {
   registerIntegrationSessionConfig,
   runWithIntegrationSessionScope,
 } from "./integration-session-persistence.js";
+import { validateNativeRuntimeRootsAttestation } from "./integration-native-runtime-roots.js";
+export {
+  NATIVE_RUNTIME_ROOTS_ATTESTATION_VERSION,
+  validateNativeRuntimeRootsAttestation,
+} from "./integration-native-runtime-roots.js";
 
 export const NATIVE_INTEGRATION_EXECUTOR_PROOF_VERSION = "aginti-native-run-agent-executor-v1";
-export const NATIVE_RUNTIME_ROOTS_ATTESTATION_VERSION = "aginti-native-runtime-roots-v1";
 
 const ZERO_DIGEST = "0".repeat(64);
 const ABSOLUTE_PATH_PATTERN =
@@ -32,25 +33,6 @@ const PUBLIC_FAILURE_CODES = new Set([
   "MODEL_TIMEOUT",
   "MAX_STEPS",
   "SESSION_RUNTIME_TAKEOVER_BLOCKED",
-]);
-const DANGEROUS_ROOTS = new Set([
-  "/",
-  "/home",
-  "/Users",
-  "/mnt",
-  "/media",
-  "/Volumes",
-  "/etc",
-  "/root",
-  "/proc",
-  "/sys",
-  "/dev",
-  "/run",
-  "/var",
-  "/usr",
-  "/opt",
-  "/srv",
-  "/tmp",
 ]);
 const REQUIRED_DISABLED_FLAGS = Object.freeze([
   "allowWrapperTools",
@@ -145,10 +127,6 @@ function redactPublicText(value) {
   });
 }
 
-function canonicalDigest(value) {
-  return contractDigest(value);
-}
-
 function assertDigest(value, label) {
   if (typeof value !== "string" || !/^[a-f0-9]{64}$/u.test(value)) fail(`${label} digest is invalid.`);
   return value;
@@ -163,81 +141,6 @@ function assertNativeSessionId(value) {
     fail("Native AgInTi session id is invalid.");
   }
   return value;
-}
-
-function assertSafeRootPath(value, label) {
-  if (typeof value !== "string" || !value.trim()) fail(`${label} is unavailable.`);
-  const resolved = path.resolve(value);
-  if (resolved !== value) fail(`${label} must be an exact absolute path.`);
-  if (DANGEROUS_ROOTS.has(resolved)) fail(`${label} must not be a host root or system directory.`);
-  if (/^\/home\/[^/]+$/u.test(resolved) || /^\/Users\/[^/]+$/u.test(resolved) || /^\/Volumes\/[^/]+$/u.test(resolved)) {
-    fail(`${label} must not be a shallow user or volume root.`);
-  }
-  if (resolved.includes("/../") || resolved.endsWith("/..")) fail(`${label} must not contain parent traversal.`);
-  return resolved;
-}
-
-function pathInside(child, parent) {
-  const relative = path.relative(parent, child);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function pathsDisjoint(left, right) {
-  return !pathInside(left, right) && !pathInside(right, left);
-}
-
-export function validateNativeRuntimeRootsAttestation(value = {}) {
-  if (value && typeof value === "object" && utilTypes.isProxy(value)) {
-    fail("Native runtime roots attestation must not be a Proxy.");
-  }
-  thenableReject(value, "native runtime roots attestation");
-  if (!Object.isFrozen(value)) fail("Native runtime roots attestation must be frozen.");
-  const roots = integrationExactKeys(
-    value,
-    [
-      "schemaVersion",
-      "sessionsDir",
-      "baseDir",
-      "commandCwd",
-      "retainedDescriptor",
-      "symlinkFree",
-      "outsideForbiddenRoots",
-      "digest",
-    ],
-    "native runtime roots attestation",
-    [
-      "schemaVersion",
-      "sessionsDir",
-      "baseDir",
-      "commandCwd",
-      "retainedDescriptor",
-      "symlinkFree",
-      "outsideForbiddenRoots",
-      "digest",
-    ]
-  );
-  for (const key of Object.keys(roots)) thenableReject(roots[key], `native runtime roots attestation.${key}`);
-  const unsigned = { ...roots };
-  delete unsigned.digest;
-  if (
-    roots.schemaVersion !== NATIVE_RUNTIME_ROOTS_ATTESTATION_VERSION ||
-    roots.retainedDescriptor !== true ||
-    roots.symlinkFree !== true ||
-    roots.outsideForbiddenRoots !== true ||
-    roots.digest !== canonicalDigest(unsigned)
-  ) {
-    fail("Native runtime roots attestation is unavailable.");
-  }
-  const sessionsDir = assertSafeRootPath(roots.sessionsDir, "sessionsDir");
-  const baseDir = assertSafeRootPath(roots.baseDir, "baseDir");
-  const commandCwd = assertSafeRootPath(roots.commandCwd, "commandCwd");
-  if (!pathInside(commandCwd, baseDir)) {
-    fail("Native runtime command workspace must be bound under the repository-attested workspace root.");
-  }
-  if (!pathsDisjoint(sessionsDir, commandCwd) || !pathsDisjoint(sessionsDir, baseDir)) {
-    fail("Native session state root must be disjoint from the command/tool workspace.");
-  }
-  return Object.freeze({ sessionsDir, baseDir, commandCwd, digest: roots.digest });
 }
 
 function assertNoEscapeFlags(config) {
