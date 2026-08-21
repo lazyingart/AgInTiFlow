@@ -2,26 +2,17 @@ import crypto from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { IntegrationAuthorityError, authorityFail } from "./integration-authority-error.js";
 import { contractDigest } from "./integration-policy.js";
+
+export { IntegrationAuthorityError, authorityFail };
+export {
+  assertIntegrationRetainedFilePrimitives as assertRetainedProtectedFilePrimitives,
+  createIntegrationRetainedFilePrimitives as createRetainedProtectedFilePrimitives,
+} from "./integration-storage-authority.js";
 
 export const INTEGRATION_INTEGRITY_DIGEST_SECURITY_SCOPE =
   "unkeyed-sha256-corruption-detection-only-same-uid-forgery-out-of-scope-v1";
-
-export class IntegrationAuthorityError extends Error {
-  constructor(code, message, { status = 503, details = {} } = {}) {
-    super(message);
-    this.name = "IntegrationAuthorityError";
-    this.code = code;
-    this.publicCode = code;
-    this.status = status;
-    this.statusCode = status;
-    this.details = details;
-  }
-}
-
-export function authorityFail(code, message, { status = 503, details = {} } = {}) {
-  throw new IntegrationAuthorityError(code, message, { status, details });
-}
 
 export function nowIso(now = () => new Date()) {
   return now().toISOString();

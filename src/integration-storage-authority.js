@@ -1,18 +1,21 @@
-import { constants as fsConstants } from "node:fs";
+import crypto from "node:crypto";
+import { constants as fsConstants, fstatSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { types as utilTypes } from "node:util";
-import { authorityFail } from "./integration-durable-common.js";
+import { TextDecoder, types as utilTypes } from "node:util";
+import { authorityFail } from "./integration-authority-error.js";
 import { contractDigest } from "./integration-policy.js";
 
 export const INTEGRATION_STORAGE_AUTHORITY_VERSION = "aginti-retained-storage-authority-v1";
 export const INTEGRATION_RETAINED_DIRECTORY_VERSION = "aginti-retained-directory-v1";
 export const INTEGRATION_STORAGE_ATTESTATION_VERSION = "aginti-retained-storage-attestation-v1";
+export const INTEGRATION_RETAINED_FILE_PRIMITIVES_VERSION = "aginti-retained-file-primitives-v1";
+export const INTEGRATION_RETAINED_FILE_ATTESTATION_VERSION = "aginti-retained-file-attestation-v1";
 
 // Node 22 does not expose openat/openat2/renameat2/unlinkat. This primitive
-// only retains directory FileHandles and walks read-only children through
-// /proc/self/fd; it is a pre-enable building block, not same-uid mutation-safe
-// production storage and not a file-write/rename/unlink authority.
+// retains directory FileHandles and walks children through /proc/self/fd. The
+// base authority surface has no mutation method. The separately branded file
+// primitive below is still pre-enable and is not same-uid mutation-safe.
 export const INTEGRATION_STORAGE_LIMITATIONS = Object.freeze({
   preEnablePrimitive: true,
   procfsRequired: true,
@@ -26,8 +29,42 @@ export const INTEGRATION_STORAGE_LIMITATIONS = Object.freeze({
   mutationMethods: false,
 });
 
+export const INTEGRATION_RETAINED_FILE_LIMITATIONS = Object.freeze({
+  preEnablePrimitive: true,
+  procfsRequired: true,
+  preprovisionedDirectoryRequired: true,
+  nodeOpenat: false,
+  nodeOpenat2: false,
+  openat2ResolveBeneath: false,
+  noXdev: false,
+  nodeRenameat2: false,
+  nodeUnlinkat: false,
+  sameUidMutationSafety: false,
+  namedBindingRaceFree: false,
+  crossProcessSerialization: false,
+  compareAndSwap: false,
+  directoryMutationMethods: false,
+  appendMethods: false,
+  listMethods: false,
+  deleteMethods: false,
+  lockMethods: false,
+  crashOrphanCleanup: false,
+  crashMayLeaveReservedTemp: true,
+  commitMayBeAmbiguousAfterRename: true,
+  hardwareDurabilityGuarantee: false,
+});
+
 const AUTHORITY_KEYS = Object.freeze(["rootPath", "role", "ownerUid", "ownerGid", "label"]);
 const EXPECTED_AUTHORITY_KEYS = Object.freeze(["role", "canonicalPath", "rootIdentityDigest"]);
+const EXPECTED_DIRECTORY_KEYS = Object.freeze([
+  "role",
+  "canonicalPath",
+  "rootIdentityDigest",
+  "relativeSegments",
+  "directoryIdentityDigest",
+]);
+const FILE_READ_OPTION_KEYS = Object.freeze(["optional", "maxBytes"]);
+const FILE_WRITE_OPTION_KEYS = Object.freeze(["maxBytes"]);
 const ATTESTATION_KEYS = Object.freeze([
   "schemaVersion",
   "owner",
@@ -64,16 +101,51 @@ const DIRECTORY_SURFACE_KEYS = Object.freeze([
   "isClosed",
 ]);
 const LEASE_SURFACE_KEYS = Object.freeze(["schemaVersion", "release"]);
+const FILE_PRIMITIVES_SURFACE_KEYS = Object.freeze([
+  "schemaVersion",
+  "attestation",
+  "readProtectedUtf8File",
+  "readProtectedJsonFile",
+  "atomicWriteProtectedUtf8File",
+  "atomicWriteProtectedJson",
+  "isClosed",
+]);
+const FILE_ATTESTATION_KEYS = Object.freeze([
+  "schemaVersion",
+  "owner",
+  "authority",
+  "role",
+  "canonicalPath",
+  "rootIdentityDigest",
+  "relativeSegments",
+  "relativePointer",
+  "directoryIdentityDigest",
+  "protectedRegularFiles",
+  "atomicSameDirectoryReplace",
+  "fileSyncBeforeRename",
+  "directorySyncAfterRename",
+  "limitations",
+  "digest",
+]);
 
 const authorityBrand = new WeakMap();
 const directoryBrand = new WeakMap();
 const attestationBrand = new WeakMap();
 const leaseBrand = new WeakMap();
+const filePrimitivesBrand = new WeakMap();
 
 const OPEN_DIRECTORY_FLAGS =
   fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
+const OPEN_PROTECTED_READ_FLAGS =
+  fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK;
 const MAX_SEGMENT_UTF8_BYTES = 160;
 const MAX_WALK_SEGMENTS = 64;
+const DEFAULT_PROTECTED_FILE_BYTES = 1024 * 1024;
+const MAX_PROTECTED_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_CANONICAL_JSON_DEPTH = 64;
+const MAX_CANONICAL_JSON_NODES = 100_000;
+const ATOMIC_TEMP_PREFIX = ".aginti-atomic-v1-";
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 function fail(code, message, details = {}) {
   authorityFail(code, message, { details });
@@ -91,6 +163,8 @@ function ensureLinuxNode22() {
   if (
     typeof fsConstants.O_DIRECTORY !== "number" ||
     typeof fsConstants.O_NOFOLLOW !== "number" ||
+    typeof fsConstants.O_NONBLOCK !== "number" ||
+    typeof fstatSync !== "function" ||
     !Number.isSafeInteger(process.getuid?.()) ||
     !Number.isSafeInteger(process.getgid?.())
   ) {
@@ -183,6 +257,31 @@ function normalizeExpectedAuthority(input) {
   });
 }
 
+function normalizeExpectedDirectory(input) {
+  const expected = assertPlainDataObject(input, EXPECTED_DIRECTORY_KEYS, "expected retained directory", {
+    required: EXPECTED_DIRECTORY_KEYS,
+  });
+  if (typeof expected.rootIdentityDigest !== "string" || !/^[a-f0-9]{64}$/u.test(expected.rootIdentityDigest)) {
+    fail("INTEGRATION_STORAGE_INVALID", "expected retained directory rootIdentityDigest is invalid.");
+  }
+  if (typeof expected.directoryIdentityDigest !== "string" || !/^[a-f0-9]{64}$/u.test(expected.directoryIdentityDigest)) {
+    fail("INTEGRATION_STORAGE_INVALID", "expected retained directory directoryIdentityDigest is invalid.");
+  }
+  const relativeSegments = cloneSegments(expected.relativeSegments, "expected retained directory relativeSegments", {
+    allowEmpty: true,
+  });
+  if (relativeSegments.some((segment) => segment.startsWith(ATOMIC_TEMP_PREFIX))) {
+    fail("INTEGRATION_STORAGE_INVALID", "expected retained directory uses the reserved atomic temporary prefix.");
+  }
+  return Object.freeze({
+    role: assertSafeRole(expected.role),
+    canonicalPath: assertCanonicalRootPath(expected.canonicalPath),
+    rootIdentityDigest: expected.rootIdentityDigest,
+    relativeSegments,
+    directoryIdentityDigest: expected.directoryIdentityDigest,
+  });
+}
+
 function assertSafeLabel(value) {
   if (typeof value !== "string" || !/^[A-Za-z0-9 ._-]{1,80}$/u.test(value)) {
     fail("INTEGRATION_STORAGE_INVALID", "storage label is invalid.");
@@ -213,7 +312,15 @@ function assertSafeSegment(value, label = "path segment") {
   return value;
 }
 
-function cloneSegments(input, label = "directory segments") {
+function assertSafeFileName(value) {
+  const fileName = assertSafeSegment(value, "protected file name");
+  if (fileName.startsWith(ATOMIC_TEMP_PREFIX)) {
+    fail("INTEGRATION_STORAGE_INVALID", "protected file name uses the reserved atomic temporary prefix.");
+  }
+  return fileName;
+}
+
+function cloneSegments(input, label = "directory segments", { allowEmpty = false } = {}) {
   if (input && (typeof input === "object" || typeof input === "function") && utilTypes.isProxy(input)) {
     fail("INTEGRATION_STORAGE_INVALID", `${label} must not be a Proxy.`);
   }
@@ -225,8 +332,9 @@ function cloneSegments(input, label = "directory segments") {
   if (indexKeys.some((key) => typeof key !== "string" || !/^(?:0|[1-9][0-9]*)$/u.test(key))) {
     fail("INTEGRATION_STORAGE_INVALID", `${label} must not contain symbols or named fields.`);
   }
-  if (input.length < 1 || input.length > MAX_WALK_SEGMENTS || indexKeys.length !== input.length) {
-    fail("INTEGRATION_STORAGE_INVALID", `${label} must be a dense non-empty array.`);
+  const minimum = allowEmpty ? 0 : 1;
+  if (input.length < minimum || input.length > MAX_WALK_SEGMENTS || indexKeys.length !== input.length) {
+    fail("INTEGRATION_STORAGE_INVALID", `${label} must be a dense ${allowEmpty ? "" : "non-empty "}array.`);
   }
   const segments = [];
   for (let index = 0; index < input.length; index += 1) {
@@ -241,6 +349,101 @@ function cloneSegments(input, label = "directory segments") {
     segments.push(assertSafeSegment(descriptor.value, `${label}[${index}]`));
   }
   return Object.freeze(segments);
+}
+
+function normalizeMaxBytes(value, label) {
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_PROTECTED_FILE_BYTES) {
+    fail("INTEGRATION_STORAGE_INVALID", `${label} is invalid.`);
+  }
+  return value;
+}
+
+function normalizeReadOptions(input) {
+  const options = assertPlainDataObject(input === undefined ? {} : input, FILE_READ_OPTION_KEYS, "protected read options");
+  if (options.optional !== undefined && typeof options.optional !== "boolean") {
+    fail("INTEGRATION_STORAGE_INVALID", "protected read options.optional must be boolean.");
+  }
+  return Object.freeze({
+    optional: options.optional === true,
+    maxBytes: normalizeMaxBytes(options.maxBytes ?? DEFAULT_PROTECTED_FILE_BYTES, "protected read options.maxBytes"),
+  });
+}
+
+function normalizeWriteOptions(input) {
+  const options = assertPlainDataObject(input === undefined ? {} : input, FILE_WRITE_OPTION_KEYS, "protected write options");
+  return Object.freeze({
+    maxBytes: normalizeMaxBytes(options.maxBytes ?? DEFAULT_PROTECTED_FILE_BYTES, "protected write options.maxBytes"),
+  });
+}
+
+function canonicalJsonTrapSafe(value) {
+  const active = new WeakSet();
+  const counter = { nodes: 0 };
+
+  function visit(item, depth) {
+    counter.nodes += 1;
+    if (counter.nodes > MAX_CANONICAL_JSON_NODES || depth > MAX_CANONICAL_JSON_DEPTH) {
+      fail("INTEGRATION_STORAGE_INVALID", "protected JSON exceeds structural bounds.");
+    }
+    if (item && (typeof item === "object" || typeof item === "function") && utilTypes.isProxy(item)) {
+      fail("INTEGRATION_STORAGE_INVALID", "protected JSON must not contain a Proxy.");
+    }
+    if (item === null || typeof item === "string" || typeof item === "boolean") return JSON.stringify(item);
+    if (typeof item === "number") {
+      if (!Number.isFinite(item)) fail("INTEGRATION_STORAGE_INVALID", "protected JSON contains a non-finite number.");
+      return JSON.stringify(item);
+    }
+    if (!item || typeof item !== "object") {
+      fail("INTEGRATION_STORAGE_INVALID", "protected JSON contains a non-JSON value.");
+    }
+    if (active.has(item)) fail("INTEGRATION_STORAGE_INVALID", "protected JSON must not contain cycles.");
+    active.add(item);
+    try {
+      if (Array.isArray(item)) {
+        if (Object.getPrototypeOf(item) !== Array.prototype || !Number.isSafeInteger(item.length)) {
+          fail("INTEGRATION_STORAGE_INVALID", "protected JSON array shape is invalid.");
+        }
+        const keys = Reflect.ownKeys(item);
+        if (keys.length !== item.length + 1 || keys[keys.length - 1] !== "length") {
+          fail("INTEGRATION_STORAGE_INVALID", "protected JSON array fields are invalid.");
+        }
+        const values = [];
+        for (let index = 0; index < item.length; index += 1) {
+          if (keys[index] !== String(index)) fail("INTEGRATION_STORAGE_INVALID", "protected JSON array must be dense.");
+          const descriptor = Object.getOwnPropertyDescriptor(item, String(index));
+          if (!descriptor || descriptor.enumerable !== true || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+            fail("INTEGRATION_STORAGE_INVALID", "protected JSON array fields must be enumerable data.");
+          }
+          values.push(visit(descriptor.value, depth + 1));
+        }
+        return `[${values.join(",")}]`;
+      }
+      const prototype = Object.getPrototypeOf(item);
+      if (prototype !== Object.prototype && prototype !== null) {
+        fail("INTEGRATION_STORAGE_INVALID", "protected JSON object prototype is invalid.");
+      }
+      const keys = Reflect.ownKeys(item);
+      if (keys.some((key) => typeof key !== "string")) {
+        fail("INTEGRATION_STORAGE_INVALID", "protected JSON object must not contain symbols.");
+      }
+      const values = new Map();
+      for (const key of keys) {
+        const descriptor = Object.getOwnPropertyDescriptor(item, key);
+        if (!descriptor || descriptor.enumerable !== true || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+          fail("INTEGRATION_STORAGE_INVALID", "protected JSON object fields must be enumerable data.");
+        }
+        values.set(key, descriptor.value);
+      }
+      return `{${[...keys]
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${visit(values.get(key), depth + 1)}`)
+        .join(",")}}`;
+    } finally {
+      active.delete(item);
+    }
+  }
+
+  return visit(value, 0);
 }
 
 function bigintIdentityFromStat(stat) {
@@ -357,6 +560,30 @@ function assertExpectedStorageState(state, expectedInput, label) {
   ) {
     fail("INTEGRATION_STORAGE_INVALID", `${label} does not match the expected retained storage authority.`);
   }
+}
+
+function sameSegments(left, right) {
+  return Boolean(
+    Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((segment, index) => segment === right[index])
+  );
+}
+
+function assertExpectedDirectoryState(dir, expectedInput, label) {
+  const expected = normalizeExpectedDirectory(expectedInput);
+  const directoryIdentityDigest = identityDigest(dir.identity);
+  if (
+    dir.root.role !== expected.role ||
+    dir.root.canonicalPath !== expected.canonicalPath ||
+    identityDigest(dir.root.rootIdentity) !== expected.rootIdentityDigest ||
+    !sameSegments(dir.relativeSegments, expected.relativeSegments) ||
+    directoryIdentityDigest !== expected.directoryIdentityDigest
+  ) {
+    fail("INTEGRATION_STORAGE_INVALID", `${label} does not match the expected retained directory.`);
+  }
+  return expected;
 }
 
 async function fstatRetainedHandleIdentity(handle, expectedIdentity, expectedOwner, label) {
@@ -643,6 +870,532 @@ function procFdChildPath(handle, segment) {
   return `/proc/self/fd/${handle.fd}/${segment}`;
 }
 
+async function recheckDirectoryNamedBinding(dir) {
+  assertDirectoryOpen(dir);
+  await fstatDirectoryHandle(dir);
+  assertDirectoryOpen(dir);
+  await recheckNamedBinding(dir.root);
+  assertDirectoryOpen(dir);
+  if (dir.relativeSegments.length === 0) return makePublicIdentity(dir.identity);
+
+  const opened = [];
+  let currentHandle = dir.root.rootDirectory.handle;
+  let routeIdentity = null;
+  let routeError = null;
+  try {
+    for (const segment of dir.relativeSegments) {
+      const nextHandle = await fs.open(procFdChildPath(currentHandle, segment), OPEN_DIRECTORY_FLAGS);
+      opened.push(nextHandle);
+      currentHandle = nextHandle;
+      assertDirectoryOpen(dir);
+      const stat = await nextHandle.stat({ bigint: true });
+      assertDirectoryOpen(dir);
+      assertLiveOwnerOnlyDirectoryStat(stat, dir.root, "retained directory named route");
+      routeIdentity = bigintIdentityFromStat(stat);
+    }
+    if (!sameRequiredIdentity(routeIdentity, dir.identity)) {
+      fail("INTEGRATION_STORAGE_POISONED", "Retained directory named binding changed.");
+    }
+  } catch (error) {
+    routeError = error;
+  }
+
+  const cleanupFailures = [];
+  for (const handle of opened.reverse()) {
+    await closeHandleBestEffort(handle, cleanupFailures, "retained directory named-route handle");
+  }
+  if (cleanupFailures.length > 0) {
+    dir.poisoned = true;
+    dir.poisonReason = "Retained directory named-route cleanup failed.";
+    dir.root.poisoned = true;
+    dir.root.poisonReason = dir.poisonReason;
+    throwCleanupFailure("Retained directory named-route cleanup failed.", cleanupFailures, {
+      originalCode: routeError?.publicCode || routeError?.code || "",
+    });
+  }
+  if (routeError) {
+    dir.poisoned = true;
+    dir.poisonReason = "Retained directory named binding cannot be proven.";
+    dir.root.poisoned = true;
+    dir.root.poisonReason = dir.poisonReason;
+    if (routeError?.publicCode === "INTEGRATION_STORAGE_POISONED") throw routeError;
+    fail("INTEGRATION_STORAGE_POISONED", "Retained directory named binding cannot be proven.", {
+      causeCode: routeError?.publicCode || routeError?.code || "",
+    });
+  }
+
+  await fstatDirectoryHandle(dir);
+  assertDirectoryOpen(dir);
+  await recheckNamedBinding(dir.root);
+  assertDirectoryOpen(dir);
+  return makePublicIdentity(dir.identity);
+}
+
+function protectedFileIdentityFromStat(stat) {
+  return Object.freeze({
+    dev: stat.dev,
+    ino: stat.ino,
+    mode: stat.mode,
+    uid: stat.uid,
+    gid: stat.gid,
+    nlink: stat.nlink,
+    size: stat.size,
+    mtimeNs: stat.mtimeNs,
+    ctimeNs: stat.ctimeNs,
+  });
+}
+
+function sameProtectedFileObject(left, right) {
+  return Boolean(
+    left &&
+      right &&
+      left.dev === right.dev &&
+      left.ino === right.ino &&
+      left.mode === right.mode &&
+      left.uid === right.uid &&
+      left.gid === right.gid &&
+      left.nlink === right.nlink
+  );
+}
+
+function sameStableProtectedFile(left, right) {
+  return Boolean(
+    sameProtectedFileObject(left, right) &&
+      left.size === right.size &&
+      left.mtimeNs === right.mtimeNs &&
+      left.ctimeNs === right.ctimeNs
+  );
+}
+
+function assertProtectedRegularFileStat(stat, root, maxBytes, label) {
+  if (!stat.isFile()) fail("INTEGRATION_STORAGE_FILE_CORRUPT", `${label} must be a regular file.`);
+  if (stat.uid !== BigInt(root.ownerUid) || stat.gid !== BigInt(root.ownerGid)) {
+    fail("INTEGRATION_STORAGE_FILE_CORRUPT", `${label} owner uid/gid is invalid.`);
+  }
+  if ((stat.mode & 0o7777n) !== 0o600n) {
+    fail("INTEGRATION_STORAGE_FILE_CORRUPT", `${label} mode must be exactly 0600.`);
+  }
+  if (stat.nlink !== 1n) fail("INTEGRATION_STORAGE_FILE_CORRUPT", `${label} must not have hard links.`);
+  if (stat.size < 0n || stat.size > BigInt(maxBytes)) {
+    fail("INTEGRATION_STORAGE_FILE_CORRUPT", `${label} size exceeds its protected bound.`);
+  }
+  return protectedFileIdentityFromStat(stat);
+}
+
+function assertProtectedNameBinding(stat, expectedIdentity, root, maxBytes, label, { stable = false } = {}) {
+  const namedIdentity = assertProtectedRegularFileStat(stat, root, maxBytes, label);
+  const matches = stable
+    ? sameStableProtectedFile(namedIdentity, expectedIdentity)
+    : sameProtectedFileObject(namedIdentity, expectedIdentity);
+  if (!matches) fail("INTEGRATION_STORAGE_FILE_CORRUPT", `${label} named binding changed.`);
+  return namedIdentity;
+}
+
+function throwNormalizedFileOperationError(error, operation) {
+  if (isAuthorityError(error)) {
+    const code = typeof error?.publicCode === "string" ? error.publicCode : "INTEGRATION_STORAGE_FILE_UNAVAILABLE";
+    const messages = {
+      INTEGRATION_STORAGE_INVALID: `Protected file ${operation} input is invalid.`,
+      INTEGRATION_STORAGE_CLOSED: `Protected file ${operation} rejected a closed retained directory.`,
+      INTEGRATION_STORAGE_POISONED: `Protected file ${operation} rejected a poisoned retained binding.`,
+      INTEGRATION_STORAGE_FILE_CORRUPT: `Protected file ${operation} detected corrupt or unstable state.`,
+      INTEGRATION_STORAGE_CLEANUP_FAILED: `Protected file ${operation} cleanup failed.`,
+    };
+    authorityFail(code, messages[code] || `Protected file ${operation} failed safely.`, {
+      status: Number.isSafeInteger(error?.status) ? error.status : 503,
+      details: { phase: operation },
+    });
+  }
+  if (error?.code === "ELOOP") {
+    fail("INTEGRATION_STORAGE_FILE_CORRUPT", `Protected file ${operation} rejected a symbolic link.`);
+  }
+  fail("INTEGRATION_STORAGE_FILE_UNAVAILABLE", `Protected file ${operation} failed.`, { phase: operation });
+}
+
+async function boundedReadUtf8(handle, dir, maxBytes) {
+  const chunks = [];
+  let total = 0;
+  let position = 0;
+  while (total <= maxBytes) {
+    const remaining = maxBytes + 1 - total;
+    const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, remaining));
+    const result = await handle.read(buffer, 0, buffer.length, position);
+    assertDirectoryOpen(dir);
+    if (result.bytesRead === 0) break;
+    chunks.push(buffer.subarray(0, result.bytesRead));
+    total += result.bytesRead;
+    position += result.bytesRead;
+  }
+  if (total > maxBytes) fail("INTEGRATION_STORAGE_FILE_CORRUPT", "Protected file exceeds its read bound.");
+  const bytes = Buffer.concat(chunks, total);
+  try {
+    return Object.freeze({ text: UTF8_DECODER.decode(bytes), bytes: total });
+  } catch {
+    fail("INTEGRATION_STORAGE_FILE_CORRUPT", "Protected file is not valid UTF-8.");
+  }
+}
+
+async function readRetainedProtectedFile(state, fileNameInput, optionsInput, { parseJson = false } = {}) {
+  const fileName = assertSafeFileName(fileNameInput);
+  const options = normalizeReadOptions(optionsInput);
+  const dir = state.directory;
+  const release = admitDirectoryOperation(dir, parseJson ? "readProtectedJsonFile" : "readProtectedUtf8File");
+  let handle = null;
+  let missing = false;
+  let problem = null;
+  let result = null;
+  try {
+    await recheckDirectoryNamedBinding(dir);
+    assertDirectoryOpen(dir);
+    const filePath = procFdChildPath(dir.handle, fileName);
+    try {
+      handle = await fs.open(filePath, OPEN_PROTECTED_READ_FLAGS);
+    } catch (error) {
+      if (options.optional && error?.code === "ENOENT") {
+        await recheckDirectoryNamedBinding(dir);
+        assertDirectoryOpen(dir);
+        missing = true;
+      } else {
+        throw error;
+      }
+    }
+    if (!missing) {
+      assertDirectoryOpen(dir);
+      const beforeStat = await handle.stat({ bigint: true });
+      assertDirectoryOpen(dir);
+      const beforeIdentity = assertProtectedRegularFileStat(
+        beforeStat,
+        dir.root,
+        options.maxBytes,
+        "protected file"
+      );
+      const beforeNamed = await fs.lstat(filePath, { bigint: true });
+      assertDirectoryOpen(dir);
+      assertProtectedNameBinding(beforeNamed, beforeIdentity, dir.root, options.maxBytes, "protected file");
+      const read = await boundedReadUtf8(handle, dir, options.maxBytes);
+      const afterStat = await handle.stat({ bigint: true });
+      assertDirectoryOpen(dir);
+      const afterIdentity = assertProtectedRegularFileStat(
+        afterStat,
+        dir.root,
+        options.maxBytes,
+        "protected file"
+      );
+      if (!sameStableProtectedFile(beforeIdentity, afterIdentity) || afterIdentity.size !== BigInt(read.bytes)) {
+        fail("INTEGRATION_STORAGE_FILE_CORRUPT", "Protected file changed while it was read.");
+      }
+      const afterNamed = await fs.lstat(filePath, { bigint: true });
+      assertDirectoryOpen(dir);
+      assertProtectedNameBinding(afterNamed, afterIdentity, dir.root, options.maxBytes, "protected file", {
+        stable: true,
+      });
+      await recheckDirectoryNamedBinding(dir);
+      assertDirectoryOpen(dir);
+      if (!parseJson) {
+        result = read.text;
+      } else {
+        try {
+          const parsed = JSON.parse(read.text);
+          canonicalJsonTrapSafe(parsed);
+          result = freezeDeep(parsed);
+        } catch {
+          fail("INTEGRATION_STORAGE_FILE_CORRUPT", "Protected file contains invalid JSON.");
+        }
+      }
+    }
+  } catch (error) {
+    problem = error;
+  }
+
+  const cleanupFailures = [];
+  await closeHandleBestEffort(handle, cleanupFailures, "protected read file handle");
+  release();
+  if (cleanupFailures.length > 0) {
+    fail("INTEGRATION_STORAGE_CLEANUP_FAILED", "Protected read file handle cleanup failed.", {
+      phase: "read-handle-close",
+      failureCount: cleanupFailures.length,
+    });
+  }
+  if (problem) throwNormalizedFileOperationError(problem, "read");
+  return result;
+}
+
+async function validateExistingProtectedDestination(dir, filePath, maxBytes) {
+  let handle = null;
+  let problem = null;
+  let result = null;
+  try {
+    try {
+      handle = await fs.open(filePath, OPEN_PROTECTED_READ_FLAGS);
+    } catch (error) {
+      if (error?.code === "ENOENT") return Object.freeze({ exists: false });
+      throw error;
+    }
+    assertDirectoryOpen(dir);
+    const stat = await handle.stat({ bigint: true });
+    assertDirectoryOpen(dir);
+    const identity = assertProtectedRegularFileStat(stat, dir.root, maxBytes, "protected destination");
+    const named = await fs.lstat(filePath, { bigint: true });
+    assertDirectoryOpen(dir);
+    assertProtectedNameBinding(named, identity, dir.root, maxBytes, "protected destination", { stable: true });
+    result = Object.freeze({ exists: true, identity });
+  } catch (error) {
+    problem = error;
+  }
+  const cleanupFailures = [];
+  await closeHandleBestEffort(handle, cleanupFailures, "protected destination validation handle");
+  if (cleanupFailures.length > 0) {
+    throwCleanupFailure("Protected destination validation cleanup failed.", cleanupFailures, {
+      originalCode: problem?.publicCode || problem?.code || "",
+    });
+  }
+  if (problem) throw problem;
+  return result;
+}
+
+function atomicTempName() {
+  return `${ATOMIC_TEMP_PREFIX}${process.pid}-${crypto.randomBytes(16).toString("hex")}`;
+}
+
+async function cleanupUncommittedTemp(dir, tempPath, tempIdentity, tempCreated) {
+  const failures = [];
+  if (!tempCreated) return failures;
+  if (!tempPath || !tempIdentity) {
+    failures.push({
+      label: "protected atomic temporary ownership proof",
+      error: Object.assign(new Error("Protected atomic temporary ownership could not be proven."), {
+        code: "INTEGRATION_STORAGE_TEMP_UNPROVEN",
+      }),
+    });
+    return failures;
+  }
+  try {
+    const named = await fs.lstat(tempPath, { bigint: true });
+    const namedIdentity = protectedFileIdentityFromStat(named);
+    if (!sameProtectedFileObject(namedIdentity, tempIdentity)) {
+      failures.push({
+        label: "protected atomic temporary identity",
+        error: Object.assign(new Error("Protected atomic temporary named binding changed."), {
+          code: "INTEGRATION_STORAGE_TEMP_CHANGED",
+        }),
+      });
+      return failures;
+    }
+    await fs.unlink(tempPath);
+    await dir.handle.sync();
+  } catch (error) {
+    if (error?.code !== "ENOENT") failures.push({ label: "protected atomic temporary cleanup", error });
+  }
+  return failures;
+}
+
+async function atomicWriteRetainedProtectedFile(state, fileNameInput, textInput, optionsInput) {
+  const fileName = assertSafeFileName(fileNameInput);
+  if (typeof textInput !== "string") {
+    fail("INTEGRATION_STORAGE_INVALID", "protected UTF-8 write value must be a primitive string.");
+  }
+  const options = normalizeWriteOptions(optionsInput);
+  const bytes = Buffer.from(textInput, "utf8");
+  if (UTF8_DECODER.decode(bytes) !== textInput) {
+    fail("INTEGRATION_STORAGE_INVALID", "protected UTF-8 write value does not round-trip exactly.");
+  }
+  if (bytes.length > options.maxBytes) fail("INTEGRATION_STORAGE_INVALID", "protected write exceeds its byte bound.");
+  let digest = "";
+  let tempName = "";
+  try {
+    digest = crypto.createHash("sha256").update(bytes).digest("hex");
+    tempName = atomicTempName();
+  } catch {
+    fail("INTEGRATION_STORAGE_FILE_UNAVAILABLE", "Protected atomic write initialization failed.", {
+      phase: "pre-admission",
+    });
+  }
+  const dir = state.directory;
+  const finalPath = procFdChildPath(dir.handle, fileName);
+  const tempPath = procFdChildPath(dir.handle, tempName);
+  const release = admitDirectoryOperation(dir, "atomicWriteProtectedFile");
+  let handle = null;
+  let tempCreated = false;
+  let tempIdentity = null;
+  let renameIssued = false;
+  let renamed = false;
+  let directorySynced = false;
+  let postRenameSyncFailed = false;
+  let phase = "preflight";
+  let result = null;
+  let problem = null;
+
+  try {
+    await recheckDirectoryNamedBinding(dir);
+    assertDirectoryOpen(dir);
+    await validateExistingProtectedDestination(dir, finalPath, options.maxBytes);
+    assertDirectoryOpen(dir);
+    handle = await fs.open(
+      tempPath,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      0o600
+    );
+    tempCreated = true;
+    phase = "temp-created";
+    const createdStat = fstatSync(handle.fd, { bigint: true });
+    tempIdentity = protectedFileIdentityFromStat(createdStat);
+    assertProtectedRegularFileStat(createdStat, dir.root, options.maxBytes, "protected atomic temporary");
+    assertDirectoryOpen(dir);
+    if (tempIdentity.size !== 0n) fail("INTEGRATION_STORAGE_FILE_CORRUPT", "Protected atomic temporary was not empty.");
+    const createdNamed = await fs.lstat(tempPath, { bigint: true });
+    assertDirectoryOpen(dir);
+    assertProtectedNameBinding(
+      createdNamed,
+      tempIdentity,
+      dir.root,
+      options.maxBytes,
+      "protected atomic temporary",
+      { stable: true }
+    );
+    await handle.writeFile(bytes);
+    phase = "temp-written";
+    assertDirectoryOpen(dir);
+    const writtenStat = await handle.stat({ bigint: true });
+    assertDirectoryOpen(dir);
+    const writtenIdentity = assertProtectedRegularFileStat(
+      writtenStat,
+      dir.root,
+      options.maxBytes,
+      "protected atomic temporary"
+    );
+    if (!sameProtectedFileObject(tempIdentity, writtenIdentity) || writtenIdentity.size !== BigInt(bytes.length)) {
+      fail("INTEGRATION_STORAGE_FILE_CORRUPT", "Protected atomic temporary changed while it was written.");
+    }
+    tempIdentity = writtenIdentity;
+    await handle.sync();
+    phase = "temp-synced";
+    assertDirectoryOpen(dir);
+    const syncedStat = await handle.stat({ bigint: true });
+    assertDirectoryOpen(dir);
+    const syncedIdentity = assertProtectedRegularFileStat(
+      syncedStat,
+      dir.root,
+      options.maxBytes,
+      "protected atomic temporary"
+    );
+    if (!sameStableProtectedFile(tempIdentity, syncedIdentity)) {
+      fail("INTEGRATION_STORAGE_FILE_CORRUPT", "Protected atomic temporary changed while it was synced.");
+    }
+    tempIdentity = syncedIdentity;
+    const syncedNamed = await fs.lstat(tempPath, { bigint: true });
+    assertDirectoryOpen(dir);
+    assertProtectedNameBinding(
+      syncedNamed,
+      tempIdentity,
+      dir.root,
+      options.maxBytes,
+      "protected atomic temporary",
+      { stable: true }
+    );
+    await recheckDirectoryNamedBinding(dir);
+    assertDirectoryOpen(dir);
+    await validateExistingProtectedDestination(dir, finalPath, options.maxBytes);
+    assertDirectoryOpen(dir);
+    const finalTempNamed = await fs.lstat(tempPath, { bigint: true });
+    assertDirectoryOpen(dir);
+    assertProtectedNameBinding(
+      finalTempNamed,
+      tempIdentity,
+      dir.root,
+      options.maxBytes,
+      "protected atomic temporary",
+      { stable: true }
+    );
+
+    renameIssued = true;
+    phase = "rename-issued";
+    await fs.rename(tempPath, finalPath);
+    renamed = true;
+    phase = "renamed";
+    const committedNamed = await fs.lstat(finalPath, { bigint: true });
+    const committedNamedIdentity = assertProtectedNameBinding(
+      committedNamed,
+      tempIdentity,
+      dir.root,
+      options.maxBytes,
+      "protected committed file"
+    );
+    const committedStat = await handle.stat({ bigint: true });
+    const committedIdentity = assertProtectedRegularFileStat(
+      committedStat,
+      dir.root,
+      options.maxBytes,
+      "protected committed file"
+    );
+    if (
+      !sameProtectedFileObject(tempIdentity, committedIdentity) ||
+      committedIdentity.size !== BigInt(bytes.length) ||
+      !sameStableProtectedFile(committedNamedIdentity, committedIdentity)
+    ) {
+      fail("INTEGRATION_STORAGE_FILE_CORRUPT", "Protected committed file identity changed.");
+    }
+    tempIdentity = committedIdentity;
+    await dir.handle.sync();
+    directorySynced = true;
+    phase = "directory-synced";
+    await recheckDirectoryNamedBinding(dir);
+    assertDirectoryOpen(dir);
+    phase = "complete";
+    result = Object.freeze({
+      committed: true,
+      bytes: bytes.length,
+      digest,
+      directorySynced: true,
+    });
+  } catch (error) {
+    problem = error;
+  }
+
+  if (renameIssued && !directorySynced && problem) {
+    try {
+      await dir.handle.sync();
+      directorySynced = true;
+    } catch {
+      postRenameSyncFailed = true;
+    }
+  }
+
+  const proofFailures = [];
+  if (!renameIssued && tempCreated && !tempIdentity && handle) {
+    try {
+      const cleanupStat = fstatSync(handle.fd, { bigint: true });
+      tempIdentity = protectedFileIdentityFromStat(cleanupStat);
+      assertProtectedRegularFileStat(cleanupStat, dir.root, options.maxBytes, "protected atomic temporary");
+    } catch (error) {
+      if (!tempIdentity) proofFailures.push({ label: "protected atomic temporary ownership proof", error });
+    }
+  }
+  const closeFailures = [];
+  await closeHandleBestEffort(handle, closeFailures, "protected atomic file handle");
+  let cleanupFailures = [];
+  if (!renameIssued) cleanupFailures = await cleanupUncommittedTemp(dir, tempPath, tempIdentity, tempCreated);
+  release();
+
+  if (renameIssued && (problem || closeFailures.length > 0)) {
+    fail("INTEGRATION_STORAGE_COMMIT_AMBIGUOUS", "Protected atomic replace outcome is ambiguous after rename was issued.", {
+      phase: closeFailures.length > 0 && !problem ? "handle-close" : phase,
+      bytes: bytes.length,
+      digest,
+      renamed,
+      directorySynced,
+      postRenameSyncFailed,
+    });
+  }
+  if (proofFailures.length > 0 || closeFailures.length > 0 || cleanupFailures.length > 0) {
+    fail("INTEGRATION_STORAGE_CLEANUP_FAILED", "Protected atomic temporary cleanup failed.", {
+      phase: "pre-rename-cleanup",
+      failureCount: proofFailures.length + closeFailures.length + cleanupFailures.length,
+    });
+  }
+  if (problem) throwNormalizedFileOperationError(problem, "atomic replace");
+  return result;
+}
+
 async function openOneChildDirectory(parent, segment) {
   assertDirectoryOpen(parent);
   await fstatDirectoryHandle(parent);
@@ -655,7 +1408,13 @@ async function openOneChildDirectory(parent, segment) {
     const stat = await handle.stat({ bigint: true });
     assertDirectoryOpen(parent);
     assertOwnerOnlyDirectoryStat(stat, parent.root, "retained child directory");
-    return makeDirectorySurface(parent.root, handle, bigintIdentityFromStat(stat), parent.depth + 1);
+    return makeDirectorySurface(
+      parent.root,
+      handle,
+      bigintIdentityFromStat(stat),
+      parent.depth + 1,
+      Object.freeze([...parent.relativeSegments, segment])
+    );
   } catch (error) {
     if (handle) {
       const failures = [];
@@ -752,12 +1511,13 @@ async function openRootComponentByComponent(options) {
   }
 }
 
-function makeDirectorySurface(root, handle, identity, depth) {
+function makeDirectorySurface(root, handle, identity, depth, relativeSegments) {
   const dir = {
     root,
     handle,
     identity,
     depth,
+    relativeSegments,
     activeOperations: new Set(),
     waiters: [],
     closing: false,
@@ -836,6 +1596,90 @@ function makeAuthoritySurface(root, rootDirectory) {
   return validateSurface(surface, AUTHORITY_SURFACE_KEYS, "authority");
 }
 
+function buildRetainedFileAttestation(dir, expected) {
+  const unsigned = {
+    schemaVersion: INTEGRATION_RETAINED_FILE_ATTESTATION_VERSION,
+    owner: "aginti",
+    authority: "aginti",
+    role: expected.role,
+    canonicalPath: expected.canonicalPath,
+    rootIdentityDigest: expected.rootIdentityDigest,
+    relativeSegments: Object.freeze([...expected.relativeSegments]),
+    relativePointer: expected.relativeSegments.length > 0 ? expected.relativeSegments.join("/") : ".",
+    directoryIdentityDigest: expected.directoryIdentityDigest,
+    protectedRegularFiles: true,
+    atomicSameDirectoryReplace: true,
+    fileSyncBeforeRename: true,
+    directorySyncAfterRename: true,
+    limitations: INTEGRATION_RETAINED_FILE_LIMITATIONS,
+    digest: "0".repeat(64),
+  };
+  const { digest: _digest, ...digestInput } = unsigned;
+  return validateSurface(
+    freezeDeep({
+      ...unsigned,
+      digest: contractDigest(digestInput),
+    }),
+    FILE_ATTESTATION_KEYS,
+    "retained file attestation"
+  );
+}
+
+function assertExpectedFilePrimitivesState(state, expectedInput, label) {
+  if (expectedInput === undefined) return;
+  const expected = assertExpectedDirectoryState(state.directory, expectedInput, label);
+  if (
+    state.expected.role !== expected.role ||
+    state.expected.canonicalPath !== expected.canonicalPath ||
+    state.expected.rootIdentityDigest !== expected.rootIdentityDigest ||
+    state.expected.directoryIdentityDigest !== expected.directoryIdentityDigest ||
+    !sameSegments(state.expected.relativeSegments, expected.relativeSegments)
+  ) {
+    fail("INTEGRATION_STORAGE_INVALID", `${label} does not match its retained directory binding.`);
+  }
+}
+
+export function createIntegrationRetainedFilePrimitives(directory, expectedInput) {
+  const dir = directory && typeof directory === "object" ? directoryBrand.get(directory) : null;
+  if (!dir) fail("INTEGRATION_STORAGE_INVALID", "Integration retained directory brand is invalid.");
+  validateSurface(directory, DIRECTORY_SURFACE_KEYS, "directory");
+  const expected = assertExpectedDirectoryState(dir, expectedInput, "Integration retained file primitives");
+  assertDirectoryOpen(dir);
+  if (dir.closing || dir.root.closing) {
+    fail("INTEGRATION_STORAGE_CLOSED", "Integration retained directory is closing.");
+  }
+  const state = {
+    directory: dir,
+    expected,
+    attestation: null,
+    surface: null,
+  };
+  state.attestation = buildRetainedFileAttestation(dir, expected);
+  const surface = Object.freeze({
+    schemaVersion: INTEGRATION_RETAINED_FILE_PRIMITIVES_VERSION,
+    attestation: state.attestation,
+    readProtectedUtf8File(fileName, options) {
+      return readRetainedProtectedFile(state, fileName, options);
+    },
+    readProtectedJsonFile(fileName, options) {
+      return readRetainedProtectedFile(state, fileName, options, { parseJson: true });
+    },
+    atomicWriteProtectedUtf8File(fileName, value, options) {
+      return atomicWriteRetainedProtectedFile(state, fileName, value, options);
+    },
+    async atomicWriteProtectedJson(fileName, value, options) {
+      const canonical = `${canonicalJsonTrapSafe(value)}\n`;
+      return atomicWriteRetainedProtectedFile(state, fileName, canonical, options);
+    },
+    isClosed() {
+      return dir.closing || dir.closed || dir.root.closing || dir.root.closed;
+    },
+  });
+  state.surface = validateSurface(surface, FILE_PRIMITIVES_SURFACE_KEYS, "retained file primitives");
+  filePrimitivesBrand.set(surface, state);
+  return surface;
+}
+
 export async function openIntegrationStorageAuthority(input = {}) {
   ensureLinuxNode22();
   const options = normalizeOptions(input);
@@ -883,7 +1727,7 @@ export async function openIntegrationStorageAuthority(input = {}) {
       poisonReason: "",
       closePromise: null,
     };
-    const rootDirectory = makeDirectorySurface(root, openedRoot.handle, rootIdentity, 0);
+    const rootDirectory = makeDirectorySurface(root, openedRoot.handle, rootIdentity, 0, Object.freeze([]));
     root.rootDirectory = rootDirectory;
     openedRoot = null;
     const authority = makeAuthoritySurface(root, rootDirectory);
@@ -918,10 +1762,22 @@ export function assertIntegrationStorageAttestation(value, expected) {
   return value;
 }
 
-export function assertIntegrationRetainedDirectory(value) {
+export function assertIntegrationRetainedDirectory(value, expected) {
   const state = value && typeof value === "object" ? directoryBrand.get(value) : null;
   if (!state) fail("INTEGRATION_STORAGE_INVALID", "Integration retained directory brand is invalid.");
   validateSurface(value, DIRECTORY_SURFACE_KEYS, "directory");
+  if (expected !== undefined) assertExpectedDirectoryState(state, expected, "Integration retained directory");
+  return value;
+}
+
+export function assertIntegrationRetainedFilePrimitives(value, expected) {
+  const state = value && typeof value === "object" ? filePrimitivesBrand.get(value) : null;
+  if (!state) fail("INTEGRATION_STORAGE_INVALID", "Integration retained file primitives brand is invalid.");
+  validateSurface(value, FILE_PRIMITIVES_SURFACE_KEYS, "retained file primitives");
+  if (value.attestation !== state.attestation) {
+    fail("INTEGRATION_STORAGE_CORRUPT", "Integration retained file primitives attestation changed.");
+  }
+  assertExpectedFilePrimitivesState(state, expected, "Integration retained file primitives");
   return value;
 }
 
