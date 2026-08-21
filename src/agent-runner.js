@@ -1011,7 +1011,7 @@ async function createInitialState(config, sessionId) {
     goal: config.goal,
     baseDir: config.baseDir,
     commandCwd: config.commandCwd,
-    startUrl: config.startUrl,
+    startUrl: config.startUrl || "",
     plan: "",
     stepsCompleted: 0,
     meta: {

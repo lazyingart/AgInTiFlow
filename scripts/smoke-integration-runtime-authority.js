@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -36,6 +37,7 @@ import {
   preflightNativeSessionRuntime,
 } from "../src/integration-native-executor.js";
 import { runAgent } from "../src/agent-runner.js";
+import { SessionStore } from "../src/session-store.js";
 
 const PRINCIPAL = "principalAAAAAAAA";
 const OTHER_PRINCIPAL = "principalBBBBBBBB";
@@ -49,10 +51,58 @@ const COMPLETION_OUTBOX_METADATA_VERSION = "aginti-completion-outbox-bundle-v1";
 const PRE_LAUNCH_ABORT_ATTEMPT_VERSION = "aginti-pre-launch-abort-attempt-v3";
 const PRE_LAUNCH_ABORT_RESPONSE_VERSION = "aginti-pre-launch-abort-response-v1";
 const NATIVE_START_AUTHORIZATION_VERSION = "aginti-native-start-authorization-v1";
+const NATIVE_START_RECOVERY_STATE_VERSION = "aginti-native-start-recovery-v1";
+const DISPATCH_RECONCILIATION_VERSION = "aginti-dispatch-reconciliation-v1";
 const SMOKE_ROOT = "/home/lachlan/ProjectsLFS/Agent/AgInTiFlow/.integration-runtime-authority-smoke-root";
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createGate() {
+  let resolveGate;
+  const promise = new Promise((resolve) => {
+    resolveGate = resolve;
+  });
+  return Object.freeze({ promise, resolve: resolveGate });
+}
+
+async function waitForGate(gate, label) {
+  let timeout = null;
+  try {
+    return await Promise.race([
+        gate.promise,
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error(`${label} did not open`)), 15_000);
+        }),
+      ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function waitForPromise(promise, label) {
+  let timeout = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${label} did not settle`)), 15_000);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function waitForRepositoryRunTerminal(fixture, runId, label) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const run = fixture.repo.state.runs.get(runId);
+    if (run && ["completed", "failed", "cancelled"].includes(run.status)) return run;
+    await delay(10);
+  }
+  const run = fixture.repo.state.runs.get(runId) || null;
+  throw new Error(`${label} did not reach a durable terminal run state\nrun=${JSON.stringify(run)}\nrecentCalls=${JSON.stringify(fixture.repo.calls.slice(-12).map(([name]) => name))}`);
 }
 
 function deepFreeze(value) {
@@ -86,6 +136,21 @@ function nativeStartAuthorizationDigestFor(authorization = {}) {
 
 function nativeStartAuthorizationIdForDigest(digest) {
   return `nstart_${digest.slice(0, 48)}`;
+}
+
+function reconciliationRequestDigestFor(request = {}) {
+  const { requestDigest: _requestDigest, ...unsigned } = request;
+  return contractDigest(unsigned);
+}
+
+function reconciliationResponseDigestFor(response = {}) {
+  const { responseDigest: _responseDigest, ...unsigned } = response;
+  return contractDigest(unsigned);
+}
+
+function recoveryStateDigestFor(state = {}) {
+  const { digest: _digest, ...unsigned } = state;
+  return contractDigest(unsigned);
 }
 
 function cloneFrozenWith(source, descriptors = {}, prototype = Object.prototype) {
@@ -311,6 +376,7 @@ function runRecord(overrides = {}) {
     abortAttemptDigest: null,
     abortAt: null,
     nativeStartReceipt: null,
+    recoveryState: null,
     output: "",
     error: null,
     authority: {
@@ -434,6 +500,11 @@ function makeRepository({
     forgedAuthorizeDescriptor: "",
     mutateAuthorizeResponseAliasAfterReturn: false,
     authorizeDescriptorTrapCount: 0,
+    reconcileMode: "",
+    reconcileTrapCount: 0,
+    onAuthorizeAfterCommitBeforeReturn: null,
+    onReconcileAfterRequestBeforeScan: null,
+    onReconcileBeforeResponse: null,
     failNextPreLaunchAbort: false,
     corruptAbortLease: false,
     forgedAbortRunRevision: null,
@@ -451,6 +522,9 @@ function makeRepository({
     mutatePriorRunAliasDuringGetThread: "",
     mutateCreateAliasAfterReturn: "",
     failNextCancel: false,
+    failFinishBeforeCommitCount: 0,
+    onFinishBeforeCommit: null,
+    onFinishBeforeCommitFailure: null,
     failNextOutboxMark: false,
     failOutboxMarkTypes: new Set(),
     bundleMode: "",
@@ -459,6 +533,7 @@ function makeRepository({
     omitCancelProcessOwner: false,
     proxyCancelProcessIdentity: false,
     cancelProcessOwnerMode: "",
+    successfulCancelMarks: 0,
     processOwnerTrapCount: 0,
     substituteFinishThread: false,
     reorderFinishOutbox: false,
@@ -481,6 +556,8 @@ function makeRepository({
     dispatchLeases: true,
     dispatchOutbox: true,
     nativeStartAuthorization: true,
+    receiptRecoveryHold: true,
+    exactReconciliationResults: true,
     preLaunchAbort: true,
     terminalOutbox: true,
     completionOutboxBundles: true,
@@ -640,6 +717,290 @@ function makeRepository({
     if (state.forgedAuthorizeDescriptor === "outer-wrapper-extra") {
       return { authorization: response, extra: "private" };
     }
+    return response;
+  }
+
+  function assertReconciliationRequest(request) {
+    assert.equal(Object.isFrozen(request), true);
+    assert.deepEqual(Object.keys(request), [
+      "schemaVersion",
+      "principalId",
+      "browserSessionId",
+      "browserSessionPolicy",
+      "processOwner",
+      "liveRunClaims",
+      "reconciledAt",
+      "requestDigest",
+    ]);
+    assert.equal(request.schemaVersion, DISPATCH_RECONCILIATION_VERSION);
+    assert.match(request.principalId, /^[A-Za-z0-9._~-]{16,128}$/u);
+    assert.match(request.browserSessionId, /^[a-f0-9]{64}$/u);
+    assert.equal(request.browserSessionPolicy, "same-browser-session");
+    assert.equal(Object.isFrozen(request.processOwner), true);
+    assert.equal(Object.isFrozen(request.processOwner.processIdentity), true);
+    assert.equal(Array.isArray(request.liveRunClaims), true);
+    assert.equal(Object.isFrozen(request.liveRunClaims), true);
+    assert.equal(request.requestDigest, reconciliationRequestDigestFor(request));
+    let previousRunId = "";
+    for (const claim of request.liveRunClaims) {
+      assert.equal(Object.isFrozen(claim), true);
+      assert.deepEqual(Object.keys(claim), ["runId", "threadId", "nativeSessionId", "claimedAt"]);
+      assert.ok(claim.runId > previousRunId);
+      previousRunId = claim.runId;
+    }
+  }
+
+  function makeRecoveryState({ run, request }) {
+    const unsigned = {
+      schemaVersion: NATIVE_START_RECOVERY_STATE_VERSION,
+      status: "recovery_hold",
+      reason: "retained_descriptor_unavailable",
+      authorizationId: run.nativeStartReceipt.authorizationId,
+      authorizationDigest: run.nativeStartReceipt.authorizationDigest,
+      sourceRunRevision: run.revision,
+      appliedRunRevision: run.revision + 1,
+      heldAt: request.reconciledAt,
+      observedByProcessOwner: cloneJson(request.processOwner),
+      digest: ZERO_DIGEST,
+    };
+    return {
+      ...unsigned,
+      digest: recoveryStateDigestFor(unsigned),
+    };
+  }
+
+  function fakeUnavailable(message) {
+    const error = new Error(message);
+    error.code = "AGENT_UNAVAILABLE";
+    throw error;
+  }
+
+  function validateFakeRecoveryState(run) {
+    if (!Object.prototype.hasOwnProperty.call(run, "recoveryState")) {
+      fakeUnavailable("recovery state field missing");
+    }
+    if (run.recoveryState === null || run.recoveryState === undefined) return null;
+    if (!run.recoveryState || typeof run.recoveryState !== "object" || Array.isArray(run.recoveryState)) {
+      fakeUnavailable("recovery state marker corrupt");
+    }
+    const legalSourceRunRevision = run.cancelRequestedAt
+      ? run.nativeStartReceipt.targetRunRevision + 1
+      : run.nativeStartReceipt.targetRunRevision;
+    if (
+      run.recoveryState.schemaVersion !== NATIVE_START_RECOVERY_STATE_VERSION ||
+      run.recoveryState.status !== "recovery_hold" ||
+      run.recoveryState.reason !== "retained_descriptor_unavailable" ||
+      run.recoveryState.authorizationId !== run.nativeStartReceipt.authorizationId ||
+      run.recoveryState.authorizationDigest !== run.nativeStartReceipt.authorizationDigest ||
+      run.recoveryState.sourceRunRevision !== legalSourceRunRevision ||
+      run.recoveryState.appliedRunRevision !== run.revision ||
+      run.recoveryState.digest !== recoveryStateDigestFor(run.recoveryState)
+    ) {
+      fakeUnavailable("recovery state marker invalid");
+    }
+    return run.recoveryState;
+  }
+
+  function fakeLiveClaimBindsDispatchWindow(claim, run, request) {
+    if (!claim) return false;
+    const claimedAtMs = Date.parse(claim.claimedAt);
+    const dispatchedAtMs = Date.parse(run.dispatchedAt);
+    const reconciledAtMs = Date.parse(request.reconciledAt);
+    return (
+      Number.isFinite(claimedAtMs) &&
+      Number.isFinite(dispatchedAtMs) &&
+      Number.isFinite(reconciledAtMs) &&
+      claimedAtMs >= dispatchedAtMs &&
+      claimedAtMs <= reconciledAtMs
+    );
+  }
+
+  function reconcileResponse({ request, receiptRunResults, pendingOutboxEvents }) {
+    let results = [...receiptRunResults].sort((left, right) => left.run.id.localeCompare(right.run.id));
+    if (state.reconcileMode === "duplicate-result" && results[0]) results = [results[0], results[0], ...results.slice(1)];
+    if (state.reconcileMode === "unsorted-result" && results.length > 1) results = [...results].reverse();
+    if (state.reconcileMode === "foreign-result" && results[0]) {
+      results = [{ ...results[0], run: { ...results[0].run, principalId: OTHER_PRINCIPAL } }, ...results.slice(1)];
+    }
+    if (state.reconcileMode === "live-without-claim" && results[0]) {
+      results = [{ ...results[0], action: "live" }, ...results.slice(1)];
+    }
+    if (state.reconcileMode === "bad-recovery-digest" && results[0]) {
+      results = [
+        {
+          ...results[0],
+          run: {
+            ...results[0].run,
+            recoveryState: { ...results[0].run.recoveryState, digest: "f".repeat(64) },
+          },
+        },
+        ...results.slice(1),
+      ];
+    }
+    if (state.reconcileMode === "bad-recovery-revision" && results[0]) {
+      results = [
+        {
+          ...results[0],
+          run: {
+            ...results[0].run,
+            revision: results[0].run.revision + 1,
+          },
+        },
+        ...results.slice(1),
+      ];
+    }
+    if (state.reconcileMode === "bad-recovery-source" && results[0]) {
+      const forgedRecovery = {
+        ...results[0].run.recoveryState,
+        sourceRunRevision: 10,
+        appliedRunRevision: 11,
+        digest: ZERO_DIGEST,
+      };
+      forgedRecovery.digest = recoveryStateDigestFor(forgedRecovery);
+      results[0].run.recoveryState = forgedRecovery;
+      results[0].run.revision = 11;
+    }
+    if (state.reconcileMode === "bad-held-at" && results[0]) {
+      const forgedRecovery = {
+        ...results[0].run.recoveryState,
+        heldAt: "2020-01-01T00:00:00.000Z",
+        digest: ZERO_DIGEST,
+      };
+      forgedRecovery.digest = recoveryStateDigestFor(forgedRecovery);
+      results[0].run.recoveryState = forgedRecovery;
+    }
+    if (state.reconcileMode === "stale-returned-already-held" && results[0]) {
+      const forgedRun = cloneJson(results[0].run);
+      forgedRun.recoveryState = {
+        ...forgedRun.recoveryState,
+        heldAt: "2020-01-01T00:00:00.000Z",
+        digest: ZERO_DIGEST,
+      };
+      forgedRun.recoveryState.digest = recoveryStateDigestFor(forgedRun.recoveryState);
+      results = [{ ...results[0], run: forgedRun }, ...results.slice(1)];
+    }
+    if (state.reconcileMode === "changed-thread-context" && results[0]) {
+      results = [
+        {
+          ...results[0],
+          thread: {
+            ...results[0].thread,
+            authority: { ...results[0].thread.authority, contextDigest: "9".repeat(64) },
+          },
+        },
+        ...results.slice(1),
+      ];
+    }
+    if (state.reconcileMode === "bad-thread-revision" && results[0]) {
+      results[0].thread.revision += 1;
+    }
+    if (state.reconcileMode === "bad-thread-updated-at" && results[0]) {
+      results[0].thread.updatedAt = "2020-01-01T00:00:00.000Z";
+    }
+    if (state.reconcileMode === "bad-runtime-revision" && results[0]) {
+      results[0].run.authority = { ...results[0].run.authority, runtimeRevision: 99 };
+    }
+    if (state.reconcileMode === "bad-previous-run" && results[0]) {
+      results[0].run.previousRunId = "run_00000000-0000-4000-8000-000000000092";
+    }
+    if (state.reconcileMode === "bad-cancel-requested" && results[0]) {
+      results[0].run.cancelRequestedAt = "not-a-canonical-timestamp";
+    }
+    if (state.reconcileMode === "bad-dispatch-lease" && results[0]) {
+      results = [
+        {
+          ...results[0],
+          run: {
+            ...results[0].run,
+            dispatchLeaseId: "f".repeat(64),
+          },
+        },
+        ...results.slice(1),
+      ];
+    }
+    if (state.reconcileMode === "hidden-run" && results[0]) {
+      results = [
+        {
+          ...results[0],
+          run: {
+            ...results[0].run,
+            hidden: true,
+          },
+        },
+        ...results.slice(1),
+      ];
+    }
+    if (state.reconcileMode === "stale-returned-run" && results[0]) {
+      const stale = {
+        ...results[0],
+        run: cloneJson(results[0].run),
+        thread: cloneJson(results[0].thread),
+      };
+      const durableRun = state.runs.get(stale.run.id);
+      if (durableRun) durableRun.revision += 1;
+      results = [stale, ...results.slice(1)];
+    }
+    if (state.reconcileMode === "stale-returned-thread" && results[0]) {
+      const stale = {
+        ...results[0],
+        run: cloneJson(results[0].run),
+        thread: cloneJson(results[0].thread),
+      };
+      const durableThread = state.threads.get(stale.thread.id);
+      if (durableThread) {
+        durableThread.authority = { ...durableThread.authority, contextDigest: "4".repeat(64) };
+      }
+      results = [stale, ...results.slice(1)];
+    }
+    if (state.reconcileMode === "extra-result" && results[0]) {
+      results = [{ ...results[0], raw: "private" }, ...results.slice(1)];
+    }
+    if (state.reconcileMode === "accessor-result" && results[0]) {
+      const result = { ...results[0] };
+      Object.defineProperty(result, "run", {
+        enumerable: true,
+        configurable: true,
+        get() {
+          state.reconcileTrapCount += 1;
+          return results[0].run;
+        },
+      });
+      results = [result, ...results.slice(1)];
+    }
+    if (state.reconcileMode === "sparse-results") {
+      const sparse = [];
+      sparse.length = (results.length || 1) + 1;
+      if (results[0]) sparse[1] = results[0];
+      results = sparse;
+    }
+    const unsignedResponse = {
+      schemaVersion: DISPATCH_RECONCILIATION_VERSION,
+      requestDigest: request.requestDigest,
+      reconciled: true,
+      receiptRunResults: results,
+      pendingOutboxEvents,
+    };
+    let response = {
+      ...unsignedResponse,
+      responseDigest: reconciliationResponseDigestFor(unsignedResponse),
+    };
+    if (state.reconcileMode === "proxy-result" && results[0]) {
+      response = {
+        ...response,
+        receiptRunResults: [
+          new Proxy(results[0], {
+            get(target, property, receiver) {
+              state.reconcileTrapCount += 1;
+              return Reflect.get(target, property, receiver);
+            },
+          }),
+          ...results.slice(1),
+        ],
+      };
+    }
+    if (state.reconcileMode === "wrapper-extra") response = { ...response, extra: "private" };
+    if (state.reconcileMode === "missing-response-digest") delete response.responseDigest;
+    if (state.reconcileMode === "bad-response-digest") response = { ...response, responseDigest: "f".repeat(64) };
     return response;
   }
 
@@ -887,6 +1248,9 @@ function makeRepository({
         nativeStartReceipt: cloneJson(authorization),
         revision: authorization.targetRunRevision,
       });
+      if (state.onAuthorizeAfterCommitBeforeReturn) {
+        await state.onAuthorizeAfterCommitBeforeReturn({ authorization, run, thread });
+      }
       if (state.failAuthorizeAfterCommit) {
         state.failAuthorizeAfterCommit = false;
         const error = new Error("native start authorization acknowledgement lost");
@@ -1047,6 +1411,7 @@ function makeRepository({
             ),
         revision: run.revision + 1,
       });
+      state.successfulCancelMarks += 1;
       return { run };
     },
     async finishIntegrationRunWithOutbox(payload) {
@@ -1059,6 +1424,17 @@ function makeRepository({
       ) {
         const error = new Error("revision conflict");
         error.code = "REVISION_CONFLICT";
+        throw error;
+      }
+      if (state.onFinishBeforeCommit) await state.onFinishBeforeCommit({ payload, run, remaining: state.failFinishBeforeCommitCount });
+      if (state.failFinishBeforeCommitCount > 0) {
+        state.failFinishBeforeCommitCount -= 1;
+        if (state.onFinishBeforeCommitFailure) {
+          await state.onFinishBeforeCommitFailure({ payload, run, remaining: state.failFinishBeforeCommitCount });
+        }
+        const error = new Error("finish failed before commit");
+        error.code = "REVISION_CONFLICT";
+        error.persistedRuntimeRevision = payload.completedNativeRuntimeRevision;
         throw error;
       }
       Object.assign(run, {
@@ -1178,17 +1554,58 @@ function makeRepository({
       }
       return { outboxEvents };
     },
-    async reconcileIntegrationDispatches(payload) {
-      calls.push(["reconcileIntegrationDispatches", payload]);
-      return {
-        reconciled: true,
+    async reconcileIntegrationDispatches(request) {
+      calls.push(["reconcileIntegrationDispatches", request]);
+      assertReconciliationRequest(request);
+      if (state.onReconcileAfterRequestBeforeScan) {
+        await state.onReconcileAfterRequestBeforeScan({ request });
+      }
+      const liveClaims = new Map(request.liveRunClaims.map((claim) => [claim.runId, claim]));
+      const receiptRunResults = [];
+      for (const run of [...state.runs.values()].sort((left, right) => left.id.localeCompare(right.id))) {
+        if (
+          run.hidden ||
+          run.status !== "running" ||
+          run.principalId !== request.principalId ||
+          run.browserSessionId !== request.browserSessionId ||
+          !run.nativeStartReceipt
+        ) {
+          continue;
+        }
+        const thread = state.threads.get(run.threadId);
+        const claim = liveClaims.get(run.id);
+        const existingRecoveryState = validateFakeRecoveryState(run);
+        if (existingRecoveryState) {
+          receiptRunResults.push({ action: "already-held", run, thread });
+          continue;
+        }
+        const exactLive =
+          claim &&
+          claim.threadId === run.threadId &&
+          claim.nativeSessionId === run.nativeSessionId &&
+          fakeLiveClaimBindsDispatchWindow(claim, run, request) &&
+          contractDigest(run.processOwner) === contractDigest(request.processOwner);
+        if (exactLive) {
+          receiptRunResults.push({ action: "live", run, thread });
+          continue;
+        }
+        run.recoveryState = makeRecoveryState({ run, request });
+        run.revision = run.recoveryState.appliedRunRevision;
+        receiptRunResults.push({ action: "held", run, thread });
+      }
+      if (state.onReconcileBeforeResponse) {
+        await state.onReconcileBeforeResponse({ request, receiptRunResults });
+      }
+      return reconcileResponse({
+        request,
+        receiptRunResults,
         pendingOutboxEvents: [...state.outbox.values()].filter(
           (record) =>
             !record.delivered &&
-            record.principalId === payload.principalId &&
-            record.browserSessionId === payload.browserSessionId
+            record.principalId === request.principalId &&
+            record.browserSessionId === request.browserSessionId
         ),
-      };
+      });
     },
     async listPendingIntegrationOutboxEvents(payload) {
       calls.push(["listPendingIntegrationOutboxEvents", payload]);
@@ -1499,8 +1916,38 @@ function context(overrides = {}) {
   };
 }
 
+function errorSummary(error) {
+  return [
+    `name=${String(error?.name || "")}`,
+    `code=${String(error?.code || "")}`,
+    `publicCode=${String(error?.publicCode || "")}`,
+    `status=${String(error?.status || error?.statusCode || "")}`,
+    `message=${String(error?.message || error)}`,
+    error?.stack ? `stack=${error.stack}` : "",
+  ].filter(Boolean).join("\n");
+}
+
 async function expectCode(action, code) {
-  await assert.rejects(async () => action(), (error) => error?.code === code || error?.publicCode === code);
+  let captured = null;
+  try {
+    await action();
+  } catch (error) {
+    captured = error;
+    if (error?.code === code || error?.publicCode === code) return error;
+  }
+  if (!captured) {
+    assert.fail(`Expected ${code} rejection, but the action completed successfully.`);
+  }
+  assert.fail(`Expected ${code} rejection, but received:\n${errorSummary(captured)}`);
+}
+
+async function expectAuthorityError(action, { code, status }) {
+  const captured = await expectCode(action, code);
+  if (status !== undefined) {
+    assert.equal(captured.status, status);
+    assert.equal(captured.statusCode, status);
+  }
+  return captured;
 }
 
 async function writeNativeState(config, state) {
@@ -1551,6 +1998,22 @@ async function prepareCompletedOutputBundle(fixture, { title, runId, output = "R
   return { thread, run: result.run, outputRecord, terminalRecord };
 }
 
+async function prepareReceiptBearingRun(fixture, { title = "Receipt hold candidate", input = "Authorize" } = {}) {
+  const thread = (await fixture.authority.createIntegrationThread({ title }, context())).thread;
+  fixture.repo.state.failAuthorizeAfterCommit = true;
+  await expectAuthorityError(
+    () => fixture.authority.startIntegrationRun({ threadId: thread.id, input: { text: input } }, context()),
+    { code: "NATIVE_START_AUTHORIZATION_ACK_LOST" }
+  );
+  const run = [...fixture.repo.state.runs.values()].find((candidate) => candidate.threadId === thread.id);
+  assert.ok(run.nativeStartReceipt);
+  assert.equal(run.status, "running");
+  assert.equal(run.revision, 3);
+  assert.equal(run.recoveryState, null);
+  assertNoPreLaunchTerminalSideEffects(fixture, run.id);
+  return { thread, run };
+}
+
 async function publishOutboxRecordOnly(fixture, scope, record) {
   const event = await fixture.ledger.appendByOutboxId(scope, {
     outboxId: record.outboxId,
@@ -1598,6 +2061,62 @@ function assertNoPreLaunchTerminalSideEffects(fixture, runId) {
   assert.equal(fixture.ledger.eventsForRun(runId).length, 0);
 }
 
+function assertRecoveryHoldApplied(fixture, { threadId, runId, sourceRunRevision = 3 }) {
+  const thread = fixture.repo.state.threads.get(threadId);
+  const run = fixture.repo.state.runs.get(runId);
+  assert.equal(run.status, "running");
+  assert.equal(run.hidden, false);
+  assert.equal(run.tombstone, false);
+  assert.equal(run.completedAt, null);
+  assert.equal(run.output, "");
+  assert.equal(run.error, null);
+  assert.ok(run.nativeStartReceipt);
+  assert.equal(run.revision, sourceRunRevision + 1);
+  assert.equal(thread.status, "running");
+  assert.equal(thread.lastRunId, run.id);
+  assert.equal(thread.nativeSessionId, run.nativeSessionId);
+  assert.equal(threadPreservationDigestFor(thread), run.nativeStartReceipt.threadPreservationDigest);
+  assert.deepEqual(Object.keys(run.recoveryState), [
+    "schemaVersion",
+    "status",
+    "reason",
+    "authorizationId",
+    "authorizationDigest",
+    "sourceRunRevision",
+    "appliedRunRevision",
+    "heldAt",
+    "observedByProcessOwner",
+    "digest",
+  ]);
+  assert.equal(run.recoveryState.schemaVersion, NATIVE_START_RECOVERY_STATE_VERSION);
+  assert.equal(run.recoveryState.status, "recovery_hold");
+  assert.equal(run.recoveryState.reason, "retained_descriptor_unavailable");
+  assert.equal(run.recoveryState.authorizationId, run.nativeStartReceipt.authorizationId);
+  assert.equal(run.recoveryState.authorizationDigest, run.nativeStartReceipt.authorizationDigest);
+  assert.equal(run.recoveryState.sourceRunRevision, sourceRunRevision);
+  assert.equal(run.recoveryState.appliedRunRevision, sourceRunRevision + 1);
+  assert.equal(run.recoveryState.digest, recoveryStateDigestFor(run.recoveryState));
+  assertNoPreLaunchTerminalSideEffects(fixture, runId);
+}
+
+function snapshotThreadMutationGuard(fixture, threadId) {
+  const thread = fixture.repo.state.threads.get(threadId);
+  return Object.freeze({
+    title: thread.title,
+    revision: thread.revision,
+    digest: threadPreservationDigestFor(thread),
+    raw: cloneJson(thread),
+  });
+}
+
+function assertThreadMutationGuardUnchanged(fixture, threadId, guard) {
+  const thread = fixture.repo.state.threads.get(threadId);
+  assert.equal(thread.title, guard.title);
+  assert.equal(thread.revision, guard.revision);
+  assert.equal(threadPreservationDigestFor(thread), guard.digest);
+  assert.deepEqual(thread, guard.raw);
+}
+
 function assertPreLaunchAbortApplied(fixture, { threadId, runId, previousRunId = null, expectedRuntimeRevision = 1, dispatched = false }) {
   const thread = fixture.repo.state.threads.get(threadId);
   const run = fixture.repo.state.runs.get(runId);
@@ -1629,6 +2148,14 @@ async function main() {
   const unhandled = [];
   const onUnhandled = (reason) => unhandled.push(reason);
   process.on("unhandledRejection", onUnhandled);
+  let finalSmokeOk = false;
+  const finalSmokeWatchdog = setTimeout(() => {
+    if (!finalSmokeOk) {
+      process.stderr.write("integration runtime authority smoke: failed (TIMEOUT)\n");
+      process.stderr.write("integration runtime authority smoke did not reach final ok marker\n");
+      throw new Error("integration runtime authority smoke timed out before final ok marker");
+    }
+  }, 60_000);
   await fs.rm(SMOKE_ROOT, { recursive: true, force: true });
   await fs.mkdir(SMOKE_ROOT, { recursive: true });
 
@@ -2005,6 +2532,30 @@ async function main() {
         }).authority.getIntegrationRuntimeProof(),
       /event append|unavailable/iu
     );
+    for (const missingRecoveryProof of ["receiptRecoveryHold", "exactReconciliationResults"]) {
+      const recoveryProofFixture = makeAuthority();
+      const baseProof = recoveryProofFixture.repo.repository[INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_PROPERTY];
+      const { digest: _baseDigest, ...unsignedProof } = baseProof;
+      const descriptors = Object.getOwnPropertyDescriptors(recoveryProofFixture.repo.repository);
+      descriptors[INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_PROPERTY] = {
+        value: seal({
+          ...unsignedProof,
+          [missingRecoveryProof]: false,
+        }),
+        enumerable: true,
+        writable: false,
+        configurable: false,
+      };
+      const badRepository = Object.freeze(Object.defineProperties({}, descriptors));
+      assert.throws(
+        () =>
+          createAgintiIntegrationRuntimeAuthority({
+            threadSessionRepository: badRepository,
+            eventLedgerStore: recoveryProofFixture.ledger,
+          }),
+        /repository attestation|unavailable/iu
+      );
+    }
     const mutableIsolation = mutableIsolationAttestation();
     const mutableSandboxFixture = makeAuthority({
       retained: true,
@@ -2069,6 +2620,9 @@ async function main() {
     assert.equal(rawThread.authority.runtimeRevision, 1);
     assert.equal(repo.calls.some(([name]) => name === "reconcileIntegrationDispatches"), true);
     const reconcileCall = repo.calls.find(([name]) => name === "reconcileIntegrationDispatches")[1];
+    assert.equal(reconcileCall.schemaVersion, DISPATCH_RECONCILIATION_VERSION);
+    assert.equal(reconcileCall.requestDigest, reconciliationRequestDigestFor(reconcileCall));
+    assert.deepEqual(reconcileCall.liveRunClaims, []);
     assert.equal(reconcileCall.processOwner.schemaVersion, "aginti-process-owner-v1");
     assert.ok(reconcileCall.processOwner.processIdentity.bootId);
 
@@ -2162,6 +2716,134 @@ async function main() {
     const dispatchAfterRun = [...dispatchAfter.repo.state.runs.values()][0];
     assertPreLaunchAbortApplied(dispatchAfter, { threadId: dispatchAfterThread.id, runId: dispatchAfterRun.id, dispatched: true });
 
+    const attachedThreadUpdateBlocked = makeAuthority();
+    const attachedThreadUpdateThread = (await attachedThreadUpdateBlocked.authority.createIntegrationThread({ title: "Attached thread update" }, context())).thread;
+    const attachedNativeSessionId = attachedThreadUpdateBlocked.repo.state.threads.get(attachedThreadUpdateThread.id).nativeSessionId;
+    const attachedReadBlocked = createGate();
+    const attachedAllowRead = createGate();
+    const attachedFinishFailed = createGate();
+    const originalAttachedReadFile = fs.readFile;
+    let attachedReadIntercepts = 0;
+    let attachedRejectRead = false;
+    let attachedFinishAttempts = 0;
+    fs.readFile = async function attachedThreadUpdateReadFile(target, ...args) {
+      const targetPath = String(target);
+      if (
+        attachedReadIntercepts === 0 &&
+        targetPath === path.join(SMOKE_ROOT, "state/sessions", attachedNativeSessionId, "state.json")
+      ) {
+        attachedReadIntercepts += 1;
+        attachedReadBlocked.resolve();
+        await attachedAllowRead.promise;
+        if (attachedRejectRead) {
+          const error = new Error("attached thread update worker cancelled before provider preflight");
+          error.code = "CANCELLED";
+          error.persistedRuntimeRevision = 1;
+          throw error;
+        }
+      }
+      return Reflect.apply(originalAttachedReadFile, this, [target, ...args]);
+    };
+    try {
+      const attachedStartPromise = attachedThreadUpdateBlocked.authority
+        .startIntegrationRun(
+          { threadId: attachedThreadUpdateThread.id, input: { text: "Attached update block" } },
+          context()
+        )
+        .then(
+          (value) => ({ value }),
+          (error) => ({ error })
+        );
+      await waitForGate(attachedReadBlocked, "attached thread update native preflight read");
+      const attachedStartOutcome = await waitForPromise(attachedStartPromise, "attached thread update start response");
+      if (attachedStartOutcome.error) throw attachedStartOutcome.error;
+      const attachedRun = [...attachedThreadUpdateBlocked.repo.state.runs.values()][0];
+      assert.equal(attachedStartOutcome.value.run.id, attachedRun.id);
+      assert.equal(attachedRun.status, "running");
+      assert.equal(attachedRun.revision, 3);
+      assert.ok(attachedRun.nativeStartReceipt);
+      const attachedGuard = snapshotThreadMutationGuard(attachedThreadUpdateBlocked, attachedThreadUpdateThread.id);
+      const attachedActiveCalls = callsNamed(attachedThreadUpdateBlocked, "getActiveIntegrationRunForThread").length;
+      const attachedUpdateCalls = callsNamed(attachedThreadUpdateBlocked, "updateIntegrationThread").length;
+      await expectCode(
+        () => attachedThreadUpdateBlocked.authority.updateIntegrationThread(
+          { threadId: attachedThreadUpdateThread.id, title: "Should not update attached" },
+          context()
+        ),
+        "RUN_CONFLICT"
+      );
+      assert.equal(callsNamed(attachedThreadUpdateBlocked, "getActiveIntegrationRunForThread").length, attachedActiveCalls);
+      assert.equal(callsNamed(attachedThreadUpdateBlocked, "updateIntegrationThread").length, attachedUpdateCalls);
+      assertThreadMutationGuardUnchanged(attachedThreadUpdateBlocked, attachedThreadUpdateThread.id, attachedGuard);
+      const attachedSuccessfulCancelMarksBefore = attachedThreadUpdateBlocked.repo.state.successfulCancelMarks;
+      const concurrentCancels = await Promise.allSettled([
+        attachedThreadUpdateBlocked.authority.cancelIntegrationRun({ runId: attachedRun.id }, context()),
+        attachedThreadUpdateBlocked.authority.cancelIntegrationRun({ runId: attachedRun.id }, context()),
+      ]);
+      const fulfilledCancels = concurrentCancels.filter((result) => result.status === "fulfilled");
+      const rejectedCancels = concurrentCancels.filter((result) => result.status === "rejected");
+      assert.ok(fulfilledCancels.length >= 1);
+      for (const result of fulfilledCancels) {
+        assert.equal(result.value.run.id, attachedRun.id);
+      }
+      for (const result of rejectedCancels) {
+        assert.equal(result.reason?.code || result.reason?.publicCode, "REVISION_CONFLICT");
+      }
+      assert.equal(attachedRun.cancelRequestedAt !== null, true);
+      assert.equal(attachedRun.revision, 4);
+      const attachedCancelTimestamp = attachedRun.cancelRequestedAt;
+      assert.equal(attachedThreadUpdateBlocked.repo.state.successfulCancelMarks, attachedSuccessfulCancelMarksBefore + 1);
+      const attachedCancelRetry = await attachedThreadUpdateBlocked.authority.cancelIntegrationRun({ runId: attachedRun.id }, context());
+      assert.equal(attachedCancelRetry.run.id, attachedRun.id);
+      assert.equal(attachedRun.cancelRequestedAt, attachedCancelTimestamp);
+      assert.equal(attachedRun.revision, 4);
+      assert.equal(attachedThreadUpdateBlocked.repo.state.successfulCancelMarks, attachedSuccessfulCancelMarksBefore + 1);
+      attachedThreadUpdateBlocked.repo.state.failFinishBeforeCommitCount = 1;
+      attachedThreadUpdateBlocked.repo.state.onFinishBeforeCommit = async ({ payload }) => {
+        attachedFinishAttempts += 1;
+        assert.equal(payload.runId, attachedRun.id);
+        assert.equal(payload.expectedRevision, 4);
+      };
+      attachedThreadUpdateBlocked.repo.state.onFinishBeforeCommitFailure = async ({ remaining }) => {
+        if (remaining === 0) attachedFinishFailed.resolve();
+      };
+      attachedRejectRead = true;
+      attachedAllowRead.resolve();
+      await waitForGate(attachedFinishFailed, "attached thread update finish failure");
+      await delay(0);
+      let recoveryError = null;
+      for (let attempt = 0; attempt < 100 && !recoveryError; attempt += 1) {
+        try {
+          await attachedThreadUpdateBlocked.authority.getIntegrationRunStatus({ runId: attachedRun.id }, context());
+        } catch (error) {
+          if (error?.code === "RECOVERY_HOLD" || error?.publicCode === "RECOVERY_HOLD") recoveryError = error;
+          else throw error;
+        }
+        if (!recoveryError) await delay(10);
+      }
+      assert.ok(recoveryError, "attached thread update worker did not release into recovery hold");
+      assert.equal(recoveryError.status, 503);
+      assert.equal(recoveryError.statusCode, 503);
+      assert.equal(attachedFinishAttempts, 1);
+      assert.equal(attachedRun.status, "running");
+      assert.equal(attachedRun.revision, 5);
+      assert.equal(attachedRun.completedAt, null);
+      assert.equal(attachedRun.output, "");
+      assert.equal(attachedRun.error, null);
+      assert.equal(attachedRun.recoveryState.sourceRunRevision, 4);
+      assert.equal(attachedRun.recoveryState.appliedRunRevision, 5);
+      assert.equal(attachedRun.recoveryState.digest, recoveryStateDigestFor(attachedRun.recoveryState));
+      assert.equal(attachedThreadUpdateBlocked.repo.state.outbox.size, 0);
+      assert.equal(attachedThreadUpdateBlocked.ledger.eventsForRun(attachedRun.id).length, 0);
+      assertThreadMutationGuardUnchanged(attachedThreadUpdateBlocked, attachedThreadUpdateThread.id, attachedGuard);
+    } finally {
+      fs.readFile = originalAttachedReadFile;
+      attachedAllowRead.resolve();
+      attachedThreadUpdateBlocked.repo.state.onFinishBeforeCommit = null;
+      attachedThreadUpdateBlocked.repo.state.onFinishBeforeCommitFailure = null;
+      attachedThreadUpdateBlocked.repo.state.failFinishBeforeCommitCount = 0;
+    }
+
     const claimFailure = makeAuthority();
     const claimFailureThread = (await claimFailure.authority.createIntegrationThread({ title: "Claim failure" }, context())).thread;
     const OriginalAbortController = globalThis.AbortController;
@@ -2192,7 +2874,7 @@ async function main() {
 
     const attachFailure = makeAuthority();
     const attachFailureThread = (await attachFailure.authority.createIntegrationThread({ title: "Attach failure" }, context())).thread;
-    const promiseSpeciesDescriptor = Object.getOwnPropertyDescriptor(Promise, Symbol.species);
+    const duplicatePromiseSpeciesDescriptor = Object.getOwnPropertyDescriptor(Promise, Symbol.species);
     const NativePromise = Promise;
     function ThrowingPromiseSpecies(executor) {
       if (String(new Error().stack || "").includes("integration-run-registry.js")) {
@@ -2210,7 +2892,7 @@ async function main() {
         "AGENT_UNAVAILABLE"
       );
     } finally {
-      if (promiseSpeciesDescriptor) Object.defineProperty(Promise, Symbol.species, promiseSpeciesDescriptor);
+      if (duplicatePromiseSpeciesDescriptor) Object.defineProperty(Promise, Symbol.species, duplicatePromiseSpeciesDescriptor);
       else delete Promise[Symbol.species];
     }
     const attachFailureRun = [...attachFailure.repo.state.runs.values()][0];
@@ -2359,13 +3041,67 @@ async function main() {
       }),
       (error) => error?.code === "PRE_LAUNCH_ABORT_REFUSED"
     );
+    const authorizeAfterThreadBeforeHold = cloneJson(authorizeAfter.repo.state.threads.get(authorizeAfterRun.threadId));
+    await expectAuthorityError(
+      () => authorizeAfter.authority.getIntegrationRunStatus({ runId: authorizeAfterRun.id }, context()),
+      { code: "RECOVERY_HOLD", status: 503 }
+    );
+    assertRecoveryHoldApplied(authorizeAfter, {
+      threadId: authorizeAfterThread.id,
+      runId: authorizeAfterRun.id,
+      sourceRunRevision: 3,
+    });
+    assert.equal(authorizeAfter.repo.state.threads.get(authorizeAfterRun.threadId).revision, authorizeAfterThreadBeforeHold.revision);
+    assert.equal(authorizeAfter.repo.state.threads.get(authorizeAfterRun.threadId).updatedAt, authorizeAfterThreadBeforeHold.updatedAt);
+    const authorizeAfterHeldState = cloneJson(authorizeAfterRun.recoveryState);
+    const authorizeAfterHeldRevision = authorizeAfterRun.revision;
+    const authorizeAfterSummary = await authorizeAfter.authority.reconcileIntegrationDispatches(context());
+    assert.deepEqual(authorizeAfterSummary, {
+      reconciled: true,
+      recoveryHolds: [{ runId: authorizeAfterRun.id, status: "recovery_hold" }],
+      deliveredOutboxEvents: 0,
+    });
+    assert.deepEqual(authorizeAfterRun.recoveryState, authorizeAfterHeldState);
+    assert.equal(authorizeAfterRun.revision, authorizeAfterHeldRevision);
+    assertNoPreLaunchTerminalSideEffects(authorizeAfter, authorizeAfterRun.id);
+    authorizeAfter.repo.state.reconcileMode = "stale-returned-already-held";
+    await expectCode(() => authorizeAfter.authority.reconcileIntegrationDispatches(context()), "AGENT_UNAVAILABLE");
+    assert.deepEqual(authorizeAfterRun.recoveryState, authorizeAfterHeldState);
+    assert.equal(authorizeAfterRun.revision, authorizeAfterHeldRevision);
+    authorizeAfter.repo.state.reconcileMode = "";
+    await expectCode(
+      () => authorizeAfter.authority.startIntegrationRun({ threadId: authorizeAfterThread.id, input: { text: "Blocked" } }, context()),
+      "AGENT_UNAVAILABLE"
+    );
+
+    const freshHoldSource = makeAuthority();
+    const freshHoldPrepared = await prepareReceiptBearingRun(freshHoldSource, {
+      title: "Fresh authority receipt hold",
+      input: "Fresh",
+    });
+    const freshHoldAuthority = createAgintiIntegrationRuntimeAuthority({
+      threadSessionRepository: freshHoldSource.repo.repository,
+      eventLedgerStore: freshHoldSource.ledger,
+    });
+    await expectAuthorityError(
+      () => freshHoldAuthority.getIntegrationRunStatus({ runId: freshHoldPrepared.run.id }, context()),
+      { code: "RECOVERY_HOLD", status: 503 }
+    );
+    const freshHoldReconcileCall = callsNamed(freshHoldSource, "reconcileIntegrationDispatches").at(-1)[1];
+    assert.notEqual(freshHoldReconcileCall.processOwner.token, freshHoldPrepared.run.processOwner.token);
+    assert.deepEqual(freshHoldReconcileCall.processOwner.processIdentity, freshHoldPrepared.run.processOwner.processIdentity);
+    assertRecoveryHoldApplied(freshHoldSource, {
+      threadId: freshHoldPrepared.thread.id,
+      runId: freshHoldPrepared.run.id,
+      sourceRunRevision: 3,
+    });
 
     const alreadyAuthorized = makeAuthority();
     const alreadyAuthorizedThread = (await alreadyAuthorized.authority.createIntegrationThread({ title: "Already authorized" }, context())).thread;
     alreadyAuthorized.repo.state.forceAuthorizeAlreadyAuthorized = true;
-    await expectCode(
+    await expectAuthorityError(
       () => alreadyAuthorized.authority.startIntegrationRun({ threadId: alreadyAuthorizedThread.id, input: { text: "Already" } }, context()),
-      "RECOVERY_HOLD"
+      { code: "RECOVERY_HOLD", status: 503 }
     );
     const alreadyAuthorizedRun = [...alreadyAuthorized.repo.state.runs.values()][0];
     assert.equal(alreadyAuthorizedRun.revision, 3);
@@ -2373,20 +3109,503 @@ async function main() {
     assert.equal(callsNamed(alreadyAuthorized, "abortIntegrationRunBeforeLaunch").length, 0);
     await delay(0);
     assertNoPreLaunchTerminalSideEffects(alreadyAuthorized, alreadyAuthorizedRun.id);
+    await expectAuthorityError(
+      () => alreadyAuthorized.authority.getIntegrationRunStatus({ runId: alreadyAuthorizedRun.id }, context()),
+      { code: "RECOVERY_HOLD", status: 503 }
+    );
+    assertRecoveryHoldApplied(alreadyAuthorized, {
+      threadId: alreadyAuthorizedThread.id,
+      runId: alreadyAuthorizedRun.id,
+      sourceRunRevision: 3,
+    });
 
     const ownerDeathHold = makeAuthority();
     assert.equal(ownerDeathHold.repo.repository[INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_PROPERTY].retainedDescriptorStorageAuthority, false);
     const ownerDeathThread = (await ownerDeathHold.authority.createIntegrationThread({ title: "Owner death recovery hold" }, context())).thread;
     ownerDeathHold.repo.state.forceAuthorizeAlreadyAuthorized = true;
-    await expectCode(
+    await expectAuthorityError(
       () => ownerDeathHold.authority.startIntegrationRun({ threadId: ownerDeathThread.id, input: { text: "Owner death" } }, context()),
-      "RECOVERY_HOLD"
+      { code: "RECOVERY_HOLD", status: 503 }
     );
     const ownerDeathRun = [...ownerDeathHold.repo.state.runs.values()][0];
     assert.equal(ownerDeathRun.nativeStartReceipt.authorizationDigest, lastCallPayload(ownerDeathHold, "authorizeIntegrationRunNativeStart").authorization.authorizationDigest);
     assert.equal(callsNamed(ownerDeathHold, "abortIntegrationRunBeforeLaunch").length, 0);
     await delay(0);
     assertNoPreLaunchTerminalSideEffects(ownerDeathHold, ownerDeathRun.id);
+    await expectAuthorityError(
+      () => ownerDeathHold.authority.getIntegrationRunStatus({ runId: ownerDeathRun.id }, context()),
+      { code: "RECOVERY_HOLD", status: 503 }
+    );
+    assertRecoveryHoldApplied(ownerDeathHold, {
+      threadId: ownerDeathThread.id,
+      runId: ownerDeathRun.id,
+      sourceRunRevision: 3,
+    });
+
+    const repositoryActiveThreadUpdateBlocked = makeAuthority();
+    const repositoryActiveThreadUpdateThread = (await repositoryActiveThreadUpdateBlocked.authority.createIntegrationThread({ title: "Repository-active thread update" }, context())).thread;
+    const repositoryActiveThreadUpdateRun = runRecord({
+      id: "run_00000000-0000-4000-8000-000000000121",
+      threadId: repositoryActiveThreadUpdateThread.id,
+      nativeSessionId: repositoryActiveThreadUpdateBlocked.repo.state.threads.get(repositoryActiveThreadUpdateThread.id).nativeSessionId,
+      status: "running",
+      revision: 2,
+    });
+    repositoryActiveThreadUpdateBlocked.repo.state.runs.set(repositoryActiveThreadUpdateRun.id, repositoryActiveThreadUpdateRun);
+    const repositoryActiveGuard = snapshotThreadMutationGuard(repositoryActiveThreadUpdateBlocked, repositoryActiveThreadUpdateThread.id);
+    const repositoryActiveUpdateCalls = callsNamed(repositoryActiveThreadUpdateBlocked, "updateIntegrationThread").length;
+    await expectCode(
+      () => repositoryActiveThreadUpdateBlocked.authority.updateIntegrationThread(
+        { threadId: repositoryActiveThreadUpdateThread.id, title: "Should not update repository active" },
+        context()
+      ),
+      "RUN_CONFLICT"
+    );
+    assert.equal(callsNamed(repositoryActiveThreadUpdateBlocked, "updateIntegrationThread").length, repositoryActiveUpdateCalls);
+    assertThreadMutationGuardUnchanged(repositoryActiveThreadUpdateBlocked, repositoryActiveThreadUpdateThread.id, repositoryActiveGuard);
+
+    const updateRevisionCas = makeAuthority();
+    const updateRevisionThread = (await updateRevisionCas.authority.createIntegrationThread({ title: "Update CAS" }, context())).thread;
+    const updateRevisionGuard = snapshotThreadMutationGuard(updateRevisionCas, updateRevisionThread.id);
+    await assert.rejects(
+      () => updateRevisionCas.repo.repository.updateIntegrationThread({
+        threadId: updateRevisionThread.id,
+        principalId: PRINCIPAL,
+        browserSessionId: BROWSER_SESSION,
+        expectedRevision: updateRevisionGuard.revision + 1,
+        title: "Should not update stale",
+        updatedAt: now(),
+      }),
+      (error) => error?.code === "REVISION_CONFLICT"
+    );
+    assertThreadMutationGuardUnchanged(updateRevisionCas, updateRevisionThread.id, updateRevisionGuard);
+
+    const heldThreadUpdateBlocked = makeAuthority();
+    const heldThreadPrepared = await prepareReceiptBearingRun(heldThreadUpdateBlocked, {
+      title: "Held thread update",
+      input: "held update block",
+    });
+    await expectAuthorityError(
+      () => heldThreadUpdateBlocked.authority.getIntegrationRunStatus({ runId: heldThreadPrepared.run.id }, context()),
+      { code: "RECOVERY_HOLD", status: 503 }
+    );
+    assertRecoveryHoldApplied(heldThreadUpdateBlocked, {
+      threadId: heldThreadPrepared.thread.id,
+      runId: heldThreadPrepared.run.id,
+      sourceRunRevision: 3,
+    });
+    const heldGuard = snapshotThreadMutationGuard(heldThreadUpdateBlocked, heldThreadPrepared.thread.id);
+    const heldUpdateCalls = callsNamed(heldThreadUpdateBlocked, "updateIntegrationThread").length;
+    await expectCode(
+      () => heldThreadUpdateBlocked.authority.updateIntegrationThread(
+        { threadId: heldThreadPrepared.thread.id, title: "Should not update held" },
+        context()
+      ),
+      "RUN_CONFLICT"
+    );
+    assert.equal(callsNamed(heldThreadUpdateBlocked, "updateIntegrationThread").length, heldUpdateCalls);
+    assertThreadMutationGuardUnchanged(heldThreadUpdateBlocked, heldThreadPrepared.thread.id, heldGuard);
+
+    const claimAppearsAfterRequest = makeAuthority();
+    const claimAppearsThread = (await claimAppearsAfterRequest.authority.createIntegrationThread({ title: "Claim appears after request" }, context())).thread;
+    const claimRequestCaptured = createGate();
+    const claimAllowReconcile = createGate();
+    let claimRequestWasEmpty = false;
+    claimAppearsAfterRequest.repo.state.onReconcileAfterRequestBeforeScan = async ({ request }) => {
+      if (request.liveRunClaims.length !== 0) return;
+      claimRequestWasEmpty = true;
+      claimRequestCaptured.resolve();
+      await claimAllowReconcile.promise;
+    };
+    const claimReconcilePromise = claimAppearsAfterRequest.authority.reconcileIntegrationDispatches(context());
+    await waitForGate(claimRequestCaptured, "stale-negative empty-claim reconcile request");
+    claimAppearsAfterRequest.repo.state.failCreateBeforeCommit = true;
+    const claimStartPromise = claimAppearsAfterRequest.authority
+      .startIntegrationRun({ threadId: claimAppearsThread.id, input: { text: "Blocked by reconcile gate" } }, context())
+      .then(
+        () => {
+          throw new Error("start unexpectedly passed while claim-after-request fixture was active");
+        },
+        (error) => error
+      );
+    await delay(0);
+    assert.equal(claimRequestWasEmpty, true);
+    assert.equal(callsNamed(claimAppearsAfterRequest, "createIntegrationRun").length, 0);
+    assert.equal(callsNamed(claimAppearsAfterRequest, "markIntegrationRunDispatching").length, 0);
+    assert.equal(callsNamed(claimAppearsAfterRequest, "authorizeIntegrationRunNativeStart").length, 0);
+    assert.equal(claimAppearsAfterRequest.repo.state.runs.size, 0);
+    claimAllowReconcile.resolve();
+    const claimReconcileSummary = await claimReconcilePromise;
+    assert.deepEqual(claimReconcileSummary, {
+      reconciled: true,
+      recoveryHolds: [],
+      deliveredOutboxEvents: 0,
+    });
+    const claimStartError = await claimStartPromise;
+    assert.equal(claimStartError.code, "REVISION_CONFLICT");
+    assert.equal(claimAppearsAfterRequest.repo.state.runs.size, 0);
+    claimAppearsAfterRequest.repo.state.onReconcileAfterRequestBeforeScan = null;
+
+    const staleLiveRelease = makeAuthority();
+    const staleLiveReleaseThread = (await staleLiveRelease.authority.createIntegrationThread({ title: "Stale live release" }, context())).thread;
+    const staleNativeSessionId = staleLiveRelease.repo.state.threads.get(staleLiveReleaseThread.id).nativeSessionId;
+    const staleLiveAbort = new AbortController();
+    const staleSaveEntered = createGate();
+    const staleAllowSaveProceed = createGate();
+    const staleSavePersisted = createGate();
+    const staleFinishEntered = createGate();
+    const staleFinishFailed = createGate();
+    const staleSaveStateDescriptor = Object.getOwnPropertyDescriptor(SessionStore.prototype, "saveState");
+    let staleLiveRequestSnapshots = 0;
+    let staleFinishAttempts = 0;
+    let staleSaveIntercepts = 0;
+    assert.equal(typeof staleSaveStateDescriptor?.value, "function");
+    Object.defineProperty(SessionStore.prototype, "saveState", {
+      ...staleSaveStateDescriptor,
+      value: async function stalePositiveSaveState(state, ...args) {
+        const isTargetFirstSave = this.sessionId === staleNativeSessionId && staleSaveIntercepts === 0;
+        if (isTargetFirstSave) {
+          staleSaveIntercepts += 1;
+          staleSaveEntered.resolve();
+          await staleAllowSaveProceed.promise;
+        }
+        const result = await Reflect.apply(staleSaveStateDescriptor.value, this, [state, ...args]);
+        if (isTargetFirstSave) {
+          staleSavePersisted.resolve();
+          const error = new Error("stale-positive worker released after persisted native state");
+          error.code = "CANCELLED";
+          error.persistedRuntimeRevision = 1;
+          throw error;
+        }
+        return result;
+      },
+    });
+    let staleLiveReleaseRun = null;
+    try {
+      const staleStartPromise = staleLiveRelease.authority
+        .startIntegrationRun(
+          { threadId: staleLiveReleaseThread.id, input: { text: "Stale release" } },
+          context({ abortSignal: staleLiveAbort.signal })
+        )
+        .then(
+          (value) => ({ value }),
+          (error) => ({ error })
+        );
+      const staleStartOutcome = await waitForPromise(staleStartPromise, "stale-positive start response");
+      if (staleStartOutcome.error) throw staleStartOutcome.error;
+      await waitForGate(staleSaveEntered, "stale-positive native session save entered").catch((error) => {
+        error.message = `${error.message}; target=${staleNativeSessionId}; calls=${JSON.stringify(staleLiveRelease.repo.calls.slice(-8).map(([name]) => name))}`;
+        throw error;
+      });
+      staleLiveReleaseRun = staleLiveRelease.repo.state.runs.get(staleStartOutcome.value.run.id);
+      assert.equal(staleLiveReleaseRun.status, "running");
+      assert.equal(staleLiveReleaseRun.revision, 3);
+      assert.ok(staleLiveReleaseRun.nativeStartReceipt);
+      staleLiveRelease.repo.state.failFinishBeforeCommitCount = 1;
+      staleLiveRelease.repo.state.onFinishBeforeCommit = async ({ payload }) => {
+        staleFinishAttempts += 1;
+        assert.equal(payload.runId, staleLiveReleaseRun.id);
+        assert.equal(payload.expectedRevision, 3);
+        assert.equal(Number.isSafeInteger(payload.completedNativeRuntimeRevision), true);
+        if (staleFinishAttempts === 1) staleFinishEntered.resolve();
+      };
+      staleLiveRelease.repo.state.onFinishBeforeCommitFailure = async ({ remaining }) => {
+        if (remaining === 0) staleFinishFailed.resolve();
+      };
+      staleLiveRelease.repo.state.onReconcileAfterRequestBeforeScan = async ({ request }) => {
+        staleLiveRequestSnapshots += 1;
+        assert.equal(request.liveRunClaims.length, 1);
+        assert.equal(request.liveRunClaims[0].runId, staleLiveReleaseRun.id);
+        assert.equal(request.liveRunClaims[0].threadId, staleLiveReleaseRun.threadId);
+        assert.equal(request.liveRunClaims[0].nativeSessionId, staleLiveReleaseRun.nativeSessionId);
+      };
+      staleLiveRelease.repo.state.onReconcileBeforeResponse = async ({ request, receiptRunResults }) => {
+        assert.equal(request.liveRunClaims.length, 1);
+        assert.equal(receiptRunResults.length, 1);
+        assert.equal(receiptRunResults[0].action, "live");
+        assert.equal(receiptRunResults[0].run.id, staleLiveReleaseRun.id);
+        staleAllowSaveProceed.resolve();
+        await waitForGate(staleSavePersisted, "stale-positive native session save persisted").catch((error) => {
+          error.message = `${error.message}; calls=${JSON.stringify(staleLiveRelease.repo.calls.slice(-12).map(([name]) => name))}`;
+          throw error;
+        });
+        const persistedState = JSON.parse(await fs.readFile(path.join(SMOKE_ROOT, "state/sessions", staleNativeSessionId, "state.json"), "utf8"));
+        assert.equal(persistedState.sessionId, staleNativeSessionId);
+        assert.equal(persistedState.startUrl, "");
+        assert.equal(persistedState.meta.integrationPolicyLock, buildFixedIntegrationPolicy().id);
+        assert.equal(persistedState.meta.runtimeConfig.revision, 1);
+        await waitForGate(staleFinishEntered, "stale-positive first finish attempt").catch((error) => {
+          error.message = `${error.message}; calls=${JSON.stringify(staleLiveRelease.repo.calls.slice(-12).map(([name]) => name))}`;
+          throw error;
+        });
+        await waitForGate(staleFinishFailed, "stale-positive finish failure");
+        await delay(0);
+      };
+      await expectCode(
+        () => staleLiveRelease.authority.reconcileIntegrationDispatches(context()),
+        "AGENT_UNAVAILABLE"
+      );
+      assert.equal(staleStartOutcome.value.run.id, staleLiveReleaseRun.id);
+      assert.equal(staleSaveIntercepts, 1);
+      assert.equal(staleLiveRequestSnapshots, 1);
+      assert.equal(callsNamed(staleLiveRelease, "finishIntegrationRunWithOutbox").length, 1);
+      assert.equal(staleFinishAttempts, 1);
+      assert.equal(callsNamed(staleLiveRelease, "abortIntegrationRunBeforeLaunch").length, 0);
+      assert.equal(staleLiveReleaseRun.status, "running");
+      assert.equal(staleLiveReleaseRun.revision, 3);
+      assert.equal(staleLiveReleaseRun.recoveryState, null);
+      assert.equal(staleLiveRelease.repo.state.outbox.size, 0);
+      staleLiveRelease.repo.state.onReconcileAfterRequestBeforeScan = null;
+      staleLiveRelease.repo.state.onReconcileBeforeResponse = null;
+      staleLiveRelease.repo.state.onFinishBeforeCommit = null;
+      staleLiveRelease.repo.state.onFinishBeforeCommitFailure = null;
+      const staleSummary = await staleLiveRelease.authority.reconcileIntegrationDispatches(context());
+      assert.deepEqual(staleSummary, {
+        reconciled: true,
+        recoveryHolds: [{ runId: staleLiveReleaseRun.id, status: "recovery_hold" }],
+        deliveredOutboxEvents: 0,
+      });
+      assert.equal(staleLiveReleaseRun.status, "running");
+      assert.equal(staleLiveReleaseRun.revision, 4);
+      assert.equal(staleLiveReleaseRun.completedAt, null);
+      assert.equal(staleLiveReleaseRun.output, "");
+      assert.equal(staleLiveReleaseRun.error, null);
+      assert.equal(staleLiveReleaseRun.recoveryState.sourceRunRevision, 3);
+      assert.equal(staleLiveReleaseRun.recoveryState.appliedRunRevision, 4);
+      assert.equal(staleLiveReleaseRun.recoveryState.digest, recoveryStateDigestFor(staleLiveReleaseRun.recoveryState));
+      assert.equal(staleLiveRelease.repo.state.outbox.size, 0);
+      assert.equal(staleLiveRelease.ledger.eventsForRun(staleLiveReleaseRun.id).length, 0);
+    } finally {
+      Object.defineProperty(SessionStore.prototype, "saveState", staleSaveStateDescriptor);
+      staleAllowSaveProceed.resolve();
+      staleLiveRelease.repo.state.onReconcileAfterRequestBeforeScan = null;
+      staleLiveRelease.repo.state.onReconcileBeforeResponse = null;
+      staleLiveRelease.repo.state.onFinishBeforeCommit = null;
+      staleLiveRelease.repo.state.onFinishBeforeCommitFailure = null;
+      staleLiveRelease.repo.state.failFinishBeforeCommitCount = 0;
+      staleLiveRelease.repo.state.onAuthorizeAfterCommitBeforeReturn = null;
+    }
+    assert.deepEqual(Object.getOwnPropertyDescriptor(SessionStore.prototype, "saveState"), staleSaveStateDescriptor);
+    assert.equal(Object.getPrototypeOf(new Promise(() => {})), Promise.prototype);
+
+    const repeatStartAfterAlsOne = makeAuthority();
+    const repeatStartAfterAlsOnePrepared = await prepareReceiptBearingRun(repeatStartAfterAlsOne, {
+      title: "Repeat native start after ALS one",
+      input: "repeat after ALS one",
+    });
+    assert.equal(repeatStartAfterAlsOnePrepared.run.revision, 3);
+    assert.match(repeatStartAfterAlsOnePrepared.run.nativeStartReceipt.authorizationDigest, /^[a-f0-9]{64}$/u);
+    assert.equal(repeatStartAfterAlsOnePrepared.run.nativeStartReceipt.targetRunRevision, 3);
+    const repeatStartAfterAlsTwo = makeAuthority();
+    const repeatStartAfterAlsTwoPrepared = await prepareReceiptBearingRun(repeatStartAfterAlsTwo, {
+      title: "Repeat native start after ALS two",
+      input: "repeat after ALS two",
+    });
+    assert.equal(repeatStartAfterAlsTwoPrepared.run.revision, 3);
+    assert.match(repeatStartAfterAlsTwoPrepared.run.nativeStartReceipt.authorizationDigest, /^[a-f0-9]{64}$/u);
+    assert.equal(repeatStartAfterAlsTwoPrepared.run.nativeStartReceipt.targetRunRevision, 3);
+
+    const cancelledCrashHold = makeAuthority();
+    const cancelledCrashPrepared = await prepareReceiptBearingRun(cancelledCrashHold, {
+      title: "Cancelled crash recovery hold",
+      input: "Cancelled crash",
+    });
+    const crashCancelRequestedAt = now();
+    const crashCancelling = await cancelledCrashHold.repo.repository.markIntegrationRunCancelling({
+      runId: cancelledCrashPrepared.run.id,
+      threadId: cancelledCrashPrepared.run.threadId,
+      principalId: PRINCIPAL,
+      browserSessionId: BROWSER_SESSION,
+      expectedRevision: 3,
+      processOwner: cancelledCrashPrepared.run.processOwner,
+      cancelRequestedAt: crashCancelRequestedAt,
+    });
+    assert.equal(crashCancelling.run.revision, 4);
+    assert.equal(cancelledCrashPrepared.run.cancelRequestedAt, crashCancelRequestedAt);
+    const dispatchCallsBeforeCancelledHold = callsNamed(cancelledCrashHold, "markIntegrationRunDispatching").length;
+    const authorizeCallsBeforeCancelledHold = callsNamed(cancelledCrashHold, "authorizeIntegrationRunNativeStart").length;
+    const abortCallsBeforeCancelledHold = callsNamed(cancelledCrashHold, "abortIntegrationRunBeforeLaunch").length;
+    await expectAuthorityError(
+      () => cancelledCrashHold.authority.getIntegrationRunStatus({ runId: cancelledCrashPrepared.run.id }, context()),
+      { code: "RECOVERY_HOLD", status: 503 }
+    );
+    assert.equal(cancelledCrashPrepared.run.cancelRequestedAt, crashCancelRequestedAt);
+    assert.equal(callsNamed(cancelledCrashHold, "markIntegrationRunDispatching").length, dispatchCallsBeforeCancelledHold);
+    assert.equal(callsNamed(cancelledCrashHold, "authorizeIntegrationRunNativeStart").length, authorizeCallsBeforeCancelledHold);
+    assert.equal(callsNamed(cancelledCrashHold, "abortIntegrationRunBeforeLaunch").length, abortCallsBeforeCancelledHold);
+    assertRecoveryHoldApplied(cancelledCrashHold, {
+      threadId: cancelledCrashPrepared.thread.id,
+      runId: cancelledCrashPrepared.run.id,
+      sourceRunRevision: 4,
+    });
+    const cancelledCrashRecoveryState = cloneJson(cancelledCrashPrepared.run.recoveryState);
+    await expectAuthorityError(
+      () => cancelledCrashHold.authority.getIntegrationRunStatus({ runId: cancelledCrashPrepared.run.id }, context()),
+      { code: "RECOVERY_HOLD", status: 503 }
+    );
+    assert.equal(cancelledCrashPrepared.run.cancelRequestedAt, crashCancelRequestedAt);
+    assert.deepEqual(cancelledCrashPrepared.run.recoveryState, cancelledCrashRecoveryState);
+
+    const forgedCancelWithoutRevision = makeAuthority();
+    const forgedCancelWithoutRevisionPrepared = await prepareReceiptBearingRun(forgedCancelWithoutRevision, {
+      title: "Forged cancel without revision",
+      input: "cancel without revision",
+    });
+    forgedCancelWithoutRevisionPrepared.run.cancelRequestedAt = now();
+    await expectCode(
+      () => forgedCancelWithoutRevision.authority.getIntegrationRunStatus(
+        { runId: forgedCancelWithoutRevisionPrepared.run.id },
+        context()
+      ),
+      "AGENT_UNAVAILABLE"
+    );
+    assertNoPreLaunchTerminalSideEffects(forgedCancelWithoutRevision, forgedCancelWithoutRevisionPrepared.run.id);
+
+    const forgedRevisionWithoutCancel = makeAuthority();
+    const forgedRevisionWithoutCancelPrepared = await prepareReceiptBearingRun(forgedRevisionWithoutCancel, {
+      title: "Forged revision without cancel",
+      input: "revision without cancel",
+    });
+    forgedRevisionWithoutCancelPrepared.run.revision = 4;
+    await expectCode(
+      () => forgedRevisionWithoutCancel.authority.getIntegrationRunStatus(
+        { runId: forgedRevisionWithoutCancelPrepared.run.id },
+        context()
+      ),
+      "AGENT_UNAVAILABLE"
+    );
+    assertNoPreLaunchTerminalSideEffects(forgedRevisionWithoutCancel, forgedRevisionWithoutCancelPrepared.run.id);
+
+    const liveRepositorySemantics = makeAuthority();
+    const livePrepared = await prepareReceiptBearingRun(liveRepositorySemantics, {
+      title: "Live claim repository semantics",
+      input: "Live",
+    });
+    const liveRequestUnsigned = {
+      schemaVersion: DISPATCH_RECONCILIATION_VERSION,
+      principalId: PRINCIPAL,
+      browserSessionId: BROWSER_SESSION,
+      browserSessionPolicy: "same-browser-session",
+      processOwner: cloneJson(livePrepared.run.processOwner),
+      liveRunClaims: [
+        {
+          runId: livePrepared.run.id,
+          threadId: livePrepared.thread.id,
+          nativeSessionId: livePrepared.run.nativeSessionId,
+          claimedAt: now(),
+        },
+      ],
+      reconciledAt: now(),
+      requestDigest: ZERO_DIGEST,
+    };
+    const liveRequest = Object.freeze({
+      ...liveRequestUnsigned,
+      processOwner: Object.freeze({
+        ...liveRequestUnsigned.processOwner,
+        processIdentity: Object.freeze(liveRequestUnsigned.processOwner.processIdentity),
+      }),
+      liveRunClaims: Object.freeze(liveRequestUnsigned.liveRunClaims.map((claim) => Object.freeze(claim))),
+      requestDigest: reconciliationRequestDigestFor(liveRequestUnsigned),
+    });
+    const liveResponse = await liveRepositorySemantics.repo.repository.reconcileIntegrationDispatches(liveRequest);
+    assert.equal(liveResponse.receiptRunResults[0].action, "live");
+    assert.equal(livePrepared.run.recoveryState, null);
+    assert.equal(livePrepared.run.revision, 3);
+    assertNoPreLaunchTerminalSideEffects(liveRepositorySemantics, livePrepared.run.id);
+    const earlyClaimRequestUnsigned = {
+      ...liveRequestUnsigned,
+      liveRunClaims: [
+        {
+          ...liveRequestUnsigned.liveRunClaims[0],
+          claimedAt: "2020-01-01T00:00:00.000Z",
+        },
+      ],
+      reconciledAt: now(),
+      requestDigest: ZERO_DIGEST,
+    };
+    const earlyClaimRequest = Object.freeze({
+      ...earlyClaimRequestUnsigned,
+      processOwner: Object.freeze({
+        ...earlyClaimRequestUnsigned.processOwner,
+        processIdentity: Object.freeze(earlyClaimRequestUnsigned.processOwner.processIdentity),
+      }),
+      liveRunClaims: Object.freeze(earlyClaimRequestUnsigned.liveRunClaims.map((claim) => Object.freeze(claim))),
+      requestDigest: reconciliationRequestDigestFor(earlyClaimRequestUnsigned),
+    });
+    const earlyClaimResponse = await liveRepositorySemantics.repo.repository.reconcileIntegrationDispatches(earlyClaimRequest);
+    assert.equal(earlyClaimResponse.receiptRunResults[0].action, "held");
+    assertRecoveryHoldApplied(liveRepositorySemantics, {
+      threadId: livePrepared.thread.id,
+      runId: livePrepared.run.id,
+      sourceRunRevision: 3,
+    });
+
+    for (const marker of [false, 0, "", { schemaVersion: NATIVE_START_RECOVERY_STATE_VERSION }, "missing"]) {
+      const corruptRecoveryMarker = makeAuthority();
+      const corruptPrepared = await prepareReceiptBearingRun(corruptRecoveryMarker, {
+        title: `Corrupt recovery marker ${String(marker)}`,
+        input: "marker",
+      });
+      if (marker === "missing") delete corruptPrepared.run.recoveryState;
+      else corruptPrepared.run.recoveryState = marker;
+      await expectCode(
+        () => corruptRecoveryMarker.authority.getIntegrationRunStatus({ runId: corruptPrepared.run.id }, context()),
+        "AGENT_UNAVAILABLE"
+      );
+      assert.equal(corruptPrepared.run.revision, 3);
+      if (marker === "missing") assert.equal(Object.prototype.hasOwnProperty.call(corruptPrepared.run, "recoveryState"), false);
+      else assert.equal(corruptPrepared.run.recoveryState, marker);
+      assertNoPreLaunchTerminalSideEffects(corruptRecoveryMarker, corruptPrepared.run.id);
+    }
+
+    for (const mode of [
+      "wrapper-extra",
+      "missing-response-digest",
+      "bad-response-digest",
+      "extra-result",
+      "foreign-result",
+      "accessor-result",
+      "proxy-result",
+      "sparse-results",
+      "duplicate-result",
+      "live-without-claim",
+      "bad-recovery-digest",
+      "bad-recovery-revision",
+      "bad-recovery-source",
+      "bad-held-at",
+      "changed-thread-context",
+      "bad-thread-revision",
+      "bad-thread-updated-at",
+      "bad-runtime-revision",
+      "bad-previous-run",
+      "bad-cancel-requested",
+      "bad-dispatch-lease",
+      "hidden-run",
+      "stale-returned-run",
+      "stale-returned-thread",
+    ]) {
+      const malformedReconcile = makeAuthority();
+      await prepareReceiptBearingRun(malformedReconcile, {
+        title: `Malformed reconcile ${mode}`,
+        input: mode,
+      });
+      malformedReconcile.repo.state.reconcileMode = mode;
+      let rejectedMode = false;
+      try {
+        await malformedReconcile.authority.reconcileIntegrationDispatches(context());
+      } catch (error) {
+        rejectedMode = true;
+        const expectedCodes = mode === "foreign-result" ? ["NOT_FOUND"] : ["AGENT_UNAVAILABLE", "INVALID_REQUEST"];
+        assert.equal(expectedCodes.includes(error?.code || error?.publicCode), true, mode);
+      }
+      assert.equal(rejectedMode, true, `reconcile mode ${mode} must reject`);
+      if (mode === "proxy-result") assert.equal(malformedReconcile.repo.state.reconcileTrapCount, 0);
+    }
+    const unsortedReconcile = makeAuthority();
+    await prepareReceiptBearingRun(unsortedReconcile, { title: "Unsorted reconcile A", input: "A" });
+    await prepareReceiptBearingRun(unsortedReconcile, { title: "Unsorted reconcile B", input: "B" });
+    unsortedReconcile.repo.state.reconcileMode = "unsorted-result";
+    await expectCode(() => unsortedReconcile.authority.reconcileIntegrationDispatches(context()), "AGENT_UNAVAILABLE");
 
     for (const [flag, value] of [
       ["forgedAuthorizeReceipt", true],
@@ -3292,9 +4511,40 @@ async function main() {
     cancelFixture.repo.state.runs.set(cancelRaw.id, cancelRaw);
     const cancelled = await cancelFixture.authority.cancelIntegrationRun({ runId: cancelRaw.id }, context());
     assert.equal(cancelled.run.cancelRequestedAt !== null, true);
-    assert.equal(cancelFixture.repo.calls.some(([name]) => name === "markIntegrationRunCancelling"), true);
+    const firstCancelTimestamp = cancelRaw.cancelRequestedAt;
+    assert.equal(callsNamed(cancelFixture, "markIntegrationRunCancelling").length, 1);
     cancelFixture.repo.state.failNextCancel = true;
-    await assert.rejects(() => cancelFixture.authority.cancelIntegrationRun({ runId: cancelRaw.id }, context()));
+    const cancelRetry = await cancelFixture.authority.cancelIntegrationRun({ runId: cancelRaw.id }, context());
+    assert.equal(cancelRetry.run.id, cancelRaw.id);
+    assert.equal(cancelRaw.cancelRequestedAt, firstCancelTimestamp);
+    assert.equal(cancelRaw.revision, 3);
+    assert.equal(callsNamed(cancelFixture, "markIntegrationRunCancelling").length, 1);
+    cancelFixture.repo.state.failNextCancel = false;
+    for (const [index, marker] of [
+      ["missing", Symbol("missing")],
+      ["undefined", undefined],
+      ["false", false],
+      ["zero", 0],
+      ["empty", ""],
+    ].entries()) {
+      const malformedCancelMarker = makeAuthority();
+      const malformedCancelThread = (await malformedCancelMarker.authority.createIntegrationThread({ title: `Malformed cancel marker ${marker[0]}` }, context())).thread;
+      const malformedCancelRun = runRecord({
+        id: `run_00000000-0000-4000-8000-00000000012${index}`,
+        threadId: malformedCancelThread.id,
+        nativeSessionId: malformedCancelMarker.repo.state.threads.get(malformedCancelThread.id).nativeSessionId,
+        status: "running",
+        revision: 3,
+      });
+      if (marker[0] === "missing") delete malformedCancelRun.cancelRequestedAt;
+      else malformedCancelRun.cancelRequestedAt = marker[1];
+      malformedCancelMarker.repo.state.runs.set(malformedCancelRun.id, malformedCancelRun);
+      await expectCode(
+        () => malformedCancelMarker.authority.cancelIntegrationRun({ runId: malformedCancelRun.id }, context()),
+        "AGENT_UNAVAILABLE"
+      );
+      assert.equal(callsNamed(malformedCancelMarker, "markIntegrationRunCancelling").length, 0);
+    }
     const cancelCompletedSubstitution = makeAuthority();
     const cancelCompletedThread = (await cancelCompletedSubstitution.authority.createIntegrationThread({ title: "Cancel substitution" }, context())).thread;
     const cancelCompletedRaw = runRecord({
@@ -3393,6 +4643,16 @@ async function main() {
     assert.equal(cancelNestedProxy.repo.state.processOwnerTrapCount, 0);
 
     const authoritySource = await fs.readFile(new URL("../src/integration-runtime-authority.js", import.meta.url), "utf8");
+    const registrySource = await fs.readFile(new URL("../src/integration-run-registry.js", import.meta.url), "utf8");
+    assert.ok(authoritySource.includes("const NativePromise = Promise;"));
+    assert.ok(authoritySource.includes("const ObjectGetPrototypeOf = Object.getPrototypeOf;"));
+    assert.ok(authoritySource.includes("const PromisePrototypeThen = PromisePrototype.then;"));
+    assert.ok(authoritySource.includes("const ReflectApply = Reflect.apply;"));
+    assert.ok(authoritySource.includes("new NativePromise("));
+    assert.ok(authoritySource.includes("ReflectApply(PromisePrototypeThen, worker, [deferred.resolve, deferred.reject])"));
+    assert.ok(registrySource.includes("const ObjectGetPrototypeOf = Object.getPrototypeOf;"));
+    assert.ok(registrySource.includes("const PromisePrototypeThen = Promise.prototype.then;"));
+    assert.ok(registrySource.includes("const ReflectApply = Reflect.apply;"));
     const launchStart = authoritySource.indexOf("function launchExecutor");
     const launchEnd = authoritySource.indexOf("function getIntegrationRuntimeProof", launchStart);
     assert.notEqual(launchStart, -1);
@@ -3422,6 +4682,24 @@ async function main() {
       assert.ok(authorizeCall > launchCall);
       assert.ok(releaseCall > authorizeCall);
     }
+    const assertNoActiveRunStart = authoritySource.indexOf("async function assertNoActiveRun");
+    const assertNoActiveRunEnd = authoritySource.indexOf("function assertRunFields", assertNoActiveRunStart);
+    assert.notEqual(assertNoActiveRunStart, -1);
+    assert.notEqual(assertNoActiveRunEnd, -1);
+    const assertNoActiveRunBody = authoritySource.slice(assertNoActiveRunStart, assertNoActiveRunEnd);
+    const registryActiveCheck = assertNoActiveRunBody.indexOf("runRegistry.hasActiveThreadRun(thread.id)");
+    const repositoryActiveCheck = assertNoActiveRunBody.indexOf('callRepository("getActiveIntegrationRunForThread"');
+    assert.ok(registryActiveCheck > 0);
+    assert.ok(repositoryActiveCheck > registryActiveCheck);
+    const updateThreadStart = authoritySource.indexOf("async updateIntegrationThread");
+    const updateThreadEnd = authoritySource.indexOf("async deleteIntegrationThread", updateThreadStart);
+    assert.notEqual(updateThreadStart, -1);
+    assert.notEqual(updateThreadEnd, -1);
+    const updateThreadBody = authoritySource.slice(updateThreadStart, updateThreadEnd);
+    const updateGuardPosition = updateThreadBody.indexOf("await assertNoActiveRun(current, scope)");
+    const updateRepositoryPosition = updateThreadBody.indexOf('callRepository("updateIntegrationThread"');
+    assert.ok(updateGuardPosition > 0);
+    assert.ok(updateRepositoryPosition > updateGuardPosition);
 
     const invalidRegistry = createIntegrationRunRegistry();
     const invalidRunId = "run_00000000-0000-4000-8000-000000000018";
@@ -3452,6 +4730,67 @@ async function main() {
     assert.equal(poisonedThenTrap, 0);
     assert.equal(invalidRegistry.snapshot().activeRuns, 0);
 
+    const postAls = new AsyncLocalStorage();
+    await postAls.run({ smoke: "native-promise-symbol-metadata" }, async () => {});
+    const postAlsRegistry = createIntegrationRunRegistry();
+    const postAlsRunId = "run_00000000-0000-4000-8000-000000000022";
+    const postAlsThreadId = "thr_00000000-0000-4000-8000-000000000022";
+    const postAlsNativeSessionId = "aginti:00000000-0000-4000-8000-000000000022";
+    let resolvePostAlsPromise;
+    const postAlsPromise = new Promise((resolve) => {
+      resolvePostAlsPromise = resolve;
+    });
+    assert.equal(Object.getPrototypeOf(postAlsPromise), Promise.prototype);
+    const postAlsPromiseKeys = Reflect.ownKeys(postAlsPromise);
+    assert.ok(postAlsPromiseKeys.length > 0);
+    assert.equal(postAlsPromiseKeys.every((key) => typeof key === "symbol"), true);
+    postAlsRegistry.claimRun({
+      runId: postAlsRunId,
+      threadId: postAlsThreadId,
+      nativeSessionId: postAlsNativeSessionId,
+      principalId: PRINCIPAL,
+      browserSessionId: BROWSER_SESSION,
+      controller: new AbortController(),
+    });
+    assert.equal(postAlsRegistry.attachPromise(postAlsRunId, postAlsPromise), postAlsPromise);
+    assert.deepEqual(postAlsRegistry.getLiveRunClaim(postAlsRunId, context()), {
+      runId: postAlsRunId,
+      threadId: postAlsThreadId,
+      nativeSessionId: postAlsNativeSessionId,
+      principalId: PRINCIPAL,
+      browserSessionId: BROWSER_SESSION,
+      browserSessionPolicy: "same-browser-session",
+      claimedAt: postAlsRegistry.getRun(postAlsRunId, context()).claimedAt,
+    });
+    resolvePostAlsPromise("post-als-ok");
+    await postAlsPromise;
+    await delay(0);
+    assert.equal(postAlsRegistry.snapshot().activeRuns, 0);
+
+    const inertSymbolRegistry = createIntegrationRunRegistry();
+    const inertSymbolRunId = "run_00000000-0000-4000-8000-000000000023";
+    const inertSymbolThreadId = "thr_00000000-0000-4000-8000-000000000023";
+    const inertSymbolNativeSessionId = "aginti:00000000-0000-4000-8000-000000000023";
+    let resolveInertSymbolPromise;
+    const inertSymbolPromise = new Promise((resolve) => {
+      resolveInertSymbolPromise = resolve;
+    });
+    inertSymbolPromise[Symbol("inert-test-metadata")] = Object.freeze({ smoke: true });
+    inertSymbolRegistry.claimRun({
+      runId: inertSymbolRunId,
+      threadId: inertSymbolThreadId,
+      nativeSessionId: inertSymbolNativeSessionId,
+      principalId: PRINCIPAL,
+      browserSessionId: BROWSER_SESSION,
+      controller: new AbortController(),
+    });
+    assert.equal(inertSymbolRegistry.attachPromise(inertSymbolRunId, inertSymbolPromise), inertSymbolPromise);
+    assert.ok(inertSymbolRegistry.getLiveRunClaim(inertSymbolRunId, context()));
+    resolveInertSymbolPromise("inert-symbol-ok");
+    await inertSymbolPromise;
+    await delay(0);
+    assert.equal(inertSymbolRegistry.snapshot().activeRuns, 0);
+
     const invalidPromiseCandidates = [
       Object.create(Promise.prototype),
       (() => {
@@ -3464,8 +4803,8 @@ async function main() {
         return promise;
       })(),
       (() => {
-        const promise = Promise.resolve("symbol");
-        promise[Symbol("extra")] = true;
+        const promise = Promise.resolve("hidden-string");
+        Object.defineProperty(promise, "hidden", { enumerable: false, configurable: true, value: true });
         return promise;
       })(),
       (() => {
@@ -3532,6 +4871,89 @@ async function main() {
     await delay(0);
     assert.equal(secondAttachRegistry.snapshot().activeRuns, 0);
 
+    const onePromiseOneRunRegistry = createIntegrationRunRegistry();
+    const onePromiseOriginalRunId = "run_00000000-0000-4000-8000-000000000024";
+    const onePromiseOriginalThreadId = "thr_00000000-0000-4000-8000-000000000024";
+    const onePromiseOriginalNativeSessionId = "aginti:00000000-0000-4000-8000-000000000024";
+    let resolveOnePromise;
+    const onePromise = new Promise((resolve) => {
+      resolveOnePromise = resolve;
+    });
+    onePromise[Symbol("inert-one-run-metadata")] = Object.freeze({ smoke: true });
+    onePromiseOneRunRegistry.claimRun({
+      runId: onePromiseOriginalRunId,
+      threadId: onePromiseOriginalThreadId,
+      nativeSessionId: onePromiseOriginalNativeSessionId,
+      principalId: PRINCIPAL,
+      browserSessionId: BROWSER_SESSION,
+      controller: new AbortController(),
+    });
+    assert.equal(onePromiseOneRunRegistry.attachPromise(onePromiseOriginalRunId, onePromise), onePromise);
+    const onePromiseOriginal = onePromiseOneRunRegistry.getRun(onePromiseOriginalRunId, context());
+    assert.equal(onePromiseOriginal.promise, onePromise);
+    assert.ok(onePromiseOneRunRegistry.getLiveRunClaim(onePromiseOriginalRunId, context()));
+    const promiseSpeciesDescriptor = Object.getOwnPropertyDescriptor(Promise, Symbol.species);
+    let duplicateAttachSpeciesCalls = 0;
+    function ThrowingDuplicateAttachSpecies(executor) {
+      duplicateAttachSpeciesCalls += 1;
+      throw new Error("duplicate attach must not install a promise observer");
+    }
+    Object.defineProperty(Promise, Symbol.species, {
+      configurable: true,
+      value: ThrowingDuplicateAttachSpecies,
+    });
+    async function expectPromiseReuseRejected(runId, threadId, nativeSessionId, label) {
+      onePromiseOneRunRegistry.claimRun({
+        runId,
+        threadId,
+        nativeSessionId,
+        principalId: PRINCIPAL,
+        browserSessionId: BROWSER_SESSION,
+        controller: new AbortController(),
+      });
+      await expectCode(() => onePromiseOneRunRegistry.attachPromise(runId, onePromise), "RUN_CONFLICT");
+      assert.equal(onePromiseOneRunRegistry.getRun(runId, context()), null, label);
+      assert.equal(duplicateAttachSpeciesCalls, 0, label);
+    }
+    try {
+      await expectPromiseReuseRejected(
+        "run_00000000-0000-4000-8000-000000000025",
+        "thr_00000000-0000-4000-8000-000000000025",
+        "aginti:00000000-0000-4000-8000-000000000025",
+        "simultaneous duplicate promise claim"
+      );
+      const onePromiseOriginalAfterDuplicate = onePromiseOneRunRegistry.getRun(onePromiseOriginalRunId, context());
+      assert.equal(onePromiseOriginalAfterDuplicate.promise, onePromise);
+      assert.equal(onePromiseOriginalAfterDuplicate.claimedAt, onePromiseOriginal.claimedAt);
+      assert.equal(onePromiseOriginalAfterDuplicate.threadId, onePromiseOriginalThreadId);
+      assert.equal(onePromiseOriginalAfterDuplicate.nativeSessionId, onePromiseOriginalNativeSessionId);
+      assert.equal(onePromiseOneRunRegistry.snapshot().activeRuns, 1);
+      assert.deepEqual(onePromiseOneRunRegistry.releaseRun(onePromiseOriginalRunId), {
+        released: true,
+        runId: onePromiseOriginalRunId,
+      });
+      assert.equal(onePromiseOneRunRegistry.snapshot().activeRuns, 0);
+      await expectPromiseReuseRejected(
+        "run_00000000-0000-4000-8000-000000000026",
+        "thr_00000000-0000-4000-8000-000000000026",
+        "aginti:00000000-0000-4000-8000-000000000026",
+        "released pending duplicate promise claim"
+      );
+      resolveOnePromise("one-promise-one-run");
+      await onePromise;
+      await delay(0);
+      await expectPromiseReuseRejected(
+        "run_00000000-0000-4000-8000-000000000027",
+        "thr_00000000-0000-4000-8000-000000000027",
+        "aginti:00000000-0000-4000-8000-000000000027",
+        "settled duplicate promise claim"
+      );
+      assert.equal(onePromiseOneRunRegistry.snapshot().activeRuns, 0);
+    } finally {
+      if (promiseSpeciesDescriptor) Object.defineProperty(Promise, Symbol.species, promiseSpeciesDescriptor);
+      else delete Promise[Symbol.species];
+    }
+
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-native-executor-smoke-"));
     try {
       const runAgentResult = await runAgent({
@@ -3571,8 +4993,10 @@ async function main() {
       await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
     }
 
+    finalSmokeOk = true;
     process.stdout.write("integration runtime authority smoke: ok\n");
   } finally {
+    clearTimeout(finalSmokeWatchdog);
     process.removeListener("unhandledRejection", onUnhandled);
     await fs.rm(SMOKE_ROOT, { recursive: true, force: true }).catch(() => {});
   }

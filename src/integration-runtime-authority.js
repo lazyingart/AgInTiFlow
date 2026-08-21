@@ -29,7 +29,7 @@ import {
 } from "./integration-native-executor.js";
 
 export const INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_VERSION =
-  "aginti-integration-thread-session-repository-v4";
+  "aginti-integration-thread-session-repository-v5";
 export const INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_PROPERTY =
   "integrationRuntimeRepositoryAttestation";
 export const INTEGRATION_EVENT_APPEND_ATTESTATION_VERSION = "aginti-public-event-append-attestation-v1";
@@ -40,6 +40,12 @@ export const INTEGRATION_HARDENED_SANDBOX_ATTESTATION_VERSION =
   "aginti-hardened-sandbox-runtime-attestation-v1";
 
 const ZERO_DIGEST = "0".repeat(64);
+const NativePromise = Promise;
+const PromisePrototype = NativePromise.prototype;
+const PromisePrototypeThen = PromisePrototype.then;
+const ObjectGetPrototypeOf = Object.getPrototypeOf;
+const ReflectApply = Reflect.apply;
+const ReflectOwnKeys = Reflect.ownKeys;
 const ACTIVE_RUN_STATUSES = new Set(["starting", "running"]);
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const TERMINAL_EVENT_TYPES = Object.freeze({
@@ -104,6 +110,8 @@ const REPOSITORY_ATTESTATION_KEYS = Object.freeze([
   "dispatchLeases",
   "dispatchOutbox",
   "nativeStartAuthorization",
+  "receiptRecoveryHold",
+  "exactReconciliationResults",
   "preLaunchAbort",
   "terminalOutbox",
   "completionOutboxBundles",
@@ -307,6 +315,49 @@ const NATIVE_START_AUTHORIZATION_RESPONSE_KEYS = Object.freeze([
   "authorizationId",
   "authorizationDigest",
   "receipt",
+  "run",
+  "thread",
+]);
+const NATIVE_START_RECOVERY_STATE_VERSION = "aginti-native-start-recovery-v1";
+const NATIVE_START_RECOVERY_STATE_KEYS = Object.freeze([
+  "schemaVersion",
+  "status",
+  "reason",
+  "authorizationId",
+  "authorizationDigest",
+  "sourceRunRevision",
+  "appliedRunRevision",
+  "heldAt",
+  "observedByProcessOwner",
+  "digest",
+]);
+const DISPATCH_RECONCILIATION_VERSION = "aginti-dispatch-reconciliation-v1";
+const DISPATCH_RECONCILIATION_REQUEST_KEYS = Object.freeze([
+  "schemaVersion",
+  "principalId",
+  "browserSessionId",
+  "browserSessionPolicy",
+  "processOwner",
+  "liveRunClaims",
+  "reconciledAt",
+  "requestDigest",
+]);
+const DISPATCH_RECONCILIATION_LIVE_CLAIM_KEYS = Object.freeze([
+  "runId",
+  "threadId",
+  "nativeSessionId",
+  "claimedAt",
+]);
+const DISPATCH_RECONCILIATION_RESPONSE_KEYS = Object.freeze([
+  "schemaVersion",
+  "requestDigest",
+  "reconciled",
+  "receiptRunResults",
+  "pendingOutboxEvents",
+  "responseDigest",
+]);
+const DISPATCH_RECONCILIATION_RESULT_KEYS = Object.freeze([
+  "action",
   "run",
   "thread",
 ]);
@@ -519,6 +570,8 @@ function validateRepositoryAttestation(value, { requireRetainedDescriptorStorage
     proof.dispatchLeases !== true ||
     proof.dispatchOutbox !== true ||
     proof.nativeStartAuthorization !== true ||
+    proof.receiptRecoveryHold !== true ||
+    proof.exactReconciliationResults !== true ||
     proof.preLaunchAbort !== true ||
     proof.terminalOutbox !== true ||
     proof.completionOutboxBundles !== true ||
@@ -731,6 +784,23 @@ function assertCanonicalIso(value, label) {
   return value;
 }
 
+function validateOptionalRunCancelRequestedAt(value, label = "run cancellation timestamp") {
+  if (value === null) return null;
+  return assertCanonicalIso(value, label);
+}
+
+function validateRunCancelRequestedAtField(record, label = "run") {
+  const descriptor = Object.getOwnPropertyDescriptor(record || {}, "cancelRequestedAt");
+  if (
+    !descriptor ||
+    descriptor.enumerable !== true ||
+    !Object.prototype.hasOwnProperty.call(descriptor, "value")
+  ) {
+    failUnavailable(`${label} cancellation marker is unavailable.`);
+  }
+  return validateOptionalRunCancelRequestedAt(descriptor.value, `${label} cancelRequestedAt`);
+}
+
 function cloneExactDescriptorRecord(value, keys, label) {
   if (value && (typeof value === "object" || typeof value === "function") && utilTypes.isProxy(value)) {
     failUnavailable(`${label} must not be a Proxy.`);
@@ -872,6 +942,7 @@ async function runPublicRecord(record, scope, eventLedgerStore, expectedRunId = 
   if (expectedRunId && record?.id !== expectedRunId) notFound("Run");
   assertOwnedBinding(record, scope, "Run");
   assertRuntimeRevision(record?.authority?.runtimeRevision, "run authority");
+  const cancelRequestedAt = validateRunCancelRequestedAtField(record, "run");
   if (record.output) assertNoUnsafeCoreEventFields({ output: record.output }, "run output");
   if (record.error) {
     if (!record.error || typeof record.error !== "object" || Array.isArray(record.error)) {
@@ -891,7 +962,7 @@ async function runPublicRecord(record, scope, eventLedgerStore, expectedRunId = 
     createdAt: record.createdAt,
     startedAt: record.startedAt ?? null,
     completedAt: record.completedAt ?? null,
-    cancelRequestedAt: record.cancelRequestedAt ?? null,
+    cancelRequestedAt,
     output: record.output || "",
     error: record.error || null,
     authority: record.authority,
@@ -932,7 +1003,8 @@ function artifactPublicRecord(record, scope, expected = {}) {
 }
 
 function unwrap(value, key) {
-  return value?.[key] || value;
+  if (value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key)) return value[key];
+  return value;
 }
 
 function snapshotRepositoryEnvelope(value, label) {
@@ -1290,6 +1362,7 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
   const runtimeRootsAttestation = repository.attestation.runtimeRoots;
   let processOwnerPromise = null;
   const reconciliationByScope = new Map();
+  const operationGateByScope = new Map();
 
   function processOwner() {
     processOwnerPromise ||= currentProcessOwner();
@@ -1298,6 +1371,28 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
 
   async function callRepository(method, payload) {
     return repository.methods[method](Object.freeze({ ...payload }));
+  }
+
+  function operationGateKey(scope) {
+    return `${scope.principalId}\n${scope.browserSessionId}`;
+  }
+
+  async function withScopeOperationGate(scope, operation) {
+    const key = operationGateKey(scope);
+    const previous = operationGateByScope.get(key) || Promise.resolve();
+    let releaseGate;
+    const gate = new Promise((resolve) => {
+      releaseGate = resolve;
+    });
+    const tail = previous.catch(() => {}).then(() => gate);
+    operationGateByScope.set(key, tail);
+    await previous.catch(() => {});
+    try {
+      return await operation();
+    } finally {
+      releaseGate();
+      if (operationGateByScope.get(key) === tail) operationGateByScope.delete(key);
+    }
   }
 
   function outboxScopeFromFallback(fallbackScope = {}) {
@@ -1517,16 +1612,17 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
   async function ensureReconciled(scope) {
     const key = `${scope.principalId}\n${scope.browserSessionId}`;
     if (reconciliationByScope.has(key)) return reconciliationByScope.get(key);
-    const promise = (async () => {
+    const promise = withScopeOperationGate(scope, async () => {
+      const liveRunClaims = validateLiveRunClaims(runRegistry.listLiveRunClaims(scope), scope);
       const owner = await processOwner();
-      const result = await callRepository("reconcileIntegrationDispatches", {
-        principalId: scope.principalId,
-        browserSessionId: scope.browserSessionId,
-        processOwner: owner,
-      });
-      await drainPendingOutboxRecords(result.pendingOutboxEvents || [], scope);
-      return result;
-    })();
+      const request = buildDispatchReconciliationRequest(scope, owner, liveRunClaims);
+      const response = await validateDispatchReconciliationResponse(
+        await callRepository("reconcileIntegrationDispatches", request),
+        request
+      );
+      await drainPendingOutboxRecords(response.pendingOutboxEvents, scope);
+      return response;
+    });
     reconciliationByScope.set(key, promise);
     promise
       .finally(() => {
@@ -1556,6 +1652,8 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
       browserSessionId: scope.browserSessionId,
     });
     const record = snapshotRunRecord(unwrap(snapshotRepositoryEnvelope(result, "get run response"), "run"), "loaded run");
+    if (!record) notFound("Run");
+    assertRunNotRecoveryHeld(record);
     await runPublicRecord(record, scope, eventLedgerStore, id);
     return record;
   }
@@ -1849,6 +1947,351 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
       failUnavailable("Authorized native start thread preservation digest did not match.");
     }
     return Object.freeze({ outcome: cloned.outcome, receipt, run, thread });
+  }
+
+  function recoveryStateDigestFor(state = {}) {
+    const { digest: _digest, ...unsigned } = state;
+    return contractDigest(unsigned);
+  }
+
+  function validateNativeStartRecoveryState(state = {}, label = "native start recovery state") {
+    assertExactDataKeys(state, NATIVE_START_RECOVERY_STATE_KEYS, [], label);
+    const clone = canonicalPlainJsonClone(state, label);
+    if (
+      clone.schemaVersion !== NATIVE_START_RECOVERY_STATE_VERSION ||
+      clone.status !== "recovery_hold" ||
+      clone.reason !== "retained_descriptor_unavailable"
+    ) {
+      failUnavailable("Native start recovery state is invalid.");
+    }
+    if (typeof clone.authorizationId !== "string" || !/^nstart_[a-f0-9]{48}$/u.test(clone.authorizationId)) {
+      failUnavailable("Native start recovery authorization id is invalid.");
+    }
+    if (typeof clone.authorizationDigest !== "string" || !/^[a-f0-9]{64}$/u.test(clone.authorizationDigest)) {
+      failUnavailable("Native start recovery authorization digest is invalid.");
+    }
+    const sourceRunRevision = assertRevision(clone.sourceRunRevision, "native start recovery source run");
+    const appliedRunRevision = assertRevision(clone.appliedRunRevision, "native start recovery applied run");
+    if (appliedRunRevision !== sourceRunRevision + 1) {
+      failUnavailable("Native start recovery revision transition is invalid.");
+    }
+    assertCanonicalIso(clone.heldAt, "native start recovery heldAt");
+    assertProcessOwnerEnvelope(clone.observedByProcessOwner, "native start recovery");
+    if (clone.digest !== recoveryStateDigestFor(clone)) failUnavailable("Native start recovery digest is invalid.");
+    return clone;
+  }
+
+  function recoveryStateForRun(run, label = "run") {
+    if (!run || !Object.prototype.hasOwnProperty.call(run, "recoveryState")) {
+      failUnavailable(`${label} recovery state field is unavailable.`);
+    }
+    if (run.recoveryState === null || run.recoveryState === undefined) return null;
+    return validateNativeStartRecoveryState(run.recoveryState, `${label} recovery state`);
+  }
+
+  function validateOptionalCancelRequestedAt(value, label = "run cancellation timestamp") {
+    if (value === null) return null;
+    return assertCanonicalIso(value, label);
+  }
+
+  function legalActiveRunRevisionForReceipt(run, receipt, cancelRequestedAt) {
+    const targetRunRevision = assertRevision(receipt.targetRunRevision, "native start receipt target run");
+    if (cancelRequestedAt) return targetRunRevision + 1;
+    return targetRunRevision;
+  }
+
+  function assertRunNotRecoveryHeld(run) {
+    const recovery = recoveryStateForRun(run, "loaded run");
+    if (recovery?.status === "recovery_hold") {
+      authorityFail("RECOVERY_HOLD", "Native start recovery is held until retained-descriptor state is available.", {
+        status: 503,
+      });
+    }
+  }
+
+  function reconciliationRequestDigestFor(request = {}) {
+    const { requestDigest: _requestDigest, ...unsigned } = request;
+    return contractDigest(unsigned);
+  }
+
+  function reconciliationResponseDigestFor(response = {}) {
+    const { responseDigest: _responseDigest, ...unsigned } = response;
+    return contractDigest(unsigned);
+  }
+
+  function validateLiveRunClaims(claims = [], scope, label = "live run claims") {
+    const cloned = canonicalPlainJsonClone(claims, label);
+    if (!Array.isArray(cloned)) failUnavailable("Live run claims must be an array.");
+    const seen = new Set();
+    let previousRunId = "";
+    return Object.freeze(cloned.map((claim, index) => {
+      assertExactDataKeys(claim, DISPATCH_RECONCILIATION_LIVE_CLAIM_KEYS, [], `${label}[${index}]`);
+      const runId = validateIntegrationRunId(claim.runId);
+      const threadId = validateIntegrationThreadId(claim.threadId);
+      const nativeSessionId = assertNativeSessionId(claim.nativeSessionId);
+      assertCanonicalIso(claim.claimedAt, "live run claim claimedAt");
+      if (runId <= previousRunId || seen.has(runId)) failUnavailable("Live run claims must be sorted and unique.");
+      previousRunId = runId;
+      seen.add(runId);
+      return Object.freeze({
+        runId,
+        threadId,
+        nativeSessionId,
+        claimedAt: claim.claimedAt,
+      });
+    }));
+  }
+
+  function validateDispatchReconciliationRequest(request = {}, scope) {
+    assertExactDataKeys(request, DISPATCH_RECONCILIATION_REQUEST_KEYS, [], "dispatch reconciliation request");
+    const cloned = canonicalPlainJsonClone(request, "dispatch reconciliation request");
+    if (
+      cloned.schemaVersion !== DISPATCH_RECONCILIATION_VERSION ||
+      cloned.principalId !== scope.principalId ||
+      cloned.browserSessionId !== scope.browserSessionId ||
+      cloned.browserSessionPolicy !== "same-browser-session"
+    ) {
+      failUnavailable("Dispatch reconciliation request scope is invalid.");
+    }
+    assertProcessOwnerEnvelope(cloned.processOwner, "dispatch reconciliation request");
+    validateLiveRunClaims(cloned.liveRunClaims, scope);
+    assertCanonicalIso(cloned.reconciledAt, "dispatch reconciliation request reconciledAt");
+    if (cloned.requestDigest !== reconciliationRequestDigestFor(cloned)) {
+      failUnavailable("Dispatch reconciliation request digest is invalid.");
+    }
+    return cloned;
+  }
+
+  function buildDispatchReconciliationRequest(scope, owner, capturedLiveRunClaims = runRegistry.listLiveRunClaims(scope)) {
+    const liveRunClaims = validateLiveRunClaims(capturedLiveRunClaims, scope);
+    const unsigned = Object.freeze({
+      schemaVersion: DISPATCH_RECONCILIATION_VERSION,
+      principalId: scope.principalId,
+      browserSessionId: scope.browserSessionId,
+      browserSessionPolicy: "same-browser-session",
+      processOwner: assertProcessOwnerEnvelope(owner, "dispatch reconciliation"),
+      liveRunClaims,
+      reconciledAt: nowIso(),
+      requestDigest: ZERO_DIGEST,
+    });
+    return validateDispatchReconciliationRequest(Object.freeze({
+      ...unsigned,
+      requestDigest: reconciliationRequestDigestFor(unsigned),
+    }), scope);
+  }
+
+  function liveClaimMapFor(request) {
+    return new Map(request.liveRunClaims.map((claim) => [claim.runId, claim]));
+  }
+
+  function liveClaimBindsDispatchWindow(claim, run, request) {
+    if (!claim) return false;
+    const claimedAtMs = Date.parse(claim.claimedAt);
+    const dispatchedAtMs = Date.parse(run.dispatchedAt);
+    const reconciledAtMs = Date.parse(request.reconciledAt);
+    return (
+      Number.isFinite(claimedAtMs) &&
+      Number.isFinite(dispatchedAtMs) &&
+      Number.isFinite(reconciledAtMs) &&
+      claimedAtMs >= dispatchedAtMs &&
+      claimedAtMs <= reconciledAtMs
+    );
+  }
+
+  function requestLiveClaimMatchesRun(claim, run, request) {
+    return Boolean(
+      claim &&
+        claim.runId === run.id &&
+        claim.threadId === run.threadId &&
+        claim.nativeSessionId === run.nativeSessionId &&
+        run.principalId === request.principalId &&
+        run.browserSessionId === request.browserSessionId &&
+        run.browserSessionPolicy === "same-browser-session" &&
+        liveClaimBindsDispatchWindow(claim, run, request)
+    );
+  }
+
+  function currentLiveClaimMatchesRun(currentClaim, run, request) {
+    return Boolean(
+      currentClaim &&
+        currentClaim.runId === run.id &&
+        currentClaim.threadId === run.threadId &&
+        currentClaim.nativeSessionId === run.nativeSessionId &&
+        currentClaim.principalId === request.principalId &&
+        currentClaim.browserSessionId === request.browserSessionId &&
+        currentClaim.browserSessionPolicy === "same-browser-session" &&
+        liveClaimBindsDispatchWindow(currentClaim, run, request)
+    );
+  }
+
+  function currentLiveClaimMatchesRequestClaim(currentClaim, requestClaim) {
+    return Boolean(
+      currentClaim &&
+        requestClaim &&
+        currentClaim.runId === requestClaim.runId &&
+        currentClaim.threadId === requestClaim.threadId &&
+        currentClaim.nativeSessionId === requestClaim.nativeSessionId &&
+        currentClaim.claimedAt === requestClaim.claimedAt
+    );
+  }
+
+  function validateDispatchReconciliationResult(result = {}, request, liveClaims, index) {
+    assertExactDataKeys(result, DISPATCH_RECONCILIATION_RESULT_KEYS, [], `dispatch reconciliation result ${index}`);
+    const action = result.action;
+    if (!["live", "held", "already-held"].includes(action)) {
+      failUnavailable("Dispatch reconciliation result action is invalid.");
+    }
+    const run = snapshotRunRecord(result.run, `dispatch reconciliation run ${index}`);
+    const thread = snapshotThreadRecord(result.thread, `dispatch reconciliation thread ${index}`);
+    assertOwnedBinding(run, request, "Run");
+    assertOwnedBinding(thread, request, "Thread");
+    if (
+      run.status !== "running" ||
+      run.threadId !== thread.id ||
+      run.nativeSessionId !== thread.nativeSessionId ||
+      thread.status !== "running" ||
+      thread.lastRunId !== run.id ||
+      run.completedAt !== null ||
+      run.hidden !== false ||
+      run.tombstone !== false ||
+      run.output !== "" ||
+      run.error !== null
+    ) {
+      failUnavailable("Dispatch reconciliation run/thread result is invalid.");
+    }
+    const cancelRequestedAt = validateOptionalCancelRequestedAt(
+      run.cancelRequestedAt,
+      "dispatch reconciliation cancelRequestedAt"
+    );
+    const receipt = assertNativeStartReceipt(run.nativeStartReceipt, run.nativeStartReceipt, "reconciled native start receipt");
+    if (
+      receipt.runId !== run.id ||
+      receipt.threadId !== run.threadId ||
+      receipt.nativeSessionId !== run.nativeSessionId ||
+      receipt.principalId !== run.principalId ||
+      receipt.browserSessionId !== run.browserSessionId ||
+      receipt.browserSessionPolicy !== run.browserSessionPolicy ||
+      receipt.authorizationId !== run.nativeStartReceipt.authorizationId ||
+      receipt.authorizationDigest !== run.nativeStartReceipt.authorizationDigest ||
+      receipt.createdAt !== run.createdAt ||
+      receipt.startedAt !== run.startedAt ||
+      receipt.previousRunId !== run.previousRunId ||
+      receipt.expectedNativeRuntimeRevision !== run.authority?.runtimeRevision ||
+      receipt.expectedNativeRuntimeRevision !== threadRuntimeRevision(thread, "dispatch reconciliation thread") ||
+      receipt.threadRevision !== thread.revision ||
+      thread.updatedAt !== receipt.createdAt ||
+      receipt.dispatchLeaseId !== run.dispatchLeaseId ||
+      receipt.dispatchOutbox !== true ||
+      run.dispatchOutbox !== true ||
+      receipt.dispatchedAt !== run.dispatchedAt ||
+      threadPreservationDigestFor(thread, "dispatch reconciliation thread") !== receipt.threadPreservationDigest
+    ) {
+      failUnavailable("Dispatch reconciliation receipt binding is invalid.");
+    }
+    const legalActiveRevision = legalActiveRunRevisionForReceipt(run, receipt, cancelRequestedAt);
+    assertProcessOwner(run, receipt.processOwner, "dispatch reconciliation run");
+    const claim = liveClaims.get(run.id) || null;
+    const currentLiveClaim = runRegistry.getLiveRunClaim(run.id, request);
+    const hasExactLiveClaim = Boolean(
+        requestLiveClaimMatchesRun(claim, run, request) &&
+        currentLiveClaimMatchesRun(currentLiveClaim, run, request) &&
+        currentLiveClaimMatchesRequestClaim(currentLiveClaim, claim) &&
+        sameProcessOwner(assertProcessOwnerEnvelope(run.processOwner, "dispatch reconciliation run"), request.processOwner)
+    );
+    const hasCurrentLiveRun = Boolean(
+      currentLiveClaimMatchesRun(currentLiveClaim, run, request) &&
+        sameProcessOwner(assertProcessOwnerEnvelope(run.processOwner, "dispatch reconciliation run"), request.processOwner)
+    );
+    const recoveryState = recoveryStateForRun(run, `dispatch reconciliation run ${index}`);
+    if (action === "live") {
+      if (!hasExactLiveClaim || recoveryState !== null || run.revision !== legalActiveRevision) {
+        failUnavailable("Dispatch reconciliation live result is invalid.");
+      }
+    } else {
+      if (hasCurrentLiveRun) failUnavailable("Dispatch reconciliation held a live owned run.");
+      const recovery = recoveryState;
+      if (!recovery) failUnavailable("Dispatch reconciliation recovery state is unavailable.");
+      if (
+        recovery.authorizationId !== receipt.authorizationId ||
+        recovery.authorizationDigest !== receipt.authorizationDigest ||
+        recovery.sourceRunRevision !== legalActiveRevision ||
+        run.revision !== recovery.appliedRunRevision ||
+        (action === "held" && recovery.heldAt !== request.reconciledAt) ||
+        (action === "held" && !sameProcessOwner(recovery.observedByProcessOwner, request.processOwner))
+      ) {
+        failUnavailable("Dispatch reconciliation recovery state is invalid.");
+      }
+    }
+    return Object.freeze({ action, run, thread });
+  }
+
+  async function validateReloadedDispatchReconciliationResult(result, request, liveClaims, index) {
+    const runResult = snapshotRepositoryEnvelope(await callRepository("getIntegrationRun", {
+      runId: result.run.id,
+      principalId: request.principalId,
+      browserSessionId: request.browserSessionId,
+    }), `dispatch reconciliation reloaded run response ${index}`);
+    const reloadedRun = snapshotRunRecord(unwrap(runResult, "run"), `dispatch reconciliation reloaded run ${index}`);
+    const threadResult = snapshotRepositoryEnvelope(await callRepository("getIntegrationThread", {
+      threadId: result.thread.id,
+      principalId: request.principalId,
+      browserSessionId: request.browserSessionId,
+    }), `dispatch reconciliation reloaded thread response ${index}`);
+    const reloadedThread = snapshotThreadRecord(unwrap(threadResult, "thread"), `dispatch reconciliation reloaded thread ${index}`);
+    if (
+      contractDigest(reloadedRun) !== contractDigest(result.run) ||
+      contractDigest(reloadedThread) !== contractDigest(result.thread)
+    ) {
+      failUnavailable("Dispatch reconciliation result did not match the durable repository reload.");
+    }
+    return validateDispatchReconciliationResult(
+      Object.freeze({ action: result.action, run: reloadedRun, thread: reloadedThread }),
+      request,
+      liveClaims,
+      index
+    );
+  }
+
+  async function validateDispatchReconciliationResponse(result = {}, request) {
+    assertExactDataKeys(result, DISPATCH_RECONCILIATION_RESPONSE_KEYS, [], "dispatch reconciliation response");
+    const cloned = canonicalPlainJsonClone(result, "dispatch reconciliation response");
+    if (
+      cloned.schemaVersion !== DISPATCH_RECONCILIATION_VERSION ||
+      cloned.requestDigest !== request.requestDigest ||
+      cloned.reconciled !== true ||
+      cloned.responseDigest !== reconciliationResponseDigestFor(cloned)
+    ) {
+      failUnavailable("Dispatch reconciliation response is invalid.");
+    }
+    if (!Array.isArray(cloned.receiptRunResults) || !Array.isArray(cloned.pendingOutboxEvents)) {
+      failUnavailable("Dispatch reconciliation response arrays are invalid.");
+    }
+    const liveClaims = liveClaimMapFor(request);
+    const seen = new Set();
+    let previousRunId = "";
+    const receiptRunResults = [];
+    for (let index = 0; index < cloned.receiptRunResults.length; index += 1) {
+      const checked = await validateReloadedDispatchReconciliationResult(
+        validateDispatchReconciliationResult(cloned.receiptRunResults[index], request, liveClaims, index),
+        request,
+        liveClaims,
+        index
+      );
+      if (checked.run.id <= previousRunId || seen.has(checked.run.id)) {
+        failUnavailable("Dispatch reconciliation results must be sorted and unique.");
+      }
+      previousRunId = checked.run.id;
+      seen.add(checked.run.id);
+      receiptRunResults.push(checked);
+    }
+    const frozenReceiptRunResults = Object.freeze(receiptRunResults);
+    return Object.freeze({
+      receiptRunResults: frozenReceiptRunResults,
+      pendingOutboxEvents: cloned.pendingOutboxEvents,
+      recoveryHolds: Object.freeze(frozenReceiptRunResults
+        .filter((item) => item.action === "held" || item.action === "already-held")
+        .map((item) => Object.freeze({ runId: item.run.id, status: "recovery_hold" }))),
+    });
   }
 
   function sealPreLaunchAbortAttempt(attempt = {}) {
@@ -2221,7 +2664,7 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
     return finished;
   }
 
-  function aggregateRuntimeObserverError(runtimeError, observerError) {
+function aggregateRuntimeObserverError(runtimeError, observerError) {
     if (!observerError) return runtimeError;
     const error = new Error("Native AgInTi execution failed and observer event delivery also failed.");
     error.code = runtimeError?.code || observerError?.code || "AGINTI_RUNTIME_ERROR";
@@ -2232,14 +2675,25 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
     return error;
   }
 
+  function nativePromiseShapeIsValid(promise) {
+    return Boolean(
+      promise &&
+        (typeof promise === "object" || typeof promise === "function") &&
+        !utilTypes.isProxy(promise) &&
+        utilTypes.isPromise(promise) &&
+        ObjectGetPrototypeOf(promise) === PromisePrototype &&
+        ReflectOwnKeys(promise).every((key) => typeof key !== "string")
+    );
+  }
+
   function createNativeDeferredPromise() {
     let resolveDeferred;
     let rejectDeferred;
-    const promise = new Promise((resolve, reject) => {
+    const promise = new NativePromise((resolve, reject) => {
       resolveDeferred = resolve;
       rejectDeferred = reject;
     });
-    if (Object.getPrototypeOf(promise) !== Promise.prototype || Reflect.ownKeys(promise).length !== 0) {
+    if (!nativePromiseShapeIsValid(promise)) {
       failUnavailable("Native AgInTi deferred launch promise is invalid.");
     }
     return Object.freeze({
@@ -2253,6 +2707,7 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
     runRegistry.claimRun({
       runId: run.id,
       threadId: run.threadId,
+      nativeSessionId: run.nativeSessionId,
       principalId: scope.principalId,
       browserSessionId: scope.browserSessionId,
       controller: prepared.controller,
@@ -2310,7 +2765,7 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
           runRegistry.releaseRun(authorizedRun.id);
         }
       })();
-      worker.then(deferred.resolve, deferred.reject);
+      ReflectApply(PromisePrototypeThen, worker, [deferred.resolve, deferred.reject]);
       return deferred.promise;
     }
     function abandon(error) {
@@ -2429,6 +2884,7 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
       const scope = normalizeContext(context);
       await ensureReconciled(scope);
       const current = await loadThread(payload.threadId, scope);
+      await assertNoActiveRun(current, scope);
       const previousRevision = assertRevision(current.revision, "thread");
       const result = snapshotRepositoryEnvelope(await callRepository("updateIntegrationThread", {
         threadId: current.id,
@@ -2466,6 +2922,7 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
     async startIntegrationRun(payload = {}, context = {}) {
       const scope = normalizeContext(context);
       await ensureReconciled(scope);
+      const gatedLaunch = await withScopeOperationGate(scope, async () => {
       const thread = await loadThread(payload.threadId, scope);
       if (thread.lastRunId !== null) failUnavailable("Start requires a pristine thread with no previous run.");
       if (threadRuntimeRevision(thread, "start thread") !== 1) failUnavailable("Start requires native runtime revision 1.");
@@ -2592,8 +3049,11 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
         const authorized = await authorizeNativeStart(authorization, () => {
           authorizationStarted = true;
         });
-        nativeLaunch.releaseAuthorizedNativeExecution(authorized.run);
-        return Object.freeze({ run: publicRun });
+        return Object.freeze({
+          response: Object.freeze({ run: publicRun }),
+          nativeLaunch,
+          authorizedRun: authorized.run,
+        });
       } catch (error) {
         if (nativeLaunch) {
           nativeLaunch.abandon(error);
@@ -2611,6 +3071,14 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
         }
         throw error;
       }
+      });
+      try {
+        gatedLaunch.nativeLaunch.releaseAuthorizedNativeExecution(gatedLaunch.authorizedRun);
+      } catch (error) {
+        gatedLaunch.nativeLaunch.abandon(error);
+        throw error;
+      }
+      return gatedLaunch.response;
     },
 
     async getIntegrationRunStatus(payload = {}, context = {}) {
@@ -2627,6 +3095,22 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
       const current = await loadRun(payload.runId, scope);
       await assertRunThreadMapping(current, scope);
       if (!ACTIVE_RUN_STATUSES.has(current.status)) {
+        return Object.freeze({ run: await runPublicRecord(current, scope, eventLedgerStore, current.id) });
+      }
+      const cancelDescriptor = Object.getOwnPropertyDescriptor(current, "cancelRequestedAt");
+      if (
+        !cancelDescriptor ||
+        cancelDescriptor.enumerable !== true ||
+        !Object.prototype.hasOwnProperty.call(cancelDescriptor, "value")
+      ) {
+        failUnavailable("Active run cancellation marker is unavailable.");
+      }
+      const existingCancelRequestedAt = validateOptionalCancelRequestedAt(
+        cancelDescriptor.value,
+        "existing run cancellation timestamp"
+      );
+      if (existingCancelRequestedAt !== null) {
+        runRegistry.cancelRun(current.id, scope, new Error("Integration run cancelled."));
         return Object.freeze({ run: await runPublicRecord(current, scope, eventLedgerStore, current.id) });
       }
       const owner = await processOwner();
@@ -2661,6 +3145,7 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
     async resumeIntegrationRun(payload = {}, context = {}) {
       const scope = normalizeContext(context);
       await ensureReconciled(scope);
+      const gatedLaunch = await withScopeOperationGate(scope, async () => {
       const previous = await loadRun(payload.runId, scope);
       const thread = await assertRunThreadMapping(previous, scope);
       if (!TERMINAL_STATUSES.has(previous.status)) failUnavailable("Resume requires the latest run to be terminal.");
@@ -2794,8 +3279,11 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
         const authorized = await authorizeNativeStart(authorization, () => {
           authorizationStarted = true;
         });
-        nativeLaunch.releaseAuthorizedNativeExecution(authorized.run);
-        return Object.freeze({ run: publicRun });
+        return Object.freeze({
+          response: Object.freeze({ run: publicRun }),
+          nativeLaunch,
+          authorizedRun: authorized.run,
+        });
       } catch (error) {
         if (nativeLaunch) {
           nativeLaunch.abandon(error);
@@ -2813,6 +3301,14 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
         }
         throw error;
       }
+      });
+      try {
+        gatedLaunch.nativeLaunch.releaseAuthorizedNativeExecution(gatedLaunch.authorizedRun);
+      } catch (error) {
+        gatedLaunch.nativeLaunch.abandon(error);
+        throw error;
+      }
+      return gatedLaunch.response;
     },
 
     async listIntegrationArtifacts(payload = {}, context = {}) {
@@ -2846,14 +3342,21 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
 
     async reconcileIntegrationDispatches(context = {}) {
       const scope = normalizeContext(context);
-      const owner = await processOwner();
-      const result = await callRepository("reconcileIntegrationDispatches", {
-        principalId: scope.principalId,
-        browserSessionId: scope.browserSessionId,
-        processOwner: owner,
+      return await withScopeOperationGate(scope, async () => {
+        const liveRunClaims = validateLiveRunClaims(runRegistry.listLiveRunClaims(scope), scope);
+        const owner = await processOwner();
+        const request = buildDispatchReconciliationRequest(scope, owner, liveRunClaims);
+        const response = await validateDispatchReconciliationResponse(
+          await callRepository("reconcileIntegrationDispatches", request),
+          request
+        );
+        const delivered = await drainPendingOutboxRecords(response.pendingOutboxEvents, scope);
+        return Object.freeze({
+          reconciled: true,
+          recoveryHolds: response.recoveryHolds,
+          deliveredOutboxEvents: delivered.length,
+        });
       });
-      const delivered = await drainPendingOutboxRecords(result.pendingOutboxEvents || [], scope);
-      return Object.freeze({ ...result, deliveredOutboxEvents: delivered.length });
     },
   };
 

@@ -6,10 +6,11 @@ import {
 import { authorityFail } from "./integration-durable-common.js";
 import { types as utilTypes } from "node:util";
 
-export const INTEGRATION_RUN_REGISTRY_ATTESTATION_VERSION = "aginti-live-run-registry-v1";
+export const INTEGRATION_RUN_REGISTRY_ATTESTATION_VERSION = "aginti-live-run-registry-v3";
 
 const PromisePrototype = Promise.prototype;
 const PromisePrototypeThen = Promise.prototype.then;
+const ObjectGetPrototypeOf = Object.getPrototypeOf;
 const ReflectApply = Reflect.apply;
 const ReflectOwnKeys = Reflect.ownKeys;
 
@@ -39,6 +40,10 @@ function assertScope(record, scope, label = "Run") {
 function normalizeClaim(claim = {}) {
   const runId = validateIntegrationRunId(claim.runId);
   const threadId = validateIntegrationThreadId(claim.threadId);
+  const nativeSessionId = claim.nativeSessionId ? String(claim.nativeSessionId) : "";
+  if (nativeSessionId && !/^aginti:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(nativeSessionId)) {
+    authorityFail("AGENT_UNAVAILABLE", "Live run registry native session id is invalid.");
+  }
   const principalId = assertPrincipalId(claim.principalId);
   const browserSessionId = assertBrowserSessionId(claim.browserSessionId);
   const controller = claim.controller;
@@ -48,6 +53,7 @@ function normalizeClaim(claim = {}) {
   return Object.freeze({
     runId,
     threadId,
+    nativeSessionId,
     principalId,
     browserSessionId,
     browserSessionPolicy: "same-browser-session",
@@ -58,6 +64,7 @@ function normalizeClaim(claim = {}) {
 export function createIntegrationRunRegistry() {
   const runs = new Map();
   const threadActiveRun = new Map();
+  const attachedNativePromises = new WeakSet();
 
   function releaseExactRecord(runId, record) {
     const current = runs.get(runId);
@@ -67,17 +74,37 @@ export function createIntegrationRunRegistry() {
     return Object.freeze({ released: true, runId });
   }
 
+  function nativePromiseShapeIsValid(promise) {
+    return Boolean(
+      utilTypes.isPromise(promise) &&
+        ObjectGetPrototypeOf(promise) === PromisePrototype &&
+        ReflectOwnKeys(promise).every((key) => typeof key !== "string")
+    );
+  }
+
   function assertNativePromise(promise) {
     if (promise && (typeof promise === "object" || typeof promise === "function") && utilTypes.isProxy(promise)) {
       authorityFail("AGENT_UNAVAILABLE", "Live run registry requires a native run promise.");
     }
-    if (!utilTypes.isPromise(promise) || Object.getPrototypeOf(promise) !== PromisePrototype) {
+    if (!nativePromiseShapeIsValid(promise)) {
       authorityFail("AGENT_UNAVAILABLE", "Live run registry requires a native run promise.");
     }
-    if (ReflectOwnKeys(promise).length !== 0) {
-      authorityFail("AGENT_UNAVAILABLE", "Live run registry promise must not expose own fields.");
-    }
     return promise;
+  }
+
+  function hasAttachedNativePromise(record) {
+    return Boolean(
+      record?.promise &&
+        attachedNativePromises.has(record.promise) &&
+        nativePromiseShapeIsValid(record.promise)
+    );
+  }
+
+  function isLiveAttachedRecord(record) {
+    return Boolean(
+      record?.nativeSessionId &&
+        hasAttachedNativePromise(record)
+    );
   }
 
   function claimRun(claimInput = {}) {
@@ -99,6 +126,7 @@ export function createIntegrationRunRegistry() {
     return Object.freeze({
       runId: claim.runId,
       threadId: claim.threadId,
+      nativeSessionId: claim.nativeSessionId,
       principalId: claim.principalId,
       browserSessionId: claim.browserSessionId,
       browserSessionPolicy: claim.browserSessionPolicy,
@@ -115,11 +143,15 @@ export function createIntegrationRunRegistry() {
     }
     try {
       const nativePromise = assertNativePromise(promise);
+      if (attachedNativePromises.has(nativePromise)) {
+        authorityFail("RUN_CONFLICT", "Native run promise is already bound to an integration run.", { status: 409 });
+      }
       const release = () => {
         releaseExactRecord(runId, record);
       };
       const observer = ReflectApply(PromisePrototypeThen, nativePromise, [release, release]);
       ReflectApply(PromisePrototypeThen, observer, [undefined, () => {}]);
+      attachedNativePromises.add(nativePromise);
       record.promise = nativePromise;
       return nativePromise;
     } catch (error) {
@@ -141,12 +173,34 @@ export function createIntegrationRunRegistry() {
     return Object.freeze({
       runId: record.runId,
       threadId: record.threadId,
+      nativeSessionId: record.nativeSessionId,
       principalId: record.principalId,
       browserSessionId: record.browserSessionId,
       browserSessionPolicy: record.browserSessionPolicy,
       claimedAt: record.claimedAt,
       promise: record.promise,
       aborted: Boolean(record.controller.signal.aborted),
+    });
+  }
+
+  function getLiveRunClaim(runIdInput, scope = {}) {
+    const runId = validateIntegrationRunId(runIdInput);
+    const record = runs.get(runId);
+    if (!record) return null;
+    const checkedScope = Object.freeze({
+      principalId: assertPrincipalId(scope.principalId),
+      browserSessionId: assertBrowserSessionId(scope.browserSessionId),
+    });
+    assertScope(record, checkedScope, "Run");
+    if (!isLiveAttachedRecord(record)) return null;
+    return Object.freeze({
+      runId: record.runId,
+      threadId: record.threadId,
+      nativeSessionId: record.nativeSessionId,
+      principalId: record.principalId,
+      browserSessionId: record.browserSessionId,
+      browserSessionPolicy: record.browserSessionPolicy,
+      claimedAt: record.claimedAt,
     });
   }
 
@@ -176,6 +230,26 @@ export function createIntegrationRunRegistry() {
     return Boolean(runId && runs.has(runId));
   }
 
+  function listLiveRunClaims(scope = {}) {
+    const checkedScope = Object.freeze({
+      principalId: assertPrincipalId(scope.principalId),
+      browserSessionId: assertBrowserSessionId(scope.browserSessionId),
+    });
+    return Object.freeze([...runs.values()]
+      .filter((record) =>
+        record.principalId === checkedScope.principalId &&
+        record.browserSessionId === checkedScope.browserSessionId &&
+        isLiveAttachedRecord(record)
+      )
+      .map((record) => Object.freeze({
+        runId: record.runId,
+        threadId: record.threadId,
+        nativeSessionId: record.nativeSessionId,
+        claimedAt: record.claimedAt,
+      }))
+      .sort((left, right) => left.runId.localeCompare(right.runId)));
+  }
+
   return Object.freeze({
     owner: "aginti",
     authority: "aginti",
@@ -185,9 +259,11 @@ export function createIntegrationRunRegistry() {
     claimRun,
     attachPromise,
     getRun,
+    getLiveRunClaim,
     cancelRun,
     releaseRun,
     hasActiveThreadRun,
+    listLiveRunClaims,
     snapshot() {
       return Object.freeze({
         activeRuns: runs.size,
