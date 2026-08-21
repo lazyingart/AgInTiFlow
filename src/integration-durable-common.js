@@ -123,9 +123,9 @@ export async function currentProcessOwner({ token = randomHex(16), now = () => n
 }
 
 export async function processOwnerLiveness(owner = {}, { testHooks = {} } = {}) {
-  const pid = Number(owner.pid);
+  const pid = Number(owner?.pid);
   if (!Number.isSafeInteger(pid) || pid < 1) return "dead";
-  const identity = normalizeProcessIdentity(owner.processIdentity, { optional: true });
+  const identity = normalizeProcessIdentity(owner?.processIdentity, { optional: true });
   const liveIdentity = await processIdentityForPid(pid, testHooks);
   if (liveIdentity === null) return "dead";
   if (!identity || liveIdentity === undefined) return "unknown";
