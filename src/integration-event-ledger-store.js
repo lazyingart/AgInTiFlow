@@ -52,6 +52,10 @@ export const INTEGRATION_RETAINED_EVENT_LEDGER_APPEND_ATTESTATION_VERSION =
   "aginti-public-event-append-attestation-v1";
 export const INTEGRATION_RETAINED_EVENT_LEDGER_APPEND_ATTESTATION_PROPERTY =
   "integrationEventAppendAttestation";
+export const INTEGRATION_RETAINED_EVENT_LEDGER_BUNDLE_VERSION =
+  "aginti-retained-public-event-ledger-bundle-v1";
+export const INTEGRATION_RETAINED_EVENT_LEDGER_BUNDLE_ATTESTATION_VERSION =
+  "aginti-retained-public-event-ledger-bundle-attestation-v1";
 export const INTEGRATION_RETAINED_EVENT_LEDGER_LIMITATIONS = Object.freeze({
   preEnablePrimitive: true,
   runtimeCapabilityEnabled: false,
@@ -96,6 +100,27 @@ export const INTEGRATION_RETAINED_EVENT_LEDGER_LIMITATIONS = Object.freeze({
   validSnapshotRollbackDetection: false,
   diskExhaustionFailsClosed: true,
   hardwareDurabilityGuarantee: false,
+});
+export const INTEGRATION_RETAINED_EVENT_LEDGER_BUNDLE_LIMITATIONS = Object.freeze({
+  preEnableBundle: true,
+  runtimeCapabilityEnabled: false,
+  runtimeWiringIncluded: false,
+  sessionServiceWiringIncluded: false,
+  serverWiringIncluded: false,
+  productionDependencySetComplete: false,
+  integrationStorageAttestationIncluded: false,
+  authorityOpeningIncluded: false,
+  directoryProvisioningIncluded: false,
+  storageLifecycleOwned: false,
+  callerMustCloseOwningAuthority: true,
+  runtimeAndSessionViewsShareState: true,
+  runtimeAndSessionViewsSharePoisonState: true,
+  sessionReadViewMutationMethods: false,
+  sessionAttestationUsesGlobalLock: false,
+  sessionAttestationChecksOpenAndPoisonState: true,
+  sessionAttestationDrainsOperations: false,
+  sessionAttestationValidatesEverySnapshot: false,
+  retainedLedgerLimitations: INTEGRATION_RETAINED_EVENT_LEDGER_LIMITATIONS,
 });
 
 const ZERO_DIGEST = "0".repeat(64);
@@ -197,7 +222,54 @@ const RETAINED_EVENT_APPEND_ATTESTATION_KEYS = Object.freeze([
   "monotonic",
   "digest",
 ]);
+const RETAINED_EVENT_LEDGER_SESSION_VIEW_KEYS = Object.freeze([
+  "owner",
+  "ledgerForRun",
+  "attest",
+]);
+const RETAINED_EVENT_LEDGER_SESSION_ATTESTATION_KEYS = Object.freeze([
+  "schemaVersion",
+  "owner",
+  "authority",
+  "durable",
+  "persisted",
+  "contiguous",
+  "monotonic",
+  "bridgeOwned",
+  "mappingVersion",
+  "maxEvents",
+  "maxBytes",
+  "digest",
+]);
+const RETAINED_EVENT_LEDGER_BUNDLE_KEYS = Object.freeze([
+  "schemaVersion",
+  "runtimeStore",
+  "sessionReadView",
+  "attestation",
+]);
+const RETAINED_EVENT_LEDGER_BUNDLE_ATTESTATION_KEYS = Object.freeze([
+  "schemaVersion",
+  "owner",
+  "authority",
+  "sharedRetainedState",
+  "runtimeAppendSurface",
+  "sessionReadOnlySurface",
+  "sessionAttestationUnderGlobalLock",
+  "sessionAttestationChecksOpenAndPoisonState",
+  "sessionAttestationDrainsOperations",
+  "singleClaimedLockSurface",
+  "storageLifecycleOwned",
+  "runtimeCapabilityEnabled",
+  "serverWiringIncluded",
+  "eventAppendProofDigest",
+  "sessionProofDigest",
+  "storageBindingDigest",
+  "limitations",
+  "digest",
+]);
 const retainedEventLedgerStoreBrand = new WeakMap();
+const retainedEventLedgerSessionViewBrand = new WeakMap();
+const retainedEventLedgerBundleBrand = new WeakMap();
 const claimedRetainedEventLedgerLocks = new WeakSet();
 const RetainedNativePromise = Promise;
 const RetainedPromiseThen = Promise.prototype.then;
@@ -1673,7 +1745,249 @@ function validateRetainedEventLedgerStoreSurface(surface, proof) {
   return surface;
 }
 
-export function createRetainedIntegrationEventLedgerStore(filePrimitives, lock, expectedInput) {
+function validateRetainedEventLedgerSessionAttestation(proof) {
+  if (!Object.isFrozen(proof) || utilTypes.isProxy(proof) || Object.getPrototypeOf(proof) !== null) {
+    retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger session proof is invalid.");
+  }
+  const keys = Reflect.ownKeys(proof);
+  if (
+    keys.length !== RETAINED_EVENT_LEDGER_SESSION_ATTESTATION_KEYS.length ||
+    keys.some((key) => !RETAINED_EVENT_LEDGER_SESSION_ATTESTATION_KEYS.includes(key))
+  ) {
+    retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger session proof fields are invalid.");
+  }
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(proof, key);
+    if (
+      !descriptor ||
+      !descriptor.enumerable ||
+      descriptor.writable ||
+      descriptor.configurable ||
+      !Object.prototype.hasOwnProperty.call(descriptor, "value")
+    ) {
+      retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger session proof is not immutable data.");
+    }
+  }
+  const { digest, ...unsigned } = proof;
+  if (
+    proof.schemaVersion !== INTEGRATION_EVENT_LEDGER_ATTESTATION_VERSION ||
+    proof.owner !== "aginti" ||
+    proof.authority !== "aginti" ||
+    proof.durable !== true ||
+    proof.persisted !== true ||
+    proof.contiguous !== true ||
+    proof.monotonic !== true ||
+    proof.bridgeOwned !== false ||
+    proof.mappingVersion !== PUBLIC_INTEGRATION_EVENT_LEDGER_VERSION ||
+    !Number.isSafeInteger(proof.maxEvents) ||
+    !Number.isSafeInteger(proof.maxBytes) ||
+    digest !== contractDigest(unsigned)
+  ) {
+    retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger session proof is unavailable.");
+  }
+  return proof;
+}
+
+function buildRetainedEventLedgerSessionAttestation(state) {
+  const unsigned = Object.assign(Object.create(null), {
+    schemaVersion: INTEGRATION_EVENT_LEDGER_ATTESTATION_VERSION,
+    owner: "aginti",
+    authority: "aginti",
+    durable: true,
+    persisted: true,
+    contiguous: true,
+    monotonic: true,
+    bridgeOwned: false,
+    mappingVersion: PUBLIC_INTEGRATION_EVENT_LEDGER_VERSION,
+    maxEvents: state.expected.maxEvents,
+    maxBytes: state.expected.maxBytes,
+  });
+  return validateRetainedEventLedgerSessionAttestation(
+    Object.freeze(Object.assign(Object.create(null), unsigned, { digest: contractDigest(unsigned) }))
+  );
+}
+
+function validateRetainedEventLedgerSessionView(surface, proof) {
+  if (!Object.isFrozen(surface) || utilTypes.isProxy(surface) || Object.getPrototypeOf(surface) !== null) {
+    retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger session view is invalid.");
+  }
+  const keys = Reflect.ownKeys(surface);
+  if (
+    keys.length !== RETAINED_EVENT_LEDGER_SESSION_VIEW_KEYS.length ||
+    keys.some((key) => !RETAINED_EVENT_LEDGER_SESSION_VIEW_KEYS.includes(key))
+  ) {
+    retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger session view fields are invalid.");
+  }
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(surface, key);
+    if (
+      !descriptor ||
+      !descriptor.enumerable ||
+      descriptor.writable ||
+      descriptor.configurable ||
+      !Object.prototype.hasOwnProperty.call(descriptor, "value")
+    ) {
+      retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger session view is not immutable data.");
+    }
+  }
+  if (surface.owner !== "aginti" || typeof surface.ledgerForRun !== "function" || typeof surface.attest !== "function") {
+    retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger session view is unavailable.");
+  }
+  validateRetainedEventLedgerSessionAttestation(proof);
+  return surface;
+}
+
+function retainedSessionLedgerForRun(state, scope) {
+  const runtimeLedger = retainedLedgerForRun(state, scope);
+  const sessionLedger = Object.create(null);
+  for (const key of Reflect.ownKeys(runtimeLedger)) {
+    Object.defineProperty(sessionLedger, key, Object.getOwnPropertyDescriptor(runtimeLedger, key));
+  }
+  return Object.freeze(sessionLedger);
+}
+
+function buildRetainedEventLedgerSessionView(state) {
+  state.sessionProof = buildRetainedEventLedgerSessionAttestation(state);
+  return validateRetainedEventLedgerSessionView(Object.freeze(Object.assign(Object.create(null), {
+    owner: "aginti",
+    ledgerForRun(scopeInput) {
+      const scope = normalizeRetainedLedgerScope(scopeInput);
+      assertRetainedEventLedgerStoreOpen(state);
+      return retainedSessionLedgerForRun(state, scope);
+    },
+    attest() {
+      if (arguments.length !== 0) {
+        retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger session attestation takes no arguments.");
+      }
+      assertRetainedEventLedgerStoreOpen(state);
+      return state.sessionProof;
+    },
+  })), state.sessionProof);
+}
+
+function validateRetainedEventLedgerBundleAttestation(proof) {
+  if (!Object.isFrozen(proof) || utilTypes.isProxy(proof) || Object.getPrototypeOf(proof) !== null) {
+    retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger bundle proof is invalid.");
+  }
+  const keys = Reflect.ownKeys(proof);
+  if (
+    keys.length !== RETAINED_EVENT_LEDGER_BUNDLE_ATTESTATION_KEYS.length ||
+    keys.some((key) => !RETAINED_EVENT_LEDGER_BUNDLE_ATTESTATION_KEYS.includes(key))
+  ) {
+    retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger bundle proof fields are invalid.");
+  }
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(proof, key);
+    if (
+      !descriptor ||
+      !descriptor.enumerable ||
+      descriptor.writable ||
+      descriptor.configurable ||
+      !Object.prototype.hasOwnProperty.call(descriptor, "value")
+    ) {
+      retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger bundle proof is not immutable data.");
+    }
+  }
+  const { digest, ...unsigned } = proof;
+  if (
+    proof.schemaVersion !== INTEGRATION_RETAINED_EVENT_LEDGER_BUNDLE_ATTESTATION_VERSION ||
+    proof.owner !== "aginti" ||
+    proof.authority !== "aginti" ||
+    proof.sharedRetainedState !== true ||
+    proof.runtimeAppendSurface !== true ||
+    proof.sessionReadOnlySurface !== true ||
+    proof.sessionAttestationUnderGlobalLock !== false ||
+    proof.sessionAttestationChecksOpenAndPoisonState !== true ||
+    proof.sessionAttestationDrainsOperations !== false ||
+    proof.singleClaimedLockSurface !== true ||
+    proof.storageLifecycleOwned !== false ||
+    proof.runtimeCapabilityEnabled !== false ||
+    proof.serverWiringIncluded !== false ||
+    proof.limitations !== INTEGRATION_RETAINED_EVENT_LEDGER_BUNDLE_LIMITATIONS ||
+    !/^[a-f0-9]{64}$/u.test(proof.eventAppendProofDigest) ||
+    !/^[a-f0-9]{64}$/u.test(proof.sessionProofDigest) ||
+    !/^[a-f0-9]{64}$/u.test(proof.storageBindingDigest) ||
+    digest !== contractDigest(unsigned)
+  ) {
+    retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger bundle proof is unavailable.");
+  }
+  return proof;
+}
+
+function buildRetainedEventLedgerBundleAttestation(state) {
+  const unsigned = Object.assign(Object.create(null), {
+    schemaVersion: INTEGRATION_RETAINED_EVENT_LEDGER_BUNDLE_ATTESTATION_VERSION,
+    owner: "aginti",
+    authority: "aginti",
+    sharedRetainedState: true,
+    runtimeAppendSurface: true,
+    sessionReadOnlySurface: true,
+    sessionAttestationUnderGlobalLock: false,
+    sessionAttestationChecksOpenAndPoisonState: true,
+    sessionAttestationDrainsOperations: false,
+    singleClaimedLockSurface: true,
+    storageLifecycleOwned: false,
+    runtimeCapabilityEnabled: false,
+    serverWiringIncluded: false,
+    eventAppendProofDigest: state.proof.digest,
+    sessionProofDigest: state.sessionProof.digest,
+    storageBindingDigest: state.bindingDigest,
+    limitations: INTEGRATION_RETAINED_EVENT_LEDGER_BUNDLE_LIMITATIONS,
+  });
+  return validateRetainedEventLedgerBundleAttestation(
+    Object.freeze(Object.assign(Object.create(null), unsigned, { digest: contractDigest(unsigned) }))
+  );
+}
+
+function validateRetainedEventLedgerBundleSurface(surface, state) {
+  if (!Object.isFrozen(surface) || utilTypes.isProxy(surface) || Object.getPrototypeOf(surface) !== null) {
+    retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger bundle is invalid.");
+  }
+  const keys = Reflect.ownKeys(surface);
+  if (
+    keys.length !== RETAINED_EVENT_LEDGER_BUNDLE_KEYS.length ||
+    keys.some((key) => !RETAINED_EVENT_LEDGER_BUNDLE_KEYS.includes(key))
+  ) {
+    retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger bundle fields are invalid.");
+  }
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(surface, key);
+    if (
+      !descriptor ||
+      !descriptor.enumerable ||
+      descriptor.writable ||
+      descriptor.configurable ||
+      !Object.prototype.hasOwnProperty.call(descriptor, "value")
+    ) {
+      retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger bundle is not immutable data.");
+    }
+  }
+  if (
+    surface.schemaVersion !== INTEGRATION_RETAINED_EVENT_LEDGER_BUNDLE_VERSION ||
+    surface.runtimeStore !== state.surface ||
+    surface.sessionReadView !== state.sessionView ||
+    surface.attestation !== state.bundleAttestation
+  ) {
+    retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger bundle references are invalid.");
+  }
+  validateRetainedEventLedgerStoreSurface(surface.runtimeStore, state.proof);
+  validateRetainedEventLedgerSessionView(surface.sessionReadView, state.sessionProof);
+  validateRetainedEventLedgerBundleAttestation(surface.attestation);
+  return surface;
+}
+
+function retainedEventLedgerBindingDigest(expected) {
+  return contractDigest({
+    schemaVersion: "aginti-retained-public-event-ledger-binding-v1",
+    directory: retainedDirectoryExpected(expected),
+    lock: retainedLockExpected(expected),
+    maxEvents: expected.maxEvents,
+    maxBytes: expected.maxBytes,
+    lockWaitMs: expected.lockWaitMs,
+  });
+}
+
+function createRetainedEventLedgerState(filePrimitives, lock, expectedInput) {
   const expected = normalizeRetainedEventLedgerExpected(expectedInput);
   const directoryExpected = retainedDirectoryExpected(expected);
   const lockExpected = retainedLockExpected(expected);
@@ -1693,14 +2007,7 @@ export function createRetainedIntegrationEventLedgerStore(filePrimitives, lock, 
     filePrimitives,
     lock,
     expected,
-    bindingDigest: contractDigest({
-      schemaVersion: "aginti-retained-public-event-ledger-binding-v1",
-      directory: directoryExpected,
-      lock: lockExpected,
-      maxEvents: expected.maxEvents,
-      maxBytes: expected.maxBytes,
-      lockWaitMs: expected.lockWaitMs,
-    }),
+    bindingDigest: retainedEventLedgerBindingDigest(expected),
     operationQueue: [],
     queueDraining: false,
     pendingOperations: 0,
@@ -1708,8 +2015,16 @@ export function createRetainedIntegrationEventLedgerStore(filePrimitives, lock, 
     poisoned: false,
     poisonReason: "",
     surface: null,
+    sessionView: null,
+    sessionProof: null,
+    bundle: null,
+    bundleAttestation: null,
     proof: buildRetainedEventAppendAttestation(),
   };
+  return state;
+}
+
+function buildRetainedEventLedgerRuntimeStore(state) {
   const surface = Object.freeze({
     owner: "aginti",
     authority: "aginti",
@@ -1742,9 +2057,38 @@ export function createRetainedIntegrationEventLedgerStore(filePrimitives, lock, 
     [INTEGRATION_RETAINED_EVENT_LEDGER_APPEND_ATTESTATION_PROPERTY]: state.proof,
   });
   state.surface = validateRetainedEventLedgerStoreSurface(surface, state.proof);
-  retainedEventLedgerStoreBrand.set(surface, state);
-  claimedRetainedEventLedgerLocks.add(lock);
-  return surface;
+  return state.surface;
+}
+
+function publishRetainedEventLedgerState(state, { bundle = false } = {}) {
+  retainedEventLedgerStoreBrand.set(state.surface, state);
+  if (bundle) {
+    retainedEventLedgerSessionViewBrand.set(state.sessionView, state);
+    retainedEventLedgerBundleBrand.set(state.bundle, state);
+  }
+  claimedRetainedEventLedgerLocks.add(state.lock);
+}
+
+export function createRetainedIntegrationEventLedgerStore(filePrimitives, lock, expectedInput) {
+  const state = createRetainedEventLedgerState(filePrimitives, lock, expectedInput);
+  buildRetainedEventLedgerRuntimeStore(state);
+  publishRetainedEventLedgerState(state);
+  return state.surface;
+}
+
+export function createRetainedIntegrationEventLedgerBundle(filePrimitives, lock, expectedInput) {
+  const state = createRetainedEventLedgerState(filePrimitives, lock, expectedInput);
+  buildRetainedEventLedgerRuntimeStore(state);
+  state.sessionView = buildRetainedEventLedgerSessionView(state);
+  state.bundleAttestation = buildRetainedEventLedgerBundleAttestation(state);
+  state.bundle = validateRetainedEventLedgerBundleSurface(Object.freeze(Object.assign(Object.create(null), {
+    schemaVersion: INTEGRATION_RETAINED_EVENT_LEDGER_BUNDLE_VERSION,
+    runtimeStore: state.surface,
+    sessionReadView: state.sessionView,
+    attestation: state.bundleAttestation,
+  })), state);
+  publishRetainedEventLedgerState(state, { bundle: true });
+  return state.bundle;
 }
 
 export function assertRetainedIntegrationEventLedgerStore(value, expectedInput) {
@@ -1757,17 +2101,25 @@ export function assertRetainedIntegrationEventLedgerStore(value, expectedInput) 
   validateRetainedEventLedgerStoreSurface(value, state.proof);
   if (expectedInput !== undefined) {
     const expected = normalizeRetainedEventLedgerExpected(expectedInput);
-    const expectedBindingDigest = contractDigest({
-      schemaVersion: "aginti-retained-public-event-ledger-binding-v1",
-      directory: retainedDirectoryExpected(expected),
-      lock: retainedLockExpected(expected),
-      maxEvents: expected.maxEvents,
-      maxBytes: expected.maxBytes,
-      lockWaitMs: expected.lockWaitMs,
-    });
+    const expectedBindingDigest = retainedEventLedgerBindingDigest(expected);
     if (expectedBindingDigest !== state.bindingDigest) {
       retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger store binding is invalid.");
     }
   }
+  return value;
+}
+
+export function assertRetainedIntegrationEventLedgerBundle(value, expectedInput) {
+  const state = value && typeof value === "object" && !utilTypes.isProxy(value)
+    ? retainedEventLedgerBundleBrand.get(value)
+    : null;
+  if (!state || value !== state.bundle) {
+    retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger bundle lexical brand is invalid.");
+  }
+  validateRetainedEventLedgerBundleSurface(value, state);
+  if (retainedEventLedgerSessionViewBrand.get(value.sessionReadView) !== state) {
+    retainedLedgerFail("PUBLIC_EVENT_LEDGER_UNAVAILABLE", "Retained event ledger session view lexical brand is invalid.");
+  }
+  assertRetainedIntegrationEventLedgerStore(value.runtimeStore, expectedInput);
   return value;
 }
