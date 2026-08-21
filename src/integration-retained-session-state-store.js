@@ -1,0 +1,1795 @@
+import crypto from "node:crypto";
+import path from "node:path";
+import { types as utilTypes } from "node:util";
+import { contractDigest } from "./integration-policy.js";
+import {
+  INTEGRATION_INTEGRITY_DIGEST_SECURITY_SCOPE,
+  assertRetainedProtectedFilePrimitives,
+  assertRetainedRegularFileLock,
+  authorityFail,
+} from "./integration-durable-common.js";
+
+export const INTEGRATION_RETAINED_SESSION_STATE_STORE_VERSION =
+  "aginti-retained-integration-session-state-store-v1";
+export const INTEGRATION_RETAINED_SESSION_STATE_STORE_ATTESTATION_VERSION =
+  "aginti-retained-integration-session-state-store-attestation-v1";
+export const INTEGRATION_RETAINED_SESSION_STATE_ENVELOPE_VERSION =
+  "aginti-retained-integration-session-state-envelope-v1";
+export const INTEGRATION_RETAINED_SESSION_STATE_LAST_MUTATION_VERSION =
+  "aginti-retained-integration-session-state-last-mutation-v1";
+export const INTEGRATION_RETAINED_SESSION_STATE_FILE_NAME_DOMAIN =
+  "aginti-retained-integration-session-state-file-name-v1";
+export const INTEGRATION_RETAINED_SESSION_STATE_POINTER_DOMAIN =
+  "aginti-retained-integration-session-state-pointer-v1";
+export const INTEGRATION_RETAINED_SESSION_STATE_PAYLOAD_DIGEST_DOMAIN =
+  "aginti-retained-integration-session-state-payload-v1";
+export const INTEGRATION_RETAINED_SESSION_STATE_REQUEST_DIGEST_DOMAIN =
+  "aginti-retained-integration-session-state-request-v1";
+export const INTEGRATION_RETAINED_SESSION_STATE_LAST_MUTATION_INTEGRITY_DOMAIN =
+  "aginti-retained-integration-session-state-last-mutation";
+export const INTEGRATION_RETAINED_SESSION_STATE_ENVELOPE_INTEGRITY_DOMAIN =
+  "aginti-retained-integration-session-state-envelope";
+
+export const INTEGRATION_RETAINED_SESSION_STATE_LOCK_FILE =
+  ".aginti-flock-v1-native-session-state";
+export const INTEGRATION_RETAINED_SESSION_STATE_FILE_PREFIX = "native-session-state-";
+export const INTEGRATION_RETAINED_SESSION_STATE_FILE_SUFFIX = ".json";
+export const INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_DEPTH = 64;
+export const INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_NODES = 100_000;
+export const INTEGRATION_RETAINED_SESSION_STATE_MAX_PENDING_OPERATIONS = 1024;
+export const INTEGRATION_RETAINED_SESSION_STATE_MAX_PENDING_PAYLOAD_BYTES = 32 * 1024 * 1024;
+export const INTEGRATION_RETAINED_SESSION_STATE_MAX_PENDING_PAYLOAD_NODES =
+  2 * INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_NODES;
+
+const ZERO_DIGEST = "0".repeat(64);
+const MIN_STATE_BYTES = 4096;
+const MAX_STATE_BYTES = 16 * 1024 * 1024;
+const MAX_LOCK_WAIT_MS = 60_000;
+const ENVELOPE_JSON_NODES = 23;
+const MAX_ENVELOPE_OVERHEAD_BYTES = 4096;
+
+export const INTEGRATION_RETAINED_SESSION_STATE_STORE_LIMITATIONS = Object.freeze(Object.assign(Object.create(null), {
+  preEnableStorageKernel: true,
+  runtimeCapabilityEnabled: false,
+  runtimeWiringIncluded: false,
+  nativeSessionStoreSurface: false,
+  runtimeSessionStoreSurface: false,
+  runtimeRecoveryIntegration: false,
+  dispatchIntegration: false,
+  integrationSessionPersistenceWiringIncluded: false,
+  nativeSessionStoreIntegration: false,
+  nativeSessionStoreAtomicity: false,
+  repositoryIntegration: false,
+  repositoryAtomicity: false,
+  eventLedgerIntegration: false,
+  eventLedgerAtomicity: false,
+  artifactIntegration: false,
+  inboxIntegration: false,
+  onePreprovisionedRetainedDirectoryRequired: true,
+  dedicatedRetainedDirectoryRequired: true,
+  dedicatedDirectoryExclusivityVerified: false,
+  flatDigestNamedFiles: true,
+  dynamicDirectoryCreation: false,
+  dynamicRegularFileCreation: true,
+  rawSessionIdInFileName: false,
+  onePreprovisionedFixedLockFileRequired: true,
+  lockSurfaceExclusiveOwnershipRequired: true,
+  lockSurfaceClaimedOnce: true,
+  oneGlobalContentionDomain: true,
+  boundedInProcessFifo: true,
+  queueBoundsPerStoreSurface: true,
+  aggregateQueueBoundAcrossStoreSurfaces: false,
+  maxPendingOperations: INTEGRATION_RETAINED_SESSION_STATE_MAX_PENDING_OPERATIONS,
+  maxPendingPayloadBytes: INTEGRATION_RETAINED_SESSION_STATE_MAX_PENDING_PAYLOAD_BYTES,
+  maxPendingPayloadNodes: INTEGRATION_RETAINED_SESSION_STATE_MAX_PENDING_PAYLOAD_NODES,
+  pendingPayloadCapsIncludeActiveOperation: true,
+  oneSynchronousStateNormalizationMayBeAdditional: true,
+  maximumAdditionalSynchronousNormalizationBytes: MAX_STATE_BYTES,
+  maximumAdditionalSynchronousNormalizationNodes: INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_NODES,
+  inputOwnKeyEnumerationTransientMemoryBounded: false,
+  protectedReadRawUtf8StringMayCoexistWithParsedEnvelope: true,
+  jsonParseInputByteBoundedByMaxStateBytes: true,
+  jsonParseTransientNodeAllocationBoundedByMaxJsonNodes: false,
+  oneActiveCanonicalSnapshotSerializationMayBeAdditional: true,
+  maximumAdditionalActiveCanonicalSnapshotUtf8Bytes: MAX_STATE_BYTES + MAX_ENVELOPE_OVERHEAD_BYTES,
+  maximumAdditionalActiveCanonicalSnapshotNodes: INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_NODES,
+  activeCanonicalSnapshotJavaScriptHeapBytesBounded: false,
+  storagePrimitiveTransientMemoryIncludedInQueueWeightCaps: false,
+  consistentMaxStateBytesAcrossStoreSurfacesRequired: true,
+  maxJsonDepth: INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_DEPTH,
+  maxJsonNodes: INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_NODES,
+  persistenceRevisionIndependentFromRuntimeRevision: true,
+  sameRuntimeRevisionMayHaveMultiplePersistenceRevisions: true,
+  exactLastMutationReplay: true,
+  olderMutationIdReuseDetection: false,
+  callerOwnsLongLivedIdempotency: true,
+  sameSurfaceObservedDeletionDetection: true,
+  sameSurfaceObservedRollbackDetection: true,
+  sameSurfaceRuntimeRevisionRollbackDetection: true,
+  sameRevisionDigestDivergenceDetection: true,
+  sameSurfaceAdjacentLineageVerification: true,
+  forwardRevisionGapsAccepted: true,
+  forwardGapLineageVerification: false,
+  freshFactoryMissingHistoryDetection: false,
+  freshFactoryRollbackDetection: false,
+  freshFactoryExactLastMutationReconciliation: true,
+  freshFactoryReconciliationAfterLockReleaseAmbiguity: false,
+  processRestartMayBeRequiredAfterLockReleaseAmbiguity: true,
+  enumeration: false,
+  deleteMethods: false,
+  physicalDelete: false,
+  prune: false,
+  migration: false,
+  multiFileTransactions: false,
+  wholeSnapshotRewrite: true,
+  persistedPointerBindsCanonicalPath: true,
+  logicalNamespaceStableAcrossDirectoryIdentityChange: true,
+  logicalNamespaceStableAcrossCanonicalPathChange: false,
+  logicalNamespaceDigestStableAcrossReopen: true,
+  sessionPointerDigestStableAcrossReopen: true,
+  admissionBindingDigestStableAcrossReopen: false,
+  crossStoreIdempotency: false,
+  oneFileAtomicReplace: true,
+  postWriteReloadVerification: true,
+  crashMayLeaveReservedTemp: true,
+  renameIssuedAmbiguityMayLeaveReservedTemp: true,
+  reservedTempMayContainFullSnapshot: true,
+  automaticTempRecovery: false,
+  corruptionPoisonsSurface: true,
+  singleSessionFailurePoisonsEntireStoreSurface: true,
+  commitAmbiguityPoisonsSurface: true,
+  lockReleaseAmbiguityPoisonsSurface: true,
+  sameKernelHostRequired: true,
+  crossHostExclusion: false,
+  localFilesystemRequired: true,
+  localFilesystemVerified: false,
+  networkFilesystemSafety: false,
+  cooperativeParticipantsOnly: true,
+  sameUidNonparticipantSafety: false,
+  advisoryLock: true,
+  fencingTokens: false,
+  lockCrashSemanticsInheritedFromRetainedFlock: true,
+  helperInFlightMayDelayCrashRelease: true,
+  selfClose: false,
+  unkeyedIntegrityDigestOnly: true,
+  storageLifecycleOwned: false,
+  callerMustCloseOwningAuthority: true,
+  diskExhaustionFailsClosed: true,
+  fileCountBounded: false,
+  observedSessionCountBounded: false,
+  missingLoadsRetainedInObservedSessionMap: false,
+  hardwareDurabilityGuarantee: false,
+}));
+
+const EXPECTED_KEYS = Object.freeze([
+  "role",
+  "canonicalPath",
+  "rootIdentityDigest",
+  "relativeSegments",
+  "directoryIdentityDigest",
+  "lockFileIdentityDigest",
+  "helperSha256",
+  "helperIdentityDigest",
+  "maxStateBytes",
+  "lockWaitMs",
+]);
+const SAVE_KEYS = Object.freeze([
+  "mutationId",
+  "nativeSessionId",
+  "expectedPersistenceRevision",
+  "expectedIntegrityDigest",
+  "state",
+]);
+const SURFACE_KEYS = Object.freeze([
+  "schemaVersion",
+  "attestation",
+  "loadSessionSnapshot",
+  "compareAndSwapSessionSnapshot",
+  "isClosed",
+]);
+const ENVELOPE_KEYS = Object.freeze([
+  "schemaVersion",
+  "owner",
+  "authority",
+  "pointerDigest",
+  "nativeSessionId",
+  "fileName",
+  "persistenceRevision",
+  "runtimeRevision",
+  "previousIntegrityDigest",
+  "state",
+  "stateDigest",
+  "lastMutation",
+  "integrityDigest",
+]);
+const LAST_MUTATION_KEYS = Object.freeze([
+  "schemaVersion",
+  "mutationId",
+  "requestDigest",
+  "basePersistenceRevision",
+  "baseIntegrityDigest",
+  "baseRuntimeRevision",
+  "resultPersistenceRevision",
+  "resultRuntimeRevision",
+  "stateDigest",
+  "mutationDigest",
+]);
+const SAVE_RESULT_KEYS = Object.freeze(["outcome", "snapshot"]);
+const SAFE_STORAGE_PHASES = Object.freeze([
+  "acquire",
+  "post-acquire-pre-operation",
+  "operation",
+  "post-operation-validation",
+  "lock-handle-close",
+  "helper-handle-close",
+  "factory-handle-close",
+  "read",
+  "read-handle-close",
+  "atomic replace",
+  "pre-admission",
+  "preflight",
+  "temp-created",
+  "temp-written",
+  "temp-synced",
+  "rename-issued",
+  "renamed",
+  "directory-synced",
+  "complete",
+  "handle-close",
+  "pre-rename-cleanup",
+]);
+const ATTESTATION_KEYS = Object.freeze([
+  "schemaVersion",
+  "owner",
+  "authority",
+  "preEnableStorageKernel",
+  "runtimeCapabilityEnabled",
+  "runtimeWiringIncluded",
+  "nativeSessionStoreSurface",
+  "runtimeSessionStoreSurface",
+  "runtimeRecoveryIntegration",
+  "dispatchIntegration",
+  "fullSessionStateSchemaValidation",
+  "canonicalStateValidation",
+  "topLevelSessionIdBinding",
+  "flatDigestNamedFiles",
+  "rawSessionIdInFileName",
+  "globalStoreLock",
+  "boundedInProcessFifo",
+  "compareAndSwap",
+  "persistenceRevisionExactlyOne",
+  "initialRuntimeRevisionExactlyOne",
+  "runtimeRevisionSameOrNext",
+  "exactLastMutationReplay",
+  "postWriteReloadVerification",
+  "storageLifecycleOwned",
+  "fileNameDomain",
+  "fileNamePrefix",
+  "fileNameSuffix",
+  "lockFileNameDigest",
+  "logicalNamespaceDigest",
+  "admissionBindingDigest",
+  "maxStateBytes",
+  "maxJsonDepth",
+  "maxJsonNodes",
+  "maxPendingOperations",
+  "maxPendingPayloadBytes",
+  "maxPendingPayloadNodes",
+  "maxTransientNormalizationBytes",
+  "maxTransientNormalizationNodes",
+  "lockWaitMs",
+  "limitations",
+  "digest",
+]);
+
+const storeBrand = new WeakMap();
+const claimedStoreLocks = new WeakSet();
+const NativePromise = Promise;
+const NativePromisePrototype = NativePromise.prototype;
+const PromiseThen = NativePromisePrototype.then;
+const ReflectApply = Reflect.apply;
+const ReflectDefineProperty = Reflect.defineProperty;
+const ArrayPush = Array.prototype.push;
+const ArrayShift = Array.prototype.shift;
+const ArrayJoin = Array.prototype.join;
+const ArraySort = Array.prototype.sort;
+const ArrayFilter = Array.prototype.filter;
+const ArraySome = Array.prototype.some;
+const ArrayIncludes = Array.prototype.includes;
+const JsonStringify = JSON.stringify;
+const ObjectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const ObjectGetPrototypeOf = Object.getPrototypeOf;
+const ObjectPrototypeHasOwn = Object.prototype.hasOwnProperty;
+const FunctionPrototypeCall = Function.prototype.call;
+const StringIncludes = String.prototype.includes;
+const StringStartsWith = String.prototype.startsWith;
+const StringEndsWith = String.prototype.endsWith;
+const SymbolSpecies = Symbol.species;
+const NativePromiseSpeciesDescriptor = ObjectGetOwnPropertyDescriptor(NativePromise, SymbolSpecies);
+const NativePromiseSpeciesGetter = NativePromiseSpeciesDescriptor?.get;
+const NativePromiseSpeciesSetter = NativePromiseSpeciesDescriptor?.set;
+const SafePromiseConstructor = Object.create(null);
+Object.defineProperty(SafePromiseConstructor, Symbol.species, {
+  configurable: false,
+  enumerable: false,
+  writable: false,
+  value: NativePromise,
+});
+Object.freeze(SafePromiseConstructor);
+
+function storeFail(code, message, { status = 503, details = Object.freeze(Object.create(null)) } = {}) {
+  authorityFail(code, message, { status, details });
+}
+
+// The implementation below deliberately keeps the persisted pointer logical:
+// role + canonical root + relative path + exact session id + derived flat filename. Ephemeral
+// inode, directory, lock, helper, and admission identities never enter a file.
+
+function statusForCode(code) {
+  if (code === "INTEGRATION_SESSION_STATE_STORE_INVALID") return 400;
+  if (
+    code === "INTEGRATION_SESSION_STATE_STORE_FULL" ||
+    code === "INTEGRATION_SESSION_STATE_STORE_CONFLICT" ||
+    code === "INTEGRATION_SESSION_STATE_STORE_MUTATION_CONFLICT"
+  ) return 409;
+  if (code === "INTEGRATION_SESSION_STATE_STORE_BUSY") return 429;
+  return 503;
+}
+
+function hasOwn(value, key) {
+  return ReflectApply(FunctionPrototypeCall, ObjectPrototypeHasOwn, [value, key]);
+}
+
+function isPromiseValue(value) {
+  return !!value && typeof value === "object" && !utilTypes.isProxy(value) && utilTypes.isPromise(value);
+}
+
+function promiseCanBeSafelyObserved(value) {
+  const ownConstructor = ObjectGetOwnPropertyDescriptor(value, "constructor");
+  let constructorDescriptor = ownConstructor;
+  if (!constructorDescriptor) {
+    const prototype = ObjectGetPrototypeOf(value);
+    if (!prototype || utilTypes.isProxy(prototype)) return false;
+    constructorDescriptor = ObjectGetOwnPropertyDescriptor(prototype, "constructor");
+  }
+  if (!constructorDescriptor || !hasOwn(constructorDescriptor, "value")) return false;
+  const constructor = constructorDescriptor.value;
+  if (constructor === undefined) return true;
+  if (constructor !== NativePromise) return false;
+  const speciesDescriptor = ObjectGetOwnPropertyDescriptor(NativePromise, SymbolSpecies);
+  if (!speciesDescriptor) return false;
+  if (hasOwn(speciesDescriptor, "value")) {
+    return speciesDescriptor.value === undefined || speciesDescriptor.value === null ||
+      speciesDescriptor.value === NativePromise;
+  }
+  return NativePromiseSpeciesGetter !== undefined &&
+    speciesDescriptor.get === NativePromiseSpeciesGetter &&
+    speciesDescriptor.set === NativePromiseSpeciesSetter;
+}
+
+function rejectPromiseValue(value, label, code) {
+  if (!isPromiseValue(value)) return false;
+  if (promiseCanBeSafelyObserved(value)) {
+    ReflectApply(PromiseThen, value, [undefined, () => undefined]);
+  }
+  storeFail(code, `${label} must be synchronous plain data.`, { status: statusForCode(code) });
+}
+
+function exactDataObject(
+  value,
+  allowedKeys,
+  requiredKeys,
+  label,
+  code = "INTEGRATION_SESSION_STATE_STORE_INVALID"
+) {
+  if (value && (typeof value === "object" || typeof value === "function") && utilTypes.isProxy(value)) {
+    storeFail(code, `${label} must not be a Proxy.`, { status: statusForCode(code) });
+  }
+  rejectPromiseValue(value, label, code);
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    storeFail(code, `${label} must be a plain data object.`, { status: statusForCode(code) });
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    storeFail(code, `${label} prototype is invalid.`, { status: statusForCode(code) });
+  }
+  const clone = Object.create(null);
+  const ownKeys = Reflect.ownKeys(value);
+  for (let index = 0; index < ownKeys.length; index += 1) {
+    const key = ownKeys[index];
+    if (typeof key !== "string" || !ReflectApply(ArrayIncludes, allowedKeys, [key])) {
+      storeFail(code, `${label} contains an unsupported field.`, { status: statusForCode(code) });
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+      storeFail(code, `${label} fields must be enumerable data.`, { status: statusForCode(code) });
+    }
+    Object.defineProperty(clone, key, {
+      configurable: false,
+      enumerable: true,
+      writable: false,
+      value: descriptor.value,
+    });
+  }
+  for (let index = 0; index < requiredKeys.length; index += 1) {
+    const key = requiredKeys[index];
+    if (!Object.prototype.hasOwnProperty.call(clone, key)) {
+      storeFail(code, `${label} is missing a required field.`, { status: statusForCode(code) });
+    }
+  }
+  return Object.freeze(clone);
+}
+
+function structuralFailure(code, label) {
+  storeFail(code, `${label} exceeds retained session-state structural bounds.`, {
+    status: statusForCode(code),
+  });
+}
+
+function addCanonicalBytes(state, amount, label) {
+  if (!state.byteLimit) return;
+  state.bytes = (state.bytes || 0) + amount;
+  if (state.bytes > state.byteLimit) structuralFailure(state.overflowCode, label);
+}
+
+function addCanonicalStringBytes(state, value, label) {
+  if (!state.byteLimit) return;
+  addCanonicalBytes(state, 2, label);
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (
+      code === 0x22 || code === 0x5c || code === 0x08 || code === 0x09 ||
+      code === 0x0a || code === 0x0c || code === 0x0d
+    ) {
+      addCanonicalBytes(state, 2, label);
+    } else if (
+      code <= 0x1f ||
+      (code >= 0xd800 && code <= 0xdfff && !(
+        code <= 0xdbff && index + 1 < value.length &&
+        value.charCodeAt(index + 1) >= 0xdc00 && value.charCodeAt(index + 1) <= 0xdfff
+      ))
+    ) {
+      addCanonicalBytes(state, 6, label);
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      addCanonicalBytes(state, 4, label);
+      index += 1;
+    } else if (code <= 0x7f) {
+      addCanonicalBytes(state, 1, label);
+    } else if (code <= 0x7ff) {
+      addCanonicalBytes(state, 2, label);
+    } else {
+      addCanonicalBytes(state, 3, label);
+    }
+  }
+}
+
+function cloneCanonicalJson(value, label, state = {}, depth = 0) {
+  state.nodes = (state.nodes || 0) + 1;
+  state.maximumDepth = Math.max(state.maximumDepth || 0, depth);
+  const overflowCode = state.overflowCode || "INTEGRATION_SESSION_STATE_STORE_INVALID";
+  const shapeCode = state.shapeCode || "INTEGRATION_SESSION_STATE_STORE_INVALID";
+  state.overflowCode = overflowCode;
+  if (
+    state.nodes > INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_NODES ||
+    depth > INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_DEPTH
+  ) structuralFailure(overflowCode, label);
+  if (value === null) {
+    addCanonicalBytes(state, 4, label);
+    return null;
+  }
+  if (typeof value === "string") {
+    addCanonicalStringBytes(state, value, label);
+    return value;
+  }
+  if (typeof value === "boolean") {
+    addCanonicalBytes(state, value ? 4 : 5, label);
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || Object.is(value, -0)) {
+      storeFail(shapeCode, `${label} contains a non-canonical number.`, { status: statusForCode(shapeCode) });
+    }
+    addCanonicalBytes(state, Buffer.byteLength(ReflectApply(JsonStringify, JSON, [value]), "utf8"), label);
+    return value;
+  }
+  if (!value || typeof value !== "object" || utilTypes.isProxy(value)) {
+    storeFail(shapeCode, `${label} must contain only trap-safe JSON data.`, { status: statusForCode(shapeCode) });
+  }
+  rejectPromiseValue(value, label, shapeCode);
+  state.active ||= new WeakSet();
+  if (state.active.has(value)) {
+    storeFail(shapeCode, `${label} must not contain cycles.`, { status: statusForCode(shapeCode) });
+  }
+  state.active.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype || !Number.isSafeInteger(value.length)) {
+        storeFail(shapeCode, `${label} array shape is invalid.`, { status: statusForCode(shapeCode) });
+      }
+      if (value.length > INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_NODES - state.nodes) {
+        structuralFailure(overflowCode, label);
+      }
+      addCanonicalBytes(state, 2 + Math.max(0, value.length - 1), label);
+      const keys = Reflect.ownKeys(value);
+      const indexKeys = ReflectApply(ArrayFilter, keys, [(key) => key !== "length"]);
+      if (
+        indexKeys.length !== value.length ||
+        ReflectApply(ArraySome, indexKeys, [(key) => typeof key !== "string" || !/^(?:0|[1-9][0-9]*)$/u.test(key)])
+      ) {
+        storeFail(shapeCode, `${label} array must be dense data.`, { status: statusForCode(shapeCode) });
+      }
+      const clone = new Array(value.length);
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor || !descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+          storeFail(shapeCode, `${label} array entries must be enumerable data.`, { status: statusForCode(shapeCode) });
+        }
+        clone[index] = cloneCanonicalJson(descriptor.value, `${label} item`, state, depth + 1);
+      }
+      return Object.freeze(clone);
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      storeFail(shapeCode, `${label} object prototype is invalid.`, { status: statusForCode(shapeCode) });
+    }
+    const keys = Reflect.ownKeys(value);
+    if (keys.length > INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_NODES - state.nodes) {
+      structuralFailure(overflowCode, label);
+    }
+    if (ReflectApply(ArraySome, keys, [(key) => typeof key !== "string"])) {
+      storeFail(shapeCode, `${label} must not contain symbols.`, { status: statusForCode(shapeCode) });
+    }
+    const clone = Object.create(null);
+    addCanonicalBytes(state, 2 + Math.max(0, keys.length - 1), label);
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+        storeFail(shapeCode, `${label} fields must be enumerable data.`, { status: statusForCode(shapeCode) });
+      }
+      addCanonicalStringBytes(state, key, label);
+      addCanonicalBytes(state, 1, label);
+      Object.defineProperty(clone, key, {
+        configurable: false,
+        enumerable: true,
+        writable: false,
+        value: cloneCanonicalJson(descriptor.value, `${label} field`, state, depth + 1),
+      });
+    }
+    return Object.freeze(clone);
+  } finally {
+    state.active.delete(value);
+  }
+}
+
+function canonicalJson(value, active = new WeakSet()) {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return ReflectApply(JsonStringify, JSON, [value]);
+  }
+  if (typeof value === "number" && Number.isFinite(value) && !Object.is(value, -0)) {
+    return ReflectApply(JsonStringify, JSON, [value]);
+  }
+  if (!value || typeof value !== "object" || utilTypes.isProxy(value) || active.has(value)) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_CORRUPT", "Retained session state is not canonical JSON data.");
+  }
+  active.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const parts = new Array(value.length);
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+          storeFail("INTEGRATION_SESSION_STATE_STORE_CORRUPT", "Retained session-state array fields are invalid.");
+        }
+        parts[index] = canonicalJson(descriptor.value, active);
+      }
+      return `[${ReflectApply(ArrayJoin, parts, [","])}]`;
+    }
+    const keys = Reflect.ownKeys(value);
+    if (ReflectApply(ArraySome, keys, [(key) => typeof key !== "string"])) {
+      storeFail("INTEGRATION_SESSION_STATE_STORE_CORRUPT", "Retained session state contains unsupported fields.");
+    }
+    ReflectApply(ArraySort, keys, []);
+    const fields = new Array(keys.length);
+    for (let index = 0; index < keys.length; index += 1) {
+      const key = keys[index];
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+        storeFail("INTEGRATION_SESSION_STATE_STORE_CORRUPT", "Retained session-state object fields are invalid.");
+      }
+      fields[index] = `${ReflectApply(JsonStringify, JSON, [key])}:${canonicalJson(descriptor.value, active)}`;
+    }
+    return `{${ReflectApply(ArrayJoin, fields, [","])}}`;
+  } finally {
+    active.delete(value);
+  }
+}
+
+function frozenRecord(value) {
+  return Object.freeze(Object.assign(Object.create(null), value));
+}
+
+function assertDigest(value, label, code = "INTEGRATION_SESSION_STATE_STORE_INVALID") {
+  rejectPromiseValue(value, label, code);
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/u.test(value)) {
+    storeFail(code, `${label} is invalid.`, { status: statusForCode(code) });
+  }
+  return value;
+}
+
+function assertNativeSessionId(value, code = "INTEGRATION_SESSION_STATE_STORE_INVALID") {
+  rejectPromiseValue(value, "retained native session id", code);
+  if (
+    typeof value !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{1,127}$/u.test(value) ||
+    ReflectApply(StringIncludes, value, [".."])
+  ) {
+    storeFail(code, "Retained native session id is invalid.", { status: statusForCode(code) });
+  }
+  return value;
+}
+
+function assertMutationId(value, code = "INTEGRATION_SESSION_STATE_STORE_INVALID") {
+  rejectPromiseValue(value, "retained session-state mutation id", code);
+  if (
+    typeof value !== "string" || value.length < 16 || value.length > 160 ||
+    !/^[A-Za-z0-9._~-]+$/u.test(value) || ReflectApply(StringIncludes, value, [".."])
+  ) {
+    storeFail(code, "Retained session-state mutation id is invalid.", {
+      status: statusForCode(code),
+    });
+  }
+  return value;
+}
+
+function normalizeExpected(input) {
+  const raw = exactDataObject(input, EXPECTED_KEYS, EXPECTED_KEYS, "retained session-state expected binding");
+  rejectPromiseValue(raw.role, "retained session-state logical role", "INTEGRATION_SESSION_STATE_STORE_INVALID");
+  if (typeof raw.role !== "string" || !/^[A-Za-z0-9._:-]{1,80}$/u.test(raw.role)) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_INVALID", "Retained session-state logical role is invalid.", {
+      status: 400,
+    });
+  }
+  rejectPromiseValue(
+    raw.canonicalPath,
+    "retained session-state canonical path",
+    "INTEGRATION_SESSION_STATE_STORE_INVALID"
+  );
+  if (
+    typeof raw.canonicalPath !== "string" ||
+    ReflectApply(StringIncludes, raw.canonicalPath, ["\0"]) ||
+    !path.isAbsolute(raw.canonicalPath) ||
+    path.normalize(raw.canonicalPath) !== raw.canonicalPath ||
+    raw.canonicalPath === path.parse(raw.canonicalPath).root ||
+    ReflectApply(StringEndsWith, raw.canonicalPath, [path.sep])
+  ) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_INVALID", "Retained session-state canonical path is invalid.", {
+      status: 400,
+    });
+  }
+  rejectPromiseValue(raw.maxStateBytes, "retained session-state byte cap", "INTEGRATION_SESSION_STATE_STORE_INVALID");
+  for (const field of [
+    "rootIdentityDigest",
+    "directoryIdentityDigest",
+    "lockFileIdentityDigest",
+    "helperSha256",
+    "helperIdentityDigest",
+  ]) assertDigest(raw[field], `retained session-state ${field}`);
+  const relativeSegments = cloneCanonicalJson(raw.relativeSegments, "retained session-state relative segments");
+  if (!Array.isArray(relativeSegments) || relativeSegments.length < 1 || relativeSegments.length > 64) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_INVALID", "Retained session state requires a dedicated retained directory.", {
+      status: 400,
+    });
+  }
+  rejectPromiseValue(raw.lockWaitMs, "retained session-state lock wait", "INTEGRATION_SESSION_STATE_STORE_INVALID");
+  for (const segment of relativeSegments) {
+    if (
+      typeof segment !== "string" || Buffer.byteLength(segment, "utf8") > 160 ||
+      !/^[A-Za-z0-9._:-]+$/u.test(segment) ||
+      ReflectApply(StringIncludes, segment, ["/"]) || ReflectApply(StringIncludes, segment, ["\\"]) ||
+      ReflectApply(StringIncludes, segment, ["\0"]) || segment === "." || segment === ".." ||
+      ReflectApply(StringStartsWith, segment, [".aginti-atomic-v1-"]) ||
+      ReflectApply(StringStartsWith, segment, [".aginti-flock-v1-"])
+    ) {
+      storeFail("INTEGRATION_SESSION_STATE_STORE_INVALID", "Retained session-state directory segment is invalid.", {
+        status: 400,
+      });
+    }
+  }
+  if (
+    !Number.isSafeInteger(raw.maxStateBytes) ||
+    raw.maxStateBytes < MIN_STATE_BYTES || raw.maxStateBytes > MAX_STATE_BYTES
+  ) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_INVALID", "Retained session-state byte cap is invalid.", {
+      status: 400,
+    });
+  }
+  if (!Number.isSafeInteger(raw.lockWaitMs) || raw.lockWaitMs < 0 || raw.lockWaitMs > MAX_LOCK_WAIT_MS) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_INVALID", "Retained session-state lock wait is invalid.", {
+      status: 400,
+    });
+  }
+  return Object.freeze({
+    role: raw.role,
+    canonicalPath: raw.canonicalPath,
+    rootIdentityDigest: raw.rootIdentityDigest,
+    relativeSegments,
+    directoryIdentityDigest: raw.directoryIdentityDigest,
+    lockFileIdentityDigest: raw.lockFileIdentityDigest,
+    helperSha256: raw.helperSha256,
+    helperIdentityDigest: raw.helperIdentityDigest,
+    maxStateBytes: raw.maxStateBytes,
+    lockWaitMs: raw.lockWaitMs,
+  });
+}
+
+function directoryExpected(expected) {
+  return Object.freeze({
+    role: expected.role,
+    canonicalPath: expected.canonicalPath,
+    rootIdentityDigest: expected.rootIdentityDigest,
+    relativeSegments: expected.relativeSegments,
+    directoryIdentityDigest: expected.directoryIdentityDigest,
+  });
+}
+
+function lockExpected(expected) {
+  return Object.freeze({
+    ...directoryExpected(expected),
+    lockFileName: INTEGRATION_RETAINED_SESSION_STATE_LOCK_FILE,
+    helperSha256: expected.helperSha256,
+    lockFileIdentityDigest: expected.lockFileIdentityDigest,
+    helperIdentityDigest: expected.helperIdentityDigest,
+  });
+}
+
+function logicalNamespaceDigest(expected) {
+  return contractDigest({
+    domain: "aginti-retained-integration-session-state-namespace-v1",
+    schemaVersion: INTEGRATION_RETAINED_SESSION_STATE_STORE_VERSION,
+    role: expected.role,
+    canonicalPath: expected.canonicalPath,
+    relativeSegments: expected.relativeSegments,
+    fileNameDomain: INTEGRATION_RETAINED_SESSION_STATE_FILE_NAME_DOMAIN,
+    fileNamePrefix: INTEGRATION_RETAINED_SESSION_STATE_FILE_PREFIX,
+    fileNameSuffix: INTEGRATION_RETAINED_SESSION_STATE_FILE_SUFFIX,
+  });
+}
+
+function admissionBindingDigest(expected) {
+  return contractDigest({
+    schemaVersion: "aginti-retained-integration-session-state-admission-v1",
+    directory: directoryExpected(expected),
+    lock: lockExpected(expected),
+    maxStateBytes: expected.maxStateBytes,
+    lockWaitMs: expected.lockWaitMs,
+  });
+}
+
+function sessionFileName(nativeSessionId) {
+  const digest = contractDigest({
+    domain: INTEGRATION_RETAINED_SESSION_STATE_FILE_NAME_DOMAIN,
+    nativeSessionId,
+  });
+  return `${INTEGRATION_RETAINED_SESSION_STATE_FILE_PREFIX}${digest}${INTEGRATION_RETAINED_SESSION_STATE_FILE_SUFFIX}`;
+}
+
+function sessionPointerDigest(expected, nativeSessionId, fileName) {
+  return contractDigest({
+    domain: INTEGRATION_RETAINED_SESSION_STATE_POINTER_DOMAIN,
+    schemaVersion: INTEGRATION_RETAINED_SESSION_STATE_ENVELOPE_VERSION,
+    role: expected.role,
+    canonicalPath: expected.canonicalPath,
+    relativeSegments: expected.relativeSegments,
+    nativeSessionId,
+    fileName,
+  });
+}
+
+function stateDigest(nativeSessionId, state) {
+  return contractDigest({
+    domain: INTEGRATION_RETAINED_SESSION_STATE_PAYLOAD_DIGEST_DOMAIN,
+    nativeSessionId,
+    state,
+  });
+}
+
+function runtimeRevisionFromState(state, code = "INTEGRATION_SESSION_STATE_STORE_INVALID") {
+  if (!state || typeof state !== "object" || Array.isArray(state) || state.sessionId === undefined) {
+    storeFail(code, "Retained SessionStore state shape is invalid.", { status: statusForCode(code) });
+  }
+  const meta = state.meta;
+  const runtime = meta && typeof meta === "object" && !Array.isArray(meta) ? meta.runtimeConfig : null;
+  const revision = runtime && typeof runtime === "object" && !Array.isArray(runtime) ? runtime.revision : null;
+  if (!Number.isSafeInteger(revision) || revision < 1) {
+    storeFail(code, "Retained SessionStore runtime revision is invalid.", { status: statusForCode(code) });
+  }
+  return revision;
+}
+
+function normalizeSaveInput(input, maxStateBytes) {
+  const raw = exactDataObject(input, SAVE_KEYS, SAVE_KEYS, "retained session-state compare-and-swap input");
+  const mutationId = assertMutationId(raw.mutationId);
+  const nativeSessionId = assertNativeSessionId(raw.nativeSessionId);
+  rejectPromiseValue(
+    raw.expectedPersistenceRevision,
+    "expected session-state persistence revision",
+    "INTEGRATION_SESSION_STATE_STORE_INVALID"
+  );
+  if (!Number.isSafeInteger(raw.expectedPersistenceRevision) || raw.expectedPersistenceRevision < 0) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_INVALID", "Expected session-state persistence revision is invalid.", {
+      status: 400,
+    });
+  }
+  const expectedIntegrityDigest = assertDigest(
+    raw.expectedIntegrityDigest,
+    "expected session-state integrity digest"
+  );
+  if (
+    (raw.expectedPersistenceRevision === 0 && expectedIntegrityDigest !== ZERO_DIGEST) ||
+    (raw.expectedPersistenceRevision > 0 && expectedIntegrityDigest === ZERO_DIGEST)
+  ) {
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_INVALID",
+      "Expected persistence revision and integrity digest disagree.",
+      { status: 400 }
+    );
+  }
+  const normalization = {
+    nodes: 0,
+    active: new WeakSet(),
+    overflowCode: "INTEGRATION_SESSION_STATE_STORE_FULL",
+    shapeCode: "INTEGRATION_SESSION_STATE_STORE_INVALID",
+    byteLimit: maxStateBytes,
+    bytes: 0,
+  };
+  const durableState = cloneCanonicalJson(raw.state, "retained SessionStore state", normalization);
+  if (!durableState || typeof durableState !== "object" || Array.isArray(durableState)) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_INVALID", "Retained SessionStore state must be an object.", {
+      status: 400,
+    });
+  }
+  if (durableState.sessionId !== nativeSessionId) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_INVALID", "SessionStore state does not match its exact native session id.", {
+      status: 400,
+    });
+  }
+  const runtimeRevision = runtimeRevisionFromState(durableState);
+  const payloadDigest = stateDigest(nativeSessionId, durableState);
+  const requestDigest = contractDigest({
+    domain: INTEGRATION_RETAINED_SESSION_STATE_REQUEST_DIGEST_DOMAIN,
+    mutationId,
+    nativeSessionId,
+    expectedPersistenceRevision: raw.expectedPersistenceRevision,
+    expectedIntegrityDigest,
+    runtimeRevision,
+    stateDigest: payloadDigest,
+  });
+  return Object.freeze({
+    mutationId,
+    requestDigest,
+    nativeSessionId,
+    expectedPersistenceRevision: raw.expectedPersistenceRevision,
+    expectedIntegrityDigest,
+    state: durableState,
+    stateDigest: payloadDigest,
+    runtimeRevision,
+    stateCanonicalBytes: normalization.bytes,
+    stateCanonicalNodes: normalization.nodes,
+    stateCanonicalDepth: normalization.maximumDepth,
+  });
+}
+
+function digestWithoutField(value, keys, omittedKey) {
+  const unsigned = Object.create(null);
+  for (const key of keys) {
+    if (key !== omittedKey) unsigned[key] = value[key];
+  }
+  return unsigned;
+}
+
+function lastMutationDigest(receipt) {
+  return contractDigest({
+    domain: INTEGRATION_RETAINED_SESSION_STATE_LAST_MUTATION_INTEGRITY_DOMAIN,
+    securityScope: INTEGRATION_INTEGRITY_DIGEST_SECURITY_SCOPE,
+    payload: digestWithoutField(receipt, LAST_MUTATION_KEYS, "mutationDigest"),
+  });
+}
+
+function envelopeIntegrityDigest(envelope) {
+  return contractDigest({
+    domain: INTEGRATION_RETAINED_SESSION_STATE_ENVELOPE_INTEGRITY_DOMAIN,
+    securityScope: INTEGRATION_INTEGRITY_DIGEST_SECURITY_SCOPE,
+    payload: digestWithoutField(envelope, ENVELOPE_KEYS, "integrityDigest"),
+  });
+}
+
+function sha256Text(value) {
+  return crypto.createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function virtualSessionSnapshot(store, nativeSessionId) {
+  const fileName = sessionFileName(nativeSessionId);
+  return frozenRecord({
+    schemaVersion: INTEGRATION_RETAINED_SESSION_STATE_ENVELOPE_VERSION,
+    owner: "aginti",
+    authority: "aginti",
+    pointerDigest: sessionPointerDigest(store.expected, nativeSessionId, fileName),
+    nativeSessionId,
+    fileName,
+    persistenceRevision: 0,
+    runtimeRevision: 0,
+    previousIntegrityDigest: ZERO_DIGEST,
+    state: null,
+    stateDigest: ZERO_DIGEST,
+    lastMutation: null,
+    integrityDigest: ZERO_DIGEST,
+  });
+}
+
+function makeLastMutation(input, current, resultPersistenceRevision) {
+  const unsigned = frozenRecord({
+    schemaVersion: INTEGRATION_RETAINED_SESSION_STATE_LAST_MUTATION_VERSION,
+    mutationId: input.mutationId,
+    requestDigest: input.requestDigest,
+    basePersistenceRevision: current.persistenceRevision,
+    baseIntegrityDigest: current.integrityDigest,
+    baseRuntimeRevision: current.runtimeRevision,
+    resultPersistenceRevision,
+    resultRuntimeRevision: input.runtimeRevision,
+    stateDigest: input.stateDigest,
+  });
+  return frozenRecord({ ...unsigned, mutationDigest: lastMutationDigest(unsigned) });
+}
+
+function makeSessionSnapshotCandidate(store, current, input) {
+  const persistenceRevision = current.persistenceRevision + 1;
+  const fileName = sessionFileName(input.nativeSessionId);
+  const lastMutation = makeLastMutation(input, current, persistenceRevision);
+  const unsigned = frozenRecord({
+    schemaVersion: INTEGRATION_RETAINED_SESSION_STATE_ENVELOPE_VERSION,
+    owner: "aginti",
+    authority: "aginti",
+    pointerDigest: sessionPointerDigest(store.expected, input.nativeSessionId, fileName),
+    nativeSessionId: input.nativeSessionId,
+    fileName,
+    persistenceRevision,
+    runtimeRevision: input.runtimeRevision,
+    previousIntegrityDigest: current.integrityDigest,
+    state: input.state,
+    stateDigest: input.stateDigest,
+    lastMutation,
+  });
+  const snapshot = frozenRecord({ ...unsigned, integrityDigest: envelopeIntegrityDigest(unsigned) });
+  if (
+    input.stateCanonicalNodes > INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_NODES - ENVELOPE_JSON_NODES ||
+    input.stateCanonicalDepth + 1 > INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_DEPTH
+  ) structuralFailure("INTEGRATION_SESSION_STATE_STORE_FULL", "retained session-state candidate");
+  const text = `${canonicalJson(snapshot)}\n`;
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes > input.stateCanonicalBytes + MAX_ENVELOPE_OVERHEAD_BYTES) {
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_FULL",
+      "Retained session-state envelope overhead exceeds its structural bound.",
+      { status: 409 }
+    );
+  }
+  if (bytes > store.expected.maxStateBytes) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_FULL", "Retained session-state byte cap is exhausted.", {
+      status: 409,
+    });
+  }
+  return frozenRecord({ snapshot, bytes, fileDigest: sha256Text(text) });
+}
+
+function poisonStore(store, reason = "Retained session-state store requires reconciliation.") {
+  store.poisoned = true;
+  store.poisonReason = reason;
+}
+
+function corruptStore(store, message = "Retained session state is corrupt.") {
+  poisonStore(store, "Retained session-state validation failed.");
+  storeFail("INTEGRATION_SESSION_STATE_STORE_CORRUPT", message);
+}
+
+function assertStoreOpen(store) {
+  if (store.poisoned) {
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_POISONED",
+      store.poisonReason || "Retained session-state store is poisoned."
+    );
+  }
+  if (store.filePrimitives.isClosed() || store.lock.isClosed()) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE", "Retained session-state storage binding is closed.");
+  }
+}
+
+function validateLastMutation(store, receipt, snapshot) {
+  const commit = exactDataObject(
+    receipt,
+    LAST_MUTATION_KEYS,
+    LAST_MUTATION_KEYS,
+    "retained session-state last mutation",
+    "INTEGRATION_SESSION_STATE_STORE_CORRUPT"
+  );
+  assertMutationId(commit.mutationId, "INTEGRATION_SESSION_STATE_STORE_CORRUPT");
+  for (const [value, label] of [
+    [commit.requestDigest, "retained session-state request digest"],
+    [commit.baseIntegrityDigest, "retained session-state base integrity digest"],
+    [commit.stateDigest, "retained session-state receipt state digest"],
+    [commit.mutationDigest, "retained session-state mutation digest"],
+  ]) assertDigest(value, label, "INTEGRATION_SESSION_STATE_STORE_CORRUPT");
+  const expectedRequestDigest = contractDigest({
+    domain: INTEGRATION_RETAINED_SESSION_STATE_REQUEST_DIGEST_DOMAIN,
+    mutationId: commit.mutationId,
+    nativeSessionId: snapshot.nativeSessionId,
+    expectedPersistenceRevision: commit.basePersistenceRevision,
+    expectedIntegrityDigest: commit.baseIntegrityDigest,
+    runtimeRevision: commit.resultRuntimeRevision,
+    stateDigest: commit.stateDigest,
+  });
+  if (
+    commit.schemaVersion !== INTEGRATION_RETAINED_SESSION_STATE_LAST_MUTATION_VERSION ||
+    !Number.isSafeInteger(commit.basePersistenceRevision) || commit.basePersistenceRevision < 0 ||
+    !Number.isSafeInteger(commit.resultPersistenceRevision) ||
+    commit.resultPersistenceRevision !== commit.basePersistenceRevision + 1 ||
+    commit.resultPersistenceRevision !== snapshot.persistenceRevision ||
+    !Number.isSafeInteger(commit.baseRuntimeRevision) || commit.baseRuntimeRevision < 0 ||
+    !Number.isSafeInteger(commit.resultRuntimeRevision) || commit.resultRuntimeRevision < 1 ||
+    commit.resultRuntimeRevision !== snapshot.runtimeRevision ||
+    commit.stateDigest !== snapshot.stateDigest ||
+    commit.baseIntegrityDigest !== snapshot.previousIntegrityDigest ||
+    commit.requestDigest !== expectedRequestDigest ||
+    (commit.basePersistenceRevision === 0 && (
+      commit.baseIntegrityDigest !== ZERO_DIGEST ||
+      commit.baseRuntimeRevision !== 0 ||
+      commit.resultRuntimeRevision !== 1
+    )) ||
+    (commit.basePersistenceRevision > 0 && (
+      commit.baseIntegrityDigest === ZERO_DIGEST ||
+      commit.baseRuntimeRevision < 1 ||
+      (commit.resultRuntimeRevision !== commit.baseRuntimeRevision &&
+        commit.resultRuntimeRevision !== commit.baseRuntimeRevision + 1)
+    )) ||
+    commit.mutationDigest !== lastMutationDigest(commit)
+  ) corruptStore(store, "Retained session-state last mutation receipt is invalid.");
+  return commit;
+}
+
+function validatePersistedSessionSnapshot(store, nativeSessionId, parsed, raw) {
+  const detached = cloneCanonicalJson(parsed, "retained session-state envelope", {
+    nodes: 0,
+    active: new WeakSet(),
+    overflowCode: "INTEGRATION_SESSION_STATE_STORE_CORRUPT",
+    shapeCode: "INTEGRATION_SESSION_STATE_STORE_CORRUPT",
+  });
+  const snapshot = exactDataObject(
+    detached,
+    ENVELOPE_KEYS,
+    ENVELOPE_KEYS,
+    "retained session-state envelope",
+    "INTEGRATION_SESSION_STATE_STORE_CORRUPT"
+  );
+  const fileName = sessionFileName(nativeSessionId);
+  if (
+    snapshot.schemaVersion !== INTEGRATION_RETAINED_SESSION_STATE_ENVELOPE_VERSION ||
+    snapshot.owner !== "aginti" || snapshot.authority !== "aginti" ||
+    snapshot.pointerDigest !== sessionPointerDigest(store.expected, nativeSessionId, fileName) ||
+    snapshot.nativeSessionId !== nativeSessionId || snapshot.fileName !== fileName ||
+    !Number.isSafeInteger(snapshot.persistenceRevision) || snapshot.persistenceRevision < 1 ||
+    !Number.isSafeInteger(snapshot.runtimeRevision) || snapshot.runtimeRevision < 1 ||
+    !snapshot.state || typeof snapshot.state !== "object" || Array.isArray(snapshot.state) ||
+    snapshot.state.sessionId !== nativeSessionId ||
+    runtimeRevisionFromState(snapshot.state, "INTEGRATION_SESSION_STATE_STORE_CORRUPT") !== snapshot.runtimeRevision
+  ) corruptStore(store, "Retained session-state envelope binding is invalid.");
+  for (const [value, label] of [
+    [snapshot.pointerDigest, "retained session-state pointer digest"],
+    [snapshot.previousIntegrityDigest, "retained session-state previous integrity digest"],
+    [snapshot.stateDigest, "retained session-state state digest"],
+    [snapshot.integrityDigest, "retained session-state integrity digest"],
+  ]) assertDigest(value, label, "INTEGRATION_SESSION_STATE_STORE_CORRUPT");
+  if (
+    (snapshot.persistenceRevision === 1 && snapshot.previousIntegrityDigest !== ZERO_DIGEST) ||
+    (snapshot.persistenceRevision > 1 && snapshot.previousIntegrityDigest === ZERO_DIGEST) ||
+    snapshot.stateDigest !== stateDigest(nativeSessionId, snapshot.state)
+  ) corruptStore(store, "Retained session-state revision or payload binding is invalid.");
+  validateLastMutation(store, snapshot.lastMutation, snapshot);
+  if (snapshot.integrityDigest !== envelopeIntegrityDigest(snapshot)) {
+    corruptStore(store, "Retained session-state integrity digest is invalid.");
+  }
+  const canonical = `${canonicalJson(snapshot)}\n`;
+  if (raw !== canonical || Buffer.byteLength(raw, "utf8") > store.expected.maxStateBytes) {
+    corruptStore(store, "Retained session-state bytes are not canonical or bounded.");
+  }
+  return snapshot;
+}
+
+function observeSessionSnapshot(store, snapshot) {
+  if (snapshot.persistenceRevision === 0) return snapshot;
+  const observed = store.observedSessions.get(snapshot.nativeSessionId);
+  if (observed) {
+    if (
+      snapshot.persistenceRevision < observed.persistenceRevision ||
+      (snapshot.persistenceRevision === observed.persistenceRevision && snapshot.integrityDigest !== observed.integrityDigest) ||
+      (snapshot.persistenceRevision === observed.persistenceRevision + 1 &&
+        snapshot.previousIntegrityDigest !== observed.integrityDigest) ||
+      snapshot.runtimeRevision < observed.runtimeRevision ||
+      (snapshot.persistenceRevision === observed.persistenceRevision + 1 && snapshot.lastMutation &&
+        snapshot.lastMutation.baseRuntimeRevision !== observed.runtimeRevision)
+    ) corruptStore(store, "Retained session state rolled back or diverged from its observed lineage.");
+  }
+  if (!observed || snapshot.persistenceRevision > observed.persistenceRevision) {
+    store.observedSessions.set(snapshot.nativeSessionId, Object.freeze({
+      persistenceRevision: snapshot.persistenceRevision,
+      runtimeRevision: snapshot.runtimeRevision,
+      integrityDigest: snapshot.integrityDigest,
+    }));
+  }
+  return snapshot;
+}
+
+async function readSessionSnapshotRecord(store, nativeSessionId) {
+  const fileName = sessionFileName(nativeSessionId);
+  const raw = await store.filePrimitives.readProtectedUtf8File(fileName, {
+    optional: true,
+    maxBytes: store.expected.maxStateBytes,
+  });
+  if (raw === null) {
+    const observed = store.observedSessions.get(nativeSessionId);
+    if (observed?.persistenceRevision > 0) {
+      corruptStore(store, "Retained session state disappeared after it was observed.");
+    }
+    const snapshot = virtualSessionSnapshot(store, nativeSessionId);
+    return frozenRecord({ snapshot, bytes: 0, fileDigest: ZERO_DIGEST, persisted: false });
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    corruptStore(store, "Retained session-state file contains invalid JSON.");
+  }
+  let snapshot;
+  try {
+    snapshot = validatePersistedSessionSnapshot(store, nativeSessionId, parsed, raw);
+  } catch (error) {
+    if (safePublicErrorCode(error) === "INTEGRATION_SESSION_STATE_STORE_CORRUPT") {
+      poisonStore(store, "Retained session-state validation failed.");
+      throw error;
+    }
+    corruptStore(store);
+  }
+  observeSessionSnapshot(store, snapshot);
+  return frozenRecord({
+    snapshot,
+    bytes: Buffer.byteLength(raw, "utf8"),
+    fileDigest: sha256Text(raw),
+    persisted: true,
+  });
+}
+
+function exactReplay(current, input) {
+  const receipt = current.lastMutation;
+  if (!receipt || receipt.mutationId !== input.mutationId) return false;
+  if (
+    receipt.requestDigest !== input.requestDigest ||
+    receipt.basePersistenceRevision !== input.expectedPersistenceRevision ||
+    receipt.baseIntegrityDigest !== input.expectedIntegrityDigest ||
+    receipt.resultPersistenceRevision !== current.persistenceRevision ||
+    receipt.resultRuntimeRevision !== input.runtimeRevision ||
+    receipt.stateDigest !== input.stateDigest ||
+    current.stateDigest !== input.stateDigest
+  ) {
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_MUTATION_CONFLICT",
+      "Retained session-state mutation id is already bound to a different request.",
+      { status: 409 }
+    );
+  }
+  return true;
+}
+
+function saveResult(outcome, snapshot) {
+  const result = frozenRecord({ outcome, snapshot });
+  if (Reflect.ownKeys(result).length !== SAVE_RESULT_KEYS.length) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE", "Retained session-state result is invalid.");
+  }
+  return result;
+}
+
+function enqueueStoreOperation(store, operation, payloadBytes = 0, payloadNodes = 0) {
+  if (store.pendingOperations >= INTEGRATION_RETAINED_SESSION_STATE_MAX_PENDING_OPERATIONS) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_BUSY", "Retained session-state operation queue is full.", {
+      status: 429,
+    });
+  }
+  if (
+    !Number.isSafeInteger(payloadBytes) || payloadBytes < 0 ||
+    payloadBytes > INTEGRATION_RETAINED_SESSION_STATE_MAX_PENDING_PAYLOAD_BYTES - store.pendingPayloadBytes
+  ) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_BUSY", "Retained session-state pending payload byte cap is full.", {
+      status: 429,
+    });
+  }
+  if (
+    !Number.isSafeInteger(payloadNodes) || payloadNodes < 0 ||
+    payloadNodes > INTEGRATION_RETAINED_SESSION_STATE_MAX_PENDING_PAYLOAD_NODES - store.pendingPayloadNodes
+  ) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_BUSY", "Retained session-state pending payload node cap is full.", {
+      status: 429,
+    });
+  }
+  store.pendingOperations += 1;
+  store.pendingPayloadBytes += payloadBytes;
+  store.pendingPayloadNodes += payloadNodes;
+  let resolveCaller;
+  let rejectCaller;
+  const caller = new NativePromise((resolve, reject) => {
+    resolveCaller = resolve;
+    rejectCaller = reject;
+  });
+  if (!ReflectDefineProperty(caller, "constructor", {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: SafePromiseConstructor,
+  })) {
+    store.pendingOperations -= 1;
+    store.pendingPayloadBytes -= payloadBytes;
+    store.pendingPayloadNodes -= payloadNodes;
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE",
+      "Retained session-state operation promise could not be hardened."
+    );
+  }
+  void ReflectApply(PromiseThen, caller, [undefined, () => undefined]);
+  ReflectApply(ArrayPush, store.operationQueue, [frozenRecord({
+    operation,
+    resolve: resolveCaller,
+    reject: rejectCaller,
+    payloadBytes,
+    payloadNodes,
+  })]);
+  if (!store.queueDraining) {
+    store.queueDraining = true;
+    void drainStoreOperations(store);
+  }
+  return caller;
+}
+
+async function drainStoreOperations(store) {
+  while (store.operationQueue.length > 0) {
+    const job = ReflectApply(ArrayShift, store.operationQueue, []);
+    try {
+      job.resolve(await job.operation());
+    } catch (error) {
+      job.reject(error);
+    } finally {
+      store.pendingOperations -= 1;
+      store.pendingPayloadBytes -= job.payloadBytes;
+      store.pendingPayloadNodes -= job.payloadNodes;
+    }
+  }
+  store.queueDraining = false;
+}
+
+function sanitizedStorageFacts(error) {
+  if (!error || typeof error !== "object" || utilTypes.isProxy(error)) return Object.create(null);
+  const detailsDescriptor = Object.getOwnPropertyDescriptor(error, "details");
+  if (
+    !detailsDescriptor ||
+    !Object.prototype.hasOwnProperty.call(detailsDescriptor, "value") ||
+    !detailsDescriptor.value ||
+    typeof detailsDescriptor.value !== "object" ||
+    utilTypes.isProxy(detailsDescriptor.value)
+  ) return Object.create(null);
+  const safe = Object.create(null);
+  for (const key of ["renamed", "directorySynced", "postRenameSyncFailed"]) {
+    const descriptor = Object.getOwnPropertyDescriptor(detailsDescriptor.value, key);
+    if (
+      descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value") &&
+      typeof descriptor.value === "boolean"
+    ) {
+      Object.defineProperty(safe, key, {
+        configurable: false,
+        enumerable: true,
+        writable: false,
+        value: descriptor.value,
+      });
+    }
+  }
+  const phaseDescriptor = Object.getOwnPropertyDescriptor(detailsDescriptor.value, "phase");
+  if (
+    phaseDescriptor && Object.prototype.hasOwnProperty.call(phaseDescriptor, "value") &&
+    typeof phaseDescriptor.value === "string" &&
+    ReflectApply(ArrayIncludes, SAFE_STORAGE_PHASES, [phaseDescriptor.value])
+  ) {
+    Object.defineProperty(safe, "storagePhase", {
+      configurable: false,
+      enumerable: true,
+      writable: false,
+      value: phaseDescriptor.value,
+    });
+  }
+  return Object.freeze(safe);
+}
+
+function safePublicErrorCode(error) {
+  if (!error || typeof error !== "object" || utilTypes.isProxy(error)) return "";
+  const descriptor = Object.getOwnPropertyDescriptor(error, "publicCode");
+  return descriptor && Object.prototype.hasOwnProperty.call(descriptor, "value") &&
+    typeof descriptor.value === "string" ? descriptor.value : "";
+}
+
+function safeOriginalStorageCode(value) {
+  return typeof value === "string" && ReflectApply(StringStartsWith, value, ["INTEGRATION_STORAGE_"])
+    ? value
+    : "";
+}
+
+function safeOperationFacts(phase, facts, error) {
+  return frozenRecord({
+    phase,
+    fileName: facts.fileName,
+    writeAttempted: facts.writeAttempted === true,
+    writeConfirmed: facts.writeConfirmed === true,
+    postWriteVerified: facts.postWriteVerified === true,
+    operationStarted: facts.workStarted === true,
+    operationSettled: facts.workSettled === true,
+    operationFailed: facts.workFailed === true,
+    commitMayHaveOccurred: facts.commitMayHaveOccurred === true || facts.writeConfirmed === true,
+    ...(facts.originalStorageCode ? { originalStorageCode: facts.originalStorageCode } : {}),
+    ...(facts.candidatePersistenceRevision === null ? {} : {
+      candidatePersistenceRevision: facts.candidatePersistenceRevision,
+      candidateRuntimeRevision: facts.candidateRuntimeRevision,
+      candidateIntegrityDigest: facts.candidateIntegrityDigest,
+      candidateStateDigest: facts.candidateStateDigest,
+    }),
+    ...facts.originalStorageFacts,
+    ...sanitizedStorageFacts(error),
+  });
+}
+
+function throwNormalizedStoreError(store, error, phase, facts, operationKind) {
+  const code = safePublicErrorCode(error);
+  const details = safeOperationFacts(phase, facts, error);
+  if (
+    (operationKind === "compare-and-swap" && (facts.writeConfirmed || facts.commitMayHaveOccurred)) ||
+    code === "INTEGRATION_STORAGE_COMMIT_AMBIGUOUS"
+  ) {
+    poisonStore(store, "Retained session-state commit outcome requires fresh-surface reconciliation.");
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_COMMIT_AMBIGUOUS",
+      "Retained session-state compare-and-swap outcome is ambiguous after a write may have crossed its commit boundary.",
+      { details }
+    );
+  }
+  if (code === "INTEGRATION_SESSION_STATE_STORE_CORRUPT") {
+    poisonStore(store, "Retained session-state validation failed.");
+    throw error;
+  }
+  if (
+    code === "INTEGRATION_SESSION_STATE_STORE_POISONED" ||
+    code === "INTEGRATION_SESSION_STATE_STORE_INVALID" ||
+    code === "INTEGRATION_SESSION_STATE_STORE_FULL" ||
+    code === "INTEGRATION_SESSION_STATE_STORE_CONFLICT" ||
+    code === "INTEGRATION_SESSION_STATE_STORE_MUTATION_CONFLICT"
+  ) throw error;
+  if (code === "INTEGRATION_STORAGE_LOCK_BUSY") {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_BUSY", "Retained session-state global lock is busy.", {
+      status: 409,
+      details,
+    });
+  }
+  if (
+    code === "INTEGRATION_STORAGE_FILE_CORRUPT" ||
+    code === "INTEGRATION_STORAGE_LOCK_CORRUPT" ||
+    code === "INTEGRATION_STORAGE_CORRUPT"
+  ) {
+    poisonStore(store, "Retained session-state storage binding is corrupt.");
+    storeFail("INTEGRATION_SESSION_STATE_STORE_CORRUPT", "Retained session-state storage binding is corrupt.", {
+      details,
+    });
+  }
+  if (
+    code === "INTEGRATION_STORAGE_LOCK_RELEASE_AMBIGUOUS" ||
+    code === "INTEGRATION_STORAGE_LOCK_POISONED" ||
+    code === "INTEGRATION_STORAGE_POISONED" ||
+    code === "INTEGRATION_STORAGE_CLEANUP_FAILED" ||
+    code === "INTEGRATION_STORAGE_LOCK_CLEANUP_FAILED"
+  ) poisonStore(store, "Retained session-state storage or lock binding is unavailable.");
+  storeFail(
+    "INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE",
+    "Retained session-state operation failed safely.",
+    { details }
+  );
+}
+
+function runStoreOperation(
+  store,
+  operationKind,
+  phase,
+  nativeSessionId,
+  work,
+  payloadBytes = 0,
+  payloadNodes = 0
+) {
+  assertStoreOpen(store);
+  const facts = {
+    fileName: sessionFileName(nativeSessionId),
+    candidatePersistenceRevision: null,
+    candidateRuntimeRevision: null,
+    candidateIntegrityDigest: "",
+    candidateStateDigest: "",
+    writeAttempted: false,
+    writeConfirmed: false,
+    postWriteVerified: false,
+    workStarted: false,
+    workSettled: false,
+    workFailed: false,
+    commitMayHaveOccurred: false,
+    originalStorageCode: "",
+    originalStorageFacts: Object.freeze(Object.create(null)),
+  };
+  return enqueueStoreOperation(store, async () => {
+    assertStoreOpen(store);
+    try {
+      return await store.lock.runExclusive(async () => {
+        assertStoreOpen(store);
+        facts.workStarted = true;
+        try {
+          const result = await work(facts);
+          facts.workSettled = true;
+          return result;
+        } catch (error) {
+          facts.workSettled = true;
+          facts.workFailed = true;
+          const originalCode = safePublicErrorCode(error);
+          facts.originalStorageCode = safeOriginalStorageCode(originalCode);
+          facts.originalStorageFacts = sanitizedStorageFacts(error);
+          facts.commitMayHaveOccurred =
+            facts.writeConfirmed || originalCode === "INTEGRATION_STORAGE_COMMIT_AMBIGUOUS";
+          throw error;
+        }
+      }, { waitMs: store.expected.lockWaitMs });
+    } catch (error) {
+      throwNormalizedStoreError(store, error, phase, facts, operationKind);
+    }
+  }, payloadBytes, payloadNodes);
+}
+
+async function writeAndReloadSessionSnapshot(store, candidate, facts) {
+  facts.candidatePersistenceRevision = candidate.snapshot.persistenceRevision;
+  facts.candidateRuntimeRevision = candidate.snapshot.runtimeRevision;
+  facts.candidateIntegrityDigest = candidate.snapshot.integrityDigest;
+  facts.candidateStateDigest = candidate.snapshot.stateDigest;
+  facts.writeAttempted = true;
+  const receipt = await store.filePrimitives.atomicWriteProtectedJson(
+    candidate.snapshot.fileName,
+    candidate.snapshot,
+    { maxBytes: store.expected.maxStateBytes }
+  );
+  facts.writeConfirmed = true;
+  if (
+    receipt?.committed !== true ||
+    receipt?.directorySynced !== true ||
+    receipt?.bytes !== candidate.bytes ||
+    receipt?.digest !== candidate.fileDigest
+  ) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_CORRUPT", "Retained session-state atomic write receipt is invalid.");
+  }
+  const reloaded = await readSessionSnapshotRecord(store, candidate.snapshot.nativeSessionId);
+  if (
+    reloaded.persisted !== true ||
+    reloaded.bytes !== candidate.bytes ||
+    reloaded.fileDigest !== candidate.fileDigest ||
+    reloaded.snapshot.persistenceRevision !== candidate.snapshot.persistenceRevision ||
+    reloaded.snapshot.runtimeRevision !== candidate.snapshot.runtimeRevision ||
+    reloaded.snapshot.integrityDigest !== candidate.snapshot.integrityDigest
+  ) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_CORRUPT", "Retained session-state post-write verification failed.");
+  }
+  facts.postWriteVerified = true;
+  return reloaded.snapshot;
+}
+
+function loadStoreSessionSnapshot(store, nativeSessionId) {
+  return runStoreOperation(store, "load", "load-session-snapshot", nativeSessionId, async () => {
+    return (await readSessionSnapshotRecord(store, nativeSessionId)).snapshot;
+  });
+}
+
+function compareAndSwapStoreSessionSnapshot(store, input) {
+  return runStoreOperation(
+    store,
+    "compare-and-swap",
+    "compare-and-swap-session-snapshot",
+    input.nativeSessionId,
+    async (facts) => {
+      const current = (await readSessionSnapshotRecord(store, input.nativeSessionId)).snapshot;
+      if (exactReplay(current, input)) return saveResult("replayed", current);
+      if (
+        current.persistenceRevision !== input.expectedPersistenceRevision ||
+        current.integrityDigest !== input.expectedIntegrityDigest
+      ) {
+        storeFail(
+          "INTEGRATION_SESSION_STATE_STORE_CONFLICT",
+          "Retained session-state persistence revision or integrity digest no longer matches.",
+          { status: 409 }
+        );
+      }
+      if (current.persistenceRevision === Number.MAX_SAFE_INTEGER) {
+        storeFail("INTEGRATION_SESSION_STATE_STORE_FULL", "Retained session-state revision space is exhausted.", {
+          status: 409,
+        });
+      }
+      if (
+        (current.persistenceRevision === 0 && input.runtimeRevision !== 1) ||
+        (current.persistenceRevision > 0 &&
+          input.runtimeRevision !== current.runtimeRevision &&
+          input.runtimeRevision !== current.runtimeRevision + 1)
+      ) {
+        storeFail(
+          "INTEGRATION_SESSION_STATE_STORE_CONFLICT",
+          "Retained SessionStore runtime revision must be initially one and then remain the same or advance by one.",
+          { status: 409 }
+        );
+      }
+      const candidate = makeSessionSnapshotCandidate(store, current, input);
+      return saveResult("committed", await writeAndReloadSessionSnapshot(store, candidate, facts));
+    },
+    input.stateCanonicalBytes,
+    input.stateCanonicalNodes
+  );
+}
+
+function validateExactNullPrototypeSurface(value, keys, label) {
+  if (!value || typeof value !== "object" || utilTypes.isProxy(value) || !Object.isFrozen(value)) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE", `${label} must be a frozen lexical object.`);
+  }
+  if (Object.getPrototypeOf(value) !== null) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE", `${label} prototype is invalid.`);
+  }
+  const ownKeys = Reflect.ownKeys(value);
+  if (
+    ownKeys.length !== keys.length ||
+    ReflectApply(ArraySome, ownKeys, [
+      (key) => typeof key !== "string" || !ReflectApply(ArrayIncludes, keys, [key]),
+    ])
+  ) storeFail("INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE", `${label} fields are invalid.`);
+  for (const key of ownKeys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (
+      !descriptor || !descriptor.enumerable || descriptor.writable || descriptor.configurable ||
+      !Object.prototype.hasOwnProperty.call(descriptor, "value")
+    ) {
+      storeFail(
+        "INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE",
+        `${label} must contain exact immutable data fields.`
+      );
+    }
+  }
+  return value;
+}
+
+function attestationDigest(value) {
+  return contractDigest(digestWithoutField(value, ATTESTATION_KEYS, "digest"));
+}
+
+function validateStoreAttestation(proof) {
+  validateExactNullPrototypeSurface(proof, ATTESTATION_KEYS, "retained session-state store attestation");
+  if (
+    proof.schemaVersion !== INTEGRATION_RETAINED_SESSION_STATE_STORE_ATTESTATION_VERSION ||
+    proof.owner !== "aginti" || proof.authority !== "aginti" ||
+    proof.preEnableStorageKernel !== true ||
+    proof.runtimeCapabilityEnabled !== false || proof.runtimeWiringIncluded !== false ||
+    proof.nativeSessionStoreSurface !== false ||
+    proof.runtimeSessionStoreSurface !== false || proof.runtimeRecoveryIntegration !== false ||
+    proof.dispatchIntegration !== false ||
+    proof.fullSessionStateSchemaValidation !== false || proof.canonicalStateValidation !== true ||
+    proof.topLevelSessionIdBinding !== true || proof.flatDigestNamedFiles !== true ||
+    proof.rawSessionIdInFileName !== false || proof.globalStoreLock !== true ||
+    proof.boundedInProcessFifo !== true || proof.compareAndSwap !== true ||
+    proof.persistenceRevisionExactlyOne !== true || proof.initialRuntimeRevisionExactlyOne !== true ||
+    proof.runtimeRevisionSameOrNext !== true || proof.exactLastMutationReplay !== true ||
+    proof.postWriteReloadVerification !== true || proof.storageLifecycleOwned !== false ||
+    proof.fileNameDomain !== INTEGRATION_RETAINED_SESSION_STATE_FILE_NAME_DOMAIN ||
+    proof.fileNamePrefix !== INTEGRATION_RETAINED_SESSION_STATE_FILE_PREFIX ||
+    proof.fileNameSuffix !== INTEGRATION_RETAINED_SESSION_STATE_FILE_SUFFIX ||
+    proof.limitations !== INTEGRATION_RETAINED_SESSION_STATE_STORE_LIMITATIONS ||
+    proof.maxJsonDepth !== INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_DEPTH ||
+    proof.maxJsonNodes !== INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_NODES ||
+    proof.maxPendingOperations !== INTEGRATION_RETAINED_SESSION_STATE_MAX_PENDING_OPERATIONS ||
+    proof.maxPendingPayloadBytes !== INTEGRATION_RETAINED_SESSION_STATE_MAX_PENDING_PAYLOAD_BYTES ||
+    proof.maxPendingPayloadNodes !== INTEGRATION_RETAINED_SESSION_STATE_MAX_PENDING_PAYLOAD_NODES ||
+    proof.maxTransientNormalizationBytes !== proof.maxStateBytes ||
+    proof.maxTransientNormalizationNodes !== INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_NODES ||
+    !Number.isSafeInteger(proof.maxStateBytes) ||
+    proof.maxStateBytes < MIN_STATE_BYTES || proof.maxStateBytes > MAX_STATE_BYTES ||
+    !Number.isSafeInteger(proof.lockWaitMs) || proof.lockWaitMs < 0 || proof.lockWaitMs > MAX_LOCK_WAIT_MS
+  ) {
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE",
+      "Retained session-state store attestation is unavailable."
+    );
+  }
+  for (const [value, label] of [
+    [proof.lockFileNameDigest, "retained session-state lock file name digest"],
+    [proof.logicalNamespaceDigest, "retained session-state logical namespace digest"],
+    [proof.admissionBindingDigest, "retained session-state admission binding digest"],
+    [proof.digest, "retained session-state attestation digest"],
+  ]) assertDigest(value, label, "INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE");
+  if (proof.digest !== attestationDigest(proof)) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE", "Retained session-state attestation digest is invalid.");
+  }
+  return proof;
+}
+
+function buildStoreAttestation(store) {
+  const unsigned = frozenRecord({
+    schemaVersion: INTEGRATION_RETAINED_SESSION_STATE_STORE_ATTESTATION_VERSION,
+    owner: "aginti",
+    authority: "aginti",
+    preEnableStorageKernel: true,
+    runtimeCapabilityEnabled: false,
+    runtimeWiringIncluded: false,
+    nativeSessionStoreSurface: false,
+    runtimeSessionStoreSurface: false,
+    runtimeRecoveryIntegration: false,
+    dispatchIntegration: false,
+    fullSessionStateSchemaValidation: false,
+    canonicalStateValidation: true,
+    topLevelSessionIdBinding: true,
+    flatDigestNamedFiles: true,
+    rawSessionIdInFileName: false,
+    globalStoreLock: true,
+    boundedInProcessFifo: true,
+    compareAndSwap: true,
+    persistenceRevisionExactlyOne: true,
+    initialRuntimeRevisionExactlyOne: true,
+    runtimeRevisionSameOrNext: true,
+    exactLastMutationReplay: true,
+    postWriteReloadVerification: true,
+    storageLifecycleOwned: false,
+    fileNameDomain: INTEGRATION_RETAINED_SESSION_STATE_FILE_NAME_DOMAIN,
+    fileNamePrefix: INTEGRATION_RETAINED_SESSION_STATE_FILE_PREFIX,
+    fileNameSuffix: INTEGRATION_RETAINED_SESSION_STATE_FILE_SUFFIX,
+    lockFileNameDigest: contractDigest({
+      domain: "aginti-retained-integration-session-state-lock-name-v1",
+      lockFileName: INTEGRATION_RETAINED_SESSION_STATE_LOCK_FILE,
+    }),
+    logicalNamespaceDigest: store.logicalNamespaceDigest,
+    admissionBindingDigest: store.admissionBindingDigest,
+    maxStateBytes: store.expected.maxStateBytes,
+    maxJsonDepth: INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_DEPTH,
+    maxJsonNodes: INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_NODES,
+    maxPendingOperations: INTEGRATION_RETAINED_SESSION_STATE_MAX_PENDING_OPERATIONS,
+    maxPendingPayloadBytes: INTEGRATION_RETAINED_SESSION_STATE_MAX_PENDING_PAYLOAD_BYTES,
+    maxPendingPayloadNodes: INTEGRATION_RETAINED_SESSION_STATE_MAX_PENDING_PAYLOAD_NODES,
+    maxTransientNormalizationBytes: store.expected.maxStateBytes,
+    maxTransientNormalizationNodes: INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_NODES,
+    lockWaitMs: store.expected.lockWaitMs,
+    limitations: INTEGRATION_RETAINED_SESSION_STATE_STORE_LIMITATIONS,
+  });
+  return validateStoreAttestation(frozenRecord({ ...unsigned, digest: contractDigest(unsigned) }));
+}
+
+function validateStoreSurface(surface, store) {
+  validateExactNullPrototypeSurface(surface, SURFACE_KEYS, "retained session-state store surface");
+  if (
+    surface.schemaVersion !== INTEGRATION_RETAINED_SESSION_STATE_STORE_VERSION ||
+    surface.attestation !== store.attestation ||
+    typeof surface.loadSessionSnapshot !== "function" ||
+    typeof surface.compareAndSwapSessionSnapshot !== "function" ||
+    typeof surface.isClosed !== "function"
+  ) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE", "Retained session-state store surface is unavailable.");
+  }
+  validateStoreAttestation(surface.attestation);
+  return surface;
+}
+
+function createStoreState(filePrimitives, lock, expectedInput) {
+  rejectPromiseValue(
+    filePrimitives,
+    "retained session-state file primitives",
+    "INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE"
+  );
+  rejectPromiseValue(lock, "retained session-state lock", "INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE");
+  const expected = normalizeExpected(expectedInput);
+  try {
+    assertRetainedProtectedFilePrimitives(filePrimitives, directoryExpected(expected));
+    assertRetainedRegularFileLock(lock, lockExpected(expected));
+  } catch {
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE",
+      "Retained session-state storage brands do not match their expected binding."
+    );
+  }
+  if (claimedStoreLocks.has(lock)) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE", "Retained session-state lock surface is already claimed.");
+  }
+  if (filePrimitives.isClosed() || lock.isClosed()) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE", "Retained session-state storage binding is closed.");
+  }
+  return {
+    filePrimitives,
+    lock,
+    expected,
+    logicalNamespaceDigest: logicalNamespaceDigest(expected),
+    admissionBindingDigest: admissionBindingDigest(expected),
+    operationQueue: [],
+    queueDraining: false,
+    pendingOperations: 0,
+    pendingPayloadBytes: 0,
+    pendingPayloadNodes: 0,
+    observedSessions: new Map(),
+    poisoned: false,
+    poisonReason: "",
+    attestation: null,
+    surface: null,
+  };
+}
+
+export function createRetainedIntegrationSessionStateStore(filePrimitives, lock, expectedInput) {
+  const store = createStoreState(filePrimitives, lock, expectedInput);
+  store.attestation = buildStoreAttestation(store);
+  store.surface = validateStoreSurface(Object.freeze(Object.assign(Object.create(null), {
+    schemaVersion: INTEGRATION_RETAINED_SESSION_STATE_STORE_VERSION,
+    attestation: store.attestation,
+    loadSessionSnapshot(nativeSessionId) {
+      assertStoreOpen(store);
+      if (arguments.length !== 1) {
+        storeFail(
+          "INTEGRATION_SESSION_STATE_STORE_INVALID",
+          "Retained session-state loadSessionSnapshot requires one exact native session id.",
+          { status: 400 }
+        );
+      }
+      return loadStoreSessionSnapshot(store, assertNativeSessionId(nativeSessionId));
+    },
+    compareAndSwapSessionSnapshot(input) {
+      assertStoreOpen(store);
+      if (arguments.length !== 1) {
+        storeFail(
+          "INTEGRATION_SESSION_STATE_STORE_INVALID",
+          "Retained session-state compareAndSwapSessionSnapshot requires one exact input.",
+          { status: 400 }
+        );
+      }
+      if (store.pendingOperations >= INTEGRATION_RETAINED_SESSION_STATE_MAX_PENDING_OPERATIONS) {
+        storeFail("INTEGRATION_SESSION_STATE_STORE_BUSY", "Retained session-state operation queue is full.", {
+          status: 429,
+        });
+      }
+      return compareAndSwapStoreSessionSnapshot(store, normalizeSaveInput(input, store.expected.maxStateBytes));
+    },
+    isClosed() {
+      return store.filePrimitives.isClosed() || store.lock.isClosed();
+    },
+  })), store);
+  storeBrand.set(store.surface, store);
+  claimedStoreLocks.add(store.lock);
+  return store.surface;
+}
+
+export function assertRetainedIntegrationSessionStateStore(value, expectedInput) {
+  rejectPromiseValue(
+    value,
+    "retained session-state store surface",
+    "INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE"
+  );
+  const expected = normalizeExpected(expectedInput);
+  const store = value && typeof value === "object" && !utilTypes.isProxy(value)
+    ? storeBrand.get(value)
+    : null;
+  if (!store || value !== store.surface) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE", "Retained session-state lexical brand is invalid.");
+  }
+  validateStoreSurface(value, store);
+  if (
+    logicalNamespaceDigest(expected) !== store.logicalNamespaceDigest ||
+    admissionBindingDigest(expected) !== store.admissionBindingDigest
+  ) {
+    storeFail("INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE", "Retained session-state expected binding is invalid.");
+  }
+  return value;
+}
