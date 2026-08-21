@@ -8,7 +8,9 @@ import { contractDigest } from "./integration-policy.js";
 export { IntegrationAuthorityError, authorityFail };
 export {
   assertIntegrationRetainedFilePrimitives as assertRetainedProtectedFilePrimitives,
+  assertIntegrationRetainedRegularFileLock as assertRetainedRegularFileLock,
   createIntegrationRetainedFilePrimitives as createRetainedProtectedFilePrimitives,
+  openIntegrationRetainedRegularFileLock as openRetainedRegularFileLock,
 } from "./integration-storage-authority.js";
 
 export const INTEGRATION_INTEGRITY_DIGEST_SECURITY_SCOPE =

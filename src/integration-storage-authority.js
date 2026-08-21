@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import { constants as fsConstants, fstatSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -11,6 +12,9 @@ export const INTEGRATION_RETAINED_DIRECTORY_VERSION = "aginti-retained-directory
 export const INTEGRATION_STORAGE_ATTESTATION_VERSION = "aginti-retained-storage-attestation-v1";
 export const INTEGRATION_RETAINED_FILE_PRIMITIVES_VERSION = "aginti-retained-file-primitives-v1";
 export const INTEGRATION_RETAINED_FILE_ATTESTATION_VERSION = "aginti-retained-file-attestation-v1";
+export const INTEGRATION_RETAINED_REGULAR_FILE_LOCK_VERSION = "aginti-retained-regular-file-lock-v1";
+export const INTEGRATION_RETAINED_REGULAR_FILE_LOCK_ATTESTATION_VERSION =
+  "aginti-retained-regular-file-lock-attestation-v1";
 
 // Node 22 does not expose openat/openat2/renameat2/unlinkat. This primitive
 // retains directory FileHandles and walks children through /proc/self/fd. The
@@ -54,6 +58,48 @@ export const INTEGRATION_RETAINED_FILE_LIMITATIONS = Object.freeze({
   hardwareDurabilityGuarantee: false,
 });
 
+export const INTEGRATION_RETAINED_REGULAR_FILE_LOCK_LIMITATIONS = Object.freeze({
+  preEnablePrimitive: true,
+  procfsRequired: true,
+  preprovisionedFixedEmptyFileRequired: true,
+  linuxKernelFlock: true,
+  rootOwnedDigestPinnedHelperRequired: true,
+  helperDependencyChainPinned: false,
+  localFilesystemRequired: true,
+  networkFilesystemSafety: false,
+  advisoryOnly: true,
+  cooperativeParticipantsOnly: true,
+  cooperativeSameKernelHostProcessExclusion: true,
+  sameKernelHostRequired: true,
+  crossHostExclusion: false,
+  sameUidMutationSafety: false,
+  namedBindingRaceFree: false,
+  nonParticipantSafety: false,
+  fencingTokens: false,
+  transactionalWrites: false,
+  reentrant: false,
+  sameSurfaceConcurrentRuns: false,
+  callbackMayCloseOwningBinding: false,
+  ownerRecord: false,
+  processLivenessChecks: false,
+  automaticStaleRecovery: false,
+  quarantineMethods: false,
+  createMethods: false,
+  writeMethods: false,
+  renameMethods: false,
+  deleteMethods: false,
+  directoryMutationMethods: false,
+  runtimeCapabilityEnabled: false,
+  storeMigrationIncluded: false,
+  filesystemSyncRequired: false,
+  crashReleaseByKernel: true,
+  helperInFlightParentCrashMayDelayRelease: true,
+  releaseMayBeAmbiguousOnCloseFailure: true,
+  ambiguousReleaseRequiresProcessRestart: true,
+  authorityCloseMayNotReleaseAmbiguousLockHandle: true,
+  hardwareDurabilityGuarantee: false,
+});
+
 const AUTHORITY_KEYS = Object.freeze(["rootPath", "role", "ownerUid", "ownerGid", "label"]);
 const EXPECTED_AUTHORITY_KEYS = Object.freeze(["role", "canonicalPath", "rootIdentityDigest"]);
 const EXPECTED_DIRECTORY_KEYS = Object.freeze([
@@ -65,6 +111,14 @@ const EXPECTED_DIRECTORY_KEYS = Object.freeze([
 ]);
 const FILE_READ_OPTION_KEYS = Object.freeze(["optional", "maxBytes"]);
 const FILE_WRITE_OPTION_KEYS = Object.freeze(["maxBytes"]);
+const REGULAR_FILE_LOCK_OPEN_KEYS = Object.freeze([
+  ...EXPECTED_DIRECTORY_KEYS,
+  "lockFileName",
+  "helperSha256",
+  "lockFileIdentityDigest",
+  "helperIdentityDigest",
+]);
+const REGULAR_FILE_LOCK_RUN_OPTION_KEYS = Object.freeze(["waitMs"]);
 const ATTESTATION_KEYS = Object.freeze([
   "schemaVersion",
   "owner",
@@ -127,12 +181,43 @@ const FILE_ATTESTATION_KEYS = Object.freeze([
   "limitations",
   "digest",
 ]);
+const REGULAR_FILE_LOCK_SURFACE_KEYS = Object.freeze([
+  "schemaVersion",
+  "attestation",
+  "runExclusive",
+  "isClosed",
+]);
+const REGULAR_FILE_LOCK_ATTESTATION_KEYS = Object.freeze([
+  "schemaVersion",
+  "owner",
+  "authority",
+  "role",
+  "canonicalPath",
+  "rootIdentityDigest",
+  "relativeSegments",
+  "relativePointer",
+  "directoryIdentityDigest",
+  "lockFileNameDigest",
+  "lockFileIdentityDigest",
+  "lockFileMode",
+  "lockFileEmpty",
+  "kernelPrimitive",
+  "helperIdentityDigest",
+  "helperSha256",
+  "advisoryExclusive",
+  "crashRelease",
+  "lockFileMutation",
+  "limitations",
+  "digest",
+]);
 
 const authorityBrand = new WeakMap();
 const directoryBrand = new WeakMap();
 const attestationBrand = new WeakMap();
 const leaseBrand = new WeakMap();
 const filePrimitivesBrand = new WeakMap();
+const regularFileLockBrand = new WeakMap();
+const ambiguousRegularFileLockHandles = new Set();
 
 const OPEN_DIRECTORY_FLAGS =
   fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
@@ -145,6 +230,14 @@ const MAX_PROTECTED_FILE_BYTES = 16 * 1024 * 1024;
 const MAX_CANONICAL_JSON_DEPTH = 64;
 const MAX_CANONICAL_JSON_NODES = 100_000;
 const ATOMIC_TEMP_PREFIX = ".aginti-atomic-v1-";
+const REGULAR_FILE_LOCK_PREFIX = ".aginti-flock-v1-";
+const FLOCK_HELPER_PATH = "/usr/bin/flock";
+const FLOCK_HELPER_MAX_BYTES = 1024 * 1024;
+const FLOCK_CONFLICT_EXIT_CODE = 42;
+const FLOCK_HELPER_TIMEOUT_MS = 2000;
+const DEFAULT_REGULAR_FILE_LOCK_WAIT_MS = 5000;
+const MAX_REGULAR_FILE_LOCK_WAIT_MS = 60_000;
+const REGULAR_FILE_LOCK_RETRY_MS = 15;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 function fail(code, message, details = {}) {
@@ -270,8 +363,8 @@ function normalizeExpectedDirectory(input) {
   const relativeSegments = cloneSegments(expected.relativeSegments, "expected retained directory relativeSegments", {
     allowEmpty: true,
   });
-  if (relativeSegments.some((segment) => segment.startsWith(ATOMIC_TEMP_PREFIX))) {
-    fail("INTEGRATION_STORAGE_INVALID", "expected retained directory uses the reserved atomic temporary prefix.");
+  if (relativeSegments.some((segment) => usesReservedInternalPrefix(segment))) {
+    fail("INTEGRATION_STORAGE_INVALID", "expected retained directory uses a reserved internal prefix.");
   }
   return Object.freeze({
     role: assertSafeRole(expected.role),
@@ -314,8 +407,20 @@ function assertSafeSegment(value, label = "path segment") {
 
 function assertSafeFileName(value) {
   const fileName = assertSafeSegment(value, "protected file name");
-  if (fileName.startsWith(ATOMIC_TEMP_PREFIX)) {
-    fail("INTEGRATION_STORAGE_INVALID", "protected file name uses the reserved atomic temporary prefix.");
+  if (usesReservedInternalPrefix(fileName)) {
+    fail("INTEGRATION_STORAGE_INVALID", "protected file name uses a reserved internal prefix.");
+  }
+  return fileName;
+}
+
+function usesReservedInternalPrefix(value) {
+  return value.startsWith(ATOMIC_TEMP_PREFIX) || value.startsWith(REGULAR_FILE_LOCK_PREFIX);
+}
+
+function assertRegularFileLockName(value) {
+  const fileName = assertSafeSegment(value, "retained regular-file lock name");
+  if (!fileName.startsWith(REGULAR_FILE_LOCK_PREFIX) || fileName.length === REGULAR_FILE_LOCK_PREFIX.length) {
+    fail("INTEGRATION_STORAGE_INVALID", "retained regular-file lock name must use its reserved prefix.");
   }
   return fileName;
 }
@@ -374,6 +479,56 @@ function normalizeWriteOptions(input) {
   return Object.freeze({
     maxBytes: normalizeMaxBytes(options.maxBytes ?? DEFAULT_PROTECTED_FILE_BYTES, "protected write options.maxBytes"),
   });
+}
+
+function assertSha256(value, label) {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/u.test(value)) {
+    fail("INTEGRATION_STORAGE_INVALID", `${label} is invalid.`);
+  }
+  return value;
+}
+
+function normalizeRegularFileLockOpenExpected(input) {
+  const expected = assertPlainDataObject(input, REGULAR_FILE_LOCK_OPEN_KEYS, "retained regular-file lock expected binding", {
+    required: REGULAR_FILE_LOCK_OPEN_KEYS,
+  });
+  const directory = normalizeExpectedDirectory({
+    role: expected.role,
+    canonicalPath: expected.canonicalPath,
+    rootIdentityDigest: expected.rootIdentityDigest,
+    relativeSegments: expected.relativeSegments,
+    directoryIdentityDigest: expected.directoryIdentityDigest,
+  });
+  return Object.freeze({
+    ...directory,
+    lockFileName: assertRegularFileLockName(expected.lockFileName),
+    helperSha256: assertSha256(expected.helperSha256, "retained regular-file lock helperSha256"),
+    lockFileIdentityDigest: assertSha256(
+      expected.lockFileIdentityDigest,
+      "retained regular-file lock lockFileIdentityDigest"
+    ),
+    helperIdentityDigest: assertSha256(
+      expected.helperIdentityDigest,
+      "retained regular-file lock helperIdentityDigest"
+    ),
+  });
+}
+
+function normalizeExpectedRegularFileLock(input) {
+  return normalizeRegularFileLockOpenExpected(input);
+}
+
+function normalizeRegularFileLockRunOptions(input) {
+  const options = assertPlainDataObject(
+    input === undefined ? {} : input,
+    REGULAR_FILE_LOCK_RUN_OPTION_KEYS,
+    "retained regular-file lock run options"
+  );
+  const waitMs = options.waitMs ?? DEFAULT_REGULAR_FILE_LOCK_WAIT_MS;
+  if (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > MAX_REGULAR_FILE_LOCK_WAIT_MS) {
+    fail("INTEGRATION_STORAGE_INVALID", "retained regular-file lock run options.waitMs is invalid.");
+  }
+  return Object.freeze({ waitMs });
 }
 
 function canonicalJsonTrapSafe(value) {
@@ -945,6 +1100,21 @@ function protectedFileIdentityFromStat(stat) {
   });
 }
 
+function protectedFileIdentityDigest(identity) {
+  return contractDigest({
+    schemaVersion: "aginti-retained-regular-file-identity-v1",
+    dev: identity.dev.toString(),
+    ino: identity.ino.toString(),
+    mode: identity.mode.toString(),
+    uid: identity.uid.toString(),
+    gid: identity.gid.toString(),
+    nlink: identity.nlink.toString(),
+    size: identity.size.toString(),
+    mtimeNs: identity.mtimeNs.toString(),
+    ctimeNs: identity.ctimeNs.toString(),
+  });
+}
+
 function sameProtectedFileObject(left, right) {
   return Boolean(
     left &&
@@ -978,6 +1148,34 @@ function assertProtectedRegularFileStat(stat, root, maxBytes, label) {
   if (stat.nlink !== 1n) fail("INTEGRATION_STORAGE_FILE_CORRUPT", `${label} must not have hard links.`);
   if (stat.size < 0n || stat.size > BigInt(maxBytes)) {
     fail("INTEGRATION_STORAGE_FILE_CORRUPT", `${label} size exceeds its protected bound.`);
+  }
+  return protectedFileIdentityFromStat(stat);
+}
+
+function assertRetainedRegularFileLockStat(stat, root, label) {
+  if (!stat.isFile()) fail("INTEGRATION_STORAGE_LOCK_CORRUPT", `${label} must be a regular file.`);
+  if (stat.uid !== BigInt(root.ownerUid) || stat.gid !== BigInt(root.ownerGid)) {
+    fail("INTEGRATION_STORAGE_LOCK_CORRUPT", `${label} owner uid/gid is invalid.`);
+  }
+  if ((stat.mode & 0o7777n) !== 0o600n) {
+    fail("INTEGRATION_STORAGE_LOCK_CORRUPT", `${label} mode must be exactly 0600.`);
+  }
+  if (stat.nlink !== 1n) fail("INTEGRATION_STORAGE_LOCK_CORRUPT", `${label} must have one link.`);
+  if (stat.size !== 0n) fail("INTEGRATION_STORAGE_LOCK_CORRUPT", `${label} must remain empty.`);
+  return protectedFileIdentityFromStat(stat);
+}
+
+function assertFlockHelperStat(stat, label) {
+  if (!stat.isFile()) fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", `${label} must be a regular file.`);
+  if (stat.uid !== 0n || stat.gid !== 0n) {
+    fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", `${label} owner uid/gid is invalid.`);
+  }
+  if ((stat.mode & 0o7777n) !== 0o755n) {
+    fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", `${label} mode must be exactly 0755.`);
+  }
+  if (stat.nlink !== 1n) fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", `${label} must have one link.`);
+  if (stat.size < 1n || stat.size > BigInt(FLOCK_HELPER_MAX_BYTES)) {
+    fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", `${label} size is invalid.`);
   }
   return protectedFileIdentityFromStat(stat);
 }
@@ -1396,6 +1594,607 @@ async function atomicWriteRetainedProtectedFile(state, fileNameInput, textInput,
   return result;
 }
 
+function poisonRegularFileLock(state, reason) {
+  state.poisoned = true;
+  state.poisonReason = reason;
+}
+
+function assertRegularFileLockOpen(state) {
+  assertDirectoryOpen(state.directory);
+  if (state.poisoned) {
+    fail("INTEGRATION_STORAGE_LOCK_POISONED", state.poisonReason || "Retained regular-file lock is poisoned.");
+  }
+}
+
+function throwNormalizedRegularFileLockError(error, phase, facts = {}) {
+  if (isAuthorityError(error)) {
+    const code = typeof error?.publicCode === "string" ? error.publicCode : "INTEGRATION_STORAGE_LOCK_UNAVAILABLE";
+    const messages = {
+      INTEGRATION_STORAGE_INVALID: "Retained regular-file lock input is invalid.",
+      INTEGRATION_STORAGE_CLOSED: "Retained regular-file lock rejected a closed binding.",
+      INTEGRATION_STORAGE_POISONED: "Retained regular-file lock rejected a poisoned directory binding.",
+      INTEGRATION_STORAGE_LOCK_BUSY: "Retained regular-file lock is busy.",
+      INTEGRATION_STORAGE_LOCK_CORRUPT: "Retained regular-file lock detected corrupt or unstable state.",
+      INTEGRATION_STORAGE_LOCK_POISONED: "Retained regular-file lock binding is poisoned.",
+      INTEGRATION_STORAGE_LOCK_UNAVAILABLE: "Retained regular-file lock is unavailable.",
+      INTEGRATION_STORAGE_LOCK_CLEANUP_FAILED: "Retained regular-file lock cleanup failed.",
+      INTEGRATION_STORAGE_LOCK_RELEASE_AMBIGUOUS: "Retained regular-file lock release is ambiguous.",
+    };
+    authorityFail(code, messages[code] || "Retained regular-file lock failed safely.", {
+      status: Number.isSafeInteger(error?.status) ? error.status : 503,
+      details: { phase, ...facts },
+    });
+  }
+  fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", "Retained regular-file lock failed.", { phase, ...facts });
+}
+
+async function hashBoundedFileHandle(handle, maxBytes) {
+  const digest = crypto.createHash("sha256");
+  let total = 0;
+  let position = 0;
+  for (;;) {
+    const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, maxBytes + 1 - total));
+    const result = await handle.read(buffer, 0, buffer.length, position);
+    if (result.bytesRead === 0) break;
+    digest.update(buffer.subarray(0, result.bytesRead));
+    total += result.bytesRead;
+    position += result.bytesRead;
+    if (total > maxBytes) {
+      fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", "Retained regular-file lock helper exceeds its byte bound.");
+    }
+  }
+  return Object.freeze({ bytes: total, digest: digest.digest("hex") });
+}
+
+async function closeLockResource(handle) {
+  if (!handle) return Object.freeze({ closed: true, failed: false });
+  try {
+    await handle.close();
+    return Object.freeze({ closed: true, failed: false });
+  } catch {
+    return Object.freeze({ closed: false, failed: true });
+  }
+}
+
+function assertRootOwnedHelperDirectoryStat(stat, label) {
+  if (!stat.isDirectory()) fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", `${label} must be a directory.`);
+  if (stat.uid !== 0n || stat.gid !== 0n) {
+    fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", `${label} owner uid/gid is invalid.`);
+  }
+  if ((stat.mode & 0o022n) !== 0n || (stat.mode & 0o111n) !== 0o111n) {
+    fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", `${label} permissions are unsafe.`);
+  }
+}
+
+async function recheckFlockHelperRoute() {
+  for (const [directoryPath, label] of [
+    ["/", "retained regular-file lock helper filesystem root"],
+    ["/usr", "retained regular-file lock helper root"],
+    ["/usr/bin", "retained regular-file lock helper directory"],
+  ]) {
+    const link = await fs.lstat(directoryPath, { bigint: true });
+    if (link.isSymbolicLink()) fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", `${label} must not be a symlink.`);
+    assertRootOwnedHelperDirectoryStat(link, label);
+    const realPath = await fs.realpath(directoryPath);
+    if (realPath !== directoryPath) fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", `${label} path is not canonical.`);
+  }
+}
+
+async function openVerifiedFlockHelper(expectedSha256, expectedIdentityDigest, expectedIdentity = null, state = null) {
+  let handle = null;
+  try {
+    await recheckFlockHelperRoute();
+    const link = await fs.lstat(FLOCK_HELPER_PATH, { bigint: true });
+    if (link.isSymbolicLink()) {
+      fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", "Retained regular-file lock helper must not be a symlink.");
+    }
+    const realPath = await fs.realpath(FLOCK_HELPER_PATH);
+    if (realPath !== FLOCK_HELPER_PATH) {
+      fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", "Retained regular-file lock helper path is not canonical.");
+    }
+    const namedBefore = assertFlockHelperStat(link, "retained regular-file lock helper");
+    handle = await fs.open(FLOCK_HELPER_PATH, OPEN_PROTECTED_READ_FLAGS);
+    const openedStat = await handle.stat({ bigint: true });
+    const openedIdentity = assertFlockHelperStat(openedStat, "retained regular-file lock helper");
+    if (!sameStableProtectedFile(namedBefore, openedIdentity)) {
+      fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", "Retained regular-file lock helper named binding changed.");
+    }
+    if (expectedIdentity && !sameStableProtectedFile(expectedIdentity, openedIdentity)) {
+      fail("INTEGRATION_STORAGE_LOCK_POISONED", "Retained regular-file lock helper identity changed.");
+    }
+    if (protectedFileIdentityDigest(openedIdentity) !== expectedIdentityDigest) {
+      fail("INTEGRATION_STORAGE_LOCK_POISONED", "Retained regular-file lock helper identity digest changed.");
+    }
+    const hashed = await hashBoundedFileHandle(handle, FLOCK_HELPER_MAX_BYTES);
+    if (hashed.bytes !== Number(openedIdentity.size) || hashed.digest !== expectedSha256) {
+      fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", "Retained regular-file lock helper digest is invalid.");
+    }
+    const afterStat = await handle.stat({ bigint: true });
+    const afterIdentity = assertFlockHelperStat(afterStat, "retained regular-file lock helper");
+    const namedAfterStat = await fs.lstat(FLOCK_HELPER_PATH, { bigint: true });
+    const namedAfter = assertFlockHelperStat(namedAfterStat, "retained regular-file lock helper");
+    if (
+      !sameStableProtectedFile(openedIdentity, afterIdentity) ||
+      !sameStableProtectedFile(afterIdentity, namedAfter)
+    ) {
+      fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", "Retained regular-file lock helper changed while it was verified.");
+    }
+    return Object.freeze({ handle, identity: afterIdentity, sha256: hashed.digest });
+  } catch (error) {
+    const closure = await closeLockResource(handle);
+    if (closure.failed) {
+      if (state) {
+        poisonRegularFileLock(state, "Retained regular-file lock helper cleanup could not be proven.");
+        if (!closure.closed && handle) state.unclosedResources.add(handle);
+      }
+      fail("INTEGRATION_STORAGE_LOCK_CLEANUP_FAILED", "Retained regular-file lock helper cleanup failed.");
+    }
+    if (state && expectedIdentity) {
+      poisonRegularFileLock(state, "Retained regular-file lock helper expected binding diverged.");
+      fail("INTEGRATION_STORAGE_LOCK_POISONED", "Retained regular-file lock helper expected binding diverged.");
+    }
+    throw error;
+  }
+}
+
+async function recheckVerifiedFlockHelper(state, handle) {
+  try {
+    await recheckFlockHelperRoute();
+    const beforeStat = await handle.stat({ bigint: true });
+    const beforeIdentity = assertFlockHelperStat(beforeStat, "retained regular-file lock helper");
+    if (
+      !sameStableProtectedFile(state.helperIdentity, beforeIdentity) ||
+      protectedFileIdentityDigest(beforeIdentity) !== state.expected.helperIdentityDigest
+    ) {
+      fail("INTEGRATION_STORAGE_LOCK_POISONED", "Retained regular-file lock helper identity changed.");
+    }
+    const hashed = await hashBoundedFileHandle(handle, FLOCK_HELPER_MAX_BYTES);
+    if (hashed.bytes !== Number(beforeIdentity.size) || hashed.digest !== state.helperSha256) {
+      fail("INTEGRATION_STORAGE_LOCK_POISONED", "Retained regular-file lock helper digest changed.");
+    }
+    const afterStat = await handle.stat({ bigint: true });
+    const afterIdentity = assertFlockHelperStat(afterStat, "retained regular-file lock helper");
+    const namedStat = await fs.lstat(FLOCK_HELPER_PATH, { bigint: true });
+    const namedIdentity = assertFlockHelperStat(namedStat, "retained regular-file lock helper");
+    if (
+      !sameStableProtectedFile(beforeIdentity, afterIdentity) ||
+      !sameStableProtectedFile(afterIdentity, namedIdentity)
+    ) {
+      fail("INTEGRATION_STORAGE_LOCK_POISONED", "Retained regular-file lock helper changed after execution.");
+    }
+  } catch (error) {
+    poisonRegularFileLock(state, "Retained regular-file lock helper expected binding diverged.");
+    if (error?.publicCode === "INTEGRATION_STORAGE_LOCK_POISONED") throw error;
+    fail("INTEGRATION_STORAGE_LOCK_POISONED", "Retained regular-file lock helper expected binding diverged.");
+  }
+}
+
+async function openVerifiedRegularFileLock(state, expectedIdentityDigest, expectedIdentity = null) {
+  const dir = state.directory;
+  let handle = null;
+  try {
+    await recheckDirectoryNamedBinding(dir);
+    assertRegularFileLockOpen(state);
+    const lockPath = procFdChildPath(dir.handle, state.lockFileName);
+    handle = await fs.open(lockPath, OPEN_PROTECTED_READ_FLAGS);
+    assertRegularFileLockOpen(state);
+    const openedStat = await handle.stat({ bigint: true });
+    assertRegularFileLockOpen(state);
+    const openedIdentity = assertRetainedRegularFileLockStat(
+      openedStat,
+      dir.root,
+      "retained regular-file lock file"
+    );
+    const namedStat = await fs.lstat(lockPath, { bigint: true });
+    assertRegularFileLockOpen(state);
+    const namedIdentity = assertRetainedRegularFileLockStat(
+      namedStat,
+      dir.root,
+      "retained regular-file lock file"
+    );
+    if (!sameStableProtectedFile(openedIdentity, namedIdentity)) {
+      fail("INTEGRATION_STORAGE_LOCK_CORRUPT", "Retained regular-file lock named binding changed.");
+    }
+    if (expectedIdentity && !sameStableProtectedFile(expectedIdentity, openedIdentity)) {
+      fail("INTEGRATION_STORAGE_LOCK_POISONED", "Retained regular-file lock file identity changed.");
+    }
+    if (protectedFileIdentityDigest(openedIdentity) !== expectedIdentityDigest) {
+      fail("INTEGRATION_STORAGE_LOCK_POISONED", "Retained regular-file lock file identity digest changed.");
+    }
+    await recheckDirectoryNamedBinding(dir);
+    assertRegularFileLockOpen(state);
+    const finalStat = await handle.stat({ bigint: true });
+    const finalIdentity = assertRetainedRegularFileLockStat(
+      finalStat,
+      dir.root,
+      "retained regular-file lock file"
+    );
+    const finalNamedStat = await fs.lstat(lockPath, { bigint: true });
+    const finalNamedIdentity = assertRetainedRegularFileLockStat(
+      finalNamedStat,
+      dir.root,
+      "retained regular-file lock file"
+    );
+    if (
+      !sameStableProtectedFile(openedIdentity, finalIdentity) ||
+      !sameStableProtectedFile(finalIdentity, finalNamedIdentity)
+    ) {
+      fail("INTEGRATION_STORAGE_LOCK_CORRUPT", "Retained regular-file lock changed while it was opened.");
+    }
+    return Object.freeze({ handle, identity: finalIdentity });
+  } catch (error) {
+    const closure = await closeLockResource(handle);
+    if (closure.failed) {
+      poisonRegularFileLock(state, "Retained regular-file lock open cleanup could not be proven.");
+      if (!closure.closed && handle) state.unclosedResources.add(handle);
+      fail("INTEGRATION_STORAGE_LOCK_CLEANUP_FAILED", "Retained regular-file lock open cleanup failed.");
+    }
+    if (expectedIdentity) {
+      poisonRegularFileLock(state, "Retained regular-file lock expected binding diverged.");
+      fail("INTEGRATION_STORAGE_LOCK_POISONED", "Retained regular-file lock expected binding diverged.");
+    }
+    throw error;
+  }
+}
+
+function monotonicMilliseconds() {
+  return Number(process.hrtime.bigint() / 1_000_000n);
+}
+
+function regularFileLockDelay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function invokeFlockHelper(lockHandle, helperHandle) {
+  const executable = "/proc/self/fd/4";
+  const args = Object.freeze([
+    "--exclusive",
+    "--nonblock",
+    "--conflict-exit-code",
+    String(FLOCK_CONFLICT_EXIT_CODE),
+    "3",
+  ]);
+  return new Promise((resolve) => {
+    let child = null;
+    let spawnFailed = false;
+    let timedOut = false;
+    let timer = null;
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(Object.freeze(result));
+    };
+    try {
+      child = spawn(executable, args, {
+        shell: false,
+        detached: false,
+        cwd: "/",
+        env: { LANG: "C", LC_ALL: "C", PATH: "/usr/bin:/bin" },
+        stdio: ["ignore", "ignore", "ignore", lockHandle.fd, helperHandle.fd],
+      });
+    } catch {
+      finish({ outcome: "spawn-failed" });
+      return;
+    }
+    child.once("error", () => {
+      spawnFailed = true;
+    });
+    child.once("close", (code, signal) => {
+      if (timedOut) finish({ outcome: "timeout" });
+      else if (spawnFailed) finish({ outcome: "spawn-failed" });
+      else if (signal) finish({ outcome: "signal" });
+      else if (code === 0) finish({ outcome: "acquired" });
+      else if (code === FLOCK_CONFLICT_EXIT_CODE) finish({ outcome: "conflict" });
+      else finish({ outcome: "failed" });
+    });
+    timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, FLOCK_HELPER_TIMEOUT_MS);
+  });
+}
+
+async function recheckHeldRegularFileLock(state, handle) {
+  assertRegularFileLockOpen(state);
+  const dir = state.directory;
+  const stat = await handle.stat({ bigint: true });
+  assertRegularFileLockOpen(state);
+  const identity = assertRetainedRegularFileLockStat(stat, dir.root, "retained held regular-file lock");
+  if (!sameStableProtectedFile(state.lockFileIdentity, identity)) {
+    fail("INTEGRATION_STORAGE_LOCK_POISONED", "Retained held regular-file lock identity changed.");
+  }
+  const lockPath = procFdChildPath(dir.handle, state.lockFileName);
+  const namedStat = await fs.lstat(lockPath, { bigint: true });
+  const namedIdentity = assertRetainedRegularFileLockStat(
+    namedStat,
+    dir.root,
+    "retained held regular-file lock"
+  );
+  if (!sameStableProtectedFile(identity, namedIdentity)) {
+    fail("INTEGRATION_STORAGE_LOCK_POISONED", "Retained held regular-file lock named binding changed.");
+  }
+  await recheckDirectoryNamedBinding(dir);
+  assertRegularFileLockOpen(state);
+}
+
+async function runRetainedRegularFileLock(state, operation, optionsInput) {
+  if (typeof operation !== "function" || utilTypes.isProxy(operation)) {
+    fail("INTEGRATION_STORAGE_INVALID", "retained regular-file lock operation must be a non-Proxy function.");
+  }
+  const options = normalizeRegularFileLockRunOptions(optionsInput);
+  assertRegularFileLockOpen(state);
+  if (state.running) {
+    fail("INTEGRATION_STORAGE_LOCK_BUSY", "Retained regular-file lock surface is non-reentrant and already running.");
+  }
+  state.running = true;
+  let releaseOperationLease = null;
+  let helperHandle = null;
+  let lockHandle = null;
+  let acquired = false;
+  let operationStarted = false;
+  let operationSettled = false;
+  let helperInvoked = false;
+  let knownConflict = false;
+  let systemProblem = null;
+  let systemPhase = "acquire";
+  let operationProblem = null;
+  let operationFailed = false;
+  let operationResult;
+  try {
+    releaseOperationLease = admitDirectoryOperation(state.directory, "runExclusive retained regular-file lock");
+    const helper = await openVerifiedFlockHelper(
+      state.helperSha256,
+      state.expected.helperIdentityDigest,
+      state.helperIdentity,
+      state
+    );
+    helperHandle = helper.handle;
+    const deadline = monotonicMilliseconds() + options.waitMs;
+    for (;;) {
+      const opened = await openVerifiedRegularFileLock(
+        state,
+        state.expected.lockFileIdentityDigest,
+        state.lockFileIdentity
+      );
+      lockHandle = opened.handle;
+      helperInvoked = true;
+      const attempt = await invokeFlockHelper(lockHandle, helperHandle);
+      knownConflict = attempt.outcome === "conflict";
+      if (knownConflict) {
+        const contendedHandle = lockHandle;
+        lockHandle = null;
+        const conflictClosure = await closeLockResource(contendedHandle);
+        if (conflictClosure.failed) {
+          poisonRegularFileLock(state, "Contended retained regular-file lock cleanup could not be proven.");
+          if (!conflictClosure.closed && contendedHandle) state.unclosedResources.add(contendedHandle);
+          fail("INTEGRATION_STORAGE_LOCK_CLEANUP_FAILED", "Contended retained regular-file lock cleanup failed.");
+        }
+        if (monotonicMilliseconds() >= deadline) {
+          fail("INTEGRATION_STORAGE_LOCK_BUSY", "Retained regular-file lock acquisition timed out.");
+        }
+        await regularFileLockDelay(
+          Math.min(REGULAR_FILE_LOCK_RETRY_MS, Math.max(1, deadline - monotonicMilliseconds()))
+        );
+        assertRegularFileLockOpen(state);
+        continue;
+      }
+      if (attempt.outcome !== "acquired") {
+        fail("INTEGRATION_STORAGE_LOCK_UNAVAILABLE", "Retained regular-file lock helper failed.");
+      }
+      acquired = true;
+      systemPhase = "post-acquire-pre-operation";
+      await recheckVerifiedFlockHelper(state, helperHandle);
+      await recheckHeldRegularFileLock(state, lockHandle);
+      const completedHelperHandle = helperHandle;
+      helperHandle = null;
+      const helperClosure = await closeLockResource(completedHelperHandle);
+      if (helperClosure.failed) {
+        poisonRegularFileLock(state, "Retained regular-file lock helper cleanup could not be proven.");
+        if (!helperClosure.closed && completedHelperHandle) state.unclosedResources.add(completedHelperHandle);
+        fail("INTEGRATION_STORAGE_LOCK_CLEANUP_FAILED", "Retained regular-file lock helper cleanup failed.");
+      }
+      operationStarted = true;
+      systemPhase = "operation";
+      try {
+        operationResult = await operation();
+      } catch (error) {
+        operationProblem = error;
+        operationFailed = true;
+      } finally {
+        operationSettled = true;
+      }
+      systemPhase = "post-operation-validation";
+      try {
+        await recheckHeldRegularFileLock(state, lockHandle);
+      } catch (error) {
+        systemProblem = error;
+        poisonRegularFileLock(state, "Retained regular-file lock binding changed during its operation.");
+      }
+      break;
+    }
+  } catch (error) {
+    systemProblem ||= error;
+    if (error?.publicCode === "INTEGRATION_STORAGE_LOCK_POISONED") {
+      poisonRegularFileLock(state, "Retained regular-file lock expected identity diverged.");
+    }
+  }
+
+  const helperClosure = await closeLockResource(helperHandle);
+  const lockClosure = await closeLockResource(lockHandle);
+  releaseOperationLease?.();
+  state.running = false;
+
+  if (lockClosure.failed) {
+    poisonRegularFileLock(state, "Retained regular-file lock release could not be proven.");
+    if (!lockClosure.closed && lockHandle) state.unclosedResources.add(lockHandle);
+    if (acquired || (helperInvoked && !knownConflict)) {
+      if (lockHandle) ambiguousRegularFileLockHandles.add(lockHandle);
+      fail("INTEGRATION_STORAGE_LOCK_RELEASE_AMBIGUOUS", "Retained regular-file lock release is ambiguous.", {
+        phase: "lock-handle-close",
+        operationStarted,
+        operationSettled,
+        operationFailed,
+      });
+    }
+    fail("INTEGRATION_STORAGE_LOCK_CLEANUP_FAILED", "Retained regular-file lock handle cleanup failed.", {
+      phase: "lock-handle-close",
+    });
+  }
+  if (helperClosure.failed) {
+    poisonRegularFileLock(state, "Retained regular-file lock helper cleanup failed.");
+    if (!helperClosure.closed && helperHandle) state.unclosedResources.add(helperHandle);
+    fail("INTEGRATION_STORAGE_LOCK_CLEANUP_FAILED", "Retained regular-file lock helper cleanup failed.", {
+      phase: "helper-handle-close",
+      operationStarted,
+      operationSettled,
+      operationFailed,
+    });
+  }
+  if (systemProblem) {
+    throwNormalizedRegularFileLockError(systemProblem, systemPhase, {
+      operationStarted,
+      operationSettled,
+      operationFailed,
+    });
+  }
+  if (operationFailed) throw operationProblem;
+  return operationResult;
+}
+
+function buildRetainedRegularFileLockAttestation(state) {
+  const expected = state.expected;
+  const unsigned = {
+    schemaVersion: INTEGRATION_RETAINED_REGULAR_FILE_LOCK_ATTESTATION_VERSION,
+    owner: "aginti",
+    authority: "aginti",
+    role: expected.role,
+    canonicalPath: expected.canonicalPath,
+    rootIdentityDigest: expected.rootIdentityDigest,
+    relativeSegments: Object.freeze([...expected.relativeSegments]),
+    relativePointer: expected.relativeSegments.length > 0 ? expected.relativeSegments.join("/") : ".",
+    directoryIdentityDigest: expected.directoryIdentityDigest,
+    lockFileNameDigest: contractDigest({
+      domain: "aginti-retained-regular-file-lock-name-v1",
+      lockFileName: state.lockFileName,
+    }),
+    lockFileIdentityDigest: protectedFileIdentityDigest(state.lockFileIdentity),
+    lockFileMode: "0600",
+    lockFileEmpty: true,
+    kernelPrimitive: "linux-flock-open-file-description-v1",
+    helperIdentityDigest: protectedFileIdentityDigest(state.helperIdentity),
+    helperSha256: state.helperSha256,
+    advisoryExclusive: true,
+    crashRelease: "kernel-close-open-file-description",
+    lockFileMutation: false,
+    limitations: INTEGRATION_RETAINED_REGULAR_FILE_LOCK_LIMITATIONS,
+    digest: "0".repeat(64),
+  };
+  const { digest: _digest, ...digestInput } = unsigned;
+  return validateSurface(
+    freezeDeep({ ...unsigned, digest: contractDigest(digestInput) }),
+    REGULAR_FILE_LOCK_ATTESTATION_KEYS,
+    "retained regular-file lock attestation"
+  );
+}
+
+function assertExpectedRegularFileLockState(state, expectedInput, label) {
+  if (expectedInput === undefined) return;
+  const expected = normalizeExpectedRegularFileLock(expectedInput);
+  const actual = state.attestation;
+  if (
+    state.expected.role !== expected.role ||
+    state.expected.canonicalPath !== expected.canonicalPath ||
+    state.expected.rootIdentityDigest !== expected.rootIdentityDigest ||
+    state.expected.directoryIdentityDigest !== expected.directoryIdentityDigest ||
+    !sameSegments(state.expected.relativeSegments, expected.relativeSegments) ||
+    state.lockFileName !== expected.lockFileName ||
+    state.helperSha256 !== expected.helperSha256 ||
+    actual.lockFileIdentityDigest !== expected.lockFileIdentityDigest ||
+    actual.helperIdentityDigest !== expected.helperIdentityDigest
+  ) {
+    fail("INTEGRATION_STORAGE_INVALID", `${label} does not match its exact retained lock binding.`);
+  }
+}
+
+export async function openIntegrationRetainedRegularFileLock(filePrimitives, expectedInput) {
+  const fileState = filePrimitives && typeof filePrimitives === "object" ? filePrimitivesBrand.get(filePrimitives) : null;
+  if (!fileState) fail("INTEGRATION_STORAGE_INVALID", "Integration retained file primitives brand is invalid.");
+  validateSurface(filePrimitives, FILE_PRIMITIVES_SURFACE_KEYS, "retained file primitives");
+  const expected = normalizeRegularFileLockOpenExpected(expectedInput);
+  assertExpectedFilePrimitivesState(fileState, {
+    role: expected.role,
+    canonicalPath: expected.canonicalPath,
+    rootIdentityDigest: expected.rootIdentityDigest,
+    relativeSegments: expected.relativeSegments,
+    directoryIdentityDigest: expected.directoryIdentityDigest,
+  }, "Integration retained regular-file lock");
+  const dir = fileState.directory;
+  assertDirectoryOpen(dir);
+  if (dir.closing || dir.root.closing) {
+    fail("INTEGRATION_STORAGE_CLOSED", "Integration retained directory is closing.");
+  }
+  const state = {
+    directory: dir,
+    expected,
+    lockFileName: expected.lockFileName,
+    lockFileIdentity: null,
+    helperSha256: expected.helperSha256,
+    helperIdentity: null,
+    attestation: null,
+    surface: null,
+    running: false,
+    poisoned: false,
+    poisonReason: "",
+    unclosedResources: new Set(),
+  };
+  const release = admitDirectoryOperation(dir, "open retained regular-file lock");
+  let lockHandle = null;
+  let helperHandle = null;
+  let problem = null;
+  try {
+    const openedLock = await openVerifiedRegularFileLock(state, expected.lockFileIdentityDigest);
+    lockHandle = openedLock.handle;
+    state.lockFileIdentity = openedLock.identity;
+    const openedHelper = await openVerifiedFlockHelper(
+      state.helperSha256,
+      expected.helperIdentityDigest
+    );
+    helperHandle = openedHelper.handle;
+    state.helperIdentity = openedHelper.identity;
+    await recheckDirectoryNamedBinding(dir);
+    assertDirectoryOpen(dir);
+  } catch (error) {
+    problem = error;
+  }
+  const lockClosure = await closeLockResource(lockHandle);
+  const helperClosure = await closeLockResource(helperHandle);
+  release();
+  if (lockClosure.failed || helperClosure.failed) {
+    if (!lockClosure.closed && lockHandle) state.unclosedResources.add(lockHandle);
+    if (!helperClosure.closed && helperHandle) state.unclosedResources.add(helperHandle);
+    fail("INTEGRATION_STORAGE_LOCK_CLEANUP_FAILED", "Retained regular-file lock factory cleanup failed.", {
+      phase: "factory-handle-close",
+    });
+  }
+  if (problem) throwNormalizedRegularFileLockError(problem, "factory");
+  state.attestation = buildRetainedRegularFileLockAttestation(state);
+  const surface = Object.freeze({
+    schemaVersion: INTEGRATION_RETAINED_REGULAR_FILE_LOCK_VERSION,
+    attestation: state.attestation,
+    runExclusive(operation, options) {
+      return runRetainedRegularFileLock(state, operation, options);
+    },
+    isClosed() {
+      return dir.closing || dir.closed || dir.root.closing || dir.root.closed;
+    },
+  });
+  state.surface = validateSurface(surface, REGULAR_FILE_LOCK_SURFACE_KEYS, "retained regular-file lock");
+  regularFileLockBrand.set(surface, state);
+  return surface;
+}
+
 async function openOneChildDirectory(parent, segment) {
   assertDirectoryOpen(parent);
   await fstatDirectoryHandle(parent);
@@ -1778,6 +2577,17 @@ export function assertIntegrationRetainedFilePrimitives(value, expected) {
     fail("INTEGRATION_STORAGE_CORRUPT", "Integration retained file primitives attestation changed.");
   }
   assertExpectedFilePrimitivesState(state, expected, "Integration retained file primitives");
+  return value;
+}
+
+export function assertIntegrationRetainedRegularFileLock(value, expected) {
+  const state = value && typeof value === "object" ? regularFileLockBrand.get(value) : null;
+  if (!state) fail("INTEGRATION_STORAGE_INVALID", "Integration retained regular-file lock brand is invalid.");
+  validateSurface(value, REGULAR_FILE_LOCK_SURFACE_KEYS, "retained regular-file lock");
+  if (value.attestation !== state.attestation) {
+    fail("INTEGRATION_STORAGE_CORRUPT", "Integration retained regular-file lock attestation changed.");
+  }
+  assertExpectedRegularFileLockState(state, expected, "Integration retained regular-file lock");
   return value;
 }
 
