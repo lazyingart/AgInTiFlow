@@ -8,6 +8,8 @@ import {
   assertRetainedIntegrationSessionStateStore,
 } from "./integration-retained-session-state-store.js";
 import {
+  assertRetainedIntegrationRuntimeNativeWriteFence,
+  assertRetainedIntegrationRuntimeNativeWriteFenceCurrent,
   assertRetainedIntegrationRuntimeRecoveryCoordinator,
   assertRetainedIntegrationRuntimeRepositoryFenceLeaseCurrent,
   assertRetainedIntegrationRuntimeRepositorySurface,
@@ -18,11 +20,11 @@ import {
 
 export const INTEGRATION_TEXT_WORKSPACE_PROFILE_ID = "text-workspace-v1";
 export const INTEGRATION_RETAINED_TEXT_WORKSPACE_VERSION =
-  "aginti-retained-text-workspace-v1";
+  "aginti-retained-text-workspace-v2";
 export const INTEGRATION_RETAINED_TEXT_WORKSPACE_ATTESTATION_VERSION =
-  "aginti-retained-text-workspace-attestation-v2";
+  "aginti-retained-text-workspace-attestation-v3";
 export const INTEGRATION_RETAINED_TEXT_WORKSPACE_CURRENT_PROOF_VERSION =
-  "aginti-retained-text-workspace-current-proof-v1";
+  "aginti-retained-text-workspace-current-proof-v2";
 export const INTEGRATION_RETAINED_TEXT_WORKSPACE_JOURNAL_VERSION =
   "aginti-retained-text-workspace-event-journal-v1";
 export const INTEGRATION_RETAINED_TEXT_WORKSPACE_EVENT_VERSION =
@@ -412,7 +414,16 @@ function eventRecord(typeInput, dataInput, journal) {
   return frozenRecord({ event, bytes });
 }
 
-function buildAttestation(store, expected, evidence, repository, recovery, bootstrap, fence) {
+function buildAttestation(
+  store,
+  expected,
+  evidence,
+  nativeWriteFence,
+  repository,
+  recovery,
+  bootstrap,
+  fence
+) {
   const unsigned = frozenRecord({
     schemaVersion: INTEGRATION_RETAINED_TEXT_WORKSPACE_ATTESTATION_VERSION,
     owner: "aginti",
@@ -436,13 +447,16 @@ function buildAttestation(store, expected, evidence, repository, recovery, boots
     typedArtifactPersistence: false,
     imagePerception: false,
     shellExecution: false,
-    crossProcessExecutionFence: false,
+    crossProcessExecutionFence: true,
     repositoryTransitionFenceBound: true,
     repositoryFenceDurablyCurrentAtConstruction: true,
     currentRepositoryFenceRevalidationRequired: true,
-    nativeSessionStateWriterFencing: false,
-    nativeSessionStateWriterQuiescenceProven: false,
-    repositoryFenceDoesNotQuiesceNativeWriters: true,
+    exactNativeWriteFenceRequired: true,
+    nativeSessionStateWriterFencing: true,
+    nativeSessionStateWriterQuiescenceProven: true,
+    repositoryFenceDoesNotQuiesceNativeWriters: false,
+    fullSessionStoreSidecarsFenced: false,
+    imagePerceptionSidecarsFenced: false,
     journalIdDomain: INTEGRATION_RETAINED_TEXT_WORKSPACE_JOURNAL_ID_DOMAIN,
     journalIdPrefix: INTEGRATION_RETAINED_TEXT_WORKSPACE_JOURNAL_ID_PREFIX,
     operationDispositions: OPERATION_DISPOSITIONS,
@@ -453,6 +467,8 @@ function buildAttestation(store, expected, evidence, repository, recovery, boots
     storageAdmissionBindingDigest: store.attestation.admissionBindingDigest,
     storageExpectedDigest: contractDigest(expected),
     nativeExecutionEvidenceDigest: evidence.attestation.digest,
+    nativeWriteFenceAttestationDigest: nativeWriteFence.attestation.digest,
+    nativeWriteFenceSealDigest: nativeWriteFence.attestation.sessionStateWriteFenceSealDigest,
     repositoryAttestationDigest: repository.integrationRuntimeRepositoryAttestation.digest,
     recoveryCoordinatorAttestationDigest: recovery.attestation.digest,
     processOwnerBootstrapDigest: bootstrap.digest,
@@ -487,6 +503,7 @@ export async function createRetainedIntegrationTextWorkspace(input = {}) {
       "sessionStateStore",
       "sessionStateStoreExpected",
       "nativeExecutionEvidence",
+      "nativeWriteFence",
       "repository",
       "recoveryCoordinator",
       "processOwnerBootstrap",
@@ -495,22 +512,39 @@ export async function createRetainedIntegrationTextWorkspace(input = {}) {
     [],
     "retained text-workspace factory"
   );
+  const repository = assertRetainedIntegrationRuntimeRepositorySurface(options.repository);
+  const bootstrap = assertIntegrationRuntimeProcessOwnerBootstrap(options.processOwnerBootstrap);
+  const nativeWriteFence = await assertRetainedIntegrationRuntimeNativeWriteFenceCurrent(
+    options.nativeWriteFence,
+    {
+      repository,
+      processOwnerBootstrap: options.processOwnerBootstrap,
+      repositoryFenceLease: options.repositoryFenceLease,
+    }
+  );
+  const evidence = assertRetainedIntegrationNativeExecutionEvidence(
+    options.nativeExecutionEvidence,
+    {
+      sessionStateStore: options.sessionStateStore,
+      nativeWriteFence,
+    }
+  );
   const store = assertRetainedIntegrationSessionStateStore(
     options.sessionStateStore,
     options.sessionStateStoreExpected
   );
-  const evidence = assertRetainedIntegrationNativeExecutionEvidence(options.nativeExecutionEvidence, {
+  assertRetainedIntegrationNativeExecutionEvidence(evidence, {
     sessionStateStore: store,
     sessionStateStoreExpected: options.sessionStateStoreExpected,
     storageNamespaceDigest: store.attestation.logicalNamespaceDigest,
+    nativeWriteFence,
   });
-  const repository = assertRetainedIntegrationRuntimeRepositorySurface(options.repository);
-  const bootstrap = assertIntegrationRuntimeProcessOwnerBootstrap(options.processOwnerBootstrap);
   const recovery = assertRetainedIntegrationRuntimeRecoveryCoordinator(options.recoveryCoordinator, {
     repository,
     nativeExecutionEvidence: evidence,
     processOwnerBootstrap: options.processOwnerBootstrap,
     repositoryFenceLease: options.repositoryFenceLease,
+    nativeWriteFence,
   });
   const fence = await assertRetainedIntegrationRuntimeRepositoryFenceLeaseCurrent(
     repository,
@@ -523,10 +557,20 @@ export async function createRetainedIntegrationTextWorkspace(input = {}) {
     fail("INTEGRATION_TEXT_WORKSPACE_UNAVAILABLE", "Retained text-workspace storage is closed.");
   }
   const expected = cloneCanonical(options.sessionStateStoreExpected, "retained storage expected binding");
-  const attestation = buildAttestation(store, expected, evidence, repository, recovery, bootstrap, fence);
+  const attestation = buildAttestation(
+    store,
+    expected,
+    evidence,
+    nativeWriteFence,
+    repository,
+    recovery,
+    bootstrap,
+    fence
+  );
   const state = {
     store,
     evidence,
+    nativeWriteFence,
     expected,
     repository,
     recovery,
@@ -738,6 +782,9 @@ export function assertRetainedIntegrationTextWorkspace(value, expected = {}) {
   if (expected.nativeExecutionEvidence && state.evidence !== expected.nativeExecutionEvidence) {
     fail("INTEGRATION_TEXT_WORKSPACE_UNAVAILABLE", "Text-workspace native evidence identity changed.");
   }
+  if (expected.nativeWriteFence && state.nativeWriteFence !== expected.nativeWriteFence) {
+    fail("INTEGRATION_TEXT_WORKSPACE_UNAVAILABLE", "Text-workspace native-write fence identity changed.");
+  }
   if (
     expected.repository && state.repository !== expected.repository ||
     expected.recoveryCoordinator && state.recovery !== expected.recoveryCoordinator ||
@@ -749,6 +796,23 @@ export function assertRetainedIntegrationTextWorkspace(value, expected = {}) {
   if (expected.sessionStateStoreExpected) {
     assertRetainedIntegrationSessionStateStore(state.store, expected.sessionStateStoreExpected);
   }
+  assertRetainedIntegrationRuntimeNativeWriteFence(state.nativeWriteFence, {
+    repository: state.repository,
+    processOwnerBootstrap: state.bootstrap,
+    repositoryFenceLease: state.repositoryFenceLease,
+  });
+  assertRetainedIntegrationNativeExecutionEvidence(state.evidence, {
+    sessionStateStore: state.store,
+    sessionStateStoreExpected: state.expected,
+    nativeWriteFence: state.nativeWriteFence,
+  });
+  assertRetainedIntegrationRuntimeRecoveryCoordinator(state.recovery, {
+    repository: state.repository,
+    nativeExecutionEvidence: state.evidence,
+    processOwnerBootstrap: state.bootstrap,
+    repositoryFenceLease: state.repositoryFenceLease,
+    nativeWriteFence: state.nativeWriteFence,
+  });
   if (value.attestation.digest !== contractDigest(Object.fromEntries(
     Object.entries(value.attestation).filter(([key]) => key !== "digest")
   ))) {
@@ -758,11 +822,28 @@ export function assertRetainedIntegrationTextWorkspace(value, expected = {}) {
 }
 
 async function currentTextWorkspaceProof(state) {
+  if (state.store.isClosed() || state.evidence.isClosed()) {
+    fail("INTEGRATION_TEXT_WORKSPACE_UNAVAILABLE", "Retained text-workspace storage is closed.");
+  }
+  assertRetainedIntegrationNativeExecutionEvidence(state.evidence, {
+    sessionStateStore: state.store,
+    sessionStateStoreExpected: state.expected,
+    nativeWriteFence: state.nativeWriteFence,
+  });
+  const nativeWriteFence = await assertRetainedIntegrationRuntimeNativeWriteFenceCurrent(
+    state.nativeWriteFence,
+    {
+      repository: state.repository,
+      processOwnerBootstrap: state.bootstrap,
+      repositoryFenceLease: state.repositoryFenceLease,
+    }
+  );
   assertRetainedIntegrationRuntimeRecoveryCoordinator(state.recovery, {
     repository: state.repository,
     nativeExecutionEvidence: state.evidence,
     processOwnerBootstrap: state.bootstrap,
     repositoryFenceLease: state.repositoryFenceLease,
+    nativeWriteFence,
   });
   const fence = await assertRetainedIntegrationRuntimeRepositoryFenceLeaseCurrent(
     state.repository,
@@ -774,7 +855,14 @@ async function currentTextWorkspaceProof(state) {
     fence.generation !== state.attestation.repositoryFenceGeneration ||
     fence.ownerIdentityDigest !== state.attestation.repositoryFenceOwnerIdentityDigest ||
     fence.fenceDigest !== state.attestation.repositoryFenceDigest ||
-    fence.leaseDigest !== state.attestation.repositoryFenceLeaseDigest
+    fence.leaseDigest !== state.attestation.repositoryFenceLeaseDigest ||
+    nativeWriteFence.attestation.digest !== state.attestation.nativeWriteFenceAttestationDigest ||
+    nativeWriteFence.attestation.repositoryIdentityDigest !== fence.repositoryIdentityDigest ||
+    nativeWriteFence.attestation.repositoryFenceGeneration !== fence.generation ||
+    nativeWriteFence.attestation.repositoryFenceOwnerDigest !== fence.ownerDigest ||
+    nativeWriteFence.attestation.repositoryFenceOwnerIdentityDigest !== fence.ownerIdentityDigest ||
+    nativeWriteFence.attestation.repositoryFenceDigest !== fence.fenceDigest ||
+    nativeWriteFence.attestation.repositoryFenceLeaseDigest !== fence.leaseDigest
   ) {
     fail("INTEGRATION_REPOSITORY_FENCE_STALE", "Text-workspace repository fence is stale or changed.");
   }
@@ -788,8 +876,12 @@ async function currentTextWorkspaceProof(state) {
     repositoryFenceDigest: fence.fenceDigest,
     repositoryFenceLeaseDigest: fence.leaseDigest,
     durablyCurrent: true,
-    nativeSessionStateWriterFencing: false,
-    nativeSessionStateWriterQuiescenceProven: false,
+    nativeWriteFenceAttestationDigest: nativeWriteFence.attestation.digest,
+    nativeWriteFenceSealDigest: nativeWriteFence.attestation.sessionStateWriteFenceSealDigest,
+    nativeSessionStateWriterFencing: true,
+    nativeSessionStateWriterQuiescenceProven: true,
+    fullSessionStoreSidecarsFenced: false,
+    imagePerceptionSidecarsFenced: false,
   });
   return frozenRecord({ ...unsigned, digest: contractDigest(unsigned) });
 }
