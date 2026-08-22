@@ -1943,6 +1943,7 @@ async function runPendingWeightCaps(smokeRoot) {
 async function runStaticBoundaryChecks() {
   const source = await fs.readFile(new URL("../src/integration-retained-session-state-store.js", import.meta.url), "utf8");
   const config = await fs.readFile(new URL("../src/integration-config.js", import.meta.url), "utf8");
+  const allowedPreEnableConsumer = "integration-retained-native-session-repository-state.js";
   assert.doesNotMatch(source, /from\s+["'].+integration-(?:runtime-authority|server|native-executor)/u);
   assert.doesNotMatch(source, /createAgintiIntegrationRuntimeAuthority|createIntegrationServer/u);
   assert.match(source, /runtimeCapabilityEnabled:\s*false/u);
@@ -1960,6 +1961,7 @@ async function runStaticBoundaryChecks() {
   ));
   for (const requiredName of [
     "integration-native-executor.js",
+    allowedPreEnableConsumer,
     "integration-runtime-authority.js",
     "integration-native-runtime-roots.js",
     "integration-server.js",
@@ -1969,6 +1971,16 @@ async function runStaticBoundaryChecks() {
   ]) assert.equal(consumerNames.includes(requiredName), true, `Missing no-wiring consumer scan: ${requiredName}`);
   for (const consumerName of consumerNames) {
     const consumer = await fs.readFile(path.join(sourceDirectory, consumerName), "utf8");
+    if (consumerName === allowedPreEnableConsumer) {
+      assert.match(consumer, /runtimeCapabilityEnabled:\s*false/u);
+      assert.match(consumer, /runtimeWiringIncluded:\s*false/u);
+      assert.doesNotMatch(
+        consumer,
+        /integration-(?:runtime-authority|server|native-executor|session-service|session-persistence|api|runtime-repository-contract|event-ledger-store|idempotency-store)\.js|(?:^|\/)session-store\.js|artifact-tunnel\.js/u,
+        `${consumerName} may bind the retained session-state store only as a capability-disabled pre-enable domain surface.`
+      );
+      continue;
+    }
     assert.doesNotMatch(
       consumer,
       /integration-retained-session-state-store|(?:create|assert)RetainedIntegrationSessionStateStore/u,
