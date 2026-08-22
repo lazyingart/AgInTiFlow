@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { fork } from "node:child_process";
+import { fork, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -14,6 +14,7 @@ import {
 } from "../src/integration-retained-native-session-repository-state.js";
 import {
   INTEGRATION_RETAINED_SESSION_STATE_LOCK_FILE,
+  bindRetainedIntegrationSessionStateStoreWriteFence,
   createRetainedIntegrationSessionStateStore,
 } from "../src/integration-retained-session-state-store.js";
 import {
@@ -42,9 +43,11 @@ import {
 import {
   acquireRetainedIntegrationRuntimeRepositoryFence,
   compactRetainedIntegrationRuntimeRepository,
+  createRetainedIntegrationRuntimeNativeWriteFence,
   createRetainedIntegrationRuntimeRecoveryCoordinator,
   createRetainedIntegrationRuntimeRepositorySurface,
   handoffRetainedIntegrationRuntimeRepositoryFence,
+  retainedIntegrationRuntimeNativeWriteFenceActivityProof,
 } from "../src/integration-retained-runtime-repository-surface.js";
 import {
   createAgintiIntegrationRuntimeAuthority,
@@ -168,6 +171,7 @@ function runtimeAuthorityForFixture(fixture) {
     hardenedSandboxAttestation: runtimeSandboxAttestation(),
     processOwnerBootstrap: fixture.processOwnerBootstrap,
     repositoryFenceLease: fixture.acquiredFence.lease,
+    nativeWriteFence: fixture.nativeWriteFence,
     retainedNativeExecutionEvidence: fixture.evidence,
     retainedRecoveryCoordinator: fixture.recovery,
   });
@@ -218,7 +222,7 @@ function runtimeRoots(rootPath) {
   return Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
 }
 
-async function openFixture(rootPath, now, processOwnerBootstrap) {
+async function openFixture(rootPath, now, processOwnerBootstrap, options = {}) {
   const repositorySegments = Object.freeze(["data:repository"]);
   const sessionSegments = Object.freeze(["native:sessions"]);
   const repositoryPath = path.join(rootPath, ...repositorySegments);
@@ -316,16 +320,48 @@ async function openFixture(rootPath, now, processOwnerBootstrap) {
   const acquiredFence = await acquireRetainedIntegrationRuntimeRepositoryFence(repository, {
     processOwnerBootstrap,
   });
-  const evidence = createRetainedIntegrationNativeExecutionEvidence({
-    sessionStateStore,
-    sessionStateStoreExpected: sessionBinding.expected,
-  });
-  const recovery = createRetainedIntegrationRuntimeRecoveryCoordinator({
-    repository,
-    nativeExecutionEvidence: evidence,
-    processOwnerBootstrap,
-    repositoryFenceLease: acquiredFence.lease,
-  });
+  if (options.probeFakeWriteFence === true) {
+    const fakeFence = deepFreeze({
+      schemaVersion: "aginti-retained-runtime-native-write-fence-v1",
+      fenceIdentity: Object.freeze({ passthrough: true }),
+      seal: Object.freeze({ passthrough: true }),
+      admit: (operation) => operation(),
+      attestation: Object.freeze({
+        sessionStateNamespaceDigest: sessionStateStore.attestation.logicalNamespaceDigest,
+        sessionStateAdmissionBindingDigest: sessionStateStore.attestation.admissionBindingDigest,
+      }),
+    });
+    await expectCode(
+      () => bindRetainedIntegrationSessionStateStoreWriteFence(
+        sessionStateStore,
+        sessionBinding.expected,
+        fakeFence
+      ),
+      "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID"
+    );
+  }
+  const nativeWriteFence = options.skipNativeWriteFence === true
+    ? null
+    : await createRetainedIntegrationRuntimeNativeWriteFence(repository, {
+        processOwnerBootstrap,
+        repositoryFenceLease: acquiredFence.lease,
+      });
+  const evidence = nativeWriteFence
+    ? createRetainedIntegrationNativeExecutionEvidence({
+        sessionStateStore,
+        sessionStateStoreExpected: sessionBinding.expected,
+        nativeWriteFence,
+      })
+    : null;
+  const recovery = nativeWriteFence
+    ? createRetainedIntegrationRuntimeRecoveryCoordinator({
+        repository,
+        nativeExecutionEvidence: evidence,
+        processOwnerBootstrap,
+        repositoryFenceLease: acquiredFence.lease,
+        nativeWriteFence,
+      })
+    : null;
   return Object.freeze({
     authority,
     repository,
@@ -337,6 +373,7 @@ async function openFixture(rootPath, now, processOwnerBootstrap) {
     processOwnerBootstrap,
     processOwner: processOwnerBootstrap.processOwner,
     acquiredFence,
+    nativeWriteFence,
     sessionBinding,
   });
 }
@@ -351,17 +388,9 @@ async function openSiblingFixture(rootPath, now, fixture) {
   const acquiredFence = await acquireRetainedIntegrationRuntimeRepositoryFence(repository, {
     processOwnerBootstrap: fixture.processOwnerBootstrap,
   });
-  const recovery = createRetainedIntegrationRuntimeRecoveryCoordinator({
-    repository,
-    nativeExecutionEvidence: fixture.evidence,
-    processOwnerBootstrap: fixture.processOwnerBootstrap,
-    repositoryFenceLease: acquiredFence.lease,
-  });
   return Object.freeze({
     repository,
     repositoryState: fixture.repositoryState,
-    evidence: fixture.evidence,
-    recovery,
     processOwnerBootstrap: fixture.processOwnerBootstrap,
     processOwner: fixture.processOwner,
     acquiredFence,
@@ -473,6 +502,52 @@ function errorCode(error) {
   return String(error?.publicCode || error?.code || error?.name || "ERROR");
 }
 
+function spawnSessionLockBarrier(lockPath) {
+  const child = spawn(
+    HELPER_PATH,
+    ["-x", lockPath, "/bin/bash", "-c", "echo locked; IFS= read -r _"],
+    { stdio: ["pipe", "pipe", "pipe"] }
+  );
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+  const locked = new Promise((resolve, reject) => {
+    let output = "";
+    child.once("error", reject);
+    child.stdout.on("data", (chunk) => {
+      output += chunk.toString();
+      if (output.includes("locked")) resolve();
+    });
+    child.once("exit", (code, signal) => {
+      if (!output.includes("locked")) {
+        reject(new Error(`session lock barrier exited ${code}/${signal}: ${stderr}`));
+      }
+    });
+  });
+  const exited = new Promise((resolve) => child.once("exit", (code, signal) => {
+    resolve({ code, signal, stderr });
+  }));
+  return Object.freeze({
+    child,
+    locked,
+    exited,
+    release() {
+      child.stdin.end("release\n");
+    },
+    terminate() {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    },
+  });
+}
+
+async function waitForFenceActivity(nativeWriteFence, predicate, label) {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    const proof = retainedIntegrationRuntimeNativeWriteFenceActivityProof(nativeWriteFence);
+    if (predicate(proof)) return proof;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for native-write fence ${label}.`);
+}
+
 function spawnSuccessor(rootPath) {
   const child = fork(fileURLToPath(import.meta.url), ["--child=successor", `--root=${rootPath}`], {
     execArgv: [],
@@ -561,6 +636,22 @@ async function runSuccessorChild() {
     const runtimeProof = await runtimeAuthority.getIntegrationRuntimeProof();
     const recovered = await fixture.recovery.resolveRecoveryHeldRun(message.payload);
     const replay = await fixture.recovery.resolveRecoveryHeldRun(message.payload);
+    const resumedNativeSessionId = fillerNativeSessionId(9001);
+    const predecessorNativeSnapshot = await fixture.sessionStateStore.loadSessionSnapshot(
+      resumedNativeSessionId
+    );
+    const successorNativeWrite = await fixture.sessionStateStore.compareAndSwapSessionSnapshot(
+      Object.freeze({
+        mutationId: "native-write-fence.successor-resume-after-handoff",
+        nativeSessionId: resumedNativeSessionId,
+        expectedPersistenceRevision: predecessorNativeSnapshot.persistenceRevision,
+        expectedIntegrityDigest: predecessorNativeSnapshot.integrityDigest,
+        state: Object.freeze({
+          sessionId: resumedNativeSessionId,
+          meta: Object.freeze({ runtimeConfig: Object.freeze({ revision: 2 }) }),
+        }),
+      })
+    );
     const persisted = (await fixture.repository.getIntegrationRun({
       runId: message.payload.runId,
       principalId: message.payload.principalId,
@@ -580,6 +671,12 @@ async function runSuccessorChild() {
         persistedRuntimeRevision: persisted.authority.runtimeRevision,
         persistedProcessOwnerDigest: contractDigest(persisted.processOwner),
         fence: runtimeProof.repositoryFence,
+        nativeWriteFence: runtimeProof.nativeWriteFence,
+        successorNativeWrite: {
+          outcome: successorNativeWrite.outcome,
+          persistenceRevision: successorNativeWrite.snapshot.persistenceRevision,
+          runtimeRevision: successorNativeWrite.snapshot.runtimeRevision,
+        },
         coordinatorFenceDigest: fixture.recovery.attestation.repositoryFenceDigest,
         coordinatorLeaseDigest: fixture.recovery.attestation.repositoryFenceLeaseDigest,
       },
@@ -687,16 +784,53 @@ async function run() {
   const mismatchRootPath = await fs.mkdtemp(
     path.join(os.tmpdir(), "aginti-retained-native-evidence-mismatch-")
   );
+  const spliceRootPath = await fs.mkdtemp(
+    path.join(os.tmpdir(), "aginti-retained-native-evidence-splice-")
+  );
   let fixture = null;
   let mismatchFixture = null;
+  let spliceFixture = null;
+  let spliceReplacementFixture = null;
   let staleRuntimeFixture = null;
   let successor = null;
+  let sessionLockBarrier = null;
   let tick = 100;
   const now = () => new Date(BASE_MS + tick++ * 1000);
   const processOwnerBootstrap = await createIntegrationRuntimeProcessOwnerBootstrap();
   try {
-    fixture = await openFixture(rootPath, now, processOwnerBootstrap);
+    fixture = await openFixture(rootPath, now, processOwnerBootstrap, {
+      probeFakeWriteFence: true,
+    });
     mismatchFixture = await openFixture(mismatchRootPath, now, processOwnerBootstrap);
+    spliceFixture = await openFixture(spliceRootPath, now, processOwnerBootstrap);
+    await spliceFixture.authority.close();
+    spliceFixture = null;
+    const replacedRepositoryPath = path.join(spliceRootPath, "data:repository");
+    await fs.rename(
+      replacedRepositoryPath,
+      path.join(spliceRootPath, "data:repository.replaced")
+    );
+    await ensureOwnerDirectory(replacedRepositoryPath);
+    await ensureLockFile(path.join(
+      replacedRepositoryPath,
+      INTEGRATION_RETAINED_REPOSITORY_LOCK_FILE
+    ));
+    spliceReplacementFixture = await openFixture(
+      spliceRootPath,
+      now,
+      processOwnerBootstrap,
+      { skipNativeWriteFence: true }
+    );
+    await expectCode(
+      () => createRetainedIntegrationRuntimeNativeWriteFence(
+        spliceReplacementFixture.repository,
+        {
+          processOwnerBootstrap,
+          repositoryFenceLease: spliceReplacementFixture.acquiredFence.lease,
+        }
+      ),
+      "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID"
+    );
     const sameDescriptorExpected = fixture.sessionBinding.expected;
     const sameDescriptorLock = await openIntegrationRetainedRegularFileLock(
       fixture.sessionBinding.files,
@@ -717,9 +851,31 @@ async function run() {
       sameDescriptorLock,
       sameDescriptorExpected
     );
+    const rawProbeSessionId = fillerNativeSessionId(9001);
+    await expectCode(
+      () => sameDescriptorStore.compareAndSwapSessionSnapshot(Object.freeze({
+        mutationId: "native-write-fence.raw-reopen-probe",
+        nativeSessionId: rawProbeSessionId,
+        expectedPersistenceRevision: 0,
+        expectedIntegrityDigest: ZERO_DIGEST,
+        state: Object.freeze({
+          sessionId: rawProbeSessionId,
+          meta: Object.freeze({
+            runtimeConfig: Object.freeze({ revision: 1 }),
+          }),
+        }),
+      })),
+      "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_REQUIRED"
+    );
+    await bindRetainedIntegrationSessionStateStoreWriteFence(
+      sameDescriptorStore,
+      sameDescriptorExpected,
+      fixture.nativeWriteFence
+    );
     const sameDescriptorEvidence = createRetainedIntegrationNativeExecutionEvidence({
       sessionStateStore: sameDescriptorStore,
       sessionStateStoreExpected: sameDescriptorExpected,
+      nativeWriteFence: fixture.nativeWriteFence,
     });
     await expectCode(
       () => createRetainedIntegrationRuntimeRecoveryCoordinator({
@@ -727,6 +883,7 @@ async function run() {
         nativeExecutionEvidence: sameDescriptorEvidence,
         processOwnerBootstrap,
         repositoryFenceLease: fixture.acquiredFence.lease,
+        nativeWriteFence: fixture.nativeWriteFence,
       }),
       "INTEGRATION_NATIVE_EVIDENCE_UNAVAILABLE"
     );
@@ -736,8 +893,17 @@ async function run() {
         nativeExecutionEvidence: mismatchFixture.evidence,
         processOwnerBootstrap,
         repositoryFenceLease: fixture.acquiredFence.lease,
+        nativeWriteFence: fixture.nativeWriteFence,
       }),
       "INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE"
+    );
+    await expectCode(
+      () => bindRetainedIntegrationSessionStateStoreWriteFence(
+        mismatchFixture.sessionStateStore,
+        mismatchFixture.sessionBinding.expected,
+        fixture.nativeWriteFence
+      ),
+      "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID"
     );
     assert.equal(
       fixture.recovery.attestation.storageExpectedDigest,
@@ -1017,20 +1183,88 @@ async function run() {
       resultDigest: resumedTerminal.resultDigest,
     });
     staleRuntimeFixture = await openSiblingFixture(rootPath, now, fixture);
-    const staleRuntimeAuthority = runtimeAuthorityForFixture(staleRuntimeFixture);
+    await expectCode(
+      () => createRetainedIntegrationRuntimeNativeWriteFence(staleRuntimeFixture.repository, {
+        processOwnerBootstrap,
+        repositoryFenceLease: staleRuntimeFixture.acquiredFence.lease,
+      }),
+      "INTEGRATION_NATIVE_WRITE_FENCE_UNAVAILABLE"
+    );
+    const staleRuntimeAuthority = runtimeAuthorityForFixture(fixture);
     const beforeHandoffProof = await staleRuntimeAuthority.getIntegrationRuntimeProof();
     assert.equal(beforeHandoffProof.repositoryFence.acquired, true);
     assert.equal(beforeHandoffProof.repositoryFence.durablyCurrent, true);
+    assert.equal(beforeHandoffProof.nativeWriteFence.required, true);
+    assert.equal(beforeHandoffProof.nativeWriteFence.acquired, true);
+    assert.equal(beforeHandoffProof.nativeWriteFence.exactLexicalCapability, true);
+    assert.equal(beforeHandoffProof.nativeWriteFence.durablyCurrent, true);
+    assert.equal(beforeHandoffProof.nativeWriteFence.fullSessionStoreSidecarsFenced, false);
+    assert.equal(
+      beforeHandoffProof.nativeWriteFence.attestationDigest,
+      fixture.nativeWriteFence.attestation.digest
+    );
     assert.equal(
       beforeHandoffProof.repositoryFence.leaseDigest,
-      staleRuntimeFixture.acquiredFence.lease.digest
+      fixture.acquiredFence.lease.digest
     );
     successor = spawnSuccessor(rootPath);
     const successorReady = await successor.ready;
-    const handoff = await handoffRetainedIntegrationRuntimeRepositoryFence(fixture.repository, {
+    await expectCode(
+      () => handoffRetainedIntegrationRuntimeRepositoryFence(staleRuntimeFixture.repository, {
+        currentProcessOwnerBootstrap: processOwnerBootstrap,
+        successorProcessOwner: successorReady.processOwner,
+        nativeWriteFence: fixture.nativeWriteFence,
+      }),
+      "INTEGRATION_NATIVE_WRITE_FENCE_UNAVAILABLE"
+    );
+    sessionLockBarrier = spawnSessionLockBarrier(path.join(
+      rootPath,
+      "native:sessions",
+      INTEGRATION_RETAINED_SESSION_STATE_LOCK_FILE
+    ));
+    await sessionLockBarrier.locked;
+    const completionOrder = [];
+    const admittedCasPromise = fixture.sessionStateStore.compareAndSwapSessionSnapshot(
+      Object.freeze({
+        mutationId: "native-write-fence.admitted-before-handoff",
+        nativeSessionId: rawProbeSessionId,
+        expectedPersistenceRevision: 0,
+        expectedIntegrityDigest: ZERO_DIGEST,
+        state: Object.freeze({
+          sessionId: rawProbeSessionId,
+          meta: Object.freeze({ runtimeConfig: Object.freeze({ revision: 1 }) }),
+        }),
+      })
+    ).then((result) => {
+      completionOrder[completionOrder.length] = "native-cas";
+      return result;
+    });
+    await waitForFenceActivity(
+      fixture.nativeWriteFence,
+      (proof) => proof.activeWrites === 1 && proof.quiescing === false,
+      "admitted CAS"
+    );
+    const handoffPromise = handoffRetainedIntegrationRuntimeRepositoryFence(fixture.repository, {
       currentProcessOwnerBootstrap: processOwnerBootstrap,
       successorProcessOwner: successorReady.processOwner,
+      nativeWriteFence: fixture.nativeWriteFence,
+    }).then((result) => {
+      completionOrder[completionOrder.length] = "handoff";
+      return result;
     });
+    const drainingProof = await waitForFenceActivity(
+      fixture.nativeWriteFence,
+      (proof) => proof.activeWrites === 1 && proof.quiescing === true,
+      "handoff drain"
+    );
+    assert.equal(drainingProof.quiesced, false);
+    sessionLockBarrier.release();
+    const barrierExit = await sessionLockBarrier.exited;
+    assert.equal(barrierExit.code, 0, barrierExit.stderr);
+    sessionLockBarrier = null;
+    const [admittedCas, handoff] = await Promise.all([admittedCasPromise, handoffPromise]);
+    assert.equal(admittedCas.outcome, "committed");
+    assert.deepEqual(completionOrder, ["native-cas", "handoff"]);
     await expectCode(
       () => staleRuntimeAuthority.getIntegrationRuntimeProof(),
       "INTEGRATION_REPOSITORY_FENCE_STALE"
@@ -1042,13 +1276,30 @@ async function run() {
       expectedCursor: noEvidenceCursor,
     });
     await expectCode(
-      () => staleRuntimeFixture.recovery.resolveRecoveryHeldRun(successorRequest),
+      () => fixture.recovery.resolveRecoveryHeldRun(successorRequest),
       "INTEGRATION_REPOSITORY_FENCE_STALE"
     );
     await expectCode(
-      () => staleRuntimeFixture.repository.finishIntegrationRunWithOutbox(resumedFinishPayload),
+      () => fixture.repository.finishIntegrationRunWithOutbox(resumedFinishPayload),
       "INTEGRATION_REPOSITORY_FENCE_STALE"
     );
+    const staleRawBefore = await fixture.sessionStateStore.loadSessionSnapshot(rawProbeSessionId);
+    await expectCode(
+      () => fixture.sessionStateStore.compareAndSwapSessionSnapshot(Object.freeze({
+        mutationId: "native-write-fence.stale-raw-cas",
+        nativeSessionId: rawProbeSessionId,
+        expectedPersistenceRevision: staleRawBefore.persistenceRevision,
+        expectedIntegrityDigest: staleRawBefore.integrityDigest,
+        state: Object.freeze({
+          sessionId: rawProbeSessionId,
+          meta: Object.freeze({ runtimeConfig: Object.freeze({ revision: 1 }) }),
+        }),
+      })),
+      "INTEGRATION_NATIVE_WRITE_FENCE_STALE"
+    );
+    const staleRawAfter = await fixture.sessionStateStore.loadSessionSnapshot(rawProbeSessionId);
+    assert.equal(staleRawAfter.persistenceRevision, staleRawBefore.persistenceRevision);
+    assert.equal(staleRawAfter.integrityDigest, staleRawBefore.integrityDigest);
     const successorResult = await successor.command("resolve", successorRequest);
     assert.equal(successorResult.runId, RESUME_RUN_ID);
     assert.equal(successorResult.status, "completed");
@@ -1061,6 +1312,14 @@ async function run() {
     assert.equal(successorResult.fence.generation, handoff.fence.generation);
     assert.equal(successorResult.fence.ownerDigest, contractDigest(successorReady.processOwner));
     assert.equal(successorResult.fence.durablyCurrent, true);
+    assert.equal(successorResult.nativeWriteFence.acquired, true);
+    assert.equal(successorResult.nativeWriteFence.durablyCurrent, true);
+    assert.equal(successorResult.nativeWriteFence.generation, successorResult.fence.generation);
+    assert.equal(successorResult.nativeWriteFence.fenceDigest, successorResult.fence.fenceDigest);
+    assert.equal(successorResult.nativeWriteFence.fullSessionStoreSidecarsFenced, false);
+    assert.equal(successorResult.successorNativeWrite.outcome, "committed");
+    assert.equal(successorResult.successorNativeWrite.persistenceRevision, 2);
+    assert.equal(successorResult.successorNativeWrite.runtimeRevision, 2);
     assert.equal(successorResult.coordinatorFenceDigest, successorResult.fence.fenceDigest);
     assert.equal(successorResult.coordinatorLeaseDigest, successorResult.fence.leaseDigest);
     const successorExit = await successor.exited;
@@ -1080,6 +1339,14 @@ async function run() {
       immutableSnapshotHash: true,
       exactStorageBinding: true,
       exactSessionStateStoreIdentityBinding: true,
+      stableSealSurvivesRestart: true,
+      mismatchedStableRootRejected: true,
+      samePathRepositoryLockReplacementRejected: true,
+      maliciousFakePresealRejected: true,
+      rawReopenedStoreWriteRejected: true,
+      siblingSurfaceGuardRejected: true,
+      staleRawCasRejectedBeforeCommit: true,
+      admittedNativeCasDrainedBeforeHandoff: true,
       authorizationProcessOwnerBound: true,
       missingTerminalEvidenceHeld: true,
       historicalRecoveryReplayAfterReceiptPruningExpired: true,
@@ -1087,16 +1354,22 @@ async function run() {
       staleCoordinatorRejectedAfterHandoff: true,
       staleRepositoryMutationRejectedAfterHandoff: true,
       successorRecoveryAfterHandoff: true,
+      successorNativeResumeWriteAfterHandoff: true,
+      exactRuntimeNativeWriteFenceAttestation: true,
       fullSessionStoreRetained: false,
       runtimeCapabilityEnabled: false,
     }));
   } finally {
+    sessionLockBarrier?.terminate();
     successor?.terminate();
     await staleRuntimeFixture?.authority?.close?.().catch(() => {});
     await fixture?.authority.close().catch(() => {});
     await mismatchFixture?.authority.close().catch(() => {});
+    await spliceFixture?.authority.close().catch(() => {});
+    await spliceReplacementFixture?.authority.close().catch(() => {});
     await fs.rm(rootPath, { recursive: true, force: true });
     await fs.rm(mismatchRootPath, { recursive: true, force: true });
+    await fs.rm(spliceRootPath, { recursive: true, force: true });
   }
 }
 

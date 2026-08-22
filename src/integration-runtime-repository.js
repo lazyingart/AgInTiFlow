@@ -6,13 +6,14 @@ import {
   INTEGRATION_INTEGRITY_DIGEST_SECURITY_SCOPE,
   assertRetainedProtectedFilePrimitives,
   assertRetainedRegularFileLock,
+  retainedRegularFileLockObjectIdentityDigest,
   authorityFail,
 } from "./integration-durable-common.js";
 
 export const INTEGRATION_RETAINED_REPOSITORY_KERNEL_VERSION =
   "aginti-retained-integration-repository-kernel-v1";
 export const INTEGRATION_RETAINED_REPOSITORY_KERNEL_ATTESTATION_VERSION =
-  "aginti-retained-integration-repository-kernel-attestation-v1";
+  "aginti-retained-integration-repository-kernel-attestation-v2";
 export const INTEGRATION_RETAINED_REPOSITORY_SNAPSHOT_VERSION =
   "aginti-retained-integration-repository-snapshot-v1";
 export const INTEGRATION_RETAINED_REPOSITORY_LAST_COMMIT_VERSION =
@@ -98,6 +99,9 @@ export const INTEGRATION_RETAINED_REPOSITORY_KERNEL_LIMITATIONS = Object.freeze(
   longLivedDomainReceiptsIncluded: false,
   pointerDigestStableAcrossReopen: true,
   admissionBindingDigestStableAcrossReopen: false,
+  namespaceSealBindingDigestStableAcrossReopen: true,
+  namespaceSealBindingIncludesStableLockObjectIdentity: true,
+  namespaceSealBindingExcludesMutableDirectoryIdentity: true,
   sameSurfaceObservedRollbackDetection: true,
   freshFactoryValidRollbackDetection: false,
   atomicSameDirectoryReplace: true,
@@ -168,6 +172,7 @@ const ATTESTATION_KEYS = Object.freeze([
   "lockFileNameDigest",
   "pointerDigest",
   "admissionBindingDigest",
+  "namespaceSealBindingDigest",
   "maxSnapshotBytes",
   "maxJsonDepth",
   "maxJsonNodes",
@@ -612,6 +617,19 @@ function admissionBindingDigest(expected) {
     lock: lockExpected(expected),
     maxSnapshotBytes: expected.maxSnapshotBytes,
     lockWaitMs: expected.lockWaitMs,
+  });
+}
+
+function namespaceSealBindingDigest(expected, lockObjectIdentityDigest) {
+  return contractDigest({
+    schemaVersion: "aginti-retained-integration-repository-seal-binding-v1",
+    role: expected.role,
+    canonicalPath: expected.canonicalPath,
+    relativeSegments: expected.relativeSegments,
+    lockFileName: INTEGRATION_RETAINED_REPOSITORY_LOCK_FILE,
+    lockFileObjectIdentityDigest: lockObjectIdentityDigest,
+    helperSha256: expected.helperSha256,
+    maxSnapshotBytes: expected.maxSnapshotBytes,
   });
 }
 
@@ -1343,6 +1361,7 @@ function validateKernelAttestation(proof) {
     [proof.lockFileNameDigest, "repository kernel lock file name digest"],
     [proof.pointerDigest, "repository kernel pointer digest"],
     [proof.admissionBindingDigest, "repository kernel admission binding digest"],
+    [proof.namespaceSealBindingDigest, "repository kernel namespace seal binding digest"],
     [proof.digest, "repository kernel attestation digest"],
   ]) {
     assertDigest(value, label, "INTEGRATION_REPOSITORY_KERNEL_UNAVAILABLE");
@@ -1380,6 +1399,7 @@ function buildKernelAttestation(state) {
     }),
     pointerDigest: state.pointerDigest,
     admissionBindingDigest: state.admissionBindingDigest,
+    namespaceSealBindingDigest: state.namespaceSealBindingDigest,
     maxSnapshotBytes: state.expected.maxSnapshotBytes,
     maxJsonDepth: INTEGRATION_RETAINED_REPOSITORY_MAX_JSON_DEPTH,
     maxJsonNodes: INTEGRATION_RETAINED_REPOSITORY_MAX_JSON_NODES,
@@ -1432,6 +1452,10 @@ function createKernelState(filePrimitives, lock, expectedInput) {
     expected,
     pointerDigest: logicalPointerDigest(expected),
     admissionBindingDigest: admissionBindingDigest(expected),
+    namespaceSealBindingDigest: namespaceSealBindingDigest(
+      expected,
+      retainedRegularFileLockObjectIdentityDigest(lock, lockExpected(expected))
+    ),
     operationQueue: [],
     queueDraining: false,
     pendingOperations: 0,
@@ -1500,4 +1524,13 @@ export function assertRetainedIntegrationRuntimeRepositoryKernel(value, expected
     kernelFail("INTEGRATION_REPOSITORY_KERNEL_UNAVAILABLE", "Repository kernel expected binding is invalid.");
   }
   return value;
+}
+
+export function retainedIntegrationRuntimeRepositoryKernelSealBindingProof(value, expectedInput) {
+  assertRetainedIntegrationRuntimeRepositoryKernel(value, expectedInput);
+  const state = repositoryKernelBrand.get(value);
+  return frozenRecord({
+    pointerDigest: state.pointerDigest,
+    namespaceSealBindingDigest: state.namespaceSealBindingDigest,
+  });
 }

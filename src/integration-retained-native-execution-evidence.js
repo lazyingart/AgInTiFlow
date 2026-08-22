@@ -1,6 +1,7 @@
 import { types as utilTypes } from "node:util";
 import {
   assertRetainedIntegrationSessionStateStore,
+  assertRetainedIntegrationSessionStateStoreUsesWriteFence,
 } from "./integration-retained-session-state-store.js";
 import {
   assertRetainedIntegrationNativeSessionRepositoryStateUsesSessionStateStore,
@@ -14,9 +15,9 @@ import { authorityFail } from "./integration-durable-common.js";
 import { redactSensitiveText } from "./redaction.js";
 
 export const INTEGRATION_RETAINED_NATIVE_EXECUTION_EVIDENCE_VERSION =
-  "aginti-retained-native-execution-evidence-v1";
+  "aginti-retained-native-execution-evidence-v3";
 export const INTEGRATION_RETAINED_NATIVE_EXECUTION_EVIDENCE_ATTESTATION_VERSION =
-  "aginti-retained-native-execution-evidence-attestation-v1";
+  "aginti-retained-native-execution-evidence-attestation-v3";
 export const INTEGRATION_RETAINED_NATIVE_EXECUTION_TERMINAL_VERSION =
   "aginti-retained-native-execution-terminal-v1";
 export const INTEGRATION_RETAINED_NATIVE_STATE_MARKER_VERSION =
@@ -558,7 +559,7 @@ function runBinding(run, storageNamespaceDigest) {
   });
 }
 
-function buildAttestation(store, expected) {
+function buildAttestation(store, expected, nativeWriteFence, writeFenceBinding) {
   const unsigned = frozenRecord({
     schemaVersion: INTEGRATION_RETAINED_NATIVE_EXECUTION_EVIDENCE_ATTESTATION_VERSION,
     owner: "aginti",
@@ -573,12 +574,22 @@ function buildAttestation(store, expected) {
     recoveryRequiresExactTerminalEvidence: true,
     recoveryFromRevisionOnly: false,
     recoveryFromAbsenceOrBaseRevision: false,
-    crossProcessExecutionFence: false,
+    crossProcessExecutionFence: true,
+    exactNativeWriteFenceRequired: true,
+    durableFenceValidationBeforeEveryCas: true,
+    cooperativeHandoffQuiescence: true,
+    staleWritesRejectedBeforeCas: true,
+    nativeWriteFenceAttestationDigest: nativeWriteFence.attestation.digest,
+    nativeWriteFenceSealDigest: writeFenceBinding.sealDigest,
+    repositoryIdentityDigest: nativeWriteFence.attestation.repositoryIdentityDigest,
+    repositorySealBindingDigest: writeFenceBinding.repositorySealBindingDigest,
+    repositoryAttestationDigest: writeFenceBinding.repositoryAttestationDigest,
     fullSessionStoreRetained: false,
     evidenceIdDomain: INTEGRATION_RETAINED_NATIVE_EXECUTION_EVIDENCE_ID_DOMAIN,
     evidenceIdPrefix: INTEGRATION_RETAINED_NATIVE_EXECUTION_EVIDENCE_ID_PREFIX,
     storageNamespaceDigest: store.attestation.logicalNamespaceDigest,
     storageAdmissionBindingDigest: store.attestation.admissionBindingDigest,
+    storageSealBindingDigest: store.attestation.namespaceSealBindingDigest,
     storageExpectedDigest: contractDigest(expected),
   });
   return frozenRecord({ ...unsigned, digest: contractDigest(unsigned) });
@@ -587,7 +598,7 @@ function buildAttestation(store, expected) {
 export function createRetainedIntegrationNativeExecutionEvidence(input = {}) {
   const options = assertExactKeys(
     input,
-    ["sessionStateStore", "sessionStateStoreExpected"],
+    ["sessionStateStore", "sessionStateStoreExpected", "nativeWriteFence"],
     [],
     "native execution evidence factory"
   );
@@ -597,8 +608,32 @@ export function createRetainedIntegrationNativeExecutionEvidence(input = {}) {
   );
   if (store.isClosed()) fail("INTEGRATION_NATIVE_EVIDENCE_UNAVAILABLE", "Retained native evidence store is closed.");
   const expected = cloneCanonical(options.sessionStateStoreExpected, "retained native evidence expected binding");
-  const attestation = buildAttestation(store, expected);
-  const state = { store, expected, attestation };
+  let writeFenceBinding;
+  try {
+    writeFenceBinding = assertRetainedIntegrationSessionStateStoreUsesWriteFence(
+      store,
+      options.sessionStateStoreExpected,
+      options.nativeWriteFence
+    );
+  } catch {
+    fail(
+      "INTEGRATION_NATIVE_EVIDENCE_UNAVAILABLE",
+      "Retained native evidence requires the exact SessionStateStore native-write fence."
+    );
+  }
+  const attestation = buildAttestation(
+    store,
+    expected,
+    options.nativeWriteFence,
+    writeFenceBinding
+  );
+  const state = {
+    store,
+    expected,
+    nativeWriteFence: options.nativeWriteFence,
+    writeFenceBinding,
+    attestation,
+  };
 
   const surface = frozenRecord({
     schemaVersion: INTEGRATION_RETAINED_NATIVE_EXECUTION_EVIDENCE_VERSION,
@@ -785,6 +820,24 @@ export function assertRetainedIntegrationNativeExecutionEvidence(value, expected
     fail(
       "INTEGRATION_NATIVE_EVIDENCE_UNAVAILABLE",
       "Retained native evidence SessionStateStore identity binding changed."
+    );
+  }
+  if (expected.nativeWriteFence && state.nativeWriteFence !== expected.nativeWriteFence) {
+    fail(
+      "INTEGRATION_NATIVE_EVIDENCE_UNAVAILABLE",
+      "Retained native evidence native-write fence binding changed."
+    );
+  }
+  try {
+    assertRetainedIntegrationSessionStateStoreUsesWriteFence(
+      state.store,
+      state.expected,
+      state.nativeWriteFence
+    );
+  } catch {
+    fail(
+      "INTEGRATION_NATIVE_EVIDENCE_UNAVAILABLE",
+      "Retained native evidence SessionStateStore write fence is unavailable."
     );
   }
   if (expected.repositoryState) {

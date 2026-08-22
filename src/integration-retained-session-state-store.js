@@ -6,13 +6,18 @@ import {
   INTEGRATION_INTEGRITY_DIGEST_SECURITY_SCOPE,
   assertRetainedProtectedFilePrimitives,
   assertRetainedRegularFileLock,
+  retainedRegularFileLockObjectIdentityDigest,
   authorityFail,
 } from "./integration-durable-common.js";
+import {
+  admitRetainedIntegrationRuntimeNativeWriteFence,
+  assertRetainedIntegrationRuntimeNativeWriteFenceLexical,
+} from "./integration-retained-runtime-repository-surface.js";
 
 export const INTEGRATION_RETAINED_SESSION_STATE_STORE_VERSION =
   "aginti-retained-integration-session-state-store-v1";
 export const INTEGRATION_RETAINED_SESSION_STATE_STORE_ATTESTATION_VERSION =
-  "aginti-retained-integration-session-state-store-attestation-v1";
+  "aginti-retained-integration-session-state-store-attestation-v2";
 export const INTEGRATION_RETAINED_SESSION_STATE_ENVELOPE_VERSION =
   "aginti-retained-integration-session-state-envelope-v1";
 export const INTEGRATION_RETAINED_SESSION_STATE_LAST_MUTATION_VERSION =
@@ -29,9 +34,15 @@ export const INTEGRATION_RETAINED_SESSION_STATE_LAST_MUTATION_INTEGRITY_DOMAIN =
   "aginti-retained-integration-session-state-last-mutation";
 export const INTEGRATION_RETAINED_SESSION_STATE_ENVELOPE_INTEGRITY_DOMAIN =
   "aginti-retained-integration-session-state-envelope";
+export const INTEGRATION_RETAINED_SESSION_STATE_WRITE_FENCE_SEAL_VERSION =
+  "aginti-retained-integration-session-state-write-fence-seal-v2";
+export const INTEGRATION_RETAINED_SESSION_STATE_WRITE_FENCE_BINDING_VERSION =
+  "aginti-retained-integration-session-state-write-fence-binding-v2";
 
 export const INTEGRATION_RETAINED_SESSION_STATE_LOCK_FILE =
   ".aginti-flock-v1-native-session-state";
+export const INTEGRATION_RETAINED_SESSION_STATE_WRITE_FENCE_SEAL_FILE =
+  ".aginti-native-write-fence-v1.json";
 export const INTEGRATION_RETAINED_SESSION_STATE_FILE_PREFIX = "native-session-state-";
 export const INTEGRATION_RETAINED_SESSION_STATE_FILE_SUFFIX = ".json";
 export const INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_DEPTH = 64;
@@ -47,6 +58,7 @@ const MAX_STATE_BYTES = 16 * 1024 * 1024;
 const MAX_LOCK_WAIT_MS = 60_000;
 const ENVELOPE_JSON_NODES = 23;
 const MAX_ENVELOPE_OVERHEAD_BYTES = 4096;
+const MAX_WRITE_FENCE_SEAL_BYTES = 4096;
 
 export const INTEGRATION_RETAINED_SESSION_STATE_STORE_LIMITATIONS = Object.freeze(Object.assign(Object.create(null), {
   preEnableStorageKernel: true,
@@ -128,6 +140,9 @@ export const INTEGRATION_RETAINED_SESSION_STATE_STORE_LIMITATIONS = Object.freez
   logicalNamespaceDigestStableAcrossReopen: true,
   sessionPointerDigestStableAcrossReopen: true,
   admissionBindingDigestStableAcrossReopen: false,
+  namespaceSealBindingDigestStableAcrossReopen: true,
+  namespaceSealBindingExcludesMutableDirectoryIdentity: true,
+  namespaceSealBindingIncludesLockAndHelperIdentity: true,
   crossStoreIdempotency: false,
   oneFileAtomicReplace: true,
   postWriteReloadVerification: true,
@@ -215,6 +230,17 @@ const LAST_MUTATION_KEYS = Object.freeze([
   "mutationDigest",
 ]);
 const SAVE_RESULT_KEYS = Object.freeze(["outcome", "snapshot"]);
+const WRITE_FENCE_SEAL_KEYS = Object.freeze([
+  "schemaVersion",
+  "owner",
+  "authority",
+  "mode",
+  "logicalNamespaceDigest",
+  "namespaceSealBindingDigest",
+  "repositorySealBindingDigest",
+  "repositoryAttestationDigest",
+  "digest",
+]);
 const SAFE_STORAGE_PHASES = Object.freeze([
   "acquire",
   "post-acquire-pre-operation",
@@ -269,6 +295,7 @@ const ATTESTATION_KEYS = Object.freeze([
   "lockFileNameDigest",
   "logicalNamespaceDigest",
   "admissionBindingDigest",
+  "namespaceSealBindingDigest",
   "maxStateBytes",
   "maxJsonDepth",
   "maxJsonNodes",
@@ -330,7 +357,9 @@ function statusForCode(code) {
   if (
     code === "INTEGRATION_SESSION_STATE_STORE_FULL" ||
     code === "INTEGRATION_SESSION_STATE_STORE_CONFLICT" ||
-    code === "INTEGRATION_SESSION_STATE_STORE_MUTATION_CONFLICT"
+    code === "INTEGRATION_SESSION_STATE_STORE_MUTATION_CONFLICT" ||
+    code === "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_REQUIRED" ||
+    code === "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID"
   ) return 409;
   if (code === "INTEGRATION_SESSION_STATE_STORE_BUSY") return 429;
   return 503;
@@ -765,6 +794,19 @@ function admissionBindingDigest(expected) {
   });
 }
 
+function namespaceSealBindingDigest(expected, lockObjectIdentityDigest) {
+  return contractDigest({
+    schemaVersion: "aginti-retained-integration-session-state-seal-binding-v1",
+    role: expected.role,
+    canonicalPath: expected.canonicalPath,
+    relativeSegments: expected.relativeSegments,
+    lockFileName: INTEGRATION_RETAINED_SESSION_STATE_LOCK_FILE,
+    lockFileObjectIdentityDigest: lockObjectIdentityDigest,
+    helperSha256: expected.helperSha256,
+    maxStateBytes: expected.maxStateBytes,
+  });
+}
+
 function sessionFileName(nativeSessionId) {
   const digest = contractDigest({
     domain: INTEGRATION_RETAINED_SESSION_STATE_FILE_NAME_DOMAIN,
@@ -1166,6 +1208,128 @@ async function readSessionSnapshotRecord(store, nativeSessionId) {
   });
 }
 
+function writeFenceSealDigest(value) {
+  return contractDigest(digestWithoutField(value, WRITE_FENCE_SEAL_KEYS, "digest"));
+}
+
+function validateWriteFenceSeal(store, value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || utilTypes.isProxy(value)) {
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID",
+      "Retained session-state write-fence seal must be plain data."
+    );
+  }
+  const keys = Reflect.ownKeys(value);
+  if (
+    keys.length !== WRITE_FENCE_SEAL_KEYS.length ||
+    ReflectApply(ArraySome, keys, [
+      (key) => typeof key !== "string" || !ReflectApply(ArrayIncludes, WRITE_FENCE_SEAL_KEYS, [key]),
+    ])
+  ) {
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID",
+      "Retained session-state write-fence seal fields are invalid."
+    );
+  }
+  const normalized = Object.create(null);
+  for (const key of WRITE_FENCE_SEAL_KEYS) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !hasOwn(descriptor, "value")) {
+      storeFail(
+        "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID",
+        "Retained session-state write-fence seal fields must be plain data."
+      );
+    }
+    normalized[key] = descriptor.value;
+  }
+  const seal = frozenRecord(normalized);
+  if (
+    seal.schemaVersion !== INTEGRATION_RETAINED_SESSION_STATE_WRITE_FENCE_SEAL_VERSION ||
+    seal.owner !== "aginti" || seal.authority !== "aginti" ||
+    seal.mode !== "repository-fenced" ||
+    seal.logicalNamespaceDigest !== store.logicalNamespaceDigest ||
+    seal.namespaceSealBindingDigest !== store.namespaceSealBindingDigest ||
+    typeof seal.repositorySealBindingDigest !== "string" ||
+    typeof seal.repositoryAttestationDigest !== "string"
+  ) {
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID",
+      "Retained session-state write-fence seal is invalid."
+    );
+  }
+  assertDigest(
+    seal.repositorySealBindingDigest,
+    "retained write-fence repository seal binding digest",
+    "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID",
+  );
+  assertDigest(
+    seal.repositoryAttestationDigest,
+    "retained write-fence repository attestation digest",
+    "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID",
+  );
+  assertDigest(
+    seal.digest,
+    "retained write-fence seal digest",
+    "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID",
+  );
+  if (
+    seal.repositorySealBindingDigest === ZERO_DIGEST ||
+    seal.repositoryAttestationDigest === ZERO_DIGEST ||
+    seal.digest === ZERO_DIGEST ||
+    seal.digest !== writeFenceSealDigest(seal)
+  ) {
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID",
+      "Retained session-state write-fence seal digest is invalid."
+    );
+  }
+  return seal;
+}
+
+async function readWriteFenceSeal(store) {
+  const raw = await store.filePrimitives.readProtectedUtf8File(
+    INTEGRATION_RETAINED_SESSION_STATE_WRITE_FENCE_SEAL_FILE,
+    { optional: true, maxBytes: MAX_WRITE_FENCE_SEAL_BYTES }
+  );
+  if (raw === null) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    corruptStore(store, "Retained session-state write-fence seal contains invalid JSON.");
+  }
+  let seal;
+  try {
+    seal = validateWriteFenceSeal(store, parsed);
+  } catch {
+    corruptStore(store, "Retained session-state write-fence seal is corrupt.");
+  }
+  if (raw !== `${canonicalJson(seal)}\n`) {
+    corruptStore(store, "Retained session-state write-fence seal is not canonical.");
+  }
+  return seal;
+}
+
+async function assertStoreWriteFenceForCas(store) {
+  const persisted = await readWriteFenceSeal(store);
+  if (persisted === null) {
+    if (store.writeFence !== null) {
+      corruptStore(store, "Retained session-state write-fence seal disappeared after binding.");
+    }
+    return;
+  }
+  if (store.writeFence === null) {
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_REQUIRED",
+      "Retained session-state namespace requires its exact native-write fence.",
+      { status: 409 }
+    );
+  }
+  if (persisted.digest !== store.writeFence.seal.digest) {
+    corruptStore(store, "Retained session-state write-fence binding diverged from its durable seal.");
+  }
+}
+
 function exactReplay(current, input) {
   const receipt = current.lastMutation;
   if (!receipt || receipt.mutationId !== input.mutationId) return false;
@@ -1371,7 +1535,9 @@ function throwNormalizedStoreError(store, error, phase, facts, operationKind) {
     code === "INTEGRATION_SESSION_STATE_STORE_INVALID" ||
     code === "INTEGRATION_SESSION_STATE_STORE_FULL" ||
     code === "INTEGRATION_SESSION_STATE_STORE_CONFLICT" ||
-    code === "INTEGRATION_SESSION_STATE_STORE_MUTATION_CONFLICT"
+    code === "INTEGRATION_SESSION_STATE_STORE_MUTATION_CONFLICT" ||
+    code === "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_REQUIRED" ||
+    code === "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID"
   ) throw error;
   if (code === "INTEGRATION_STORAGE_LOCK_BUSY") {
     storeFail("INTEGRATION_SESSION_STATE_STORE_BUSY", "Retained session-state global lock is busy.", {
@@ -1504,6 +1670,7 @@ function compareAndSwapStoreSessionSnapshot(store, input) {
     "compare-and-swap-session-snapshot",
     input.nativeSessionId,
     async (facts) => {
+      await assertStoreWriteFenceForCas(store);
       const current = (await readSessionSnapshotRecord(store, input.nativeSessionId)).snapshot;
       if (exactReplay(current, input)) return saveResult("replayed", current);
       if (
@@ -1539,6 +1706,139 @@ function compareAndSwapStoreSessionSnapshot(store, input) {
     input.stateCanonicalBytes,
     input.stateCanonicalNodes
   );
+}
+
+function normalizeWriteFenceBinding(store, fenceIdentity) {
+  rejectPromiseValue(
+    fenceIdentity,
+    "retained session-state write-fence binding",
+    "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID"
+  );
+  let fence;
+  try {
+    fence = assertRetainedIntegrationRuntimeNativeWriteFenceLexical(fenceIdentity);
+  } catch {
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID",
+      "Retained session-state write-fence lexical authority is invalid."
+    );
+  }
+  const authority = fence.attestation;
+  if (
+    authority.sessionStateNamespaceDigest !== store.logicalNamespaceDigest ||
+    authority.sessionStateAdmissionBindingDigest !== store.admissionBindingDigest ||
+    authority.sessionStateSealBindingDigest !== store.namespaceSealBindingDigest
+  ) {
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID",
+      "Retained native-write fence does not match the exact SessionStateStore admission binding."
+    );
+  }
+  const sealUnsigned = frozenRecord({
+    schemaVersion: INTEGRATION_RETAINED_SESSION_STATE_WRITE_FENCE_SEAL_VERSION,
+    owner: "aginti",
+    authority: "aginti",
+    mode: "repository-fenced",
+    logicalNamespaceDigest: store.logicalNamespaceDigest,
+    namespaceSealBindingDigest: store.namespaceSealBindingDigest,
+    repositorySealBindingDigest: authority.repositorySealBindingDigest,
+    repositoryAttestationDigest: authority.repositoryAttestationDigest,
+  });
+  const seal = validateWriteFenceSeal(store, frozenRecord({
+    ...sealUnsigned,
+    digest: contractDigest(sealUnsigned),
+  }));
+  if (seal.digest !== authority.sessionStateWriteFenceSealDigest) {
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID",
+      "Retained native-write fence seal attestation is invalid."
+    );
+  }
+  return Object.freeze({
+    schemaVersion: INTEGRATION_RETAINED_SESSION_STATE_WRITE_FENCE_BINDING_VERSION,
+    fenceIdentity: fence,
+    seal,
+  });
+}
+
+function writeFenceBindingProof(store, binding) {
+  return frozenRecord({
+    schemaVersion: INTEGRATION_RETAINED_SESSION_STATE_WRITE_FENCE_BINDING_VERSION,
+    logicalNamespaceDigest: store.logicalNamespaceDigest,
+    admissionBindingDigest: store.admissionBindingDigest,
+    namespaceSealBindingDigest: store.namespaceSealBindingDigest,
+    repositorySealBindingDigest: binding.seal.repositorySealBindingDigest,
+    repositoryAttestationDigest: binding.seal.repositoryAttestationDigest,
+    sealDigest: binding.seal.digest,
+  });
+}
+
+async function bindStoreWriteFence(store, fenceIdentity) {
+  const binding = normalizeWriteFenceBinding(store, fenceIdentity);
+  if (store.writeFence) {
+    if (
+      store.writeFence.fenceIdentity !== binding.fenceIdentity ||
+      store.writeFence.seal.digest !== binding.seal.digest
+    ) {
+      storeFail(
+        "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID",
+        "Retained session-state store is already bound to another native-write fence."
+      );
+    }
+    return writeFenceBindingProof(store, store.writeFence);
+  }
+  if (store.writeFenceBindingPending || store.pendingOperations !== 0 || store.queueDraining) {
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_BUSY",
+      "Retained session-state write-fence binding requires an idle fresh surface.",
+      { status: 429 }
+    );
+  }
+  store.writeFenceBindingPending = true;
+  try {
+    return await runStoreOperation(
+      store,
+      "compare-and-swap",
+      "bind-native-write-fence",
+      "aginti:native-write-fence",
+      async (facts) => {
+        facts.fileName = INTEGRATION_RETAINED_SESSION_STATE_WRITE_FENCE_SEAL_FILE;
+        let persisted = await readWriteFenceSeal(store);
+        if (persisted === null) {
+          const canonical = `${canonicalJson(binding.seal)}\n`;
+          facts.writeAttempted = true;
+          const receipt = await store.filePrimitives.atomicWriteProtectedJson(
+            INTEGRATION_RETAINED_SESSION_STATE_WRITE_FENCE_SEAL_FILE,
+            binding.seal,
+            { maxBytes: MAX_WRITE_FENCE_SEAL_BYTES }
+          );
+          facts.writeConfirmed = true;
+          if (
+            receipt?.committed !== true || receipt?.directorySynced !== true ||
+            receipt?.bytes !== Buffer.byteLength(canonical, "utf8") ||
+            receipt?.digest !== sha256Text(canonical)
+          ) {
+            storeFail(
+              "INTEGRATION_SESSION_STATE_STORE_CORRUPT",
+              "Retained session-state write-fence seal receipt is invalid."
+            );
+          }
+          persisted = await readWriteFenceSeal(store);
+          facts.postWriteVerified = true;
+        }
+        if (persisted.digest !== binding.seal.digest) {
+          storeFail(
+            "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_INVALID",
+            "Retained session-state namespace is sealed to another repository fence."
+          );
+        }
+        store.writeFence = binding;
+        return writeFenceBindingProof(store, binding);
+      }
+    );
+  } finally {
+    store.writeFenceBindingPending = false;
+  }
 }
 
 function validateExactNullPrototypeSurface(value, keys, label) {
@@ -1615,6 +1915,7 @@ function validateStoreAttestation(proof) {
     [proof.lockFileNameDigest, "retained session-state lock file name digest"],
     [proof.logicalNamespaceDigest, "retained session-state logical namespace digest"],
     [proof.admissionBindingDigest, "retained session-state admission binding digest"],
+    [proof.namespaceSealBindingDigest, "retained session-state namespace seal binding digest"],
     [proof.digest, "retained session-state attestation digest"],
   ]) assertDigest(value, label, "INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE");
   if (proof.digest !== attestationDigest(proof)) {
@@ -1658,6 +1959,7 @@ function buildStoreAttestation(store) {
     }),
     logicalNamespaceDigest: store.logicalNamespaceDigest,
     admissionBindingDigest: store.admissionBindingDigest,
+    namespaceSealBindingDigest: store.namespaceSealBindingDigest,
     maxStateBytes: store.expected.maxStateBytes,
     maxJsonDepth: INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_DEPTH,
     maxJsonNodes: INTEGRATION_RETAINED_SESSION_STATE_MAX_JSON_NODES,
@@ -1716,12 +2018,18 @@ function createStoreState(filePrimitives, lock, expectedInput) {
     expected,
     logicalNamespaceDigest: logicalNamespaceDigest(expected),
     admissionBindingDigest: admissionBindingDigest(expected),
+    namespaceSealBindingDigest: namespaceSealBindingDigest(
+      expected,
+      retainedRegularFileLockObjectIdentityDigest(lock, lockExpected(expected))
+    ),
     operationQueue: [],
     queueDraining: false,
     pendingOperations: 0,
     pendingPayloadBytes: 0,
     pendingPayloadNodes: 0,
     observedSessions: new Map(),
+    writeFence: null,
+    writeFenceBindingPending: false,
     poisoned: false,
     poisonReason: "",
     attestation: null,
@@ -1760,7 +2068,18 @@ export function createRetainedIntegrationSessionStateStore(filePrimitives, lock,
           status: 429,
         });
       }
-      return compareAndSwapStoreSessionSnapshot(store, normalizeSaveInput(input, store.expected.maxStateBytes));
+      if (store.writeFenceBindingPending) {
+        storeFail(
+          "INTEGRATION_SESSION_STATE_STORE_BUSY",
+          "Retained session-state write-fence binding is in progress.",
+          { status: 429 }
+        );
+      }
+      const normalized = normalizeSaveInput(input, store.expected.maxStateBytes);
+      const operation = () => compareAndSwapStoreSessionSnapshot(store, normalized);
+      return store.writeFence
+        ? admitRetainedIntegrationRuntimeNativeWriteFence(store.writeFence.fenceIdentity, operation)
+        : operation();
     },
     isClosed() {
       return store.filePrimitives.isClosed() || store.lock.isClosed();
@@ -1792,4 +2111,31 @@ export function assertRetainedIntegrationSessionStateStore(value, expectedInput)
     storeFail("INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE", "Retained session-state expected binding is invalid.");
   }
   return value;
+}
+
+export async function bindRetainedIntegrationSessionStateStoreWriteFence(
+  value,
+  expectedInput,
+  fenceIdentity
+) {
+  assertRetainedIntegrationSessionStateStore(value, expectedInput);
+  const store = storeBrand.get(value);
+  return bindStoreWriteFence(store, fenceIdentity);
+}
+
+export function assertRetainedIntegrationSessionStateStoreUsesWriteFence(
+  value,
+  expectedInput,
+  fenceIdentity
+) {
+  assertRetainedIntegrationSessionStateStore(value, expectedInput);
+  const store = storeBrand.get(value);
+  if (!store.writeFence || store.writeFence.fenceIdentity !== fenceIdentity) {
+    storeFail(
+      "INTEGRATION_SESSION_STATE_STORE_WRITE_FENCE_REQUIRED",
+      "Retained session-state store is not bound to the exact native-write fence.",
+      { status: 409 }
+    );
+  }
+  return writeFenceBindingProof(store, store.writeFence);
 }
