@@ -37,9 +37,11 @@ import {
 } from "../src/integration-runtime-repository-contract.js";
 import {
   INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS,
+  acquireRetainedIntegrationRuntimeRepositoryFence,
   assertRetainedIntegrationRuntimeRepositorySurface,
   createRetainedIntegrationRuntimeRepositorySurface,
 } from "../src/integration-retained-runtime-repository-surface.js";
+import { createIntegrationRuntimeProcessOwnerBootstrap } from "../src/integration-runtime-authority.js";
 
 const UID = process.getuid();
 const GID = process.getgid();
@@ -52,6 +54,8 @@ const OTHER_BROWSER_SESSION = "d".repeat(64);
 const POLICY_FINGERPRINT = "b".repeat(64);
 const ROLE = "retained-runtime-repository-surface-smoke";
 const BASE_MS = Date.parse("2026-08-22T02:00:00.000Z");
+let primaryProcessOwnerBootstrap = null;
+let primaryProcessOwner = null;
 
 const IDS = Object.freeze({
   mainThread: "thr_00000000-0000-4000-8000-000000000201",
@@ -75,17 +79,25 @@ function timestamp(offsetSeconds) {
 }
 
 function owner(tokenDigit = "1", offsetSeconds = 0) {
+  if ((tokenDigit === "1" || tokenDigit === "9") && primaryProcessOwner) return primaryProcessOwner;
+  const numericDigit = Number(tokenDigit);
   return Object.freeze({
     schemaVersion: "aginti-process-owner-v1",
-    pid: 4242,
+    pid: 4242 + numericDigit,
     token: tokenDigit.repeat(32),
     processIdentity: Object.freeze({
       schemaVersion: "aginti-process-identity-v1",
       bootId: "01234567-89ab-cdef-0123-456789abcdef",
-      startTimeTicks: "123456",
+      startTimeTicks: `12345${tokenDigit}`,
     }),
     acquiredAt: timestamp(offsetSeconds),
     heartbeatAt: timestamp(offsetSeconds),
+  });
+}
+
+async function activateRepository(repository) {
+  return acquireRetainedIntegrationRuntimeRepositoryFence(repository, {
+    processOwnerBootstrap: primaryProcessOwnerBootstrap,
   });
 }
 
@@ -221,6 +233,7 @@ async function openFixture(rootPath, now) {
     repositoryStateExpected: expected,
     runtimeRoots: runtimeRoots(rootPath),
     now,
+    processOwnerLiveness: async () => "alive",
   });
   return Object.freeze({ authority, repositoryState, repository, expected });
 }
@@ -382,6 +395,7 @@ async function createDispatched(repository, {
   dispatchedAt,
   principalId = PRINCIPAL,
   browserSessionId = BROWSER_SESSION,
+  processOwner = owner("1", 1),
 }) {
   const threadPayload = createThreadPayload(
     threadId,
@@ -394,7 +408,7 @@ async function createDispatched(repository, {
   const originalThread = (await repository.createIntegrationThread(threadPayload)).thread;
   const created = await repository.createIntegrationRun(createRunPayload({ runId, thread: originalThread, createdAt }));
   const dispatched = (await repository.markIntegrationRunDispatching(
-    dispatchPayload(created.run, dispatchedAt, owner("1", 1))
+    dispatchPayload(created.run, dispatchedAt, processOwner)
   )).run;
   return Object.freeze({ threadPayload, originalThread, createdThread: created.thread, dispatched });
 }
@@ -416,8 +430,11 @@ async function run() {
   const now = () => new Date(BASE_MS + clockTick++ * 1000);
   let fixture = null;
   try {
+    primaryProcessOwnerBootstrap = await createIntegrationRuntimeProcessOwnerBootstrap();
+    primaryProcessOwner = primaryProcessOwnerBootstrap.processOwner;
     fixture = await openFixture(rootPath, now);
     const { repository } = fixture;
+    await activateRepository(repository);
     assert.equal(assertRetainedIntegrationRuntimeRepositorySurface(repository), repository);
     assert.equal(
       assertIntegrationRuntimeRepositorySurface(repository, { requireRetainedDescriptorStorage: true }).attestation,
@@ -431,9 +448,11 @@ async function run() {
     assert.equal(INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS.runtimeCapabilityEnabled, false);
     assert.equal(INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS.artifactCompletionAtomic, false);
     assert.equal(INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS.artifactRuntimeProducerWiring, false);
-    assert.equal(INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS.singleRuntimeProcessRequired, true);
-    assert.equal(INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS.rollingRestartOverlapSafe, false);
-    assert.equal(INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS.sharedProcessLeaseOrFence, false);
+    assert.equal(INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS.singleRuntimeProcessRequired, false);
+    assert.equal(INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS.rollingRestartOverlapSafe, true);
+    assert.equal(INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS.sharedProcessLeaseOrFence, true);
+    assert.equal(INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS.nativeSessionMappingTombstonePruning, false);
+    assert.equal(INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS.liveOwnerPublishedArtifactPruning, false);
     assert.equal(INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS.trustedDependencyIntrinsicsRequired, true);
     assert.equal(INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS.dependencyWidePrototypePoisonResistance, false);
     assert.equal(INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS.artifactOwnerTombstoneVisibilityFiltering, true);
@@ -617,7 +636,7 @@ async function run() {
         ...finishMainPayload,
         processOwner: owner("3", 1),
       }),
-      "REVISION_CONFLICT"
+      "INTEGRATION_REPOSITORY_FENCE_STALE"
     );
     await expectCode(
       () => repository.finishIntegrationRunWithOutbox({
@@ -672,7 +691,7 @@ async function run() {
     assert.equal(finishedMain.run.status, "completed");
     assert.equal(finishedMain.resultDigest, finishMainPayload.resultDigest);
     assert.equal(finishedMain.run.authority.snapshotHash, authorizedMain.run.authority.snapshotHash);
-    assert.equal(finishedMain.run.authority.completionOutbox.schemaVersion, "aginti-completion-outbox-bundle-v1");
+    assert.equal(finishedMain.run.authority.completionOutbox.schemaVersion, "aginti-completion-outbox-bundle-v2");
     assert.equal(finishedMain.outboxEvents.length, 2);
     const bundle = await repository.getIntegrationCompletionOutboxBundle({
       principalId: PRINCIPAL,
@@ -705,6 +724,7 @@ async function run() {
         eventSeq: event.seq,
         eventHash: event.hash,
         eventDigest: contractDigest(event),
+        deliveredAt: timestamp(5),
       });
     }
     assert.equal((await repository.listPendingIntegrationOutboxEvents({
@@ -748,6 +768,7 @@ async function run() {
     await fixture.authority.close();
     fixture = await openFixture(rootPath, now);
     const reopened = fixture.repository;
+    await activateRepository(reopened);
     assert.equal((await reopened.getIntegrationRun(runScope(IDS.mainRun))).run.output, mainOutput);
     assert.equal((await reopened.getIntegrationThread(threadScope(IDS.mainThread))).thread.nativeSessionId, "aginti:durable-main");
     const replayedThread = await reopened.createIntegrationThread(mainThreadPayload);
@@ -817,7 +838,7 @@ async function run() {
         ...cancelPayload,
         processOwner: owner("2", 12),
       }),
-      "REVISION_CONFLICT"
+      "INTEGRATION_REPOSITORY_FENCE_STALE"
     );
     const cancelling = await reopened.markIntegrationRunCancelling(cancelPayload);
     assert.equal(cancelling.run.cancelRequestedAt, timestamp(12));
@@ -866,6 +887,7 @@ async function run() {
       principalId: PRINCIPAL,
       browserSessionId: BROWSER_SESSION,
       expectedRevision: cancelledFinish.thread.revision,
+      deletedAt: timestamp(15),
     }));
     await expectCode(
       () => reopened.publishIntegrationArtifactOutbox(Object.freeze({
@@ -911,7 +933,7 @@ async function run() {
     const snapshotBytesBeforeReadOnlyReconciliation = (await fs.stat(snapshotPath)).size;
     for (let index = 0; index < 20; index += 1) {
       const response = await reopened.reconcileIntegrationDispatches(
-        reconciliationRequest(owner("4", 24), timestamp(24 + index))
+        reconciliationRequest(owner("1", 1), timestamp(24 + index))
       );
       assert.deepEqual(response.receiptRunResults, []);
     }
@@ -943,7 +965,8 @@ async function run() {
     await fixture.authority.close();
     fixture = await openFixture(rootPath, now);
     const afterRestart = fixture.repository;
-    const staleReconcile = reconciliationRequest(owner("7", 29), timestamp(29));
+    await activateRepository(afterRestart);
+    const staleReconcile = reconciliationRequest(owner("1", 1), timestamp(29));
     const beforeStaleReconcile = (await fixture.repositoryState.loadDomainSnapshot()).snapshotRevision;
     const staleResponse = await afterRestart.reconcileIntegrationDispatches(staleReconcile);
     assert.deepEqual(staleResponse.receiptRunResults, []);
@@ -958,7 +981,7 @@ async function run() {
       nativeSessionId: held.dispatched.nativeSessionId,
       claimedAt: timestamp(39),
     });
-    const reconcile = reconciliationRequest(owner("9", 40), timestamp(40), [overlapClaim]);
+    const reconcile = reconciliationRequest(owner("9", 40), timestamp(40), []);
     const reconciled = await afterRestart.reconcileIntegrationDispatches(reconcile);
     assert.equal(reconciled.receiptRunResults.length, 1);
     assert.equal(reconciled.receiptRunResults[0].run.id, IDS.heldRun);
@@ -969,7 +992,7 @@ async function run() {
     const reconcileRevision = (await fixture.repositoryState.loadDomainSnapshot()).snapshotRevision;
     assert.deepEqual(await afterRestart.reconcileIntegrationDispatches(reconcile), reconciled);
     assert.equal((await fixture.repositoryState.loadDomainSnapshot()).snapshotRevision, reconcileRevision);
-    const laterReconcileRequest = reconciliationRequest(owner("8", 41), timestamp(41));
+    const laterReconcileRequest = reconciliationRequest(owner("9", 40), timestamp(41));
     const beforeNoChangeReconcile = (await fixture.repositoryState.loadDomainSnapshot()).snapshotRevision;
     const laterReconcile = await afterRestart.reconcileIntegrationDispatches(laterReconcileRequest);
     assert.equal(laterReconcile.receiptRunResults[0].action, "already-held");
@@ -1003,7 +1026,7 @@ async function run() {
         ...recoveredFinishPayload,
         processOwner: owner("8", 41),
       }),
-      "RECOVERY_HOLD"
+      "INTEGRATION_REPOSITORY_FENCE_STALE"
     );
     await expectCode(
       () => afterRestart.finishIntegrationRunWithOutbox(recoveredFinishPayload),
@@ -1020,7 +1043,7 @@ async function run() {
       text: "Resume recovery evidence proof.",
     }));
     const resumeDispatched = (await afterRestart.markIntegrationRunDispatching(
-      dispatchPayload(resumeCreated.run, timestamp(71), owner("5", 70))
+      dispatchPayload(resumeCreated.run, timestamp(71), owner("9", 40))
     )).run;
     const resumeAuthorization = authorizationFor({
       mode: "resume",
@@ -1031,7 +1054,7 @@ async function run() {
     });
     await afterRestart.authorizeIntegrationRunNativeStart({ authorization: resumeAuthorization });
     const resumeReconciliation = await afterRestart.reconcileIntegrationDispatches(
-      reconciliationRequest(owner("6", 72), timestamp(72))
+      reconciliationRequest(owner("9", 40), timestamp(72))
     );
     const resumeHeld = resumeReconciliation.receiptRunResults.find(
       (item) => item.run.id === IDS.resumeHeldRun
@@ -1051,7 +1074,7 @@ async function run() {
         output: "",
         error: Object.freeze({ code: "AGINTI_RUNTIME_ERROR", message: "Resume evidence is unavailable." }),
         completedAt: timestamp(73),
-        processOwner: owner("6", 72),
+        processOwner: owner("9", 40),
         expectedCursor: Object.freeze({ firstSeq: 1, lastSeq: 0, lastHash: ZERO_DIGEST, prunedThroughSeq: 0 }),
         outputEvent: null,
         terminalEvent: Object.freeze({ type: "run.failed", payload: Object.freeze({}), createdAt: timestamp(73) }),
@@ -1064,10 +1087,11 @@ async function run() {
       threadId: IDS.otherThread,
       runId: IDS.otherRun,
       nativeSessionId: "aginti:other-owner-artifact",
-      createdAt: timestamp(60),
-      dispatchedAt: timestamp(61),
+      createdAt: timestamp(80),
+      dispatchedAt: timestamp(81),
       principalId: OTHER_PRINCIPAL,
       browserSessionId: OTHER_BROWSER_SESSION,
+      processOwner: owner("9", 40),
     });
     const otherAuthorization = authorizationFor({
       run: otherFlow.dispatched,
@@ -1089,11 +1113,11 @@ async function run() {
       status: "failed",
       output: "",
       error: Object.freeze({ code: "AGINTI_RUNTIME_ERROR", message: "Cross-owner artifact proof terminal." }),
-      completedAt: timestamp(62),
+      completedAt: timestamp(82),
       processOwner: otherFlow.dispatched.processOwner,
       expectedCursor: Object.freeze({ firstSeq: 1, lastSeq: 0, lastHash: ZERO_DIGEST, prunedThroughSeq: 0 }),
       outputEvent: null,
-      terminalEvent: Object.freeze({ type: "run.failed", payload: Object.freeze({}), createdAt: timestamp(62) }),
+      terminalEvent: Object.freeze({ type: "run.failed", payload: Object.freeze({}), createdAt: timestamp(82) }),
       resultDigest: contractDigest({ status: "failed", scope: "other-owner" }),
     }));
     const otherArtifact = await afterRestart.stageIntegrationArtifactOutbox(Object.freeze({
@@ -1102,7 +1126,7 @@ async function run() {
       threadId: IDS.otherThread,
       runId: IDS.otherRun,
       artifact: artifactInput,
-      stagedAt: timestamp(63),
+      stagedAt: timestamp(83),
     }));
     assert.notEqual(otherArtifact.artifact.id, staged.artifact.id);
     assert.notEqual(otherArtifact.artifact.id, repeatedArtifact.artifact.id);
@@ -1113,7 +1137,7 @@ async function run() {
       runId: IDS.otherRun,
       artifactId: otherArtifact.artifact.id,
       expectedRevision: 1,
-      publishedAt: timestamp(64),
+      publishedAt: timestamp(84),
     }));
     assert.equal((await afterRestart.getIntegrationArtifact({
       principalId: PRINCIPAL,
@@ -1132,6 +1156,7 @@ async function run() {
       principalId: OTHER_PRINCIPAL,
       browserSessionId: OTHER_BROWSER_SESSION,
       expectedRevision: otherFinished.thread.revision,
+      deletedAt: timestamp(85),
     }));
     assert.equal((await afterRestart.getIntegrationArtifact({
       principalId: OTHER_PRINCIPAL,
@@ -1147,7 +1172,7 @@ async function run() {
       publishedOnly: true,
     })).artifacts, []);
 
-    const deletePayload = createThreadPayload(IDS.deletedThread, "aginti:delete-proof", timestamp(50));
+    const deletePayload = createThreadPayload(IDS.deletedThread, "aginti:delete-proof", timestamp(90));
     const deleteThread = (await afterRestart.createIntegrationThread(deletePayload)).thread;
     const updatedDelete = (await afterRestart.updateIntegrationThread({
       threadId: deleteThread.id,
@@ -1155,13 +1180,14 @@ async function run() {
       browserSessionId: BROWSER_SESSION,
       expectedRevision: deleteThread.revision,
       title: "Delete proof renamed",
-      updatedAt: timestamp(51),
+      updatedAt: timestamp(91),
     })).thread;
     const deleteMutation = Object.freeze({
       threadId: updatedDelete.id,
       principalId: PRINCIPAL,
       browserSessionId: BROWSER_SESSION,
       expectedRevision: updatedDelete.revision,
+      deletedAt: timestamp(92),
     });
     const deleted = await afterRestart.deleteIntegrationThread(deleteMutation);
     assert.equal(deleted.deleted, true);

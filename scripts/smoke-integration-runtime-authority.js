@@ -47,7 +47,7 @@ const ZERO_DIGEST = "0".repeat(64);
 const CONTEXT_DIGEST = "c".repeat(64);
 const SNAPSHOT_HASH = "d".repeat(64);
 const ARTIFACT_ID = `art_${"e".repeat(64)}`;
-const COMPLETION_OUTBOX_METADATA_VERSION = "aginti-completion-outbox-bundle-v1";
+const COMPLETION_OUTBOX_METADATA_VERSION = "aginti-completion-outbox-bundle-v2";
 const PRE_LAUNCH_ABORT_ATTEMPT_VERSION = "aginti-pre-launch-abort-attempt-v3";
 const PRE_LAUNCH_ABORT_RESPONSE_VERSION = "aginti-pre-launch-abort-response-v1";
 const NATIVE_START_AUTHORIZATION_VERSION = "aginti-native-start-authorization-v1";
@@ -450,6 +450,7 @@ function completionOutboxMetadata({ run, thread, records, cursor }) {
     eventTypes: records.map((record) => record.type),
     eventHashes: records.map((record) => record.expectedEventHash),
     orderedBundleDigest: contractDigest(records.map(immutableOutboxDigestView)),
+    deliveryCheckpoint: null,
   };
 }
 
@@ -1634,7 +1635,10 @@ function makeRepository({
         throw error;
       }
       record.delivered = true;
+      record.deliveredEventSeq = payload.eventSeq;
       record.deliveredEventHash = payload.eventHash;
+      record.deliveredEventDigest = payload.eventDigest;
+      record.deliveredAt = payload.deliveredAt;
       return { delivered: true, outboxId: payload.outboxId };
     },
     async listIntegrationArtifacts(payload) {
@@ -2033,6 +2037,7 @@ async function publishOutboxRecordOnly(fixture, scope, record) {
     eventSeq: event.seq,
     eventHash: event.hash,
     eventDigest: contractDigest(event),
+    deliveredAt: event.createdAt,
   });
   return event;
 }
@@ -4035,7 +4040,13 @@ async function main() {
       cancellationAttestation: makeCancellationAttestation(),
       hardenedSandboxAttestation: makeSandboxAttestation(),
     });
-    outboxRetry.repo.state.outbox.get("out_retry").delivered = false;
+    Object.assign(outboxRetry.repo.state.outbox.get("out_retry"), {
+      delivered: false,
+      deliveredEventSeq: null,
+      deliveredEventHash: null,
+      deliveredEventDigest: null,
+      deliveredAt: null,
+    });
     const fresh = await freshAuthority.reconcileIntegrationDispatches(context());
     assert.equal(fresh.deliveredOutboxEvents, 1);
     assert.equal(outboxRetry.ledger.eventsForRun(retryRun.id).length, 1);
@@ -4098,7 +4109,13 @@ async function main() {
       "run.completed",
     ]);
     const partialFreshHashes = partialFresh.ledger.eventsForRun(partialFreshBundle.run.id).map((event) => event.hash);
-    partialFresh.repo.state.outbox.get(partialFreshBundle.terminalRecord.outboxId).delivered = false;
+    Object.assign(partialFresh.repo.state.outbox.get(partialFreshBundle.terminalRecord.outboxId), {
+      delivered: false,
+      deliveredEventSeq: null,
+      deliveredEventHash: null,
+      deliveredEventDigest: null,
+      deliveredAt: null,
+    });
     const idempotentReplay = await partialFresh.authority.reconcileIntegrationDispatches(context());
     assert.equal(idempotentReplay.deliveredOutboxEvents, 2);
     assert.deepEqual(partialFresh.ledger.eventsForRun(partialFreshBundle.run.id).map((event) => event.hash), partialFreshHashes);

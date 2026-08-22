@@ -31,6 +31,15 @@ import {
   assertIntegrationRuntimeRepositoryAttestation as validateRepositoryAttestation,
   assertIntegrationRuntimeRepositorySurface as validateRepository,
 } from "./integration-runtime-repository-contract.js";
+import {
+  assertRetainedIntegrationRuntimeRepositoryFenceLease,
+  isRetainedIntegrationRuntimeRepositorySurface,
+} from "./integration-retained-runtime-repository-surface.js";
+import {
+  assertIntegrationRuntimeProcessOwnerBootstrap,
+  createIntegrationRuntimeProcessOwnerBootstrap,
+} from "./integration-runtime-process-owner-bootstrap.js";
+export { createIntegrationRuntimeProcessOwnerBootstrap } from "./integration-runtime-process-owner-bootstrap.js";
 export {
   INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_PROPERTY,
   INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_VERSION,
@@ -148,7 +157,7 @@ const PUBLIC_EVENT_KEYS = Object.freeze([
   "previousHash",
   "hash",
 ]);
-const COMPLETION_OUTBOX_METADATA_VERSION = "aginti-completion-outbox-bundle-v1";
+const COMPLETION_OUTBOX_METADATA_VERSION = "aginti-completion-outbox-bundle-v2";
 const OUTBOX_RECORD_REQUIRED_KEYS = Object.freeze([
   "outboxId",
   "principalId",
@@ -168,6 +177,7 @@ const OUTBOX_RECORD_OPTIONAL_KEYS = Object.freeze([
   "deliveredEventSeq",
   "deliveredEventHash",
   "deliveredEventDigest",
+  "deliveredAt",
 ]);
 const COMPLETION_OUTBOX_METADATA_KEYS = Object.freeze([
   "schemaVersion",
@@ -186,6 +196,7 @@ const COMPLETION_OUTBOX_METADATA_KEYS = Object.freeze([
   "eventTypes",
   "eventHashes",
   "orderedBundleDigest",
+  "deliveryCheckpoint",
 ]);
 const COMPLETION_OUTBOX_CURSOR_KEYS = Object.freeze(["firstSeq", "lastSeq", "lastHash", "prunedThroughSeq"]);
 const PRE_LAUNCH_ABORT_ATTEMPT_VERSION = "aginti-pre-launch-abort-attempt-v3";
@@ -736,6 +747,11 @@ function assertProcessOwnerEnvelope(owner, label) {
   });
 }
 
+function validateProcessOwnerBootstrap(value) {
+  const bootstrap = assertIntegrationRuntimeProcessOwnerBootstrap(value);
+  return assertProcessOwnerEnvelope(bootstrap.processOwner, "integration runtime bootstrap");
+}
+
 function sameProcessOwner(left, right) {
   return Boolean(
     left.schemaVersion === "aginti-process-owner-v1" &&
@@ -1103,11 +1119,23 @@ function cloneOutboxRecordStrict(record, label) {
     failUnavailable(`${label}.createdAt is invalid.`);
   }
   if (typeof clone.delivered !== "boolean") failUnavailable(`${label}.delivered must be boolean.`);
-  if (clone.deliveredEventSeq !== undefined && (!Number.isSafeInteger(clone.deliveredEventSeq) || clone.deliveredEventSeq < 1)) {
-    failUnavailable(`${label}.deliveredEventSeq is invalid.`);
-  }
-  for (const key of ["deliveredEventHash", "deliveredEventDigest"]) {
-    if (clone[key] !== undefined && !/^[a-f0-9]{64}$/u.test(clone[key])) failUnavailable(`${label}.${key} is invalid.`);
+  if (clone.delivered) {
+    if (!Number.isSafeInteger(clone.deliveredEventSeq) || clone.deliveredEventSeq < 1) {
+      failUnavailable(`${label}.deliveredEventSeq is invalid.`);
+    }
+    for (const key of ["deliveredEventHash", "deliveredEventDigest"]) {
+      if (!/^[a-f0-9]{64}$/u.test(clone[key]) || clone[key] === ZERO_DIGEST) {
+        failUnavailable(`${label}.${key} is invalid.`);
+      }
+    }
+    assertCanonicalIso(clone.deliveredAt, `${label}.deliveredAt`);
+    if (clone.deliveredAt < clone.createdAt) failUnavailable(`${label}.deliveredAt precedes creation.`);
+  } else {
+    for (const key of ["deliveredEventSeq", "deliveredEventHash", "deliveredEventDigest", "deliveredAt"]) {
+      if (clone[key] !== undefined && clone[key] !== null) {
+        failUnavailable(`${label}.${key} must be null while undelivered.`);
+      }
+    }
   }
   return clone;
 }
@@ -1180,6 +1208,8 @@ function validateCompletionCursor(value, label) {
 }
 
 function completionMetadataFor({ records = [], runRecord = {}, scope = {}, cursor = {}, threadRecord = null }) {
+  const retained = runRecord.authority?.completionOutbox || null;
+  const compacted = retained?.deliveryCheckpoint !== null && retained?.deliveryCheckpoint !== undefined;
   return Object.freeze({
     schemaVersion: COMPLETION_OUTBOX_METADATA_VERSION,
     principalId: scope.principalId,
@@ -1193,10 +1223,11 @@ function completionMetadataFor({ records = [], runRecord = {}, scope = {}, curso
     completionRevision: assertRevision(runRecord.revision, "completion metadata run"),
     threadRevision: threadRecord ? assertRevision(threadRecord.revision, "completion metadata thread") : runRecord.authority?.completionOutbox?.threadRevision,
     originalCursor: validateCompletionCursor(cursor, "completion metadata cursor"),
-    outboxIds: Object.freeze(records.map((record) => record.outboxId)),
-    eventTypes: Object.freeze(records.map((record) => record.type)),
-    eventHashes: Object.freeze(records.map((record) => record.expectedEventHash)),
-    orderedBundleDigest: outboxBundleDigest(records),
+    outboxIds: compacted ? Object.freeze([...retained.outboxIds]) : Object.freeze(records.map((record) => record.outboxId)),
+    eventTypes: compacted ? Object.freeze([...retained.eventTypes]) : Object.freeze(records.map((record) => record.type)),
+    eventHashes: compacted ? Object.freeze([...retained.eventHashes]) : Object.freeze(records.map((record) => record.expectedEventHash)),
+    orderedBundleDigest: compacted ? retained.orderedBundleDigest : outboxBundleDigest(records),
+    deliveryCheckpoint: compacted ? retained.deliveryCheckpoint : null,
   });
 }
 
@@ -1230,13 +1261,35 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
   rejectThenableDependency(options.cancellationAttestation, "cancellation attestation");
   rejectThenableDependency(options.hardenedSandboxAttestation, "hardened sandbox attestation");
   rejectThenableDependency(options.hardenedSandboxAttestation?.isolationAttestation, "hardened sandbox isolation attestation");
+  rejectThenableDependency(options.processOwnerBootstrap, "process-owner bootstrap");
+  const bootstrappedProcessOwner = options.processOwnerBootstrap === undefined
+    ? null
+    : validateProcessOwnerBootstrap(options.processOwnerBootstrap);
   const repository = validateRepository(options.threadSessionRepository);
+  const retainedRepository = isRetainedIntegrationRuntimeRepositorySurface(repository);
+  if (!retainedRepository && options.repositoryFenceLease !== undefined) {
+    failUnavailable("Repository fence lease is only valid for its retained repository surface.");
+  }
+  if (retainedRepository && !bootstrappedProcessOwner) {
+    failUnavailable("Retained repository runtime requires one exact process-owner bootstrap capability.");
+  }
+  const repositoryFenceAuthority = retainedRepository
+    ? assertRetainedIntegrationRuntimeRepositoryFenceLease(repository, options.repositoryFenceLease)
+    : null;
+  if (
+    repositoryFenceAuthority &&
+    repositoryFenceAuthority.ownerDigest !== contractDigest(bootstrappedProcessOwner)
+  ) {
+    failUnavailable("Runtime process owner does not match the acquired retained repository fence.");
+  }
   const eventLedgerStore = validateEventLedgerStore(options.eventLedgerStore);
   const runRegistry = createIntegrationRunRegistry();
   const projector = createIntegrationCoreEventProjector({ eventLedgerStore });
   validateNativeRuntimeRootsAttestation(repository.attestation.runtimeRoots);
   const runtimeRootsAttestation = repository.attestation.runtimeRoots;
-  let processOwnerPromise = null;
+  let processOwnerPromise = bootstrappedProcessOwner
+    ? Promise.resolve(bootstrappedProcessOwner)
+    : null;
   const reconciliationByScope = new Map();
   const operationGateByScope = new Map();
 
@@ -1430,6 +1483,7 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
           eventSeq: event.seq,
           eventHash: event.hash,
           eventDigest: contractDigest(event),
+          deliveredAt: event.createdAt,
         });
       } catch (error) {
         if (suppressDeliveryErrors) return Object.freeze(delivered);
@@ -2672,6 +2726,15 @@ function aggregateRuntimeObserverError(runtimeError, observerError) {
     if (NATIVE_INTEGRATION_EXECUTOR_PROOF.cancellation !== true) {
       failUnavailable("native executor cancellation proof is unavailable.");
     }
+    const currentFenceAuthority = retainedRepository
+      ? assertRetainedIntegrationRuntimeRepositoryFenceLease(repository, options.repositoryFenceLease)
+      : null;
+    if (
+      currentFenceAuthority &&
+      currentFenceAuthority.ownerDigest !== contractDigest(bootstrappedProcessOwner)
+    ) {
+      failUnavailable("Runtime process owner no longer matches the acquired retained repository fence.");
+    }
     const unsignedProof = canonicalPlainJsonClone({
       schemaVersion: NATIVE_INTEGRATION_RUNTIME_PROOF_VERSION,
       owner: "aginti",
@@ -2697,6 +2760,29 @@ function aggregateRuntimeObserverError(runtimeError, observerError) {
       executorProofDigest: NATIVE_INTEGRATION_EXECUTOR_PROOF.digest,
       eventAppendProofDigest: appendProof.digest,
       cancellationProofDigest: cancellationProof.digest,
+      repositoryFence: currentFenceAuthority
+        ? Object.freeze({
+            required: true,
+            acquired: true,
+            repositoryIdentityDigest: currentFenceAuthority.repositoryIdentityDigest,
+            repositoryAttestationDigest: currentFenceAuthority.repositoryAttestationDigest,
+            generation: currentFenceAuthority.generation,
+            ownerDigest: currentFenceAuthority.ownerDigest,
+            ownerIdentityDigest: currentFenceAuthority.ownerIdentityDigest,
+            fenceDigest: currentFenceAuthority.fenceDigest,
+            leaseDigest: currentFenceAuthority.leaseDigest,
+          })
+        : Object.freeze({
+            required: false,
+            acquired: false,
+            repositoryIdentityDigest: ZERO_DIGEST,
+            repositoryAttestationDigest: repositoryProof.digest,
+            generation: 0,
+            ownerDigest: ZERO_DIGEST,
+            ownerIdentityDigest: ZERO_DIGEST,
+            fenceDigest: ZERO_DIGEST,
+            leaseDigest: ZERO_DIGEST,
+          }),
     }, "integration runtime proof");
     return canonicalPlainJsonClone({
       ...unsignedProof,
@@ -2793,6 +2879,7 @@ function aggregateRuntimeObserverError(runtimeError, observerError) {
         principalId: scope.principalId,
         browserSessionId: scope.browserSessionId,
         expectedRevision: assertRevision(current.revision, "thread"),
+        deletedAt: nowIso(),
       }), "delete thread response");
       if (result.thread) threadPublicRecord(snapshotThreadRecord(result.thread, "deleted thread"), scope, current.id);
       return Object.freeze({ deleted: true, threadId: current.id, principalId: scope.principalId });

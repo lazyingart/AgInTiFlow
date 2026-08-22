@@ -38,7 +38,7 @@ export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_STATE_VERSION =
 export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_STATE_ATTESTATION_VERSION =
   "aginti-retained-native-session-repository-state-attestation-v1";
 export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_DOMAIN_VERSION =
-  "aginti-retained-native-session-repository-domain-v1";
+  "aginti-retained-native-session-repository-domain-v2";
 export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_SNAPSHOT_VERSION =
   "aginti-retained-native-session-repository-snapshot-v1";
 export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_LAST_MUTATION_VERSION =
@@ -46,11 +46,19 @@ export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_LAST_MUTATION_VERSIO
 export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_THREAD_VERSION =
   "aginti-retained-native-session-repository-thread-v1";
 export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RUN_VERSION =
-  "aginti-retained-native-session-repository-run-v1";
+  "aginti-retained-native-session-repository-run-v2";
 export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_ARTIFACT_VERSION =
-  "aginti-retained-native-session-repository-artifact-v1";
+  "aginti-retained-native-session-repository-artifact-v2";
 export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MUTATION_RECEIPT_VERSION =
-  "aginti-retained-native-session-repository-mutation-receipt-v1";
+  "aginti-retained-native-session-repository-mutation-receipt-v2";
+export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RETENTION_VERSION =
+  "aginti-retained-native-session-repository-retention-v1";
+export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RECONCILIATION_FENCE_VERSION =
+  "aginti-retained-native-session-repository-reconciliation-fence-v1";
+export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RETIRED_OWNER_VERSION =
+  "aginti-retained-native-session-repository-retired-owner-v1";
+export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_DELIVERY_CHECKPOINT_VERSION =
+  "aginti-retained-native-session-repository-delivery-checkpoint-v1";
 export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_STATE_DIGEST_DOMAIN =
   "aginti-retained-native-session-repository-state-payload-v1";
 export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_REQUEST_DIGEST_DOMAIN =
@@ -63,6 +71,10 @@ export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_RUNS = 50_000;
 export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_OUTBOX_EVENTS = 100_000;
 export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_ARTIFACTS = 50_000;
 export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_MUTATION_RECEIPTS = 100_000;
+export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_RETIRED_FENCE_OWNERS = 64;
+export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MIN_REPLAY_RECEIPTS = 8;
+export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_TARGET_REPLAY_RECEIPTS = 16;
+export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_REPLAY_RECEIPTS = 24;
 export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_MESSAGES_PER_THREAD = 256;
 export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_PUBLIC_ARTIFACT_BYTES =
   MAX_INTEGRATION_PUBLIC_ARTIFACT_BYTES;
@@ -92,7 +104,7 @@ const PUBLIC_ERROR_CODE_SET = new Set([
 ]);
 const NATIVE_START_AUTHORIZATION_VERSION = "aginti-native-start-authorization-v1";
 const NATIVE_START_RECOVERY_STATE_VERSION = "aginti-native-start-recovery-v1";
-const COMPLETION_OUTBOX_METADATA_VERSION = "aginti-completion-outbox-bundle-v1";
+const COMPLETION_OUTBOX_METADATA_VERSION = "aginti-completion-outbox-bundle-v2";
 
 export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_STATE_LIMITATIONS = Object.freeze(
   Object.assign(Object.create(null), {
@@ -137,6 +149,9 @@ export const INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_STATE_LIMITATIONS = 
     exactOutboxRecordSchema: true,
     exactPublicArtifactRecordSchema: true,
     exactMutationReceiptSchema: true,
+    exactRetentionCheckpointSchema: true,
+    exactReconciliationFenceSchema: true,
+    compactedDeliveryCheckpointSchema: true,
     snapshotLocalValidationOnly: true,
     historicalTransitionValidation: false,
     immutableMappingHistoryValidation: false,
@@ -236,6 +251,8 @@ const DOMAIN_KEYS = Object.freeze([
   "outboxEvents",
   "artifacts",
   "mutationReceipts",
+  "retention",
+  "reconciliationFence",
 ]);
 const SNAPSHOT_KEYS = Object.freeze([
   "schemaVersion",
@@ -281,6 +298,7 @@ const RUN_KEYS = Object.freeze([
   "browserSessionPolicy", "previousRunId", "status", "revision", "createdAt", "startedAt",
   "completedAt", "cancelRequestedAt", "dispatchLeaseId", "dispatchOutbox", "dispatchedAt",
   "processOwner", "hidden", "tombstone", "abortAttemptDigest", "abortAt",
+  "tombstoneSnapshotRevision",
   "nativeStartReceipt", "recoveryState", "inputDigest", "output", "error", "authority",
 ]);
 const RUN_AUTHORITY_KEYS = Object.freeze([
@@ -307,24 +325,48 @@ const COMPLETION_OUTBOX_KEYS = Object.freeze([
   "schemaVersion", "principalId", "browserSessionId", "browserSessionPolicy", "threadId",
   "runId", "status", "completedAt", "runtimeRevision", "completionRevision",
   "threadRevision", "originalCursor", "outboxIds", "eventTypes", "eventHashes",
-  "orderedBundleDigest",
+  "orderedBundleDigest", "deliveryCheckpoint",
 ]);
 const COMPLETION_CURSOR_KEYS = Object.freeze(["firstSeq", "lastSeq", "lastHash", "prunedThroughSeq"]);
 const OUTBOX_KEYS = Object.freeze([
   "outboxId", "principalId", "browserSessionId", "browserSessionPolicy", "threadId", "runId",
   "type", "payload", "createdAt", "expectedPreviousSeq", "expectedPreviousHash",
   "expectedEventHash", "delivered", "deliveredEventSeq", "deliveredEventHash",
-  "deliveredEventDigest",
+  "deliveredEventDigest", "deliveredAt",
 ]);
 const ARTIFACT_KEYS = Object.freeze([
   "schemaVersion", "id", "principalId", "browserSessionId", "browserSessionPolicy",
   "threadId", "runId", "title", "kind", "spec", "revision", "stagedAt",
-  "published", "publishedAt",
+  "retainedAtSnapshotRevision", "published", "publishedAt",
 ]);
 const MUTATION_RECEIPT_KEYS = Object.freeze([
   "schemaVersion", "mutationId", "operation", "principalId", "browserSessionId",
   "browserSessionPolicy", "requestDigest", "baseSnapshotRevision", "baseIntegrityDigest",
-  "resultSnapshotRevision", "resultDigest", "result", "committedAt",
+  "resultSnapshotRevision", "resultDigest", "result", "mutationTimestamp", "committedAt",
+]);
+const RETENTION_KEYS = Object.freeze([
+  "schemaVersion", "policyVersion", "minimumReplayReceipts", "targetReplayReceipts",
+  "maximumReplayReceipts", "exactReplayFloorSnapshotRevision", "replayCutoffAt",
+  "compactionGeneration", "lastCompactedAt", "lastCompactedSnapshotRevision",
+  "prunedMutationReceiptCount", "prunedMutationReceiptDigest",
+  "compactedOutboxEventCount", "compactedOutboxEventDigest",
+  "prunedRunTombstoneCount", "prunedRunTombstoneDigest",
+  "prunedArtifactCount", "prunedArtifactDigest",
+]);
+const RECONCILIATION_FENCE_KEYS = Object.freeze([
+  "schemaVersion", "generation", "owner", "ownerDigest", "ownerIdentityDigest", "issuedAt",
+  "previousFenceDigest", "retiredOwners", "digest",
+]);
+const RETIRED_FENCE_OWNER_KEYS = Object.freeze([
+  "schemaVersion", "owner", "ownerDigest", "processIdentityDigest", "retiredAtGeneration",
+  "retiredAt", "reason",
+]);
+const DELIVERY_CHECKPOINT_KEYS = Object.freeze([
+  "schemaVersion", "compactedAt", "compactedAtSnapshotRevision", "deliveries", "digest",
+]);
+const DELIVERY_CHECKPOINT_ENTRY_KEYS = Object.freeze([
+  "outboxId", "type", "payloadDigest", "createdAt", "expectedPreviousSeq",
+  "expectedPreviousHash", "expectedEventHash", "eventSeq", "eventHash", "eventDigest", "deliveredAt",
 ]);
 const ATTESTATION_KEYS = Object.freeze([
   "schemaVersion", "owner", "authority", "preEnableDomainState", "runtimeCapabilityEnabled",
@@ -1004,7 +1046,63 @@ function validateCompletionCursor(value, label, code) {
   return cursor;
 }
 
-function validateCompletionOutbox(value, label, code) {
+function validateDeliveryCheckpoint(value, completion, generation, label, code) {
+  if (value === null) return null;
+  const checkpoint = exactDataObject(value, DELIVERY_CHECKPOINT_KEYS, `${label} deliveryCheckpoint`, code);
+  if (checkpoint.schemaVersion !== INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_DELIVERY_CHECKPOINT_VERSION) {
+    stateFail(code, `${label} delivery checkpoint schema is invalid.`, { status: statusForCode(code) });
+  }
+  assertCanonicalIso(checkpoint.compactedAt, `${label} delivery checkpoint compactedAt`, code);
+  assertInteger(
+    checkpoint.compactedAtSnapshotRevision,
+    `${label} delivery checkpoint compactedAtSnapshotRevision`,
+    { minimum: 1, maximum: generation, code }
+  );
+  if (!Array.isArray(checkpoint.deliveries) || checkpoint.deliveries.length !== completion.outboxIds.length) {
+    stateFail(code, `${label} delivery checkpoint length is invalid.`, { status: statusForCode(code) });
+  }
+  const deliveries = ReflectApply(ArrayMap, checkpoint.deliveries, [(valueEntry, index) => {
+    const entryLabel = `${label} delivery checkpoint[${index}]`;
+    const entry = exactDataObject(valueEntry, DELIVERY_CHECKPOINT_ENTRY_KEYS, entryLabel, code);
+    assertSafeIdentifier(entry.outboxId, `${entryLabel} outboxId`, code, { minimum: 4, maximum: 128 });
+    if (!OUTBOX_EVENT_TYPE_SET.has(entry.type)) {
+      stateFail(code, `${entryLabel} type is invalid.`, { status: statusForCode(code) });
+    }
+    assertDigest(entry.payloadDigest, `${entryLabel} payloadDigest`, code, { allowZero: false });
+    assertCanonicalIso(entry.createdAt, `${entryLabel} createdAt`, code);
+    assertInteger(entry.expectedPreviousSeq, `${entryLabel} expectedPreviousSeq`, {
+      maximum: MAX_SEQUENCE,
+      code,
+    });
+    assertDigest(entry.expectedPreviousHash, `${entryLabel} expectedPreviousHash`, code);
+    assertDigest(entry.expectedEventHash, `${entryLabel} expectedEventHash`, code, { allowZero: false });
+    assertInteger(entry.eventSeq, `${entryLabel} eventSeq`, { minimum: 1, maximum: MAX_SEQUENCE + 1, code });
+    assertDigest(entry.eventHash, `${entryLabel} eventHash`, code, { allowZero: false });
+    assertDigest(entry.eventDigest, `${entryLabel} eventDigest`, code, { allowZero: false });
+    assertCanonicalIso(entry.deliveredAt, `${entryLabel} deliveredAt`, code);
+    if (
+      entry.outboxId !== completion.outboxIds[index] ||
+      entry.type !== completion.eventTypes[index] ||
+      entry.eventSeq !== completion.originalCursor.lastSeq + index + 1 ||
+      entry.expectedPreviousSeq !== entry.eventSeq - 1 ||
+      entry.expectedEventHash !== completion.eventHashes[index] ||
+      entry.eventHash !== entry.expectedEventHash ||
+      entry.deliveredAt < completion.completedAt ||
+      entry.deliveredAt > checkpoint.compactedAt
+    ) {
+      stateFail(code, `${entryLabel} binding is invalid.`, { status: statusForCode(code) });
+    }
+    return entry;
+  }]);
+  assertDigest(checkpoint.digest, `${label} delivery checkpoint digest`, code, { allowZero: false });
+  const { digest: _digest, ...unsigned } = checkpoint;
+  if (checkpoint.digest !== contractDigest(unsigned) || deliveries.length !== completion.outboxIds.length) {
+    stateFail(code, `${label} delivery checkpoint digest is invalid.`, { status: statusForCode(code) });
+  }
+  return checkpoint;
+}
+
+function validateCompletionOutbox(value, generation, label, code) {
   const completion = exactDataObject(value, COMPLETION_OUTBOX_KEYS, label, code);
   if (completion.schemaVersion !== COMPLETION_OUTBOX_METADATA_VERSION) {
     stateFail(code, `${label} schema is invalid.`, { status: statusForCode(code) });
@@ -1050,6 +1148,7 @@ function validateCompletionOutbox(value, label, code) {
     assertDigest(completion.eventHashes[index], `${label} eventHashes[${index}]`, code, { allowZero: false });
   }
   assertDigest(completion.orderedBundleDigest, `${label} orderedBundleDigest`, code, { allowZero: false });
+  validateDeliveryCheckpoint(completion.deliveryCheckpoint, completion, generation, label, code);
   return completion;
 }
 
@@ -1174,7 +1273,7 @@ function validateRunError(value, label, code) {
   return error;
 }
 
-function validateRunRecord(value, index, code) {
+function validateRunRecord(value, index, generation, code) {
   const label = `repository run[${index}]`;
   const run = exactDataObject(value, RUN_KEYS, label, code);
   if (run.schemaVersion !== INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RUN_VERSION) {
@@ -1223,6 +1322,13 @@ function validateRunRecord(value, index, code) {
   if (run.processOwner !== null) validateProcessOwner(run.processOwner, label, code);
   assertBoolean(run.hidden, `${label} hidden`, code);
   assertBoolean(run.tombstone, `${label} tombstone`, code);
+  const tombstoneSnapshotRevision = run.tombstoneSnapshotRevision === null
+    ? null
+    : assertInteger(run.tombstoneSnapshotRevision, `${label} tombstoneSnapshotRevision`, {
+        minimum: 1,
+        maximum: generation,
+        code,
+      });
   if (run.abortAttemptDigest !== null) {
     assertDigest(run.abortAttemptDigest, `${label} abortAttemptDigest`, code, { allowZero: false });
   }
@@ -1247,7 +1353,12 @@ function validateRunRecord(value, index, code) {
   assertDigest(authority.contextDigest, `${label} authority contextDigest`, code, { allowZero: false });
   const completion = authority.completionOutbox === null
     ? null
-    : validateCompletionOutbox(authority.completionOutbox, `${label} authority completionOutbox`, code);
+    : validateCompletionOutbox(
+        authority.completionOutbox,
+        generation,
+        `${label} authority completionOutbox`,
+        code
+      );
 
   if (receipt && (
     receipt.runId !== run.id || receipt.threadId !== run.threadId ||
@@ -1303,11 +1414,14 @@ function validateRunRecord(value, index, code) {
   } else if (
     run.status === "aborted_before_launch" && (
       receipt || recovery || completion || run.completedAt !== null || run.output !== "" || error !== null ||
-      !run.hidden || !run.tombstone || run.abortAt === null ||
+      !run.hidden || !run.tombstone || run.abortAt === null || tombstoneSnapshotRevision === null ||
       (run.cancelRequestedAt !== null && !hasDispatch)
     )
   ) {
     stateFail(code, `${label} pre-launch abort state is inconsistent.`, { status: statusForCode(code) });
+  }
+  if ((run.status === "aborted_before_launch") !== (tombstoneSnapshotRevision !== null)) {
+    stateFail(code, `${label} tombstone snapshot anchor is inconsistent.`, { status: statusForCode(code) });
   }
   return run;
 }
@@ -1371,17 +1485,22 @@ function validateOutboxRecord(value, index, code) {
     ) {
       stateFail(code, `${label} delivery receipt is invalid.`, { status: statusForCode(code) });
     }
+    assertCanonicalIso(outbox.deliveredAt, `${label} deliveredAt`, code);
+    if (outbox.deliveredAt < outbox.createdAt) {
+      stateFail(code, `${label} delivery timestamp is invalid.`, { status: statusForCode(code) });
+    }
   } else if (
     outbox.deliveredEventSeq !== null ||
     outbox.deliveredEventHash !== null ||
-    outbox.deliveredEventDigest !== null
+    outbox.deliveredEventDigest !== null ||
+    outbox.deliveredAt !== null
   ) {
     stateFail(code, `${label} undelivered receipt must be null.`, { status: statusForCode(code) });
   }
   return outbox;
 }
 
-function validateArtifactRecord(value, index, code) {
+function validateArtifactRecord(value, index, generation, code) {
   const label = `repository artifact[${index}]`;
   const artifact = exactDataObject(value, ARTIFACT_KEYS, label, code);
   if (artifact.schemaVersion !== INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_ARTIFACT_VERSION) {
@@ -1414,6 +1533,11 @@ function validateArtifactRecord(value, index, code) {
   }
   assertInteger(artifact.revision, `${label} revision`, { minimum: 1, code });
   assertCanonicalIso(artifact.stagedAt, `${label} stagedAt`, code);
+  assertInteger(artifact.retainedAtSnapshotRevision, `${label} retainedAtSnapshotRevision`, {
+    minimum: 1,
+    maximum: generation,
+    code,
+  });
   assertBoolean(artifact.published, `${label} published`, code);
   assertOptionalIso(artifact.publishedAt, `${label} publishedAt`, code);
   if (
@@ -1454,8 +1578,133 @@ function validateMutationReceipt(value, index, generation, code) {
   if (receipt.resultDigest !== contractDigest(receipt.result)) {
     stateFail(code, `${label} result digest is invalid.`, { status: statusForCode(code) });
   }
+  assertCanonicalIso(receipt.mutationTimestamp, `${label} mutationTimestamp`, code);
   assertCanonicalIso(receipt.committedAt, `${label} committedAt`, code);
+  if (receipt.mutationTimestamp > receipt.committedAt) {
+    stateFail(code, `${label} mutation timestamp is in the future.`, { status: statusForCode(code) });
+  }
   return receipt;
+}
+
+function validateRetentionCheckpoint(value, generation, receipts, code) {
+  const label = "repository retention checkpoint";
+  const retention = exactDataObject(value, RETENTION_KEYS, label, code);
+  if (
+    retention.schemaVersion !== INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RETENTION_VERSION ||
+    retention.policyVersion !== "bounded-replay-horizon-v1" ||
+    retention.minimumReplayReceipts !== INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MIN_REPLAY_RECEIPTS ||
+    retention.targetReplayReceipts !== INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_TARGET_REPLAY_RECEIPTS ||
+    retention.maximumReplayReceipts !== INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_REPLAY_RECEIPTS
+  ) {
+    stateFail(code, `${label} policy is invalid.`, { status: statusForCode(code) });
+  }
+  const floor = assertInteger(
+    retention.exactReplayFloorSnapshotRevision,
+    `${label} exactReplayFloorSnapshotRevision`,
+    { maximum: generation + 1, code }
+  );
+  assertOptionalIso(retention.replayCutoffAt, `${label} replayCutoffAt`, code);
+  const compactionGeneration = assertInteger(
+    retention.compactionGeneration,
+    `${label} compactionGeneration`,
+    { maximum: generation, code }
+  );
+  assertOptionalIso(retention.lastCompactedAt, `${label} lastCompactedAt`, code);
+  const lastCompactedSnapshotRevision = assertInteger(
+    retention.lastCompactedSnapshotRevision,
+    `${label} lastCompactedSnapshotRevision`,
+    { maximum: generation, code }
+  );
+  if (
+    (compactionGeneration === 0) !== (retention.lastCompactedAt === null) ||
+    (compactionGeneration === 0) !== (lastCompactedSnapshotRevision === 0) ||
+    (floor === 0) !== (retention.replayCutoffAt === null) ||
+    floor > lastCompactedSnapshotRevision ||
+    (retention.replayCutoffAt !== null && retention.replayCutoffAt > retention.lastCompactedAt)
+  ) {
+    stateFail(code, `${label} lifecycle is inconsistent.`, { status: statusForCode(code) });
+  }
+  for (const [countField, digestField] of [
+    ["prunedMutationReceiptCount", "prunedMutationReceiptDigest"],
+    ["compactedOutboxEventCount", "compactedOutboxEventDigest"],
+    ["prunedRunTombstoneCount", "prunedRunTombstoneDigest"],
+    ["prunedArtifactCount", "prunedArtifactDigest"],
+  ]) {
+    const count = assertInteger(retention[countField], `${label} ${countField}`, { code });
+    assertDigest(retention[digestField], `${label} ${digestField}`, code);
+    if ((count === 0) !== (retention[digestField] === ZERO_DIGEST)) {
+      stateFail(code, `${label} ${countField} chain is inconsistent.`, { status: statusForCode(code) });
+    }
+  }
+  if (receipts.length > retention.maximumReplayReceipts) {
+    stateFail(code, `${label} receipt window is not bounded.`, { status: statusForCode(code) });
+  }
+  for (const receipt of receipts) {
+    if (floor > 0 && receipt.resultSnapshotRevision < floor) {
+      stateFail(code, `${label} does not bound its retained receipts.`, { status: statusForCode(code) });
+    }
+  }
+  return retention;
+}
+
+function validateReconciliationFence(value, generation, code) {
+  if (value === null) return null;
+  const label = "repository reconciliation fence";
+  const fence = exactDataObject(value, RECONCILIATION_FENCE_KEYS, label, code);
+  if (fence.schemaVersion !== INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RECONCILIATION_FENCE_VERSION) {
+    stateFail(code, `${label} schema is invalid.`, { status: statusForCode(code) });
+  }
+  const fenceGeneration = assertInteger(fence.generation, `${label} generation`, {
+    minimum: 1,
+    maximum: generation,
+    code,
+  });
+  const owner = validateProcessOwner(fence.owner, label, code);
+  assertDigest(fence.ownerDigest, `${label} ownerDigest`, code, { allowZero: false });
+  assertDigest(fence.ownerIdentityDigest, `${label} ownerIdentityDigest`, code, { allowZero: false });
+  assertCanonicalIso(fence.issuedAt, `${label} issuedAt`, code);
+  assertDigest(fence.previousFenceDigest, `${label} previousFenceDigest`, code);
+  if (
+    fence.ownerDigest !== contractDigest(owner) ||
+    fence.ownerIdentityDigest !== contractDigest(owner.processIdentity) ||
+    (fenceGeneration === 1) !== (fence.previousFenceDigest === ZERO_DIGEST) ||
+    !Array.isArray(fence.retiredOwners) ||
+    fence.retiredOwners.length > INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_RETIRED_FENCE_OWNERS
+  ) {
+    stateFail(code, `${label} authority is invalid.`, { status: statusForCode(code) });
+  }
+  const retired = ReflectApply(ArrayMap, fence.retiredOwners, [(entry, index) => {
+    const itemLabel = `${label} retired owner[${index}]`;
+    const item = exactDataObject(entry, RETIRED_FENCE_OWNER_KEYS, itemLabel, code);
+    if (item.schemaVersion !== INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RETIRED_OWNER_VERSION) {
+      stateFail(code, `${itemLabel} schema is invalid.`, { status: statusForCode(code) });
+    }
+    const retiredOwner = validateProcessOwner(item.owner, itemLabel, code);
+    assertDigest(item.ownerDigest, `${itemLabel} ownerDigest`, code, { allowZero: false });
+    assertDigest(item.processIdentityDigest, `${itemLabel} processIdentityDigest`, code, { allowZero: false });
+    assertInteger(item.retiredAtGeneration, `${itemLabel} retiredAtGeneration`, {
+      minimum: 1,
+      maximum: fenceGeneration - 1,
+      code,
+    });
+    assertCanonicalIso(item.retiredAt, `${itemLabel} retiredAt`, code);
+    if (
+      item.ownerDigest !== contractDigest(retiredOwner) ||
+      item.processIdentityDigest !== contractDigest(retiredOwner.processIdentity) ||
+      item.processIdentityDigest === fence.ownerIdentityDigest ||
+      (item.reason !== "handoff" && item.reason !== "dead-owner-takeover")
+    ) {
+      stateFail(code, `${itemLabel} binding is invalid.`, { status: statusForCode(code) });
+    }
+    return item;
+  }]);
+  assertSortedUnique(retired, (item) => [item.processIdentityDigest], `${label} retired owners`, code);
+  assertDigest(fence.digest, `${label} digest`, code, { allowZero: false });
+  const { digest: _digest, ...unsigned } = fence;
+  if (fence.digest !== contractDigest(unsigned)) {
+    stateFail(code, `${label} digest is invalid.`, { status: statusForCode(code) });
+  }
+  return fence;
 }
 
 function completionOutboxDigestView(record) {
@@ -1506,7 +1755,7 @@ function validateRunPredecessors(runs, runsById, code) {
   }
 }
 
-function validateCompletionCrossReferences(run, thread, outboxById, outboxOwnerCount, code) {
+function validateCompletionCrossReferences(run, thread, outboxById, outboxOwnerCount, generation, code) {
   const completion = run.authority.completionOutbox;
   if (completion === null) return;
   if (completion.threadRevision > thread.revision) {
@@ -1514,7 +1763,7 @@ function validateCompletionCrossReferences(run, thread, outboxById, outboxOwnerC
       status: statusForCode(code),
     });
   }
-  const records = ReflectApply(ArrayMap, completion.outboxIds, [(outboxId) => {
+  let records = ReflectApply(ArrayMap, completion.outboxIds, [(outboxId) => {
     const count = (outboxOwnerCount.get(outboxId) || 0) + 1;
     outboxOwnerCount.set(outboxId, count);
     if (count !== 1) {
@@ -1524,6 +1773,63 @@ function validateCompletionCrossReferences(run, thread, outboxById, outboxOwnerC
     }
     return outboxById.get(outboxId);
   }]);
+  if (completion.deliveryCheckpoint !== null) {
+    if (
+      completion.deliveryCheckpoint.compactedAtSnapshotRevision > generation ||
+      ReflectApply(ArraySome, records, [(record) => record !== undefined])
+    ) {
+      stateFail(code, `repository run ${run.id} compacted completion checkpoint is invalid.`, {
+        status: statusForCode(code),
+      });
+    }
+    records = ReflectApply(ArrayMap, completion.deliveryCheckpoint.deliveries, [(entry, index) => {
+      const payload = entry.type === "output.delta"
+        ? frozenRecord({ text: ReflectApply(StringSlice, run.output, [0, 4_000]) })
+        : frozenRecord({});
+      if (entry.payloadDigest !== contractDigest(payload)) {
+        stateFail(code, `repository run ${run.id} compacted completion payload is invalid.`, {
+          status: statusForCode(code),
+        });
+      }
+      const event = createPublicIntegrationEvent({
+        threadId: run.threadId,
+        runId: run.id,
+        seq: entry.eventSeq,
+        type: entry.type,
+        payload,
+        createdAt: entry.createdAt,
+        previousHash: entry.expectedPreviousHash,
+      });
+      if (
+        event.seq !== entry.expectedPreviousSeq + 1 ||
+        event.hash !== entry.expectedEventHash ||
+        contractDigest(event) !== entry.eventDigest ||
+        (index === 0
+          ? entry.expectedPreviousSeq !== completion.originalCursor.lastSeq ||
+            entry.expectedPreviousHash !== completion.originalCursor.lastHash
+          : entry.expectedPreviousSeq !== completion.deliveryCheckpoint.deliveries[index - 1].eventSeq ||
+            entry.expectedPreviousHash !== completion.deliveryCheckpoint.deliveries[index - 1].eventHash)
+      ) {
+        stateFail(code, `repository run ${run.id} compacted completion chain is invalid.`, {
+          status: statusForCode(code),
+        });
+      }
+      return frozenRecord({
+        outboxId: entry.outboxId,
+        principalId: completion.principalId,
+        browserSessionId: completion.browserSessionId,
+        browserSessionPolicy: completion.browserSessionPolicy,
+        threadId: completion.threadId,
+        runId: completion.runId,
+        type: entry.type,
+        payload,
+        createdAt: entry.createdAt,
+        expectedPreviousSeq: entry.expectedPreviousSeq,
+        expectedPreviousHash: entry.expectedPreviousHash,
+        expectedEventHash: entry.expectedEventHash,
+      });
+    }]);
+  }
   if (ReflectApply(ArraySome, records, [(record) => !record])) {
     stateFail(code, `repository run ${run.id} completion outbox reference is missing.`, {
       status: statusForCode(code),
@@ -1736,6 +2042,7 @@ function validateDomainCrossReferences(domain, code) {
       threadsById.get(run.threadId),
       outboxById,
       outboxOwnerCount,
+      domain.generation,
       code
     );
   }
@@ -1798,17 +2105,19 @@ function validateDomainState(value, binding, generation, code, maxSnapshotBytes)
     (thread, index) => validateThreadRecord(thread, index, code),
   ]);
   const runs = ReflectApply(ArrayMap, domain.runs, [
-    (run, index) => validateRunRecord(run, index, code),
+    (run, index) => validateRunRecord(run, index, domain.generation, code),
   ]);
   const outboxEvents = ReflectApply(ArrayMap, domain.outboxEvents, [
     (outbox, index) => validateOutboxRecord(outbox, index, code),
   ]);
   const artifacts = ReflectApply(ArrayMap, domain.artifacts, [
-    (artifact, index) => validateArtifactRecord(artifact, index, code),
+    (artifact, index) => validateArtifactRecord(artifact, index, domain.generation, code),
   ]);
   const mutationReceipts = ReflectApply(ArrayMap, domain.mutationReceipts, [
     (receipt, index) => validateMutationReceipt(receipt, index, domain.generation, code),
   ]);
+  validateRetentionCheckpoint(domain.retention, domain.generation, mutationReceipts, code);
+  validateReconciliationFence(domain.reconciliationFence, domain.generation, code);
   assertSortedUnique(threads, (thread) => [thread.id], "repository threads", code);
   assertSortedUnique(runs, (run) => [run.id], "repository runs", code);
   assertSortedUnique(outboxEvents, (outbox) => [outbox.outboxId], "repository outbox events", code);
@@ -1841,6 +2150,27 @@ function emptyDomainState(binding) {
     outboxEvents: Object.freeze([]),
     artifacts: Object.freeze([]),
     mutationReceipts: Object.freeze([]),
+    retention: frozenRecord({
+      schemaVersion: INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RETENTION_VERSION,
+      policyVersion: "bounded-replay-horizon-v1",
+      minimumReplayReceipts: INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MIN_REPLAY_RECEIPTS,
+      targetReplayReceipts: INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_TARGET_REPLAY_RECEIPTS,
+      maximumReplayReceipts: INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_REPLAY_RECEIPTS,
+      exactReplayFloorSnapshotRevision: 0,
+      replayCutoffAt: null,
+      compactionGeneration: 0,
+      lastCompactedAt: null,
+      lastCompactedSnapshotRevision: 0,
+      prunedMutationReceiptCount: 0,
+      prunedMutationReceiptDigest: ZERO_DIGEST,
+      compactedOutboxEventCount: 0,
+      compactedOutboxEventDigest: ZERO_DIGEST,
+      prunedRunTombstoneCount: 0,
+      prunedRunTombstoneDigest: ZERO_DIGEST,
+      prunedArtifactCount: 0,
+      prunedArtifactDigest: ZERO_DIGEST,
+    }),
+    reconciliationFence: null,
   });
 }
 
