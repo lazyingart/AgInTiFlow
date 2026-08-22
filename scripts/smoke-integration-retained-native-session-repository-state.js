@@ -63,6 +63,10 @@ const {
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RUN_VERSION,
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_ARTIFACT_VERSION,
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MUTATION_RECEIPT_VERSION,
+  INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RETENTION_VERSION,
+  INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MIN_REPLAY_RECEIPTS,
+  INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_TARGET_REPLAY_RECEIPTS,
+  INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_REPLAY_RECEIPTS,
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_STATE_DIGEST_DOMAIN,
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_REQUEST_DIGEST_DOMAIN,
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_LAST_MUTATION_DIGEST_DOMAIN,
@@ -130,6 +134,8 @@ const DOMAIN_KEYS = Object.freeze([
   "outboxEvents",
   "artifacts",
   "mutationReceipts",
+  "retention",
+  "reconciliationFence",
 ]);
 
 const PRINCIPAL = "principalAAAAAAAA";
@@ -458,6 +464,7 @@ function completionOutboxRecord({
     deliveredEventDigest: delivered
       ? independentDigest({ ...eventEnvelope, hash: expectedEventHash })
       : null,
+    deliveredAt: delivered ? createdAt : null,
   };
 }
 
@@ -493,7 +500,7 @@ function completionMetadataFor({
 }) {
   const first = outboxes[0];
   return {
-    schemaVersion: "aginti-completion-outbox-bundle-v1",
+    schemaVersion: "aginti-completion-outbox-bundle-v2",
     principalId: PRINCIPAL,
     browserSessionId: BROWSER_SESSION,
     browserSessionPolicy: "same-browser-session",
@@ -514,6 +521,7 @@ function completionMetadataFor({
     eventTypes: outboxes.map((outbox) => outbox.type),
     eventHashes: outboxes.map((outbox) => outbox.expectedEventHash),
     orderedBundleDigest: independentDigest(outboxes.map(completionDigestView)),
+    deliveryCheckpoint: null,
   };
 }
 
@@ -578,6 +586,7 @@ function fullRecords() {
     processOwner: owner,
     hidden: false,
     tombstone: false,
+    tombstoneSnapshotRevision: null,
     abortAttemptDigest: null,
     abortAt: null,
     nativeStartReceipt: receipt,
@@ -606,6 +615,7 @@ function fullRecords() {
     spec: { schemaVersion: "1", markdown: "Repository state report" },
     revision: 3,
     stagedAt: COMPLETED_AT,
+    retainedAtSnapshotRevision: 1,
     published: false,
     publishedAt: null,
   };
@@ -623,6 +633,7 @@ function fullRecords() {
     resultSnapshotRevision: 1,
     resultDigest: independentDigest(result),
     result,
+    mutationTimestamp: COMPLETED_AT,
     committedAt: COMPLETED_AT,
   };
   return { thread, run, outbox, artifact, mutationReceipt };
@@ -642,6 +653,8 @@ function domainStateFor(surface, generation, overrides = {}) {
     outboxEvents: [records.outbox],
     artifacts: [records.artifact],
     mutationReceipts: [records.mutationReceipt],
+    retention: retentionCheckpoint(),
+    reconciliationFence: null,
     ...overrides,
   };
 }
@@ -659,6 +672,31 @@ function emptyDomainStateFor(surface, generation) {
     outboxEvents: [],
     artifacts: [],
     mutationReceipts: [],
+    retention: retentionCheckpoint(),
+    reconciliationFence: null,
+  };
+}
+
+function retentionCheckpoint() {
+  return {
+    schemaVersion: INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RETENTION_VERSION,
+    policyVersion: "bounded-replay-horizon-v1",
+    minimumReplayReceipts: INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MIN_REPLAY_RECEIPTS,
+    targetReplayReceipts: INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_TARGET_REPLAY_RECEIPTS,
+    maximumReplayReceipts: INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_REPLAY_RECEIPTS,
+    exactReplayFloorSnapshotRevision: 0,
+    replayCutoffAt: null,
+    compactionGeneration: 0,
+    lastCompactedAt: null,
+    lastCompactedSnapshotRevision: 0,
+    prunedMutationReceiptCount: 0,
+    prunedMutationReceiptDigest: ZERO_DIGEST,
+    compactedOutboxEventCount: 0,
+    compactedOutboxEventDigest: ZERO_DIGEST,
+    prunedRunTombstoneCount: 0,
+    prunedRunTombstoneDigest: ZERO_DIGEST,
+    prunedArtifactCount: 0,
+    prunedArtifactDigest: ZERO_DIGEST,
   };
 }
 
@@ -1144,6 +1182,7 @@ async function runValidVariantMatrix(rootPath) {
         cancelRequestedAt: COMPLETED_AT,
         hidden: true,
         tombstone: true,
+        tombstoneSnapshotRevision: 4,
         abortAttemptDigest: "9".repeat(64),
         abortAt: COMPLETED_AT,
         nativeStartReceipt: null,

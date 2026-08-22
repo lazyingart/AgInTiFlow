@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { fork } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createRetainedIntegrationNativeExecutionEvidence,
 } from "../src/integration-retained-native-execution-evidence.js";
@@ -24,6 +26,9 @@ import {
   openIntegrationStorageAuthority,
 } from "../src/integration-storage-authority.js";
 import {
+  PUBLIC_INTEGRATION_EVENT_LEDGER_VERSION,
+} from "../src/integration-events.js";
+import {
   NATIVE_RUNTIME_ROOTS_ATTESTATION_VERSION,
 } from "../src/integration-native-runtime-roots.js";
 import {
@@ -35,12 +40,24 @@ import {
   recordRetainedNativeTerminalEvidence,
 } from "../src/integration-native-executor.js";
 import {
+  acquireRetainedIntegrationRuntimeRepositoryFence,
+  compactRetainedIntegrationRuntimeRepository,
   createRetainedIntegrationRuntimeRecoveryCoordinator,
   createRetainedIntegrationRuntimeRepositorySurface,
+  handoffRetainedIntegrationRuntimeRepositoryFence,
 } from "../src/integration-retained-runtime-repository-surface.js";
+import {
+  createAgintiIntegrationRuntimeAuthority,
+  createIntegrationRuntimeProcessOwnerBootstrap,
+  INTEGRATION_EVENT_APPEND_ATTESTATION_PROPERTY,
+  INTEGRATION_EVENT_APPEND_ATTESTATION_VERSION,
+  INTEGRATION_HARDENED_SANDBOX_ATTESTATION_VERSION,
+  INTEGRATION_RUNTIME_CANCELLATION_ATTESTATION_VERSION,
+} from "../src/integration-runtime-authority.js";
 import {
   buildFixedIntegrationPolicy,
   contractDigest,
+  REQUIRED_INTEGRATION_ISOLATION_ASSERTIONS,
 } from "../src/integration-policy.js";
 import {
   runWithIntegrationSessionScope,
@@ -60,23 +77,99 @@ const RUN_ID = "run_00000000-0000-4000-8000-000000000302";
 const RESUME_RUN_ID = "run_00000000-0000-4000-8000-000000000304";
 const NATIVE_SESSION_ID = "aginti:00000000-0000-4000-8000-000000000303";
 const BASE_MS = Date.parse("2026-08-22T08:00:00.000Z");
+const CHILD_MODE = String(process.argv.find((value) => value.startsWith("--child=")) || "").slice(8);
+const CHILD_ROOT = String(process.argv.find((value) => value.startsWith("--root=")) || "").slice(7);
 
 function timestamp(offsetSeconds) {
   return new Date(BASE_MS + offsetSeconds * 1000).toISOString();
 }
 
-function owner(tokenDigit = "1", offsetSeconds = 0) {
+function deepFreeze(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const key of Reflect.ownKeys(value)) deepFreeze(value[key]);
+  return Object.freeze(value);
+}
+
+function seal(value) {
+  const unsigned = { ...value };
+  return deepFreeze({ ...unsigned, digest: contractDigest(unsigned) });
+}
+
+function runtimeEventLedgerStore() {
   return Object.freeze({
-    schemaVersion: "aginti-process-owner-v1",
-    pid: 4242,
-    token: tokenDigit.repeat(32),
-    processIdentity: Object.freeze({
-      schemaVersion: "aginti-process-identity-v1",
-      bootId: "01234567-89ab-cdef-0123-456789abcdef",
-      startTimeTicks: "123456",
+    owner: "aginti",
+    authority: "aginti",
+    mappingVersion: PUBLIC_INTEGRATION_EVENT_LEDGER_VERSION,
+    durable: true,
+    persisted: true,
+    contiguous: true,
+    monotonic: true,
+    bridgeOwned: false,
+    appendPublicEvent() {
+      throw new Error("runtime proof smoke does not append public events");
+    },
+    appendByOutboxId() {
+      throw new Error("runtime proof smoke does not append outbox events");
+    },
+    lookupByOutboxId() {
+      return null;
+    },
+    ledgerForRun() {
+      throw new Error("runtime proof smoke does not open a public ledger");
+    },
+    [INTEGRATION_EVENT_APPEND_ATTESTATION_PROPERTY]: seal({
+      schemaVersion: INTEGRATION_EVENT_APPEND_ATTESTATION_VERSION,
+      owner: "aginti",
+      authority: "aginti",
+      appendPublicEvent: true,
+      appendByOutboxId: true,
+      lookupByOutboxId: true,
+      terminalFinality: true,
+      durable: true,
+      persisted: true,
+      monotonic: true,
     }),
-    acquiredAt: timestamp(offsetSeconds),
-    heartbeatAt: timestamp(offsetSeconds),
+  });
+}
+
+function runtimeCancellationAttestation() {
+  return seal({
+    schemaVersion: INTEGRATION_RUNTIME_CANCELLATION_ATTESTATION_VERSION,
+    owner: "aginti",
+    authority: "aginti",
+    abortControllerBound: true,
+    exactRunOnly: true,
+    browserSessionBound: true,
+    cancellation: true,
+  });
+}
+
+function runtimeSandboxAttestation() {
+  const isolationAttestation = deepFreeze({
+    profileVersion: "hardened-v1",
+    profileDigest: "f".repeat(64),
+    ...Object.fromEntries(REQUIRED_INTEGRATION_ISOLATION_ASSERTIONS.map((key) => [key, true])),
+  });
+  return seal({
+    schemaVersion: INTEGRATION_HARDENED_SANDBOX_ATTESTATION_VERSION,
+    owner: "aginti",
+    authority: "aginti",
+    valid: true,
+    enabled: true,
+    isolationAttestation,
+  });
+}
+
+function runtimeAuthorityForFixture(fixture) {
+  return createAgintiIntegrationRuntimeAuthority({
+    threadSessionRepository: fixture.repository,
+    eventLedgerStore: runtimeEventLedgerStore(),
+    cancellationAttestation: runtimeCancellationAttestation(),
+    hardenedSandboxAttestation: runtimeSandboxAttestation(),
+    processOwnerBootstrap: fixture.processOwnerBootstrap,
+    repositoryFenceLease: fixture.acquiredFence.lease,
+    retainedNativeExecutionEvidence: fixture.evidence,
+    retainedRecoveryCoordinator: fixture.recovery,
   });
 }
 
@@ -125,7 +218,7 @@ function runtimeRoots(rootPath) {
   return Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
 }
 
-async function openFixture(rootPath, now) {
+async function openFixture(rootPath, now, processOwnerBootstrap) {
   const repositorySegments = Object.freeze(["data:repository"]);
   const sessionSegments = Object.freeze(["native:sessions"]);
   const repositoryPath = path.join(rootPath, ...repositorySegments);
@@ -220,6 +313,9 @@ async function openFixture(rootPath, now) {
     runtimeRoots: runtimeRoots(rootPath),
     now,
   });
+  const acquiredFence = await acquireRetainedIntegrationRuntimeRepositoryFence(repository, {
+    processOwnerBootstrap,
+  });
   const evidence = createRetainedIntegrationNativeExecutionEvidence({
     sessionStateStore,
     sessionStateStoreExpected: sessionBinding.expected,
@@ -227,8 +323,49 @@ async function openFixture(rootPath, now) {
   const recovery = createRetainedIntegrationRuntimeRecoveryCoordinator({
     repository,
     nativeExecutionEvidence: evidence,
+    processOwnerBootstrap,
+    repositoryFenceLease: acquiredFence.lease,
   });
-  return Object.freeze({ authority, repository, repositoryState, sessionStateStore, evidence, recovery, expected });
+  return Object.freeze({
+    authority,
+    repository,
+    repositoryState,
+    sessionStateStore,
+    evidence,
+    recovery,
+    expected,
+    processOwnerBootstrap,
+    processOwner: processOwnerBootstrap.processOwner,
+    acquiredFence,
+    sessionBinding,
+  });
+}
+
+async function openSiblingFixture(rootPath, now, fixture) {
+  const repository = createRetainedIntegrationRuntimeRepositorySurface({
+    repositoryState: fixture.repositoryState,
+    repositoryStateExpected: fixture.expected,
+    runtimeRoots: runtimeRoots(rootPath),
+    now,
+  });
+  const acquiredFence = await acquireRetainedIntegrationRuntimeRepositoryFence(repository, {
+    processOwnerBootstrap: fixture.processOwnerBootstrap,
+  });
+  const recovery = createRetainedIntegrationRuntimeRecoveryCoordinator({
+    repository,
+    nativeExecutionEvidence: fixture.evidence,
+    processOwnerBootstrap: fixture.processOwnerBootstrap,
+    repositoryFenceLease: acquiredFence.lease,
+  });
+  return Object.freeze({
+    repository,
+    repositoryState: fixture.repositoryState,
+    evidence: fixture.evidence,
+    recovery,
+    processOwnerBootstrap: fixture.processOwnerBootstrap,
+    processOwner: fixture.processOwner,
+    acquiredFence,
+  });
 }
 
 function threadPreservationDigest(thread) {
@@ -297,6 +434,30 @@ function reconciliationRequest(processOwner, reconciledAt) {
   return Object.freeze({ ...unsigned, requestDigest: contractDigest(unsigned) });
 }
 
+function fillerThreadId(index) {
+  return `thr_00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`;
+}
+
+function fillerNativeSessionId(index) {
+  return `aginti:00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`;
+}
+
+async function fillReplayReceipts(fixture, { startIndex, count, startOffset }) {
+  for (let index = 0; index < count; index += 1) {
+    const identity = startIndex + index;
+    await fixture.repository.createIntegrationThread(Object.freeze({
+      threadId: fillerThreadId(identity),
+      nativeSessionId: fillerNativeSessionId(identity),
+      principalId: PRINCIPAL,
+      browserSessionId: BROWSER_SESSION,
+      browserSessionPolicy: "same-browser-session",
+      title: `Replay horizon filler ${identity}`,
+      createdAt: timestamp(startOffset + index),
+      policyFingerprint: POLICY_FINGERPRINT,
+    }));
+  }
+}
+
 async function expectCode(action, expectedCode) {
   let captured = null;
   try {
@@ -308,7 +469,136 @@ async function expectCode(action, expectedCode) {
   assert.equal(captured.publicCode || captured.code, expectedCode, captured.message);
 }
 
-async function authorizeRepositoryRun(fixture, dispatchOwner = owner("1", 2)) {
+function errorCode(error) {
+  return String(error?.publicCode || error?.code || error?.name || "ERROR");
+}
+
+function spawnSuccessor(rootPath) {
+  const child = fork(fileURLToPath(import.meta.url), ["--child=successor", `--root=${rootPath}`], {
+    execArgv: [],
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+  let readyResolve;
+  let readyReject;
+  const ready = new Promise((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+  const pending = new Map();
+  let nextId = 1;
+  child.on("message", (message) => {
+    if (message?.type === "ready") {
+      readyResolve(message);
+      return;
+    }
+    if (message?.type !== "response" || !pending.has(message.id)) return;
+    const waiter = pending.get(message.id);
+    pending.delete(message.id);
+    clearTimeout(waiter.timer);
+    if (message.ok) waiter.resolve(message.result);
+    else {
+      const error = new Error(message.message || message.code || "successor command failed");
+      error.code = message.code;
+      waiter.reject(error);
+    }
+  });
+  const exited = new Promise((resolve) => child.once("exit", (code, signal) => {
+    const error = new Error(`successor exited (${code ?? signal}): ${stderr}`);
+    readyReject(error);
+    for (const waiter of pending.values()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+    pending.clear();
+    resolve({ code, signal, stderr });
+  }));
+  return Object.freeze({
+    child,
+    ready,
+    exited,
+    command(command, payload) {
+      const id = nextId++;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`successor ${command} timed out: ${stderr}`));
+        }, 20_000);
+        pending.set(id, { resolve, reject, timer });
+        child.send({ type: "command", id, command, payload });
+      });
+    },
+    terminate() {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    },
+  });
+}
+
+async function runSuccessorChild() {
+  const processOwnerBootstrap = await createIntegrationRuntimeProcessOwnerBootstrap();
+  const send = (payload) => new Promise((resolve, reject) => {
+    if (typeof process.send !== "function") {
+      reject(new Error("successor child requires an IPC channel"));
+      return;
+    }
+    process.send(payload, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+  await send({ type: "ready", processOwner: processOwnerBootstrap.processOwner, pid: process.pid });
+  const message = await new Promise((resolve) => process.once("message", resolve));
+  let fixture = null;
+  try {
+    if (message?.type !== "command" || message.command !== "resolve") {
+      throw new Error("successor received an invalid command");
+    }
+    let childTick = 500;
+    const now = () => new Date(BASE_MS + childTick++ * 1000);
+    fixture = await openFixture(CHILD_ROOT, now, processOwnerBootstrap);
+    const runtimeAuthority = runtimeAuthorityForFixture(fixture);
+    const runtimeProof = await runtimeAuthority.getIntegrationRuntimeProof();
+    const recovered = await fixture.recovery.resolveRecoveryHeldRun(message.payload);
+    const replay = await fixture.recovery.resolveRecoveryHeldRun(message.payload);
+    const persisted = (await fixture.repository.getIntegrationRun({
+      runId: message.payload.runId,
+      principalId: message.payload.principalId,
+      browserSessionId: message.payload.browserSessionId,
+    })).run;
+    await send({
+      type: "response",
+      id: message.id,
+      ok: true,
+      result: {
+        runId: recovered.run.id,
+        status: recovered.run.status,
+        runtimeRevision: recovered.run.authority.runtimeRevision,
+        processOwnerDigest: contractDigest(recovered.run.processOwner),
+        replayOutcome: replay.outcome,
+        persistedStatus: persisted.status,
+        persistedRuntimeRevision: persisted.authority.runtimeRevision,
+        persistedProcessOwnerDigest: contractDigest(persisted.processOwner),
+        fence: runtimeProof.repositoryFence,
+        coordinatorFenceDigest: fixture.recovery.attestation.repositoryFenceDigest,
+        coordinatorLeaseDigest: fixture.recovery.attestation.repositoryFenceLeaseDigest,
+      },
+    });
+  } catch (error) {
+    await send({
+      type: "response",
+      id: message?.id,
+      ok: false,
+      code: errorCode(error),
+      message: String(error?.message || error),
+    });
+  } finally {
+    await fixture?.authority.close().catch(() => {});
+    process.disconnect?.();
+  }
+}
+
+async function authorizeRepositoryRun(fixture, dispatchOwner = fixture.processOwner) {
   const createdAt = timestamp(1);
   const originalThread = (await fixture.repository.createIntegrationThread(Object.freeze({
     threadId: THREAD_ID,
@@ -399,15 +689,53 @@ async function run() {
   );
   let fixture = null;
   let mismatchFixture = null;
+  let staleRuntimeFixture = null;
+  let successor = null;
   let tick = 100;
   const now = () => new Date(BASE_MS + tick++ * 1000);
+  const processOwnerBootstrap = await createIntegrationRuntimeProcessOwnerBootstrap();
   try {
-    fixture = await openFixture(rootPath, now);
-    mismatchFixture = await openFixture(mismatchRootPath, now);
+    fixture = await openFixture(rootPath, now, processOwnerBootstrap);
+    mismatchFixture = await openFixture(mismatchRootPath, now, processOwnerBootstrap);
+    const sameDescriptorExpected = fixture.sessionBinding.expected;
+    const sameDescriptorLock = await openIntegrationRetainedRegularFileLock(
+      fixture.sessionBinding.files,
+      Object.freeze({
+        role: sameDescriptorExpected.role,
+        canonicalPath: sameDescriptorExpected.canonicalPath,
+        rootIdentityDigest: sameDescriptorExpected.rootIdentityDigest,
+        relativeSegments: sameDescriptorExpected.relativeSegments,
+        directoryIdentityDigest: sameDescriptorExpected.directoryIdentityDigest,
+        lockFileName: INTEGRATION_RETAINED_SESSION_STATE_LOCK_FILE,
+        helperSha256: sameDescriptorExpected.helperSha256,
+        lockFileIdentityDigest: sameDescriptorExpected.lockFileIdentityDigest,
+        helperIdentityDigest: sameDescriptorExpected.helperIdentityDigest,
+      })
+    );
+    const sameDescriptorStore = createRetainedIntegrationSessionStateStore(
+      fixture.sessionBinding.files,
+      sameDescriptorLock,
+      sameDescriptorExpected
+    );
+    const sameDescriptorEvidence = createRetainedIntegrationNativeExecutionEvidence({
+      sessionStateStore: sameDescriptorStore,
+      sessionStateStoreExpected: sameDescriptorExpected,
+    });
+    await expectCode(
+      () => createRetainedIntegrationRuntimeRecoveryCoordinator({
+        repository: fixture.repository,
+        nativeExecutionEvidence: sameDescriptorEvidence,
+        processOwnerBootstrap,
+        repositoryFenceLease: fixture.acquiredFence.lease,
+      }),
+      "INTEGRATION_NATIVE_EVIDENCE_UNAVAILABLE"
+    );
     await expectCode(
       () => createRetainedIntegrationRuntimeRecoveryCoordinator({
         repository: fixture.repository,
         nativeExecutionEvidence: mismatchFixture.evidence,
+        processOwnerBootstrap,
+        repositoryFenceLease: fixture.acquiredFence.lease,
       }),
       "INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE"
     );
@@ -419,11 +747,11 @@ async function run() {
       fixture.recovery.attestation.storageAdmissionBindingDigest,
       fixture.evidence.attestation.storageAdmissionBindingDigest
     );
-    await authorizeRepositoryRun(mismatchFixture, owner("3", 30));
+    await authorizeRepositoryRun(mismatchFixture);
     await mismatchFixture.authority.close();
-    mismatchFixture = await openFixture(mismatchRootPath, now);
+    mismatchFixture = await openFixture(mismatchRootPath, now, processOwnerBootstrap);
     await mismatchFixture.repository.reconcileIntegrationDispatches(
-      reconciliationRequest(owner("4", 40), timestamp(40))
+      reconciliationRequest(mismatchFixture.processOwner, timestamp(40))
     );
     const noEvidenceCursor = Object.freeze({
       firstSeq: 1,
@@ -507,8 +835,8 @@ async function run() {
     assert.equal((await fs.stat(path.join(roots.sessionsDir, NATIVE_SESSION_ID, "state.json")).catch(() => null)), null);
 
     await fixture.authority.close();
-    fixture = await openFixture(rootPath, now);
-    const recoveryOwner = owner("2", 20);
+    fixture = await openFixture(rootPath, now, processOwnerBootstrap);
+    const recoveryOwner = fixture.processOwner;
     const reconciliation = await fixture.repository.reconcileIntegrationDispatches(
       reconciliationRequest(recoveryOwner, timestamp(20))
     );
@@ -547,6 +875,13 @@ async function run() {
       () => fixture.repository.finishIntegrationRunWithOutbox(Object.freeze(publicFinish)),
       "RECOVERY_HOLD"
     );
+    await fillReplayReceipts(fixture, { startIndex: 1_000, count: 20, startOffset: 21 });
+    await compactRetainedIntegrationRuntimeRepository(fixture.repository);
+    const delayedRecoverySnapshot = await fixture.repositoryState.loadDomainSnapshot();
+    assert(
+      delayedRecoverySnapshot.state.retention.replayCutoffAt >= terminal.completedAt,
+      "recovery terminal timestamp must be behind the durable replay floor"
+    );
     const recovered = await fixture.recovery.resolveRecoveryHeldRun(Object.freeze({
       runId: RUN_ID,
       principalId: PRINCIPAL,
@@ -568,8 +903,23 @@ async function run() {
     assert.equal(replay.outcome, "already-recovered");
     assert.equal(replay.run.id, RUN_ID);
     assert.equal(replay.resultDigest, terminal.resultDigest);
+    await fillReplayReceipts(fixture, { startIndex: 1_020, count: 20, startOffset: 45 });
+    await compactRetainedIntegrationRuntimeRepository(fixture.repository);
+    const beforeExpiredRecoveryReplay = await fixture.repositoryState.loadDomainSnapshot();
+    await expectCode(
+      () => fixture.recovery.resolveRecoveryHeldRun(Object.freeze({
+        runId: RUN_ID,
+        principalId: PRINCIPAL,
+        browserSessionId: BROWSER_SESSION,
+        expectedCursor: publicFinish.expectedCursor,
+      })),
+      "INTEGRATION_REPOSITORY_REPLAY_WINDOW_EXPIRED"
+    );
+    const afterExpiredRecoveryReplay = await fixture.repositoryState.loadDomainSnapshot();
+    assert.equal(afterExpiredRecoveryReplay.snapshotRevision, beforeExpiredRecoveryReplay.snapshotRevision);
+    assert.equal(afterExpiredRecoveryReplay.integrityDigest, beforeExpiredRecoveryReplay.integrityDigest);
 
-    const resumeOwner = owner("5", 61);
+    const resumeOwner = fixture.processOwner;
     const resumed = await authorizeRepositoryResume(
       fixture,
       recovered.run,
@@ -628,13 +978,24 @@ async function run() {
       persistedRuntimeRevision: 2,
     });
     await recordRetainedNativeTerminalEvidence(resumeConfig, resumedTerminal);
-    const resumedFinish = await fixture.repository.finishIntegrationRunWithOutbox(Object.freeze({
+    const resumedReconciliation = await fixture.repository.reconcileIntegrationDispatches(
+      reconciliationRequest(fixture.processOwner, timestamp(70))
+    );
+    assert.equal(resumedReconciliation.receiptRunResults.length, 1);
+    assert.equal(resumedReconciliation.receiptRunResults[0].action, "held");
+    const resumedHeld = (await fixture.repository.getIntegrationRun({
+      runId: RESUME_RUN_ID,
+      principalId: PRINCIPAL,
+      browserSessionId: BROWSER_SESSION,
+    })).run;
+    assert.equal(resumedHeld.recoveryState.status, "recovery_hold");
+    const resumedFinishPayload = Object.freeze({
       runId: RESUME_RUN_ID,
       threadId: THREAD_ID,
       nativeSessionId: NATIVE_SESSION_ID,
       principalId: PRINCIPAL,
       browserSessionId: BROWSER_SESSION,
-      expectedRevision: resumed.authorized.run.revision,
+      expectedRevision: resumedHeld.revision,
       expectedNativeRuntimeRevision: 1,
       completedNativeRuntimeRevision: 2,
       status: resumedTerminal.status,
@@ -654,18 +1015,56 @@ async function run() {
         createdAt: resumedTerminal.completedAt,
       }),
       resultDigest: resumedTerminal.resultDigest,
-    }));
-    assert.equal(resumedFinish.run.status, "completed");
-    assert.equal(resumedFinish.run.authority.runtimeRevision, 2);
-    const historicalReplay = await fixture.recovery.resolveRecoveryHeldRun(Object.freeze({
-      runId: RUN_ID,
+    });
+    staleRuntimeFixture = await openSiblingFixture(rootPath, now, fixture);
+    const staleRuntimeAuthority = runtimeAuthorityForFixture(staleRuntimeFixture);
+    const beforeHandoffProof = await staleRuntimeAuthority.getIntegrationRuntimeProof();
+    assert.equal(beforeHandoffProof.repositoryFence.acquired, true);
+    assert.equal(beforeHandoffProof.repositoryFence.durablyCurrent, true);
+    assert.equal(
+      beforeHandoffProof.repositoryFence.leaseDigest,
+      staleRuntimeFixture.acquiredFence.lease.digest
+    );
+    successor = spawnSuccessor(rootPath);
+    const successorReady = await successor.ready;
+    const handoff = await handoffRetainedIntegrationRuntimeRepositoryFence(fixture.repository, {
+      currentProcessOwnerBootstrap: processOwnerBootstrap,
+      successorProcessOwner: successorReady.processOwner,
+    });
+    await expectCode(
+      () => staleRuntimeAuthority.getIntegrationRuntimeProof(),
+      "INTEGRATION_REPOSITORY_FENCE_STALE"
+    );
+    const successorRequest = Object.freeze({
+      runId: RESUME_RUN_ID,
       principalId: PRINCIPAL,
       browserSessionId: BROWSER_SESSION,
-      expectedCursor: publicFinish.expectedCursor,
-    }));
-    assert.equal(historicalReplay.outcome, "already-recovered");
-    assert.equal(historicalReplay.run.id, RUN_ID);
-    assert.equal(historicalReplay.run.authority.runtimeRevision, 1);
+      expectedCursor: noEvidenceCursor,
+    });
+    await expectCode(
+      () => staleRuntimeFixture.recovery.resolveRecoveryHeldRun(successorRequest),
+      "INTEGRATION_REPOSITORY_FENCE_STALE"
+    );
+    await expectCode(
+      () => staleRuntimeFixture.repository.finishIntegrationRunWithOutbox(resumedFinishPayload),
+      "INTEGRATION_REPOSITORY_FENCE_STALE"
+    );
+    const successorResult = await successor.command("resolve", successorRequest);
+    assert.equal(successorResult.runId, RESUME_RUN_ID);
+    assert.equal(successorResult.status, "completed");
+    assert.equal(successorResult.runtimeRevision, 2);
+    assert.equal(successorResult.replayOutcome, "already-recovered");
+    assert.equal(successorResult.processOwnerDigest, contractDigest(successorReady.processOwner));
+    assert.equal(successorResult.persistedStatus, "completed");
+    assert.equal(successorResult.persistedRuntimeRevision, 2);
+    assert.equal(successorResult.persistedProcessOwnerDigest, contractDigest(successorReady.processOwner));
+    assert.equal(successorResult.fence.generation, handoff.fence.generation);
+    assert.equal(successorResult.fence.ownerDigest, contractDigest(successorReady.processOwner));
+    assert.equal(successorResult.fence.durablyCurrent, true);
+    assert.equal(successorResult.coordinatorFenceDigest, successorResult.fence.fenceDigest);
+    assert.equal(successorResult.coordinatorLeaseDigest, successorResult.fence.leaseDigest);
+    const successorExit = await successor.exited;
+    assert.equal(successorExit.code, 0, successorExit.stderr);
     assert.equal(fixture.recovery.attestation.publicRepositoryMethodCountUnchanged, true);
     assert.equal(fixture.evidence.attestation.fullSessionStoreRetained, false);
     console.log(JSON.stringify({
@@ -676,15 +1075,24 @@ async function run() {
       publicRecoveryBlocked: true,
       privateRecoveryCommitted: true,
       privateRecoveryReplay: true,
+      delayedRecoveryPastReplayFloor: true,
+      prunedRecoveryReplayExpired: true,
       immutableSnapshotHash: true,
       exactStorageBinding: true,
+      exactSessionStateStoreIdentityBinding: true,
       authorizationProcessOwnerBound: true,
       missingTerminalEvidenceHeld: true,
-      historicalRecoveryReplayAfterResume: true,
+      historicalRecoveryReplayAfterReceiptPruningExpired: true,
+      durableRuntimeProofReload: true,
+      staleCoordinatorRejectedAfterHandoff: true,
+      staleRepositoryMutationRejectedAfterHandoff: true,
+      successorRecoveryAfterHandoff: true,
       fullSessionStoreRetained: false,
       runtimeCapabilityEnabled: false,
     }));
   } finally {
+    successor?.terminate();
+    await staleRuntimeFixture?.authority?.close?.().catch(() => {});
     await fixture?.authority.close().catch(() => {});
     await mismatchFixture?.authority.close().catch(() => {});
     await fs.rm(rootPath, { recursive: true, force: true });
@@ -692,4 +1100,5 @@ async function run() {
   }
 }
 
-await run();
+if (CHILD_MODE === "successor") await runSuccessorChild();
+else await run();

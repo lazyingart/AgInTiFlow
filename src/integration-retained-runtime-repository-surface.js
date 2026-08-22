@@ -5,17 +5,25 @@ import { authorityFail } from "./integration-authority-error.js";
 import { createPublicIntegrationEvent } from "./integration-events.js";
 import {
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_ARTIFACT_VERSION,
+  INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_DELIVERY_CHECKPOINT_VERSION,
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_DOMAIN_VERSION,
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_ARTIFACTS,
-  INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_MUTATION_RECEIPTS,
+  INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_REPLAY_RECEIPTS,
+  INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_RETIRED_FENCE_OWNERS,
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_OUTBOX_EVENTS,
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_RUNS,
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_THREADS,
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MUTATION_RECEIPT_VERSION,
+  INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RECONCILIATION_FENCE_VERSION,
+  INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RETIRED_OWNER_VERSION,
+  INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RETENTION_VERSION,
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RUN_VERSION,
+  INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_TARGET_REPLAY_RECEIPTS,
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_THREAD_VERSION,
   assertRetainedIntegrationNativeSessionRepositoryState,
 } from "./integration-retained-native-session-repository-state.js";
+import { processOwnerLiveness as defaultProcessOwnerLiveness } from "./integration-durable-common.js";
+import { assertIntegrationRuntimeProcessOwnerBootstrap } from "./integration-runtime-process-owner-bootstrap.js";
 import { validateNativeRuntimeRootsAttestation } from "./integration-native-runtime-roots.js";
 import {
   assertRetainedIntegrationNativeExecutionEvidence,
@@ -50,6 +58,7 @@ const NativePromise = Promise;
 const NativeSet = Set;
 const NativeWeakMap = WeakMap;
 const NativeWeakSet = WeakSet;
+const JsonStringify = JSON.stringify;
 const NumberMaxSafeInteger = Number.MAX_SAFE_INTEGER;
 const NumberNaN = Number.NaN;
 const NumberIsFinite = Number.isFinite;
@@ -68,6 +77,9 @@ const ReflectOwnKeys = Reflect.ownKeys;
 const RegExpPrototypeTest = RegExp.prototype.test;
 const MapPrototypeGet = Map.prototype.get;
 const MapPrototypeSet = Map.prototype.set;
+const MathFloor = Math.floor;
+const MathMax = Math.max;
+const MathMin = Math.min;
 const PathResolve = path.resolve;
 const PromisePrototypeThen = Promise.prototype.then;
 const SetPrototypeAdd = Set.prototype.add;
@@ -84,6 +96,8 @@ const WeakSetPrototypeAdd = WeakSet.prototype.add;
 const WeakSetPrototypeDelete = WeakSet.prototype.delete;
 const WeakSetPrototypeHas = WeakSet.prototype.has;
 const SymbolSpecies = Symbol.species;
+const TextEncoderPrototypeEncode = TextEncoder.prototype.encode;
+const NativeTextEncoder = TextEncoder;
 const NativePromiseSpeciesDescriptor = ObjectGetOwnPropertyDescriptor(NativePromise, SymbolSpecies);
 const NativePromiseSpeciesGetter = NativePromiseSpeciesDescriptor?.get;
 const NativePromiseSpeciesSetter = NativePromiseSpeciesDescriptor?.set;
@@ -203,6 +217,12 @@ export const INTEGRATION_RETAINED_RUNTIME_REPOSITORY_RECONCILIATION_VERSION =
   "aginti-dispatch-reconciliation-v1";
 export const INTEGRATION_RETAINED_RUNTIME_REPOSITORY_ARTIFACT_IDENTITY_VERSION =
   "aginti-owned-artifact-identity-v1";
+export const INTEGRATION_RETAINED_RUNTIME_REPOSITORY_FENCE_HANDLE_VERSION =
+  "aginti-retained-runtime-repository-fence-handle-v1";
+export const INTEGRATION_RETAINED_RUNTIME_REPOSITORY_FENCE_LEASE_VERSION =
+  "aginti-retained-runtime-repository-fence-lease-v1";
+export const INTEGRATION_RETAINED_RUNTIME_REPOSITORY_MAINTENANCE_VERSION =
+  "aginti-retained-runtime-repository-maintenance-v1";
 
 export const INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS = ObjectFreeze(
   ObjectAssign(ObjectCreate(null), {
@@ -223,10 +243,13 @@ export const INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS = ObjectFreeze(
     optimisticCas: true,
     longLivedMutationReplayWithinRetainedCapacity: true,
     unboundedMutationReplay: false,
-    mutationReceiptPruning: false,
-    tombstonePruning: false,
-    outboxPruning: false,
-    artifactPruning: false,
+    durableReplayHorizon: true,
+    mutationReceiptPruning: true,
+    nativeSessionMappingTombstonePruning: false,
+    hiddenAbortRunTombstonePruning: true,
+    outboxPruning: true,
+    artifactPruning: true,
+    liveOwnerPublishedArtifactPruning: false,
     snapshotByteCapInherited: true,
     capacityExhaustionFailsClosed: true,
     nativeStartReplayPreventsRedispatch: true,
@@ -236,7 +259,7 @@ export const INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS = ObjectFreeze(
     resumeRecoveryHoldTerminalizationThroughRepositoryMethod: false,
     recoveryHoldResolutionCallerWiring: false,
     reconciliationWallClockAdmissionCut: true,
-    reconciliationSnapshotFence: false,
+    reconciliationSnapshotFence: true,
     noChangeReconciliationReadOnly: true,
     noChangeReconciliationDurableReplay: false,
     terminalOutboxAtomicWithRun: true,
@@ -250,9 +273,11 @@ export const INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS = ObjectFreeze(
     eventLedgerCrossStoreAtomicity: false,
     apiIdempotencyCrossStoreAtomicity: false,
     sameKernelHostRequired: true,
-    singleRuntimeProcessRequired: true,
-    rollingRestartOverlapSafe: false,
-    sharedProcessLeaseOrFence: false,
+    singleRuntimeProcessRequired: false,
+    rollingRestartOverlapSafe: true,
+    sharedProcessLeaseOrFence: true,
+    runtimeFenceOwnerBootstrapContract: true,
+    runtimeFenceOwnerServerWiring: false,
     sameProcessPrototypeIntegrityRequired: true,
     endToEndPrototypePoisoningIsolation: false,
     trustedDependencyIntrinsicsRequired: true,
@@ -260,12 +285,12 @@ export const INTEGRATION_RETAINED_RUNTIME_REPOSITORY_LIMITATIONS = ObjectFreeze(
     crossHostExclusion: false,
     localFilesystemRequired: true,
     networkFilesystemSafety: false,
-    fencingTokens: false,
+    fencingTokens: true,
   })
 );
 
 const ZERO_DIGEST = "0".repeat(64);
-const COMPLETION_OUTBOX_METADATA_VERSION = "aginti-completion-outbox-bundle-v1";
+const COMPLETION_OUTBOX_METADATA_VERSION = "aginti-completion-outbox-bundle-v2";
 const NATIVE_START_AUTHORIZATION_VERSION = "aginti-native-start-authorization-v1";
 const PRE_LAUNCH_ABORT_ATTEMPT_VERSION = "aginti-pre-launch-abort-attempt-v3";
 const PRE_LAUNCH_ABORT_RESPONSE_VERSION = "aginti-pre-launch-abort-response-v1";
@@ -291,6 +316,8 @@ const CAS_RETRY_CODES = new NativeSet([
 const MAX_CANONICAL_NODES = 250_000;
 const MAX_CANONICAL_DEPTH = 64;
 const DEFAULT_MAX_CAS_RETRIES = 32;
+const RETENTION_TARGET_BYTE_RATIO = 0.72;
+const MAX_MUTATION_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const PRIVATE_RUNTIME_PATTERN =
   /(?:^|[\s("'`])(?:\/(?:workspace|home|users|root|etc|usr|var|opt|srv|run|tmp|proc|sys|dev|mnt|media|aginti-(?:home|cache|env))(?:\/|\b)|[A-Za-z]:\\)|(?:api[_-]?key|token|secret|password)\s*[:=]/iu;
 const PRESENTATIONAL_UNSAFE_PATTERN = /[<>]|(?:javascript\s*:|(?:https?|data|file)\s*:\/\/)/iu;
@@ -301,6 +328,7 @@ const FACTORY_KEYS = ObjectFreeze([
   "runtimeRoots",
   "now",
   "maxCasRetries",
+  "processOwnerLiveness",
 ]);
 const CREATE_THREAD_KEYS = ObjectFreeze([
   "threadId", "nativeSessionId", "principalId", "browserSessionId", "browserSessionPolicy",
@@ -312,7 +340,7 @@ const UPDATE_THREAD_KEYS = ObjectFreeze([
   "threadId", "principalId", "browserSessionId", "expectedRevision", "title", "updatedAt",
 ]);
 const DELETE_THREAD_KEYS = ObjectFreeze([
-  "threadId", "principalId", "browserSessionId", "expectedRevision",
+  "threadId", "principalId", "browserSessionId", "expectedRevision", "deletedAt",
 ]);
 const CREATE_RUN_KEYS = ObjectFreeze([
   "runId", "threadId", "nativeSessionId", "previousRunId", "principalId", "browserSessionId",
@@ -339,7 +367,7 @@ const COMPLETION_BUNDLE_KEYS = ObjectFreeze([
 const OUTBOX_SCOPE_KEYS = ObjectFreeze(["principalId", "browserSessionId"]);
 const OUTBOX_DELIVERY_KEYS = ObjectFreeze([
   "outboxId", "principalId", "browserSessionId", "threadId", "runId", "eventSeq", "eventHash",
-  "eventDigest",
+  "eventDigest", "deliveredAt",
 ]);
 const LIST_ARTIFACT_KEYS = ObjectFreeze([
   "principalId", "browserSessionId", "threadId", "runId", "publishedOnly",
@@ -348,9 +376,8 @@ const GET_ARTIFACT_KEYS = ObjectFreeze([
   "principalId", "browserSessionId", "artifactId", "publishedOnly",
 ]);
 const STAGE_ARTIFACT_REQUIRED_KEYS = ObjectFreeze([
-  "principalId", "browserSessionId", "threadId", "runId", "artifact",
+  "principalId", "browserSessionId", "threadId", "runId", "artifact", "stagedAt",
 ]);
-const STAGE_ARTIFACT_OPTIONAL_KEYS = ObjectFreeze(["stagedAt"]);
 const PUBLISH_ARTIFACT_KEYS = ObjectFreeze([
   "principalId", "browserSessionId", "threadId", "runId", "artifactId", "expectedRevision",
   "publishedAt",
@@ -365,6 +392,7 @@ const RECONCILIATION_KEYS = ObjectFreeze([
 const repositoryBrand = new NativeWeakMap();
 const recoveryCoordinatorBrand = new NativeWeakMap();
 const recoveryCoordinatorInternals = new NativeWeakMap();
+const repositoryFenceLeaseBrand = new NativeWeakMap();
 
 function repositoryFail(code, message, status = 503) {
   authorityFail(code, message, { status, details: ObjectFreeze(ObjectCreate(null)) });
@@ -504,6 +532,15 @@ function exactPayload(value, requiredKeys, optionalKeys = [], label = "repositor
     if (!hasOwn(clone, key)) repositoryFail("INTEGRATION_REPOSITORY_INVALID", `${label}.${key} is required.`, 400);
   }
   return clone;
+}
+
+function brandedProcessOwnerBootstrapFromPayload(value, field, allowedKeys, label) {
+  exactPayload(value, allowedKeys, [], label);
+  const descriptor = ObjectGetOwnPropertyDescriptor(value, field);
+  if (!descriptor?.enumerable || !hasOwn(descriptor, "value")) {
+    repositoryFail("INTEGRATION_REPOSITORY_INVALID", `${label}.${field} must be a data field.`, 400);
+  }
+  return assertIntegrationRuntimeProcessOwnerBootstrap(descriptor.value);
 }
 
 function assertDigest(value, label, { allowZero = true } = {}) {
@@ -719,6 +756,10 @@ function domainWith(state, generation, changes = {}) {
     outboxEvents: changes.outboxEvents || state.outboxEvents,
     artifacts: changes.artifacts || state.artifacts,
     mutationReceipts: changes.mutationReceipts || state.mutationReceipts,
+    retention: changes.retention || state.retention,
+    reconciliationFence: hasOwn(changes, "reconciliationFence")
+      ? changes.reconciliationFence
+      : state.reconciliationFence,
   });
 }
 
@@ -734,7 +775,7 @@ function mutationIdFor(operation, digest) {
   return `repository.${operation}.${digest}`;
 }
 
-function receiptFor({ mutationId, operation, scope, digest, snapshot, result, committedAt }) {
+function receiptFor({ mutationId, operation, scope, digest, snapshot, result, mutationTimestamp, committedAt }) {
   return frozenRecord({
     schemaVersion: INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MUTATION_RECEIPT_VERSION,
     mutationId,
@@ -748,6 +789,7 @@ function receiptFor({ mutationId, operation, scope, digest, snapshot, result, co
     resultSnapshotRevision: snapshot.snapshotRevision + 1,
     resultDigest: contractDigest(result),
     result,
+    mutationTimestamp,
     committedAt,
   });
 }
@@ -759,6 +801,336 @@ function existingReceipt(state, mutationId, operation, digest, scope) {
     conflict("INTEGRATION_REPOSITORY_MUTATION_CONFLICT", "Repository mutation id is bound to another request.");
   }
   return receipt;
+}
+
+function processIdentityDigest(owner) {
+  return contractDigest(owner.processIdentity);
+}
+
+function fenceHandle(fence) {
+  return frozenRecord({
+    schemaVersion: INTEGRATION_RETAINED_RUNTIME_REPOSITORY_FENCE_HANDLE_VERSION,
+    generation: fence.generation,
+    ownerDigest: fence.ownerDigest,
+    ownerIdentityDigest: fence.ownerIdentityDigest,
+    fenceDigest: fence.digest,
+  });
+}
+
+function fenceLease(surface, entry, fence) {
+  const unsigned = frozenRecord({
+    schemaVersion: INTEGRATION_RETAINED_RUNTIME_REPOSITORY_FENCE_LEASE_VERSION,
+    repositoryIdentityDigest: entry.repositoryIdentityDigest,
+    repositoryAttestationDigest: entry.attestationDigest,
+    generation: fence.generation,
+    ownerDigest: fence.ownerDigest,
+    ownerIdentityDigest: fence.ownerIdentityDigest,
+    fenceDigest: fence.digest,
+  });
+  const lease = frozenRecord({ ...unsigned, digest: contractDigest(unsigned) });
+  weakMapSet(repositoryFenceLeaseBrand, lease, {
+    surface,
+    processOwner: fence.owner,
+    handle: fenceHandle(fence),
+  });
+  return lease;
+}
+
+function sameFenceHandle(handle, fence) {
+  return NativeBoolean(
+    handle && fence &&
+    handle.schemaVersion === INTEGRATION_RETAINED_RUNTIME_REPOSITORY_FENCE_HANDLE_VERSION &&
+    handle.generation === fence.generation &&
+    handle.ownerDigest === fence.ownerDigest &&
+    handle.ownerIdentityDigest === fence.ownerIdentityDigest &&
+    handle.fenceDigest === fence.digest
+  );
+}
+
+function assertCurrentFence(state, runtimeState) {
+  if (!sameFenceHandle(runtimeState.heldFence, state.reconciliationFence)) {
+    conflict("INTEGRATION_REPOSITORY_FENCE_STALE", "Repository write fence is absent or stale.");
+  }
+  return state.reconciliationFence;
+}
+
+function ownerForMutation(operation, payload) {
+  if (
+    operation === "markIntegrationRunDispatching" ||
+    operation === "markIntegrationRunCancelling" ||
+    operation === "finishIntegrationRunWithOutbox" ||
+    operation === "reconcileIntegrationDispatches"
+  ) return payload.processOwner;
+  if (operation === "authorizeIntegrationRunNativeStart") return payload.authorization.processOwner;
+  if (operation === "abortIntegrationRunBeforeLaunch") return payload.attempt.processOwner;
+  if (operation === "resolveRecoveryHeldRun") return payload.finish.processOwner;
+  return null;
+}
+
+function mutationTimestampFor(operation, payload) {
+  let value = "";
+  if (operation === "createIntegrationThread" || operation === "createIntegrationRun") value = payload.createdAt;
+  else if (operation === "updateIntegrationThread") value = payload.updatedAt;
+  else if (operation === "deleteIntegrationThread") value = payload.deletedAt;
+  else if (operation === "markIntegrationRunDispatching") value = payload.dispatchedAt;
+  else if (operation === "authorizeIntegrationRunNativeStart") value = payload.authorization.authorizedAt;
+  else if (operation === "abortIntegrationRunBeforeLaunch") value = payload.attempt.abortAt;
+  else if (operation === "markIntegrationRunCancelling") value = payload.cancelRequestedAt;
+  else if (operation === "finishIntegrationRunWithOutbox") value = payload.completedAt;
+  else if (operation === "reconcileIntegrationDispatches") value = payload.reconciledAt;
+  else if (operation === "markIntegrationOutboxDelivered") value = payload.deliveredAt;
+  else if (operation === "stageIntegrationArtifactOutbox") value = payload.stagedAt;
+  else if (operation === "publishIntegrationArtifactOutbox") value = payload.publishedAt;
+  else if (operation === "resolveRecoveryHeldRun") value = payload.finish.completedAt;
+  if (!value) repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Mutation timestamp is required.", 400);
+  return assertCanonicalIso(value, `${operation} mutation timestamp`);
+}
+
+function latestRepositoryTimestamp(state) {
+  let latest = state.retention.lastCompactedAt || "";
+  if (state.reconciliationFence?.issuedAt > latest) latest = state.reconciliationFence.issuedAt;
+  for (let index = 0; index < state.mutationReceipts.length; index += 1) {
+    if (state.mutationReceipts[index].committedAt > latest) latest = state.mutationReceipts[index].committedAt;
+  }
+  return latest;
+}
+
+function monotonicRepositoryTimestamp(state, rawNow) {
+  const latest = latestRepositoryTimestamp(state);
+  if (!latest || rawNow > latest) return rawNow;
+  const milliseconds = ReflectApply(DateParse, NativeDate, [latest]);
+  if (!NumberIsFinite(milliseconds) || milliseconds >= 8_640_000_000_000_000 - 1) {
+    repositoryFail("INTEGRATION_REPOSITORY_CLOCK_UNAVAILABLE", "Repository logical clock cannot advance.");
+  }
+  return ReflectApply(DatePrototypeToISOString, new NativeDate(milliseconds + 1), []);
+}
+
+function assertMutationTimeAdmissible(mutationTimestamp, rawNow, committedAt) {
+  const mutationMs = ReflectApply(DateParse, NativeDate, [mutationTimestamp]);
+  const rawNowMs = ReflectApply(DateParse, NativeDate, [rawNow]);
+  if (mutationMs > rawNowMs + MAX_MUTATION_FUTURE_SKEW_MS || mutationTimestamp > committedAt) {
+    repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Mutation timestamp is implausibly in the future.", 400);
+  }
+}
+
+function chainDigest(domain, previousDigest, records) {
+  return contractDigest({
+    schemaVersion: "aginti-retained-runtime-repository-compaction-chain-v1",
+    domain,
+    previousDigest,
+    recordDigests: arrayMap(records, (record) => contractDigest(record)),
+  });
+}
+
+function canonicalByteSize(value) {
+  const json = ReflectApply(JsonStringify, JSON, [value]);
+  return ReflectApply(TextEncoderPrototypeEncode, new NativeTextEncoder(), [json]).byteLength;
+}
+
+function retainedReceiptReferencesIdentifier(receipts, identifier) {
+  const needle = `"${identifier}"`;
+  return arraySome(receipts, (receipt) => {
+    const serialized = ReflectApply(JsonStringify, JSON, [receipt.result]);
+    return ReflectApply(StringPrototypeIncludes, serialized, [needle]);
+  });
+}
+
+function completionDeliveryCheckpoint(run, records, compactedAt, snapshotRevision) {
+  const deliveries = ObjectFreeze(arrayMap(records, (record) => frozenRecord({
+    outboxId: record.outboxId,
+    type: record.type,
+    payloadDigest: contractDigest(record.payload),
+    createdAt: record.createdAt,
+    expectedPreviousSeq: record.expectedPreviousSeq,
+    expectedPreviousHash: record.expectedPreviousHash,
+    expectedEventHash: record.expectedEventHash,
+    eventSeq: record.deliveredEventSeq,
+    eventHash: record.deliveredEventHash,
+    eventDigest: record.deliveredEventDigest,
+    deliveredAt: record.deliveredAt,
+  })));
+  const unsigned = frozenRecord({
+    schemaVersion: INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_DELIVERY_CHECKPOINT_VERSION,
+    compactedAt,
+    compactedAtSnapshotRevision: snapshotRevision,
+    deliveries,
+  });
+  return frozenRecord({ ...unsigned, digest: contractDigest(unsigned) });
+}
+
+function compactDomainForCommit(state, snapshotRevision, compactedAt, maxSnapshotBytes, { force = false } = {}) {
+  let threads = state.threads;
+  let runs = state.runs;
+  let outboxEvents = state.outboxEvents;
+  let artifacts = state.artifacts;
+  let mutationReceipts = state.mutationReceipts;
+  let retention = state.retention;
+  const compactedOutbox = [];
+  const outboxById = mapFromRecords(outboxEvents, (record) => record.outboxId);
+  for (let runIndex = 0; runIndex < runs.length; runIndex += 1) {
+    const run = runs[runIndex];
+    const completion = run.authority.completionOutbox;
+    if (!completion || completion.deliveryCheckpoint !== null) continue;
+    const records = arrayMap(completion.outboxIds, (outboxId) => mapGet(outboxById, outboxId));
+    if (arraySome(records, (record) => !record || !record.delivered || !record.deliveredAt)) continue;
+    const checkpoint = completionDeliveryCheckpoint(run, records, compactedAt, snapshotRevision);
+    const compactedRun = frozenRecord({
+      ...run,
+      authority: frozenRecord({
+        ...run.authority,
+        completionOutbox: frozenRecord({ ...completion, deliveryCheckpoint: checkpoint }),
+      }),
+    });
+    runs = replaceById(runs, compactedRun);
+    for (let recordIndex = 0; recordIndex < records.length; recordIndex += 1) {
+      arrayPush(compactedOutbox, records[recordIndex]);
+    }
+  }
+  if (compactedOutbox.length) {
+    const compactedIds = setFromArray(arrayMap(compactedOutbox, (record) => record.outboxId));
+    outboxEvents = ObjectFreeze(arrayFilter(outboxEvents, (record) => !setHas(compactedIds, record.outboxId)));
+  }
+
+  const orderedReceipts = arraySort(arraySlice(mutationReceipts, 0), (left, right) =>
+    left.resultSnapshotRevision - right.resultSnapshotRevision || compareText(left.mutationId, right.mutationId)
+  );
+  let pruneCount = orderedReceipts.length > INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_REPLAY_RECEIPTS
+    ? orderedReceipts.length - INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_TARGET_REPLAY_RECEIPTS
+    : force && orderedReceipts.length > INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_TARGET_REPLAY_RECEIPTS
+      ? orderedReceipts.length - INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_TARGET_REPLAY_RECEIPTS
+      : 0;
+  let provisional = domainWith(state, snapshotRevision, { threads, runs, outboxEvents, artifacts, mutationReceipts });
+  const targetBytes = MathFloor(maxSnapshotBytes * RETENTION_TARGET_BYTE_RATIO);
+  while (
+    orderedReceipts.length - pruneCount > state.retention.minimumReplayReceipts &&
+    canonicalByteSize(provisional) > targetBytes
+  ) {
+    pruneCount += 1;
+    provisional = domainWith(provisional, snapshotRevision, {
+      mutationReceipts: ObjectFreeze(arraySlice(orderedReceipts, pruneCount)),
+    });
+  }
+  const prunedReceipts = ObjectFreeze(arraySlice(orderedReceipts, 0, pruneCount));
+  if (prunedReceipts.length) {
+    mutationReceipts = sortedById(arraySlice(orderedReceipts, pruneCount), "mutationId");
+  }
+  let retainedFloor = snapshotRevision;
+  for (let index = 0; index < mutationReceipts.length; index += 1) {
+    retainedFloor = MathMin(retainedFloor, mutationReceipts[index].resultSnapshotRevision);
+  }
+  const exactReplayFloorSnapshotRevision = prunedReceipts.length
+    ? MathMax(retention.exactReplayFloorSnapshotRevision, retainedFloor)
+    : retention.exactReplayFloorSnapshotRevision;
+  let replayCutoffAt = retention.replayCutoffAt;
+  for (let index = 0; index < prunedReceipts.length; index += 1) {
+    if (!replayCutoffAt || prunedReceipts[index].mutationTimestamp > replayCutoffAt) {
+      replayCutoffAt = prunedReceipts[index].mutationTimestamp;
+    }
+  }
+
+  const prunedArtifacts = [];
+  if (replayCutoffAt && exactReplayFloorSnapshotRevision > 0) {
+    const threadById = mapFromRecords(threads, (thread) => thread.id);
+    const runById = mapFromRecords(runs, (run) => run.id);
+    artifacts = ObjectFreeze(arrayFilter(artifacts, (artifact) => {
+      const owner = mapGet(threadById, artifact.threadId);
+      const run = mapGet(runById, artifact.runId);
+      const closedOwner = owner?.tombstone === true;
+      const anchorAt = artifact.publishedAt || artifact.stagedAt;
+      const pendingRunOutbox = arraySome(outboxEvents, (record) =>
+        record.runId === artifact.runId && !record.delivered
+      );
+      if (
+        !closedOwner || !run || artifact.published || anchorAt > replayCutoffAt ||
+        artifact.retainedAtSnapshotRevision >= exactReplayFloorSnapshotRevision ||
+        pendingRunOutbox || run.recoveryState !== null ||
+        retainedReceiptReferencesIdentifier(mutationReceipts, artifact.id)
+      ) return true;
+      arrayPush(prunedArtifacts, artifact);
+      return false;
+    }));
+  }
+
+  const prunedRuns = [];
+  if (replayCutoffAt && exactReplayFloorSnapshotRevision > 0) {
+    const referencedRunIds = new NativeSet();
+    for (let index = 0; index < runs.length; index += 1) {
+      if (runs[index].previousRunId) setAdd(referencedRunIds, runs[index].previousRunId);
+    }
+    for (let index = 0; index < threads.length; index += 1) {
+      if (threads[index].lastRunId) setAdd(referencedRunIds, threads[index].lastRunId);
+    }
+    for (let index = 0; index < artifacts.length; index += 1) setAdd(referencedRunIds, artifacts[index].runId);
+    for (let index = 0; index < outboxEvents.length; index += 1) setAdd(referencedRunIds, outboxEvents[index].runId);
+    runs = ObjectFreeze(arrayFilter(runs, (run) => {
+      if (
+        run.status !== "aborted_before_launch" || !run.hidden || !run.tombstone ||
+        !run.abortAt || run.abortAt > replayCutoffAt ||
+        run.tombstoneSnapshotRevision === null ||
+        run.tombstoneSnapshotRevision >= exactReplayFloorSnapshotRevision ||
+        setHas(referencedRunIds, run.id) ||
+        retainedReceiptReferencesIdentifier(mutationReceipts, run.id)
+      ) return true;
+      arrayPush(prunedRuns, run);
+      return false;
+    }));
+  }
+
+  const didCompact = NativeBoolean(
+    compactedOutbox.length || prunedReceipts.length || prunedArtifacts.length || prunedRuns.length
+  );
+  if (didCompact) {
+    retention = frozenRecord({
+      ...retention,
+      exactReplayFloorSnapshotRevision,
+      replayCutoffAt,
+      compactionGeneration: retention.compactionGeneration + 1,
+      lastCompactedAt: compactedAt,
+      lastCompactedSnapshotRevision: snapshotRevision,
+      prunedMutationReceiptCount: retention.prunedMutationReceiptCount + prunedReceipts.length,
+      prunedMutationReceiptDigest: prunedReceipts.length
+        ? chainDigest("mutation-receipts", retention.prunedMutationReceiptDigest, prunedReceipts)
+        : retention.prunedMutationReceiptDigest,
+      compactedOutboxEventCount: retention.compactedOutboxEventCount + compactedOutbox.length,
+      compactedOutboxEventDigest: compactedOutbox.length
+        ? chainDigest("terminal-outbox", retention.compactedOutboxEventDigest, compactedOutbox)
+        : retention.compactedOutboxEventDigest,
+      prunedRunTombstoneCount: retention.prunedRunTombstoneCount + prunedRuns.length,
+      prunedRunTombstoneDigest: prunedRuns.length
+        ? chainDigest("hidden-run-tombstones", retention.prunedRunTombstoneDigest, prunedRuns)
+        : retention.prunedRunTombstoneDigest,
+      prunedArtifactCount: retention.prunedArtifactCount + prunedArtifacts.length,
+      prunedArtifactDigest: prunedArtifacts.length
+        ? chainDigest("closed-owner-artifacts", retention.prunedArtifactDigest, prunedArtifacts)
+        : retention.prunedArtifactDigest,
+    });
+  }
+  return frozenRecord({
+    state: domainWith(state, snapshotRevision, {
+      threads,
+      runs,
+      outboxEvents,
+      artifacts,
+      mutationReceipts,
+      retention,
+    }),
+    didCompact,
+    prunedReceipts: prunedReceipts.length,
+    compactedOutboxEvents: compactedOutbox.length,
+    prunedRunTombstones: prunedRuns.length,
+    prunedArtifacts: prunedArtifacts.length,
+  });
+}
+
+function findCompactedDelivery(state, outboxId, scope) {
+  for (let runIndex = 0; runIndex < state.runs.length; runIndex += 1) {
+    const run = state.runs[runIndex];
+    const checkpoint = run.authority.completionOutbox?.deliveryCheckpoint;
+    if (!checkpoint || !sameScope(run, scope)) continue;
+    const delivery = arrayFind(checkpoint.deliveries, (entry) => entry.outboxId === outboxId);
+    if (delivery) return frozenRecord({ run, delivery });
+  }
+  return null;
 }
 
 function errorCode(error) {
@@ -854,6 +1226,7 @@ function makeOutboxRecords(run, expectedCursor, outputEvent, terminalEvent) {
       deliveredEventSeq: null,
       deliveredEventHash: null,
       deliveredEventDigest: null,
+      deliveredAt: null,
     });
     arrayPush(records, record);
     sequence = event.seq;
@@ -885,6 +1258,7 @@ function completionMetadata(run, thread, cursor, records) {
     eventTypes: ObjectFreeze(arrayMap(records, (record) => record.type)),
     eventHashes: ObjectFreeze(arrayMap(records, (record) => record.expectedEventHash)),
     orderedBundleDigest: contractDigest(arrayMap(records, outboxDigestView)),
+    deliveryCheckpoint: null,
   });
 }
 
@@ -1019,12 +1393,19 @@ function factoryOptions(input) {
     : assertInteger(values.maxCasRetries, "maxCasRetries", 1, 256);
   const now = values.now === undefined ? () => new NativeDate() : values.now;
   if (typeof now !== "function") repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Repository clock is unavailable.");
+  const processOwnerLiveness = values.processOwnerLiveness === undefined
+    ? defaultProcessOwnerLiveness
+    : values.processOwnerLiveness;
+  if (typeof processOwnerLiveness !== "function") {
+    repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Repository process liveness authority is unavailable.");
+  }
   return {
     repositoryState: values.repositoryState,
     repositoryStateExpected: values.repositoryStateExpected,
     runtimeRoots: values.runtimeRoots,
     maxCasRetries,
     now,
+    processOwnerLiveness,
   };
 }
 
@@ -1055,38 +1436,78 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
   }
   const runtimeRoots = options.runtimeRoots;
   const attestation = buildAttestation(runtimeRoots);
+  const runtimeState = { heldFence: null };
 
   async function loadSnapshot() {
     if (repositoryState.isClosed()) repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Repository storage is closed.");
     return repositoryState.loadDomainSnapshot();
   }
 
-  async function mutate(operation, payload, scope, transition, { explicitMutationId = "" } = {}) {
+  async function loadFencedSnapshot() {
+    const snapshot = await loadSnapshot();
+    assertCurrentFence(snapshot.state, runtimeState);
+    return snapshot;
+  }
+
+    async function mutate(
+      operation,
+      payload,
+      scope,
+      transition,
+      { explicitMutationId = "", replayHorizonAnchor = null } = {}
+    ) {
     const normalizedPayload = cloneCanonical(payload, `${operation} request`);
     const digest = requestDigest(operation, normalizedPayload);
     const mutationId = explicitMutationId || mutationIdFor(operation, digest);
+    const mutationTimestamp = mutationTimestampFor(operation, normalizedPayload);
     let committedAt = "";
     for (let attempt = 0; attempt < options.maxCasRetries; attempt += 1) {
       const snapshot = await loadSnapshot();
+      const fence = assertCurrentFence(snapshot.state, runtimeState);
+      const mutationOwner = ownerForMutation(operation, normalizedPayload);
+      if (mutationOwner && contractDigest(mutationOwner) !== fence.ownerDigest) {
+        conflict("INTEGRATION_REPOSITORY_FENCE_STALE", "Mutation process owner does not hold the repository fence.");
+      }
       const replay = existingReceipt(snapshot.state, mutationId, operation, digest, scope);
       if (replay) return frozenRecord({ outcome: "replayed", result: cloneRecord(replay.result), snapshot });
-      if (snapshot.state.mutationReceipts.length >= INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_MUTATION_RECEIPTS) {
-        conflict("INTEGRATION_REPOSITORY_FULL", "Repository mutation receipt capacity is exhausted.");
+      if (
+        snapshot.state.retention.replayCutoffAt !== null &&
+        mutationTimestamp <= snapshot.state.retention.replayCutoffAt &&
+        !(typeof replayHorizonAnchor === "function" && replayHorizonAnchor(snapshot.state))
+      ) {
+        conflict("INTEGRATION_REPOSITORY_REPLAY_WINDOW_EXPIRED", "Mutation is older than the durable replay horizon.");
       }
-      if (!committedAt) committedAt = nowFrom(options.now);
+      const rawNow = nowFrom(options.now);
+      committedAt = monotonicRepositoryTimestamp(snapshot.state, committedAt > rawNow ? committedAt : rawNow);
+      assertMutationTimeAdmissible(mutationTimestamp, rawNow, committedAt);
       const transitioned = transition(snapshot.state, snapshot);
       const result = cloneCanonical(transitioned.result, `${operation} result`);
-      const receipt = receiptFor({ mutationId, operation, scope, digest, snapshot, result, committedAt });
-      const next = domainWith(snapshot.state, snapshot.snapshotRevision + 1, {
+      const receipt = receiptFor({
+        mutationId,
+        operation,
+        scope,
+        digest,
+        snapshot,
+        result,
+        mutationTimestamp,
+        committedAt,
+      });
+      const uncompacted = domainWith(snapshot.state, snapshot.snapshotRevision + 1, {
         ...transitioned.changes,
         mutationReceipts: sortedById(arrayConcat(snapshot.state.mutationReceipts, [receipt]), "mutationId"),
       });
+      const compacted = compactDomainForCommit(
+        uncompacted,
+        snapshot.snapshotRevision + 1,
+        committedAt,
+        expectedBinding.repositoryKernel.maxSnapshotBytes
+      );
       try {
         const committed = await repositoryState.compareAndSwapDomainSnapshot({
           mutationId,
           expectedSnapshotRevision: snapshot.snapshotRevision,
           expectedIntegrityDigest: snapshot.integrityDigest,
-          state: next,
+          state: compacted.state,
         });
         const durableReceipt = existingReceipt(committed.snapshot.state, mutationId, operation, digest, scope);
         if (!durableReceipt) repositoryFail("INTEGRATION_REPOSITORY_CORRUPT", "Committed mutation receipt is missing.");
@@ -1137,7 +1558,14 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
     return { payload, scope, terminalError };
   }
 
-  function finishTransition(state, payload, scope, terminalError, recoveryEvidence = null) {
+  function finishTransition(
+    state,
+    payload,
+    scope,
+    terminalError,
+    recoveryEvidence = null,
+    recoveryFenceAuthority = null
+  ) {
     const run = findRun(state, payload.runId, scope);
     const thread = findThread(state, payload.threadId, scope);
     if (
@@ -1160,7 +1588,12 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
     } else {
       if (
         run.recoveryState === null ||
-        !sameProcessOwner(run.recoveryState.observedByProcessOwner, payload.processOwner) ||
+        recoveryFenceAuthority === null ||
+        state.reconciliationFence?.generation !== recoveryFenceAuthority.generation ||
+        state.reconciliationFence?.ownerDigest !== recoveryFenceAuthority.ownerDigest ||
+        state.reconciliationFence?.ownerIdentityDigest !== recoveryFenceAuthority.ownerIdentityDigest ||
+        state.reconciliationFence?.digest !== recoveryFenceAuthority.fenceDigest ||
+        contractDigest(payload.processOwner) !== recoveryFenceAuthority.ownerDigest ||
         recoveryEvidence.runId !== run.id ||
         recoveryEvidence.authorizationId !== run.nativeStartReceipt.authorizationId ||
         recoveryEvidence.authorizationDigest !== run.nativeStartReceipt.authorizationDigest ||
@@ -1370,9 +1803,8 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
       const scope = scopeFor(payload);
       validateIntegrationThreadId(payload.threadId);
       assertInteger(payload.expectedRevision, "thread expected revision", 1);
-      let deletedAt = "";
+      assertCanonicalIso(payload.deletedAt, "thread deletedAt");
       const committed = await mutate("deleteIntegrationThread", payload, scope, (state) => {
-        if (!deletedAt) deletedAt = nowFrom(options.now);
         const current = findThread(state, payload.threadId, scope);
         if (!current || current.revision !== payload.expectedRevision || current.status !== "idle") {
           conflict("REVISION_CONFLICT", "Thread revision or state changed.");
@@ -1381,8 +1813,8 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
           ...current,
           status: "deleting",
           revision: current.revision + 1,
-          updatedAt: deletedAt,
-          deletedAt,
+          updatedAt: payload.deletedAt,
+          deletedAt: payload.deletedAt,
           tombstone: true,
         });
         return { changes: { threads: replaceById(state.threads, thread) }, result: frozenRecord({ deleted: true, thread }) };
@@ -1460,6 +1892,7 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
           processOwner: null,
           hidden: false,
           tombstone: false,
+          tombstoneSnapshotRevision: null,
           abortAttemptDigest: null,
           abortAt: null,
           nativeStartReceipt: null,
@@ -1737,6 +2170,7 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
             revision: run.revision + 1,
             hidden: true,
             tombstone: true,
+            tombstoneSnapshotRevision: state.generation + 1,
             abortAttemptDigest: attempt.attemptDigest,
             abortAt: attempt.abortAt,
           });
@@ -1816,6 +2250,9 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
       if (!run || run.threadId !== payload.threadId || !run.authority.completionOutbox) {
         return frozenRecord({ outboxEvents: ObjectFreeze([]) });
       }
+      if (run.authority.completionOutbox.deliveryCheckpoint !== null) {
+        return frozenRecord({ outboxEvents: ObjectFreeze([]) });
+      }
       const byId = mapFromRecords(snapshot.state.outboxEvents, (record) => record.outboxId);
       return frozenRecord({
         outboxEvents: ObjectFreeze(arrayMap(
@@ -1859,6 +2296,7 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
               revision: run.revision + 1,
               hidden: true,
               tombstone: true,
+              tombstoneSnapshotRevision: state.generation + 1,
               abortAttemptDigest,
               abortAt,
             });
@@ -1925,7 +2363,10 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
         return { changed, changes: { threads, runs }, result: response };
       };
       const reconcileMutationId = `repository.reconcile.${request.requestDigest}`;
-      const snapshot = await loadSnapshot();
+      const snapshot = await loadFencedSnapshot();
+      if (contractDigest(request.processOwner) !== snapshot.state.reconciliationFence.ownerDigest) {
+        conflict("INTEGRATION_REPOSITORY_FENCE_STALE", "Reconciliation process owner does not hold the repository fence.");
+      }
       const reconcileDigest = requestDigest("reconcileIntegrationDispatches", mutationPayload);
       const replay = existingReceipt(
         snapshot.state,
@@ -1935,6 +2376,18 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
         scope
       );
       if (replay) return cloneRecord(replay.result);
+      if (
+        snapshot.state.retention.replayCutoffAt !== null &&
+        request.reconciledAt <= snapshot.state.retention.replayCutoffAt
+      ) {
+        conflict("INTEGRATION_REPOSITORY_REPLAY_WINDOW_EXPIRED", "Reconciliation is older than the durable replay horizon.");
+      }
+      const reconciliationNow = nowFrom(options.now);
+      assertMutationTimeAdmissible(
+        request.reconciledAt,
+        reconciliationNow,
+        monotonicRepositoryTimestamp(snapshot.state, reconciliationNow)
+      );
       const preview = transition(snapshot.state);
       if (!preview.changed) return preview.result;
       const committed = await mutate(
@@ -1971,16 +2424,51 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
       assertSafeIdentifier(payload.outboxId, "outbox id", { minimum: 4, maximum: 128 });
       assertDigest(payload.eventHash, "delivered event hash", { allowZero: false });
       assertDigest(payload.eventDigest, "delivered event digest", { allowZero: false });
-      const initial = await loadSnapshot();
+      assertCanonicalIso(payload.deliveredAt, "outbox deliveredAt");
+      const initial = await loadFencedSnapshot();
       const existing = arrayFind(initial.state.outboxEvents, (record) => record.outboxId === payload.outboxId);
       if (existing?.delivered) {
         if (
           !sameScope(existing, scope) || existing.threadId !== payload.threadId || existing.runId !== payload.runId ||
           existing.deliveredEventSeq !== payload.eventSeq || existing.deliveredEventHash !== payload.eventHash ||
-          existing.deliveredEventDigest !== payload.eventDigest
+          existing.deliveredEventDigest !== payload.eventDigest || existing.deliveredAt !== payload.deliveredAt
         ) conflict("OUTBOX_CONFLICT", "Outbox delivery receipt changed.");
         return frozenRecord({ delivered: true, outboxId: payload.outboxId });
       }
+      const compacted = findCompactedDelivery(initial.state, payload.outboxId, scope);
+      if (compacted) {
+        if (
+          compacted.run.id !== payload.runId || compacted.run.threadId !== payload.threadId ||
+          compacted.delivery.eventSeq !== payload.eventSeq ||
+          compacted.delivery.eventHash !== payload.eventHash ||
+          compacted.delivery.eventDigest !== payload.eventDigest ||
+          compacted.delivery.deliveredAt !== payload.deliveredAt
+        ) conflict("OUTBOX_CONFLICT", "Compacted outbox delivery receipt changed.");
+        return frozenRecord({ delivered: true, outboxId: payload.outboxId });
+      }
+      const exactPendingDeliveryAnchor = (state) => {
+        const record = arrayFind(state.outboxEvents, (item) => item.outboxId === payload.outboxId);
+        if (
+          !record || record.delivered || !sameScope(record, scope) ||
+          record.threadId !== payload.threadId || record.runId !== payload.runId ||
+          record.expectedEventHash !== payload.eventHash ||
+          record.expectedPreviousSeq + 1 !== payload.eventSeq
+        ) return false;
+        try {
+          const event = createPublicIntegrationEvent({
+            threadId: record.threadId,
+            runId: record.runId,
+            seq: payload.eventSeq,
+            type: record.type,
+            payload: record.payload,
+            createdAt: record.createdAt,
+            previousHash: record.expectedPreviousHash,
+          });
+          return contractDigest(event) === payload.eventDigest;
+        } catch {
+          return false;
+        }
+      };
       const committed = await mutate("markIntegrationOutboxDelivered", payload, scope, (state) => {
         const record = arrayFind(state.outboxEvents, (item) => item.outboxId === payload.outboxId);
         if (
@@ -2003,12 +2491,13 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
           deliveredEventSeq: payload.eventSeq,
           deliveredEventHash: payload.eventHash,
           deliveredEventDigest: payload.eventDigest,
+          deliveredAt: payload.deliveredAt,
         });
         return {
           changes: { outboxEvents: replaceById(state.outboxEvents, delivered, "outboxId") },
           result: frozenRecord({ delivered: true, outboxId: payload.outboxId }),
         };
-      });
+      }, { replayHorizonAnchor: exactPendingDeliveryAnchor });
       return committed.result;
     },
 
@@ -2057,7 +2546,7 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
       const payload = exactPayload(
         inputPayload,
         STAGE_ARTIFACT_REQUIRED_KEYS,
-        STAGE_ARTIFACT_OPTIONAL_KEYS,
+        [],
         "stage artifact payload"
       );
       const scope = scopeFor(payload);
@@ -2068,9 +2557,8 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
         ...artifactInput,
         id: ownedArtifactId(artifactInput, scope, payload.threadId, payload.runId),
       });
-      let stagedAt = payload.stagedAt === undefined ? "" : assertCanonicalIso(payload.stagedAt, "artifact stagedAt");
+      assertCanonicalIso(payload.stagedAt, "artifact stagedAt");
       const committed = await mutate("stageIntegrationArtifactOutbox", payload, scope, (state) => {
-        if (!stagedAt) stagedAt = nowFrom(options.now);
         const thread = findThread(state, payload.threadId, scope);
         const run = findRun(state, payload.runId, scope);
         if (!thread || !run || run.threadId !== thread.id || !setHas(TERMINAL_STATUSES, run.status)) {
@@ -2093,7 +2581,8 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
           kind: artifact.kind,
           spec: artifact.spec,
           revision: 1,
-          stagedAt,
+          stagedAt: payload.stagedAt,
+          retainedAtSnapshotRevision: state.generation + 1,
           published: false,
           publishedAt: null,
         });
@@ -2113,7 +2602,7 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
       validateIntegrationArtifactId(payload.artifactId);
       assertInteger(payload.expectedRevision, "artifact expected revision", 1);
       assertCanonicalIso(payload.publishedAt, "artifact publishedAt");
-      const initial = await loadSnapshot();
+      const initial = await loadFencedSnapshot();
       const existing = arrayFind(
         initial.state.artifacts,
         (item) => item.id === payload.artifactId && sameScope(item, scope)
@@ -2152,7 +2641,7 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
     },
   };
 
-  async function resolveRecoveryHeldRun(evidenceLane, inputPayload) {
+  async function resolveRecoveryHeldRun(evidenceLane, inputPayload, recoveryFenceAuthority) {
     const request = exactPayload(
       inputPayload,
       ["runId", "principalId", "browserSessionId", "expectedCursor"],
@@ -2162,6 +2651,15 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
     const scope = scopeFor(request);
     validateIntegrationRunId(request.runId);
     const initial = await loadSnapshot();
+    const persistedFence = assertCurrentFence(initial.state, runtimeState);
+    if (
+      persistedFence.generation !== recoveryFenceAuthority.generation ||
+      persistedFence.ownerDigest !== recoveryFenceAuthority.ownerDigest ||
+      persistedFence.ownerIdentityDigest !== recoveryFenceAuthority.ownerIdentityDigest ||
+      persistedFence.digest !== recoveryFenceAuthority.fenceDigest
+    ) {
+      conflict("INTEGRATION_REPOSITORY_FENCE_STALE", "Recovery coordinator repository fence is stale.");
+    }
     const run = findRun(initial.state, request.runId, scope);
     const evidence = await evidenceLane.inspectRecoveryEvidence(run);
     const recoveryMutationId = `repository.recovery-finish.${run.nativeStartReceipt.authorizationDigest}`;
@@ -2171,6 +2669,15 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
         (receipt) => receipt.mutationId === recoveryMutationId && receipt.operation === "resolveRecoveryHeldRun"
       );
       if (!recoveryReceipt) {
+        if (
+          initial.state.retention.replayCutoffAt !== null &&
+          evidence.terminal.completedAt <= initial.state.retention.replayCutoffAt
+        ) {
+          conflict(
+            "INTEGRATION_REPOSITORY_REPLAY_WINDOW_EXPIRED",
+            "Recovery replay is older than the durable replay horizon."
+          );
+        }
         conflict("REVISION_CONFLICT", "Terminal run was not resolved by this retained recovery coordinator.");
       }
       const replay = cloneRecord(recoveryReceipt.result);
@@ -2219,7 +2726,7 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
       output: terminal.output,
       error: terminal.error,
       completedAt,
-      processOwner: run.recoveryState.observedByProcessOwner,
+      processOwner: recoveryFenceAuthority.processOwner,
       expectedCursor: request.expectedCursor,
       outputEvent,
       terminalEvent: frozenRecord({
@@ -2235,13 +2742,37 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
       finish: payload,
       recoveryProofDigest: evidence.proofDigest,
       terminalEvidenceDigest: terminal.evidenceDigest,
+      repositoryFence: frozenRecord({
+        generation: recoveryFenceAuthority.generation,
+        ownerDigest: recoveryFenceAuthority.ownerDigest,
+        ownerIdentityDigest: recoveryFenceAuthority.ownerIdentityDigest,
+        fenceDigest: recoveryFenceAuthority.fenceDigest,
+        leaseDigest: recoveryFenceAuthority.leaseDigest,
+      }),
     });
     const committed = await mutate(
       "resolveRecoveryHeldRun",
       mutationPayload,
       finishScope,
-      (state) => finishTransition(state, payload, finishScope, terminalError, evidence),
-      { explicitMutationId: recoveryMutationId }
+      (state) => finishTransition(
+        state,
+        payload,
+        finishScope,
+        terminalError,
+        evidence,
+        recoveryFenceAuthority
+      ),
+      {
+        explicitMutationId: recoveryMutationId,
+        replayHorizonAnchor: (state) => {
+          const anchored = findRun(state, request.runId, finishScope);
+          return NativeBoolean(
+            anchored?.recoveryState?.status === "recovery_hold" &&
+            anchored.nativeStartReceipt?.authorizationDigest === evidence.authorizationDigest &&
+            anchored.authority?.snapshotHash === evidence.snapshotHash
+          );
+        },
+      }
     );
     return frozenRecord({
       outcome: committed.outcome,
@@ -2271,13 +2802,85 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
     repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Repository surface inventory is invalid.");
   }
   assertIntegrationRuntimeRepositorySurface(surface, { requireRetainedDescriptorStorage: true });
-  weakMapSet(repositoryBrand, surface, { repositoryState, options });
+  weakMapSet(repositoryBrand, surface, {
+    repositoryState,
+    options,
+    runtimeState,
+    repositoryIdentityDigest: contractDigest(expectedBinding),
+    attestationDigest: attestation.digest,
+  });
   weakMapSet(recoveryCoordinatorInternals, surface, {
     repositoryState,
     repositoryStateExpected: options.repositoryStateExpected,
     resolveRecoveryHeldRun,
   });
   return surface;
+}
+
+export function isRetainedIntegrationRuntimeRepositorySurface(value) {
+  return NativeBoolean(value && (typeof value === "object" || typeof value === "function") && weakMapHas(repositoryBrand, value));
+}
+
+export function assertRetainedIntegrationRuntimeRepositoryFenceLease(surface, lease) {
+  const entry = retainedRepositoryEntry(surface);
+  if (!lease || typeof lease !== "object" || !weakMapHas(repositoryFenceLeaseBrand, lease)) {
+    repositoryFail("INTEGRATION_REPOSITORY_FENCE_UNAVAILABLE", "Repository fence lease lexical brand is invalid.");
+  }
+  const branded = weakMapGet(repositoryFenceLeaseBrand, lease);
+  if (
+    branded.surface !== surface ||
+    lease.schemaVersion !== INTEGRATION_RETAINED_RUNTIME_REPOSITORY_FENCE_LEASE_VERSION ||
+    lease.repositoryIdentityDigest !== entry.repositoryIdentityDigest ||
+    lease.repositoryAttestationDigest !== entry.attestationDigest ||
+    lease.digest !== contractDigest(frozenRecord({
+      schemaVersion: lease.schemaVersion,
+      repositoryIdentityDigest: lease.repositoryIdentityDigest,
+      repositoryAttestationDigest: lease.repositoryAttestationDigest,
+      generation: lease.generation,
+      ownerDigest: lease.ownerDigest,
+      ownerIdentityDigest: lease.ownerIdentityDigest,
+      fenceDigest: lease.fenceDigest,
+    })) ||
+    !entry.runtimeState.heldFence ||
+    branded.handle.generation !== entry.runtimeState.heldFence.generation ||
+    branded.handle.ownerDigest !== entry.runtimeState.heldFence.ownerDigest ||
+    branded.handle.ownerIdentityDigest !== entry.runtimeState.heldFence.ownerIdentityDigest ||
+    branded.handle.fenceDigest !== entry.runtimeState.heldFence.fenceDigest
+  ) {
+    repositoryFail("INTEGRATION_REPOSITORY_FENCE_STALE", "Repository fence lease is stale or misbound.");
+  }
+  return frozenRecord({
+    schemaVersion: lease.schemaVersion,
+    repositoryIdentityDigest: lease.repositoryIdentityDigest,
+    repositoryAttestationDigest: lease.repositoryAttestationDigest,
+    generation: lease.generation,
+    ownerDigest: lease.ownerDigest,
+    ownerIdentityDigest: lease.ownerIdentityDigest,
+    fenceDigest: lease.fenceDigest,
+    leaseDigest: lease.digest,
+    processOwner: cloneRecord(branded.processOwner),
+  });
+}
+
+export async function assertRetainedIntegrationRuntimeRepositoryFenceLeaseCurrent(surface, lease) {
+  const entry = retainedRepositoryEntry(surface);
+  const authority = assertRetainedIntegrationRuntimeRepositoryFenceLease(surface, lease);
+  const snapshot = await entry.repositoryState.loadDomainSnapshot();
+  const persistedFence = assertCurrentFence(snapshot.state, entry.runtimeState);
+  if (
+    persistedFence.generation !== authority.generation ||
+    persistedFence.ownerDigest !== authority.ownerDigest ||
+    persistedFence.ownerIdentityDigest !== authority.ownerIdentityDigest ||
+    persistedFence.digest !== authority.fenceDigest
+  ) {
+    conflict("INTEGRATION_REPOSITORY_FENCE_STALE", "Repository fence lease is not durably current.");
+  }
+  return frozenRecord({
+    ...authority,
+    repositorySnapshotRevision: snapshot.snapshotRevision,
+    repositoryIntegrityDigest: snapshot.integrityDigest,
+    durablyCurrent: true,
+  });
 }
 
 export function assertRetainedIntegrationRuntimeRepositorySurface(value) {
@@ -2289,9 +2892,9 @@ export function assertRetainedIntegrationRuntimeRepositorySurface(value) {
 }
 
 export const INTEGRATION_RETAINED_RUNTIME_RECOVERY_COORDINATOR_VERSION =
-  "aginti-retained-runtime-recovery-coordinator-v1";
+  "aginti-retained-runtime-recovery-coordinator-v2";
 export const INTEGRATION_RETAINED_RUNTIME_RECOVERY_COORDINATOR_ATTESTATION_VERSION =
-  "aginti-retained-runtime-recovery-coordinator-attestation-v1";
+  "aginti-retained-runtime-recovery-coordinator-attestation-v2";
 
 export function createRetainedIntegrationRuntimeRecoveryCoordinator(input = {}) {
   if (!input || typeof input !== "object" || ArrayIsArray(input) || utilTypes.isProxy(input)) {
@@ -2299,9 +2902,11 @@ export function createRetainedIntegrationRuntimeRecoveryCoordinator(input = {}) 
   }
   const factoryKeys = ReflectOwnKeys(input);
   if (
-    factoryKeys.length !== 2 ||
+    factoryKeys.length !== 4 ||
     !arraySome(factoryKeys, (key) => key === "repository") ||
-    !arraySome(factoryKeys, (key) => key === "nativeExecutionEvidence")
+    !arraySome(factoryKeys, (key) => key === "nativeExecutionEvidence") ||
+    !arraySome(factoryKeys, (key) => key === "processOwnerBootstrap") ||
+    !arraySome(factoryKeys, (key) => key === "repositoryFenceLease")
   ) {
     repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Retained recovery coordinator factory fields are invalid.");
   }
@@ -2317,10 +2922,24 @@ export function createRetainedIntegrationRuntimeRecoveryCoordinator(input = {}) 
   const repository = assertRetainedIntegrationRuntimeRepositorySurface(options.repository);
   const internals = weakMapGet(recoveryCoordinatorInternals, repository);
   if (!internals) repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Repository recovery companion is unavailable.");
+  const processOwnerBootstrap = assertIntegrationRuntimeProcessOwnerBootstrap(options.processOwnerBootstrap);
+  const repositoryFenceLease = options.repositoryFenceLease;
+  const repositoryFenceAuthority = assertRetainedIntegrationRuntimeRepositoryFenceLease(
+    repository,
+    repositoryFenceLease
+  );
+  if (repositoryFenceAuthority.ownerDigest !== processOwnerBootstrap.ownerDigest) {
+    repositoryFail(
+      "INTEGRATION_REPOSITORY_FENCE_STALE",
+      "Recovery coordinator process owner does not match the acquired repository fence."
+    );
+  }
   const nativeExecutionEvidence = assertRetainedIntegrationNativeExecutionEvidence(
     options.nativeExecutionEvidence,
     {
       sessionStateStoreExpected: internals.repositoryStateExpected.sessionStateStore,
+      repositoryState: internals.repositoryState,
+      repositoryStateExpected: internals.repositoryStateExpected,
       storageNamespaceDigest: internals.repositoryState.attestation.sessionStateNamespaceDigest,
     }
   );
@@ -2347,16 +2966,34 @@ export function createRetainedIntegrationRuntimeRecoveryCoordinator(input = {}) 
     exactTerminalEvidenceRequired: true,
     revisionOnlyRecovery: false,
     authorizationProcessOwnerDigestBound: true,
-    crossProcessExecutionFence: false,
+    crossProcessExecutionFence: true,
+    lexicalProcessOwnerBootstrapRequired: true,
+    lexicalRepositoryFenceLeaseRequired: true,
+    staleFenceFailsClosed: true,
+    successorRecoveryFromExactEvidence: true,
     enablementReady: false,
     repositoryAttestationDigest: repository[INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_PROPERTY].digest,
     nativeExecutionEvidenceAttestationDigest: nativeExecutionEvidence.attestation.digest,
     storageNamespaceDigest: nativeExecutionEvidence.attestation.storageNamespaceDigest,
     storageAdmissionBindingDigest: nativeExecutionEvidence.attestation.storageAdmissionBindingDigest,
     storageExpectedDigest: repositorySessionStateExpectedDigest,
+    processOwnerBootstrapDigest: processOwnerBootstrap.digest,
+    repositoryIdentityDigest: repositoryFenceAuthority.repositoryIdentityDigest,
+    repositoryFenceGeneration: repositoryFenceAuthority.generation,
+    repositoryFenceOwnerDigest: repositoryFenceAuthority.ownerDigest,
+    repositoryFenceOwnerIdentityDigest: repositoryFenceAuthority.ownerIdentityDigest,
+    repositoryFenceDigest: repositoryFenceAuthority.fenceDigest,
+    repositoryFenceLeaseDigest: repositoryFenceAuthority.leaseDigest,
   });
   const attestation = frozenRecord({ ...unsigned, digest: contractDigest(unsigned) });
-  const coordinatorState = { repository, nativeExecutionEvidence, internals, attestation };
+  const coordinatorState = {
+    repository,
+    nativeExecutionEvidence,
+    processOwnerBootstrap,
+    repositoryFenceLease,
+    internals,
+    attestation,
+  };
   const coordinator = frozenRecord({
     schemaVersion: INTEGRATION_RETAINED_RUNTIME_RECOVERY_COORDINATOR_VERSION,
     attestation,
@@ -2364,7 +3001,24 @@ export function createRetainedIntegrationRuntimeRecoveryCoordinator(input = {}) 
       if (repositoryStateClosed(coordinatorState)) {
         repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Retained recovery coordinator is closed.");
       }
-      return internals.resolveRecoveryHeldRun(nativeExecutionEvidence, inputPayload);
+      const currentBootstrap = assertIntegrationRuntimeProcessOwnerBootstrap(
+        coordinatorState.processOwnerBootstrap
+      );
+      const currentFenceAuthority = assertRetainedIntegrationRuntimeRepositoryFenceLease(
+        repository,
+        coordinatorState.repositoryFenceLease
+      );
+      if (currentFenceAuthority.ownerDigest !== currentBootstrap.ownerDigest) {
+        repositoryFail(
+          "INTEGRATION_REPOSITORY_FENCE_STALE",
+          "Recovery coordinator process owner no longer matches the repository fence."
+        );
+      }
+      return internals.resolveRecoveryHeldRun(
+        nativeExecutionEvidence,
+        inputPayload,
+        currentFenceAuthority
+      );
     },
     isClosed() {
       return repositoryStateClosed(coordinatorState);
@@ -2389,9 +3043,267 @@ export function assertRetainedIntegrationRuntimeRecoveryCoordinator(value, expec
   }
   if (
     expected.repository && state.repository !== expected.repository ||
-    expected.nativeExecutionEvidence && state.nativeExecutionEvidence !== expected.nativeExecutionEvidence
+    expected.nativeExecutionEvidence && state.nativeExecutionEvidence !== expected.nativeExecutionEvidence ||
+    expected.processOwnerBootstrap && state.processOwnerBootstrap !== expected.processOwnerBootstrap ||
+    expected.repositoryFenceLease && state.repositoryFenceLease !== expected.repositoryFenceLease
   ) {
     repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Retained recovery coordinator binding changed.");
   }
+  const currentBootstrap = assertIntegrationRuntimeProcessOwnerBootstrap(state.processOwnerBootstrap);
+  const currentFenceAuthority = assertRetainedIntegrationRuntimeRepositoryFenceLease(
+    state.repository,
+    state.repositoryFenceLease
+  );
+  if (currentFenceAuthority.ownerDigest !== currentBootstrap.ownerDigest) {
+    repositoryFail(
+      "INTEGRATION_REPOSITORY_FENCE_STALE",
+      "Recovery coordinator process owner no longer matches the repository fence."
+    );
+  }
   return value;
+}
+
+function retainedRepositoryEntry(surface) {
+  if (!weakMapHas(repositoryBrand, surface)) {
+    repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Repository surface lexical brand is invalid.");
+  }
+  return weakMapGet(repositoryBrand, surface);
+}
+
+async function livenessFor(entry, owner, label) {
+  let result;
+  try {
+    result = await entry.options.processOwnerLiveness(owner);
+  } catch {
+    repositoryFail("INTEGRATION_REPOSITORY_FENCE_UNAVAILABLE", `${label} liveness cannot be proven.`);
+  }
+  if (result !== "alive" && result !== "dead" && result !== "unknown") {
+    repositoryFail("INTEGRATION_REPOSITORY_FENCE_UNAVAILABLE", `${label} liveness authority is invalid.`);
+  }
+  return result;
+}
+
+async function liveRetiredOwners(entry, retiredOwners) {
+  const retained = [];
+  for (let index = 0; index < retiredOwners.length; index += 1) {
+    const liveness = await livenessFor(entry, retiredOwners[index].owner, "Retired fence owner");
+    if (liveness !== "dead") arrayPush(retained, retiredOwners[index]);
+  }
+  return sortedById(retained, "processIdentityDigest");
+}
+
+function makeReconciliationFence(previous, owner, issuedAt, retiredOwners) {
+  const generation = previous ? previous.generation + 1 : 1;
+  const unsigned = frozenRecord({
+    schemaVersion: INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RECONCILIATION_FENCE_VERSION,
+    generation,
+    owner,
+    ownerDigest: contractDigest(owner),
+    ownerIdentityDigest: processIdentityDigest(owner),
+    issuedAt,
+    previousFenceDigest: previous ? previous.digest : ZERO_DIGEST,
+    retiredOwners,
+  });
+  return frozenRecord({ ...unsigned, digest: contractDigest(unsigned) });
+}
+
+function retiredOwnerRecord(owner, generation, retiredAt, reason) {
+  return frozenRecord({
+    schemaVersion: INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RETIRED_OWNER_VERSION,
+    owner,
+    ownerDigest: contractDigest(owner),
+    processIdentityDigest: processIdentityDigest(owner),
+    retiredAtGeneration: generation,
+    retiredAt,
+    reason,
+  });
+}
+
+export async function acquireRetainedIntegrationRuntimeRepositoryFence(surface, inputPayload) {
+  const entry = retainedRepositoryEntry(surface);
+  const bootstrap = brandedProcessOwnerBootstrapFromPayload(
+    inputPayload,
+    "processOwnerBootstrap",
+    ["processOwnerBootstrap"],
+    "repository fence acquisition"
+  );
+  const owner = assertProcessOwner(bootstrap.processOwner, "repository fence owner");
+  if (await livenessFor(entry, owner, "Requested fence owner") !== "alive") {
+    conflict("INTEGRATION_REPOSITORY_FENCE_OWNER_NOT_LIVE", "Requested repository fence owner is not provably alive.");
+  }
+  for (let attempt = 0; attempt < entry.options.maxCasRetries; attempt += 1) {
+    const snapshot = await entry.repositoryState.loadDomainSnapshot();
+    const current = snapshot.state.reconciliationFence;
+    if (current && current.ownerDigest === contractDigest(owner)) {
+      const handle = fenceHandle(current);
+      entry.runtimeState.heldFence = handle;
+      return frozenRecord({
+        outcome: "acquired",
+        fence: cloneRecord(handle),
+        lease: fenceLease(surface, entry, current),
+      });
+    }
+    const requesterIdentityDigest = processIdentityDigest(owner);
+    if (current && arraySome(
+      current.retiredOwners,
+      (retired) => retired.processIdentityDigest === requesterIdentityDigest
+    )) {
+      conflict("INTEGRATION_REPOSITORY_FENCE_RETIRED", "A retired live process identity cannot reacquire the repository fence.");
+    }
+    let retiredOwners = current
+      ? await liveRetiredOwners(entry, current.retiredOwners)
+      : ObjectFreeze([]);
+    if (current) {
+      const currentLiveness = await livenessFor(entry, current.owner, "Current fence owner");
+      if (currentLiveness === "alive") {
+        conflict("INTEGRATION_REPOSITORY_FENCE_HELD", "Repository fence is held by a live process.");
+      }
+      if (currentLiveness === "unknown") {
+        repositoryFail("INTEGRATION_REPOSITORY_FENCE_UNAVAILABLE", "Current repository fence owner liveness is unknown.");
+      }
+    }
+    const rawNow = nowFrom(entry.options.now);
+    const issuedAt = monotonicRepositoryTimestamp(snapshot.state, rawNow);
+    const fence = makeReconciliationFence(current, owner, issuedAt, retiredOwners);
+    const state = domainWith(snapshot.state, snapshot.snapshotRevision + 1, { reconciliationFence: fence });
+    try {
+      const committed = await entry.repositoryState.compareAndSwapDomainSnapshot({
+        mutationId: `repository.fence.acquire.${fence.digest}`,
+        expectedSnapshotRevision: snapshot.snapshotRevision,
+        expectedIntegrityDigest: snapshot.integrityDigest,
+        state,
+      });
+      const durableFence = committed.snapshot.state.reconciliationFence;
+      if (!durableFence || durableFence.digest !== fence.digest) {
+        repositoryFail("INTEGRATION_REPOSITORY_CORRUPT", "Committed repository fence is missing.");
+      }
+      const handle = fenceHandle(durableFence);
+      entry.runtimeState.heldFence = handle;
+      return frozenRecord({
+        outcome: committed.outcome,
+        fence: cloneRecord(handle),
+        lease: fenceLease(surface, entry, durableFence),
+      });
+    } catch (error) {
+      if (setHas(CAS_RETRY_CODES, errorCode(error))) continue;
+      throw error;
+    }
+  }
+  repositoryFail("INTEGRATION_REPOSITORY_BUSY", "Repository fence acquisition retry budget was exhausted.", 429);
+}
+
+export async function handoffRetainedIntegrationRuntimeRepositoryFence(surface, inputPayload) {
+  const entry = retainedRepositoryEntry(surface);
+  const payload = exactPayload(
+    inputPayload,
+    ["currentProcessOwnerBootstrap", "successorProcessOwner"],
+    [],
+    "repository fence handoff"
+  );
+  const currentBootstrap = brandedProcessOwnerBootstrapFromPayload(
+    inputPayload,
+    "currentProcessOwnerBootstrap",
+    ["currentProcessOwnerBootstrap", "successorProcessOwner"],
+    "repository fence handoff"
+  );
+  const currentOwner = assertProcessOwner(currentBootstrap.processOwner, "current repository fence owner");
+  const successorOwner = assertProcessOwner(payload.successorProcessOwner, "successor repository fence owner");
+  if (processIdentityDigest(currentOwner) === processIdentityDigest(successorOwner)) {
+    conflict("INTEGRATION_REPOSITORY_FENCE_HANDOFF_REFUSED", "Fence handoff requires a distinct process identity.");
+  }
+  if (
+    await livenessFor(entry, currentOwner, "Current fence owner") !== "alive" ||
+    await livenessFor(entry, successorOwner, "Successor fence owner") !== "alive"
+  ) {
+    conflict("INTEGRATION_REPOSITORY_FENCE_HANDOFF_REFUSED", "Fence handoff participants must be provably alive.");
+  }
+  for (let attempt = 0; attempt < entry.options.maxCasRetries; attempt += 1) {
+    const snapshot = await entry.repositoryState.loadDomainSnapshot();
+    const current = assertCurrentFence(snapshot.state, entry.runtimeState);
+    if (current.ownerDigest !== contractDigest(currentOwner)) {
+      conflict("INTEGRATION_REPOSITORY_FENCE_STALE", "Fence handoff caller is not the current owner.");
+    }
+    let retiredOwners = await liveRetiredOwners(entry, current.retiredOwners);
+    const successorIdentityDigest = processIdentityDigest(successorOwner);
+    if (arraySome(retiredOwners, (retired) => retired.processIdentityDigest === successorIdentityDigest)) {
+      conflict("INTEGRATION_REPOSITORY_FENCE_RETIRED", "A retired live process identity cannot receive a fence handoff.");
+    }
+    retiredOwners = sortedById(arrayConcat(retiredOwners, [
+      retiredOwnerRecord(current.owner, current.generation, monotonicRepositoryTimestamp(snapshot.state, nowFrom(entry.options.now)), "handoff"),
+    ]), "processIdentityDigest");
+    if (retiredOwners.length > INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_RETIRED_FENCE_OWNERS) {
+      conflict("INTEGRATION_REPOSITORY_FENCE_FULL", "Repository retired-owner fence inventory is exhausted.");
+    }
+    const issuedAt = monotonicRepositoryTimestamp(snapshot.state, nowFrom(entry.options.now));
+    const fence = makeReconciliationFence(current, successorOwner, issuedAt, retiredOwners);
+    const state = domainWith(snapshot.state, snapshot.snapshotRevision + 1, { reconciliationFence: fence });
+    try {
+      const committed = await entry.repositoryState.compareAndSwapDomainSnapshot({
+        mutationId: `repository.fence.handoff.${fence.digest}`,
+        expectedSnapshotRevision: snapshot.snapshotRevision,
+        expectedIntegrityDigest: snapshot.integrityDigest,
+        state,
+      });
+      if (committed.snapshot.state.reconciliationFence?.digest !== fence.digest) {
+        repositoryFail("INTEGRATION_REPOSITORY_CORRUPT", "Committed repository fence handoff is missing.");
+      }
+      entry.runtimeState.heldFence = null;
+      return frozenRecord({ outcome: committed.outcome, fence: cloneRecord(fenceHandle(fence)) });
+    } catch (error) {
+      if (setHas(CAS_RETRY_CODES, errorCode(error))) continue;
+      throw error;
+    }
+  }
+  repositoryFail("INTEGRATION_REPOSITORY_BUSY", "Repository fence handoff retry budget was exhausted.", 429);
+}
+
+export async function compactRetainedIntegrationRuntimeRepository(surface) {
+  const entry = retainedRepositoryEntry(surface);
+  for (let attempt = 0; attempt < entry.options.maxCasRetries; attempt += 1) {
+    const snapshot = await entry.repositoryState.loadDomainSnapshot();
+    assertCurrentFence(snapshot.state, entry.runtimeState);
+    const compactedAt = monotonicRepositoryTimestamp(snapshot.state, nowFrom(entry.options.now));
+    const nextRevision = snapshot.snapshotRevision + 1;
+    const prepared = compactDomainForCommit(
+      domainWith(snapshot.state, nextRevision),
+      nextRevision,
+      compactedAt,
+      entry.options.repositoryStateExpected.repositoryKernel.maxSnapshotBytes,
+      { force: true }
+    );
+    if (!prepared.didCompact) {
+      return frozenRecord({
+        outcome: "unchanged",
+        snapshotRevision: snapshot.snapshotRevision,
+        retention: cloneRecord(snapshot.state.retention),
+      });
+    }
+    const request = frozenRecord({
+      schemaVersion: INTEGRATION_RETAINED_RUNTIME_REPOSITORY_MAINTENANCE_VERSION,
+      expectedSnapshotRevision: snapshot.snapshotRevision,
+      expectedIntegrityDigest: snapshot.integrityDigest,
+      retentionDigest: contractDigest(prepared.state.retention),
+    });
+    try {
+      const committed = await entry.repositoryState.compareAndSwapDomainSnapshot({
+        mutationId: `repository.compact.${contractDigest(request)}`,
+        expectedSnapshotRevision: snapshot.snapshotRevision,
+        expectedIntegrityDigest: snapshot.integrityDigest,
+        state: prepared.state,
+      });
+      return frozenRecord({
+        outcome: committed.outcome,
+        snapshotRevision: committed.snapshot.snapshotRevision,
+        retention: cloneRecord(committed.snapshot.state.retention),
+        compactedOutboxEvents: prepared.compactedOutboxEvents,
+        prunedReceipts: prepared.prunedReceipts,
+        prunedRunTombstones: prepared.prunedRunTombstones,
+        prunedArtifacts: prepared.prunedArtifacts,
+      });
+    } catch (error) {
+      if (setHas(CAS_RETRY_CODES, errorCode(error))) continue;
+      throw error;
+    }
+  }
+  repositoryFail("INTEGRATION_REPOSITORY_BUSY", "Repository compaction retry budget was exhausted.", 429);
 }

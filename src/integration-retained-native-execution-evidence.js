@@ -3,6 +3,9 @@ import {
   assertRetainedIntegrationSessionStateStore,
 } from "./integration-retained-session-state-store.js";
 import {
+  assertRetainedIntegrationNativeSessionRepositoryStateUsesSessionStateStore,
+} from "./integration-retained-native-session-repository-state.js";
+import {
   contractDigest,
   validateIntegrationRunId,
   validateIntegrationThreadId,
@@ -777,6 +780,26 @@ export function assertRetainedIntegrationNativeExecutionEvidence(value, expected
   }
   if (expected.sessionStateStoreExpected) {
     assertRetainedIntegrationSessionStateStore(state.store, expected.sessionStateStoreExpected);
+  }
+  if (expected.sessionStateStore && state.store !== expected.sessionStateStore) {
+    fail(
+      "INTEGRATION_NATIVE_EVIDENCE_UNAVAILABLE",
+      "Retained native evidence SessionStateStore identity binding changed."
+    );
+  }
+  if (expected.repositoryState) {
+    try {
+      assertRetainedIntegrationNativeSessionRepositoryStateUsesSessionStateStore(
+        expected.repositoryState,
+        expected.repositoryStateExpected,
+        state.store
+      );
+    } catch {
+      fail(
+        "INTEGRATION_NATIVE_EVIDENCE_UNAVAILABLE",
+        "Retained native evidence repository SessionStateStore identity binding changed."
+      );
+    }
   }
   if (
     expected.storageNamespaceDigest &&

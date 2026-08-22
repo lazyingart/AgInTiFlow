@@ -601,7 +601,7 @@ async function runCore() {
       cancellationAttestation: runtimeFixture.cancellationAttestation,
       hardenedSandboxAttestation: runtimeFixture.hardenedSandboxAttestation,
     });
-    const realRuntimeProof = realRuntimeAuthority.getIntegrationRuntimeProof();
+    const realRuntimeProof = await realRuntimeAuthority.getIntegrationRuntimeProof();
     assert.equal(realRuntimeProof.repositoryProofDigest, runtimeFixture.repositoryAttestation.digest);
     assert.equal(
       realRuntimeProof.eventAppendProofDigest,
