@@ -52,6 +52,17 @@ const artifactContract = deriveScsTaskContract({
 });
 assert.equal(artifactContract.requiresExternalEvidence, true, "real chat artifact work lost its evidence gate");
 assert.ok(artifactContract.requiredEvidence.some((item) => item.category === "artifact"));
+const scopedArtifactRootContract = deriveScsTaskContract({
+  goal:
+    'AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Create result.txt with the exact requested content.","artifact_root":"/tmp/labcanvas-task-artifacts"}',
+  taskProfile: "chatops",
+});
+assert.equal(scopedArtifactRootContract.artifactRoot, "/tmp/labcanvas-task-artifacts");
+assert.deepEqual(
+  scopedArtifactRootContract.exactOutputPaths,
+  ["/tmp/labcanvas-task-artifacts/result.txt"],
+  "a bare task artifact filename was not resolved against the host-declared artifact root"
+);
 
 let capturedPayload = null;
 const client = {

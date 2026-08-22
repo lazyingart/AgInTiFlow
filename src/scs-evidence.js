@@ -670,13 +670,27 @@ function stripForbiddenLanguage(goal = "") {
     .replace(/禁止([^。\n；]+)/g, "");
 }
 
+function parseAgintiEvidenceScope(goal = "") {
+  const matches = [
+    ...String(goal || "").matchAll(/^AGINTI_EVIDENCE_SCOPE_JSON:\s*(\{[^\n]+\})\s*$/gm),
+  ];
+  const match = matches.at(-1);
+  if (!match) return null;
+  try {
+    const payload = JSON.parse(match[1]);
+    return payload && typeof payload === "object" ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
 export function hasAgintiEvidenceScope(goal = "") {
-  return /^AGINTI_EVIDENCE_SCOPE_JSON:\s*\{[^\n]+\}\s*$/m.test(String(goal || ""));
+  return Boolean(parseAgintiEvidenceScope(goal));
 }
 
 export function scopedChatopsEvidenceGoal(goal = "", taskProfile = "") {
-  const match = String(goal || "").match(/^AGINTI_EVIDENCE_SCOPE_JSON:\s*(\{[^\n]+\})\s*$/m);
-  if (!match) {
+  const payload = parseAgintiEvidenceScope(goal);
+  if (!payload) {
     const text = String(goal || "");
     const lines = text
       .split(/\r?\n/)
@@ -694,22 +708,32 @@ export function scopedChatopsEvidenceGoal(goal = "", taskProfile = "") {
     }
     return text;
   }
-  try {
-    const payload = JSON.parse(match[1]);
-    if (!payload || typeof payload !== "object") return String(goal || "");
-    const mode = String(payload.mode || "").trim().toLowerCase();
-    if (["chat-response", "host-managed-response", "plan-response", "read-only-answer"].includes(mode)) {
-      return "Answer the current chat turn directly without external execution.";
-    }
-    const request = String(payload.request || "").trim();
-    return request || String(goal || "");
-  } catch {
-    return String(goal || "");
+  const mode = String(payload.mode || "").trim().toLowerCase();
+  if (["chat-response", "host-managed-response", "plan-response", "read-only-answer"].includes(mode)) {
+    return "Answer the current chat turn directly without external execution.";
   }
+  const request = String(payload.request || "").trim();
+  return request || String(goal || "");
+}
+
+function scopedArtifactRoot(goal = "") {
+  const payload = parseAgintiEvidenceScope(goal);
+  if (!payload || String(payload.mode || "").trim().toLowerCase() !== "task") return "";
+  return String(payload.artifact_root || "").trim();
+}
+
+function applyScopedArtifactRoot(items = [], artifactRoot = "") {
+  if (!artifactRoot) return items;
+  return items.map((item) => {
+    const value = String(item || "").trim();
+    if (!value || path.isAbsolute(value) || value.startsWith("~/") || /[\\/]/.test(value)) return value;
+    return path.join(artifactRoot, value);
+  });
 }
 
 export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceCriteria = [] } = {}) {
   const evidenceGoal = scopedChatopsEvidenceGoal(goal, taskProfile);
+  const artifactRoot = scopedArtifactRoot(goal);
   const requirementCategories = inferRequirementCategories(evidenceGoal, taskProfile, acceptanceCriteria);
   const requiredToolCalls = inferRequiredToolCalls(evidenceGoal);
   const requiresExternalEvidence = requirementCategories.length > 0 || requiredToolCalls.length > 0 || goalRequiresEvidence(evidenceGoal, taskProfile);
@@ -718,8 +742,11 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     category,
     description: CATEGORY_LABELS[category] || category,
   }));
-  const exactOutputPaths = inferExactOutputPaths(evidenceGoal);
-  const exactInputPaths = inferExactInputPaths(evidenceGoal).filter((item) => !exactOutputPaths.includes(item));
+  const inferredOutputPaths = inferExactOutputPaths(evidenceGoal);
+  const exactOutputPaths = applyScopedArtifactRoot(inferredOutputPaths, artifactRoot);
+  const exactInputPaths = inferExactInputPaths(evidenceGoal).filter(
+    (item) => !inferredOutputPaths.includes(item) && !exactOutputPaths.includes(item)
+  );
   const declaredSourceRoots = inferDeclaredSourceRoots(evidenceGoal);
   return {
     version: 1,
@@ -729,6 +756,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     requiredEvidence,
     forbiddenActions: inferForbiddenActions(evidenceGoal),
     exactOutputPaths,
+    artifactRoot,
     exactInputPaths,
     declaredSourceRoots,
     readOnlyReadiness: isReadOnlyReadinessTask(evidenceGoal),
@@ -786,11 +814,12 @@ export function augmentScsTaskContractWithProjectVerification(contract = {}, sta
       .map((item) => String(item?.path || item || "").trim())
       .filter(Boolean)
   ).slice(0, 80);
-  const requiredOutputs = unique(
+  const requiredOutputs = unique(applyScopedArtifactRoot(
     (Array.isArray(verification.requiredOutputs) ? verification.requiredOutputs : [])
       .map((item) => String(item || "").trim())
-      .filter(Boolean)
-  ).slice(0, 64);
+      .filter(Boolean),
+    String(contract.artifactRoot || "")
+  )).slice(0, 64);
   const requiredProjectCommands = unique(
     (Array.isArray(verification.requiredCommands) ? verification.requiredCommands : [])
       .map(normalizeProjectCommand)
