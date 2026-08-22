@@ -2717,8 +2717,10 @@ async function main() {
     const attachedThreadUpdateBlocked = makeAuthority();
     const attachedThreadUpdateThread = (await attachedThreadUpdateBlocked.authority.createIntegrationThread({ title: "Attached thread update" }, context())).thread;
     const attachedNativeSessionId = attachedThreadUpdateBlocked.repo.state.threads.get(attachedThreadUpdateThread.id).nativeSessionId;
-    const attachedReadBlocked = createGate();
-    const attachedAllowRead = createGate();
+    const attachedPreflightReadBlocked = createGate();
+    const attachedAllowPreflightRead = createGate();
+    const attachedExecutionReadBlocked = createGate();
+    const attachedAllowExecutionRead = createGate();
     const attachedFinishFailed = createGate();
     const originalAttachedReadFile = fs.readFile;
     let attachedReadIntercepts = 0;
@@ -2727,13 +2729,19 @@ async function main() {
     fs.readFile = async function attachedThreadUpdateReadFile(target, ...args) {
       const targetPath = String(target);
       if (
-        attachedReadIntercepts === 0 &&
+        attachedReadIntercepts < 2 &&
         targetPath === path.join(SMOKE_ROOT, "state/sessions", attachedNativeSessionId, "state.json")
       ) {
         attachedReadIntercepts += 1;
-        attachedReadBlocked.resolve();
-        await attachedAllowRead.promise;
-        if (attachedRejectRead) {
+        const preflightRead = attachedReadIntercepts === 1;
+        if (preflightRead) {
+          attachedPreflightReadBlocked.resolve();
+          await attachedAllowPreflightRead.promise;
+        } else {
+          attachedExecutionReadBlocked.resolve();
+          await attachedAllowExecutionRead.promise;
+        }
+        if (!preflightRead && attachedRejectRead) {
           const error = new Error("attached thread update worker cancelled before provider preflight");
           error.code = "CANCELLED";
           error.persistedRuntimeRevision = 1;
@@ -2752,9 +2760,12 @@ async function main() {
           (value) => ({ value }),
           (error) => ({ error })
         );
-      await waitForGate(attachedReadBlocked, "attached thread update native preflight read");
+      await waitForGate(attachedPreflightReadBlocked, "attached thread update native preflight read");
+      assert.equal(callsNamed(attachedThreadUpdateBlocked, "authorizeIntegrationRunNativeStart").length, 0);
+      attachedAllowPreflightRead.resolve();
       const attachedStartOutcome = await waitForPromise(attachedStartPromise, "attached thread update start response");
       if (attachedStartOutcome.error) throw attachedStartOutcome.error;
+      await waitForGate(attachedExecutionReadBlocked, "attached thread update native execution read");
       const attachedRun = [...attachedThreadUpdateBlocked.repo.state.runs.values()][0];
       assert.equal(attachedStartOutcome.value.run.id, attachedRun.id);
       assert.equal(attachedRun.status, "running");
@@ -2805,8 +2816,8 @@ async function main() {
       attachedThreadUpdateBlocked.repo.state.onFinishBeforeCommitFailure = async ({ remaining }) => {
         if (remaining === 0) attachedFinishFailed.resolve();
       };
-      attachedRejectRead = true;
-      attachedAllowRead.resolve();
+      attachedRejectRead = false;
+      attachedAllowExecutionRead.resolve();
       await waitForGate(attachedFinishFailed, "attached thread update finish failure");
       await delay(0);
       let recoveryError = null;
@@ -2836,7 +2847,8 @@ async function main() {
       assertThreadMutationGuardUnchanged(attachedThreadUpdateBlocked, attachedThreadUpdateThread.id, attachedGuard);
     } finally {
       fs.readFile = originalAttachedReadFile;
-      attachedAllowRead.resolve();
+      attachedAllowPreflightRead.resolve();
+      attachedAllowExecutionRead.resolve();
       attachedThreadUpdateBlocked.repo.state.onFinishBeforeCommit = null;
       attachedThreadUpdateBlocked.repo.state.onFinishBeforeCommitFailure = null;
       attachedThreadUpdateBlocked.repo.state.failFinishBeforeCommitCount = 0;
@@ -4658,7 +4670,7 @@ async function main() {
     const launchBody = authoritySource.slice(launchStart, launchEnd);
     const attachPosition = launchBody.indexOf("runRegistry.attachPromise(run.id, deferred.promise)");
     const releasePosition = launchBody.indexOf("function releaseAuthorizedNativeExecution");
-    const executePosition = launchBody.indexOf("executeNativeAgintiRun(prepared.config)");
+    const executePosition = launchBody.indexOf("executeNativeAgintiRun(prepared.config, { preflight })");
     assert.ok(attachPosition > 0);
     assert.ok(releasePosition > attachPosition);
     assert.ok(executePosition > attachPosition);
@@ -4673,12 +4685,16 @@ async function main() {
       assert.notEqual(methodStart, -1);
       assert.notEqual(methodEnd, -1);
       const methodBody = authoritySource.slice(methodStart, methodEnd);
+      const preflightCall = methodBody.indexOf("preflightNativeSessionRuntime(prepared.config)");
       const launchCall = methodBody.indexOf("nativeLaunch = launchExecutor");
       const authorizeCall = methodBody.indexOf("authorizeNativeStart(authorization");
+      const retainedBindCall = methodBody.indexOf("bindRetainedNativeExecution(prepared.config");
       const releaseCall = methodBody.indexOf("nativeLaunch.releaseAuthorizedNativeExecution");
-      assert.ok(launchCall > 0);
+      assert.ok(preflightCall > 0);
+      assert.ok(launchCall > preflightCall);
       assert.ok(authorizeCall > launchCall);
-      assert.ok(releaseCall > authorizeCall);
+      assert.ok(retainedBindCall > authorizeCall);
+      assert.ok(releaseCall > retainedBindCall);
     }
     const assertNoActiveRunStart = authoritySource.indexOf("async function assertNoActiveRun");
     const assertNoActiveRunEnd = authoritySource.indexOf("function assertRunFields", assertNoActiveRunStart);

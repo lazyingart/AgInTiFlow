@@ -17,6 +17,9 @@ import {
   assertRetainedIntegrationNativeSessionRepositoryState,
 } from "./integration-retained-native-session-repository-state.js";
 import { validateNativeRuntimeRootsAttestation } from "./integration-native-runtime-roots.js";
+import {
+  assertRetainedIntegrationNativeExecutionEvidence,
+} from "./integration-retained-native-execution-evidence.js";
 import { redactSensitiveText } from "./redaction.js";
 import {
   contractDigest,
@@ -71,6 +74,7 @@ const SetPrototypeAdd = Set.prototype.add;
 const SetPrototypeHas = Set.prototype.has;
 const StringConstructor = String;
 const StringPrototypeIncludes = String.prototype.includes;
+const StringPrototypeStartsWith = String.prototype.startsWith;
 const StringPrototypeSlice = String.prototype.slice;
 const StringPrototypeTrim = String.prototype.trim;
 const WeakMapPrototypeGet = WeakMap.prototype.get;
@@ -359,6 +363,8 @@ const RECONCILIATION_KEYS = ObjectFreeze([
 ]);
 
 const repositoryBrand = new NativeWeakMap();
+const recoveryCoordinatorBrand = new NativeWeakMap();
+const recoveryCoordinatorInternals = new NativeWeakMap();
 
 function repositoryFail(code, message, status = 503) {
   authorityFail(code, message, { status, details: ObjectFreeze(ObjectCreate(null)) });
@@ -590,7 +596,8 @@ function assertNativeSessionId(value) {
   if (
     typeof value !== "string" ||
     !regexTest(/^[A-Za-z0-9][A-Za-z0-9._:-]{1,127}$/u, value) ||
-    ReflectApply(StringPrototypeIncludes, value, [".."])
+    ReflectApply(StringPrototypeIncludes, value, [".."]) ||
+    ReflectApply(StringPrototypeStartsWith, value, ["aginti-evidence-v1:"])
   ) {
     repositoryFail("INTEGRATION_REPOSITORY_INVALID", "nativeSessionId is invalid.", 400);
   }
@@ -1090,6 +1097,174 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
       }
     }
     repositoryFail("INTEGRATION_REPOSITORY_BUSY", "Repository compare-and-swap retry budget was exhausted.", 429);
+  }
+
+  function normalizeFinishPayload(inputPayload) {
+    const payload = exactPayload(inputPayload, FINISH_RUN_KEYS, [], "finish run payload");
+    const scope = scopeFor(payload);
+    validateIntegrationRunId(payload.runId);
+    validateIntegrationThreadId(payload.threadId);
+    assertInteger(payload.expectedRevision, "run expected revision", 1);
+    assertInteger(payload.expectedNativeRuntimeRevision, "expected native runtime revision", 1);
+    assertInteger(payload.completedNativeRuntimeRevision, "completed native runtime revision", 1);
+    assertCanonicalIso(payload.completedAt, "run completedAt");
+    assertDigest(payload.resultDigest, "run result digest", { allowZero: false });
+    assertNativeSessionId(payload.nativeSessionId);
+    assertProcessOwner(payload.processOwner, "completion process owner");
+    if (!setHas(TERMINAL_STATUSES, payload.status)) {
+      repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Terminal run status is invalid.", 400);
+    }
+    assertPublicText(payload.output, "run output", 32_000);
+    const terminalError = payload.error === null
+      ? null
+      : exactPayload(payload.error, ["code", "message"], [], "run error");
+    if (terminalError !== null) {
+      if (!setHas(PUBLIC_ERROR_CODES, terminalError.code)) {
+        repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Run error code is not public.", 400);
+      }
+      assertPublicText(terminalError.message, "run error message", 600, { minimum: 1, trim: true });
+    }
+    if (
+      (payload.status === "completed" && terminalError !== null) ||
+      (payload.status !== "completed" && (payload.output !== "" || terminalError === null))
+    ) repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Terminal output and error fields do not match the status.", 400);
+    if (
+      payload.status !== "completed" &&
+      ((payload.status === "cancelled") !== (terminalError.code === "CANCELLED"))
+    ) {
+      repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Terminal status and public error code do not match.", 400);
+    }
+    return { payload, scope, terminalError };
+  }
+
+  function finishTransition(state, payload, scope, terminalError, recoveryEvidence = null) {
+    const run = findRun(state, payload.runId, scope);
+    const thread = findThread(state, payload.threadId, scope);
+    if (
+      !run || !thread || run.threadId !== payload.threadId || run.nativeSessionId !== payload.nativeSessionId ||
+      run.status !== "running" || run.revision !== payload.expectedRevision || run.nativeStartReceipt === null ||
+      run.authority.runtimeRevision !== payload.expectedNativeRuntimeRevision ||
+      run.nativeStartReceipt.targetNativeRuntimeRevision !== payload.completedNativeRuntimeRevision ||
+      thread.lastRunId !== run.id || thread.status !== "running"
+    ) conflict("REVISION_CONFLICT", "Run cannot enter terminal state.");
+    if (recoveryEvidence === null) {
+      if (run.recoveryState !== null) {
+        conflict(
+          "RECOVERY_HOLD",
+          "Recovery-held transition requires the private retained-evidence coordinator."
+        );
+      }
+      if (!sameProcessOwner(run.processOwner, payload.processOwner)) {
+        conflict("REVISION_CONFLICT", "Completion process owner changed.");
+      }
+    } else {
+      if (
+        run.recoveryState === null ||
+        !sameProcessOwner(run.recoveryState.observedByProcessOwner, payload.processOwner) ||
+        recoveryEvidence.runId !== run.id ||
+        recoveryEvidence.authorizationId !== run.nativeStartReceipt.authorizationId ||
+        recoveryEvidence.authorizationDigest !== run.nativeStartReceipt.authorizationDigest ||
+        recoveryEvidence.snapshotHash !== run.authority.snapshotHash ||
+        recoveryEvidence.terminal.status !== payload.status ||
+        recoveryEvidence.terminal.output !== payload.output ||
+        contractDigest(recoveryEvidence.terminal.error) !== contractDigest(payload.error) ||
+        recoveryEvidence.terminal.resultDigest !== payload.resultDigest ||
+        recoveryEvidence.terminal.nativeRuntimeRevision !== payload.completedNativeRuntimeRevision ||
+        recoveryEvidence.terminal.completedAt !== payload.completedAt
+      ) {
+        conflict("RECOVERY_HOLD", "Recovery-held transition evidence does not exactly match the run.");
+      }
+    }
+    if (
+      run.cancelRequestedAt !== null &&
+      (payload.status !== "cancelled" || payload.error?.code !== "CANCELLED")
+    ) {
+      conflict("REVISION_CONFLICT", "A durably cancelled run must finish as cancelled.");
+    }
+    const cursor = exactPayload(
+      payload.expectedCursor,
+      ["firstSeq", "lastSeq", "lastHash", "prunedThroughSeq"],
+      [],
+      "completion cursor"
+    );
+    if (cursor.firstSeq !== 1 || cursor.prunedThroughSeq !== 0) {
+      repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Completion cursor is unsupported.", 400);
+    }
+    assertInteger(cursor.lastSeq, "completion cursor sequence", 0, 10_000_000_000);
+    assertDigest(cursor.lastHash, "completion cursor hash");
+    if ((cursor.lastSeq === 0) !== (cursor.lastHash === ZERO_DIGEST)) {
+      repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Completion cursor hash does not match its sequence.", 400);
+    }
+    const terminalEvent = exactPayload(payload.terminalEvent, ["type", "payload", "createdAt"], [], "terminal event");
+    exactPayload(terminalEvent.payload, [], [], "terminal event payload");
+    if (terminalEvent.type !== `run.${payload.status}` || terminalEvent.createdAt !== payload.completedAt) {
+      repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Terminal event does not match the run.", 400);
+    }
+    const outputEvent = payload.outputEvent === null
+      ? null
+      : exactPayload(payload.outputEvent, ["type", "payload", "createdAt"], [], "output event");
+    const outputEventPayload = outputEvent === null
+      ? null
+      : exactPayload(outputEvent.payload, ["text"], [], "output event payload");
+    if (
+      (payload.status === "completed" && ReflectApply(StringPrototypeTrim, payload.output, []).length > 0) !== (outputEvent !== null) ||
+      (outputEvent && (
+        outputEvent.type !== "output.delta" ||
+        outputEvent.createdAt !== payload.completedAt ||
+        outputEventPayload.text !== ReflectApply(StringPrototypeSlice, payload.output, [0, 4_000])
+      ))
+    ) repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Output event does not match the run output.", 400);
+    const terminalBase = frozenRecord({
+      ...run,
+      status: payload.status,
+      revision: run.revision + 1,
+      completedAt: payload.completedAt,
+      processOwner: payload.processOwner,
+      recoveryState: null,
+      output: payload.status === "completed" ? payload.output : "",
+      error: payload.status === "completed" ? null : terminalError,
+      authority: frozenRecord({
+        ...run.authority,
+        runtimeRevision: payload.completedNativeRuntimeRevision,
+        completionOutbox: null,
+      }),
+    });
+    const updatedThread = frozenRecord({
+      ...thread,
+      status: "idle",
+      revision: thread.revision + 1,
+      updatedAt: payload.completedAt,
+      authority: frozenRecord({ ...thread.authority, runtimeRevision: payload.completedNativeRuntimeRevision }),
+    });
+    const outboxEvents = makeOutboxRecords(terminalBase, cursor, outputEvent, terminalEvent);
+    if (state.outboxEvents.length + outboxEvents.length > INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_OUTBOX_EVENTS) {
+      conflict("INTEGRATION_REPOSITORY_FULL", "Repository outbox capacity is exhausted.");
+    }
+    if (arraySome(outboxEvents, (record) =>
+      arraySome(state.outboxEvents, (existing) => existing.outboxId === record.outboxId)
+    )) {
+      conflict("OUTBOX_CONFLICT", "Completion outbox id already exists.");
+    }
+    const terminalRun = frozenRecord({
+      ...terminalBase,
+      authority: frozenRecord({
+        ...terminalBase.authority,
+        completionOutbox: completionMetadata(terminalBase, updatedThread, cursor, outboxEvents),
+      }),
+    });
+    return {
+      changes: {
+        threads: replaceById(state.threads, updatedThread),
+        runs: replaceById(state.runs, terminalRun),
+        outboxEvents: sortedById(arrayConcat(state.outboxEvents, outboxEvents), "outboxId"),
+      },
+      result: frozenRecord({
+        run: terminalRun,
+        thread: updatedThread,
+        outboxEvents,
+        resultDigest: payload.resultDigest,
+      }),
+    };
   }
 
   const methods = {
@@ -1621,153 +1796,13 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
     },
 
     async finishIntegrationRunWithOutbox(inputPayload) {
-      const payload = exactPayload(inputPayload, FINISH_RUN_KEYS, [], "finish run payload");
-      const scope = scopeFor(payload);
-      validateIntegrationRunId(payload.runId);
-      validateIntegrationThreadId(payload.threadId);
-      assertInteger(payload.expectedRevision, "run expected revision", 1);
-      assertInteger(payload.expectedNativeRuntimeRevision, "expected native runtime revision", 1);
-      assertInteger(payload.completedNativeRuntimeRevision, "completed native runtime revision", 1);
-      assertCanonicalIso(payload.completedAt, "run completedAt");
-      assertDigest(payload.resultDigest, "run result digest", { allowZero: false });
-      assertNativeSessionId(payload.nativeSessionId);
-      assertProcessOwner(payload.processOwner, "completion process owner");
-      if (!setHas(TERMINAL_STATUSES, payload.status)) repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Terminal run status is invalid.", 400);
-      assertPublicText(payload.output, "run output", 32_000);
-      const terminalError = payload.error === null
-        ? null
-        : exactPayload(payload.error, ["code", "message"], [], "run error");
-      if (terminalError !== null) {
-        if (!setHas(PUBLIC_ERROR_CODES, terminalError.code)) {
-          repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Run error code is not public.", 400);
-        }
-        assertPublicText(terminalError.message, "run error message", 600, { minimum: 1, trim: true });
-      }
-      if (
-        (payload.status === "completed" && terminalError !== null) ||
-        (payload.status !== "completed" && (payload.output !== "" || terminalError === null))
-      ) repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Terminal output and error fields do not match the status.", 400);
-      if (
-        payload.status !== "completed" &&
-        ((payload.status === "cancelled") !== (terminalError.code === "CANCELLED"))
-      ) {
-        repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Terminal status and public error code do not match.", 400);
-      }
-      const committed = await mutate("finishIntegrationRunWithOutbox", payload, scope, (state) => {
-        const run = findRun(state, payload.runId, scope);
-        const thread = findThread(state, payload.threadId, scope);
-        if (
-          !run || !thread || run.threadId !== payload.threadId || run.nativeSessionId !== payload.nativeSessionId ||
-          run.status !== "running" || run.revision !== payload.expectedRevision || run.nativeStartReceipt === null ||
-          run.authority.runtimeRevision !== payload.expectedNativeRuntimeRevision ||
-          run.nativeStartReceipt.targetNativeRuntimeRevision !== payload.completedNativeRuntimeRevision ||
-          thread.lastRunId !== run.id || thread.status !== "running"
-        ) conflict("REVISION_CONFLICT", "Run cannot enter terminal state.");
-        if (
-          run.recoveryState === null &&
-          !sameProcessOwner(run.processOwner, payload.processOwner)
-        ) {
-          conflict("REVISION_CONFLICT", "Completion process owner changed.");
-        }
-        if (run.recoveryState !== null) {
-          conflict(
-            "RECOVERY_HOLD",
-            "Recovery-held transition requires retained native-session evidence outside this repository slice."
-          );
-        }
-        if (
-          run.cancelRequestedAt !== null &&
-          (payload.status !== "cancelled" || payload.error?.code !== "CANCELLED")
-        ) {
-          conflict("REVISION_CONFLICT", "A durably cancelled run must finish as cancelled.");
-        }
-        const cursor = exactPayload(
-          payload.expectedCursor,
-          ["firstSeq", "lastSeq", "lastHash", "prunedThroughSeq"],
-          [],
-          "completion cursor"
-        );
-        if (cursor.firstSeq !== 1 || cursor.prunedThroughSeq !== 0) {
-          repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Completion cursor is unsupported.", 400);
-        }
-        assertInteger(cursor.lastSeq, "completion cursor sequence", 0, 10_000_000_000);
-        assertDigest(cursor.lastHash, "completion cursor hash");
-        if ((cursor.lastSeq === 0) !== (cursor.lastHash === ZERO_DIGEST)) {
-          repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Completion cursor hash does not match its sequence.", 400);
-        }
-        const terminalEvent = exactPayload(payload.terminalEvent, ["type", "payload", "createdAt"], [], "terminal event");
-        exactPayload(terminalEvent.payload, [], [], "terminal event payload");
-        if (terminalEvent.type !== `run.${payload.status}` || terminalEvent.createdAt !== payload.completedAt) {
-          repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Terminal event does not match the run.", 400);
-        }
-        const outputEvent = payload.outputEvent === null
-          ? null
-          : exactPayload(payload.outputEvent, ["type", "payload", "createdAt"], [], "output event");
-        const outputEventPayload = outputEvent === null
-          ? null
-          : exactPayload(outputEvent.payload, ["text"], [], "output event payload");
-        if (
-          (payload.status === "completed" && ReflectApply(StringPrototypeTrim, payload.output, []).length > 0) !== (outputEvent !== null) ||
-          (outputEvent && (
-            outputEvent.type !== "output.delta" ||
-            outputEvent.createdAt !== payload.completedAt ||
-            outputEventPayload.text !== ReflectApply(StringPrototypeSlice, payload.output, [0, 4_000])
-          ))
-        ) repositoryFail("INTEGRATION_REPOSITORY_INVALID", "Output event does not match the run output.", 400);
-        const runRevision = run.revision + 1;
-        const threadRevision = thread.revision + 1;
-        const terminalBase = frozenRecord({
-          ...run,
-          status: payload.status,
-          revision: runRevision,
-          completedAt: payload.completedAt,
-          processOwner: payload.processOwner,
-          recoveryState: null,
-          output: payload.status === "completed" ? payload.output : "",
-          error: payload.status === "completed" ? null : terminalError,
-          authority: frozenRecord({
-            ...run.authority,
-            runtimeRevision: payload.completedNativeRuntimeRevision,
-            completionOutbox: null,
-          }),
-        });
-        const updatedThread = frozenRecord({
-          ...thread,
-          status: "idle",
-          revision: threadRevision,
-          updatedAt: payload.completedAt,
-          authority: frozenRecord({ ...thread.authority, runtimeRevision: payload.completedNativeRuntimeRevision }),
-        });
-        const outboxEvents = makeOutboxRecords(terminalBase, cursor, outputEvent, terminalEvent);
-        if (state.outboxEvents.length + outboxEvents.length > INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_OUTBOX_EVENTS) {
-          conflict("INTEGRATION_REPOSITORY_FULL", "Repository outbox capacity is exhausted.");
-        }
-        if (arraySome(outboxEvents, (record) =>
-          arraySome(state.outboxEvents, (existing) => existing.outboxId === record.outboxId)
-        )) {
-          conflict("OUTBOX_CONFLICT", "Completion outbox id already exists.");
-        }
-        const terminalRun = frozenRecord({
-          ...terminalBase,
-          authority: frozenRecord({
-            ...terminalBase.authority,
-            completionOutbox: completionMetadata(terminalBase, updatedThread, cursor, outboxEvents),
-          }),
-        });
-        return {
-          changes: {
-            threads: replaceById(state.threads, updatedThread),
-            runs: replaceById(state.runs, terminalRun),
-            outboxEvents: sortedById(arrayConcat(state.outboxEvents, outboxEvents), "outboxId"),
-          },
-          result: frozenRecord({
-            run: terminalRun,
-            thread: updatedThread,
-            outboxEvents,
-            resultDigest: payload.resultDigest,
-          }),
-        };
-      });
+      const { payload, scope, terminalError } = normalizeFinishPayload(inputPayload);
+      const committed = await mutate(
+        "finishIntegrationRunWithOutbox",
+        payload,
+        scope,
+        (state) => finishTransition(state, payload, scope, terminalError)
+      );
       return committed.result;
     },
 
@@ -2117,6 +2152,104 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
     },
   };
 
+  async function resolveRecoveryHeldRun(evidenceLane, inputPayload) {
+    const request = exactPayload(
+      inputPayload,
+      ["runId", "principalId", "browserSessionId", "expectedCursor"],
+      [],
+      "retained recovery request"
+    );
+    const scope = scopeFor(request);
+    validateIntegrationRunId(request.runId);
+    const initial = await loadSnapshot();
+    const run = findRun(initial.state, request.runId, scope);
+    const evidence = await evidenceLane.inspectRecoveryEvidence(run);
+    const recoveryMutationId = `repository.recovery-finish.${run.nativeStartReceipt.authorizationDigest}`;
+    if (setHas(TERMINAL_STATUSES, run.status)) {
+      const recoveryReceipt = arrayFind(
+        initial.state.mutationReceipts,
+        (receipt) => receipt.mutationId === recoveryMutationId && receipt.operation === "resolveRecoveryHeldRun"
+      );
+      if (!recoveryReceipt) {
+        conflict("REVISION_CONFLICT", "Terminal run was not resolved by this retained recovery coordinator.");
+      }
+      const replay = cloneRecord(recoveryReceipt.result);
+      if (
+        replay.run?.id !== run.id || replay.run?.threadId !== run.threadId ||
+        !sameScope(replay.run, scope) || replay.run?.status !== evidence.terminal.status ||
+        replay.run?.output !== evidence.terminal.output ||
+        contractDigest(replay.run?.error) !== contractDigest(evidence.terminal.error) ||
+        replay.run?.completedAt !== evidence.terminal.completedAt ||
+        replay.run?.authority?.runtimeRevision !== evidence.terminal.nativeRuntimeRevision ||
+        replay.run?.authority?.snapshotHash !== evidence.snapshotHash ||
+        replay.resultDigest !== evidence.terminal.resultDigest ||
+        contractDigest(replay.run?.authority?.completionOutbox?.originalCursor) !==
+          contractDigest(request.expectedCursor)
+      ) {
+        repositoryFail("INTEGRATION_REPOSITORY_CORRUPT", "Retained recovery mutation receipt is inconsistent.");
+      }
+      return frozenRecord({
+        outcome: "already-recovered",
+        ...replay,
+        recoveryProofDigest: evidence.proofDigest,
+      });
+    }
+    if (!run.recoveryState || run.recoveryState.status !== "recovery_hold") {
+      conflict("RECOVERY_HOLD", "Run is not in an exact retained recovery hold.");
+    }
+    const terminal = evidence.terminal;
+    const completedAt = terminal.completedAt;
+    const outputEvent = terminal.status === "completed" && ReflectApply(StringPrototypeTrim, terminal.output, []).length > 0
+      ? frozenRecord({
+          type: "output.delta",
+          payload: frozenRecord({ text: ReflectApply(StringPrototypeSlice, terminal.output, [0, 4_000]) }),
+          createdAt: completedAt,
+        })
+      : null;
+    const finishInput = frozenRecord({
+      runId: run.id,
+      threadId: run.threadId,
+      nativeSessionId: run.nativeSessionId,
+      principalId: run.principalId,
+      browserSessionId: run.browserSessionId,
+      expectedRevision: run.revision,
+      expectedNativeRuntimeRevision: run.nativeStartReceipt.expectedNativeRuntimeRevision,
+      completedNativeRuntimeRevision: terminal.nativeRuntimeRevision,
+      status: terminal.status,
+      output: terminal.output,
+      error: terminal.error,
+      completedAt,
+      processOwner: run.recoveryState.observedByProcessOwner,
+      expectedCursor: request.expectedCursor,
+      outputEvent,
+      terminalEvent: frozenRecord({
+        type: `run.${terminal.status}`,
+        payload: frozenRecord({}),
+        createdAt: completedAt,
+      }),
+      resultDigest: terminal.resultDigest,
+    });
+    const { payload, scope: finishScope, terminalError } = normalizeFinishPayload(finishInput);
+    const mutationPayload = frozenRecord({
+      request,
+      finish: payload,
+      recoveryProofDigest: evidence.proofDigest,
+      terminalEvidenceDigest: terminal.evidenceDigest,
+    });
+    const committed = await mutate(
+      "resolveRecoveryHeldRun",
+      mutationPayload,
+      finishScope,
+      (state) => finishTransition(state, payload, finishScope, terminalError, evidence),
+      { explicitMutationId: recoveryMutationId }
+    );
+    return frozenRecord({
+      outcome: committed.outcome,
+      ...committed.result,
+      recoveryProofDigest: evidence.proofDigest,
+    });
+  }
+
   const surface = ObjectCreate(null);
   ObjectDefineProperty(surface, INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_PROPERTY, {
     configurable: false,
@@ -2139,6 +2272,11 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
   }
   assertIntegrationRuntimeRepositorySurface(surface, { requireRetainedDescriptorStorage: true });
   weakMapSet(repositoryBrand, surface, { repositoryState, options });
+  weakMapSet(recoveryCoordinatorInternals, surface, {
+    repositoryState,
+    repositoryStateExpected: options.repositoryStateExpected,
+    resolveRecoveryHeldRun,
+  });
   return surface;
 }
 
@@ -2147,5 +2285,113 @@ export function assertRetainedIntegrationRuntimeRepositorySurface(value) {
     repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Repository surface lexical brand is invalid.");
   }
   assertIntegrationRuntimeRepositorySurface(value, { requireRetainedDescriptorStorage: true });
+  return value;
+}
+
+export const INTEGRATION_RETAINED_RUNTIME_RECOVERY_COORDINATOR_VERSION =
+  "aginti-retained-runtime-recovery-coordinator-v1";
+export const INTEGRATION_RETAINED_RUNTIME_RECOVERY_COORDINATOR_ATTESTATION_VERSION =
+  "aginti-retained-runtime-recovery-coordinator-attestation-v1";
+
+export function createRetainedIntegrationRuntimeRecoveryCoordinator(input = {}) {
+  if (!input || typeof input !== "object" || ArrayIsArray(input) || utilTypes.isProxy(input)) {
+    repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Retained recovery coordinator factory is invalid.");
+  }
+  const factoryKeys = ReflectOwnKeys(input);
+  if (
+    factoryKeys.length !== 2 ||
+    !arraySome(factoryKeys, (key) => key === "repository") ||
+    !arraySome(factoryKeys, (key) => key === "nativeExecutionEvidence")
+  ) {
+    repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Retained recovery coordinator factory fields are invalid.");
+  }
+  const options = ObjectCreate(null);
+  for (let keyIndex = 0; keyIndex < factoryKeys.length; keyIndex += 1) {
+    const key = factoryKeys[keyIndex];
+    const descriptor = ObjectGetOwnPropertyDescriptor(input, key);
+    if (typeof key !== "string" || !descriptor?.enumerable || !hasOwn(descriptor, "value")) {
+      repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Retained recovery coordinator factory must use data fields.");
+    }
+    options[key] = descriptor.value;
+  }
+  const repository = assertRetainedIntegrationRuntimeRepositorySurface(options.repository);
+  const internals = weakMapGet(recoveryCoordinatorInternals, repository);
+  if (!internals) repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Repository recovery companion is unavailable.");
+  const nativeExecutionEvidence = assertRetainedIntegrationNativeExecutionEvidence(
+    options.nativeExecutionEvidence,
+    {
+      sessionStateStoreExpected: internals.repositoryStateExpected.sessionStateStore,
+      storageNamespaceDigest: internals.repositoryState.attestation.sessionStateNamespaceDigest,
+    }
+  );
+  const repositorySessionStateExpectedDigest = contractDigest(
+    internals.repositoryStateExpected.sessionStateStore
+  );
+  if (
+    nativeExecutionEvidence.attestation.storageExpectedDigest !==
+    repositorySessionStateExpectedDigest
+  ) {
+    repositoryFail(
+      "INTEGRATION_REPOSITORY_UNAVAILABLE",
+      "Retained recovery repository and evidence store bindings diverged."
+    );
+  }
+  const unsigned = frozenRecord({
+    schemaVersion: INTEGRATION_RETAINED_RUNTIME_RECOVERY_COORDINATOR_ATTESTATION_VERSION,
+    owner: "aginti",
+    authority: "aginti",
+    runtimeCapabilityEnabled: false,
+    publicServerCapabilityEnabled: false,
+    privateCompanion: true,
+    publicRepositoryMethodCountUnchanged: true,
+    exactTerminalEvidenceRequired: true,
+    revisionOnlyRecovery: false,
+    authorizationProcessOwnerDigestBound: true,
+    crossProcessExecutionFence: false,
+    enablementReady: false,
+    repositoryAttestationDigest: repository[INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_PROPERTY].digest,
+    nativeExecutionEvidenceAttestationDigest: nativeExecutionEvidence.attestation.digest,
+    storageNamespaceDigest: nativeExecutionEvidence.attestation.storageNamespaceDigest,
+    storageAdmissionBindingDigest: nativeExecutionEvidence.attestation.storageAdmissionBindingDigest,
+    storageExpectedDigest: repositorySessionStateExpectedDigest,
+  });
+  const attestation = frozenRecord({ ...unsigned, digest: contractDigest(unsigned) });
+  const coordinatorState = { repository, nativeExecutionEvidence, internals, attestation };
+  const coordinator = frozenRecord({
+    schemaVersion: INTEGRATION_RETAINED_RUNTIME_RECOVERY_COORDINATOR_VERSION,
+    attestation,
+    resolveRecoveryHeldRun(inputPayload) {
+      if (repositoryStateClosed(coordinatorState)) {
+        repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Retained recovery coordinator is closed.");
+      }
+      return internals.resolveRecoveryHeldRun(nativeExecutionEvidence, inputPayload);
+    },
+    isClosed() {
+      return repositoryStateClosed(coordinatorState);
+    },
+  });
+  coordinatorState.coordinator = coordinator;
+  weakMapSet(recoveryCoordinatorBrand, coordinator, coordinatorState);
+  return coordinator;
+}
+
+function repositoryStateClosed(state) {
+  return state.internals.repositoryState.isClosed() || state.nativeExecutionEvidence.isClosed();
+}
+
+export function assertRetainedIntegrationRuntimeRecoveryCoordinator(value, expected = {}) {
+  const state = weakMapGet(recoveryCoordinatorBrand, value);
+  if (
+    !state || value !== state.coordinator ||
+    value.schemaVersion !== INTEGRATION_RETAINED_RUNTIME_RECOVERY_COORDINATOR_VERSION
+  ) {
+    repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Retained recovery coordinator lexical brand is invalid.");
+  }
+  if (
+    expected.repository && state.repository !== expected.repository ||
+    expected.nativeExecutionEvidence && state.nativeExecutionEvidence !== expected.nativeExecutionEvidence
+  ) {
+    repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Retained recovery coordinator binding changed.");
+  }
   return value;
 }

@@ -12,6 +12,9 @@ import { SESSION_RUNTIME_FIELDS, captureSessionRuntime } from "./session-runtime
 import { runAgent } from "./agent-runner.js";
 import {
   assertRegisteredIntegrationSessionConfig,
+  bindIntegrationNativeExecution,
+  loadIntegrationSessionSnapshotForConfig,
+  recordIntegrationNativeTerminalEvidence,
   registerIntegrationSessionConfig,
   runWithIntegrationSessionScope,
 } from "./integration-session-persistence.js";
@@ -136,7 +139,8 @@ function assertNativeSessionId(value) {
   if (
     typeof value !== "string" ||
     !/^[A-Za-z0-9][A-Za-z0-9._:-]{1,127}$/u.test(value) ||
-    value.includes("..")
+    value.includes("..") ||
+    value.startsWith("aginti-evidence-v1:")
   ) {
     fail("Native AgInTi session id is invalid.");
   }
@@ -236,6 +240,9 @@ export function buildFixedNativeRunAgentConfig(input = {}) {
     expectedAfterRevision,
     expectedBeforeRuntimeDigest,
     expectedAfterRuntimeDigest,
+    ...(input.retainedNativeExecutionEvidence === undefined
+      ? {}
+      : { retainedNativeExecutionEvidence: input.retainedNativeExecutionEvidence }),
   });
 }
 
@@ -285,12 +292,14 @@ function assertPolicyBinding(state = {}, config = {}, label = "session state") {
   }
 }
 
-async function readNativeSessionState(config = {}) {
-  const store = new SessionStore(config.sessionsDir, config.sessionId, {
-    projectRoot: config.baseDir,
-    commandCwd: config.commandCwd,
+async function readNativeSessionSnapshot(config = {}) {
+  return loadIntegrationSessionSnapshotForConfig(config, async () => {
+    const store = new SessionStore(config.sessionsDir, config.sessionId, {
+      projectRoot: config.baseDir,
+      commandCwd: config.commandCwd,
+    });
+    return store.loadState();
   });
-  return store.loadState();
 }
 
 export async function preflightNativeSessionRuntime(config = {}) {
@@ -298,7 +307,8 @@ export async function preflightNativeSessionRuntime(config = {}) {
   if (!isIntegrationMarkedConfig(config)) fail("Integration native execution requires a fixed marked config.");
   const expectedRevision = Number(config.expectedIntegrationRuntimeRevision);
   if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) fail("Expected integration runtime revision is invalid.");
-  const state = await readNativeSessionState(config);
+  const loaded = await readNativeSessionSnapshot(config);
+  const state = loaded.state;
   if (config.resume) {
     if (!state) fail("Resume requires an existing native AgInTi session state.");
     assertPolicyBinding(state, config, "preflight session state");
@@ -314,20 +324,31 @@ export async function preflightNativeSessionRuntime(config = {}) {
     if (contractDigest(config.runtimePatch) !== contractDigest(exhaustiveRuntimePatchFromSnapshot(target))) {
       fail("Resume runtime patch is not the exhaustive fixed integration profile.");
     }
-    return Object.freeze({ skipped: false, mode: "resume", beforeRevision: current.revision, expectedAfterRevision: expectedRevision + 1 });
+    return Object.freeze({
+      skipped: false,
+      retained: loaded.retained,
+      mode: "resume",
+      beforeRevision: current.revision,
+      expectedAfterRevision: expectedRevision + 1,
+    });
   }
   if (state) {
     authorityFail("SESSION_RUNTIME_TAKEOVER_BLOCKED", "Start requires pristine absent native session state.", {
       status: 503,
     });
   }
-  return Object.freeze({ skipped: false, mode: "start", expectedAfterRevision: expectedRevision });
+  return Object.freeze({
+    skipped: false,
+    retained: loaded.retained,
+    mode: "start",
+    expectedAfterRevision: expectedRevision,
+  });
 }
 
 export async function postflightNativeSessionRuntime(config = {}, preflight = {}) {
   assertRegisteredIntegrationSessionConfig(config);
   if (!isIntegrationMarkedConfig(config) || preflight.skipped) fail("Integration native postflight requires a fixed marked config.");
-  const state = await readNativeSessionState(config);
+  const state = (await readNativeSessionSnapshot(config)).state;
   if (!state) fail("Native AgInTi session state disappeared after execution.");
   assertPolicyBinding(state, config, "postflight session state");
   if (!Number.isSafeInteger(preflight.expectedAfterRevision) || preflight.expectedAfterRevision < 1) {
@@ -341,9 +362,25 @@ export async function postflightNativeSessionRuntime(config = {}, preflight = {}
   return Object.freeze({ skipped: false, revision: expected.revision });
 }
 
-export async function executeNativeAgintiRun(config) {
+export async function bindRetainedNativeExecution(config, input = {}) {
   assertRegisteredIntegrationSessionConfig(config);
-  const preflight = await preflightNativeSessionRuntime(config);
+  return bindIntegrationNativeExecution(config, input);
+}
+
+export async function recordRetainedNativeTerminalEvidence(config, terminal = {}) {
+  assertRegisteredIntegrationSessionConfig(config);
+  return recordIntegrationNativeTerminalEvidence(config, terminal);
+}
+
+export async function executeNativeAgintiRun(config, options = {}) {
+  assertRegisteredIntegrationSessionConfig(config);
+  const preflight = options.preflight || await preflightNativeSessionRuntime(config);
+  if (
+    !preflight || preflight.skipped !== false ||
+    preflight.expectedAfterRevision !== Number(config.resume ? config.expectedIntegrationRuntimeRevision + 1 : 1)
+  ) {
+    fail("Integration native execution requires its exact read-only preflight proof.");
+  }
   let result;
   let runError = null;
   try {

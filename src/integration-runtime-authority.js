@@ -20,13 +20,22 @@ import { createIntegrationRunRegistry } from "./integration-run-registry.js";
 import { NATIVE_INTEGRATION_RUNTIME_PROOF_VERSION } from "./integration-session-service.js";
 import {
   NATIVE_INTEGRATION_EXECUTOR_PROOF,
+  bindRetainedNativeExecution,
   buildFixedNativeRunAgentConfig,
   classifyRunAgentError,
   classifyRunAgentResult,
   executeNativeAgintiRun,
   outputEventForRunResult,
+  preflightNativeSessionRuntime,
+  recordRetainedNativeTerminalEvidence,
   validateNativeRuntimeRootsAttestation,
 } from "./integration-native-executor.js";
+import {
+  assertRetainedIntegrationNativeExecutionEvidence,
+} from "./integration-retained-native-execution-evidence.js";
+import {
+  assertRetainedIntegrationRuntimeRecoveryCoordinator,
+} from "./integration-retained-runtime-repository-surface.js";
 import {
   assertIntegrationRuntimeRepositoryAttestation as validateRepositoryAttestation,
   assertIntegrationRuntimeRepositorySurface as validateRepository,
@@ -344,7 +353,8 @@ function assertNativeSessionId(value) {
   if (
     typeof value !== "string" ||
     !/^[A-Za-z0-9][A-Za-z0-9._:-]{1,127}$/u.test(value) ||
-    value.includes("..")
+    value.includes("..") ||
+    value.startsWith("aginti-evidence-v1:")
   ) {
     failUnavailable("Native AgInTi session id is invalid.");
   }
@@ -1232,6 +1242,24 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
   rejectThenableDependency(options.hardenedSandboxAttestation?.isolationAttestation, "hardened sandbox isolation attestation");
   const repository = validateRepository(options.threadSessionRepository);
   const eventLedgerStore = validateEventLedgerStore(options.eventLedgerStore);
+  const retainedNativeExecutionEvidence = options.retainedNativeExecutionEvidence === undefined
+    ? null
+    : assertRetainedIntegrationNativeExecutionEvidence(options.retainedNativeExecutionEvidence);
+  const retainedRecoveryCoordinator = options.retainedRecoveryCoordinator === undefined
+    ? null
+    : assertRetainedIntegrationRuntimeRecoveryCoordinator(options.retainedRecoveryCoordinator, {
+        repository: options.threadSessionRepository,
+        nativeExecutionEvidence: retainedNativeExecutionEvidence,
+      });
+  if (Boolean(retainedNativeExecutionEvidence) !== Boolean(retainedRecoveryCoordinator)) {
+    failUnavailable("Retained native execution evidence and recovery coordinator must be supplied together.");
+  }
+  if (
+    retainedNativeExecutionEvidence &&
+    repository.attestation.retainedDescriptorStorageAuthority !== true
+  ) {
+    failUnavailable("Retained native execution evidence requires the retained repository authority.");
+  }
   const runRegistry = createIntegrationRunRegistry();
   const projector = createIntegrationCoreEventProjector({ eventLedgerStore });
   validateNativeRuntimeRootsAttestation(repository.attestation.runtimeRoots);
@@ -2415,6 +2443,9 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
         onEvent,
         repositoryRoots: runtimeRootsAttestation,
         expectedRuntimeRevision,
+        ...(retainedNativeExecutionEvidence
+          ? { retainedNativeExecutionEvidence }
+          : {}),
       });
       return Object.freeze({
         nativeSessionId,
@@ -2474,7 +2505,22 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
       threadId: current.threadId,
       runId: current.id,
     });
-    const result = snapshotRepositoryEnvelope(await callRepository("finishIntegrationRunWithOutbox", {
+    try {
+      await recordRetainedNativeTerminalEvidence(prepared.config, {
+        status,
+        output: status === "completed" ? classification.output : "",
+        error: status === "completed" ? null : classification.error,
+        resultDigest: classification.digest,
+        completedAt,
+        persistedRuntimeRevision: completedRuntimeRevision,
+      });
+    } catch (error) {
+      error.integrationTerminalEvidenceError = true;
+      throw error;
+    }
+    let result;
+    try {
+      result = snapshotRepositoryEnvelope(await callRepository("finishIntegrationRunWithOutbox", {
       runId: current.id,
       threadId: current.threadId,
       nativeSessionId: current.nativeSessionId,
@@ -2492,7 +2538,11 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
       outputEvent: expectedOutboxEvents.find((event) => event.type === "output.delta") || null,
       terminalEvent: Object.freeze({ type: TERMINAL_EVENT_TYPES[status], payload: {}, createdAt: completedAt }),
       resultDigest: classification.digest,
-    }), "finish run response");
+      }), "finish run response");
+    } catch (error) {
+      if (retainedNativeExecutionEvidence) error.integrationTerminalCommitError = true;
+      throw error;
+    }
     const finished = snapshotRunRecord(unwrap(result, "run"), "finished run");
     if (result.resultDigest !== classification.digest) {
       failUnavailable("Repository did not persist the exact native terminal result digest.");
@@ -2582,7 +2632,7 @@ function aggregateRuntimeObserverError(runtimeError, observerError) {
     });
   }
 
-  function launchExecutor({ run, scope, prepared }) {
+  function launchExecutor({ run, scope, prepared, preflight }) {
     runRegistry.claimRun({
       runId: run.id,
       threadId: run.threadId,
@@ -2609,7 +2659,7 @@ function aggregateRuntimeObserverError(runtimeError, observerError) {
       released = true;
       const worker = (async () => {
         try {
-          const result = await executeNativeAgintiRun(prepared.config);
+          const result = await executeNativeAgintiRun(prepared.config, { preflight });
           const classification = classifyRunAgentResult(result, {
             nativeSessionId: prepared.nativeSessionId,
             abortSignal: prepared.controller.signal,
@@ -2624,6 +2674,9 @@ function aggregateRuntimeObserverError(runtimeError, observerError) {
           }
           return await finishWithOutbox(authorizedRun.id, scope, classification, prepared, { suppressOutboxErrors: true });
         } catch (error) {
+          if (error?.integrationTerminalEvidenceError || error?.integrationTerminalCommitError) {
+            throw error;
+          }
           prepared.closeObserver();
           let observerError = null;
           if (error?.integrationObserverError !== true) {
@@ -2697,6 +2750,10 @@ function aggregateRuntimeObserverError(runtimeError, observerError) {
       executorProofDigest: NATIVE_INTEGRATION_EXECUTOR_PROOF.digest,
       eventAppendProofDigest: appendProof.digest,
       cancellationProofDigest: cancellationProof.digest,
+      retainedNativeExecutionEvidenceProofDigest:
+        retainedNativeExecutionEvidence?.attestation?.digest || ZERO_DIGEST,
+      retainedRecoveryCoordinatorProofDigest:
+        retainedRecoveryCoordinator?.attestation?.digest || ZERO_DIGEST,
     }, "integration runtime proof");
     return canonicalPlainJsonClone({
       ...unsignedProof,
@@ -2924,9 +2981,14 @@ function aggregateRuntimeObserverError(runtimeError, observerError) {
           run: dispatched,
           targetNativeRuntimeRevision: prepared.completedRuntimeRevision,
         });
-        nativeLaunch = launchExecutor({ run: dispatched, scope, prepared });
+        const preflight = await preflightNativeSessionRuntime(prepared.config);
+        nativeLaunch = launchExecutor({ run: dispatched, scope, prepared, preflight });
         const authorized = await authorizeNativeStart(authorization, () => {
           authorizationStarted = true;
+        });
+        await bindRetainedNativeExecution(prepared.config, {
+          authorization: authorized.receipt,
+          snapshotHash: authorized.run.authority.snapshotHash,
         });
         return Object.freeze({
           response: Object.freeze({ run: publicRun }),
@@ -3154,9 +3216,14 @@ function aggregateRuntimeObserverError(runtimeError, observerError) {
           previousRun: previous,
           targetNativeRuntimeRevision: prepared.completedRuntimeRevision,
         });
-        nativeLaunch = launchExecutor({ run: dispatched, scope, prepared });
+        const preflight = await preflightNativeSessionRuntime(prepared.config);
+        nativeLaunch = launchExecutor({ run: dispatched, scope, prepared, preflight });
         const authorized = await authorizeNativeStart(authorization, () => {
           authorizationStarted = true;
+        });
+        await bindRetainedNativeExecution(prepared.config, {
+          authorization: authorized.receipt,
+          snapshotHash: authorized.run.authority.snapshotHash,
         });
         return Object.freeze({
           response: Object.freeze({ run: publicRun }),

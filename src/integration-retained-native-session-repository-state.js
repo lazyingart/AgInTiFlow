@@ -369,6 +369,7 @@ const ArrayIncludes = Array.prototype.includes;
 const ArraySome = Array.prototype.some;
 const JsonStringify = JSON.stringify;
 const StringIncludes = String.prototype.includes;
+const StringStartsWith = String.prototype.startsWith;
 const StringSlice = String.prototype.slice;
 const StringTrim = String.prototype.trim;
 const SymbolSpecies = Symbol.species;
@@ -727,7 +728,8 @@ function assertNativeSessionId(value, label, code) {
   if (
     typeof value !== "string" ||
     !/^[A-Za-z0-9][A-Za-z0-9._:-]{1,127}$/u.test(value) ||
-    ReflectApply(StringIncludes, value, [".."])
+    ReflectApply(StringIncludes, value, [".."]) ||
+    ReflectApply(StringStartsWith, value, ["aginti-evidence-v1:"])
   ) {
     stateFail(code, `${label} is invalid.`, { status: statusForCode(code) });
   }
