@@ -6,9 +6,12 @@ import { enqueueHousekeepingEvent } from "./housekeeping.js";
 import {
   assertIntegrationSessionOperationAllowed,
   claimIntegrationSessionStore,
+  loadIntegrationClaimedSessionState,
   markIntegrationStatePersisted,
   prepareIntegrationStateForSave,
+  retainedIntegrationSessionStateEnabled,
   runIntegrationSessionOperation,
+  saveIntegrationClaimedSessionState,
   validateIntegrationLoadedState,
 } from "./integration-session-persistence.js";
 
@@ -254,7 +257,10 @@ export class SessionStore {
   loadState() {
     return this.withIntegrationOperation("loadState", async () => {
       if (this.#integrationSessionClaim) {
-        const state = await loadStateFile(this.statePath);
+        const state = await loadIntegrationClaimedSessionState(
+          this.#integrationSessionClaim,
+          () => loadStateFile(this.statePath)
+        );
         return validateIntegrationLoadedState(this.#integrationSessionClaim, state);
       }
       const currentState = await loadStateFile(this.statePath);
@@ -267,6 +273,10 @@ export class SessionStore {
   saveState(state) {
     return this.withIntegrationOperation("saveState", async () => {
       const durableState = prepareIntegrationStateForSave(this.#integrationSessionClaim, state);
+      if (await saveIntegrationClaimedSessionState(this.#integrationSessionClaim, durableState)) {
+        markIntegrationStatePersisted(this.#integrationSessionClaim, durableState);
+        return;
+      }
       await this.ensure();
       await atomicWriteFile(this.statePath, `${JSON.stringify(durableState, null, 2)}\n`);
       markIntegrationStatePersisted(this.#integrationSessionClaim, durableState);
@@ -287,7 +297,9 @@ export class SessionStore {
       }
       // A drained item is acknowledged only after the state containing it is durable.
       // If the process dies before this point, a new store instance will replay it.
-      await this.acknowledgeDrainedInbox();
+      if (!retainedIntegrationSessionStateEnabled(this.#integrationSessionClaim)) {
+        await this.acknowledgeDrainedInbox();
+      }
     });
   }
 

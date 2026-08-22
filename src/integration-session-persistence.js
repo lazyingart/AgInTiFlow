@@ -2,6 +2,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { types as utilTypes } from "node:util";
 import { contractDigest } from "./integration-policy.js";
+import {
+  assertRetainedIntegrationNativeExecutionEvidence,
+} from "./integration-retained-native-execution-evidence.js";
 
 const registrations = new WeakMap();
 const integrationSessionScope = new AsyncLocalStorage();
@@ -29,7 +32,11 @@ function handledRejection(code, message) {
 
 function assertNativeSessionId(value) {
   const id = String(value || "");
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{1,127}$/u.test(id) || id.includes("..")) {
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{1,127}$/u.test(id) ||
+    id.includes("..") ||
+    id.startsWith("aginti-evidence-v1:")
+  ) {
     fail("INTEGRATION_SESSION_SCOPE_INVALID", "Integration native session id is invalid.");
   }
   return id;
@@ -181,6 +188,12 @@ export function registerIntegrationSessionConfig(config, registration = {}) {
   if (mode === "resume" && expectedAfterRevision !== expectedBeforeRevision + 1) {
     fail("INTEGRATION_SESSION_SCOPE_INVALID", "Resume must bind N to N+1.");
   }
+  const retainedNativeExecutionEvidence = registration.retainedNativeExecutionEvidence === undefined
+    ? null
+    : assertRetainedIntegrationNativeExecutionEvidence(registration.retainedNativeExecutionEvidence);
+  const retainedExecutionState = retainedNativeExecutionEvidence
+    ? { preflightSnapshot: null, binding: null }
+    : null;
   const normalized = Object.freeze({
     schemaVersion: "aginti-integration-session-persistence-v1",
     config,
@@ -196,6 +209,8 @@ export function registerIntegrationSessionConfig(config, registration = {}) {
     expectedAfterRevision,
     expectedBeforeRuntimeDigest: String(registration.expectedBeforeRuntimeDigest || ""),
     expectedAfterRuntimeDigest: String(registration.expectedAfterRuntimeDigest || ""),
+    retainedNativeExecutionEvidence,
+    retainedExecutionState,
   });
   if (
     !normalized.nativeSessionId ||
@@ -214,6 +229,15 @@ export function registerIntegrationSessionConfig(config, registration = {}) {
 export function runWithIntegrationSessionScope(config, operation) {
   const registration = assertFrozenRegisteredConfig(config);
   if (typeof operation !== "function") fail("INTEGRATION_SESSION_SCOPE_INVALID", "Integration session operation is invalid.");
+  if (
+    registration.retainedNativeExecutionEvidence &&
+    !registration.retainedExecutionState?.binding
+  ) {
+    fail(
+      "INTEGRATION_SESSION_SCOPE_INVALID",
+      "Retained native execution must be bound to a durable authorization before runAgent starts."
+    );
+  }
   const leaseKey = sessionLeaseKey(registration);
   if (activeSessionLeases.has(leaseKey)) {
     fail("INTEGRATION_SESSION_SCOPE_INVALID", "Integration native session already has an active scoped run.");
@@ -362,6 +386,83 @@ export function claimIntegrationSessionStore(store = {}) {
   return Object.freeze({ scope, registration });
 }
 
+export async function loadIntegrationSessionSnapshotForConfig(config, fallbackLoader) {
+  const registration = assertFrozenRegisteredConfig(config);
+  if (!registration.retainedNativeExecutionEvidence) {
+    if (typeof fallbackLoader !== "function") {
+      fail("INTEGRATION_SESSION_SCOPE_INVALID", "Native session fallback loader is unavailable.");
+    }
+    return Object.freeze({ retained: false, state: await fallbackLoader(), snapshot: null });
+  }
+  if (registration.retainedExecutionState.binding) {
+    const state = await registration.retainedNativeExecutionEvidence.loadNativeState(
+      registration.retainedExecutionState.binding
+    );
+    const snapshot = await registration.retainedNativeExecutionEvidence.loadNativeSessionSnapshot(
+      registration.nativeSessionId
+    );
+    return Object.freeze({ retained: true, state, snapshot });
+  }
+  const snapshot = await registration.retainedNativeExecutionEvidence.loadNativeSessionSnapshot(
+    registration.nativeSessionId
+  );
+  registration.retainedExecutionState.preflightSnapshot = snapshot;
+  return Object.freeze({ retained: true, state: snapshot.state, snapshot });
+}
+
+export async function bindIntegrationNativeExecution(config, input = {}) {
+  const registration = assertFrozenRegisteredConfig(config);
+  if (!registration.retainedNativeExecutionEvidence) return null;
+  if (!registration.retainedExecutionState.preflightSnapshot) {
+    fail("INTEGRATION_SESSION_SCOPE_INVALID", "Retained native execution has no read-only preflight proof.");
+  }
+  if (registration.retainedExecutionState.binding) {
+    fail("INTEGRATION_SESSION_SCOPE_INVALID", "Retained native execution was already bound.");
+  }
+  const binding = await registration.retainedNativeExecutionEvidence.bindAuthorizedExecution({
+    authorization: input.authorization,
+    snapshotHash: input.snapshotHash,
+    preflightSnapshot: registration.retainedExecutionState.preflightSnapshot,
+  });
+  registration.retainedExecutionState.binding = binding;
+  return binding;
+}
+
+export async function loadIntegrationClaimedSessionState(claim, fallbackLoader) {
+  if (!claim?.registration?.retainedNativeExecutionEvidence) {
+    return typeof fallbackLoader === "function" ? fallbackLoader() : null;
+  }
+  const binding = claim.registration.retainedExecutionState?.binding;
+  if (!binding) {
+    fail("INTEGRATION_SESSION_SCOPE_INVALID", "Retained native SessionStore load lacks an authorization binding.");
+  }
+  return claim.registration.retainedNativeExecutionEvidence.loadNativeState(binding);
+}
+
+export async function saveIntegrationClaimedSessionState(claim, state) {
+  if (!claim?.registration?.retainedNativeExecutionEvidence) return false;
+  const binding = claim.registration.retainedExecutionState?.binding;
+  if (!binding) {
+    fail("INTEGRATION_SESSION_SCOPE_INVALID", "Retained native SessionStore save lacks an authorization binding.");
+  }
+  await claim.registration.retainedNativeExecutionEvidence.saveNativeState(binding, state);
+  return true;
+}
+
+export function retainedIntegrationSessionStateEnabled(claim) {
+  return Boolean(claim?.registration?.retainedNativeExecutionEvidence);
+}
+
+export async function recordIntegrationNativeTerminalEvidence(config, terminal) {
+  const registration = assertFrozenRegisteredConfig(config);
+  if (!registration.retainedNativeExecutionEvidence) return null;
+  const binding = registration.retainedExecutionState?.binding;
+  if (!binding) {
+    fail("INTEGRATION_SESSION_SCOPE_INVALID", "Retained native terminal evidence lacks an authorization binding.");
+  }
+  return registration.retainedNativeExecutionEvidence.recordTerminalEvidence(binding, terminal);
+}
+
 export function assertIntegrationRunAgentInvocation(config = {}) {
   const registered = config && typeof config === "object" ? registrations.get(config) : null;
   if (!registered) {
@@ -419,21 +520,21 @@ function assertRuntimeSnapshot(state = {}, expectedRevision, expectedDigest, lab
 
 export function validateIntegrationLoadedState(claim, state) {
   if (!claim) return state;
-  const { registration } = claim;
+  const { scope, registration } = claim;
   if (state === null) {
-    if (registration.mode === "start") return null;
+    if (registration.mode === "start" && scope.persisted !== true) return null;
     fail("SESSION_RUNTIME_TAKEOVER_BLOCKED", "Resume requires an existing integration session state.");
   }
   const clone = canonicalCloneStrict(state, "loaded session state");
-  if (registration.mode === "start") {
+  if (registration.mode === "start" && scope.persisted !== true) {
     fail("SESSION_RUNTIME_TAKEOVER_BLOCKED", "Start requires pristine absent native session state.");
   }
   assertSessionTopIdentity(clone, registration, "loaded session state");
   assertIntegrationMarkers(clone, registration, "loaded session state");
   assertRuntimeSnapshot(
     clone,
-    registration.expectedBeforeRevision,
-    registration.expectedBeforeRuntimeDigest,
+    scope.persisted === true ? registration.expectedAfterRevision : registration.expectedBeforeRevision,
+    scope.persisted === true ? registration.expectedAfterRuntimeDigest : registration.expectedBeforeRuntimeDigest,
     "loaded session state"
   );
   return clone;
