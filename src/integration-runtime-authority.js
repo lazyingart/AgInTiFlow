@@ -34,6 +34,9 @@ import {
   assertRetainedIntegrationNativeExecutionEvidence,
 } from "./integration-retained-native-execution-evidence.js";
 import {
+  assertRetainedIntegrationTextWorkspace,
+} from "./integration-retained-text-workspace.js";
+import {
   assertRetainedIntegrationRuntimeRecoveryCoordinator,
 } from "./integration-retained-runtime-repository-surface.js";
 import {
@@ -1254,6 +1257,14 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
   if (Boolean(retainedNativeExecutionEvidence) !== Boolean(retainedRecoveryCoordinator)) {
     failUnavailable("Retained native execution evidence and recovery coordinator must be supplied together.");
   }
+  const retainedTextWorkspace = options.retainedTextWorkspace === undefined
+    ? null
+    : assertRetainedIntegrationTextWorkspace(options.retainedTextWorkspace, {
+        nativeExecutionEvidence: retainedNativeExecutionEvidence,
+      });
+  if (retainedTextWorkspace && !retainedNativeExecutionEvidence) {
+    failUnavailable("Retained text-workspace requires retained native execution evidence.");
+  }
   if (
     retainedNativeExecutionEvidence &&
     repository.attestation.retainedDescriptorStorageAuthority !== true
@@ -2446,6 +2457,13 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
         ...(retainedNativeExecutionEvidence
           ? { retainedNativeExecutionEvidence }
           : {}),
+        ...(retainedTextWorkspace
+          ? {
+              retainedTextWorkspace,
+              principalId: scope.principalId,
+              browserSessionId: scope.browserSessionId,
+            }
+          : {}),
       });
       return Object.freeze({
         nativeSessionId,
@@ -2754,6 +2772,8 @@ function aggregateRuntimeObserverError(runtimeError, observerError) {
         retainedNativeExecutionEvidence?.attestation?.digest || ZERO_DIGEST,
       retainedRecoveryCoordinatorProofDigest:
         retainedRecoveryCoordinator?.attestation?.digest || ZERO_DIGEST,
+      retainedTextWorkspaceProofDigest:
+        retainedTextWorkspace?.attestation?.digest || ZERO_DIGEST,
     }, "integration runtime proof");
     return canonicalPlainJsonClone({
       ...unsignedProof,

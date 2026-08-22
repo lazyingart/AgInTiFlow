@@ -13,9 +13,17 @@ import {
   selectProgressiveTools,
 } from "../src/progressive-tool-selection.js";
 import { requestNextStep } from "../src/model-client.js";
-import { buildModelTimeoutRetryMessages, runAgent } from "../src/agent-runner.js";
+import {
+  buildModelTimeoutRetryMessages,
+  integrationTextWorkspaceToolExecutionBlock,
+  runAgent,
+} from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { SessionStore } from "../src/session-store.js";
+import {
+  INTEGRATION_TEXT_WORKSPACE_PROFILE_ID,
+  INTEGRATION_TEXT_WORKSPACE_TOOL_NAMES,
+} from "../src/integration-retained-text-workspace.js";
 import {
   attachToolContract,
   createToolContract,
@@ -871,6 +879,45 @@ const imageReadTools = selectProgressiveTools(allTools, {
   profile: "vision",
 });
 sameNames(imageReadTools, ["read_image", "send_to_canvas", "finish"], "vision task did not select the exact perception bundle");
+
+const retainedTextWorkspaceTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    integrationSessionProfile: INTEGRATION_TEXT_WORKSPACE_PROFILE_ID,
+    integrationAllowedToolNames: INTEGRATION_TEXT_WORKSPACE_TOOL_NAMES,
+    allowImagePerception: false,
+  },
+  goal: "Inspect the screenshot, edit the project, and preview it in a browser.",
+  profile: "vision",
+});
+for (const selected of names(retainedTextWorkspaceTools)) {
+  assert(
+    INTEGRATION_TEXT_WORKSPACE_TOOL_NAMES.includes(selected),
+    `retained text-workspace leaked disallowed tool ${selected}`
+  );
+}
+assert(!names(retainedTextWorkspaceTools).includes("read_image"), "retained text-workspace exposed read_image");
+assert(!names(retainedTextWorkspaceTools).includes("run_command"), "retained text-workspace exposed run_command");
+assert(!names(retainedTextWorkspaceTools).includes("send_to_canvas"), "retained text-workspace exposed canvas");
+assert(!names(retainedTextWorkspaceTools).includes("open_url"), "retained text-workspace exposed browser tools");
+assert(names(retainedTextWorkspaceTools).includes("finish"), "retained text-workspace lost finish");
+const forgedReadImageBlock = integrationTextWorkspaceToolExecutionBlock(
+  { integrationSessionProfile: INTEGRATION_TEXT_WORKSPACE_PROFILE_ID },
+  "read_image"
+);
+assert(forgedReadImageBlock?.blocked === true, "executeTool second-line gate accepted forged read_image");
+const forgedRunCommandBlock = integrationTextWorkspaceToolExecutionBlock(
+  { integrationSessionProfile: INTEGRATION_TEXT_WORKSPACE_PROFILE_ID },
+  "run_command"
+);
+assert(forgedRunCommandBlock?.blocked === true, "executeTool second-line gate accepted forged run_command");
+assert(
+  integrationTextWorkspaceToolExecutionBlock(
+    { integrationSessionProfile: INTEGRATION_TEXT_WORKSPACE_PROFILE_ID },
+    "read_file"
+  ) === null,
+  "executeTool second-line gate blocked an allowed text tool"
+);
 
 const imageGenerationTools = selectProgressiveTools(allTools, {
   config: { provider: "localllm", allowAuxiliaryTools: true },

@@ -778,6 +778,9 @@ export function assertRetainedIntegrationNativeExecutionEvidence(value, expected
   if (expected.sessionStateStoreExpected) {
     assertRetainedIntegrationSessionStateStore(state.store, expected.sessionStateStoreExpected);
   }
+  if (expected.sessionStateStore && state.store !== expected.sessionStateStore) {
+    fail("INTEGRATION_NATIVE_EVIDENCE_UNAVAILABLE", "Retained native evidence storage identity changed.");
+  }
   if (
     expected.storageNamespaceDigest &&
     value.attestation.storageNamespaceDigest !== expected.storageNamespaceDigest

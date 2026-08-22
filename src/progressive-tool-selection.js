@@ -1,4 +1,8 @@
 import { shouldStartWithDeepResearch } from "./research-routing.js";
+import {
+  INTEGRATION_TEXT_WORKSPACE_PROFILE_ID,
+  isIntegrationTextWorkspaceToolAllowed,
+} from "./integration-retained-text-workspace.js";
 
 const FUNCTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -390,6 +394,10 @@ function validatedUniqueTools(tools) {
 }
 
 function toolIsDisabled(name, config) {
+  if (
+    config.integrationSessionProfile === INTEGRATION_TEXT_WORKSPACE_PROFILE_ID &&
+    !isIntegrationTextWorkspaceToolAllowed(name)
+  ) return true;
   if (isDisabled(config.allowFileTools) && FILE_TOOL_NAMES.has(name)) return true;
   if (isDisabled(config.allowFileTools) && name === "generate_image") return true;
   if (isDisabled(config.allowShellTool) && SHELL_TOOL_NAMES.has(name)) return true;

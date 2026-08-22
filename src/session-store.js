@@ -10,6 +10,8 @@ import {
   markIntegrationStatePersisted,
   prepareIntegrationStateForSave,
   retainedIntegrationSessionStateEnabled,
+  retainedIntegrationTextWorkspaceEnabled,
+  invokeIntegrationTextWorkspace,
   runIntegrationSessionOperation,
   saveIntegrationClaimedSessionState,
   validateIntegrationLoadedState,
@@ -203,6 +205,21 @@ export class SessionStore {
     this.ensurePromise = null;
     this.eventAppendTail = Promise.resolve();
     this.#integrationSessionClaim = claimIntegrationSessionStore(this);
+    if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+      for (const property of ["artifactsDir", "storageStatePath"]) {
+        Object.defineProperty(this, property, {
+          configurable: false,
+          enumerable: false,
+          get() {
+            const error = new Error(
+              `${property} is outside the retained text-workspace-v1 SessionStore profile.`
+            );
+            error.code = "INTEGRATION_TEXT_WORKSPACE_OPERATION_DENIED";
+            throw error;
+          },
+        });
+      }
+    }
   }
 
   withIntegrationOperation(label, operation) {
@@ -215,6 +232,10 @@ export class SessionStore {
 
   ensure() {
     return this.withIntegrationOperation("ensure", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        await invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "ensure");
+        return;
+      }
       if (!this.ensurePromise) {
         this.ensurePromise = (async () => {
           await fs.mkdir(this.artifactsDir, { recursive: true });
@@ -232,6 +253,10 @@ export class SessionStore {
 
   writePointer(state = {}) {
     return this.withIntegrationOperation("writePointer", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        await invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "writePointer", [state]);
+        return;
+      }
       if (this.#integrationSessionClaim) return;
       if (!this.pointerPath) return;
       await fs.mkdir(this.pointerDir, { recursive: true });
@@ -305,6 +330,9 @@ export class SessionStore {
 
   savePlan(planText) {
     return this.withIntegrationOperation("savePlan", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "savePlan", [planText]);
+      }
       await this.ensure();
       await fs.writeFile(this.planPath, `${planText.trim()}\n`, "utf8");
     });
@@ -312,6 +340,9 @@ export class SessionStore {
 
   saveJsonArtifact(filename, data) {
     return this.withIntegrationOperation("saveJsonArtifact", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "saveJsonArtifact", [filename, data]);
+      }
       await this.ensure();
       const safeName = path.basename(String(filename || "artifact.json"));
       const outputName = safeName.endsWith(".json") ? safeName : `${safeName}.json`;
@@ -324,6 +355,10 @@ export class SessionStore {
   appendEvent(type, data = {}) {
     return this.withIntegrationOperation("appendEvent", async () => {
       const operation = this.eventAppendTail.then(async () => {
+        if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+          await invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "appendEvent", [type, data]);
+          return;
+        }
         await this.ensure();
         const event = {
           timestamp: new Date().toISOString(),
@@ -348,6 +383,9 @@ export class SessionStore {
 
   loadEvents() {
     return this.withIntegrationOperation("loadEvents", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "loadEvents");
+      }
       try {
         const raw = await fs.readFile(this.eventsPath, "utf8");
         return raw
@@ -375,6 +413,9 @@ export class SessionStore {
 
   removeStaleInboxLock() {
     return this.withIntegrationOperation("removeStaleInboxLock", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "removeStaleInboxLock");
+      }
       let stat;
       let owner = null;
       try {
@@ -404,6 +445,9 @@ export class SessionStore {
 
   acquireInboxLock() {
     return this.withIntegrationOperation("acquireInboxLock", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "acquireInboxLock");
+      }
       await fs.mkdir(this.sessionDir, { recursive: true });
       const token = crypto.randomUUID();
       const ownerPath = path.join(this.sessionDir, `.inbox-lock-owner.${process.pid}.${token}`);
@@ -451,6 +495,9 @@ export class SessionStore {
 
   withInboxLock(operation) {
     return this.withIntegrationOperation("withInboxLock", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "withInboxLock", [operation]);
+      }
       const release = await this.acquireInboxLock();
       try {
         return await operation();
@@ -462,6 +509,9 @@ export class SessionStore {
 
   readJsonLinesUnlocked(filePath) {
     return this.withIntegrationOperation("readJsonLinesUnlocked", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "readJsonLinesUnlocked", [filePath]);
+      }
       try {
         const raw = await fs.readFile(filePath, "utf8");
         return decodeJsonLines(raw, { allowIncompleteFinal: true });
@@ -474,6 +524,9 @@ export class SessionStore {
 
   appendJsonRecordsUnlocked(filePath, records = []) {
     return this.withIntegrationOperation("appendJsonRecordsUnlocked", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "appendJsonRecordsUnlocked", [filePath, records]);
+      }
       const nextRecords = records.filter(Boolean);
       if (nextRecords.length === 0) return;
       const decoded = await this.readJsonLinesUnlocked(filePath);
@@ -488,6 +541,9 @@ export class SessionStore {
 
   readInboxDataUnlocked() {
     return this.withIntegrationOperation("readInboxDataUnlocked", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "readInboxDataUnlocked");
+      }
       const [queue, claims, acknowledgements] = await Promise.all([
         this.readJsonLinesUnlocked(this.inboxPath),
         this.readJsonLinesUnlocked(this.inboxClaimsPath),
@@ -535,6 +591,11 @@ export class SessionStore {
   }
 
   visibleInboxItems(data) {
+    if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+      const error = new Error("visibleInboxItems is outside the retained text-workspace-v1 SessionStore profile.");
+      error.code = "INTEGRATION_TEXT_WORKSPACE_OPERATION_DENIED";
+      throw error;
+    }
     return data.activeItems.filter((item) => {
       const key = inboxItemKey(item);
       return !data.claimedKeys.has(key) && !this.drainedInboxKeys.has(key);
@@ -543,6 +604,9 @@ export class SessionStore {
 
   rewriteActiveInboxUnlocked(items, claimRecords = new Map()) {
     return this.withIntegrationOperation("rewriteActiveInboxUnlocked", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "rewriteActiveInboxUnlocked", [items, claimRecords]);
+      }
       const activeItems = [];
       const activeKeys = new Set();
       for (const item of items.filter(Boolean)) {
@@ -571,6 +635,11 @@ export class SessionStore {
   }
 
   shouldCompactInbox(data) {
+    if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+      const error = new Error("shouldCompactInbox is outside the retained text-workspace-v1 SessionStore profile.");
+      error.code = "INTEGRATION_TEXT_WORKSPACE_OPERATION_DENIED";
+      throw error;
+    }
     const hasObsoleteRecords =
       data.acknowledgements.values.length > 0 || data.claims.values.length > data.claimRecords.size;
     if (!hasObsoleteRecords) return false;
@@ -582,6 +651,9 @@ export class SessionStore {
 
   compactInboxUnlocked(data = null) {
     return this.withIntegrationOperation("compactInboxUnlocked", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "compactInboxUnlocked", [data]);
+      }
       const current = data || (await this.readInboxDataUnlocked());
       await this.rewriteActiveInboxUnlocked(current.activeItems, current.claimRecords);
     });
@@ -589,6 +661,9 @@ export class SessionStore {
 
   appendInbox(content, metadata = {}) {
     return this.withIntegrationOperation("appendInbox", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "appendInbox", [content, metadata]);
+      }
       await this.ensure();
       const text = String(content || "").trim();
       if (!text) return null;
@@ -606,6 +681,9 @@ export class SessionStore {
 
   loadInboxAcknowledgements() {
     return this.withIntegrationOperation("loadInboxAcknowledgements", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "loadInboxAcknowledgements");
+      }
       await this.ensure();
       return this.withInboxLock(async () => (await this.readInboxDataUnlocked()).acknowledgedKeys);
     });
@@ -613,6 +691,9 @@ export class SessionStore {
 
   loadInbox() {
     return this.withIntegrationOperation("loadInbox", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "loadInbox");
+      }
       await this.ensure();
       const items = await this.withInboxLock(async () => {
         const data = await this.readInboxDataUnlocked();
@@ -625,6 +706,9 @@ export class SessionStore {
 
   saveInbox(items = []) {
     return this.withIntegrationOperation("saveInbox", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "saveInbox", [items]);
+      }
       await this.ensure();
       const desiredItems = items.filter(Boolean);
       return this.withInboxLock(async () => {
@@ -650,6 +734,9 @@ export class SessionStore {
 
   mutateInbox(mutator) {
     return this.withIntegrationOperation("mutateInbox", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "mutateInbox", [mutator]);
+      }
       await this.ensure();
       if (typeof mutator !== "function") throw new TypeError("Inbox mutation requires a callback.");
       return this.withInboxLock(async () => {
@@ -671,6 +758,9 @@ export class SessionStore {
 
   drainInbox() {
     return this.withIntegrationOperation("drainInbox", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "drainInbox");
+      }
       await this.ensure();
       const items = await this.withInboxLock(async () => {
         const data = await this.readInboxDataUnlocked();
@@ -708,6 +798,7 @@ export class SessionStore {
 
   markInboxApplied(itemOrId) {
     this.assertIntegrationOperation("markInboxApplied");
+    if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) return false;
     const key =
       typeof itemOrId === "string"
         ? `id:${String(itemOrId).trim()}`
@@ -719,6 +810,10 @@ export class SessionStore {
 
   acknowledgeDrainedInbox() {
     return this.withIntegrationOperation("acknowledgeDrainedInbox", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        await invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "acknowledgeDrainedInbox");
+        return;
+      }
       const drainedAtSave = new Set(this.drainedInboxKeys);
       const keys = [...this.appliedInboxAcknowledgements].filter((key) => drainedAtSave.has(key));
       if (drainedAtSave.size > 0) {
@@ -758,6 +853,10 @@ export class SessionStore {
 
   releaseInboxClaims() {
     return this.withIntegrationOperation("releaseInboxClaims", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        await invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "releaseInboxClaims");
+        return;
+      }
       const keys = [...this.drainedInboxKeys];
       if (keys.length === 0) return;
       const releasedAt = new Date().toISOString();
@@ -788,6 +887,9 @@ export class SessionStore {
 
   saveSnapshot(step, snapshot) {
     return this.withIntegrationOperation("saveSnapshot", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "saveSnapshot", [step, snapshot]);
+      }
       await this.ensure();
       const filename = `step-${String(step).padStart(3, "0")}.snapshot.json`;
       const filePath = path.join(this.artifactsDir, filename);
@@ -797,11 +899,19 @@ export class SessionStore {
   }
 
   screenshotPath(step) {
+    if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+      const error = new Error("screenshotPath is outside the retained text-workspace-v1 SessionStore profile.");
+      error.code = "INTEGRATION_TEXT_WORKSPACE_OPERATION_DENIED";
+      throw error;
+    }
     return path.join(this.artifactsDir, `step-${String(step).padStart(3, "0")}.png`);
   }
 
   remove() {
     return this.withIntegrationOperation("remove", async () => {
+      if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
+        return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "remove");
+      }
       await this.eventAppendTail.catch(() => {});
       await fs.rm(this.sessionDir, { recursive: true, force: true });
       if (!this.#integrationSessionClaim) {
