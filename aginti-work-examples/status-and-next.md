@@ -15,6 +15,8 @@
 - `host-scoped artifacts`: LabCanvas can declare an exact per-task artifact root; AgInTiFlow resolves bare requested outputs inside it, verifies them there, and no longer enters a repair loop because it searched the repository root.
 - `recipient-safe artifact identity`: generated files receive subject-bearing delivery names while exact inbound attachment names remain unchanged; private paths and generic source names are rewritten out of recipient-facing replies.
 - `production reload`: the released `0.20.211` CLI passed a clean global-install smoke, and the live LabCanvas web, WeChat worker, and WeCom worker were reloaded without duplicating GUI stacks or replaying queues.
+- `persistent multi-artifact execution`: one resumed DeepSeek-backed AgInTi session completed a real XeLaTeX PDF turn and a separate editable SVG/PNG turn, preserving session identity while keeping each turn's artifacts scoped, meaningful, validated, and path-free.
+- `bounded operator output`: task-specific CLI status no longer emits the complete historical canvas registry; full history remains available only through the explicit studio-artifacts command.
 
 ## What Is Not Yet Fully Proven
 
