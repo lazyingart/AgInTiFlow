@@ -15,7 +15,9 @@ import {
 import { requestNextStep } from "../src/model-client.js";
 import {
   buildModelTimeoutRetryMessages,
+  completionContractGoal,
   integrationTextWorkspaceToolExecutionBlock,
+  nextStepRuntimeConfig,
   runAgent,
 } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
@@ -223,7 +225,7 @@ const localFailureRecoveryTools = selectProgressiveTools(allTools, {
 });
 sameNames(
   localFailureRecoveryTools,
-  ["read_file", "apply_patch", "write_file", "run_command", "search_files", "inspect_project", "finish"],
+  ["read_file", "read_image", "apply_patch", "write_file", "run_command", "search_files", "inspect_project", "finish"],
   "local failure recovery did not restore the bounded repair surface"
 );
 
@@ -402,8 +404,23 @@ const dataRecoveryAfterDiscoveryTools = selectProgressiveTools(allTools, {
 });
 sameNames(
   dataRecoveryAfterDiscoveryTools,
-  ["read_file", "apply_patch", "write_file", "run_command", "search_files", "inspect_project", "finish"],
+  ["read_file", "read_image", "apply_patch", "write_file", "run_command", "search_files", "inspect_project", "finish"],
   "local recovery remained trapped after data discovery completed"
+);
+
+const retainedDataRecoveryTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    localFailureRecoveryActive: true,
+    dataProjectDiscoveryReady: true,
+  },
+  goal: "Continue the same retained data repair.",
+  profile: "data",
+});
+sameNames(
+  retainedDataRecoveryTools,
+  ["read_file", "read_image", "apply_patch", "write_file", "run_command", "search_files", "inspect_project", "finish"],
+  "retained local data recovery omitted mutation and verification tools"
 );
 
 const artifactRepairTools = selectProgressiveTools(allTools, {

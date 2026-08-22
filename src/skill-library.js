@@ -519,14 +519,18 @@ export function selectSkillsForGoal(goal = "", { taskProfile = "auto", limit = 6
   const text = `${goalText} ${taskProfile}`.toLowerCase();
   const skills = listSkills({ includeBody, projectRoot });
   const ranked = skills
-    .map((skill) => ({ skill, score: scoreSkill(skill, text, taskProfile) }))
+    .map((skill) => ({
+      skill,
+      score: scoreSkill(skill, text, taskProfile),
+      directGoalScore: scoreSkill(skill, goalText, "auto"),
+    }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score || a.skill.id.localeCompare(b.skill.id));
   const explicitProfile = Boolean(taskProfile && taskProfile !== "auto");
   const bestScore = ranked[0]?.score || 0;
   const relevanceFloor = explicitProfile && bestScore >= 6 ? Math.max(2, bestScore * 0.5) : 0;
   const scored = ranked
-    .filter((item) => item.score >= relevanceFloor)
+    .filter((item) => item.score >= relevanceFloor || item.directGoalScore >= 4)
     .map((item) => item.skill);
   return scored.slice(0, Math.max(1, limit));
 }

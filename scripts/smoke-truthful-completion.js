@@ -77,6 +77,7 @@ async function runCase({
   executionTier = "",
   resume = false,
   setup = null,
+  scsActive = false,
 }) {
   const workspace = path.join(tempRoot, "workspaces", id);
   const sessionsDir = path.join(tempRoot, "sessions");

@@ -1113,6 +1113,17 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
   );
   const toolHistory = summarizeToolHistory(messages);
   const retainedSourceEvidence = summarizeRetainedSourceEvidence(messages);
+  const failedTestEvidence = retainedFailedTestEvidencePacket(state, messages);
+  const verificationCheckpoint = compactVerificationCheckpoint(state);
+  const currentFailure = verificationCheckpoint.currentFailedTest;
+  const effectivePlan = currentFailure
+    ? [
+        "1. Use the exact retained test/source/config evidence below to calculate the actual-versus-expected delta.",
+        "2. Apply one minimal patch to the canonical producer; do not recreate completed artifacts or add sidecars.",
+        `3. Run the exact test command: ${currentFailure.command || "the retained project test"}.`,
+        "4. After it passes, run the documented canonical generator, verify missing outputs, remove temporary clutter, and finish.",
+      ].join("\n")
+    : state?.plan || "(no plan recorded)";
   // DeepSeek thinking mode requires the original, complete reasoning_content
   // for every assistant turn that issued tool calls. Compaction creates new
   // synthetic pairs, so preserve their bounded evidence as explicit runtime
@@ -3160,6 +3171,15 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
   return verification;
 }
 
+function currentFailedProjectTest(state = {}) {
+  const verification = state.meta?.projectVerification || {};
+  const mutationRevision = Number(verification.mutationRevision || 0);
+  const latest = [...(verification.testRuns || [])]
+    .reverse()
+    .find((run) => Number(run.mutationRevision || 0) === mutationRevision);
+  return latest && latest.passed !== true ? { test: latest, mutationRevision, verification } : null;
+}
+
 export function enqueueFailedTestRepairInstruction(state = {}, toolResults = []) {
   const latestTestResult = [...(Array.isArray(toolResults) ? toolResults : [])]
     .reverse()
@@ -4205,7 +4225,46 @@ function completionTaskContract(config = {}, state = {}) {
 }
 
 export function nextStepRuntimeConfig(config = {}, state = {}) {
-  const runtimeConfig = applyLocalFailureRecovery(config, state);
+  const staticOrder = Array.isArray(state.meta?.toolLoop?.staticOrder)
+    ? state.meta.toolLoop.staticOrder
+    : [];
+  const retainedDataDiscoveryReady =
+    state.meta?.dataProjectWorkflow?.ready === true ||
+    (staticOrder.some((item) => String(item).startsWith("project-inspect:")) &&
+      staticOrder.some((item) => /file-read:.*(?:README|AGENTS?|AGINTI|TASK)/i.test(String(item))) &&
+      staticOrder.some((item) => /file-read:.*(?:tests?|specs?|config|analysis|pipeline|src|scripts?)[\\/]/i.test(String(item))));
+  const runtimeConfig = {
+    ...applyLocalFailureRecovery(config, state),
+    ...(retainedDataDiscoveryReady ? { dataProjectDiscoveryReady: true } : {}),
+  };
+  const verification = state.meta?.projectVerification || {};
+  const mutationRevision = Number(verification.mutationRevision || 0);
+  const latestCurrentTest = [...(verification.testRuns || [])]
+    .reverse()
+    .find((run) => Number(run.mutationRevision || 0) === mutationRevision);
+  if (latestCurrentTest && latestCurrentTest.passed !== true) {
+    runtimeConfig.testFailureRepairActive = true;
+    runtimeConfig.testFailureCommand = String(latestCurrentTest.command || "");
+    runtimeConfig.testFailureSignature = String(latestCurrentTest.failureSignature || "");
+    const completedOutputs = new Set(
+      (state.meta?.artifactProgress?.completed || [])
+        .map((item) => String(item || "").replace(/\\/g, "/").replace(/^\.\//, ""))
+    );
+    runtimeConfig.testFailureRepairAllowedCreates = (verification.requiredOutputs || [])
+      .map((item) => String(item || "").replace(/\\/g, "/").replace(/^\.\//, ""))
+      .filter((item) => !completedOutputs.has(item))
+      .filter((item) => /(?:^|\/)(?:AGINTI|AGENTS)\.md$/i.test(item))
+      .slice(0, 8);
+  } else if (!latestCurrentTest && mutationRevision > 0 && (verification.discoveredTests || []).length) {
+    const retainedTestCommand = [...(verification.testRuns || [])]
+      .reverse()
+      .map((run) => String(run.command || ""))
+      .find(Boolean);
+    if (retainedTestCommand) {
+      runtimeConfig.testVerificationPending = true;
+      runtimeConfig.testVerificationCommand = retainedTestCommand;
+    }
+  }
   if (state.meta?.artifactProgress?.complete) {
     const completionContract = completionTaskContract(config, state);
     const completionLedger = buildScsEvidenceLedger({ state });
@@ -5054,6 +5113,9 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
   }
   const textPath = requestedToolName === "read_image" && !isRetainedWorkspaceProfile(config)
     ? plainTextPathRequestedAsImage(args)
+    : "";
+  const imagePath = requestedToolName === "read_file" && !isRetainedWorkspaceProfile(config)
+    ? imagePathRequestedAsText(args)
     : "";
   const autoCorrection = textPath
     ? {
@@ -6108,21 +6170,20 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     return { action: "accept", assessment, acceptedBlocker: true };
   }
 
-  state.meta = state.meta || {};
-  const key = completionContractKey(config);
-  const prior = state.meta.completionEvidenceRepair || {};
-  const attempts = prior.key === key ? Number(prior.attempts || 0) : 0;
-  const progressCount = Number(assessment.progressCount || 0);
-  const priorProgressCount = prior.key === key ? Number(prior.progressCount || 0) : 0;
-  const progressedSincePriorRepair = attempts === 0 || progressCount > priorProgressCount;
   const blocker = deterministicFinishBlocker(assessment.contract, assessment.ledger, assessment.evaluation);
   const verificationDeficits = projectVerificationDeficits(state);
   const requiredEvidence = (assessment.contract.requiredEvidence || []).map((item) => item.category);
   const presentEvidence = assessment.ledger.categories || [];
-  const detail = {
+  const progressCount = Number(assessment.progressCount || 0);
+  const semanticFailureReason = assessment.semantic.checked && !assessment.semantic.ok
+    ? String(assessment.semantic.reason || "")
+    : "";
+  const baseDetail = {
     step,
     mode,
-    reason: blocker?.reason || assessment.evaluation.reason || "Required execution evidence is missing.",
+    reason: claimsIncompleteWork
+      ? assessment.evaluation.reason
+      : semanticFailureReason || blocker?.reason || assessment.evaluation.reason || "Required execution evidence is missing.",
     requiredEvidence,
     presentEvidence,
     missingEvidence: requiredEvidence.filter((category) => !presentEvidence.includes(category)),
@@ -6139,15 +6200,20 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
       ok: Boolean(assessment.semantic.ok),
       reason: assessment.semantic.reason || "",
     },
-    repairAttempt: attempts + 1,
-    maxRepairAttempts: MAX_COMPLETION_EVIDENCE_REPAIR_ATTEMPTS,
     progressCount,
-    progressedSincePriorRepair,
   };
   state.meta = state.meta || {};
-  const key = completionRepairKey(config, detail);
+  const key = completionRepairKey(config, baseDetail);
   const prior = state.meta.completionEvidenceRepair || {};
   const attempts = prior.key === key ? Number(prior.attempts || 0) : 0;
+  const priorProgressCount = prior.key === key ? Number(prior.progressCount || 0) : 0;
+  const progressedSincePriorRepair = attempts === 0 || progressCount > priorProgressCount;
+  const detail = {
+    ...baseDetail,
+    repairAttempt: attempts + 1,
+    maxRepairAttempts: MAX_COMPLETION_EVIDENCE_REPAIR_ATTEMPTS,
+    progressedSincePriorRepair,
+  };
   await store.appendEvent("completion.evidence_rejected", detail);
   observers.event("completion.evidence_rejected", detail);
 
@@ -6163,6 +6229,21 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
       "The proposed completion was rejected because the requested action is not supported by concrete runtime evidence.",
       `Reason: ${detail.reason}`,
       detail.requiredEvidence.length ? `Required evidence: ${detail.requiredEvidence.join(", ")}.` : "",
+      detail.pendingProjectCommands.length
+        ? `Run the pending canonical command(s) after the latest edit: ${detail.pendingProjectCommands.join("; ")}.`
+        : "",
+      detail.pendingProjectTests.length
+        ? `Discovered tests still need a successful current run: ${detail.pendingProjectTests.join(", ")}.`
+        : "",
+      detail.suggestedTestCommands.length
+        ? `Use the established test command now: ${detail.suggestedTestCommands.join("; ")}.`
+        : "",
+      detail.failedProjectTestSummary
+        ? `The latest current test run failed: ${detail.failedProjectTestSummary}`
+        : "",
+      detail.failedProjectTestSignature
+        ? "Repair the failed assertions before rerunning the unchanged test; do not treat a failed test invocation as verification."
+        : "",
       attempts > 0
         ? "The previous repair produced new tool evidence but did not satisfy verification. Use its diagnostics to repair the work, rerun the relevant validation, and do not call finish while that validation still fails."
         : "Use only an enabled relevant tool to perform and verify the task. Do not repeat a prose-only answer or call finish until the evidence exists.",
@@ -6350,6 +6431,25 @@ async function recordToolContractViolation({
   const localRecovery = decideLocalFailureRecovery(config, state);
   const deferStopToLocalRecovery =
     violationCount >= 2 && localRecovery.active === true && localRecovery.activated === true;
+  const requestedCalls = reportedToolCalls.slice(0, 4).map((call) => {
+    const callArgs = safeParseToolContent(call?.function?.arguments) || {};
+    return {
+      name: String(call?.function?.name || ""),
+      path: String(callArgs.path || callArgs.file || "").replace(/\\/g, "/").slice(0, 300),
+      mode: String(callArgs.mode || "").slice(0, 40),
+    };
+  });
+  const completedArtifacts = new Set(
+    (state.meta?.artifactProgress?.completed || []).map((item) => String(item || "").replace(/\\/g, "/"))
+  );
+  const completedRequestedPaths = requestedCalls
+    .map((call) => call.path)
+    .filter((item) => item && completedArtifacts.has(item));
+  const currentFailure = currentFailedProjectTest(state)?.test;
+  const repairPaths = (state.meta?.failedTestRecoveryPacket?.paths || [])
+    .map((item) => String(item || "").replace(/\\/g, "/"))
+    .filter((item) => item && !/(?:^|\/)tests?(?:\/|$)/i.test(item))
+    .slice(0, 6);
   const result = {
     ok: false,
     blocked: true,

@@ -680,6 +680,59 @@ function constrainReadFilePaths(tool, paths, phase) {
   };
 }
 
+function constrainWriteFilePaths(tool, paths = []) {
+  if (!tool || paths.length === 0) return null;
+  const pathSchema = tool.function?.parameters?.properties?.path || { type: "string" };
+  const modeSchema = tool.function?.parameters?.properties?.mode || { type: "string" };
+  return {
+    ...tool,
+    function: {
+      ...tool.function,
+      description:
+        "Create one exact required project-instruction file while test repair is active. This exception cannot create sidecars, generated outputs, replacement analyzers, or arbitrary files; repair canonical source and pass the retained test before other artifact work.",
+      parameters: {
+        ...tool.function.parameters,
+        properties: {
+          ...tool.function.parameters.properties,
+          path: {
+            ...pathSchema,
+            enum: paths,
+            description: "Exact required project-instruction path from the retained acceptance contract.",
+          },
+          mode: {
+            ...modeSchema,
+            enum: ["create"],
+            description: "Only creation is permitted for this missing required instruction file.",
+          },
+        },
+      },
+    },
+  };
+}
+
+function constrainRunCommand(tool, command = "", description = "") {
+  if (!tool || !command) return tool;
+  const commandSchema = tool.function?.parameters?.properties?.command || { type: "string" };
+  return {
+    ...tool,
+    function: {
+      ...tool.function,
+      description: description || tool.function?.description,
+      parameters: {
+        ...tool.function.parameters,
+        properties: {
+          ...tool.function.parameters.properties,
+          command: {
+            ...commandSchema,
+            enum: [command],
+            description: "Exact retained verification command required after the latest canonical-source mutation.",
+          },
+        },
+      },
+    },
+  };
+}
+
 function roundRobinToolNames(groups) {
   const names = [];
   const maxLength = Math.max(0, ...groups.map((group) => group.length));
@@ -878,7 +931,41 @@ export function selectProgressiveTools(
     return artifactValidationToolNames(config).map((name) => available.get(name)).filter(Boolean);
   }
 
-  if (profileId(config, profile) === "data" && toolSurfacePolicy(config, profile) !== "full") {
+  if (config.testFailureRepairActive === true) {
+    const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    const constrainedInstructionCreate = constrainWriteFilePaths(
+      available.get("write_file"),
+      Array.isArray(config.testFailureRepairAllowedCreates)
+        ? config.testFailureRepairAllowedCreates
+        : []
+    );
+    return [
+      "read_file",
+      "search_files",
+      "apply_patch",
+      ...(constrainedInstructionCreate ? ["write_file"] : []),
+      "run_command",
+      "finish",
+    ]
+      .map((name) => (name === "write_file" ? constrainedInstructionCreate : available.get(name)))
+      .filter(Boolean);
+  }
+
+  if (config.testVerificationPending === true) {
+    const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    const verificationCommand = constrainRunCommand(
+      available.get("run_command"),
+      config.testVerificationCommand,
+      "Run the exact discovered test suite now. A canonical source changed after the last test, so no artifact work or further discovery is valid until this command passes or returns a concrete failure."
+    );
+    return [verificationCommand, finish].filter(Boolean);
+  }
+
+  if (
+    profileId(config, profile) === "data" &&
+    toolSurfacePolicy(config, profile) !== "full" &&
+    config.dataProjectDiscoveryReady !== true
+  ) {
     const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
     const discovery = dataProjectDiscoveryState(messages);
     if (discovery.phase === "inspect") {
@@ -902,7 +989,7 @@ export function selectProgressiveTools(
       DEFAULT_LOCAL_TOOL_SCHEMA_CHAR_TARGET
     );
     const selected = [];
-    for (const name of ["read_file", "apply_patch", "write_file", "run_command", "search_files", "inspect_project"]) {
+    for (const name of ["read_file", "read_image", "apply_patch", "write_file", "run_command", "search_files", "inspect_project"]) {
       if (selected.length + 1 >= toolLimit) break;
       const tool = available.get(name);
       if (!tool) continue;

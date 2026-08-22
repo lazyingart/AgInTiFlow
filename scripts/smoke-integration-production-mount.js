@@ -543,6 +543,7 @@ async function verifyPackagedBinAndScriptClosure() {
   assert.equal(packageJson.bin?.["aginti-integration"], "bin/aginti-integration.js");
   assert.equal(packageJson.files.includes("bin/"), true);
   for (const requiredFile of [
+    "scripts/check-js-syntax.js",
     "scripts/eval-provider-attribution.js",
     "scripts/smoke-context-budget-recovery.js",
     "scripts/smoke-integration-production-mount.js",
@@ -553,11 +554,7 @@ async function verifyPackagedBinAndScriptClosure() {
     packageJson.scripts?.["smoke:integration-production-mount"],
     "node scripts/smoke-integration-production-mount.js"
   );
-  assert.equal(packageJson.scripts.check.includes("node --check bin/aginti-integration.js"), true);
-  assert.equal(
-    packageJson.scripts.check.includes("node --check scripts/smoke-integration-production-mount.js"),
-    true
-  );
+  assert.equal(packageJson.scripts.check, "node scripts/check-js-syntax.js");
   for (const relativePath of referencedRunnablePaths(packageJson)) {
     const stat = await fs.stat(path.join(REPOSITORY_ROOT, relativePath));
     assert.equal(stat.isFile(), true, `packaged script reference is missing: ${relativePath}`);
@@ -1131,5 +1128,6 @@ async function main() {
 
 main().catch((error) => {
   process.stderr.write(`integration production mount smoke: failed (${String(error?.code || error?.name || "ERROR")})\n`);
+  process.stderr.write(`${String(error?.stack || error?.message || error)}\n`);
   process.exitCode = 1;
 });
