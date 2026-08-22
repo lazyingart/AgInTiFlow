@@ -15,6 +15,10 @@ import {
   INTEGRATION_TEXT_WORKSPACE_TOOL_NAMES,
 } from "./integration-retained-text-workspace.js";
 import {
+  INTEGRATION_VISION_WORKSPACE_PROFILE_ID,
+  INTEGRATION_VISION_WORKSPACE_TOOL_NAMES,
+} from "./integration-retained-vision-workspace.js";
+import {
   assertRegisteredIntegrationSessionConfig,
   bindIntegrationNativeExecution,
   loadIntegrationSessionSnapshotForConfig,
@@ -179,6 +183,15 @@ function assertNoEscapeFlags(config) {
       fail("Fixed text-workspace profile must disable image perception and bind its exact tool surface.");
     }
   }
+  if (config.integrationSessionProfile === INTEGRATION_VISION_WORKSPACE_PROFILE_ID) {
+    if (
+      config.allowShellTool !== false ||
+      config.allowImagePerception !== true ||
+      contractDigest(config.integrationAllowedToolNames) !== contractDigest(INTEGRATION_VISION_WORKSPACE_TOOL_NAMES)
+    ) {
+      fail("Fixed vision-workspace profile must bind retained image perception and its exact tool surface.");
+    }
+  }
 }
 
 export function buildFixedNativeRunAgentConfig(input = {}) {
@@ -196,15 +209,31 @@ export function buildFixedNativeRunAgentConfig(input = {}) {
     fail("Native executor requires an explicit expected runtime revision.");
   }
   if (input.mode === "start" && expectedRevision !== 1) fail("Start requires native runtime revision 1.");
+  if (input.retainedVisionWorkspace !== undefined && input.retainedTextWorkspace === undefined) {
+    fail("Fixed vision-workspace requires its exact retained text-workspace base.");
+  }
+  const workspaceProfile = input.retainedVisionWorkspace === undefined
+    ? input.retainedTextWorkspace === undefined
+      ? null
+      : {
+          id: INTEGRATION_TEXT_WORKSPACE_PROFILE_ID,
+          tools: INTEGRATION_TEXT_WORKSPACE_TOOL_NAMES,
+          allowImagePerception: false,
+        }
+    : {
+        id: INTEGRATION_VISION_WORKSPACE_PROFILE_ID,
+        tools: INTEGRATION_VISION_WORKSPACE_TOOL_NAMES,
+        allowImagePerception: true,
+      };
   const fixed = {
     ...buildFixedIntegrationRuntimeOverrides(policy, { sessionId: nativeSessionId }),
-    ...(input.retainedTextWorkspace === undefined
+    ...(workspaceProfile === null
       ? {}
       : {
-          integrationSessionProfile: INTEGRATION_TEXT_WORKSPACE_PROFILE_ID,
-          integrationAllowedToolNames: INTEGRATION_TEXT_WORKSPACE_TOOL_NAMES,
+          integrationSessionProfile: workspaceProfile.id,
+          integrationAllowedToolNames: workspaceProfile.tools,
           allowShellTool: false,
-          allowImagePerception: false,
+          allowImagePerception: workspaceProfile.allowImagePerception,
         }),
     goal: inputText,
     abortSignal: input.abortSignal,
@@ -223,7 +252,7 @@ export function buildFixedNativeRunAgentConfig(input = {}) {
   }
   const expectedKeys = [
     ...Object.keys(buildFixedIntegrationRuntimeOverrides(policy, { sessionId: nativeSessionId })),
-    ...(input.retainedTextWorkspace === undefined
+    ...(workspaceProfile === null
       ? []
       : ["integrationSessionProfile", "integrationAllowedToolNames", "allowImagePerception"]),
     "goal",
@@ -276,6 +305,9 @@ export function buildFixedNativeRunAgentConfig(input = {}) {
           threadId: input.threadId,
           runId: input.runId,
         }),
+    ...(input.retainedVisionWorkspace === undefined
+      ? {}
+      : { retainedVisionWorkspace: input.retainedVisionWorkspace }),
   });
 }
 

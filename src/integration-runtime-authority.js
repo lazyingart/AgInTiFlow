@@ -40,6 +40,12 @@ import {
 import {
   assertRetainedIntegrationRuntimeNativeWriteFence,
   assertRetainedIntegrationRuntimeNativeWriteFenceCurrent,
+} from "./integration-retained-runtime-repository-surface.js";
+import {
+  assertRetainedIntegrationVisionWorkspace,
+  assertRetainedIntegrationVisionWorkspaceCurrent,
+} from "./integration-retained-vision-workspace.js";
+import {
   assertRetainedIntegrationRuntimeRecoveryCoordinator,
 } from "./integration-retained-runtime-repository-surface.js";
 import {
@@ -1341,6 +1347,20 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
   if (retainedTextWorkspace && !retainedNativeExecutionEvidence) {
     failUnavailable("Retained text-workspace requires retained native execution evidence.");
   }
+  const retainedVisionWorkspace = options.retainedVisionWorkspace === undefined
+    ? null
+    : assertRetainedIntegrationVisionWorkspace(options.retainedVisionWorkspace, {
+        textWorkspace: retainedTextWorkspace,
+        nativeExecutionEvidence: retainedNativeExecutionEvidence,
+        nativeWriteFence,
+        repository: repositorySurface,
+        recoveryCoordinator: retainedRecoveryCoordinator,
+        processOwnerBootstrap: options.processOwnerBootstrap,
+        repositoryFenceLease: options.repositoryFenceLease,
+      });
+  if (retainedVisionWorkspace && !retainedTextWorkspace) {
+    failUnavailable("Retained vision-workspace requires its exact retained text-workspace base.");
+  }
   if (
     retainedNativeExecutionEvidence &&
     repository.attestation.retainedDescriptorStorageAuthority !== true
@@ -2539,6 +2559,7 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
         ...(retainedTextWorkspace
           ? {
               retainedTextWorkspace,
+              ...(retainedVisionWorkspace ? { retainedVisionWorkspace } : {}),
               principalId: scope.principalId,
               browserSessionId: scope.browserSessionId,
             }
@@ -2881,6 +2902,27 @@ function aggregateRuntimeObserverError(runtimeError, observerError) {
     ) {
       failUnavailable("Runtime text-workspace is not bound to the exact current native-write fence.");
     }
+    const currentVisionWorkspaceProof = retainedVisionWorkspace
+      ? await assertRetainedIntegrationVisionWorkspaceCurrent(retainedVisionWorkspace, {
+          textWorkspace: retainedTextWorkspace,
+          nativeExecutionEvidence: retainedNativeExecutionEvidence,
+          nativeWriteFence: currentNativeWriteFence,
+          repository: repositorySurface,
+          recoveryCoordinator: retainedRecoveryCoordinator,
+          processOwnerBootstrap: options.processOwnerBootstrap,
+          repositoryFenceLease: options.repositoryFenceLease,
+        })
+      : null;
+    if (
+      currentVisionWorkspaceProof && (
+        currentVisionWorkspaceProof.nativeWriteFenceAttestationDigest !==
+          currentNativeWriteFence.attestation.digest ||
+        currentVisionWorkspaceProof.nativeWriteFenceSealDigest !==
+          currentNativeWriteFence.attestation.sessionStateWriteFenceSealDigest
+      )
+    ) {
+      failUnavailable("Runtime vision-workspace is not bound to the exact current native-write fence.");
+    }
     const unsignedProof = canonicalPlainJsonClone({
       schemaVersion: NATIVE_INTEGRATION_RUNTIME_PROOF_VERSION,
       owner: "aginti",
@@ -2966,6 +3008,16 @@ function aggregateRuntimeObserverError(runtimeError, observerError) {
             fenceDigest: ZERO_DIGEST,
             leaseDigest: ZERO_DIGEST,
           }),
+      retainedVisionWorkspaceProofDigest:
+        retainedVisionWorkspace?.attestation?.digest || ZERO_DIGEST,
+      retainedVisionWorkspaceCurrentProofDigest:
+        currentVisionWorkspaceProof?.digest || ZERO_DIGEST,
+      retainedVisionWorkspaceNativeWriterFencing:
+        currentVisionWorkspaceProof?.nativeSessionStateWriterFencing === true,
+      retainedVisionWorkspaceNativeWriterQuiescence:
+        currentVisionWorkspaceProof?.nativeSessionStateWriterQuiescenceProven === true,
+      retainedVisionWorkspaceCrossProcessImageWriterFencing:
+        currentVisionWorkspaceProof?.crossProcessImageWriterFencing === true,
       repositoryFence: currentFenceAuthority
         ? Object.freeze({
             required: true,

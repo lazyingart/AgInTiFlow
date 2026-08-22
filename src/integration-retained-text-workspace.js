@@ -785,6 +785,9 @@ export function assertRetainedIntegrationTextWorkspace(value, expected = {}) {
   if (expected.nativeWriteFence && state.nativeWriteFence !== expected.nativeWriteFence) {
     fail("INTEGRATION_TEXT_WORKSPACE_UNAVAILABLE", "Text-workspace native-write fence identity changed.");
   }
+  if (expected.sessionStateStore && state.store !== expected.sessionStateStore) {
+    fail("INTEGRATION_TEXT_WORKSPACE_UNAVAILABLE", "Text-workspace retained store identity changed.");
+  }
   if (
     expected.repository && state.repository !== expected.repository ||
     expected.recoveryCoordinator && state.recovery !== expected.recoveryCoordinator ||

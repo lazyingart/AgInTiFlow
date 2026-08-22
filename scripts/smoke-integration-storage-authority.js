@@ -104,6 +104,8 @@ async function runModuleMockChild() {
     failCloseSuffix: "",
     failStatSuffix: "",
     mutateOwnerStatSuffix: "",
+    failSyncSuffix: "",
+    failSyncRemaining: 0,
   };
   const mockFs = { ...realFs };
   mockFs.lstat = async (target, ...args) => {
@@ -129,7 +131,8 @@ async function runModuleMockChild() {
     const mutateOwner = Boolean(
       state.mutateOwnerStatSuffix && targetPath.endsWith(state.mutateOwnerStatSuffix)
     );
-    if (!failClose && !failStat && !mutateOwner) return handle;
+    const wrapSync = Boolean(state.failSyncSuffix && targetPath.endsWith(state.failSyncSuffix));
+    if (!failClose && !failStat && !mutateOwner && !wrapSync) return handle;
     const close = handle.close.bind(handle);
     let injected = false;
     return {
@@ -164,12 +167,24 @@ async function runModuleMockChild() {
           });
         }
       },
+      async sync(...syncArgs) {
+        if (wrapSync && state.failSyncRemaining > 0) {
+          state.failSyncRemaining -= 1;
+          throw Object.assign(new Error("synthetic retained directory fsync failure"), {
+            code: "EIO",
+          });
+        }
+        return handle.sync(...syncArgs);
+      },
     };
   };
 
   const moduleMock = mock.module("node:fs/promises", { defaultExport: mockFs });
   const moduleUrl = new URL(`../src/integration-storage-authority.js?mock-child=${Date.now()}`, import.meta.url);
-  const { openIntegrationStorageAuthority: openMockedAuthority } = await import(moduleUrl.href);
+  const {
+    createIntegrationRetainedBinaryFilePrimitives: createMockedBinaryFiles,
+    openIntegrationStorageAuthority: openMockedAuthority,
+  } = await import(moduleUrl.href);
   const smokeRoot = await realFs.mkdtemp(path.join(os.tmpdir(), "aginti-storage-authority-mock-"));
   const opened = [];
   const armLstatPause = (targetPath) => {
@@ -364,6 +379,53 @@ async function runModuleMockChild() {
       await rootFdReuseProbe.close();
     }
     await expectCode(() => closedRootAuthority.openDirectory(["child"]), "INTEGRATION_STORAGE_POISONED");
+
+    const binarySyncRoot = path.join(smokeRoot, "binary-sync-root");
+    await makeOwnerDirectory(binarySyncRoot);
+    await makeOwnerDirectory(path.join(binarySyncRoot, "binary"));
+    const binarySyncAuthority = await openMockedAuthority({
+      rootPath: binarySyncRoot,
+      role: "binary-sync",
+      ownerUid: UID,
+      ownerGid: GID,
+      label: "binary directory sync fault",
+    });
+    opened.push(binarySyncAuthority);
+    state.failSyncSuffix = "/binary";
+    const binaryDirectory = await binarySyncAuthority.openDirectory(["binary"]);
+    opened.push(binaryDirectory);
+    const binaryIdentity = await binaryDirectory.identity();
+    const binaryExpected = Object.freeze({
+      role: "binary-sync",
+      canonicalPath: binarySyncRoot,
+      rootIdentityDigest: binarySyncAuthority.attestation.rootIdentityDigest,
+      relativeSegments: Object.freeze(["binary"]),
+      directoryIdentityDigest: binaryIdentity.digest,
+    });
+    const binaryFiles = createMockedBinaryFiles(binaryDirectory, binaryExpected);
+    const durableBytes = Buffer.from("durable-after-explicit-directory-sync");
+    state.failSyncRemaining = 2;
+    const ambiguous = await expectCode(
+      () => binaryFiles.atomicWriteProtectedBinaryFile("durable.bin", durableBytes, { maxBytes: 4096 }),
+      "INTEGRATION_STORAGE_COMMIT_AMBIGUOUS"
+    );
+    assert.equal(ambiguous.details.directorySynced, false);
+    assert.equal((await binaryFiles.syncProtectedBinaryDirectory()).directorySynced, true);
+    assert.deepEqual((await binaryFiles.readProtectedBinaryFile("durable.bin", { maxBytes: 4096 })).bytes, durableBytes);
+
+    state.failSyncRemaining = 3;
+    const undurable = await expectCode(
+      () => binaryFiles.atomicWriteProtectedBinaryFile("orphan.bin", Buffer.from("orphan-only"), { maxBytes: 4096 }),
+      "INTEGRATION_STORAGE_COMMIT_AMBIGUOUS"
+    );
+    assert.equal(undurable.details.directorySynced, false);
+    await expectCode(
+      () => binaryFiles.syncProtectedBinaryDirectory(),
+      "INTEGRATION_STORAGE_FILE_UNAVAILABLE"
+    );
+    state.failSyncRemaining = 0;
+    await binaryFiles.syncProtectedBinaryDirectory();
+    state.failSyncSuffix = "";
 
     const cleanupRoot = path.join(smokeRoot, "cleanup-root");
     await makeOwnerDirectory(cleanupRoot);
