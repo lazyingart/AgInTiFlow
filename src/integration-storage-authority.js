@@ -1115,6 +1115,18 @@ function protectedFileIdentityDigest(identity) {
   });
 }
 
+function protectedFileObjectIdentityDigest(identity) {
+  return contractDigest({
+    schemaVersion: "aginti-retained-regular-file-object-identity-v1",
+    dev: identity.dev.toString(),
+    ino: identity.ino.toString(),
+    mode: identity.mode.toString(),
+    uid: identity.uid.toString(),
+    gid: identity.gid.toString(),
+    nlink: identity.nlink.toString(),
+  });
+}
+
 function sameProtectedFileObject(left, right) {
   return Boolean(
     left &&
@@ -2605,6 +2617,13 @@ export function assertIntegrationRetainedRegularFileLock(value, expected) {
   }
   assertExpectedRegularFileLockState(state, expected, "Integration retained regular-file lock");
   return value;
+}
+
+export function retainedIntegrationRegularFileLockObjectIdentityDigest(value, expected) {
+  const state = value && typeof value === "object" ? regularFileLockBrand.get(value) : null;
+  if (!state) fail("INTEGRATION_STORAGE_INVALID", "Integration retained regular-file lock brand is invalid.");
+  assertIntegrationRetainedRegularFileLock(value, expected);
+  return protectedFileObjectIdentityDigest(state.lockFileIdentity);
 }
 
 export function assertIntegrationStorageLease(value) {

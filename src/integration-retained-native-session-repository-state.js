@@ -15,9 +15,18 @@ import {
   INTEGRATION_RETAINED_REPOSITORY_PAYLOAD_DIGEST_DOMAIN,
   INTEGRATION_RETAINED_REPOSITORY_SNAPSHOT_VERSION,
   assertRetainedIntegrationRuntimeRepositoryKernel,
+  retainedIntegrationRuntimeRepositoryKernelSealBindingProof,
 } from "./integration-runtime-repository.js";
 import {
+  INTEGRATION_RETAINED_SESSION_STATE_WRITE_FENCE_BINDING_VERSION,
+  INTEGRATION_RETAINED_SESSION_STATE_WRITE_FENCE_SEAL_VERSION,
   assertRetainedIntegrationSessionStateStore,
+  assertRetainedIntegrationSessionStateStoreUsesWriteFence,
+  bindRetainedIntegrationSessionStateStoreWriteFence,
+} from "./integration-retained-session-state-store.js";
+export {
+  INTEGRATION_RETAINED_SESSION_STATE_WRITE_FENCE_BINDING_VERSION,
+  INTEGRATION_RETAINED_SESSION_STATE_WRITE_FENCE_SEAL_VERSION,
 } from "./integration-retained-session-state-store.js";
 import {
   INTEGRATION_INTEGRITY_DIGEST_SECURITY_SCOPE,
@@ -3139,5 +3148,56 @@ export function assertRetainedIntegrationNativeSessionRepositoryStateUsesSession
       "Native-session repository-state SessionStateStore identity binding changed."
     );
   }
+  return value;
+}
+
+export function retainedIntegrationNativeSessionRepositoryStateSessionStoreBindingProof(
+  value,
+  expectedInput
+) {
+  assertRetainedIntegrationNativeSessionRepositoryState(value, expectedInput);
+  const state = repositoryStateBrand.get(value);
+  const repositoryKernelSealBinding =
+    retainedIntegrationRuntimeRepositoryKernelSealBindingProof(
+      state.repositoryKernel,
+      state.expected.repositoryKernel
+    );
+  return frozenRecord({
+    repositoryPointerDigest: state.binding.repositoryPointerDigest,
+    repositoryKernelSealBindingDigest:
+      repositoryKernelSealBinding.namespaceSealBindingDigest,
+    logicalNamespaceDigest: state.sessionStateStore.attestation.logicalNamespaceDigest,
+    admissionBindingDigest: state.sessionStateStore.attestation.admissionBindingDigest,
+    namespaceSealBindingDigest:
+      state.sessionStateStore.attestation.namespaceSealBindingDigest,
+  });
+}
+
+export async function bindRetainedIntegrationNativeSessionRepositoryStateWriteFence(
+  value,
+  expectedInput,
+  nativeWriteFence
+) {
+  assertRetainedIntegrationNativeSessionRepositoryState(value, expectedInput);
+  const state = repositoryStateBrand.get(value);
+  return bindRetainedIntegrationSessionStateStoreWriteFence(
+    state.sessionStateStore,
+    state.expected.sessionStateStore,
+    nativeWriteFence
+  );
+}
+
+export function assertRetainedIntegrationNativeSessionRepositoryStateUsesWriteFence(
+  value,
+  expectedInput,
+  fenceIdentity
+) {
+  assertRetainedIntegrationNativeSessionRepositoryState(value, expectedInput);
+  const state = repositoryStateBrand.get(value);
+  assertRetainedIntegrationSessionStateStoreUsesWriteFence(
+    state.sessionStateStore,
+    state.expected.sessionStateStore,
+    fenceIdentity
+  );
   return value;
 }

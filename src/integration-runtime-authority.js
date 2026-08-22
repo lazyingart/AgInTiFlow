@@ -38,6 +38,8 @@ import {
   assertRetainedIntegrationTextWorkspaceCurrent,
 } from "./integration-retained-text-workspace.js";
 import {
+  assertRetainedIntegrationRuntimeNativeWriteFence,
+  assertRetainedIntegrationRuntimeNativeWriteFenceCurrent,
   assertRetainedIntegrationRuntimeRecoveryCoordinator,
 } from "./integration-retained-runtime-repository-surface.js";
 import {
@@ -1286,6 +1288,9 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
   if (!retainedRepository && options.repositoryFenceLease !== undefined) {
     failUnavailable("Repository fence lease is only valid for its retained repository surface.");
   }
+  if (!retainedRepository && options.nativeWriteFence !== undefined) {
+    failUnavailable("Native-write fence is only valid for its retained repository surface.");
+  }
   if (retainedRepository && !bootstrappedProcessOwner) {
     failUnavailable("Retained repository runtime requires one exact process-owner bootstrap capability.");
   }
@@ -1298,10 +1303,19 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
   ) {
     failUnavailable("Runtime process owner does not match the acquired retained repository fence.");
   }
+  const nativeWriteFence = retainedRepository
+    ? assertRetainedIntegrationRuntimeNativeWriteFence(options.nativeWriteFence, {
+        repository: repositorySurface,
+        processOwnerBootstrap: options.processOwnerBootstrap,
+        repositoryFenceLease: options.repositoryFenceLease,
+      })
+    : null;
   const eventLedgerStore = validateEventLedgerStore(options.eventLedgerStore);
   const retainedNativeExecutionEvidence = options.retainedNativeExecutionEvidence === undefined
     ? null
-    : assertRetainedIntegrationNativeExecutionEvidence(options.retainedNativeExecutionEvidence);
+    : assertRetainedIntegrationNativeExecutionEvidence(options.retainedNativeExecutionEvidence, {
+        nativeWriteFence,
+      });
   const retainedRecoveryCoordinator = options.retainedRecoveryCoordinator === undefined
     ? null
     : assertRetainedIntegrationRuntimeRecoveryCoordinator(options.retainedRecoveryCoordinator, {
@@ -1309,6 +1323,7 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
         nativeExecutionEvidence: retainedNativeExecutionEvidence,
         processOwnerBootstrap: options.processOwnerBootstrap,
         repositoryFenceLease: options.repositoryFenceLease,
+        nativeWriteFence,
       });
   if (Boolean(retainedNativeExecutionEvidence) !== Boolean(retainedRecoveryCoordinator)) {
     failUnavailable("Retained native execution evidence and recovery coordinator must be supplied together.");
@@ -1317,6 +1332,7 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
     ? null
     : assertRetainedIntegrationTextWorkspace(options.retainedTextWorkspace, {
         nativeExecutionEvidence: retainedNativeExecutionEvidence,
+        nativeWriteFence,
         repository: repositorySurface,
         recoveryCoordinator: retainedRecoveryCoordinator,
         processOwnerBootstrap: options.processOwnerBootstrap,
@@ -2824,17 +2840,47 @@ function aggregateRuntimeObserverError(runtimeError, observerError) {
           nativeExecutionEvidence: retainedNativeExecutionEvidence,
           processOwnerBootstrap: options.processOwnerBootstrap,
           repositoryFenceLease: options.repositoryFenceLease,
+          nativeWriteFence,
         })
       : null;
+    const currentNativeWriteFence = nativeWriteFence
+      ? await assertRetainedIntegrationRuntimeNativeWriteFenceCurrent(nativeWriteFence, {
+          repository: repositorySurface,
+          processOwnerBootstrap: options.processOwnerBootstrap,
+          repositoryFenceLease: options.repositoryFenceLease,
+        })
+      : null;
+    if (
+      currentNativeWriteFence && (
+        currentNativeWriteFence.attestation.repositoryFenceGeneration !== currentFenceAuthority.generation ||
+        currentNativeWriteFence.attestation.repositoryFenceOwnerDigest !== currentFenceAuthority.ownerDigest ||
+        currentNativeWriteFence.attestation.repositoryFenceOwnerIdentityDigest !== currentFenceAuthority.ownerIdentityDigest ||
+        currentNativeWriteFence.attestation.repositoryFenceDigest !== currentFenceAuthority.fenceDigest ||
+        currentNativeWriteFence.attestation.repositoryFenceLeaseDigest !== currentFenceAuthority.leaseDigest
+      )
+    ) {
+      failUnavailable("Runtime native-write fence is not bound to the durably current repository fence.");
+    }
     const currentTextWorkspaceProof = retainedTextWorkspace
       ? await assertRetainedIntegrationTextWorkspaceCurrent(retainedTextWorkspace, {
           nativeExecutionEvidence: retainedNativeExecutionEvidence,
+          nativeWriteFence: currentNativeWriteFence,
           repository: repositorySurface,
           recoveryCoordinator: retainedRecoveryCoordinator,
           processOwnerBootstrap: options.processOwnerBootstrap,
           repositoryFenceLease: options.repositoryFenceLease,
         })
       : null;
+    if (
+      currentTextWorkspaceProof && (
+        currentTextWorkspaceProof.nativeWriteFenceAttestationDigest !==
+          currentNativeWriteFence.attestation.digest ||
+        currentTextWorkspaceProof.nativeWriteFenceSealDigest !==
+          currentNativeWriteFence.attestation.sessionStateWriteFenceSealDigest
+      )
+    ) {
+      failUnavailable("Runtime text-workspace is not bound to the exact current native-write fence.");
+    }
     const unsignedProof = canonicalPlainJsonClone({
       schemaVersion: NATIVE_INTEGRATION_RUNTIME_PROOF_VERSION,
       owner: "aginti",
@@ -2872,6 +2918,54 @@ function aggregateRuntimeObserverError(runtimeError, observerError) {
         currentTextWorkspaceProof?.nativeSessionStateWriterFencing === true,
       retainedTextWorkspaceNativeWriterQuiescence:
         currentTextWorkspaceProof?.nativeSessionStateWriterQuiescenceProven === true,
+      retainedTextWorkspaceFullSessionStoreSidecarsFenced:
+        currentTextWorkspaceProof?.fullSessionStoreSidecarsFenced === true,
+      retainedTextWorkspaceImagePerceptionSidecarsFenced:
+        currentTextWorkspaceProof?.imagePerceptionSidecarsFenced === true,
+      retainedNativeWriteFenceProofDigest:
+        currentNativeWriteFence?.attestation?.digest || ZERO_DIGEST,
+      nativeWriteFence: currentNativeWriteFence
+        ? Object.freeze({
+            required: true,
+            acquired: true,
+            exactLexicalCapability: true,
+            durablyCurrent: true,
+            staleWritesRejectedBeforeCas: true,
+            cooperativeHandoffQuiescence: true,
+            nativeSessionStateWriterFencing: true,
+            fullSessionStoreSidecarsFenced: false,
+            imagePerceptionSidecarsFenced: false,
+            attestationDigest: currentNativeWriteFence.attestation.digest,
+            sessionStateWriteFenceSealDigest:
+              currentNativeWriteFence.attestation.sessionStateWriteFenceSealDigest,
+            repositoryIdentityDigest: currentFenceAuthority.repositoryIdentityDigest,
+            repositoryAttestationDigest: currentFenceAuthority.repositoryAttestationDigest,
+            generation: currentFenceAuthority.generation,
+            ownerDigest: currentFenceAuthority.ownerDigest,
+            ownerIdentityDigest: currentFenceAuthority.ownerIdentityDigest,
+            fenceDigest: currentFenceAuthority.fenceDigest,
+            leaseDigest: currentFenceAuthority.leaseDigest,
+          })
+        : Object.freeze({
+            required: false,
+            acquired: false,
+            exactLexicalCapability: false,
+            durablyCurrent: false,
+            staleWritesRejectedBeforeCas: false,
+            cooperativeHandoffQuiescence: false,
+            nativeSessionStateWriterFencing: false,
+            fullSessionStoreSidecarsFenced: false,
+            imagePerceptionSidecarsFenced: false,
+            attestationDigest: ZERO_DIGEST,
+            sessionStateWriteFenceSealDigest: ZERO_DIGEST,
+            repositoryIdentityDigest: ZERO_DIGEST,
+            repositoryAttestationDigest: repositoryProof.digest,
+            generation: 0,
+            ownerDigest: ZERO_DIGEST,
+            ownerIdentityDigest: ZERO_DIGEST,
+            fenceDigest: ZERO_DIGEST,
+            leaseDigest: ZERO_DIGEST,
+          }),
       repositoryFence: currentFenceAuthority
         ? Object.freeze({
             required: true,

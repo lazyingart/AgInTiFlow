@@ -23,19 +23,29 @@ const CHILD_ROOT = String(process.argv.find((value) => value.startsWith("--root=
 const fault = { armed: false };
 let fsMock = null;
 
-if (FAULT_MODE === "rename-before" || FAULT_MODE === "rename-after") {
+if ([
+  "rename-before",
+  "rename-after",
+  "handoff-rename-before",
+  "handoff-rename-after",
+  "native-rename-before",
+  "native-rename-after",
+].includes(FAULT_MODE)) {
   const { mock } = await import("node:test");
   const mockFs = { ...realFs };
   mockFs.rename = async (source, target) => {
     const isRepositorySnapshot = path.basename(String(target)) === "repository.snapshot.json";
-    if (fault.armed && isRepositorySnapshot && FAULT_MODE === "rename-before") {
+    const targetBase = path.basename(String(target));
+    const isNativeSnapshot = targetBase.startsWith("native-session-state-") && targetBase.endsWith(".json");
+    const selectedTarget = FAULT_MODE.startsWith("native-") ? isNativeSnapshot : isRepositorySnapshot;
+    if (fault.armed && selectedTarget && FAULT_MODE.endsWith("rename-before")) {
       fault.armed = false;
       const error = new Error("synthetic compaction rename-before failure");
       error.code = "EIO";
       throw error;
     }
     await realFs.rename(source, target);
-    if (fault.armed && isRepositorySnapshot && FAULT_MODE === "rename-after") {
+    if (fault.armed && selectedTarget && FAULT_MODE.endsWith("rename-after")) {
       fault.armed = false;
       const error = new Error("synthetic compaction rename-after ambiguity");
       error.code = "EIO";
@@ -87,10 +97,13 @@ const {
 const { NATIVE_RUNTIME_ROOTS_ATTESTATION_VERSION } = rootsApi;
 const {
   acquireRetainedIntegrationRuntimeRepositoryFence,
+  assertRetainedIntegrationRuntimeNativeWriteFenceCurrent,
   assertRetainedIntegrationRuntimeRepositoryFenceLease,
   compactRetainedIntegrationRuntimeRepository,
+  createRetainedIntegrationRuntimeNativeWriteFence,
   createRetainedIntegrationRuntimeRepositorySurface,
   handoffRetainedIntegrationRuntimeRepositoryFence,
+  retainedIntegrationRuntimeNativeWriteFenceActivityProof,
 } = surfaceApi;
 const { createIntegrationRuntimeProcessOwnerBootstrap } = runtimeApi;
 
@@ -237,6 +250,8 @@ async function openFixture(rootPath, { lockWaitMs = 10_000 } = {}) {
     repositoryLock: repositoryBinding.lock,
     repositoryPath,
     repositoryState,
+    sessionLock: sessionBinding.lock,
+    sessionStore,
   });
 }
 
@@ -531,7 +546,199 @@ function deepFreezeData(value) {
   return Object.freeze(value);
 }
 
+async function runNativeCasFaultMode() {
+  const rootPath = await realFs.mkdtemp(path.join(os.tmpdir(), `aginti-phase-b-${FAULT_MODE}-`));
+  let fixture = null;
+  try {
+    const bootstrap = await createIntegrationRuntimeProcessOwnerBootstrap();
+    fixture = await openFixture(rootPath, { lockWaitMs: 15_000 });
+    const acquired = await acquireRetainedIntegrationRuntimeRepositoryFence(fixture.repository, {
+      processOwnerBootstrap: bootstrap,
+    });
+    await createRetainedIntegrationRuntimeNativeWriteFence(fixture.repository, {
+      processOwnerBootstrap: bootstrap,
+      repositoryFenceLease: acquired.lease,
+    });
+    const nativeSessionId = `aginti:phase-b-${FAULT_MODE}`;
+    const input = Object.freeze({
+      mutationId: `native-write-fence.${FAULT_MODE}`,
+      nativeSessionId,
+      expectedPersistenceRevision: 0,
+      expectedIntegrityDigest: ZERO_DIGEST,
+      state: Object.freeze({
+        sessionId: nativeSessionId,
+        meta: Object.freeze({ runtimeConfig: Object.freeze({ revision: 1 }) }),
+      }),
+    });
+    fault.armed = true;
+    let problem = null;
+    try {
+      await fixture.sessionStore.compareAndSwapSessionSnapshot(input);
+    } catch (error) {
+      problem = error;
+    }
+    assert(problem, `${FAULT_MODE} must lose the native CAS response`);
+    await fixture.authority.close().catch(() => {});
+    fixture = await openFixture(rootPath, { lockWaitMs: 15_000 });
+    const reacquired = await acquireRetainedIntegrationRuntimeRepositoryFence(fixture.repository, {
+      processOwnerBootstrap: bootstrap,
+    });
+    assert.equal(reacquired.fence.generation, 1);
+    await createRetainedIntegrationRuntimeNativeWriteFence(fixture.repository, {
+      processOwnerBootstrap: bootstrap,
+      repositoryFenceLease: reacquired.lease,
+    });
+    const retry = await fixture.sessionStore.compareAndSwapSessionSnapshot(input);
+    assert.equal(
+      retry.outcome,
+      FAULT_MODE === "native-rename-before" ? "committed" : "replayed"
+    );
+    assert.equal(retry.snapshot.persistenceRevision, 1);
+    process.stdout.write(`integration retained phase-b ${FAULT_MODE} fault: ok\n`);
+  } finally {
+    await fixture?.authority.close().catch(() => {});
+    fsMock?.restore();
+    await realFs.rm(rootPath, { recursive: true, force: true });
+  }
+}
+
+async function runHandoffFaultMode() {
+  const rootPath = await realFs.mkdtemp(path.join(os.tmpdir(), `aginti-phase-b-${FAULT_MODE}-`));
+  let fixture = null;
+  let successor = null;
+  try {
+    const bootstrap = await createIntegrationRuntimeProcessOwnerBootstrap();
+    fixture = await openFixture(rootPath, { lockWaitMs: 15_000 });
+    const acquired = await acquireRetainedIntegrationRuntimeRepositoryFence(fixture.repository, {
+      processOwnerBootstrap: bootstrap,
+    });
+    const nativeWriteFence = await createRetainedIntegrationRuntimeNativeWriteFence(
+      fixture.repository,
+      {
+        processOwnerBootstrap: bootstrap,
+        repositoryFenceLease: acquired.lease,
+      }
+    );
+    successor = spawnChild("owner", rootPath);
+    const successorReady = await successor.waitEvent("ready");
+    fault.armed = true;
+    let problem = null;
+    try {
+      await handoffRetainedIntegrationRuntimeRepositoryFence(fixture.repository, {
+        currentProcessOwnerBootstrap: bootstrap,
+        successorProcessOwner: successorReady.owner,
+        nativeWriteFence,
+      });
+    } catch (error) {
+      problem = error;
+    }
+    assert(problem, `${FAULT_MODE} must lose or reject the handoff response`);
+    const activity = retainedIntegrationRuntimeNativeWriteFenceActivityProof(nativeWriteFence);
+    let currentFenceProblem = null;
+    try {
+      await assertRetainedIntegrationRuntimeNativeWriteFenceCurrent(nativeWriteFence, {
+        repository: fixture.repository,
+        processOwnerBootstrap: bootstrap,
+        repositoryFenceLease: acquired.lease,
+      });
+    } catch (error) {
+      currentFenceProblem = error;
+    }
+    assert.equal(errorCode(currentFenceProblem), "INTEGRATION_NATIVE_WRITE_FENCE_STALE");
+    const nativeSessionId = `aginti:phase-b-${FAULT_MODE}`;
+    const nativeMutationId = `native-write-fence.${FAULT_MODE}`;
+    const nativeWrite = () => fixture.sessionStore.compareAndSwapSessionSnapshot(Object.freeze({
+      mutationId: nativeMutationId,
+      nativeSessionId,
+      expectedPersistenceRevision: 0,
+      expectedIntegrityDigest: ZERO_DIGEST,
+      state: Object.freeze({
+        sessionId: nativeSessionId,
+        meta: Object.freeze({ runtimeConfig: Object.freeze({ revision: 1 }) }),
+      }),
+    }));
+    if (FAULT_MODE === "handoff-rename-before") {
+      assert.equal(activity.quiesced, true);
+      let staleProblem = null;
+      try {
+        await nativeWrite();
+      } catch (error) {
+        staleProblem = error;
+      }
+      assert.equal(errorCode(staleProblem), "INTEGRATION_NATIVE_WRITE_FENCE_STALE");
+      await fixture.authority.close();
+      fixture = await openFixture(rootPath, { lockWaitMs: 15_000 });
+      const reacquired = await acquireRetainedIntegrationRuntimeRepositoryFence(
+        fixture.repository,
+        { processOwnerBootstrap: bootstrap }
+      );
+      assert.equal(reacquired.fence.generation, 1);
+      const reopenedNativeWriteFence = await createRetainedIntegrationRuntimeNativeWriteFence(fixture.repository, {
+        processOwnerBootstrap: bootstrap,
+        repositoryFenceLease: reacquired.lease,
+      });
+      assert.equal(
+        await assertRetainedIntegrationRuntimeNativeWriteFenceCurrent(
+          reopenedNativeWriteFence,
+          {
+            repository: fixture.repository,
+            processOwnerBootstrap: bootstrap,
+            repositoryFenceLease: reacquired.lease,
+          }
+        ),
+        reopenedNativeWriteFence
+      );
+      const saved = await fixture.sessionStore.compareAndSwapSessionSnapshot(Object.freeze({
+        mutationId: nativeMutationId,
+        nativeSessionId,
+        expectedPersistenceRevision: 0,
+        expectedIntegrityDigest: ZERO_DIGEST,
+        state: Object.freeze({
+          sessionId: nativeSessionId,
+          meta: Object.freeze({ runtimeConfig: Object.freeze({ revision: 1 }) }),
+        }),
+      }));
+      assert.equal(saved.outcome, "committed");
+      const snapshot = await fixture.repositoryState.loadDomainSnapshot();
+      assert.equal(snapshot.state.reconciliationFence.ownerDigest, contractDigest(bootstrap.processOwner));
+      await successor.request("close");
+    } else {
+      assert.equal(activity.quiesced, true);
+      let staleProblem = null;
+      try {
+        await nativeWrite();
+      } catch (error) {
+        staleProblem = error;
+      }
+      assert.equal(errorCode(staleProblem), "INTEGRATION_NATIVE_WRITE_FENCE_STALE");
+      const successorFence = await successor.request("acquire");
+      assert.equal(successorFence.fence.generation, 2);
+      const successorWrite = await successor.request("native-write", {
+        nativeSessionId,
+        mutationId: nativeMutationId,
+      });
+      assert.equal(successorWrite.outcome, "committed");
+      assert.equal(successorWrite.persistenceRevision, 1);
+      await successor.request("close");
+    }
+    process.stdout.write(`integration retained phase-b ${FAULT_MODE} fault: ok\n`);
+  } finally {
+    await killAndWait(successor).catch(() => {});
+    await fixture?.authority.close().catch(() => {});
+    fsMock?.restore();
+    await realFs.rm(rootPath, { recursive: true, force: true });
+  }
+}
+
 async function runFaultMode() {
+  if (FAULT_MODE.startsWith("native-")) {
+    await runNativeCasFaultMode();
+    return;
+  }
+  if (FAULT_MODE.startsWith("handoff-")) {
+    await runHandoffFaultMode();
+    return;
+  }
   const rootPath = await realFs.mkdtemp(path.join(os.tmpdir(), `aginti-phase-b-${FAULT_MODE}-`));
   let fixture = null;
   let reopened = null;
@@ -610,15 +817,53 @@ async function childOwnerMode() {
         result = await acquireRetainedIntegrationRuntimeRepositoryFence(fixture.repository, {
           processOwnerBootstrap: bootstrap,
         });
+        saved.acquiredFence = result;
+        saved.nativeWriteFence = await createRetainedIntegrationRuntimeNativeWriteFence(
+          fixture.repository,
+          {
+            processOwnerBootstrap: bootstrap,
+            repositoryFenceLease: result.lease,
+          }
+        );
         const lease = assertRetainedIntegrationRuntimeRepositoryFenceLease(fixture.repository, result.lease);
         assert.equal(lease.ownerDigest, result.fence.ownerDigest);
       } else if (message.command === "handoff") {
         result = await handoffRetainedIntegrationRuntimeRepositoryFence(fixture.repository, {
           currentProcessOwnerBootstrap: bootstrap,
           successorProcessOwner: message.successorOwner,
+          nativeWriteFence: saved.nativeWriteFence,
         });
       } else if (message.command === "stale-write") {
         result = await fixture.repository.createIntegrationThread(threadPayload(800_000 + process.pid, new Date(Date.now() - 1000).toISOString()));
+      } else if (message.command === "native-write") {
+        if (!saved.nativeWriteFence) throw new Error("native write requires an acquired fence");
+        const nativeSessionId = String(message.nativeSessionId);
+        const operation = fixture.sessionStore.compareAndSwapSessionSnapshot(Object.freeze({
+          mutationId: String(message.mutationId),
+          nativeSessionId,
+          expectedPersistenceRevision: 0,
+          expectedIntegrityDigest: ZERO_DIGEST,
+          state: Object.freeze({
+            sessionId: nativeSessionId,
+            meta: Object.freeze({ runtimeConfig: Object.freeze({ revision: 1 }) }),
+          }),
+        }));
+        for (let attempt = 0; attempt < 500; attempt += 1) {
+          const proof = retainedIntegrationRuntimeNativeWriteFenceActivityProof(
+            saved.nativeWriteFence
+          );
+          if (proof.activeWrites === 1) {
+            sendIpc({ type: "native-write-admitted", id });
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        const savedSnapshot = await operation;
+        result = {
+          outcome: savedSnapshot.outcome,
+          persistenceRevision: savedSnapshot.snapshot.persistenceRevision,
+          integrityDigest: savedSnapshot.snapshot.integrityDigest,
+        };
       } else if (message.command === "retired-reacquire") {
         const replacement = await createIntegrationRuntimeProcessOwnerBootstrap();
         result = await acquireRetainedIntegrationRuntimeRepositoryFence(fixture.repository, {
@@ -763,11 +1008,12 @@ async function childOwnerMode() {
 
 async function childLockMode() {
   const fixture = await openFixture(CHILD_ROOT, { lockWaitMs: 15_000 });
+  const lock = CHILD_MODE === "session-lock" ? fixture.sessionLock : fixture.repositoryLock;
   sendIpc({ type: "ready", pid: process.pid });
   process.on("message", async (message) => {
     if (message.command !== "hold") return;
     try {
-      await fixture.repositoryLock.runExclusive(async () => {
+      await lock.runExclusive(async () => {
         sendIpc({ type: "lock-held", id: message.id });
         await new Promise(() => {});
       }, { waitMs: 15_000 });
@@ -863,6 +1109,54 @@ async function expectChildCode(action, code) {
   }
   assert(problem, `expected child error ${code}`);
   assert.equal(problem.code, code, problem.message);
+}
+
+async function runNativeWriterSigkillMode() {
+  const rootPath = await realFs.mkdtemp(
+    path.join(os.tmpdir(), "aginti-phase-b-native-writer-sigkill-")
+  );
+  const children = [];
+  try {
+    const first = spawnChild("owner", rootPath);
+    children.push(first);
+    await first.waitEvent("ready");
+    const firstFence = await first.request("acquire");
+    assert.equal(firstFence.fence.generation, 1);
+
+    const lockHolder = spawnChild("session-lock", rootPath);
+    children.push(lockHolder);
+    await lockHolder.waitEvent("ready");
+    void lockHolder.request("hold").catch(() => {});
+    await lockHolder.waitEvent("lock-held");
+
+    const nativeSessionId = "aginti:phase-b-sigkill-native-writer";
+    const mutationId = "native-write-fence.sigkill-takeover";
+    const abandonedWrite = first.request("native-write", {
+      nativeSessionId,
+      mutationId,
+    }).catch(() => null);
+    await first.waitEvent("native-write-admitted");
+    await killAndWait(first);
+    await abandonedWrite;
+    await killAndWait(lockHolder);
+
+    const successor = spawnChild("owner", rootPath);
+    children.push(successor);
+    await successor.waitEvent("ready");
+    const successorFence = await successor.request("acquire");
+    assert.equal(successorFence.fence.generation, 2);
+    const successorWrite = await successor.request("native-write", {
+      nativeSessionId,
+      mutationId,
+    });
+    assert.equal(successorWrite.outcome, "committed");
+    assert.equal(successorWrite.persistenceRevision, 1);
+    await successor.request("close");
+    process.stdout.write("integration retained native-writer SIGKILL takeover: ok\n");
+  } finally {
+    for (const child of children) await killAndWait(child).catch(() => {});
+    await realFs.rm(rootPath, { recursive: true, force: true });
+  }
 }
 
 async function runMultiProcessMode() {
@@ -971,8 +1265,16 @@ async function runMultiProcessMode() {
 }
 
 async function runMain() {
+  await runNativeWriterSigkillMode();
   await runMultiProcessMode();
-  for (const mode of ["rename-before", "rename-after"]) {
+  for (const mode of [
+    "rename-before",
+    "rename-after",
+    "handoff-rename-before",
+    "handoff-rename-after",
+    "native-rename-before",
+    "native-rename-after",
+  ]) {
     const { stdout } = await execFileAsync(
       process.execPath,
       ["--experimental-test-module-mocks", fileURLToPath(import.meta.url), `--fault=${mode}`],
@@ -987,7 +1289,7 @@ if (FAULT_MODE) {
   await runFaultMode();
 } else if (CHILD_MODE === "owner") {
   await childOwnerMode();
-} else if (CHILD_MODE === "lock") {
+} else if (CHILD_MODE === "lock" || CHILD_MODE === "session-lock") {
   await childLockMode();
 } else {
   await runMain();

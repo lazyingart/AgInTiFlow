@@ -9,6 +9,7 @@ export { IntegrationAuthorityError, authorityFail };
 export {
   assertIntegrationRetainedFilePrimitives as assertRetainedProtectedFilePrimitives,
   assertIntegrationRetainedRegularFileLock as assertRetainedRegularFileLock,
+  retainedIntegrationRegularFileLockObjectIdentityDigest as retainedRegularFileLockObjectIdentityDigest,
   createIntegrationRetainedFilePrimitives as createRetainedProtectedFilePrimitives,
   openIntegrationRetainedRegularFileLock as openRetainedRegularFileLock,
 } from "./integration-storage-authority.js";

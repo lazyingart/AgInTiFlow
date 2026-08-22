@@ -20,7 +20,11 @@ import {
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_RUN_VERSION,
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_TARGET_REPLAY_RECEIPTS,
   INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_THREAD_VERSION,
+  INTEGRATION_RETAINED_SESSION_STATE_WRITE_FENCE_SEAL_VERSION,
   assertRetainedIntegrationNativeSessionRepositoryState,
+  assertRetainedIntegrationNativeSessionRepositoryStateUsesWriteFence,
+  bindRetainedIntegrationNativeSessionRepositoryStateWriteFence,
+  retainedIntegrationNativeSessionRepositoryStateSessionStoreBindingProof,
 } from "./integration-retained-native-session-repository-state.js";
 import { processOwnerLiveness as defaultProcessOwnerLiveness } from "./integration-durable-common.js";
 import { assertIntegrationRuntimeProcessOwnerBootstrap } from "./integration-runtime-process-owner-bootstrap.js";
@@ -221,6 +225,10 @@ export const INTEGRATION_RETAINED_RUNTIME_REPOSITORY_FENCE_HANDLE_VERSION =
   "aginti-retained-runtime-repository-fence-handle-v1";
 export const INTEGRATION_RETAINED_RUNTIME_REPOSITORY_FENCE_LEASE_VERSION =
   "aginti-retained-runtime-repository-fence-lease-v1";
+export const INTEGRATION_RETAINED_RUNTIME_NATIVE_WRITE_FENCE_VERSION =
+  "aginti-retained-runtime-native-write-fence-v2";
+export const INTEGRATION_RETAINED_RUNTIME_NATIVE_WRITE_FENCE_ATTESTATION_VERSION =
+  "aginti-retained-runtime-native-write-fence-attestation-v2";
 export const INTEGRATION_RETAINED_RUNTIME_REPOSITORY_MAINTENANCE_VERSION =
   "aginti-retained-runtime-repository-maintenance-v1";
 
@@ -393,6 +401,8 @@ const repositoryBrand = new NativeWeakMap();
 const recoveryCoordinatorBrand = new NativeWeakMap();
 const recoveryCoordinatorInternals = new NativeWeakMap();
 const repositoryFenceLeaseBrand = new NativeWeakMap();
+const nativeWriteFenceBrand = new NativeWeakMap();
+const nativeWriteFenceBySealedNamespace = new NativeMap();
 
 function repositoryFail(code, message, status = 503) {
   authorityFail(code, message, { status, details: ObjectFreeze(ObjectCreate(null)) });
@@ -1436,7 +1446,7 @@ export function createRetainedIntegrationRuntimeRepositorySurface(input = {}) {
   }
   const runtimeRoots = options.runtimeRoots;
   const attestation = buildAttestation(runtimeRoots);
-  const runtimeState = { heldFence: null };
+  const runtimeState = { heldFence: null, nativeWriteFence: null };
 
   async function loadSnapshot() {
     if (repositoryState.isClosed()) repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Repository storage is closed.");
@@ -2883,6 +2893,396 @@ export async function assertRetainedIntegrationRuntimeRepositoryFenceLeaseCurren
   });
 }
 
+function nativeWriteFenceFail(code, message, status = 409) {
+  repositoryFail(code, message, status);
+}
+
+function nativeWriteFenceAttestation(entry, bootstrap, leaseAuthority, sessionBinding) {
+  const repositorySealBindingDigest = contractDigest({
+    domain: "aginti-retained-runtime-native-write-fence-repository-seal-binding-v1",
+    repositoryPointerDigest: sessionBinding.repositoryPointerDigest,
+    repositoryKernelSealBindingDigest: sessionBinding.repositoryKernelSealBindingDigest,
+    sessionStateNamespaceDigest: sessionBinding.logicalNamespaceDigest,
+    sessionStateSealBindingDigest: sessionBinding.namespaceSealBindingDigest,
+    runtimeRepositoryAttestationDigest: entry.attestationDigest,
+  });
+  const sealUnsigned = frozenRecord({
+    schemaVersion: INTEGRATION_RETAINED_SESSION_STATE_WRITE_FENCE_SEAL_VERSION,
+    owner: "aginti",
+    authority: "aginti",
+    mode: "repository-fenced",
+    logicalNamespaceDigest: sessionBinding.logicalNamespaceDigest,
+    namespaceSealBindingDigest: sessionBinding.namespaceSealBindingDigest,
+    repositorySealBindingDigest,
+    repositoryAttestationDigest: entry.attestationDigest,
+  });
+  const sealDigest = contractDigest(sealUnsigned);
+  const unsigned = frozenRecord({
+    schemaVersion: INTEGRATION_RETAINED_RUNTIME_NATIVE_WRITE_FENCE_ATTESTATION_VERSION,
+    owner: "aginti",
+    authority: "aginti",
+    runtimeCapabilityEnabled: false,
+    publicServerCapabilityEnabled: false,
+    exactProcessOwnerBootstrapRequired: true,
+    exactRepositoryFenceLeaseRequired: true,
+    durableFenceValidationBeforeEveryCas: true,
+    synchronousAdmissionBeforeValidation: true,
+    cooperativeHandoffQuiescence: true,
+    staleWritesRejectedBeforeCas: true,
+    sigkillTakeoverRequiresDeathProof: true,
+    fullSessionStoreSidecarsFenced: false,
+    processOwnerBootstrapDigest: bootstrap.digest,
+    repositoryIdentityDigest: leaseAuthority.repositoryIdentityDigest,
+    repositoryAttestationDigest: leaseAuthority.repositoryAttestationDigest,
+    repositoryFenceGeneration: leaseAuthority.generation,
+    repositoryFenceOwnerDigest: leaseAuthority.ownerDigest,
+    repositoryFenceOwnerIdentityDigest: leaseAuthority.ownerIdentityDigest,
+    repositoryFenceDigest: leaseAuthority.fenceDigest,
+    repositoryFenceLeaseDigest: leaseAuthority.leaseDigest,
+    sessionStateNamespaceDigest: sessionBinding.logicalNamespaceDigest,
+    sessionStateAdmissionBindingDigest: sessionBinding.admissionBindingDigest,
+    sessionStateSealBindingDigest: sessionBinding.namespaceSealBindingDigest,
+    repositorySealBindingDigest,
+    sessionStateWriteFenceSealDigest: sealDigest,
+  });
+  return frozenRecord({ ...unsigned, digest: contractDigest(unsigned) });
+}
+
+function nativeWriteFenceEntry(value) {
+  if (!value || typeof value !== "object" || !weakMapHas(nativeWriteFenceBrand, value)) {
+    repositoryFail(
+      "INTEGRATION_NATIVE_WRITE_FENCE_UNAVAILABLE",
+      "Native-write fence lexical brand is invalid."
+    );
+  }
+  const state = weakMapGet(nativeWriteFenceBrand, value);
+  const unsignedAttestation = ObjectCreate(null);
+  const attestationKeys = ReflectOwnKeys(value.attestation || ObjectCreate(null));
+  for (let index = 0; index < attestationKeys.length; index += 1) {
+    const key = attestationKeys[index];
+    if (key !== "digest") unsignedAttestation[key] = value.attestation[key];
+  }
+  if (
+    state.fence !== value ||
+    value.schemaVersion !== INTEGRATION_RETAINED_RUNTIME_NATIVE_WRITE_FENCE_VERSION ||
+    value.attestation !== state.attestation ||
+    value.attestation.digest !== contractDigest(unsignedAttestation)
+  ) {
+    repositoryFail(
+      "INTEGRATION_NATIVE_WRITE_FENCE_UNAVAILABLE",
+      "Native-write fence attestation is invalid."
+    );
+  }
+  return state;
+}
+
+export function assertRetainedIntegrationRuntimeNativeWriteFenceLexical(value, expected = {}) {
+  const state = nativeWriteFenceEntry(value);
+  if (
+    expected.repository && state.surface !== expected.repository ||
+    expected.processOwnerBootstrap && state.processOwnerBootstrap !== expected.processOwnerBootstrap ||
+    expected.repositoryFenceLease && state.repositoryFenceLease !== expected.repositoryFenceLease
+  ) {
+    repositoryFail(
+      "INTEGRATION_NATIVE_WRITE_FENCE_UNAVAILABLE",
+      "Native-write fence authority binding changed."
+    );
+  }
+  assertIntegrationRuntimeProcessOwnerBootstrap(state.processOwnerBootstrap);
+  assertRetainedIntegrationRuntimeRepositoryFenceLease(state.surface, state.repositoryFenceLease);
+  return value;
+}
+
+export function assertRetainedIntegrationRuntimeNativeWriteFence(value, expected = {}) {
+  const state = nativeWriteFenceEntry(
+    assertRetainedIntegrationRuntimeNativeWriteFenceLexical(value, expected)
+  );
+  assertRetainedIntegrationNativeSessionRepositoryStateUsesWriteFence(
+    state.entry.repositoryState,
+    state.entry.options.repositoryStateExpected,
+    value
+  );
+  return value;
+}
+
+export async function assertRetainedIntegrationRuntimeNativeWriteFenceCurrent(
+  value,
+  expected = {}
+) {
+  const fence = assertRetainedIntegrationRuntimeNativeWriteFence(value, expected);
+  const state = nativeWriteFenceEntry(fence);
+  if (state.initializationPromise) await state.initializationPromise;
+  if (!state.bindingProof) {
+    nativeWriteFenceFail(
+      "INTEGRATION_NATIVE_WRITE_FENCE_UNAVAILABLE",
+      "Native-write fence SessionStateStore binding is not initialized."
+    );
+  }
+  if (state.quiescing || state.quiesced) {
+    nativeWriteFenceFail(
+      "INTEGRATION_NATIVE_WRITE_FENCE_STALE",
+      "Native-write fence is quiescing, quiesced, or stale."
+    );
+  }
+  const current = await assertRetainedIntegrationRuntimeRepositoryFenceLeaseCurrent(
+    state.surface,
+    state.repositoryFenceLease
+  );
+  if (
+    current.generation !== state.authority.generation ||
+    current.ownerDigest !== state.authority.ownerDigest ||
+    current.ownerIdentityDigest !== state.authority.ownerIdentityDigest ||
+    current.fenceDigest !== state.authority.fenceDigest ||
+    state.quiescing ||
+    state.quiesced
+  ) {
+    nativeWriteFenceFail(
+      "INTEGRATION_NATIVE_WRITE_FENCE_STALE",
+      "Native-write fence is not usable under the durably current repository lease."
+    );
+  }
+  return fence;
+}
+
+export function retainedIntegrationRuntimeNativeWriteFenceActivityProof(value) {
+  const state = nativeWriteFenceEntry(value);
+  return frozenRecord({
+    activeWrites: state.activeWrites,
+    quiescing: state.quiescing,
+    quiesced: state.quiesced,
+    initializationPending: NativeBoolean(state.initializationPromise && !state.bindingProof),
+  });
+}
+
+function releaseNativeWriteAdmission(state) {
+  state.activeWrites -= 1;
+  if (state.activeWrites !== 0) return;
+  const waiters = state.drainWaiters;
+  state.drainWaiters = new NativeArray();
+  for (let index = 0; index < waiters.length; index += 1) waiters[index]();
+}
+
+export function admitRetainedIntegrationRuntimeNativeWriteFence(value, operation) {
+  const state = nativeWriteFenceEntry(value);
+  if (typeof operation !== "function" || utilTypes.isProxy(operation)) {
+    repositoryFail(
+      "INTEGRATION_NATIVE_WRITE_FENCE_UNAVAILABLE",
+      "Native-write fence operation is invalid."
+    );
+  }
+  if (state.quiescing || state.quiesced) {
+    nativeWriteFenceFail(
+      "INTEGRATION_NATIVE_WRITE_FENCE_STALE",
+      "Native-write fence is quiesced or stale."
+    );
+  }
+  state.activeWrites += 1;
+  return (async () => {
+    try {
+      const current = await assertRetainedIntegrationRuntimeRepositoryFenceLeaseCurrent(
+        state.surface,
+        state.repositoryFenceLease
+      );
+      if (
+        current.generation !== state.authority.generation ||
+        current.ownerDigest !== state.authority.ownerDigest ||
+        current.ownerIdentityDigest !== state.authority.ownerIdentityDigest ||
+        current.fenceDigest !== state.authority.fenceDigest
+      ) {
+        nativeWriteFenceFail(
+          "INTEGRATION_NATIVE_WRITE_FENCE_STALE",
+          "Native-write fence is no longer durably current."
+        );
+      }
+      return await operation();
+    } finally {
+      releaseNativeWriteAdmission(state);
+    }
+  })();
+}
+
+function beginNativeWriteFenceQuiescence(state) {
+  if (state.quiesced) {
+    nativeWriteFenceFail(
+      "INTEGRATION_NATIVE_WRITE_FENCE_STALE",
+      "Native-write fence is already permanently quiesced."
+    );
+  }
+  state.quiescing = true;
+  if (state.activeWrites === 0) return new NativePromise((resolve) => resolve());
+  return new NativePromise((resolve) => arrayPush(state.drainWaiters, resolve));
+}
+
+async function reopenNativeWriteFenceOnlyIfStillCurrent(state) {
+  try {
+    const current = await assertRetainedIntegrationRuntimeRepositoryFenceLeaseCurrent(
+      state.surface,
+      state.repositoryFenceLease
+    );
+    if (
+      current.generation === state.authority.generation &&
+      current.ownerDigest === state.authority.ownerDigest &&
+      current.ownerIdentityDigest === state.authority.ownerIdentityDigest &&
+      current.fenceDigest === state.authority.fenceDigest
+    ) {
+      state.quiescing = false;
+      return true;
+    }
+  } catch {
+    // Fail closed whenever the post-error durable fence cannot be proven unchanged.
+  }
+  state.quiesced = true;
+  return false;
+}
+
+export async function createRetainedIntegrationRuntimeNativeWriteFence(surface, inputPayload) {
+  const entry = retainedRepositoryEntry(surface);
+  exactPayload(
+    inputPayload,
+    ["processOwnerBootstrap", "repositoryFenceLease"],
+    [],
+    "native-write fence factory"
+  );
+  const processOwnerBootstrap = brandedProcessOwnerBootstrapFromPayload(
+    inputPayload,
+    "processOwnerBootstrap",
+    ["processOwnerBootstrap", "repositoryFenceLease"],
+    "native-write fence factory"
+  );
+  const repositoryFenceLease = inputPayload.repositoryFenceLease;
+  const authority = assertRetainedIntegrationRuntimeRepositoryFenceLease(
+    surface,
+    repositoryFenceLease
+  );
+  if (authority.ownerDigest !== processOwnerBootstrap.ownerDigest) {
+    nativeWriteFenceFail(
+      "INTEGRATION_NATIVE_WRITE_FENCE_STALE",
+      "Native-write fence owner does not match the repository lease."
+    );
+  }
+  if (entry.runtimeState.nativeWriteFence) {
+    const existingFence = assertRetainedIntegrationRuntimeNativeWriteFenceLexical(
+      entry.runtimeState.nativeWriteFence,
+      { repository: surface, processOwnerBootstrap, repositoryFenceLease }
+    );
+    const existingState = nativeWriteFenceEntry(existingFence);
+    if (existingState.initializationPromise) await existingState.initializationPromise;
+    if (existingState.quiescing || existingState.quiesced) {
+      nativeWriteFenceFail(
+        "INTEGRATION_NATIVE_WRITE_FENCE_STALE",
+        "Native-write fence is quiesced or stale."
+      );
+    }
+    return assertRetainedIntegrationRuntimeNativeWriteFence(
+      existingFence,
+      { repository: surface, processOwnerBootstrap, repositoryFenceLease }
+    );
+  }
+  await assertRetainedIntegrationRuntimeRepositoryFenceLeaseCurrent(surface, repositoryFenceLease);
+  const sessionBinding = retainedIntegrationNativeSessionRepositoryStateSessionStoreBindingProof(
+    entry.repositoryState,
+    entry.options.repositoryStateExpected
+  );
+  const attestation = nativeWriteFenceAttestation(
+    entry,
+    processOwnerBootstrap,
+    authority,
+    sessionBinding
+  );
+  const priorNamespaceFence = mapGet(
+    nativeWriteFenceBySealedNamespace,
+    attestation.sessionStateWriteFenceSealDigest
+  );
+  if (priorNamespaceFence) {
+    const priorState = nativeWriteFenceEntry(priorNamespaceFence);
+    let priorRepositoryClosed = true;
+    try {
+      priorRepositoryClosed = priorState.entry.repositoryState.isClosed();
+    } catch {
+      priorRepositoryClosed = true;
+    }
+    if (!priorRepositoryClosed) {
+      nativeWriteFenceFail(
+        "INTEGRATION_NATIVE_WRITE_FENCE_UNAVAILABLE",
+        "Retained namespace already has a live native-write fence authority."
+      );
+    }
+    priorState.quiescing = true;
+    priorState.quiesced = true;
+  }
+  const fence = frozenRecord({
+    schemaVersion: INTEGRATION_RETAINED_RUNTIME_NATIVE_WRITE_FENCE_VERSION,
+    attestation,
+  });
+  const state = {
+    fence,
+    attestation,
+    surface,
+    entry,
+    processOwnerBootstrap,
+    repositoryFenceLease,
+    authority,
+    // Seal installation is itself an admitted operation. Publishing this count
+    // before the lexical guard makes a concurrent handoff synchronously close
+    // admission and then drain the entire bind/revalidation sequence.
+    activeWrites: 1,
+    quiescing: false,
+    quiesced: false,
+    drainWaiters: new NativeArray(),
+    bindingProof: null,
+    initializationPromise: null,
+  };
+  weakMapSet(nativeWriteFenceBrand, fence, state);
+  mapSet(nativeWriteFenceBySealedNamespace, attestation.sessionStateWriteFenceSealDigest, fence);
+  entry.runtimeState.nativeWriteFence = fence;
+  state.initializationPromise = (async () => {
+    try {
+      state.bindingProof = await bindRetainedIntegrationNativeSessionRepositoryStateWriteFence(
+        entry.repositoryState,
+        entry.options.repositoryStateExpected,
+        fence
+      );
+      if (state.bindingProof.sealDigest !== attestation.sessionStateWriteFenceSealDigest) {
+        repositoryFail(
+          "INTEGRATION_NATIVE_WRITE_FENCE_UNAVAILABLE",
+          "Native-write fence seal binding diverged from its attestation."
+        );
+      }
+      const current = await assertRetainedIntegrationRuntimeRepositoryFenceLeaseCurrent(
+        surface,
+        repositoryFenceLease
+      );
+      if (
+        current.generation !== authority.generation ||
+        current.ownerDigest !== authority.ownerDigest ||
+        current.ownerIdentityDigest !== authority.ownerIdentityDigest ||
+        current.fenceDigest !== authority.fenceDigest ||
+        state.quiescing ||
+        state.quiesced
+      ) {
+        nativeWriteFenceFail(
+          "INTEGRATION_NATIVE_WRITE_FENCE_STALE",
+          "Native-write fence changed or quiesced during SessionStateStore seal installation."
+        );
+      }
+      return fence;
+    } catch (error) {
+      state.quiesced = true;
+      if (entry.runtimeState.nativeWriteFence === fence) {
+        entry.runtimeState.nativeWriteFence = null;
+      }
+      throw error;
+    } finally {
+      releaseNativeWriteAdmission(state);
+    }
+  })();
+  await state.initializationPromise;
+  return assertRetainedIntegrationRuntimeNativeWriteFence(
+    fence,
+    { repository: surface, processOwnerBootstrap, repositoryFenceLease }
+  );
+}
+
 export function assertRetainedIntegrationRuntimeRepositorySurface(value) {
   if (!weakMapHas(repositoryBrand, value)) {
     repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Repository surface lexical brand is invalid.");
@@ -2892,9 +3292,9 @@ export function assertRetainedIntegrationRuntimeRepositorySurface(value) {
 }
 
 export const INTEGRATION_RETAINED_RUNTIME_RECOVERY_COORDINATOR_VERSION =
-  "aginti-retained-runtime-recovery-coordinator-v2";
+  "aginti-retained-runtime-recovery-coordinator-v3";
 export const INTEGRATION_RETAINED_RUNTIME_RECOVERY_COORDINATOR_ATTESTATION_VERSION =
-  "aginti-retained-runtime-recovery-coordinator-attestation-v2";
+  "aginti-retained-runtime-recovery-coordinator-attestation-v3";
 
 export function createRetainedIntegrationRuntimeRecoveryCoordinator(input = {}) {
   if (!input || typeof input !== "object" || ArrayIsArray(input) || utilTypes.isProxy(input)) {
@@ -2902,11 +3302,12 @@ export function createRetainedIntegrationRuntimeRecoveryCoordinator(input = {}) 
   }
   const factoryKeys = ReflectOwnKeys(input);
   if (
-    factoryKeys.length !== 4 ||
+    factoryKeys.length !== 5 ||
     !arraySome(factoryKeys, (key) => key === "repository") ||
     !arraySome(factoryKeys, (key) => key === "nativeExecutionEvidence") ||
     !arraySome(factoryKeys, (key) => key === "processOwnerBootstrap") ||
-    !arraySome(factoryKeys, (key) => key === "repositoryFenceLease")
+    !arraySome(factoryKeys, (key) => key === "repositoryFenceLease") ||
+    !arraySome(factoryKeys, (key) => key === "nativeWriteFence")
   ) {
     repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Retained recovery coordinator factory fields are invalid.");
   }
@@ -2934,6 +3335,14 @@ export function createRetainedIntegrationRuntimeRecoveryCoordinator(input = {}) 
       "Recovery coordinator process owner does not match the acquired repository fence."
     );
   }
+  const nativeWriteFence = assertRetainedIntegrationRuntimeNativeWriteFence(
+    options.nativeWriteFence,
+    {
+      repository,
+      processOwnerBootstrap,
+      repositoryFenceLease,
+    }
+  );
   const nativeExecutionEvidence = assertRetainedIntegrationNativeExecutionEvidence(
     options.nativeExecutionEvidence,
     {
@@ -2941,6 +3350,7 @@ export function createRetainedIntegrationRuntimeRecoveryCoordinator(input = {}) 
       repositoryState: internals.repositoryState,
       repositoryStateExpected: internals.repositoryStateExpected,
       storageNamespaceDigest: internals.repositoryState.attestation.sessionStateNamespaceDigest,
+      nativeWriteFence,
     }
   );
   const repositorySessionStateExpectedDigest = contractDigest(
@@ -2969,6 +3379,9 @@ export function createRetainedIntegrationRuntimeRecoveryCoordinator(input = {}) 
     crossProcessExecutionFence: true,
     lexicalProcessOwnerBootstrapRequired: true,
     lexicalRepositoryFenceLeaseRequired: true,
+    exactNativeWriteFenceRequired: true,
+    durableNativeWriteFenceBeforeEvidenceInspection: true,
+    nativeWriteFenceAttestationDigest: nativeWriteFence.attestation.digest,
     staleFenceFailsClosed: true,
     successorRecoveryFromExactEvidence: true,
     enablementReady: false,
@@ -2989,6 +3402,7 @@ export function createRetainedIntegrationRuntimeRecoveryCoordinator(input = {}) 
   const coordinatorState = {
     repository,
     nativeExecutionEvidence,
+    nativeWriteFence,
     processOwnerBootstrap,
     repositoryFenceLease,
     internals,
@@ -3014,10 +3428,13 @@ export function createRetainedIntegrationRuntimeRecoveryCoordinator(input = {}) 
           "Recovery coordinator process owner no longer matches the repository fence."
         );
       }
-      return internals.resolveRecoveryHeldRun(
-        nativeExecutionEvidence,
-        inputPayload,
-        currentFenceAuthority
+      return admitRetainedIntegrationRuntimeNativeWriteFence(
+        coordinatorState.nativeWriteFence,
+        () => internals.resolveRecoveryHeldRun(
+          nativeExecutionEvidence,
+          inputPayload,
+          currentFenceAuthority
+        )
       );
     },
     isClosed() {
@@ -3045,7 +3462,8 @@ export function assertRetainedIntegrationRuntimeRecoveryCoordinator(value, expec
     expected.repository && state.repository !== expected.repository ||
     expected.nativeExecutionEvidence && state.nativeExecutionEvidence !== expected.nativeExecutionEvidence ||
     expected.processOwnerBootstrap && state.processOwnerBootstrap !== expected.processOwnerBootstrap ||
-    expected.repositoryFenceLease && state.repositoryFenceLease !== expected.repositoryFenceLease
+    expected.repositoryFenceLease && state.repositoryFenceLease !== expected.repositoryFenceLease ||
+    expected.nativeWriteFence && state.nativeWriteFence !== expected.nativeWriteFence
   ) {
     repositoryFail("INTEGRATION_REPOSITORY_UNAVAILABLE", "Retained recovery coordinator binding changed.");
   }
@@ -3060,6 +3478,11 @@ export function assertRetainedIntegrationRuntimeRecoveryCoordinator(value, expec
       "Recovery coordinator process owner no longer matches the repository fence."
     );
   }
+  assertRetainedIntegrationRuntimeNativeWriteFence(state.nativeWriteFence, {
+    repository: state.repository,
+    processOwnerBootstrap: state.processOwnerBootstrap,
+    repositoryFenceLease: state.repositoryFenceLease,
+  });
   return value;
 }
 
@@ -3196,18 +3619,32 @@ export async function handoffRetainedIntegrationRuntimeRepositoryFence(surface, 
   const entry = retainedRepositoryEntry(surface);
   const payload = exactPayload(
     inputPayload,
-    ["currentProcessOwnerBootstrap", "successorProcessOwner"],
+    ["currentProcessOwnerBootstrap", "successorProcessOwner", "nativeWriteFence"],
     [],
     "repository fence handoff"
   );
   const currentBootstrap = brandedProcessOwnerBootstrapFromPayload(
     inputPayload,
     "currentProcessOwnerBootstrap",
-    ["currentProcessOwnerBootstrap", "successorProcessOwner"],
+    ["currentProcessOwnerBootstrap", "successorProcessOwner", "nativeWriteFence"],
     "repository fence handoff"
   );
   const currentOwner = assertProcessOwner(currentBootstrap.processOwner, "current repository fence owner");
   const successorOwner = assertProcessOwner(payload.successorProcessOwner, "successor repository fence owner");
+  const nativeWriteFence = assertRetainedIntegrationRuntimeNativeWriteFenceLexical(
+    inputPayload.nativeWriteFence,
+    {
+      repository: surface,
+      processOwnerBootstrap: inputPayload.currentProcessOwnerBootstrap,
+    }
+  );
+  const nativeWriteState = nativeWriteFenceEntry(nativeWriteFence);
+  if (nativeWriteState.processOwnerBootstrap !== currentBootstrap) {
+    nativeWriteFenceFail(
+      "INTEGRATION_NATIVE_WRITE_FENCE_UNAVAILABLE",
+      "Fence handoff requires the exact native-write bootstrap capability."
+    );
+  }
   if (processIdentityDigest(currentOwner) === processIdentityDigest(successorOwner)) {
     conflict("INTEGRATION_REPOSITORY_FENCE_HANDOFF_REFUSED", "Fence handoff requires a distinct process identity.");
   }
@@ -3217,44 +3654,51 @@ export async function handoffRetainedIntegrationRuntimeRepositoryFence(surface, 
   ) {
     conflict("INTEGRATION_REPOSITORY_FENCE_HANDOFF_REFUSED", "Fence handoff participants must be provably alive.");
   }
-  for (let attempt = 0; attempt < entry.options.maxCasRetries; attempt += 1) {
-    const snapshot = await entry.repositoryState.loadDomainSnapshot();
-    const current = assertCurrentFence(snapshot.state, entry.runtimeState);
-    if (current.ownerDigest !== contractDigest(currentOwner)) {
-      conflict("INTEGRATION_REPOSITORY_FENCE_STALE", "Fence handoff caller is not the current owner.");
-    }
-    let retiredOwners = await liveRetiredOwners(entry, current.retiredOwners);
-    const successorIdentityDigest = processIdentityDigest(successorOwner);
-    if (arraySome(retiredOwners, (retired) => retired.processIdentityDigest === successorIdentityDigest)) {
-      conflict("INTEGRATION_REPOSITORY_FENCE_RETIRED", "A retired live process identity cannot receive a fence handoff.");
-    }
-    retiredOwners = sortedById(arrayConcat(retiredOwners, [
-      retiredOwnerRecord(current.owner, current.generation, monotonicRepositoryTimestamp(snapshot.state, nowFrom(entry.options.now)), "handoff"),
-    ]), "processIdentityDigest");
-    if (retiredOwners.length > INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_RETIRED_FENCE_OWNERS) {
-      conflict("INTEGRATION_REPOSITORY_FENCE_FULL", "Repository retired-owner fence inventory is exhausted.");
-    }
-    const issuedAt = monotonicRepositoryTimestamp(snapshot.state, nowFrom(entry.options.now));
-    const fence = makeReconciliationFence(current, successorOwner, issuedAt, retiredOwners);
-    const state = domainWith(snapshot.state, snapshot.snapshotRevision + 1, { reconciliationFence: fence });
-    try {
-      const committed = await entry.repositoryState.compareAndSwapDomainSnapshot({
-        mutationId: `repository.fence.handoff.${fence.digest}`,
-        expectedSnapshotRevision: snapshot.snapshotRevision,
-        expectedIntegrityDigest: snapshot.integrityDigest,
-        state,
-      });
-      if (committed.snapshot.state.reconciliationFence?.digest !== fence.digest) {
-        repositoryFail("INTEGRATION_REPOSITORY_CORRUPT", "Committed repository fence handoff is missing.");
+  await beginNativeWriteFenceQuiescence(nativeWriteState);
+  try {
+    for (let attempt = 0; attempt < entry.options.maxCasRetries; attempt += 1) {
+      const snapshot = await entry.repositoryState.loadDomainSnapshot();
+      const current = assertCurrentFence(snapshot.state, entry.runtimeState);
+      if (current.ownerDigest !== contractDigest(currentOwner)) {
+        conflict("INTEGRATION_REPOSITORY_FENCE_STALE", "Fence handoff caller is not the current owner.");
       }
-      entry.runtimeState.heldFence = null;
-      return frozenRecord({ outcome: committed.outcome, fence: cloneRecord(fenceHandle(fence)) });
-    } catch (error) {
-      if (setHas(CAS_RETRY_CODES, errorCode(error))) continue;
-      throw error;
+      let retiredOwners = await liveRetiredOwners(entry, current.retiredOwners);
+      const successorIdentityDigest = processIdentityDigest(successorOwner);
+      if (arraySome(retiredOwners, (retired) => retired.processIdentityDigest === successorIdentityDigest)) {
+        conflict("INTEGRATION_REPOSITORY_FENCE_RETIRED", "A retired live process identity cannot receive a fence handoff.");
+      }
+      retiredOwners = sortedById(arrayConcat(retiredOwners, [
+        retiredOwnerRecord(current.owner, current.generation, monotonicRepositoryTimestamp(snapshot.state, nowFrom(entry.options.now)), "handoff"),
+      ]), "processIdentityDigest");
+      if (retiredOwners.length > INTEGRATION_RETAINED_NATIVE_SESSION_REPOSITORY_MAX_RETIRED_FENCE_OWNERS) {
+        conflict("INTEGRATION_REPOSITORY_FENCE_FULL", "Repository retired-owner fence inventory is exhausted.");
+      }
+      const issuedAt = monotonicRepositoryTimestamp(snapshot.state, nowFrom(entry.options.now));
+      const fence = makeReconciliationFence(current, successorOwner, issuedAt, retiredOwners);
+      const state = domainWith(snapshot.state, snapshot.snapshotRevision + 1, { reconciliationFence: fence });
+      try {
+        const committed = await entry.repositoryState.compareAndSwapDomainSnapshot({
+          mutationId: `repository.fence.handoff.${fence.digest}`,
+          expectedSnapshotRevision: snapshot.snapshotRevision,
+          expectedIntegrityDigest: snapshot.integrityDigest,
+          state,
+        });
+        if (committed.snapshot.state.reconciliationFence?.digest !== fence.digest) {
+          repositoryFail("INTEGRATION_REPOSITORY_CORRUPT", "Committed repository fence handoff is missing.");
+        }
+        nativeWriteState.quiesced = true;
+        entry.runtimeState.heldFence = null;
+        return frozenRecord({ outcome: committed.outcome, fence: cloneRecord(fenceHandle(fence)) });
+      } catch (error) {
+        if (setHas(CAS_RETRY_CODES, errorCode(error))) continue;
+        throw error;
+      }
     }
+    repositoryFail("INTEGRATION_REPOSITORY_BUSY", "Repository fence handoff retry budget was exhausted.", 429);
+  } catch (error) {
+    await reopenNativeWriteFenceOnlyIfStillCurrent(nativeWriteState);
+    throw error;
   }
-  repositoryFail("INTEGRATION_REPOSITORY_BUSY", "Repository fence handoff retry budget was exhausted.", 429);
 }
 
 export async function compactRetainedIntegrationRuntimeRepository(surface) {

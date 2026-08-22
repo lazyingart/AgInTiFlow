@@ -190,6 +190,7 @@ const ATTESTATION_KEYS = Object.freeze([
   "lockFileNameDigest",
   "pointerDigest",
   "admissionBindingDigest",
+  "namespaceSealBindingDigest",
   "maxSnapshotBytes",
   "maxJsonDepth",
   "maxJsonNodes",
