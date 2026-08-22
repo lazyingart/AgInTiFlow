@@ -22,6 +22,8 @@ import {
   recordExactOutputProgress,
   recordStaticDiscoveryProgress,
   rememberCompletedDeepResearch,
+  repeatedNoProgressToolBlock,
+  repeatedSuccessfulMutationBlock,
   repeatedStaticToolBlock,
   shouldResetStaticDiscoveryPhase,
 } from "../src/agent-runner.js";
@@ -59,6 +61,39 @@ try {
   assert(normalizeDynamicStepsMode("off") === "off", "dynamic mode off did not normalize");
   assert(normalizeDynamicStepsMode("always") === "on", "dynamic mode always did not normalize to on");
   assert(normalizeDynamicStepsMode("smart") === "auto", "dynamic mode smart did not normalize to auto");
+  const inheritedBudget = createStepBudgetState(
+    { maxSteps: 16, dynamicSteps: "off" },
+    {
+      stepsCompleted: 0,
+      meta: {
+        stepBudget: {
+          initialMaxSteps: 30,
+          currentMaxSteps: 40,
+          extensionsUsed: 1,
+          lastExtensionStep: 28,
+        },
+      },
+    }
+  );
+  assert(inheritedBudget.currentMaxSteps === 40, "ordinary resume did not retain its prior expanded budget");
+  const explicitBudget = createStepBudgetState(
+    { maxSteps: 16, dynamicSteps: "off", resetStepBudget: true },
+    {
+      stepsCompleted: 0,
+      meta: {
+        stepBudget: {
+          initialMaxSteps: 30,
+          currentMaxSteps: 40,
+          extensionsUsed: 1,
+          lastExtensionStep: 28,
+        },
+      },
+    }
+  );
+  assert(explicitBudget.initialMaxSteps === 16, "explicit resumed max-steps did not reset the initial budget");
+  assert(explicitBudget.currentMaxSteps === 16, "a prior extension overrode explicit resumed max-steps");
+  assert(explicitBudget.extensionsUsed === 0, "explicit resumed max-steps retained stale extension usage");
+  assert(explicitBudget.resetFromExplicitOverride, "explicit resumed max-steps reset was not recorded");
   assert(isStaticDiscoveryToolCall("run_command", { command: "ls -la ../Musia" }), "static ls discovery was not classified");
   assert(isStaticDiscoveryToolCall("read_image", { path: "snapshot.png" }), "image perception was not classified as static discovery");
   assert(
@@ -96,6 +131,126 @@ try {
       { commandCwd: workspace }
     ) === null,
     "a bounded continuation read was mistaken for an exact reread"
+  );
+  const repeatedProbeArgs = { command: "python -c \"print(100.0)\"" };
+  const repeatedProbeSignature = staticToolCallSignature("run_command", repeatedProbeArgs, {
+    commandCwd: workspace,
+  });
+  const repeatedProbeState = {
+    meta: {
+      toolLoop: {
+        stagnationEpoch: 4,
+        recent: [
+          {
+            signature: repeatedProbeSignature,
+            toolName: "run_command",
+            ok: true,
+            blocked: false,
+            noProgressProbe: true,
+            outcomeFingerprint: "same-output",
+            stagnationEpoch: 4,
+          },
+          {
+            signature: repeatedProbeSignature,
+            toolName: "run_command",
+            ok: true,
+            blocked: false,
+            noProgressProbe: true,
+            outcomeFingerprint: "same-output",
+            stagnationEpoch: 4,
+          },
+        ],
+      },
+    },
+  };
+  assert(
+    repeatedNoProgressToolBlock(repeatedProbeState, "run_command", repeatedProbeArgs, {
+      commandCwd: workspace,
+    })?.category === "repeated-no-progress-call",
+    "a third identical unchanged shell probe was not blocked"
+  );
+  assert(
+    repeatedNoProgressToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            stagnationEpoch: 5,
+            recent: repeatedProbeState.meta.toolLoop.recent,
+          },
+        },
+      },
+      "run_command",
+      repeatedProbeArgs,
+      { commandCwd: workspace }
+    ) === null,
+    "a new mutation epoch did not reopen bounded validation"
+  );
+  assert(
+    repeatedNoProgressToolBlock(
+      repeatedProbeState,
+      "run_command",
+      { command: "python monitor.py --status" },
+      { commandCwd: workspace }
+    ) === null,
+    "an explicit status polling command was incorrectly blocked"
+  );
+  const repeatedPatchArgs = {
+    path: "analysis.py",
+    search: "signal = raw_signal",
+    replace: "signal = raw_signal - offset",
+    searchHash: "search-hash",
+    replaceHash: "replace-hash",
+  };
+  const repeatedPatchSignature = staticToolCallSignature("apply_patch", repeatedPatchArgs, {
+    commandCwd: workspace,
+  });
+  const repeatedPatchState = {
+    meta: {
+      toolLoop: {
+        stagnationEpoch: 7,
+        recent: [
+          {
+            signature: repeatedPatchSignature,
+            toolName: "apply_patch",
+            ok: true,
+            blocked: false,
+            successfulMutation: true,
+            stagnationEpoch: 7,
+          },
+        ],
+      },
+    },
+  };
+  assert(
+    repeatedSuccessfulMutationBlock(repeatedPatchState, "apply_patch", repeatedPatchArgs, {
+      commandCwd: workspace,
+    })?.category === "repeated-successful-mutation",
+    "an exact already-successful patch was not blocked in the same mutation epoch"
+  );
+  assert(
+    repeatedSuccessfulMutationBlock(
+      {
+        meta: {
+          toolLoop: {
+            stagnationEpoch: 8,
+            recent: repeatedPatchState.meta.toolLoop.recent,
+          },
+        },
+      },
+      "apply_patch",
+      repeatedPatchArgs,
+      { commandCwd: workspace }
+    ) === null,
+    "a user continuation did not reopen an intentional exact patch"
+  );
+  assert(
+    repeatedSuccessfulMutationBlock(
+      repeatedPatchState,
+      "apply_patch",
+      { ...repeatedPatchArgs, replaceHash: "different-replacement-hash" },
+      { commandCwd: workspace }
+    ) === null,
+    "a materially different patch was mistaken for an exact replay"
   );
   const completedResearchState = {
     goal: "Create one cited report",
@@ -639,6 +794,24 @@ try {
   assert(extension.data?.approvedExtraSteps > 0, "dynamic budget extension did not record approved extra steps");
   const state = await store.loadState();
   assert(state.meta?.stepBudget?.extensionsUsed === 1, "dynamic budget state did not persist extension count");
+
+  const resumed = await runAgent({
+    ...config,
+    goal: "Create notes/explicit-resume-budget.md with one concise line.",
+    resume: run.sessionId,
+    sessionId: run.sessionId,
+    maxSteps: 2,
+    dynamicSteps: "off",
+    runtimePatch: { maxSteps: 2, dynamicSteps: "off" },
+    expectedRuntimeRevision: state.meta?.runtimeConfig?.revision,
+  });
+  assert(!resumed.stopped, "explicit bounded resume stopped before completing its simple task");
+  const resumedEvents = await store.loadEvents();
+  const resumedBudget = resumedEvents.filter((event) => event.type === "budget.initialized").at(-1)?.data;
+  assert(resumedBudget?.initialMaxSteps === 2, "runAgent did not apply explicit resumed max-steps as the initial budget");
+  assert(resumedBudget?.currentMaxSteps === 2, "runAgent inherited an older expanded budget over explicit resumed max-steps");
+  assert(resumedBudget?.extensionsUsed === 0, "runAgent retained stale extension usage after an explicit resumed max-steps patch");
+  assert(resumedBudget?.resetFromExplicitOverride === true, "runAgent did not record the explicit budget reset boundary");
 
   await fs.rm(tempRoot, { recursive: true, force: true });
   console.log("smoke-dynamic-step-budget ok");

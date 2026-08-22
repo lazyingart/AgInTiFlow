@@ -5,7 +5,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "playwright";
-import { createClient, createPlan, requestNextStep } from "./model-client.js";
+import { createClient, createPlan, requestNextStep, resolveModelTimeoutMs } from "./model-client.js";
 import { SessionStore } from "./session-store.js";
 import { assertIntegrationRunAgentInvocation } from "./integration-session-persistence.js";
 import { captureSnapshot } from "./snapshot.js";
@@ -113,6 +113,7 @@ import {
   toolContractFromResponse,
 } from "./tool-contract.js";
 import {
+  compactTextForTokenBudget,
   createContextBudgetState,
   decideContextCompaction,
   estimateMessageChars,
@@ -128,6 +129,17 @@ const previewServers = new Map();
 const GOAL_HISTORY_LIMIT = 24;
 const GOAL_PREVIEW_LIMIT = 2000;
 const STATIC_DISCOVERY_CONVERGENCE_LIMIT = 14;
+const MAX_COMPLETION_EVIDENCE_REPAIR_ATTEMPTS = 4;
+const COMPLETION_REPAIR_PROGRESS_EVENT_TYPES = new Set([
+  "tool.completed",
+  "tool.failed",
+  "tool.blocked",
+  "file.changed",
+  "canvas.item",
+  "canvas.selected",
+  "image.generated",
+  "long_job.started",
+]);
 const PLAIN_TEXT_FILE_EXTENSIONS = new Set([
   ".c",
   ".cc",
@@ -604,6 +616,161 @@ function summarizeRetainedSourceEvidence(messages = [], limit = 28) {
   return [...bySource.values()].slice(-Math.max(1, Number(limit) || 28));
 }
 
+const COMPACTION_STATE_TOOL_NAMES = new Set([
+  "inspect_project",
+  "read_file",
+  "list_files",
+  "search_files",
+  "apply_patch",
+  "write_file",
+  "run_command",
+]);
+
+function compactPathItems(items, limit = 24, fields = ["path", "type", "size", "kind"]) {
+  if (!Array.isArray(items)) return [];
+  return items.slice(0, limit).map((item) => {
+    if (typeof item === "string") return compactSingleLine(item, 320);
+    if (!item || typeof item !== "object") return compactSingleLine(item, 320);
+    const compacted = {};
+    for (const field of fields) {
+      if (item[field] !== undefined) compacted[field] = item[field];
+    }
+    return compacted;
+  });
+}
+
+function compactRetainedToolPayload(toolName, payload = {}, args = {}) {
+  const result = {
+    ok: payload.ok !== false,
+    toolName,
+  };
+  const sourcePath = String(payload.path || args.path || "").trim();
+  if (sourcePath) result.path = sourcePath;
+  if (payload.blocked) result.blocked = true;
+  if (payload.skipped) result.skipped = true;
+  if (payload.reason) result.reason = compactSingleLine(payload.reason, 500);
+  if (payload.error) result.error = compactSingleLine(payload.error, 500);
+
+  if (toolName === "inspect_project") {
+    result.summary = compactSingleLine(payload.summary, 500);
+    result.counts = payload.counts && typeof payload.counts === "object" ? payload.counts : {};
+    result.recommendedReads = compactPathItems(payload.recommendedReads, 24, ["path"]);
+    result.manifestFiles = compactPathItems(payload.manifestFiles, 16, ["path", "size"]);
+    result.testFiles = compactPathItems(payload.testFiles, 24, ["path", "size"]);
+    result.sourceDirs = compactPathItems(payload.sourceDirs, 16, ["path", "kind"]);
+    result.topLevel = compactPathItems(payload.topLevel, 32, ["path", "type", "size"]);
+    result.files = compactPathItems(payload.files, 48, ["path", "size"]);
+  } else if (toolName === "read_file") {
+    if (Number.isFinite(Number(payload.bytes))) result.bytes = Number(payload.bytes);
+    const content = String(payload.content || payload.contentPreview || "");
+    if (content) result.content = compactMultiline(content, 4200);
+    if (Array.isArray(payload.pathEvidence)) {
+      result.pathEvidence = compactPathItems(payload.pathEvidence, 12, ["path", "source"]);
+    }
+  } else if (toolName === "list_files") {
+    result.entries = compactPathItems(payload.entries, 32, ["path", "type", "size"]);
+  } else if (toolName === "search_files") {
+    result.results = compactPathItems(payload.results, 24, ["path", "file", "line", "match"]);
+  } else if (toolName === "run_command") {
+    result.args = { command: compactMultiline(args.command || payload.args?.command || "", 1200) };
+    if (Number.isFinite(Number(payload.exitCode))) result.exitCode = Number(payload.exitCode);
+    if (payload.stdout) result.stdout = compactMultiline(payload.stdout, 1800);
+    if (payload.stderr) result.stderr = compactMultiline(payload.stderr, 1200);
+  } else {
+    if (payload.changed !== undefined) result.changed = Boolean(payload.changed);
+    if (Number.isFinite(Number(payload.bytes))) result.bytes = Number(payload.bytes);
+    if (payload.diff) result.diff = compactMultiline(payload.diff, 1800);
+  }
+
+  return redactValue(result);
+}
+
+function retainedToolStateMessages(messages = [], limit = 12) {
+  const callsById = new Map();
+  const recordsByKey = new Map();
+  let ordinal = 0;
+  for (const message of messages) {
+    if (message?.role === "assistant" && Array.isArray(message.tool_calls)) {
+      for (const call of message.tool_calls) {
+        const id = String(call?.id || "").trim();
+        const name = String(call?.function?.name || "").trim();
+        if (!id || !COMPACTION_STATE_TOOL_NAMES.has(name)) continue;
+        callsById.set(id, {
+          name,
+          args: safeParseToolContent(call?.function?.arguments) || {},
+        });
+      }
+      continue;
+    }
+    if (message?.role !== "tool") continue;
+    const call = callsById.get(String(message.tool_call_id || "").trim());
+    const payload = safeParseToolContent(message.content);
+    if (!call || !payload || payload.ok === false || payload.blocked || payload.skipped) continue;
+    const sourcePath = String(payload.path || call.args?.path || "").trim();
+    const command = String(call.args?.command || payload.args?.command || "").trim();
+    const key = `${call.name}:${sourcePath || command || ordinal}`;
+    recordsByKey.set(key, {
+      ordinal: ordinal += 1,
+      name: call.name,
+      args: redactValue(call.args),
+      payload: compactRetainedToolPayload(call.name, payload, call.args),
+    });
+  }
+
+  const records = [...recordsByKey.values()];
+  const latestInspection = [...records].reverse().find((record) => record.name === "inspect_project");
+  const remaining = records
+    .filter((record) => record !== latestInspection)
+    .slice(-Math.max(0, Number(limit) - (latestInspection ? 1 : 0)));
+  const selected = [latestInspection, ...remaining].filter(Boolean).sort((left, right) => left.ordinal - right.ordinal);
+
+  return selected.flatMap((record, index) => {
+    const id = `aginti-compacted-tool-${index + 1}`;
+    return [
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id,
+            type: "function",
+            function: {
+              name: record.name,
+              arguments: JSON.stringify(record.args || {}),
+            },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: id,
+        content: JSON.stringify(record.payload),
+      },
+    ];
+  });
+}
+
+function retainedToolStateTextMessages(messages = [], limit = 12) {
+  const nativeMessages = retainedToolStateMessages(messages, limit);
+  const retained = [];
+  for (let index = 0; index < nativeMessages.length; index += 2) {
+    const assistantMessage = nativeMessages[index];
+    const toolMessage = nativeMessages[index + 1];
+    const call = assistantMessage?.tool_calls?.[0];
+    if (!call || toolMessage?.role !== "tool") continue;
+    retained.push({
+      role: "user",
+      content: [
+        "Retained runtime tool evidence. This operation already completed; use its result and do not repeat it solely because context was compacted.",
+        `Tool: ${String(call.function?.name || "tool")}`,
+        `Arguments: ${String(call.function?.arguments || "{}")}`,
+        `Verified result: ${String(toolMessage.content || "{}")}`,
+      ].join("\n"),
+    });
+  }
+  return retained;
+}
+
 function isRuntimeCompactionRequest(content = "") {
   return /^(?:The runtime proactively compacted a long agent history|A previous agent-step model request timed out|Continue from this compacted, valid transcript)/i.test(
     String(content || "").trim()
@@ -627,12 +794,17 @@ function summarizeOriginalRequests(messages = [], limit = 6) {
 }
 
 function countMessageChars(messages = []) {
-  return messages.reduce((sum, message) => sum + String(message?.content || "").length, 0);
+  return messages.reduce(
+    (sum, message) =>
+      sum +
+      String(message?.content || "").length +
+      (Array.isArray(message?.tool_calls) ? JSON.stringify(message.tool_calls).length : 0),
+    0
+  );
 }
 
 function modelTimeoutMsForConfig(config = {}) {
-  const timeout = Number(config.modelTimeoutMs || process.env.AGINTI_MODEL_TIMEOUT_MS || 180000);
-  return Number.isFinite(timeout) && timeout > 0 ? timeout : 180000;
+  return resolveModelTimeoutMs(config);
 }
 
 export function modelTimeoutRetryRoute(config = {}) {
@@ -646,8 +818,9 @@ export function modelTimeoutRetryRoute(config = {}) {
   }
   const timeoutMs = modelTimeoutMsForConfig(config);
   const switchedModel = Boolean(model && model !== currentModel);
+  const switchedRetryCap = provider === "localllm" ? 300000 : 180000;
   const retryTimeoutMs = switchedModel
-    ? Math.min(Math.max(Math.round(timeoutMs * 0.75), 60000), 180000)
+    ? Math.min(Math.max(Math.round(timeoutMs * 0.75), 60000), switchedRetryCap)
     : Math.max(timeoutMs * 2, 180000);
   return {
     provider,
@@ -671,6 +844,14 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
   const requests = summarizeOriginalRequests(messages);
   const toolHistory = summarizeToolHistory(messages);
   const retainedSourceEvidence = summarizeRetainedSourceEvidence(messages);
+  // DeepSeek thinking mode requires the original, complete reasoning_content
+  // for every assistant turn that issued tool calls. Compaction creates new
+  // synthetic pairs, so preserve their bounded evidence as explicit runtime
+  // context instead of fabricating assistant reasoning.
+  const deepSeekCompaction = normalizeProviderId(config.provider, "") === "deepseek";
+  const retainedToolMessages = deepSeekCompaction
+    ? retainedToolStateTextMessages(messages)
+    : retainedToolStateMessages(messages);
   const snapshotSummary = {
     step,
     maxSteps: config.maxSteps,
@@ -714,12 +895,51 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
     .filter((line) => line !== "")
     .join("\n");
 
-  const compactMessages = [
-    ...systemMessages,
+  const targetTokens = Math.max(
+    2048,
+    Number(
+      config.contextBudgetTargetTokens ||
+      state?.meta?.contextBudget?.targetTokens ||
+      Math.floor(Number(config.contextWindowTokens || 32768) * 0.375)
+    ) || 12288
+  );
+  const systemTokenBudget = Math.max(512, Math.floor(targetTokens * 0.32));
+  const perSystemTokenBudget = Math.max(
+    256,
+    Math.floor(systemTokenBudget / Math.max(1, systemMessages.length))
+  );
+  const boundedSystemMessages = systemMessages.map((message) => ({
+    ...message,
+    content: compactTextForTokenBudget(message.content, perSystemTokenBudget, { headFraction: 0.7 }),
+  }));
+  const boundedContent = compactTextForTokenBudget(
+    compactedContent,
+    Math.max(1024, Math.floor(targetTokens * 0.52)),
+    { headFraction: 0.58 }
+  );
+  const baseMessages = [
+    ...boundedSystemMessages,
     {
       role: "user",
-      content: compactedContent,
+      content: boundedContent,
     },
+  ];
+  const retainedPairs = [];
+  for (let index = 0; index < retainedToolMessages.length; index += deepSeekCompaction ? 1 : 2) {
+    retainedPairs.push(retainedToolMessages.slice(index, index + (deepSeekCompaction ? 1 : 2)));
+  }
+  const selectedPairs = [];
+  for (const pair of retainedPairs.reverse()) {
+    const candidate = [
+      ...baseMessages,
+      ...pair,
+      ...selectedPairs.flat(),
+    ];
+    if (estimateMessageTokens(candidate) <= targetTokens) selectedPairs.unshift(pair);
+  }
+  const compactMessages = [
+    ...baseMessages,
+    ...selectedPairs.flat(),
   ];
 
   if (!compactMessages.some((message) => message.role === "system")) {
@@ -1727,6 +1947,11 @@ async function applyContinuationPrompt(state, config, observers) {
   state.startUrl = config.startUrl;
   state.plan = "";
   state.stepsCompleted = 0;
+  state.meta.toolLoop = state.meta.toolLoop || { recent: [], warned: [] };
+  state.meta.toolLoop.stagnationEpoch = Math.max(0, Number(state.meta.toolLoop.stagnationEpoch || 0)) + 1;
+  if (state.meta.contextBudget && typeof state.meta.contextBudget === "object") {
+    state.meta.contextBudget.lastCompactedStep = 0;
+  }
   state.updatedAt = new Date().toISOString();
   const platform = platformInfo();
   const temporalContext = runtimeTemporalContext(new Date(state.updatedAt));
@@ -2019,6 +2244,8 @@ function sanitizeToolArgs(toolName, args) {
       patch: typeof args.patch === "string" ? `[${Buffer.byteLength(args.patch, "utf8")} bytes sha256=${hashForLog(args.patch)}]` : safeArgs.patch,
       search: typeof args.search === "string" ? redactSensitiveText(args.search).slice(0, 160) : safeArgs.search,
       replace: typeof args.replace === "string" ? redactSensitiveText(args.replace).slice(0, 160) : safeArgs.replace,
+      searchHash: typeof args.search === "string" ? hashForLog(args.search) : undefined,
+      replaceHash: typeof args.replace === "string" ? hashForLog(args.replace) : undefined,
     };
   }
   if (toolName === "generate_image") {
@@ -2224,6 +2451,126 @@ export function repeatedStaticToolBlock(state, toolName, args = {}, config = {})
         "Use the prior tool result already present in the session.",
         "Read one different exact manifest, SKILL.md, or source file that resolves a specific missing fact.",
         "Move to output creation and verification instead of restarting discovery.",
+      ],
+    },
+  };
+}
+
+function expectedRepeatedObservationCommand(command = "") {
+  return /\b(?:watch|poll|status|queue|sleep)\b|tail\s+-f|tmux\s+capture-pane|\b(?:curl|wget|ps)\b/i.test(
+    String(command || "")
+  );
+}
+
+function isStaticDiscoveryToolResult(toolResult = {}) {
+  if (isStaticDiscoveryToolCall(toolResult.toolName, toolResult.args || {})) return true;
+  if (toolResult.toolName !== "run_command") return false;
+  if (toolResult.commandPolicy?.writesWorkspace !== false) return false;
+  return !expectedRepeatedObservationCommand(toolResult.args?.command);
+}
+
+function successfulToolStateProgress(toolResult = {}) {
+  if (!toolResult || toolResult.done || toolResult.ok === false || toolResult.blocked || toolResult.skipped) return false;
+  if (toolResult.toolName === "run_command") return toolResult.commandPolicy?.writesWorkspace === true;
+  return ![
+    "inspect_project",
+    "list_files",
+    "long_job_status",
+    "read_file",
+    "read_image",
+    "search_files",
+    "tmux_capture_pane",
+    "tmux_list_sessions",
+  ].includes(String(toolResult.toolName || ""));
+}
+
+function noProgressOutcomeFingerprint(toolResult = {}) {
+  if (
+    toolResult?.toolName !== "run_command" ||
+    toolResult?.ok === false ||
+    toolResult?.blocked ||
+    toolResult?.commandPolicy?.writesWorkspace === true ||
+    expectedRepeatedObservationCommand(toolResult?.args?.command)
+  ) {
+    return "";
+  }
+  return hashForLog(JSON.stringify({
+    exitCode: Number.isInteger(toolResult.exitCode) ? toolResult.exitCode : null,
+    stdout: String(toolResult.stdout || ""),
+    stderr: String(toolResult.stderr || ""),
+  }));
+}
+
+export function repeatedNoProgressToolBlock(state, toolName, args = {}, config = {}) {
+  if (toolName !== "run_command" || expectedRepeatedObservationCommand(args.command)) return null;
+  const toolLoop = state.meta?.toolLoop || {};
+  const signature = staticToolCallSignature(toolName, args || {}, {
+    commandCwd: config.commandCwd,
+  });
+  const stagnationEpoch = Math.max(0, Number(toolLoop.stagnationEpoch || 0));
+  const matches = (Array.isArray(toolLoop.recent) ? toolLoop.recent : []).filter(
+    (entry) =>
+      entry?.signature === signature &&
+      entry?.toolName === "run_command" &&
+      entry?.ok === true &&
+      entry?.blocked !== true &&
+      entry?.noProgressProbe === true &&
+      Number(entry?.stagnationEpoch || 0) === stagnationEpoch &&
+      Boolean(entry?.outcomeFingerprint)
+  );
+  if (matches.length < 2) return null;
+  const recentFingerprints = matches.slice(-2).map((entry) => entry.outcomeFingerprint);
+  if (new Set(recentFingerprints).size !== 1) return null;
+  return {
+    reason:
+      "The same read-only command already returned the same result twice without an intervening file, artifact, browser, or task-state change.",
+    category: "repeated-no-progress-call",
+    permissionAdvice: {
+      category: "repeated-no-progress-call",
+      autoRecover: true,
+      summary: "This is a stagnation guard, not a permission blocker.",
+      instruction:
+        "Do not rerun or cosmetically rewrite this probe. Use the retained result and latest failure evidence, make one bounded repair with an offered mutation tool, then rerun the smallest relevant validation.",
+      options: [
+        "Inspect one exact source or test file only when a concrete missing detail remains.",
+        "Apply a bounded edit that addresses the observed mismatch, then rerun the focused test.",
+        "Finish with a concrete external blocker only when no enabled tool can make progress.",
+      ],
+    },
+  };
+}
+
+export function repeatedSuccessfulMutationBlock(state, toolName, args = {}, config = {}) {
+  if (toolName !== "apply_patch") return null;
+  const toolLoop = state.meta?.toolLoop || {};
+  const signature = staticToolCallSignature(toolName, args || {}, {
+    commandCwd: config.commandCwd,
+  });
+  const stagnationEpoch = Math.max(0, Number(toolLoop.stagnationEpoch || 0));
+  const alreadyApplied = (Array.isArray(toolLoop.recent) ? toolLoop.recent : []).some(
+    (entry) =>
+      entry?.signature === signature &&
+      entry?.toolName === "apply_patch" &&
+      entry?.ok === true &&
+      entry?.blocked !== true &&
+      entry?.successfulMutation === true &&
+      Number(entry?.stagnationEpoch || 0) === stagnationEpoch
+  );
+  if (!alreadyApplied) return null;
+  return {
+    reason:
+      "This exact patch already succeeded without an intervening successful mutation or user continuation.",
+    category: "repeated-successful-mutation",
+    permissionAdvice: {
+      category: "repeated-successful-mutation",
+      autoRecover: true,
+      summary: "This is an idempotency guard, not a permission blocker.",
+      instruction:
+        "Do not apply the same patch again. Inspect the tested source and latest failure evidence, then make a different bounded repair or explicitly revert the prior change when it was wrong.",
+      options: [
+        "Use the retained successful patch result and continue with focused validation.",
+        "Patch the source file named by the failing test or traceback with a materially different edit.",
+        "Revert the prior edit explicitly before attempting a corrected replacement.",
       ],
     },
   };
@@ -2619,7 +2966,7 @@ export function recordStaticDiscoveryProgress(toolLoop = {}, signature = "") {
 
 export function shouldResetStaticDiscoveryPhase(toolResult = {}) {
   if (!toolResult || toolResult.done || toolResult.ok === false || toolResult.blocked || toolResult.skipped) return false;
-  return !isStaticDiscoveryToolCall(toolResult.toolName, toolResult.args || {});
+  return !isStaticDiscoveryToolResult(toolResult);
 }
 
 function isArtifactRuntimeInstruction(content = "") {
@@ -2954,15 +3301,23 @@ async function applyToolLoopGuard(state, toolResult, store, observers, config = 
     });
   }
   state.meta.toolLoop = state.meta.toolLoop || { recent: [], warned: [] };
+  if (successfulToolStateProgress(toolResult)) {
+    state.meta.toolLoop.stagnationEpoch = Math.max(0, Number(state.meta.toolLoop.stagnationEpoch || 0)) + 1;
+  }
   const signature = staticToolCallSignature(toolResult.toolName, toolResult.args || {}, {
     commandCwd: config.commandCwd,
   });
+  const outcomeFingerprint = noProgressOutcomeFingerprint(toolResult);
   const entry = {
     signature,
     toolName: toolResult.toolName,
     ok: Boolean(toolResult.ok),
     blocked: Boolean(toolResult.blocked),
-    staticDiscovery: isStaticDiscoveryToolCall(toolResult.toolName, toolResult.args || {}),
+    staticDiscovery: isStaticDiscoveryToolResult(toolResult),
+    successfulMutation: successfulToolStateProgress(toolResult),
+    noProgressProbe: Boolean(outcomeFingerprint),
+    outcomeFingerprint,
+    stagnationEpoch: Math.max(0, Number(state.meta.toolLoop.stagnationEpoch || 0)),
     error: toolResult.error || toolResult.reason || "",
     at: new Date().toISOString(),
   };
@@ -3242,6 +3597,38 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       toolName,
       args: safeArgs,
       ...repeatedStaticBlock,
+    };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
+  }
+
+  const repeatedNoProgressBlock = repeatedNoProgressToolBlock(state, toolName, safeArgs, config);
+  if (repeatedNoProgressBlock) {
+    const result = {
+      ok: false,
+      blocked: true,
+      recoverable: true,
+      needsApproval: false,
+      toolName,
+      args: safeArgs,
+      ...repeatedNoProgressBlock,
+    };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
+  }
+
+  const repeatedMutationBlock = repeatedSuccessfulMutationBlock(state, toolName, safeArgs, config);
+  if (repeatedMutationBlock) {
+    const result = {
+      ok: false,
+      blocked: true,
+      recoverable: true,
+      needsApproval: false,
+      toolName,
+      args: safeArgs,
+      ...repeatedMutationBlock,
     };
     await store.appendEvent("tool.blocked", result);
     observers.event("tool.blocked", result);
@@ -3957,6 +4344,12 @@ function currentContinuationEvidence(state = {}, events = []) {
   };
 }
 
+function completionRepairProgressCount(events = []) {
+  return (Array.isArray(events) ? events : []).filter((event) =>
+    COMPLETION_REPAIR_PROGRESS_EVENT_TYPES.has(String(event?.type || ""))
+  ).length;
+}
+
 async function evaluateCompletionEvidence({ config, state, store }) {
   const contract = deriveScsTaskContract({
     goal: config.goal || state.goal || "",
@@ -3970,6 +4363,7 @@ async function evaluateCompletionEvidence({ config, state, store }) {
       ledger: { itemCount: 0, categories: [], toolNames: [] },
       evaluation: { ok: true, reason: "This response does not require external execution evidence." },
       semantic: { ok: true, checked: false, reason: "No deterministic artifact contract is required." },
+      progressCount: 0,
     };
   }
 
@@ -3996,7 +4390,14 @@ async function evaluateCompletionEvidence({ config, state, store }) {
         ok: false,
         reason: !evidence.ok ? evidence.reason : semantic.reason || "The requested artifact could not be verified.",
       };
-  return { ok, contract, ledger, evaluation, semantic };
+  return {
+    ok,
+    contract,
+    ledger,
+    evaluation,
+    semantic,
+    progressCount: completionRepairProgressCount(scoped.events),
+  };
 }
 
 async function completionEvidenceDecision({ config, state, store, observers, step, mode, candidateResult = "" }) {
@@ -4039,6 +4440,9 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
   const key = completionContractKey(config);
   const prior = state.meta.completionEvidenceRepair || {};
   const attempts = prior.key === key ? Number(prior.attempts || 0) : 0;
+  const progressCount = Number(assessment.progressCount || 0);
+  const priorProgressCount = prior.key === key ? Number(prior.progressCount || 0) : 0;
+  const progressedSincePriorRepair = attempts === 0 || progressCount > priorProgressCount;
   const blocker = deterministicFinishBlocker(assessment.contract, assessment.ledger, assessment.evaluation);
   const detail = {
     step,
@@ -4052,17 +4456,29 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
       ok: Boolean(assessment.semantic.ok),
       reason: assessment.semantic.reason || "",
     },
+    repairAttempt: attempts + 1,
+    maxRepairAttempts: MAX_COMPLETION_EVIDENCE_REPAIR_ATTEMPTS,
+    progressCount,
+    progressedSincePriorRepair,
   };
   await store.appendEvent("completion.evidence_rejected", detail);
   observers.event("completion.evidence_rejected", detail);
 
-  if (attempts < 1) {
-    state.meta.completionEvidenceRepair = { key, attempts: attempts + 1, step };
+  if (attempts < MAX_COMPLETION_EVIDENCE_REPAIR_ATTEMPTS && progressedSincePriorRepair) {
+    state.meta.completionEvidenceRepair = {
+      key,
+      attempts: attempts + 1,
+      step,
+      progressCount,
+      reason: detail.reason,
+    };
     const instruction = [
       "The proposed completion was rejected because the requested action is not supported by concrete runtime evidence.",
       `Reason: ${detail.reason}`,
       detail.requiredEvidence.length ? `Required evidence: ${detail.requiredEvidence.join(", ")}.` : "",
-      "Use only an enabled relevant tool to perform and verify the task. Do not repeat a prose-only answer or call finish until the evidence exists.",
+      attempts > 0
+        ? "The previous repair produced new tool evidence but did not satisfy verification. Use its diagnostics to repair the work, rerun the relevant validation, and do not call finish while that validation still fails."
+        : "Use only an enabled relevant tool to perform and verify the task. Do not repeat a prose-only answer or call finish until the evidence exists.",
       "If execution is impossible, report the concrete permission, environment, or dependency blocker instead of claiming success.",
     ]
       .filter(Boolean)
@@ -4567,6 +4983,10 @@ export async function runAgent(config) {
     const patchedRuntimeFields = runtime.patched
       ? Object.keys(incomingConfig.runtimePatch || {}).filter((field) => isSessionRuntimeField(field))
       : [];
+    // A saved dynamic budget remains useful for an ordinary resume, but an
+    // explicit max-step patch is an operator boundary for this continuation.
+    // Do not let a prior extension silently override a smaller requested cap.
+    config.resetStepBudget = patchedRuntimeFields.includes("maxSteps");
     if (patchedRuntimeFields.some((field) => LOCAL_ROUTE_RUNTIME_CONTROL_FIELDS.has(field))) {
       state.meta.localAutoMaxPolicy = captureLocalAutoMaxPolicy(config);
       state.meta.localCodePolicy = captureLocalCodePolicy(config);
@@ -5431,6 +5851,20 @@ export async function runAgent(config) {
 
       await recordToolContractRecovery({ config, state, store, observers, step });
 
+      if (toolBatchValidation.recoveredSingletonEnums) {
+        const detail = {
+          step,
+          toolName: String(toolCalls[0]?.function?.name || ""),
+          corrections: (toolBatchValidation.argumentCorrections || []).map((item) => ({
+            property: String(item?.property || ""),
+            source: String(item?.source || ""),
+          })),
+          originalCode: String(toolBatchValidation.originalCode || ""),
+        };
+        await store.appendEvent("tool.arguments_repaired", detail);
+        observers.event("tool.arguments_repaired", detail);
+      }
+
       if (toolBatchValidation.recoveredSequentially) {
         const deferredToolCalls = toolBatchValidation.deferredToolCalls || [];
         const detail = {
@@ -5447,7 +5881,7 @@ export async function runAgent(config) {
 
       state.messages.push(
         preserveAssistantMessage(
-          toolBatchValidation.recoveredSequentially
+          toolBatchValidation.recoveredSequentially || toolBatchValidation.recoveredSingletonEnums
             ? { ...assistantMessage, tool_calls: toolCalls }
             : assistantMessage
         )

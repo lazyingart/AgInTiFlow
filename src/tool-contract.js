@@ -245,6 +245,62 @@ function isSafeSequentialReadBatch(toolCalls) {
   );
 }
 
+function recoverSingletonEnumReadCall(toolCalls, contract, validation) {
+  const calls = Array.isArray(toolCalls) ? toolCalls : [];
+  const errors = Array.isArray(validation?.errors) ? validation.errors : [];
+  if (calls.length !== 1 || !errors.length || contract?.[contractMarker] !== true) return null;
+  const call = calls[0];
+  const toolName = String(call?.function?.name || "");
+  if (!SAFE_SEQUENTIAL_READ_TOOLS.has(toolName) || typeof call?.function?.arguments !== "string") return null;
+  const specificErrors = errors.filter((error) => error?.code !== "TOOL_ARGUMENTS_SCHEMA_INVALID");
+  if (!specificErrors.length || specificErrors.some((error) => error?.code !== "ARGUMENT_ENUM_MISMATCH")) return null;
+
+  let args;
+  try {
+    args = JSON.parse(call.function.arguments);
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(args)) return null;
+  const descriptor = contract.tools.find(
+    (candidate) => candidate?.type === "function" && candidate.function?.name === toolName
+  );
+  const properties = descriptor?.function?.parameters?.properties;
+  if (!isPlainObject(properties)) return null;
+
+  const correctedArgs = { ...args };
+  const corrections = [];
+  for (const error of specificErrors) {
+    const match = /^\$\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(String(error?.path || ""));
+    if (!match) return null;
+    const property = match[1];
+    const choices = properties[property]?.enum;
+    if (!Array.isArray(choices) || choices.length !== 1) return null;
+    correctedArgs[property] = cloneValue(choices[0]);
+    corrections.push({ property, source: "singleton-enum" });
+  }
+  if (!corrections.length) return null;
+
+  const correctedCall = {
+    ...call,
+    function: {
+      ...call.function,
+      arguments: JSON.stringify(correctedArgs),
+    },
+  };
+  const correctedValidation = validateToolCallBatch([correctedCall], contract, { maxToolCalls: 1 });
+  if (!correctedValidation.ok) return null;
+  return {
+    ...correctedValidation,
+    acceptedToolCalls: [correctedCall],
+    deferredToolCalls: [],
+    recoveredSequentially: false,
+    recoveredSingletonEnums: true,
+    argumentCorrections: corrections,
+    originalCode: validation.code,
+  };
+}
+
 export function validateToolCallBatch(toolCalls, contract, { maxToolCalls = 1 } = {}) {
   const errors = [];
   const addError = (code, callIndex, message) => {
@@ -360,6 +416,9 @@ export function resolveDispatchableToolCallBatch(toolCalls, contract) {
       recoveredSequentially: false,
     };
   }
+
+  const singletonEnumRecovery = recoverSingletonEnumReadCall(calls, contract, validation);
+  if (singletonEnumRecovery) return singletonEnumRecovery;
 
   const errors = Array.isArray(validation.errors) ? validation.errors : [];
   const onlyExceededBatchLimit =

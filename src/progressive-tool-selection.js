@@ -536,6 +536,8 @@ const PRIMARY_PROJECT_INSTRUCTION_PATH_PATTERN = /(?:^|\/)(?:AGENTS?\.md|AGINTI\
 const PROJECT_INSTRUCTION_PATH_PATTERN = /(?:^|\/)(?:AGENTS?\.md|AGINTI\.md|README(?:\.[^/]+)?|TASK(?:\.[^/]+)?|CONTRIBUTING\.md)$/i;
 const DATA_PROJECT_CONTEXT_PATH_PATTERN =
   /(?:^|\/)(?:config|tests?|specs?|src|scripts?|analysis|pipeline)(?:\/|$)|(?:^|\/)(?:pyproject\.toml|package\.json|requirements[^/]*\.txt|[^/]+\.(?:py|r|R|jl|ipynb|sql))$/i;
+const DATA_PROJECT_TEST_PATH_PATTERN =
+  /(?:^|\/)(?:tests?|specs?|__tests__)(?:\/|$)|(?:^|\/)(?:test_[^/]+|[^/]+(?:_test|\.test|\.spec)[^/]*)\.(?:py|js|jsx|ts|tsx|mjs|cjs|r|R|jl|sql)$/i;
 
 function parseJsonObject(value) {
   if (value && typeof value === "object" && !Array.isArray(value)) return value;
@@ -606,14 +608,20 @@ function dataProjectDiscoveryState(messages) {
     primaryInstructionCandidates.length > 0
       ? primaryInstructionCandidates
       : discoveredPaths.filter((item) => PROJECT_INSTRUCTION_PATH_PATTERN.test(item));
-  const dataContextCandidates = discoveredPaths.filter((item) => DATA_PROJECT_CONTEXT_PATH_PATTERN.test(item));
+  const testCandidates = discoveredPaths.filter((item) => DATA_PROJECT_TEST_PATH_PATTERN.test(item));
+  const dataContextCandidates = discoveredPaths.filter(
+    (item) => DATA_PROJECT_CONTEXT_PATH_PATTERN.test(item) && !DATA_PROJECT_TEST_PATH_PATTERN.test(item)
+  );
   const instructionRead =
     instructionCandidates.length === 0 || readPaths.some((item) => instructionCandidates.includes(item));
   if (!instructionRead) return { phase: "read-instructions", paths: instructionCandidates.slice(0, 24) };
 
   const dataContextRead =
-    dataContextCandidates.length === 0 || readPaths.some((item) => DATA_PROJECT_CONTEXT_PATH_PATTERN.test(item));
+    dataContextCandidates.length === 0 || readPaths.some((item) => dataContextCandidates.includes(item));
   if (!dataContextRead) return { phase: "read-context", paths: dataContextCandidates.slice(0, 24) };
+  const testContextRead =
+    testCandidates.length === 0 || readPaths.some((item) => testCandidates.includes(item));
+  if (!testContextRead) return { phase: "read-tests", paths: testCandidates.slice(0, 24) };
   return { phase: "ready", paths: [] };
 }
 
@@ -627,7 +635,9 @@ function constrainReadFilePaths(tool, paths, phase) {
       description:
         phase === "read-instructions"
           ? "Read one exact project instruction file discovered by inspect_project before data mutation or commands are enabled."
-          : "Read one exact existing analyzer, configuration, or test file discovered by inspect_project before data mutation or commands are enabled.",
+          : phase === "read-tests"
+            ? "Read one exact existing test file discovered by inspect_project before data mutation or commands are enabled."
+            : "Read one exact existing analyzer or configuration file discovered by inspect_project before data mutation or commands are enabled.",
       parameters: {
         ...tool.function.parameters,
         properties: {

@@ -13,7 +13,7 @@ import {
   selectProgressiveTools,
 } from "../src/progressive-tool-selection.js";
 import { requestNextStep } from "../src/model-client.js";
-import { runAgent } from "../src/agent-runner.js";
+import { buildModelTimeoutRetryMessages, runAgent } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { SessionStore } from "../src/session-store.js";
 import {
@@ -289,12 +289,76 @@ sameNames(
 );
 assertStrict.deepEqual(
   enumFor(dataImplementationTools, "read_file", "path"),
-  ["tests/test_analysis.py", "analysis.py"],
+  ["analysis.py"],
   "local data context phase did not constrain read_file to discovered analysis paths"
 );
 
-const dataReadyMessages = [
+const dataTestDiscoveryMessages = [
   ...dataImplementationMessages,
+  {
+    role: "assistant",
+    tool_calls: [
+      { id: "data-analysis", function: { name: "read_file", arguments: '{"path":"analysis.py"}' } },
+    ],
+  },
+  { role: "tool", tool_call_id: "data-analysis", content: '{"ok":true,"path":"analysis.py"}' },
+];
+const dataTestDiscoveryTools = selectProgressiveTools(allTools, {
+  config: { provider: "localllm" },
+  goal: "Clean these experiment exports and leave a reproducible analysis.",
+  profile: "data",
+  messages: dataTestDiscoveryMessages,
+});
+sameNames(
+  dataTestDiscoveryTools,
+  ["read_file", "finish"],
+  "local data task exposed mutation tools before reading a discovered test"
+);
+assertStrict.deepEqual(
+  enumFor(dataTestDiscoveryTools, "read_file", "path"),
+  ["tests/test_analysis.py"],
+  "local data test phase did not constrain read_file to discovered tests"
+);
+
+const timeoutError = new Error("agent step request timed out after 300000ms");
+timeoutError.name = "ModelTimeoutError";
+const compactedDataTestMessages = buildModelTimeoutRetryMessages(
+  {
+    goal: "Clean these experiment exports and leave a reproducible analysis.",
+    plan: "",
+    messages: dataTestDiscoveryMessages,
+    meta: {},
+  },
+  {
+    taskProfile: "data",
+    sandboxMode: "host",
+    packageInstallPolicy: "block",
+    commandCwd: repoRoot,
+    maxSteps: 30,
+  },
+  { title: "No browser page open", url: "" },
+  4,
+  timeoutError
+);
+const compactedDataTestTools = selectProgressiveTools(allTools, {
+  config: { provider: "localllm" },
+  goal: "Clean these experiment exports and leave a reproducible analysis.",
+  profile: "data",
+  messages: compactedDataTestMessages,
+});
+sameNames(
+  compactedDataTestTools,
+  ["read_file", "finish"],
+  "timeout compaction discarded completed data discovery state"
+);
+assertStrict.deepEqual(
+  enumFor(compactedDataTestTools, "read_file", "path"),
+  ["tests/test_analysis.py"],
+  "timeout compaction did not resume at the next exact discovered test"
+);
+
+const dataReadyMessages = [
+  ...dataTestDiscoveryMessages,
   {
     role: "assistant",
     tool_calls: [
@@ -1160,6 +1224,70 @@ assert(
     maxToolCalls: safeSequentialToolBatchLimit(safeReadCalls),
   }).ok,
   "valid safe read batch did not pass the exact per-turn contract"
+);
+const singletonReadContract = createToolContract([
+  {
+    ...safeReadDescriptors[0],
+    function: {
+      ...safeReadDescriptors[0].function,
+      parameters: {
+        ...safeReadDescriptors[0].function.parameters,
+        properties: { path: { type: "string", enum: ["README.md"] } },
+      },
+    },
+  },
+]);
+const repairedSingletonRead = resolveDispatchableToolCallBatch(
+  [contractCall("wrong-singleton-read", "read_file", { path: "raw/run_a.csv" })],
+  singletonReadContract
+);
+assert(repairedSingletonRead.ok, "singleton read-only enum mismatch was not repaired");
+assert(repairedSingletonRead.recoveredSingletonEnums, "singleton enum recovery was not recorded");
+assertStrict.deepEqual(
+  JSON.parse(repairedSingletonRead.acceptedToolCalls[0].function.arguments),
+  { path: "README.md" },
+  "singleton enum recovery did not dispatch the only contract-authorized path"
+);
+const multipleReadChoices = createToolContract([
+  {
+    ...safeReadDescriptors[0],
+    function: {
+      ...safeReadDescriptors[0].function,
+      parameters: {
+        ...safeReadDescriptors[0].function.parameters,
+        properties: { path: { type: "string", enum: ["README.md", "AGENTS.md"] } },
+      },
+    },
+  },
+]);
+assert(
+  !resolveDispatchableToolCallBatch(
+    [contractCall("wrong-multi-read", "read_file", { path: "raw/run_a.csv" })],
+    multipleReadChoices
+  ).ok,
+  "multi-choice read enum was silently rewritten"
+);
+const unsafeSingletonWrite = createToolContract([
+  {
+    ...strictWriteDescriptor,
+    function: {
+      ...strictWriteDescriptor.function,
+      parameters: {
+        ...strictWriteDescriptor.function.parameters,
+        properties: {
+          ...strictWriteDescriptor.function.parameters.properties,
+          mode: { type: "string", enum: ["create"] },
+        },
+      },
+    },
+  },
+]);
+assert(
+  !resolveDispatchableToolCallBatch(
+    [contractCall("wrong-singleton-write", "write_file", { path: "unsafe.txt", content: "x", mode: "overwrite" })],
+    unsafeSingletonWrite
+  ).ok,
+  "write argument was rewritten through read-only singleton recovery"
 );
 const mixedReadWriteCalls = [
   safeReadCalls[0],

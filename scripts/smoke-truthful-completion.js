@@ -52,11 +52,22 @@ function scriptedClient(responses, calls) {
   };
 }
 
-async function runCase({ id, goal, taskProfile = "auto", responses, allowShellTool = false, resume = false }) {
+async function runCase({
+  id,
+  goal,
+  taskProfile = "auto",
+  responses,
+  allowShellTool = false,
+  allowFileTools = false,
+  executionTier = "",
+  resume = false,
+  setup = null,
+}) {
   const workspace = path.join(tempRoot, "workspaces", id);
   const sessionsDir = path.join(tempRoot, "sessions");
   const projectSessionsDir = path.join(workspace, ".aginti-sessions");
   await fs.mkdir(workspace, { recursive: true });
+  if (typeof setup === "function") await setup(workspace);
   const calls = [];
   const client = scriptedClient([...responses], calls);
   const config = resolveRuntimeConfig(
@@ -66,8 +77,9 @@ async function runCase({ id, goal, taskProfile = "auto", responses, allowShellTo
       model: "scripted-model",
       goal,
       taskProfile,
+      executionTier,
       allowShellTool,
-      allowFileTools: false,
+      allowFileTools,
       allowWrapperTools: false,
       allowAuxiliaryTools: false,
       allowWebSearch: false,
@@ -82,13 +94,14 @@ async function runCase({ id, goal, taskProfile = "auto", responses, allowShellTo
       provider: "openai",
       routingMode: "manual",
       model: "scripted-model",
+      executionTier,
       sessionId: id,
       resume: resume ? id : "",
       commandCwd: workspace,
       sandboxMode: "host",
       packageInstallPolicy: "block",
       allowShellTool,
-      allowFileTools: false,
+      allowFileTools,
       allowWrapperTools: false,
       allowAuxiliaryTools: false,
       allowWebSearch: false,
@@ -108,7 +121,7 @@ async function runCase({ id, goal, taskProfile = "auto", responses, allowShellTo
     sandboxMode: "host",
     packageInstallPolicy: "block",
     allowShellTool,
-    allowFileTools: false,
+    allowFileTools,
     allowWrapperTools: false,
     allowAuxiliaryTools: false,
     allowWebSearch: false,
@@ -117,6 +130,7 @@ async function runCase({ id, goal, taskProfile = "auto", responses, allowShellTo
     scsActive: false,
     enableScs: "off",
     modelTimeoutMs: 1_000,
+    ...(executionTier ? { executionTier, executionPolicy: { tier: executionTier, requiresPlan: false, reason: "Scripted completion smoke." } } : {}),
   });
   const result = await runAgent(config);
   const store = new SessionStore(sessionsDir, id, { projectRoot: workspace, commandCwd: workspace, projectSessionsDir });
@@ -215,6 +229,210 @@ try {
   assert(verifiedAction.events.some((event) => event.type === "tool.completed" && event.data?.toolName === "run_command"));
   assert(verifiedAction.events.some((event) => event.type === "session.finished"));
   assert(!verifiedAction.events.some((event) => event.type === "completion.repair_requested"));
+
+  const sourceChangeRequiresFreshTests = await runCase({
+    id: "source-change-requires-fresh-tests",
+    goal: "Repair this Python project and verify the result.",
+    taskProfile: "python",
+    allowShellTool: true,
+    allowFileTools: true,
+    executionTier: "focused",
+    setup: async (workspace) => {
+      await fs.mkdir(path.join(workspace, "tests"), { recursive: true });
+      await fs.writeFile(path.join(workspace, "analysis.py"), "VALUE = 1\n", "utf8");
+      await fs.writeFile(
+        path.join(workspace, "tests", "test_analysis.py"),
+        [
+          "import unittest",
+          "import analysis",
+          "",
+          "class AnalysisTests(unittest.TestCase):",
+          "    def test_value(self):",
+          "        self.assertEqual(analysis.VALUE, 2)",
+          "",
+          "if __name__ == '__main__':",
+          "    unittest.main()",
+          "",
+        ].join("\n"),
+        "utf8"
+      );
+    },
+    responses: [
+      assistant("", [toolCall("inspect-source-tests", "inspect_project", { path: "." })]),
+      assistant("", [
+        toolCall("patch-source", "apply_patch", {
+          path: "analysis.py",
+          search: "VALUE = 1",
+          replace: "VALUE = 2",
+        }),
+      ]),
+      assistant("", [toolCall("run-not-test", "run_command", { command: "python analysis.py" })]),
+      assistant("", [toolCall("finish-before-test", "finish", { result: "The repair is verified." })]),
+      assistant("", [
+        toolCall("run-tests", "run_command", { command: "python -m unittest discover -s tests" }),
+      ]),
+      assistant("", [toolCall("finish-after-test", "finish", { result: "The repair and focused tests passed." })]),
+    ],
+  });
+  assert.equal(
+    sourceChangeRequiresFreshTests.calls.length,
+    6,
+    JSON.stringify(
+      sourceChangeRequiresFreshTests.events.map((event) => ({
+        type: event.type,
+        toolName: event.data?.toolName || "",
+        path: event.data?.path || "",
+        testFiles: event.data?.testFiles || [],
+        command: event.data?.args?.command || "",
+      }))
+    )
+  );
+  assert.equal(
+    sourceChangeRequiresFreshTests.result.stopped,
+    undefined,
+    JSON.stringify({
+      result: sourceChangeRequiresFreshTests.result,
+      events: sourceChangeRequiresFreshTests.events
+        .filter((event) => ["tool.completed", "tool.failed", "tool.blocked", "completion.evidence_rejected"].includes(event.type))
+        .map((event) => ({
+          type: event.type,
+          toolName: event.data?.toolName || "",
+          command: event.data?.args?.command || "",
+          exitCode: event.data?.exitCode,
+          reason: event.data?.reason || "",
+          error: event.data?.error || "",
+        })),
+    })
+  );
+  assert.match(sourceChangeRequiresFreshTests.result.result, /focused tests passed/i);
+  assert.equal(
+    sourceChangeRequiresFreshTests.events.filter((event) => event.type === "completion.evidence_rejected").length,
+    1
+  );
+  assert(
+    sourceChangeRequiresFreshTests.events.some(
+      (event) =>
+        event.type === "completion.evidence_rejected" &&
+        /no relevant test command succeeded/i.test(String(event.data?.reason || ""))
+    ),
+    "source-changing completion was not rejected before a fresh test run"
+  );
+  assert(
+    sourceChangeRequiresFreshTests.events.some(
+      (event) =>
+        event.type === "tool.completed" &&
+        event.data?.toolName === "run_command" &&
+        event.data?.args?.command === "python -m unittest discover -s tests" &&
+        event.data?.exitCode === 0
+    ),
+    "fresh project test command did not pass"
+  );
+  assert(sourceChangeRequiresFreshTests.events.some((event) => event.type === "session.finished"));
+
+  const failedValidationCanBeRepaired = await runCase({
+    id: "failed-validation-can-be-repaired",
+    goal: "Repair this Python project and verify the result.",
+    taskProfile: "python",
+    allowShellTool: true,
+    allowFileTools: true,
+    executionTier: "focused",
+    setup: async (workspace) => {
+      await fs.mkdir(path.join(workspace, "tests"), { recursive: true });
+      await fs.writeFile(path.join(workspace, "analysis.py"), "VALUE = 1\n", "utf8");
+      await fs.writeFile(
+        path.join(workspace, "tests", "test_analysis.py"),
+        [
+          "import unittest",
+          "import analysis",
+          "",
+          "class AnalysisTests(unittest.TestCase):",
+          "    def test_value(self):",
+          "        self.assertEqual(analysis.VALUE, 3)",
+          "",
+          "if __name__ == '__main__':",
+          "    unittest.main()",
+          "",
+        ].join("\n"),
+        "utf8"
+      );
+    },
+    responses: [
+      assistant("", [toolCall("inspect-repair-tests", "inspect_project", { path: "." })]),
+      assistant("", [
+        toolCall("patch-wrong-value", "apply_patch", {
+          path: "analysis.py",
+          search: "VALUE = 1",
+          replace: "VALUE = 20",
+        }),
+      ]),
+      assistant("", [toolCall("finish-without-tests", "finish", { result: "The repair is verified." })]),
+      assistant("", [
+        toolCall("run-failing-tests", "run_command", { command: "python -m unittest discover -s tests" }),
+      ]),
+      assistant("", [toolCall("finish-after-failed-tests", "finish", { result: "The repair is verified." })]),
+      assistant("", [
+        toolCall("patch-correct-value", "apply_patch", {
+          path: "analysis.py",
+          search: "VALUE = 20",
+          replace: "VALUE = 3",
+        }),
+      ]),
+      assistant("", [
+        toolCall("run-passing-tests", "run_command", { command: "python -m unittest discover -s tests" }),
+      ]),
+      assistant("", [toolCall("finish-after-repair", "finish", { result: "The repair and focused tests passed." })]),
+    ],
+  });
+  assert.equal(
+    failedValidationCanBeRepaired.calls.length,
+    8,
+    JSON.stringify(
+      failedValidationCanBeRepaired.events
+        .filter((event) =>
+          ["tool.completed", "tool.failed", "tool.blocked", "completion.evidence_rejected", "completion.repair_requested"].includes(
+            event.type
+          )
+        )
+        .map((event) => ({
+          type: event.type,
+          toolName: event.data?.toolName || "",
+          command: event.data?.args?.command || "",
+          exitCode: event.data?.exitCode,
+          reason: event.data?.reason || "",
+          repairAttempt: event.data?.repairAttempt,
+          progressCount: event.data?.progressCount,
+        }))
+    )
+  );
+  assert.equal(failedValidationCanBeRepaired.result.stopped, undefined);
+  assert.match(failedValidationCanBeRepaired.result.result, /focused tests passed/i);
+  assert.equal(
+    failedValidationCanBeRepaired.events.filter((event) => event.type === "completion.evidence_rejected").length,
+    2
+  );
+  assert.equal(
+    failedValidationCanBeRepaired.events.filter((event) => event.type === "completion.repair_requested").length,
+    2
+  );
+  assert(
+    failedValidationCanBeRepaired.events.some(
+      (event) =>
+        event.type === "tool.completed" &&
+        event.data?.args?.command === "python -m unittest discover -s tests" &&
+        event.data?.exitCode === 1
+    ),
+    "failing validation evidence was not preserved for another repair turn"
+  );
+  assert(
+    failedValidationCanBeRepaired.events.some(
+      (event) =>
+        event.type === "tool.completed" &&
+        event.data?.args?.command === "python -m unittest discover -s tests" &&
+        event.data?.exitCode === 0
+    ),
+    "repaired project tests did not pass"
+  );
+  assert(failedValidationCanBeRepaired.events.some((event) => event.type === "session.finished"));
 
   const verifiedEmptyCompletion = await runCase({
     id: "verified-empty-completion",

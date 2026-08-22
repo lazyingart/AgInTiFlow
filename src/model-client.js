@@ -89,17 +89,19 @@ function prepareMessages(config, messages) {
   });
 }
 
+export function resolveModelTimeoutMs(config = {}) {
+  const provider = normalizeProviderId(config.provider, "");
+  const fallback = provider === "localllm" ? 300000 : 180000;
+  const timeout = Number(config.modelTimeoutMs || process.env.AGINTI_MODEL_TIMEOUT_MS || fallback);
+  return Number.isFinite(timeout) && timeout > 0 ? timeout : fallback;
+}
+
 function requestOptions(config) {
-  const timeout = Number(config.modelTimeoutMs || process.env.AGINTI_MODEL_TIMEOUT_MS || 180000);
+  const timeout = resolveModelTimeoutMs(config);
   return {
     ...(config.abortSignal ? { signal: config.abortSignal } : {}),
     ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}),
   };
-}
-
-function modelTimeoutMs(config) {
-  const timeout = Number(config.modelTimeoutMs || process.env.AGINTI_MODEL_TIMEOUT_MS || 180000);
-  return Number.isFinite(timeout) && timeout > 0 ? timeout : 0;
 }
 
 function chatReasoningEffort(config = {}) {
@@ -124,7 +126,7 @@ function shouldRetryWithoutReasoningEffort(error, payload = {}) {
 
 export async function createChatCompletion(client, payload, config, label = "model request") {
   const preparedPayload = withChatReasoningEffort(payload, config);
-  const timeout = modelTimeoutMs(config);
+  const timeout = resolveModelTimeoutMs(config);
   if (!timeout && !config.abortSignal) {
     try {
       return await client.chat.completions.create(preparedPayload, requestOptions(config));

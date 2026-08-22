@@ -7,6 +7,7 @@ import {
   buildModelTimeoutRetryMessages,
   modelTimeoutRetryRoute,
   repairModelMessageHistory,
+  shouldResetStaticDiscoveryPhase,
   runAgent,
   sanitizeToolResult,
   toolResultForModel,
@@ -18,6 +19,7 @@ import { formatBehaviorContractForPrompt } from "../src/behavior-contract.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { readCodebaseMap } from "../src/codebase-map.js";
 import { evaluateCommandPolicy } from "../src/command-policy.js";
+import { shouldReviewToolResult } from "../src/scs-controller.js";
 import {
   engineeringGuidanceForTask,
   recommendedMaxStepsForTask,
@@ -163,6 +165,74 @@ try {
   assert(
     interruptedDeepSeekState.messages.at(-1)?.content === "Continue with this new request: /review",
     "interrupted repair dropped the new user request"
+  );
+  const deepSeekCompactionState = {
+    goal: "Continue a data repair from retained evidence.",
+    plan: "Use the verified source evidence, repair once, then test.",
+    stepsCompleted: 4,
+    meta: {},
+    messages: [
+      { role: "system", content: "system" },
+      { role: "user", content: "inspect the exact source" },
+      {
+        role: "assistant",
+        content: "",
+        reasoning_content: "The source must be read before editing.",
+        tool_calls: [
+          { id: "deep-read", type: "function", function: { name: "read_file", arguments: '{"path":"analysis.py"}' } },
+        ],
+      },
+      { role: "tool", tool_call_id: "deep-read", content: '{"ok":true,"path":"analysis.py","content":"verified source"}' },
+    ],
+  };
+  const deepSeekCompacted = buildModelTimeoutRetryMessages(
+    deepSeekCompactionState,
+    { provider: "deepseek", model: "deepseek-v4-pro", contextWindowTokens: 32768 },
+    { url: "", title: "No browser page open" },
+    5,
+    new Error("synthetic timeout")
+  );
+  assert(
+    !deepSeekCompacted.some((message) => message.role === "assistant" && Array.isArray(message.tool_calls)),
+    "DeepSeek compaction synthesized assistant tool calls without original reasoning_content"
+  );
+  assert(
+    deepSeekCompacted.some(
+      (message) => message.role === "user" && /Retained runtime tool evidence/.test(message.content) && /analysis\.py/.test(message.content) && /verified source/.test(message.content)
+    ),
+    "DeepSeek compaction dropped bounded source evidence while removing synthetic tool-call messages"
+  );
+  assert(
+    !shouldReviewToolResult(
+      { ok: true, toolName: "read_file", path: "analysis.py" },
+      { meta: { toolLoop: { warned: ["old-read"], recent: [{ toolName: "read_file", ok: false }] } } }
+    ),
+    "SCS scheduled a redundant review for a successful read because an older read failed"
+  );
+  assert(
+    shouldReviewToolResult(
+      { ok: false, blocked: true, toolName: "read_file", reason: "exact read blocked" },
+      { meta: { toolLoop: { warned: [], recent: [] } } }
+    ),
+    "SCS stopped reviewing an exact blocked tool result"
+  );
+  assert(
+    !shouldResetStaticDiscoveryPhase({
+      ok: true,
+      toolName: "run_command",
+      args: { command: 'echo "SOURCE"; cat analysis.py; echo "DIFF"; git diff -- analysis.py' },
+      commandPolicy: { writesWorkspace: false },
+    }),
+    "composite read-only shell discovery incorrectly reset the bounded discovery phase"
+  );
+  assert(
+    shouldResetStaticDiscoveryPhase({
+      ok: true,
+      toolName: "run_command",
+      args: { command: "python analysis.py" },
+      commandPolicy: { writesWorkspace: true },
+    }),
+    "a successful workspace-writing command did not reset the discovery phase"
   );
   const workspaceToolConfig = {
     commandCwd: workspace,
@@ -1110,6 +1180,14 @@ try {
   assert(
     localTimeoutRoute.model === "localllm-fast" && localTimeoutRoute.retryTimeoutMs === 90000,
     "LocalLLM timeout retry did not switch to its same-boundary fast route"
+  );
+  const defaultLocalTimeoutRoute = modelTimeoutRetryRoute({
+    provider: "localllm",
+    model: "localllm-fast",
+  });
+  assert(
+    defaultLocalTimeoutRoute.timeoutMs === 300000 && defaultLocalTimeoutRoute.retryTimeoutMs === 600000,
+    "LocalLLM default timeout did not allow bounded slow local generation and one longer retry"
   );
   const artifactTimeoutMessages = buildModelTimeoutRetryMessages(
     {

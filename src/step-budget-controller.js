@@ -60,7 +60,8 @@ export function normalizeDynamicStepsMode(value = "auto") {
 }
 
 export function createStepBudgetState(config = {}, state = {}) {
-  const saved = state.meta?.stepBudget || {};
+  const resetFromExplicitOverride = config.resetStepBudget === true;
+  const saved = resetFromExplicitOverride ? {} : state.meta?.stepBudget || {};
   const initialMaxSteps = positiveInteger(saved.initialMaxSteps, positiveInteger(config.maxSteps, 24));
   const savedCurrent = positiveInteger(saved.currentMaxSteps, initialMaxSteps);
   const currentMaxSteps = Math.max(savedCurrent, positiveInteger(config.maxSteps, initialMaxSteps), positiveInteger(state.stepsCompleted, 0));
@@ -88,6 +89,7 @@ export function createStepBudgetState(config = {}, state = {}) {
     extensionsUsed: clamp(positiveInteger(saved.extensionsUsed, 0), 0, extensionLimit),
     lastExtensionStep: positiveInteger(saved.lastExtensionStep, 0),
     monitor: scsActive ? "scs-student" : "runtime",
+    resetFromExplicitOverride,
   };
 }
 
@@ -102,6 +104,7 @@ export function serializeStepBudgetState(budget = {}) {
     extensionLimit: positiveInteger(budget.extensionLimit, 0),
     extensionsUsed: positiveInteger(budget.extensionsUsed, 0),
     lastExtensionStep: positiveInteger(budget.lastExtensionStep, 0),
+    resetFromExplicitOverride: Boolean(budget.resetFromExplicitOverride),
   };
 }
 

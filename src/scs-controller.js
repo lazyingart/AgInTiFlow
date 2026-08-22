@@ -1104,9 +1104,12 @@ export function shouldReviewToolResult(toolResult, state = {}) {
   if (isRecoverableShellToolResult(toolResult)) return false;
   if (toolResult.ok === false || toolResult.blocked || toolResult.error || toolResult.reason) return true;
   if (isSuspiciousBroadBrowserToolResult(toolResult)) return true;
-  const recent = state.meta?.toolLoop?.recent || [];
-  const warned = state.meta?.toolLoop?.warned || [];
-  return warned.length > 0 && recent.some((entry) => entry.toolName === toolResult.toolName && entry.ok === false);
+  // A later successful call is progress, even when another call using the same
+  // tool name failed earlier. Re-reviewing every successful read in a batch
+  // burns the monitor budget and can trigger several replans before the model
+  // receives the complete batch. Periodic SCS review still evaluates aggregate
+  // progress, while exact failed/blocked calls remain reviewed above.
+  return false;
 }
 
 export function isRecoverableShellToolResult(toolResult = {}) {

@@ -649,6 +649,104 @@ function resolveContractPath(commandCwd = process.cwd(), rawPath = "") {
   return path.resolve(commandCwd || process.cwd(), text);
 }
 
+const PROJECT_SOURCE_PATH_PATTERN =
+  /\.(?:c|cc|cpp|cxx|h|hh|hpp|cs|go|java|js|jsx|ts|tsx|mjs|cjs|kt|kts|php|py|r|rb|rs|scala|sh|sql|swift|vue|svelte|jl)$/i;
+const PROJECT_SOURCE_MANIFEST_PATTERN =
+  /(?:^|\/)(?:CMakeLists\.txt|Cargo\.toml|Gemfile|Makefile|Package\.swift|build\.gradle(?:\.kts)?|go\.mod|package\.json|pom\.xml|pyproject\.toml|requirements[^/]*\.txt)$/i;
+const GENERATED_SOURCE_PATH_PATTERN =
+  /(?:^|\/)(?:\.aginti|\.aginti-sessions|artifacts?|build|coverage|dist|node_modules|outputs?|target|vendor)(?:\/|$)/i;
+const TEST_COMMAND_PATTERNS = Object.freeze([
+  /(?:^|[;&|]\s*|\s)python\d*(?:\.\d+)?\s+-m\s+(?:pytest|unittest)\b/i,
+  /(?:^|[;&|]\s*|\s)(?:pytest|jest|vitest|phpunit|rspec)\b/i,
+  /(?:^|[;&|]\s*|\s)npx\s+(?:jest|mocha|pytest|vitest)\b/i,
+  /(?:^|[;&|]\s*|\s)(?:npm|pnpm|yarn|bun)\s+(?:test|run\s+(?:test|check)(?::[^\s;&|]+)?)(?:\s|$)/i,
+  /(?:^|[;&|]\s*|\s)(?:cargo|deno|dotnet|go|swift)\s+test\b/i,
+  /(?:^|[;&|]\s*|\s)node\s+--test\b/i,
+  /(?:^|[;&|]\s*|\s)(?:ctest|make\s+(?:check|test)|mvn\w*\s+(?:test|verify))\b/i,
+  /(?:^|[;&|]\s*|\s)(?:gradle\w*|\.\/gradlew)\s+[^;&|\n]*\btest\b/i,
+]);
+
+function projectSourceMutationPath(value = "") {
+  const cleaned = String(value || "").trim().replace(/\\/g, "/");
+  if (!cleaned || GENERATED_SOURCE_PATH_PATTERN.test(cleaned)) return false;
+  return PROJECT_SOURCE_PATH_PATTERN.test(cleaned) || PROJECT_SOURCE_MANIFEST_PATTERN.test(cleaned);
+}
+
+function projectTestCommand(value = "") {
+  const command = String(value || "").trim();
+  return Boolean(command && TEST_COMMAND_PATTERNS.some((pattern) => pattern.test(command)));
+}
+
+function evaluateProjectTestVerification(events = []) {
+  const eventList = Array.isArray(events) ? events : [];
+  let testFiles = [];
+  for (const event of eventList) {
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    if (event?.type !== "tool.completed" || data.toolName !== "inspect_project" || data.ok === false) continue;
+    testFiles = unique([
+      ...testFiles,
+      ...(Array.isArray(data.testFiles) ? data.testFiles : [])
+        .map((item) => String(item?.path || item || "").trim())
+        .filter(Boolean),
+    ]);
+  }
+  if (testFiles.length === 0) {
+    return { ok: true, checked: false, reason: "No project tests were discovered." };
+  }
+
+  const mutations = [];
+  for (let index = 0; index < eventList.length; index += 1) {
+    const event = eventList[index];
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    if (event?.type !== "file.changed") continue;
+    const changedPath = String(data.path || data.file || data.change?.path || "").trim();
+    if (projectSourceMutationPath(changedPath)) mutations.push({ index, path: changedPath });
+  }
+  if (mutations.length === 0) {
+    return { ok: true, checked: false, reason: "No source or build manifest changed after test discovery." };
+  }
+
+  const lastMutation = mutations.at(-1);
+  const testRuns = [];
+  for (let index = lastMutation.index + 1; index < eventList.length; index += 1) {
+    const event = eventList[index];
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    const command = String(data.args?.command || "").trim();
+    if (
+      event?.type !== "tool.completed" ||
+      data.toolName !== "run_command" ||
+      !projectTestCommand(command)
+    ) {
+      continue;
+    }
+    testRuns.push({ command, exitCode: Number.isInteger(data.exitCode) ? data.exitCode : null });
+  }
+
+  if (testRuns.length === 0) {
+    return {
+      ok: false,
+      checked: true,
+      testFiles: testFiles.slice(0, 12),
+      changedPaths: mutations.map((item) => item.path).slice(-12),
+      testRuns: [],
+      reason: `Source changed after inspect_project discovered tests, but no relevant test command succeeded after the latest source change (${lastMutation.path}). Run the focused project tests and finish only after exit 0.`,
+    };
+  }
+
+  const lastRun = testRuns.at(-1);
+  const ok = lastRun.exitCode === 0;
+  return {
+    ok,
+    checked: true,
+    testFiles: testFiles.slice(0, 12),
+    changedPaths: mutations.map((item) => item.path).slice(-12),
+    testRuns: testRuns.slice(-8),
+    reason: ok
+      ? `A relevant test command passed after the latest source change: ${lastRun.command}.`
+      : `The latest relevant test command did not pass after the latest source change (exit ${lastRun.exitCode ?? "unknown"}): ${lastRun.command}.`,
+  };
+}
+
 const STANDARD_SHELL_COMMANDS = new Set([
   ".",
   "alias",
@@ -1716,16 +1814,27 @@ export function evaluateScsSemanticContract(
   const exactOutputPaths = Array.isArray(contract.exactOutputPaths) ? contract.exactOutputPaths : [];
   const requiredTextTerms = Array.isArray(contract.requiredTextTerms) ? contract.requiredTextTerms : [];
   const forbiddenTextTerms = Array.isArray(contract.forbiddenTextTerms) ? contract.forbiddenTextTerms : [];
+  const projectTestVerification = evaluateProjectTestVerification(events);
   if (!exactOutputPaths.length && !requiredTextTerms.length && !forbiddenTextTerms.length) {
-    return { ok: true, checked: false, reason: "No semantic file contract was inferred." };
+    return projectTestVerification.checked
+      ? {
+          ok: projectTestVerification.ok,
+          checked: true,
+          projectTestVerification,
+          reason: projectTestVerification.reason,
+        }
+      : { ok: true, checked: false, projectTestVerification, reason: "No semantic file contract was inferred." };
   }
   if (!exactOutputPaths.length) {
     return {
-      ok: true,
-      checked: false,
-      reason: "Semantic text terms were inferred, but no exact output path was inferred for deterministic file inspection.",
+      ok: projectTestVerification.ok,
+      checked: projectTestVerification.checked,
+      reason: projectTestVerification.ok
+        ? "Semantic text terms were inferred, but no exact output path was inferred for deterministic file inspection."
+        : projectTestVerification.reason,
       requiredTextTerms,
       forbiddenTextTerms,
+      projectTestVerification,
     };
   }
 
@@ -1747,7 +1856,8 @@ export function evaluateScsSemanticContract(
     missingFiles.length === 0 &&
     missingRequiredText.length === 0 &&
     presentForbiddenText.length === 0 &&
-    sourceGrounding.ok;
+    sourceGrounding.ok &&
+    projectTestVerification.ok;
   return {
     ok,
     checked: true,
@@ -1758,6 +1868,7 @@ export function evaluateScsSemanticContract(
     missingRequiredText,
     presentForbiddenText,
     sourceGrounding,
+    projectTestVerification,
     unsupportedCommandClaims: sourceGrounding.unsupportedCommandClaims || [],
     unsupportedPathClaims: sourceGrounding.unsupportedPathClaims || [],
     unsupportedOutputClaims: sourceGrounding.unsupportedOutputClaims || [],
@@ -1777,6 +1888,7 @@ export function evaluateScsSemanticContract(
           missingRequiredText.length ? `Missing required text terms: ${missingRequiredText.join(", ")}` : "",
           presentForbiddenText.length ? `Forbidden text terms present: ${presentForbiddenText.join(", ")}` : "",
           !sourceGrounding.ok ? sourceGrounding.reason : "",
+          !projectTestVerification.ok ? projectTestVerification.reason : "",
         ]
           .filter(Boolean)
           .join("; "),

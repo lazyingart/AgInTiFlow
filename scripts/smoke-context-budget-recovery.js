@@ -163,6 +163,10 @@ const runtimeMessages = buildContextBudgetCompactionMessages(
   { reason: "test context recovery" }
 );
 const runtimeText = runtimeMessages.map((message) => message.content || "").join("\n");
+assert.ok(
+  estimateMessageTokens(runtimeMessages) <= 12288,
+  "runtime compaction exceeded the bounded LocalLLM retry target"
+);
 assert.ok(runtimeText.includes(HEAD));
 assert.ok(runtimeText.includes(TAIL));
 assert.ok(runtimeText.includes("latest interruption"));
