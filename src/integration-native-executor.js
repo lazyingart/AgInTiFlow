@@ -11,6 +11,10 @@ import { SessionStore } from "./session-store.js";
 import { SESSION_RUNTIME_FIELDS, captureSessionRuntime } from "./session-runtime.js";
 import { runAgent } from "./agent-runner.js";
 import {
+  INTEGRATION_TEXT_WORKSPACE_PROFILE_ID,
+  INTEGRATION_TEXT_WORKSPACE_TOOL_NAMES,
+} from "./integration-retained-text-workspace.js";
+import {
   assertRegisteredIntegrationSessionConfig,
   bindIntegrationNativeExecution,
   loadIntegrationSessionSnapshotForConfig,
@@ -166,6 +170,15 @@ function assertNoEscapeFlags(config) {
   if (Array.isArray(config.readOnlyHostMounts) && config.readOnlyHostMounts.length !== 0) {
     fail("Fixed runtime config must not allow host mounts.");
   }
+  if (config.integrationSessionProfile === INTEGRATION_TEXT_WORKSPACE_PROFILE_ID) {
+    if (
+      config.allowShellTool !== false ||
+      config.allowImagePerception !== false ||
+      contractDigest(config.integrationAllowedToolNames) !== contractDigest(INTEGRATION_TEXT_WORKSPACE_TOOL_NAMES)
+    ) {
+      fail("Fixed text-workspace profile must disable image perception and bind its exact tool surface.");
+    }
+  }
 }
 
 export function buildFixedNativeRunAgentConfig(input = {}) {
@@ -185,6 +198,14 @@ export function buildFixedNativeRunAgentConfig(input = {}) {
   if (input.mode === "start" && expectedRevision !== 1) fail("Start requires native runtime revision 1.");
   const fixed = {
     ...buildFixedIntegrationRuntimeOverrides(policy, { sessionId: nativeSessionId }),
+    ...(input.retainedTextWorkspace === undefined
+      ? {}
+      : {
+          integrationSessionProfile: INTEGRATION_TEXT_WORKSPACE_PROFILE_ID,
+          integrationAllowedToolNames: INTEGRATION_TEXT_WORKSPACE_TOOL_NAMES,
+          allowShellTool: false,
+          allowImagePerception: false,
+        }),
     goal: inputText,
     abortSignal: input.abortSignal,
     onEvent: input.onEvent,
@@ -202,6 +223,9 @@ export function buildFixedNativeRunAgentConfig(input = {}) {
   }
   const expectedKeys = [
     ...Object.keys(buildFixedIntegrationRuntimeOverrides(policy, { sessionId: nativeSessionId })),
+    ...(input.retainedTextWorkspace === undefined
+      ? []
+      : ["integrationSessionProfile", "integrationAllowedToolNames", "allowImagePerception"]),
     "goal",
     "abortSignal",
     "onEvent",
@@ -243,6 +267,15 @@ export function buildFixedNativeRunAgentConfig(input = {}) {
     ...(input.retainedNativeExecutionEvidence === undefined
       ? {}
       : { retainedNativeExecutionEvidence: input.retainedNativeExecutionEvidence }),
+    ...(input.retainedTextWorkspace === undefined
+      ? {}
+      : {
+          retainedTextWorkspace: input.retainedTextWorkspace,
+          principalId: input.principalId,
+          browserSessionId: input.browserSessionId,
+          threadId: input.threadId,
+          runId: input.runId,
+        }),
   });
 }
 

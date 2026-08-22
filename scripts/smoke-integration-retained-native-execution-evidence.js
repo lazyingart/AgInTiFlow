@@ -10,6 +10,11 @@ import {
   createRetainedIntegrationNativeExecutionEvidence,
 } from "../src/integration-retained-native-execution-evidence.js";
 import {
+  createRetainedIntegrationTextWorkspace,
+  INTEGRATION_TEXT_WORKSPACE_PROFILE_ID,
+  INTEGRATION_TEXT_WORKSPACE_TOOL_NAMES,
+} from "../src/integration-retained-text-workspace.js";
+import {
   createRetainedIntegrationNativeSessionRepositoryState,
 } from "../src/integration-retained-native-session-repository-state.js";
 import {
@@ -60,9 +65,11 @@ import {
   REQUIRED_INTEGRATION_ISOLATION_ASSERTIONS,
 } from "../src/integration-policy.js";
 import {
+  registerIntegrationSessionConfig,
   runWithIntegrationSessionScope,
 } from "../src/integration-session-persistence.js";
 import { SessionStore } from "../src/session-store.js";
+import { runAgent } from "../src/agent-runner.js";
 
 const UID = process.getuid();
 const GID = process.getgid();
@@ -170,6 +177,7 @@ function runtimeAuthorityForFixture(fixture) {
     repositoryFenceLease: fixture.acquiredFence.lease,
     retainedNativeExecutionEvidence: fixture.evidence,
     retainedRecoveryCoordinator: fixture.recovery,
+    retainedTextWorkspace: fixture.textWorkspace,
   });
 }
 
@@ -229,6 +237,12 @@ async function openFixture(rootPath, now, processOwnerBootstrap) {
   await ensureOwnerDirectory(repositoryPath);
   await ensureOwnerDirectory(sessionPath);
   await ensureOwnerDirectory(path.join(rootPath, "workspace"));
+  const poisonTarget = path.join(rootPath, "legacy-session-root-poison");
+  await fs.mkdir(poisonTarget, { recursive: true, mode: 0o700 });
+  await fs.chmod(poisonTarget, 0o000);
+  await fs.symlink(poisonTarget, path.join(sessionPath, NATIVE_SESSION_ID)).catch((error) => {
+    if (error?.code !== "EEXIST") throw error;
+  });
   await ensureLockFile(repositoryLockPath);
   await ensureLockFile(sessionLockPath);
   const authority = await openIntegrationStorageAuthority({
@@ -326,18 +340,43 @@ async function openFixture(rootPath, now, processOwnerBootstrap) {
     processOwnerBootstrap,
     repositoryFenceLease: acquiredFence.lease,
   });
+  const textWorkspace = await createRetainedIntegrationTextWorkspace({
+    sessionStateStore,
+    sessionStateStoreExpected: sessionBinding.expected,
+    nativeExecutionEvidence: evidence,
+    repository,
+    recoveryCoordinator: recovery,
+    processOwnerBootstrap,
+    repositoryFenceLease: acquiredFence.lease,
+  });
+  const openDistinctSessionStore = async () => {
+    const distinctBinding = await binding(
+      sessionSegments,
+      INTEGRATION_RETAINED_SESSION_STATE_LOCK_FILE,
+      sessionLockPath,
+      "maxStateBytes",
+      512 * 1024
+    );
+    return createRetainedIntegrationSessionStateStore(
+      distinctBinding.files,
+      distinctBinding.lock,
+      distinctBinding.expected
+    );
+  };
   return Object.freeze({
     authority,
     repository,
     repositoryState,
     sessionStateStore,
     evidence,
+    textWorkspace,
     recovery,
     expected,
     processOwnerBootstrap,
     processOwner: processOwnerBootstrap.processOwner,
     acquiredFence,
     sessionBinding,
+    openDistinctSessionStore,
   });
 }
 
@@ -357,14 +396,171 @@ async function openSiblingFixture(rootPath, now, fixture) {
     processOwnerBootstrap: fixture.processOwnerBootstrap,
     repositoryFenceLease: acquiredFence.lease,
   });
+  const textWorkspace = await createRetainedIntegrationTextWorkspace({
+    sessionStateStore: fixture.sessionStateStore,
+    sessionStateStoreExpected: fixture.expected.sessionStateStore,
+    nativeExecutionEvidence: fixture.evidence,
+    repository,
+    recoveryCoordinator: recovery,
+    processOwnerBootstrap: fixture.processOwnerBootstrap,
+    repositoryFenceLease: acquiredFence.lease,
+  });
   return Object.freeze({
     repository,
     repositoryState: fixture.repositoryState,
+    sessionStateStore: fixture.sessionStateStore,
     evidence: fixture.evidence,
+    textWorkspace,
     recovery,
     processOwnerBootstrap: fixture.processOwnerBootstrap,
     processOwner: fixture.processOwner,
     acquiredFence,
+  });
+}
+
+function installLegacySessionRootGuard(legacyRoot) {
+  const names = [
+    "access", "appendFile", "chmod", "chown", "copyFile", "cp", "link", "lstat", "mkdir", "mkdtemp",
+    "open", "opendir", "readFile", "readdir", "readlink", "realpath", "rename", "rm", "stat",
+    "symlink", "truncate", "unlink", "utimes", "writeFile",
+  ];
+  const originals = new Map();
+  const hits = [];
+  const matches = (value) => {
+    let candidate = value;
+    if (value instanceof URL && value.protocol === "file:") candidate = fileURLToPath(value);
+    if (Buffer.isBuffer(candidate)) candidate = candidate.toString("utf8");
+    if (typeof candidate !== "string") return false;
+    const resolved = path.resolve(candidate);
+    return resolved === legacyRoot || resolved.startsWith(`${legacyRoot}${path.sep}`);
+  };
+  for (const name of names) {
+    if (typeof fs[name] !== "function") continue;
+    const original = fs[name];
+    originals.set(name, original);
+    fs[name] = async (...args) => {
+      if (args.some(matches)) {
+        hits.push(Object.freeze({ name, path: String(args.find(matches)) }));
+        const error = new Error(`Forbidden legacy SessionStore root access: ${name}`);
+        error.code = "EACCES";
+        throw error;
+      }
+      return original(...args);
+    };
+  }
+  return Object.freeze({
+    hits,
+    restore() {
+      for (const [name, original] of originals) fs[name] = original;
+    },
+  });
+}
+
+function deterministicRunAgentConfig(baseConfig, registration) {
+  let toolTurn = 0;
+  const promptAudit = {
+    payloads: 0,
+    planPayloads: 0,
+    executionPayloads: 0,
+  };
+  const clientFactory = async () => ({
+    chat: {
+      completions: {
+        async create(payload) {
+          const promptText = JSON.stringify(payload.messages || []);
+          assert.doesNotMatch(
+            promptText,
+            /common host data roots|home parent|supports broader setup and network commands|read-only at (?:their )?original absolute paths|Absolute host paths are acceptable/iu,
+            "retained text-workspace prompt advertised unavailable host mounts or network setup"
+          );
+          assert.match(
+            promptText,
+            /(?:No shell command tool is available|Shell execution(?: and package installation)? (?:is|are) (?:unavailable|disabled))/iu,
+            "retained text-workspace prompt did not disclose that shell execution is disabled"
+          );
+          promptAudit.payloads += 1;
+          if (!Array.isArray(payload.tools) || payload.tools.length === 0) {
+            promptAudit.planPayloads += 1;
+            return {
+              choices: [{
+                message: {
+                  role: "assistant",
+                  content: "1. Inspect the workspace.\n2. Verify retained evidence.\n3. Finish concisely.",
+                },
+              }],
+            };
+          }
+          promptAudit.executionPayloads += 1;
+          assert(
+            !payload.tools.some((tool) => tool.function?.name === "run_command"),
+            "real retained text-workspace execution offered run_command"
+          );
+          toolTurn += 1;
+          const offered = new Set(payload.tools.map((tool) => tool.function?.name));
+          const name = toolTurn === 1 && offered.has("inspect_project") ? "inspect_project" : "finish";
+          return {
+            choices: [{
+              message: {
+                role: "assistant",
+                content: "",
+                tool_calls: [{
+                  id: `retained-text-workspace-${toolTurn}`,
+                  type: "function",
+                  function: {
+                    name,
+                    arguments: name === "finish"
+                      ? JSON.stringify({ result: "Retained text-workspace execution completed with verified workspace evidence." })
+                      : "{}",
+                  },
+                }],
+              },
+            }],
+          };
+        },
+      },
+    },
+  });
+  clientFactory.agintiDeterministicTest = true;
+  clientFactory.promptAudit = promptAudit;
+  const config = Object.freeze({
+    ...baseConfig,
+    clientFactory,
+    providerReadinessMode: "deterministic-test",
+    allowLocalAutoMax: false,
+    localResourceProbe: async () => Object.freeze({
+      ready: false,
+      status: "unknown",
+      sharedWorkstationPressure: null,
+    }),
+    executionPolicy: Object.freeze({
+      tier: "thorough",
+      requiresPlan: true,
+      reason: "Deterministic retained-profile E2E coverage.",
+    }),
+  });
+  const expectedBeforeRevision = registration.mode === "resume" ? registration.expectedRuntimeRevision : 0;
+  const expectedAfterRevision = registration.mode === "resume" ? registration.expectedRuntimeRevision + 1 : 1;
+  return registerIntegrationSessionConfig(config, {
+    nativeSessionId: NATIVE_SESSION_ID,
+    mode: registration.mode,
+    policyLock: config.integrationPolicyLock,
+    policyFingerprint: config.integrationPolicyFingerprint,
+    runtimeRootsDigest: config.integrationRuntimeRootsDigest,
+    sessionsDir: config.sessionsDir,
+    baseDir: config.baseDir,
+    commandCwd: config.commandCwd,
+    expectedBeforeRevision,
+    expectedAfterRevision,
+    expectedBeforeRuntimeDigest: registration.mode === "resume"
+      ? contractDigest(expectedFixedSessionRuntimeSnapshot(config, expectedBeforeRevision))
+      : ZERO_DIGEST,
+    expectedAfterRuntimeDigest: contractDigest(expectedFixedSessionRuntimeSnapshot(config, expectedAfterRevision)),
+    retainedNativeExecutionEvidence: registration.evidence,
+    retainedTextWorkspace: registration.textWorkspace,
+    principalId: PRINCIPAL,
+    browserSessionId: BROWSER_SESSION,
+    threadId: THREAD_ID,
+    runId: registration.runId,
   });
 }
 
@@ -730,6 +926,19 @@ async function run() {
       }),
       "INTEGRATION_NATIVE_EVIDENCE_UNAVAILABLE"
     );
+    const distinctSameDescriptorStore = await fixture.openDistinctSessionStore();
+    await expectCode(
+      () => createRetainedIntegrationTextWorkspace({
+        sessionStateStore: distinctSameDescriptorStore,
+        sessionStateStoreExpected: fixture.expected.sessionStateStore,
+        nativeExecutionEvidence: fixture.evidence,
+        repository: fixture.repository,
+        recoveryCoordinator: fixture.recovery,
+        processOwnerBootstrap,
+        repositoryFenceLease: fixture.acquiredFence.lease,
+      }),
+      "INTEGRATION_NATIVE_EVIDENCE_UNAVAILABLE"
+    );
     await expectCode(
       () => createRetainedIntegrationRuntimeRecoveryCoordinator({
         repository: fixture.repository,
@@ -739,6 +948,18 @@ async function run() {
       }),
       "INTEGRATION_SESSION_STATE_STORE_UNAVAILABLE"
     );
+    await expectCode(
+      () => createRetainedIntegrationTextWorkspace({
+        sessionStateStore: fixture.sessionStateStore,
+        sessionStateStoreExpected: fixture.expected.sessionStateStore,
+        nativeExecutionEvidence: fixture.evidence,
+        repository: mismatchFixture.repository,
+        recoveryCoordinator: mismatchFixture.recovery,
+        processOwnerBootstrap,
+        repositoryFenceLease: mismatchFixture.acquiredFence.lease,
+      }),
+      "INTEGRATION_REPOSITORY_UNAVAILABLE"
+    );
     assert.equal(
       fixture.recovery.attestation.storageExpectedDigest,
       fixture.evidence.attestation.storageExpectedDigest
@@ -746,6 +967,85 @@ async function run() {
     assert.equal(
       fixture.recovery.attestation.storageAdmissionBindingDigest,
       fixture.evidence.attestation.storageAdmissionBindingDigest
+    );
+    assert.equal(fixture.textWorkspace.attestation.profile, INTEGRATION_TEXT_WORKSPACE_PROFILE_ID);
+    assert.equal(fixture.textWorkspace.attestation.legacySessionRootAccess, false);
+    assert.equal(fixture.textWorkspace.attestation.reachableOperationsRetained, true);
+    assert.equal(fixture.textWorkspace.attestation.fullSessionStoreRetained, false);
+    assert.equal(fixture.textWorkspace.attestation.shellExecution, false);
+    assert.equal(fixture.textWorkspace.attestation.crossProcessExecutionFence, false);
+    assert.equal(fixture.evidence.attestation.crossProcessExecutionFence, false);
+    assert.equal(fixture.textWorkspace.attestation.repositoryTransitionFenceBound, true);
+    assert.equal(fixture.textWorkspace.attestation.nativeSessionStateWriterFencing, false);
+    assert.equal(fixture.textWorkspace.attestation.nativeSessionStateWriterQuiescenceProven, false);
+    const currentProfileProof = await fixture.textWorkspace.attestCurrent();
+    assert.equal(currentProfileProof.durablyCurrent, true);
+    assert.equal(currentProfileProof.nativeSessionStateWriterFencing, false);
+    assert.equal(currentProfileProof.nativeSessionStateWriterQuiescenceProven, false);
+    assert.equal(currentProfileProof.repositoryFenceLeaseDigest, fixture.acquiredFence.lease.digest);
+    const integratedRuntimeProof = await runtimeAuthorityForFixture(fixture).getIntegrationRuntimeProof();
+    assert.equal(
+      integratedRuntimeProof.retainedNativeExecutionEvidenceProofDigest,
+      fixture.evidence.attestation.digest
+    );
+    assert.equal(
+      integratedRuntimeProof.retainedRecoveryCoordinatorProofDigest,
+      fixture.recovery.attestation.digest
+    );
+    assert.equal(
+      integratedRuntimeProof.retainedTextWorkspaceProofDigest,
+      fixture.textWorkspace.attestation.digest
+    );
+    assert.equal(integratedRuntimeProof.retainedTextWorkspaceCurrentProofDigest, currentProfileProof.digest);
+    assert.equal(integratedRuntimeProof.retainedTextWorkspaceNativeWriterFencing, false);
+    assert.equal(integratedRuntimeProof.retainedTextWorkspaceNativeWriterQuiescence, false);
+    assert.equal(integratedRuntimeProof.repositoryFence.leaseDigest, fixture.acquiredFence.lease.digest);
+    assert.deepEqual(
+      [...fixture.textWorkspace.attestation.enabledToolNames],
+      [...INTEGRATION_TEXT_WORKSPACE_TOOL_NAMES]
+    );
+    const sessionStoreMethods = Object.getOwnPropertyNames(SessionStore.prototype)
+      .filter((name) => !["constructor", "withIntegrationOperation", "assertIntegrationOperation"].includes(name))
+      .sort();
+    assert.deepEqual(
+      Object.keys(fixture.textWorkspace.attestation.operationDispositions).sort(),
+      sessionStoreMethods
+    );
+    let accessorTrapCount = 0;
+    const accessorFactoryPayload = {};
+    Object.defineProperty(accessorFactoryPayload, "sessionStateStore", {
+      enumerable: true,
+      get() {
+        accessorTrapCount += 1;
+        return fixture.sessionStateStore;
+      },
+    });
+    Object.defineProperty(accessorFactoryPayload, "sessionStateStoreExpected", {
+      enumerable: true,
+      value: fixture.expected.sessionStateStore,
+    });
+    Object.defineProperty(accessorFactoryPayload, "nativeExecutionEvidence", {
+      enumerable: true,
+      value: fixture.evidence,
+    });
+    for (const [key, value] of Object.entries({
+      repository: fixture.repository,
+      recoveryCoordinator: fixture.recovery,
+      processOwnerBootstrap,
+      repositoryFenceLease: fixture.acquiredFence.lease,
+    })) {
+      Object.defineProperty(accessorFactoryPayload, key, { enumerable: true, value });
+    }
+    await expectCode(
+      () => createRetainedIntegrationTextWorkspace(accessorFactoryPayload),
+      "INTEGRATION_TEXT_WORKSPACE_INVALID"
+    );
+    assert.equal(accessorTrapCount, 0);
+    const revokedScope = Proxy.revocable({}, {});
+    revokedScope.revoke();
+    await expectCode(
+      () => fixture.textWorkspace.prepareExecution(revokedScope.proxy),
+      "INTEGRATION_TEXT_WORKSPACE_INVALID"
     );
     await authorizeRepositoryRun(mismatchFixture);
     await mismatchFixture.authority.close();
@@ -776,55 +1076,61 @@ async function run() {
     assert.equal(noEvidenceHeld.recoveryState.status, "recovery_hold");
     const roots = runtimeRoots(rootPath);
     const { authorization, authorized } = await authorizeRepositoryRun(fixture);
-    const config = buildFixedNativeRunAgentConfig({
+    const baseConfig = buildFixedNativeRunAgentConfig({
       mode: "start",
       policy: buildFixedIntegrationPolicy(),
       nativeSessionId: NATIVE_SESSION_ID,
-      inputText: "Prove retained native execution.",
+      inputText: "Inspect this JavaScript workspace and produce a concise verified maintenance report without modifying files.",
       abortSignal: new AbortController().signal,
       onEvent() {},
       repositoryRoots: roots,
       expectedRuntimeRevision: 1,
       retainedNativeExecutionEvidence: fixture.evidence,
+      retainedTextWorkspace: fixture.textWorkspace,
+      principalId: PRINCIPAL,
+      browserSessionId: BROWSER_SESSION,
+      threadId: THREAD_ID,
+      runId: RUN_ID,
     });
-    const preflight = await preflightNativeSessionRuntime(config);
-    assert.equal(preflight.retained, true);
-    assert.equal(preflight.expectedAfterRevision, 1);
-    await bindRetainedNativeExecution(config, {
-      authorization: authorized.receipt,
-      snapshotHash: authorized.run.authority.snapshotHash,
+    const config = deterministicRunAgentConfig(baseConfig, {
+      mode: "start",
+      expectedRuntimeRevision: 1,
+      evidence: fixture.evidence,
+      textWorkspace: fixture.textWorkspace,
+      runId: RUN_ID,
     });
-    const expectedRuntime = expectedFixedSessionRuntimeSnapshot(config, 1);
-    const nativeState = Object.freeze({
-      sessionId: NATIVE_SESSION_ID,
-      baseDir: roots.baseDir,
-      commandCwd: roots.commandCwd,
-      status: "completed",
-      meta: Object.freeze({ runtimeConfig: expectedRuntime }),
-    });
-    await runWithIntegrationSessionScope(config, async () => {
-      const store = new SessionStore(roots.sessionsDir, NATIVE_SESSION_ID, {
-        projectRoot: roots.baseDir,
-        commandCwd: roots.commandCwd,
+    assert.equal(config.integrationSessionProfile, INTEGRATION_TEXT_WORKSPACE_PROFILE_ID);
+    assert.equal(config.allowShellTool, false);
+    assert.equal(config.allowImagePerception, false);
+    const legacySessionRoot = path.join(roots.sessionsDir, NATIVE_SESSION_ID);
+    const legacyGuard = installLegacySessionRootGuard(legacySessionRoot);
+    let preflight;
+    let postflight;
+    let nativeResult;
+    try {
+      preflight = await preflightNativeSessionRuntime(config);
+      assert.equal(preflight.retained, true);
+      assert.equal(preflight.expectedAfterRevision, 1);
+      await bindRetainedNativeExecution(config, {
+        authorization: authorized.receipt,
+        snapshotHash: authorized.run.authority.snapshotHash,
       });
-      assert.equal(await store.loadState(), null);
-      await store.saveState(nativeState);
-      const reloaded = await store.loadState();
-      assert.equal(reloaded.meta.runtimeConfig.revision, 1);
-      assert.equal(reloaded.meta.integrationNativeExecution.authorizationDigest, authorization.authorizationDigest);
-      assert.equal(
-        reloaded.meta.integrationNativeExecution.processOwnerDigest,
-        contractDigest(authorization.processOwner)
-      );
-      assert.equal(reloaded.meta.integrationNativeExecution.snapshotHash, authorized.run.authority.snapshotHash);
-    });
-    const postflight = await postflightNativeSessionRuntime(config, preflight);
+      nativeResult = await runWithIntegrationSessionScope(config, () => runAgent(config));
+      postflight = await postflightNativeSessionRuntime(config, preflight);
+    } finally {
+      legacyGuard.restore();
+    }
+    assert.deepEqual(legacyGuard.hits, []);
+    assert.equal((await fs.lstat(legacySessionRoot)).isSymbolicLink(), true);
+    assert.match(nativeResult.result, /Retained text-workspace execution completed/u);
+    assert(config.clientFactory.promptAudit.planPayloads >= 1);
+    assert(config.clientFactory.promptAudit.executionPayloads >= 2);
     assert.equal(postflight.revision, 1);
     const terminal = Object.freeze({
       status: "completed",
-      output: "Retained native evidence completed.",
+      output: nativeResult.result,
       error: null,
-      resultDigest: contractDigest({ status: "completed", output: "Retained native evidence completed." }),
+      resultDigest: contractDigest({ status: "completed", output: nativeResult.result }),
       completedAt: timestamp(8),
       persistedRuntimeRevision: 1,
     });
@@ -926,7 +1232,7 @@ async function run() {
       recovered.thread,
       resumeOwner
     );
-    const resumeConfig = buildFixedNativeRunAgentConfig({
+    const resumeBaseConfig = buildFixedNativeRunAgentConfig({
       mode: "resume",
       policy: buildFixedIntegrationPolicy(),
       nativeSessionId: NATIVE_SESSION_ID,
@@ -936,43 +1242,46 @@ async function run() {
       repositoryRoots: roots,
       expectedRuntimeRevision: 1,
       retainedNativeExecutionEvidence: fixture.evidence,
+      retainedTextWorkspace: fixture.textWorkspace,
+      principalId: PRINCIPAL,
+      browserSessionId: BROWSER_SESSION,
+      threadId: THREAD_ID,
+      runId: RESUME_RUN_ID,
     });
-    const resumePreflight = await preflightNativeSessionRuntime(resumeConfig);
-    assert.equal(resumePreflight.beforeRevision, 1);
-    assert.equal(resumePreflight.expectedAfterRevision, 2);
-    await bindRetainedNativeExecution(resumeConfig, {
-      authorization: resumed.authorized.receipt,
-      snapshotHash: resumed.authorized.run.authority.snapshotHash,
+    const resumeConfig = deterministicRunAgentConfig(resumeBaseConfig, {
+      mode: "resume",
+      expectedRuntimeRevision: 1,
+      evidence: fixture.evidence,
+      textWorkspace: fixture.textWorkspace,
+      runId: RESUME_RUN_ID,
     });
-    const resumedRuntime = expectedFixedSessionRuntimeSnapshot(resumeConfig, 2);
-    await runWithIntegrationSessionScope(resumeConfig, async () => {
-      const store = new SessionStore(roots.sessionsDir, NATIVE_SESSION_ID, {
-        projectRoot: roots.baseDir,
-        commandCwd: roots.commandCwd,
+    const resumeLegacyGuard = installLegacySessionRootGuard(legacySessionRoot);
+    let resumePreflight;
+    let resumePostflight;
+    let resumedNativeResult;
+    try {
+      resumePreflight = await preflightNativeSessionRuntime(resumeConfig);
+      assert.equal(resumePreflight.beforeRevision, 1);
+      assert.equal(resumePreflight.expectedAfterRevision, 2);
+      await bindRetainedNativeExecution(resumeConfig, {
+        authorization: resumed.authorized.receipt,
+        snapshotHash: resumed.authorized.run.authority.snapshotHash,
       });
-      assert.equal((await store.loadState()).meta.runtimeConfig.revision, 1);
-      await store.saveState(Object.freeze({
-        sessionId: NATIVE_SESSION_ID,
-        baseDir: roots.baseDir,
-        commandCwd: roots.commandCwd,
-        status: "completed",
-        meta: Object.freeze({ runtimeConfig: resumedRuntime }),
-      }));
-      const resumedState = await store.loadState();
-      assert.equal(resumedState.meta.runtimeConfig.revision, 2);
-      assert.equal(
-        resumedState.meta.integrationNativeExecution.authorizationDigest,
-        resumed.authorization.authorizationDigest
-      );
-    });
-    assert.equal((await postflightNativeSessionRuntime(resumeConfig, resumePreflight)).revision, 2);
+      resumedNativeResult = await runWithIntegrationSessionScope(resumeConfig, () => runAgent(resumeConfig));
+      resumePostflight = await postflightNativeSessionRuntime(resumeConfig, resumePreflight);
+    } finally {
+      resumeLegacyGuard.restore();
+    }
+    assert.deepEqual(resumeLegacyGuard.hits, []);
+    assert(resumeConfig.clientFactory.promptAudit.executionPayloads >= 2);
+    assert.equal(resumePostflight.revision, 2);
     const resumedTerminal = Object.freeze({
       status: "completed",
-      output: "Retained native resume completed.",
+      output: resumedNativeResult.result,
       error: null,
       resultDigest: contractDigest({
         status: "completed",
-        output: "Retained native resume completed.",
+        output: resumedNativeResult.result,
       }),
       completedAt: timestamp(62),
       persistedRuntimeRevision: 2,
@@ -1035,6 +1344,22 @@ async function run() {
       () => staleRuntimeAuthority.getIntegrationRuntimeProof(),
       "INTEGRATION_REPOSITORY_FENCE_STALE"
     );
+    await expectCode(
+      () => staleRuntimeFixture.textWorkspace.attestCurrent(),
+      "INTEGRATION_REPOSITORY_FENCE_STALE"
+    );
+    await expectCode(
+      () => createRetainedIntegrationTextWorkspace({
+        sessionStateStore: staleRuntimeFixture.sessionStateStore,
+        sessionStateStoreExpected: fixture.expected.sessionStateStore,
+        nativeExecutionEvidence: staleRuntimeFixture.evidence,
+        repository: staleRuntimeFixture.repository,
+        recoveryCoordinator: staleRuntimeFixture.recovery,
+        processOwnerBootstrap,
+        repositoryFenceLease: staleRuntimeFixture.acquiredFence.lease,
+      }),
+      "INTEGRATION_REPOSITORY_FENCE_STALE"
+    );
     const successorRequest = Object.freeze({
       runId: RESUME_RUN_ID,
       principalId: PRINCIPAL,
@@ -1086,7 +1411,17 @@ async function run() {
       durableRuntimeProofReload: true,
       staleCoordinatorRejectedAfterHandoff: true,
       staleRepositoryMutationRejectedAfterHandoff: true,
+      staleTextWorkspaceConstructionRejectedAfterHandoff: true,
+      staleTextWorkspaceAttestationRejectedAfterHandoff: true,
       successorRecoveryAfterHandoff: true,
+      textWorkspaceProfile: true,
+      retainedHashChainedEventJournal: true,
+      eventReplayAcrossResume: true,
+      legacySessionRootAccess: false,
+      imagePerception: false,
+      shellExecution: false,
+      nativeSessionStateWriterFencing: false,
+      nativeSessionStateWriterQuiescenceProven: false,
       fullSessionStoreRetained: false,
       runtimeCapabilityEnabled: false,
     }));

@@ -34,6 +34,10 @@ import {
   assertRetainedIntegrationNativeExecutionEvidence,
 } from "./integration-retained-native-execution-evidence.js";
 import {
+  assertRetainedIntegrationTextWorkspace,
+  assertRetainedIntegrationTextWorkspaceCurrent,
+} from "./integration-retained-text-workspace.js";
+import {
   assertRetainedIntegrationRuntimeRecoveryCoordinator,
 } from "./integration-retained-runtime-repository-surface.js";
 import {
@@ -1309,6 +1313,18 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
   if (Boolean(retainedNativeExecutionEvidence) !== Boolean(retainedRecoveryCoordinator)) {
     failUnavailable("Retained native execution evidence and recovery coordinator must be supplied together.");
   }
+  const retainedTextWorkspace = options.retainedTextWorkspace === undefined
+    ? null
+    : assertRetainedIntegrationTextWorkspace(options.retainedTextWorkspace, {
+        nativeExecutionEvidence: retainedNativeExecutionEvidence,
+        repository: repositorySurface,
+        recoveryCoordinator: retainedRecoveryCoordinator,
+        processOwnerBootstrap: options.processOwnerBootstrap,
+        repositoryFenceLease: options.repositoryFenceLease,
+      });
+  if (retainedTextWorkspace && !retainedNativeExecutionEvidence) {
+    failUnavailable("Retained text-workspace requires retained native execution evidence.");
+  }
   if (
     retainedNativeExecutionEvidence &&
     repository.attestation.retainedDescriptorStorageAuthority !== true
@@ -2504,6 +2520,13 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
         ...(retainedNativeExecutionEvidence
           ? { retainedNativeExecutionEvidence }
           : {}),
+        ...(retainedTextWorkspace
+          ? {
+              retainedTextWorkspace,
+              principalId: scope.principalId,
+              browserSessionId: scope.browserSessionId,
+            }
+          : {}),
       });
       return Object.freeze({
         nativeSessionId,
@@ -2803,6 +2826,15 @@ function aggregateRuntimeObserverError(runtimeError, observerError) {
           repositoryFenceLease: options.repositoryFenceLease,
         })
       : null;
+    const currentTextWorkspaceProof = retainedTextWorkspace
+      ? await assertRetainedIntegrationTextWorkspaceCurrent(retainedTextWorkspace, {
+          nativeExecutionEvidence: retainedNativeExecutionEvidence,
+          repository: repositorySurface,
+          recoveryCoordinator: retainedRecoveryCoordinator,
+          processOwnerBootstrap: options.processOwnerBootstrap,
+          repositoryFenceLease: options.repositoryFenceLease,
+        })
+      : null;
     const unsignedProof = canonicalPlainJsonClone({
       schemaVersion: NATIVE_INTEGRATION_RUNTIME_PROOF_VERSION,
       owner: "aginti",
@@ -2832,6 +2864,14 @@ function aggregateRuntimeObserverError(runtimeError, observerError) {
         retainedNativeExecutionEvidence?.attestation?.digest || ZERO_DIGEST,
       retainedRecoveryCoordinatorProofDigest:
         currentRecoveryCoordinator?.attestation?.digest || ZERO_DIGEST,
+      retainedTextWorkspaceProofDigest:
+        retainedTextWorkspace?.attestation?.digest || ZERO_DIGEST,
+      retainedTextWorkspaceCurrentProofDigest:
+        currentTextWorkspaceProof?.digest || ZERO_DIGEST,
+      retainedTextWorkspaceNativeWriterFencing:
+        currentTextWorkspaceProof?.nativeSessionStateWriterFencing === true,
+      retainedTextWorkspaceNativeWriterQuiescence:
+        currentTextWorkspaceProof?.nativeSessionStateWriterQuiescenceProven === true,
       repositoryFence: currentFenceAuthority
         ? Object.freeze({
             required: true,
