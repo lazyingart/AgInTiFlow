@@ -770,6 +770,41 @@ const explicitDeepResearchFollowup = selectProgressiveTools(allTools, {
 });
 assert(names(explicitDeepResearchFollowup).includes("web_search"), "deep-research follow-up did not restore targeted recovery tools");
 
+const scopedArtifactPrompt = `You are a persistent workspace agent. The surrounding policy mentions an evidence review.
+AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Create one plain-text artifact and verify it."}
+Repository evidence to consult as relevant: literature review, evidence review, research report.`;
+const scopedArtifactTools = selectProgressiveTools(allTools, {
+  config: { provider: "deepseek", progressiveTools: true },
+  goal: scopedArtifactPrompt,
+  profile: "auto",
+  messages: [
+    { role: "user", content: scopedArtifactPrompt },
+    {
+      role: "user",
+      content: "Runtime snapshot: consult the surrounding literature review and evidence review policy before acting.",
+    },
+  ],
+});
+assert(names(scopedArtifactTools).includes("write_file"), "scoped artifact task omitted write_file");
+assert(
+  !(names(scopedArtifactTools).length === 2 && names(scopedArtifactTools)[0] === "deep_research"),
+  "surrounding policy prose incorrectly forced a scoped artifact task into deep research"
+);
+
+const scopedDeepResearchPrompt = `Generic workspace policy.
+AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Write a deep research evidence review comparing three primary papers."}`;
+const scopedDeepResearchTools = selectProgressiveTools(allTools, {
+  config: { provider: "deepseek", progressiveTools: true },
+  goal: scopedDeepResearchPrompt,
+  profile: "auto",
+  messages: [{ role: "user", content: scopedDeepResearchPrompt }],
+});
+sameNames(
+  scopedDeepResearchTools,
+  ["deep_research", "finish"],
+  "explicit deep research inside the scoped user request was not preserved"
+);
+
 const writingTools = selectProgressiveTools(allTools, {
   config: { provider: "localllm" },
   goal: "Draft and revise a chapter, then save it.",

@@ -670,7 +670,11 @@ function stripForbiddenLanguage(goal = "") {
     .replace(/禁止([^。\n；]+)/g, "");
 }
 
-function scopedChatopsEvidenceGoal(goal = "", taskProfile = "") {
+export function hasAgintiEvidenceScope(goal = "") {
+  return /^AGINTI_EVIDENCE_SCOPE_JSON:\s*\{[^\n]+\}\s*$/m.test(String(goal || ""));
+}
+
+export function scopedChatopsEvidenceGoal(goal = "", taskProfile = "") {
   const match = String(goal || "").match(/^AGINTI_EVIDENCE_SCOPE_JSON:\s*(\{[^\n]+\})\s*$/m);
   if (!match) {
     const text = String(goal || "");

@@ -10,7 +10,9 @@ import { WebDatabase } from "../src/web-db.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixtureMcpServer = path.join(repoRoot, "scripts", "fixtures", "mcp-stdio-smoke-server.mjs");
-const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-api-smoke-"));
+const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-api-smoke-root-"));
+const runtimeDir = path.join(fixtureRoot, "workspace");
+await fs.mkdir(runtimeDir, { recursive: true });
 const agintiflowHome = path.join(runtimeDir, ".agintiflow-home");
 process.env.AGINTIFLOW_HOME = agintiflowHome;
 const port = 43000 + Math.floor(Math.random() * 1000);
@@ -863,5 +865,5 @@ try {
 } finally {
   server.kill("SIGTERM");
   await delay(150);
-  await fs.rm(runtimeDir, { recursive: true, force: true });
+  await fs.rm(fixtureRoot, { recursive: true, force: true });
 }

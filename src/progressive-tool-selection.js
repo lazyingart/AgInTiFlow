@@ -1,4 +1,5 @@
 import { shouldStartWithDeepResearch } from "./research-routing.js";
+import { hasAgintiEvidenceScope, scopedChatopsEvidenceGoal } from "./scs-evidence.js";
 import {
   INTEGRATION_TEXT_WORKSPACE_PROFILE_ID,
   isIntegrationTextWorkspaceToolAllowed,
@@ -514,15 +515,17 @@ function textContent(content) {
 }
 
 function taskText(goal, config, messages) {
-  const recentConversation = Array.isArray(messages)
+  const rawGoal = goal || config.goal || "";
+  const scopedGoal = scopedChatopsEvidenceGoal(rawGoal);
+  const recentConversation = !hasAgintiEvidenceScope(rawGoal) && Array.isArray(messages)
     ? messages
         .filter((message) => message && (message.role === "user" || message.role === "assistant"))
         .slice(-6)
-        .map((message) => textContent(message.content))
+        .map((message) => scopedChatopsEvidenceGoal(textContent(message.content)))
         .filter(Boolean)
         .join("\n")
     : "";
-  return `${String(goal || config.goal || "")}\n${recentConversation}`.trim().toLowerCase();
+  return `${scopedGoal}\n${recentConversation}`.trim().toLowerCase();
 }
 
 function currentTaskMessages(messages) {

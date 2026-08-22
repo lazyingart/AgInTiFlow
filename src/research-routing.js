@@ -1,3 +1,5 @@
+import { hasAgintiEvidenceScope, scopedChatopsEvidenceGoal } from "./scs-evidence.js";
+
 function messageText(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -5,12 +7,14 @@ function messageText(content) {
 }
 
 export function hasExplicitDeepResearchIntent(goal = "", messages = []) {
-  const recent = messages
-    .filter((message) => message?.role === "user")
-    .slice(-4)
-    .map((message) => messageText(message.content))
-    .join("\n");
-  const text = `${String(goal || "")}\n${recent}`.toLowerCase();
+  const recent = hasAgintiEvidenceScope(goal)
+    ? ""
+    : messages
+        .filter((message) => message?.role === "user")
+        .slice(-4)
+        .map((message) => scopedChatopsEvidenceGoal(messageText(message.content)))
+        .join("\n");
+  const text = `${scopedChatopsEvidenceGoal(goal)}\n${recent}`.toLowerCase();
   return (
     /\b(deep (?:web )?research|literature review|systematic review|multi[- ]source research|evidence review)\b/i.test(text) ||
     /\b(research report|compare at least|independent (?:primary|scholarly|official) sources?)\b.{0,160}\b(primary|scholarly|papers?|pdf|citations?|evidence|sources?)\b/i.test(text) ||
