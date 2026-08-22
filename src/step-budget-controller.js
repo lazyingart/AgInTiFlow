@@ -66,9 +66,18 @@ export function createStepBudgetState(config = {}, state = {}) {
   const savedCurrent = positiveInteger(saved.currentMaxSteps, initialMaxSteps);
   const currentMaxSteps = Math.max(savedCurrent, positiveInteger(config.maxSteps, initialMaxSteps), positiveInteger(state.stepsCompleted, 0));
   const scsActive = Boolean(config.scsActive);
-  const defaultExtensionLimit = scsActive ? 2 : 1;
+  const defaultExtensionLimit = 3;
+  const configuredExtensionLimit = positiveInteger(
+    config.dynamicStepExtensionLimit ?? config.dynamicStepExtensions,
+    defaultExtensionLimit
+  );
+  const extensionLimitExplicit = config.dynamicStepExtensionLimitExplicit !== undefined
+    ? config.dynamicStepExtensionLimitExplicit === true
+    : Object.prototype.hasOwnProperty.call(config, "dynamicStepExtensionLimit");
   const extensionLimit = clamp(
-    positiveInteger(config.dynamicStepExtensionLimit ?? config.dynamicStepExtensions, defaultExtensionLimit),
+    extensionLimitExplicit
+      ? configuredExtensionLimit
+      : Math.max(configuredExtensionLimit, defaultExtensionLimit),
     0,
     8
   );
@@ -115,6 +124,14 @@ export function shouldCheckStepBudget(step, budget = {}, options = {}) {
   if (currentStep >= budget.hardCap) return true;
   const threshold = clamp(positiveInteger(options.threshold ?? 2, 2), 1, 8);
   return budget.currentMaxSteps - currentStep <= threshold;
+}
+
+export function shouldEvaluateResumeBoundary(config = {}, state = {}, budget = {}) {
+  if (!config.resume || !budget.enabled) return false;
+  const stepsCompleted = positiveInteger(state.stepsCompleted, 0);
+  if (stepsCompleted < positiveInteger(budget.currentMaxSteps, 0)) return false;
+  if (stepsCompleted >= positiveInteger(budget.hardCap, 0)) return false;
+  return positiveInteger(budget.extensionsUsed, 0) < positiveInteger(budget.extensionLimit, 0);
 }
 
 export function summarizeRecentToolResults(state = {}, limit = 8) {
@@ -210,9 +227,22 @@ export function summarizeRepeatedStaticDiscovery(recentToolResults = [], context
 }
 
 function hasConcreteProgress(recentToolResults = [], events = []) {
+  const recentMeaningfulEvents = events
+    .filter((event) =>
+      [
+        "file.changed",
+        "canvas.item",
+        "image.generated",
+        "tool.completed",
+        "tool.failed",
+        "tool.blocked",
+        "provider.local_failure_recovery",
+        "history.compacted_for_context_budget",
+      ].includes(event?.type)
+    )
+    .slice(-24);
   if (
-    events
-      .slice(-24)
+    recentMeaningfulEvents
       .some((event) => event?.type === "file.changed" || event?.type === "canvas.item" || event?.type === "image.generated")
   ) {
     return true;
@@ -253,10 +283,13 @@ function activeBlocker(recentToolResults = []) {
   ]
     .filter(Boolean)
     .join(" ");
-  if (/permission|approval|blocked|destructive|outside|install|policy|secret|forbidden|requires/i.test(reasonText)) {
+  if (
+    /permission|approval|destructive|outside (?:the )?(?:workspace|allowed)|install|policy|secret|forbidden|captcha|login|credential|authentication|network unavailable|requires (?:human|login|authentication|credentials?)/i.test(
+      reasonText
+    )
+  ) {
     return compact(reasonText, 360);
   }
-  if (blockers.length >= 2) return compact(reasonText || "recent repeated tool failures", 360);
   return null;
 }
 

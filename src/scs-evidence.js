@@ -10,7 +10,80 @@ const CATEGORY_LABELS = {
   git: "git/version-control action",
   publish: "publish/submit/deploy action",
   visual: "visual inspection or screenshot evidence",
+  test: "successful discovered project test run",
 };
+
+const OBSERVATIONAL_GIT_ACTIONS = new Set(["diff", "log", "show", "status"]);
+const RECOGNIZED_GIT_ACTIONS = [
+  "add",
+  "branch",
+  "checkout",
+  "commit",
+  "diff",
+  "log",
+  "merge",
+  "pull",
+  "push",
+  "restore",
+  "show",
+  "status",
+  "switch",
+  "tag",
+];
+
+export function inferGitActionsFromCommand(value = "") {
+  const actions = [];
+  const pattern = new RegExp(`\\bgit\\s+(?:-[A-Za-z]\\s+\\S+\\s+)*(?:--[A-Za-z-]+\\s+)*(?:${RECOGNIZED_GIT_ACTIONS.join("|")})\\b`, "gi");
+  for (const match of String(value || "").matchAll(pattern)) {
+    const action = String(match[0] || "").trim().split(/\s+/).at(-1)?.toLowerCase();
+    if (action && RECOGNIZED_GIT_ACTIONS.includes(action)) actions.push(action);
+  }
+  return unique(actions);
+}
+
+function inferRequiredGitActions(goal = "") {
+  const positiveGoal = stripForbiddenLanguage(goal);
+  const text = normalizedText(positiveGoal);
+  const actions = [];
+  const patterns = {
+    add: /\bgit\s+add\b|\bstage\s+(?:the\s+)?(?:changes?|files?)\b/,
+    branch: /\b(?:create|make)\s+(?:a\s+)?(?:git\s+)?branch\b|\bgit\s+branch\b/,
+    checkout: /\bgit\s+checkout\b/,
+    commit: /\bcommit\b|提交代码/,
+    merge: /\bmerge\b|合并分支/,
+    pull: /\bgit\s+pull\b|\bpull\s+(?:the\s+)?(?:latest|changes?)\b/,
+    push: /\bgit\s+push\b|\bpush\s+(?:the\s+)?(?:changes?|commits?|branch|tag)\b|\bpush\s+to\s+(?:git|github|the\s+repo(?:sitory)?)\b|推送/,
+    restore: /\bgit\s+restore\b/,
+    switch: /\bgit\s+switch\b|\bswitch\s+(?:to\s+)?(?:the\s+)?branch\b/,
+    tag: /\b(?:create|make|push)\s+(?:a\s+)?(?:git\s+)?tag\b|\bgit\s+tag\b/,
+  };
+  for (const [action, pattern] of Object.entries(patterns)) {
+    if (pattern.test(text)) actions.push(action);
+  }
+  return unique(actions);
+}
+
+export function gitActionsSatisfyContract(contract = {}, actions = []) {
+  const observed = new Set((Array.isArray(actions) ? actions : []).map((item) => String(item || "").toLowerCase()));
+  const required = Array.isArray(contract.requiredGitActions)
+    ? contract.requiredGitActions.map((item) => String(item || "").toLowerCase()).filter(Boolean)
+    : [];
+  if (required.length) return required.every((action) => observed.has(action));
+  return [...observed].some((action) => !OBSERVATIONAL_GIT_ACTIONS.has(action));
+}
+
+const PROJECT_TEST_PROFILES = new Set([
+  "app",
+  "code",
+  "codebase",
+  "data",
+  "database",
+  "large-codebase",
+  "maintenance",
+  "pipeline",
+  "python",
+  "qa",
+]);
 
 const PROFILE_REQUIREMENTS = {
   code: ["file", "command"],
@@ -229,7 +302,7 @@ function inferExactInputPaths(goal = "") {
     "gi"
   );
   const inputAction =
-    /\b(use|using|read|load|fill|upload|attach|import|select|choose|reference|input|from)\b|使用|读取|讀取|加载|載入|填写|填入|上传|上傳|附加|导入|導入|选择|選擇|选取|選取|参考|參考|素材|图片|圖片|照片|提示词|提示詞|从|從/i;
+    /\b(use|using|read|load|fill|upload|attach|import|select|choose|reference|input|from|fix|repair|patch|correct)\b|使用|读取|讀取|加载|載入|填写|填入|上传|上傳|附加|导入|導入|选择|選擇|选取|選取|参考|參考|素材|图片|圖片|照片|提示词|提示詞|修复|修正|更正|从|從/i;
   const directOutputAction =
     /\b(save|saved|write|written|output|create|store|update|modify|edit)\b|保存|写入|寫入|输出|輸出|创建|建立|更新|修改|编辑|編輯/i;
   const pushPath = (raw = "") => {
@@ -333,9 +406,16 @@ function blockerFromPayload(payload = {}, source = "tool") {
   const advice = payload.permissionAdvice && typeof payload.permissionAdvice === "object" ? payload.permissionAdvice : {};
   const category = String(payload.category || advice.category || "blocked-tool");
   const code = String(payload.code || "");
+  const reason = String(payload.reason || payload.error || advice.reason || "");
+  const recoverableWorkspaceFailure =
+    toolName === "apply_patch" &&
+    /(?:patch search text was not found|base hash mismatch|patch expected \d+ replacement|patch would replace too many sections|patch search text is required)/i.test(
+      reason
+    );
   if (
     payload.recoverable === true ||
     advice.autoRecover === true ||
+    recoverableWorkspaceFailure ||
     ["tool-contract-violation", "repeated-read-only-call", "static-discovery-limit"].includes(category) ||
     ["TOO_MANY_TOOL_CALLS", "MALFORMED_TOOL_ARGUMENTS"].includes(code)
   ) {
@@ -500,7 +580,13 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   if (textHas(text, /\b(screenshot|visible|visual|see|inspect image|open image|read_image|thumbnail)\b/) || /截图|可见|缩略图/.test(text)) {
     categories.add("visual");
   }
-  if (textHas(text, /\b(commit|push|pull request|pr|branch|merge|tag|release|git\s+(?:commit|push|pull|add|checkout|switch|branch|merge|tag))\b/) || /提交代码|推送|分支/.test(text)) {
+  if (
+    textHas(
+      text,
+      /\b(commit|pull request|pr|branch|merge|tag|release|git\s+(?:commit|push|pull|add|checkout|switch|branch|merge|tag))\b|\bpush\s+(?:the\s+)?(?:changes?|commits?|branch|tag)\b|\bpush\s+to\s+(?:git|github|the\s+repo(?:sitory)?)\b/
+    ) ||
+    /提交代码|推送|分支/.test(text)
+  ) {
     categories.add("git");
   }
   if (textHas(text, /\b(publish|deploy|submit|upload to|generate video|external service|npm publish|release)\b/) || /发布|部署|提交|生成视频|外部服务/.test(text)) {
@@ -533,7 +619,10 @@ function inferForbiddenActions(goal = "") {
       value
     ) || /浏览器|网页|打开|点击|上传|提交|发布|部署|运行|执行|安装|删除|复制|移动|提交代码|推送|调用|API/.test(value);
   const patterns = [
-    { re: /\b(do not|don't|dont|never|no need to|without)\s+([^.\n;]+)/gi, prefix: "User forbids" },
+    { re: /\b(do not|don't|dont|never|no need to)\s+([^.\n;]+)/gi, prefix: "User forbids" },
+    // A sentence such as "without changing X, run tests and commit" starts a
+    // positive instruction after the comma. Keep only the local without-clause.
+    { re: /\bwithout\s+([^.,\n;]+)/gi, prefix: "User forbids" },
     { re: /不要([^。\n；]+)/g, prefix: "User forbids" },
     { re: /禁止([^。\n；]+)/g, prefix: "User forbids" },
   ];
@@ -575,7 +664,8 @@ function inferRequiredToolCalls(goal = "") {
 
 function stripForbiddenLanguage(goal = "") {
   return String(goal || "")
-    .replace(/\b(do not|don't|dont|never|no need to|without)\s+([^.\n;]+)/gi, "")
+    .replace(/\b(do not|don't|dont|never|no need to)\s+([^.\n;]+)/gi, "")
+    .replace(/\bwithout\s+([^.,\n;]+)/gi, "")
     .replace(/不要([^。\n；]+)/g, "")
     .replace(/禁止([^。\n；]+)/g, "");
 }
@@ -640,10 +730,101 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     readOnlyReadiness: isReadOnlyReadinessTask(evidenceGoal),
     requiresPerSourceChecks: requiresPerSourceChecks(evidenceGoal),
     requiredToolCalls,
+    requiredGitActions: inferRequiredGitActions(evidenceGoal),
     requiresSourceGrounding: requiresSourceGrounding(evidenceGoal),
     requiredTextTerms: inferRequiredTextTerms(evidenceGoal),
     forbiddenTextTerms: inferForbiddenTextTerms(evidenceGoal),
     successCriteria: unique(acceptanceCriteria).slice(0, 10),
+  };
+}
+
+function normalizeProjectCommand(value = "") {
+  return String(value || "")
+    .replace(/\\\s*\n\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function observedProjectCommandSatisfies(requiredCommand = "", item = {}) {
+  const required = normalizeProjectCommand(requiredCommand);
+  const observed = normalizeProjectCommand(item?.command || item?.target || "");
+  if (!required || !observed) return false;
+  if (
+    observed === required ||
+    observed.startsWith(`${required} `) ||
+    observed.endsWith(` ${required}`)
+  ) {
+    return true;
+  }
+
+  // Agents commonly preserve a command's exit code with
+  // `command; echo "EXIT=$?"`. Accept only that narrow wrapper when the
+  // captured evidence proves the wrapped command returned zero. Arbitrary
+  // semicolon chains remain rejected because their final exit code can mask
+  // an earlier failure.
+  if (!observed.startsWith(`${required};`)) return false;
+  const suffix = observed.slice(required.length);
+  const isExitProbe = /^;\s*(?:echo|printf)\b[^;&|]*(?:EXIT|STATUS|RESULT)[^;&|]*\$\?[^;&|]*$/i.test(
+    suffix
+  );
+  if (!isExitProbe) return false;
+  const proof = String(item?.proof || "");
+  return /(?:^|\s)(?:EXIT|STATUS|RESULT)\s*=\s*0(?:\s|$)/i.test(proof);
+}
+
+export function augmentScsTaskContractWithProjectVerification(contract = {}, state = {}, context = {}) {
+  const verification = state?.meta?.projectVerification;
+  if (!verification || typeof verification !== "object") return contract;
+  const profile = String(context.taskProfile || contract.taskProfile || verification.taskProfile || "auto").toLowerCase();
+  const mutationRevision = Math.max(0, Number(verification.mutationRevision || 0));
+  const discoveredTests = unique(
+    (Array.isArray(verification.discoveredTests) ? verification.discoveredTests : [])
+      .map((item) => String(item?.path || item || "").trim())
+      .filter(Boolean)
+  ).slice(0, 80);
+  const requiredOutputs = unique(
+    (Array.isArray(verification.requiredOutputs) ? verification.requiredOutputs : [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+  ).slice(0, 64);
+  const requiredProjectCommands = unique(
+    (Array.isArray(verification.requiredCommands) ? verification.requiredCommands : [])
+      .map(normalizeProjectCommand)
+      .filter(Boolean)
+  ).slice(0, 24);
+  const requiredEvidence = Array.isArray(contract.requiredEvidence)
+    ? contract.requiredEvidence.map((item) => ({ ...item }))
+    : [];
+  const addEvidence = (category, description, details = {}) => {
+    if (requiredEvidence.some((item) => item.category === category)) return;
+    requiredEvidence.push({ id: category, category, description, ...details });
+  };
+
+  if (PROJECT_TEST_PROFILES.has(profile) && discoveredTests.length && mutationRevision > 0) {
+    addEvidence("test", CATEGORY_LABELS.test, { minimumMutationRevision: mutationRevision });
+  }
+  if (requiredOutputs.some((item) => /\.(?:avif|bmp|gif|jpe?g|png|tiff?|webp)$/i.test(item))) {
+    addEvidence("visual", CATEGORY_LABELS.visual);
+  }
+
+  const exactOutputPaths = unique([
+    ...(Array.isArray(contract.exactOutputPaths) ? contract.exactOutputPaths : []),
+    ...requiredOutputs,
+  ]).slice(0, 80);
+  const requiresExternalEvidence = Boolean(
+    contract.requiresExternalEvidence ||
+    requiredEvidence.length ||
+    exactOutputPaths.length ||
+    requiredProjectCommands.length
+  );
+  return {
+    ...contract,
+    requiresExternalEvidence,
+    requiredEvidence,
+    exactOutputPaths,
+    requiredProjectCommands,
+    projectMutationRevision: mutationRevision,
+    projectTestFiles: discoveredTests,
   };
 }
 
@@ -1956,7 +2137,7 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
     payload.artifactPath
   );
   const evidence = [];
-  const push = (category, proof, target = "") => {
+  const push = (category, proof, target = "", details = {}) => {
     evidence.push({
       category,
       source,
@@ -1964,6 +2145,7 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
       target: compact(target || payload.path || payload.outputPath || payload.artifactPath || args.path || args.command || payload.url || "", 260),
       proof: compact(proof, 500),
       verified: payload.ok !== false,
+      ...details,
     });
   };
 
@@ -1975,7 +2157,26 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
     );
   }
   if (toolName === "run_command" || payload.stdout || Number.isInteger(payload.exitCode)) {
-    push("command", `exit=${payload.exitCode ?? 0} stdout=${compact(payload.stdout || "", 260)}`, args.command || "");
+    push(
+      "command",
+      `exit=${payload.exitCode ?? 0} stdout=${compact(payload.stdout || "", 260)}`,
+      args.command || "",
+      {
+        command: normalizeProjectCommand(args.command || ""),
+        mutationRevision: Math.max(0, Number(payload.projectMutationRevision || 0)),
+      }
+    );
+  }
+  if (payload.projectTest?.passed === true) {
+    push(
+      "test",
+      `project tests passed for mutation revision ${Number(payload.projectTest.mutationRevision || 0)}`,
+      payload.projectTest.command || args.command || "",
+      {
+        command: normalizeProjectCommand(payload.projectTest.command || args.command || ""),
+        mutationRevision: Math.max(0, Number(payload.projectTest.mutationRevision || 0)),
+      }
+    );
   }
   if (
     toolName === "deep_research" &&
@@ -2025,8 +2226,18 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
   if (["read_image", "generate_image"].includes(toolName) || /\b(screenshot|visible|thumbnail|preview|image)\b/.test(text)) {
     push("visual", `${toolName || "tool"} supplied visual evidence`, payload.path || payload.outputPath || args.path || "");
   }
-  if (/\bgit\s+(commit|push|status|diff|show|log|add)\b/.test(text)) {
-    push("git", `git command evidence: ${compact(payload.stdout || args.command || "", 260)}`, args.command || "");
+  const gitActions = inferGitActionsFromCommand(args.command || text);
+  if (gitActions.length) {
+    push(
+      "git",
+      `git ${gitActions.join("+")} evidence: ${compact(payload.stdout || args.command || "", 260)}`,
+      args.command || "",
+      {
+        gitAction: gitActions.at(-1),
+        gitActions,
+        goalRevision: Math.max(0, Number(payload.goalRevision || 0)),
+      }
+    );
   }
   if (/\b(npm publish|publish|deploy|submit|generate video|uploaded|submitted)\b/.test(text) || /发布|部署|提交|生成视频/.test(text)) {
     push("publish", `publish/submit evidence: ${compact(payload.stdout || payload.result || args.command || "", 260)}`, args.command || "");
@@ -2075,21 +2286,74 @@ export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
 export function evaluateScsEvidence(contract = {}, ledger = {}) {
   const required = Array.isArray(contract.requiredEvidence) ? contract.requiredEvidence : [];
   const ledgerCategories = new Set(Array.isArray(ledger.categories) ? ledger.categories : []);
+  const ledgerItems = Array.isArray(ledger.items) ? ledger.items : [];
   const requiredToolCalls = Array.isArray(contract.requiredToolCalls) ? contract.requiredToolCalls : [];
   const ledgerToolNames = new Set(Array.isArray(ledger.toolNames) ? ledger.toolNames : []);
+  const requiredGitRevision = Math.max(0, Number(contract.requiredGitRevision || 0));
+  const observedGitActions = unique(
+    ledgerItems
+      .filter(
+        (item) =>
+          item?.category === "git" &&
+          item?.verified !== false &&
+          (requiredGitRevision === 0 || Number(item?.goalRevision || 0) >= requiredGitRevision)
+      )
+      .flatMap((item) =>
+        Array.isArray(item.gitActions)
+          ? item.gitActions
+          : item.gitAction
+            ? [item.gitAction]
+            : inferGitActionsFromCommand(item.command || item.target || "")
+      )
+      .map((item) => String(item || "").toLowerCase())
+      .filter(Boolean)
+  );
+  const requiredGitActions = Array.isArray(contract.requiredGitActions)
+    ? contract.requiredGitActions
+    : [];
+  const missingGitActions = requiredGitActions.filter((action) => !observedGitActions.includes(action));
   const satisfied = [];
   const missing = [];
   for (const requirement of required) {
-    if (ledgerCategories.has(requirement.category)) {
+    const minimumMutationRevision = Math.max(0, Number(requirement.minimumMutationRevision || 0));
+    const categorySatisfied = requirement.category === "git"
+      ? gitActionsSatisfyContract(contract, observedGitActions)
+      : requirement.category === "test" && minimumMutationRevision > 0
+        ? ledgerItems.some(
+            (item) =>
+              item?.category === "test" &&
+              item?.verified !== false &&
+              Number(item?.mutationRevision || 0) >= minimumMutationRevision
+          )
+        : ledgerCategories.has(requirement.category);
+    if (categorySatisfied) {
       satisfied.push(requirement);
     } else {
       missing.push(requirement);
     }
   }
   const missingToolCalls = requiredToolCalls.filter((toolName) => !ledgerToolNames.has(toolName));
+  const requiredProjectCommands = unique(
+    (Array.isArray(contract.requiredProjectCommands) ? contract.requiredProjectCommands : [])
+      .map(normalizeProjectCommand)
+      .filter(Boolean)
+  );
+  const projectMutationRevision = Math.max(0, Number(contract.projectMutationRevision || 0));
+  const successfulProjectCommandItems = ledgerItems.filter(
+    (item) =>
+      item?.category === "command" &&
+      item?.verified !== false &&
+      Number(item?.mutationRevision || 0) >= projectMutationRevision
+  );
+  const missingProjectCommands = requiredProjectCommands.filter(
+    (requiredCommand) =>
+      !successfulProjectCommandItems.some((item) =>
+        observedProjectCommandSatisfies(requiredCommand, item)
+      )
+  );
   const hasAnyEvidence = Number(ledger.itemCount || 0) > 0;
   const evidenceOk = !contract.requiresExternalEvidence || (missing.length === 0 && hasAnyEvidence);
-  const ok = evidenceOk && missingToolCalls.length === 0;
+  const ok = evidenceOk && missingToolCalls.length === 0 && missingProjectCommands.length === 0;
   return {
     ok,
     requiresExternalEvidence: Boolean(contract.requiresExternalEvidence),
@@ -2098,9 +2362,19 @@ export function evaluateScsEvidence(contract = {}, ledger = {}) {
     missing,
     requiredToolCalls,
     missingToolCalls,
+    requiredGitActions,
+    requiredGitRevision,
+    observedGitActions,
+    missingGitActions,
+    requiredProjectCommands,
+    missingProjectCommands,
     reason: ok
       ? "Evidence satisfies the deterministic task contract."
-      : missingToolCalls.length
+      : missingProjectCommands.length
+        ? `Missing successful required project command(s) after the latest change: ${missingProjectCommands.join(", ")}.`
+        : missingGitActions.length
+          ? `Missing required git action(s): ${missingGitActions.join(", ")}.`
+        : missingToolCalls.length
         ? `Missing required tool calls: ${missingToolCalls.join(", ")}.`
         : missing.length
         ? `Missing evidence categories: ${missing.map((item) => item.category).join(", ")}.`
@@ -2123,6 +2397,11 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
       exactOutputPaths: contract.exactOutputPaths || [],
       exactInputPaths: contract.exactInputPaths || [],
       requiredToolCalls: contract.requiredToolCalls || [],
+      requiredGitActions: contract.requiredGitActions || [],
+      requiredGitRevision: Number(contract.requiredGitRevision || 0),
+      requiredProjectCommands: contract.requiredProjectCommands || [],
+      projectMutationRevision: Number(contract.projectMutationRevision || 0),
+      projectTestFiles: contract.projectTestFiles || [],
       requiresSourceGrounding: Boolean(contract.requiresSourceGrounding),
       requiredTextTerms: contract.requiredTextTerms || [],
       forbiddenTextTerms: contract.forbiddenTextTerms || [],
@@ -2139,6 +2418,7 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
         toolName: item.toolName || "",
         target: item.target || "",
         proof: compact(item.proof || "", 300),
+        gitActions: item.gitActions || (item.gitAction ? [item.gitAction] : []),
       })),
       blockers: (ledger.blockers || []).slice(-8).map((item) => ({
         id: item.id,
@@ -2155,6 +2435,9 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
       reason: evaluation.reason || "",
       missing: (evaluation.missing || []).map((item) => item.category),
       missingToolCalls: evaluation.missingToolCalls || [],
+      missingGitActions: evaluation.missingGitActions || [],
+      observedGitActions: evaluation.observedGitActions || [],
+      missingProjectCommands: evaluation.missingProjectCommands || [],
       satisfied: (evaluation.satisfied || []).map((item) => item.category),
     },
   };
@@ -2172,6 +2455,25 @@ export function finishResultClaimsBlocker(result = "") {
   );
 }
 
+export function finishResultClaimsIncompleteWork(result = "") {
+  const text = String(result || "")
+    .replace(/\b(?:not|never)\s+(?:paused|pending|incomplete|unfinished)\b/gi, "")
+    .replace(/\b(?:no|without)\s+(?:remaining|pending|unfinished)\s+(?:work|steps?|tasks?|actions?)\b/gi, "");
+  const explicitIncompleteState =
+    /\b(?:paused|pending|unfinished|incomplete|not\s+(?:yet\s+)?(?:complete|completed|done)|still\s+(?:needs?|requires?)\s+(?:work|implementation|repair|validation|testing|verification))\b/i.test(
+      text
+    );
+  const promisedFutureAction =
+    /\b(?:will|would|going\s+to|still\s+need(?:s)?\s+to)\s+(?:now\s+)?(?:be\s+)?(?:write|written|rewrite|rewritten|replace|replaced|refactor|refactored|patch|patched|create|created|implement|implemented|fix|fixed|repair|repaired|generate|generated|run|test|tested|validate|validated|verify|verified|continue|continued|finish|finished|complete|completed|submit|submitted|publish|published|upload|uploaded|download|downloaded)\b/i.test(
+      text
+    );
+  const asksForApprovalInsteadOfFinishing =
+    /\b(?:do you approve|please approve|reply ["']?yes|ask(?:ing)? for approval|need(?:s)? (?:your |user )?approval|must ask(?: the user)?|await(?:ing)? approval)\b/i.test(
+      text
+    );
+  return explicitIncompleteState || promisedFutureAction || asksForApprovalInsteadOfFinishing;
+}
+
 export function hasScsBlockerEvidence(ledger = {}) {
   return Number(ledger.blockerCount || 0) > 0 || (Array.isArray(ledger.blockers) && ledger.blockers.length > 0);
 }
@@ -2186,6 +2488,9 @@ export function deterministicFinishBlocker(contract = {}, ledger = {}, evaluatio
       `Required: ${(contract.requiredEvidence || []).map((item) => item.category).join(", ") || "external evidence"}`,
       `Present: ${(ledger.categories || []).join(", ") || "none"}`,
       ...(evaluation.missingToolCalls?.length ? [`Required tool calls missing: ${evaluation.missingToolCalls.join(", ")}`] : []),
+      ...(evaluation.missingProjectCommands?.length
+        ? [`Required project commands missing after the latest change: ${evaluation.missingProjectCommands.join(", ")}`]
+        : []),
     ],
     nextRequiredAction:
       "Collect the missing concrete evidence, verify the requested state or artifact, then ask SCS to finish again; if impossible, report a real blocker with proof.",

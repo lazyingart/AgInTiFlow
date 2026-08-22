@@ -41,6 +41,7 @@ const localConfig = {
   maxSteps: 40,
   dynamicSteps: "auto",
   dynamicStepExtensionLimit: 2,
+  dynamicStepExtensionLimitExplicit: true,
   dynamicStepHardCap: 80,
   dynamicStepExtensionSize: 8,
   headless: true,
@@ -99,6 +100,7 @@ assert.equal(initial.wrapperReasoning, "high");
 assert.equal(initial.auxiliaryProvider, "venice");
 assert.equal(initial.auxiliaryModel, "qwen-image-2-pro");
 assert.equal(initial.scsValidationMode, "deterministic");
+assert.equal(initial.dynamicStepExtensionLimitExplicit, true, "explicit step-limit provenance was not persisted");
 assert.equal(initial.commandCwd, localConfig.commandCwd);
 assert.deepEqual(initial.allowedDomains, localConfig.allowedDomains);
 assert.deepEqual(initial.readOnlyRoots, localConfig.readOnlyRoots);
@@ -150,6 +152,7 @@ assert.equal(resumed.runtimeOverrides.allowHostedWebResearch, false, "hosted res
 assert.equal(resumed.runtimeOverrides.allowHostedJsonSpecialist, false, "hosted JSON permission drifted on resume");
 assert.equal(resumed.runtimeOverrides.allowHostedWritingSpecialist, false, "hosted writer permission drifted on resume");
 assert.equal(resumed.runtimeOverrides.scsValidationMode, "deterministic", "saved SCS validation policy drifted on resume");
+assert.equal(resumed.snapshot.dynamicStepExtensionLimitExplicit, true, "resume lost explicit step-limit provenance");
 assert.deepEqual(resumed.runtimeOverrides.allowedDomains, localConfig.allowedDomains, "saved network scope was not preserved");
 assert.deepEqual(resumed.runtimeOverrides.readOnlyRoots, localConfig.readOnlyRoots, "saved read-only roots were not preserved");
 assert.equal(resumed.credentialProvider, "localllm", "caller was not told which provider credentials to rebuild");
@@ -359,6 +362,7 @@ assert.equal(legacy.spareProvider, "localllm", "legacy migration introduced a ho
 assert.equal(legacy.routeModel, "localllm-deep");
 assert.equal(legacy.mainModel, "localllm-deep");
 assert.equal(legacy.spareModel, "localllm-deep");
+assert.equal(legacy.dynamicStepExtensionLimitExplicit, false, "legacy runtime invented an explicit step limit");
 
 const legacyResume = resolveSessionRuntime({
   state: {
@@ -381,6 +385,7 @@ assert.equal(legacyResume.runtimeOverrides.provider, "localllm");
 assert.equal(legacyResume.runtimeOverrides.routeProvider, "localllm");
 assert.equal(legacyResume.runtimeOverrides.mainProvider, "localllm");
 assert.equal(legacyResume.runtimeOverrides.spareProvider, "localllm");
+assert.equal(legacyResume.snapshot.dynamicStepExtensionLimitExplicit, false, "legacy resume invented step-limit provenance");
 
 const overrides = sessionRuntimeOverrides(initial);
 assert.equal(overrides.schemaVersion, undefined);

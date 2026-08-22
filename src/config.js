@@ -245,6 +245,10 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     executionPolicy,
     { explicit: maxStepsExplicit }
   );
+  const configuredDynamicStepExtensionLimit =
+    overrides.dynamicStepExtensionLimit ?? args.dynamicStepExtensionLimit ?? process.env.AGINTI_STEP_EXTENSION_LIMIT;
+  const dynamicStepExtensionLimitExplicit =
+    configuredDynamicStepExtensionLimit !== undefined && String(configuredDynamicStepExtensionLimit).trim() !== "";
   const packageDir = path.resolve(overrides.packageDir || process.env.AGINTIFLOW_PACKAGE_DIR || baseDir);
   const permissionMode = normalizePermissionMode(
     overrides.permissionMode || args.permissionMode || process.env.AGINTI_PERMISSION_MODE || "normal"
@@ -375,10 +379,11 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     maxSteps,
     maxStepsExplicit,
     dynamicSteps: normalizeDynamicStepsMode(overrides.dynamicSteps ?? args.dynamicSteps ?? process.env.AGINTI_DYNAMIC_STEPS ?? "auto"),
+    dynamicStepExtensionLimitExplicit,
     dynamicStepExtensionLimit: clampNumber(
       parseNumber(
-        overrides.dynamicStepExtensionLimit ?? args.dynamicStepExtensionLimit ?? process.env.AGINTI_STEP_EXTENSION_LIMIT,
-        scsActive ? 2 : 1
+        configuredDynamicStepExtensionLimit,
+        3
       ),
       0,
       8

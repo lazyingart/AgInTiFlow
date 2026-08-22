@@ -40,6 +40,24 @@ async function main() {
   const persisted = await persistCanvasPayloadFile(normalized.payload, { config, store });
   if (!persisted.ok) throw new Error(persisted.reason || "canvas artifact persistence failed");
   if (!persisted.payload.artifactPersisted) throw new Error("canvas file was not persisted into session artifacts");
+  if (persisted.payload.downloadName !== "durable-report.md") {
+    throw new Error(`canvas artifact lost its meaningful download name: ${persisted.payload.downloadName}`);
+  }
+  if (!/^durable-report--[A-Za-z0-9_-]{8}\.md$/.test(path.basename(persisted.payload.sessionFilePath))) {
+    throw new Error(`canvas persistence put an opaque id before the filename: ${persisted.payload.sessionFilePath}`);
+  }
+
+  const genericNamed = normalizeCanvasPayload(
+    {
+      title: "Fluorescence Experiment Analysis",
+      kind: "pdf",
+      path: "report.pdf",
+    },
+    config
+  );
+  if (!genericNamed.ok || genericNamed.payload.downloadName !== "Fluorescence-Experiment-Analysis.pdf") {
+    throw new Error(`generic artifact did not receive a task-meaningful filename: ${genericNamed.payload?.downloadName}`);
+  }
 
   await fs.rm(sourcePath);
 
@@ -59,6 +77,7 @@ async function main() {
   const content = await readArtifactContent(items[0], { store, config });
   if (!content.ok) throw new Error(content.error || "persisted artifact could not be read");
   if (!String(content.text || "").includes("Durable report")) throw new Error("persisted artifact content mismatch");
+  if (content.filename !== "durable-report.md") throw new Error("artifact read metadata lost the download filename");
 
   const largeImagePath = path.join(workspace, "large-preview.png");
   const pngHeader = Buffer.from("89504e470d0a1a0a", "hex");

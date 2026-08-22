@@ -19,6 +19,17 @@ function run(command, args = []) {
   }));
 }
 
+function runFails(command, args, expected) {
+  try {
+    run(command, args);
+  } catch (error) {
+    const output = `${error?.stdout || ""}\n${error?.stderr || ""}\n${error?.message || ""}`;
+    assert(expected.test(output), `unexpected ${command} failure: ${output}`);
+    return;
+  }
+  throw new Error(`${command} unexpectedly succeeded`);
+}
+
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -33,6 +44,14 @@ run("scenario", [
   "--prompt-quality", "normal", "--prompt", "Prepare the media chain without publishing.",
   "--expected-outputs", "[\"readiness.md\"]", "--validation", "Verify routine paths and no external write.",
 ]);
+runFails("test", [
+  "--id", "missing-capability", "--capability", "not-registered", "--scenario", "media-dry-run",
+  "--title", "Invalid capability reference", "--validation", "Must fail before insertion.",
+], /Unknown capability/);
+runFails("test", [
+  "--id", "missing-scenario", "--capability", "media-chain", "--scenario", "not-registered",
+  "--title", "Invalid scenario reference", "--validation", "Must fail before insertion.",
+], /Unknown scenario/);
 run("test", [
   "--id", "media-dry-run-001", "--capability", "media-chain", "--scenario", "media-dry-run",
   "--title", "Read-only established media routine probe", "--prompt-path", "TASK.md",
@@ -60,7 +79,7 @@ assert(status.ok, "ledger status did not succeed");
 assert(fs.statSync(db).size > 0, "ledger database is empty");
 assert(status.campaign?.id === "smoke", "campaign row was not preserved");
 assert(status.capability_counts.some((row) => row.status === "passed_after_fix" && row.count === 1), "capability status was not updated");
-assert(status.scenario_counts.some((row) => row.status === "backlog" && row.count === 1), "scenario was not recorded");
+assert(status.scenario_counts.some((row) => row.status === "passed_after_fix" && row.count === 1), "scenario result was not propagated");
 assert(status.test_counts.some((row) => row.status === "passed_after_fix" && row.count === 1), "test result was not recorded");
 assert(status.recent_tests[0]?.session_id === "session-smoke", "session evidence was not retained");
 

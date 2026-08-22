@@ -15,6 +15,7 @@ import {
   extractMarkdownCommandEvidence,
   extractMarkdownPathEvidence,
   finishResultClaimsBlocker,
+  finishResultClaimsIncompleteWork,
 } from "../src/scs-evidence.js";
 
 function fakeStudentClient(json) {
@@ -213,8 +214,29 @@ const recoverableLedger = buildScsEvidenceLedger({
   },
 });
 assert.equal(recoverableLedger.blockerCount, 0, "recoverable runtime guards became external completion blockers");
+const recoverablePatchLedger = buildScsEvidenceLedger({
+  context: {
+    events: [
+      {
+        type: "tool.failed",
+        data: {
+          ok: false,
+          toolName: "apply_patch",
+          error: "Patch search text was not found in analysis.py.",
+        },
+      },
+    ],
+  },
+});
+assert.equal(recoverablePatchLedger.blockerCount, 0, "a recoverable patch context miss became a completion blocker");
 assert.equal(finishResultClaimsBlocker("No external services, logins, or approvals are required."), false);
 assert.equal(finishResultClaimsBlocker("The task is blocked and requires human login approval."), true);
+assert.equal(finishResultClaimsIncompleteWork("Completed and verified the requested report."), false);
+assert.equal(
+  finishResultClaimsIncompleteWork("The task is paused. A corrected implementation will be written next."),
+  true,
+  "future work was accepted as a completed result"
+);
 
 const outputFilenameContract = deriveScsTaskContract({
   goal: "Save the complete cited report as `CLAIM_LEVEL_CITATION_RESEARCH.md` and include `negative evidence` in the report.",

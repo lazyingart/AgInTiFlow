@@ -76,6 +76,18 @@ function safeResearchId(value, fallback) {
   return normalized || fallback;
 }
 
+function researchTopicSlug(query = "") {
+  const words = String(query || "")
+    .toLowerCase()
+    .match(/[a-z0-9]+/g) || [];
+  const stopWords = new Set(["a", "an", "and", "for", "from", "in", "of", "on", "the", "to", "with"]);
+  const meaningful = words
+    .filter((word) => word.length >= 3 && !stopWords.has(word))
+    .filter((word, index, items) => items.indexOf(word) === index)
+    .slice(0, 6);
+  return meaningful.join("-") || "research";
+}
+
 function sourcePolicy(value = "primary") {
   const normalized = String(value || "primary").trim().toLowerCase();
   return ["any", "primary", "official", "scholarly"].includes(normalized) ? normalized : "primary";
@@ -1865,7 +1877,7 @@ export async function deepResearch(args = {}, config = {}, store = null) {
     recencyDays: Number(args.recencyDays || 0),
     language: String(args.language || ""),
   });
-  const defaultId = `dr-${new Date().toISOString().slice(0, 10)}-${fingerprint.slice(0, 12)}`;
+  const defaultId = `${researchTopicSlug(query)}-${new Date().toISOString().slice(0, 10)}-${fingerprint.slice(0, 10)}`;
   const researchId = safeResearchId(args.researchId, defaultId);
   let paths;
   try {

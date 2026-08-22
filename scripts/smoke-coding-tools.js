@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildModelTimeoutRetryMessages,
+  genericArtifactFilenameBlock,
   modelTimeoutRetryRoute,
   repairModelMessageHistory,
   shouldResetStaticDiscoveryPhase,
@@ -83,6 +84,40 @@ async function runMock(goal, sessionId, { resume = false } = {}) {
 }
 
 try {
+  const genericArtifactBlock = await genericArtifactFilenameBlock(
+    "write_file",
+    { path: "report.md", content: "summary" },
+    { commandCwd: workspace, taskProfile: "data", goal: "Analyze the fluorescence experiment exports." },
+    { goal: "Analyze the fluorescence experiment exports.", messages: [], meta: {} }
+  );
+  assert(
+    genericArtifactBlock?.category === "artifact-filename" &&
+      /fluorescence|experiment/i.test(genericArtifactBlock.permissionAdvice?.instruction || ""),
+    "new generic artifact filename was not redirected to a meaningful topic-derived name"
+  );
+  assert(
+    (await genericArtifactFilenameBlock(
+      "write_file",
+      { path: "outputs/summary.json", content: "{}" },
+      { commandCwd: workspace, taskProfile: "data", goal: "Analyze the experiment." },
+      {
+        goal: "Analyze the experiment.",
+        messages: [],
+        meta: { projectVerification: { requiredOutputs: ["outputs/summary.json"] } },
+      }
+    )) === null,
+    "an exact project-declared artifact filename was incorrectly rejected as generic"
+  );
+  assert(
+    (await genericArtifactFilenameBlock(
+      "write_file",
+      { path: "reports/fluorescence-dose-response-analysis.md", content: "summary" },
+      { commandCwd: workspace, taskProfile: "data" },
+      { goal: "Analyze the experiment.", messages: [], meta: {} }
+    )) === null,
+    "a descriptive artifact filename was incorrectly blocked"
+  );
+
   const staleDeepSeekState = {
     messages: [
       { role: "system", content: "system" },
@@ -1384,6 +1419,30 @@ try {
   );
   const unifiedText = await fs.readFile(path.join(workspace, "unified-target.txt"), "utf8");
   assert(unified.ok && unifiedText === "alpha\nnew\nomega\n", "unified apply_patch did not update expected file");
+
+  await fs.writeFile(path.join(workspace, "hybrid-patch-target.txt"), "alpha\nold\nomega\n", "utf8");
+  const hybridPatch = await executeWorkspaceTool(
+    "apply_patch",
+    {
+      patch: [
+        "*** Begin Patch ***",
+        "--- a/hybrid-patch-target.txt",
+        "+++ b/hybrid-patch-target.txt",
+        "@@ -1,3 +1,3 @@",
+        " alpha",
+        "-old",
+        "+new",
+        " omega",
+        "*** End Patch ***",
+      ].join("\n"),
+    },
+    { commandCwd: workspace, allowFileTools: true }
+  );
+  const hybridPatchText = await fs.readFile(path.join(workspace, "hybrid-patch-target.txt"), "utf8");
+  assert(
+    hybridPatch.ok && hybridPatchText === "alpha\nnew\nomega\n",
+    "hybrid wrapped unified apply_patch did not update expected file"
+  );
 
   await fs.writeFile(path.join(workspace, "repair-report.md"), "old report\n", "utf8");
   const ordinaryAddExistingError = await executeWorkspaceTool(

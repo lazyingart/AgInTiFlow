@@ -27,6 +27,26 @@ function isoStamp() {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
+function descriptiveImageArtifactStem(images = [], failed = false) {
+  const first = images[0] || {};
+  let sourceName = "image";
+  if (first.path) sourceName = path.basename(String(first.path), path.extname(String(first.path)));
+  else if (first.url) {
+    try {
+      const url = new URL(String(first.url));
+      sourceName = path.basename(url.pathname, path.extname(url.pathname)) || url.hostname;
+    } catch {
+      sourceName = "remote-image";
+    }
+  }
+  const slug = String(sourceName || "image")
+    .normalize("NFKD")
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "image";
+  return `${slug}-${failed ? "image-analysis-failed" : "image-analysis"}`;
+}
+
 function sha256(buffer) {
   return crypto.createHash("sha256").update(buffer).digest("hex");
 }
@@ -616,11 +636,10 @@ async function callImageRead(args, images, config, store) {
     if (current === "localllm") provider = "localllm";
     else if (current === "openai") provider = "openai";
     else if (config.allowHostedImagePerception === true) provider = "openai";
-    else {
-      throw new Error(
-        `read_image has no automatic backend for active provider ${current}. Select provider=localllm, or explicitly enable OpenAI image perception or a wrapper backend.`
-      );
-    }
+    else if (config.allowLocalImagePerception !== false) provider = "localllm";
+    else throw new Error(
+      `read_image has no automatic backend for active provider ${current}. Enable the local image-perception handoff, select provider=localllm, or explicitly authorize a hosted image backend.`
+    );
   }
   if (localAliases.has(provider)) return callLocalLLMImageRead(args, images, config);
   if (provider === "openai") return callOpenAiImageRead(args, images, config);
@@ -651,8 +670,9 @@ export async function readImage(args = {}, config = {}, store = null) {
       fallback: Boolean(analysis.fallback),
       fallbackReason: analysis.fallbackReason || "",
     };
-    payload.artifactPath = await persistToolArtifact(store, "perception", "read-image", payload);
-    Object.assign(payload, await persistMarkdownArtifact(store, config, "perception", "read-image", payload));
+    const artifactStem = descriptiveImageArtifactStem(images, false);
+    payload.artifactPath = await persistToolArtifact(store, "perception", artifactStem, payload);
+    Object.assign(payload, await persistMarkdownArtifact(store, config, "perception", artifactStem, payload));
     return payload;
   } catch (error) {
     payload = {
@@ -662,8 +682,9 @@ export async function readImage(args = {}, config = {}, store = null) {
       error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
       images: loadedImages.map(({ dataUrl, absolutePath, ...image }) => image),
     };
-    payload.artifactPath = await persistToolArtifact(store, "perception", "read-image-failed", payload);
-    Object.assign(payload, await persistMarkdownArtifact(store, config, "perception", "read-image-failed", payload));
+    const artifactStem = descriptiveImageArtifactStem(loadedImages, true);
+    payload.artifactPath = await persistToolArtifact(store, "perception", artifactStem, payload);
+    Object.assign(payload, await persistMarkdownArtifact(store, config, "perception", artifactStem, payload));
     return payload;
   }
 }

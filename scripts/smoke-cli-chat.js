@@ -1190,6 +1190,7 @@ try {
 
   const resumeStatePath = path.join(agintiflowHome, "sessions", resumedSessionId, "state.json");
   const runtimeBeforeAmbientResume = JSON.parse(await fs.readFile(resumeStatePath, "utf8"));
+  const completedArtifactBeforeAmbientResume = await fs.stat(path.join(tempRoot, "notes/interactive.md"));
   const ambientSecret = "must-not-persist-cli-resume-secret";
   const ordinaryResume = await runCli(
     ["resume", resumedSessionId, "--", "Continue this saved mock session without changing its runtime."],
@@ -1204,6 +1205,7 @@ try {
     }
   );
   const runtimeAfterAmbientResume = JSON.parse(await fs.readFile(resumeStatePath, "utf8"));
+  const completedArtifactAfterAmbientResume = await fs.stat(path.join(tempRoot, "notes/interactive.md"));
   if (
     runtimeAfterAmbientResume.meta.runtimeConfig.provider !== "mock" ||
     runtimeAfterAmbientResume.meta.runtimeConfig.model !== "mock-agent" ||
@@ -1212,6 +1214,14 @@ try {
     JSON.stringify(runtimeAfterAmbientResume).includes(ambientSecret)
   ) {
     throw new Error("ordinary one-shot resume drifted to ambient provider/model/key settings");
+  }
+  if (
+    completedArtifactAfterAmbientResume.mtimeMs !== completedArtifactBeforeAmbientResume.mtimeMs ||
+    runtimeAfterAmbientResume.meta.goalContract.status !== "completed" ||
+    runtimeAfterAmbientResume.meta.goalContract.lifecycle.at(-1)?.reason !== "completed_task_noop" ||
+    !ordinaryResume.stdout.includes("did not repeat any tool or external side effect")
+  ) {
+    throw new Error("generic resume of a completed task repeated work instead of preserving the verified result");
   }
 
   await runCli(

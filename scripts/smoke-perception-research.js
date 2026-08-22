@@ -127,6 +127,26 @@ async function verifyProviderBoundary({ pngPath, store, config }) {
     const localImagePart = calls[0].payload?.messages?.[0]?.content?.find((part) => part?.type === "image_url");
     assert(/^data:image\/png;base64,/.test(localImagePart?.image_url?.url || ""), "LocalLLM vision request did not carry the bounded image pixels");
 
+    const deepSeekWithLocalVision = await readImage(
+      { path: path.relative(config.commandCwd, pngPath), prompt: "Inspect locally while DeepSeek handles text." },
+      {
+        ...config,
+        provider: "deepseek",
+        allowHostedImagePerception: false,
+        perceptionClientFactory,
+        providerReadinessProbe: async (request) => ({
+          ok: true,
+          checks: { models: { available: [request.selectedModel] } },
+        }),
+      },
+      store
+    );
+    assert(
+      deepSeekWithLocalVision.ok && deepSeekWithLocalVision.provider === "localllm-chat-completions",
+      `DeepSeek did not hand auto image perception to the safe local backend: ${deepSeekWithLocalVision.error || deepSeekWithLocalVision.provider}`
+    );
+    assert(calls.length === 2 && calls[1].provider === "localllm", "DeepSeek image handoff escaped to a hosted provider");
+
     const blockedImage = await readImage(
       { path: path.relative(config.commandCwd, pngPath), provider: "openai", prompt: "Try hosted vision." },
       {
@@ -138,7 +158,7 @@ async function verifyProviderBoundary({ pngPath, store, config }) {
       store
     );
     assert(!blockedImage.ok && blockedImage.blocked && /explicitly enable allowHostedImagePerception/i.test(blockedImage.error || ""), "Local read_image did not reject unapproved hosted OpenAI");
-    assert(calls.length === 1, "Blocked OpenAI image perception still created a hosted client");
+    assert(calls.length === 2, "Blocked OpenAI image perception still created a hosted client");
 
     const hostedImage = await readImage(
       { path: path.relative(config.commandCwd, pngPath), provider: "openai", prompt: "Use explicitly approved hosted vision." },
@@ -151,7 +171,7 @@ async function verifyProviderBoundary({ pngPath, store, config }) {
       store
     );
     assert(hostedImage.ok && hostedImage.provider === "openai-responses", `Explicit OpenAI image perception failed: ${hostedImage.error || "unknown"}`);
-    assert(calls.length === 2 && calls[1].provider === "openai", "Explicit OpenAI image permission did not select the hosted client");
+    assert(calls.length === 3 && calls[2].provider === "openai", "Explicit OpenAI image permission did not select the hosted client");
 
     const blockedResearch = await webResearch(
       { query: "boundary smoke", mode: "openai" },
@@ -165,7 +185,7 @@ async function verifyProviderBoundary({ pngPath, store, config }) {
     );
     assert(!blockedResearch.ok && blockedResearch.blocked, "Local web_research did not visibly reject unapproved OpenAI synthesis");
     assert(blockedResearch.fallbackAvailable, "Blocked hosted research did not preserve safe snippet evidence");
-    assert(calls.length === 2, "Blocked hosted web research still created an OpenAI client");
+    assert(calls.length === 3, "Blocked hosted web research still created an OpenAI client");
 
     const hostedResearch = await webResearch(
       { query: "boundary smoke", mode: "openai" },
@@ -178,7 +198,7 @@ async function verifyProviderBoundary({ pngPath, store, config }) {
       store
     );
     assert(hostedResearch.ok && hostedResearch.provider === "openai-responses-web_search", "Explicit OpenAI web research did not run through the approved client");
-    assert(calls.length === 3 && calls[2].provider === "openai", "Explicit OpenAI web research permission did not select the hosted client");
+    assert(calls.length === 4 && calls[3].provider === "openai", "Explicit OpenAI web research permission did not select the hosted client");
 
     const jsonArgs = {
       task: "Return a boundary marker.",
@@ -293,6 +313,10 @@ async function main() {
   assert(image.artifactPath, "read_image did not persist a perception artifact");
   assert(image.markdownArtifactPath, "read_image did not persist a Markdown perception artifact");
   assert(image.markdownPath, "read_image did not persist a workspace Markdown report");
+  assert(
+    path.basename(image.markdownPath).includes("tiny-image-analysis"),
+    `read_image emitted a generic artifact filename: ${image.markdownPath}`
+  );
   await fs.access(image.artifactPath);
   await fs.access(image.markdownArtifactPath);
   await fs.access(path.join(workspace, image.markdownPath));

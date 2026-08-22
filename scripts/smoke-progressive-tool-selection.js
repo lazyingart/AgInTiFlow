@@ -475,6 +475,172 @@ const artifactCommandTools = selectProgressiveTools(allTools, {
 assertStrict.equal(names(artifactCommandTools)[0], "run_command", "artifact command evidence was not prioritized");
 assert(!names(artifactCommandTools).includes("read_file"), "already-used artifact read remained exposed");
 
+const pendingCompletionEvidenceTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    artifactValidationPhase: true,
+    artifactValidationNeedsGitEvidence: true,
+    artifactValidationNeedsVisualEvidence: true,
+    artifactValidationUsedTools: ["run_command", "read_image"],
+  },
+  goal: "Finish only after the generated plot is inspected and the intentional changes are committed.",
+  profile: "data",
+});
+assertStrict.equal(
+  names(pendingCompletionEvidenceTools)[0],
+  "read_image",
+  "pending visual evidence did not prioritize actual image perception"
+);
+assert(
+  names(pendingCompletionEvidenceTools).includes("run_command"),
+  "pending git evidence did not reopen the shell after an earlier generator command"
+);
+
+const resumedArtifactRuntime = nextStepRuntimeConfig(
+  {
+    goal: "Perform a visual screenshot inspection of the generated plot and commit the intentional changes.",
+    taskProfile: "data",
+  },
+  {
+    goal: "Perform a visual screenshot inspection of the generated plot and commit the intentional changes.",
+    meta: {
+      taskProfile: "data",
+      artifactProgress: {
+        complete: true,
+        usedValidationTools: ["run_command", "read_image"],
+      },
+      durableEvidenceCategories: [],
+    },
+    messages: [],
+  }
+);
+assert(
+  resumedArtifactRuntime.artifactValidationNeedsGitEvidence === true,
+  "artifact resume lost the durable git evidence requirement"
+);
+assert(
+  resumedArtifactRuntime.artifactValidationNeedsVisualEvidence === true,
+  "artifact resume lost the durable visual evidence requirement"
+);
+
+const visuallyVerifiedArtifactRuntime = nextStepRuntimeConfig(
+  {
+    goal: "Perform a visual screenshot inspection of the generated plot and commit the intentional changes.",
+    taskProfile: "data",
+  },
+  {
+    goal: "Perform a visual screenshot inspection of the generated plot and commit the intentional changes.",
+    meta: {
+      taskProfile: "data",
+      durableEvidenceCategories: ["visual", "artifact"],
+      artifactProgress: { complete: true, usedValidationTools: ["read_image"] },
+    },
+    messages: [],
+  }
+);
+assert(
+  visuallyVerifiedArtifactRuntime.artifactValidationNeedsVisualEvidence === false,
+  "durable visual evidence was forgotten after history compaction"
+);
+assert(
+  visuallyVerifiedArtifactRuntime.artifactValidationNeedsGitEvidence === true,
+  "durable visual evidence incorrectly satisfied the separate git requirement"
+);
+
+const statusOnlyArtifactState = {
+  goal: "Generate the required outputs.",
+  meta: {
+    taskProfile: "data",
+    goalContract: {
+      revision: 7,
+      taskGoal: "Generate the required outputs.",
+      currentRequest: "Commit only analysis.py and AGINTI.md after cleanup.",
+    },
+    durableEvidenceCategories: ["git"],
+    durableGitActions: ["status", "diff"],
+    durableGitEvidence: [
+      { action: "status", goalRevision: 7 },
+      { action: "diff", goalRevision: 7 },
+    ],
+    artifactProgress: { complete: true, usedValidationTools: ["run_command"] },
+  },
+  messages: [],
+};
+assert(
+  completionContractGoal({ taskProfile: "data" }, statusOnlyArtifactState).includes(
+    "Commit only analysis.py and AGINTI.md"
+  ),
+  "the latest same-task continuation disappeared from the completion contract"
+);
+assert(
+  nextStepRuntimeConfig({ taskProfile: "data" }, statusOnlyArtifactState)
+    .artifactValidationNeedsGitEvidence === true,
+  "durable git status incorrectly hid the shell before the requested commit"
+);
+assert(
+  nextStepRuntimeConfig({ taskProfile: "data" }, statusOnlyArtifactState)
+    .artifactValidationNeedsCommand === true,
+  "a fresh pending commit did not reopen the command tool"
+);
+const staleCommitArtifactRuntime = nextStepRuntimeConfig(
+  { taskProfile: "data" },
+  {
+    ...statusOnlyArtifactState,
+    meta: {
+      ...statusOnlyArtifactState.meta,
+      durableGitActions: ["status", "diff", "commit"],
+      durableGitEvidence: [
+        { action: "status", goalRevision: 7 },
+        { action: "commit", goalRevision: 6 },
+      ],
+    },
+  }
+);
+assert(
+  staleCommitArtifactRuntime.artifactValidationNeedsGitEvidence === true,
+  "a commit from an earlier goal revision satisfied a fresh commit request"
+);
+const committedArtifactRuntime = nextStepRuntimeConfig(
+  { taskProfile: "data" },
+  {
+    ...statusOnlyArtifactState,
+    meta: {
+      ...statusOnlyArtifactState.meta,
+      durableGitActions: ["status", "diff", "add", "commit"],
+      durableGitEvidence: [
+        { action: "status", goalRevision: 7 },
+        { action: "commit", goalRevision: 7 },
+      ],
+    },
+  }
+);
+assert(
+  committedArtifactRuntime.artifactValidationNeedsGitEvidence === false,
+  "a durable matching commit was forgotten after compaction"
+);
+const pendingCanonicalCommandRuntime = nextStepRuntimeConfig(
+  { taskProfile: "data" },
+  {
+    goal: "Finish the validated data project.",
+    meta: {
+      taskProfile: "data",
+      projectVerification: {
+        mutationRevision: 4,
+        requiredCommands: ["python analysis.py"],
+        requiredOutputs: ["outputs/summary.json"],
+        commandRuns: [],
+        testRuns: [],
+      },
+      artifactProgress: { complete: true, usedValidationTools: [] },
+    },
+    messages: [],
+  }
+);
+assert(
+  pendingCanonicalCommandRuntime.artifactValidationNeedsCommand === true,
+  "a missing canonical project command did not reopen command execution"
+);
+
 const artifactSourceReadTools = selectProgressiveTools(allTools, {
   config: {
     provider: "localllm",
@@ -510,6 +676,53 @@ const browserTools = selectProgressiveTools(allTools, {
 assert(names(browserTools).includes("open_url"), "browser bundle omitted open_url");
 assert(names(browserTools).includes("click") && names(browserTools).includes("type"), "browser bundle omitted interaction tools");
 assert(!names(browserTools).includes("run_command"), "browser bundle leaked the code shell tool");
+
+const failedTestRepairTools = selectProgressiveTools(allTools, {
+  config: { provider: "localllm", testFailureRepairActive: true },
+  goal: "Repair the current project after a failing test.",
+  profile: "data",
+});
+sameNames(
+  failedTestRepairTools,
+  ["read_file", "search_files", "apply_patch", "run_command", "finish"],
+  "failed-test repair did not receive the bounded diagnose-patch-retest tool surface"
+);
+
+const failedTestRepairWithRequiredInstruction = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    testFailureRepairActive: true,
+    testFailureRepairAllowedCreates: ["AGINTI.md"],
+  },
+  goal: "Repair the current project and create the required project instructions.",
+  profile: "data",
+});
+sameNames(
+  failedTestRepairWithRequiredInstruction,
+  ["read_file", "search_files", "apply_patch", "write_file", "run_command", "finish"],
+  "failed-test repair omitted the exact required instruction-file creation exception"
+);
+const constrainedInstructionWrite = failedTestRepairWithRequiredInstruction.find(
+  (tool) => tool.function.name === "write_file"
+);
+assertStrict.deepEqual(constrainedInstructionWrite.function.parameters.properties.path.enum, ["AGINTI.md"]);
+assertStrict.deepEqual(constrainedInstructionWrite.function.parameters.properties.mode.enum, ["create"]);
+
+const pendingTestTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    testVerificationPending: true,
+    testVerificationCommand: "python -m unittest discover -s tests -v",
+  },
+  goal: "Verify the canonical mutation.",
+  profile: "data",
+});
+sameNames(pendingTestTools, ["run_command", "finish"], "post-mutation verification offered unrelated tools");
+assertStrict.deepEqual(
+  pendingTestTools[0].function.parameters.properties.command.enum,
+  ["python -m unittest discover -s tests -v"],
+  "post-mutation verification did not constrain the exact retained test command"
+);
 
 const researchTools = selectProgressiveTools(allTools, {
   config: { provider: "localllm" },

@@ -32,6 +32,24 @@ function jsonValue(value, fallback = []) {
   return JSON.stringify(JSON.parse(String(value)));
 }
 
+function assertCampaignReference(db, table, id, campaignId, label) {
+  if (!id) return;
+  const row = db.prepare(`SELECT id FROM ${table} WHERE id=? AND campaign_id=?`).get(id, campaignId);
+  if (!row) throw new Error(`Unknown ${label} for campaign ${campaignId}: ${id}`);
+}
+
+function runTransaction(db, operation) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = operation();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function openLedger(dbPath) {
   const resolved = path.resolve(dbPath);
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
@@ -131,6 +149,10 @@ function main() {
     result = { scenario: id };
   } else if (command === "test") {
     const id = required(options, "id");
+    const capabilityId = String(options.capability || "");
+    const scenarioId = String(options.scenario || "");
+    assertCampaignReference(db, "capabilities", capabilityId, campaignId, "capability");
+    assertCampaignReference(db, "scenarios", scenarioId, campaignId, "scenario");
     db.prepare(`INSERT INTO test_items
       (id, campaign_id, capability_id, scenario_id, title, profile, prompt_quality,
        prompt_path, expected_outputs_json, validation_plan, status, updated_at)
@@ -139,7 +161,7 @@ function main() {
       title=excluded.title, profile=excluded.profile, prompt_quality=excluded.prompt_quality,
       prompt_path=excluded.prompt_path, expected_outputs_json=excluded.expected_outputs_json,
       validation_plan=excluded.validation_plan, updated_at=excluded.updated_at`).run(
-      id, campaignId, String(options.capability || ""), String(options.scenario || ""),
+      id, campaignId, capabilityId, scenarioId,
       required(options, "title"), String(options.profile || "auto"),
       String(options.prompt_quality || "normal"), String(options.prompt_path || ""),
       jsonValue(options.expected_outputs), String(options.validation || ""),
@@ -166,16 +188,28 @@ function main() {
   } else if (command === "finish") {
     const id = required(options, "id");
     const status = required(options, "status");
-    const changed = db.prepare(`UPDATE test_items SET status=?, result_summary=?, evidence_json=?,
-      finished_at=?, updated_at=? WHERE id=? AND campaign_id=?`).run(
-      status, required(options, "summary"), jsonValue(options.evidence), timestamp, timestamp, id, campaignId
-    );
-    if (Number(changed.changes || 0) !== 1) throw new Error(`Unknown test item: ${id}`);
-    const item = db.prepare("SELECT capability_id FROM test_items WHERE id=?").get(id);
-    if (item?.capability_id) {
-      db.prepare("UPDATE capabilities SET status=?, last_test_id=?, updated_at=? WHERE id=?")
-        .run(status, id, timestamp, item.capability_id);
-    }
+    const summary = required(options, "summary");
+    const evidence = jsonValue(options.evidence);
+    const item = db.prepare(
+      "SELECT capability_id, scenario_id FROM test_items WHERE id=? AND campaign_id=?"
+    ).get(id, campaignId);
+    if (!item) throw new Error(`Unknown test item: ${id}`);
+    assertCampaignReference(db, "capabilities", item.capability_id, campaignId, "capability");
+    assertCampaignReference(db, "scenarios", item.scenario_id, campaignId, "scenario");
+    runTransaction(db, () => {
+      db.prepare(`UPDATE test_items SET status=?, result_summary=?, evidence_json=?,
+        finished_at=?, updated_at=? WHERE id=? AND campaign_id=?`).run(
+        status, summary, evidence, timestamp, timestamp, id, campaignId
+      );
+      if (item.capability_id) {
+        db.prepare(`UPDATE capabilities SET status=?, last_test_id=?, updated_at=?
+          WHERE id=? AND campaign_id=?`).run(status, id, timestamp, item.capability_id, campaignId);
+      }
+      if (item.scenario_id) {
+        db.prepare("UPDATE scenarios SET status=?, updated_at=? WHERE id=? AND campaign_id=?")
+          .run(status, timestamp, item.scenario_id, campaignId);
+      }
+    });
     result = { test: id, status };
   } else if (command === "fix") {
     const id = required(options, "id");

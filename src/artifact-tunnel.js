@@ -70,14 +70,40 @@ function artifactRawUrl(item, download = false) {
   return download ? `${base}?download=1` : base;
 }
 
-function safeCanvasFilename(artifactId, filePath) {
-  const rawBase = path.basename(String(filePath || "artifact"));
-  const safeBase = rawBase
+const GENERIC_ARTIFACT_STEM = /^(?:final[-_ ]*)?(?:artifact|answer|chart|data|document|draft|file|figure|image|notes?|output|plot|report|response|result|screenshot|story|summary)(?:[-_ ]*(?:final|latest|new|v\d+|\d+))?$/i;
+
+function safeFilenameStem(value, fallback = "") {
+  return String(value || "")
+    .normalize("NFKC")
     .replace(/^\.+/, "")
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/[^\p{L}\p{N}._-]+/gu, "-")
     .replace(/-+/g, "-")
-    .slice(0, 90);
-  return `${String(artifactId || "canvas").replace(/[^A-Za-z0-9._-]+/g, "-")}-${safeBase || "artifact"}`;
+    .replace(/^[-_.]+|[-_.]+$/g, "")
+    .slice(0, 88) || fallback;
+}
+
+function meaningfulArtifactFilename(filePath, title = "", artifactId = "") {
+  const rawBase = path.basename(String(filePath || "artifact"));
+  const parsed = path.parse(rawBase);
+  const extensionStem = safeFilenameStem(parsed.ext.toLowerCase());
+  const extension = extensionStem ? `.${extensionStem}` : "";
+  const sourceStem = safeFilenameStem(parsed.name, "artifact");
+  const titleStem = safeFilenameStem(title);
+  const titleIsUseful = titleStem && !/^(?:agent-canvas-item|artifact|file)$/i.test(titleStem);
+  let stem = sourceStem;
+  if (GENERIC_ARTIFACT_STEM.test(sourceStem) && titleIsUseful) stem = titleStem;
+  if (!stem || GENERIC_ARTIFACT_STEM.test(stem)) {
+    const shortId = safeFilenameStem(artifactId).slice(-8);
+    stem = titleIsUseful ? titleStem : `task-artifact${shortId ? `-${shortId}` : ""}`;
+  }
+  return `${stem}${extension}`;
+}
+
+function safeCanvasFilename(artifactId, filePath, title = "") {
+  const meaningful = meaningfulArtifactFilename(filePath, title, artifactId);
+  const parsed = path.parse(meaningful);
+  const shortId = safeFilenameStem(artifactId, "canvas").slice(-8);
+  return `${parsed.name.slice(0, 78)}--${shortId}${parsed.ext}`;
 }
 
 function publicArtifact(item) {
@@ -87,6 +113,7 @@ function publicArtifact(item) {
     kind: item.kind,
     title: item.title,
     path: item.path || "",
+    filename: item.downloadName || "",
     preview: item.preview || "",
     source: item.source,
     tab: item.tab,
@@ -210,6 +237,9 @@ function addCanvasArtifact(items, event, sessionId, store) {
     kind: normalizeKind(data.kind, artifactPath),
     title: String(data.title || "Agent canvas item").slice(0, 120),
     path: artifactPath,
+    downloadName:
+      data.downloadName ||
+      meaningfulArtifactFilename(artifactPath, data.title || "Agent canvas item", artifactId),
     preview: previewText(data.note || text || artifactPath || "Agent selected this item for canvas display."),
     source: "agent-canvas",
     tab: "canvas",
@@ -318,6 +348,8 @@ export async function resolveArtifactFile(item, { store, config } = {}) {
       kind: mime === "application/pdf" ? "pdf" : mime.startsWith("image/") ? "image" : item.kind,
       title: item.title,
       path: item.path || "",
+      downloadName:
+        item.downloadName || meaningfulArtifactFilename(item.path, item.title, item.id),
     };
   }
 
@@ -340,6 +372,8 @@ export async function resolveArtifactFile(item, { store, config } = {}) {
       kind: mime === "application/pdf" ? "pdf" : mime.startsWith("image/") ? "image" : item.kind,
       title: item.title,
       path: item.path || "",
+      downloadName:
+        item.downloadName || meaningfulArtifactFilename(item.path, item.title, item.id),
     };
   }
 
@@ -377,6 +411,7 @@ export async function readArtifactContent(item, { store, config }) {
       kind: resolved.kind,
       title: item.title,
       path: item.path || "",
+      filename: resolved.downloadName || "",
       mime: resolved.mime,
       size: resolved.size,
       url,
@@ -448,6 +483,9 @@ export function normalizeCanvasPayload(args, config) {
       title,
       kind: normalizeKind(args.kind, relativePath),
       path: relativePath,
+      downloadName: relativePath
+        ? meaningfulArtifactFilename(relativePath, title, artifactId)
+        : "",
       content: content ? redactSensitiveText(content) : "",
       contentBytes: content ? Buffer.byteLength(content, "utf8") : 0,
       note: note ? previewText(note, 500) : "",
@@ -490,7 +528,10 @@ export async function persistCanvasPayloadFile(payload, { config, store }) {
   await store.ensure();
   const canvasDir = path.join(store.artifactsDir, "canvas");
   await fs.mkdir(canvasDir, { recursive: true });
-  const sessionFilePath = path.join(canvasDir, safeCanvasFilename(payload.artifactId, target.relativePath));
+  const sessionFilePath = path.join(
+    canvasDir,
+    safeCanvasFilename(payload.artifactId, target.relativePath, payload.title)
+  );
   await fs.copyFile(target.absolutePath, sessionFilePath);
 
   return {

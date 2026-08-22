@@ -26,6 +26,21 @@ function assistant(content, toolCalls = []) {
   };
 }
 
+function reasoningOnly(reasoning, finishReason = "length") {
+  return {
+    choices: [
+      {
+        finish_reason: finishReason,
+        message: {
+          role: "assistant",
+          content: "",
+          reasoning_content: reasoning,
+        },
+      },
+    ],
+  };
+}
+
 function toolCall(id, name, args) {
   return {
     id,
@@ -85,7 +100,7 @@ async function runCase({
       allowWebSearch: false,
       allowMcpTools: false,
       allowParallelScouts: false,
-      enableScs: "off",
+      enableScs: scsActive ? "auto" : "off",
       commandCwd: workspace,
     },
     {
@@ -107,7 +122,7 @@ async function runCase({
       allowWebSearch: false,
       allowMcpTools: false,
       allowParallelScouts: false,
-      enableScs: "off",
+      enableScs: scsActive ? "auto" : "off",
       clientFactory: async () => client,
     }
   );
@@ -127,8 +142,11 @@ async function runCase({
     allowWebSearch: false,
     allowMcpTools: false,
     allowParallelScouts: false,
-    scsActive: false,
-    enableScs: "off",
+    scsActive,
+    enableScs: scsActive ? "auto" : "off",
+    executionPolicy: scsActive
+      ? { tier: "focused", requiresPlan: false, reason: "Scripted SCS completion regression." }
+      : undefined,
     modelTimeoutMs: 1_000,
     ...(executionTier ? { executionTier, executionPolicy: { tier: executionTier, requiresPlan: false, reason: "Scripted completion smoke." } } : {}),
   });
@@ -166,6 +184,54 @@ try {
     "focused runtime snapshot repeated the full capability manual"
   );
 
+  // Recreate a state written by the older continuation classifier: the
+  // expanded continuation was incorrectly persisted as the durable task.
+  // A later generic resume must still recover the original material request.
+  {
+    const workspace = path.join(tempRoot, "workspaces", "ordinary-explanation");
+    const store = new SessionStore(path.join(tempRoot, "sessions"), "ordinary-explanation", {
+      projectRoot: workspace,
+      commandCwd: workspace,
+      projectSessionsDir: path.join(workspace, ".aginti-sessions"),
+    });
+    const stale = await store.loadState();
+    const expandedContinuation =
+      "Please continue and finish the same task from retained state. Repair the canonical project in place, follow every documented requirement, verify every deliverable, and leave the folder tidy.";
+    stale.goal = expandedContinuation;
+    stale.meta.goalContract.taskGoal = expandedContinuation;
+    stale.meta.goalContract.history.push({
+      revision: stale.meta.goalContract.revision + 1,
+      kind: "continuation",
+      relation: "new-request",
+      preview: expandedContinuation,
+    });
+    await store.saveState(stale);
+  }
+
+  const sameTaskContinuation = await runCase({
+    id: "ordinary-explanation",
+    goal: "Please continue and finish the same task from the retained state. Repair the canonical project in place, follow every documented requirement, verify every deliverable, and leave the folder tidy.",
+    resume: true,
+    responses: [assistant("A base case also defines the smallest directly solvable input.")],
+  });
+  const continuationEvent = [...sameTaskContinuation.events]
+    .reverse()
+    .find((event) => event.type === "conversation.continued");
+  assert.equal(continuationEvent?.data?.preservesTaskBoundary, true);
+  assert.equal(
+    sameTaskContinuation.state.goal,
+    "Explain why recursion needs a base case.",
+    "a generic same-task resume replaced the authoritative task goal"
+  );
+  assert(
+    sameTaskContinuation.state.messages.some(
+      (message) =>
+        message.role === "user" &&
+        /^Continue the current task from saved state:/i.test(String(message.content || ""))
+    ),
+    "same-task resume used the new-request boundary marker"
+  );
+
   const quotedChatClassification = await runCase({
     id: "quoted-chat-classification",
     taskProfile: "chatops",
@@ -184,12 +250,12 @@ try {
 
   const proseOnlyAction = await runCase({
     id: "prose-only-action",
-    goal: "Run printf 4 and report the output.",
+    goal: "Run pwd and report the output.",
     taskProfile: "shell",
     allowShellTool: true,
     responses: [
-      assistant("The command would print 4."),
-      assistant("Here is the command instead: printf 4"),
+      assistant("The command would print the working directory."),
+      assistant("Here is the command instead: pwd"),
     ],
   });
   assert.equal(proseOnlyAction.calls.length, 2);
@@ -198,6 +264,56 @@ try {
   assert.equal(proseOnlyAction.events.filter((event) => event.type === "completion.repair_requested").length, 1);
   assert.equal(proseOnlyAction.events.filter((event) => event.type === "completion.evidence_rejected").length, 2);
   assert(!proseOnlyAction.events.some((event) => event.type === "session.finished"));
+
+  const reasoningTruncation = await runCase({
+    id: "reasoning-only-tool-continuation",
+    goal: "Run pwd and report the verified working directory.",
+    taskProfile: "shell",
+    allowShellTool: true,
+    responses: [
+      reasoningOnly("The next concrete action is to run pwd with the shell tool."),
+      assistant("", [toolCall("reasoning-run", "run_command", { command: "pwd" })]),
+      assistant("", [toolCall("reasoning-finish", "finish", { result: "Ran pwd and verified the working directory." })]),
+    ],
+  });
+  assert.equal(reasoningTruncation.calls.length, 3);
+  assert.equal(reasoningTruncation.result.stopped, undefined);
+  assert.equal(
+    reasoningTruncation.events.filter((event) => event.type === "model.reasoning_continuation_requested").length,
+    1
+  );
+  assert.equal(
+    reasoningTruncation.events.filter((event) => event.type === "completion.evidence_rejected").length,
+    0,
+    "reasoning-only truncation was treated as a completion claim"
+  );
+  assert.equal(
+    reasoningTruncation.calls[1].tool_choice,
+    "required",
+    "reasoning-only continuation did not require one native tool call"
+  );
+  assert(
+    reasoningTruncation.calls[1].messages.some(
+      (message) => /exactly one enabled tool call/i.test(String(message.content || ""))
+    ),
+    "reasoning-only continuation instruction was not retained in the next request"
+  );
+
+  const resumedAfterRejectedCompletion = await runCase({
+    id: "prose-only-action",
+    goal: "Please continue and finish the same task from the retained state.",
+    taskProfile: "shell",
+    allowShellTool: true,
+    resume: true,
+    responses: [
+      assistant("I will run the command and verify it next."),
+      assistant("", [toolCall("resume-run", "run_command", { command: "pwd" })]),
+      assistant("", [toolCall("resume-finish", "finish", { result: "Ran pwd and verified the working directory." })]),
+    ],
+  });
+  assert.equal(resumedAfterRejectedCompletion.calls.length, 3);
+  assert.equal(resumedAfterRejectedCompletion.result.stopped, undefined);
+  assert.match(resumedAfterRejectedCompletion.result.result, /verified the working directory/i);
 
   const falseFinish = await runCase({
     id: "false-finish-tool",
@@ -212,6 +328,89 @@ try {
   assert.equal(falseFinish.calls.length, 2);
   assert.equal(falseFinish.result.reason, "model_did_not_execute");
   assert(!falseFinish.events.some((event) => event.type === "session.finished"));
+
+  const scsApprovalNarrative = await runCase({
+    id: "scs-approval-narrative",
+    goal: "Repair analysis.py in place and run the documented verification command.",
+    taskProfile: "shell",
+    allowShellTool: true,
+    scsActive: true,
+    responses: [
+      assistant("I must ask for approval before replacing the file. Do you approve? Reply yes to proceed."),
+      assistant("After approval, I will rewrite the file and run the verification command."),
+    ],
+  });
+  assert.equal(scsApprovalNarrative.calls.length, 2);
+  assert.equal(scsApprovalNarrative.result.stopped, true);
+  assert.equal(scsApprovalNarrative.result.reason, "model_did_not_execute");
+  assert.equal(
+    scsApprovalNarrative.events.filter((event) => event.type === "completion.evidence_rejected").length,
+    2
+  );
+  assert(!scsApprovalNarrative.events.some((event) => event.type === "session.finished"));
+
+  const scsUnsupportedNarrative = await runCase({
+    id: "scs-unsupported-success-narrative",
+    goal: "Run pwd and report the verified working directory.",
+    taskProfile: "shell",
+    allowShellTool: true,
+    scsActive: true,
+    responses: [
+      assistant("The task is complete and the working directory is correct."),
+      assistant("Completed successfully with all requested checks."),
+    ],
+  });
+  assert.equal(scsUnsupportedNarrative.result.stopped, true);
+  assert.equal(scsUnsupportedNarrative.result.reason, "model_did_not_execute");
+  assert.equal(
+    scsUnsupportedNarrative.events.filter((event) => event.type === "completion.evidence_rejected").length,
+    2
+  );
+  assert(!scsUnsupportedNarrative.events.some((event) => event.type === "session.finished"));
+
+  const approvalNarrativeWithBlockerEvidence = await runCase({
+    id: "approval-narrative-with-blocker-evidence",
+    goal: "Run definitely_missing_aginti_command and report the result.",
+    taskProfile: "shell",
+    allowShellTool: true,
+    responses: [
+      assistant("", [
+        toolCall("missing-command", "run_command", { command: "definitely_missing_aginti_command" }),
+      ]),
+      assistant("The command is unavailable. Approve installing it and I will continue after approval."),
+      assistant("Unable to execute the requested command because it is not installed in this environment."),
+    ],
+  });
+  assert.equal(approvalNarrativeWithBlockerEvidence.calls.length, 3);
+  assert.match(approvalNarrativeWithBlockerEvidence.result.result, /not installed/i);
+  assert(
+    approvalNarrativeWithBlockerEvidence.events.some(
+      (event) => event.type === "completion.evidence_rejected"
+    ),
+    "an approval narrative overrode existing blocker evidence"
+  );
+
+  const futureWorkFinish = await runCase({
+    id: "future-work-finish",
+    goal: "Execute the shell command pwd and report the output.",
+    taskProfile: "shell",
+    allowShellTool: true,
+    responses: [
+      assistant("", [
+        toolCall("finish-future", "finish", {
+          result: "The task is paused. The command will be run and verified next.",
+        }),
+      ]),
+      assistant("", [toolCall("run-after-reject", "run_command", { command: "pwd" })]),
+      assistant("", [
+        toolCall("finish-after-proof", "finish", { result: "Ran pwd and verified the working directory." }),
+      ]),
+    ],
+  });
+  assert.equal(futureWorkFinish.calls.length, 3);
+  assert.equal(futureWorkFinish.result.stopped, undefined);
+  assert.match(futureWorkFinish.result.result, /verified the working directory/i);
+  assert(futureWorkFinish.events.some((event) => event.type === "completion.evidence_rejected"));
 
   const verifiedAction = await runCase({
     id: "verified-action",
@@ -515,5 +714,9 @@ try {
 
   console.log("smoke-truthful-completion ok");
 } finally {
-  await fs.rm(tempRoot, { recursive: true, force: true });
+  if (process.env.AGINTI_KEEP_SMOKE_TEMP === "1") {
+    console.error(`Preserved smoke workspace: ${tempRoot}`);
+  } else {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
 }

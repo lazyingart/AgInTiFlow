@@ -515,7 +515,8 @@ function textHasTrigger(text, needle) {
 }
 
 export function selectSkillsForGoal(goal = "", { taskProfile = "auto", limit = 6, includeBody = true, projectRoot = process.cwd() } = {}) {
-  const text = `${goal} ${taskProfile}`.toLowerCase();
+  const goalText = String(goal || "").toLowerCase();
+  const text = `${goalText} ${taskProfile}`.toLowerCase();
   const skills = listSkills({ includeBody, projectRoot });
   const ranked = skills
     .map((skill) => ({ skill, score: scoreSkill(skill, text, taskProfile) }))

@@ -199,6 +199,7 @@ export const ARTIFACT_VALIDATION_TOOL_NAMES = Object.freeze([
   "run_command",
   "apply_patch",
   "write_file",
+  "read_image",
   "send_to_canvas",
   "open_workspace_file",
   "preview_workspace",
@@ -214,6 +215,8 @@ function artifactValidationToolNames(config = {}) {
   const needsCommand = config.artifactValidationNeedsCommand === true;
   const needsSourceRead = config.artifactValidationNeedsSourceRead === true;
   const outputEmbedded = config.artifactValidationOutputEmbedded === true;
+  const needsGitEvidence = config.artifactValidationNeedsGitEvidence === true;
+  const needsVisualEvidence = config.artifactValidationNeedsVisualEvidence === true;
   const repairAttempts = Math.max(0, Number(config.artifactValidationRepairAttempts || 0));
   const outputReadTools = outputEmbedded ? [] : ["read_file"];
   const repairTools = outputEmbedded
@@ -232,8 +235,16 @@ function artifactValidationToolNames(config = {}) {
       : needsRepair
         ? repairTools
         : ["finish", ...outputReadTools, "run_command", "apply_patch", "write_file"];
-  for (const name of ["send_to_canvas", "open_workspace_file", "preview_workspace"]) ordered.push(name);
-  return ordered.filter((name) => name === "finish" || !used.has(name));
+  if (needsGitEvidence) ordered.unshift("run_command");
+  if (needsVisualEvidence) ordered.unshift("read_image");
+  for (const name of ["read_image", "send_to_canvas", "open_workspace_file", "preview_workspace"]) ordered.push(name);
+  return [...new Set(ordered)].filter(
+    (name) =>
+      name === "finish" ||
+      (name === "run_command" && needsGitEvidence) ||
+      (name === "read_image" && needsVisualEvidence) ||
+      !used.has(name)
+  );
 }
 
 const CODE_PROFILES = new Set([
@@ -858,7 +869,11 @@ export function selectProgressiveTools(
     throw new TypeError("An enabled, valid finish function tool must exist in the input tool array");
   }
 
-  if (config.artifactValidationPhase === true) {
+  if (
+    config.artifactValidationPhase === true &&
+    config.testFailureRepairActive !== true &&
+    config.testVerificationPending !== true
+  ) {
     const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
     return artifactValidationToolNames(config).map((name) => available.get(name)).filter(Boolean);
   }

@@ -455,10 +455,28 @@ export function checkWorkspaceToolUse(toolName, args, config) {
     }
     return { allowed: true };
   } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    const patchFormatFailure = toolName === "apply_patch" && /\bPatch\b|patch hunk|base hash/i.test(reason);
     return {
       allowed: false,
-      reason: error instanceof Error ? error.message : String(error),
-      category: "workspace-path",
+      reason,
+      category: patchFormatFailure ? "workspace-patch" : "workspace-path",
+      ...(patchFormatFailure
+        ? {
+            recoverable: true,
+            permissionAdvice: {
+              category: "workspace-patch",
+              autoRecover: true,
+              summary: "The patch format or exact context was not accepted; this is not a permission blocker.",
+              instruction:
+                "If exact content is visible, use apply_patch path/search/replace with expectedReplacements=1. Otherwise read one narrow exact range, then use that exact replacement form. Do not repeat a failed unified hunk, ask for write approval, or create a sidecar replacement file.",
+              options: [
+                "Use apply_patch path/search/replace for one exact replacement after read_file.",
+                "Use a standard Codex or unified patch only when its context is copied exactly from the current file.",
+              ],
+            },
+          }
+        : {}),
     };
   }
 }
@@ -1176,10 +1194,15 @@ function parseUnifiedPatchDocument(patch) {
 }
 
 function parsePatchDocument(patch) {
-  const text = String(patch || "").trim();
+  const text = String(patch || "")
+    .trim()
+    .replace(/^\*\*\* Begin Patch(?: \*\*\*)?\s*\n/i, "")
+    .replace(/\n\*\*\* End Patch(?: \*\*\*)?\s*$/i, "")
+    .trim();
   if (!text) throw new Error("Patch content is required.");
   ensurePatchSize(text);
-  const operations = text.includes("*** Begin Patch") ? parseCodexPatchDocument(text) : parseUnifiedPatchDocument(text);
+  const hasCodexOperations = /^\*\*\* (?:Add|Update|Delete) File:/m.test(text);
+  const operations = hasCodexOperations ? parseCodexPatchDocument(text) : parseUnifiedPatchDocument(text);
   if (!operations.length) throw new Error("Patch did not contain any supported file operations.");
   return operations;
 }
@@ -1292,8 +1315,7 @@ export async function executeWorkspaceTool(toolName, args, config) {
     return {
       ok: false,
       blocked: true,
-      reason: guard.reason,
-      category: guard.category,
+      ...guard,
       toolName,
     };
   }

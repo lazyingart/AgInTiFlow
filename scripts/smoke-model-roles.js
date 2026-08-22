@@ -850,6 +850,76 @@ const codeContract = deriveScsTaskContract({
   goal: "Fix the bug in src/app.js and run the test.",
   taskProfile: "code",
 });
+const commitContract = deriveScsTaskContract({
+  goal: "Commit only analysis.py and AGINTI.md after the tests pass.",
+  taskProfile: "code",
+});
+const correctionCommitContract = deriveScsTaskContract({
+  goal: "Fix analysis.py without changing validated results or artifact names, run the exact tests, commit only the intentional source correction, and verify clean status.",
+  taskProfile: "code",
+});
+const gitStatusLedger = buildScsEvidenceLedger({
+  state: {
+    messages: [
+      {
+        role: "tool",
+        content: JSON.stringify({
+          ok: true,
+          toolName: "run_command",
+          exitCode: 0,
+          args: { command: "git status --short && git diff --stat" },
+          stdout: " M analysis.py",
+        }),
+      },
+    ],
+  },
+});
+const gitCommitLedger = buildScsEvidenceLedger({
+  state: {
+    messages: [
+      {
+        role: "tool",
+        content: JSON.stringify({
+          ok: true,
+          toolName: "run_command",
+          exitCode: 0,
+          args: { command: "git add analysis.py AGINTI.md && git commit -m 'finish analysis'" },
+          stdout: "[main abc1234] finish analysis",
+        }),
+      },
+    ],
+  },
+});
+assert(
+  commitContract.requiredGitActions.includes("commit"),
+  "an explicit commit request did not retain the required git action"
+);
+assert(
+  correctionCommitContract.requiredGitActions.includes("commit"),
+  "a local without-clause swallowed the later positive commit instruction"
+);
+assert(
+  correctionCommitContract.exactInputPaths.includes("analysis.py"),
+  "a named source file in a correction request was not retained for bounded inspection"
+);
+assert(
+  !correctionCommitContract.forbiddenActions.some((item) => /run the exact tests|commit only/i.test(item)),
+  "a local without-clause incorrectly converted later positive instructions into prohibitions"
+);
+assert(
+  evaluateScsEvidence(commitContract, gitStatusLedger).ok === false,
+  "read-only git status incorrectly satisfied an explicit commit request"
+);
+assert(
+  evaluateScsEvidence(commitContract, gitStatusLedger).missingGitActions.includes("commit"),
+  "the completion deficit did not identify the missing commit"
+);
+const committedEvaluation = evaluateScsEvidence(commitContract, gitCommitLedger);
+assert(
+  committedEvaluation.missingGitActions.length === 0 &&
+    !committedEvaluation.missing.some((item) => item.category === "git"),
+  "a successful git commit did not satisfy the explicit git requirement"
+);
 const explainCodeContract = deriveScsTaskContract({
   goal: "Explain JavaScript closures at a high level.",
   taskProfile: "code",

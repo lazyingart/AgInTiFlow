@@ -61,6 +61,10 @@ for (const required of [
 
 assert(selectedIds("write a beautiful React website and preview it").includes("website-app"), "website prompt did not select website-app");
 assert(
+  selectedIds("website", "code").includes("website-app"),
+  "an explicit user topic was suppressed by the broader task-profile relevance floor"
+);
+assert(
   selectedIds("control an existing Chrome CDP browser composer, upload images, choose model duration, and submit").includes(
     "browser-automation"
   ),

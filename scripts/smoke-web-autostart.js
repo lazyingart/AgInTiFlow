@@ -11,7 +11,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-web-autostart-"));
 const homeDir = path.join(runtimeDir, "stable-web-home");
 const inheritedHome = path.join(runtimeDir, "leaked-cli-home");
-const preferredPort = 44500 + Math.floor(Math.random() * 1000);
+const preferredPort = await findFreePreferredPort();
 let childPid = 0;
 const originalHome = process.env.AGINTIFLOW_HOME;
 
@@ -35,6 +35,20 @@ function listenOccupier(port) {
     server.once("error", reject);
     server.listen(port, "127.0.0.1", () => resolve(server));
   });
+}
+
+async function findFreePreferredPort() {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const candidate = 44000 + Math.floor(Math.random() * 5000);
+    try {
+      const reservation = await listenOccupier(candidate);
+      await new Promise((resolve) => reservation.close(resolve));
+      return candidate;
+    } catch {
+      // Another shared-workstation service owns this candidate; try another.
+    }
+  }
+  throw new Error("could not find a free preferred web-autostart smoke port");
 }
 
 try {

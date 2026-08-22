@@ -2016,7 +2016,9 @@ app.get("/api/sessions/:sessionId/artifacts/:artifactId/raw", async (req, res) =
     return;
   }
 
-  const filename = safeDownloadFilename(file.path || file.title || file.absolutePath);
+  const filename = safeDownloadFilename(
+    file.downloadName || file.path || file.title || file.absolutePath
+  );
   const disposition = req.query.download === "1" ? "attachment" : "inline";
   res.setHeader("Content-Type", file.mime || "application/octet-stream");
   res.setHeader("Content-Length", String(file.size));

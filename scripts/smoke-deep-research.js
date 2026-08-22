@@ -53,6 +53,13 @@ async function main() {
     "provider-neutral research routing added an unsupported named tool_choice"
   );
   assert(
+    toolChoiceForProvider(
+      { provider: "deepseek" },
+      [{ role: "user", content: "Emit exactly one enabled tool call that performs the next concrete action." }]
+    ) === "auto",
+    "DeepSeek thinking mode received unsupported required tool selection during recovery"
+  );
+  assert(
     JSON.stringify(providerStructuredOutputAttempts("deepseek")) === JSON.stringify(["json_object", "prompt"]),
     "DeepSeek structured extraction still probes an unsupported JSON Schema mode"
   );

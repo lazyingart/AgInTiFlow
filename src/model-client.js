@@ -239,6 +239,18 @@ function assertLocalRequestWithinContext(payload = {}, config = {}, label = "age
 export { hasExplicitDeepResearchIntent } from "./research-routing.js";
 
 export function toolChoiceForProvider(config, messages = []) {
+  const requiresConcreteContinuation = messages.slice(-3).some(
+    (message) =>
+      message?.role === "user" &&
+      /emit exactly one enabled tool call that performs the next concrete action/i.test(String(message.content || ""))
+  );
+  // DeepSeek thinking models reject tool_choice="required" even though they
+  // accept the same native tool schema with auto selection. The continuation
+  // instruction remains explicit in the messages, so keep the supported
+  // provider mode instead of turning a recoverable truncation into HTTP 400.
+  if (requiresConcreteContinuation && normalizeProviderId(config.provider, "") !== "deepseek") {
+    return "required";
+  }
   if (config.provider !== "venice") return "auto";
 
   // Venice accepts OpenAI tool calls but often treats the first "auto" call as plain chat.

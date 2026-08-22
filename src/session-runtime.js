@@ -70,7 +70,7 @@ const DEFAULTS = Object.freeze({
   scsValidationMode: "auto",
   maxSteps: 24,
   dynamicSteps: "auto",
-  dynamicStepExtensionLimit: 1,
+  dynamicStepExtensionLimit: 3,
   dynamicStepHardCap: 0,
   dynamicStepExtensionSize: 0,
   headless: false,
@@ -359,6 +359,7 @@ function canonicalSnapshot(config = {}, revision = 1) {
       "dynamicStepExtensionLimit",
       DEFAULTS.dynamicStepExtensionLimit
     ),
+    dynamicStepExtensionLimitExplicit: config.dynamicStepExtensionLimitExplicit === true,
     dynamicStepHardCap: safeNumber(config.dynamicStepHardCap, "dynamicStepHardCap", DEFAULTS.dynamicStepHardCap),
     dynamicStepExtensionSize: safeNumber(config.dynamicStepExtensionSize, "dynamicStepExtensionSize", DEFAULTS.dynamicStepExtensionSize),
   };

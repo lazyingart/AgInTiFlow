@@ -18,21 +18,34 @@ import {
   artifactValidationScopeBlock,
   canonicalizeVerifiedArtifactCompletion,
   completedDeepResearchReuse,
+  completionEvidenceNeedsCommand,
+  enqueueFailedTestRepairInstruction,
   nextStepRuntimeConfig,
+  projectAcceptanceFromMarkdown,
+  recordCanonicalGeneratedOutputProgress,
+  recordProjectVerificationOutcome,
   recordExactOutputProgress,
   recordStaticDiscoveryProgress,
+  resetStaticDiscoveryAfterContextLoss,
   rememberCompletedDeepResearch,
   repeatedNoProgressToolBlock,
   repeatedSuccessfulMutationBlock,
   repeatedStaticToolBlock,
+  reopenedArtifactRepairPending,
   shouldResetStaticDiscoveryPhase,
 } from "../src/agent-runner.js";
+import {
+  augmentScsTaskContractWithProjectVerification,
+  buildScsEvidenceLedger,
+  evaluateScsEvidence,
+} from "../src/scs-evidence.js";
 import {
   createStepBudgetState,
   decideStepBudgetExtension,
   isStaticDiscoveryToolCall,
   staticToolCallSignature,
   normalizeDynamicStepsMode,
+  shouldEvaluateResumeBoundary,
   summarizeRepeatedStaticDiscovery,
 } from "../src/step-budget-controller.js";
 import { SessionStore } from "../src/session-store.js";
@@ -59,6 +72,18 @@ function toolMessage(payload) {
 
 try {
   assert(normalizeDynamicStepsMode("off") === "off", "dynamic mode off did not normalize");
+  assert(
+    completionEvidenceNeedsCommand({ missingProjectCommands: ["python analysis.py"] }),
+    "a pending canonical command did not reopen command execution"
+  );
+  assert(
+    completionEvidenceNeedsCommand({ missingGitActions: ["commit"] }),
+    "a pending git action did not reopen command execution"
+  );
+  assert(
+    !completionEvidenceNeedsCommand({ missing: [], missingProjectCommands: [], missingGitActions: [] }),
+    "satisfied completion evidence kept command execution open"
+  );
   assert(normalizeDynamicStepsMode("always") === "on", "dynamic mode always did not normalize to on");
   assert(normalizeDynamicStepsMode("smart") === "auto", "dynamic mode smart did not normalize to auto");
   const inheritedBudget = createStepBudgetState(
@@ -111,6 +136,27 @@ try {
   assert(uniqueDiscovery.staticTotal === 2, "duplicate reads consumed the unique convergence budget");
   assert(uniqueDiscovery.staticCallTotal === 3, "raw static call telemetry did not retain duplicate calls");
   assert(uniqueDiscovery.staticCounts["read_file:/reference/A.md"] === 2, "per-signature loop accounting was lost");
+  const compactedDiscoveryState = {
+    meta: {
+      toolLoop: {
+        recent: [],
+        warned: ["file-read:/reference/A.md", "run_command:keep"],
+        staticCounts: { "file-read:/reference/A.md": 1 },
+        staticOrder: ["file-read:/reference/A.md"],
+        staticTotal: 1,
+        staticCallTotal: 1,
+        convergenceAnnounced: { staticTotal: 1 },
+      },
+    },
+  };
+  resetStaticDiscoveryAfterContextLoss(compactedDiscoveryState, "smoke-compaction");
+  assert(compactedDiscoveryState.meta.toolLoop.staticTotal === 0, "context recovery kept a stale static convergence total");
+  assert(compactedDiscoveryState.meta.toolLoop.staticOrder.length === 0, "context recovery kept stale read signatures active");
+  assert(compactedDiscoveryState.meta.toolLoop.staticHistory.length === 1, "context recovery did not archive discovery telemetry");
+  assert(
+    JSON.stringify(compactedDiscoveryState.meta.toolLoop.warned) === JSON.stringify(["run_command:keep"]),
+    "context recovery did not clear only stale static-read warnings"
+  );
   const exactReadSignature = staticToolCallSignature("read_file", { path: "/reference/A.md" }, {
     commandCwd: workspace,
   });
@@ -379,6 +425,35 @@ try {
     deleteOutputBlock?.category === "artifact-validation-delete-output",
     "artifact validation allowed delete-and-recreate repair of an exact output"
   );
+  const reopenedSourceReadState = {
+    commandCwd: workspace,
+    meta: {
+      artifactProgress: {
+        exactOutputPaths: ["outputs/report.md"],
+        needsRepair: true,
+        needsSourceRead: true,
+        reopenedSourcePaths: ["analysis.py"],
+      },
+    },
+  };
+  assert(
+    artifactValidationScopeBlock(
+      reopenedSourceReadState,
+      "read_file",
+      { path: "analysis.py" },
+      { commandCwd: workspace, artifactValidationPhase: true }
+    ) === null,
+    "a correction request could not inspect its exact named source file"
+  );
+  assert(
+    artifactValidationScopeBlock(
+      reopenedSourceReadState,
+      "read_file",
+      { path: "unrelated.py" },
+      { commandCwd: workspace, artifactValidationPhase: true }
+    )?.category === "artifact-validation-scope",
+    "the correction source allowance leaked to unrelated files"
+  );
   const artifactProgress = recordExactOutputProgress(
     artifactState,
     {
@@ -394,6 +469,28 @@ try {
   assert(
     nextStepRuntimeConfig({ provider: "localllm" }, artifactState).artifactValidationPhase === true,
     "next step did not enter artifact validation mode"
+  );
+  const reopenedRepairState = {
+    meta: {
+      goalContract: { revision: 9 },
+      artifactProgress: { reopenedGoalRevision: 9, reopenedMutationRevision: 4 },
+      projectVerification: { mutationRevision: 4 },
+    },
+  };
+  assert(
+    reopenedArtifactRepairPending(reopenedRepairState),
+    "a fresh same-task correction was cleared before any source mutation"
+  );
+  reopenedRepairState.meta.projectVerification.mutationRevision = 5;
+  assert(
+    !reopenedArtifactRepairPending(reopenedRepairState),
+    "a source mutation did not satisfy the revision-scoped repair obligation"
+  );
+  reopenedRepairState.meta.projectVerification.mutationRevision = 4;
+  reopenedRepairState.meta.goalContract.revision = 10;
+  assert(
+    !reopenedArtifactRepairPending(reopenedRepairState),
+    "an old correction obligation leaked into a different goal revision"
   );
   artifactState.meta.artifactProgress.needsRepair = true;
   artifactState.meta.artifactProgress.outputEmbedded = true;
@@ -512,6 +609,27 @@ try {
       "Completed and verified MEDIA_ROUTINE_READINESS.md."
     ) === "Completed and verified MEDIA_ROUTINE_READINESS.md.",
     "verified completion rewrote a result that already named the exact contract output"
+  );
+  const portablePathState = {
+    commandCwd: workspace,
+    meta: {
+      artifactProgress: {
+        complete: true,
+        exactOutputPaths: [path.join(workspace, "reports", "fluorescence-dose-response-analysis.pdf")],
+        preflight: { defectCount: 0 },
+        preflightFingerprint: "passed",
+        defectCount: 0,
+        needsRepair: false,
+        needsCommand: false,
+        needsSourceRead: false,
+      },
+    },
+  };
+  const portableCompletion = canonicalizeVerifiedArtifactCompletion(portablePathState, "");
+  assert(
+    portableCompletion.includes("reports/fluorescence-dose-response-analysis.pdf") &&
+      !portableCompletion.includes(workspace),
+    "verified completion leaked an absolute private workspace path"
   );
   artifactState.meta.artifactProgress.needsRepair = true;
   artifactState.meta.artifactProgress.defectCount = 2;
@@ -656,6 +774,48 @@ try {
     },
     { meta: {}, stepsCompleted: 0 }
   );
+  const migratedDefaultBudget = createStepBudgetState(
+    {
+      provider: "localllm",
+      maxSteps: 30,
+      dynamicSteps: "auto",
+      dynamicStepExtensionLimit: 1,
+      dynamicStepExtensionLimitExplicit: false,
+      scsActive: false,
+    },
+    {
+      meta: {
+        stepBudget: {
+          initialMaxSteps: 30,
+          currentMaxSteps: 40,
+          hardCap: 60,
+          extensionLimit: 1,
+          extensionsUsed: 1,
+        },
+      },
+      stepsCompleted: 40,
+    }
+  );
+  assert(
+    migratedDefaultBudget.extensionLimit === 3 && migratedDefaultBudget.extensionsUsed === 1,
+    "resumed non-explicit step budget did not adopt the current bounded default"
+  );
+  assert(
+    shouldEvaluateResumeBoundary(
+      { resume: "existing-session" },
+      { stepsCompleted: 40 },
+      migratedDefaultBudget
+    ),
+    "a resumed session at its consumed boundary did not request bounded capacity before the loop"
+  );
+  assert(
+    !shouldEvaluateResumeBoundary(
+      { resume: "existing-session" },
+      { stepsCompleted: migratedDefaultBudget.hardCap },
+      { ...migratedDefaultBudget, currentMaxSteps: migratedDefaultBudget.hardCap }
+    ),
+    "a resumed session attempted to exceed its dynamic hard cap"
+  );
   const progressDecision = decideStepBudgetExtension({
     config: { scsActive: false },
     budget: normalBudget,
@@ -698,6 +858,65 @@ try {
     events: [],
   });
   assert(!blockedDecision.approved && /permission|approval|blocked/i.test(blockedDecision.reason), "budget gate did not deny blocker loops");
+
+  const repairBudget = createStepBudgetState(
+    {
+      provider: "localllm",
+      maxSteps: 30,
+      dynamicSteps: "on",
+      dynamicStepExtensionLimit: 2,
+      scsActive: false,
+    },
+    { meta: {}, stepsCompleted: 0 }
+  );
+  const repairDecision = decideStepBudgetExtension({
+    config: { scsActive: false, commandCwd: "/tmp/workspace" },
+    budget: repairBudget,
+    step: 29,
+    state: {
+      messages: [
+        toolMessage({
+          toolName: "run_command",
+          ok: false,
+          exitCode: 1,
+          args: { command: "python -m unittest discover -s tests" },
+          stderr: "AssertionError: expected calibrated values",
+        }),
+        toolMessage({
+          toolName: "apply_patch",
+          ok: false,
+          reason: "Patch search text was not found in analysis.py.",
+        }),
+        toolMessage({
+          toolName: "read_file",
+          ok: true,
+          args: { path: "analysis.py" },
+          path: "analysis.py",
+        }),
+        toolMessage({
+          toolName: "read_file",
+          ok: false,
+          blocked: true,
+          category: "repeated-read-only-call",
+          reason: "The same static discovery call already ran once.",
+        }),
+      ],
+    },
+    events: [
+      { type: "file.changed", data: { path: "analysis.py" } },
+      ...Array.from({ length: 30 }, (_, index) => ({
+        type: index % 2 === 0 ? "snapshot.captured" : "model.requested",
+        data: {},
+      })),
+      { type: "tool.completed", data: { toolName: "run_command", exitCode: 1 } },
+      { type: "tool.failed", data: { toolName: "apply_patch" } },
+      { type: "tool.blocked", data: { toolName: "read_file" } },
+    ],
+  });
+  assert(
+    repairDecision.approved && repairDecision.extraSteps > 0,
+    `budget gate denied an active repair after concrete file progress: ${repairDecision.reason}`
+  );
 
   const repeatedDiscoveryMessages = [
     "ls -la ../Musia",

@@ -4,11 +4,13 @@ import { browserStateReconciliationGuidance } from "./browser-automation-guidanc
 import { createChatCompletion } from "./model-client.js";
 import {
   buildScsEvidenceLedger,
+  augmentScsTaskContractWithProjectVerification,
   deriveScsTaskContract,
   deterministicFinishBlocker,
   evaluateScsSemanticContract,
   evaluateScsEvidence,
   finishResultClaimsBlocker,
+  finishResultClaimsIncompleteWork,
   hasScsBlockerEvidence,
   summarizeScsContractEvidence,
 } from "./scs-evidence.js";
@@ -694,7 +696,7 @@ function finishRequiresExternalEvidence(goal = "", taskProfile = "") {
 
 function contractForState(state = {}, context = {}) {
   const scs = state.meta?.scs || {};
-  return (
+  const contract = (
     scs.taskContract ||
     deriveScsTaskContract({
       goal: state.goal || context.goal || "",
@@ -702,6 +704,7 @@ function contractForState(state = {}, context = {}) {
       acceptanceCriteria: scs.acceptanceCriteria || [],
     })
   );
+  return augmentScsTaskContractWithProjectVerification(contract, state, context);
 }
 
 function hasConcreteFinishEvidence(state = {}, context = {}) {
@@ -1325,6 +1328,19 @@ export async function reviewScsFinish(client, config, state, result = "", contex
   });
   const deterministicBlocker = deterministicFinishBlocker(taskContract, evidenceLedger, evidenceEvaluation);
   const hasRealBlocker = hasScsBlockerEvidence(evidenceLedger) && finishResultClaimsBlocker(result);
+  if (finishResultClaimsIncompleteWork(result) && !hasRealBlocker) {
+    return normalizeDecision(
+      {
+        decision: "finish_rejected",
+        confidence: 0.99,
+        reason: "The proposed final result explicitly describes unfinished or future work.",
+        evidence: [compact(result, 600)],
+        next_required_action:
+          "Continue from the retained evidence with an enabled mutation or verification tool, and finish only after the requested outcome exists and is verified.",
+      },
+      "finish_rejected"
+    );
+  }
   if (!semanticEvaluation.ok && !hasRealBlocker) {
     return normalizeDecision(
       {
