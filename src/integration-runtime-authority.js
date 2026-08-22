@@ -2494,6 +2494,9 @@ export function createAgintiIntegrationRuntimeAuthority(options = {}) {
       resultDigest: classification.digest,
     }), "finish run response");
     const finished = snapshotRunRecord(unwrap(result, "run"), "finished run");
+    if (result.resultDigest !== classification.digest) {
+      failUnavailable("Repository did not persist the exact native terminal result digest.");
+    }
     assertRunFields(finished, {
       runId: current.id,
       threadId: current.threadId,
