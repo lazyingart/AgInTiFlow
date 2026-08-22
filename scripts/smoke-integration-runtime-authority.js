@@ -53,7 +53,7 @@ const PRE_LAUNCH_ABORT_RESPONSE_VERSION = "aginti-pre-launch-abort-response-v1";
 const NATIVE_START_AUTHORIZATION_VERSION = "aginti-native-start-authorization-v1";
 const NATIVE_START_RECOVERY_STATE_VERSION = "aginti-native-start-recovery-v1";
 const DISPATCH_RECONCILIATION_VERSION = "aginti-dispatch-reconciliation-v1";
-const SMOKE_ROOT = "/home/lachlan/ProjectsLFS/Agent/AgInTiFlow/.integration-runtime-authority-smoke-root";
+let SMOKE_ROOT = "";
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1484,7 +1484,7 @@ function makeRepository({
       const returnedThread = state.substituteFinishThread
         ? { ...thread, id: "thr_00000000-0000-4000-8000-000000000097" }
         : thread;
-      return { run, thread: returnedThread, outboxEvents };
+      return { run, thread: returnedThread, outboxEvents, resultDigest: payload.resultDigest };
     },
     async getIntegrationCompletionOutboxBundle(payload) {
       calls.push(["getIntegrationCompletionOutboxBundle", payload]);
@@ -2145,6 +2145,7 @@ async function assertHiddenRunNotPublic(fixture, runId) {
 }
 
 async function main() {
+  SMOKE_ROOT = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-integration-runtime-authority-"));
   const unhandled = [];
   const onUnhandled = (reason) => unhandled.push(reason);
   process.on("unhandledRejection", onUnhandled);
@@ -2156,9 +2157,6 @@ async function main() {
       throw new Error("integration runtime authority smoke timed out before final ok marker");
     }
   }, 60_000);
-  await fs.rm(SMOKE_ROOT, { recursive: true, force: true });
-  await fs.mkdir(SMOKE_ROOT, { recursive: true });
-
   try {
     const withRevision = (result, persistedRuntimeRevision = 1) => ({ ...result, persistedRuntimeRevision });
     assert.equal(classifyRunAgentResult(withRevision({ sessionId: "aginti:one", ok: true, result: "Direct answer." }), { nativeSessionId: "aginti:one" }).status, "completed");
