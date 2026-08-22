@@ -639,7 +639,9 @@ async function main() {
   assert.match(authoritySource, /assertIntegrationRuntimeRepositorySurface as validateRepository/u);
   assert.match(authoritySource, /assertIntegrationRuntimeRepositoryAttestation as validateRepositoryAttestation/u);
   assert.match(authoritySource, /export \{[\s\S]*INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_PROPERTY,[\s\S]*INTEGRATION_RUNTIME_REPOSITORY_ATTESTATION_VERSION,[\s\S]*\} from "\.\/integration-runtime-repository-contract\.js"/u);
-  assert.match(authoritySource, /validateRepository\(options\.threadSessionRepository\)/u);
+  assert.match(authoritySource, /const repositorySurface = options\.threadSessionRepository;/u);
+  assert.match(authoritySource, /validateRepository\(repositorySurface\)/u);
+  assert.match(authoritySource, /isRetainedIntegrationRuntimeRepositorySurface\(repositorySurface\)/u);
   assert.match(authoritySource, /validateRepositoryAttestation\(repository\.attestation,/u);
   assert.match(executorSource, /from "\.\/integration-native-runtime-roots\.js"/u);
   assert.match(executorSource, /export \{[\s\S]*NATIVE_RUNTIME_ROOTS_ATTESTATION_VERSION,[\s\S]*validateNativeRuntimeRootsAttestation,[\s\S]*\} from "\.\/integration-native-runtime-roots\.js"/u);

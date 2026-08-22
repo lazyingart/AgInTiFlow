@@ -311,14 +311,14 @@ export function createNativeIntegrationSessionService(options = {}) {
   const runtime = options.runtimeAuthority || null;
   const eventLedgerStore = options.eventLedgerStore || null;
 
-  function runtimeProof() {
+  async function runtimeProof() {
     assertNoAdapterSemantics(runtime || {});
     const getProof = requireRuntimeMethod(runtime, "getIntegrationRuntimeProof");
-    return validateRuntimeProof(getProof());
+    return validateRuntimeProof(await getProof());
   }
 
   async function call(method, payload, context) {
-    runtimeProof();
+    await runtimeProof();
     const fn = requireRuntimeMethod(runtime, method);
     return fn(payload, contextScope(context));
   }
@@ -356,7 +356,7 @@ export function createNativeIntegrationSessionService(options = {}) {
 
   return Object.freeze({
     async getIntegrationCapabilities() {
-      const proof = runtimeProof();
+      const proof = await runtimeProof();
       const events = await eventStoreProof(eventLedgerStore);
       return Object.freeze({
         nativeIntegrationAuthority: integrationAuthorityFromProof(proof, events),
