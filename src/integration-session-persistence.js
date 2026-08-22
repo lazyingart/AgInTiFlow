@@ -5,6 +5,9 @@ import { contractDigest } from "./integration-policy.js";
 import {
   assertRetainedIntegrationNativeExecutionEvidence,
 } from "./integration-retained-native-execution-evidence.js";
+import {
+  assertRetainedIntegrationTextWorkspace,
+} from "./integration-retained-text-workspace.js";
 
 const registrations = new WeakMap();
 const integrationSessionScope = new AsyncLocalStorage();
@@ -118,6 +121,22 @@ function canonicalCloneStrict(value, label = "value", seen = new WeakSet()) {
   }
 }
 
+function mutableCloneOfValidatedData(value) {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    const clone = new Array(value.length);
+    for (let index = 0; index < value.length; index += 1) {
+      clone[index] = mutableCloneOfValidatedData(value[index]);
+    }
+    return clone;
+  }
+  const clone = {};
+  for (const key of Reflect.ownKeys(value)) {
+    clone[key] = mutableCloneOfValidatedData(value[key]);
+  }
+  return clone;
+}
+
 function assertFrozenRegisteredConfig(config) {
   if (!config || typeof config !== "object" || Array.isArray(config) || !Object.isFrozen(config)) {
     fail("INTEGRATION_SESSION_SCOPE_INVALID", "Integration fixed config must be the exact frozen registered object.");
@@ -191,8 +210,19 @@ export function registerIntegrationSessionConfig(config, registration = {}) {
   const retainedNativeExecutionEvidence = registration.retainedNativeExecutionEvidence === undefined
     ? null
     : assertRetainedIntegrationNativeExecutionEvidence(registration.retainedNativeExecutionEvidence);
+  const retainedTextWorkspace = registration.retainedTextWorkspace === undefined
+    ? null
+    : assertRetainedIntegrationTextWorkspace(registration.retainedTextWorkspace, {
+        nativeExecutionEvidence: retainedNativeExecutionEvidence,
+      });
+  if (retainedTextWorkspace && !retainedNativeExecutionEvidence) {
+    fail(
+      "INTEGRATION_SESSION_SCOPE_INVALID",
+      "The retained text-workspace profile and native execution evidence must be supplied together."
+    );
+  }
   const retainedExecutionState = retainedNativeExecutionEvidence
-    ? { preflightSnapshot: null, binding: null }
+    ? { preflightSnapshot: null, profilePreflight: null, binding: null }
     : null;
   const normalized = Object.freeze({
     schemaVersion: "aginti-integration-session-persistence-v1",
@@ -209,7 +239,12 @@ export function registerIntegrationSessionConfig(config, registration = {}) {
     expectedAfterRevision,
     expectedBeforeRuntimeDigest: String(registration.expectedBeforeRuntimeDigest || ""),
     expectedAfterRuntimeDigest: String(registration.expectedAfterRuntimeDigest || ""),
+    principalId: String(registration.principalId || ""),
+    browserSessionId: String(registration.browserSessionId || ""),
+    threadId: String(registration.threadId || ""),
+    runId: String(registration.runId || ""),
     retainedNativeExecutionEvidence,
+    retainedTextWorkspace,
     retainedExecutionState,
   });
   if (
@@ -218,7 +253,13 @@ export function registerIntegrationSessionConfig(config, registration = {}) {
     !/^[a-f0-9]{64}$/u.test(normalized.policyFingerprint) ||
     !/^[a-f0-9]{64}$/u.test(normalized.runtimeRootsDigest) ||
     !/^(?:0{64}|[a-f0-9]{64})$/u.test(normalized.expectedBeforeRuntimeDigest) ||
-    !/^[a-f0-9]{64}$/u.test(normalized.expectedAfterRuntimeDigest)
+    !/^[a-f0-9]{64}$/u.test(normalized.expectedAfterRuntimeDigest) ||
+    (retainedTextWorkspace && (
+      !/^[A-Za-z0-9._~-]{16,128}$/u.test(normalized.principalId) ||
+      !/^[a-f0-9]{64}$/u.test(normalized.browserSessionId) ||
+      !normalized.threadId ||
+      !normalized.runId
+    ))
   ) {
     fail("INTEGRATION_SESSION_SCOPE_INVALID", "Integration session registration is incomplete.");
   }
@@ -251,6 +292,7 @@ export function runWithIntegrationSessionScope(config, operation) {
     claimed: false,
     claimCount: 0,
     runAgentEntered: false,
+    runAgentEntryCount: 0,
     persisted: false,
     persistedRevision: 0,
     leaseKey,
@@ -276,6 +318,9 @@ export function runWithIntegrationSessionScope(config, operation) {
       if (scope.operationErrors.length > 0) throw scope.operationErrors[0];
       if (scope.claimCount !== 1) {
         fail("INTEGRATION_SESSION_SCOPE_INVALID", "Integration run must claim exactly one native SessionStore.");
+      }
+      if (registration.retainedTextWorkspace && (scope.runAgentEntered !== true || scope.runAgentEntryCount !== 1)) {
+        fail("INTEGRATION_SESSION_SCOPE_INVALID", "Integration scope must enter lexical runAgent exactly once.");
       }
       if (scope.persisted !== true || scope.persistedRevision !== registration.expectedAfterRevision) {
         fail("INTEGRATION_SESSION_SCOPE_INVALID", "Integration run did not persist the expected native session revision.");
@@ -395,17 +440,33 @@ export async function loadIntegrationSessionSnapshotForConfig(config, fallbackLo
     return Object.freeze({ retained: false, state: await fallbackLoader(), snapshot: null });
   }
   if (registration.retainedExecutionState.binding) {
-    const state = await registration.retainedNativeExecutionEvidence.loadNativeState(
-      registration.retainedExecutionState.binding
-    );
+    const state = registration.retainedTextWorkspace
+      ? await registration.retainedTextWorkspace.invoke(
+          registration.retainedExecutionState.binding,
+          "loadState"
+        )
+      : await registration.retainedNativeExecutionEvidence.loadNativeState(
+          registration.retainedExecutionState.binding
+        );
     const snapshot = await registration.retainedNativeExecutionEvidence.loadNativeSessionSnapshot(
       registration.nativeSessionId
     );
     return Object.freeze({ retained: true, state, snapshot });
   }
-  const snapshot = await registration.retainedNativeExecutionEvidence.loadNativeSessionSnapshot(
-    registration.nativeSessionId
-  );
+  if (registration.retainedTextWorkspace) {
+    const prepared = await registration.retainedTextWorkspace.prepareExecution({
+      mode: registration.mode,
+      principalId: registration.principalId,
+      browserSessionId: registration.browserSessionId,
+      threadId: registration.threadId,
+      runId: registration.runId,
+      nativeSessionId: registration.nativeSessionId,
+    });
+    registration.retainedExecutionState.profilePreflight = prepared.handle;
+    registration.retainedExecutionState.preflightSnapshot = prepared.nativeSnapshot;
+    return Object.freeze({ retained: true, state: prepared.nativeState, snapshot: prepared.nativeSnapshot });
+  }
+  const snapshot = await registration.retainedNativeExecutionEvidence.loadNativeSessionSnapshot(registration.nativeSessionId);
   registration.retainedExecutionState.preflightSnapshot = snapshot;
   return Object.freeze({ retained: true, state: snapshot.state, snapshot });
 }
@@ -419,11 +480,17 @@ export async function bindIntegrationNativeExecution(config, input = {}) {
   if (registration.retainedExecutionState.binding) {
     fail("INTEGRATION_SESSION_SCOPE_INVALID", "Retained native execution was already bound.");
   }
-  const binding = await registration.retainedNativeExecutionEvidence.bindAuthorizedExecution({
-    authorization: input.authorization,
-    snapshotHash: input.snapshotHash,
-    preflightSnapshot: registration.retainedExecutionState.preflightSnapshot,
-  });
+  const binding = registration.retainedTextWorkspace
+    ? await registration.retainedTextWorkspace.bindAuthorizedExecution({
+        authorization: input.authorization,
+        snapshotHash: input.snapshotHash,
+        preflight: registration.retainedExecutionState.profilePreflight,
+      })
+    : await registration.retainedNativeExecutionEvidence.bindAuthorizedExecution({
+        authorization: input.authorization,
+        snapshotHash: input.snapshotHash,
+        preflightSnapshot: registration.retainedExecutionState.preflightSnapshot,
+      });
   registration.retainedExecutionState.binding = binding;
   return binding;
 }
@@ -436,7 +503,9 @@ export async function loadIntegrationClaimedSessionState(claim, fallbackLoader) 
   if (!binding) {
     fail("INTEGRATION_SESSION_SCOPE_INVALID", "Retained native SessionStore load lacks an authorization binding.");
   }
-  return claim.registration.retainedNativeExecutionEvidence.loadNativeState(binding);
+  return claim.registration.retainedTextWorkspace
+    ? claim.registration.retainedTextWorkspace.invoke(binding, "loadState")
+    : claim.registration.retainedNativeExecutionEvidence.loadNativeState(binding);
 }
 
 export async function saveIntegrationClaimedSessionState(claim, state) {
@@ -445,12 +514,30 @@ export async function saveIntegrationClaimedSessionState(claim, state) {
   if (!binding) {
     fail("INTEGRATION_SESSION_SCOPE_INVALID", "Retained native SessionStore save lacks an authorization binding.");
   }
-  await claim.registration.retainedNativeExecutionEvidence.saveNativeState(binding, state);
+  if (claim.registration.retainedTextWorkspace) {
+    await claim.registration.retainedTextWorkspace.invoke(binding, "saveState", [state]);
+  } else {
+    await claim.registration.retainedNativeExecutionEvidence.saveNativeState(binding, state);
+  }
   return true;
 }
 
 export function retainedIntegrationSessionStateEnabled(claim) {
   return Boolean(claim?.registration?.retainedNativeExecutionEvidence);
+}
+
+export function retainedIntegrationTextWorkspaceEnabled(claim) {
+  return Boolean(claim?.registration?.retainedTextWorkspace);
+}
+
+export function invokeIntegrationTextWorkspace(claim, operation, args = []) {
+  const profile = claim?.registration?.retainedTextWorkspace;
+  if (!profile) return null;
+  const binding = claim.registration.retainedExecutionState?.binding;
+  if (!binding) {
+    fail("INTEGRATION_SESSION_SCOPE_INVALID", `${operation} lacks a retained text-workspace authorization binding.`);
+  }
+  return profile.invoke(binding, operation, args);
 }
 
 export async function recordIntegrationNativeTerminalEvidence(config, terminal) {
@@ -460,7 +547,9 @@ export async function recordIntegrationNativeTerminalEvidence(config, terminal) 
   if (!binding) {
     fail("INTEGRATION_SESSION_SCOPE_INVALID", "Retained native terminal evidence lacks an authorization binding.");
   }
-  return registration.retainedNativeExecutionEvidence.recordTerminalEvidence(binding, terminal);
+  return registration.retainedTextWorkspace
+    ? registration.retainedTextWorkspace.recordTerminalEvidence(binding, terminal)
+    : registration.retainedNativeExecutionEvidence.recordTerminalEvidence(binding, terminal);
 }
 
 export function assertIntegrationRunAgentInvocation(config = {}) {
@@ -476,6 +565,10 @@ export function assertIntegrationRunAgentInvocation(config = {}) {
     fail("INTEGRATION_SESSION_SCOPE_INVALID", "Registered integration runAgent config escaped its active AgInTi scope.");
   }
   scope.runAgentEntered = true;
+  scope.runAgentEntryCount += 1;
+  if (scope.runAgentEntryCount !== 1) {
+    fail("INTEGRATION_SESSION_SCOPE_INVALID", "Registered integration runAgent config was entered more than once.");
+  }
 }
 
 function assertSessionTopIdentity(state = {}, registration, label) {
@@ -537,7 +630,7 @@ export function validateIntegrationLoadedState(claim, state) {
     scope.persisted === true ? registration.expectedAfterRuntimeDigest : registration.expectedBeforeRuntimeDigest,
     "loaded session state"
   );
-  return clone;
+  return mutableCloneOfValidatedData(clone);
 }
 
 export function prepareIntegrationStateForSave(claim, state) {
