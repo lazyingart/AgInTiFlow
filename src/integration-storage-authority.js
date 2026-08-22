@@ -12,6 +12,10 @@ export const INTEGRATION_RETAINED_DIRECTORY_VERSION = "aginti-retained-directory
 export const INTEGRATION_STORAGE_ATTESTATION_VERSION = "aginti-retained-storage-attestation-v1";
 export const INTEGRATION_RETAINED_FILE_PRIMITIVES_VERSION = "aginti-retained-file-primitives-v1";
 export const INTEGRATION_RETAINED_FILE_ATTESTATION_VERSION = "aginti-retained-file-attestation-v1";
+export const INTEGRATION_RETAINED_BINARY_FILE_PRIMITIVES_VERSION =
+  "aginti-retained-binary-file-primitives-v1";
+export const INTEGRATION_RETAINED_BINARY_FILE_ATTESTATION_VERSION =
+  "aginti-retained-binary-file-attestation-v1";
 export const INTEGRATION_RETAINED_REGULAR_FILE_LOCK_VERSION = "aginti-retained-regular-file-lock-v1";
 export const INTEGRATION_RETAINED_REGULAR_FILE_LOCK_ATTESTATION_VERSION =
   "aginti-retained-regular-file-lock-attestation-v1";
@@ -164,6 +168,14 @@ const FILE_PRIMITIVES_SURFACE_KEYS = Object.freeze([
   "atomicWriteProtectedJson",
   "isClosed",
 ]);
+const BINARY_FILE_PRIMITIVES_SURFACE_KEYS = Object.freeze([
+  "schemaVersion",
+  "attestation",
+  "readProtectedBinaryFile",
+  "atomicWriteProtectedBinaryFile",
+  "syncProtectedBinaryDirectory",
+  "isClosed",
+]);
 const FILE_ATTESTATION_KEYS = Object.freeze([
   "schemaVersion",
   "owner",
@@ -175,6 +187,24 @@ const FILE_ATTESTATION_KEYS = Object.freeze([
   "relativePointer",
   "directoryIdentityDigest",
   "protectedRegularFiles",
+  "atomicSameDirectoryReplace",
+  "fileSyncBeforeRename",
+  "directorySyncAfterRename",
+  "limitations",
+  "digest",
+]);
+const BINARY_FILE_ATTESTATION_KEYS = Object.freeze([
+  "schemaVersion",
+  "owner",
+  "authority",
+  "role",
+  "canonicalPath",
+  "rootIdentityDigest",
+  "relativeSegments",
+  "relativePointer",
+  "directoryIdentityDigest",
+  "protectedRegularFiles",
+  "rawBinaryBytes",
   "atomicSameDirectoryReplace",
   "fileSyncBeforeRename",
   "directorySyncAfterRename",
@@ -216,6 +246,7 @@ const directoryBrand = new WeakMap();
 const attestationBrand = new WeakMap();
 const leaseBrand = new WeakMap();
 const filePrimitivesBrand = new WeakMap();
+const binaryFilePrimitivesBrand = new WeakMap();
 const regularFileLockBrand = new WeakMap();
 const ambiguousRegularFileLockHandles = new Set();
 
@@ -1210,7 +1241,7 @@ function throwNormalizedFileOperationError(error, operation) {
   fail("INTEGRATION_STORAGE_FILE_UNAVAILABLE", `Protected file ${operation} failed.`, { phase: operation });
 }
 
-async function boundedReadUtf8(handle, dir, maxBytes) {
+async function boundedReadBytes(handle, dir, maxBytes) {
   const chunks = [];
   let total = 0;
   let position = 0;
@@ -1225,12 +1256,21 @@ async function boundedReadUtf8(handle, dir, maxBytes) {
     position += result.bytesRead;
   }
   if (total > maxBytes) fail("INTEGRATION_STORAGE_FILE_CORRUPT", "Protected file exceeds its read bound.");
-  const bytes = Buffer.concat(chunks, total);
+  return Buffer.concat(chunks, total);
+}
+
+async function boundedReadUtf8(handle, dir, maxBytes) {
+  const bytes = await boundedReadBytes(handle, dir, maxBytes);
   try {
-    return Object.freeze({ text: UTF8_DECODER.decode(bytes), bytes: total });
+    return Object.freeze({ text: UTF8_DECODER.decode(bytes), bytes: bytes.length });
   } catch {
     fail("INTEGRATION_STORAGE_FILE_CORRUPT", "Protected file is not valid UTF-8.");
   }
+}
+
+async function boundedReadBinary(handle, dir, maxBytes) {
+  const bytes = await boundedReadBytes(handle, dir, maxBytes);
+  return { bytes };
 }
 
 async function readRetainedProtectedFile(state, fileNameInput, optionsInput, { parseJson = false } = {}) {
@@ -1318,6 +1358,93 @@ async function readRetainedProtectedFile(state, fileNameInput, optionsInput, { p
   return result;
 }
 
+async function readRetainedProtectedBinaryFile(state, fileNameInput, optionsInput) {
+  const fileName = assertSafeFileName(fileNameInput);
+  const options = normalizeReadOptions(optionsInput);
+  const dir = state.directory;
+  const release = admitDirectoryOperation(dir, "readProtectedBinaryFile");
+  let handle = null;
+  let missing = false;
+  let problem = null;
+  let result = null;
+  try {
+    await recheckDirectoryNamedBinding(dir);
+    assertDirectoryOpen(dir);
+    const filePath = procFdChildPath(dir.handle, fileName);
+    try {
+      handle = await fs.open(filePath, OPEN_PROTECTED_READ_FLAGS);
+    } catch (error) {
+      if (options.optional && error?.code === "ENOENT") {
+        await recheckDirectoryNamedBinding(dir);
+        assertDirectoryOpen(dir);
+        missing = true;
+      } else {
+        throw error;
+      }
+    }
+    if (!missing) {
+      const beforeStat = await handle.stat({ bigint: true });
+      assertDirectoryOpen(dir);
+      const beforeIdentity = assertProtectedRegularFileStat(
+        beforeStat,
+        dir.root,
+        options.maxBytes,
+        "protected binary file"
+      );
+      const beforeNamed = await fs.lstat(filePath, { bigint: true });
+      assertDirectoryOpen(dir);
+      assertProtectedNameBinding(
+        beforeNamed,
+        beforeIdentity,
+        dir.root,
+        options.maxBytes,
+        "protected binary file"
+      );
+      const read = await boundedReadBinary(handle, dir, options.maxBytes);
+      const afterStat = await handle.stat({ bigint: true });
+      assertDirectoryOpen(dir);
+      const afterIdentity = assertProtectedRegularFileStat(
+        afterStat,
+        dir.root,
+        options.maxBytes,
+        "protected binary file"
+      );
+      if (!sameStableProtectedFile(beforeIdentity, afterIdentity) || afterIdentity.size !== BigInt(read.bytes.length)) {
+        fail("INTEGRATION_STORAGE_FILE_CORRUPT", "Protected binary file changed while it was read.");
+      }
+      const afterNamed = await fs.lstat(filePath, { bigint: true });
+      assertDirectoryOpen(dir);
+      assertProtectedNameBinding(
+        afterNamed,
+        afterIdentity,
+        dir.root,
+        options.maxBytes,
+        "protected binary file",
+        { stable: true }
+      );
+      await recheckDirectoryNamedBinding(dir);
+      assertDirectoryOpen(dir);
+      result = Object.freeze({
+        bytes: Buffer.from(read.bytes),
+        size: read.bytes.length,
+      });
+    }
+  } catch (error) {
+    problem = error;
+  }
+  const cleanupFailures = [];
+  await closeHandleBestEffort(handle, cleanupFailures, "protected binary read file handle");
+  release();
+  if (cleanupFailures.length > 0) {
+    fail("INTEGRATION_STORAGE_CLEANUP_FAILED", "Protected binary read file handle cleanup failed.", {
+      phase: "read-handle-close",
+      failureCount: cleanupFailures.length,
+    });
+  }
+  if (problem) throwNormalizedFileOperationError(problem, "binary read");
+  return result;
+}
+
 async function validateExistingProtectedDestination(dir, filePath, maxBytes) {
   let handle = null;
   let problem = null;
@@ -1387,16 +1514,13 @@ async function cleanupUncommittedTemp(dir, tempPath, tempIdentity, tempCreated) 
   return failures;
 }
 
-async function atomicWriteRetainedProtectedFile(state, fileNameInput, textInput, optionsInput) {
+async function atomicWriteRetainedProtectedBytes(state, fileNameInput, bytesInput, optionsInput) {
   const fileName = assertSafeFileName(fileNameInput);
-  if (typeof textInput !== "string") {
-    fail("INTEGRATION_STORAGE_INVALID", "protected UTF-8 write value must be a primitive string.");
+  if (!Buffer.isBuffer(bytesInput) || utilTypes.isProxy(bytesInput)) {
+    fail("INTEGRATION_STORAGE_INVALID", "protected binary write value must be a Buffer.");
   }
   const options = normalizeWriteOptions(optionsInput);
-  const bytes = Buffer.from(textInput, "utf8");
-  if (UTF8_DECODER.decode(bytes) !== textInput) {
-    fail("INTEGRATION_STORAGE_INVALID", "protected UTF-8 write value does not round-trip exactly.");
-  }
+  const bytes = Buffer.from(bytesInput);
   if (bytes.length > options.maxBytes) fail("INTEGRATION_STORAGE_INVALID", "protected write exceeds its byte bound.");
   let digest = "";
   let tempName = "";
@@ -1592,6 +1716,39 @@ async function atomicWriteRetainedProtectedFile(state, fileNameInput, textInput,
   }
   if (problem) throwNormalizedFileOperationError(problem, "atomic replace");
   return result;
+}
+
+async function atomicWriteRetainedProtectedFile(state, fileNameInput, textInput, optionsInput) {
+  if (typeof textInput !== "string") {
+    fail("INTEGRATION_STORAGE_INVALID", "protected UTF-8 write value must be a primitive string.");
+  }
+  const bytes = Buffer.from(textInput, "utf8");
+  if (UTF8_DECODER.decode(bytes) !== textInput) {
+    fail("INTEGRATION_STORAGE_INVALID", "protected UTF-8 write value does not round-trip exactly.");
+  }
+  return atomicWriteRetainedProtectedBytes(state, fileNameInput, bytes, optionsInput);
+}
+
+async function syncRetainedProtectedBinaryDirectory(state) {
+  const dir = state.directory;
+  const release = admitDirectoryOperation(dir, "syncProtectedBinaryDirectory");
+  let problem = null;
+  try {
+    await recheckDirectoryNamedBinding(dir);
+    assertDirectoryOpen(dir);
+    await dir.handle.sync();
+    await recheckDirectoryNamedBinding(dir);
+    assertDirectoryOpen(dir);
+  } catch (error) {
+    problem = error;
+  }
+  release();
+  if (problem) throwNormalizedFileOperationError(problem, "directory sync");
+  return Object.freeze({ directorySynced: true });
+}
+
+async function atomicWriteRetainedProtectedBinaryFile(state, fileNameInput, bytesInput, optionsInput) {
+  return atomicWriteRetainedProtectedBytes(state, fileNameInput, bytesInput, optionsInput);
 }
 
 function poisonRegularFileLock(state, reason) {
@@ -2440,6 +2597,33 @@ function buildRetainedFileAttestation(dir, expected) {
   );
 }
 
+function buildRetainedBinaryFileAttestation(dir, expected) {
+  const unsigned = {
+    schemaVersion: INTEGRATION_RETAINED_BINARY_FILE_ATTESTATION_VERSION,
+    owner: "aginti",
+    authority: "aginti",
+    role: expected.role,
+    canonicalPath: expected.canonicalPath,
+    rootIdentityDigest: expected.rootIdentityDigest,
+    relativeSegments: Object.freeze([...expected.relativeSegments]),
+    relativePointer: expected.relativeSegments.length > 0 ? expected.relativeSegments.join("/") : ".",
+    directoryIdentityDigest: expected.directoryIdentityDigest,
+    protectedRegularFiles: true,
+    rawBinaryBytes: true,
+    atomicSameDirectoryReplace: true,
+    fileSyncBeforeRename: true,
+    directorySyncAfterRename: true,
+    limitations: INTEGRATION_RETAINED_FILE_LIMITATIONS,
+    digest: "0".repeat(64),
+  };
+  const { digest: _digest, ...digestInput } = unsigned;
+  return validateSurface(
+    freezeDeep({ ...unsigned, digest: contractDigest(digestInput) }),
+    BINARY_FILE_ATTESTATION_KEYS,
+    "retained binary file attestation"
+  );
+}
+
 function assertExpectedFilePrimitivesState(state, expectedInput, label) {
   if (expectedInput === undefined) return;
   const expected = assertExpectedDirectoryState(state.directory, expectedInput, label);
@@ -2492,6 +2676,47 @@ export function createIntegrationRetainedFilePrimitives(directory, expectedInput
   });
   state.surface = validateSurface(surface, FILE_PRIMITIVES_SURFACE_KEYS, "retained file primitives");
   filePrimitivesBrand.set(surface, state);
+  return surface;
+}
+
+export function createIntegrationRetainedBinaryFilePrimitives(directory, expectedInput) {
+  const dir = directory && typeof directory === "object" ? directoryBrand.get(directory) : null;
+  if (!dir) fail("INTEGRATION_STORAGE_INVALID", "Integration retained directory brand is invalid.");
+  validateSurface(directory, DIRECTORY_SURFACE_KEYS, "directory");
+  const expected = assertExpectedDirectoryState(dir, expectedInput, "Integration retained binary file primitives");
+  assertDirectoryOpen(dir);
+  if (dir.closing || dir.root.closing) {
+    fail("INTEGRATION_STORAGE_CLOSED", "Integration retained directory is closing.");
+  }
+  const state = {
+    directory: dir,
+    expected,
+    attestation: null,
+    surface: null,
+  };
+  state.attestation = buildRetainedBinaryFileAttestation(dir, expected);
+  const surface = Object.freeze({
+    schemaVersion: INTEGRATION_RETAINED_BINARY_FILE_PRIMITIVES_VERSION,
+    attestation: state.attestation,
+    readProtectedBinaryFile(fileName, options) {
+      return readRetainedProtectedBinaryFile(state, fileName, options);
+    },
+    atomicWriteProtectedBinaryFile(fileName, value, options) {
+      return atomicWriteRetainedProtectedBinaryFile(state, fileName, value, options);
+    },
+    syncProtectedBinaryDirectory() {
+      return syncRetainedProtectedBinaryDirectory(state);
+    },
+    isClosed() {
+      return dir.closing || dir.closed || dir.root.closing || dir.root.closed;
+    },
+  });
+  state.surface = validateSurface(
+    surface,
+    BINARY_FILE_PRIMITIVES_SURFACE_KEYS,
+    "retained binary file primitives"
+  );
+  binaryFilePrimitivesBrand.set(surface, state);
   return surface;
 }
 
@@ -2593,6 +2818,17 @@ export function assertIntegrationRetainedFilePrimitives(value, expected) {
     fail("INTEGRATION_STORAGE_CORRUPT", "Integration retained file primitives attestation changed.");
   }
   assertExpectedFilePrimitivesState(state, expected, "Integration retained file primitives");
+  return value;
+}
+
+export function assertIntegrationRetainedBinaryFilePrimitives(value, expected) {
+  const state = value && typeof value === "object" ? binaryFilePrimitivesBrand.get(value) : null;
+  if (!state) fail("INTEGRATION_STORAGE_INVALID", "Integration retained binary file primitives brand is invalid.");
+  validateSurface(value, BINARY_FILE_PRIMITIVES_SURFACE_KEYS, "retained binary file primitives");
+  if (value.attestation !== state.attestation) {
+    fail("INTEGRATION_STORAGE_CORRUPT", "Integration retained binary file primitives attestation changed.");
+  }
+  assertExpectedFilePrimitivesState(state, expected, "Integration retained binary file primitives");
   return value;
 }
 

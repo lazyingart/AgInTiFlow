@@ -8,6 +8,9 @@ import {
 import {
   assertRetainedIntegrationTextWorkspace,
 } from "./integration-retained-text-workspace.js";
+import {
+  assertRetainedIntegrationVisionWorkspace,
+} from "./integration-retained-vision-workspace.js";
 
 const registrations = new WeakMap();
 const integrationSessionScope = new AsyncLocalStorage();
@@ -182,6 +185,10 @@ function currentOperationAdmits(scope) {
   return Boolean(operation?.scope === scope && operation.active === true);
 }
 
+function retainedWorkspaceFor(registration) {
+  return registration?.retainedVisionWorkspace || registration?.retainedTextWorkspace || null;
+}
+
 function partialIntegrationMarkers(config = {}) {
   if (!config || typeof config !== "object") return false;
   return Boolean(
@@ -215,7 +222,20 @@ export function registerIntegrationSessionConfig(config, registration = {}) {
     : assertRetainedIntegrationTextWorkspace(registration.retainedTextWorkspace, {
         nativeExecutionEvidence: retainedNativeExecutionEvidence,
       });
-  if (retainedTextWorkspace && !retainedNativeExecutionEvidence) {
+  const retainedVisionWorkspace = registration.retainedVisionWorkspace === undefined
+    ? null
+    : assertRetainedIntegrationVisionWorkspace(registration.retainedVisionWorkspace, {
+        textWorkspace: retainedTextWorkspace,
+        sessionStateStore: undefined,
+        nativeExecutionEvidence: retainedNativeExecutionEvidence,
+      });
+  if (retainedVisionWorkspace && !retainedTextWorkspace) {
+    fail(
+      "INTEGRATION_SESSION_SCOPE_INVALID",
+      "The retained vision-workspace profile requires its exact retained text-workspace base."
+    );
+  }
+  if ((retainedTextWorkspace || retainedVisionWorkspace) && !retainedNativeExecutionEvidence) {
     fail(
       "INTEGRATION_SESSION_SCOPE_INVALID",
       "The retained text-workspace profile and native execution evidence must be supplied together."
@@ -245,6 +265,7 @@ export function registerIntegrationSessionConfig(config, registration = {}) {
     runId: String(registration.runId || ""),
     retainedNativeExecutionEvidence,
     retainedTextWorkspace,
+    retainedVisionWorkspace,
     retainedExecutionState,
   });
   if (
@@ -254,7 +275,7 @@ export function registerIntegrationSessionConfig(config, registration = {}) {
     !/^[a-f0-9]{64}$/u.test(normalized.runtimeRootsDigest) ||
     !/^(?:0{64}|[a-f0-9]{64})$/u.test(normalized.expectedBeforeRuntimeDigest) ||
     !/^[a-f0-9]{64}$/u.test(normalized.expectedAfterRuntimeDigest) ||
-    (retainedTextWorkspace && (
+    ((retainedTextWorkspace || retainedVisionWorkspace) && (
       !/^[A-Za-z0-9._~-]{16,128}$/u.test(normalized.principalId) ||
       !/^[a-f0-9]{64}$/u.test(normalized.browserSessionId) ||
       !normalized.threadId ||
@@ -319,7 +340,7 @@ export function runWithIntegrationSessionScope(config, operation) {
       if (scope.claimCount !== 1) {
         fail("INTEGRATION_SESSION_SCOPE_INVALID", "Integration run must claim exactly one native SessionStore.");
       }
-      if (registration.retainedTextWorkspace && (scope.runAgentEntered !== true || scope.runAgentEntryCount !== 1)) {
+      if (retainedWorkspaceFor(registration) && (scope.runAgentEntered !== true || scope.runAgentEntryCount !== 1)) {
         fail("INTEGRATION_SESSION_SCOPE_INVALID", "Integration scope must enter lexical runAgent exactly once.");
       }
       if (scope.persisted !== true || scope.persistedRevision !== registration.expectedAfterRevision) {
@@ -440,8 +461,9 @@ export async function loadIntegrationSessionSnapshotForConfig(config, fallbackLo
     return Object.freeze({ retained: false, state: await fallbackLoader(), snapshot: null });
   }
   if (registration.retainedExecutionState.binding) {
-    const state = registration.retainedTextWorkspace
-      ? await registration.retainedTextWorkspace.invoke(
+    const retainedWorkspace = retainedWorkspaceFor(registration);
+    const state = retainedWorkspace
+      ? await retainedWorkspace.invoke(
           registration.retainedExecutionState.binding,
           "loadState"
         )
@@ -453,8 +475,9 @@ export async function loadIntegrationSessionSnapshotForConfig(config, fallbackLo
     );
     return Object.freeze({ retained: true, state, snapshot });
   }
-  if (registration.retainedTextWorkspace) {
-    const prepared = await registration.retainedTextWorkspace.prepareExecution({
+  const retainedWorkspace = retainedWorkspaceFor(registration);
+  if (retainedWorkspace) {
+    const prepared = await retainedWorkspace.prepareExecution({
       mode: registration.mode,
       principalId: registration.principalId,
       browserSessionId: registration.browserSessionId,
@@ -480,8 +503,9 @@ export async function bindIntegrationNativeExecution(config, input = {}) {
   if (registration.retainedExecutionState.binding) {
     fail("INTEGRATION_SESSION_SCOPE_INVALID", "Retained native execution was already bound.");
   }
-  const binding = registration.retainedTextWorkspace
-    ? await registration.retainedTextWorkspace.bindAuthorizedExecution({
+  const retainedWorkspace = retainedWorkspaceFor(registration);
+  const binding = retainedWorkspace
+    ? await retainedWorkspace.bindAuthorizedExecution({
         authorization: input.authorization,
         snapshotHash: input.snapshotHash,
         preflight: registration.retainedExecutionState.profilePreflight,
@@ -503,8 +527,9 @@ export async function loadIntegrationClaimedSessionState(claim, fallbackLoader) 
   if (!binding) {
     fail("INTEGRATION_SESSION_SCOPE_INVALID", "Retained native SessionStore load lacks an authorization binding.");
   }
-  return claim.registration.retainedTextWorkspace
-    ? claim.registration.retainedTextWorkspace.invoke(binding, "loadState")
+  const retainedWorkspace = retainedWorkspaceFor(claim.registration);
+  return retainedWorkspace
+    ? retainedWorkspace.invoke(binding, "loadState")
     : claim.registration.retainedNativeExecutionEvidence.loadNativeState(binding);
 }
 
@@ -514,8 +539,9 @@ export async function saveIntegrationClaimedSessionState(claim, state) {
   if (!binding) {
     fail("INTEGRATION_SESSION_SCOPE_INVALID", "Retained native SessionStore save lacks an authorization binding.");
   }
-  if (claim.registration.retainedTextWorkspace) {
-    await claim.registration.retainedTextWorkspace.invoke(binding, "saveState", [state]);
+  const retainedWorkspace = retainedWorkspaceFor(claim.registration);
+  if (retainedWorkspace) {
+    await retainedWorkspace.invoke(binding, "saveState", [state]);
   } else {
     await claim.registration.retainedNativeExecutionEvidence.saveNativeState(binding, state);
   }
@@ -527,17 +553,47 @@ export function retainedIntegrationSessionStateEnabled(claim) {
 }
 
 export function retainedIntegrationTextWorkspaceEnabled(claim) {
-  return Boolean(claim?.registration?.retainedTextWorkspace);
+  return Boolean(retainedWorkspaceFor(claim?.registration));
 }
 
 export function invokeIntegrationTextWorkspace(claim, operation, args = []) {
-  const profile = claim?.registration?.retainedTextWorkspace;
+  const profile = retainedWorkspaceFor(claim?.registration);
   if (!profile) return null;
   const binding = claim.registration.retainedExecutionState?.binding;
   if (!binding) {
     fail("INTEGRATION_SESSION_SCOPE_INVALID", `${operation} lacks a retained text-workspace authorization binding.`);
   }
   return profile.invoke(binding, operation, args);
+}
+
+export function invokeIntegrationVisionWorkspace(config, args = {}) {
+  const scope = integrationSessionScope.getStore();
+  const registration = scope?.registration || null;
+  if (
+    !registration || !registration.retainedVisionWorkspace || scope.registration !== registration ||
+    !currentLeaseMatches(scope) || scope.runAgentEntered !== true
+  ) {
+    fail("INTEGRATION_SESSION_SCOPE_INVALID", "Retained read_image escaped its exact vision-workspace run scope.");
+  }
+  if (
+    config !== registration.config
+  ) {
+    fail("INTEGRATION_SESSION_SCOPE_INVALID", "Retained read_image runtime profile binding changed.");
+  }
+  const binding = registration.retainedExecutionState?.binding;
+  if (!binding) {
+    fail("INTEGRATION_SESSION_SCOPE_INVALID", "Retained read_image lacks an authorization binding.");
+  }
+  const runtime = {
+    abortSignal: registration.config.abortSignal,
+    ...(registration.config.providerReadinessTimeoutMs === undefined
+      ? {}
+      : { providerReadinessTimeoutMs: registration.config.providerReadinessTimeoutMs }),
+    ...(registration.config.modelTimeoutMs === undefined
+      ? {}
+      : { modelTimeoutMs: registration.config.modelTimeoutMs }),
+  };
+  return registration.retainedVisionWorkspace.invokeReadImage(binding, args, Object.freeze(runtime));
 }
 
 export async function recordIntegrationNativeTerminalEvidence(config, terminal) {
@@ -547,8 +603,9 @@ export async function recordIntegrationNativeTerminalEvidence(config, terminal) 
   if (!binding) {
     fail("INTEGRATION_SESSION_SCOPE_INVALID", "Retained native terminal evidence lacks an authorization binding.");
   }
-  return registration.retainedTextWorkspace
-    ? registration.retainedTextWorkspace.recordTerminalEvidence(binding, terminal)
+  const retainedWorkspace = retainedWorkspaceFor(registration);
+  return retainedWorkspace
+    ? retainedWorkspace.recordTerminalEvidence(binding, terminal)
     : registration.retainedNativeExecutionEvidence.recordTerminalEvidence(binding, terminal);
 }
 

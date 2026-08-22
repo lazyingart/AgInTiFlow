@@ -3,6 +3,10 @@ import {
   INTEGRATION_TEXT_WORKSPACE_PROFILE_ID,
   isIntegrationTextWorkspaceToolAllowed,
 } from "./integration-retained-text-workspace.js";
+import {
+  INTEGRATION_VISION_WORKSPACE_PROFILE_ID,
+  isIntegrationVisionWorkspaceToolAllowed,
+} from "./integration-retained-vision-workspace.js";
 
 const FUNCTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -397,6 +401,10 @@ function toolIsDisabled(name, config) {
   if (
     config.integrationSessionProfile === INTEGRATION_TEXT_WORKSPACE_PROFILE_ID &&
     !isIntegrationTextWorkspaceToolAllowed(name)
+  ) return true;
+  if (
+    config.integrationSessionProfile === INTEGRATION_VISION_WORKSPACE_PROFILE_ID &&
+    !isIntegrationVisionWorkspaceToolAllowed(name)
   ) return true;
   if (isDisabled(config.allowFileTools) && FILE_TOOL_NAMES.has(name)) return true;
   if (isDisabled(config.allowFileTools) && name === "generate_image") return true;

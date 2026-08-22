@@ -372,7 +372,15 @@ function textHas(text, regex) {
 }
 
 function normalizedText(...parts) {
-  return parts.map((part) => String(part || "")).join("\n").toLowerCase();
+  return parts.map((part) => {
+    if (part === null || part === undefined) return "";
+    if (typeof part !== "object") return String(part);
+    try {
+      return JSON.stringify(part);
+    } catch {
+      return "";
+    }
+  }).join("\n").toLowerCase();
 }
 
 function goalRequiresEvidence(goal = "", taskProfile = "") {

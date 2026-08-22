@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { deflateSync } from "node:zlib";
 import {
   createRetainedIntegrationNativeExecutionEvidence,
 } from "../src/integration-retained-native-execution-evidence.js";
@@ -14,6 +16,12 @@ import {
   INTEGRATION_TEXT_WORKSPACE_PROFILE_ID,
   INTEGRATION_TEXT_WORKSPACE_TOOL_NAMES,
 } from "../src/integration-retained-text-workspace.js";
+import {
+  INTEGRATION_VISION_WORKSPACE_PROFILE_ID,
+  INTEGRATION_VISION_WORKSPACE_TOOL_NAMES,
+  INTEGRATION_RETAINED_VISION_MAX_UPLOAD_BYTES,
+  createRetainedIntegrationVisionWorkspace,
+} from "../src/integration-retained-vision-workspace.js";
 import {
   createRetainedIntegrationNativeSessionRepositoryState,
 } from "../src/integration-retained-native-session-repository-state.js";
@@ -26,6 +34,7 @@ import {
   createRetainedIntegrationRuntimeRepositoryKernel,
 } from "../src/integration-runtime-repository.js";
 import {
+  createIntegrationRetainedBinaryFilePrimitives,
   createIntegrationRetainedFilePrimitives,
   openIntegrationRetainedRegularFileLock,
   openIntegrationStorageAuthority,
@@ -65,6 +74,7 @@ import {
   REQUIRED_INTEGRATION_ISOLATION_ASSERTIONS,
 } from "../src/integration-policy.js";
 import {
+  invokeIntegrationVisionWorkspace,
   registerIntegrationSessionConfig,
   runWithIntegrationSessionScope,
 } from "../src/integration-session-persistence.js";
@@ -83,12 +93,51 @@ const THREAD_ID = "thr_00000000-0000-4000-8000-000000000301";
 const RUN_ID = "run_00000000-0000-4000-8000-000000000302";
 const RESUME_RUN_ID = "run_00000000-0000-4000-8000-000000000304";
 const NATIVE_SESSION_ID = "aginti:00000000-0000-4000-8000-000000000303";
+const VISION_LOCK_FILE = ".aginti-flock-v1-vision-blobs";
+const FORGED_VISION_ARGUMENT_MARKER = "FORGED_VISION_ARGUMENT_7f4a65b9";
+const FORGED_VISION_TEXT_RETRY_MARKER = "FORGED_VISION_TEXT_RETRY_6c2d91a8";
+const FORGED_VISION_PATH = `/tmp/${FORGED_VISION_ARGUMENT_MARKER}.png`;
+const FORGED_VISION_URL = `https://forbidden.invalid/${FORGED_VISION_ARGUMENT_MARKER}.png`;
+const FORGED_VISION_BASE64 = `data:image/png;base64,${Buffer.from(FORGED_VISION_ARGUMENT_MARKER).toString("base64")}`;
+const FORGED_WRAPPED_VISION_BYTES = Buffer.alloc(600, 0x00);
+const FORGED_WRAPPED_VISION_PROMPT = (() => {
+  const encoded = FORGED_WRAPPED_VISION_BYTES.toString("base64");
+  const parts = [];
+  let offset = 0;
+  let width = 17;
+  while (offset < encoded.length) {
+    parts.push(encoded.slice(offset, offset + width));
+    offset += width;
+    width += 1;
+  }
+  return parts.join("\n");
+})();
+const FORGED_OVERSIZED_WRAPPED_VISION_PROMPT = Buffer.alloc(1200, 0xa5)
+  .toString("base64")
+  .match(/.{1,76}/gu)
+  .join("\n");
+const FORGED_BOUNDED_WRAPPED_VISION_PROMPT = Buffer.alloc(420, 0x93)
+  .toString("base64")
+  .match(/.{1,56}/gu)
+  .join("\n");
 const BASE_MS = Date.parse("2026-08-22T08:00:00.000Z");
 const CHILD_MODE = String(process.argv.find((value) => value.startsWith("--child=")) || "").slice(8);
 const CHILD_ROOT = String(process.argv.find((value) => value.startsWith("--root=")) || "").slice(7);
 
 function timestamp(offsetSeconds) {
   return new Date(BASE_MS + offsetSeconds * 1000).toISOString();
+}
+
+function assertNoEncodedImageFragments(text, bytes, label) {
+  const encoded = bytes.toString("base64");
+  assert.equal(text.includes(encoded), false, `${label} retained the exact image encoding`);
+  for (let index = 0; index <= encoded.length - 24; index += 1) {
+    assert.equal(
+      text.includes(encoded.slice(index, index + 24)),
+      false,
+      `${label} retained an input-derived image encoding fragment at ${index}`
+    );
+  }
 }
 
 function deepFreeze(value) {
@@ -100,6 +149,259 @@ function deepFreeze(value) {
 function seal(value) {
   const unsigned = { ...value };
   return deepFreeze({ ...unsigned, digest: contractDigest(unsigned) });
+}
+
+function pngCrc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data = Buffer.alloc(0)) {
+  const typeBytes = Buffer.from(type, "ascii");
+  const result = Buffer.alloc(12 + data.length);
+  result.writeUInt32BE(data.length, 0);
+  typeBytes.copy(result, 4);
+  data.copy(result, 8);
+  result.writeUInt32BE(pngCrc32(Buffer.concat([typeBytes, data])), 8 + data.length);
+  return result;
+}
+
+function exactPng(width, height, rgba = [32, 96, 160, 255]) {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 6;
+  const rows = Buffer.alloc(height * (1 + width * 4));
+  for (let row = 0; row < height; row += 1) {
+    const rowStart = row * (1 + width * 4);
+    rows[rowStart] = 0;
+    for (let column = 0; column < width; column += 1) {
+      const pixel = rowStart + 1 + column * 4;
+      rows[pixel] = rgba[0];
+      rows[pixel + 1] = rgba[1];
+      rows[pixel + 2] = rgba[2];
+      rows[pixel + 3] = rgba[3];
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", deflateSync(rows)),
+    pngChunk("IEND"),
+  ]);
+}
+
+function customPng({
+  width = 1,
+  height = 1,
+  interlace = 0,
+  rows = Buffer.from([0, 0, 0, 0, 255]),
+  compressed = null,
+  beforeImageData = [],
+  afterImageData = [],
+} = {}) {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 6;
+  header[12] = interlace;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", header),
+    ...beforeImageData,
+    pngChunk("IDAT", compressed || deflateSync(rows)),
+    ...afterImageData,
+    pngChunk("IEND"),
+  ]);
+}
+
+function nearMaximumUploadPng() {
+  const width = 1024;
+  const height = 960;
+  const rowBytes = 1 + width * 4;
+  const rows = Buffer.alloc(rowBytes * height);
+  crypto.randomFillSync(rows);
+  for (let row = 0; row < height; row += 1) rows[row * rowBytes] = 0;
+  return customPng({
+    width,
+    height,
+    rows,
+    compressed: deflateSync(rows, { level: 0 }),
+  });
+}
+
+async function openVisionLoopback() {
+  const requests = [];
+  let failureReferenceId = "";
+  let cancellationReferenceId = "";
+  let outputEchoReferenceId = "";
+  let outputEchoMode = "wrapped";
+  const promptWaiters = new Map();
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) {
+      chunks.push(chunk);
+      if (chunks.reduce((total, item) => total + item.length, 0) > 8 * 1024 * 1024) {
+        request.destroy();
+        return;
+      }
+    }
+    const bodyText = Buffer.concat(chunks).toString("utf8");
+    requests.push(Object.freeze({ method: request.method, url: request.url, bodyText }));
+    const send = (status, payload) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify(payload));
+    };
+    if (request.method === "GET" && request.url === "/healthz") {
+      send(200, { ok: true, service: "localllm-api", ollama: { ok: true, version: "vision-smoke" } });
+      return;
+    }
+    if (request.method === "GET" && request.url === "/v1/models") {
+      assert.match(String(request.headers.authorization || ""), /^Bearer /u);
+      send(200, { object: "list", data: [{ id: "localllm-vision", object: "model" }] });
+      return;
+    }
+    if (request.method === "POST" && request.url === "/v1/chat/completions") {
+      const payload = JSON.parse(bodyText);
+      assert.equal(payload.model, "localllm-vision");
+      assert.equal(payload.response_format?.type, "json_object");
+      const content = payload.messages?.[0]?.content;
+      assert(Array.isArray(content));
+      const prompt = String(content.find((item) => item?.type === "text")?.text || "");
+      const dataUrl = String(content.find((item) => item?.type === "image_url")?.image_url?.url || "");
+      const detail = String(content.find((item) => item?.type === "image_url")?.image_url?.detail || "");
+      assert.match(dataUrl, /^data:image\/png;base64,[A-Za-z0-9+/=]+$/u);
+      assert(["low", "high", "auto"].includes(detail));
+      for (const [referenceId, resolve] of promptWaiters) {
+        if (!prompt.includes(referenceId)) continue;
+        promptWaiters.delete(referenceId);
+        resolve();
+      }
+      if (cancellationReferenceId && prompt.includes(cancellationReferenceId)) {
+        await new Promise((resolve) => {
+          const timer = setTimeout(resolve, 5000);
+          request.once("close", () => {
+            clearTimeout(timer);
+            resolve();
+          });
+        });
+        if (response.destroyed || response.writableEnded) return;
+      }
+      if (failureReferenceId && prompt.includes(failureReferenceId)) {
+        send(500, {
+          error: {
+            message: `echo=${dataUrl} path=/tmp/private-vision.png secret=sk-abcdefghijklmnop`,
+          },
+        });
+        return;
+      }
+      if (outputEchoReferenceId && prompt.includes(outputEchoReferenceId)) {
+        const encodedImage = dataUrl.slice(dataUrl.indexOf(",") + 1);
+        const echoed = outputEchoMode === "sparse-hidden-exact"
+          ? `${"a ".repeat(6000)}${encodedImage.slice(100_003, 100_051).match(/.{12}/gu).join(".")} ${"a ".repeat(6000)}`
+          : outputEchoMode === "large-natural"
+            ? JSON.stringify({
+                summary: "The image presents a detailed but ordinary visual scene with balanced spacing, readable structure, and no indication that raw image bytes are part of this description. ".repeat(35),
+                answer: "Visible evidence remains neutral and descriptive; colors, shapes, alignment, and uncertainty are reported in natural language for the calling agent. ".repeat(35),
+              })
+          : outputEchoMode === "unicode-punctuation"
+          ? `vision-output:${encodedImage.match(/.{1,11}/gu).join("\u200b:,:")}:end`
+          : outputEchoMode === "tiny-json-chunks"
+          ? JSON.stringify({ answerChunks: encodedImage.match(/.{1,7}/gu) })
+          : outputEchoMode === "prefix-suffix"
+            ? JSON.stringify({ answer: `prefix:${encodedImage.slice(11, 83)}:suffix` })
+            : JSON.stringify({ answer: encodedImage.match(/.{1,76}/gu).join("\n") });
+        send(200, {
+          id: "chatcmpl-retained-vision-echo-smoke",
+          object: "chat.completion",
+          choices: [{
+            index: 0,
+            finish_reason: "stop",
+            message: { role: "assistant", content: echoed },
+          }],
+        });
+        return;
+      }
+      send(200, {
+        id: "chatcmpl-retained-vision-smoke",
+        object: "chat.completion",
+        choices: [{
+          index: 0,
+          finish_reason: "stop",
+          message: {
+            role: "assistant",
+            content: JSON.stringify({
+              summary: "A small validated PNG. secret=sk-abcdefghijklmnop path=/tmp/private-vision.png",
+              visibleText: [],
+              observations: ["One blue-toned square is visible."],
+              issues: [],
+              answer: "The retained image was read locally.",
+              uncertainty: [],
+            }),
+          },
+        }],
+      });
+      return;
+    }
+    send(404, { error: { message: "not found" } });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert(address && typeof address === "object");
+  return Object.freeze({
+    baseURL: `http://127.0.0.1:${address.port}/v1`,
+    requests,
+    setFailureReferenceId(referenceId) {
+      failureReferenceId = referenceId;
+    },
+    setCancellationReferenceId(referenceId) {
+      cancellationReferenceId = referenceId;
+    },
+    setOutputEcho(referenceId, mode = "wrapped") {
+      outputEchoReferenceId = referenceId;
+      outputEchoMode = mode;
+    },
+    waitForPrompt(referenceId) {
+      const existing = requests.some((request) => request.bodyText.includes(referenceId));
+      if (existing) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          promptWaiters.delete(referenceId);
+          reject(new Error(`Vision request ${referenceId} was not observed.`));
+        }, 5000);
+        promptWaiters.set(referenceId, () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    },
+    async close() {
+      await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    },
+  });
+}
+
+function visionScope(overrides = {}) {
+  return Object.freeze({
+    mode: "start",
+    principalId: PRINCIPAL,
+    browserSessionId: BROWSER_SESSION,
+    threadId: THREAD_ID,
+    runId: RUN_ID,
+    nativeSessionId: NATIVE_SESSION_ID,
+    ...overrides,
+  });
 }
 
 function runtimeEventLedgerStore() {
@@ -178,6 +480,7 @@ function runtimeAuthorityForFixture(fixture) {
     retainedNativeExecutionEvidence: fixture.evidence,
     retainedRecoveryCoordinator: fixture.recovery,
     retainedTextWorkspace: fixture.textWorkspace,
+    retainedVisionWorkspace: fixture.visionWorkspace,
   });
 }
 
@@ -229,13 +532,21 @@ function runtimeRoots(rootPath) {
 async function openFixture(rootPath, now, processOwnerBootstrap) {
   const repositorySegments = Object.freeze(["data:repository"]);
   const sessionSegments = Object.freeze(["native:sessions"]);
+  const visionMetadataSegments = Object.freeze(["native:vision-metadata"]);
+  const visionSegments = Object.freeze(["native:vision-blobs"]);
   const repositoryPath = path.join(rootPath, ...repositorySegments);
   const sessionPath = path.join(rootPath, ...sessionSegments);
+  const visionMetadataPath = path.join(rootPath, ...visionMetadataSegments);
+  const visionPath = path.join(rootPath, ...visionSegments);
   const repositoryLockPath = path.join(repositoryPath, INTEGRATION_RETAINED_REPOSITORY_LOCK_FILE);
   const sessionLockPath = path.join(sessionPath, INTEGRATION_RETAINED_SESSION_STATE_LOCK_FILE);
+  const visionMetadataLockPath = path.join(visionMetadataPath, INTEGRATION_RETAINED_SESSION_STATE_LOCK_FILE);
+  const visionLockPath = path.join(visionPath, VISION_LOCK_FILE);
   await ensureOwnerDirectory(rootPath);
   await ensureOwnerDirectory(repositoryPath);
   await ensureOwnerDirectory(sessionPath);
+  await ensureOwnerDirectory(visionMetadataPath);
+  await ensureOwnerDirectory(visionPath);
   await ensureOwnerDirectory(path.join(rootPath, "workspace"));
   const poisonTarget = path.join(rootPath, "legacy-session-root-poison");
   await fs.mkdir(poisonTarget, { recursive: true, mode: 0o700 });
@@ -245,6 +556,8 @@ async function openFixture(rootPath, now, processOwnerBootstrap) {
   });
   await ensureLockFile(repositoryLockPath);
   await ensureLockFile(sessionLockPath);
+  await ensureLockFile(visionMetadataLockPath);
+  await ensureLockFile(visionLockPath);
   const authority = await openIntegrationStorageAuthority({
     rootPath,
     role: ROLE,
@@ -255,7 +568,7 @@ async function openFixture(rootPath, now, processOwnerBootstrap) {
   const helperSha256 = crypto.createHash("sha256").update(await fs.readFile(HELPER_PATH)).digest("hex");
   const helperIdentityDigest = identityDigest(await fs.stat(HELPER_PATH, { bigint: true }));
 
-  async function binding(relativeSegments, lockFileName, lockPath, bytesKey, bytesValue) {
+  async function binding(relativeSegments, lockFileName, lockPath, bytesKey, bytesValue, { binary = false } = {}) {
     const directory = await authority.openDirectory(relativeSegments);
     const directoryIdentity = await directory.identity();
     const directoryExpected = Object.freeze({
@@ -265,9 +578,12 @@ async function openFixture(rootPath, now, processOwnerBootstrap) {
       relativeSegments,
       directoryIdentityDigest: directoryIdentity.digest,
     });
-    const files = createIntegrationRetainedFilePrimitives(directory, directoryExpected);
+    const lockFiles = createIntegrationRetainedFilePrimitives(directory, directoryExpected);
+    const files = binary
+      ? createIntegrationRetainedBinaryFilePrimitives(directory, directoryExpected)
+      : lockFiles;
     const lockFileIdentityDigest = identityDigest(await fs.stat(lockPath, { bigint: true }));
-    const lock = await openIntegrationRetainedRegularFileLock(files, Object.freeze({
+    const lock = await openIntegrationRetainedRegularFileLock(lockFiles, Object.freeze({
       ...directoryExpected,
       lockFileName,
       helperSha256,
@@ -275,6 +591,7 @@ async function openFixture(rootPath, now, processOwnerBootstrap) {
       helperIdentityDigest,
     }));
     return Object.freeze({
+      directory,
       files,
       lock,
       expected: Object.freeze({
@@ -302,6 +619,21 @@ async function openFixture(rootPath, now, processOwnerBootstrap) {
     "maxStateBytes",
     512 * 1024
   );
+  const visionBinding = await binding(
+    visionSegments,
+    VISION_LOCK_FILE,
+    visionLockPath,
+    "maxBlobBytes",
+    INTEGRATION_RETAINED_VISION_MAX_UPLOAD_BYTES,
+    { binary: true }
+  );
+  const visionMetadataBinding = await binding(
+    visionMetadataSegments,
+    INTEGRATION_RETAINED_SESSION_STATE_LOCK_FILE,
+    visionMetadataLockPath,
+    "maxStateBytes",
+    512 * 1024
+  );
   const kernel = createRetainedIntegrationRuntimeRepositoryKernel(
     repositoryBinding.files,
     repositoryBinding.lock,
@@ -311,6 +643,11 @@ async function openFixture(rootPath, now, processOwnerBootstrap) {
     sessionBinding.files,
     sessionBinding.lock,
     sessionBinding.expected
+  );
+  const visionMetadataStore = createRetainedIntegrationSessionStateStore(
+    visionMetadataBinding.files,
+    visionMetadataBinding.lock,
+    visionMetadataBinding.expected
   );
   const expected = Object.freeze({
     repositoryKernel: repositoryBinding.expected,
@@ -349,6 +686,36 @@ async function openFixture(rootPath, now, processOwnerBootstrap) {
     processOwnerBootstrap,
     repositoryFenceLease: acquiredFence.lease,
   });
+  const visionFilesExpected = Object.freeze({
+    role: visionBinding.expected.role,
+    canonicalPath: visionBinding.expected.canonicalPath,
+    rootIdentityDigest: visionBinding.expected.rootIdentityDigest,
+    relativeSegments: visionBinding.expected.relativeSegments,
+    directoryIdentityDigest: visionBinding.expected.directoryIdentityDigest,
+  });
+  const visionLockExpected = Object.freeze({
+    ...visionFilesExpected,
+    lockFileName: VISION_LOCK_FILE,
+    helperSha256: visionBinding.expected.helperSha256,
+    lockFileIdentityDigest: visionBinding.expected.lockFileIdentityDigest,
+    helperIdentityDigest: visionBinding.expected.helperIdentityDigest,
+  });
+  const visionWorkspace = await createRetainedIntegrationVisionWorkspace({
+    textWorkspace,
+    sessionStateStore,
+    sessionStateStoreExpected: sessionBinding.expected,
+    metadataStore: visionMetadataStore,
+    metadataStoreExpected: visionMetadataBinding.expected,
+    binaryFilePrimitives: visionBinding.files,
+    binaryFilePrimitivesExpected: visionFilesExpected,
+    binaryFileLock: visionBinding.lock,
+    binaryFileLockExpected: visionLockExpected,
+    nativeExecutionEvidence: evidence,
+    repository,
+    recoveryCoordinator: recovery,
+    processOwnerBootstrap,
+    repositoryFenceLease: acquiredFence.lease,
+  });
   const openDistinctSessionStore = async () => {
     const distinctBinding = await binding(
       sessionSegments,
@@ -368,14 +735,21 @@ async function openFixture(rootPath, now, processOwnerBootstrap) {
     repository,
     repositoryState,
     sessionStateStore,
+    visionMetadataStore,
     evidence,
     textWorkspace,
+    visionWorkspace,
     recovery,
     expected,
     processOwnerBootstrap,
     processOwner: processOwnerBootstrap.processOwner,
     acquiredFence,
     sessionBinding,
+    visionMetadataBinding,
+    visionBinding,
+    visionFilesExpected,
+    visionLockExpected,
+    visionPath,
     openDistinctSessionStore,
   });
 }
@@ -458,7 +832,18 @@ function installLegacySessionRootGuard(legacyRoot) {
 
 function deterministicRunAgentConfig(baseConfig, registration) {
   let toolTurn = 0;
+  let visionTextRetrySent = false;
+  const vision = registration.visionWorkspace
+    ? Object.freeze({
+        workspace: registration.visionWorkspace,
+        revokedReferenceId: registration.revokedReferenceId,
+        failureReferenceId: registration.failureReferenceId,
+        outputEchoReferenceId: registration.outputEchoReferenceId,
+        validReferenceId: registration.validReferenceId,
+      })
+    : null;
   const promptAudit = {
+    executionTier: registration.executionTier || "thorough",
     payloads: 0,
     planPayloads: 0,
     executionPayloads: 0,
@@ -475,9 +860,21 @@ function deterministicRunAgentConfig(baseConfig, registration) {
           );
           assert.match(
             promptText,
-            /(?:No shell command tool is available|Shell execution(?: and package installation)? (?:is|are) (?:unavailable|disabled))/iu,
-            "retained text-workspace prompt did not disclose that shell execution is disabled"
+            /(?:No shell command tool is available|Shell(?: tool)?(?: execution)?(?: and package installation)? (?:is|are)? ?(?:unavailable|disabled)|Shell, browser.{0,160}(?:unavailable|disabled))/iu,
+            "retained workspace prompt did not disclose that shell execution is disabled"
           );
+          const forbiddenCapability = promptText.match(
+            /browser and canvas tools are available|local preview tools available|canvas\/artifacts tunnel: available|writing specialist: available|long-job tool available|allowed remote image|workspace-local.{0,40}image|persists typed perception|perception artifacts? (?:are )?(?:persisted|available)/iu
+          );
+          assert.equal(
+            forbiddenCapability,
+            null,
+            `retained workspace prompt advertised a forbidden capability: ${forbiddenCapability?.[0] || "unknown"}`
+          );
+          if (vision) {
+            assert.match(promptText, /opaque retained PNG reference/iu);
+            assert.match(promptText, /localllm-vision/u);
+          }
           promptAudit.payloads += 1;
           if (!Array.isArray(payload.tools) || payload.tools.length === 0) {
             promptAudit.planPayloads += 1;
@@ -493,11 +890,72 @@ function deterministicRunAgentConfig(baseConfig, registration) {
           promptAudit.executionPayloads += 1;
           assert(
             !payload.tools.some((tool) => tool.function?.name === "run_command"),
-            "real retained text-workspace execution offered run_command"
+            "real retained workspace execution offered run_command"
           );
-          toolTurn += 1;
           const offered = new Set(payload.tools.map((tool) => tool.function?.name));
-          const name = toolTurn === 1 && offered.has("inspect_project") ? "inspect_project" : "finish";
+          if (vision) {
+            assert([...offered].every((name) => [
+              "inspect_project", "list_files", "read_file", "search_files", "write_file", "apply_patch",
+              "read_image", "finish",
+            ].includes(name)));
+            const readImageTool = payload.tools.find((tool) => tool.function?.name === "read_image");
+            assert(readImageTool, "retained vision execution did not offer read_image");
+            assert.deepEqual(
+              Object.keys(readImageTool.function.parameters.properties).sort(),
+              ["detail", "referenceId"]
+            );
+            assert.deepEqual(readImageTool.function.parameters.required, ["referenceId"]);
+            assert.equal(readImageTool.function.parameters.additionalProperties, false);
+            if (!visionTextRetrySent) {
+              visionTextRetrySent = true;
+              return {
+                choices: [{
+                  message: {
+                    role: "assistant",
+                    content: "",
+                    aginti_text_tool_retry: {
+                      reason: `${FORGED_VISION_TEXT_RETRY_MARKER} data:image/png;base64,Zm9yYmlkZGVu /tmp/private-vision.png`,
+                    },
+                  },
+                }],
+              };
+            }
+          }
+          toolTurn += 1;
+          const sequence = vision
+            ? [
+                {
+                  name: "read_image",
+                  args: {
+                    referenceId: vision.validReferenceId,
+                    path: FORGED_VISION_PATH,
+                    url: FORGED_VISION_URL,
+                    base64: FORGED_VISION_BASE64,
+                    provider: "hosted-forged-provider",
+                    model: "hosted-forged-model",
+                  },
+                },
+                { name: "read_image", args: { referenceId: vision.revokedReferenceId, detail: "auto" } },
+                {
+                  name: "read_image",
+                  args: {
+                    referenceId: vision.validReferenceId,
+                    prompt: FORGED_WRAPPED_VISION_PROMPT,
+                    detail: "auto",
+                  },
+                },
+                { name: "read_image", args: { referenceId: vision.failureReferenceId, detail: "high" } },
+                { name: "read_image", args: { referenceId: vision.outputEchoReferenceId, detail: "auto" } },
+                { name: "read_image", args: { referenceId: vision.validReferenceId, detail: "low" } },
+                { name: "finish", args: { result: "Retained vision-workspace execution completed with verified local PNG evidence." } },
+              ]
+            : [
+                { name: "inspect_project", args: {} },
+                { name: "finish", args: { result: "Retained text-workspace execution completed with verified workspace evidence." } },
+              ];
+          const selected = sequence[Math.min(toolTurn - 1, sequence.length - 1)];
+          const name = selected.name === "inspect_project" && !offered.has("inspect_project") ? "finish" : selected.name;
+          assert(offered.has(name), `retained profile did not offer selected tool ${name}`);
           return {
             choices: [{
               message: {
@@ -508,9 +966,9 @@ function deterministicRunAgentConfig(baseConfig, registration) {
                   type: "function",
                   function: {
                     name,
-                    arguments: name === "finish"
-                      ? JSON.stringify({ result: "Retained text-workspace execution completed with verified workspace evidence." })
-                      : "{}",
+                    arguments: JSON.stringify(name === selected.name ? selected.args : {
+                      result: "Retained workspace execution completed with verified evidence.",
+                    }),
                   },
                 }],
               },
@@ -533,8 +991,8 @@ function deterministicRunAgentConfig(baseConfig, registration) {
       sharedWorkstationPressure: null,
     }),
     executionPolicy: Object.freeze({
-      tier: "thorough",
-      requiresPlan: true,
+      tier: registration.executionTier || "thorough",
+      requiresPlan: (registration.executionTier || "thorough") === "thorough",
       reason: "Deterministic retained-profile E2E coverage.",
     }),
   });
@@ -557,6 +1015,7 @@ function deterministicRunAgentConfig(baseConfig, registration) {
     expectedAfterRuntimeDigest: contractDigest(expectedFixedSessionRuntimeSnapshot(config, expectedAfterRevision)),
     retainedNativeExecutionEvidence: registration.evidence,
     retainedTextWorkspace: registration.textWorkspace,
+    ...(vision ? { retainedVisionWorkspace: vision.workspace } : {}),
     principalId: PRINCIPAL,
     browserSessionId: BROWSER_SESSION,
     threadId: THREAD_ID,
@@ -887,12 +1346,302 @@ async function run() {
   let mismatchFixture = null;
   let staleRuntimeFixture = null;
   let successor = null;
+  const visionLoopback = await openVisionLoopback();
+  const priorLocalLLMBaseURL = process.env.AGINTI_LOCALLLM_BASE_URL;
+  const priorLocalLLMApiKey = process.env.LOCALLLM_API_KEY;
+  process.env.AGINTI_LOCALLLM_BASE_URL = visionLoopback.baseURL;
+  process.env.LOCALLLM_API_KEY = "retained-vision-smoke-key";
   let tick = 100;
   const now = () => new Date(BASE_MS + tick++ * 1000);
   const processOwnerBootstrap = await createIntegrationRuntimeProcessOwnerBootstrap();
   try {
     fixture = await openFixture(rootPath, now, processOwnerBootstrap);
     mismatchFixture = await openFixture(mismatchRootPath, now, processOwnerBootstrap);
+    assert.deepEqual(fixture.visionWorkspace.attestation.supportedMimeTypes, ["image/png"]);
+    assert.equal(fixture.visionWorkspace.attestation.runtimeCapabilityEnabled, false);
+    assert.equal(fixture.visionWorkspace.attestation.publicServerCapabilityEnabled, false);
+    assert.equal(fixture.visionWorkspace.attestation.nativeSessionStateWriterFencing, false);
+    assert.equal(fixture.visionWorkspace.attestation.crossProcessImageWriterFencing, false);
+    assert.equal(fixture.visionWorkspace.attestation.localVisionModel, "localllm-vision");
+    const primaryScope = visionScope();
+    const revokedOuter = Proxy.revocable({}, {});
+    revokedOuter.revoke();
+    await expectCode(
+      () => fixture.visionWorkspace.stageImageUpload(revokedOuter.proxy),
+      "INTEGRATION_VISION_WORKSPACE_INVALID"
+    );
+    const revokedUploadScope = Proxy.revocable(primaryScope, {});
+    revokedUploadScope.revoke();
+    await expectCode(
+      () => fixture.visionWorkspace.stageImageUpload({
+        scope: revokedUploadScope.proxy,
+        mimeType: "image/png",
+        bytes: exactPng(1, 1),
+      }),
+      "INTEGRATION_VISION_WORKSPACE_INVALID"
+    );
+    const revokedBytes = Proxy.revocable(Buffer.from(exactPng(1, 1)), {});
+    revokedBytes.revoke();
+    await expectCode(
+      () => fixture.visionWorkspace.stageImageUpload({
+        scope: primaryScope,
+        mimeType: "image/png",
+        bytes: revokedBytes.proxy,
+      }),
+      "INTEGRATION_VISION_IMAGE_INVALID"
+    );
+    const mutableBinarySegments = [...fixture.visionFilesExpected.relativeSegments];
+    const mutableLockSegments = [...fixture.visionLockExpected.relativeSegments];
+    const mutationSafeFactory = createRetainedIntegrationVisionWorkspace({
+      textWorkspace: fixture.textWorkspace,
+      sessionStateStore: fixture.sessionStateStore,
+      sessionStateStoreExpected: fixture.sessionBinding.expected,
+      metadataStore: fixture.visionMetadataStore,
+      metadataStoreExpected: fixture.visionMetadataBinding.expected,
+      binaryFilePrimitives: fixture.visionBinding.files,
+      binaryFilePrimitivesExpected: {
+        ...fixture.visionFilesExpected,
+        relativeSegments: mutableBinarySegments,
+      },
+      binaryFileLock: fixture.visionBinding.lock,
+      binaryFileLockExpected: {
+        ...fixture.visionLockExpected,
+        relativeSegments: mutableLockSegments,
+      },
+      nativeExecutionEvidence: fixture.evidence,
+      repository: fixture.repository,
+      recoveryCoordinator: fixture.recovery,
+      processOwnerBootstrap,
+      repositoryFenceLease: fixture.acquiredFence.lease,
+    });
+    mutableBinarySegments[0] = "caller-mutated-after-await";
+    mutableLockSegments[0] = "caller-mutated-after-await";
+    const mutationSafeVision = await mutationSafeFactory;
+    assert.equal(mutationSafeVision.attestation.digest, fixture.visionWorkspace.attestation.digest);
+    const orphanPng = exactPng(1, 1, [20, 40, 60, 255]);
+    const orphanPrepared = await fixture.visionWorkspace.prepareImageUpload({
+      scope: primaryScope,
+      mimeType: "image/png",
+      bytes: orphanPng,
+    });
+    await fixture.authority.close();
+    fixture = await openFixture(rootPath, now, processOwnerBootstrap);
+    await expectCode(
+      () => fixture.visionWorkspace.inspectImageReference({
+        scope: primaryScope,
+        referenceId: orphanPrepared.reference.referenceId,
+      }),
+      "INTEGRATION_VISION_REFERENCE_UNAVAILABLE"
+    );
+    const orphanPublished = await fixture.visionWorkspace.stageImageUpload({
+      scope: primaryScope,
+      mimeType: "image/png",
+      bytes: orphanPng,
+    });
+    assert.equal(orphanPublished.reference.referenceId, orphanPrepared.reference.referenceId);
+    const primaryPng = exactPng(2, 2, [30, 90, 150, 255]);
+    const primaryPublished = await fixture.visionWorkspace.stageImageUpload({
+      scope: primaryScope,
+      mimeType: "image/png",
+      bytes: primaryPng,
+    });
+    await fixture.authority.close();
+    fixture = await openFixture(rootPath, now, processOwnerBootstrap);
+    const reopenedPrimary = await fixture.visionWorkspace.inspectImageReference({
+      scope: primaryScope,
+      referenceId: primaryPublished.reference.referenceId,
+    });
+    assert.equal(reopenedPrimary.revoked, false);
+    assert.equal(reopenedPrimary.reference.sha256, crypto.createHash("sha256").update(primaryPng).digest("hex"));
+    const exactRetry = await fixture.visionWorkspace.stageImageUpload({
+      scope: primaryScope,
+      mimeType: "image/png",
+      bytes: primaryPng,
+    });
+    assert.equal(exactRetry.outcome, "replayed");
+    assert.deepEqual(exactRetry.reference, primaryPublished.reference);
+    const otherOwnerScope = visionScope({ principalId: "principalBBBBBBBB" });
+    const isolated = await fixture.visionWorkspace.stageImageUpload({
+      scope: otherOwnerScope,
+      mimeType: "image/png",
+      bytes: primaryPng,
+    });
+    assert.notEqual(isolated.reference.referenceId, primaryPublished.reference.referenceId);
+    await expectCode(
+      () => fixture.visionWorkspace.inspectImageReference({
+        scope: otherOwnerScope,
+        referenceId: primaryPublished.reference.referenceId,
+      }),
+      "INTEGRATION_VISION_REFERENCE_FORBIDDEN"
+    );
+    await expectCode(
+      () => fixture.visionWorkspace.stageImageUpload({
+        scope: primaryScope,
+        mimeType: "image/jpeg",
+        bytes: primaryPng,
+      }),
+      "INTEGRATION_VISION_IMAGE_INVALID"
+    );
+    const badCrc = Buffer.from(primaryPng);
+    badCrc[29] ^= 0x01;
+    await expectCode(
+      () => fixture.visionWorkspace.stageImageUpload({
+        scope: primaryScope,
+        mimeType: "image/png",
+        bytes: badCrc,
+      }),
+      "INTEGRATION_VISION_IMAGE_INVALID"
+    );
+    const validSingleRow = Buffer.from([0, 10, 20, 30, 255]);
+    const invalidPngMatrix = [
+      ["interlaced", customPng({ interlace: 1, rows: validSingleRow })],
+      ["apng", customPng({ rows: validSingleRow, beforeImageData: [pngChunk("acTL", Buffer.alloc(8))] })],
+      ["unknown-ancillary", customPng({ rows: validSingleRow, beforeImageData: [pngChunk("tEXt", Buffer.from("forbidden"))] })],
+      ["reserved-type-bit", customPng({ rows: validSingleRow, beforeImageData: [pngChunk("ABcD", Buffer.alloc(0))] })],
+      ["truncated", primaryPng.subarray(0, primaryPng.length - 1)],
+      ["trailing-after-iend", Buffer.concat([primaryPng, Buffer.from([0])])],
+      [
+        "trailing-compressed-stream",
+        customPng({
+          rows: validSingleRow,
+          compressed: Buffer.concat([deflateSync(validSingleRow), Buffer.from([0xde, 0xad, 0xbe, 0xef])]),
+        }),
+      ],
+      ["invalid-filter", customPng({ rows: Buffer.from([5, 10, 20, 30, 255]) })],
+      ["dimension-bound", customPng({ width: 8193, height: 1, rows: Buffer.from([0]) })],
+      ["pixel-bound", customPng({ width: 8192, height: 3000, rows: Buffer.from([0]) })],
+      ["decoded-byte-bound", customPng({ width: 8192, height: 2400, rows: Buffer.from([0]) })],
+    ];
+    for (const [label, bytes] of invalidPngMatrix) {
+      await expectCode(
+        () => fixture.visionWorkspace.stageImageUpload({
+          scope: primaryScope,
+          mimeType: "image/png",
+          bytes,
+        }),
+        "INTEGRATION_VISION_IMAGE_INVALID",
+        label
+      );
+    }
+    await expectCode(
+      () => fixture.visionWorkspace.stageImageUpload({
+        scope: primaryScope,
+        mimeType: "image/png",
+        bytes: Buffer.alloc(INTEGRATION_RETAINED_VISION_MAX_UPLOAD_BYTES + 1),
+      }),
+      "INTEGRATION_VISION_IMAGE_INVALID"
+    );
+    await expectCode(
+      () => fixture.visionWorkspace.stageImageUpload({
+        scope: primaryScope,
+        mimeType: "image/png",
+        bytes: primaryPng,
+        path: "/tmp/forbidden.png",
+      }),
+      "INTEGRATION_VISION_WORKSPACE_INVALID"
+    );
+    const symlinkPng = exactPng(1, 2, [211, 17, 93, 255]);
+    const blobNamesBeforeSymlink = new Set(
+      (await fs.readdir(fixture.visionPath)).filter((name) => name.startsWith("vision-blob-"))
+    );
+    await fixture.visionWorkspace.prepareImageUpload({
+      scope: primaryScope,
+      mimeType: "image/png",
+      bytes: symlinkPng,
+    });
+    const symlinkBlobName = (await fs.readdir(fixture.visionPath)).find(
+      (name) => name.startsWith("vision-blob-") && !blobNamesBeforeSymlink.has(name)
+    );
+    assert(symlinkBlobName, "prepared retained vision blob was not found");
+    const symlinkBlobPath = path.join(fixture.visionPath, symlinkBlobName);
+    const symlinkSentinelPath = path.join(rootPath, "vision-symlink-sentinel.bin");
+    await fs.writeFile(symlinkSentinelPath, Buffer.from("sentinel-stays-private"), { mode: 0o600 });
+    await fs.unlink(symlinkBlobPath);
+    await fs.symlink(symlinkSentinelPath, symlinkBlobPath);
+    await expectCode(
+      () => fixture.visionWorkspace.prepareImageUpload({
+        scope: primaryScope,
+        mimeType: "image/png",
+        bytes: symlinkPng,
+      }),
+      "INTEGRATION_STORAGE_FILE_CORRUPT"
+    );
+    assert.equal(await fs.readFile(symlinkSentinelPath, "utf8"), "sentinel-stays-private");
+    await fs.unlink(symlinkBlobPath);
+    const revocable = await fixture.visionWorkspace.stageImageUpload({
+      scope: primaryScope,
+      mimeType: "image/png",
+      bytes: exactPng(3, 1, [70, 80, 90, 255]),
+    });
+    const revoked = await fixture.visionWorkspace.revokeImageReference({
+      scope: primaryScope,
+      referenceId: revocable.reference.referenceId,
+    });
+    assert.equal(revoked.revoked, true);
+    const revokedReplay = await fixture.visionWorkspace.revokeImageReference({
+      scope: primaryScope,
+      referenceId: revocable.reference.referenceId,
+    });
+    assert.equal(revokedReplay.outcome, "replayed");
+    await fixture.authority.close();
+    fixture = await openFixture(rootPath, now, processOwnerBootstrap);
+    const reopenedRevoked = await fixture.visionWorkspace.inspectImageReference({
+      scope: primaryScope,
+      referenceId: revocable.reference.referenceId,
+    });
+    assert.equal(reopenedRevoked.revoked, true);
+    const failureImageBytes = exactPng(2, 1, [180, 30, 60, 255]);
+    const failureImage = await fixture.visionWorkspace.stageImageUpload({
+      scope: primaryScope,
+      mimeType: "image/png",
+      bytes: failureImageBytes,
+    });
+    visionLoopback.setFailureReferenceId(failureImage.reference.referenceId);
+    const outputEchoImageBytes = exactPng(3, 2, [125, 45, 205, 255]);
+    const outputEchoImage = await fixture.visionWorkspace.stageImageUpload({
+      scope: primaryScope,
+      mimeType: "image/png",
+      bytes: outputEchoImageBytes,
+    });
+    visionLoopback.setOutputEcho(outputEchoImage.reference.referenceId, "unicode-punctuation");
+    const maximumUploadPng = nearMaximumUploadPng();
+    assert(maximumUploadPng.length > INTEGRATION_RETAINED_VISION_MAX_UPLOAD_BYTES - 300_000);
+    assert(maximumUploadPng.length <= INTEGRATION_RETAINED_VISION_MAX_UPLOAD_BYTES);
+    const maximumUploadImage = await fixture.visionWorkspace.stageImageUpload({
+      scope: primaryScope,
+      mimeType: "image/png",
+      bytes: maximumUploadPng,
+    });
+    const cancellationImage = await fixture.visionWorkspace.stageImageUpload({
+      scope: primaryScope,
+      mimeType: "image/png",
+      bytes: exactPng(1, 3, [90, 20, 140, 255]),
+    });
+    const tamper = await fixture.visionWorkspace.stageImageUpload({
+      scope: primaryScope,
+      mimeType: "image/png",
+      bytes: exactPng(4, 1, [110, 120, 130, 255]),
+    });
+    const blobNames = (await fs.readdir(fixture.visionPath)).filter((name) => name.startsWith("vision-blob-"));
+    let tamperBlob = "";
+    for (const name of blobNames) {
+      const candidate = await fs.readFile(path.join(fixture.visionPath, name));
+      if (crypto.createHash("sha256").update(candidate).digest("hex") === tamper.reference.sha256) {
+        tamperBlob = path.join(fixture.visionPath, name);
+        break;
+      }
+    }
+    assert(tamperBlob);
+    const tamperedBytes = await fs.readFile(tamperBlob);
+    tamperedBytes[tamperedBytes.length - 1] ^= 0x01;
+    await fs.writeFile(tamperBlob, tamperedBytes, { mode: 0o600 });
+    await expectCode(
+      () => fixture.visionWorkspace.inspectImageReference({
+        scope: primaryScope,
+        referenceId: tamper.reference.referenceId,
+      }),
+      "INTEGRATION_VISION_BLOB_CORRUPT"
+    );
     const sameDescriptorExpected = fixture.sessionBinding.expected;
     const sameDescriptorLock = await openIntegrationRetainedRegularFileLock(
       fixture.sessionBinding.files,
@@ -999,6 +1748,15 @@ async function run() {
     assert.equal(integratedRuntimeProof.retainedTextWorkspaceCurrentProofDigest, currentProfileProof.digest);
     assert.equal(integratedRuntimeProof.retainedTextWorkspaceNativeWriterFencing, false);
     assert.equal(integratedRuntimeProof.retainedTextWorkspaceNativeWriterQuiescence, false);
+    const currentVisionProfileProof = await fixture.visionWorkspace.attestCurrent();
+    assert.equal(
+      integratedRuntimeProof.retainedVisionWorkspaceProofDigest,
+      fixture.visionWorkspace.attestation.digest
+    );
+    assert.equal(integratedRuntimeProof.retainedVisionWorkspaceCurrentProofDigest, currentVisionProfileProof.digest);
+    assert.equal(integratedRuntimeProof.retainedVisionWorkspaceNativeWriterFencing, false);
+    assert.equal(integratedRuntimeProof.retainedVisionWorkspaceNativeWriterQuiescence, false);
+    assert.equal(integratedRuntimeProof.retainedVisionWorkspaceCrossProcessImageWriterFencing, false);
     assert.equal(integratedRuntimeProof.repositoryFence.leaseDigest, fixture.acquiredFence.lease.digest);
     assert.deepEqual(
       [...fixture.textWorkspace.attestation.enabledToolNames],
@@ -1074,19 +1832,32 @@ async function run() {
       browserSessionId: BROWSER_SESSION,
     })).run;
     assert.equal(noEvidenceHeld.recoveryState.status, "recovery_hold");
+    await mismatchFixture.visionMetadataBinding.directory.close();
+    await expectCode(
+      () => mismatchFixture.visionWorkspace.attestCurrent(),
+      "INTEGRATION_VISION_WORKSPACE_UNAVAILABLE"
+    );
     const roots = runtimeRoots(rootPath);
     const { authorization, authorized } = await authorizeRepositoryRun(fixture);
+    const visionRuntimeEvents = [];
+    const visionRuntimeLogs = [];
     const baseConfig = buildFixedNativeRunAgentConfig({
       mode: "start",
       policy: buildFixedIntegrationPolicy(),
       nativeSessionId: NATIVE_SESSION_ID,
-      inputText: "Inspect this JavaScript workspace and produce a concise verified maintenance report without modifying files.",
+      inputText: `Inspect the retained PNG image reference ${primaryPublished.reference.referenceId} and report visible evidence without modifying files.`,
       abortSignal: new AbortController().signal,
-      onEvent() {},
+      onEvent(type, data) {
+        visionRuntimeEvents.push(Object.freeze({ type, data }));
+      },
+      onLog(type, data) {
+        visionRuntimeLogs.push(Object.freeze({ type, data }));
+      },
       repositoryRoots: roots,
       expectedRuntimeRevision: 1,
       retainedNativeExecutionEvidence: fixture.evidence,
       retainedTextWorkspace: fixture.textWorkspace,
+      retainedVisionWorkspace: fixture.visionWorkspace,
       principalId: PRINCIPAL,
       browserSessionId: BROWSER_SESSION,
       threadId: THREAD_ID,
@@ -1094,37 +1865,239 @@ async function run() {
     });
     const config = deterministicRunAgentConfig(baseConfig, {
       mode: "start",
+      executionTier: "focused",
       expectedRuntimeRevision: 1,
       evidence: fixture.evidence,
       textWorkspace: fixture.textWorkspace,
+      visionWorkspace: fixture.visionWorkspace,
+      revokedReferenceId: revocable.reference.referenceId,
+      failureReferenceId: failureImage.reference.referenceId,
+      outputEchoReferenceId: outputEchoImage.reference.referenceId,
+      validReferenceId: primaryPublished.reference.referenceId,
       runId: RUN_ID,
     });
-    assert.equal(config.integrationSessionProfile, INTEGRATION_TEXT_WORKSPACE_PROFILE_ID);
+    assert.equal(config.integrationSessionProfile, INTEGRATION_VISION_WORKSPACE_PROFILE_ID);
     assert.equal(config.allowShellTool, false);
-    assert.equal(config.allowImagePerception, false);
+    assert.equal(config.allowImagePerception, true);
+    assert.deepEqual(config.integrationAllowedToolNames, INTEGRATION_VISION_WORKSPACE_TOOL_NAMES);
     const legacySessionRoot = path.join(roots.sessionsDir, NATIVE_SESSION_ID);
     const legacyGuard = installLegacySessionRootGuard(legacySessionRoot);
     let preflight;
     let postflight;
     let nativeResult;
+    let nativeVisionBinding;
     try {
       preflight = await preflightNativeSessionRuntime(config);
       assert.equal(preflight.retained, true);
       assert.equal(preflight.expectedAfterRevision, 1);
-      await bindRetainedNativeExecution(config, {
+      nativeVisionBinding = await bindRetainedNativeExecution(config, {
         authorization: authorized.receipt,
         snapshotHash: authorized.run.authority.snapshotHash,
       });
-      nativeResult = await runWithIntegrationSessionScope(config, () => runAgent(config));
+      nativeResult = await runWithIntegrationSessionScope(config, async () => {
+        const result = await runAgent(config);
+        const beforeLookalikeRequests = visionLoopback.requests.length;
+        await expectCode(
+          () => invokeIntegrationVisionWorkspace(
+            Object.freeze({ integrationSessionProfile: INTEGRATION_VISION_WORKSPACE_PROFILE_ID }),
+            { referenceId: primaryPublished.reference.referenceId }
+          ),
+          "INTEGRATION_SESSION_SCOPE_INVALID"
+        );
+        assert.equal(visionLoopback.requests.length, beforeLookalikeRequests);
+        return result;
+      });
       postflight = await postflightNativeSessionRuntime(config, preflight);
     } finally {
       legacyGuard.restore();
     }
     assert.deepEqual(legacyGuard.hits, []);
     assert.equal((await fs.lstat(legacySessionRoot)).isSymbolicLink(), true);
-    assert.match(nativeResult.result, /Retained text-workspace execution completed/u);
-    assert(config.clientFactory.promptAudit.planPayloads >= 1);
-    assert(config.clientFactory.promptAudit.executionPayloads >= 2);
+    assert.match(nativeResult.result, /Retained vision-workspace execution completed/u);
+    assert.equal(config.clientFactory.promptAudit.executionTier, "focused");
+    assert(config.clientFactory.promptAudit.executionPayloads >= 7);
+    for (const mode of ["wrapped", "tiny-json-chunks", "prefix-suffix"]) {
+      visionLoopback.setOutputEcho(outputEchoImage.reference.referenceId, mode);
+      let outputEchoError = null;
+      try {
+        await fixture.visionWorkspace.invokeReadImage(
+          nativeVisionBinding,
+          {
+            referenceId: outputEchoImage.reference.referenceId,
+            detail: "auto",
+          },
+          { abortSignal: new AbortController().signal }
+        );
+      } catch (error) {
+        outputEchoError = error;
+      }
+      assert(outputEchoError, `${mode} exact-image echo was not rejected`);
+      assert.equal(errorCode(outputEchoError), "INTEGRATION_VISION_OUTPUT_REJECTED");
+      assert.equal(outputEchoError.message, "The local vision response contained forbidden retained image data.");
+      assertNoEncodedImageFragments(
+        JSON.stringify({ code: errorCode(outputEchoError), message: outputEchoError.message }),
+        outputEchoImageBytes,
+        `${mode} public error`
+      );
+    }
+    visionLoopback.setOutputEcho(maximumUploadImage.reference.referenceId, "sparse-hidden-exact");
+    const sparseEchoStartedAt = performance.now();
+    await expectCode(
+      () => fixture.visionWorkspace.invokeReadImage(
+        nativeVisionBinding,
+        { referenceId: maximumUploadImage.reference.referenceId, detail: "auto" },
+        { abortSignal: new AbortController().signal }
+      ),
+      "INTEGRATION_VISION_OUTPUT_REJECTED"
+    );
+    const sparseEchoElapsedMs = performance.now() - sparseEchoStartedAt;
+    assert(
+      sparseEchoElapsedMs < 3_000,
+      `near-maximum retained image sparse exact-echo scan blocked for ${sparseEchoElapsedMs.toFixed(1)}ms`
+    );
+    visionLoopback.setOutputEcho(maximumUploadImage.reference.referenceId, "large-natural");
+    const maximumInputStartedAt = performance.now();
+    const maximumInputResult = await fixture.visionWorkspace.invokeReadImage(
+      nativeVisionBinding,
+      { referenceId: maximumUploadImage.reference.referenceId, detail: "auto" },
+      { abortSignal: new AbortController().signal }
+    );
+    const maximumInputElapsedMs = performance.now() - maximumInputStartedAt;
+    assert.equal(maximumInputResult.ok, true);
+    assert(
+      maximumInputElapsedMs < 3_000,
+      `near-maximum retained image plus long natural non-match blocked for ${maximumInputElapsedMs.toFixed(1)}ms`
+    );
+    assert.equal(fixture.visionWorkspace.attestation.completeBoundedInputEchoResponseWindowIndex, true);
+    visionLoopback.setOutputEcho(outputEchoImage.reference.referenceId, "wrapped");
+    const beforeForgedInvocationRequests = visionLoopback.requests.length;
+    for (const forgedArgs of [
+      { path: "forbidden.txt" },
+      { url: "https://forbidden.invalid/image.png" },
+      { base64: "Zm9yYmlkZGVu" },
+      { referenceId: primaryPublished.reference.referenceId, prompt: FORGED_BOUNDED_WRAPPED_VISION_PROMPT },
+      { referenceId: primaryPublished.reference.referenceId, prompt: FORGED_OVERSIZED_WRAPPED_VISION_PROMPT },
+      { referenceId: primaryPublished.reference.referenceId, provider: "openai" },
+      { referenceId: primaryPublished.reference.referenceId, model: "forged-model" },
+      { referenceId: primaryPublished.reference.referenceId, dryRun: true },
+      { referenceId: primaryPublished.reference.referenceId, clientFactory: Object.assign(() => {}, { agintiDeterministicTest: true }) },
+    ]) {
+      await expectCode(
+        () => fixture.visionWorkspace.invokeReadImage(
+          nativeVisionBinding,
+          forgedArgs,
+          { abortSignal: new AbortController().signal }
+        ),
+        "INTEGRATION_VISION_WORKSPACE_INVALID"
+      );
+    }
+    const revokedAbortSignal = Proxy.revocable(new AbortController().signal, {});
+    revokedAbortSignal.revoke();
+    await expectCode(
+      () => fixture.visionWorkspace.invokeReadImage(
+        nativeVisionBinding,
+        { referenceId: primaryPublished.reference.referenceId },
+        { abortSignal: revokedAbortSignal.proxy }
+      ),
+      "INTEGRATION_VISION_WORKSPACE_INVALID"
+    );
+    await expectCode(
+      () => fixture.visionWorkspace.invokeReadImage(
+        nativeVisionBinding,
+        { referenceId: primaryPublished.reference.referenceId },
+        { abortSignal: Object.create(AbortSignal.prototype) }
+      ),
+      "INTEGRATION_VISION_WORKSPACE_INVALID"
+    );
+    let abortAccessorCalls = 0;
+    const accessorAbortSignal = new AbortController().signal;
+    Object.defineProperty(accessorAbortSignal, "aborted", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        abortAccessorCalls += 1;
+        throw new Error("abort accessor must not run");
+      },
+    });
+    await expectCode(
+      () => fixture.visionWorkspace.invokeReadImage(
+        nativeVisionBinding,
+        { referenceId: primaryPublished.reference.referenceId },
+        { abortSignal: accessorAbortSignal }
+      ),
+      "INTEGRATION_VISION_WORKSPACE_INVALID"
+    );
+    assert.equal(abortAccessorCalls, 0);
+    assert.equal(visionLoopback.requests.length, beforeForgedInvocationRequests);
+    visionLoopback.setCancellationReferenceId(cancellationImage.reference.referenceId);
+    const cancellationController = new AbortController();
+    const cancellationPromise = fixture.visionWorkspace.invokeReadImage(
+      nativeVisionBinding,
+      {
+        referenceId: cancellationImage.reference.referenceId,
+        detail: "auto",
+      },
+      {
+        abortSignal: cancellationController.signal,
+        providerReadinessTimeoutMs: 5000,
+        modelTimeoutMs: 5000,
+      }
+    );
+    await visionLoopback.waitForPrompt(cancellationImage.reference.referenceId);
+    cancellationController.abort(new Error(
+      "echo=data:image/png;base64,Zm9yYmlkZGVu path=/tmp/private-vision.png secret=sk-abcdefghijklmnop"
+    ));
+    let cancellationError = null;
+    try {
+      await cancellationPromise;
+    } catch (error) {
+      cancellationError = error;
+    }
+    assert(cancellationError);
+    assert.equal(errorCode(cancellationError), "CANCELLED");
+    assert.equal(cancellationError.message, "Retained vision inference was cancelled.");
+    assert.doesNotMatch(JSON.stringify({
+      code: errorCode(cancellationError),
+      message: cancellationError.message,
+    }), /data:image|base64|\/tmp\/|sk-|echo=/u);
+    const completionRequests = visionLoopback.requests.filter((request) => request.url === "/v1/chat/completions");
+    assert.equal(completionRequests.length, 9);
+    assert(completionRequests.every((request) => request.bodyText.includes('"model":"localllm-vision"')));
+    const requestedDetails = completionRequests.map((request) => {
+      const payload = JSON.parse(request.bodyText);
+      return payload.messages[0].content.find((item) => item.type === "image_url").image_url.detail;
+    }).sort();
+    assert.deepEqual(requestedDetails, ["auto", "auto", "auto", "auto", "auto", "auto", "auto", "high", "low"]);
+    const retainedEventText = JSON.stringify(visionRuntimeEvents);
+    const retainedLogText = JSON.stringify(visionRuntimeLogs);
+    const forgedEncodedPayload = FORGED_VISION_BASE64.slice(FORGED_VISION_BASE64.indexOf(",") + 1);
+    assert.doesNotMatch(retainedEventText, /data:image\/png;base64,/u);
+    assert.doesNotMatch(retainedEventText, /\/tmp\/private-vision\.png/u);
+    assert.doesNotMatch(retainedEventText, /sk-abcdefghijklmnop/u);
+    assert.match(retainedEventText, /The exact loopback LocalLLM vision request failed/u);
+    assert.match(retainedEventText, /The local vision response contained forbidden retained image data/u);
+    assert.match(retainedEventText, /model\.text_tool_retry_requested/u);
+    assert.match(retainedEventText, /retained-vision-text-tool-retry/u);
+    assert.doesNotMatch(retainedEventText, /echo=/u);
+    for (const forbidden of [FORGED_VISION_ARGUMENT_MARKER, FORGED_VISION_TEXT_RETRY_MARKER, FORGED_VISION_PATH, FORGED_VISION_URL, forgedEncodedPayload]) {
+      assert.equal(retainedEventText.includes(forbidden), false, `forged vision argument leaked into runtime events: ${forbidden}`);
+    }
+    const retainedStartSnapshot = await fixture.sessionStateStore.loadSessionSnapshot(NATIVE_SESSION_ID);
+    const retainedStartText = JSON.stringify(retainedStartSnapshot.state);
+    for (const forbidden of [FORGED_VISION_ARGUMENT_MARKER, FORGED_VISION_TEXT_RETRY_MARKER, FORGED_VISION_PATH, FORGED_VISION_URL, forgedEncodedPayload]) {
+      assert.equal(retainedStartText.includes(forbidden), false, `forged vision argument leaked into retained state: ${forbidden}`);
+    }
+    for (const [label, text] of [
+      ["runtime events", retainedEventText],
+      ["runtime logs", retainedLogText],
+      ["retained start state", retainedStartText],
+      ["native result", nativeResult.result],
+    ]) {
+      assertNoEncodedImageFragments(text, primaryPng, label);
+      assertNoEncodedImageFragments(text, failureImageBytes, label);
+      assertNoEncodedImageFragments(text, outputEchoImageBytes, label);
+      assertNoEncodedImageFragments(text, FORGED_WRAPPED_VISION_BYTES, label);
+    }
     assert.equal(postflight.revision, 1);
     const terminal = Object.freeze({
       status: "completed",
@@ -1142,6 +2115,11 @@ async function run() {
 
     await fixture.authority.close();
     fixture = await openFixture(rootPath, now, processOwnerBootstrap);
+    const reopenedStartSnapshot = await fixture.sessionStateStore.loadSessionSnapshot(NATIVE_SESSION_ID);
+    const reopenedStartText = JSON.stringify(reopenedStartSnapshot.state);
+    for (const forbidden of [FORGED_VISION_ARGUMENT_MARKER, FORGED_VISION_TEXT_RETRY_MARKER, FORGED_VISION_PATH, FORGED_VISION_URL, forgedEncodedPayload]) {
+      assert.equal(reopenedStartText.includes(forbidden), false, `forged vision argument survived restart: ${forbidden}`);
+    }
     const recoveryOwner = fixture.processOwner;
     const reconciliation = await fixture.repository.reconcileIntegrationDispatches(
       reconciliationRequest(recoveryOwner, timestamp(20))
@@ -1232,17 +2210,53 @@ async function run() {
       recovered.thread,
       resumeOwner
     );
+    const resumeVisionScope = visionScope({ mode: "resume", runId: RESUME_RUN_ID });
+    const resumeValid = await fixture.visionWorkspace.stageImageUpload({
+      scope: resumeVisionScope,
+      mimeType: "image/png",
+      bytes: exactPng(2, 2, [15, 45, 75, 255]),
+    });
+    const resumeFailure = await fixture.visionWorkspace.stageImageUpload({
+      scope: resumeVisionScope,
+      mimeType: "image/png",
+      bytes: exactPng(2, 1, [25, 55, 85, 255]),
+    });
+    const resumeEchoBytes = exactPng(3, 1, [145, 85, 25, 255]);
+    const resumeEcho = await fixture.visionWorkspace.stageImageUpload({
+      scope: resumeVisionScope,
+      mimeType: "image/png",
+      bytes: resumeEchoBytes,
+    });
+    const resumeRevoked = await fixture.visionWorkspace.stageImageUpload({
+      scope: resumeVisionScope,
+      mimeType: "image/png",
+      bytes: exactPng(1, 2, [35, 65, 95, 255]),
+    });
+    await fixture.visionWorkspace.revokeImageReference({
+      scope: resumeVisionScope,
+      referenceId: resumeRevoked.reference.referenceId,
+    });
+    visionLoopback.setFailureReferenceId(resumeFailure.reference.referenceId);
+    visionLoopback.setOutputEcho(resumeEcho.reference.referenceId, "wrapped");
+    const resumeVisionEvents = [];
+    const resumeVisionLogs = [];
     const resumeBaseConfig = buildFixedNativeRunAgentConfig({
       mode: "resume",
       policy: buildFixedIntegrationPolicy(),
       nativeSessionId: NATIVE_SESSION_ID,
-      inputText: "Advance the retained native execution.",
+      inputText: `Resume and inspect the retained PNG image reference ${resumeValid.reference.referenceId}.`,
       abortSignal: new AbortController().signal,
-      onEvent() {},
+      onEvent(type, data) {
+        resumeVisionEvents.push(Object.freeze({ type, data }));
+      },
+      onLog(type, data) {
+        resumeVisionLogs.push(Object.freeze({ type, data }));
+      },
       repositoryRoots: roots,
       expectedRuntimeRevision: 1,
       retainedNativeExecutionEvidence: fixture.evidence,
       retainedTextWorkspace: fixture.textWorkspace,
+      retainedVisionWorkspace: fixture.visionWorkspace,
       principalId: PRINCIPAL,
       browserSessionId: BROWSER_SESSION,
       threadId: THREAD_ID,
@@ -1250,9 +2264,15 @@ async function run() {
     });
     const resumeConfig = deterministicRunAgentConfig(resumeBaseConfig, {
       mode: "resume",
+      executionTier: "thorough",
       expectedRuntimeRevision: 1,
       evidence: fixture.evidence,
       textWorkspace: fixture.textWorkspace,
+      visionWorkspace: fixture.visionWorkspace,
+      revokedReferenceId: resumeRevoked.reference.referenceId,
+      failureReferenceId: resumeFailure.reference.referenceId,
+      outputEchoReferenceId: resumeEcho.reference.referenceId,
+      validReferenceId: resumeValid.reference.referenceId,
       runId: RESUME_RUN_ID,
     });
     const resumeLegacyGuard = installLegacySessionRootGuard(legacySessionRoot);
@@ -1273,7 +2293,26 @@ async function run() {
       resumeLegacyGuard.restore();
     }
     assert.deepEqual(resumeLegacyGuard.hits, []);
-    assert(resumeConfig.clientFactory.promptAudit.executionPayloads >= 2);
+    assert.equal(resumeConfig.clientFactory.promptAudit.executionTier, "thorough");
+    assert(resumeConfig.clientFactory.promptAudit.executionPayloads >= 7);
+    const allCompletionRequests = visionLoopback.requests.filter((request) => request.url === "/v1/chat/completions");
+    assert.equal(allCompletionRequests.length, 12);
+    const resumeEventText = JSON.stringify(resumeVisionEvents);
+    const resumeLogText = JSON.stringify(resumeVisionLogs);
+    assert.doesNotMatch(resumeEventText, /data:image\/png;base64,|\/tmp\/private-vision\.png|sk-abcdefghijklmnop|echo=/u);
+    assert.match(resumeEventText, /The exact loopback LocalLLM vision request failed/u);
+    assert.match(resumeEventText, /The local vision response contained forbidden retained image data/u);
+    const retainedResumeSnapshot = await fixture.sessionStateStore.loadSessionSnapshot(NATIVE_SESSION_ID);
+    const retainedResumeText = JSON.stringify(retainedResumeSnapshot.state);
+    for (const [label, text] of [
+      ["resume runtime events", resumeEventText],
+      ["resume runtime logs", resumeLogText],
+      ["retained reopened resume state", retainedResumeText],
+      ["resumed native result", resumedNativeResult.result],
+    ]) {
+      assertNoEncodedImageFragments(text, resumeEchoBytes, label);
+      assertNoEncodedImageFragments(text, FORGED_WRAPPED_VISION_BYTES, label);
+    }
     assert.equal(resumePostflight.revision, 2);
     const resumedTerminal = Object.freeze({
       status: "completed",
@@ -1415,10 +2454,14 @@ async function run() {
       staleTextWorkspaceAttestationRejectedAfterHandoff: true,
       successorRecoveryAfterHandoff: true,
       textWorkspaceProfile: true,
+      visionWorkspaceProfile: true,
+      retainedPngReferencePerception: true,
+      maximumInputSparseEchoElapsedMs: Number(sparseEchoElapsedMs.toFixed(1)),
+      maximumInputNaturalOutputElapsedMs: Number(maximumInputElapsedMs.toFixed(1)),
       retainedHashChainedEventJournal: true,
       eventReplayAcrossResume: true,
       legacySessionRootAccess: false,
-      imagePerception: false,
+      pathOrHostedImagePerception: false,
       shellExecution: false,
       nativeSessionStateWriterFencing: false,
       nativeSessionStateWriterQuiescenceProven: false,
@@ -1430,6 +2473,11 @@ async function run() {
     await staleRuntimeFixture?.authority?.close?.().catch(() => {});
     await fixture?.authority.close().catch(() => {});
     await mismatchFixture?.authority.close().catch(() => {});
+    await visionLoopback.close().catch(() => {});
+    if (priorLocalLLMBaseURL === undefined) delete process.env.AGINTI_LOCALLLM_BASE_URL;
+    else process.env.AGINTI_LOCALLLM_BASE_URL = priorLocalLLMBaseURL;
+    if (priorLocalLLMApiKey === undefined) delete process.env.LOCALLLM_API_KEY;
+    else process.env.LOCALLLM_API_KEY = priorLocalLLMApiKey;
     await fs.rm(rootPath, { recursive: true, force: true });
     await fs.rm(mismatchRootPath, { recursive: true, force: true });
   }

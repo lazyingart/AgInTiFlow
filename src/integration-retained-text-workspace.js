@@ -738,6 +738,9 @@ export function assertRetainedIntegrationTextWorkspace(value, expected = {}) {
   if (expected.nativeExecutionEvidence && state.evidence !== expected.nativeExecutionEvidence) {
     fail("INTEGRATION_TEXT_WORKSPACE_UNAVAILABLE", "Text-workspace native evidence identity changed.");
   }
+  if (expected.sessionStateStore && state.store !== expected.sessionStateStore) {
+    fail("INTEGRATION_TEXT_WORKSPACE_UNAVAILABLE", "Text-workspace retained store identity changed.");
+  }
   if (
     expected.repository && state.repository !== expected.repository ||
     expected.recoveryCoordinator && state.recovery !== expected.recoveryCoordinator ||
