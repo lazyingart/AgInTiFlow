@@ -487,6 +487,31 @@ function codeProfileRequiresCommand(goal = "") {
   return substantiveCodeWork && !simpleDocumentWrite;
 }
 
+function goalRequestsWorkspaceMutation(goal = "") {
+  const text = normalizedText(goal);
+  return (
+    /\b(?:append|build|convert|copy|create|delete|edit|fix|generate|implement|modify|move|patch|refactor|remove|rename|repair|replace|rewrite|save|update|write)\b/.test(
+      text
+    ) ||
+    /创建|写入|编辑|修复|实现|修改|更新|生成|保存|复制|移动|转换|删除|重命名|替换|追加/.test(text)
+  );
+}
+
+function goalRequestsFileMutation(goal = "") {
+  const text = normalizedText(goal);
+  if (!goalRequestsWorkspaceMutation(text)) return false;
+  return (
+    /\b(?:code|codebase|document(?:ation)?|file|notes?|path|readme|repo(?:sitory)?|script|source|workspace)\b/.test(
+      text
+    ) ||
+    /(?:^|[\s`'"(])(?:\.{0,2}\/|\/)?[a-z0-9_.-]+(?:\/[a-z0-9_.{}-]+)+/i.test(text) ||
+    /\.(?:c|cc|cpp|cs|css|csv|go|h|hpp|html?|java|js|jsx|json|kt|md|mjs|php|py|rb|rs|sh|swift|tex|ts|tsx|txt|ya?ml)\b/i.test(
+      text
+    ) ||
+    /文件|文档|代码|代码库|仓库|脚本|源码|路径|工作区|说明书|笔记/.test(text)
+  );
+}
+
 function profileRequirementsForGoal(taskProfile = "", goal = "") {
   const profile = String(taskProfile || "").toLowerCase();
   const defaults = PROFILE_REQUIREMENTS[profile] || [];
@@ -510,8 +535,14 @@ function profileRequirementsForGoal(taskProfile = "", goal = "") {
     "aaps",
   ]);
   if (!codeLikeProfiles.has(profile)) return defaults;
-  if (codeProfileRequiresCommand(goal)) return defaults;
-  return defaults.filter((category) => category !== "command");
+  let requirements = [...defaults];
+  if (!goalRequestsWorkspaceMutation(goal)) {
+    requirements = requirements.filter((category) => category !== "file");
+  }
+  if (!codeProfileRequiresCommand(goal)) {
+    requirements = requirements.filter((category) => category !== "command");
+  }
+  return requirements;
 }
 
 function isReadOnlyReadinessTask(goal = "") {
@@ -550,18 +581,16 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
       ""
     )
     .replace(/\bfigure\s+out\b/gi, "");
+  const mandatoryEvidenceText = artifactSignalText.replace(
+    /[^.\n]{0,240}\b(?:as appropriate|if appropriate|when useful|where applicable)\b/gi,
+    " "
+  );
   const profile = String(taskProfile || "").toLowerCase();
   const categories = new Set(
     goalRequiresEvidence(positiveGoal, "") ? profileRequirementsForGoal(taskProfile, positiveGoal) : []
   );
 
-  if (
-    textHas(
-      text,
-      /\b(file|path|workspace|edit|patch|fix|repair|refactor|convert|copy|move|remove|delete|source|script|code)\b|\.(?:md|txt|js|jsx|ts|tsx|mjs|cjs|json|ya?ml|py|tex|html|css|svg|csv)\b|\b(?:markdown|json|yaml|html|css|tex|latex)\s+file\b|\bfile\s+(?:as|in)\s+(?:markdown|json|yaml|html|css|tex|latex)\b/
-    ) ||
-    /文件|写入文件|编辑|修复|转换|复制|移动|删除|脚本|代码/.test(text)
-  ) {
+  if (goalRequestsFileMutation(positiveGoal)) {
     categories.add("file");
   }
   const directCommandSignal =
@@ -577,13 +606,13 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   if (directCommandSignal || (validationSignal && codeProfileRequiresCommand(positiveGoal))) {
     categories.add("command");
   }
-  if (textHas(artifactSignalText, /\b(artifact|canvas|pdf|image|video|screenshot|cover|plot|chart|figure|docx|archive|copy to|export|generated|generate|draft)\b/) || /输出|产物|图片|视频|截图|封面|生成/.test(artifactSignalText)) {
+  if (textHas(mandatoryEvidenceText, /\b(artifact|canvas|pdf|image|video|screenshot|cover|plot|chart|figure|docx|archive|copy to|export|generated|generate|draft)\b/) || /输出|产物|图片|视频|截图|封面|生成/.test(mandatoryEvidenceText)) {
     categories.add("artifact");
   }
-  if (textHas(text, /\b(browser|chrome|chromium|cdp|devtools|playwright|selenium|web[- ]?ui|website|page|tab|composer|click|type|upload|attach|submit|form)\b/) || /浏览器|网页|页面|上传|提交|附件|资产库/.test(text)) {
+  if (textHas(mandatoryEvidenceText, /\b(browser|chrome|chromium|cdp|devtools|playwright|selenium|web[- ]?ui|website|page|tab|composer|click|type|upload|attach|submit|form)\b/) || /浏览器|网页|页面|上传|提交|附件|资产库/.test(mandatoryEvidenceText)) {
     categories.add("browser");
   }
-  if (textHas(text, /\b(screenshot|visible|visual|see|inspect image|open image|read_image|thumbnail)\b/) || /截图|可见|缩略图/.test(text)) {
+  if (textHas(mandatoryEvidenceText, /\b(screenshot|visible|visual|see|inspect image|open image|read_image|thumbnail)\b/) || /截图|可见|缩略图/.test(mandatoryEvidenceText)) {
     categories.add("visual");
   }
   if (

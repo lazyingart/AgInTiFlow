@@ -2423,6 +2423,28 @@ async function finishWithDirectAnswer({ config, state, store, observers, session
   };
 }
 
+export function resetGoalScopedRuntimeState(state = {}) {
+  state.meta = state.meta || {};
+  const keys = [
+    "artifactProgress",
+    "completionEvidenceRepair",
+    "dataProjectWorkflow",
+    "durableEvidenceCategories",
+    "durableGitActions",
+    "durableGitEvidence",
+    "failedTestRecoveryPacket",
+    "projectVerification",
+    "scs",
+  ];
+  const removed = [];
+  for (const key of keys) {
+    if (!(key in state.meta)) continue;
+    delete state.meta[key];
+    removed.push(key);
+  }
+  return removed;
+}
+
 async function applyContinuationPrompt(state, config, observers) {
   if (!config.resume || !config.goal) return null;
 
@@ -2439,6 +2461,9 @@ async function applyContinuationPrompt(state, config, observers) {
   state.meta = state.meta || {};
   const preserveTaskBoundary = preservesCurrentTaskBoundary(state, config.goal);
   const goalUpdate = updateGoalContract(state, config.goal, { preserveTaskBoundary });
+  if (!preserveTaskBoundary) {
+    resetGoalScopedRuntimeState(state);
+  }
   if (
     preserveTaskBoundary &&
     continuationAddsConcreteRequirement(config.goal) &&
@@ -2961,6 +2986,19 @@ function commandReportsTestFailure(result = {}) {
   );
 }
 
+function explicitExitProbeStatus(command = "", result = {}) {
+  const normalizedCommand = normalizeProjectCommand(command);
+  const hasExitProbe = /(?:^|;)\s*(?:echo|printf)\b[^;&|]*(?:EXIT|STATUS|RESULT)[^;&|]*\$\?[^;&|]*$/i.test(
+    normalizedCommand
+  );
+  if (!hasExitProbe) return { present: false, status: null };
+
+  const output = `${String(result.stdout || "")}\n${String(result.stderr || "")}`;
+  const matches = [...output.matchAll(/(?:^|\n)\s*(?:EXIT|STATUS|RESULT)(?:_CODE)?\s*[:=]\s*(-?\d+)\s*(?=\n|$)/gim)];
+  if (!matches.length) return { present: true, status: null };
+  return { present: true, status: Number(matches.at(-1)[1]) };
+}
+
 function actionableTestWarnings(result = {}) {
   const output = redactSensitiveText(`${String(result.stderr || "")}\n${String(result.stdout || "")}`);
   const warnings = [];
@@ -3133,17 +3171,24 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
 
   if (toolName === "run_command") {
     const command = normalizeProjectCommand(toolResult.args?.command || "");
+    const exitProbe = explicitExitProbeStatus(command, toolResult);
     const run = {
       command,
       at: now,
-      ok: toolResult.ok !== false && Number(toolResult.exitCode ?? 0) === 0,
+      ok:
+        toolResult.ok !== false &&
+        Number(toolResult.exitCode ?? 0) === 0 &&
+        (!exitProbe.present || exitProbe.status === 0),
       mutationRevision: verification.mutationRevision,
+      ...(exitProbe.present ? { explicitExitStatus: exitProbe.status } : {}),
     };
     verification.commandRuns = [...verification.commandRuns, run].slice(-40);
     toolResult.projectMutationRevision = verification.mutationRevision;
     if (isSubstantiveTestCommand(command)) {
       const zeroTests = commandReportsZeroTests(toolResult);
-      const reportedFailure = commandReportsTestFailure(toolResult);
+      const reportedFailure =
+        commandReportsTestFailure(toolResult) ||
+        (exitProbe.present && exitProbe.status !== 0);
       const qualityWarnings = actionableTestWarnings(toolResult);
       const passed = run.ok && !zeroTests && !reportedFailure && qualityWarnings.length === 0;
       const failedEvidence = passed ? {} : compactFailedTestEvidence(toolResult, config);

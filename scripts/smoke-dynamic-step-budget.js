@@ -26,6 +26,7 @@ import {
   recordProjectVerificationOutcome,
   recordExactOutputProgress,
   recordStaticDiscoveryProgress,
+  resetGoalScopedRuntimeState,
   resetStaticDiscoveryAfterContextLoss,
   rememberCompletedDeepResearch,
   repeatedNoProgressToolBlock,
@@ -37,6 +38,7 @@ import {
 import {
   augmentScsTaskContractWithProjectVerification,
   buildScsEvidenceLedger,
+  deriveScsTaskContract,
   evaluateScsEvidence,
 } from "../src/scs-evidence.js";
 import {
@@ -72,6 +74,128 @@ function toolMessage(payload) {
 
 try {
   assert(normalizeDynamicStepsMode("off") === "off", "dynamic mode off did not normalize");
+  const failedExitProbeState = { meta: {} };
+  const failedExitProbeResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: 'python -m unittest discover -s tests; echo "EXIT:$?"' },
+    stdout: "external contract did not pass\nEXIT:1\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(failedExitProbeState, failedExitProbeResult, {
+    commandCwd: workspace,
+    taskProfile: "qa",
+  });
+  assert(
+    failedExitProbeResult.projectTest?.passed === false &&
+      failedExitProbeResult.projectTest?.explicitExitStatus === 1,
+    "a wrapped nonzero test status was recorded as passing"
+  );
+  const missingExitProbeState = { meta: {} };
+  const missingExitProbeResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: 'python -m unittest discover -s tests; printf "EXIT=%s\\n" "$?"' },
+    stdout: "external contract output ended before the status marker\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(missingExitProbeState, missingExitProbeResult, {
+    commandCwd: workspace,
+    taskProfile: "qa",
+  });
+  assert(
+    missingExitProbeResult.projectTest?.passed === false &&
+      missingExitProbeResult.projectTest?.explicitExitStatus === null,
+    "a missing wrapped test status was recorded as passing"
+  );
+  const passingExitProbeState = { meta: {} };
+  const passingExitProbeResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: 'python -m unittest discover -s tests; echo "EXIT=$?"' },
+    stdout: "contract checks passed\nEXIT=0\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(passingExitProbeState, passingExitProbeResult, {
+    commandCwd: workspace,
+    taskProfile: "qa",
+  });
+  assert(
+    passingExitProbeResult.projectTest?.passed === true &&
+      passingExitProbeResult.projectTest?.explicitExitStatus === 0,
+    "a wrapped zero test status was not accepted"
+  );
+
+  const newGoalState = {
+    meta: {
+      artifactProgress: { complete: true },
+      completionEvidenceRepair: { attempts: 1 },
+      dataProjectWorkflow: { ready: true },
+      durableEvidenceCategories: ["file", "visual"],
+      durableGitActions: ["commit"],
+      durableGitEvidence: [{ action: "commit", goalRevision: 1 }],
+      failedTestRecoveryPacket: { content: "old failure" },
+      goalContract: { revision: 2 },
+      projectVerification: { mutationRevision: 4 },
+      scs: { taskContract: { exactOutputPaths: ["old-output.md"] } },
+      completedDeepResearch: [{ goalKey: "retained-other-goal" }],
+    },
+  };
+  const removedGoalState = resetGoalScopedRuntimeState(newGoalState);
+  assert(removedGoalState.includes("artifactProgress"), "new goal did not clear stale artifact progress");
+  assert(!newGoalState.meta.projectVerification, "new goal retained stale project verification");
+  assert(!newGoalState.meta.scs, "new goal retained the previous SCS task contract");
+  assert(!newGoalState.meta.durableEvidenceCategories, "new goal inherited completed evidence categories");
+  assert(newGoalState.meta.goalContract?.revision === 2, "new goal reset its durable goal contract");
+  assert(newGoalState.meta.completedDeepResearch?.length === 1, "new goal discarded goal-keyed research cache");
+
+  const optionalVisualContract = deriveScsTaskContract({
+    goal: "Repair the repository, verify it, commit, and push the intentional work.",
+    taskProfile: "github",
+    acceptanceCriteria: [
+      "Do not rely only on chat summaries; verify files, commands, screenshots, PDFs, reports, or app launches as appropriate.",
+    ],
+  });
+  assert(
+    !optionalVisualContract.requiredEvidence.some((item) => item.category === "visual"),
+    "an optional evidence example forced irrelevant visual validation"
+  );
+  const explicitVisualContract = deriveScsTaskContract({
+    goal: "Capture and inspect a screenshot of the repaired interface.",
+    taskProfile: "website",
+  });
+  assert(
+    explicitVisualContract.requiredEvidence.some((item) => item.category === "visual"),
+    "an explicit screenshot request lost visual validation"
+  );
+  const readOnlyCheckerContract = deriveScsTaskContract({
+    goal:
+      "Re-run /tmp/acceptance/github_maintenance_contract.py once, verify the repository, and do not edit, commit, or push anything.",
+    taskProfile: "github",
+  });
+  assert(
+    !readOnlyCheckerContract.requiredEvidence.some((item) => item.category === "file"),
+    "a read-only checker path was mistaken for a requested file change"
+  );
+  const canvasOnlyContract = deriveScsTaskContract({
+    goal: "Create a canvas artifact preview for this smoke test.",
+  });
+  assert(
+    canvasOnlyContract.requiredEvidence.some((item) => item.category === "artifact") &&
+      !canvasOnlyContract.requiredEvidence.some((item) => item.category === "file"),
+    "a virtual canvas artifact was mistaken for a workspace-file mutation"
+  );
+  const sourceRepairContract = deriveScsTaskContract({
+    goal: "Fix src/runtime.py and verify the focused tests.",
+    taskProfile: "python",
+  });
+  assert(
+    sourceRepairContract.requiredEvidence.some((item) => item.category === "file"),
+    "an explicit source repair lost its file-change evidence gate"
+  );
   assert(
     completionEvidenceNeedsCommand({ missingProjectCommands: ["python analysis.py"] }),
     "a pending canonical command did not reopen command execution"
