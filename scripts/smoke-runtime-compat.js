@@ -70,8 +70,11 @@ const server = spawn(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js")
 
 let stdout = "";
 let stderr = "";
+let baseUrl = `http://127.0.0.1:${port}`;
 server.stdout.on("data", (chunk) => {
   stdout += chunk.toString();
+  const announcedUrl = stdout.match(/Website control agent UI running on (http:\/\/127\.0\.0\.1:\d+)/)?.[1];
+  if (announcedUrl) baseUrl = announcedUrl;
 });
 server.stderr.on("data", (chunk) => {
   stderr += chunk.toString();
@@ -86,7 +89,7 @@ async function waitForHealth() {
   while (Date.now() < deadline) {
     if (server.exitCode !== null) break;
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/health`);
+      const response = await fetch(`${baseUrl}/health`);
       const health = await response.json();
       if (health.ok) return health;
     } catch {

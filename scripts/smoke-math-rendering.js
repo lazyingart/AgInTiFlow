@@ -9,7 +9,7 @@ import { chromium } from "playwright";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-math-smoke-"));
 const port = 48000 + Math.floor(Math.random() * 1000);
-const baseUrl = `http://127.0.0.1:${port}`;
+let baseUrl = `http://127.0.0.1:${port}`;
 const server = spawn(
   process.execPath,
   [path.join(repoRoot, "bin/aginti-cli.js"), "web", "--port", String(port), "--host", "127.0.0.1"],
@@ -29,6 +29,8 @@ let stderr = "";
 let browser;
 server.stdout.on("data", (chunk) => {
   stdout += chunk.toString();
+  const announcedUrl = stdout.match(/Website control agent UI running on (http:\/\/127\.0\.0\.1:\d+)/)?.[1];
+  if (announcedUrl) baseUrl = announcedUrl;
 });
 server.stderr.on("data", (chunk) => {
   stderr += chunk.toString();
@@ -53,6 +55,24 @@ async function waitForHealth() {
   throw new Error(`math smoke server did not become healthy. stdout=${stdout.slice(-500)} stderr=${stderr.slice(-500)}`);
 }
 
+async function waitForAnnouncedUrl() {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const announcedUrl = stdout.match(
+      /Website control agent UI running on (http:\/\/127\.0\.0\.1:\d+)/
+    )?.[1];
+    if (announcedUrl) {
+      baseUrl = announcedUrl;
+      return;
+    }
+    if (server.exitCode !== null) break;
+    await delay(50);
+  }
+  throw new Error(
+    `math smoke server did not announce its URL. stdout=${stdout.slice(-500)} stderr=${stderr.slice(-500)}`
+  );
+}
+
 async function assertTextAsset(assetPath, contentType, expectedText) {
   const response = await fetch(`${baseUrl}${assetPath}`);
   const body = await response.text();
@@ -65,6 +85,7 @@ async function assertTextAsset(assetPath, contentType, expectedText) {
 }
 
 try {
+  await waitForAnnouncedUrl();
   await waitForHealth();
   await assertTextAsset("/vendor/katex/katex.mjs", "javascript", "renderToString");
   await assertTextAsset("/vendor/katex/katex.min.css", "text/css", "KaTeX_Main");

@@ -19,7 +19,7 @@ import {
 import { formatBehaviorContractForPrompt } from "../src/behavior-contract.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { readCodebaseMap } from "../src/codebase-map.js";
-import { evaluateCommandPolicy } from "../src/command-policy.js";
+import { classifyCommand, evaluateCommandPolicy } from "../src/command-policy.js";
 import { shouldReviewToolResult } from "../src/scs-controller.js";
 import {
   engineeringGuidanceForTask,
@@ -328,6 +328,39 @@ try {
     packageInstallPolicy: "block",
     commandCwd: workspace,
   });
+  const opaqueInPlaceEditPolicy = evaluateCommandPolicy("sed -i 's/old/new/' report.md", {
+    allowShellTool: true,
+    sandboxMode: "host",
+    packageInstallPolicy: "block",
+    commandCwd: workspace,
+    allowDestructive: true,
+  });
+  assert(
+    opaqueInPlaceEditPolicy.writesWorkspace === true,
+    "an unknown host shell edit was incorrectly classified as read-only"
+  );
+  const destructiveGitPolicy = evaluateCommandPolicy("git reset --hard HEAD~1", {
+    allowShellTool: true,
+    sandboxMode: "host",
+    packageInstallPolicy: "block",
+    commandCwd: workspace,
+    allowDestructive: true,
+  });
+  assert(
+    destructiveGitPolicy.category === "destructive" &&
+      destructiveGitPolicy.writesWorkspace === true,
+    "a destructive git command was not classified as a workspace mutation"
+  );
+  const safeTagPolicy = evaluateCommandPolicy("git tag v0.20.216", {
+    allowShellTool: true,
+    sandboxMode: "host",
+    packageInstallPolicy: "block",
+    commandCwd: workspace,
+  });
+  assert(
+    safeTagPolicy.allowed && safeTagPolicy.category === "git-workflow" && safeTagPolicy.writesWorkspace,
+    "a bounded local git tag was not classified as a git workflow action"
+  );
   assert(boundedRgPolicy.allowed, "targeted bounded rg should remain allowed");
   const boundedAdvice = buildPermissionAdvice({
     toolName: "run_command",
@@ -692,6 +725,53 @@ try {
   const actualDangerAfterQuotePolicy = evaluateCommandPolicy('echo "rm -rf is text" && rm -rf reports', dockerWorkspacePolicy);
   assert(!actualDangerAfterQuotePolicy.allowed, "actual destructive command after quoted text should still be blocked");
   assert(actualDangerAfterQuotePolicy.category === "destructive", "actual destructive command after quoted text was not classified as destructive");
+  for (const command of [
+    "npm test &",
+    "npm test & sed -i 's/old/new/' report.md",
+  ]) {
+    const classification = classifyCommand(command);
+    const policy = evaluateCommandPolicy(command, hostWorkspacePolicy);
+    assert(
+      !policy.allowed &&
+        classification.category !== "test" &&
+        classification.substantiveTest !== true &&
+        classification.writesWorkspace === true,
+      `background execution bypassed bounded test policy: ${command}`
+    );
+  }
+  const backgroundPublishPolicy = evaluateCommandPolicy(
+    "npm test & npm publish",
+    { ...hostWorkspacePolicy, allowDestructive: true, allowPasswords: true }
+  );
+  assert(
+    !backgroundPublishPolicy.allowed && backgroundPublishPolicy.category === "blocked",
+    "a background test bypassed the hard package-publication guard"
+  );
+  for (const command of [
+    `node -e 'require("fs").writeFileSync("report.md", "changed")' --test`,
+    "node test/unit.test.js --test",
+  ]) {
+    const classification = classifyCommand(command);
+    assert(
+      classification.category !== "test" &&
+        classification.substantiveTest !== true &&
+        classification.writesWorkspace === true,
+      `a Node entrypoint fabricated test-runner identity: ${command}`
+    );
+  }
+  const redirectedTestPolicy = evaluateCommandPolicy("npm test 2>&1", hostWorkspacePolicy);
+  assert(
+    redirectedTestPolicy.allowed && redirectedTestPolicy.substantiveTest === true,
+    "descriptor redirection was mistaken for background test execution"
+  );
+  const singleQuoteBackslashPolicy = evaluateCommandPolicy(
+    "git status 'x\\\\'; touch report.md",
+    dockerWorkspacePolicy
+  );
+  assert(
+    !singleQuoteBackslashPolicy.allowed || singleQuoteBackslashPolicy.category !== "read-only",
+    "a literal backslash inside single quotes hid a following workspace mutation"
+  );
   const safeChmodAndRunPolicy = evaluateCommandPolicy(
     'chmod +x /workspace/reports/run_bounded_02079_v2.sh && bash /workspace/reports/run_bounded_02079.sh 2>&1; echo "RUN_COMMAND_EXIT: $?"',
     dockerWorkspacePolicy
@@ -996,6 +1076,18 @@ try {
   assert(sanitizedSmallRead.content === longSmallFile, "small read_file result did not keep full content for the model");
   assert(sanitizedSmallRead.contentTruncated === false, "small read_file result should not be marked truncated");
   assert(!("contentPreview" in sanitizedSmallRead), "small read_file result should not replace full content with preview");
+  const sanitizedCommandResult = sanitizeToolResult({
+    ok: true,
+    toolName: "run_command",
+    args: { command: "echo password=private-value" },
+    commandPolicy: { normalizedCommand: "echo password=private-value" },
+    stdout: "password=private-value",
+  });
+  const serializedCommandResult = JSON.stringify(sanitizedCommandResult);
+  assert(
+    !serializedCommandResult.includes("private-value") && serializedCommandResult.includes("[REDACTED]"),
+    "a nested normalized command bypassed tool-event redaction"
+  );
   const largeModelRead = toolResultForModel({
     ok: true,
     toolName: "read_file",
@@ -1442,6 +1534,44 @@ try {
   assert(
     hybridPatch.ok && hybridPatchText === "alpha\nnew\nomega\n",
     "hybrid wrapped unified apply_patch did not update expected file"
+  );
+
+  await fs.mkdir(path.join(workspace, "a"), { recursive: true });
+  await fs.writeFile(path.join(workspace, "report.md"), "root report\n", "utf8");
+  await fs.writeFile(path.join(workspace, "a", "report.md"), "nested old\n", "utf8");
+  const nestedCustomPatch = await executeWorkspaceTool(
+    "apply_patch",
+    {
+      patch: [
+        "*** Begin Patch",
+        "*** Update File: a/report.md",
+        "@@",
+        "-nested old",
+        "+nested new",
+        "*** End Patch",
+      ].join("\n"),
+    },
+    { commandCwd: workspace, allowFileTools: true }
+  );
+  assert(
+    nestedCustomPatch.ok &&
+      (await fs.readFile(path.join(workspace, "a", "report.md"), "utf8")) === "nested new\n" &&
+      (await fs.readFile(path.join(workspace, "report.md"), "utf8")) === "root report\n",
+    "custom patch path canonicalization confused a real a/ directory with a unified-diff prefix"
+  );
+  const nestedCustomDelete = await executeWorkspaceTool(
+    "apply_patch",
+    { patch: ["*** Begin Patch", "*** Delete File: a/report.md", "*** End Patch"].join("\n") },
+    { commandCwd: workspace, allowFileTools: true }
+  );
+  assert(nestedCustomDelete.ok, "custom patch could not delete its exact nested target");
+  const nestedStillExists = await fs
+    .stat(path.join(workspace, "a", "report.md"))
+    .then(() => true)
+    .catch(() => false);
+  assert(
+    !nestedStillExists && (await fs.readFile(path.join(workspace, "report.md"), "utf8")) === "root report\n",
+    "custom delete stripped a real a/ directory and deleted the wrong root file"
   );
 
   await fs.writeFile(path.join(workspace, "repair-report.md"), "old report\n", "utf8");

@@ -211,3 +211,27 @@ IDs `7`, `12`, and `19`, tag relationships, schema columns, foreign keys,
 idempotent reopening, stable URL updates, literal punctuation, archive
 filtering, absence of destructive SQL, intentional commit history, and a clean
 worktree. The hidden contract passed.
+
+### Shell grammar, mutation revision, and output provenance hardening
+
+The next campaign phase exercised completion evidence under realistic compound
+commands, multiline acceptance criteria, delegated test runners, Git workflows,
+and pre-existing output files. The reusable repair centralizes shell
+canonicalization, command classification, Git-action intent, and evidence
+tracking instead of adding project- or prompt-specific branches. In particular,
+escaped line continuations and heredocs are parsed structurally; read-only test
+evidence is separated from write capability; later mutations invalidate stale
+validation; commit, pull-request, tag, and push evidence must occur in the
+requested order; and exact output files count only when the current required
+generator created or changed them.
+
+Five independent review rounds found and drove regressions for inline mutation
+batches, stale opaque validators, Git grammar and ordering, zero-test runners,
+external executable paths, arithmetic shifts mistaken for heredocs, multiline
+command substitutions, stale exact outputs, and ambiguous Git nouns such as
+"commit message" or "branch diagram". A final fresh hosted Codex review was
+blocked by its rolling quota and the DeepSeek review route was blocked by
+provider balance. A separate read-only `localllm-deep` review completed with no
+actionable findings. The full `npm test` suite, focused dynamic-step-budget,
+coding-tools, SCS-evidence, and syntax checks all pass before packaging
+AgInTiFlow `0.20.216`.

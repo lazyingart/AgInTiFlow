@@ -45,6 +45,17 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function captureUntil(target, pattern, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  let latest = null;
+  while (Date.now() < deadline) {
+    latest = await captureTmuxPane({ target, lines: 40 });
+    if (latest.ok && pattern.test(latest.content)) return latest;
+    await sleep(100);
+  }
+  return latest;
+}
+
 try {
   if (!(await tmuxAvailable())) {
     console.log(JSON.stringify({ ok: true, skipped: true, reason: "tmux is not installed" }, null, 2));
@@ -55,17 +66,24 @@ try {
   assert.equal(start.ok, true, start.error || start.reason);
   await sleep(250);
 
+  const executionMarker = `AGINTI_TMUX_EXECUTED_${process.pid}`;
   const send = await sendTmuxKeys({
     target: start.target,
-    text: "printf 'aginti tmux smoke\\n'; pwd",
+    text: `pwd; printf 'AGINTI_TMUX_EXECUTED_%s\\n' '${process.pid}'`,
     enter: true,
   }, config);
   assert.equal(send.ok, true, send.error || send.reason);
-  await sleep(500);
 
-  const capture = await captureTmuxPane({ target: start.target, lines: 40 });
+  const capture = await captureUntil(
+    start.target,
+    new RegExp(`(?:^|\\n)${executionMarker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\n|$)`)
+  );
   assert.equal(capture.ok, true, capture.error || capture.reason);
-  assert.match(capture.content, /aginti tmux smoke/, "tmux capture did not include command output");
+  assert.match(
+    capture.content,
+    new RegExp(`(?:^|\\n)${executionMarker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\n|$)`),
+    "tmux capture did not include the output-only execution marker"
+  );
   assert.match(capture.content, new RegExp(workspace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "tmux cwd was not workspace");
 
   const list = await listTmuxSessions({ includePanes: true });

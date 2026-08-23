@@ -250,7 +250,7 @@ function sanitizePathInput(inputPath) {
   return value;
 }
 
-function normalizeWorkspaceInputPath(rawPath) {
+export function normalizeWorkspaceInputPath(rawPath) {
   if (rawPath === "/workspace") return ".";
   if (rawPath.startsWith("/workspace/")) return rawPath.slice("/workspace/".length) || ".";
   return rawPath;
@@ -1054,12 +1054,12 @@ function ensurePatchSize(patch) {
   if (bytes > MAX_PATCH_BYTES) throw new Error(`Patch is too large for safe workspace tools (${bytes} bytes).`);
 }
 
-function cleanPatchPath(rawPath) {
+function cleanPatchPath(rawPath, { stripUnifiedPrefix = false } = {}) {
   let value = String(rawPath || "").trim();
   value = value.replace(/^"|"$/g, "");
   if (!value || value === "/dev/null") return "";
   value = value.replace(/^\.[/\\]/, "");
-  value = value.replace(/^[ab]\//, "");
+  if (stripUnifiedPrefix) value = value.replace(/^[ab]\//, "");
   return value;
 }
 
@@ -1168,8 +1168,8 @@ function parseUnifiedPatchDocument(patch) {
       continue;
     }
 
-    const oldPath = cleanPatchPath(oldHeader[1].split(/\s+/)[0]);
-    const newPath = cleanPatchPath(newHeader[1].split(/\s+/)[0]);
+    const oldPath = cleanPatchPath(oldHeader[1].split(/\s+/)[0], { stripUnifiedPrefix: true });
+    const newPath = cleanPatchPath(newHeader[1].split(/\s+/)[0], { stripUnifiedPrefix: true });
     const hunkLines = [];
     index += 2;
     while (index < lines.length && !/^---\s+/.test(lines[index])) {
@@ -1193,7 +1193,7 @@ function parseUnifiedPatchDocument(patch) {
   return operations;
 }
 
-function parsePatchDocument(patch) {
+export function parsePatchDocument(patch) {
   const text = String(patch || "")
     .trim()
     .replace(/^\*\*\* Begin Patch(?: \*\*\*)?\s*\n/i, "")

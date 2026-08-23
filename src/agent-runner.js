@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
@@ -27,9 +28,27 @@ import { captureSnapshot } from "./snapshot.js";
 import { checkToolUse } from "./guardrails.js";
 import { ensureDockerSandboxReady, runDockerSandboxCommand } from "./docker-sandbox.js";
 import { normalizeWrapperName, runAgentWrapper, wrapperStatusText } from "./tool-wrappers.js";
-import { evaluateCommandPolicy } from "./command-policy.js";
+import {
+  classifyCommand,
+  evaluateCommandPolicy,
+  normalizeCommandForPolicy,
+} from "./command-policy.js";
+import {
+  canonicalizeShellCommand,
+  parseTopLevelShellSequence,
+  shellCommandNeedsContinuation,
+  startsWithShellArrayAssignment,
+  tokenizeShellWords,
+} from "./shell-syntax.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
-import { executeWorkspaceTool, resolveWorkspacePath, summarizeWorkspaceTools, WORKSPACE_TOOL_NAMES } from "./workspace-tools.js";
+import {
+  executeWorkspaceTool,
+  normalizeWorkspaceInputPath,
+  parsePatchDocument,
+  resolveWorkspacePath,
+  summarizeWorkspaceTools,
+  WORKSPACE_TOOL_NAMES,
+} from "./workspace-tools.js";
 import { normalizeCanvasPayload, persistCanvasPayloadFile } from "./artifact-tunnel.js";
 import { getTaskProfile } from "./task-profiles.js";
 import { generateImage, listAuxiliarySkills } from "./auxiliary-tools.js";
@@ -101,7 +120,11 @@ import {
   finishResultClaimsIncompleteWork,
   hasScsBlockerEvidence,
   inferGitActionsFromCommand,
+  inferSuccessfulGitActionsFromCommandResult,
+  isObservationalGitAction,
   gitActionsSatisfyContract,
+  parseExplicitExitStatus,
+  parseNonMutatingExitStatusWrapper,
 } from "./scs-evidence.js";
 import {
   DEFAULT_SCS_MODE,
@@ -274,6 +297,8 @@ function buildScsRuntimeContext(config = {}, state = {}, extra = {}) {
   });
   const verification = state.meta?.projectVerification || {};
   const mutationRevision = Number(verification.mutationRevision || 0);
+  const requiredCommands = effectiveRequiredProjectCommands(state, verification, config).slice(0, 16);
+  const requiredCommandBatch = currentRequiredCommandBatch(verification, requiredCommands);
   const currentTest = [...(Array.isArray(verification.testRuns) ? verification.testRuns : [])]
     .reverse()
     .find((run) => Number(run?.mutationRevision || 0) === mutationRevision);
@@ -299,9 +324,16 @@ function buildScsRuntimeContext(config = {}, state = {}, extra = {}) {
       requiredOutputs: Array.isArray(verification.requiredOutputs)
         ? verification.requiredOutputs.slice(0, 32)
         : [],
-      requiredCommands: Array.isArray(verification.requiredCommands)
-        ? verification.requiredCommands.slice(0, 16)
-        : [],
+      requiredCommands,
+      requiredCommandBatch: requiredCommandBatch
+        ? {
+            id: requiredCommandBatch.id,
+            completedCommands: requiredCommandBatch.completedCommands.slice(0, 16),
+            complete: requiredCommandBatch.complete === true,
+            startedMutationRevision: Number(requiredCommandBatch.startedMutationRevision || 0),
+            lastMutationRevision: Number(requiredCommandBatch.lastMutationRevision || 0),
+          }
+        : null,
       currentTest: currentTest
         ? {
             command: String(currentTest.command || ""),
@@ -1034,6 +1066,8 @@ function compactVerificationCheckpoint(state = {}) {
   const verification = state.meta?.projectVerification || {};
   const artifactProgress = state.meta?.artifactProgress || {};
   const currentFailure = currentFailedProjectTest(state)?.test;
+  const requiredCommands = effectiveRequiredProjectCommands(state, verification).slice(0, 12);
+  const requiredCommandBatch = currentRequiredCommandBatch(verification, requiredCommands);
   return {
     mutationRevision: Math.max(0, Number(verification.mutationRevision || 0)),
     currentFailedTest: currentFailure
@@ -1047,9 +1081,19 @@ function compactVerificationCheckpoint(state = {}) {
         }
       : null,
     lastMutation: verification.lastMutation || null,
-    requiredCommands: Array.isArray(verification.requiredCommands)
-      ? verification.requiredCommands.slice(0, 12)
+    mutationHistory: Array.isArray(verification.mutationHistory)
+      ? verification.mutationHistory.slice(-32)
       : [],
+    requiredCommands,
+    requiredCommandBatch: requiredCommandBatch
+      ? {
+          id: requiredCommandBatch.id,
+          completedCommands: requiredCommandBatch.completedCommands.slice(0, 12),
+          complete: requiredCommandBatch.complete === true,
+          startedMutationRevision: Number(requiredCommandBatch.startedMutationRevision || 0),
+          lastMutationRevision: Number(requiredCommandBatch.lastMutationRevision || 0),
+        }
+      : null,
     completedArtifacts: Array.isArray(artifactProgress.completed)
       ? artifactProgress.completed.slice(0, 32)
       : [],
@@ -2018,10 +2062,10 @@ async function maybeExtendStepBudget({ client, config, state, store, observers, 
       (() => {
         const verification = state.meta?.projectVerification || {};
         const revision = Number(verification.mutationRevision || 0);
-        const pendingCommands = (verification.requiredCommands || []).filter(
+        const pendingCommands = effectiveRequiredProjectCommands(state, verification, config).filter(
           (command) =>
-            !(verification.commandRuns || []).some(
-              (run) => run.ok && run.command === command && Number(run.mutationRevision || 0) === revision
+            !(verification.commandRuns || []).some((run) =>
+              requiredCommandRunIsCurrent(verification, command, run, config)
             )
         );
         const testsCurrent = (verification.testRuns || []).some(
@@ -2500,6 +2544,7 @@ async function applyContinuationPrompt(state, config, observers) {
       reopenedAt: new Date().toISOString(),
       reopenedGoalRevision: Number(goalUpdate?.revision || 0),
       reopenedMutationRevision: projectMutationRevision,
+      reopenedSourceMutationRevision: 0,
       reopenedRequest: compactMultiline(config.goal, 1200),
       reopenedSourcePaths,
     };
@@ -2701,9 +2746,17 @@ function safeExecutionEnv() {
   };
 }
 
-function trimOutput(value = "", limit = 8000) {
+export function trimCommandOutput(value = "", limit = 8000) {
   const text = redactSensitiveText(String(value || ""));
-  return text.trim().slice(0, limit);
+  const trimmed = text.trim();
+  const boundedLimit = Math.max(0, Math.floor(Number(limit) || 0));
+  if (!boundedLimit) return "";
+  if (trimmed.length <= boundedLimit) return trimmed;
+  const marker = "\n... output omitted ...\n";
+  if (boundedLimit <= marker.length + 2) return trimmed.slice(-boundedLimit);
+  const tailLength = Math.max(1, Math.floor((boundedLimit - marker.length) / 3));
+  const headLength = Math.max(0, boundedLimit - marker.length - tailLength);
+  return `${trimmed.slice(0, headLength)}${marker}${trimmed.slice(-tailLength)}`;
 }
 
 function killChildTree(child, signal = "SIGTERM") {
@@ -2954,31 +3007,115 @@ const PROJECT_VERIFICATION_PROFILES = new Set([
 ]);
 
 function normalizeProjectCommand(command = "") {
-  return String(command || "")
-    .replace(/\\\s*\n\s*/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return canonicalizeShellCommand(command);
 }
 
-export function isSubstantiveTestCommand(command = "") {
-  const text = normalizeProjectCommand(command);
+function normalizeLeadingWorkspaceCd(command = "", config = {}) {
+  const normalized = normalizeProjectCommand(command);
+  const sequence = parseTopLevelShellSequence(normalized);
+  if (
+    !normalized ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator ||
+    !sequence.commands.length ||
+    (sequence.commands.length > 1 && sequence.separators[0] !== "&&")
+  ) {
+    return normalized;
+  }
+
+  const leadingCommand = sequence.commands[0];
+  const tokens = tokenizeShellWords(leadingCommand);
+  if (tokens.length !== 2 || tokens[0] !== "cd" || !normalized.startsWith(leadingCommand)) {
+    return normalized;
+  }
+  const remainder = normalized.slice(leadingCommand.length);
+  if (
+    (sequence.commands.length === 1 && remainder) ||
+    (sequence.commands.length > 1 && !/^\s*&&/.test(remainder))
+  ) {
+    return normalized;
+  }
+
+  const commandCwd = path.resolve(config.commandCwd || process.cwd());
+  const target = normalizeWorkspaceInputPath(tokens[1]);
+  if (path.resolve(commandCwd, target) !== commandCwd) return normalized;
+  const canonicalRemainder = remainder.replace(/^\s*&&\s*/, " && ");
+  return normalizeProjectCommand(`cd .${canonicalRemainder}`);
+}
+
+function projectCommandsEquivalent(left = "", right = "", config = {}) {
+  const normalizedLeft = normalizeLeadingWorkspaceCd(left, config);
+  const normalizedRight = normalizeLeadingWorkspaceCd(right, config);
+  return Boolean(normalizedLeft && normalizedLeft === normalizedRight);
+}
+
+export function isSubstantiveTestCommand(command = "", config = {}) {
+  const normalized = normalizeProjectCommand(normalizeCommandForPolicy(command, config));
+  const text = parseNonMutatingExitStatusWrapper(normalized)?.command || normalized;
   if (!text) return false;
-  return (
-    /(?:^|[;&|]\s*)(?:python(?:\d+(?:\.\d+)*)?\s+-m\s+)?(?:pytest|unittest)(?:\s|$)/i.test(text) ||
-    /(?:^|[;&|]\s*)python(?:\d+(?:\.\d+)*)?\s+[^;&|]*(?:tests?[\\/]|test_[^/\\\s]+\.py\b)/i.test(text) ||
-    /(?:^|[;&|]\s*)(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test(?:\s|$)/i.test(text) ||
-    /(?:^|[;&|]\s*)(?:cargo|go|dotnet|mvnw?|gradlew?)\s+test(?:\s|$)/i.test(text) ||
-    /(?:^|[;&|]\s*)(?:ctest|make\s+(?:test|check))(?:\s|$)/i.test(text)
-  );
+  const classification = classifyCommand(text);
+  if (classification.substantiveTest !== true) return false;
+  const sequence = parseTopLevelShellSequence(text);
+  if (sequence.commands.length <= 1) return true;
+  if (!sequence.separators.every((separator) => separator === "&&")) return false;
+
+  let lastTestIndex = -1;
+  let lastMutationIndex = -1;
+  sequence.commands.forEach((segment, index) => {
+    const segmentPolicy = classifyCommand(segment);
+    if (segmentPolicy.substantiveTest === true) lastTestIndex = index;
+    if (commandCanMutateProjectContent(segment, segmentPolicy)) lastMutationIndex = index;
+  });
+  return lastTestIndex >= 0 && lastTestIndex >= lastMutationIndex;
 }
 
 function commandReportsZeroTests(result = {}) {
   const output = `${String(result.stdout || "")}\n${String(result.stderr || "")}`;
+  const tapCounters = {};
+  for (const match of output.matchAll(
+    /^#\s*(tests|pass|fail|skipped|cancelled|todo)\s+(\d+)\s*$/gim
+  )) {
+    tapCounters[String(match[1] || "").toLowerCase()] = Number(match[2]);
+  }
+  const allDiscoveredTapTestsSkipped =
+    Number.isInteger(tapCounters.tests) &&
+    tapCounters.tests > 0 &&
+    tapCounters.pass === 0 &&
+    tapCounters.fail === 0 &&
+    Number(tapCounters.skipped || 0) +
+      Number(tapCounters.cancelled || 0) +
+      Number(tapCounters.todo || 0) >=
+      tapCounters.tests;
+  if (allDiscoveredTapTestsSkipped) return true;
+  const explicitNoTests =
+    /\b(?:warning:\s*)?no tests? to run\b/i.test(output) ||
+    /\[\s*no test files\s*\]/i.test(output) ||
+    /\bno tests? (?:is|are) available\b/i.test(output) ||
+    /\bno test matches\b/i.test(output) ||
+    /^>\s*Task\s+\S*test\S*\s+NO-SOURCE\s*$/im.test(output);
+  const positiveCount =
+    /\bRan\s+[1-9]\d*\s+tests?\b/i.test(output) ||
+    /\bcollected\s+[1-9]\d*\s+items?\b/i.test(output) ||
+    /\brunning\s+[1-9]\d*\s+tests?\b/i.test(output) ||
+    /\btests?\s+run:\s*[1-9]\d*\b/i.test(output) ||
+    /\btotal\s+tests?:\s*[1-9]\d*\b/i.test(output) ||
+    /\b[1-9]\d*\s+(?:tests?|specs?)\s+(?:passed|executed|run)\b/i.test(output) ||
+    /^ok\s+\S+\s+(?:\(cached\)|\d+(?:\.\d+)?s)(?![^\n]*\[\s*no tests? to run\s*\])[^\n]*$/im.test(output) ||
+    /^#\s*tests\s+[1-9]\d*\s*$/im.test(output) ||
+    /^1\.\.[1-9]\d*\s*$/m.test(output);
+  if (positiveCount) return false;
+  if (explicitNoTests) return true;
   return (
     /\bRan\s+0\s+tests?\b/i.test(output) ||
     /\bcollected\s+0\s+items?\b/i.test(output) ||
     /\bno tests? (?:ran|were found|found)\b/i.test(output) ||
-    /\b0\s+(?:tests?|specs?)\s+(?:passed|executed|run)\b/i.test(output)
+    /\brunning\s+0\s+tests?\b/i.test(output) ||
+    /\btests?\s+run:\s*0\b/i.test(output) ||
+    /\btotal\s+tests?:\s*0\b/i.test(output) ||
+    /\b0\s+(?:tests?|specs?)\s+(?:passed|executed|run)\b/i.test(output) ||
+    /^#\s*tests\s+0\s*$/im.test(output) ||
+    /^1\.\.0\s*$/m.test(output)
   );
 }
 
@@ -2996,15 +3133,14 @@ function commandReportsTestFailure(result = {}) {
 
 function explicitExitProbeStatus(command = "", result = {}) {
   const normalizedCommand = normalizeProjectCommand(command);
-  const hasExitProbe = /(?:^|;)\s*(?:echo|printf)\b[^;&|]*(?:EXIT|STATUS|RESULT)[^;&|]*\$\?[^;&|]*$/i.test(
-    normalizedCommand
-  );
-  if (!hasExitProbe) return { present: false, status: null };
+  const exitProbe = parseNonMutatingExitStatusWrapper(normalizedCommand);
+  if (!exitProbe) return { present: false, status: null, command: normalizedCommand };
 
-  const output = `${String(result.stdout || "")}\n${String(result.stderr || "")}`;
-  const matches = [...output.matchAll(/(?:^|\n)\s*(?:EXIT|STATUS|RESULT)(?:_CODE)?\s*[:=]\s*(-?\d+)\s*(?=\n|$)/gim)];
-  if (!matches.length) return { present: true, status: null };
-  return { present: true, status: Number(matches.at(-1)[1]) };
+  return {
+    present: true,
+    status: parseExplicitExitStatus(result.stdout || ""),
+    command: exitProbe.command,
+  };
 }
 
 function actionableTestWarnings(result = {}) {
@@ -3090,10 +3226,68 @@ function markdownRequiredOutputs(content = "") {
   return [...new Set(outputs)].slice(0, 32);
 }
 
+function shellFenceContextCommand(value = "") {
+  const command = String(value || "").trim();
+  const functionDefinition =
+    /^(?:(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)|function\s+[A-Za-z_][A-Za-z0-9_]*)\s*\{/.test(
+      command
+    ) &&
+    /\}\s*;?\s*$/.test(command) &&
+    !shellCommandNeedsContinuation(command);
+  if (functionDefinition) return true;
+  if (
+    startsWithShellArrayAssignment(command) &&
+    /\)\s*;?\s*$/.test(command) &&
+    !shellCommandNeedsContinuation(command)
+  ) {
+    return true;
+  }
+  const sequence = parseTopLevelShellSequence(command);
+  if (
+    !command ||
+    command.includes("\n") ||
+    sequence.commands.length !== 1 ||
+    sequence.separators.length ||
+    sequence.trailingSeparator
+  ) {
+    return false;
+  }
+  const tokens = tokenizeShellWords(command);
+  if (!tokens.length) return false;
+  if (tokens.every((token) => /^[A-Za-z_][A-Za-z0-9_]*=.*$/s.test(String(token)))) return true;
+  return new Set([".", "cd", "export", "set", "shopt", "source", "umask", "unset"]).has(
+    String(tokens[0] || "").toLowerCase()
+  );
+}
+
+function shellFenceNeedsLiteralLines(value = "") {
+  const script = String(value || "");
+  return Boolean(
+    /<<-?\s*(?:['"][^'"\n]+['"]|[^\s;&|<>]+)/.test(script) ||
+      /(?:^|\n)\s*(?:if|for|while|until|select|case)\b/.test(script) ||
+      /(?:^|\n)\s*(?:(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)|function\s+[A-Za-z_][A-Za-z0-9_]*)\s*\{/.test(script) ||
+      startsWithShellArrayAssignment(script) ||
+      /(?:^|\n)\s*[({](?:\s|$)/.test(script)
+  );
+}
+
+function canonicalRequiredFenceCommand(value = "") {
+  const script = String(value || "").replace(/\r\n?/g, "\n").trim();
+  if (!script) return "";
+  if (shellFenceNeedsLiteralLines(script)) return normalizeProjectCommand(script);
+  return normalizeProjectCommand(
+    script
+      .replace(/\\[ \t]*\n[ \t]*/g, " ")
+      .replace(/\s+/g, " ")
+  );
+}
+
 function markdownRequiredCommands(content = "") {
   const text = String(content || "");
   const commands = [];
-  for (const match of text.matchAll(/```(?:bash|sh|shell|console)?\s*\n([\s\S]*?)```/gi)) {
+  for (const match of text.matchAll(/```([A-Za-z0-9_-]*)[ \t]*\n([\s\S]*?)```/gi)) {
+    const language = String(match[1] || "").toLowerCase();
+    if (language && !["bash", "sh", "shell", "console"].includes(language)) continue;
     const before = text.slice(Math.max(0, Number(match.index || 0) - 420), Number(match.index || 0));
     if (
       !/(?:run|running|execute|command|verify|validation|regenerate)[^\n.]{0,180}(?:must|required|should|use|run|regenerate)|(?:必须|需要|应当|运行|执行|验证)[^。\n]{0,180}(?:命令|生成|输出|交付)/i.test(
@@ -3102,13 +3296,36 @@ function markdownRequiredCommands(content = "") {
     ) {
       continue;
     }
-    const block = String(match[1] || "")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line && !line.startsWith("#"))
-      .join(" ");
-    const command = normalizeProjectCommand(block);
-    if (command && !/[<>](?:PATH|FILE|COMMAND|VALUE)[<>]?/i.test(command)) commands.push(command);
+    const body = String(match[2] || "");
+    const fenceCommandStart = commands.length;
+    const context = [];
+    let pending = "";
+    const record = (value) => {
+      const command = canonicalRequiredFenceCommand(value);
+      if (!command || /[<>](?:PATH|FILE|COMMAND|VALUE)[<>]?/i.test(command)) return;
+      if (shellFenceContextCommand(command)) {
+        context.push(command);
+        return;
+      }
+      commands.push(context.length ? `${context.join(" && ")} && ${command}` : command);
+    };
+    for (const sourceLine of body.split("\n")) {
+      let line = sourceLine;
+      const trimmed = line.trim();
+      if (!pending && (!trimmed || trimmed.startsWith("#"))) continue;
+      if (language === "console") {
+        if (!pending && !/^\$\s+/.test(trimmed)) continue;
+        line = pending ? trimmed.replace(/^>\s?/, "") : trimmed.replace(/^\$\s+/, "");
+      } else if (!pending) {
+        line = trimmed.replace(/^\$\s+/, "");
+      }
+      pending = pending ? `${pending}\n${line}` : line;
+      if (shellCommandNeedsContinuation(pending)) continue;
+      record(pending);
+      pending = "";
+    }
+    if (pending) record(pending);
+    if (commands.length === fenceCommandStart && context.length) commands.push(context.join(" && "));
   }
   return [...new Set(commands)].slice(0, 16);
 }
@@ -3122,6 +3339,256 @@ export function projectAcceptanceFromMarkdown(content = "", sourcePath = "") {
     requiredOutputs: markdownRequiredOutputs(content),
     requiredCommands: markdownRequiredCommands(content),
   };
+}
+
+function requiredCommandBatchKey(commands = []) {
+  return JSON.stringify(
+    [...new Set(
+      (Array.isArray(commands) ? commands : [])
+        .map(normalizeProjectCommand)
+        .filter(Boolean)
+    )]
+  );
+}
+
+function normalizedRequiredProjectCommands(values = [], limit = 24) {
+  return [
+    ...new Set(
+      (Array.isArray(values) ? values : [])
+        .map(normalizeProjectCommand)
+        .filter(Boolean)
+    ),
+  ].slice(0, limit);
+}
+
+function contractRequiredProjectCommands(state = {}, config = {}) {
+  const taskProfile = config.taskProfile || state.meta?.taskProfile || "auto";
+  const stored = state.meta?.scs?.taskContract?.requiredProjectCommands;
+  const derived = deriveScsTaskContract({
+    goal: completionContractGoal(config, state),
+    taskProfile,
+    acceptanceCriteria: state.meta?.scs?.acceptanceCriteria || [],
+  }).requiredProjectCommands;
+  return normalizedRequiredProjectCommands([
+    ...(Array.isArray(stored) ? stored : []),
+    ...(Array.isArray(derived) ? derived : []),
+  ]);
+}
+
+function verificationRequiredProjectCommands(verification = {}) {
+  return normalizedRequiredProjectCommands([
+    ...(Array.isArray(verification.contractRequiredCommands)
+      ? verification.contractRequiredCommands
+      : []),
+    ...(Array.isArray(verification.requiredCommands) ? verification.requiredCommands : []),
+  ]);
+}
+
+function effectiveRequiredProjectCommands(state = {}, verification = {}, config = {}) {
+  return normalizedRequiredProjectCommands([
+    ...contractRequiredProjectCommands(state, config),
+    ...verificationRequiredProjectCommands(verification),
+  ]);
+}
+
+function currentRequiredCommandBatch(verification = {}, requiredCommands = []) {
+  const batch = verification.requiredCommandBatch;
+  const key = requiredCommandBatchKey(requiredCommands);
+  if (!batch || typeof batch !== "object" || !key || batch.key !== key || !batch.id) return null;
+  return {
+    ...batch,
+    completedCommands: Array.isArray(batch.completedCommands)
+      ? batch.completedCommands.map(normalizeProjectCommand).filter(Boolean)
+      : [],
+    completedRuns: Array.isArray(batch.completedRuns)
+      ? batch.completedRuns
+          .map((run) => ({
+            command: normalizeProjectCommand(run?.command || ""),
+            mutationRevision: Math.max(0, Number(run?.mutationRevision || 0)),
+          }))
+          .filter((run) => run.command)
+      : [],
+  };
+}
+
+function startRequiredCommandBatch(verification = {}, requiredCommands = []) {
+  const sequence = Math.max(0, Number(verification.requiredCommandBatchSequence || 0)) + 1;
+  verification.requiredCommandBatchSequence = sequence;
+  const revision = Math.max(0, Number(verification.mutationRevision || 0));
+  const batch = {
+    id: `required-command-batch-${sequence}`,
+    key: requiredCommandBatchKey(requiredCommands),
+    completedCommands: [],
+    completedRuns: [],
+    startedMutationRevision: revision + 1,
+    lastMutationRevision: revision,
+    complete: false,
+  };
+  verification.requiredCommandBatch = batch;
+  return batch;
+}
+
+function clearRequiredCommandBatch(verification = {}) {
+  delete verification.requiredCommandBatch;
+}
+
+function appendProjectMutation(state = {}, verification = {}, mutation = {}, config = {}) {
+  const record = {
+    ...mutation,
+    revision: Math.max(0, Number(mutation.revision || verification.mutationRevision || 0)),
+    paths: Array.isArray(mutation.paths)
+      ? [...new Set(mutation.paths.map((item) => String(item || "")).filter(Boolean))].slice(0, 24)
+      : [],
+  };
+  verification.lastMutation = record;
+  verification.mutationHistory = [
+    ...(Array.isArray(verification.mutationHistory) ? verification.mutationHistory : []),
+    record,
+  ].slice(-64);
+
+  const progress = state.meta?.artifactProgress;
+  const currentGoalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+  const reopenedGoalRevision = Math.max(0, Number(progress?.reopenedGoalRevision || 0));
+  const reopenedMutationRevision = Math.max(0, Number(progress?.reopenedMutationRevision || 0));
+  if (
+    progress &&
+    currentGoalRevision > 0 &&
+    currentGoalRevision === reopenedGoalRevision &&
+    record.revision > reopenedMutationRevision &&
+    mutationTouchesReopenedSource(record, progress.reopenedSourcePaths, config.commandCwd || state.commandCwd)
+  ) {
+    progress.reopenedSourceMutationRevision = record.revision;
+  }
+  return record;
+}
+
+function recordRequiredBatchRun(batch = {}, command = "", mutationRevision = 0) {
+  const normalized = normalizeProjectCommand(command);
+  if (!normalized) return batch;
+  const completedRuns = (Array.isArray(batch.completedRuns) ? batch.completedRuns : [])
+    .filter((run) => normalizeProjectCommand(run?.command || "") !== normalized);
+  completedRuns.push({
+    command: normalized,
+    mutationRevision: Math.max(0, Number(mutationRevision || 0)),
+  });
+  batch.completedRuns = completedRuns;
+  batch.completedCommands = completedRuns.map((run) => run.command);
+  return batch;
+}
+
+function invalidateRequiredBatchValidations(
+  batch = {},
+  requiredCommands = [],
+  config = {},
+  currentRequiredCommand = ""
+) {
+  const currentPolicyCommand = normalizeProjectCommand(
+    normalizeCommandForPolicy(currentRequiredCommand, config)
+  );
+  const currentClassification = classifyCommand(currentPolicyCommand);
+  const currentIsMutatingValidation = Boolean(
+    currentPolicyCommand &&
+      requiredCommandHasValidationIntent(currentPolicyCommand, currentClassification) &&
+      commandCanMutateProjectContent(currentPolicyCommand, currentClassification)
+  );
+  const retainedCommands = new Set(
+    requiredCommands
+      .map((candidate) => ({
+        required: normalizeProjectCommand(candidate),
+        policy: normalizeProjectCommand(normalizeCommandForPolicy(candidate, config)),
+      }))
+      .filter(({ policy }) => {
+        const classification = classifyCommand(policy);
+        return (
+          currentIsMutatingValidation ||
+          (!requiredCommandHasValidationIntent(policy, classification) &&
+            commandCanMutateProjectContent(policy, classification))
+        );
+      })
+      .map(({ required }) => required)
+  );
+  batch.completedRuns = (Array.isArray(batch.completedRuns) ? batch.completedRuns : [])
+    .filter((run) => retainedCommands.has(normalizeProjectCommand(run?.command || "")));
+  batch.completedCommands = batch.completedRuns.map((run) => run.command);
+  batch.complete = false;
+  return batch;
+}
+
+function requiredCommandSemanticTerms(command = "") {
+  const tokens = tokenizeShellWords(command);
+  const terms = [];
+  for (const token of tokens) {
+    const normalized = String(token || "")
+      .replace(/\\/g, "/")
+      .split("/")
+      .at(-1)
+      ?.replace(/\.[a-z0-9]{1,8}$/i, "")
+      .toLowerCase();
+    if (!normalized || normalized.startsWith("-")) continue;
+    terms.push(...normalized.split(/[^a-z0-9]+/).filter(Boolean));
+  }
+  return new Set(terms);
+}
+
+const REQUIRED_VALIDATION_WORD_FAMILIES = new Map([
+  ["audit", ["", "s", "ed", "ing", "or", "ors"]],
+  ["check", ["", "s", "ed", "ing", "er", "ers"]],
+  ["doctor", ["", "s"]],
+  ["inspect", ["", "s", "ed", "ing", "or", "ors", "ion", "ions"]],
+  ["lint", ["", "s", "ed", "ing", "er", "ers"]],
+  ["smoke", ["", "s", "d"]],
+  ["test", ["", "s", "ed", "ing", "er", "ers"]],
+  ["validat", ["e", "es", "ed", "ing", "or", "ors", "ion", "ions"]],
+  ["verif", ["y", "ies", "ied", "ying", "ier", "iers", "ication", "ications"]],
+]);
+
+function requiredCommandHasValidationIntent(command = "", classification = {}) {
+  if (classification.substantiveTest === true) return true;
+  const terms = requiredCommandSemanticTerms(command);
+  return [...terms].some((term) =>
+    [...REQUIRED_VALIDATION_WORD_FAMILIES].some(([stem, suffixes]) =>
+      term.startsWith(stem) && suffixes.includes(term.slice(stem.length))
+    )
+  );
+}
+
+function requiredCommandRunIsCurrent(
+  verification = {},
+  requiredCommand = "",
+  run = {},
+  config = {}
+) {
+  if (!run?.ok) return false;
+  const required = normalizeProjectCommand(requiredCommand);
+  const observed = normalizeProjectCommand(run.command || "");
+  const boundRequired = normalizeProjectCommand(run.requiredProjectCommand || "");
+  if (
+    Object.prototype.hasOwnProperty.call(run, "explicitExitStatus") &&
+    run.explicitExitStatus !== 0
+  ) {
+    return false;
+  }
+  const exitProbe = parseNonMutatingExitStatusWrapper(observed);
+  const commandMatches =
+    projectCommandsEquivalent(boundRequired, required, config) ||
+    projectCommandsEquivalent(observed, required, config) ||
+    (projectCommandsEquivalent(exitProbe?.command || "", required, config) &&
+      Number(run.explicitExitStatus) === 0);
+  if (!required || !commandMatches) return false;
+  const requiredCommands = verificationRequiredProjectCommands(verification);
+  const batch = currentRequiredCommandBatch(verification, requiredCommands);
+  if (batch?.id) {
+    const accepted = batch.completedRuns.find((item) => item.command === required);
+    return Boolean(
+      accepted &&
+        String(run.requiredCommandBatchId || "") === batch.id &&
+        Number(run.mutationRevision || 0) === Number(accepted.mutationRevision || 0)
+    );
+  }
+  return (
+    Number(run.mutationRevision || 0) ===
+    Math.max(0, Number(verification.mutationRevision || 0))
+  );
 }
 
 export function recordProjectVerificationOutcome(state = {}, toolResult = {}, config = {}) {
@@ -3138,8 +3605,10 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     requiredCommands: Array.isArray(prior.requiredCommands) ? prior.requiredCommands : [],
     commandRuns: Array.isArray(prior.commandRuns) ? prior.commandRuns : [],
     testRuns: Array.isArray(prior.testRuns) ? prior.testRuns : [],
+    mutationHistory: Array.isArray(prior.mutationHistory) ? prior.mutationHistory : [],
     mutationRevision: Math.max(0, Number(prior.mutationRevision || 0)),
   };
+  verification.contractRequiredCommands = contractRequiredProjectCommands(state, config);
   const toolName = String(toolResult.toolName || "");
   const now = new Date().toISOString();
   const successful = toolResult.ok !== false;
@@ -3166,33 +3635,124 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     }
   }
 
-  if (["write_file", "apply_patch"].includes(toolName) && successfulMutationPaths(toolResult).length) {
+  const projectMutationPaths = successfulProjectMutationPaths(toolResult);
+  if (["write_file", "apply_patch"].includes(toolName) && projectMutationPaths.length) {
     verification.mutationRevision += 1;
-    verification.lastMutation = {
+    clearRequiredCommandBatch(verification);
+    appendProjectMutation(state, verification, {
       revision: verification.mutationRevision,
       at: now,
       toolName,
-      paths: successfulMutationPaths(toolResult).slice(0, 24),
-    };
+      paths: projectMutationPaths.slice(0, 24),
+    }, config);
     toolResult.projectMutationRevision = verification.mutationRevision;
   }
 
   if (toolName === "run_command") {
     const command = normalizeProjectCommand(toolResult.args?.command || "");
     const exitProbe = explicitExitProbeStatus(command, toolResult);
+    const mutationCommand = normalizeProjectCommand(
+      normalizeCommandForPolicy(exitProbe.command || command, config)
+    );
+    // The result proves the command already executed. Classify its semantic
+    // mutation capability independently of whether the current policy would
+    // authorize a new invocation of the same command. A recognized trailing
+    // status probe reports evidence but does not change the inner command's
+    // mutation capability.
+    const commandPolicy = classifyCommand(mutationCommand);
+    const requiredCommands = effectiveRequiredProjectCommands(state, verification, config);
+    const requiredCommand = requiredCommands.find(
+      (candidate) => projectCommandsEquivalent(candidate, exitProbe.command || command, config)
+    ) || "";
+    const requiredMutatingCommands = requiredCommands.filter((candidate) =>
+      commandCanMutateProjectContent(
+        normalizeProjectCommand(normalizeCommandForPolicy(candidate, config)),
+        classifyCommand(normalizeProjectCommand(normalizeCommandForPolicy(candidate, config)))
+      )
+    );
+    const commandSucceeded =
+      successful &&
+      Number(toolResult.exitCode ?? 0) === 0 &&
+      (!exitProbe.present || exitProbe.status === 0);
+    // Shell commands are not transactional. A command may mutate files and
+    // then fail, so any executed write-capable command invalidates prior
+    // verification regardless of its final exit status. Test identity and
+    // mutation capability are independent: a generator or snapshot-updating
+    // test still advances the revision, then records its evidence there.
+    const projectContentMutation = Boolean(
+      command &&
+        toolResult.blocked !== true &&
+        commandCanMutateProjectContent(mutationCommand, commandPolicy)
+    );
+    let requiredBatch = currentRequiredCommandBatch(verification, requiredCommands);
+    if (projectContentMutation) {
+      if (
+        requiredCommand &&
+        (!requiredBatch ||
+          requiredBatch.complete ||
+          requiredBatch.completedCommands.includes(requiredCommand))
+      ) {
+        requiredBatch = startRequiredCommandBatch(verification, requiredCommands);
+      }
+      verification.mutationRevision += 1;
+      if (requiredCommand && requiredBatch) {
+        invalidateRequiredBatchValidations(
+          requiredBatch,
+          requiredCommands,
+          config,
+          requiredCommand
+        );
+        requiredBatch.lastMutationRevision = verification.mutationRevision;
+        verification.requiredCommandBatch = requiredBatch;
+      } else {
+        clearRequiredCommandBatch(verification);
+        requiredBatch = null;
+      }
+      appendProjectMutation(state, verification, {
+        revision: verification.mutationRevision,
+        at: now,
+        toolName,
+        paths: [],
+        commandCategory: String(commandPolicy.category || "general-shell"),
+      }, config);
+    }
     const run = {
       command,
       at: now,
-      ok:
-        toolResult.ok !== false &&
-        Number(toolResult.exitCode ?? 0) === 0 &&
-        (!exitProbe.present || exitProbe.status === 0),
+      ok: commandSucceeded,
       mutationRevision: verification.mutationRevision,
+      ...(requiredBatch?.id ? { requiredCommandBatchId: requiredBatch.id } : {}),
+      ...(requiredCommand ? { requiredProjectCommand: requiredCommand } : {}),
       ...(exitProbe.present ? { explicitExitStatus: exitProbe.status } : {}),
     };
+    if (requiredCommand && commandSucceeded) {
+      if (!requiredBatch && requiredMutatingCommands.length === 0) {
+        requiredBatch = startRequiredCommandBatch(verification, requiredCommands);
+        requiredBatch.startedMutationRevision = verification.mutationRevision;
+        requiredBatch.lastMutationRevision = verification.mutationRevision;
+      }
+      if (requiredBatch) {
+        recordRequiredBatchRun(
+          requiredBatch,
+          requiredCommand,
+          verification.mutationRevision
+        );
+        requiredBatch.complete = requiredCommands.every((candidate) =>
+          requiredBatch.completedCommands.includes(candidate)
+        );
+        verification.requiredCommandBatch = requiredBatch;
+        run.requiredCommandBatchId = requiredBatch.id;
+      }
+    }
     verification.commandRuns = [...verification.commandRuns, run].slice(-40);
     toolResult.projectMutationRevision = verification.mutationRevision;
-    if (isSubstantiveTestCommand(command)) {
+    if (run.requiredCommandBatchId) {
+      toolResult.requiredCommandBatchId = run.requiredCommandBatchId;
+    }
+    if (run.requiredProjectCommand) {
+      toolResult.requiredProjectCommand = run.requiredProjectCommand;
+    }
+    if (isSubstantiveTestCommand(command, config)) {
       const zeroTests = commandReportsZeroTests(toolResult);
       const reportedFailure =
         commandReportsTestFailure(toolResult) ||
@@ -3758,7 +4318,27 @@ function comparableOutputPath(value = "", commandCwd = process.cwd()) {
   if (!candidate) return "";
   if (candidate === "~") candidate = process.env.HOME || candidate;
   else if (candidate.startsWith("~/")) candidate = path.join(process.env.HOME || "~", candidate.slice(2));
+  else if (candidate === "/workspace" || candidate.startsWith("/workspace/")) {
+    candidate = normalizeWorkspaceInputPath(candidate);
+  }
   return path.normalize(path.isAbsolute(candidate) ? candidate : path.resolve(commandCwd, candidate));
+}
+
+function artifactValidationPathKeys(value = "", commandCwd = process.cwd()) {
+  const lexicalPath = comparableOutputPath(value, commandCwd);
+  if (!lexicalPath) return [];
+  const normalizeKey = (candidate) => {
+    const normalized = path.normalize(candidate);
+    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  };
+  const keys = new Set([normalizeKey(lexicalPath)]);
+  try {
+    keys.add(normalizeKey(fsSync.realpathSync.native(lexicalPath)));
+  } catch {
+    // Accepted artifacts normally exist. For a not-yet-created target, retain
+    // its lexical identity; the executor remains responsible for path policy.
+  }
+  return [...keys];
 }
 
 function currentGoalKey(state = {}) {
@@ -3848,11 +4428,267 @@ export function reopenedArtifactRepairPending(state = {}) {
     0,
     Number(state.meta?.projectVerification?.mutationRevision || 0)
   );
-  return Boolean(
-    reopenedGoalRevision > 0 &&
-      reopenedGoalRevision === currentGoalRevision &&
-      currentMutationRevision <= reopenedMutationRevision
+  if (reopenedGoalRevision <= 0 || reopenedGoalRevision !== currentGoalRevision) return false;
+  const reopenedSourcePaths = Array.isArray(state.meta?.artifactProgress?.reopenedSourcePaths)
+    ? state.meta.artifactProgress.reopenedSourcePaths.filter(Boolean)
+    : [];
+  if (!reopenedSourcePaths.length) return currentMutationRevision <= reopenedMutationRevision;
+  const recordedSourceMutationRevision = Math.max(
+    0,
+    Number(state.meta?.artifactProgress?.reopenedSourceMutationRevision || 0)
   );
+  if (recordedSourceMutationRevision > reopenedMutationRevision) return false;
+  const verification = state.meta?.projectVerification || {};
+  const history = Array.isArray(verification.mutationHistory)
+    ? verification.mutationHistory
+    : verification.lastMutation
+      ? [verification.lastMutation]
+      : [];
+  const commandCwd = state.commandCwd || process.cwd();
+  return !history.some(
+    (mutation) =>
+      Number(mutation?.revision || 0) > reopenedMutationRevision &&
+      mutationTouchesReopenedSource(mutation, reopenedSourcePaths, commandCwd)
+  );
+}
+
+function mutationTouchesReopenedSource(mutation = {}, sourcePaths = [], commandCwd = process.cwd()) {
+  const changedPaths = Array.isArray(mutation.paths) ? mutation.paths : [];
+  if (!changedPaths.length || !Array.isArray(sourcePaths) || !sourcePaths.length) return false;
+  return sourcePaths.some((sourcePath) => {
+    const lexicalSource = comparableOutputPath(sourcePath, commandCwd);
+    if (!lexicalSource) return false;
+    const sourceKeys = artifactValidationPathKeys(sourcePath, commandCwd);
+    let sourceIsDirectory = false;
+    try {
+      sourceIsDirectory = fsSync.statSync(lexicalSource).isDirectory();
+    } catch {
+      sourceIsDirectory = false;
+    }
+    return changedPaths.some((changedPath) => {
+      const changedKeys = artifactValidationPathKeys(changedPath, commandCwd);
+      return changedKeys.some((changedKey) =>
+        sourceKeys.some(
+          (sourceKey) =>
+            changedKey === sourceKey ||
+            (sourceIsDirectory && changedKey.startsWith(`${sourceKey}${path.sep}`))
+        )
+      );
+    });
+  });
+}
+
+export function artifactValidationAcceptanceIsCurrent(state = {}) {
+  const progress = state.meta?.artifactProgress || {};
+  if (!progress.preflight || !progress.preflightFingerprint) return false;
+  const goalContract = state.meta?.goalContract || {};
+  const currentGoalRevision = Math.max(0, Number(goalContract.revision || 0));
+  const acceptedGoalRevision = Math.max(0, Number(progress.preflightGoalRevision || 0));
+  const currentGoalHash = String(goalContract.currentHash || "");
+  const acceptedGoalHash = String(progress.preflightGoalHash || "");
+  const currentContractKey = String(progress.contractKey || "");
+  const acceptedContractKey = String(progress.preflightContractKey || "");
+  const currentMutationRevision = Math.max(
+    0,
+    Number(state.meta?.projectVerification?.mutationRevision || 0)
+  );
+  const acceptedMutationRevision = Math.max(0, Number(progress.preflightMutationRevision || 0));
+  return Boolean(
+    currentGoalRevision > 0 &&
+      acceptedGoalRevision === currentGoalRevision &&
+      acceptedGoalHash === currentGoalHash &&
+      acceptedContractKey === currentContractKey &&
+      acceptedMutationRevision === currentMutationRevision
+  );
+}
+
+const WORKTREE_CHANGING_GIT_ACTIONS = new Set([
+  "checkout",
+  "clean",
+  "merge",
+  "pull",
+  "rebase",
+  "reset",
+  "restore",
+  "switch",
+]);
+
+function commandCanMutateProjectContent(command = "", commandPolicy = {}) {
+  if (commandPolicy.writesWorkspace !== true && commandPolicy.mayMutateProject !== true) return false;
+  const category = String(commandPolicy.category || "");
+  if (!["git-workflow", "git-remote"].includes(category)) return true;
+  if (/\bgit\s+clone\b/i.test(String(command || ""))) return true;
+  // An aggregate Git category can still contain a non-Git build/generator
+  // segment. Its write capability remains authoritative.
+  if (commandPolicy.gitOnly !== true) return true;
+  return inferGitActionsFromCommand(command, { requireFailurePropagation: false }).some((action) =>
+    WORKTREE_CHANGING_GIT_ACTIONS.has(action)
+  );
+}
+
+function artifactValidationCommandMatchesRequired(observedCommand = "", requiredCommand = "", config = {}) {
+  const observed = normalizeProjectCommand(observedCommand);
+  const required = normalizeProjectCommand(requiredCommand);
+  if (!observed || !required) return false;
+  if (projectCommandsEquivalent(observed, required, config)) return true;
+  const exitWrapper = parseNonMutatingExitStatusWrapper(observed);
+  return Boolean(exitWrapper && projectCommandsEquivalent(exitWrapper.command, required, config));
+}
+
+function artifactValidationGitActionAllowed(progress = {}, command = "", commandPolicy = {}) {
+  const exitWrapper = parseNonMutatingExitStatusWrapper(command);
+  const effectiveCommand = exitWrapper?.command || command;
+  const effectivePolicy = exitWrapper ? classifyCommand(effectiveCommand) : commandPolicy;
+  const category = String(effectivePolicy.category || "");
+  const boundedGitWorkflow = ["git-workflow", "git-remote"].includes(category);
+  const explicitlyAuthorizedDestructiveGit =
+    category === "destructive" && commandPolicy.allowed === true;
+  if (
+    effectivePolicy.gitOnly !== true ||
+    (!boundedGitWorkflow && !explicitlyAuthorizedDestructiveGit)
+  ) {
+    return false;
+  }
+  const observed = inferGitActionsFromCommand(effectiveCommand);
+  const missing = new Set(
+    (Array.isArray(progress.preflight?.missingGitActions) ? progress.preflight.missingGitActions : [])
+      .map((action) => String(action || "").toLowerCase())
+      .filter(Boolean)
+  );
+  if (!observed.length) return false;
+  if (!missing.size) return gitActionsSatisfyContract({}, observed);
+  if (!observed.some((action) => missing.has(action))) return false;
+
+  const permitted = new Set(missing);
+  if (missing.has("commit")) permitted.add("add");
+  if (missing.has("push")) {
+    permitted.add("add");
+    permitted.add("commit");
+  }
+  if (!observed.every((action) => permitted.has(action) || isObservationalGitAction(action))) return false;
+  const consequential = observed.filter((action) => !isObservationalGitAction(action));
+  if (missing.has("push") && consequential.at(-1) !== "push") return false;
+  if (missing.has("commit") && !missing.has("push") && consequential.at(-1) !== "commit") return false;
+  return true;
+}
+
+function artifactValidationBoundedCommandAllowed(command = "", commandPolicy = {}) {
+  const exitWrapper = parseNonMutatingExitStatusWrapper(command);
+  const effectiveCommand = exitWrapper?.command || command;
+  const effectivePolicy = exitWrapper ? classifyCommand(effectiveCommand) : commandPolicy;
+  if (effectivePolicy.category !== "test") return false;
+  const sequence = parseTopLevelShellSequence(effectiveCommand);
+  if (
+    !sequence.commands.length ||
+    sequence.trailingSeparator ||
+    sequence.separators.some((separator) => separator !== "&&")
+  ) {
+    return false;
+  }
+  return sequence.commands.every((segment) => {
+    const policy = classifyCommand(segment);
+    return policy.category === "test" ||
+      (policy.category === "read-only" && policy.writesWorkspace !== true && policy.mayMutateProject !== true);
+  });
+}
+
+function artifactValidationMutationPaths(toolName, args = {}, commandCwd = process.cwd()) {
+  const candidates = [];
+  if (toolName === "write_file") candidates.push(args.path || args.file || "");
+  if (toolName === "apply_patch") {
+    candidates.push(args.path || args.file || "");
+    try {
+      for (const operation of parsePatchDocument(args.patch || "")) {
+        candidates.push(operation.path || "", operation.newPath || "");
+      }
+    } catch {
+      // Malformed patches are rejected by the executor. Returning no parsed
+      // path keeps the validation guard conservative as well.
+    }
+  }
+  return [...new Set(candidates.filter(Boolean).flatMap((item) => artifactValidationPathKeys(item, commandCwd)))];
+}
+
+function artifactValidationDeletedPaths(patch = "", commandCwd = process.cwd()) {
+  const deleted = [];
+  try {
+    for (const operation of parsePatchDocument(patch || "")) {
+      if (operation.type === "delete" || operation.newPath) deleted.push(operation.path || "");
+    }
+  } catch {
+    return [];
+  }
+  return [...new Set(deleted.filter(Boolean).flatMap((item) => artifactValidationPathKeys(item, commandCwd)))];
+}
+
+function artifactValidationTouchesExactOutput(state = {}, toolName = "", args = {}, config = {}) {
+  const commandCwd = config.commandCwd || state.commandCwd || process.cwd();
+  const exactOutputs = new Set(
+    (state.meta?.artifactProgress?.exactOutputPaths || []).flatMap((item) =>
+      artifactValidationPathKeys(item, commandCwd)
+    )
+  );
+  const mutationPaths = artifactValidationMutationPaths(toolName, args, commandCwd);
+  // A malformed or opaque file mutation is handled conservatively. Normal
+  // workspace tools always expose their target path.
+  if (!mutationPaths.length) return true;
+  return mutationPaths.some((item) => exactOutputs.has(item));
+}
+
+function artifactValidationShellMutationBlock(state = {}, args = {}, config = {}) {
+  const command = String(args.command || "").trim();
+  if (!command) return null;
+  const commandPolicy = evaluateCommandPolicy(command, config);
+  if (commandPolicy.writesWorkspace !== true && commandPolicy.mayMutateProject !== true) return null;
+  const progress = state.meta?.artifactProgress || {};
+  const normalizedCommand = normalizeProjectCommand(command);
+  const missingProjectCommands = Array.isArray(progress.preflight?.missingProjectCommands)
+    ? progress.preflight.missingProjectCommands.map(normalizeProjectCommand).filter(Boolean)
+    : [];
+  const matchesRequiredProjectCommand = missingProjectCommands.some((required) =>
+    artifactValidationCommandMatchesRequired(normalizedCommand, required, config)
+  );
+  const commandEvidencePending = config.artifactValidationNeedsCommand === true || progress.needsCommand === true;
+  const genericCommandEvidencePending = commandEvidencePending && missingProjectCommands.length === 0;
+  if (
+    commandEvidencePending &&
+    (matchesRequiredProjectCommand ||
+      (genericCommandEvidencePending && artifactValidationBoundedCommandAllowed(command, commandPolicy)))
+  ) {
+    return null;
+  }
+  if (
+    config.artifactValidationNeedsGitEvidence === true &&
+    artifactValidationGitActionAllowed(progress, command, commandPolicy)
+  ) {
+    return null;
+  }
+  const acceptedAtBatchStart = config.artifactValidationAcceptedAtBatchStart === true;
+  if (
+    !artifactValidationAcceptanceIsCurrent(state) &&
+    !acceptedAtBatchStart &&
+    progress.needsRepair !== true
+  ) {
+    return null;
+  }
+  return {
+    reason: "Artifact validation does not permit an unconstrained shell mutation after the current output contract has been accepted.",
+    category: "artifact-validation-shell-mutation",
+    permissionAdvice: {
+      category: "artifact-validation-shell-mutation",
+      autoRecover: true,
+      summary: "Use the revision-scoped workspace mutation tools instead of bypassing artifact validation through the shell.",
+      instruction:
+        progress.needsRepair === true
+          ? "Apply the bounded repair with apply_patch or write_file. Run a shell command only when deterministic preflight names command evidence that is still missing."
+          : "Do not mutate the accepted exact output through run_command. Use apply_patch for a different required project file, run the missing git action, or call finish.",
+      options: [
+        "Use apply_patch or write_file for a required non-accepted project file.",
+        "Run a bounded read-only validation command.",
+        "Run only the git action still required by the completion contract.",
+      ],
+    },
+  };
 }
 
 export function completionEvidenceNeedsCommand(evidence = {}) {
@@ -3872,15 +4708,17 @@ export function completionEvidenceNeedsCommand(evidence = {}) {
 
 export function artifactValidationScopeBlock(state, toolName, args = {}, config = {}) {
   if (config.artifactValidationPhase !== true) return null;
+  if (toolName === "run_command") {
+    return artifactValidationShellMutationBlock(state, args, config);
+  }
   if (["write_file", "apply_patch"].includes(toolName)) {
     const progress = state.meta?.artifactProgress || {};
     if (toolName === "apply_patch") {
       const commandCwd = config.commandCwd || state.commandCwd || process.cwd();
       const exactOutputs = new Set(
-        (progress.exactOutputPaths || []).map((item) => comparableOutputPath(item, commandCwd))
+        (progress.exactOutputPaths || []).flatMap((item) => artifactValidationPathKeys(item, commandCwd))
       );
-      const deletedPaths = [...String(args.patch || "").matchAll(/^\*\*\* Delete File:\s*(.+)$/gm)]
-        .map((match) => comparableOutputPath(match[1], commandCwd));
+      const deletedPaths = artifactValidationDeletedPaths(args.patch, commandCwd);
       if (deletedPaths.some((item) => exactOutputs.has(item))) {
         return {
           reason: "Artifact validation cannot delete an exact requested output as an intermediate repair step.",
@@ -3895,7 +4733,14 @@ export function artifactValidationScopeBlock(state, toolName, args = {}, config 
         };
       }
     }
+    if (!artifactValidationTouchesExactOutput(state, toolName, args, config)) return null;
     if (progress.needsRepair !== true) {
+      if (
+        !artifactValidationAcceptanceIsCurrent(state) &&
+        config.artifactValidationAcceptedAtBatchStart !== true
+      ) {
+        return null;
+      }
       return {
         reason: "Deterministic artifact preflight already passed; further rewrites are unnecessary.",
         category: "artifact-validation-complete",
@@ -3979,7 +4824,7 @@ export function artifactValidationFinishBlock(state = {}) {
   const progress = state.meta?.artifactProgress;
   if (!progress?.complete) return null;
 
-  const preflightReady = Boolean(progress.preflight && progress.preflightFingerprint);
+  const preflightReady = artifactValidationAcceptanceIsCurrent(state);
   const defectCount = Number(progress.defectCount ?? progress.preflight?.defectCount ?? 0);
   const unresolved =
     !preflightReady ||
@@ -4044,8 +4889,7 @@ export function canonicalizeVerifiedArtifactCompletion(state = {}, result = "") 
   const text = portableCompletionText(result, state);
   if (!progress?.complete || !exactOutputPaths.length) return text;
   const validationPassed = Boolean(
-    progress.preflight &&
-    progress.preflightFingerprint &&
+    artifactValidationAcceptanceIsCurrent(state) &&
     progress.needsRepair !== true &&
     progress.needsCommand !== true &&
     progress.needsSourceRead !== true &&
@@ -4085,6 +4929,109 @@ function successfulMutationPaths(toolResult = {}) {
   );
   if (!changes.length) return [];
   return [...new Set([toolResult.path, ...changes.map((change) => change.path)].filter(Boolean))];
+}
+
+function successfulProjectMutationPaths(toolResult = {}) {
+  if (!toolResult || toolResult.blocked || toolResult.skipped) return [];
+  if (!["write_file", "apply_patch"].includes(String(toolResult.toolName || ""))) return [];
+  const changes = [
+    ...(Array.isArray(toolResult.changes) ? toolResult.changes : []),
+    ...(toolResult.change ? [toolResult.change] : []),
+  ].filter(Boolean);
+  // Workspace writers can mutate bytes and then return ok=false when a
+  // post-write artifact validator rejects the result. The change record, not
+  // the aggregate tool status, is authoritative for revision invalidation.
+  if (toolResult.ok === false && !changes.length) return [];
+  const actualChanges = changes.filter((change) => {
+    if (change.deleted || (change.fromPath && change.fromPath !== change.path)) return true;
+    if (change.beforeHash !== undefined && change.afterHash !== undefined) {
+      return String(change.beforeHash || "") !== String(change.afterHash || "");
+    }
+    if (change.created) return true;
+    if (change.beforeBytes !== undefined && change.afterBytes !== undefined) {
+      return Number(change.beforeBytes) !== Number(change.afterBytes);
+    }
+    return true;
+  });
+  if (changes.length && !actualChanges.length) return [];
+  return [
+    ...new Set(
+      [
+        toolResult.path,
+        ...actualChanges.flatMap((change) => [change.path, change.fromPath]),
+      ].filter(Boolean)
+    ),
+  ];
+}
+
+function exactOutputPathsForState(state = {}) {
+  const scsOutputPaths = Array.isArray(state.meta?.scs?.taskContract?.exactOutputPaths)
+    ? state.meta.scs.taskContract.exactOutputPaths.filter(Boolean)
+    : [];
+  const progressOutputPaths = Array.isArray(state.meta?.artifactProgress?.exactOutputPaths)
+    ? state.meta.artifactProgress.exactOutputPaths.filter(Boolean)
+    : [];
+  const verificationOutputPaths = Array.isArray(state.meta?.projectVerification?.requiredOutputs)
+    ? state.meta.projectVerification.requiredOutputs.filter(Boolean)
+    : [];
+  return [...new Set([
+    ...scsOutputPaths,
+    ...progressOutputPaths,
+    ...verificationOutputPaths,
+  ])].slice(0, 32);
+}
+
+async function hashExactOutputFile(absolutePath) {
+  return await new Promise((resolve, reject) => {
+    const digest = crypto.createHash("sha256");
+    const input = fsSync.createReadStream(absolutePath);
+    input.on("data", (chunk) => digest.update(chunk));
+    input.once("error", reject);
+    input.once("end", () => resolve(digest.digest("hex")));
+  });
+}
+
+async function captureExactOutputSnapshots(state = {}, config = {}) {
+  const snapshots = [];
+  for (const outputPath of exactOutputPathsForState(state)) {
+    try {
+      const target = resolveWorkspacePath(config, outputPath);
+      const stat = await fs.stat(target.absolutePath, { bigint: true });
+      if (!stat.isFile()) {
+        snapshots.push({ path: outputPath, exists: false });
+        continue;
+      }
+      snapshots.push({
+        path: outputPath,
+        exists: true,
+        size: String(stat.size),
+        mtimeNs: String(stat.mtimeNs),
+        ctimeNs: String(stat.ctimeNs),
+        sha256: await hashExactOutputFile(target.absolutePath),
+      });
+    } catch {
+      snapshots.push({ path: outputPath, exists: false });
+    }
+  }
+  return snapshots;
+}
+
+async function verifiedGeneratedOutputPaths(state = {}, beforeSnapshots = [], config = {}) {
+  if (!beforeSnapshots.length) return [];
+  const beforeByPath = new Map(beforeSnapshots.map((item) => [String(item.path || ""), item]));
+  const afterSnapshots = await captureExactOutputSnapshots(state, config);
+  return afterSnapshots
+    .filter((after) => {
+      if (!after.exists || Number(after.size || 0) <= 0) return false;
+      const before = beforeByPath.get(String(after.path || ""));
+      if (!before?.exists) return true;
+      return (
+        String(before.sha256 || "") !== String(after.sha256 || "") ||
+        String(before.mtimeNs || "") !== String(after.mtimeNs || "") ||
+        String(before.ctimeNs || "") !== String(after.ctimeNs || "")
+      );
+    })
+    .map((item) => item.path);
 }
 
 export function recordExactOutputProgress(state = {}, toolResult = {}, config = {}) {
@@ -4140,9 +5087,22 @@ export async function recordCanonicalGeneratedOutputProgress(state = {}, toolRes
     return null;
   }
   const verification = state.meta?.projectVerification || {};
-  const command = normalizeProjectCommand(toolResult.args?.command || "");
-  const canonicalCommands = new Set((verification.requiredCommands || []).map(normalizeProjectCommand).filter(Boolean));
-  if (!canonicalCommands.has(command)) return null;
+  const observedCommand = normalizeProjectCommand(toolResult.args?.command || "");
+  const exitProbe = explicitExitProbeStatus(observedCommand, toolResult);
+  if (exitProbe.present && exitProbe.status !== 0) return null;
+  const command = exitProbe.command;
+  const canonicalCommands = new Set(
+    effectiveRequiredProjectCommands(state, verification, config)
+  );
+  const boundRequiredCommand = normalizeProjectCommand(toolResult.requiredProjectCommand || "");
+  if (!canonicalCommands.has(command) && !canonicalCommands.has(boundRequiredCommand)) return null;
+  const generatedPaths = new Set(
+    (Array.isArray(toolResult.verifiedGeneratedOutputPaths)
+      ? toolResult.verifiedGeneratedOutputPaths
+      : [])
+      .map((item) => comparableOutputPath(item, config.commandCwd || state.commandCwd || process.cwd()))
+  );
+  if (!generatedPaths.size) return null;
 
   const progress = state.meta?.artifactProgress;
   if (!progress?.exactOutputPaths?.length) return null;
@@ -4151,6 +5111,7 @@ export async function recordCanonicalGeneratedOutputProgress(state = {}, toolRes
   const discovered = [];
   for (const outputPath of progress.exactOutputPaths) {
     try {
+      if (!generatedPaths.has(comparableOutputPath(outputPath, commandCwd))) continue;
       const target = resolveWorkspacePath(config, outputPath);
       const stat = await fs.stat(target.absolutePath);
       if (!stat.isFile() || stat.size <= 0) continue;
@@ -4199,7 +5160,7 @@ function recordDurableEvidenceCategories(state = {}, toolResult = {}) {
   if (toolName === "run_command" && Number(toolResult.exitCode ?? 0) === 0) {
     categories.add("command");
     const command = String(toolResult.args?.command || "").trim();
-    const gitActions = inferGitActionsFromCommand(command);
+    const gitActions = inferSuccessfulGitActionsFromCommandResult(toolResult);
     if (gitActions.length) {
       categories.add("git");
       state.meta.durableGitActions = [
@@ -4630,6 +5591,9 @@ async function refreshArtifactValidationPreflight(
     }
   }
   const fingerprint = JSON.stringify({
+    goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+    goalHash: String(state.meta?.goalContract?.currentHash || ""),
+    artifactContractKey: String(state.meta?.artifactProgress?.contractKey || ""),
     semanticOk: Boolean(semantic.ok),
     unsupportedCommandClaims,
     unsupportedPathClaims,
@@ -4662,6 +5626,10 @@ async function refreshArtifactValidationPreflight(
     stagnantRepairAttempts,
     usedValidationTools: [...usedValidationTools],
     preflightFingerprint: fingerprint,
+    preflightGoalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+    preflightGoalHash: String(state.meta?.goalContract?.currentHash || ""),
+    preflightContractKey: String(state.meta?.artifactProgress?.contractKey || ""),
+    preflightMutationRevision: currentMutationRevision,
     preflight: {
       semanticOk: Boolean(semantic.ok),
       semanticReason: semantic.reason || "",
@@ -4853,6 +5821,15 @@ async function applyToolLoopGuard(state, toolResult, store, observers, config = 
   const exactOutputMutation = successfulMutationPaths(toolResult)
     .map((item) => comparableOutputPath(item, commandCwd))
     .some((item) => exactOutputSet.has(item));
+  const currentMutationRevision = Math.max(
+    0,
+    Number(state.meta?.projectVerification?.mutationRevision || 0)
+  );
+  const preflightMutationRevision = Math.max(
+    0,
+    Number(state.meta?.artifactProgress?.preflightMutationRevision || 0)
+  );
+  const projectMutationChangedSincePreflight = currentMutationRevision !== preflightMutationRevision;
   if (exactOutputMutation && !artifactProgress.justActivated) {
     state.meta.artifactProgress.repairAttempts = Number(state.meta.artifactProgress.repairAttempts || 0) + 1;
   }
@@ -4879,9 +5856,17 @@ async function applyToolLoopGuard(state, toolResult, store, observers, config = 
       exactOutputPaths: artifactProgress.completed,
     });
   }
-  if (artifactProgress.active && (artifactProgress.justActivated || exactOutputMutation || ["read_file", "run_command"].includes(String(toolResult.toolName || "")))) {
+  if (
+    artifactProgress.active &&
+    (
+      artifactProgress.justActivated ||
+      exactOutputMutation ||
+      projectMutationChangedSincePreflight ||
+      ["read_file", "run_command"].includes(String(toolResult.toolName || ""))
+    )
+  ) {
     await refreshArtifactValidationPreflight(state, store, observers, config, {
-      force: artifactProgress.justActivated || exactOutputMutation,
+      force: artifactProgress.justActivated || exactOutputMutation || projectMutationChangedSincePreflight,
       trackRepair: exactOutputMutation && !artifactProgress.justActivated,
     });
   }
@@ -4959,8 +5944,8 @@ async function runShellCommand(command, config, policy = evaluateCommandPolicy(c
     return {
       ok: result.ok !== false,
       exitCode: Number.isInteger(result.exitCode) ? result.exitCode : 0,
-      stdout: trimOutput(result.stdout, 8000),
-      stderr: trimOutput(result.stderr, 4000),
+      stdout: trimCommandOutput(result.stdout, 8000),
+      stderr: trimCommandOutput(result.stderr, 4000),
       ...(diagnosticHint ? { diagnosticHint } : {}),
     };
   } catch (error) {
@@ -4968,8 +5953,8 @@ async function runShellCommand(command, config, policy = evaluateCommandPolicy(c
     const failedResult = {
       ok: false,
       exitCode: Number.isInteger(error?.code) ? error.code : 1,
-      stdout: trimOutput(error?.stdout || "", 8000),
-      stderr: trimOutput(error?.stderr || error?.message || "", 4000),
+      stdout: trimCommandOutput(error?.stdout || "", 8000),
+      stderr: trimCommandOutput(error?.stderr || error?.message || "", 4000),
     };
     const diagnosticHint = shellDiagnosticHint(command, failedResult);
     return diagnosticHint ? { ...failedResult, diagnosticHint } : failedResult;
@@ -5247,7 +6232,9 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
     };
   }
 
-  const validationScopeBlock = artifactValidationScopeBlock(state, toolName, safeArgs, config);
+  // Validation inspects raw patch paths before event/log redaction. The guard
+  // does not persist argument contents.
+  const validationScopeBlock = artifactValidationScopeBlock(state, toolName, args, config);
   if (validationScopeBlock) {
     const result = {
       ok: false,
@@ -5685,11 +6672,28 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         return result;
       }
       case "run_command": {
-        const policy = evaluateCommandPolicy(String(args.command), config);
+        const rawCommand = String(args.command);
+        const policy = evaluateCommandPolicy(rawCommand, config);
+        const observedCommand = normalizeProjectCommand(rawCommand);
+        const observedInnerCommand = explicitExitProbeStatus(observedCommand).command;
+        const requiredCommands = effectiveRequiredProjectCommands(
+          state,
+          state.meta?.projectVerification || {},
+          config
+        );
+        const isRequiredCommand = requiredCommands.some((candidate) =>
+          projectCommandsEquivalent(candidate, observedInnerCommand, config)
+        );
+        const exactOutputSnapshotsBefore = isRequiredCommand && policy.writesWorkspace
+          ? await captureExactOutputSnapshots(state, config)
+          : [];
         if (config.useDockerSandbox) {
           await ensureDockerSandboxReady(config, observers);
         }
-        const commandResult = await runShellCommand(String(args.command), config, policy);
+        const commandResult = await runShellCommand(rawCommand, config, policy);
+        const generatedOutputPaths = commandResult.ok !== false
+          ? await verifiedGeneratedOutputPaths(state, exactOutputSnapshotsBefore, config)
+          : [];
         const permissionAdvice = commandResult.ok === false
           ? buildFailedCommandAdvice({
               args: safeArgs,
@@ -5710,13 +6714,21 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
             packageInstallPolicy: policy.packageInstallPolicy,
             needsNetwork: Boolean(policy.needsNetwork),
             writesWorkspace: Boolean(policy.writesWorkspace),
+            mayMutateProject: Boolean(policy.mayMutateProject),
+            substantiveTest: Boolean(policy.substantiveTest),
+            gitOnly: Boolean(policy.gitOnly),
+            normalizedCommand: normalizeCommandForPolicy(String(args.command), config),
           },
+          ...(generatedOutputPaths.length
+            ? { verifiedGeneratedOutputPaths: generatedOutputPaths }
+            : {}),
           ...commandResult,
           ...(permissionAdvice ? { permissionAdvice } : {}),
         };
         recordProjectVerificationOutcome(state, result, config);
-        await store.appendEvent("tool.completed", result);
-        observers.event("tool.completed", result);
+        const eventResult = sanitizeToolResult(result);
+        await store.appendEvent("tool.completed", eventResult);
+        observers.event("tool.completed", eventResult);
         return result;
       }
       case "tmux_list_sessions": {
@@ -6032,13 +7044,13 @@ function completionContractKey(config = {}) {
     .slice(0, 16);
 }
 
-function projectVerificationDeficits(state = {}) {
+function projectVerificationDeficits(state = {}, config = {}) {
   const verification = state.meta?.projectVerification || {};
   const revision = Number(verification.mutationRevision || 0);
-  const pendingCommands = (verification.requiredCommands || []).filter(
+  const pendingCommands = effectiveRequiredProjectCommands(state, verification, config).filter(
     (command) =>
-      !(verification.commandRuns || []).some(
-        (run) => run.ok && run.command === command && Number(run.mutationRevision || 0) === revision
+      !(verification.commandRuns || []).some((run) =>
+        requiredCommandRunIsCurrent(verification, command, run, config)
       )
   );
   const discoveredTests = Array.isArray(verification.discoveredTests)
@@ -6231,7 +7243,7 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
   }
 
   const blocker = deterministicFinishBlocker(assessment.contract, assessment.ledger, assessment.evaluation);
-  const verificationDeficits = projectVerificationDeficits(state);
+  const verificationDeficits = projectVerificationDeficits(state, config);
   const requiredEvidence = (assessment.contract.requiredEvidence || []).map((item) => item.category);
   const presentEvidence = assessment.ledger.categories || [];
   const progressCount = Number(assessment.progressCount || 0);
@@ -8095,6 +9107,10 @@ export async function runAgent(config) {
       let continueForCompletionRepair = false;
       let pendingPermissionPause = null;
       const postBatchToolResults = [];
+      const toolBatchRuntimeConfig = {
+        ...stepRuntimeConfig,
+        artifactValidationAcceptedAtBatchStart: artifactValidationAcceptanceIsCurrent(state),
+      };
       for (let toolIndex = 0; toolIndex < toolCalls.length; toolIndex += 1) {
         const toolCall = toolCalls[toolIndex];
         throwIfAborted(config);
@@ -8102,7 +9118,7 @@ export async function runAgent(config) {
           browserState,
           toolCall,
           snapshot,
-          stepRuntimeConfig,
+          toolBatchRuntimeConfig,
           store,
           observers,
           state,
@@ -8326,7 +9342,7 @@ export async function runAgent(config) {
       if (continueForCompletionRepair) continue;
 
       for (const toolResult of postBatchToolResults) {
-        await applyToolLoopGuard(state, toolResult, store, observers, stepRuntimeConfig);
+        await applyToolLoopGuard(state, toolResult, store, observers, toolBatchRuntimeConfig);
 
         if (config.scsActive && shouldReviewToolResult(toolResult, state)) {
           const decision = await reviewScsToolResult(client, config, state, toolResult, {

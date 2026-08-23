@@ -1,6 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { redactSensitiveText, redactValue } from "./redaction.js";
+import {
+  canonicalizeShellCommand,
+  hasActiveShellExpansion,
+  parseTopLevelShellSequence,
+  tokenizeShellWords,
+} from "./shell-syntax.js";
 
 const CATEGORY_LABELS = {
   file: "file or workspace change",
@@ -18,12 +24,16 @@ const RECOGNIZED_GIT_ACTIONS = [
   "add",
   "branch",
   "checkout",
+  "clean",
   "commit",
   "diff",
   "log",
   "merge",
   "pull",
   "push",
+  "pull-request",
+  "rebase",
+  "reset",
   "restore",
   "show",
   "status",
@@ -31,45 +41,188 @@ const RECOGNIZED_GIT_ACTIONS = [
   "tag",
 ];
 
-export function inferGitActionsFromCommand(value = "") {
-  const actions = [];
-  const pattern = new RegExp(`\\bgit\\s+(?:-[A-Za-z]\\s+\\S+\\s+)*(?:--[A-Za-z-]+\\s+)*(?:${RECOGNIZED_GIT_ACTIONS.join("|")})\\b`, "gi");
-  for (const match of String(value || "").matchAll(pattern)) {
-    const action = String(match[0] || "").trim().split(/\s+/).at(-1)?.toLowerCase();
-    if (action && RECOGNIZED_GIT_ACTIONS.includes(action)) actions.push(action);
+export function isObservationalGitAction(value = "") {
+  return OBSERVATIONAL_GIT_ACTIONS.has(String(value || "").toLowerCase());
+}
+
+export function inferGitActionsFromCommand(value = "", { requireFailurePropagation = true } = {}) {
+  // Expansion can execute a nested command that is not represented by the
+  // outer command tokens. Do not turn ambiguous shell text into durable Git
+  // evidence; the caller can rerun a bounded literal Git command instead.
+  if (hasActiveShellExpansion(value)) return [];
+  const sequence = parseTopLevelShellSequence(value);
+  if (
+    requireFailurePropagation &&
+    (sequence.trailingSeparator ||
+      (sequence.commands.length > 1 &&
+        !sequence.separators.every((item) => item === "&&")))
+  ) {
+    return [];
   }
-  return unique(actions);
+  const actions = [];
+  for (const command of sequence.commands) {
+    const tokens = tokenizeShellWords(command);
+    if (!tokens.length) continue;
+    const executable = String(tokens[0] || "").split(/[\\/]/).at(-1);
+    if (
+      (executable === "gh" && tokens[1] === "pr" && tokens[2] === "create") ||
+      (executable === "glab" && tokens[1] === "mr" && tokens[2] === "create") ||
+      (executable === "hub" && tokens[1] === "pull-request")
+    ) {
+      actions.push("pull-request");
+      continue;
+    }
+    if (executable !== "git") continue;
+    let index = 1;
+    while (index < tokens.length) {
+      const token = String(tokens[index] || "");
+      if (["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"].includes(token)) {
+        index += 2;
+        continue;
+      }
+      if (/^--(?:git-dir|work-tree|namespace|exec-path)=/.test(token)) {
+        index += 1;
+        continue;
+      }
+      if (["--no-pager", "--paginate", "--literal-pathspecs", "--no-optional-locks", "--bare"].includes(token)) {
+        index += 1;
+        continue;
+      }
+      break;
+    }
+    const action = String(tokens[index] || "").toLowerCase();
+    if (RECOGNIZED_GIT_ACTIONS.includes(action)) actions.push(action);
+  }
+  return actions;
+}
+
+const REQUIRED_GIT_ACTION_HEADS = {
+  add: /^(?:git\s+add\b|stage\s+(?:the\s+)?(?:changes?|files?)\b)/,
+  branch: /^(?:git\s+branch\b|(?:create|make)\s+(?:a\s+)?(?:git\s+)?branch\b(?!\s+(?:diagram|field|label|name|template)\b))/,
+  checkout: /^(?:git\s+checkout\b|checkout\s+(?:the\s+)?(?:branch|revision|commit)\b)/,
+  commit: /^(?:(?:git\s+)?commit\b(?!\s+(?:hash|history|message|object)\b)|(?:create|make)\s+(?:a\s+)?commit\b(?!\s+(?:hash|history|message|object|template)\b)|(?:the\s+)?(?:changes?|work|fix(?:es)?|code)\s+(?:is|are|be|gets?|got)\s+committed\b|提交代码)/,
+  merge: /^(?:git\s+merge\b|merge\s+(?:the\s+)?(?:branch|changes?|commits?)\b|合并分支)/,
+  pull: /^(?:git\s+pull\b|pull\s+(?:the\s+)?(?:latest|changes?)\b)/,
+  push: /^(?:git\s+push\b|push\s+(?:(?:a|the)\s+)?(?:git\s+)?(?:changes?|commits?|branch|tag)\b|push\s+to\s+(?:git|github|the\s+repo(?:sitory)?)\b|(?:the\s+)?(?:changes?|work|fix(?:es)?|code|commits?|branch|tag)\s+(?:is|are|be|gets?|got)\s+pushed\b|推送)/,
+  "pull-request": /^(?:(?:gh\s+pr|glab\s+mr)\s+create\b|hub\s+pull-request\b|(?:open|create|make|submit)\s+(?:(?:a|the)\s+)?(?:(?:github|gitlab)\s+)?(?:pull|merge)\s+request\b)/,
+  restore: /^(?:git\s+restore\b)/,
+  switch: /^(?:git\s+switch\b|switch\s+(?:to\s+)?(?:the\s+)?branch\b)/,
+  tag: /^(?:git\s+tag\b|(?:create|make)\s+(?:a\s+)?(?:git\s+)?tag\b(?!\s+(?:field|label|name|template)\b))/,
+};
+
+const REQUIRED_GIT_ACTION_CONTINUATION_HEADS = new Map([
+  ["stage", "add"],
+  ["branch", "branch"],
+  ["checkout", "checkout"],
+  ["commit", "commit"],
+  ["committed", "commit"],
+  ["merge", "merge"],
+  ["pull", "pull"],
+  ["push", "push"],
+  ["pushed", "push"],
+  ["switch", "switch"],
+  ["tag", "tag"],
+]);
+
+function gitActionRequestSentences(goal = "") {
+  return normalizedText(stripForbiddenLanguage(goal))
+    .split(/[\n.!?。！？]+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+function gitActionRequestSegments(sentence = "") {
+  return String(sentence || "")
+    .replace(/\b(?:and\s+then|then|after\s+that|afterwards|finally|next)\b/g, ",")
+    .replace(/(?:然后|然後|接着|接著|随后|隨後|最后|最後)/g, ",")
+    .split(/(?:[,;，；]+|\s+(?:and|also)\s+|\s*&&\s*|(?:并且|並且|以及|再)\s*)/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+function stripGitActionRequestPreamble(clause = "") {
+  let value = String(clause || "").trim();
+  const preamble = /^(?:(?:and|also)\s+|(?:please|kindly|now)\s+|(?:can|could|would|will)\s+you\s+|i\s+(?:want|need|would\s+like)\s+you\s+to\s+|you\s+(?:must|should|need\s+to|have\s+to)\s+|(?:ensure|make\s+sure)(?:\s+that)?(?:\s+you)?\s+|(?:help|assist)\s+me(?:\s+to)?\s+|(?:run|execute|perform)\s+|(?:and|also|请你|請你|麻烦|麻煩|帮我|幫我|需要|必须|必須|运行|運行|执行|執行|请|請)\s*)/;
+  while (preamble.test(value)) value = value.replace(preamble, "").trim();
+  return value;
+}
+
+function requestedGitActionAtHead(value = "", { continuation = false } = {}) {
+  const candidate = stripGitActionRequestPreamble(value);
+  for (const [action, pattern] of Object.entries(REQUIRED_GIT_ACTION_HEADS)) {
+    const match = candidate.match(pattern);
+    if (match) return { action, match, candidate };
+  }
+  const bareMatch = candidate.match(/^([a-z]+)(?:\s+(?:it|them|this|that|these|those))?$/);
+  if (bareMatch) {
+    const action = REQUIRED_GIT_ACTION_CONTINUATION_HEADS.get(String(bareMatch[1] || ""));
+    if (action) return { action, match: bareMatch, candidate };
+  }
+  if (continuation && !/^[a-z]+\s+\S+\s+(?:must|should|will|would|can|could|is|are|was|were|has|have|needs?|remains?|stays?)\b/.test(candidate)) {
+    const match = candidate.match(/^([a-z]+)\b/);
+    const action = REQUIRED_GIT_ACTION_CONTINUATION_HEADS.get(String(match?.[1] || ""));
+    if (action) return { action, match, candidate };
+  }
+  return null;
+}
+
+function gitActionsRequestedBySentence(sentence = "") {
+  const segments = gitActionRequestSegments(sentence);
+  const requested = [];
+  let actionSequenceActive = false;
+  for (const segment of segments) {
+    const request = requestedGitActionAtHead(segment, { continuation: actionSequenceActive });
+    if (!request) continue;
+    requested.push(request.action);
+    actionSequenceActive = true;
+  }
+  return requested;
 }
 
 function inferRequiredGitActions(goal = "") {
-  const positiveGoal = stripForbiddenLanguage(goal);
-  const text = normalizedText(positiveGoal);
-  const actions = [];
-  const patterns = {
-    add: /\bgit\s+add\b|\bstage\s+(?:the\s+)?(?:changes?|files?)\b/,
-    branch: /\b(?:create|make)\s+(?:a\s+)?(?:git\s+)?branch\b|\bgit\s+branch\b/,
-    checkout: /\bgit\s+checkout\b/,
-    commit: /\bcommit\b|提交代码/,
-    merge: /\bmerge\b|合并分支/,
-    pull: /\bgit\s+pull\b|\bpull\s+(?:the\s+)?(?:latest|changes?)\b/,
-    push: /\bgit\s+push\b|\bpush\s+(?:the\s+)?(?:changes?|commits?|branch|tag)\b|\bpush\s+to\s+(?:git|github|the\s+repo(?:sitory)?)\b|推送/,
-    restore: /\bgit\s+restore\b/,
-    switch: /\bgit\s+switch\b|\bswitch\s+(?:to\s+)?(?:the\s+)?branch\b/,
-    tag: /\b(?:create|make|push)\s+(?:a\s+)?(?:git\s+)?tag\b|\bgit\s+tag\b/,
-  };
-  for (const [action, pattern] of Object.entries(patterns)) {
-    if (pattern.test(text)) actions.push(action);
+  const requested = [];
+  for (const sentence of gitActionRequestSentences(goal)) {
+    requested.push(...gitActionsRequestedBySentence(sentence));
   }
-  return unique(actions);
+  return unique(requested);
+}
+
+function missingRequiredGitActionSequence(required = [], observed = []) {
+  let expected = (Array.isArray(required) ? required : [])
+    .map((item) => String(item || "").toLowerCase())
+    .filter(Boolean);
+  if (
+    expected.includes("commit") &&
+    expected.includes("push") &&
+    expected.lastIndexOf("push") < expected.lastIndexOf("commit")
+  ) {
+    expected = [...expected.filter((action) => action !== "push"), "push"];
+  }
+  const actual = (Array.isArray(observed) ? observed : [])
+    .map((item) => String(item || "").toLowerCase())
+    .filter(Boolean);
+  let cursor = 0;
+  for (let index = 0; index < expected.length; index += 1) {
+    const observedIndex = actual.indexOf(expected[index], cursor);
+    if (observedIndex < 0) return expected.slice(index);
+    cursor = observedIndex + 1;
+  }
+  if (expected.at(-1) === "push") {
+    const finalConsequentialAction = [...actual]
+      .reverse()
+      .find((action) => !isObservationalGitAction(action));
+    if (finalConsequentialAction !== "push") return ["push"];
+  }
+  return [];
 }
 
 export function gitActionsSatisfyContract(contract = {}, actions = []) {
-  const observed = new Set((Array.isArray(actions) ? actions : []).map((item) => String(item || "").toLowerCase()));
+  const observed = (Array.isArray(actions) ? actions : []).map((item) => String(item || "").toLowerCase());
   const required = Array.isArray(contract.requiredGitActions)
     ? contract.requiredGitActions.map((item) => String(item || "").toLowerCase()).filter(Boolean)
     : [];
-  if (required.length) return required.every((action) => observed.has(action));
-  return [...observed].some((action) => !OBSERVATIONAL_GIT_ACTIONS.has(action));
+  if (required.length) return missingRequiredGitActionSequence(required, observed).length === 0;
+  return observed.some((action) => !isObservationalGitAction(action));
 }
 
 const PROJECT_TEST_PROFILES = new Set([
@@ -619,15 +772,6 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   if (textHas(mandatoryEvidenceText, /\b(screenshot|visible|visual|see|inspect image|open image|read_image|thumbnail)\b/) || /截图|可见|缩略图/.test(mandatoryEvidenceText)) {
     categories.add("visual");
   }
-  if (
-    textHas(
-      text,
-      /\b(commit|pull request|pr|branch|merge|tag|release|git\s+(?:commit|push|pull|add|checkout|switch|branch|merge|tag))\b|\bpush\s+(?:the\s+)?(?:changes?|commits?|branch|tag)\b|\bpush\s+to\s+(?:git|github|the\s+repo(?:sitory)?)\b/
-    ) ||
-    /提交代码|推送|分支/.test(text)
-  ) {
-    categories.add("git");
-  }
   if (textHas(text, /\b(publish|deploy|submit|upload to|generate video|external service|npm publish|release)\b/) || /发布|部署|提交|生成视频|外部服务/.test(text)) {
     categories.add("publish");
   }
@@ -770,11 +914,79 @@ function applyScopedArtifactRoot(items = [], artifactRoot = "") {
   });
 }
 
+function prefixRequestsInlineCommandExecution(prefix = "") {
+  const clauses = String(prefix || "")
+    .split(
+      /(?:[,;，；]+|\b(?:and\s+then|and|then|after\s+that|afterwards|finally|next)\b|(?:然后|然後|接着|接著|随后|隨後|最后|最後|并且|並且|以及|再))/i
+    )
+    .map((item) => item.trim())
+    .filter(Boolean);
+  let clause = clauses.at(-1) || String(prefix || "").trim();
+  const preamble = /^(?:(?:please|kindly|now)\s+|(?:can|could|would|will)\s+you\s+|i\s+(?:want|need|would\s+like)\s+you\s+to\s+|you\s+(?:must|should|need\s+to|have\s+to)\s+|(?:help|assist)\s+me(?:\s+to)?\s+|(?:请你|請你|麻烦|麻煩|帮我|幫我|需要|必须|必須|请|請)\s*)/i;
+  while (preamble.test(clause)) clause = clause.replace(preamble, "").trim();
+  clause = clause.replace(/(?:[:：]|--?)\s*$/, "").trim();
+  return (
+    /^(?:run|execute|invoke|launch)(?:\s+(?:(?:the|this|that)\s+)?(?:following\s+)?command(?:\s+named)?)?\s*$/i.test(
+      clause
+    ) || /^(?:运行|運行|执行|執行|调用|調用)\s*$/.test(clause)
+  );
+}
+
+function inferExplicitRequestedCommands(goal = "") {
+  const source = stripForbiddenLanguage(goal);
+  const commands = [];
+  const inlineCode = /(?<!`)`([^`\r\n]+)`(?!`)/g;
+  for (const match of source.matchAll(inlineCode)) {
+    const index = Number(match.index || 0);
+    const sentenceStart = Math.max(
+      source.lastIndexOf("\n", index - 1),
+      source.lastIndexOf(".", index - 1),
+      source.lastIndexOf("!", index - 1),
+      source.lastIndexOf("?", index - 1),
+      source.lastIndexOf("。", index - 1),
+      source.lastIndexOf("！", index - 1),
+      source.lastIndexOf("？", index - 1)
+    );
+    const prefix = source.slice(sentenceStart + 1, index).trimEnd();
+    if (!prefixRequestsInlineCommandExecution(prefix)) continue;
+
+    const command = normalizeProjectCommand(match[1]);
+    if (
+      !command ||
+      command.length > 1000 ||
+      /[<>](?:PATH|FILE|COMMAND|VALUE)[<>]?/i.test(command) ||
+      hasActiveShellExpansion(command)
+    ) {
+      continue;
+    }
+    const sequence = parseTopLevelShellSequence(command);
+    if (
+      !sequence.commands.length ||
+      sequence.trailingSeparator ||
+      sequence.openQuote ||
+      sequence.trailingEscape ||
+      sequence.separators.some((separator) => separator !== "&&")
+    ) {
+      continue;
+    }
+    const executableSegments = sequence.commands.every((segment) => {
+      const tokens = tokenizeShellWords(segment);
+      return Boolean(tokens.length && !String(tokens[0] || "").startsWith("-"));
+    });
+    if (executableSegments) commands.push(command);
+  }
+  return unique(commands).slice(0, 8);
+}
+
 export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceCriteria = [] } = {}) {
   const evidenceGoal = scopedChatopsEvidenceGoal(goal, taskProfile);
   const artifactRoot = scopedArtifactRoot(goal);
   const requirementCategories = inferRequirementCategories(evidenceGoal, taskProfile, acceptanceCriteria);
   const requiredToolCalls = inferRequiredToolCalls(evidenceGoal);
+  const requiredGitActions = inferRequiredGitActions(evidenceGoal);
+  if (requiredGitActions.length && !requirementCategories.includes("git")) {
+    requirementCategories.push("git");
+  }
   const requiresExternalEvidence = requirementCategories.length > 0 || requiredToolCalls.length > 0 || goalRequiresEvidence(evidenceGoal, taskProfile);
   const requiredEvidence = requirementCategories.map((category) => ({
     id: category,
@@ -801,7 +1013,8 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     readOnlyReadiness: isReadOnlyReadinessTask(evidenceGoal),
     requiresPerSourceChecks: requiresPerSourceChecks(evidenceGoal),
     requiredToolCalls,
-    requiredGitActions: inferRequiredGitActions(evidenceGoal),
+    requiredGitActions,
+    requiredProjectCommands: inferExplicitRequestedCommands(evidenceGoal),
     requiresSourceGrounding: requiresSourceGrounding(evidenceGoal),
     requiredTextTerms: inferRequiredTextTerms(evidenceGoal),
     forbiddenTextTerms: inferForbiddenTextTerms(evidenceGoal),
@@ -810,37 +1023,78 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
 }
 
 function normalizeProjectCommand(value = "") {
-  return String(value || "")
-    .replace(/\\\s*\n\s*/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return canonicalizeShellCommand(value);
+}
+
+export function parseNonMutatingExitStatusWrapper(value = "") {
+  const normalized = normalizeProjectCommand(value);
+  if (!normalized) return null;
+  const label = "(?:EXIT|STATUS|RESULT)(?:_CODE)?";
+  const patterns = [
+    new RegExp(
+      `^(?<command>[\\s\\S]+);\\s*echo\\s+(?:\"(?<doubleLabel>${label})\\s*[:=]\\s*\\$\\?\"|'(?<singleLabel>${label})\\s*[:=]\\s*\\$\\?'|(?<bareLabel>${label})\\s*[:=]\\s*\\$\\?)$`,
+      "i"
+    ),
+    new RegExp(
+      `^(?<command>[\\s\\S]+);\\s*printf\\s+(?:\"(?<doubleLabel>${label})\\s*[:=]\\s*%(?:s|d|i|u)\\\\n\"|'(?<singleLabel>${label})\\s*[:=]\\s*%(?:s|d|i|u)\\\\n')\\s+(?:\"\\$\\?\"|\\$\\?)$`,
+      "i"
+    ),
+  ];
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (!match?.groups?.command) continue;
+    return {
+      command: normalizeProjectCommand(match.groups.command),
+      label: String(
+        match.groups.doubleLabel || match.groups.singleLabel || match.groups.bareLabel || ""
+      ).toUpperCase(),
+    };
+  }
+  return null;
+}
+
+export function parseExplicitExitStatus(value = "") {
+  const match = String(value || "")
+    .trimEnd()
+    .match(/(?:^|\n)\s*(?:EXIT|STATUS|RESULT)(?:_CODE)?\s*[:=]\s*(-?\d+)\s*$/i);
+  return match ? Number(match[1]) : null;
+}
+
+export function inferSuccessfulGitActionsFromCommandResult(payload = {}) {
+  if (!payload || payload.blocked || payload.skipped) return [];
+  const command = normalizeProjectCommand(payload.args?.command || payload.command || "");
+  if (!command) return [];
+  const exitWrapper = parseNonMutatingExitStatusWrapper(command);
+  if (exitWrapper) {
+    if (parseExplicitExitStatus(payload.stdout || payload.result || "") !== 0) return [];
+    return inferGitActionsFromCommand(exitWrapper.command);
+  }
+  if (payload.ok === false || Number(payload.exitCode ?? 0) !== 0) return [];
+  return inferGitActionsFromCommand(command);
 }
 
 function observedProjectCommandSatisfies(requiredCommand = "", item = {}) {
   const required = normalizeProjectCommand(requiredCommand);
   const observed = normalizeProjectCommand(item?.command || item?.target || "");
+  const boundRequired = normalizeProjectCommand(item?.requiredProjectCommand || "");
   if (!required || !observed) return false;
   if (
-    observed === required ||
-    observed.startsWith(`${required} `) ||
-    observed.endsWith(` ${required}`)
+    Object.prototype.hasOwnProperty.call(item, "explicitExitStatus") &&
+    item.explicitExitStatus !== 0
   ) {
-    return true;
+    return false;
   }
+  if (boundRequired === required) return true;
+  if (observed === required) return true;
 
   // Agents commonly preserve a command's exit code with
   // `command; echo "EXIT=$?"`. Accept only that narrow wrapper when the
   // captured evidence proves the wrapped command returned zero. Arbitrary
   // semicolon chains remain rejected because their final exit code can mask
   // an earlier failure.
-  if (!observed.startsWith(`${required};`)) return false;
-  const suffix = observed.slice(required.length);
-  const isExitProbe = /^;\s*(?:echo|printf)\b[^;&|]*(?:EXIT|STATUS|RESULT)[^;&|]*\$\?[^;&|]*$/i.test(
-    suffix
-  );
-  if (!isExitProbe) return false;
-  const proof = String(item?.proof || "");
-  return /(?:^|\s)(?:EXIT|STATUS|RESULT)\s*=\s*0(?:\s|$)/i.test(proof);
+  const exitProbe = parseNonMutatingExitStatusWrapper(observed);
+  if (!exitProbe || exitProbe.command !== required) return false;
+  return item?.explicitExitStatus === 0;
 }
 
 export function augmentScsTaskContractWithProjectVerification(contract = {}, state = {}, context = {}) {
@@ -859,11 +1113,31 @@ export function augmentScsTaskContractWithProjectVerification(contract = {}, sta
       .filter(Boolean),
     String(contract.artifactRoot || "")
   )).slice(0, 64);
-  const requiredProjectCommands = unique(
-    (Array.isArray(verification.requiredCommands) ? verification.requiredCommands : [])
-      .map(normalizeProjectCommand)
-      .filter(Boolean)
-  ).slice(0, 24);
+  const verificationRequiredProjectCommands = unique([
+    ...(Array.isArray(verification.contractRequiredCommands)
+      ? verification.contractRequiredCommands
+      : []),
+    ...(Array.isArray(verification.requiredCommands) ? verification.requiredCommands : []),
+  ].map(normalizeProjectCommand).filter(Boolean)).slice(0, 24);
+  const requiredProjectCommands = unique([
+    ...(Array.isArray(contract.requiredProjectCommands) ? contract.requiredProjectCommands : []),
+    ...verificationRequiredProjectCommands,
+  ].map(normalizeProjectCommand).filter(Boolean)).slice(0, 24);
+  const requiredCommandBatch = verification.requiredCommandBatch;
+  const requiredProjectCommandBatchId =
+    requiredCommandBatch &&
+    requiredCommandBatch.key === JSON.stringify(requiredProjectCommands) &&
+    requiredCommandBatch.id
+      ? String(requiredCommandBatch.id)
+      : "";
+  const requiredProjectCommandRuns = requiredProjectCommandBatchId
+    ? (Array.isArray(requiredCommandBatch.completedRuns) ? requiredCommandBatch.completedRuns : [])
+        .map((run) => ({
+          command: normalizeProjectCommand(run?.command || ""),
+          mutationRevision: Math.max(0, Number(run?.mutationRevision || 0)),
+        }))
+        .filter((run) => run.command && requiredProjectCommands.includes(run.command))
+    : [];
   const requiredEvidence = Array.isArray(contract.requiredEvidence)
     ? contract.requiredEvidence.map((item) => ({ ...item }))
     : [];
@@ -895,6 +1169,11 @@ export function augmentScsTaskContractWithProjectVerification(contract = {}, sta
     requiredEvidence,
     exactOutputPaths,
     requiredProjectCommands,
+    requiredProjectCommandBatchId,
+    requiredProjectCommandBatchCommands: requiredProjectCommandBatchId
+      ? requiredProjectCommands
+      : [],
+    requiredProjectCommandRuns,
     projectMutationRevision: mutationRevision,
     projectTestFiles: discoveredTests,
   };
@@ -2230,13 +2509,25 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
     );
   }
   if (toolName === "run_command" || payload.stdout || Number.isInteger(payload.exitCode)) {
+    const command = normalizeProjectCommand(args.command || "");
+    const exitWrapper = parseNonMutatingExitStatusWrapper(command);
+    const explicitExitStatus = exitWrapper
+      ? parseExplicitExitStatus(payload.stdout || "")
+      : undefined;
     push(
       "command",
       `exit=${payload.exitCode ?? 0} stdout=${compact(payload.stdout || "", 260)}`,
       args.command || "",
       {
-        command: normalizeProjectCommand(args.command || ""),
+        command,
         mutationRevision: Math.max(0, Number(payload.projectMutationRevision || 0)),
+        ...(payload.requiredCommandBatchId
+          ? { requiredCommandBatchId: String(payload.requiredCommandBatchId) }
+          : {}),
+        ...(payload.requiredProjectCommand
+          ? { requiredProjectCommand: normalizeProjectCommand(payload.requiredProjectCommand) }
+          : {}),
+        ...(exitWrapper ? { explicitExitStatus } : {}),
       }
     );
   }
@@ -2314,7 +2605,7 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
   if (["read_image", "generate_image"].includes(toolName) || /\b(screenshot|visible|thumbnail|preview|image)\b/.test(text)) {
     push("visual", `${toolName || "tool"} supplied visual evidence`, payload.path || payload.outputPath || args.path || "");
   }
-  const gitActions = inferGitActionsFromCommand(args.command || text);
+  const gitActions = inferSuccessfulGitActionsFromCommandResult(payload);
   if (gitActions.length) {
     push(
       "git",
@@ -2399,7 +2690,12 @@ export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
   const events = Array.isArray(context.events) ? context.events : [];
   const messages = Array.isArray(state.messages) ? state.messages : [];
   const eventEvidence = events.flatMap(eventToEvidence);
-  const messageEvidence = messages.flatMap(messageToEvidence);
+  // Completed tools are mirrored into both the append-only event stream and
+  // model messages. Use the chronological event stream when it is available;
+  // otherwise use messages as the durable fallback. Combining both can repeat
+  // action sequences and fabricate ordered Git completion.
+  const hasCompletedToolEvents = events.some((event) => String(event?.type || "") === "tool.completed");
+  const messageEvidence = hasCompletedToolEvents ? [] : messages.flatMap(messageToEvidence);
   const items = [...eventEvidence, ...messageEvidence]
     .slice(-80)
     .map((item) => revalidateArtifactEvidence(item, state, context));
@@ -2434,7 +2730,7 @@ export function evaluateScsEvidence(contract = {}, ledger = {}) {
   const requiredToolCalls = Array.isArray(contract.requiredToolCalls) ? contract.requiredToolCalls : [];
   const ledgerToolNames = new Set(Array.isArray(ledger.toolNames) ? ledger.toolNames : []);
   const requiredGitRevision = Math.max(0, Number(contract.requiredGitRevision || 0));
-  const observedGitActions = unique(
+  const observedGitActionSequence =
     ledgerItems
       .filter(
         (item) =>
@@ -2450,18 +2746,21 @@ export function evaluateScsEvidence(contract = {}, ledger = {}) {
             : inferGitActionsFromCommand(item.command || item.target || "")
       )
       .map((item) => String(item || "").toLowerCase())
-      .filter(Boolean)
-  );
+      .filter(Boolean);
+  const observedGitActions = unique(observedGitActionSequence);
   const requiredGitActions = Array.isArray(contract.requiredGitActions)
     ? contract.requiredGitActions
     : [];
-  const missingGitActions = requiredGitActions.filter((action) => !observedGitActions.includes(action));
+  const missingGitActions = missingRequiredGitActionSequence(
+    requiredGitActions,
+    observedGitActionSequence
+  );
   const satisfied = [];
   const missing = [];
   for (const requirement of required) {
     const minimumMutationRevision = Math.max(0, Number(requirement.minimumMutationRevision || 0));
     const categorySatisfied = requirement.category === "git"
-      ? gitActionsSatisfyContract(contract, observedGitActions)
+      ? gitActionsSatisfyContract(contract, observedGitActionSequence)
       : requirement.category === "test" && minimumMutationRevision > 0
         ? ledgerItems.some(
             (item) =>
@@ -2483,21 +2782,55 @@ export function evaluateScsEvidence(contract = {}, ledger = {}) {
       .filter(Boolean)
   );
   const projectMutationRevision = Math.max(0, Number(contract.projectMutationRevision || 0));
+  const requiredProjectCommandBatchId = String(
+    contract.requiredProjectCommandBatchId || ""
+  );
+  const requiredProjectCommandBatchCommands = unique(
+    (Array.isArray(contract.requiredProjectCommandBatchCommands)
+      ? contract.requiredProjectCommandBatchCommands
+      : [])
+      .map(normalizeProjectCommand)
+      .filter(Boolean)
+  );
+  const requiredProjectCommandRuns = Array.isArray(contract.requiredProjectCommandRuns)
+    ? contract.requiredProjectCommandRuns
+        .map((run) => ({
+          command: normalizeProjectCommand(run?.command || ""),
+          mutationRevision: Math.max(0, Number(run?.mutationRevision || 0)),
+        }))
+        .filter((run) => run.command)
+    : [];
   const successfulProjectCommandItems = ledgerItems.filter(
-    (item) =>
-      item?.category === "command" &&
-      item?.verified !== false &&
-      Number(item?.mutationRevision || 0) >= projectMutationRevision
+    (item) => item?.category === "command" && item?.verified !== false
   );
   const missingProjectCommands = requiredProjectCommands.filter(
-    (requiredCommand) =>
-      !successfulProjectCommandItems.some((item) =>
-        observedProjectCommandSatisfies(requiredCommand, item)
-      )
+    (requiredCommand) => {
+      const batchGoverned =
+        requiredProjectCommandBatchId &&
+        requiredProjectCommandBatchCommands.includes(requiredCommand);
+      const expectedRun = batchGoverned
+        ? requiredProjectCommandRuns.find((run) => run.command === requiredCommand)
+        : null;
+      if (batchGoverned && !expectedRun) return true;
+      return !successfulProjectCommandItems.some((item) => {
+        if (!observedProjectCommandSatisfies(requiredCommand, item)) return false;
+        if (expectedRun) {
+          return (
+            String(item?.requiredCommandBatchId || "") === requiredProjectCommandBatchId &&
+            Number(item?.mutationRevision || 0) === expectedRun.mutationRevision
+          );
+        }
+        return Number(item?.mutationRevision || 0) >= projectMutationRevision;
+      });
+    }
   );
   const hasAnyEvidence = Number(ledger.itemCount || 0) > 0;
   const evidenceOk = !contract.requiresExternalEvidence || (missing.length === 0 && hasAnyEvidence);
-  const ok = evidenceOk && missingToolCalls.length === 0 && missingProjectCommands.length === 0;
+  const ok =
+    evidenceOk &&
+    missingGitActions.length === 0 &&
+    missingToolCalls.length === 0 &&
+    missingProjectCommands.length === 0;
   return {
     ok,
     requiresExternalEvidence: Boolean(contract.requiresExternalEvidence),
@@ -2511,6 +2844,9 @@ export function evaluateScsEvidence(contract = {}, ledger = {}) {
     observedGitActions,
     missingGitActions,
     requiredProjectCommands,
+    requiredProjectCommandBatchId,
+    requiredProjectCommandBatchCommands,
+    requiredProjectCommandRuns,
     missingProjectCommands,
     reason: ok
       ? "Evidence satisfies the deterministic task contract."
@@ -2544,6 +2880,8 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
       requiredGitActions: contract.requiredGitActions || [],
       requiredGitRevision: Number(contract.requiredGitRevision || 0),
       requiredProjectCommands: contract.requiredProjectCommands || [],
+      requiredProjectCommandBatchId: contract.requiredProjectCommandBatchId || "",
+      requiredProjectCommandRuns: contract.requiredProjectCommandRuns || [],
       projectMutationRevision: Number(contract.projectMutationRevision || 0),
       projectTestFiles: contract.projectTestFiles || [],
       requiresSourceGrounding: Boolean(contract.requiresSourceGrounding),
@@ -2563,6 +2901,8 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
         target: item.target || "",
         proof: compact(item.proof || "", 300),
         gitActions: item.gitActions || (item.gitAction ? [item.gitAction] : []),
+        requiredCommandBatchId: item.requiredCommandBatchId || "",
+        requiredProjectCommand: item.requiredProjectCommand || "",
       })),
       blockers: (ledger.blockers || []).slice(-8).map((item) => ({
         id: item.id,
@@ -2582,6 +2922,7 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
       missingGitActions: evaluation.missingGitActions || [],
       observedGitActions: evaluation.observedGitActions || [],
       missingProjectCommands: evaluation.missingProjectCommands || [],
+      requiredProjectCommandBatchId: evaluation.requiredProjectCommandBatchId || "",
       satisfied: (evaluation.satisfied || []).map((item) => item.category),
     },
   };

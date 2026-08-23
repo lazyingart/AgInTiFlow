@@ -1,4 +1,10 @@
 import path from "node:path";
+import {
+  hasActiveShellCommandSubstitution,
+  hasActiveShellExpansion,
+  parseTopLevelShellSequence,
+  tokenizeShellWords,
+} from "./shell-syntax.js";
 
 export const SANDBOX_MODES = ["host", "docker-readonly", "docker-workspace"];
 export const PACKAGE_INSTALL_POLICIES = ["block", "prompt", "allow"];
@@ -24,12 +30,14 @@ const READ_ONLY_PATTERNS = [
   /^sha256sum(?:\s+[-\w./~*]+)+$/,
   /^sed\s+-n\s+['"0-9,:p\s-]+\s+[-\w./~*]+$/,
   /^git\s+(status|branch|log|show|diff(?:\s+--stat)?|remote\s+-v)(?:\s+.+)?$/,
+  /^git\s+rev-parse(?:\s+(?:--show-toplevel|--git-dir|--is-inside-work-tree|--show-prefix|--show-cdup|--verify|--short(?:=\d+)?|[-\w./@^{}~:]+))+$/,
+  /^git\s+ls-files(?:\s+(?:--(?:cached|deleted|modified|others|ignored|stage|unmerged|exclude-standard)|[-\w./*]+))*$/,
   /^node\s+(?:-v|--version)$/,
   /^node\s+[-\w./]+\.(?:c?js|mjs)\s+(?:--help|help|doctor|status|health)(?:\s+[-\w./:=]+)*$/,
   /^npm\s+(?:-v|--version)$/,
-  /^python(?:3)?\s+--version$/,
-  /^(?:[-/\w.]+\/)?python(?:3)?\s+[-\w./]+\.py\s+(?:--help|help|doctor|status|health)(?:\s+[-\w./:=]+)*$/,
-  /^python(?:3)?\s+-m\s+json\.tool$/,
+  /^python(?:3(?:\.\d+)*)?\s+--version$/,
+  /^(?:[-/\w.]+\/)?python(?:3(?:\.\d+)*)?\s+[-\w./]+\.py\s+(?:--help|help|doctor|status|health)(?:\s+[-\w./:=]+)*$/,
+  /^python(?:3(?:\.\d+)*)?\s+-m\s+json\.tool$/,
   /^pip(?:3)?\s+--version$/,
   /^conda\s+--version$/,
   /^R\s+--version$/,
@@ -45,6 +53,19 @@ const READ_ONLY_PATTERNS = [
   /^true$/,
   /^false$/,
   /^echo(?:\s+.+)?$/,
+];
+
+// Keep direct Python test recognition structural and bounded. Interpreter
+// runtime flags are separate from the script path so common invocations do
+// not fall through to trusted general-shell policy.
+const PYTHON_TEST_EXECUTABLE_PATTERN = String.raw`(?:[-/\\\w.]+[/\\])?python(?:3(?:\.\d+)*)?`;
+const PYTHON_TEST_FLAGS_PATTERN = String.raw`(?:(?:-(?:B|E|I|O|OO|P|q|s|S|u|v|x)|-(?:X|W)\s+[-\w.:=,]+)\s+)*`;
+const PYTHON_TEST_TARGET_PATTERN = String.raw`(?:[-\w./\\]*[/\\])?(?:test_[\w.-]+|[\w.-]+_test)\.py`;
+const PYTHON_TEST_ARGUMENTS_PATTERN = String.raw`(?:\s+[-\w./\\:=@]+)*`;
+const PYTHON_TEST_SCRIPT_PATTERNS = [
+  new RegExp(
+    `^${PYTHON_TEST_EXECUTABLE_PATTERN}\\s+${PYTHON_TEST_FLAGS_PATTERN}${PYTHON_TEST_TARGET_PATTERN}${PYTHON_TEST_ARGUMENTS_PATTERN}$`
+  ),
 ];
 
 function stripBenignRedirections(command = "") {
@@ -74,18 +95,548 @@ function isUnboundedRecursiveGrep(command = "") {
 }
 
 const TEST_PATTERNS = [
-  /^npm\s+(run\s+)?(check|test|build|lint)(?:\s+--\s+[-\w./:=]+)*$/,
-  /^npm\s+--prefix\s+[-\w./]+\s+(run\s+)?(check|test|build|lint)(?:\s+--\s+[-\w./:=]+)*$/,
-  /^npm\s+test$/,
+  /^npm\s+run\s+(?:check|test|build|lint|smoke)(?::[-\w.]+)*(?:\s+--(?:\s+[-\w./:=@]+)*)?$/,
+  /^npm\s+--prefix\s+[-\w./]+\s+run\s+(?:check|test|build|lint|smoke)(?::[-\w.]+)*(?:\s+--(?:\s+[-\w./:=@]+)*)?$/,
+  /^npm\s+(?:check|test|build|lint)(?:\s+--(?:\s+[-\w./:=@]+)*)?$/,
+  /^npm\s+--prefix\s+[-\w./]+\s+(?:check|test|build|lint)(?:\s+--(?:\s+[-\w./:=@]+)*)?$/,
+  /^(?:pnpm|yarn|bun)\s+(?:run\s+)?test(?:\s+[-\w./:=@]+)*$/,
+  /^(?:cargo|go|dotnet)\s+test(?:\s+[-\w./:=@]+)*$/,
+  /^(?:mvnw?|gradlew?|\.\/(?:mvnw|gradlew))\s+test(?:\s+[-\w./:=@]+)*$/,
+  /^ctest(?:\s+[-\w./:=@]+)*$/,
+  /^make\s+(?:test|check)(?:\s+[-\w./:=@]+)*$/,
   /^node\s+--check\s+[-\w./]+$/,
-  /^node\s+--test(?:\s+[-\w./]+)*$/,
   /^bash\s+-n\s+[-\w./]+\.sh$/,
   /^sh\s+-n\s+[-\w./]+\.sh$/,
-  /^python(?:3)?\s+-m\s+py_compile\s+[-\w./]+\.py$/,
-  /^python(?:3)?\s+-m\s+unittest(?:\s+[-\w./:=]+)*$/,
-  /^python(?:3)?\s+-m\s+pytest(?:\s+[-\w./:=]+)*$/,
+  /^python(?:3(?:\.\d+)*)?\s+-m\s+py_compile\s+[-\w./]+\.py$/,
+  /^python(?:3(?:\.\d+)*)?\s+-m\s+unittest(?:\s+[-\w./:=]+)*$/,
+  /^python(?:3(?:\.\d+)*)?\s+-m\s+pytest(?:\s+[-\w./:=]+)*$/,
   /^pytest(?:\s+[-\w./:=]+)*$/,
+  ...PYTHON_TEST_SCRIPT_PATTERNS,
 ];
+
+// TEST_PATTERNS is the broader allowlist for validation commands. Only these
+// commands prove that project tests actually ran; build, lint, and syntax
+// checks remain useful validation without satisfying the test contract.
+const SUBSTANTIVE_TEST_PATTERNS = [
+  /^npm\s+(?:--prefix\s+[-\w./]+\s+)?run\s+(?:test|smoke)(?::[-\w.]+)*(?:\s+--(?:\s+[-\w./:=@]+)*)?$/,
+  /^npm\s+(?:--prefix\s+[-\w./]+\s+)?test(?:\s+--(?:\s+[-\w./:=@]+)*)?$/,
+  /^(?:pnpm|yarn|bun)\s+(?:run\s+)?test(?:\s+[-\w./:=@]+)*$/,
+  /^(?:cargo|go|dotnet)\s+test(?:\s+[-\w./:=@]+)*$/,
+  /^(?:mvnw?|gradlew?|\.\/(?:mvnw|gradlew))\s+test(?:\s+[-\w./:=@]+)*$/,
+  /^ctest(?:\s+[-\w./:=@]+)*$/,
+  /^make\s+(?:test|check)(?:\s+[-\w./:=@]+)*$/,
+  /^python(?:3(?:\.\d+)*)?\s+-m\s+unittest(?:\s+[-\w./:=]+)*$/,
+  /^python(?:3(?:\.\d+)*)?\s+-m\s+pytest(?:\s+[-\w./:=]+)*$/,
+  /^pytest(?:\s+[-\w./:=]+)*$/,
+  ...PYTHON_TEST_SCRIPT_PATTERNS,
+];
+
+function commandHasOption(args = [], names = []) {
+  const accepted = new Set(names.map((name) => String(name).toLowerCase()));
+  return args.some((token) => {
+    const option = String(token || "").toLowerCase();
+    if (accepted.has(option)) return true;
+    const equals = option.indexOf("=");
+    return equals > 0 && accepted.has(option.slice(0, equals));
+  });
+}
+
+function testInvocationIsInformational(tokens = []) {
+  return commandHasOption(tokens, ["-h", "--help", "--version"]);
+}
+
+function optionPathValues(args = [], names = []) {
+  const values = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const token = String(args[index] || "");
+    for (const name of names) {
+      if (token === name) {
+        if (args[index + 1]) values.push(String(args[index + 1]));
+        continue;
+      }
+      if (token.startsWith(`${name}=`) || token.startsWith(`${name}:`)) {
+        values.push(token.slice(name.length + 1));
+        continue;
+      }
+      if (/^-[A-Za-z]$/.test(name) && token.startsWith(name) && token.length > name.length) {
+        values.push(token.slice(name.length).replace(/^=/, ""));
+      }
+    }
+  }
+  return values.filter(Boolean);
+}
+
+function delegatedPathIsOutsideWorkspace(value = "") {
+  const candidate = String(value || "").trim().replace(/\\/g, "/");
+  if (!candidate) return false;
+  if (/^[A-Za-z]:\//.test(candidate) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(candidate)) {
+    return true;
+  }
+  const relativeCandidate = candidate.replace(/^(?:\.\/)+/, "");
+  return (
+    !isSafeWorkspacePath(relativeCandidate) &&
+    !isSafeVirtualWorkspaceDir(candidate)
+  );
+}
+
+function validationExecutablePathMetadata(value = "") {
+  const candidate = String(value || "").trim().replace(/\\/g, "/");
+  if (!candidate || !candidate.includes("/")) {
+    return { outsideWorkspace: false, virtualWorkspacePath: false };
+  }
+  if (/^[A-Za-z]:\//.test(candidate) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(candidate)) {
+    return { outsideWorkspace: true, virtualWorkspacePath: false };
+  }
+  if (isSafeVirtualWorkspacePath(candidate)) {
+    return { outsideWorkspace: false, virtualWorkspacePath: true };
+  }
+  const relativeCandidate = candidate.replace(/^(?:\.\/)+/, "");
+  return {
+    outsideWorkspace: !isSafeRelativeDir(relativeCandidate),
+    virtualWorkspacePath: false,
+  };
+}
+
+function externalRunnerPlanPaths(executable = "", args = []) {
+  const optionNames = {
+    cargo: ["--manifest-path"],
+    ctest: ["--test-dir"],
+    dotnet: ["--settings", "--test-adapter-path"],
+    gradle: ["-b", "--build-file", "-c", "--settings-file", "-p", "--project-dir", "-I", "--init-script", "--include-build"],
+    gradlew: ["-b", "--build-file", "-c", "--settings-file", "-p", "--project-dir", "-I", "--init-script", "--include-build"],
+    mvn: ["-f", "--file"],
+    mvnw: ["-f", "--file"],
+  };
+  const paths = optionPathValues(args, optionNames[executable] || []);
+  if (["dotnet", "go"].includes(executable)) {
+    const testIndex = args.findIndex((token) => String(token).toLowerCase() === "test");
+    if (testIndex >= 0) {
+      paths.push(
+        ...args.slice(testIndex + 1).filter((token) => {
+          const candidate = String(token || "").replace(/\\/g, "/");
+          return (
+            candidate.startsWith("/") ||
+            candidate.startsWith("~/") ||
+            candidate === ".." ||
+            candidate.startsWith("../") ||
+            /^[A-Za-z]:\//.test(candidate)
+          );
+        })
+      );
+    }
+  }
+  return paths.filter(delegatedPathIsOutsideWorkspace);
+}
+
+function delegatedValidationPlanClassification(tokens = []) {
+  if (!Array.isArray(tokens) || !tokens.length) return null;
+  const executable = String(tokens[0] || "").split(/[/\\]/).at(-1)?.toLowerCase();
+  const args = tokens.slice(1).map((token) => String(token || ""));
+  const executablePath = validationExecutablePathMetadata(tokens[0]);
+  const basenameCommand = [executable, ...args].join(" ");
+  const validationLike = Boolean(
+    structuredValidationCommand(basenameCommand) || matchAny(TEST_PATTERNS, basenameCommand)
+  );
+  if (executablePath.outsideWorkspace && validationLike) {
+    return {
+      category: "general-shell",
+      needsNetwork: true,
+      writesWorkspace: true,
+      mayMutateProject: true,
+      substantiveTest: false,
+      reason:
+        "The validation executable is outside the current workspace and requires trusted shell policy.",
+    };
+  }
+  const externalPlanPaths = externalRunnerPlanPaths(executable, args);
+  if (externalPlanPaths.length) {
+    return {
+      category: "general-shell",
+      needsNetwork: true,
+      writesWorkspace: true,
+      mayMutateProject: true,
+      substantiveTest: false,
+      reason:
+        "The validation runner delegates its project or execution plan outside the current workspace and requires trusted shell policy.",
+    };
+  }
+  if (/^(?:g|mingw32-)?make$/.test(executable)) {
+    const hasEvalOption = args.some((token) =>
+      token === "-E" || /^-E.+/.test(token) || token === "--eval" || token.startsWith("--eval=")
+    );
+    const hasMakeExpansion = args.some((token) => /\$[({]/.test(token));
+    if (hasEvalOption || hasMakeExpansion) {
+      return {
+        category: "blocked",
+        hardBlocked: true,
+        needsNetwork: true,
+        writesWorkspace: true,
+        mayMutateProject: true,
+        reason:
+          "The validation runner received interpreter-owned evaluation syntax that can execute undeclared commands.",
+      };
+    }
+    const delegatesToExternalPlan = args.some((token) =>
+      /^(?:-f(?:.+|$)|--(?:file|makefile)(?:=|$)|-C(?:.+|$)|--directory(?:=|$)|-I(?:.+|$)|--include-dir(?:=|$))/.test(token)
+    );
+    if (delegatesToExternalPlan) {
+      return {
+        category: "general-shell",
+        needsNetwork: true,
+        writesWorkspace: true,
+        mayMutateProject: true,
+        substantiveTest: false,
+        reason:
+          "The validation runner delegates its execution plan to another file or directory and requires trusted shell policy.",
+      };
+    }
+  }
+  if (executable === "ctest") {
+    const delegatesToExternalPlan = args.some((token) =>
+      /^(?:-S(?:.+|$)|--script(?:-new-process)?(?:=|$)|-D(?:.+|$)|--dashboard(?:=|$)|-M(?:.+|$)|--test-model(?:=|$)|-T(?:.+|$)|--test-action(?:=|$)|--build-and-test(?:=|$)|--build-(?:generator|project|target|config|options)(?:=|$)|--test-command(?:=|$))/.test(
+        token
+      )
+    );
+    if (delegatesToExternalPlan) {
+      return {
+        category: "general-shell",
+        needsNetwork: true,
+        writesWorkspace: true,
+        mayMutateProject: true,
+        substantiveTest: false,
+        reason:
+          "CTest script, dashboard, and build-and-test modes execute a delegated plan and require trusted shell policy.",
+      };
+    }
+  }
+  return null;
+}
+
+function validationCommandDeclaresOutput(tokens = []) {
+  let executable = String(tokens[0] || "").split(/[/\\]/).at(-1)?.toLowerCase();
+  let args = tokens.slice(1);
+  if (/^python(?:3(?:\.\d+)*)?$/.test(executable) && args[0] === "-m") {
+    executable = String(args[1] || "").toLowerCase();
+    args = args.slice(2);
+  }
+  if (
+    executable === "node" &&
+    commandHasOption(args, ["--test-reporter-destination"])
+  ) {
+    return true;
+  }
+  if (executable === "go" && args[0] === "test") {
+    return commandHasOption(args.slice(1), [
+      "-blockprofile",
+      "-coverprofile",
+      "-cpuprofile",
+      "-memprofile",
+      "-mutexprofile",
+      "-o",
+      "-trace",
+    ]);
+  }
+  if (executable === "ctest" && commandHasOption(args, ["--output-junit"])) return true;
+  if (
+    ["pytest", "py.test"].includes(executable) &&
+    commandHasOption(args, ["--html", "--junit-xml", "--junitxml"])
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function validationCommandMayMutateProject(command = "") {
+  const normalized = String(command || "").trim();
+  if (!normalized) return false;
+  const tokens = tokenizeShellWords(normalized);
+  if (validationCommandDeclaresOutput(tokens)) return true;
+  const packageScript = packageManagerScriptName(tokens);
+  if (packageScript && packageScriptMayMutate(packageScript)) return true;
+  if (/(?:^|\s)--(?:fix|write)(?:\s|=|$)/i.test(normalized)) {
+    return true;
+  }
+  if (
+    /(?:^|\s)(?:--(?:update-?snapshots?|snapshot-?update|test-update-snapshots?)|--coverage|--coverageDirectory)(?:\s|=|$)/i.test(
+      normalized
+    ) ||
+    (/^(?:npm|pnpm|yarn|bun|node)\b/.test(normalized) && /(?:^|\s)-u(?:\s|=|$)/.test(normalized))
+  ) {
+    return true;
+  }
+  if (/\bpy_compile\b/.test(normalized)) return true;
+  if (
+    String(tokens[0] || "").split(/[/\\]/).at(-1)?.toLowerCase() === "go" &&
+    tokens[1] === "test" &&
+    commandHasOption(tokens.slice(2), ["-c"])
+  ) {
+    return true;
+  }
+  return /^(?:cargo|dotnet)\s+test\b|^(?:mvnw?|gradlew?|\.\/(?:mvnw|gradlew))\s+test\b/.test(
+    normalized
+  );
+}
+
+function packageManagerScriptName(tokens = []) {
+  if (!Array.isArray(tokens) || !tokens.length) return "";
+  const manager = String(tokens[0] || "").split(/[/\\]/).at(-1)?.toLowerCase();
+  if (!["npm", "pnpm", "yarn", "bun"].includes(manager)) return "";
+  let index = 1;
+  if (manager === "npm" && tokens[index] === "--prefix") index += 2;
+  if (tokens[index] === "run") index += 1;
+  return String(tokens[index] || "").toLowerCase();
+}
+
+function invokesPackageManagerScript(tokens = []) {
+  if (!Array.isArray(tokens) || !tokens.length) return false;
+  const manager = String(tokens[0] || "").split(/[/\\]/).at(-1)?.toLowerCase();
+  if (!["npm", "pnpm", "yarn", "bun"].includes(manager)) return false;
+  let index = 1;
+  if (manager === "npm" && tokens[index] === "--prefix") index += 2;
+  if (tokens[index] === "run") return Boolean(tokens[index + 1]);
+  return /^(?:build|check|lint|smoke|test)(?::|$)/.test(String(tokens[index] || "").toLowerCase());
+}
+
+function packageScriptHasUnsafeLifecycle(scriptName = "") {
+  const segments = String(scriptName || "").toLowerCase().split(":").filter(Boolean);
+  return segments.some((segment) =>
+    /^(?:(?:pre|post)?(?:publish(?:only)?|pack|deploy|release|upload|submit|token|login|logout|adduser|auth|install|uninstall|bootstrap|setup|upgrade)(?:[-_.]|$)|prepare(?:[-_.]|$)|dependencies(?:[-_.]|$)|(?:add|remove|update)[-_.]?(?:deps?|dependencies|packages?)(?:[-_.]|$))/.test(
+      segment
+    )
+  );
+}
+
+function packageScriptMayMutate(scriptName = "") {
+  const segments = String(scriptName || "").toLowerCase().split(":").filter(Boolean);
+  if (!segments.length) return false;
+  if (segments[0] === "build") return true;
+  return segments.slice(1).some((segment) =>
+    /^(?:build|compile|coverage|fix|format|generate|regen(?:erate)?|update(?:[-_.]?snapshots?)?|write)(?:[-_.]|$)/.test(
+      segment
+    )
+  );
+}
+
+function boundedTestArguments(tokens = []) {
+  return (
+    Array.isArray(tokens) &&
+    tokens.every((token) => {
+      const text = String(token || "");
+      return text.length > 0 && text.length <= 512 && !/[\r\n\0]/.test(text);
+    })
+  );
+}
+
+function nodeTestTargetIsExplicitTest(value = "") {
+  const raw = String(value || "").replace(/\\/g, "/");
+  if (!raw || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(raw)) return false;
+  const normalized = path.posix.normalize(raw);
+  if (!normalized || normalized === ".." || normalized.startsWith("../")) return false;
+  if (/(?:^|\/)(?:test|tests|__tests__)(?:\/|$)/i.test(normalized)) return true;
+  const basename = normalized.split("/").at(-1) || "";
+  return /(?:^|[._-])(?:test|spec)(?:[._-]|$)/i.test(basename);
+}
+
+function nodeTestUsesExecutableModuleHook(args = []) {
+  return args.some((token) =>
+    /^(?:-r(?:=|[^-].*)?|--(?:require|import|loader|experimental-loader|test-global-setup|test-reporter)(?:=|$))/i.test(
+      String(token || "")
+    )
+  );
+}
+
+const NODE_OPTIONS_WITH_SEPARATE_VALUE = new Set([
+  "-r",
+  "--conditions",
+  "--env-file",
+  "--env-file-if-exists",
+  "--experimental-loader",
+  "--import",
+  "--input-type",
+  "--loader",
+  "--require",
+  "--test-concurrency",
+  "--test-coverage-branches",
+  "--test-coverage-exclude",
+  "--test-coverage-functions",
+  "--test-coverage-include",
+  "--test-coverage-lines",
+  "--test-global-setup",
+  "--test-isolation",
+  "--test-name-pattern",
+  "--test-reporter",
+  "--test-reporter-destination",
+  "--test-rerun-failures",
+  "--test-shard",
+  "--test-skip-pattern",
+  "--test-timeout",
+]);
+
+function nodeCliPositionals(args = []) {
+  const positionals = [];
+  let literalArguments = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const token = String(args[index] || "");
+    if (!literalArguments && token === "--") {
+      literalArguments = true;
+      continue;
+    }
+    if (!literalArguments && token.startsWith("-")) {
+      const option = token.split("=", 1)[0];
+      if (!token.includes("=") && NODE_OPTIONS_WITH_SEPARATE_VALUE.has(option)) index += 1;
+      continue;
+    }
+    positionals.push({ index, value: token });
+  }
+  return positionals;
+}
+
+function nativeTestRunnerExecutesTests(executable = "", args = []) {
+  const runner = String(executable || "").toLowerCase();
+  const options = args.slice(1);
+  if (runner === "cargo" && commandHasOption(options, ["--no-run", "--list"])) return false;
+  if (runner === "go" && commandHasOption(options, ["-c", "-list"])) return false;
+  if (runner === "dotnet" && commandHasOption(options, ["-t", "--list-tests"])) return false;
+  if (runner === "ctest" && commandHasOption(args, ["-n", "--show-only", "--print-labels"])) {
+    return false;
+  }
+  if (["gradle", "gradlew"].includes(runner)) {
+    if (commandHasOption(options, ["-m", "--dry-run", "--task-graph"])) return false;
+    for (let index = 0; index < options.length; index += 1) {
+      const token = String(options[index] || "").toLowerCase();
+      if (
+        ["-x", "--exclude-task"].includes(token) &&
+        String(options[index + 1] || "").toLowerCase() === "test"
+      ) {
+        return false;
+      }
+      if (/^(?:-x|--exclude-task)=test$/.test(token)) return false;
+    }
+  }
+  if (["mvn", "mvnw"].includes(runner)) {
+    if (options.some((token) => /^-d(?:skiptests|maven\.test\.skip)(?:=true)?$/i.test(String(token)))) {
+      return false;
+    }
+  }
+  if (runner === "make" && commandHasOption(args, ["-n", "-q", "-t", "--dry-run", "--just-print", "--question", "--recon", "--touch"])) {
+    return false;
+  }
+  return true;
+}
+
+function structuredNativeTestRunner(tokens = [], command = "") {
+  const executable = String(tokens[0] || "").split(/[/\\]/).at(-1)?.toLowerCase();
+  const args = tokens.slice(1);
+  const directTestSubcommand = new Set(["cargo", "dotnet", "go", "gradle", "gradlew", "mvn", "mvnw"]);
+  const directTestTarget = directTestSubcommand.has(executable) && args[0] === "test";
+  const ctestInvocation = executable === "ctest";
+  const makeTestTarget = executable === "make" && ["check", "test"].includes(args[0]);
+  if (!directTestTarget && !ctestInvocation && !makeTestTarget) return null;
+  return {
+    substantiveTest: nativeTestRunnerExecutesTests(executable, args),
+    mayMutateProject: validationCommandMayMutateProject(command),
+  };
+}
+
+function structuredValidationCommand(command = "") {
+  const shellSequence = parseTopLevelShellSequence(command);
+  if (
+    shellSequence.commands.length !== 1 ||
+    shellSequence.separators.length > 0 ||
+    shellSequence.trailingSeparator
+  ) {
+    return null;
+  }
+  if (hasActiveShellExpansion(command)) return null;
+  const tokens = tokenizeShellWords(command);
+  if (!boundedTestArguments(tokens)) return null;
+  const executable = String(tokens[0] || "").split(/[/\\]/).at(-1)?.toLowerCase();
+
+  if (["npm", "pnpm", "yarn", "bun"].includes(executable)) {
+    const scriptName = packageManagerScriptName(tokens);
+    if (!/^(?:build|check|lint|smoke|test)(?::[-\w.]+)*$/.test(scriptName)) return null;
+    return {
+      substantiveTest: /^(?:smoke|test)(?::|$)/.test(scriptName),
+      mayMutateProject: validationCommandMayMutateProject(command),
+    };
+  }
+
+  let framework = executable;
+  let args = tokens.slice(1);
+  if (/^python(?:3(?:\.\d+)*)?$/.test(executable) && tokens[1] === "-m") {
+    framework = String(tokens[2] || "").toLowerCase();
+    args = tokens.slice(3);
+  }
+  if (framework === "pytest") {
+    const collectionOnly = args.some((token) =>
+      /^(?:--collect-only|--collectonly|--co)(?:=|$)/.test(String(token || ""))
+    );
+    return {
+      substantiveTest: !collectionOnly,
+      mayMutateProject: validationCommandMayMutateProject(command),
+    };
+  }
+  if (framework === "unittest") {
+    return {
+      substantiveTest: !commandHasOption(args, ["--list-tests", "--collect-only"]),
+      mayMutateProject: validationCommandMayMutateProject(command),
+    };
+  }
+
+  const nativeRunner = structuredNativeTestRunner(tokens, command);
+  if (nativeRunner) return nativeRunner;
+
+  if (executable === "node" && args.includes("--test")) {
+    const testIndex = args.indexOf("--test");
+    const informationalMode = args.some((token) =>
+      /^(?:-h|--help|-v|--version)(?:=|$)/.test(String(token || ""))
+    );
+    const evaluatesSource = args.some((token) =>
+      /^(?:-e(?:[^-].*)?|--eval(?:=.*)?|-p(?:[^-].*)?|--print(?:=.*)?|-c|--check)$/.test(
+        String(token || "")
+      )
+    );
+    const positionals = nodeCliPositionals(args);
+    const entrypointBeforeTest = positionals.some((item) => item.index < testIndex);
+    if (informationalMode || evaluatesSource || entrypointBeforeTest) return null;
+    const explicitTargets = positionals
+      .filter((item) => item.index > testIndex)
+      .map((item) => item.value);
+    if (explicitTargets.some((target) => !nodeTestTargetIsExplicitTest(target))) return null;
+    return {
+      substantiveTest: true,
+      mayMutateProject:
+        validationCommandMayMutateProject(command) ||
+        nodeTestUsesExecutableModuleHook(args),
+    };
+  }
+
+  return null;
+}
+
+function classifyBackgroundShell(normalized = "") {
+  const sequence = parseTopLevelShellSequence(normalized);
+  if (!sequence.separators.includes("&") && sequence.trailingSeparator !== "&") return null;
+
+  const classifications = sequence.commands.map((command) => classifySimpleCommand(command));
+  const blocked = classifications.find((classification) => classification.category === "blocked");
+  if (blocked) return { ...blocked, gitOnly: false, background: true };
+  const destructive = classifications.find(
+    (classification) => classification.category === "destructive"
+  );
+  if (destructive) return { ...destructive, gitOnly: false, background: true };
+
+  return {
+    category: "general-shell",
+    needsNetwork: classifications.some((classification) => classification.needsNetwork),
+    writesWorkspace: true,
+    mayMutateProject: true,
+    substantiveTest: false,
+    background: true,
+    reason:
+      "Background shell execution is asynchronous and cannot provide bounded mutation or completion evidence.",
+  };
+}
 
 const SAFE_WORKSPACE_WRITE_PATTERNS = [/^mkdir\s+-p\s+[-\w./]+$/];
 const PERMISSION_CHANGE_PATTERNS = [/^(?:sudo\s+)?chmod\s+[-+=,rwxugoXst0-7]+\s+[-\w./]+$/];
@@ -96,6 +647,70 @@ const NETWORK_FETCH_PATTERNS = [
   /^curl\b(?=[\s\S]*https?:\/\/\S+)[\s\S]*$/,
   /^wget\b(?=[\s\S]*https?:\/\/\S+)[\s\S]*$/,
 ];
+
+function outputDestinationWritesFile(value = "") {
+  const destination = String(value || "").trim();
+  return Boolean(destination && destination !== "-" && !/^(?:\/dev\/null|nul)$/i.test(destination));
+}
+
+function networkFetchWritesWorkspace(command = "") {
+  const tokens = tokenizeShellWords(command);
+  const executable = path.basename(String(tokens[0] || "")).toLowerCase();
+  if (executable === "curl") {
+    for (let index = 1; index < tokens.length; index += 1) {
+      const token = String(tokens[index] || "");
+      if (["-O", "--remote-name", "--remote-name-all"].includes(token)) return true;
+      if (token === "-o" || token === "--output") {
+        if (outputDestinationWritesFile(tokens[index + 1])) return true;
+        index += 1;
+        continue;
+      }
+      if (token.startsWith("--output=")) {
+        if (outputDestinationWritesFile(token.slice("--output=".length))) return true;
+        continue;
+      }
+      if (/^-[^-]/.test(token)) {
+        const outputIndex = token.indexOf("o", 1);
+        if (outputIndex >= 1) {
+          const inlineDestination = token.slice(outputIndex + 1);
+          if (outputDestinationWritesFile(inlineDestination || tokens[index + 1])) return true;
+          if (!inlineDestination) index += 1;
+          continue;
+        }
+        if (token.includes("O")) return true;
+      }
+    }
+    return false;
+  }
+  if (executable === "wget") {
+    if (tokens.some((token) => token === "--spider")) return false;
+    let explicitDestination;
+    for (let index = 1; index < tokens.length; index += 1) {
+      const token = String(tokens[index] || "");
+      if (token === "-O" || token === "--output-document") {
+        explicitDestination = tokens[index + 1];
+        index += 1;
+        continue;
+      }
+      if (token.startsWith("--output-document=")) {
+        explicitDestination = token.slice("--output-document=".length);
+        continue;
+      }
+      if (/^-[^-]/.test(token)) {
+        const outputIndex = token.indexOf("O", 1);
+        if (outputIndex >= 1) {
+          explicitDestination = token.slice(outputIndex + 1) || tokens[index + 1];
+          if (!token.slice(outputIndex + 1)) index += 1;
+        }
+      }
+    }
+    if (explicitDestination !== undefined) return outputDestinationWritesFile(explicitDestination);
+    // Unlike curl, wget writes its URL-derived filename unless explicitly sent
+    // to stdout or used in spider mode.
+    return true;
+  }
+  return false;
+}
 
 const GIT_WORKFLOW_PATTERNS = [
   /^git\s+init(?:\s+(?:\.|[-\w./]+))?$/,
@@ -118,15 +733,17 @@ const GIT_WORKFLOW_PATTERNS = [
   /^git\s+fetch(?:\s+[-\w./:=]+)*$/,
   /^git\s+pull\s+--ff-only(?:\s+[-\w./:=]+)*$/,
   /^git\s+push(?:\s+[-\w./:=]+)*$/,
+  /^git\s+tag\s+[A-Za-z0-9][-\w./]*$/,
+  /^git\s+tag\s+-a\s+[A-Za-z0-9][-\w./]*\s+-m\s+(['"])[^'"\n]{1,220}\1$/,
 ];
 
 const UNSAFE_GIT_PATTERNS = [
   /^git\s+pull\b(?!\s+--ff-only(?:\s|$))/,
-  /^git\s+(merge|rebase|reset|checkout|switch|clean)\b/,
+  /^git\s+(merge|rebase|reset|checkout|switch|clean|restore)\b/,
 ];
 
 const TOOLCHAIN_PATTERNS = [
-  /^(?:[-/\w.]+\/)?python(?:3)?\s+[-\w./]+\.py(?:\s+[-\w./:=]+)*$/,
+  /^(?:[-/\w.]+\/)?python(?:3(?:\.\d+)*)?\s+[-\w./]+\.py(?:\s+[-\w./:=]+)*$/,
   /^Rscript\s+[-\w./]+\.R(?:\s+[-\w./:=]+)*$/,
   /^(?:\.\/gradlew|[-\w./]+\/gradlew)\s+(?:-p\s+[-\w./]+\s+)?(?:(?::[-\w]+:)?(?:assembleDebug|assembleRelease|bundleDebug|bundleRelease|compileDebugKotlin|compileReleaseKotlin|testDebugUnitTest|lintDebug|lint|check|build))(?:\s+[-\w./:=]+)*$/,
   /^latexmk\s+(?=[-\w./=\s]*-pdf\b)(?:(?:-cd|-pdf|-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+)\s+)+[-\w./]+\.tex$/,
@@ -167,19 +784,10 @@ const ENV_SETUP_PATTERNS = [
 ];
 
 const BLOCKED_SHELL_TOKENS = ["&&", "||", ";", "|", ">", "<", "$(", "`"];
-const BLOCKED_WRITE_TOKENS = [
-  " rm",
-  " mv",
-  " chmod",
-  " chown",
-  " rmdir",
-  " touch",
-  " tee",
-  "-delete",
-  "git checkout",
-  "git switch",
-  "git reset",
-  "git clean",
+const BLOCKED_WRITE_PATTERNS = [
+  /(?:^|[\s;&|()])(?:rm|mv|chmod|chown|rmdir|touch|tee)(?=\s|$)/,
+  /(?:^|\s)-delete(?=\s|$)/,
+  /(?:^|[\s;&|()])git\s+(?:checkout|switch|reset|clean)(?=\s|$)/,
 ];
 
 const ALWAYS_BLOCKED_PATTERNS = [
@@ -217,7 +825,7 @@ export function normalizePackageInstallPolicy(value) {
 
 function isHardBlockedClassification(classification = {}) {
   const reason = String(classification.reason || "");
-  return /empty|secret|credential|token|publish/i.test(reason);
+  return classification.hardBlocked === true || /empty|secret|credential|token|publish/i.test(reason);
 }
 
 function matchAny(patterns, command) {
@@ -229,6 +837,11 @@ function stripQuotedSegments(command = "") {
   let quote = "";
   let escaped = false;
   for (const char of String(command || "")) {
+    if (quote === "'") {
+      if (char === "'") quote = "";
+      output += " ";
+      continue;
+    }
     if (escaped) {
       escaped = false;
       if (!quote) output += " ";
@@ -239,8 +852,8 @@ function stripQuotedSegments(command = "") {
       if (!quote) output += char;
       continue;
     }
-    if (quote) {
-      if (char === quote) quote = "";
+    if (quote === '"') {
+      if (char === '"') quote = "";
       output += " ";
       continue;
     }
@@ -291,6 +904,10 @@ function relativizeWorkspaceAbsolutePaths(command = "", root = "") {
     if (!isInsideDirectory(workspaceRoot, resolved)) return candidate;
     return path.relative(workspaceRoot, resolved) || ".";
   });
+}
+
+export function normalizeCommandForPolicy(command = "", config = {}) {
+  return relativizeWorkspaceAbsolutePaths(command, config.commandCwd).trim();
 }
 
 function isSafeEnvAssignment(name = "", value = "") {
@@ -379,6 +996,10 @@ function classifyGitClone(normalized) {
 }
 
 function classifyGitWorkflow(normalized) {
+  // Git arguments accepted here are executed through a shell. Keep expansion
+  // syntax out of this narrow allowlist while preserving literal commit/tag
+  // text protected by single quotes.
+  if (hasActiveShellExpansion(normalized)) return null;
   if (!matchAny(GIT_WORKFLOW_PATTERNS, normalized)) return null;
   const remote = /^git\s+(fetch|pull|push)\b/.test(normalized);
   const writesWorkspace = !/^git\s+fetch\b/.test(normalized);
@@ -386,6 +1007,7 @@ function classifyGitWorkflow(normalized) {
     category: remote ? "git-remote" : "git-workflow",
     needsNetwork: remote,
     writesWorkspace,
+    gitOnly: true,
     reason:
       remote
         ? "Git remote workflow command. Agent should inspect status/diff first and stop on divergence or conflicts."
@@ -434,9 +1056,15 @@ function classifySimpleCommand(normalized) {
   const condaRunClassification = classifyCondaRun(normalized);
   if (condaRunClassification) return condaRunClassification;
   if (matchAny(UNSAFE_GIT_PATTERNS, normalized)) {
+    const unquoted = stripQuotedSegments(normalized);
     return {
       category: "destructive",
       needsApproval: true,
+      writesWorkspace: true,
+      gitOnly:
+        /^git\s+/.test(normalized) &&
+        !/[;&|<>()]/.test(unquoted) &&
+        !hasActiveShellExpansion(normalized),
       reason:
         "Git merge/rebase/reset/checkout/switch/clean, and non-ff-only pulls, can rewrite or conflict with local work. Inspect status/diff first and ask the user when the repository is divergent or conflicted.",
     };
@@ -482,9 +1110,20 @@ function classifySimpleCommand(normalized) {
   }
 
   const commandForPatternMatching = stripSafeInlineEnvAssignments(benignRedirectCommand);
+  if (hasActiveShellCommandSubstitution(commandForPatternMatching)) {
+    return {
+      category: "general-shell",
+      needsNetwork: true,
+      writesWorkspace: true,
+      reason: `Command uses active shell expansion outside the bounded command policy: ${normalized}`,
+    };
+  }
+  const validationTokens = tokenizeShellWords(commandForPatternMatching);
+  const delegatedValidationPlan = delegatedValidationPlanClassification(validationTokens);
+  if (delegatedValidationPlan) return delegatedValidationPlan;
   const unquoted = stripQuotedSegments(commandForPatternMatching);
-  const lowered = ` ${unquoted.toLowerCase()} `;
-  if (BLOCKED_WRITE_TOKENS.some((part) => lowered.includes(part))) {
+  const lowered = unquoted.toLowerCase();
+  if (BLOCKED_WRITE_PATTERNS.some((pattern) => pattern.test(lowered))) {
     return {
       category: "destructive",
       needsNetwork: false,
@@ -502,16 +1141,52 @@ function classifySimpleCommand(normalized) {
   }
 
   if (matchAny(READ_ONLY_PATTERNS, commandForPatternMatching) || isReadOnlyFindCommand(normalized)) {
-    return { category: "read-only", needsNetwork: false, writesWorkspace: false };
+    return {
+      category: "read-only",
+      needsNetwork: false,
+      writesWorkspace: false,
+      gitOnly: /^git\s+/.test(commandForPatternMatching),
+    };
   }
-  if (matchAny(TEST_PATTERNS, commandForPatternMatching)) {
-    return { category: "test", needsNetwork: false, writesWorkspace: false };
+  const packageScript = packageManagerScriptName(validationTokens);
+  if (invokesPackageManagerScript(validationTokens) && packageScriptHasUnsafeLifecycle(packageScript)) {
+    return {
+      category: "blocked",
+      needsNetwork: true,
+      writesWorkspace: true,
+      reason:
+        `Package script ${packageScript} has an external, credential, or environment lifecycle name and cannot be treated as bounded validation.`,
+    };
+  }
+  const structuredValidation = structuredValidationCommand(commandForPatternMatching);
+  if (structuredValidation || matchAny(TEST_PATTERNS, commandForPatternMatching)) {
+    const mayMutateProject =
+      structuredValidation?.mayMutateProject ??
+      validationCommandMayMutateProject(commandForPatternMatching);
+    return {
+      category: "test",
+      needsNetwork: false,
+      writesWorkspace: mayMutateProject,
+      mayMutateProject,
+      virtualWorkspacePath: validationExecutablePathMetadata(validationTokens[0])
+        .virtualWorkspacePath,
+      substantiveTest:
+        !testInvocationIsInformational(validationTokens) &&
+        (structuredValidation?.substantiveTest ??
+          matchAny(SUBSTANTIVE_TEST_PATTERNS, commandForPatternMatching)),
+    };
   }
   if (matchAny(TOOLCHAIN_PATTERNS, commandForPatternMatching)) {
     return { category: "toolchain", needsNetwork: false, writesWorkspace: true };
   }
   if (matchAny(NETWORK_FETCH_PATTERNS, commandForPatternMatching)) {
-    return { category: "network-fetch", needsNetwork: true, writesWorkspace: /(\s-o\s|\s-O\s)/.test(commandForPatternMatching) };
+    const writesWorkspace = networkFetchWritesWorkspace(commandForPatternMatching);
+    return {
+      category: "network-fetch",
+      needsNetwork: true,
+      writesWorkspace,
+      mayMutateProject: writesWorkspace,
+    };
   }
   if (matchAny(SYSTEM_PACKAGE_INSTALL_PATTERNS, commandForPatternMatching)) {
     return { category: "system-package-install", needsNetwork: true, writesWorkspace: false, requiresDockerRoot: true };
@@ -526,13 +1201,18 @@ function classifySimpleCommand(normalized) {
   return {
     category: "general-shell",
     needsNetwork: false,
-    writesWorkspace: false,
+    // Anything outside the bounded read-only allowlist may mutate project
+    // state. Treating an unknown shell command as read-only lets callers
+    // bypass revision, test, and artifact guards through tools such as
+    // interpreters or in-place editors.
+    writesWorkspace: true,
     reason: `Command is outside the narrow allowlist and requires a trusted shell policy: ${normalized}`,
   };
 }
 
 function splitTopLevelShellSequence(command = "") {
   const parts = [];
+  const separators = [];
   let current = "";
   let quote = "";
   let escaped = false;
@@ -540,6 +1220,11 @@ function splitTopLevelShellSequence(command = "") {
   const text = String(command || "");
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index];
+    if (quote === "'") {
+      current += char;
+      if (char === "'") quote = "";
+      continue;
+    }
     if (escaped) {
       current += char;
       escaped = false;
@@ -550,9 +1235,9 @@ function splitTopLevelShellSequence(command = "") {
       escaped = true;
       continue;
     }
-    if (quote) {
+    if (quote === '"') {
       current += char;
-      if (char === quote) quote = "";
+      if (char === '"') quote = "";
       continue;
     }
     if (char === "'" || char === '"') {
@@ -576,6 +1261,9 @@ function splitTopLevelShellSequence(command = "") {
         return null;
       }
       parts.push(part);
+      separators.push(
+        newlineSeparator ? "newline" : char === ";" ? ";" : char === "&" ? "&&" : "||"
+      );
       current = "";
       hadSeparator = true;
       if (char === "&" || char === "|" || (char === "\r" && text[index + 1] === "\n")) index += 1;
@@ -586,15 +1274,16 @@ function splitTopLevelShellSequence(command = "") {
   const finalPart = current.trim();
   if (finalPart) parts.push(finalPart);
   if (!hadSeparator || parts.length < 2) return null;
-  return parts;
+  return { parts, separators };
 }
 
 function classifyShellSequence(normalized) {
-  const parts = splitTopLevelShellSequence(normalized);
-  if (!parts) return null;
+  const sequence = splitTopLevelShellSequence(normalized);
+  if (!sequence) return null;
+  const { parts, separators } = sequence;
   const classifications = parts.map((part) => classifyCdCommand(part) || classifyPipelineSequence(part) || classifySimpleCommand(part));
   const blocked = classifications.find((classification) => classification.category === "blocked" || classification.category === "destructive");
-  if (blocked) return blocked;
+  if (blocked) return { ...blocked, gitOnly: false };
   const broad = classifications.find((classification) => classification.category === "general-shell");
   if (broad) {
     return {
@@ -608,6 +1297,11 @@ function classifyShellSequence(normalized) {
     writesWorkspace: classifications.some((classification) => classification.writesWorkspace),
     requiresDockerRoot: classifications.some((classification) => classification.requiresDockerRoot),
     virtualWorkspacePath: classifications.some((classification) => classification.virtualWorkspacePath),
+    gitOnly: classifications.every((classification) => classification.gitOnly === true),
+    mayMutateProject: classifications.some((classification) => classification.mayMutateProject === true),
+    substantiveTest:
+      separators.every((separator) => separator === "&&") &&
+      classifications.some((classification) => classification.substantiveTest === true),
     reason: `Command sequence uses shell separators with individually classified safe segments: ${normalized}`,
   };
   if (categories.has("system-package-install")) return { category: "system-package-install", ...aggregate };
@@ -635,6 +1329,11 @@ function splitTopLevelPipeline(command = "") {
   const text = String(command || "");
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index];
+    if (quote === "'") {
+      current += char;
+      if (char === "'") quote = "";
+      continue;
+    }
     if (escaped) {
       current += char;
       escaped = false;
@@ -645,9 +1344,9 @@ function splitTopLevelPipeline(command = "") {
       escaped = true;
       continue;
     }
-    if (quote) {
+    if (quote === '"') {
       current += char;
-      if (char === quote) quote = "";
+      if (char === '"') quote = "";
       continue;
     }
     if (char === "'" || char === '"') {
@@ -756,8 +1455,9 @@ function classifyReadOnlyRootCd(normalized, config = {}) {
 }
 
 function classifyReadOnlyRootSequence(normalized, config = {}) {
-  const parts = splitTopLevelShellSequence(normalized);
-  if (!parts) return null;
+  const sequence = splitTopLevelShellSequence(normalized);
+  if (!sequence) return null;
+  const { parts } = sequence;
   const classifications = parts.map((part) => classifyReadOnlyRootCd(part, config));
   if (classifications.some((classification) => !classification)) return null;
   const blocked = classifications.find((classification) => classification.category === "blocked");
@@ -784,12 +1484,13 @@ export function classifyCommand(command) {
   const normalized = String(command || "").trim();
   if (!normalized) return { category: "blocked", reason: "Command is empty." };
 
-  return classifyCdCommand(normalized) || classifyShellSequence(normalized) || classifyPipelineSequence(normalized) || classifySimpleCommand(normalized);
+  return classifyBackgroundShell(normalized) || classifyCdCommand(normalized) || classifyShellSequence(normalized) || classifyPipelineSequence(normalized) || classifySimpleCommand(normalized);
 }
 
 export function evaluateCommandPolicy(command, config = {}) {
-  const normalizedForPolicy = relativizeWorkspaceAbsolutePaths(command, config.commandCwd);
-  const classification = classifyReadOnlyRootCd(normalizedForPolicy, config) ||
+  const normalizedForPolicy = normalizeCommandForPolicy(command, config);
+  const classification = classifyBackgroundShell(normalizedForPolicy) ||
+    classifyReadOnlyRootCd(normalizedForPolicy, config) ||
     classifyReadOnlyRootSequence(normalizedForPolicy, config) ||
     classifyCommand(normalizedForPolicy);
   const normalizedCommand = String(command || "").trim();
