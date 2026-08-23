@@ -725,6 +725,47 @@ const constrainedInstructionWrite = failedTestRepairWithRequiredInstruction.find
 assertStrict.deepEqual(constrainedInstructionWrite.function.parameters.properties.path.enum, ["AGINTI.md"]);
 assertStrict.deepEqual(constrainedInstructionWrite.function.parameters.properties.mode.enum, ["create"]);
 
+const continuedFailedTestRepairRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "qa" },
+  {
+    meta: {
+      projectVerification: {
+        mutationRevision: 1,
+        discoveredTests: ["python -m pytest -q"],
+        requiredOutputs: [],
+        testRuns: [
+          {
+            command: "python -m pytest -q",
+            mutationRevision: 0,
+            passed: false,
+            failureSignature: "baseline-failure",
+          },
+        ],
+      },
+    },
+    messages: [],
+  }
+);
+assertStrict.equal(
+  continuedFailedTestRepairRuntime.testFailureRepairActive,
+  true,
+  "a partial repair forgot the retained failed test after the mutation revision advanced"
+);
+assertStrict.equal(
+  continuedFailedTestRepairRuntime.testFailureCommand,
+  "python -m pytest -q",
+  "a partial repair lost the retained failing test command"
+);
+sameNames(
+  selectProgressiveTools(allTools, {
+    config: continuedFailedTestRepairRuntime,
+    goal: "Continue the coherent repair, then retest.",
+    profile: "qa",
+  }),
+  ["read_file", "search_files", "apply_patch", "run_command", "finish"],
+  "a partial repair was forced into test-only mode before the coherent patch was complete"
+);
+
 const pendingTestTools = selectProgressiveTools(allTools, {
   config: {
     provider: "localllm",

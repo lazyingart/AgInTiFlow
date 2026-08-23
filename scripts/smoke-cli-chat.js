@@ -74,6 +74,12 @@ function cellWidth(value = "") {
   return [...String(value || "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")].reduce((sum, char) => sum + charCellWidth(char), 0);
 }
 
+function stripTerminalControls(value = "") {
+  return String(value || "")
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
 function runChat(inputText) {
   return runCli(
     ["chat", "--provider", "mock", "--routing", "manual", "--profile", "code", "--headless", "--sandbox-mode", "host"],
@@ -596,7 +602,7 @@ try {
     animated: false,
     webAppUrl: "http://127.0.0.1:3210",
   }).join("\n");
-  if (!launchHeaderWithWeb.includes("webapp: http://127.0.0.1:3210")) {
+  if (!stripTerminalControls(launchHeaderWithWeb).includes("webapp: http://127.0.0.1:3210")) {
     throw new Error("launch header did not render the active webapp URL in the tagline row");
   }
   const launchHeaderWithWebError = buildLaunchHeaderLines({
@@ -749,17 +755,21 @@ try {
     throw new Error("terminal prompt layout did not render live input queue and cwd footer");
   }
   const hintPromptLayout = buildPromptLayout("/mo", 3, 90, 24, { suggestions: ["/models", "/model"], suggestionIndex: 1 });
-  const hintText = hintPromptLayout.renderedRows
-    .map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""))
-    .join("\n");
-  if (!hintText.includes("  user> /mo") || !hintText.includes("hint    /models  >/model")) {
-    throw new Error("terminal prompt layout did not align user and hint text columns");
+  const hintRaw = hintPromptLayout.renderedRows.join("\n");
+  const hintText = stripTerminalControls(hintRaw);
+  const selectedHintRendered =
+    hintText.includes("hint    /models  >/model") ||
+    (hintText.includes("hint    /models  /model") && hintRaw.includes("\x1b[1m/model\x1b[0m"));
+  if (!hintText.includes("  user> /mo") || !selectedHintRendered) {
+    throw new Error(`terminal prompt layout did not align user and hint text columns: ${JSON.stringify(hintText)}`);
   }
   const exactHintLayout = buildPromptLayout("/model", 6, 90, 24);
-  const exactHintText = exactHintLayout.renderedRows
-    .map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""))
-    .join("\n");
-  if (!exactHintText.includes("hint    >/model") || exactHintText.includes("/models")) {
+  const exactHintRaw = exactHintLayout.renderedRows.join("\n");
+  const exactHintText = stripTerminalControls(exactHintRaw);
+  const exactHintSelected =
+    exactHintText.includes("hint    >/model") ||
+    (exactHintText.includes("hint    /model") && exactHintRaw.includes("\x1b[1m/model\x1b[0m"));
+  if (!exactHintSelected || exactHintText.includes("/models")) {
     throw new Error("exact slash commands should not show broader prefix matches");
   }
   if (classifyEscapeAction({ active: false }) !== "noop") {

@@ -75,3 +75,24 @@ The incident established two general contracts:
   canvas/download filename derived from the task title and source purpose.
   Internal collision identifiers are short suffixes, never the leading or only
   visible filename information.
+
+### QA repair continuity and evidence intent
+
+`qa-incident-metrics-001` passed after two reusable runtime fixes. A normal,
+underspecified QA prompt led the DeepSeek-backed agent to reproduce and diagnose
+compound-duration parsing, percentile interpolation/mutation, and deterministic
+summary-order defects. The first partial patch advanced the mutation revision,
+but the runtime then forgot the retained failing test and prematurely reduced
+the tool surface to test-only mode. Source-next restored the failed-test repair
+state until a fresh current-revision test passed, allowing the same durable
+session to finish the coherent patch, add regressions, run 15 tests at 100%
+statement coverage, clean debris, and commit `667891f`.
+
+Independent `pytest` and the hidden `qa_incident_metrics_contract.py` checker
+both passed. The run also exposed an evidence-intent false positive: `figure
+out` and `clean up generated test debris` were interpreted as a request for a
+canvas artifact. Evidence inference now excludes those non-production phrases
+while retaining the artifact gate for real generated figures. Exact session
+evidence remains in
+`~/.agintiflow/sessions/aginti-qa-incident-metrics-001/events.jsonl` and the
+machine ledger records the run as `passed_after_fix`.

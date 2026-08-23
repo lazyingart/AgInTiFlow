@@ -986,6 +986,14 @@ const generatedReviewContract = deriveScsTaskContract({
   ].join("\n"),
   taskProfile: "review",
 });
+const qaCleanupContract = deriveScsTaskContract({
+  goal: "Inspect the project, figure out what is actually wrong, fix the failing tests, clean up generated test debris, and commit only the intentional fix.",
+  taskProfile: "qa",
+});
+const generatedFigureContract = deriveScsTaskContract({
+  goal: "Generate a publication-ready figure that compares the two repair strategies.",
+  taskProfile: "design",
+});
 assert(
   !explainCodeContract.requiresExternalEvidence,
   "code profile alone should not force external evidence for a pure explanation"
@@ -1036,6 +1044,16 @@ assert(
     !generatedReviewContract.requiredEvidence.some((item) => item.category === "file") &&
     !generatedReviewContract.requiredEvidence.some((item) => item.category === "artifact"),
   "review profile should not turn review-format boilerplate into file/artifact production requirements"
+);
+assert(
+  qaCleanupContract.requiredEvidence.some((item) => item.category === "command") &&
+    qaCleanupContract.requiredEvidence.some((item) => item.category === "git") &&
+    !qaCleanupContract.requiredEvidence.some((item) => item.category === "artifact"),
+  "cleaning generated test debris should not invent an unrelated artifact-delivery requirement"
+);
+assert(
+  generatedFigureContract.requiredEvidence.some((item) => item.category === "artifact"),
+  "tightening QA intent phrases removed the real generated-figure artifact gate"
 );
 const fileOnlyLedger = buildScsEvidenceLedger({
   context: { events: [{ type: "file.changed", data: { path: "src/app.js" } }] },

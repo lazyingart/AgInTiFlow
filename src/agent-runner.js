@@ -4239,13 +4239,23 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   };
   const verification = state.meta?.projectVerification || {};
   const mutationRevision = Number(verification.mutationRevision || 0);
-  const latestCurrentTest = [...(verification.testRuns || [])]
+  const testRuns = Array.isArray(verification.testRuns) ? verification.testRuns : [];
+  const latestCurrentTest = [...testRuns]
     .reverse()
     .find((run) => Number(run.mutationRevision || 0) === mutationRevision);
-  if (latestCurrentTest && latestCurrentTest.passed !== true) {
+  const latestRecordedTest = [...testRuns]
+    .reverse()
+    .find((run) => String(run?.command || "").trim());
+  const retainedFailedTest =
+    latestCurrentTest && latestCurrentTest.passed !== true
+      ? latestCurrentTest
+      : !latestCurrentTest && latestRecordedTest?.passed === false
+        ? latestRecordedTest
+        : null;
+  if (retainedFailedTest) {
     runtimeConfig.testFailureRepairActive = true;
-    runtimeConfig.testFailureCommand = String(latestCurrentTest.command || "");
-    runtimeConfig.testFailureSignature = String(latestCurrentTest.failureSignature || "");
+    runtimeConfig.testFailureCommand = String(retainedFailedTest.command || "");
+    runtimeConfig.testFailureSignature = String(retainedFailedTest.failureSignature || "");
     const completedOutputs = new Set(
       (state.meta?.artifactProgress?.completed || [])
         .map((item) => String(item || "").replace(/\\/g, "/").replace(/^\.\//, ""))
@@ -4256,10 +4266,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       .filter((item) => /(?:^|\/)(?:AGINTI|AGENTS)\.md$/i.test(item))
       .slice(0, 8);
   } else if (!latestCurrentTest && mutationRevision > 0 && (verification.discoveredTests || []).length) {
-    const retainedTestCommand = [...(verification.testRuns || [])]
-      .reverse()
-      .map((run) => String(run.command || ""))
-      .find(Boolean);
+    const retainedTestCommand = String(latestRecordedTest?.command || "");
     if (retainedTestCommand) {
       runtimeConfig.testVerificationPending = true;
       runtimeConfig.testVerificationCommand = retainedTestCommand;

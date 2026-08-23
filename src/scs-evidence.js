@@ -544,6 +544,12 @@ function requiresSourceGrounding(goal = "") {
 function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCriteria = []) {
   const positiveGoal = stripForbiddenLanguage(goal);
   const text = normalizedText(positiveGoal);
+  const artifactSignalText = text
+    .replace(
+      /\b(?:clean(?:\s+up)?|remove|delete|clear|purge)\b[^.\n;]{0,120}\b(?:generated|temporary|stale|test)?\s*(?:test\s+)?(?:debris|caches?|byproducts?)\b/gi,
+      ""
+    )
+    .replace(/\bfigure\s+out\b/gi, "");
   const profile = String(taskProfile || "").toLowerCase();
   const categories = new Set(
     goalRequiresEvidence(positiveGoal, "") ? profileRequirementsForGoal(taskProfile, positiveGoal) : []
@@ -571,7 +577,7 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   if (directCommandSignal || (validationSignal && codeProfileRequiresCommand(positiveGoal))) {
     categories.add("command");
   }
-  if (textHas(text, /\b(artifact|canvas|pdf|image|video|screenshot|cover|plot|chart|figure|docx|archive|copy to|export|generated|generate|draft)\b/) || /输出|产物|图片|视频|截图|封面|生成/.test(text)) {
+  if (textHas(artifactSignalText, /\b(artifact|canvas|pdf|image|video|screenshot|cover|plot|chart|figure|docx|archive|copy to|export|generated|generate|draft)\b/) || /输出|产物|图片|视频|截图|封面|生成/.test(artifactSignalText)) {
     categories.add("artifact");
   }
   if (textHas(text, /\b(browser|chrome|chromium|cdp|devtools|playwright|selenium|web[- ]?ui|website|page|tab|composer|click|type|upload|attach|submit|form)\b/) || /浏览器|网页|页面|上传|提交|附件|资产库/.test(text)) {
