@@ -158,3 +158,31 @@ Independent verification passed the checked-in Java test script, the hidden
 event-window contract, generated-output tracking checks, clean-worktree checks,
 the focused permission/evidence regressions, and the complete AgInTiFlow npm
 suite.
+
+### Long-context memo synthesis and local visual verification
+
+`memo-full-context-pdf-014` used a normal, short writing prompt against a
+realistic interrupted chat export containing corrections, cancellations,
+deadlines, dependencies, completed work, publication boundaries, research
+ideas, and personal errands. The DeepSeek-backed writing agent read the full
+history and produced an editable two-page XeLaTeX/PDF memo instead of copying
+transport rows. Independent acceptance checked every critical commitment,
+rejected raw timestamps and internal identifiers, verified the PDF structure,
+and required a clean intentional commit.
+
+The first draft generalized a concrete Nutstore private-backup destination and
+left generated agent/perception directories unignored. The same durable session
+accepted those exact external findings, restored the actionable destination,
+added narrow generated-state ignores, rebuilt the PDF, inspected both rendered
+pages, and committed the correction as `a275878`. The hidden full-context
+checker, `qpdf`, `pdfinfo`, extracted-text review, independent page renders, and
+clean-worktree check then passed.
+
+The visual-review turn exposed a reusable provider-boundary defect: automatic
+`read_image` was blocked merely because DeepSeek was the active reasoning
+provider, even though the configured local image-perception handoff was safe
+and the perception runtime already supported it. Guardrails now allow the
+DeepSeek-to-LocalLLM handoff when local perception is enabled, continue to block
+hosted vision without explicit authorization, and block all automatic vision
+when both local and hosted routes are disabled. A focused regression covers the
+guard and the actual LocalLLM client route.

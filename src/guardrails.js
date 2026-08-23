@@ -230,11 +230,12 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
       !args.dryRun &&
       ["", "auto", "default"].includes(provider) &&
       !["localllm", "openai"].includes(activeProvider) &&
+      config.allowLocalImagePerception === false &&
       config.allowHostedImagePerception !== true
     ) {
       return {
         allowed: false,
-        reason: `No automatic image-reading backend is enabled for active provider ${activeProvider}. Select localllm or explicitly enable a hosted image backend.`,
+        reason: `No automatic image-reading backend is enabled for active provider ${activeProvider}. Enable the local image-perception handoff, select localllm, or explicitly enable a hosted image backend.`,
         category: "perception-tools",
       };
     }

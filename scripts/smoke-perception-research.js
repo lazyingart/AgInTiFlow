@@ -83,6 +83,36 @@ async function verifyProviderBoundary({ pngPath, store, config }) {
       config: { ...config, provider: "localllm", allowHostedImagePerception: false },
     });
     assert(!guardedImage.allowed, "guardrails allowed unapproved hosted image perception");
+    const guardedDeepSeekLocalHandoff = checkToolUse({
+      toolName: "read_image",
+      args: { path: path.relative(config.commandCwd, pngPath) },
+      snapshot: { elements: [] },
+      config: {
+        ...config,
+        provider: "deepseek",
+        allowLocalImagePerception: true,
+        allowHostedImagePerception: false,
+      },
+    });
+    assert(
+      guardedDeepSeekLocalHandoff.allowed,
+      "guardrails blocked the safe DeepSeek-to-LocalLLM image handoff"
+    );
+    const blockedDeepSeekWithoutHandoff = checkToolUse({
+      toolName: "read_image",
+      args: { path: path.relative(config.commandCwd, pngPath) },
+      snapshot: { elements: [] },
+      config: {
+        ...config,
+        provider: "deepseek",
+        allowLocalImagePerception: false,
+        allowHostedImagePerception: false,
+      },
+    });
+    assert(
+      !blockedDeepSeekWithoutHandoff.allowed,
+      "guardrails allowed auto image perception after every backend handoff was disabled"
+    );
     const guardedResearch = checkToolUse({
       toolName: "web_research",
       args: { query: "provider boundary smoke", mode: "openai" },
