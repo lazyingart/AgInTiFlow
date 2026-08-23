@@ -152,38 +152,50 @@ const finishDecision = await reviewScsFinish(
 assert.equal(finishDecision.decision, "finish_allowed", "SCS should not reject finish as no-evidence when the contract ledger is satisfied");
 assert.match(finishDecision.reason, /Overrode a no-evidence finish rejection/);
 
-const researchReportLedger = buildScsEvidenceLedger({
-  context: {
-    events: [{
-      type: "tool.completed",
-      data: {
-        ok: true,
-        toolName: "deep_research",
-        status: "completed",
-        reportPath: "/workspace/reports/cited-research.md",
-        artifactPath: "/session/artifacts/deep-research.json",
-        coverage: {
-          verifiedClaimCount: 12,
-          quoteVerificationRate: 1,
+const researchEvidenceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aginti-research-evidence-"));
+try {
+  const reportPath = path.join(researchEvidenceRoot, "reports", "cited-research.md");
+  const artifactPath = path.join(researchEvidenceRoot, "artifacts", "deep-research.json");
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+  fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+  fs.writeFileSync(reportPath, "# Cited research\n\nVerified report fixture.\n", "utf8");
+  fs.writeFileSync(artifactPath, JSON.stringify({ status: "completed" }), "utf8");
+
+  const researchReportLedger = buildScsEvidenceLedger({
+    context: {
+      events: [{
+        type: "tool.completed",
+        data: {
+          ok: true,
+          toolName: "deep_research",
+          status: "completed",
+          reportPath,
+          artifactPath,
+          coverage: {
+            verifiedClaimCount: 12,
+            quoteVerificationRate: 1,
+          },
+          audit: {
+            citationCoverage: 1,
+            unknownEvidenceIds: [],
+          },
         },
-        audit: {
-          citationCoverage: 1,
-          unknownEvidenceIds: [],
-        },
-      },
-    }],
-  },
-});
-assert(
-  ["file", "command", "artifact"].every((category) => researchReportLedger.categories.includes(category)),
-  "a completed and audited deep-research report did not satisfy file, validation-command, and artifact evidence categories"
-);
-assert(
-  researchReportLedger.items.some(
-    (item) => item.category === "command" && /deterministic audit completed/.test(item.proof)
-  ),
-  "deep-research validation evidence did not preserve its deterministic audit provenance"
-);
+      }],
+    },
+  });
+  assert(
+    ["file", "command", "artifact"].every((category) => researchReportLedger.categories.includes(category)),
+    "a completed and audited deep-research report did not satisfy file, validation-command, and artifact evidence categories"
+  );
+  assert(
+    researchReportLedger.items.some(
+      (item) => item.category === "command" && /deterministic audit completed/.test(item.proof)
+    ),
+    "deep-research validation evidence did not preserve its deterministic audit provenance"
+  );
+} finally {
+  fs.rmSync(researchEvidenceRoot, { recursive: true, force: true });
+}
 
 const recoverableLedger = buildScsEvidenceLedger({
   context: {

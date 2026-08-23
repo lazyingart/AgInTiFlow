@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -1086,18 +1088,27 @@ assert(
   !missingWriterToolEval.ok && missingWriterToolEval.missingToolCalls.includes("writing_specialist"),
   "SCS should reject finish when required specialist call is missing"
 );
-const presentWriterToolEval = evaluateScsEvidence(
-  requiredWriterToolContract,
-  buildScsEvidenceLedger({
-    context: {
-      events: [
-        { type: "file.changed", data: { path: "final/story.md" } },
-        { type: "tool.completed", data: { toolName: "writing_specialist", ok: true, artifactPath: "artifacts/writer.json" } },
-      ],
-    },
-  })
-);
-assert(presentWriterToolEval.ok, "SCS should accept required specialist call when tool evidence is present");
+const writerEvidenceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aginti-writer-evidence-"));
+try {
+  const writerArtifactPath = path.join(writerEvidenceRoot, "artifacts", "writer.json");
+  fs.mkdirSync(path.dirname(writerArtifactPath), { recursive: true });
+  fs.writeFileSync(writerArtifactPath, JSON.stringify({ status: "completed" }), "utf8");
+  const presentWriterToolEval = evaluateScsEvidence(
+    requiredWriterToolContract,
+    buildScsEvidenceLedger({
+      context: {
+        commandCwd: writerEvidenceRoot,
+        events: [
+          { type: "file.changed", data: { path: "final/story.md" } },
+          { type: "tool.completed", data: { toolName: "writing_specialist", ok: true, artifactPath: writerArtifactPath } },
+        ],
+      },
+    })
+  );
+  assert(presentWriterToolEval.ok, "SCS should accept required specialist call when tool evidence is present");
+} finally {
+  fs.rmSync(writerEvidenceRoot, { recursive: true, force: true });
+}
 
 const blockedFileFinish = await reviewScsFinish(
   { mock: true },

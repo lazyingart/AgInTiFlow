@@ -1367,6 +1367,17 @@ async function ensureNotRunning(sessionId) {
 }
 
 async function latestPermissionAdvice(sessionId) {
+  const events = await sessionStore(sessionId).loadEvents().catch(() => []);
+  for (const event of [...events].reverse()) {
+    if (["permission.approval_granted", "permission.approval_declined"].includes(event.type)) return null;
+    if (event.type === "tool.blocked" && event.data?.permissionAdvice) {
+      return {
+        ...event.data.permissionAdvice,
+        category: event.data.permissionAdvice.category || event.data.category || "",
+      };
+    }
+  }
+
   const inMemory = runs.get(sessionId);
   const memoryEntry = [...(inMemory?.logs || [])]
     .reverse()
@@ -1378,13 +1389,7 @@ async function latestPermissionAdvice(sessionId) {
     };
   }
 
-  const events = await sessionStore(sessionId).loadEvents().catch(() => []);
-  const event = [...events].reverse().find((candidate) => candidate.type === "tool.blocked" && candidate.data?.permissionAdvice);
-  if (!event?.data?.permissionAdvice) return null;
-  return {
-    ...event.data.permissionAdvice,
-    category: event.data.permissionAdvice.category || event.data.category || "",
-  };
+  return null;
 }
 
 function permissionApprovalPrompt(action, advice = {}, originalGoal = "") {
@@ -2421,6 +2426,12 @@ app.post("/api/sessions/:sessionId/approve-permission", async (req, res) => {
         source: "web",
         category: advice.category || "",
       });
+      const state = await store.loadState();
+      if (state?.meta?.pendingPermissionAdvice) {
+        delete state.meta.pendingPermissionAdvice;
+        state.updatedAt = new Date().toISOString();
+        await store.saveState(state);
+      }
       const existing = runs.get(sessionId);
       if (existing) {
         existing.logs.push({
@@ -2473,6 +2484,11 @@ app.post("/api/sessions/:sessionId/approve-permission", async (req, res) => {
       category: advice.category || "",
       permissionMode: targetMode,
     });
+    if (state.meta?.pendingPermissionAdvice) {
+      delete state.meta.pendingPermissionAdvice;
+      state.updatedAt = new Date().toISOString();
+      await store.saveState(state);
+    }
 
     const stored = await loadStoredRun(sessionId);
     if (runs.get(sessionId)?.status === "running") {

@@ -233,6 +233,29 @@ try {
     "same-task resume used the new-request boundary marker"
   );
 
+  const prefixedSameTaskContinuation = await runCase({
+    id: "ordinary-explanation",
+    goal: [
+      "You have explicit trusted-host approval for this isolated fixture.",
+      "Continue the same task from the current edits. Finish it with verified evidence.",
+    ].join(" "),
+    resume: true,
+    responses: [assistant("A base case remains the condition that terminates recursive expansion.")],
+  });
+  const prefixedContinuationEvent = [...prefixedSameTaskContinuation.events]
+    .reverse()
+    .find((event) => event.type === "conversation.continued");
+  assert.equal(
+    prefixedContinuationEvent?.data?.preservesTaskBoundary,
+    true,
+    "a same-task continuation prefixed by a permission statement opened a new task boundary"
+  );
+  assert.equal(
+    prefixedSameTaskContinuation.state.meta?.goalContract?.taskGoal,
+    "Explain why recursion needs a base case.",
+    "a prefixed same-task continuation replaced the durable task goal"
+  );
+
   const quotedChatClassification = await runCase({
     id: "quoted-chat-classification",
     taskProfile: "chatops",
@@ -265,6 +288,36 @@ try {
   assert.equal(proseOnlyAction.events.filter((event) => event.type === "completion.repair_requested").length, 1);
   assert.equal(proseOnlyAction.events.filter((event) => event.type === "completion.evidence_rejected").length, 2);
   assert(!proseOnlyAction.events.some((event) => event.type === "session.finished"));
+
+  const permissionPause = await runCase({
+    id: "permission-pause",
+    goal: "Run the checked-in project test script and report its verified result.",
+    taskProfile: "java",
+    allowShellTool: true,
+    scsActive: true,
+    setup: async (workspace) => {
+      await fs.mkdir(path.join(workspace, "scripts"), { recursive: true });
+      await fs.writeFile(path.join(workspace, "scripts", "test.sh"), "#!/usr/bin/env bash\necho pass\n", "utf8");
+    },
+    responses: [
+      assistant("", [toolCall("permission-test", "run_command", { command: "bash scripts/test.sh" })]),
+    ],
+  });
+  assert.equal(permissionPause.calls.length, 1, "permission blocker consumed another model turn");
+  assert.equal(permissionPause.result.stopped, true);
+  assert.equal(permissionPause.result.reason, "permission_required");
+  assert(permissionPause.result.permissionAdvice?.suggestedCommand, "permission pause lost its exact resume command");
+  assert.equal(
+    permissionPause.events.filter((event) => event.type === "session.stopped" && event.data?.reason === "permission_required").length,
+    1,
+    "permission blocker did not persist exactly one paused state"
+  );
+  assert(
+    !permissionPause.events.some((event) =>
+      ["scs.student.rethink_plan", "scs.student.reject_phase", "scs.committee.replan_drafted"].includes(event.type)
+    ),
+    "permission blocker triggered an SCS replan instead of waiting for approval"
+  );
 
   const reasoningTruncation = await runCase({
     id: "reasoning-only-tool-continuation",
@@ -371,12 +424,12 @@ try {
 
   const approvalNarrativeWithBlockerEvidence = await runCase({
     id: "approval-narrative-with-blocker-evidence",
-    goal: "Run definitely_missing_aginti_command and report the result.",
+    goal: "Run which definitely_missing_aginti_command and report the result.",
     taskProfile: "shell",
     allowShellTool: true,
     responses: [
       assistant("", [
-        toolCall("missing-command", "run_command", { command: "definitely_missing_aginti_command" }),
+        toolCall("missing-command", "run_command", { command: "which definitely_missing_aginti_command" }),
       ]),
       assistant("The command is unavailable. Approve installing it and I will continue after approval."),
       assistant("Unable to execute the requested command because it is not installed in this environment."),
@@ -695,11 +748,11 @@ try {
 
   const verifiedBlocker = await runCase({
     id: "verified-blocker",
-    goal: "Execute the shell command definitely_not_an_aginti_command and report the result.",
+    goal: "Run which definitely_not_an_aginti_command and report the result.",
     taskProfile: "shell",
     allowShellTool: true,
     responses: [
-      assistant("", [toolCall("run-blocked", "run_command", { command: "definitely_not_an_aginti_command" })]),
+      assistant("", [toolCall("run-blocked", "run_command", { command: "which definitely_not_an_aginti_command" })]),
       assistant("", [
         toolCall("finish-blocked", "finish", {
           result: "Unable to execute the requested command because it is not installed in this environment.",

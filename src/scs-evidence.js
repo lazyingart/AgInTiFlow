@@ -580,6 +580,10 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
       /\b(?:clean(?:\s+up)?|remove|delete|clear|purge)\b[^.\n;]{0,120}\b(?:generated|temporary|stale|test)?\s*(?:test\s+)?(?:debris|caches?|byproducts?)\b/gi,
       ""
     )
+    .replace(
+      /\b(?:ignore|exclude|omit|skip|leave\s+out)\b[^.\n;]{0,160}\b(?:generated|temporary|stale|build|session)\b[^.\n;]{0,100}\b(?:outputs?|artifacts?|files?|directories?|folders?)\b/gi,
+      ""
+    )
     .replace(/\bfigure\s+out\b/gi, "");
   const mandatoryEvidenceText = artifactSignalText.replace(
     /[^.\n]{0,240}\b(?:as appropriate|if appropriate|when useful|where applicable)\b/gi,
@@ -2172,6 +2176,7 @@ function eventToEvidence(event = {}) {
       target: data.path || data.artifactId || data.outputPath || "",
       proof: type,
       verified: true,
+      virtualArtifact: Boolean(data.artifactId && !data.path && !data.outputPath),
     });
     if (type === "image.generated") {
       evidence.push({
@@ -2280,16 +2285,31 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
   if (["open_url", "click", "type", "scroll", "press", "back"].includes(toolName) || /\b(browser|chrome|cdp|playwright|selenium|upload|attach|submit|click|tab|page)\b/.test(text)) {
     push("browser", `${toolName || "browser tool"} affected or inspected browser/UI state`, payload.url || args.url || args.command || "");
   }
-  if (
-    ["open_workspace_file", "preview_workspace", "send_to_canvas", "generate_image", "read_image", "writing_specialist", "json_specialist", "json_specialist_batch"].includes(
-      toolName
-    ) ||
-    payload.artifactId ||
-    payload.outputPath ||
-    payload.artifactPath ||
-    /\b(pdf|png|jpg|jpeg|image|video|screenshot|artifact|preview)\b/.test(text)
-  ) {
-    push("artifact", `${toolName || "tool"} produced or inspected an artifact`, payload.path || payload.outputPath || payload.artifactPath || args.path || "");
+  const artifactTools = new Set([
+    "open_workspace_file",
+    "preview_workspace",
+    "send_to_canvas",
+    "generate_image",
+    "read_image",
+    "writing_specialist",
+    "json_specialist",
+    "json_specialist_batch",
+  ]);
+  const artifactPath = firstArtifactPath(
+    payload.artifactPath,
+    payload.outputPath,
+    payload.reportPath,
+    payload.path,
+    args.path,
+    text
+  );
+  if (artifactTools.has(toolName) || payload.artifactId || artifactPath) {
+    push(
+      "artifact",
+      `${toolName || "tool"} produced or inspected an artifact`,
+      artifactPath || payload.artifactId || "",
+      { virtualArtifact: Boolean(payload.artifactId && !artifactPath) }
+    );
   }
   if (["read_image", "generate_image"].includes(toolName) || /\b(screenshot|visible|thumbnail|preview|image)\b/.test(text)) {
     push("visual", `${toolName || "tool"} supplied visual evidence`, payload.path || payload.outputPath || args.path || "");
@@ -2313,6 +2333,59 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
   return evidence;
 }
 
+const ARTIFACT_EXTENSION_PATTERN = /\.(?:md|json|csv|txt|html?|tex|pdf|docx|pptx|xlsx|png|jpe?g|webp|svg|mp4|mov|mkv|webm|wav|mp3|flac|zip|7z|tar|gz|step|stp|stl|3mf)$/i;
+const ARTIFACT_PATH_PATTERN = /(?:^|[\s"'`(=])([^\s"'`()=]+\.(?:md|json|csv|txt|html?|tex|pdf|docx|pptx|xlsx|png|jpe?g|webp|svg|mp4|mov|mkv|webm|wav|mp3|flac|zip|7z|tar|gz|step|stp|stl|3mf))(?:$|[\s"'`),;:])/i;
+
+function firstArtifactPath(...values) {
+  for (const value of values) {
+    const candidate = String(value || "").trim();
+    if (!candidate) continue;
+    if (!/\s/.test(candidate) && ARTIFACT_EXTENSION_PATTERN.test(candidate)) {
+      return candidate;
+    }
+    const match = candidate.match(ARTIFACT_PATH_PATTERN);
+    if (match?.[1]) return match[1];
+  }
+  return "";
+}
+
+function revalidateArtifactEvidence(item = {}, state = {}, context = {}) {
+  if (item?.category !== "artifact" || item?.verified === false || item?.virtualArtifact === true) return item;
+  const candidate = firstArtifactPath(item.target, item.proof);
+  if (!candidate) {
+    return item.toolName === "run_command"
+      ? {
+          ...item,
+          verified: false,
+          proof: `${item.proof || "artifact evidence"}; no durable artifact path was reported`,
+        }
+      : item;
+  }
+  const commandCwd = String(
+    context.commandCwd ||
+      state.commandCwd ||
+      state.meta?.runtimeConfig?.commandCwd ||
+      process.cwd()
+  );
+  const resolved = path.isAbsolute(candidate) ? candidate : path.resolve(commandCwd, candidate);
+  let durable = false;
+  try {
+    const stat = fs.statSync(resolved);
+    durable = stat.isDirectory() || (stat.isFile() && stat.size > 0);
+  } catch {
+    durable = false;
+  }
+  return {
+    ...item,
+    target: candidate,
+    resolvedTarget: resolved,
+    verified: durable,
+    proof: durable
+      ? item.proof
+      : `${item.proof || "artifact evidence"}; artifact path no longer exists or is empty`,
+  };
+}
+
 function messageToEvidence(message = {}) {
   if (message.role !== "tool") return [];
   try {
@@ -2327,9 +2400,12 @@ export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
   const messages = Array.isArray(state.messages) ? state.messages : [];
   const eventEvidence = events.flatMap(eventToEvidence);
   const messageEvidence = messages.flatMap(messageToEvidence);
-  const items = [...eventEvidence, ...messageEvidence].slice(-80);
-  const categories = unique(items.map((item) => item.category));
-  const toolNames = unique(items.map((item) => item.toolName).filter(Boolean));
+  const items = [...eventEvidence, ...messageEvidence]
+    .slice(-80)
+    .map((item) => revalidateArtifactEvidence(item, state, context));
+  const verifiedItems = items.filter((item) => item?.verified !== false);
+  const categories = unique(verifiedItems.map((item) => item.category));
+  const toolNames = unique(verifiedItems.map((item) => item.toolName).filter(Boolean));
   const blockers = [...events.map(eventToBlocker), ...messages.map(messageToBlocker)]
     .filter(Boolean)
     .slice(-20)

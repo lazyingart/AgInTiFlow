@@ -85,7 +85,11 @@ function mockToolCall(name, args = {}) {
 
 function latestToolPayload(messages) {
   for (const message of [...messages].reverse()) {
-    if (message.role === "user" && /^Continue with this new request:|^Goal:/i.test(String(message.content || ""))) {
+    const userContent = String(message.content || "");
+    if (
+      message.role === "user" &&
+      /^(?:Continue with this new request:|Continue the current task from saved state:|Goal:)/i.test(userContent)
+    ) {
       return null;
     }
     if (message.role !== "tool" || !message.content) continue;

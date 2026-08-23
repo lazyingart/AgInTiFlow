@@ -64,11 +64,12 @@ async function waitForHealth() {
   throw new Error(`web server did not become healthy. stdout=${stdout.slice(-500)} stderr=${stderr.slice(-500)}`);
 }
 
-async function waitForRun(sessionId) {
+async function waitForRun(sessionId, terminalStatuses = ["finished", "failed"]) {
+  const acceptedStatuses = new Set(terminalStatuses);
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
     const run = await fetchJson(`/api/runs/${encodeURIComponent(sessionId)}`);
-    if (run.status === "finished" || run.status === "failed") return run;
+    if (acceptedStatuses.has(run.status)) return run;
     await delay(400);
   }
   throw new Error(`run ${sessionId} did not finish in time`);
@@ -548,7 +549,10 @@ try {
       headless: true,
     }),
   });
-  const approvalRaceBlocked = await waitForRun(approvalRaceStart.sessionId);
+  const approvalRaceBlocked = await waitForRun(approvalRaceStart.sessionId, ["stopped", "failed"]);
+  if (approvalRaceBlocked.status !== "stopped") {
+    throw new Error(`permission/message race fixture did not stop for approval: ${approvalRaceBlocked.status}`);
+  }
   if (!approvalRaceBlocked.logs?.some((entry) => entry.message === "tool.blocked" && entry.data?.permissionAdvice)) {
     throw new Error("permission/message race fixture did not produce pending permission advice");
   }
@@ -595,7 +599,10 @@ try {
       headless: true,
     }),
   });
-  const safeRun = await waitForRun(safeRunStart.sessionId);
+  const safeRun = await waitForRun(safeRunStart.sessionId, ["stopped", "failed"]);
+  if (safeRun.status !== "stopped") {
+    throw new Error(`safe mode web run did not stop for approval: ${safeRun.status}`);
+  }
   if (!safeRun.logs?.some((entry) => entry.message === "tool.blocked" && entry.data?.permissionAdvice?.category === "workspace-write")) {
     throw new Error("safe mode web run did not expose workspace-write permission advice");
   }
@@ -629,6 +636,14 @@ try {
   const safeApproved = await fs.readFile(safePath, "utf8");
   if (!safeApproved.includes("Created by AgInTiFlow mock mode.")) {
     throw new Error("permission-approved continuation did not create the requested file");
+  }
+  const staleApproval = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(safeRunStart.sessionId)}/approve-permission`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "once" }),
+  });
+  if (staleApproval.status !== 404) {
+    throw new Error(`resolved permission advice remained reusable: ${staleApproval.status}`);
   }
   await fetchJson("/api/preferences", {
     method: "POST",

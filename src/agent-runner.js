@@ -2216,7 +2216,7 @@ function isGenericTaskContinuationText(value = "") {
   const normalized = String(value || "").replace(/\s+/g, " ").trim();
   if (!normalized || normalized.length > 600) return false;
   const explicitSameTaskContinuation =
-    /^(?:(?:please|kindly)\s+)?(?:continue|resume|keep\s+working|finish|complete)\b.{0,180}\b(?:same|current|previous|existing|retained|saved|unfinished)\b.{0,80}\b(?:task|work|run|session|job|state)\b/i.test(normalized);
+    /(?:^|[.!?]\s+)(?:(?:please|kindly)\s+)?(?:continue|resume|keep\s+working|finish|complete)\b.{0,180}\b(?:same|current|previous|existing|retained|saved|unfinished)\b.{0,80}\b(?:task|work|run|session|job|state)\b/i.test(normalized);
   return explicitSameTaskContinuation || /^(?:(?:please|kindly)\s+)?(?:continue|resume|finish|complete|keep\s+working)(?:\s+(?:and\s+)?(?:continue|finish|complete|working))?(?:\s+(?:the\s+)?(?:same|current|previous|existing|retained|saved|unfinished)\s+(?:task|work|run|session|job))?(?:\s+from\s+(?:the\s+)?(?:retained|saved|current|previous)\s+state)?[.!?]*$/i.test(normalized) ||
     /^(?:请)?(?:继续|接着|恢复|完成)(?:之前|上次|当前|同一|这个)?(?:的)?(?:任务|工作|会话|进度)?(?:并完成)?[。！？.!?]*$/u.test(normalized) ||
     /^(?:このまま|前回から|保存した状態から)?(?:同じ|現在の|前の)?(?:タスク|作業|セッション)?(?:を)?(?:続けて|再開して|完了して)(?:ください)?[。！？.!?]*$/u.test(normalized);
@@ -2904,6 +2904,14 @@ export function shouldShortCircuitToolBatch(toolResult) {
     (toolResult?.blocked && toolResult?.permissionAdvice) ||
       toolResult?.category === "malformed-tool-arguments" ||
       toolResult?.category === "tool-contract-violation"
+  );
+}
+
+export function shouldPauseForPermissionAdvice(toolResult = {}) {
+  return Boolean(
+    toolResult?.blocked &&
+      toolResult?.permissionAdvice &&
+      toolResult.permissionAdvice.autoRecover !== true
   );
 }
 
@@ -6441,6 +6449,51 @@ async function stopForMissingCompletionEvidence({ config, state, store, observer
   };
 }
 
+async function stopForPermissionAdvice({ config, state, store, observers, sessionId, step, toolResult }) {
+  const advice = toolResult?.permissionAdvice && typeof toolResult.permissionAdvice === "object"
+    ? toolResult.permissionAdvice
+    : {};
+  const result = [
+    advice.summary || toolResult?.reason || "The requested action needs a stronger permission mode.",
+    advice.instruction || "Resume after approving the required mode or choose a safer alternative.",
+    advice.suggestedCommand ? `Contained resume: ${advice.suggestedCommand}` : "",
+    advice.trustedHostCommand ? `Trusted-host resume: ${advice.trustedHostCommand}` : "",
+  ].filter(Boolean).join("\n");
+  const detail = {
+    step,
+    toolName: toolResult?.toolName || "",
+    category: toolResult?.category || advice.category || "permission-required",
+    reason: toolResult?.reason || advice.reason || "",
+    permissionAdvice: advice,
+  };
+  state.stepsCompleted = step;
+  state.updatedAt = new Date().toISOString();
+  state.meta = state.meta || {};
+  state.meta.pendingPermissionAdvice = detail;
+  updateGoalStatus(state, "paused", "permission_required", state.updatedAt);
+  await store.appendEvent("session.stopped", {
+    reason: "permission_required",
+    step,
+    detail,
+  });
+  observers.event("session.stopped", {
+    reason: "permission_required",
+    sessionId,
+    toolName: detail.toolName,
+    category: detail.category,
+  });
+  await store.saveState(state);
+  emitConsole(config, result, { kind: "error", error: true });
+  return {
+    sessionId,
+    result,
+    stopped: true,
+    reason: "permission_required",
+    permissionAdvice: advice,
+    ...goalRunMetadata(state),
+  };
+}
+
 export function resetPerTurnToolContractState(state = {}, at = new Date().toISOString()) {
   const prior = state.meta?.toolContractViolation;
   if (!prior) return null;
@@ -8040,6 +8093,7 @@ export async function runAgent(config) {
 
       let continueForQueuedInput = false;
       let continueForCompletionRepair = false;
+      let pendingPermissionPause = null;
       const postBatchToolResults = [];
       for (let toolIndex = 0; toolIndex < toolCalls.length; toolIndex += 1) {
         const toolCall = toolCalls[toolIndex];
@@ -8128,6 +8182,7 @@ export async function runAgent(config) {
               priorBlockedTool: skippedResult.priorBlockedTool,
             });
           }
+          if (shouldPauseForPermissionAdvice(toolResult)) pendingPermissionPause = toolResult;
           break;
         }
 
@@ -8254,6 +8309,18 @@ export async function runAgent(config) {
             ...goalRunMetadata(state),
           };
         }
+      }
+
+      if (pendingPermissionPause) {
+        return await stopForPermissionAdvice({
+          config,
+          state,
+          store,
+          observers,
+          sessionId,
+          step,
+          toolResult: pendingPermissionPause,
+        });
       }
 
       if (continueForCompletionRepair) continue;

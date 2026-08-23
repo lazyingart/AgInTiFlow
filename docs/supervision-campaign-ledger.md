@@ -130,3 +130,31 @@ checker exactly once, performed no file, canvas, commit, or push side effect,
 and completed with a clean repository-state check. The full npm suite and the
 focused dynamic-budget, SCS/model-role, and web-canvas regressions pass for
 AgInTiFlow `0.20.213`.
+
+### Java repair, permission pause, and durable artifact evidence
+
+`java-event-window-013` passed after exposing two runtime defects with a normal,
+underspecified Java repair prompt. DeepSeek correctly implemented decimal
+duration parsing, non-mutating percentile interpolation, deterministic window
+summaries, project guidance, and generated-output ignores. The first run then
+encountered a host permission blocker while invoking the checked-in test script.
+The runtime continued spending model and SCS turns instead of persisting a
+single actionable pause. After trusted-host approval, loose artifact inference
+also treated a generated test transcript as a mandatory deliverable, prompting
+the agent to create and commit an unrequested `docs/test-results.txt`.
+
+Permission advice that cannot auto-recover now stops the run immediately with
+durable resume data. Approval is single-use, and a resolved blocker cannot be
+replayed by a stale web request. Same-task continuation still preserves the
+original goal when an approval sentence precedes the continuation instruction.
+Artifact evidence from commands is accepted only when it names a supported,
+existing, nonempty path; removed files and label-only prose no longer satisfy
+completion. Exclusion language such as "ignore generated build and session
+outputs" no longer invents an artifact requirement.
+
+The queued correction was applied to the same live session, the stray transcript
+commit was removed, and the intended repair remains at target commit `f2792f3`.
+Independent verification passed the checked-in Java test script, the hidden
+event-window contract, generated-output tracking checks, clean-worktree checks,
+the focused permission/evidence regressions, and the complete AgInTiFlow npm
+suite.

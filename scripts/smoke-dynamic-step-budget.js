@@ -196,6 +196,74 @@ try {
     sourceRepairContract.requiredEvidence.some((item) => item.category === "file"),
     "an explicit source repair lost its file-change evidence gate"
   );
+  const ignoredGeneratedOutputsContract = deriveScsTaskContract({
+    goal: [
+      "You have explicit trusted-host approval for this isolated Java fixture.",
+      "Continue the same task from the current edits. Run the checked-in project test script, repair any failures,",
+      "create the required project guidance, ignore generated build and session outputs, commit only intentional work,",
+      "and finish with verified evidence.",
+    ].join(" "),
+    taskProfile: "java",
+  });
+  assert(
+    ignoredGeneratedOutputsContract.requiredEvidence.some((item) => item.category === "file") &&
+      ignoredGeneratedOutputsContract.requiredEvidence.some((item) => item.category === "command") &&
+      ignoredGeneratedOutputsContract.requiredEvidence.some((item) => item.category === "git") &&
+      !ignoredGeneratedOutputsContract.requiredEvidence.some((item) => item.category === "artifact"),
+    "ignoring generated build/session outputs invented a standalone artifact requirement"
+  );
+  const durableArtifactPath = path.join(workspace, "reports", "durable-report.pdf");
+  await fs.mkdir(path.dirname(durableArtifactPath), { recursive: true });
+  await fs.writeFile(durableArtifactPath, "%PDF-1.4\nsmoke\n", "utf8");
+  const artifactEvents = [
+    {
+      type: "tool.completed",
+      data: {
+        ok: true,
+        toolName: "run_command",
+        args: { command: "printf smoke > reports/durable-report.pdf" },
+        stdout: "created reports/durable-report.pdf",
+        exitCode: 0,
+      },
+    },
+  ];
+  const durableArtifactLedger = buildScsEvidenceLedger({
+    context: { events: artifactEvents, commandCwd: workspace },
+  });
+  assert(
+    durableArtifactLedger.categories.includes("artifact"),
+    "an existing shell-generated PDF did not count as durable artifact evidence"
+  );
+  await fs.rm(durableArtifactPath);
+  const removedArtifactLedger = buildScsEvidenceLedger({
+    context: { events: artifactEvents, commandCwd: workspace },
+  });
+  assert(
+    !removedArtifactLedger.categories.includes("artifact") &&
+      removedArtifactLedger.items.some((item) => item.category === "artifact" && item.verified === false),
+    "a removed artifact continued to satisfy the final evidence ledger"
+  );
+  const labelOnlyArtifactLedger = buildScsEvidenceLedger({
+    context: {
+      events: [
+        {
+          type: "tool.completed",
+          data: {
+            ok: true,
+            toolName: "run_command",
+            args: { command: "echo ARTIFACT READY" },
+            stdout: "ARTIFACT READY",
+            exitCode: 0,
+          },
+        },
+      ],
+      commandCwd: workspace,
+    },
+  });
+  assert(
+    !labelOnlyArtifactLedger.categories.includes("artifact"),
+    "an artifact label in generic shell text counted as a durable artifact"
+  );
   assert(
     completionEvidenceNeedsCommand({ missingProjectCommands: ["python analysis.py"] }),
     "a pending canonical command did not reopen command execution"
