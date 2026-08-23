@@ -186,3 +186,28 @@ DeepSeek-to-LocalLLM handoff when local perception is enabled, continue to block
 hosted vision without explicit authorization, and block all automatic vision
 when both local and hosted routes are disabled. A focused regression covers the
 guard and the actual LocalLLM client route.
+
+### SQLite migration and literal-query safety
+
+`database-migration-safety-015` passed on AgInTiFlow `0.20.215` from a normal,
+imperfect maintenance prompt. The DeepSeek-backed database profile diagnosed a
+destructive version-1 migration, `INSERT OR REPLACE` identity loss, and unsafe
+`LIKE` semantics. In one retained session it replaced the migration with an
+in-place transaction, preserved item IDs, tags, and relationships, used an
+identity-preserving UPSERT, escaped `%`, `_`, and backslashes as literal search
+text, added regression tests, and committed target repair `fb97fbd`.
+
+The run also exercised recovery behavior without a supervisor rescue prompt.
+DeepSeek initially requested too many tools in one turn; the contract guard
+rejected that batch and the next turn continued with allowed calls. Later, a
+noncanonical `TEST_EXIT:0` shell suffix confused project-test evidence despite
+five passing tests. The agent recognized the discrepancy, reran the canonical
+README command, obtained `passed:true`, cleaned transient Python artifacts, and
+finished normally. No AgInTiFlow product patch was required for this scenario.
+
+Independent acceptance used
+`supervision/acceptance/database_migration_safety_contract.py` to verify legacy
+IDs `7`, `12`, and `19`, tag relationships, schema columns, foreign keys,
+idempotent reopening, stable URL updates, literal punctuation, archive
+filtering, absence of destructive SQL, intentional commit history, and a clean
+worktree. The hidden contract passed.
