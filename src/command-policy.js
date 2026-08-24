@@ -1226,6 +1226,48 @@ function classifyGitCleanDryRun(normalized) {
   };
 }
 
+function classifyGitRmCached(normalized) {
+  if (!/^git\s+rm\b/.test(normalized) || hasActiveShellExpansion(normalized)) return null;
+  const tokens = tokenizeShellWords(normalized);
+  if (tokens[0] !== "git" || tokens[1] !== "rm") return null;
+
+  let cached = false;
+  const paths = [];
+  let afterOptions = false;
+  for (const token of tokens.slice(2)) {
+    if (!afterOptions && token === "--") {
+      afterOptions = true;
+      continue;
+    }
+    if (!afterOptions && ["--cached"].includes(token)) {
+      cached = true;
+      continue;
+    }
+    if (!afterOptions && ["-q", "--quiet"].includes(token)) continue;
+    if (!afterOptions && token.startsWith("-")) return null;
+    paths.push(token);
+  }
+  if (!cached || !paths.length || paths.length > 20) return null;
+  if (
+    paths.some(
+      (target) =>
+        target === "." ||
+        /[*?\[\]{}]/.test(target) ||
+        !isSafeRelativeDir(target)
+    )
+  ) {
+    return null;
+  }
+  return {
+    category: "git-workflow",
+    needsNetwork: false,
+    writesWorkspace: true,
+    gitOnly: true,
+    reason:
+      "Git rm --cached removes only bounded literal workspace paths from the index; working-tree files are preserved.",
+  };
+}
+
 function classifyGitClone(normalized) {
   const match = normalized.match(
     /^git\s+clone(?:\s+--depth\s+\d+)?(?:\s+--branch\s+[-\w./]+)?\s+(https:\/\/\S+)(?:\s+([-\w./]+))?$/
@@ -1305,6 +1347,8 @@ function classifySimpleCommand(normalized) {
   }
   const gitCleanDryRun = classifyGitCleanDryRun(normalized);
   if (gitCleanDryRun) return gitCleanDryRun;
+  const gitRmCached = classifyGitRmCached(normalized);
+  if (gitRmCached) return gitRmCached;
   const scopedReadOnlyGitProbe = classifyScopedReadOnlyGitProbe(normalized);
   if (scopedReadOnlyGitProbe) return scopedReadOnlyGitProbe;
   const gitWorkflowClassification = classifyGitWorkflow(normalized);

@@ -264,6 +264,16 @@ assert(
   "excluding output filenames also removed a real required text term"
 );
 
+const wordDocumentContract = deriveScsTaskContract({
+  goal: "Create an editable DOCX and a phone-friendly PDF, then verify both outputs.",
+  taskProfile: "word",
+});
+assert.deepEqual(
+  wordDocumentContract.requiredEvidence.map((item) => item.category).sort(),
+  ["artifact", "command", "file"],
+  "Word document production must require written files, validation, and durable artifacts"
+);
+
 const groundingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aginti-source-grounding-"));
 try {
   const reportPath = path.join(groundingRoot, "READINESS.md");

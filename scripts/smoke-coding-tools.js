@@ -1115,6 +1115,27 @@ try {
   assert(cdWorkspacePolicy.allowed, "cd /workspace should be allowed in docker-workspace mode");
   const gitCleanDryRunPolicy = evaluateCommandPolicy("git clean -nd reports", dockerWorkspacePolicy);
   assert(gitCleanDryRunPolicy.allowed, "git clean dry-run should be allowed as read-only inspection evidence");
+  const gitRmCachedPolicy = evaluateCommandPolicy(
+    "git rm --cached -q build/__pycache__/content.cpython-312.pyc",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(gitRmCachedPolicy.allowed, "bounded git rm --cached should preserve the working tree and remain allowed");
+  assert(gitRmCachedPolicy.category === "git-workflow", "bounded git rm --cached should be a git workflow command");
+  const gitRmCachedRecursivePolicy = evaluateCommandPolicy(
+    "git rm --cached -r build",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(!gitRmCachedRecursivePolicy.allowed, "recursive git rm --cached should remain guarded");
+  const gitRmCachedGlobPolicy = evaluateCommandPolicy(
+    "git rm --cached 'build/**/*.pyc'",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(!gitRmCachedGlobPolicy.allowed, "globbed git rm --cached should remain guarded");
+  const gitRmWorkingTreePolicy = evaluateCommandPolicy(
+    "git rm build/content.py",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(!gitRmWorkingTreePolicy.allowed, "git rm without --cached must remain guarded");
   const localGitInitPolicy = evaluateCommandPolicy("git init", dockerWorkspaceNoInstallsPolicy);
   assert(localGitInitPolicy.allowed, "local git init should be allowed without package installs");
   assert(localGitInitPolicy.category === "git-workflow", "local git init should be classified as git-workflow");

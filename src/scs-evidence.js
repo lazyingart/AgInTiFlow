@@ -259,7 +259,7 @@ const PROFILE_REQUIREMENTS = {
   design: ["artifact", "visual"],
   image: ["artifact", "visual"],
   slides: ["artifact"],
-  word: ["artifact"],
+  word: ["file", "command", "artifact"],
   data: ["file", "command", "artifact"],
   qa: ["command"],
   review: ["command"],

@@ -276,7 +276,7 @@ export const TASK_PROFILES = {
     id: "word",
     label: "Word documents",
     prompt:
-      "Bias toward Word/docx/document workflows while still using writing, conversion, LaTeX, or scripts when useful. Preserve originals, create clear output filenames, use available local tools such as pandoc/libreoffice/python packages when present, and verify generated documents exist before reporting success.",
+      "Bias toward Word/docx/document workflows while still using writing, conversion, LaTeX, or scripts when useful. Preserve source material byte-for-byte and synthesize a reader-facing document from the current corrected facts instead of concatenating notes, logs, schemas, task IDs, private paths, or delivery instructions. Prefer mature editable-document tooling already available in the workspace, such as python-docx, pandoc, or LibreOffice, over hand-written OOXML; when direct OOXML is genuinely necessary, validate its package parts and openability. Keep one maintainable source of truth and a reproducible project-local build command. Verify the DOCX is structurally editable, render or convert it for visual inspection, compile the PDF, inspect every rendered page, and run pdftotext or an equivalent extraction check that rejects replacement characters and unexpected control glyphs. Resolve stale-versus-current facts explicitly, use clear descriptive filenames, exclude caches and generated debris from commits, inspect git status/diff before committing, and report success only after the editable source, reader-facing content, visual layout, searchable text, and requested artifacts all pass.",
     tools: ["files", "shell", "canvas", "sandbox"],
   },
   latex: {
