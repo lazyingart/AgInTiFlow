@@ -1133,6 +1133,43 @@ function classifySafeEchoCommandSubstitution(normalized = "") {
   };
 }
 
+function classifyScopedReadOnlyGitProbe(normalized = "") {
+  const command = stripBenignRedirections(normalized);
+  if (!/^git\s+-C\s+/.test(command) || hasActiveShellExpansion(command)) return null;
+
+  const tokens = tokenizeShellWords(command);
+  if (tokens.length < 5 || tokens[0] !== "git" || tokens[1] !== "-C") return null;
+  const repository = tokens[2] || "";
+  if (
+    !repository ||
+    repository.startsWith("-") ||
+    !/^[A-Za-z0-9_@%+=:,./~+-]+$/.test(repository) ||
+    /[*?\[\]{}]/.test(repository)
+  ) {
+    return null;
+  }
+
+  const operation = tokens[3] || "";
+  const args = tokens.slice(4);
+  const safeStatus = operation === "status" && args.every((arg) =>
+    ["--short", "-s", "--porcelain", "--porcelain=v1", "--porcelain=v2", "--branch", "-b"].includes(arg)
+  );
+  const safeIdentityConfig = operation === "config" && (
+    (args.length === 1 && ["user.name", "user.email"].includes(args[0])) ||
+    (args.length === 2 && args[0] === "--get" && ["user.name", "user.email"].includes(args[1]))
+  );
+  if (!safeStatus && !safeIdentityConfig) return null;
+
+  return {
+    category: "read-only",
+    needsNetwork: false,
+    writesWorkspace: false,
+    gitOnly: true,
+    scopedGitProbe: true,
+    reason: `Git ${operation} reads bounded repository metadata through -C.`,
+  };
+}
+
 function classifyGitCleanDryRun(normalized) {
   const match = normalized.match(/^git\s+clean\b([\s\S]*)$/);
   if (!match) return null;
@@ -1226,6 +1263,8 @@ function classifySimpleCommand(normalized) {
   }
   const gitCleanDryRun = classifyGitCleanDryRun(normalized);
   if (gitCleanDryRun) return gitCleanDryRun;
+  const scopedReadOnlyGitProbe = classifyScopedReadOnlyGitProbe(normalized);
+  if (scopedReadOnlyGitProbe) return scopedReadOnlyGitProbe;
   const gitWorkflowClassification = classifyGitWorkflow(normalized);
   if (gitWorkflowClassification) return gitWorkflowClassification;
   const condaRunClassification = classifyCondaRun(normalized);
@@ -1643,6 +1682,27 @@ function classifyReadOnlyLoopBody(bodySource = "") {
   };
 }
 
+function loopBodyHasOnlyBoundedReadOnlyExpansions(bodySource = "") {
+  const text = String(bodySource || "").trim();
+  if (!hasActiveShellExpansion(text)) return true;
+  const sequence = parseTopLevelShellSequence(text);
+  if (
+    !sequence.commands.length ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator
+  ) {
+    return false;
+  }
+  return sequence.commands.every((command) => {
+    if (!hasActiveShellExpansion(command)) return true;
+    const classification = classifySafeEchoCommandSubstitution(command);
+    return classification?.category === "read-only" &&
+      classification.writesWorkspace === false &&
+      classification.needsNetwork === false;
+  });
+}
+
 function classifyReadOnlyForLoop(normalized) {
   const text = String(normalized || "").trim();
   if (!/^for\s+/.test(text)) return null;
@@ -1670,10 +1730,6 @@ function classifyReadOnlyForLoop(normalized) {
     );
   }
 
-  if (hasActiveShellCommandSubstitution(bodySource)) {
-    return broadForLoopClassification(text, "the body uses command substitution");
-  }
-
   const escapedVariable = shellIdentifierPattern(variableName);
   const variableReference = new RegExp(
     `\\$(?:\\{${escapedVariable}\\}|${escapedVariable}(?![A-Za-z0-9_]))`,
@@ -1686,7 +1742,7 @@ function classifyReadOnlyForLoop(normalized) {
 
   for (const item of items) {
     const expandedBody = bodySource.replace(variableReference, item);
-    if (hasActiveShellExpansion(expandedBody) || hasActiveShellCommandSubstitution(expandedBody)) {
+    if (!loopBodyHasOnlyBoundedReadOnlyExpansions(expandedBody)) {
       return broadForLoopClassification(text, "the body contains expansion beyond the loop variable");
     }
     const classification = classifyReadOnlyLoopBody(expandedBody);

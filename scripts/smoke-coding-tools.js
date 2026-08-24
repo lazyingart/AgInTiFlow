@@ -671,6 +671,20 @@ try {
       exactReadOnlyGitIdentityProbePolicy.writesWorkspace === false,
     "bounded read-only git identity substitutions incorrectly required destructive host permission"
   );
+  const exactReadOnlyGitIdentityLoop =
+    'for d in /home/lachlan/ProjectsLFS/AgenticApp /home/lachlan/ProjectsLFS/Musia /home/lachlan/ProjectsLFS/LALACHAN /home/lachlan/DiskMech/Projects/lazyedit; do echo "=== $d ==="; echo "user.name=[$(git -C "$d" config user.name 2>/dev/null)]"; echo "user.email=[$(git -C "$d" config user.email 2>/dev/null)]"; echo "--status--"; git -C "$d" status --short 2>&1 | head -15; echo; done';
+  const exactReadOnlyGitIdentityLoopPolicy = evaluateCommandPolicy(
+    exactReadOnlyGitIdentityLoop,
+    hostReadRootPolicy
+  );
+  assert(
+    exactReadOnlyGitIdentityLoopPolicy.allowed &&
+      exactReadOnlyGitIdentityLoopPolicy.category === "read-only" &&
+      exactReadOnlyGitIdentityLoopPolicy.boundedForLoop === true &&
+      exactReadOnlyGitIdentityLoopPolicy.needsNetwork === false &&
+      exactReadOnlyGitIdentityLoopPolicy.writesWorkspace === false,
+    "bounded per-repository Git identity/status audit incorrectly required destructive host permission"
+  );
   for (const unsafeEchoSubstitution of [
     'echo "VALUE=$(rm -rf report.md)"',
     'echo "VALUE=$(cp README.md report.md)"',
@@ -691,6 +705,28 @@ try {
         unsafeEchoSubstitutionPolicy.writesWorkspace === true ||
         unsafeEchoSubstitutionPolicy.needsNetwork === true,
       `unsafe echo command substitution bypassed the bounded read-only policy: ${unsafeEchoSubstitution}`
+    );
+  }
+  for (const unsafeLoopSubstitution of [
+    'for d in /tmp; do echo "VALUE=$(rm -rf report.md)"; done',
+    'for d in /tmp; do echo "VALUE=$(curl https://example.com)"; done',
+    'for d in /tmp; do echo "VALUE=$(echo $(pwd))"; done',
+    'for d in /tmp; do echo "VALUE=$SECRET"; done',
+    'for d in /tmp; do echo "VALUE=$(git -C "$d" config user.name attacker)"; done',
+    'for d in /tmp; do echo "VALUE=$(git -C "$d" config --global user.name)"; done',
+    'for d in /tmp; do echo "VALUE=$(git -C "$d" status; rm -rf report.md)"; done',
+    'for d in /tmp; do git -C "$d" status --short > report.md; done',
+  ]) {
+    const unsafeLoopSubstitutionPolicy = evaluateCommandPolicy(
+      unsafeLoopSubstitution,
+      hostReadRootPolicy
+    );
+    assert(
+      !unsafeLoopSubstitutionPolicy.allowed ||
+        unsafeLoopSubstitutionPolicy.category !== "read-only" ||
+        unsafeLoopSubstitutionPolicy.writesWorkspace === true ||
+        unsafeLoopSubstitutionPolicy.needsNetwork === true,
+      `unsafe loop substitution bypassed the bounded read-only policy: ${unsafeLoopSubstitution}`
     );
   }
   for (const unsafeCompoundAudit of [
