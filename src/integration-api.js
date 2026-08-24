@@ -1,5 +1,6 @@
 import express from "express";
-import { TextDecoder } from "node:util";
+import crypto from "node:crypto";
+import { TextDecoder, types as utilTypes } from "node:util";
 import {
   INTEGRATION_IDEMPOTENCY_HEADER,
   createIntegrationAuthMiddleware,
@@ -41,6 +42,8 @@ import {
   validatePublicIntegrationEvent,
   writeIntegrationEventStream,
 } from "./integration-events.js";
+import { assertIntegrationAnalysisSessionService } from "./integration-analysis-session-service.js";
+import { assertFileIntegrationIdempotencyStore } from "./integration-idempotency-store.js";
 import { redactSensitiveText } from "./redaction.js";
 
 export const INTEGRATION_SERVICE_METHODS = Object.freeze({
@@ -60,10 +63,17 @@ export const INTEGRATION_SERVICE_METHODS = Object.freeze({
 
 const ZERO_DIGEST = "0".repeat(64);
 export const INTEGRATION_IDEMPOTENCY_CONTRACT_VERSION = "aginti-transactional-idempotency-v1";
-const INTEGRATION_IDEMPOTENCY_REQUEST_HASH_ALGORITHM = "canonical-json-v1";
+export const INTEGRATION_IDEMPOTENCY_REQUEST_HASH_ALGORITHM = "canonical-json-v1";
 const INTEGRATION_IDEMPOTENCY_RESPONSE_ENVELOPE = "aginti-agent-rpc-v1";
 export const INTEGRATION_IDEMPOTENCY_MAX_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const INTEGRATION_PUBLIC_JSON_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
+export const INTEGRATION_ANALYSIS_ROUTER_ACTIVATION_SCHEMA_VERSION =
+  "aginti-integration-analysis-router-activation-v1";
+export const INTEGRATION_ANALYSIS_MUTATION_RECOVERY_SCHEMA_VERSION =
+  "aginti-analysis-mutation-recovery-v1";
+const INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION = "aginti-integration-analysis-session-v1";
+const INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION = "aginti-integration-analysis-coordinator-v1";
+const ANALYSIS_ROUTER_ACTIVATIONS = new WeakMap();
 const ABSOLUTE_PATH_PATTERN =
   /(?:^|[\s("'`])(?:\/(?:workspace|home|users|root|etc|usr|var|opt|srv|run|tmp|proc|sys|dev|mnt|media|aginti-(?:home|cache|env))(?:\/[^\s"'`<>)\]]*)?|[A-Za-z]:\\[^\s"'`<>)\]]*)/giu;
 const FATAL_UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
@@ -379,7 +389,7 @@ function artifactBelongsToRequest(artifact = {}, payload = {}) {
   return false;
 }
 
-function publicResponseForPath(pathname, result = {}, payload = {}, context = {}) {
+export function projectPublicIntegrationResponse(pathname, result = {}, payload = {}, context = {}) {
   const principalId = context.principal.id;
   const browserSessionId = context.browserSession.id;
   switch (pathname) {
@@ -467,6 +477,10 @@ function requestHash(pathname, principalId, browserSessionId, payload) {
   });
 }
 
+function idempotencyKeyDigest(idempotencyKey) {
+  return crypto.createHash("sha256").update(String(idempotencyKey), "utf8").digest("hex");
+}
+
 export function assertIntegrationTransactionalIdempotencyStore(store = {}) {
   const windowMs = Number(store?.idempotencyWindowMs ?? 0);
   const recovery = store?.recoveryAuthority || {};
@@ -528,6 +542,409 @@ function idempotencyReady(store = {}) {
   }
 }
 
+function plainDataObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || utilTypes.isProxy(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function exactDataObject(value, allowedKeys, requiredKeys, label, { frozen = false } = {}) {
+  if (!plainDataObject(value) || (frozen && !Object.isFrozen(value))) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", `${label} is unavailable.`, { status: 503 });
+  }
+  const allowed = new Set(allowedKeys);
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = typeof key === "string" ? Object.getOwnPropertyDescriptor(value, key) : null;
+    if (
+      typeof key !== "string" ||
+      !allowed.has(key) ||
+      !descriptor?.enumerable ||
+      !Object.prototype.hasOwnProperty.call(descriptor, "value")
+    ) {
+      throw new IntegrationApiError("AGENT_UNAVAILABLE", `${label} is unavailable.`, { status: 503 });
+    }
+  }
+  for (const key of requiredKeys) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) {
+      throw new IntegrationApiError("AGENT_UNAVAILABLE", `${label} is unavailable.`, { status: 503 });
+    }
+  }
+  return value;
+}
+
+function digestField(value, label) {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/u.test(value)) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", `${label} is unavailable.`, { status: 503 });
+  }
+  return value;
+}
+
+function assertCanonicalProofDigest(proof, label) {
+  const unsigned = {};
+  for (const key of Object.keys(proof)) {
+    if (key !== "digest") unsigned[key] = proof[key];
+  }
+  if (digestField(proof.digest, `${label} digest`) !== contractDigest(unsigned)) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", `${label} is unavailable.`, { status: 503 });
+  }
+  return proof;
+}
+
+function assertAnalysisStartupProof(value) {
+  const keys = [
+    "schemaVersion",
+    "ready",
+    "publicActivationReady",
+    "workerCapabilityDigest",
+    "workerHealthDigest",
+    "coordinatorProtocolDigest",
+    "coordinatorHealthDigest",
+    "runtimeProfile",
+    "runtimeBundleRootDigest",
+    "seccompPolicyDigest",
+    "cgroupPolicyDigest",
+    "digest",
+  ];
+  const proof = exactDataObject(value, keys, keys, "analysis startup proof", { frozen: true });
+  if (
+    proof.schemaVersion !== INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION ||
+    proof.ready !== true ||
+    proof.publicActivationReady !== true ||
+    typeof proof.runtimeProfile !== "string" ||
+    !/^[A-Za-z0-9._+~-]{1,192}$/u.test(proof.runtimeProfile)
+  ) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis startup proof is unavailable.", { status: 503 });
+  }
+  for (const key of [
+    "workerCapabilityDigest",
+    "workerHealthDigest",
+    "coordinatorProtocolDigest",
+    "coordinatorHealthDigest",
+    "runtimeBundleRootDigest",
+    "seccompPolicyDigest",
+    "cgroupPolicyDigest",
+  ]) {
+    digestField(proof[key], `analysis startup proof ${key}`);
+  }
+  return assertCanonicalProofDigest(proof, "analysis startup proof");
+}
+
+function assertAnalysisMutationRecoveryAuthority(value) {
+  const keys = [
+    "schemaVersion",
+    "owner",
+    "durable",
+    "atomicWithMutation",
+    "principalBound",
+    "browserSessionBound",
+    "pathnameBound",
+    "requestHashBound",
+    "idempotencyKeyDigestBound",
+    "blindRedispatch",
+    "exactPublicResponse",
+    "digest",
+  ];
+  const proof = exactDataObject(value, keys, keys, "analysis mutation recovery authority", { frozen: true });
+  if (
+    proof.schemaVersion !== INTEGRATION_ANALYSIS_MUTATION_RECOVERY_SCHEMA_VERSION ||
+    proof.owner !== "aginti" ||
+    proof.durable !== true ||
+    proof.atomicWithMutation !== true ||
+    proof.principalBound !== true ||
+    proof.browserSessionBound !== true ||
+    proof.pathnameBound !== true ||
+    proof.requestHashBound !== true ||
+    proof.idempotencyKeyDigestBound !== true ||
+    proof.blindRedispatch !== false ||
+    proof.exactPublicResponse !== true
+  ) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis mutation recovery authority is unavailable.", {
+      status: 503,
+    });
+  }
+  return assertCanonicalProofDigest(proof, "analysis mutation recovery authority");
+}
+
+function assertAnalysisSessionAuthority(value, startupProof, mutationRecoveryAuthority) {
+  const keys = [
+    "schemaVersion",
+    "owner",
+    "authority",
+    "ready",
+    "testOnly",
+    "runnerAuthority",
+    "runnerDigest",
+    "fixedCoordinatorDigest",
+    "plannerActivationSchemaVersion",
+    "plannerActivationDigest",
+    "plannerActivationBrandRequired",
+    "plannerCoordinatorDigestBound",
+    "activationProofRequired",
+    "activationProofDigest",
+    "activationProof",
+    "activationProofPinnedAtStartup",
+    "activationProofMatchesBoundCoordinator",
+    "activationReadinessProbedAtStartup",
+    "activationReadinessReprobedPerRpc",
+    "stateRootDigest",
+    "oneFixedStateRoot",
+    "principalBound",
+    "browserSessionBound",
+    "sameBrowserSessionOnly",
+    "requestDerivedPaths",
+    "symlinksRejected",
+    "hardlinksRejected",
+    "privateOwnershipAndModes",
+    "canonicalStateEncoding",
+    "stateEnvelopeDigest",
+    "atomicTempFsyncRename",
+    "directoryFsync",
+    "serializedMutations",
+    "exclusiveServiceLifetimeLock",
+    "ownershipLockHeldAtAttestation",
+    "ownershipReleasedOnlyAfterDrain",
+    "crossProcessSafe",
+    "maximumConcurrentPlannerRuns",
+    "maximumQueuedPlannerRuns",
+    "maximumQueuedPlannerRunsPerScope",
+    "queuedRunsPersisted",
+    "boundedDrain",
+    "durablePublicReplay",
+    "publicEventHashChain",
+    "artifactBeforeTerminal",
+    "exactCancellation",
+    "interruptedRunRecovery",
+    "durableMutationReceipts",
+    "mutationRecoveryAuthorityDigest",
+    "rawExecutionSourcePersisted",
+    "rawExecutionStdoutPersisted",
+    "privateRuntimePathsPersisted",
+    "publicActivationLocksChanged",
+    "limitsDigest",
+    "digest",
+  ];
+  const proof = exactDataObject(value, keys, keys, "analysis session authority", { frozen: true });
+  if (
+    proof.schemaVersion !== INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION ||
+    proof.owner !== "aginti" ||
+    proof.authority !== "aginti" ||
+    proof.ready !== true ||
+    proof.testOnly !== false ||
+    proof.runnerAuthority !== "aginti-analysis-planner" ||
+    proof.plannerActivationSchemaVersion !== "aginti-integration-analysis-planner-activation-v1" ||
+    proof.plannerActivationBrandRequired !== true ||
+    proof.plannerCoordinatorDigestBound !== true ||
+    proof.activationProofRequired !== true ||
+    proof.activationProofDigest !== startupProof.digest ||
+    proof.activationProofPinnedAtStartup !== true ||
+    proof.activationProofMatchesBoundCoordinator !== true ||
+    proof.activationReadinessProbedAtStartup !== true ||
+    proof.activationReadinessReprobedPerRpc !== false ||
+    proof.oneFixedStateRoot !== true ||
+    proof.principalBound !== true ||
+    proof.browserSessionBound !== true ||
+    proof.sameBrowserSessionOnly !== true ||
+    proof.requestDerivedPaths !== false ||
+    proof.symlinksRejected !== true ||
+    proof.hardlinksRejected !== true ||
+    proof.privateOwnershipAndModes !== true ||
+    proof.canonicalStateEncoding !== true ||
+    proof.stateEnvelopeDigest !== true ||
+    proof.atomicTempFsyncRename !== true ||
+    proof.directoryFsync !== true ||
+    proof.serializedMutations !== true ||
+    proof.exclusiveServiceLifetimeLock !== true ||
+    proof.ownershipLockHeldAtAttestation !== true ||
+    proof.ownershipReleasedOnlyAfterDrain !== true ||
+    proof.crossProcessSafe !== true ||
+    proof.maximumConcurrentPlannerRuns !== 2 ||
+    proof.maximumQueuedPlannerRuns !== 16 ||
+    proof.maximumQueuedPlannerRunsPerScope !== 4 ||
+    proof.queuedRunsPersisted !== true ||
+    proof.boundedDrain !== true ||
+    proof.durablePublicReplay !== true ||
+    proof.publicEventHashChain !== true ||
+    proof.artifactBeforeTerminal !== true ||
+    proof.exactCancellation !== true ||
+    proof.interruptedRunRecovery !== true ||
+    proof.durableMutationReceipts !== true ||
+    proof.mutationRecoveryAuthorityDigest !== mutationRecoveryAuthority.digest ||
+    proof.rawExecutionSourcePersisted !== false ||
+    proof.rawExecutionStdoutPersisted !== false ||
+    proof.privateRuntimePathsPersisted !== false ||
+    proof.publicActivationLocksChanged !== false
+  ) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis session authority is unavailable.", { status: 503 });
+  }
+  for (const key of [
+    "runnerDigest",
+    "fixedCoordinatorDigest",
+    "plannerActivationDigest",
+    "stateRootDigest",
+    "limitsDigest",
+    "mutationRecoveryAuthorityDigest",
+  ]) {
+    digestField(proof[key], `analysis session authority ${key}`);
+  }
+  assertAnalysisStartupProof(proof.activationProof);
+  if (proof.activationProof.digest !== startupProof.digest) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis startup proof binding is unavailable.", { status: 503 });
+  }
+  return assertCanonicalProofDigest(proof, "analysis session authority");
+}
+
+function analysisActivationMetadata(value) {
+  if (!value || typeof value !== "object" || !ANALYSIS_ROUTER_ACTIVATIONS.has(value)) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis router activation is unavailable.", { status: 503 });
+  }
+  return ANALYSIS_ROUTER_ACTIVATIONS.get(value);
+}
+
+function fixedStorageRootDigest(value, field, label) {
+  if (
+    typeof value !== "string" ||
+    value.length < 2 ||
+    value.length > 4096 ||
+    !value.startsWith("/") ||
+    value.includes("\u0000")
+  ) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", `${label} is unavailable.`, { status: 503 });
+  }
+  return contractDigest({ [field]: value });
+}
+
+export function assertIntegrationAnalysisActivationStorage(activation, value = {}) {
+  const roots = exactDataObject(
+    value,
+    ["stateRoot", "idempotencyRoot"],
+    ["stateRoot", "idempotencyRoot"],
+    "analysis activation storage roots"
+  );
+  const metadata = analysisActivationMetadata(activation);
+  if (
+    metadata.proof.storageRootsBound !== true ||
+    metadata.proof.stateRootDigest !== fixedStorageRootDigest(roots.stateRoot, "stateRoot", "analysis state root") ||
+    metadata.proof.idempotencyRootDigest !==
+      fixedStorageRootDigest(roots.idempotencyRoot, "rootDir", "analysis idempotency root")
+  ) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis activation storage binding is unavailable.", {
+      status: 503,
+    });
+  }
+  return activation;
+}
+
+export async function createIntegrationAnalysisRouterActivation(options = {}) {
+  exactDataObject(
+    options,
+    ["sessionService", "idempotencyStore", "startupProof", "policy", "stateRoot", "idempotencyRoot"],
+    ["sessionService", "idempotencyStore", "startupProof", "stateRoot", "idempotencyRoot"],
+    "analysis router activation options"
+  );
+  const policy = options.policy || buildFixedIntegrationPolicy();
+  assertFixedIntegrationPolicy(policy);
+  if (!Object.isFrozen(policy)) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis policy is unavailable.", { status: 503 });
+  }
+  let sessionService;
+  let idempotencyStore;
+  try {
+    sessionService = assertIntegrationAnalysisSessionService(options.sessionService);
+    idempotencyStore = assertFileIntegrationIdempotencyStore(options.idempotencyStore);
+  } catch (error) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Exact analysis dependency identity is unavailable.", {
+      status: 503,
+      cause: error,
+    });
+  }
+  assertIntegrationTransactionalIdempotencyStore(idempotencyStore);
+  const startupProof = assertAnalysisStartupProof(options.startupProof);
+  if (
+    !sessionService ||
+    typeof sessionService !== "object" ||
+    !Object.isFrozen(sessionService) ||
+    missingServiceMethods(sessionService).length !== 0 ||
+    typeof sessionService.getIntegrationCapabilities !== "function" ||
+    typeof sessionService.recoverMutation !== "function" ||
+    !Object.isFrozen(idempotencyStore)
+  ) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Durable analysis session recovery is unavailable.", {
+      status: 503,
+    });
+  }
+  const serviceCapabilities = await sessionService.getIntegrationCapabilities({ policy });
+  exactDataObject(
+    serviceCapabilities,
+    ["analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume"],
+    ["analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume"],
+    "analysis service capabilities",
+    { frozen: true }
+  );
+  if (serviceCapabilities.cancel !== true || serviceCapabilities.resume !== true) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis actions are unavailable.", { status: 503 });
+  }
+  const mutationRecoveryAuthority = assertAnalysisMutationRecoveryAuthority(
+    serviceCapabilities.mutationRecoveryAuthority
+  );
+  const sessionAuthority = assertAnalysisSessionAuthority(
+    serviceCapabilities.analysisSessionAuthority,
+    startupProof,
+    mutationRecoveryAuthority
+  );
+  const stateRootDigest = fixedStorageRootDigest(options.stateRoot, "stateRoot", "analysis state root");
+  const idempotencyRootDigest = fixedStorageRootDigest(
+    options.idempotencyRoot,
+    "rootDir",
+    "analysis idempotency root"
+  );
+  if (
+    sessionAuthority.stateRootDigest !== stateRootDigest ||
+    idempotencyStore.rootDirDigest !== idempotencyRootDigest
+  ) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis dependency storage binding is unavailable.", {
+      status: 503,
+    });
+  }
+  const recoveryAuthority = idempotencyStore.recoveryAuthority;
+  assertIntegrationTransactionalIdempotencyStore(idempotencyStore);
+  const unsigned = Object.freeze({
+    schemaVersion: INTEGRATION_ANALYSIS_ROUTER_ACTIVATION_SCHEMA_VERSION,
+    owner: "aginti",
+    ready: true,
+    startupProofDigest: startupProof.digest,
+    sessionAuthorityDigest: sessionAuthority.digest,
+    mutationRecoveryAuthorityDigest: mutationRecoveryAuthority.digest,
+    idempotencyRecoveryAuthorityDigest: digestField(
+      recoveryAuthority?.digest,
+      "idempotency recovery authority digest"
+    ),
+    policyDigest: contractDigest(policy),
+    exclusiveSessionAuthority: true,
+    exactDependencyIdentity: true,
+    startupProofPinned: true,
+    storageRootsBound: true,
+    stateRootDigest,
+    idempotencyRootDigest,
+  });
+  const proof = Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
+  const activation = Object.freeze({
+    schemaVersion: INTEGRATION_ANALYSIS_ROUTER_ACTIVATION_SCHEMA_VERSION,
+    digest: proof.digest,
+  });
+  ANALYSIS_ROUTER_ACTIVATIONS.set(
+    activation,
+    Object.freeze({
+      sessionService,
+      idempotencyStore,
+      startupProof,
+      policy,
+      serviceCapabilities,
+      proof,
+    })
+  );
+  return activation;
+}
+
 function idempotencyContext(req, pathname) {
   const value = requestSingleIntegrationHeader(req, INTEGRATION_IDEMPOTENCY_HEADER, {
     code: "INVALID_IDEMPOTENCY_KEY",
@@ -545,7 +962,7 @@ function idempotencyContext(req, pathname) {
   return "";
 }
 
-function serviceContext(req, pathname, payload, policy, idempotencyKey) {
+function serviceContext(req, pathname, payload, policy, idempotencyKey, mutationIdentity = null) {
   return Object.freeze({
     schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
     pathname,
@@ -555,6 +972,12 @@ function serviceContext(req, pathname, payload, policy, idempotencyKey) {
     browserSessionId: req.integrationBrowserSession.id,
     client: req.integrationClient,
     idempotencyKey,
+    ...(mutationIdentity
+      ? {
+          requestHash: mutationIdentity.requestHash,
+          idempotencyKeyDigest: mutationIdentity.idempotencyKeyDigest,
+        }
+      : {}),
     payload,
     policy,
     abortSignal: req.integrationAbortSignal,
@@ -625,6 +1048,28 @@ async function capabilitiesForService({ sessionService, idempotencyStore, policy
   });
 }
 
+function assertActivatedReadiness({ sessionService, idempotencyStore, policy }, activationMetadata) {
+  if (
+    !activationMetadata ||
+    activationMetadata.sessionService !== sessionService ||
+    activationMetadata.idempotencyStore !== idempotencyStore ||
+    activationMetadata.policy !== policy ||
+    activationMetadata.proof?.ready !== true
+  ) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis router activation is unavailable.", { status: 503 });
+  }
+  return activationMetadata;
+}
+
+function activatedCapabilitiesForService(options, activationMetadata) {
+  const metadata = assertActivatedReadiness(options, activationMetadata);
+  return integrationCapabilitiesResponse({
+    enabled: true,
+    cancel: metadata.serviceCapabilities.cancel,
+    resume: metadata.serviceCapabilities.resume,
+  });
+}
+
 async function readinessForService({ sessionService, idempotencyStore, policy }) {
   const service =
     typeof sessionService?.getIntegrationCapabilities === "function"
@@ -659,6 +1104,10 @@ async function requireEnabled(options) {
   }
 }
 
+function requireActivated(options, activationMetadata) {
+  assertActivatedReadiness(options, activationMetadata);
+}
+
 async function callSessionService(sessionService, pathname, payload, context) {
   const method = methodForPath(pathname);
   if (!method || typeof sessionService?.[method] !== "function") {
@@ -667,37 +1116,59 @@ async function callSessionService(sessionService, pathname, payload, context) {
   return sessionService[method](payload, context);
 }
 
-async function handleRpc({ req, res, pathname, sessionService, idempotencyStore, policy }) {
+async function handleRpc({ req, res, pathname, sessionService, idempotencyStore, policy, activationMetadata = null }) {
   if (!integrationClientCanUsePath(req.integrationClient, pathname)) {
     throw new IntegrationApiError("FORBIDDEN", "Integration client is not authorized for this path.", { status: 403 });
   }
   const payload = sanitizeIntegrationRequest(pathname, req.body || {});
   const idempotencyKey = idempotencyContext(req, pathname);
-  const context = serviceContext(req, pathname, payload, policy, idempotencyKey);
+  const mutationIdentity = integrationRpcPathIsMutation(pathname)
+    ? Object.freeze({
+        requestHash: requestHash(pathname, req.integrationPrincipal.id, req.integrationBrowserSession.id, payload),
+        idempotencyKeyDigest: idempotencyKeyDigest(idempotencyKey),
+      })
+    : null;
+  const context = serviceContext(req, pathname, payload, policy, idempotencyKey, mutationIdentity);
 
   if (pathname === INTEGRATION_RPC_PATHS.capabilities) {
-    sendJson(res, 200, await capabilitiesForService({ sessionService, idempotencyStore, policy }));
+    const options = { sessionService, idempotencyStore, policy };
+    sendJson(
+      res,
+      200,
+      activationMetadata
+        ? activatedCapabilitiesForService(options, activationMetadata)
+        : await capabilitiesForService(options)
+    );
     return;
   }
 
-  await requireEnabled({ sessionService, idempotencyStore, policy });
+  if (activationMetadata) {
+    requireActivated({ sessionService, idempotencyStore, policy }, activationMetadata);
+  } else {
+    await requireEnabled({ sessionService, idempotencyStore, policy });
+  }
 
   if (integrationRpcPathIsMutation(pathname)) {
     const transactionalIdempotencyStore = assertIntegrationTransactionalIdempotencyStore(idempotencyStore);
-    const hash = requestHash(pathname, context.principalId, context.browserSessionId, payload);
     const response = await transactionalIdempotencyStore.runMutation(
       {
         principalId: context.principalId,
         browserSessionId: context.browserSessionId,
         pathname,
         idempotencyKey,
-        requestHash: hash,
+        requestHash: mutationIdentity.requestHash,
         requestHashAlgorithm: INTEGRATION_IDEMPOTENCY_REQUEST_HASH_ALGORITHM,
         responseEnvelope: INTEGRATION_IDEMPOTENCY_RESPONSE_ENVELOPE,
         idempotencyWindowMs: INTEGRATION_IDEMPOTENCY_MAX_WINDOW_MS,
         payload,
       },
-      async () => publicResponseForPath(pathname, await callSessionService(sessionService, pathname, payload, context), payload, context)
+      async () =>
+        projectPublicIntegrationResponse(
+          pathname,
+          await callSessionService(sessionService, pathname, payload, context),
+          payload,
+          context
+        )
     );
     sendJson(res, 200, response);
     return;
@@ -744,7 +1215,7 @@ async function handleRpc({ req, res, pathname, sessionService, idempotencyStore,
   }
 
   const result = await callSessionService(sessionService, pathname, payload, context);
-  sendJson(res, 200, publicResponseForPath(pathname, result, payload, context));
+  sendJson(res, 200, projectPublicIntegrationResponse(pathname, result, payload, context));
 }
 
 function hasHeader(req, name) {
@@ -788,7 +1259,7 @@ function verifyFatalUtf8Json(_req, _res, buffer) {
   }
 }
 
-export function createIntegrationRouter(options = {}) {
+function createIntegrationRouterWithAuthority(options = {}, activationMetadata = null) {
   const sessionService = options.sessionService;
   const idempotencyStore = options.idempotencyStore;
   const policy = options.policy || buildFixedIntegrationPolicy(options.policyOptions || {});
@@ -860,6 +1331,7 @@ export function createIntegrationRouter(options = {}) {
           sessionService,
           idempotencyStore,
           policy,
+          activationMetadata,
         });
       } catch (error) {
         sendError(res, error);
@@ -880,6 +1352,31 @@ export function createIntegrationRouter(options = {}) {
   });
 
   return router;
+}
+
+export function createIntegrationRouter(options = {}) {
+  return createIntegrationRouterWithAuthority(options, null);
+}
+
+export function createActivatedIntegrationAnalysisRouter(options = {}) {
+  exactDataObject(
+    options,
+    ["activation", "auth", "prefix", "maxBodyBytes"],
+    ["activation"],
+    "activated analysis router options"
+  );
+  const metadata = analysisActivationMetadata(options.activation);
+  return createIntegrationRouterWithAuthority(
+    {
+      sessionService: metadata.sessionService,
+      idempotencyStore: metadata.idempotencyStore,
+      policy: metadata.policy,
+      ...(options.auth === undefined ? {} : { auth: options.auth }),
+      ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
+      ...(options.maxBodyBytes === undefined ? {} : { maxBodyBytes: options.maxBodyBytes }),
+    },
+    metadata
+  );
 }
 
 function assertPublicCapabilityResponse(value = {}) {

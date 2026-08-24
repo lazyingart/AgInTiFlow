@@ -19,6 +19,7 @@ import {
   currentProcessOwner,
   ensureOwnerOnlyDirectory,
   ensureStoreLayout,
+  fsyncDirectory,
   listFilesRecursive,
   normalizeProcessIdentity,
   nowIso,
@@ -47,6 +48,7 @@ const DEFAULT_RECORD_CAP = 10_000;
 const RESPONSE_MAX_BYTES = 256 * 1024;
 const ZERO_DIGEST = "0".repeat(64);
 const OWNER_TOKEN_PATTERN = /^[a-f0-9]{32,128}$/u;
+const fileIntegrationIdempotencyStoreBrand = new WeakSet();
 const RECOVERY_STAGES = new Set([
   "before-dispatch",
   "after-dispatch-before-result",
@@ -403,9 +405,17 @@ export function integrationIdempotencyPaths(rootDir, context = {}) {
   });
 }
 
+export function assertFileIntegrationIdempotencyStore(value) {
+  if (!value || typeof value !== "object" || !fileIntegrationIdempotencyStoreBrand.has(value)) {
+    authorityFail("IDEMPOTENCY_STORE_UNAVAILABLE", "File integration idempotency store lexical brand is invalid.");
+  }
+  return value;
+}
+
 export function createFileIntegrationIdempotencyStore(options = {}) {
   if (!options.rootDir) authorityFail("IDEMPOTENCY_STORE_UNAVAILABLE", "Idempotency rootDir is required.");
   const rootDir = path.resolve(String(options.rootDir || ""));
+  const rootDirDigest = contractDigest({ rootDir });
   const retentionMs = Math.min(Number(options.retentionMs || INTEGRATION_IDEMPOTENCY_MAX_WINDOW_MS), INTEGRATION_IDEMPOTENCY_MAX_WINDOW_MS);
   const pendingLeaseMs = Number(options.pendingLeaseMs || DEFAULT_PENDING_LEASE_MS);
   const recordCap = Number(options.recordCap || DEFAULT_RECORD_CAP);
@@ -486,6 +496,43 @@ export function createFileIntegrationIdempotencyStore(options = {}) {
     await fs.rm(filePath, { force: true }).catch(() => {});
   }
 
+  async function reclaimExpiredPendingRecord(filePath, record, nowMs, expectedRecoveryStage) {
+    if (
+      record?.state !== "pending" ||
+      !["before-dispatch", "after-dispatch-before-result"].includes(expectedRecoveryStage) ||
+      record.recoveryStage !== expectedRecoveryStage ||
+      parseIsoMs(record.leaseExpiresAt, "record leaseExpiresAt") > nowMs
+    ) {
+      authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency pending reclaim is invalid.");
+    }
+    const latest = await readRecord(filePath, record.index);
+    if (
+      !latest ||
+      latest.state !== "pending" ||
+      latest.recoveryStage !== expectedRecoveryStage ||
+      latest.integrityDigest !== record.integrityDigest ||
+      !samePendingOwner(latest.pendingOwner, record.pendingOwner)
+    ) {
+      authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency pending record changed during reclaim.");
+    }
+    if (faultInjector) {
+      await faultInjector({
+        phase: `pending-reclaim-${expectedRecoveryStage}`,
+        filePath,
+        record: JSON.parse(JSON.stringify(latest)),
+      });
+    }
+    try {
+      await fs.unlink(filePath);
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency pending record disappeared during reclaim.");
+      }
+      throw error;
+    }
+    await fsyncDirectory(path.dirname(filePath));
+  }
+
   async function collectLiveResponsePointers(dirs, nowMs) {
     const pointers = new Set();
     const files = await listFilesRecursive(dirs.records, { suffix: ".json" });
@@ -525,6 +572,7 @@ export function createFileIntegrationIdempotencyStore(options = {}) {
     if (liveness === "unknown") return "preserve";
     if (parseIsoMs(record.leaseExpiresAt, "record leaseExpiresAt") > nowMs) return "preserve";
     if (record.recoveryStage === "after-result-before-public-response") return "recover-persisted";
+    if (record.recoveryStage === "before-dispatch") return "reclaim-before-dispatch";
     return "recover-authority";
   }
 
@@ -543,27 +591,37 @@ export function createFileIntegrationIdempotencyStore(options = {}) {
     const action = await livePendingRetentionAction(record, nowMs);
     if (action === "extend") return { live: true, record: await extendLivePendingRetention(filePath, record) };
     if (action === "preserve") return { live: true, record };
+    if (action === "reclaim-before-dispatch") {
+      await reclaimExpiredPendingRecord(filePath, record, nowMs, "before-dispatch");
+      return { live: false, record: null };
+    }
     if (action === "recover-persisted" || action === "recover-authority") return { live: true, record, recoveryAction: action };
     await deleteRecord(filePath);
     return { live: false, record: null };
   }
 
-  async function recoverExpiredRecordWithAuthority(dirs, paths, record) {
+  async function recoverExpiredRecordWithAuthority(dirs, paths, record, nowMs) {
     if (record.recoveryStage === "after-result-before-public-response") {
-      return withDirectoryLock(
+      await withDirectoryLock(
         paths.responseLock,
         () => completePersistedRecoveredRecord(dirs, paths, record),
         { waitMs: lockWaitMs, staleMs: staleLockMs }
       );
+      return true;
     }
     if (!recoveryAuthorityIsReady(recoveryProof)) throw recoveryRequiredError();
     const recovered = await recoverPendingWithAuthority(record);
+    if (recovered === null && record.recoveryStage === "after-dispatch-before-result") {
+      await reclaimExpiredPendingRecord(paths.record, record, nowMs, "after-dispatch-before-result");
+      return false;
+    }
     if (!recovered) throw recoveryRequiredError();
-    return withDirectoryLock(
+    await withDirectoryLock(
       paths.responseLock,
       () => completeRecoveredRecord(dirs, paths, record, recovered),
       { waitMs: lockWaitMs, staleMs: staleLockMs }
     );
+    return true;
   }
 
   async function pruneExpiredRecord(dirs, file, index, nowMs) {
@@ -578,7 +636,7 @@ export function createFileIntegrationIdempotencyStore(options = {}) {
         const retained = await handleExpiredRecordWithHeldLock(file, record, nowMs);
         if (!retained.recoveryAction) return retained.live;
         try {
-          await recoverExpiredRecordWithAuthority(dirs, paths, retained.record);
+          return await recoverExpiredRecordWithAuthority(dirs, paths, retained.record, nowMs);
         } catch (error) {
           if (error?.code !== "IDEMPOTENCY_RECOVERY_REQUIRED") throw error;
         }
@@ -745,6 +803,7 @@ export function createFileIntegrationIdempotencyStore(options = {}) {
     const nowMs = Date.parse(nowIso(now));
     if (record.state === "pending" && parseIsoMs(record.expiresAt, "record expiresAt") <= nowMs) {
       const refreshed = await handleExpiredRecordWithHeldLock(paths.record, record, nowMs);
+      if (!refreshed.live) return null;
       record = refreshed.record;
     }
     if (record.state !== "pending" && parseIsoMs(record.expiresAt, "record expiresAt") <= nowMs) {
@@ -762,7 +821,15 @@ export function createFileIntegrationIdempotencyStore(options = {}) {
     }
     if (parseIsoMs(record.leaseExpiresAt, "record leaseExpiresAt") > nowMs) throw pendingError();
     if (!(await pendingOwnerIsRecoverable(record))) throw pendingError();
+    if (record.recoveryStage === "before-dispatch") {
+      await reclaimExpiredPendingRecord(paths.record, record, nowMs, "before-dispatch");
+      return null;
+    }
     const recovered = await recoverPendingWithAuthority(record);
+    if (recovered === null && record.recoveryStage === "after-dispatch-before-result") {
+      await reclaimExpiredPendingRecord(paths.record, record, nowMs, "after-dispatch-before-result");
+      return null;
+    }
     if (!recovered) throw recoveryRequiredError();
     return withDirectoryLock(
       paths.responseLock,
@@ -1011,7 +1078,8 @@ export function createFileIntegrationIdempotencyStore(options = {}) {
         async () => {
           const record = await readRecord(paths.record, index);
           if (!record || record.state !== "pending") return;
-          if (parseIsoMs(record.leaseExpiresAt, "record leaseExpiresAt") > Date.parse(nowIso(now))) return;
+          const recoveryNowMs = Date.parse(nowIso(now));
+          if (parseIsoMs(record.leaseExpiresAt, "record leaseExpiresAt") > recoveryNowMs) return;
           if (record.recoveryStage === "after-result-before-public-response") {
             await withDirectoryLock(
               paths.responseLock,
@@ -1022,8 +1090,18 @@ export function createFileIntegrationIdempotencyStore(options = {}) {
             return;
           }
           if (!(await pendingOwnerIsRecoverable(record))) return;
+          if (record.recoveryStage === "before-dispatch") {
+            await reclaimExpiredPendingRecord(paths.record, record, recoveryNowMs, "before-dispatch");
+            recovered.push(index);
+            return;
+          }
           if (!recoveryAuthorityIsReady(recoveryProof)) return;
           const response = await recoverPendingWithAuthority(record);
+          if (response === null && record.recoveryStage === "after-dispatch-before-result") {
+            await reclaimExpiredPendingRecord(paths.record, record, recoveryNowMs, "after-dispatch-before-result");
+            recovered.push(index);
+            return;
+          }
           if (!response) return;
           await withDirectoryLock(
             paths.responseLock,
@@ -1038,8 +1116,9 @@ export function createFileIntegrationIdempotencyStore(options = {}) {
     return Object.freeze({ recovered: Object.freeze(recovered) });
   }
 
-  return Object.freeze({
+  const surface = Object.freeze({
     owner: "aginti",
+    rootDirDigest,
     contractVersion: INTEGRATION_IDEMPOTENCY_CONTRACT_VERSION,
     durable: true,
     crossProcessSafe: true,
@@ -1072,4 +1151,6 @@ export function createFileIntegrationIdempotencyStore(options = {}) {
       return readRecord(pathsForIndex(dirs, index).record, index);
     },
   });
+  fileIntegrationIdempotencyStoreBrand.add(surface);
+  return surface;
 }

@@ -11,16 +11,27 @@ import {
   assertIntegrationAnalysisPlannerActivation,
 } from "./integration-analysis-planner.js";
 import { INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION } from "./integration-analysis-coordinator.js";
-import { sanitizePublicIntegrationRun, sanitizePublicIntegrationThread } from "./integration-api.js";
+import {
+  INTEGRATION_ANALYSIS_MUTATION_RECOVERY_SCHEMA_VERSION,
+  INTEGRATION_IDEMPOTENCY_MAX_WINDOW_MS,
+  INTEGRATION_IDEMPOTENCY_REQUEST_HASH_ALGORITHM,
+  assertPublicIntegrationResponse,
+  projectPublicIntegrationResponse,
+  sanitizePublicIntegrationRun,
+  sanitizePublicIntegrationThread,
+} from "./integration-api.js";
 import { validateAgintiBrowserSession, validateAgintiPrincipalId } from "./integration-auth.js";
 import { withDirectoryLock } from "./integration-durable-common.js";
 import {
   AGENT_WORKER_SCHEMA_VERSION,
+  INTEGRATION_RPC_PATHS,
   canonicalJson,
   contractDigest,
   integrationBoundedInteger,
   integrationBoundedText,
   integrationExactKeys,
+  integrationRpcPathIsMutation,
+  validateIntegrationIdempotencyKey,
   validateIntegrationArtifactId,
   validateIntegrationRunId,
   validateIntegrationThreadId,
@@ -33,7 +44,7 @@ import {
 import { redactSensitiveText } from "./redaction.js";
 
 export const INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION = "aginti-integration-analysis-session-v1";
-export const INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION = "aginti-integration-analysis-state-v1";
+export const INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION = "aginti-integration-analysis-state-v2";
 export const DEFAULT_INTEGRATION_ANALYSIS_STATE_ROOT = "/var/lib/agintiflow-integration/analysis";
 
 export const INTEGRATION_ANALYSIS_SESSION_LIMITS = Object.freeze({
@@ -45,6 +56,8 @@ export const INTEGRATION_ANALYSIS_SESSION_LIMITS = Object.freeze({
   maximumEventsPerRun: 512,
   maximumArtifactsPerRun: 32,
   maximumArtifactsPerScope: 1024,
+  maximumMutationReceiptsPerScope: 1024,
+  maximumMutationReceiptResponseBytes: 256 * 1024,
   maximumStateBytes: 4 * 1024 * 1024,
   maximumPromptBytes: 16 * 1024,
   maximumConversationMessages: 24,
@@ -79,6 +92,7 @@ const SESSION_BRAND = new WeakSet();
 const SESSION_METADATA = new WeakMap();
 const MESSAGE_DIGEST_VERSION = "aginti-analysis-public-message-v1";
 const STATE_SCOPE_DIGEST_VERSION = "aginti-analysis-state-scope-v1";
+const MUTATION_RECEIPT_SCHEMA_VERSION = "aginti-analysis-mutation-receipt-v1";
 const PRIVATE_PATH_PATTERN =
   /(?:^|[\s("'`<>\[{=])(?:file:\/\/\/[^\s"'`<>)\]}]+|\/(?!\/)[^\s"'`<>)\]}]+|[A-Za-z]:[\\/][^\s"'`<>)\]}]+|\\\\[^\\/\s"'`<>)\]}]+\\[^\s"'`<>)\]}]+)/giu;
 const O_NOFOLLOW = Number(fsConstants.O_NOFOLLOW || 0);
@@ -254,6 +268,141 @@ function scopeDigest(scope) {
   });
 }
 
+function mutationReceiptId(scope, pathname, idempotencyKeyDigest) {
+  return contractDigest({
+    schemaVersion: MUTATION_RECEIPT_SCHEMA_VERSION,
+    principalId: scope.principalId,
+    browserSessionId: scope.browserSessionId,
+    pathname,
+    idempotencyKeyDigest,
+  });
+}
+
+function mutationReceiptDigest(scope, receipt) {
+  return contractDigest({
+    schemaVersion: receipt.schemaVersion,
+    id: receipt.id,
+    principalId: scope.principalId,
+    browserSessionId: scope.browserSessionId,
+    pathname: receipt.pathname,
+    requestHash: receipt.requestHash,
+    idempotencyKeyDigest: receipt.idempotencyKeyDigest,
+    createdAt: receipt.createdAt,
+    expiresAt: receipt.expiresAt,
+    response: receipt.response,
+  });
+}
+
+function normalizedMutationIdentity(scope, pathname, payload, context, { required }) {
+  if (!context?.requestHash && !context?.idempotencyKeyDigest && !context?.idempotencyKey) {
+    if (!required) return null;
+    fail("ANALYSIS_MUTATION_IDENTITY_REQUIRED", "Durable mutation identity is required.", { status: 503 });
+  }
+  if (!integrationRpcPathIsMutation(pathname) || context.pathname !== pathname) {
+    fail("ANALYSIS_MUTATION_IDENTITY_INVALID", "Durable mutation path identity is invalid.", { status: 400 });
+  }
+  const idempotencyKey = validateIntegrationIdempotencyKey(context.idempotencyKey);
+  const idempotencyKeyDigest = crypto.createHash("sha256").update(idempotencyKey, "utf8").digest("hex");
+  if (context.idempotencyKeyDigest !== idempotencyKeyDigest) {
+    fail("ANALYSIS_MUTATION_IDENTITY_INVALID", "Durable mutation key identity is invalid.", { status: 400 });
+  }
+  const requestHash = contractDigest({
+    algorithm: INTEGRATION_IDEMPOTENCY_REQUEST_HASH_ALGORITHM,
+    principalId: scope.principalId,
+    browserSessionId: scope.browserSessionId,
+    operation: pathname,
+    request: payload,
+  });
+  if (context.requestHash !== requestHash) {
+    fail("ANALYSIS_MUTATION_IDENTITY_INVALID", "Durable mutation request identity is invalid.", { status: 400 });
+  }
+  return Object.freeze({ pathname, requestHash, idempotencyKeyDigest });
+}
+
+function publicProjectionContext(scope) {
+  return Object.freeze({
+    principal: Object.freeze({ id: scope.principalId }),
+    browserSession: Object.freeze({ id: scope.browserSessionId }),
+  });
+}
+
+function projectedMutationResponse(scope, identity, payload, result) {
+  let response;
+  try {
+    response = projectPublicIntegrationResponse(
+      identity.pathname,
+      result,
+      payload,
+      publicProjectionContext(scope)
+    );
+    response = assertPublicIntegrationResponse(identity.pathname, response);
+  } catch (error) {
+    fail("ANALYSIS_MUTATION_RESPONSE_INVALID", "Durable mutation response is not publicly recoverable.", {
+      status: 503,
+      cause: error,
+    });
+  }
+  const serialized = canonicalJson(response);
+  if (Buffer.byteLength(serialized, "utf8") > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumMutationReceiptResponseBytes) {
+    fail("ANALYSIS_MUTATION_RESPONSE_TOO_LARGE", "Durable mutation response exceeds its recovery limit.", {
+      status: 409,
+    });
+  }
+  return JSON.parse(serialized);
+}
+
+function appendMutationReceipt(state, scope, identity, response, createdAt) {
+  const nowMs = Date.parse(createdAt);
+  state.mutationReceipts = state.mutationReceipts.filter(
+    (receipt) => Date.parse(receipt.expiresAt) > nowMs
+  );
+  const id = mutationReceiptId(scope, identity.pathname, identity.idempotencyKeyDigest);
+  const existing = state.mutationReceipts.find((receipt) => receipt.id === id);
+  if (existing) {
+    if (existing.requestHash !== identity.requestHash) {
+      conflict("IDEMPOTENCY_CONFLICT", "The durable mutation key belongs to a different request.");
+    }
+    fail("ANALYSIS_MUTATION_ALREADY_COMMITTED", "The durable mutation was already committed; replay its receipt.", {
+      status: 503,
+    });
+  }
+  if (state.mutationReceipts.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumMutationReceiptsPerScope) {
+    conflict("ANALYSIS_MUTATION_RECEIPT_CAPACITY_EXHAUSTED", "Durable mutation receipt capacity is exhausted.");
+  }
+  const expiresAt = new Date(nowMs + INTEGRATION_IDEMPOTENCY_MAX_WINDOW_MS).toISOString();
+  const receipt = {
+    schemaVersion: MUTATION_RECEIPT_SCHEMA_VERSION,
+    id,
+    pathname: identity.pathname,
+    requestHash: identity.requestHash,
+    idempotencyKeyDigest: identity.idempotencyKeyDigest,
+    createdAt,
+    expiresAt,
+    response,
+    digest: "",
+  };
+  receipt.digest = mutationReceiptDigest(scope, receipt);
+  state.mutationReceipts.push(receipt);
+  return receipt;
+}
+
+function mutationRecoveryAuthority() {
+  const unsigned = Object.freeze({
+    schemaVersion: INTEGRATION_ANALYSIS_MUTATION_RECOVERY_SCHEMA_VERSION,
+    owner: "aginti",
+    durable: true,
+    atomicWithMutation: true,
+    principalBound: true,
+    browserSessionBound: true,
+    pathnameBound: true,
+    requestHashBound: true,
+    idempotencyKeyDigestBound: true,
+    blindRedispatch: false,
+    exactPublicResponse: true,
+  });
+  return Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
+}
+
 function initialState(scope) {
   return {
     schemaVersion: INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION,
@@ -266,6 +415,7 @@ function initialState(scope) {
     threads: [],
     runs: [],
     artifacts: [],
+    mutationReceipts: [],
   };
 }
 
@@ -717,11 +867,68 @@ function validateArtifact(artifact, scope, runsById) {
   if (terminalEvent && createdEvent.seq >= terminalEvent.seq) corrupt();
 }
 
+function validateMutationReceipt(receipt, scope) {
+  exactState(
+    receipt,
+    [
+      "schemaVersion",
+      "id",
+      "pathname",
+      "requestHash",
+      "idempotencyKeyDigest",
+      "createdAt",
+      "expiresAt",
+      "response",
+      "digest",
+    ],
+    [
+      "schemaVersion",
+      "id",
+      "pathname",
+      "requestHash",
+      "idempotencyKeyDigest",
+      "createdAt",
+      "expiresAt",
+      "response",
+      "digest",
+    ],
+    "analysis mutation receipt"
+  );
+  if (
+    receipt.schemaVersion !== MUTATION_RECEIPT_SCHEMA_VERSION ||
+    !integrationRpcPathIsMutation(receipt.pathname)
+  ) {
+    corrupt();
+  }
+  stateDigest(receipt.id, "analysis mutation receipt id");
+  stateDigest(receipt.requestHash, "analysis mutation receipt requestHash");
+  stateDigest(receipt.idempotencyKeyDigest, "analysis mutation receipt idempotencyKeyDigest");
+  stateDigest(receipt.digest, "analysis mutation receipt digest");
+  const createdAt = stateTimestamp(receipt.createdAt, "analysis mutation receipt createdAt");
+  const expiresAt = stateTimestamp(receipt.expiresAt, "analysis mutation receipt expiresAt");
+  if (Date.parse(expiresAt) - Date.parse(createdAt) !== INTEGRATION_IDEMPOTENCY_MAX_WINDOW_MS) corrupt();
+  if (receipt.id !== mutationReceiptId(scope, receipt.pathname, receipt.idempotencyKeyDigest)) corrupt();
+  if (receipt.digest !== mutationReceiptDigest(scope, receipt)) corrupt();
+  let response;
+  try {
+    response = assertPublicIntegrationResponse(receipt.pathname, receipt.response);
+  } catch (error) {
+    corrupt(error);
+  }
+  if (
+    canonicalJson(response) !== canonicalJson(receipt.response) ||
+    Buffer.byteLength(canonicalJson(receipt.response), "utf8") >
+      INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumMutationReceiptResponseBytes
+  ) {
+    corrupt();
+  }
+}
+
 function validateState(state, expectedScope) {
   exactState(
     state,
-    ["schemaVersion", "scope", "revision", "threads", "runs", "artifacts"],
-    ["schemaVersion", "scope", "revision", "threads", "runs", "artifacts"],
+    ["schemaVersion", "scope", "revision", "threads", "runs", "artifacts", "mutationReceipts"],
+    ["schemaVersion", "scope", "revision", "threads", "runs", "artifacts", "mutationReceipts"],
     "analysis state"
   );
   if (state.schemaVersion !== INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION) corrupt();
@@ -747,9 +954,11 @@ function validateState(state, expectedScope) {
     !Array.isArray(state.threads) ||
     !Array.isArray(state.runs) ||
     !Array.isArray(state.artifacts) ||
+    !Array.isArray(state.mutationReceipts) ||
     state.threads.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumThreadsPerScope ||
     state.runs.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumRunsPerScope ||
-    state.artifacts.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerScope
+    state.artifacts.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerScope ||
+    state.mutationReceipts.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumMutationReceiptsPerScope
   ) {
     corrupt();
   }
@@ -823,6 +1032,12 @@ function validateState(state, expectedScope) {
     if (activeRunCount > 1) corrupt();
     const hasActiveRun = activeRunCount === 1;
     if ((thread.status === "running") !== hasActiveRun || thread.status === "deleting") corrupt();
+  }
+  const mutationReceiptIds = new Set();
+  for (const receipt of state.mutationReceipts) {
+    if (mutationReceiptIds.has(receipt.id)) corrupt();
+    mutationReceiptIds.add(receipt.id);
+    validateMutationReceipt(receipt, expectedScope);
   }
   return state;
 }
@@ -1037,7 +1252,7 @@ function validateActivationProof(value, { required }) {
     proof.ready !== true ||
     proof.publicActivationReady !== true ||
     typeof proof.runtimeProfile !== "string" ||
-    !/^[A-Za-z0-9._~-]{1,128}$/u.test(proof.runtimeProfile)
+    !/^[A-Za-z0-9._+~-]{1,192}$/u.test(proof.runtimeProfile)
   ) {
     fail("ANALYSIS_CONFIGURATION_INVALID", "Execution activation proof is not immutable and ready.", { status: 500 });
   }
@@ -1100,6 +1315,7 @@ function createService(options, { testOnly }) {
         : ZERO_DIGEST;
   const fixedCoordinatorDigest = plannerActivation?.coordinatorDigest || ZERO_DIGEST;
   const plannerActivationDigest = plannerActivation?.digest || ZERO_DIGEST;
+  const fixedMutationRecoveryAuthority = mutationRecoveryAuthority();
   const activeRuns = new Map();
   const runQueue = [];
   const ownershipLockPath = path.join(stateRoot, ".analysis-session-owner.lock");
@@ -1365,12 +1581,26 @@ function createService(options, { testOnly }) {
     return state;
   }
 
-  async function mutate(scope, task, { create = false } = {}) {
+  async function mutate(scope, task, { create = false, receipt = null } = {}) {
     return serialized(async () => {
+      const identity = receipt
+        ? normalizedMutationIdentity(scope, receipt.pathname, receipt.payload, receipt.context, {
+            required: !testOnly,
+          })
+        : null;
       const state = await loadRecoveredState(scope, { create });
       if (!state) return task(null);
       const outcome = await task(state);
-      if (outcome?.changed === true) {
+      if (identity) {
+        const response = projectedMutationResponse(
+          scope,
+          identity,
+          receipt.payload,
+          outcome?.receiptResult ?? outcome?.result
+        );
+        appendMutationReceipt(state, scope, identity, response, timestamp());
+      }
+      if (outcome?.changed === true || identity) {
         state.revision += 1;
         await writeState(scope, state);
       }
@@ -1963,9 +2193,17 @@ function createService(options, { testOnly }) {
           appendEvent(record, "run.status", { status: "starting" }, createdAt);
           state.runs.push(record);
           touchThread(thread, createdAt, { status: "running", lastRunId: runId });
-          return { changed: true, result: ownedRun(record) };
+          const result = ownedRun(record);
+          return { changed: true, result, receiptResult: Object.freeze({ run: result }) };
         },
-        { create: false }
+        {
+          create: false,
+          receipt: {
+            pathname: previousRunId === null ? INTEGRATION_RPC_PATHS.runsStart : INTEGRATION_RPC_PATHS.runsResume,
+            payload: previousRunId === null ? payload : context.payload,
+            context,
+          },
+        }
       );
     } catch (error) {
       removeFromQueue(entry);
@@ -2134,6 +2372,8 @@ function createService(options, { testOnly }) {
       artifactBeforeTerminal: true,
       exactCancellation: true,
       interruptedRunRecovery: true,
+      durableMutationReceipts: true,
+      mutationRecoveryAuthorityDigest: fixedMutationRecoveryAuthority.digest,
       rawExecutionSourcePersisted: false,
       rawExecutionStdoutPersisted: false,
       privateRuntimePathsPersisted: false,
@@ -2148,8 +2388,49 @@ function createService(options, { testOnly }) {
       const proof = await attestation();
       return Object.freeze({
         analysisSessionAuthority: proof,
+        mutationRecoveryAuthority: fixedMutationRecoveryAuthority,
         cancel: true,
         resume: true,
+      });
+    },
+
+    async recoverMutation(value) {
+      const record = exact(
+        value,
+        [
+          "principalId",
+          "browserSessionId",
+          "pathname",
+          "requestHash",
+          "idempotencyKeyDigest",
+          "createdAt",
+          "recoveryStage",
+          "responseReceipt",
+        ],
+        ["principalId", "browserSessionId", "pathname", "requestHash", "idempotencyKeyDigest"],
+        "analysis mutation recovery request"
+      );
+      const scope = Object.freeze({
+        principalId: validateAgintiPrincipalId(record.principalId),
+        browserSessionId: validateAgintiBrowserSession(record.browserSessionId),
+      });
+      if (!integrationRpcPathIsMutation(record.pathname)) {
+        fail("INVALID_REQUEST", "Analysis mutation recovery path is invalid.", { status: 400 });
+      }
+      const requestHash = digest(record.requestHash, "analysis mutation recovery requestHash");
+      const idempotencyKeyDigest = digest(
+        record.idempotencyKeyDigest,
+        "analysis mutation recovery idempotencyKeyDigest"
+      );
+      return inspect(scope, (state) => {
+        if (!state) return null;
+        const id = mutationReceiptId(scope, record.pathname, idempotencyKeyDigest);
+        const receipt = state.mutationReceipts.find((item) => item.id === id);
+        if (!receipt || Date.parse(receipt.expiresAt) <= Date.parse(timestamp())) return null;
+        if (receipt.requestHash !== requestHash) {
+          conflict("IDEMPOTENCY_CONFLICT", "The durable mutation key belongs to a different request.");
+        }
+        return assertPublicIntegrationResponse(record.pathname, receipt.response);
       });
     },
 
@@ -2224,7 +2505,14 @@ function createService(options, { testOnly }) {
           state.threads.push(thread);
           return { changed: true, result: Object.freeze({ thread: ownedThread(thread) }) };
         },
-        { create: true }
+        {
+          create: true,
+          receipt: {
+            pathname: INTEGRATION_RPC_PATHS.threadsCreate,
+            payload,
+            context,
+          },
+        }
       );
     },
 
@@ -2238,28 +2526,36 @@ function createService(options, { testOnly }) {
       exact(payload, ["threadId", "title"], ["threadId", "title"], "update thread request");
       const scope = normalizeScopeFromContext(context);
       const title = normalizeTitle(payload.title);
-      return mutate(scope, (state) => {
-        const thread = findThread(state, payload.threadId);
-        if (thread.title === title) return { changed: false, result: Object.freeze({ thread: ownedThread(thread) }) };
-        touchThread(thread, timestamp());
-        thread.title = title;
-        return { changed: true, result: Object.freeze({ thread: ownedThread(thread) }) };
-      });
+      return mutate(
+        scope,
+        (state) => {
+          const thread = findThread(state, payload.threadId);
+          if (thread.title === title) return { changed: false, result: Object.freeze({ thread: ownedThread(thread) }) };
+          touchThread(thread, timestamp());
+          thread.title = title;
+          return { changed: true, result: Object.freeze({ thread: ownedThread(thread) }) };
+        },
+        { receipt: { pathname: INTEGRATION_RPC_PATHS.threadsUpdate, payload, context } }
+      );
     },
 
     async deleteThread(payload, context) {
       exact(payload, ["threadId"], ["threadId"], "delete thread request");
       const scope = normalizeScopeFromContext(context);
-      return mutate(scope, (state) => {
-        const thread = findThread(state, payload.threadId);
-        if (thread.status === "running") conflict("ANALYSIS_THREAD_BUSY", "An active thread cannot be deleted.");
-        const record = ownedThread(thread);
-        const runIds = new Set(state.runs.filter((run) => run.threadId === thread.id).map((run) => run.id));
-        state.threads = state.threads.filter((item) => item.id !== thread.id);
-        state.runs = state.runs.filter((run) => !runIds.has(run.id));
-        state.artifacts = state.artifacts.filter((artifact) => !runIds.has(artifact.runId));
-        return { changed: true, result: Object.freeze({ deleted: true, thread: record, threadId: thread.id }) };
-      });
+      return mutate(
+        scope,
+        (state) => {
+          const thread = findThread(state, payload.threadId);
+          if (thread.status === "running") conflict("ANALYSIS_THREAD_BUSY", "An active thread cannot be deleted.");
+          const record = ownedThread(thread);
+          const runIds = new Set(state.runs.filter((run) => run.threadId === thread.id).map((run) => run.id));
+          state.threads = state.threads.filter((item) => item.id !== thread.id);
+          state.runs = state.runs.filter((run) => !runIds.has(run.id));
+          state.artifacts = state.artifacts.filter((artifact) => !runIds.has(artifact.runId));
+          return { changed: true, result: Object.freeze({ deleted: true, thread: record, threadId: thread.id }) };
+        },
+        { receipt: { pathname: INTEGRATION_RPC_PATHS.threadsDelete, payload, context } }
+      );
     },
 
     async startRun(payload, context) {
@@ -2292,7 +2588,8 @@ function createService(options, { testOnly }) {
           events: Object.freeze([...run.events]),
         });
       });
-      const snapshotEvents = record.events;
+      const initialEvents = record.events;
+      const initialHeadEvent = initialEvents.at(-1);
       const ledger = Object.freeze({
         owner: "aginti",
         authority: "aginti",
@@ -2308,45 +2605,57 @@ function createService(options, { testOnly }) {
         threadId: record.threadId,
         runId,
         async loadEventsAfter(afterSeq) {
-          return Object.freeze(snapshotEvents.filter((event) => event.seq > afterSeq).slice(0, 128));
+          return inspect(scope, (state) => {
+            const run = findRun(state, runId);
+            return Object.freeze(run.events.filter((event) => event.seq > afterSeq).slice(0, 128));
+          });
         },
         async loadCursor(seq) {
           if (seq === 0) return Object.freeze({ seq: 0, hash: ZERO_DIGEST });
-          const event = snapshotEvents.find((item) => item.seq === seq);
-          return event ? Object.freeze({ seq: event.seq, hash: event.hash }) : null;
+          return inspect(scope, (state) => {
+            const event = findRun(state, runId).events.find((item) => item.seq === seq);
+            return event ? Object.freeze({ seq: event.seq, hash: event.hash }) : null;
+          });
         },
         async loadHead() {
-          const event = snapshotEvents.at(-1);
-          return Object.freeze({ seq: event?.seq || 0, hash: event?.hash || ZERO_DIGEST });
+          return Object.freeze({ seq: initialHeadEvent?.seq || 0, hash: initialHeadEvent?.hash || ZERO_DIGEST });
         },
       });
       return Object.freeze({
         run: record.run,
         publicEventLedger: ledger,
-        once: true,
-        streamMs: 1_000,
-        pollMs: 50,
+        once: false,
+        streamMs: 25_000,
+        pollMs: 100,
       });
     },
 
     async cancelRun(payload, context) {
       exact(payload, ["runId"], ["runId"], "cancel run request");
       const scope = normalizeScopeFromContext(context);
-      const result = await mutate(scope, (state) => {
-        const run = findRun(state, payload.runId);
-        if (TERMINAL_RUN_STATUSES.has(run.status)) return { changed: false, result: ownedRun(run) };
-        const thread = findThread(state, run.threadId);
-        const cancelledAt = timestamp();
-        run.cancelRequestedAt = cancelledAt;
-        run.completedAt = cancelledAt;
-        run.status = "cancelled";
-        run.schedulingState = "terminal";
-        run.error = null;
-        closeOpenTools(run, cancelledAt, "Analysis execution was cancelled.");
-        appendEvent(run, "run.cancelled", {}, cancelledAt);
-        touchThread(thread, cancelledAt, { status: "idle", lastRunId: run.id });
-        return { changed: true, result: ownedRun(run) };
-      });
+      const result = await mutate(
+        scope,
+        (state) => {
+          const run = findRun(state, payload.runId);
+          const result = ownedRun(run);
+          if (TERMINAL_RUN_STATUSES.has(run.status)) {
+            return { changed: false, result, receiptResult: Object.freeze({ run: result }) };
+          }
+          const thread = findThread(state, run.threadId);
+          const cancelledAt = timestamp();
+          run.cancelRequestedAt = cancelledAt;
+          run.completedAt = cancelledAt;
+          run.status = "cancelled";
+          run.schedulingState = "terminal";
+          run.error = null;
+          closeOpenTools(run, cancelledAt, "Analysis execution was cancelled.");
+          appendEvent(run, "run.cancelled", {}, cancelledAt);
+          touchThread(thread, cancelledAt, { status: "idle", lastRunId: run.id });
+          const cancelled = ownedRun(run);
+          return { changed: true, result: cancelled, receiptResult: Object.freeze({ run: cancelled }) };
+        },
+        { receipt: { pathname: INTEGRATION_RPC_PATHS.runsCancel, payload, context } }
+      );
       const active = activeRuns.get(payload.runId);
       if (active && new Set(["queued", "persisting-queued"]).has(active.phase)) {
         settleQueuedEntry(active);

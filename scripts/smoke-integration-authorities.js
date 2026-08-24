@@ -18,6 +18,7 @@ import {
   contractDigest,
 } from "../src/integration-policy.js";
 import {
+  assertFileIntegrationIdempotencyStore,
   createFileIntegrationIdempotencyStore,
   createSealedIntegrationIdempotencyRecord,
   integrationIdempotencyPaths,
@@ -671,6 +672,14 @@ async function smokeIdempotency(root) {
   const cloudPrincipalReplay = await cloudPrincipalStore.runMutation(cloudPrincipalContext, async () => threadResponse("Cloud grammar principal"));
   assert.equal(cloudPrincipalReplay.thread.title, "Cloud grammar principal");
   const store = createFileIntegrationIdempotencyStore({ rootDir: storeRoot, pendingLeaseMs: 1000 });
+  assert.equal(assertFileIntegrationIdempotencyStore(store), store);
+  assert.equal(store.rootDirDigest, contractDigest({ rootDir: path.resolve(storeRoot) }));
+  assert.equal(Object.isFrozen(store), true);
+  await assertRejectsCode(
+    async () => assertFileIntegrationIdempotencyStore(Object.freeze({ ...store })),
+    "IDEMPOTENCY_STORE_UNAVAILABLE",
+    "forged file idempotency store brand"
+  );
   let calls = 0;
   const first = await store.runMutation(context, async () => {
     calls += 1;
@@ -1238,41 +1247,326 @@ async function smokeIdempotency(root) {
     );
   }
 
-  for (const recoveryStage of ["before-dispatch", "after-dispatch-before-result"]) {
-    const crashRoot = path.join(root, `idempotency-crash-${recoveryStage}`);
-    const crashContext = mutationContext(INTEGRATION_RPC_PATHS.threadsCreate, {}, `phase3-crash-${recoveryStage}`.padEnd(28, "x"));
-    await seedExpiredPendingRecord(crashRoot, crashContext, recoveryStage);
-    const noRecoveryStore = createFileIntegrationIdempotencyStore({ rootDir: crashRoot, pendingLeaseMs: 1000 });
-    let semanticCalls = 0;
-    await assertRejectsCode(
-      () =>
-        noRecoveryStore.runMutation(crashContext, async () => {
-          semanticCalls += 1;
-          return threadResponse("must-not-dispatch");
-        }),
-      "IDEMPOTENCY_RECOVERY_REQUIRED",
-      `missing recovery authority ${recoveryStage}`
-    );
-    assert.equal(semanticCalls, 0);
-    let recoveryCalls = 0;
-    const recoveryStore = createFileIntegrationIdempotencyStore({
-      rootDir: crashRoot,
-      pendingLeaseMs: 1000,
-      recoveryAuthority: fullRecoveryAuthority(),
-      recoverPending: async (record) => {
-        recoveryCalls += 1;
-        assert.equal(record.recoveryStage, recoveryStage);
-        return threadResponse(`Recovered ${recoveryStage}`);
-      },
-    });
-    const crashRecovered = await recoveryStore.runMutation(crashContext, async () => {
-      semanticCalls += 1;
-      return threadResponse("duplicate");
-    });
-    assert.equal(crashRecovered.thread.title, `Recovered ${recoveryStage}`);
-    assert.equal(recoveryCalls, 1);
-    assert.equal(semanticCalls, 0);
-  }
+  const beforeDispatchRoot = path.join(root, "idempotency-crash-before-dispatch");
+  const beforeDispatchContext = mutationContext(
+    INTEGRATION_RPC_PATHS.threadsCreate,
+    {},
+    "phase3-crash-before-dispatch"
+  );
+  await seedExpiredPendingRecord(beforeDispatchRoot, beforeDispatchContext, "before-dispatch");
+  const beforeDispatchSeed = await createFileIntegrationIdempotencyStore({
+    rootDir: beforeDispatchRoot,
+    pendingLeaseMs: 1000,
+  }).inspectRecord(beforeDispatchContext);
+  let beforeDispatchRecoveryCalls = 0;
+  let beforeDispatchSemanticCalls = 0;
+  let beforeDispatchReclaimEntered = false;
+  let releaseBeforeDispatchReclaim;
+  const beforeDispatchReclaimGate = new Promise((resolve) => {
+    releaseBeforeDispatchReclaim = resolve;
+  });
+  const beforeDispatchStoreA = createFileIntegrationIdempotencyStore({
+    rootDir: beforeDispatchRoot,
+    pendingLeaseMs: 1000,
+    recoverPending: async () => {
+      beforeDispatchRecoveryCalls += 1;
+      return threadResponse("before-dispatch callback must not run");
+    },
+    faultInjector: async ({ phase }) => {
+      if (phase === "pending-reclaim-before-dispatch") {
+        beforeDispatchReclaimEntered = true;
+        await beforeDispatchReclaimGate;
+      }
+    },
+  });
+  const beforeDispatchStoreB = createFileIntegrationIdempotencyStore({
+    rootDir: beforeDispatchRoot,
+    pendingLeaseMs: 1000,
+    recoverPending: async () => {
+      beforeDispatchRecoveryCalls += 1;
+      return threadResponse("before-dispatch callback must not run");
+    },
+  });
+  const beforeDispatchConflict = {
+    ...beforeDispatchContext,
+    requestHash: beforeDispatchContext.requestHash === "6".repeat(64) ? "7".repeat(64) : "6".repeat(64),
+  };
+  await assertRejectsCode(
+    () => beforeDispatchStoreA.runMutation(beforeDispatchConflict, async () => threadResponse("conflict")),
+    "IDEMPOTENCY_CONFLICT",
+    "before-dispatch reclaim preserves request binding"
+  );
+  assert.equal(
+    (await beforeDispatchStoreA.inspectRecord(beforeDispatchContext)).integrityDigest,
+    beforeDispatchSeed.integrityDigest
+  );
+  const beforeDispatchFreshResponse = threadResponse("Fresh after before-dispatch crash");
+  const beforeDispatchFirst = beforeDispatchStoreA.runMutation(beforeDispatchContext, async () => {
+    beforeDispatchSemanticCalls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    return beforeDispatchFreshResponse;
+  });
+  await waitFor(() => beforeDispatchReclaimEntered, "before-dispatch reclaim hook did not run");
+  const beforeDispatchSecond = beforeDispatchStoreB.runMutation(beforeDispatchContext, async () => {
+    beforeDispatchSemanticCalls += 1;
+    return beforeDispatchFreshResponse;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(beforeDispatchSemanticCalls, 0);
+  releaseBeforeDispatchReclaim();
+  const beforeDispatchRaced = await Promise.all([beforeDispatchFirst, beforeDispatchSecond]);
+  assert.deepEqual(beforeDispatchRaced, [beforeDispatchFreshResponse, beforeDispatchFreshResponse]);
+  assert.equal(beforeDispatchRecoveryCalls, 0);
+  assert.equal(beforeDispatchSemanticCalls, 1);
+  assert.equal((await beforeDispatchStoreA.inspectRecord(beforeDispatchContext)).state, "completed");
+  assert.deepEqual(
+    await beforeDispatchStoreA.runMutation(beforeDispatchContext, async () => {
+      beforeDispatchSemanticCalls += 1;
+      return threadResponse("duplicate before-dispatch replay");
+    }),
+    beforeDispatchFreshResponse
+  );
+  assert.equal(beforeDispatchSemanticCalls, 1);
+
+  const afterDispatchCrashRoot = path.join(root, "idempotency-crash-after-dispatch-before-result");
+  const afterDispatchCrashContext = mutationContext(
+    INTEGRATION_RPC_PATHS.threadsCreate,
+    {},
+    "phase3-crash-after-dispatch-before-result"
+  );
+  await seedExpiredPendingRecord(afterDispatchCrashRoot, afterDispatchCrashContext, "after-dispatch-before-result");
+  const noRecoveryStore = createFileIntegrationIdempotencyStore({ rootDir: afterDispatchCrashRoot, pendingLeaseMs: 1000 });
+  let afterDispatchCrashSemanticCalls = 0;
+  await assertRejectsCode(
+    () =>
+      noRecoveryStore.runMutation(afterDispatchCrashContext, async () => {
+        afterDispatchCrashSemanticCalls += 1;
+        return threadResponse("must-not-dispatch");
+      }),
+    "IDEMPOTENCY_RECOVERY_REQUIRED",
+    "missing recovery authority after-dispatch-before-result"
+  );
+  assert.equal(afterDispatchCrashSemanticCalls, 0);
+  let afterDispatchCrashRecoveryCalls = 0;
+  const recoveryStore = createFileIntegrationIdempotencyStore({
+    rootDir: afterDispatchCrashRoot,
+    pendingLeaseMs: 1000,
+    recoveryAuthority: fullRecoveryAuthority(),
+    recoverPending: async (record) => {
+      afterDispatchCrashRecoveryCalls += 1;
+      assert.equal(record.recoveryStage, "after-dispatch-before-result");
+      return threadResponse("Recovered after-dispatch-before-result");
+    },
+  });
+  const crashRecovered = await recoveryStore.runMutation(afterDispatchCrashContext, async () => {
+    afterDispatchCrashSemanticCalls += 1;
+    return threadResponse("duplicate");
+  });
+  assert.equal(crashRecovered.thread.title, "Recovered after-dispatch-before-result");
+  assert.equal(afterDispatchCrashRecoveryCalls, 1);
+  assert.equal(afterDispatchCrashSemanticCalls, 0);
+
+  const absentReceiptRoot = path.join(root, "idempotency-after-dispatch-absent-receipt-race");
+  const absentReceiptContext = mutationContext(
+    INTEGRATION_RPC_PATHS.threadsCreate,
+    {},
+    "phase3-after-dispatch-absent-receipt"
+  );
+  await seedExpiredPendingRecord(absentReceiptRoot, absentReceiptContext, "after-dispatch-before-result");
+  const absentReceiptSeed = await createFileIntegrationIdempotencyStore({
+    rootDir: absentReceiptRoot,
+    pendingLeaseMs: 1000,
+  }).inspectRecord(absentReceiptContext);
+  let absentReceiptRecoveryCalls = 0;
+  let absentReceiptSemanticCalls = 0;
+  let absentReceiptRecoveryEntered = false;
+  let releaseAbsentReceiptRecovery;
+  const absentReceiptRecoveryGate = new Promise((resolve) => {
+    releaseAbsentReceiptRecovery = resolve;
+  });
+  const absentReceiptStoreA = createFileIntegrationIdempotencyStore({
+    rootDir: absentReceiptRoot,
+    pendingLeaseMs: 1000,
+    recoveryAuthority: fullRecoveryAuthority(),
+    recoverPending: async (record) => {
+      absentReceiptRecoveryCalls += 1;
+      assert.equal(record.recoveryStage, "after-dispatch-before-result");
+      absentReceiptRecoveryEntered = true;
+      await absentReceiptRecoveryGate;
+      return null;
+    },
+  });
+  const absentReceiptStoreB = createFileIntegrationIdempotencyStore({
+    rootDir: absentReceiptRoot,
+    pendingLeaseMs: 1000,
+    recoveryAuthority: fullRecoveryAuthority(),
+    recoverPending: async () => {
+      absentReceiptRecoveryCalls += 1;
+      return null;
+    },
+  });
+  const absentReceiptConflict = {
+    ...absentReceiptContext,
+    requestHash: absentReceiptContext.requestHash === "8".repeat(64) ? "9".repeat(64) : "8".repeat(64),
+  };
+  await assertRejectsCode(
+    () => absentReceiptStoreA.runMutation(absentReceiptConflict, async () => threadResponse("conflict")),
+    "IDEMPOTENCY_CONFLICT",
+    "after-dispatch reclaim preserves request binding"
+  );
+  assert.equal(
+    (await absentReceiptStoreA.inspectRecord(absentReceiptContext)).integrityDigest,
+    absentReceiptSeed.integrityDigest
+  );
+  const absentReceiptFreshResponse = threadResponse("Fresh after absent session receipt");
+  const absentReceiptFirst = absentReceiptStoreA.runMutation(absentReceiptContext, async () => {
+    absentReceiptSemanticCalls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    return absentReceiptFreshResponse;
+  });
+  await waitFor(() => absentReceiptRecoveryEntered, "after-dispatch absent-receipt recovery hook did not run");
+  const absentReceiptSecond = absentReceiptStoreB.runMutation(absentReceiptContext, async () => {
+    absentReceiptSemanticCalls += 1;
+    return absentReceiptFreshResponse;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(absentReceiptRecoveryCalls, 1);
+  assert.equal(absentReceiptSemanticCalls, 0);
+  releaseAbsentReceiptRecovery();
+  const absentReceiptRaced = await Promise.all([absentReceiptFirst, absentReceiptSecond]);
+  assert.deepEqual(absentReceiptRaced, [absentReceiptFreshResponse, absentReceiptFreshResponse]);
+  assert.equal(absentReceiptRecoveryCalls, 1);
+  assert.equal(absentReceiptSemanticCalls, 1);
+  assert.equal((await absentReceiptStoreA.inspectRecord(absentReceiptContext)).state, "completed");
+  assert.deepEqual(
+    await absentReceiptStoreA.runMutation(absentReceiptContext, async () => {
+      absentReceiptSemanticCalls += 1;
+      return threadResponse("duplicate absent-receipt replay");
+    }),
+    absentReceiptFreshResponse
+  );
+  assert.equal(absentReceiptSemanticCalls, 1);
+
+  const beforeDispatchSweepRoot = path.join(root, "idempotency-before-dispatch-startup-sweep");
+  const beforeDispatchSweepContext = mutationContext(
+    INTEGRATION_RPC_PATHS.threadsCreate,
+    {},
+    "phase3-before-dispatch-startup-sweep"
+  );
+  await seedExpiredPendingRecord(beforeDispatchSweepRoot, beforeDispatchSweepContext, "before-dispatch");
+  let beforeDispatchSweepRecoveryCalls = 0;
+  let beforeDispatchSweepSemanticCalls = 0;
+  const beforeDispatchSweepStore = createFileIntegrationIdempotencyStore({
+    rootDir: beforeDispatchSweepRoot,
+    pendingLeaseMs: 1000,
+    recoverPending: async () => {
+      beforeDispatchSweepRecoveryCalls += 1;
+      return threadResponse("before-dispatch sweep callback must not run");
+    },
+  });
+  assert.deepEqual((await beforeDispatchSweepStore.recoverExpiredPending()).recovered, [
+    integrationIdempotencyPaths(beforeDispatchSweepRoot, beforeDispatchSweepContext).index,
+  ]);
+  assert.equal(await beforeDispatchSweepStore.inspectRecord(beforeDispatchSweepContext), null);
+  assert.equal(beforeDispatchSweepRecoveryCalls, 0);
+  const beforeDispatchSweepFresh = await beforeDispatchSweepStore.runMutation(beforeDispatchSweepContext, async () => {
+    beforeDispatchSweepSemanticCalls += 1;
+    return threadResponse("Fresh after before-dispatch startup sweep");
+  });
+  assert.equal(beforeDispatchSweepFresh.thread.title, "Fresh after before-dispatch startup sweep");
+  assert.equal(beforeDispatchSweepSemanticCalls, 1);
+
+  const beforeDispatchRetentionRoot = path.join(root, "idempotency-before-dispatch-expired-retention");
+  const beforeDispatchRetentionContext = mutationContext(
+    INTEGRATION_RPC_PATHS.threadsCreate,
+    {},
+    "phase3-before-dispatch-expired-retention"
+  );
+  await seedExpiredPendingRecord(beforeDispatchRetentionRoot, beforeDispatchRetentionContext, "before-dispatch", {
+    expiresAt: past,
+  });
+  let beforeDispatchRetentionRecoveryCalls = 0;
+  let beforeDispatchRetentionSemanticCalls = 0;
+  const beforeDispatchRetentionStore = createFileIntegrationIdempotencyStore({
+    rootDir: beforeDispatchRetentionRoot,
+    pendingLeaseMs: 1000,
+    recoverPending: async () => {
+      beforeDispatchRetentionRecoveryCalls += 1;
+      return threadResponse("before-dispatch retention callback must not run");
+    },
+  });
+  const beforeDispatchRetentionFresh = await beforeDispatchRetentionStore.runMutation(
+    beforeDispatchRetentionContext,
+    async () => {
+      beforeDispatchRetentionSemanticCalls += 1;
+      return threadResponse("Fresh after expired before-dispatch retention");
+    }
+  );
+  assert.equal(beforeDispatchRetentionFresh.thread.title, "Fresh after expired before-dispatch retention");
+  assert.equal(beforeDispatchRetentionRecoveryCalls, 0);
+  assert.equal(beforeDispatchRetentionSemanticCalls, 1);
+
+  const absentReceiptSweepRoot = path.join(root, "idempotency-after-dispatch-null-startup-sweep");
+  const absentReceiptSweepContext = mutationContext(
+    INTEGRATION_RPC_PATHS.threadsCreate,
+    {},
+    "phase3-after-dispatch-null-startup-sweep"
+  );
+  await seedExpiredPendingRecord(absentReceiptSweepRoot, absentReceiptSweepContext, "after-dispatch-before-result");
+  let absentReceiptSweepRecoveryCalls = 0;
+  let absentReceiptSweepSemanticCalls = 0;
+  const absentReceiptSweepStore = createFileIntegrationIdempotencyStore({
+    rootDir: absentReceiptSweepRoot,
+    pendingLeaseMs: 1000,
+    recoveryAuthority: fullRecoveryAuthority(),
+    recoverPending: async () => {
+      absentReceiptSweepRecoveryCalls += 1;
+      return null;
+    },
+  });
+  assert.deepEqual((await absentReceiptSweepStore.recoverExpiredPending()).recovered, [
+    integrationIdempotencyPaths(absentReceiptSweepRoot, absentReceiptSweepContext).index,
+  ]);
+  assert.equal(await absentReceiptSweepStore.inspectRecord(absentReceiptSweepContext), null);
+  assert.equal(absentReceiptSweepRecoveryCalls, 1);
+  const absentReceiptSweepFresh = await absentReceiptSweepStore.runMutation(absentReceiptSweepContext, async () => {
+    absentReceiptSweepSemanticCalls += 1;
+    return threadResponse("Fresh after absent-receipt startup sweep");
+  });
+  assert.equal(absentReceiptSweepFresh.thread.title, "Fresh after absent-receipt startup sweep");
+  assert.equal(absentReceiptSweepSemanticCalls, 1);
+
+  const undefinedReceiptRoot = path.join(root, "idempotency-after-dispatch-undefined-receipt");
+  const undefinedReceiptContext = mutationContext(
+    INTEGRATION_RPC_PATHS.threadsCreate,
+    {},
+    "phase3-after-dispatch-undefined-receipt"
+  );
+  await seedExpiredPendingRecord(undefinedReceiptRoot, undefinedReceiptContext, "after-dispatch-before-result");
+  let undefinedReceiptRecoveryCalls = 0;
+  let undefinedReceiptSemanticCalls = 0;
+  const undefinedReceiptStore = createFileIntegrationIdempotencyStore({
+    rootDir: undefinedReceiptRoot,
+    pendingLeaseMs: 1000,
+    recoveryAuthority: fullRecoveryAuthority(),
+    recoverPending: async () => {
+      undefinedReceiptRecoveryCalls += 1;
+      return undefined;
+    },
+  });
+  assert.deepEqual((await undefinedReceiptStore.recoverExpiredPending()).recovered, []);
+  assert.equal((await undefinedReceiptStore.inspectRecord(undefinedReceiptContext)).recoveryStage, "after-dispatch-before-result");
+  await assertRejectsCode(
+    () =>
+      undefinedReceiptStore.runMutation(undefinedReceiptContext, async () => {
+        undefinedReceiptSemanticCalls += 1;
+        return threadResponse("undefined receipt must not redispatch");
+      }),
+    "IDEMPOTENCY_RECOVERY_REQUIRED",
+    "undefined after-dispatch recovery remains fail closed"
+  );
+  assert.equal(undefinedReceiptRecoveryCalls, 2);
+  assert.equal(undefinedReceiptSemanticCalls, 0);
 
   const deadRestartRoot = path.join(root, "idempotency-dead-restart-retention");
   const deadRestartContext = mutationContext(INTEGRATION_RPC_PATHS.threadsCreate, {}, "phase3-dead-restart-live");
@@ -1334,6 +1628,41 @@ async function smokeIdempotency(root) {
   assert.equal(deadPruneTrigger.thread.title, "Dead prune trigger");
   assert.equal(deadPruneRecoveryCalls, 1);
   assert.deepEqual(await deadPruneStore.runMutation(deadPruneContext, async () => threadResponse("wrong dead prune replay")), deadPruneResponse);
+
+  const absentReceiptPruneRoot = path.join(root, "idempotency-dead-prune-absent-receipt");
+  const absentReceiptPruneContext = mutationContext(
+    INTEGRATION_RPC_PATHS.threadsCreate,
+    {},
+    "phase3-dead-prune-absent-receipt"
+  );
+  await seedExpiredPendingRecord(absentReceiptPruneRoot, absentReceiptPruneContext, "after-dispatch-before-result", {
+    expiresAt: past,
+  });
+  let absentReceiptPruneRecoveryCalls = 0;
+  let absentReceiptPruneSemanticCalls = 0;
+  const absentReceiptPruneStore = createFileIntegrationIdempotencyStore({
+    rootDir: absentReceiptPruneRoot,
+    pendingLeaseMs: 1000,
+    recoveryAuthority: fullRecoveryAuthority(),
+    recoverPending: async () => {
+      absentReceiptPruneRecoveryCalls += 1;
+      return null;
+    },
+  });
+  const absentReceiptPruneTrigger = await absentReceiptPruneStore.runMutation(
+    mutationContext(INTEGRATION_RPC_PATHS.threadsCreate, {}, "phase3-dead-prune-absent-trigger"),
+    async () => threadResponse("Absent-receipt prune trigger")
+  );
+  assert.equal(absentReceiptPruneTrigger.thread.title, "Absent-receipt prune trigger");
+  assert.equal(absentReceiptPruneRecoveryCalls, 1);
+  assert.equal(await absentReceiptPruneStore.inspectRecord(absentReceiptPruneContext), null);
+  const absentReceiptPruneFresh = await absentReceiptPruneStore.runMutation(absentReceiptPruneContext, async () => {
+    absentReceiptPruneSemanticCalls += 1;
+    return threadResponse("Fresh after absent-receipt prune");
+  });
+  assert.equal(absentReceiptPruneFresh.thread.title, "Fresh after absent-receipt prune");
+  assert.equal(absentReceiptPruneRecoveryCalls, 1);
+  assert.equal(absentReceiptPruneSemanticCalls, 1);
 
   const unknownRetentionRoot = path.join(root, "idempotency-unknown-retention");
   const unknownRetentionContext = mutationContext(INTEGRATION_RPC_PATHS.threadsCreate, {}, "phase3-unknown-retent");

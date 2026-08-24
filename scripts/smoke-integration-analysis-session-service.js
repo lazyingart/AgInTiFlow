@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import {
-  INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION,
-} from "../src/integration-analysis-planner.js";
+import { INTEGRATION_IDEMPOTENCY_REQUEST_HASH_ALGORITHM } from "../src/integration-api.js";
+import { INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION } from "../src/integration-analysis-planner.js";
 import { INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION } from "../src/integration-analysis-coordinator.js";
 import {
   INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION,
   assertIntegrationAnalysisSessionService,
   createTestOnlyIntegrationAnalysisSessionService,
 } from "../src/integration-analysis-session-service.js";
-import { canonicalJson, contractDigest } from "../src/integration-policy.js";
+import { INTEGRATION_RPC_PATHS, canonicalJson, contractDigest } from "../src/integration-policy.js";
 import { validatePublicIntegrationEvent } from "../src/integration-events.js";
 
 const PRINCIPAL_ID = "principal-analysis-0001";
@@ -25,6 +25,34 @@ const RAW_STDOUT_MARKER = "RAW_EXECUTION_STDOUT_SHOULD_NOT_PERSIST";
 
 function context(principalId = PRINCIPAL_ID, browserSessionId = BROWSER_SESSION_ID) {
   return Object.freeze({ principalId, browserSessionId });
+}
+
+function mutationContext(pathname, payload, idempotencyKey, principalId = PRINCIPAL_ID, browserSessionId = BROWSER_SESSION_ID) {
+  return Object.freeze({
+    principalId,
+    browserSessionId,
+    pathname,
+    payload,
+    idempotencyKey,
+    requestHash: contractDigest({
+      algorithm: INTEGRATION_IDEMPOTENCY_REQUEST_HASH_ALGORITHM,
+      principalId,
+      browserSessionId,
+      operation: pathname,
+      request: payload,
+    }),
+    idempotencyKeyDigest: crypto.createHash("sha256").update(idempotencyKey, "utf8").digest("hex"),
+  });
+}
+
+function recoveryRequestFor(value) {
+  return Object.freeze({
+    principalId: value.principalId,
+    browserSessionId: value.browserSessionId,
+    pathname: value.pathname,
+    requestHash: value.requestHash,
+    idempotencyKeyDigest: value.idempotencyKeyDigest,
+  });
 }
 
 function eventsRequest(runId) {
@@ -212,6 +240,7 @@ async function main() {
     assert.throws(() => assertIntegrationAnalysisSessionService(service), /test-only/u);
     for (const method of [
       "getIntegrationCapabilities",
+      "recoverMutation",
       "listThreads",
       "createThread",
       "getThread",
@@ -241,6 +270,13 @@ async function main() {
     assert.equal(capabilities.analysisSessionAuthority.crossProcessSafe, true);
     assert.equal(capabilities.analysisSessionAuthority.maximumConcurrentPlannerRuns, 2);
     assert.equal(capabilities.analysisSessionAuthority.publicActivationLocksChanged, false);
+    assert.equal(capabilities.analysisSessionAuthority.durableMutationReceipts, true);
+    assert.equal(capabilities.mutationRecoveryAuthority.atomicWithMutation, true);
+    assert.equal(capabilities.mutationRecoveryAuthority.blindRedispatch, false);
+    assert.equal(
+      capabilities.analysisSessionAuthority.mutationRecoveryAuthorityDigest,
+      capabilities.mutationRecoveryAuthority.digest
+    );
 
     const proofBoundService = createTestOnlyIntegrationAnalysisSessionService({
       analysisRunner: fakeRunner,
@@ -251,6 +287,135 @@ async function main() {
     assert.equal(proofBoundAttestation.activationProofPinnedAtStartup, true);
     assert.equal(proofBoundAttestation.activationProof.digest, proofBoundAttestation.activationProofDigest);
     await proofBoundService.close();
+
+    const receiptRoot = path.join(temporaryRoot, "receipt-state");
+    const receiptService = createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: fakeRunner,
+      stateRoot: receiptRoot,
+    });
+    const receiptPayload = Object.freeze({ title: "Atomic mutation receipt" });
+    const rawIdempotencyKey = "mutation-receipt-secret-key-0001";
+    const receiptContext = mutationContext(
+      INTEGRATION_RPC_PATHS.threadsCreate,
+      receiptPayload,
+      rawIdempotencyKey
+    );
+    const receiptCreated = await receiptService.createThread(receiptPayload, receiptContext);
+    const recoveryRequest = recoveryRequestFor(receiptContext);
+    const recoveredReceipt = await receiptService.recoverMutation(recoveryRequest);
+    assert.equal(recoveredReceipt.schemaVersion, "1");
+    assert.equal(recoveredReceipt.thread.id, receiptCreated.thread.id);
+
+    const updatePayload = Object.freeze({ threadId: receiptCreated.thread.id, title: "Receipt updated" });
+    const updateContext = mutationContext(
+      INTEGRATION_RPC_PATHS.threadsUpdate,
+      updatePayload,
+      "mutation-receipt-secret-key-0002"
+    );
+    const updatedReceiptThread = await receiptService.updateThread(updatePayload, updateContext);
+    assert.equal(
+      (await receiptService.recoverMutation(recoveryRequestFor(updateContext))).thread.title,
+      updatedReceiptThread.thread.title
+    );
+
+    const startPayload = Object.freeze({
+      threadId: receiptCreated.thread.id,
+      input: Object.freeze({ text: "Run receipt plot" }),
+    });
+    const startContext = mutationContext(
+      INTEGRATION_RPC_PATHS.runsStart,
+      startPayload,
+      "mutation-receipt-secret-key-0003"
+    );
+    const receiptStarted = await receiptService.startRun(startPayload, startContext);
+    assert.equal(
+      (await receiptService.recoverMutation(recoveryRequestFor(startContext))).run.id,
+      receiptStarted.run.id
+    );
+    await receiptService.waitForIdle();
+
+    const heldPayload = Object.freeze({
+      threadId: receiptCreated.thread.id,
+      input: Object.freeze({ text: "hold for receipt cancellation" }),
+    });
+    const heldContext = mutationContext(
+      INTEGRATION_RPC_PATHS.runsStart,
+      heldPayload,
+      "mutation-receipt-secret-key-0004"
+    );
+    const heldReceiptRun = await receiptService.startRun(heldPayload, heldContext);
+    await waitFor(() => fakeRunner.held.has(heldReceiptRun.run.id), "receipt cancellation runner start");
+    const cancelPayload = Object.freeze({ runId: heldReceiptRun.run.id });
+    const cancelContext = mutationContext(
+      INTEGRATION_RPC_PATHS.runsCancel,
+      cancelPayload,
+      "mutation-receipt-secret-key-0005"
+    );
+    const cancelledReceiptRun = await receiptService.cancelRun(cancelPayload, cancelContext);
+    assert.equal(cancelledReceiptRun.run.status, "cancelled");
+    assert.equal(
+      (await receiptService.recoverMutation(recoveryRequestFor(cancelContext))).run.status,
+      "cancelled"
+    );
+    await receiptService.waitForIdle();
+
+    const resumePayload = Object.freeze({
+      runId: heldReceiptRun.run.id,
+      input: Object.freeze({ text: "answer the receipt resume" }),
+    });
+    const resumeContext = mutationContext(
+      INTEGRATION_RPC_PATHS.runsResume,
+      resumePayload,
+      "mutation-receipt-secret-key-0006"
+    );
+    const resumedReceiptRun = await receiptService.resumeRun(resumePayload, resumeContext);
+    assert.equal(
+      (await receiptService.recoverMutation(recoveryRequestFor(resumeContext))).run.id,
+      resumedReceiptRun.run.id
+    );
+    await receiptService.waitForIdle();
+
+    const deletePayload = Object.freeze({ threadId: receiptCreated.thread.id });
+    const deleteContext = mutationContext(
+      INTEGRATION_RPC_PATHS.threadsDelete,
+      deletePayload,
+      "mutation-receipt-secret-key-0007"
+    );
+    await receiptService.deleteThread(deletePayload, deleteContext);
+    assert.deepEqual(await receiptService.recoverMutation(recoveryRequestFor(deleteContext)), {
+      schemaVersion: "1",
+      deleted: true,
+      threadId: receiptCreated.thread.id,
+    });
+    const receiptStatePath = await stateFile(receiptRoot);
+    const receiptStateBytes = await fs.readFile(receiptStatePath, "utf8");
+    assert.doesNotMatch(receiptStateBytes, new RegExp(rawIdempotencyKey, "u"));
+    assert.equal(JSON.parse(receiptStateBytes).state.mutationReceipts.length, 7);
+    await expectCode(
+      receiptService.recoverMutation({ ...recoveryRequest, requestHash: "f".repeat(64) }),
+      "IDEMPOTENCY_CONFLICT"
+    );
+    assert.equal(
+      await receiptService.recoverMutation({ ...recoveryRequest, idempotencyKeyDigest: "e".repeat(64) }),
+      null
+    );
+    await receiptService.close({ mode: "wait" });
+
+    const restartedReceiptService = createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: fakeRunner,
+      stateRoot: receiptRoot,
+    });
+    assert.deepEqual(await restartedReceiptService.recoverMutation(recoveryRequest), recoveredReceipt);
+    const corruptReceiptEnvelope = JSON.parse(receiptStateBytes);
+    corruptReceiptEnvelope.state.mutationReceipts[0].response.thread.title = "Corrupted receipt";
+    corruptReceiptEnvelope.digest = contractDigest({
+      schemaVersion: corruptReceiptEnvelope.schemaVersion,
+      state: corruptReceiptEnvelope.state,
+    });
+    await fs.writeFile(receiptStatePath, `${canonicalJson(corruptReceiptEnvelope)}\n`, { mode: 0o600 });
+    await expectCode(restartedReceiptService.recoverMutation(recoveryRequest), "ANALYSIS_STATE_CORRUPT");
+    await fs.writeFile(receiptStatePath, receiptStateBytes, { mode: 0o600 });
+    await restartedReceiptService.close({ mode: "wait" });
 
     const created = await service.createThread({ title: "Durable plot" }, context());
     const threadId = created.thread.id;
@@ -320,6 +485,30 @@ async function main() {
     await expectCode(
       restarted.getThread({ threadId }, context(OTHER_PRINCIPAL_ID, BROWSER_SESSION_ID)),
       "NOT_FOUND"
+    );
+
+    const streamingThread = await restarted.createThread({ title: "Dynamic stream" }, context());
+    const streamingStarted = await restarted.startRun(
+      { threadId: streamingThread.thread.id, input: { text: "hold for a live stream" } },
+      context()
+    );
+    await waitFor(() => fakeRunner.held.has(streamingStarted.run.id), "dynamic stream runner start");
+    const liveEventResult = await restarted.loadRunEvents(eventsRequest(streamingStarted.run.id), context());
+    assert.equal(liveEventResult.once, false);
+    assert.equal(liveEventResult.streamMs, 25_000);
+    assert.equal(liveEventResult.pollMs, 100);
+    const initialStreamEvents = await liveEventResult.publicEventLedger.loadEventsAfter(0);
+    const pinnedInitialHead = await liveEventResult.publicEventLedger.loadHead();
+    assert.equal(pinnedInitialHead.seq, initialStreamEvents.at(-1).seq);
+    await fakeRunner.held.get(streamingStarted.run.id).release();
+    await restarted.waitForIdle();
+    const appendedStreamEvents = await liveEventResult.publicEventLedger.loadEventsAfter(pinnedInitialHead.seq);
+    assert.ok(appendedStreamEvents.length > 0, "live event ledger did not expose events appended after the initial snapshot");
+    assert.equal(appendedStreamEvents.at(-1).type, "run.completed");
+    assert.deepEqual(
+      await liveEventResult.publicEventLedger.loadHead(),
+      pinnedInitialHead,
+      "initial run/head binding must stay atomic while the append-only ledger grows"
     );
 
     const cancelThread = await restarted.createThread({ title: "Cancel" }, context());
