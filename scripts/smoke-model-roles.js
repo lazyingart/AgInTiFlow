@@ -29,7 +29,13 @@ import {
   shouldActivateScs,
   shouldRequestScsReplan,
 } from "../src/scs-controller.js";
-import { buildScsEvidenceLedger, deriveScsTaskContract, evaluateScsEvidence } from "../src/scs-evidence.js";
+import {
+  buildScsEvidenceLedger,
+  deriveScsTaskContract,
+  evaluateScsEvidence,
+  gitActionsSatisfyContract,
+  inferSuccessfulGitActionsFromCommandResult,
+} from "../src/scs-evidence.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { classifyGoalIntent, isDirectAnswerIntent } from "../src/goal-intent.js";
 import { languageWriterDefaults } from "../src/writing-specialist.js";
@@ -921,6 +927,26 @@ assert(
   committedEvaluation.missingGitActions.length === 0 &&
     !committedEvaluation.missing.some((item) => item.category === "git"),
   "a successful git commit did not satisfy the explicit git requirement"
+);
+const recoveredCommitActions = inferSuccessfulGitActionsFromCommandResult({
+  ok: true,
+  exitCode: 0,
+  args: {
+    command:
+      'echo "seed author: $(git log -1 --format=\'%an <%ae>\')"; git config user.name "$(git log -1 --format=\'%an\')"; git commit -m "finish handoff" && git log -1 --oneline',
+  },
+  stdout: "[main abc1234] finish handoff\n 8 files changed, 499 insertions(+)",
+});
+assert(
+  recoveredCommitActions.length === 1 && recoveredCommitActions[0] === "commit",
+  "a canonical successful commit was lost because its command had a setup prefix or shell expansion"
+);
+assert(
+  gitActionsSatisfyContract(
+    { requiredGitActions: ["add", "commit"] },
+    recoveredCommitActions
+  ),
+  "a successful commit did not satisfy the implied staging step after a partially successful add/commit chain"
 );
 const explainCodeContract = deriveScsTaskContract({
   goal: "Explain JavaScript closures at a high level.",

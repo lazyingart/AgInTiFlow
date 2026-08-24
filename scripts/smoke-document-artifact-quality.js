@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import {
   evaluateCurrentStateText,
   evaluateDocumentConsistency,
+  evaluateExtractedDocumentText,
   evaluatePdfPageBalance,
+  evaluatePdfTextBounds,
   extractSupersededLiterals,
 } from "../src/document-artifact-quality.js";
 
@@ -121,5 +123,22 @@ const readableOnePage = evaluatePdfPageBalance(
   `<doc>${page(260, { wordHeight: 9.4 })}</doc>`
 );
 assert.equal(readableOnePage.ok, true, "readable one-page typography was rejected");
+
+const cleanExtractedText = evaluateExtractedDocumentText("Page one\n\fPage two\tvalue\r\n");
+assert.equal(cleanExtractedText.ok, true, "normal whitespace and PDF form feeds were rejected");
+
+const corruptExtractedText = evaluateExtractedDocumentText("Reference detector \u0016 complete \ufffd");
+assert.equal(corruptExtractedText.ok, false, "control and replacement glyphs were accepted");
+assert.deepEqual(corruptExtractedText.codePoints, [0x16, 0xfffd]);
+assert.equal(corruptExtractedText.defects[0]?.code, "corrupt-extracted-text");
+
+const boundedText = evaluatePdfTextBounds(`<doc>${page(20)}</doc>`);
+assert.equal(boundedText.ok, true, "text inside readable margins was rejected");
+
+const clippedText = evaluatePdfTextBounds(
+  '<doc><page width="595" height="842"><word xMin="8" yMin="60" xMax="90" yMax="70">clipped</word></page></doc>'
+);
+assert.equal(clippedText.ok, false, "text outside readable margins was accepted");
+assert.equal(clippedText.defects[0]?.code, "pdf-text-outside-readable-margin");
 
 console.log("document artifact quality smoke test passed");

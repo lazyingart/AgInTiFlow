@@ -204,7 +204,20 @@ function missingRequiredGitActionSequence(required = [], observed = []) {
   let cursor = 0;
   for (let index = 0; index < expected.length; index += 1) {
     const observedIndex = actual.indexOf(expected[index], cursor);
-    if (observedIndex < 0) return expected.slice(index);
+    if (observedIndex < 0) {
+      // A successful commit proves that an index was staged, even when the
+      // preceding `git add` happened in an earlier partially successful shell
+      // chain or the commit used `-a`. Preserve the requested add -> commit
+      // order without forcing the model to repeat a completed commit.
+      if (expected[index] === "add" && expected[index + 1] === "commit") {
+        const commitIndex = actual.indexOf("commit", cursor);
+        if (commitIndex >= 0) {
+          cursor = commitIndex;
+          continue;
+        }
+      }
+      return expected.slice(index);
+    }
     cursor = observedIndex + 1;
   }
   if (expected.at(-1) === "push") {
@@ -1070,7 +1083,20 @@ export function inferSuccessfulGitActionsFromCommandResult(payload = {}) {
     return inferGitActionsFromCommand(exitWrapper.command);
   }
   if (payload.ok === false || Number(payload.exitCode ?? 0) !== 0) return [];
-  return inferGitActionsFromCommand(command);
+  const inferred = inferGitActionsFromCommand(command);
+  if (inferred.length) return inferred;
+
+  // Shell expansion or a setup prefix can make the full command ambiguous to
+  // the static parser. A canonical successful commit line plus an explicit
+  // top-level `git commit` still provides concrete commit evidence.
+  const output = String(payload.stdout || payload.result || "");
+  if (
+    /(?:^|[;&|]\s*)git\s+commit\b/i.test(command) &&
+    /^\[[^\]\n]+\s+[0-9a-f]{7,}\]\s+\S+/mi.test(output)
+  ) {
+    return ["commit"];
+  }
+  return [];
 }
 
 function observedProjectCommandSatisfies(requiredCommand = "", item = {}) {

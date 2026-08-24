@@ -30,6 +30,7 @@ const INTENTIONAL_SPARSE_PAGE_PATTERN =
 const HISTORICAL_TRANSITION_PATTERN =
   /\b(?:formerly|no longer|previously|replac(?:ed|ing)|supersed(?:e|ed|es|ing)|used to be)\b/i;
 const MIN_READABLE_MEDIAN_WORD_HEIGHT_PT = 8.8;
+const MIN_READABLE_HORIZONTAL_MARGIN_PT = 18;
 const COUNT_WORDS = new Map([
   ["zero", 0], ["one", 1], ["two", 2], ["three", 3], ["four", 4], ["five", 5],
   ["six", 6], ["seven", 7], ["eight", 8], ["nine", 9], ["ten", 10],
@@ -237,6 +238,49 @@ export function evaluatePdfPageBalance(bboxXml = "") {
     documentMedianWordHeight,
     defects,
   };
+}
+
+export function evaluateExtractedDocumentText(text = "") {
+  const unexpected = [...String(text || "").matchAll(/[\u0000-\u0008\u000b\u000e-\u001f\u007f-\u009f\ufffd]/gu)]
+    .map((match) => match[0].codePointAt(0))
+    .filter(Number.isInteger);
+  const codePoints = [...new Set(unexpected)].sort((a, b) => a - b);
+  const defects = [];
+  if (codePoints.length) {
+    defects.push({
+      code: "corrupt-extracted-text",
+      message: `The independently extracted reader text contains unexpected control or replacement glyphs: ${codePoints
+        .map((value) => `U+${value.toString(16).toUpperCase().padStart(4, "0")}`)
+        .join(", ")}. Repair the document encoding or generator instead of stripping these bytes only during validation.`,
+    });
+  }
+  return { ok: defects.length === 0, defects, codePoints };
+}
+
+export function evaluatePdfTextBounds(bboxXml = "", minimumMargin = MIN_READABLE_HORIZONTAL_MARGIN_PT) {
+  const pages = parsePdfBboxPages(bboxXml);
+  const defects = [];
+  for (const [index, page] of pages.entries()) {
+    if (!Number.isFinite(page.width) || page.width <= 0) continue;
+    const outside = page.words.filter((word) =>
+      word.text && (
+        !Number.isFinite(word.xMin) ||
+        !Number.isFinite(word.xMax) ||
+        word.xMin < minimumMargin ||
+        word.xMax > page.width - minimumMargin
+      )
+    );
+    if (!outside.length) continue;
+    const sample = outside
+      .slice(0, 4)
+      .map((word) => `${JSON.stringify(word.text)} at ${Number(word.xMin).toFixed(1)}..${Number(word.xMax).toFixed(1)} pt`)
+      .join("; ");
+    defects.push({
+      code: "pdf-text-outside-readable-margin",
+      message: `PDF page ${index + 1} places ${outside.length} text item${outside.length === 1 ? "" : "s"} outside the ${minimumMargin} pt horizontal readability margin (${sample}). Reflow the text or table instead of accepting clipping.`,
+    });
+  }
+  return { ok: pages.length > 0 && defects.length === 0, checked: pages.length > 0, defects };
 }
 
 export function evaluateCurrentStateText({ sourceText = "", outputText = "", currentStateRequired = false } = {}) {
@@ -475,9 +519,11 @@ export async function validateWordDocumentArtifacts({
     try {
       if (artifact.extension === ".pdf") {
         const extracted = await extractPdf(artifact);
+        const textQuality = evaluateExtractedDocumentText(extracted.text);
         const semantic = evaluateCurrentStateText({ sourceText, outputText: extracted.text, currentStateRequired });
         const consistency = evaluateDocumentConsistency(extracted.text);
         const pageBalance = evaluatePdfPageBalance(extracted.bbox);
+        const textBounds = evaluatePdfTextBounds(extracted.bbox);
         if (!String(extracted.text || "").trim()) {
           defects.push({
             code: "empty-pdf-text",
@@ -493,8 +539,10 @@ export async function validateWordDocumentArtifacts({
           });
         }
         defects.push(...semantic.defects.map((item) => ({ ...item, path: artifact.path })));
+        defects.push(...textQuality.defects.map((item) => ({ ...item, path: artifact.path })));
         defects.push(...consistency.defects.map((item) => ({ ...item, path: artifact.path })));
         defects.push(...pageBalance.defects.map((item) => ({ ...item, path: artifact.path })));
+        defects.push(...textBounds.defects.map((item) => ({ ...item, path: artifact.path })));
         artifactReports.push({
           path: artifact.path,
           extension: artifact.extension,
@@ -506,6 +554,7 @@ export async function validateWordDocumentArtifacts({
         });
       } else {
         const text = await extractDocxText(artifact);
+        const textQuality = evaluateExtractedDocumentText(text);
         const semantic = evaluateCurrentStateText({ sourceText, outputText: text, currentStateRequired });
         const consistency = evaluateDocumentConsistency(text);
         if (!String(text || "").trim()) {
@@ -516,6 +565,7 @@ export async function validateWordDocumentArtifacts({
           });
         }
         defects.push(...semantic.defects.map((item) => ({ ...item, path: artifact.path })));
+        defects.push(...textQuality.defects.map((item) => ({ ...item, path: artifact.path })));
         defects.push(...consistency.defects.map((item) => ({ ...item, path: artifact.path })));
         artifactReports.push({
           path: artifact.path,
