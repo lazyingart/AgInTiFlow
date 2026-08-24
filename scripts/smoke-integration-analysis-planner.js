@@ -225,6 +225,9 @@ async function executesAndSynthesizesPlot() {
     assert.equal(config.model, LOCAL_MODEL.model);
     if (modelCalls.length === 1) {
       assert.equal(payload.tool_choice, "required");
+      assert.match(payload.messages[0].content, /columns:\[\{key:'number',label:'Number'\}/u);
+      assert.match(payload.messages[0].content, /do not use headers or positional row arrays/u);
+      assert.match(payload.messages[0].content, /emit_markdown\(title, markdownText\)/u);
       return toolResponse([
         "values = [1, 4, 9]",
         "emit_plot('Square-number trend', {'schemaVersion':'1','type':'line','labels':['1','2','3'],'series':[{'name':'n squared','data':values}]})",
