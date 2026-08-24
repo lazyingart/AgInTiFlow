@@ -1158,7 +1158,8 @@ function classifyScopedReadOnlyGitProbe(normalized = "") {
     (args.length === 1 && ["user.name", "user.email"].includes(args[0])) ||
     (args.length === 2 && args[0] === "--get" && ["user.name", "user.email"].includes(args[1]))
   );
-  if (!safeStatus && !safeIdentityConfig) return null;
+  const safeRemoteList = operation === "remote" && args.length === 1 && args[0] === "-v";
+  if (!safeStatus && !safeIdentityConfig && !safeRemoteList) return null;
 
   return {
     category: "read-only",

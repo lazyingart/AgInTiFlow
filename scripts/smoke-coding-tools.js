@@ -685,6 +685,20 @@ try {
       exactReadOnlyGitIdentityLoopPolicy.writesWorkspace === false,
     "bounded per-repository Git identity/status audit incorrectly required destructive host permission"
   );
+  const exactReadOnlyGitRepositoryAudit =
+    'for d in /home/lachlan/ProjectsLFS/AgenticApp /home/lachlan/ProjectsLFS/Musia /home/lachlan/ProjectsLFS/LALACHAN /home/lachlan/DiskMech/Projects/lazyedit; do echo "=== $d ==="; git -C "$d" config --get user.name; git -C "$d" config --get user.email; git -C "$d" status --porcelain=v1 --branch; echo "--- remotes ---"; git -C "$d" remote -v; echo; done';
+  const exactReadOnlyGitRepositoryAuditPolicy = evaluateCommandPolicy(
+    exactReadOnlyGitRepositoryAudit,
+    hostReadRootPolicy
+  );
+  assert(
+    exactReadOnlyGitRepositoryAuditPolicy.allowed &&
+      exactReadOnlyGitRepositoryAuditPolicy.category === "read-only" &&
+      exactReadOnlyGitRepositoryAuditPolicy.boundedForLoop === true &&
+      exactReadOnlyGitRepositoryAuditPolicy.needsNetwork === false &&
+      exactReadOnlyGitRepositoryAuditPolicy.writesWorkspace === false,
+    "bounded per-repository Git identity/status/remote audit incorrectly required destructive host permission"
+  );
   for (const unsafeEchoSubstitution of [
     'echo "VALUE=$(rm -rf report.md)"',
     'echo "VALUE=$(cp README.md report.md)"',
@@ -716,6 +730,8 @@ try {
     'for d in /tmp; do echo "VALUE=$(git -C "$d" config --global user.name)"; done',
     'for d in /tmp; do echo "VALUE=$(git -C "$d" status; rm -rf report.md)"; done',
     'for d in /tmp; do git -C "$d" status --short > report.md; done',
+    'for d in /tmp; do git -C "$d" remote add origin https://example.com/repo.git; done',
+    'for d in /tmp; do git -C "$d" remote set-url origin https://example.com/repo.git; done',
   ]) {
     const unsafeLoopSubstitutionPolicy = evaluateCommandPolicy(
       unsafeLoopSubstitution,
