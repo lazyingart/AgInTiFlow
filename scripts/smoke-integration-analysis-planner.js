@@ -128,9 +128,11 @@ function resultArtifact(request) {
   return sanitizeIntegrationArtifact({ id: artifactId(request, artifact), ...artifact });
 }
 
-function terminalResult(request, signal) {
+function terminalResult(request, signal, successfulArtifacts) {
   const status = signal?.aborted ? "cancelled" : "succeeded";
-  const artifacts = status === "succeeded" ? Object.freeze([resultArtifact(request)]) : Object.freeze([]);
+  const artifacts = status === "succeeded"
+    ? Object.freeze(successfulArtifacts ?? [resultArtifact(request)])
+    : Object.freeze([]);
   const unsigned = Object.freeze({
     schemaVersion: EXECUTION_RESULT_SCHEMA_VERSION,
     jobId: request.jobId,
@@ -147,7 +149,25 @@ function terminalResult(request, signal) {
   return validateExecutionResult({ ...unsigned, resultDigest: contractDigest(unsigned) }, request);
 }
 
-function fakeWorker() {
+function runtimeFailureResult(request, signal) {
+  const status = signal?.aborted ? "cancelled" : "failed";
+  const unsigned = Object.freeze({
+    schemaVersion: EXECUTION_RESULT_SCHEMA_VERSION,
+    jobId: request.jobId,
+    attempt: request.attempt,
+    sourceSha256: request.sourceSha256,
+    status,
+    exitCode: status === "failed" ? 1 : null,
+    stdout: "",
+    stderr: status === "failed" ? "RuntimeError: simulated bounded execution failure\n" : "",
+    outputTruncated: false,
+    durationMs: 12,
+    artifacts: Object.freeze([]),
+  });
+  return validateExecutionResult({ ...unsigned, resultDigest: contractDigest(unsigned) }, request);
+}
+
+function fakeWorker(resultForRequest = terminalResult) {
   return Object.freeze({
     capabilities: async () => capability(),
     async execute(request, { signal } = {}) {
@@ -158,7 +178,7 @@ function fakeWorker() {
           resolve();
         }, { once: true });
       });
-      return terminalResult(request, signal);
+      return resultForRequest(request, signal);
     },
   });
 }
@@ -203,9 +223,9 @@ function textResponse(content) {
   return { choices: [{ message: { role: "assistant", content, tool_calls: [] } }] };
 }
 
-function fixture(complete) {
+function fixture(complete, { worker } = {}) {
   const rpcCalls = [];
-  const manager = createExecutionJobManager({ worker: fakeWorker() });
+  const manager = createExecutionJobManager({ worker: worker || fakeWorker() });
   const client = createTestOnlyExecutionWorkerClient(rpcForManager(manager, rpcCalls));
   const coordinator = createTestOnlyIntegrationAnalysisCoordinator(client, { pollMs: 25 });
   const planner = createTestOnlyIntegrationAnalysisPlanner({
@@ -318,6 +338,193 @@ async function directAnswerDoesNotExecute() {
   coordinator.close();
 }
 
+async function exactFormulaPlotsRequireExecutionAndArtifact() {
+  let executionCount = 0;
+  const worker = fakeWorker((request, signal) => {
+    executionCount += 1;
+    return executionCount === 1
+      ? terminalResult(request, signal, [])
+      : terminalResult(request, signal);
+  });
+  let modelStep = 0;
+  const corrected = fixture(async (_client, payload) => {
+    modelStep += 1;
+    if (modelStep === 1) {
+      assert.equal(payload.tool_choice, "required");
+      return toolResponse("values = [1.0, 2.0]\nprint(values)");
+    }
+    if (modelStep === 2) {
+      assert.equal(payload.tool_choice, "required");
+      const feedback = JSON.parse(payload.messages.at(-1).content);
+      assert.equal(feedback.ok, true);
+      assert.deepEqual(feedback.artifacts, []);
+      assert.match(feedback.correction, /explicitly requested a plot/u);
+      return toolResponse([
+        "labels = ['0', '1', '2']",
+        "values = [1.0, 2.718, 7.389]",
+        "emit_plot('e^x - x^e', {'schemaVersion':'1','type':'line','labels':labels,'series':[{'name':'value','data':values}]})",
+      ].join("\n"));
+    }
+    assert.equal(payload.tool_choice, "auto");
+    assert.equal(Object.hasOwn(payload, "tools"), true);
+    return textResponse("The corrected execution produced the requested plot.");
+  }, { worker });
+  const result = await corrected.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000070"),
+    { prompt: "Plot e^x-x^e" }
+  );
+  assert.equal(modelStep, 3);
+  assert.equal(executionCount, 2);
+  assert.equal(result.toolCalls, 2);
+  assert.equal(result.executionStatus, "succeeded");
+  assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["plot"]);
+  corrected.coordinator.close();
+
+  const lowercase = fixture(async (_client, payload) => {
+    assert.equal(payload.tool_choice, "required");
+    return textResponse("I would only describe the formula.");
+  });
+  await assert.rejects(
+    lowercase.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000071"),
+      { prompt: "plot e^x-x" }
+    ),
+    (error) => error?.code === "ANALYSIS_TOOL_REQUIRED"
+  );
+  lowercase.coordinator.close();
+
+  const nonImperativePrompts = [
+    "Explain how to create a plot of e^x-x.",
+    "If I plot e^x-x, what should I expect?",
+    "Do not create a plot of e^x-x; explain the notation.",
+    "Could e^x-x be plotted without running code?",
+    "Plot is a noun in this sentence.",
+  ];
+  for (let index = 0; index < nonImperativePrompts.length; index += 1) {
+    const direct = fixture(async (_client, payload) => {
+      assert.equal(payload.tool_choice, "auto");
+      return textResponse("This is an explanation, not an execution request.");
+    });
+    const directResult = await direct.planner.run(
+      scope(`run_00000000-0000-4000-8000-${String(72 + index).padStart(12, "0")}`),
+      { prompt: nonImperativePrompts[index] }
+    );
+    assert.equal(directResult.kind, "direct");
+    assert.equal(directResult.toolCalls, 0);
+    direct.coordinator.close();
+  }
+}
+
+async function recoversPlotOnThirdExecutionAttempt() {
+  let runtimeExecutions = 0;
+  const worker = fakeWorker((request, signal) => {
+    runtimeExecutions += 1;
+    return runtimeExecutions === 1
+      ? runtimeFailureResult(request, signal)
+      : terminalResult(request, signal);
+  });
+  let modelStep = 0;
+  const recovered = fixture(async (_client, payload) => {
+    modelStep += 1;
+    if (modelStep === 1) {
+      assert.equal(payload.tool_choice, "required");
+      return toolResponse("import numpy\nprint(numpy.exp(1))");
+    }
+    if (modelStep === 2) {
+      assert.equal(payload.tool_choice, "required");
+      const feedback = JSON.parse(payload.messages.at(-1).content);
+      assert.equal(feedback.ok, false);
+      assert.match(feedback.stderr, /numpy/u);
+      return toolResponse("raise RuntimeError('second attempt fails at runtime')");
+    }
+    if (modelStep === 3) {
+      assert.equal(payload.tool_choice, "required");
+      const feedback = JSON.parse(payload.messages.at(-1).content);
+      assert.equal(feedback.ok, false);
+      assert.equal(feedback.status, "failed");
+      assert.match(feedback.stderr, /simulated bounded execution failure/u);
+      return toolResponse([
+        "labels = ['0', '1', '2']",
+        "values = [1.0, 1.718, 3.389]",
+        "emit_plot('e^x - x^e', {'schemaVersion':'1','type':'line','labels':labels,'series':[{'name':'value','data':values}]})",
+      ].join("\n"));
+    }
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    const feedback = JSON.parse(payload.messages.at(-1).content);
+    assert.equal(feedback.ok, true);
+    assert.equal(feedback.artifacts[0].kind, "plot");
+    return textResponse("The third bounded execution succeeded and produced the plot.");
+  }, { worker });
+  const result = await recovered.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000079"),
+    { prompt: "Plot e^x-x^e" }
+  );
+  assert.equal(modelStep, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS + 1);
+  assert.equal(runtimeExecutions, 2);
+  assert.equal(result.toolCalls, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS);
+  assert.equal(result.executionStatus, "succeeded");
+  assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["plot"]);
+  assert.equal(
+    recovered.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    2
+  );
+  recovered.coordinator.close();
+}
+
+async function rejectsFalseCompletionAfterFailedOrArtifactlessExecution() {
+  let failedStep = 0;
+  const failed = fixture(async (_client, payload) => {
+    failedStep += 1;
+    if (failedStep === 1) return toolResponse("import numpy\nprint(numpy.arange(3))");
+    if (failedStep === 2) return toolResponse("import pandas\nprint(pandas.DataFrame())");
+    if (failedStep === 3) return toolResponse("import matplotlib\nprint(matplotlib.__version__)");
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    return textResponse("Let me fix this and create the plot next.");
+  });
+  let failedFinals = 0;
+  await assert.rejects(
+    failed.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000077"),
+      { prompt: "Plot e^x-x" },
+      { onFinal: () => { failedFinals += 1; } }
+    ),
+    (error) => error?.code === "ANALYSIS_EXECUTION_FAILED"
+  );
+  assert.equal(failedStep, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS + 1);
+  assert.equal(failedFinals, 0);
+  assert.equal(
+    failed.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    0
+  );
+  failed.coordinator.close();
+
+  let artifactlessStep = 0;
+  const artifactless = fixture(async (_client, payload) => {
+    artifactlessStep += 1;
+    if (artifactlessStep <= INTEGRATION_ANALYSIS_MAX_TOOL_CALLS) {
+      assert.equal(payload.tool_choice, "required");
+      return toolResponse(`print('artifactless attempt ${artifactlessStep}')`);
+    }
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    return textResponse("The plot is ready.");
+  }, {
+    worker: fakeWorker((request, signal) => terminalResult(request, signal, [])),
+  });
+  await assert.rejects(
+    artifactless.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000078"),
+      { prompt: "Plot e^x-x^e" }
+    ),
+    (error) => error?.code === "ANALYSIS_PLOT_ARTIFACT_REQUIRED"
+  );
+  assert.equal(artifactlessStep, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS + 1);
+  assert.equal(
+    artifactless.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    INTEGRATION_ANALYSIS_MAX_TOOL_CALLS
+  );
+  artifactless.coordinator.close();
+}
+
 async function rejectsOverridesAndMalformedTools() {
   const direct = fixture(async () => textResponse("No execution needed."));
   await assert.rejects(
@@ -396,7 +603,7 @@ async function enforcesToolLoopAndCancellation() {
     }),
     (error) => error?.code === "ANALYSIS_TOOL_LIMIT"
   );
-  assert.equal(step, 3);
+  assert.equal(step, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS + 1);
   assert.equal(
     loop.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
     INTEGRATION_ANALYSIS_MAX_TOOL_CALLS
@@ -503,6 +710,9 @@ async function correctsUnavailableImportsAndBrandsActivation() {
 
 await executesAndSynthesizesPlot();
 await directAnswerDoesNotExecute();
+await exactFormulaPlotsRequireExecutionAndArtifact();
+await recoversPlotOnThirdExecutionAttempt();
+await rejectsFalseCompletionAfterFailedOrArtifactlessExecution();
 await rejectsOverridesAndMalformedTools();
 await enforcesToolLoopAndCancellation();
 await correctsUnavailableImportsAndBrandsActivation();

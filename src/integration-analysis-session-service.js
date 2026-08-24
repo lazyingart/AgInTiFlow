@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { sanitizeIntegrationArtifact } from "./integration-artifacts.js";
 import {
+  INTEGRATION_ANALYSIS_MAX_TOOL_CALLS,
   INTEGRATION_ANALYSIS_PLANNER_ACTIVATION_SCHEMA_VERSION,
   INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION,
   assertIntegrationAnalysisPlanner,
@@ -72,6 +73,7 @@ const ZERO_DIGEST = "0".repeat(64);
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const TERMINAL_EVENT_TYPES = new Set(["run.completed", "run.failed", "run.cancelled"]);
 const TOOL_TERMINAL_EVENT_TYPES = new Set(["tool.completed", "tool.failed"]);
+const SUCCESSFUL_EXECUTION_STATUSES = new Set(["succeeded", "completed"]);
 const EXECUTION_STATES = new Set([
   "starting",
   "queued",
@@ -1683,9 +1685,14 @@ function createService(options, { testOnly }) {
     if (!["planning", "executing", "synthesizing"].includes(progress.phase)) {
       fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis progress phase is invalid.", { status: 502 });
     }
-    integrationBoundedInteger(progress.toolCallsCompleted, "analysis progress toolCallsCompleted", { maximum: 2 });
+    integrationBoundedInteger(progress.toolCallsCompleted, "analysis progress toolCallsCompleted", {
+      maximum: INTEGRATION_ANALYSIS_MAX_TOOL_CALLS,
+    });
     if (progress.toolCallNumber !== undefined) {
-      integrationBoundedInteger(progress.toolCallNumber, "analysis progress toolCallNumber", { minimum: 1, maximum: 2 });
+      integrationBoundedInteger(progress.toolCallNumber, "analysis progress toolCallNumber", {
+        minimum: 1,
+        maximum: INTEGRATION_ANALYSIS_MAX_TOOL_CALLS,
+      });
     }
     if (progress.toolName !== undefined && progress.toolName !== "execute_python_analysis") {
       fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis progress tool is invalid.", { status: 502 });
@@ -1706,7 +1713,7 @@ function createService(options, { testOnly }) {
 
   function callIdForProgress(progress) {
     const number = Number(progress.toolCallNumber || Math.max(1, progress.toolCallsCompleted || 1));
-    return `analysis-${Math.min(2, Math.max(1, number))}`;
+    return `analysis-${Math.min(INTEGRATION_ANALYSIS_MAX_TOOL_CALLS, Math.max(1, number))}`;
   }
 
   function toolEventState(run, callId) {
@@ -1880,7 +1887,9 @@ function createService(options, { testOnly }) {
     if (result.kind !== "direct" && result.kind !== "analysis") {
       fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis runner result kind is invalid.", { status: 502 });
     }
-    integrationBoundedInteger(result.toolCalls, "analysis runner toolCalls", { maximum: 2 });
+    integrationBoundedInteger(result.toolCalls, "analysis runner toolCalls", {
+      maximum: INTEGRATION_ANALYSIS_MAX_TOOL_CALLS,
+    });
     if (result.executionStatus !== null && !/^[a-z_]{1,40}$/u.test(String(result.executionStatus))) {
       fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis runner execution status is invalid.", { status: 502 });
     }
@@ -2022,6 +2031,9 @@ function createService(options, { testOnly }) {
         fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis runner final callback disagreed with its result.", {
           status: 502,
         });
+      }
+      if (result.kind === "analysis" && !SUCCESSFUL_EXECUTION_STATUSES.has(result.executionStatus)) {
+        fail("ANALYSIS_EXECUTION_FAILED", "Analysis execution did not complete successfully.", { status: 502 });
       }
       await completeRun(scope, runId, result);
     } catch (error) {

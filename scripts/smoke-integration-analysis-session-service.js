@@ -5,7 +5,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { INTEGRATION_IDEMPOTENCY_REQUEST_HASH_ALGORITHM } from "../src/integration-api.js";
-import { INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION } from "../src/integration-analysis-planner.js";
+import {
+  INTEGRATION_ANALYSIS_MAX_TOOL_CALLS,
+  INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION,
+} from "../src/integration-analysis-planner.js";
 import { INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION } from "../src/integration-analysis-coordinator.js";
 import {
   INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION,
@@ -59,13 +62,18 @@ function eventsRequest(runId) {
   return Object.freeze({ runId, afterSeq: 0, afterHash: ZERO_DIGEST });
 }
 
-function plannerResult({ text = "Analysis completed safely.", artifacts = [], toolCalls = 1 } = {}) {
+function plannerResult({
+  text = "Analysis completed safely.",
+  artifacts = [],
+  toolCalls = 1,
+  executionStatus = toolCalls > 0 ? "succeeded" : null,
+} = {}) {
   return Object.freeze({
     schemaVersion: INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION,
     text,
     kind: toolCalls > 0 ? "analysis" : "direct",
     toolCalls,
-    executionStatus: toolCalls > 0 ? "succeeded" : null,
+    executionStatus,
     artifacts: Object.freeze(artifacts),
   });
 }
@@ -148,6 +156,25 @@ function createFakeRunner() {
       }
       if (input.prompt.includes("fail")) {
         throw runnerError("ANALYSIS_MODEL_UNAVAILABLE", `private ${RAW_SOURCE_MARKER} /root/private/model.log`);
+      }
+      if (input.prompt.includes("return unsuccessful execution result")) {
+        await options.onProgress?.(Object.freeze({ phase: "planning", toolCallsCompleted: 0 }));
+        for (let toolCallNumber = 1; toolCallNumber <= INTEGRATION_ANALYSIS_MAX_TOOL_CALLS; toolCallNumber += 1) {
+          await options.onProgress?.(Object.freeze({
+            phase: "executing",
+            toolCallsCompleted: toolCallNumber - 1,
+            toolName: "execute_python_analysis",
+            toolCallNumber,
+            executionState: "failed",
+          }));
+        }
+        const result = plannerResult({
+          text: "Let me fix this in a later response.",
+          toolCalls: INTEGRATION_ANALYSIS_MAX_TOOL_CALLS,
+          executionStatus: "failed",
+        });
+        await options.onFinal?.(result);
+        return result;
       }
       await options.onProgress?.(Object.freeze({ phase: "planning", toolCallsCompleted: 0 }));
       await options.onProgress?.(Object.freeze({
@@ -537,6 +564,42 @@ async function main() {
     assert.equal(failed.status, "failed");
     assert.equal(failed.error.code, "ANALYSIS_MODEL_UNAVAILABLE");
     assert.doesNotMatch(failed.error.message, /private|root|source/iu);
+
+    const failedResultThread = await restarted.createThread({ title: "Failed runner result" }, context());
+    const failedResultStarted = await restarted.startRun(
+      {
+        threadId: failedResultThread.thread.id,
+        input: { text: "return unsuccessful execution result" },
+      },
+      context()
+    );
+    await restarted.waitForIdle();
+    const failedResult = (
+      await restarted.getRunStatus({ runId: failedResultStarted.run.id }, context())
+    ).run;
+    assert.equal(failedResult.status, "failed");
+    assert.equal(failedResult.output, "");
+    assert.equal(failedResult.error.code, "ANALYSIS_EXECUTION_FAILED");
+    const failedResultEventsResponse = await restarted.loadRunEvents(
+      eventsRequest(failedResult.id),
+      context()
+    );
+    const failedResultEvents = await failedResultEventsResponse.publicEventLedger.loadEventsAfter(0);
+    assert.equal(failedResultEvents.at(-1).type, "run.failed");
+    assert.equal(failedResultEvents.filter(({ type }) => type === "run.failed").length, 1);
+    assert.equal(failedResultEvents.some(({ type }) => type === "run.completed"), false);
+    assert.equal(failedResultEvents.some(({ type }) => type === "output.completed"), false);
+    const failedToolEvents = failedResultEvents.filter(({ type }) => type === "tool.failed");
+    assert.equal(failedToolEvents.length, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS);
+    assert.deepEqual(
+      failedToolEvents.map(({ payload }) => payload.callId),
+      ["analysis-1", "analysis-2", "analysis-3"]
+    );
+    const failedResultMessages = (
+      await restarted.getThread({ threadId: failedResultThread.thread.id }, context())
+    ).thread.messages;
+    assert.deepEqual(failedResultMessages.map(({ role }) => role), ["user"]);
+
     const resumed = await restarted.resumeRun(
       { runId: failed.id, input: { text: "Run Python and show the plot now" } },
       context()
