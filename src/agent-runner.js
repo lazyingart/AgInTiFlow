@@ -810,6 +810,34 @@ function summarizeReadSemanticEvidence(payload = {}, limit = 1200) {
   return compactSingleLine(redactSensitiveText(selected.join(" || ")), limit);
 }
 
+function retainedReadRange(payload = {}, args = {}) {
+  const requestedStart = Number(payload.startLine || args.startLine || 1);
+  const startLine = Number.isFinite(requestedStart) && requestedStart > 0
+    ? Math.floor(requestedStart)
+    : 1;
+  const requestedLimit = Number(payload.lineLimit ?? args.lineLimit);
+  const lineLimit = Number.isFinite(requestedLimit) && requestedLimit > 0
+    ? Math.floor(requestedLimit)
+    : 0;
+  const measuredLineCount = Number(payload.lineCount || 0);
+  const lineCount = Number.isFinite(measuredLineCount) && measuredLineCount > 0
+    ? Math.floor(measuredLineCount)
+    : 0;
+  const endLine = lineLimit > 0
+    ? Math.min(startLine + lineLimit - 1, lineCount || Number.POSITIVE_INFINITY)
+    : 0;
+  return {
+    startLine,
+    lineLimit,
+    lineCount,
+    endLine: Number.isFinite(endLine) ? endLine : 0,
+    key: `${startLine}:${lineLimit || "all"}`,
+    label: lineLimit > 0
+      ? `lines ${startLine}-${Number.isFinite(endLine) ? endLine : startLine + lineLimit - 1}`
+      : `from line ${startLine}`,
+  };
+}
+
 function summarizeRetainedSourceEvidence(messages = [], limit = 28) {
   const bySource = new Map();
   for (const message of messages) {
@@ -822,9 +850,11 @@ function summarizeRetainedSourceEvidence(messages = [], limit = 28) {
     }
     const sourcePath = String(payload.path || payload.args?.path || "").trim();
     const command = String(payload.args?.command || "").trim();
-    const key = `${toolName}:${sourcePath || command}`;
+    const readRange = toolName === "read_file" ? retainedReadRange(payload, payload.args || {}) : null;
+    const key = `${toolName}:${sourcePath || command}${readRange ? `:${readRange.key}` : ""}`;
     const parts = [`tool=${toolName}`];
     if (sourcePath) parts.push(`path=${sourcePath}`);
+    if (readRange) parts.push(`range=${readRange.label}`);
     if (Number.isFinite(Number(payload.bytes))) parts.push(`bytes=${Number(payload.bytes)}`);
     if (payload.sha256) parts.push(`sha256=${String(payload.sha256).slice(0, 16)}`);
     if (payload.contentTruncated === true || payload.contentTruncatedByLines === true) {
@@ -933,10 +963,18 @@ function compactRetainedToolPayload(toolName, payload = {}, args = {}) {
     result.artifactPath = compactSingleLine(payload.artifactPath, 500);
     result.queryCount = Math.max(0, Number(payload.queryCount || 0));
     result.sourceCount = Math.max(0, Number(payload.sourceCount || 0));
+    result.answer = compactMultiline(payload.answer, 1800);
     result.coverage = payload.coverage && typeof payload.coverage === "object" ? payload.coverage : {};
     result.audit = payload.audit && typeof payload.audit === "object" ? payload.audit : {};
   } else if (toolName === "read_file") {
+    const readRange = retainedReadRange(payload, args);
     if (Number.isFinite(Number(payload.bytes))) result.bytes = Number(payload.bytes);
+    result.startLine = readRange.startLine;
+    result.lineLimit = readRange.lineLimit || null;
+    result.lineCount = readRange.lineCount;
+    result.contentTruncated = payload.contentTruncated === true;
+    result.contentTruncatedByLines = payload.contentTruncatedByLines === true;
+    if (payload.sha256) result.sha256 = compactSingleLine(payload.sha256, 96);
     const content = String(payload.content || payload.contentPreview || "");
     if (content) result.content = compactMultiline(content, 4200);
     if (Array.isArray(payload.pathEvidence)) {
@@ -983,7 +1021,8 @@ function retainedToolStateMessages(messages = [], limit = 12) {
     if (!call || !payload || payload.ok === false || payload.blocked || payload.skipped) continue;
     const sourcePath = String(payload.path || call.args?.path || "").trim();
     const command = String(call.args?.command || payload.args?.command || "").trim();
-    const key = `${call.name}:${sourcePath || command || ordinal}`;
+    const readRange = call.name === "read_file" ? retainedReadRange(payload, call.args) : null;
+    const key = `${call.name}:${sourcePath || command || ordinal}${readRange ? `:${readRange.key}` : ""}`;
     recordsByKey.set(key, {
       ordinal: ordinal += 1,
       name: call.name,

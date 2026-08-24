@@ -164,8 +164,69 @@ const compactionState = {
         artifactPath: ".aginti/deep-research-reliability.json",
         queryCount: 10,
         sourceCount: 16,
+        answer: "RESEARCH-COMPACTION-SUMMARY",
         coverage: { requiredFirstPartyVerified: true },
         audit: { citationCoverage: 1 },
+      }),
+    },
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        {
+          id: "evidence-chunk-one",
+          type: "function",
+          function: {
+            name: "read_file",
+            arguments: '{"path":"reports/reliability.md","startLine":1,"lineLimit":50}',
+          },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "evidence-chunk-one",
+      content: JSON.stringify({
+        ok: true,
+        toolName: "read_file",
+        path: "reports/reliability.md",
+        startLine: 1,
+        lineLimit: 50,
+        lineCount: 100,
+        bytes: 8000,
+        sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        contentTruncated: false,
+        content: `EVIDENCE-CHUNK-ONE measured retry findings\n${"retry evidence ".repeat(220)}`,
+      }),
+    },
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        {
+          id: "evidence-chunk-two",
+          type: "function",
+          function: {
+            name: "read_file",
+            arguments: '{"path":"reports/reliability.md","startLine":51,"lineLimit":50}',
+          },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "evidence-chunk-two",
+      content: JSON.stringify({
+        ok: true,
+        toolName: "read_file",
+        path: "reports/reliability.md",
+        startLine: 51,
+        lineLimit: 50,
+        lineCount: 100,
+        bytes: 8000,
+        sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        contentTruncated: false,
+        content: `EVIDENCE-CHUNK-TWO limitations and recommendations\n${"limitation evidence ".repeat(180)}`,
       }),
     },
     {
@@ -233,6 +294,11 @@ assert.ok(runtimeText.includes("scripts/xyq_cdp_browser.py"));
 assert.ok(retainedNativeDeepResearch, "native compaction lost the completed deep_research call");
 assert.ok(runtimeText.includes("reliability-evidence-v14"));
 assert.ok(runtimeText.includes('"version":14'));
+assert.ok(runtimeText.includes("RESEARCH-COMPACTION-SUMMARY"));
+assert.ok(runtimeText.includes("EVIDENCE-CHUNK-ONE"));
+assert.ok(runtimeText.includes("EVIDENCE-CHUNK-TWO"));
+assert.ok(runtimeText.includes("range=lines 1-50"));
+assert.ok(runtimeText.includes("range=lines 51-100"));
 assert.ok(!runtimeText.includes("OLD-COMPACTION-MUST-NOT-RECUR"));
 assert.match(runtimeText, /Do not reread a listed source solely because compaction occurred/);
 assert.match(runtimeText, /never restart a full-file read loop after compaction/);
@@ -248,6 +314,9 @@ const deepSeekRuntimeText = deepSeekRuntimeMessages.map((message) => message.con
 assert.ok(deepSeekRuntimeText.includes("Tool: deep_research"));
 assert.ok(deepSeekRuntimeText.includes("reliability-evidence-v14"));
 assert.ok(deepSeekRuntimeText.includes('"version":14'));
+assert.ok(deepSeekRuntimeText.includes("RESEARCH-COMPACTION-SUMMARY"));
+assert.ok(deepSeekRuntimeText.includes("EVIDENCE-CHUNK-ONE"));
+assert.ok(deepSeekRuntimeText.includes("EVIDENCE-CHUNK-TWO"));
 assert.ok(
   estimateMessageTokens(deepSeekRuntimeMessages) <= 12288,
   "DeepSeek runtime compaction exceeded the bounded retry target"
