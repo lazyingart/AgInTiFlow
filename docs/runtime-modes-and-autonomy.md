@@ -73,6 +73,7 @@ Current contract:
 - `danger` is trusted host/full-access mode: host shell, destructive actions, host installs, password typing, and outside-workspace file paths are enabled. Use it only for tasks you trust; obvious secret/publish exfiltration guards remain hard stops.
 - Workspace file tools may read and write inside the configured project folder when file tools are enabled.
 - Narrow workspace-local shell actions such as safe probes, Gradle/TeX builds, and `chmod +x` on a project script may run when the command policy can classify them precisely.
+- Finite literal read-only audit loops may count matches into a temporary shell variable and echo the result without asking for destructive permission. The count command, every consumer, and any surrounding command must still classify as bounded read-only work; network, mutation, dynamic item lists, and computed values used as command arguments remain blocked.
 - Android/JVM toolchain commands may include safe local env assignments such as `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `JAVA_HOME`, or `GRADLE_USER_HOME`, plus small workspace-local status-log redirects. Secret-like env vars and redirects outside the workspace remain blocked.
 - Workspace writes outside that folder, secret paths, `.git` internals, and dependency folders such as `node_modules` are blocked.
 - `git clone`, `git fetch`, `git pull --ff-only`, `git push`, `curl`, and `wget` are classified as network operations.

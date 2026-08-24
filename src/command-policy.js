@@ -1543,7 +1543,7 @@ function classifyShellSequence(normalized) {
 
 const READ_ONLY_FOR_LOOP_MAX_ITEMS = 64;
 const READ_ONLY_FOR_LOOP_MAX_COMMANDS = 16;
-const READ_ONLY_FOR_LOOP_LITERAL_PATTERN = /^[A-Za-z0-9_@%+=:,./~+-]+$/;
+const READ_ONLY_FOR_LOOP_LITERAL_PATTERN = /^[A-Za-z0-9_@%+=:,./~+ -]+$/;
 
 function shellIdentifierPattern(value = "") {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -1708,6 +1708,83 @@ function loopBodyHasOnlyBoundedReadOnlyExpansions(bodySource = "") {
   });
 }
 
+function isBoundedReadOnlyScalarCommand(command = "") {
+  const normalized = stripBenignRedirections(command);
+  if (!normalized || hasActiveShellExpansion(normalized)) return false;
+  const tokens = tokenizeShellWords(normalized);
+  if (!tokens.length) return false;
+  if (["grep", "rg"].includes(tokens[0])) {
+    return tokens.slice(1).some((token) =>
+      token === "--count" || /^-[A-Za-z]*c[A-Za-z]*$/.test(token)
+    );
+  }
+  return tokens[0] === "wc" && tokens.slice(1).includes("-l");
+}
+
+function sanitizeReadOnlyLoopAssignments(bodySource = "") {
+  const text = String(bodySource || "").trim();
+  const sequence = parseTopLevelShellSequence(text);
+  if (
+    !sequence.commands.length ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator
+  ) {
+    return null;
+  }
+
+  const assigned = new Map();
+  const commands = [];
+  for (const sourceCommand of sequence.commands) {
+    let command = sourceCommand;
+    for (const [name, state] of assigned.entries()) {
+      const escapedName = shellIdentifierPattern(name);
+      const reference = new RegExp(`\\$(?:\\{${escapedName}\\}|${escapedName}(?![A-Za-z0-9_]))`, "g");
+      if (!reference.test(command)) continue;
+      if (!/^echo\s+/.test(command)) return null;
+      command = command.replace(reference, `AGINTI_READ_VALUE_${name}`);
+      state.used = true;
+    }
+
+    const assignment = command.match(/^([A-Za-z_][A-Za-z0-9_]*)=(\$\([\s\S]+\))$/);
+    if (!assignment) {
+      commands.push(command);
+      continue;
+    }
+    const [, name, expression] = assignment;
+    if (assigned.has(name) || assigned.size >= 4) return null;
+    const extracted = extractBoundedCommandSubstitutions(`echo ${expression}`);
+    if (
+      !extracted ||
+      extracted.commands.length !== 1 ||
+      extracted.template !== "echo AGINTI_READ_VALUE_1"
+    ) {
+      return null;
+    }
+    const inner = extracted.commands[0];
+    const classification = classifyShellSequence(inner) ||
+      classifyPipelineSequence(inner) ||
+      classifySimpleCommand(inner);
+    if (
+      classification.category !== "read-only" ||
+      classification.writesWorkspace ||
+      classification.needsNetwork ||
+      !isBoundedReadOnlyScalarCommand(inner)
+    ) {
+      return null;
+    }
+    assigned.set(name, { used: false });
+    commands.push("true");
+  }
+  if ([...assigned.values()].some((state) => !state.used)) return null;
+
+  let sanitized = commands[0];
+  for (let index = 1; index < commands.length; index += 1) {
+    sanitized += ` ${sequence.separators[index - 1] || ";"} ${commands[index]}`;
+  }
+  return sanitized;
+}
+
 function classifyReadOnlyForLoop(normalized) {
   const text = String(normalized || "").trim();
   if (!/^for\s+/.test(text)) return null;
@@ -1747,10 +1824,11 @@ function classifyReadOnlyForLoop(normalized) {
 
   for (const item of items) {
     const expandedBody = bodySource.replace(variableReference, item);
-    if (!loopBodyHasOnlyBoundedReadOnlyExpansions(expandedBody)) {
+    const sanitizedBody = sanitizeReadOnlyLoopAssignments(expandedBody);
+    if (!sanitizedBody || !loopBodyHasOnlyBoundedReadOnlyExpansions(sanitizedBody)) {
       return broadForLoopClassification(text, "the body contains expansion beyond the loop variable");
     }
-    const classification = classifyReadOnlyLoopBody(expandedBody);
+    const classification = classifyReadOnlyLoopBody(sanitizedBody);
     if (classification.category === "blocked" || classification.category === "destructive") {
       return { ...classification, gitOnly: false };
     }
@@ -1771,7 +1849,7 @@ function classifyReadOnlyForLoop(normalized) {
 
 function classifyReadOnlyCompoundSequence(normalized) {
   const text = String(normalized || "").trim();
-  if (!text || hasActiveShellCommandSubstitution(text)) return null;
+  if (!text) return null;
 
   let forIndex = findUnquotedShellWord(text, "for");
   const startsAtCommandBoundary = (index) => {
@@ -1908,7 +1986,11 @@ function classifyCdCommand(normalized) {
   if (!isSafeRelativeDir(dir) && !virtualWorkspacePath) {
     return { category: "blocked", reason: `cd target must be a safe workspace-relative directory: ${dir}` };
   }
-  const innerClassification = classifyShellSequence(inner.trim()) || classifyPipelineSequence(inner.trim()) || classifySimpleCommand(inner.trim());
+  const innerClassification = classifyReadOnlyCompoundSequence(inner.trim()) ||
+    classifyReadOnlyForLoop(inner.trim()) ||
+    classifyShellSequence(inner.trim()) ||
+    classifyPipelineSequence(inner.trim()) ||
+    classifySimpleCommand(inner.trim());
   if (innerClassification.category === "blocked") return innerClassification;
   return { ...innerClassification, cdDir: dir, virtualWorkspacePath };
 }
@@ -1929,7 +2011,9 @@ function classifyReadOnlyRootCd(normalized, config = {}) {
   const readOnlyRoot = configuredReadOnlyRoot(config, dir);
   if (!readOnlyRoot) return null;
 
-  const innerClassification = classifyShellSequence(inner.trim()) ||
+  const innerClassification = classifyReadOnlyCompoundSequence(inner.trim()) ||
+    classifyReadOnlyForLoop(inner.trim()) ||
+    classifyShellSequence(inner.trim()) ||
     classifyPipelineSequence(inner.trim()) ||
     classifySimpleCommand(inner.trim());
   const safeCategory = ["read-only", "network-fetch"].includes(innerClassification.category);

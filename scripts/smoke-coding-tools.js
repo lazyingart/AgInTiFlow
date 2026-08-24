@@ -673,6 +673,20 @@ try {
       exactReadOnlyExistenceLoopWithSuffixPolicy.writesWorkspace === false,
     "a finite read-only existence loop with bounded list suffix incorrectly required destructive host permission"
   );
+  const exactReadOnlyReportLiteralAudit =
+    'cd . && for s in \'handoff/LABCANVAS_AGENT_API_HANDOFF_2026_07_29.md\' \'/home/lachlan/ProjectsLFS/AgenticApp\' \'src/agenticapp/musia_ops.py\' \'scripts/xyq_chrome/watch_thread_dom_download.py\' \'Reviewed master\' \'ffprobe verification\' \'Song-only versus MV separation\' \'MV request versus publication separation\'; do n=$(grep -c -- "$s" media-routine-readiness.md); echo "$n :: $s"; done; echo \'--- git status ---\'; git status --short';
+  const exactReadOnlyReportLiteralAuditPolicy = evaluateCommandPolicy(
+    exactReadOnlyReportLiteralAudit,
+    hostWorkspacePolicy
+  );
+  assert(
+    exactReadOnlyReportLiteralAuditPolicy.allowed &&
+      exactReadOnlyReportLiteralAuditPolicy.category === "read-only" &&
+      exactReadOnlyReportLiteralAuditPolicy.boundedForLoop === true &&
+      exactReadOnlyReportLiteralAuditPolicy.needsNetwork === false &&
+      exactReadOnlyReportLiteralAuditPolicy.writesWorkspace === false,
+    "a bounded report literal-count audit incorrectly required destructive host permission"
+  );
   const exactReadOnlyGitIdentityProbe =
     'git status --short && echo "TOPLEVEL=$(git rev-parse --show-toplevel 2>&1)" && echo "BRANCH=$(git rev-parse --abbrev-ref HEAD 2>&1)"';
   const exactReadOnlyGitIdentityProbePolicy = evaluateCommandPolicy(
@@ -747,6 +761,11 @@ try {
     'for d in /tmp; do git -C "$d" status --short > report.md; done',
     'for d in /tmp; do git -C "$d" remote add origin https://example.com/repo.git; done',
     'for d in /tmp; do git -C "$d" remote set-url origin https://example.com/repo.git; done',
+    'for s in README.md; do n=$(rm -rf report.md); echo "$n :: $s"; done',
+    'for s in README.md; do n=$(curl https://example.com); echo "$n :: $s"; done',
+    'for s in README.md; do n=$(cat "$s"); echo "$n :: $s"; done',
+    'for s in README.md; do n=$(grep -c -- "$s" README.md); rm -rf "$n"; done',
+    'for s in \'README.md; rm -rf report.md\'; do echo "$s"; done',
   ]) {
     const unsafeLoopSubstitutionPolicy = evaluateCommandPolicy(
       unsafeLoopSubstitution,
