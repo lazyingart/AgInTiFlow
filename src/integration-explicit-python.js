@@ -21,18 +21,20 @@ const REQUESTED_PLOT =
 const ENGLISH_BROAD_EXECUTION = /^(?:run|execute)\b/iu;
 const CHINESE_BROAD_EXECUTION = /^(?:运行|運行|执行|執行)/iu;
 const ENGLISH_CODE_NOUN = "(?:python(?:\\s+(?:code|script|program|snippet|block))?|code|script|program|snippet|block)";
+const ENGLISH_CODE_TARGET =
+  `(?:(?:corrected|revised|updated)\\s+)?${ENGLISH_CODE_NOUN}`;
 const ENGLISH_PREFIX_TARGET = [
-  `(?:(?:this|that|my)\\s+${ENGLISH_CODE_NOUN}(?:\\s+below)?)`,
-  `(?:(?:the\\s+)?(?:following|below)(?:\\s+${ENGLISH_CODE_NOUN})?)`,
-  `(?:the\\s+${ENGLISH_CODE_NOUN}(?:\\s+below)?)`,
-  ENGLISH_CODE_NOUN,
+  `(?:(?:this|that|my)\\s+${ENGLISH_CODE_TARGET}(?:\\s+below)?)`,
+  `(?:(?:the\\s+)?(?:following|below)(?:\\s+${ENGLISH_CODE_TARGET})?)`,
+  `(?:the\\s+${ENGLISH_CODE_TARGET}(?:\\s+below)?)`,
+  ENGLISH_CODE_TARGET,
   "(?:this|that|it)",
 ].join("|");
 const ENGLISH_SUFFIX_TARGET = [
-  `(?:(?:this|that|my)\\s+${ENGLISH_CODE_NOUN}(?:\\s+above)?)`,
-  `(?:(?:the\\s+)?(?:above)(?:\\s+${ENGLISH_CODE_NOUN})?)`,
-  `(?:the\\s+${ENGLISH_CODE_NOUN}(?:\\s+above)?)`,
-  ENGLISH_CODE_NOUN,
+  `(?:(?:this|that|my)\\s+${ENGLISH_CODE_TARGET}(?:\\s+above)?)`,
+  `(?:(?:the\\s+)?(?:above)(?:\\s+${ENGLISH_CODE_TARGET})?)`,
+  `(?:the\\s+${ENGLISH_CODE_TARGET}(?:\\s+above)?)`,
+  ENGLISH_CODE_TARGET,
   "(?:this|that|it)",
 ].join("|");
 const ENGLISH_RESULT_OBJECT =

@@ -348,6 +348,10 @@ function explicitPythonCompilerIsStrict() {
   assert.equal(chinese.source, "print('好')");
   for (const prompt of [
     "Kindly run this Python code\n```python\nprint(1)\n```",
+    "Run this corrected Python code and show the plot.\n```python\nprint(1)\n```",
+    "Execute the revised Python script and return the output.\n```python\nprint(1)\n```",
+    "Run the following updated code and display its graph.\n```python\nprint(1)\n```",
+    "```python\nprint(1)\n```\nRun the updated code above and show the result.",
     "I'd like you to run this Python code\n```python\nprint(1)\n```",
     "Let's run this Python code\n```python\nprint(1)\n```",
     "請執行下面的程式碼\n```python\nprint('好')\n```",
@@ -426,6 +430,12 @@ function explicitPythonCompilerIsStrict() {
 
   for (const prompt of [
     "Run this code, but do not execute it:\n```python\nprint(1)\n```",
+    "Run this corrected Python code, but do not execute it:\n```python\nprint(1)\n```",
+    "Run this corrected Python code and summarize it:\n```python\nprint(1)\n```",
+    "Run this unreviewed Python code and show the result:\n```python\nprint(1)\n```",
+    "Run this corrected and revised Python code and show the result:\n```python\nprint(1)\n```",
+    "Run this corrected Python code:\n```python\nprint(1)\n```\n```python\nprint(2)\n```",
+    "Run this corrected\u200b Python code:\n```python\nprint(1)\n```",
     "Run this code. Actually, don’t run it.\n```python\nprint(1)\n```",
     "Run this code only if it is safe:\n```python\nprint(1)\n```",
     "Run this code, but don't.\n```python\nprint(1)\n```",
@@ -487,7 +497,7 @@ async function deterministicExplicitPythonExecutesWithoutModel() {
   const finals = [];
   const result = await deterministic.planner.run(
     scope("run_00000000-0000-4000-8000-000000000084"),
-    { prompt: `Run this Python code and show the plot.\n\n\`\`\`python\n${source}\n\`\`\`` },
+    { prompt: `Run this corrected Python code and show the plot.\n\n\`\`\`python\n${source}\n\`\`\`` },
     {
       onProgress: (value) => progress.push(value),
       onArtifact: (value) => artifacts.push(value),
