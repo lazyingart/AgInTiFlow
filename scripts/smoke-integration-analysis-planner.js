@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 
 import {
   EXECUTION_WORKER_API_SCHEMA_VERSION,
@@ -22,6 +23,11 @@ import {
   assertIntegrationAnalysisPlannerActivation,
   createTestOnlyIntegrationAnalysisPlanner,
 } from "../src/integration-analysis-planner.js";
+import {
+  INTEGRATION_EXPRESSION_PLOT_SCHEMA_VERSION,
+  IntegrationExpressionPlotError,
+  compileIntegrationExpressionPlotPrompt,
+} from "../src/integration-expression-plot.js";
 import { sanitizeIntegrationArtifact } from "../src/integration-artifacts.js";
 import { contractDigest } from "../src/integration-policy.js";
 
@@ -237,6 +243,197 @@ function fixture(complete, { worker } = {}) {
   return Object.freeze({ planner, coordinator, rpcCalls });
 }
 
+function expressionPlotCompilerIsStrict() {
+  const exact = compileIntegrationExpressionPlotPrompt("Plot e^x-x^e");
+  assert(exact);
+  assert(Object.isFrozen(exact));
+  assert.equal(exact.schemaVersion, INTEGRATION_EXPRESSION_PLOT_SCHEMA_VERSION);
+  assert.equal(exact.expression, "e ^ x - x ^ e");
+  assert.equal(exact.xMinimum, -5);
+  assert.equal(exact.xMaximum, 5);
+  assert.equal(exact.sampleCount, 201);
+  assert.match(exact.source, /^import math\n/u);
+  assert.match(exact.source, /_value = \(\(math\.e \*\* x\) - \(x \*\* math\.e\)\)/u);
+  assert.match(exact.source, /'type':'scatter'/u);
+  assert.match(exact.source, /emit_plot\(/u);
+  assert.doesNotMatch(exact.source, /\b(?:eval|exec|compile|open|__import__)\s*\(/u);
+  assert.doesNotMatch(exact.source, /(?:subprocess|socket|urllib|requests|https?:)/u);
+  const runtime = spawnSync("python3", ["-I", "-S", "-c", [
+    "_captured_plots = []",
+    "def emit_plot(title, spec):",
+    "    _captured_plots.append((title, spec))",
+    exact.source,
+    "assert len(_captured_plots) == 1",
+    "_title, _spec = _captured_plots[0]",
+    "assert _title == 'Plot of e ^ x - x ^ e'",
+    "assert _spec['schemaVersion'] == '1'",
+    "assert _spec['type'] == 'scatter'",
+    "assert 100 <= len(_spec['series'][0]['points']) <= 201",
+    "print('expression-plot-runtime-ok')",
+  ].join("\n")], {
+    encoding: "utf8",
+    timeout: 5_000,
+    maxBuffer: 64 * 1024,
+  });
+  assert.equal(runtime.error, undefined, runtime.error?.message);
+  assert.equal(runtime.status, 0, runtime.stderr);
+  assert.match(runtime.stdout, /expression-plot-runtime-ok/u);
+
+  const commonNotation = compileIntegrationExpressionPlotPrompt(
+    "Could you please plot 2x + π + sin(x)^2 + cos(x)^2?"
+  );
+  assert(commonNotation);
+  assert.equal(commonNotation.expression, "2 * x + pi + sin ( x ) ^ 2 + cos ( x ) ^ 2");
+  assert.match(commonNotation.source, /math\.pi/u);
+  assert.match(commonNotation.source, /float\(math\.sin\(x\)\)/u);
+  assert.match(commonNotation.source, /float\(math\.cos\(x\)\)/u);
+  assert(compileIntegrationExpressionPlotPrompt("plot sqrt(abs(x))"));
+
+  for (const prompt of [
+    "Plot the sales data.",
+    "Plot customer-retention by region.",
+    "Plot revenue (monthly).",
+    "Plot 2023-2024 sales.",
+    "Explain how to plot x^2.",
+    "If I plot x^2, what happens?",
+    "Plot if x^2 is positive.",
+    "Do not plot x^2.",
+    "Let's not plot x^2.",
+    "Could x^2 be plotted without running code?",
+    "Plot is a noun in this sentence.",
+  ]) {
+    assert.equal(compileIntegrationExpressionPlotPrompt(prompt), null, prompt);
+  }
+
+  for (const prompt of [
+    "Plot __import__('os').system('id')",
+    "Plot x; __import__('os')",
+    "Plot (lambda: 1)()",
+    "Plot process.exit()",
+    "Plot sqrt.__call__(x)",
+    "Plot unknown(x)",
+    `Plot ${"(".repeat(30)}x${")".repeat(30)}`,
+    `Plot ${"x+".repeat(140)}x`,
+  ]) {
+    assert.throws(
+      () => compileIntegrationExpressionPlotPrompt(prompt),
+      (error) =>
+        error instanceof IntegrationExpressionPlotError &&
+        error.code === "ANALYSIS_EXPRESSION_PLOT_INVALID" &&
+        error.status === 400,
+      prompt
+    );
+  }
+}
+
+async function deterministicExpressionPlotExecutesWithoutModel() {
+  let modelCalls = 0;
+  let workerCalls = 0;
+  const deterministic = fixture(async () => {
+    modelCalls += 1;
+    throw new Error("LocalLLM must not be called for a supported expression plot");
+  }, {
+    worker: fakeWorker((request, signal) => {
+      workerCalls += 1;
+      assert.match(request.source, /_value = \(\(math\.e \*\* x\) - \(x \*\* math\.e\)\)/u);
+      assert.match(request.source, /emit_plot\(/u);
+      assert.doesNotMatch(request.source, /\b(?:eval|exec|__import__)\s*\(/u);
+      return terminalResult(request, signal);
+    }),
+  });
+  const progress = [];
+  const artifacts = [];
+  const finals = [];
+  const result = await deterministic.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000080"),
+    { prompt: "Plot e^x-x^e" },
+    {
+      onProgress: (value) => progress.push(value),
+      onArtifact: (value) => artifacts.push(value),
+      onFinal: (value) => finals.push(value),
+    }
+  );
+  assert.equal(modelCalls, 0);
+  assert.equal(workerCalls, 1);
+  assert.equal(result.kind, "analysis");
+  assert.equal(result.toolCalls, 1);
+  assert.equal(result.executionStatus, "succeeded");
+  assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["plot"]);
+  assert.match(result.text, /Plotted e \^ x - x \^ e for x from -5 to 5/u);
+  assert.match(result.text, /3 finite samples/u);
+  assert.deepEqual(artifacts, result.artifacts);
+  assert.deepEqual(finals, [result]);
+  assert(progress.some(({ phase, executionState }) => phase === "executing" && executionState === "running"));
+  assert(progress.some(({ phase, executionSucceeded }) => phase === "synthesizing" && executionSucceeded));
+  assert.equal(
+    deterministic.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    1
+  );
+  deterministic.coordinator.close();
+}
+
+async function deterministicExpressionPlotFailuresStayTruthful() {
+  let failedModelCalls = 0;
+  const failed = fixture(async () => {
+    failedModelCalls += 1;
+    return textResponse("The plot is ready.");
+  }, { worker: fakeWorker(runtimeFailureResult) });
+  let failedFinals = 0;
+  await assert.rejects(
+    failed.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000081"),
+      { prompt: "Plot e^x-x^e" },
+      { onFinal: () => { failedFinals += 1; } }
+    ),
+    (error) => error?.code === "ANALYSIS_EXECUTION_FAILED" && error?.status === 502
+  );
+  assert.equal(failedModelCalls, 0);
+  assert.equal(failedFinals, 0);
+  assert.equal(
+    failed.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    1
+  );
+  failed.coordinator.close();
+
+  let artifactlessModelCalls = 0;
+  const artifactless = fixture(async () => {
+    artifactlessModelCalls += 1;
+    return textResponse("The plot is ready.");
+  }, { worker: fakeWorker((request, signal) => terminalResult(request, signal, [])) });
+  await assert.rejects(
+    artifactless.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000082"),
+      { prompt: "plot e^x-x" }
+    ),
+    (error) => error?.code === "ANALYSIS_PLOT_ARTIFACT_REQUIRED" && error?.status === 502
+  );
+  assert.equal(artifactlessModelCalls, 0);
+  assert.equal(
+    artifactless.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    1
+  );
+  artifactless.coordinator.close();
+
+  let injectionModelCalls = 0;
+  const injection = fixture(async () => {
+    injectionModelCalls += 1;
+    return textResponse("unsafe");
+  });
+  await assert.rejects(
+    injection.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000083"),
+      { prompt: "Plot __import__('os').system('id')" }
+    ),
+    (error) => error?.code === "ANALYSIS_EXPRESSION_PLOT_INVALID" && error?.status === 400
+  );
+  assert.equal(injectionModelCalls, 0);
+  assert.equal(
+    injection.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    0
+  );
+  injection.coordinator.close();
+}
+
 async function executesAndSynthesizesPlot() {
   const modelCalls = [];
   const { planner, coordinator, rpcCalls } = fixture(async (_client, payload, config) => {
@@ -306,6 +503,13 @@ async function executesAndSynthesizesPlot() {
   assert.equal(planner.attestation.callerSelectableModel, false);
   assert.equal(planner.attestation.callerSelectableCredential, false);
   assert.equal(planner.attestation.maximumToolCalls, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS);
+  assert.equal(planner.attestation.deterministicExpressionPlots, true);
+  assert.equal(
+    planner.attestation.expressionPlotCompilerSchemaVersion,
+    INTEGRATION_EXPRESSION_PLOT_SCHEMA_VERSION
+  );
+  assert.equal(planner.attestation.expressionPlotUsesAgentExecution, true);
+  assert.equal(planner.attestation.expressionPlotUsesEval, false);
   assert.equal(planner.attestation.durableSessionIntegrated, false);
   assert.equal(planner.attestation.serverIntegrated, false);
   assert.doesNotMatch(proofJson, /127\.0\.0\.1|localllm-analysis-smoke|test-local-secret-credential/u);
@@ -338,7 +542,7 @@ async function directAnswerDoesNotExecute() {
   coordinator.close();
 }
 
-async function exactFormulaPlotsRequireExecutionAndArtifact() {
+async function generalPlotRequestsRequireExecutionAndArtifact() {
   let executionCount = 0;
   const worker = fakeWorker((request, signal) => {
     executionCount += 1;
@@ -371,7 +575,7 @@ async function exactFormulaPlotsRequireExecutionAndArtifact() {
   }, { worker });
   const result = await corrected.planner.run(
     scope("run_00000000-0000-4000-8000-000000000070"),
-    { prompt: "Plot e^x-x^e" }
+    { prompt: "Run Python to create a plot of e^x-x^e." }
   );
   assert.equal(modelStep, 3);
   assert.equal(executionCount, 2);
@@ -387,7 +591,7 @@ async function exactFormulaPlotsRequireExecutionAndArtifact() {
   await assert.rejects(
     lowercase.planner.run(
       scope("run_00000000-0000-4000-8000-000000000071"),
-      { prompt: "plot e^x-x" }
+      { prompt: "Run Python to create a plot of e^x-x." }
     ),
     (error) => error?.code === "ANALYSIS_TOOL_REQUIRED"
   );
@@ -457,7 +661,7 @@ async function recoversPlotOnThirdExecutionAttempt() {
   }, { worker });
   const result = await recovered.planner.run(
     scope("run_00000000-0000-4000-8000-000000000079"),
-    { prompt: "Plot e^x-x^e" }
+    { prompt: "Run Python to create a plot of e^x-x^e." }
   );
   assert.equal(modelStep, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS + 1);
   assert.equal(runtimeExecutions, 2);
@@ -485,7 +689,7 @@ async function rejectsFalseCompletionAfterFailedOrArtifactlessExecution() {
   await assert.rejects(
     failed.planner.run(
       scope("run_00000000-0000-4000-8000-000000000077"),
-      { prompt: "Plot e^x-x" },
+      { prompt: "Run Python to create a plot of e^x-x." },
       { onFinal: () => { failedFinals += 1; } }
     ),
     (error) => error?.code === "ANALYSIS_EXECUTION_FAILED"
@@ -513,7 +717,7 @@ async function rejectsFalseCompletionAfterFailedOrArtifactlessExecution() {
   await assert.rejects(
     artifactless.planner.run(
       scope("run_00000000-0000-4000-8000-000000000078"),
-      { prompt: "Plot e^x-x^e" }
+      { prompt: "Run Python to create a plot of e^x-x^e." }
     ),
     (error) => error?.code === "ANALYSIS_PLOT_ARTIFACT_REQUIRED"
   );
@@ -708,9 +912,12 @@ async function correctsUnavailableImportsAndBrandsActivation() {
   repeated.coordinator.close();
 }
 
+expressionPlotCompilerIsStrict();
+await deterministicExpressionPlotExecutesWithoutModel();
+await deterministicExpressionPlotFailuresStayTruthful();
 await executesAndSynthesizesPlot();
 await directAnswerDoesNotExecute();
-await exactFormulaPlotsRequireExecutionAndArtifact();
+await generalPlotRequestsRequireExecutionAndArtifact();
 await recoversPlotOnThirdExecutionAttempt();
 await rejectsFalseCompletionAfterFailedOrArtifactlessExecution();
 await rejectsOverridesAndMalformedTools();

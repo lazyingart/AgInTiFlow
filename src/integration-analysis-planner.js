@@ -6,6 +6,11 @@ import {
   IntegrationAnalysisError,
   assertIntegrationAnalysisCoordinator,
 } from "./integration-analysis-coordinator.js";
+import {
+  INTEGRATION_EXPRESSION_PLOT_SCHEMA_VERSION,
+  IntegrationExpressionPlotError,
+  compileIntegrationExpressionPlotPrompt,
+} from "./integration-expression-plot.js";
 import { sanitizeIntegrationArtifact } from "./integration-artifacts.js";
 import {
   contractDigest,
@@ -668,6 +673,12 @@ function translateError(error, signal) {
       cause: error,
     });
   }
+  if (error instanceof IntegrationExpressionPlotError) {
+    return new IntegrationAnalysisPlannerError(error.code, error.message, {
+      status: error.status,
+      cause: error,
+    });
+  }
   return new IntegrationAnalysisPlannerError("ANALYSIS_MODEL_UNAVAILABLE", "LocalLLM analysis planning was unavailable.", {
     cause: error,
   });
@@ -704,6 +715,10 @@ function createPlanner({ coordinator, localModelConfig, modelClient, complete, r
     exactToolArguments: true,
     sanitizedModelFeedback: true,
     rawExecutionOutputInCallbacks: false,
+    deterministicExpressionPlots: true,
+    expressionPlotCompilerSchemaVersion: INTEGRATION_EXPRESSION_PLOT_SCHEMA_VERSION,
+    expressionPlotUsesAgentExecution: true,
+    expressionPlotUsesEval: false,
     durableSessionIntegrated: false,
     serverIntegrated: false,
   });
@@ -770,8 +785,76 @@ function createPlanner({ coordinator, localModelConfig, modelClient, complete, r
       assertNotAborted(signal);
     };
 
+    const captureArtifact = async (value) => {
+      const artifact = publicArtifact(value);
+      if (artifactIds.has(artifact.id)) return;
+      artifactIds.add(artifact.id);
+      artifacts.push(artifact);
+      await options.onArtifact?.(artifact);
+      assertNotAborted(signal);
+    };
+
     try {
       await emitProgress("planning");
+      const expressionPlot = explicitPlotArtifact
+        ? compileIntegrationExpressionPlotPrompt(input.prompt)
+        : null;
+      if (expressionPlot) {
+        let lastExecutionState = "";
+        await emitProgress("executing", {
+          toolName: INTEGRATION_ANALYSIS_TOOL_NAME,
+          toolCallNumber: 1,
+          executionState: "starting",
+        });
+        const execution = await coordinator.execute(scope, Object.freeze({
+          source: expressionPlot.source,
+          stdin: "",
+          timeoutMs: Math.min(10_000, EXECUTION_LIMITS.maximumWallTimeMs),
+        }), {
+          signal,
+          async onProgress(progress) {
+            const state = EXECUTION_STATES.has(progress?.state) ? progress.state : "running";
+            if (state === lastExecutionState) return;
+            lastExecutionState = state;
+            await emitProgress("executing", {
+              toolName: INTEGRATION_ANALYSIS_TOOL_NAME,
+              toolCallNumber: 1,
+              executionState: state,
+            });
+          },
+          onArtifact: captureArtifact,
+        });
+        for (const artifact of execution.artifacts) await captureArtifact(artifact);
+        toolCalls = 1;
+        executionStatus = execution.status;
+        await emitProgress("synthesizing", {
+          executionSucceeded: execution.ok === true,
+          artifactCount: artifacts.length,
+        });
+        if (!execution.ok) {
+          fail("ANALYSIS_EXECUTION_FAILED", "The requested analysis did not complete successfully.", {
+            status: 502,
+          });
+        }
+        const plotArtifact = artifacts.find(({ kind }) => kind === "plot");
+        if (!plotArtifact) {
+          fail("ANALYSIS_PLOT_ARTIFACT_REQUIRED", "The requested plot was not produced.", {
+            status: 502,
+          });
+        }
+        const pointCount = artifactSummary(plotArtifact).pointCount;
+        const finalResult = publicFinalResult({
+          text:
+            `Plotted ${expressionPlot.expression} for x from ${expressionPlot.xMinimum} ` +
+            `to ${expressionPlot.xMaximum}. The plot contains ${pointCount} finite samples.`,
+          toolCalls,
+          artifacts,
+          executionStatus,
+        });
+        await options.onFinal?.(finalResult);
+        assertNotAborted(signal);
+        return finalResult;
+      }
       for (let modelStep = 0; modelStep <= INTEGRATION_ANALYSIS_MAX_TOOL_CALLS; modelStep += 1) {
         assertNotAborted(signal);
         const executionSatisfied =
@@ -854,14 +937,7 @@ function createPlanner({ coordinator, localModelConfig, modelClient, complete, r
                 executionState: state,
               });
             },
-            async onArtifact(value) {
-              const artifact = publicArtifact(value);
-              if (artifactIds.has(artifact.id)) return;
-              artifactIds.add(artifact.id);
-              artifacts.push(artifact);
-              await options.onArtifact?.(artifact);
-              assertNotAborted(signal);
-            },
+            onArtifact: captureArtifact,
           });
         }
         toolCalls += 1;
