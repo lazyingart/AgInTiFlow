@@ -285,3 +285,24 @@ external semantic and repository-state contract passed at target commit
 `f19ff4b`. No AgInTiFlow source change or task-specific prompt branch was
 needed; the run validates the generic inbox, context, evidence, and completion
 contracts in the published package.
+
+### LabCanvas least-privilege worker integration
+
+`labcanvas-worker-permission-018` validated the installed AgInTiFlow `0.20.217`
+through LabCanvas after a real WeCom research task paused at
+`permission_required`. The defect was in the integration boundary: LabCanvas
+unconditionally selected AgInTi's blocked package-install tier, which also
+blocked ordinary workspace shell execution. LabCanvas now keeps response-only
+roles blocked while granting genuine worker roles reversible package setup
+inside the Docker workspace. Host access, credentials, payment, publication,
+destructive operations, and other irreversible actions remain separately
+guarded.
+
+A direct DeepSeek-backed worker smoke created and validated a bounded workspace
+artifact without a permission prompt. Focused backend regressions, all WeChat
+self-checks, the complete 1,442-test LabCanvas suite, and GitHub Actions passed.
+The originally blocked exact-chat task was then resumed without duplicate model
+work, produced a visually inspected nine-page XeLaTeX research report, and
+delivered one concise message plus the PDF through the verified WeCom transport.
+The follow-up message was preserved in the same chat session. The reusable fix
+is AgenticApp commit `e705bb0`; no AgInTiFlow release change was required.
