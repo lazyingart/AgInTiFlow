@@ -51,6 +51,7 @@ import {
 } from "./workspace-tools.js";
 import { normalizeCanvasPayload, persistCanvasPayloadFile } from "./artifact-tunnel.js";
 import { getTaskProfile } from "./task-profiles.js";
+import { validateWordDocumentArtifacts } from "./document-artifact-quality.js";
 import { generateImage, listAuxiliarySkills } from "./auxiliary-tools.js";
 import {
   engineeringGuidanceForTask,
@@ -9122,6 +9123,66 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
       },
     };
   }
+  let documentQuality = null;
+  if (String(config.taskProfile || state.meta?.taskProfile || "").toLowerCase() === "word") {
+    try {
+      documentQuality = await validateWordDocumentArtifacts({
+        commandCwd: config.commandCwd || state.commandCwd || process.cwd(),
+        candidateResult,
+        goal: completionContractGoal(config, state),
+        exactOutputPaths: [
+          ...(assessment.contract?.exactOutputPaths || []),
+          ...exactOutputPathsForState(state),
+        ],
+      });
+    } catch (error) {
+      documentQuality = {
+        ok: false,
+        checked: true,
+        artifacts: [],
+        defects: [{
+          code: "document-quality-check-failed",
+          message: String(error?.message || error),
+        }],
+        reason: `Independent document-quality validation failed: ${String(error?.message || error)}`,
+      };
+    }
+    state.meta = state.meta || {};
+    state.meta.documentArtifactQuality = documentQuality;
+    const qualityEvent = {
+      step,
+      mode,
+      ok: documentQuality.ok,
+      reason: documentQuality.reason,
+      artifacts: documentQuality.artifacts || [],
+      defects: documentQuality.defects || [],
+      sourcePaths: documentQuality.sourcePaths || [],
+    };
+    await store.appendEvent("document.quality_assessed", qualityEvent);
+    observers.event("document.quality_assessed", qualityEvent);
+    if (!documentQuality.ok) {
+      const priorSemanticReason = assessment.semantic?.checked && !assessment.semantic?.ok
+        ? String(assessment.semantic.reason || "")
+        : "";
+      const qualityReason = String(documentQuality.reason || "The document artifact failed independent quality checks.");
+      assessment = {
+        ...assessment,
+        ok: false,
+        documentQuality,
+        evaluation: {
+          ...assessment.evaluation,
+          ok: false,
+          reason: qualityReason,
+        },
+        semantic: {
+          ...assessment.semantic,
+          checked: true,
+          ok: false,
+          reason: [priorSemanticReason, qualityReason].filter(Boolean).join(" "),
+        },
+      };
+    }
+  }
   const hasRealBlocker = finishResultClaimsBlocker(candidateResult) && hasScsBlockerEvidence(assessment.ledger);
   if (assessment.ok && !claimsIncompleteWork) return { action: "accept", assessment };
   if (claimsIncompleteWork) {
@@ -9168,6 +9229,13 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
       ok: Boolean(assessment.semantic.ok),
       reason: assessment.semantic.reason || "",
     },
+    documentQuality: documentQuality
+      ? {
+          ok: Boolean(documentQuality.ok),
+          reason: documentQuality.reason || "",
+          defects: documentQuality.defects || [],
+        }
+      : null,
     progressCount,
   };
   state.meta = state.meta || {};

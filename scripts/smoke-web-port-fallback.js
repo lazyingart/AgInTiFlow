@@ -63,6 +63,7 @@ const child = spawn(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"),
   cwd: runtimeDir,
   env: {
     ...process.env,
+    AGINTIFLOW_NO_AUTO_UPDATE: "1",
     AGINTIFLOW_RUNTIME_DIR: runtimeDir,
     AGINTIFLOW_HOME: path.join(runtimeDir, ".agintiflow-home"),
   },

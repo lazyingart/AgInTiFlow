@@ -77,6 +77,7 @@ async function runCase({ port, env = {}, expectHeader, label }) {
     cwd: runtimeDir,
     env: {
       ...process.env,
+      AGINTIFLOW_NO_AUTO_UPDATE: "1",
       AGINTIFLOW_NO_ANIMATION: "1",
       AGINTIFLOW_HOME: path.join(runtimeDir, `.ignored-cli-home-${label}`),
       AGINTIFLOW_WEB_HOME: path.join(runtimeDir, `.agintiflow-web-home-${label}`),

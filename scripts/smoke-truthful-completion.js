@@ -503,6 +503,36 @@ try {
   assert.match(futureWorkFinish.result.result, /verified the working directory/i);
   assert(futureWorkFinish.events.some((event) => event.type === "completion.evidence_rejected"));
 
+  const wordCompletionWithoutArtifact = await runCase({
+    id: "word-completion-without-artifact",
+    goal: "Create an editable, phone-friendly project handoff from this folder.",
+    taskProfile: "word",
+    allowFileTools: true,
+    responses: [
+      assistant("", [toolCall("word-finish-without-file-1", "finish", { result: "The handoff is complete." })]),
+      assistant("", [toolCall("word-finish-without-file-2", "finish", { result: "The handoff is complete." })]),
+    ],
+  });
+  assert.equal(wordCompletionWithoutArtifact.result.stopped, true);
+  assert.equal(wordCompletionWithoutArtifact.result.reason, "model_did_not_execute");
+  assert(
+    wordCompletionWithoutArtifact.events.some(
+      (event) =>
+        event.type === "document.quality_assessed" &&
+        event.data?.ok === false &&
+        /no readable DOCX or PDF/i.test(String(event.data?.reason || ""))
+    ),
+    "Word completion without a document artifact bypassed the independent quality gate"
+  );
+  assert(
+    wordCompletionWithoutArtifact.events.some(
+      (event) =>
+        event.type === "completion.evidence_rejected" &&
+        /no readable DOCX or PDF/i.test(String(event.data?.reason || ""))
+    ),
+    "missing Word artifacts did not produce an actionable completion repair"
+  );
+
   const verifiedAction = await runCase({
     id: "verified-action",
     goal: "Execute the shell command pwd and report the output.",
