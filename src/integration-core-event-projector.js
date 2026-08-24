@@ -12,6 +12,7 @@ import {
   createPublicIntegrationEvent,
   validateIntegrationEventPayload,
 } from "./integration-events.js";
+import { sanitizeIntegrationArtifact } from "./integration-artifacts.js";
 import { authorityFail } from "./integration-durable-common.js";
 import { redactSensitiveText } from "./redaction.js";
 
@@ -32,6 +33,7 @@ const ALLOWED_RAW_EVENT_TYPES = new Set([
   "assistant.delta",
   "model.responded",
   "output.completed",
+  "artifact.available",
 ]);
 const TERMINAL_TYPES = new Set(["run.completed", "run.failed", "run.cancelled"]);
 const RUN_STATUSES = new Set(["starting", "running", "completed", "failed", "cancelled"]);
@@ -206,6 +208,7 @@ function publicToolLabel(toolName) {
     search_files: "Search files",
     apply_patch: "Apply patch",
     run_command: "Run command",
+    execute_python_analysis: "Run Python analysis",
     finish: "Finish",
   };
   return labels[name] || "AgInTi tool";
@@ -314,6 +317,13 @@ export function projectCoreEvent(typeInput, dataInput = {}, options = {}) {
     try {
       assertNoUnsafeCoreEventFields(typeof data === "string" ? { text: data } : data, type);
       payload = normalizeOutputPayload(data);
+    } catch {
+      return null;
+    }
+  } else if (type === "artifact.created") {
+    try {
+      const artifact = sanitizeIntegrationArtifact(data?.artifact || data);
+      payload = validateIntegrationEventPayload(type, { artifact });
     } catch {
       return null;
     }

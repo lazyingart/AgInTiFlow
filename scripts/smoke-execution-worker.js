@@ -207,7 +207,8 @@ const productionGatedWorker = createPythonExecutionWorker({ workerId: WORKER_ID 
 const productionGatedCapabilities = await productionGatedWorker.capabilities();
 assert.equal(productionGatedCapabilities.ready, false);
 assert.equal(productionGatedCapabilities.activation.publicReady, false);
-assert(productionGatedCapabilities.activation.blockers.includes("public-activation-locked"));
+assert(productionGatedCapabilities.activation.blockers.includes("aggregate-cgroup-containment-unproven"));
+assert.equal(productionGatedCapabilities.activation.blockers.includes("public-activation-locked"), false);
 await assert.rejects(
   () => productionGatedWorker.execute(job("print('blocked until the full service boundary is proven')")),
   (error) => error instanceof ExecutionWorkerError && error.code === "EXECUTION_UNAVAILABLE"

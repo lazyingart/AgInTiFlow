@@ -8,6 +8,12 @@ import {
   EXECUTION_RUNTIME_BUNDLE_PROFILE,
   validateExecutionRuntimeBundle,
 } from "./execution-runtime-bundle.js";
+import {
+  EXECUTION_WORKER_CGROUP_POLICY_DIGEST,
+  EXECUTION_WORKER_EXPECTED_CGROUP,
+  EXECUTION_WORKER_SERVICE_UNIT,
+  attestExecutionWorkerCgroupBoundary,
+} from "./execution-worker-systemd-boundary.js";
 import { sanitizeIntegrationArtifact } from "./integration-artifacts.js";
 import { contractDigest } from "./integration-policy.js";
 
@@ -15,7 +21,7 @@ export const EXECUTION_WORKER_SCHEMA_VERSION = "aginti-execution-worker-v1";
 export const EXECUTION_JOB_SCHEMA_VERSION = "aginti-execution-job-v1";
 export const EXECUTION_RESULT_SCHEMA_VERSION = "aginti-execution-result-v1";
 export const EXECUTION_RUNTIME_PROFILE = "python-bwrap-netless-v1";
-export const EXECUTION_PUBLIC_ACTIVATION_ENABLED = false;
+export const EXECUTION_PUBLIC_ACTIVATION_ENABLED = true;
 export const EXECUTION_RUNTIME_PATHS = Object.freeze({
   prlimit: "/usr/bin/prlimit",
   bwrap: "/usr/bin/bwrap",
@@ -340,6 +346,52 @@ export class ExecutionWorkerError extends Error {
 
 function fail(code, message, options) {
   throw new ExecutionWorkerError(code, message, options);
+}
+
+function unavailableContainment(error) {
+  const code = typeof error?.code === "string" && /^[A-Z0-9_]{1,80}$/u.test(error.code)
+    ? error.code
+    : "EXECUTION_CGROUP_ATTESTATION_UNAVAILABLE";
+  const proof = Object.freeze({
+    aggregateCgroupVerified: false,
+    exactUnitIdentityVerified: false,
+    currentProcessMembershipVerified: false,
+    hierarchicalDescendantLimitsVerified: false,
+    cgroupPolicyDigest: EXECUTION_WORKER_CGROUP_POLICY_DIGEST,
+    evidenceSha256: null,
+    failureCode: code,
+  });
+  return Object.freeze({ ...proof, containmentDigest: contractDigest(proof) });
+}
+
+function validatedContainment(attestation) {
+  const containment = attestation?.containment;
+  if (
+    !attestation || typeof attestation !== "object" || Array.isArray(attestation) ||
+    attestation.unit !== EXECUTION_WORKER_SERVICE_UNIT ||
+    attestation.cgroupPath !== EXECUTION_WORKER_EXPECTED_CGROUP ||
+    attestation.aggregateDescendantContainment !== true ||
+    attestation.cgroupPolicyDigest !== EXECUTION_WORKER_CGROUP_POLICY_DIGEST ||
+    typeof attestation.evidenceSha256 !== "string" || !DIGEST.test(attestation.evidenceSha256) ||
+    !containment || typeof containment !== "object" || Array.isArray(containment) ||
+    containment.aggregateCgroupVerified !== true ||
+    containment.exactUnitIdentityVerified !== true ||
+    containment.currentProcessMembershipVerified !== true ||
+    containment.hierarchicalDescendantLimitsVerified !== true ||
+    containment.cgroupPolicyDigest !== EXECUTION_WORKER_CGROUP_POLICY_DIGEST
+  ) {
+    return unavailableContainment({ code: "EXECUTION_CGROUP_ATTESTATION_INVALID" });
+  }
+  const proof = Object.freeze({
+    aggregateCgroupVerified: true,
+    exactUnitIdentityVerified: true,
+    currentProcessMembershipVerified: true,
+    hierarchicalDescendantLimitsVerified: true,
+    cgroupPolicyDigest: EXECUTION_WORKER_CGROUP_POLICY_DIGEST,
+    evidenceSha256: attestation.evidenceSha256,
+    failureCode: null,
+  });
+  return Object.freeze({ ...proof, containmentDigest: contractDigest(proof) });
 }
 
 function exactObject(input, allowed, required, label, { code = "EXECUTION_REQUEST_INVALID", status = 400 } = {}) {
@@ -1039,6 +1091,7 @@ export function createPythonExecutionWorker({
   filesystem = fs,
   clock = () => performance.now(),
   runtimeProbeImpl = probeExecutionWorkerRuntime,
+  containmentProbeImpl = attestExecutionWorkerCgroupBoundary,
   testOnlyAllowMissingSeccomp = false,
   runtimeBundleDirectory = null,
   expectedRuntimeBundleRootDigest,
@@ -1054,6 +1107,7 @@ export function createPythonExecutionWorker({
   }
   if (typeof clock !== "function") throw new TypeError("clock must be a function");
   if (typeof runtimeProbeImpl !== "function") throw new TypeError("runtimeProbeImpl must be a function");
+  if (typeof containmentProbeImpl !== "function") throw new TypeError("containmentProbeImpl must be a function");
   if (typeof testOnlyAllowMissingSeccomp !== "boolean") throw new TypeError("testOnlyAllowMissingSeccomp must be a boolean");
   if (runtimeBundleDirectory !== null && (typeof runtimeBundleDirectory !== "string"
       || !path.isAbsolute(runtimeBundleDirectory) || path.normalize(runtimeBundleDirectory) !== runtimeBundleDirectory)) {
@@ -1091,10 +1145,18 @@ export function createPythonExecutionWorker({
         expectedRuntimeBundleRootDigest,
         testOnlyAllowUntrustedRuntimeBundle,
       }),
-    ]).then(([identity, proof]) => Object.freeze({
+      Promise.resolve()
+        .then(() => containmentProbeImpl())
+        .then(validatedContainment, unavailableContainment),
+    ]).then(([identity, proof, containment]) => Object.freeze({
       ...identity,
       proof,
-      runtimeDigest: contractDigest({ identityDigest: identity.runtimeDigest, proofDigest: proof.proofDigest }),
+      containment,
+      runtimeDigest: contractDigest({
+        identityDigest: identity.runtimeDigest,
+        proofDigest: proof.proofDigest,
+        containmentDigest: containment.containmentDigest,
+      }),
     })).then((inspected) => {
       lastRuntime = inspected;
       lastRuntimeAt = clock();
@@ -1116,6 +1178,9 @@ export function createPythonExecutionWorker({
       && inspected.minimalRuntimeRoot
       && inspected.runtimeBundleDigestPinned
       && inspected.proof.seccompPolicyVerified === true
+      && inspected.containment.aggregateCgroupVerified === true
+      && !testOnlyAllowMissingSeccomp
+      && !testOnlyAllowUntrustedRuntimeBundle
       && !degraded;
     const admission = Object.freeze({
       state: !activationReady
@@ -1142,12 +1207,14 @@ export function createPythonExecutionWorker({
         runtimeBundleDigestPinned: inspected.runtimeBundleDigestPinned,
         runtimeBundleRootDigest: inspected.runtimeBundle?.rootDigest ?? null,
       }),
+      containment: inspected.containment,
       languages: Object.freeze(["python"]),
       artifacts: Object.freeze({ schemaVersion: "1", kinds: Object.freeze(["plot", "table", "markdown"]) }),
       limits: EXECUTION_LIMITS,
       executionGate: Object.freeze({
         requiresVerifiedSeccompPolicy: true,
-        testOnlyBypassConfigured: testOnlyAllowMissingSeccomp,
+        requiresAggregateCgroupContainment: true,
+        testOnlyBypassConfigured: testOnlyAllowMissingSeccomp || testOnlyAllowUntrustedRuntimeBundle,
       }),
     });
     const capabilityDigest = contractDigest(capability);
@@ -1158,9 +1225,12 @@ export function createPythonExecutionWorker({
         ...(!inspected.minimalRuntimeRoot ? ["minimal-runtime-root-unproven"] : []),
         ...(inspected.minimalRuntimeRoot && !inspected.runtimeBundleDigestPinned
           ? ["runtime-bundle-digest-unpinned"] : []),
-        "aggregate-cgroup-containment-unproven",
+        ...(!inspected.containment.aggregateCgroupVerified
+          ? ["aggregate-cgroup-containment-unproven"] : []),
+        ...((testOnlyAllowMissingSeccomp || testOnlyAllowUntrustedRuntimeBundle)
+          ? ["test-only-bypass-configured"] : []),
         ...(degraded ? ["worker-termination-degraded"] : []),
-        "public-activation-locked",
+        ...(!EXECUTION_PUBLIC_ACTIVATION_ENABLED ? ["public-activation-locked"] : []),
       ]),
     });
     const health = Object.freeze({ ready: admission.state === "ready", admission, activation });
@@ -1203,7 +1273,8 @@ export function createPythonExecutionWorker({
     }
     if ((!EXECUTION_PUBLIC_ACTIVATION_ENABLED || !inspected.minimalRuntimeRoot
         || !inspected.runtimeBundleDigestPinned
-        || !inspected.proof.seccompPolicyVerified) && !testOnlyAllowMissingSeccomp) {
+        || !inspected.proof.seccompPolicyVerified
+        || !inspected.containment.aggregateCgroupVerified) && !testOnlyAllowMissingSeccomp) {
       activeJobs -= 1;
       fail("EXECUTION_UNAVAILABLE", "execution requires the hardened service boundary.", { status: 503 });
     }
@@ -1351,9 +1422,11 @@ export function createPythonExecutionWorker({
   }
 
   return Object.freeze({
-    kind: testOnlyAllowMissingSeccomp ? "aginti-execution-worker-test-only" : "aginti-execution-worker",
+    kind: testOnlyAllowMissingSeccomp || testOnlyAllowUntrustedRuntimeBundle
+      ? "aginti-execution-worker-test-only"
+      : "aginti-execution-worker",
     workerId,
-    testOnlyBypassActive: testOnlyAllowMissingSeccomp,
+    testOnlyBypassActive: testOnlyAllowMissingSeccomp || testOnlyAllowUntrustedRuntimeBundle,
     capabilities,
     execute,
   });

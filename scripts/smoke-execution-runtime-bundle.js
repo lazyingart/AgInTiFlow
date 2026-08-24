@@ -136,7 +136,8 @@ try {
   assert.equal(capabilities.activation.publicReady, false, "the bundle alone must not unlock public execution");
   assert.equal(capabilities.activation.blockers.includes("minimal-runtime-root-unproven"), false);
   assert(capabilities.activation.blockers.includes("aggregate-cgroup-containment-unproven"));
-  assert(capabilities.activation.blockers.includes("public-activation-locked"));
+  assert(capabilities.activation.blockers.includes("test-only-bypass-configured"));
+  assert.equal(capabilities.activation.blockers.includes("public-activation-locked"), false);
 
   const unpinnedWorker = createPythonExecutionWorker({
     workerId: `worker_${crypto.randomBytes(24).toString("base64url")}`,
