@@ -13,6 +13,7 @@ import { redactSensitiveText } from "./redaction.js";
 export const MAX_INTEGRATION_PUBLIC_ARTIFACT_BYTES = 48 * 1024;
 
 const PLOT_TYPES = new Set(["line", "bar", "scatter", "area"]);
+const MAX_PLOT_MAGNITUDE = Number.MAX_SAFE_INTEGER;
 const ABSOLUTE_PATH_PATTERN =
   /(?:^|[\s("'`])(?:\/(?:workspace|home|users|root|etc|usr|var|opt|srv|run|tmp|proc|sys|dev|mnt|media|aginti-(?:home|cache|env))(?:\/[^\s"'`<>)\]]*)?|[A-Za-z]:\\[^\s"'`<>)\]]*)/giu;
 
@@ -30,6 +31,25 @@ function redactPublicText(value) {
 function finiteNumber(value, label) {
   if (typeof value !== "number" || !Number.isFinite(value)) integrationInvalid(`${label} must be a finite number`);
   return value;
+}
+
+function plotNumber(value, label) {
+  const normalized = finiteNumber(value, label);
+  if (Math.abs(normalized) > MAX_PLOT_MAGNITUDE) integrationInvalid(`${label} exceeds the supported plot magnitude`);
+  return normalized;
+}
+
+function validatePlotRange(values, label, { includeZero = false } = {}) {
+  let minimum = includeZero ? Math.min(0, ...values) : Math.min(...values);
+  let maximum = includeZero ? Math.max(0, ...values) : Math.max(...values);
+  if (minimum === maximum) {
+    minimum -= 1;
+    maximum += 1;
+  }
+  const span = maximum - minimum;
+  if (![minimum, maximum, span].every(Number.isFinite) || span <= 0) {
+    integrationInvalid(`${label} produces an unsupported numeric range`);
+  }
 }
 
 function validateLabel(value, label, maximum = 120) {
@@ -82,7 +102,7 @@ export function validateIntegrationPlotSpec(value) {
       totalPoints += entry.data.length;
       return Object.freeze({
         name,
-        data: Object.freeze(entry.data.map((point, pointIndex) => finiteNumber(point, `plot series[${index}].data[${pointIndex}]`))),
+        data: Object.freeze(entry.data.map((point, pointIndex) => plotNumber(point, `plot series[${index}].data[${pointIndex}]`))),
       });
     }
     if (!Array.isArray(entry.points) || entry.points.length < 1) integrationInvalid(`plot series[${index}].points must not be empty`);
@@ -93,14 +113,19 @@ export function validateIntegrationPlotSpec(value) {
         entry.points.map((point, pointIndex) => {
           const normalized = integrationExactKeys(point, ["x", "y"], `plot series[${index}].points[${pointIndex}]`, ["x", "y"]);
           return Object.freeze({
-            x: finiteNumber(normalized.x, `plot series[${index}].points[${pointIndex}].x`),
-            y: finiteNumber(normalized.y, `plot series[${index}].points[${pointIndex}].y`),
+            x: plotNumber(normalized.x, `plot series[${index}].points[${pointIndex}].x`),
+            y: plotNumber(normalized.y, `plot series[${index}].points[${pointIndex}].y`),
           });
         })
       ),
     });
   });
   if (totalPoints > 500) integrationInvalid("plot contains more than 500 total points");
+  const normalizedPoints = series.flatMap((entry) => categorical
+    ? entry.data.map((y, x) => ({ x, y }))
+    : entry.points);
+  validatePlotRange(normalizedPoints.map(({ y }) => y), "plot y values", { includeZero: true });
+  validatePlotRange(normalizedPoints.map(({ x }) => x), "plot x values");
 
   return Object.freeze({
     schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
