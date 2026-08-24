@@ -315,7 +315,7 @@ function createCoordinator(client, { requireSystemdCredential, pollMs = 100 } = 
       await readiness({ signal });
       let status = await client.start(request, { signal });
       started = true;
-      options.onProgress?.(Object.freeze({ state: status.state }));
+      await options.onProgress?.(Object.freeze({ state: status.state }));
 
       while (!status.terminal) {
         if (signal?.aborted) {
@@ -335,7 +335,7 @@ function createCoordinator(client, { requireSystemdCredential, pollMs = 100 } = 
         if (replay.events.length) lastEvent = replay.events.at(-1);
         await delay(pollMs, signal);
         status = await client.status(reference, { signal });
-        options.onProgress?.(Object.freeze({ state: status.state }));
+        await options.onProgress?.(Object.freeze({ state: status.state }));
       }
       terminal = true;
       const finalEvents = await client.events({

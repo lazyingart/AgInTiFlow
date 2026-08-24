@@ -184,6 +184,14 @@ function fakeWorker({
   });
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return Object.freeze({ promise, resolve });
+}
+
 function rpcForManager(manager, mutate = null, calls = []) {
   return async (pathname, body) => {
     calls.push(Object.freeze({ pathname, body }));
@@ -418,6 +426,107 @@ async function cancellationPropagates() {
   coordinator.close();
 }
 
+async function awaitsProgressDeliveryAndPropagatesRejections() {
+  const calls = [];
+  const workerCompletion = deferred();
+  const firstProgressRelease = deferred();
+  const secondProgressRelease = deferred();
+  const firstProgressEntered = deferred();
+  const secondProgressEntered = deferred();
+  const controlledWorker = Object.freeze({
+    capabilities: async () => capability(),
+    async execute(request, { signal } = {}) {
+      await Promise.race([
+        workerCompletion.promise,
+        new Promise((resolve) => signal?.addEventListener?.("abort", resolve, { once: true })),
+      ]);
+      return terminalResult(request, signal?.aborted ? "cancelled" : "succeeded");
+    },
+  });
+  const manager = createExecutionJobManager({ worker: controlledWorker });
+  const coordinator = createTestOnlyIntegrationAnalysisCoordinator(
+    createTestOnlyExecutionWorkerClient(rpcForManager(manager, null, calls)),
+    { pollMs: 25 }
+  );
+  let progressCount = 0;
+  const pending = coordinator.execute(scope(), { source: "print(1)", timeoutMs: 1_000 }, {
+    async onProgress(progress) {
+      progressCount += 1;
+      if (progressCount === 1) {
+        firstProgressEntered.resolve(progress.state);
+        await firstProgressRelease.promise;
+      } else if (progressCount === 2) {
+        secondProgressEntered.resolve(progress.state);
+        await secondProgressRelease.promise;
+      }
+    },
+  });
+  try {
+    assert.equal(await firstProgressEntered.promise, "running");
+    assert.equal(calls.some(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsEvents), false);
+    assert.equal(calls.some(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStatus), false);
+
+    firstProgressRelease.resolve();
+    assert.equal(await secondProgressEntered.promise, "running");
+    const pollCallsWhileSecondWriteIsPending = calls.filter(({ pathname }) =>
+      pathname === EXECUTION_WORKER_RPC_PATHS.jobsEvents || pathname === EXECUTION_WORKER_RPC_PATHS.jobsStatus
+    ).length;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls.filter(({ pathname }) =>
+      pathname === EXECUTION_WORKER_RPC_PATHS.jobsEvents || pathname === EXECUTION_WORKER_RPC_PATHS.jobsStatus
+    ).length, pollCallsWhileSecondWriteIsPending);
+
+    workerCompletion.resolve();
+    secondProgressRelease.resolve();
+    const result = await pending;
+    assert.equal(result.status, "succeeded");
+    assert(progressCount >= 3);
+  } finally {
+    workerCompletion.resolve();
+    firstProgressRelease.resolve();
+    secondProgressRelease.resolve();
+    await pending.catch(() => {});
+    coordinator.close();
+  }
+
+  const rejectionCalls = [];
+  const rejectionManager = createExecutionJobManager({ worker: fakeWorker({ delayMs: 75 }) });
+  const rejectingCoordinator = createTestOnlyIntegrationAnalysisCoordinator(
+    createTestOnlyExecutionWorkerClient(rpcForManager(rejectionManager, null, rejectionCalls)),
+    { pollMs: 25 }
+  );
+  const writeFailure = new Error("durable progress write failed");
+  const unhandled = [];
+  const onUnhandledRejection = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandledRejection);
+  try {
+    await assert.rejects(
+      rejectingCoordinator.execute(scope(), { source: "print(2)", timeoutMs: 1_000 }, {
+        async onProgress() {
+          await Promise.resolve();
+          throw writeFailure;
+        },
+      }),
+      (error) => error?.code === "EXECUTION_UNAVAILABLE" && error?.cause === writeFailure
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+    assert.equal(
+      rejectionCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsCancel).length,
+      1
+    );
+    assert.equal(
+      rejectionCalls.some(({ pathname }) =>
+        pathname === EXECUTION_WORKER_RPC_PATHS.jobsEvents || pathname === EXECUTION_WORKER_RPC_PATHS.jobsStatus
+      ),
+      false
+    );
+  } finally {
+    process.off("unhandledRejection", onUnhandledRejection);
+    rejectingCoordinator.close();
+  }
+}
+
 await successfulExecution();
 await publicActivationGates();
 await rejectsCallerTransportFields();
@@ -425,5 +534,6 @@ credentialMetadataAcceptsSystemdOwnership();
 await rejectsArtifactTamper();
 await rejectsEventTamper();
 await cancellationPropagates();
+await awaitsProgressDeliveryAndPropagatesRejections();
 
 console.log("integration analysis coordinator smoke passed");

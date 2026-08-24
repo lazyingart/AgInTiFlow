@@ -352,7 +352,7 @@ function normalizeAnalysisArguments(rawArguments) {
 function normalizeToolCall(value) {
   const call = exactObject(
     value,
-    ["id", "type", "function"],
+    ["id", "type", "function", "index"],
     ["type", "function"],
     "analysis tool call",
     { code: "ANALYSIS_TOOL_CALL_INVALID", status: 502 }
@@ -366,6 +366,9 @@ function normalizeToolCall(value) {
   );
   if (call.type !== "function") {
     fail("ANALYSIS_TOOL_CALL_INVALID", "LocalLLM returned an invalid analysis tool call.", { status: 502 });
+  }
+  if (Object.hasOwn(call, "index") && !Object.is(call.index, 0)) {
+    fail("ANALYSIS_TOOL_CALL_INVALID", "LocalLLM returned an invalid analysis tool call index.", { status: 502 });
   }
   if (fn.name !== INTEGRATION_ANALYSIS_TOOL_NAME) {
     fail("ANALYSIS_TOOL_FORBIDDEN", "LocalLLM requested a tool that is not available in this analysis profile.", { status: 502 });

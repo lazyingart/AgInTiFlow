@@ -178,13 +178,14 @@ function rpcForManager(manager, calls) {
   };
 }
 
-function toolResponse(source, extras = {}) {
+function toolResponse(source, extras = {}, callExtras = {}) {
   return {
     choices: [{
       message: {
         role: "assistant",
         content: null,
         tool_calls: [{
+          ...callExtras,
           id: `call_${contractDigest(source).slice(0, 20)}`,
           type: "function",
           function: {
@@ -228,8 +229,11 @@ async function executesAndSynthesizesPlot() {
         "values = [1, 4, 9]",
         "emit_plot('Square-number trend', {'schemaVersion':'1','type':'line','labels':['1','2','3'],'series':[{'name':'n squared','data':values}]})",
         "print('answer=9')",
-      ].join("\n"));
+      ].join("\n"), {}, { index: 0 });
     }
+    const canonicalToolCall = payload.messages.at(-2).tool_calls[0];
+    assert.equal(Object.hasOwn(canonicalToolCall, "index"), false);
+    assert.deepEqual(Object.keys(canonicalToolCall).sort(), ["function", "id", "type"]);
     const feedback = JSON.parse(payload.messages.at(-1).content);
     assert.equal(feedback.ok, true);
     assert.equal(feedback.artifacts[0].kind, "plot");
@@ -344,6 +348,21 @@ async function rejectsOverridesAndMalformedTools() {
     (error) => error?.code === "ANALYSIS_TOOL_CALL_INVALID"
   );
   extraArgs.coordinator.close();
+
+  for (const callExtras of [
+    { index: 1 },
+    { index: "0" },
+    { index: null },
+    { index: -0 },
+    { position: 0 },
+  ]) {
+    const malformed = fixture(async () => toolResponse("print(1)", {}, callExtras));
+    await assert.rejects(
+      malformed.planner.run(scope(), { prompt: "Execute Python code." }),
+      (error) => error?.code === "ANALYSIS_TOOL_CALL_INVALID"
+    );
+    malformed.coordinator.close();
+  }
 
   const wrongTool = fixture(async () => ({
     choices: [{ message: { role: "assistant", content: null, tool_calls: [{
