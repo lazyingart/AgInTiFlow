@@ -5991,6 +5991,49 @@ const WORKTREE_CHANGING_GIT_ACTIONS = new Set([
   "switch",
 ]);
 
+function isPrivateVerificationEvidencePath(value = "") {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "");
+  return Boolean(
+    normalized === ".aginti/verification" ||
+      normalized.startsWith(".aginti/verification/") ||
+      normalized.includes("/.aginti/verification/")
+  );
+}
+
+function commandWritesOnlyPrivateVerificationEvidence(command = "") {
+  const normalized = String(command || "").trim();
+  if (!normalized) return false;
+  const tokens = tokenizeShellWords(normalized);
+  if (tokens[0] === "tee") {
+    let index = 1;
+    if (["-a", "--append"].includes(tokens[index])) index += 1;
+    if (tokens[index] === "--") index += 1;
+    const targets = tokens.slice(index);
+    return targets.length > 0 && targets.every(isPrivateVerificationEvidencePath);
+  }
+  if (tokens[0] === "mkdir") {
+    const targets = tokens.slice(1).filter((token) => token !== "-p" && token !== "--");
+    return targets.length > 0 && targets.every(isPrivateVerificationEvidencePath);
+  }
+
+  let strippedPrivateRedirect = false;
+  const withoutPrivateRedirects = normalized.replace(
+    /(^|\s)(?:\d*>>?|&>>?)\s*("[^"]+"|'[^']+'|[^\s;&|]+)/g,
+    (match, prefix, target) => {
+      if (!isPrivateVerificationEvidencePath(target)) return match;
+      strippedPrivateRedirect = true;
+      return prefix;
+    }
+  ).trim();
+  if (!strippedPrivateRedirect || !withoutPrivateRedirects) return false;
+  const underlyingPolicy = classifyCommand(withoutPrivateRedirects);
+  return underlyingPolicy.writesWorkspace !== true && underlyingPolicy.mayMutateProject !== true;
+}
+
 function commandCanMutateProjectContent(command = "", commandPolicy = {}) {
   if (commandPolicy.writesWorkspace !== true && commandPolicy.mayMutateProject !== true) return false;
   const sequence = parseTopLevelShellSequence(String(command || ""));
@@ -6004,6 +6047,7 @@ function commandCanMutateProjectContent(command = "", commandPolicy = {}) {
       commandCanMutateProjectContent(segment, classifyCommand(segment))
     );
   }
+  if (commandWritesOnlyPrivateVerificationEvidence(command)) return false;
   const category = String(commandPolicy.category || "");
   if (!["git-workflow", "git-remote"].includes(category)) return true;
   if (/\bgit\s+clone\b/i.test(String(command || ""))) return true;
@@ -6490,7 +6534,7 @@ function successfulProjectMutationPaths(toolResult = {}) {
       [
         toolResult.path,
         ...actualChanges.flatMap((change) => [change.path, change.fromPath]),
-      ].filter(Boolean)
+      ].filter((candidate) => candidate && !isPrivateVerificationEvidencePath(candidate))
     ),
   ];
 }

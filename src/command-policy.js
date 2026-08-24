@@ -108,14 +108,28 @@ function isReadOnlyUniqFilter(command = "") {
   );
 }
 
-function isReadOnlySha256Command(command = "") {
+function isReadOnlyDigestCommand(command = "") {
   const normalized = stripBenignRedirections(command);
   if (hasActiveShellExpansion(normalized)) return false;
   const tokens = tokenizeShellWords(normalized);
-  if (tokens[0] !== "sha256sum" || tokens.length < 2) return false;
-  const paths = tokens.slice(1).filter((token) => token !== "--");
+  if (!["md5sum", "sha256sum"].includes(tokens[0]) || tokens.length < 2) return false;
+  let index = 1;
+  if (["-c", "--check"].includes(tokens[index])) index += 1;
+  if (tokens[index] === "--") index += 1;
+  const paths = tokens.slice(index);
   return paths.length > 0 && paths.every((token) =>
     !token.startsWith("-") && READ_ONLY_FOR_LOOP_LITERAL_PATTERN.test(token)
+  );
+}
+
+function isReadOnlyDiffCommand(command = "") {
+  const normalized = stripBenignRedirections(command);
+  if (hasActiveShellExpansion(normalized)) return false;
+  const tokens = tokenizeShellWords(normalized);
+  if (tokens[0] !== "diff" || tokens.length < 3) return false;
+  const operands = tokens.slice(1).filter((token) => token !== "--" && !token.startsWith("-"));
+  return operands.length === 2 && operands.every((token) =>
+    READ_ONLY_FOR_LOOP_LITERAL_PATTERN.test(token)
   );
 }
 
@@ -1511,7 +1525,8 @@ function classifySimpleCommand(normalized) {
     isReadOnlyPrintfCommand(commandForPatternMatching) ||
     isReadOnlyTrDeleteFilter(commandForPatternMatching) ||
     isReadOnlyUniqFilter(commandForPatternMatching) ||
-    isReadOnlySha256Command(commandForPatternMatching) ||
+    isReadOnlyDigestCommand(commandForPatternMatching) ||
+    isReadOnlyDiffCommand(commandForPatternMatching) ||
     isReadOnlyFindCommand(normalized) ||
     (!hasActiveShellExpansion(benignRedirectCommand) && isReadOnlyShellCondition(benignRedirectCommand))
   ) {

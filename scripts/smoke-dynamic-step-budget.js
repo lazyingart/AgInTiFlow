@@ -2302,6 +2302,112 @@ try {
     shellMutationState.meta.projectVerification?.mutationRevision === 1,
     "metadata-only Git chain with observational output invalidated current verification"
   );
+  assert(
+    classifyCommand("md5sum output/report.pdf").writesWorkspace === false &&
+      classifyCommand("md5sum -c .aginti/verification/source-hashes.txt").writesWorkspace === false &&
+      classifyCommand("diff .aginti/verification/run-1.txt .aginti/verification/run-2.txt").writesWorkspace === false,
+    "checksum or diff evidence probes were not classified as read-only"
+  );
+  const privateEvidenceState = {
+    meta: {
+      goalContract: { revision: 1 },
+      projectVerification: { requiredCommands: ["bash build.sh"] },
+    },
+  };
+  const privateEvidenceBuild = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: "bash build.sh" },
+    stdout: "build complete\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(privateEvidenceState, privateEvidenceBuild, {
+    commandCwd: workspace,
+    taskProfile: "writing",
+    allowShellTool: true,
+    sandboxMode: "host",
+  });
+  const privateEvidenceRevision =
+    privateEvidenceState.meta.projectVerification?.mutationRevision;
+  const privateEvidenceCommand = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command:
+        "md5sum output/report.pdf > .aginti/verification/hashes-final.txt && cat .aginti/verification/hashes-final.txt && diff .aginti/verification/hashes-run1.txt .aginti/verification/hashes-final.txt && md5sum -c .aginti/verification/source-hashes.txt && git status --porcelain",
+    },
+    stdout: "MATCH\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(privateEvidenceState, privateEvidenceCommand, {
+    commandCwd: workspace,
+    taskProfile: "writing",
+    allowShellTool: true,
+    sandboxMode: "host",
+  });
+  const privateEvidenceWrite = {
+    toolName: "write_file",
+    ok: true,
+    path: ".aginti/verification/visual-check.txt",
+    changes: [
+      {
+        path: ".aginti/verification/visual-check.txt",
+        created: true,
+        beforeHash: "",
+        afterHash: "private-evidence",
+      },
+    ],
+  };
+  recordProjectVerificationOutcome(privateEvidenceState, privateEvidenceWrite, {
+    commandCwd: workspace,
+    taskProfile: "writing",
+  });
+  const privateEvidenceContract = augmentScsTaskContractWithProjectVerification(
+    {
+      requiresExternalEvidence: false,
+      requiredEvidence: [],
+      requiredToolCalls: [],
+      requiredGitActions: [],
+      taskProfile: "writing",
+    },
+    privateEvidenceState,
+    { taskProfile: "writing" }
+  );
+  const privateEvidenceLedger = buildScsEvidenceLedger({
+    state: {
+      messages: [privateEvidenceBuild, privateEvidenceCommand, privateEvidenceWrite].map((result) =>
+        toolMessage(result)
+      ),
+    },
+  });
+  assert(
+    privateEvidenceRevision === 1 &&
+      privateEvidenceState.meta.projectVerification?.mutationRevision === 1 &&
+      privateEvidenceState.meta.projectVerification?.requiredCommandBatch?.complete === true &&
+      evaluateScsEvidence(privateEvidenceContract, privateEvidenceLedger).ok,
+    "ignored private verification evidence invalidated a successful canonical build"
+  );
+  const publicEvidenceMutation = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: "md5sum output/report.pdf > output/hashes-final.txt" },
+    stdout: "",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(privateEvidenceState, publicEvidenceMutation, {
+    commandCwd: workspace,
+    taskProfile: "writing",
+    allowShellTool: true,
+    sandboxMode: "host",
+  });
+  assert(
+    privateEvidenceState.meta.projectVerification?.mutationRevision === 2 &&
+      !privateEvidenceState.meta.projectVerification?.requiredCommandBatch,
+    "a non-private output write was incorrectly exempted from project mutation tracking"
+  );
   const gitCheckoutResult = {
     toolName: "run_command",
     ok: true,
