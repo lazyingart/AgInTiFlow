@@ -120,7 +120,10 @@ assert.equal(identity.policy.hostDataMounts, false);
 assert.equal(identity.policy.runtimeCredentials, false);
 assert.equal(identity.policy.nestedUserNamespaces, false);
 assert.equal(identity.policy.runtimeTree, "broad-read-only-host-runtime-bind");
-assert.equal(identity.policy.childProcessExecution, "not-yet-restricted-inside-namespace");
+assert.equal(
+  identity.policy.childProcessExecution,
+  "seccomp-denied-after-python-start-but-broad-host-runtime-remains-readable"
+);
 assert.match(identity.policyDigest, /^[a-f0-9]{64}$/u);
 assert.match(identity.runtimeDigest, /^[a-f0-9]{64}$/u);
 assert.equal(identity.policy.limits.maximumWorkspaceBytes, 16 * 1024 * 1024);
@@ -130,6 +133,12 @@ assert.equal(liveProof.nonRoot, true);
 assert.equal(liveProof.capabilitiesDropped, true);
 assert.equal(liveProof.noNewPrivileges, true);
 assert.equal(liveProof.nestedUserNamespacesDisabled, true);
+assert.equal(liveProof.seccomp, true);
+assert.equal(liveProof.seccompPolicyVerified, true);
+assert.deepEqual(
+  liveProof.deniedSyscallsProven,
+  ["execve", "execveat", "clone", "clone3", "unshare", "x32-execve"]
+);
 assert.match(liveProof.proofDigest, /^[a-f0-9]{64}$/u);
 
 function successfulChild() {

@@ -1,8 +1,13 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { types as utilTypes } from "node:util";
 
+import {
+  EXECUTION_RUNTIME_BUNDLE_PROFILE,
+  validateExecutionRuntimeBundle,
+} from "./execution-runtime-bundle.js";
 import { sanitizeIntegrationArtifact } from "./integration-artifacts.js";
 import { contractDigest } from "./integration-policy.js";
 
@@ -31,6 +36,52 @@ export const EXECUTION_LIMITS = Object.freeze({
   maximumOpenFiles: 128,
   cpuSeconds: 22,
 });
+export const EXECUTION_SECCOMP_POLICY = Object.freeze({
+  schemaVersion: "aginti-execution-seccomp-v1",
+  architecture: "AUDIT_ARCH_X86_64",
+  x32AbiAction: "errno-EPERM",
+  defaultAction: "allow",
+  deniedAction: "errno-EPERM",
+  deniedSyscalls: Object.freeze([
+    Object.freeze({ name: "clone", number: 56 }),
+    Object.freeze({ name: "fork", number: 57 }),
+    Object.freeze({ name: "vfork", number: 58 }),
+    Object.freeze({ name: "execve", number: 59 }),
+    Object.freeze({ name: "ptrace", number: 101 }),
+    Object.freeze({ name: "pivot_root", number: 155 }),
+    Object.freeze({ name: "chroot", number: 161 }),
+    Object.freeze({ name: "acct", number: 163 }),
+    Object.freeze({ name: "mount", number: 165 }),
+    Object.freeze({ name: "umount2", number: 166 }),
+    Object.freeze({ name: "swapon", number: 167 }),
+    Object.freeze({ name: "swapoff", number: 168 }),
+    Object.freeze({ name: "reboot", number: 169 }),
+    Object.freeze({ name: "init_module", number: 175 }),
+    Object.freeze({ name: "delete_module", number: 176 }),
+    Object.freeze({ name: "kexec_load", number: 246 }),
+    Object.freeze({ name: "add_key", number: 248 }),
+    Object.freeze({ name: "request_key", number: 249 }),
+    Object.freeze({ name: "keyctl", number: 250 }),
+    Object.freeze({ name: "unshare", number: 272 }),
+    Object.freeze({ name: "move_pages", number: 279 }),
+    Object.freeze({ name: "perf_event_open", number: 298 }),
+    Object.freeze({ name: "open_by_handle_at", number: 304 }),
+    Object.freeze({ name: "setns", number: 308 }),
+    Object.freeze({ name: "process_vm_readv", number: 310 }),
+    Object.freeze({ name: "process_vm_writev", number: 311 }),
+    Object.freeze({ name: "kcmp", number: 312 }),
+    Object.freeze({ name: "finit_module", number: 313 }),
+    Object.freeze({ name: "seccomp", number: 317 }),
+    Object.freeze({ name: "bpf", number: 321 }),
+    Object.freeze({ name: "execveat", number: 322 }),
+    Object.freeze({ name: "userfaultfd", number: 323 }),
+    Object.freeze({ name: "io_uring_setup", number: 425 }),
+    Object.freeze({ name: "io_uring_enter", number: 426 }),
+    Object.freeze({ name: "io_uring_register", number: 427 }),
+    Object.freeze({ name: "clone3", number: 435 }),
+  ]),
+});
+export const EXECUTION_SECCOMP_POLICY_DIGEST = contractDigest(EXECUTION_SECCOMP_POLICY);
 
 const JOB_ID = /^job_[A-Za-z0-9_-]{24,96}$/u;
 const WORKER_ID = /^worker_[A-Za-z0-9_-]{24,96}$/u;
@@ -58,6 +109,8 @@ const ALLOWED_TERMINAL_STATUSES = new Set([
 
 const PYTHON_WRAPPER = String.raw`
 import builtins
+import ctypes
+import errno
 import io
 import json
 import os
@@ -71,6 +124,60 @@ _json_dumps = json.dumps
 _stderr_write = sys.__stderr__.write
 _stderr_flush = sys.__stderr__.flush
 os.umask(0o077)
+
+_seccomp_policy_digest = ${JSON.stringify(EXECUTION_SECCOMP_POLICY_DIGEST)}
+_seccomp_syscalls = ${JSON.stringify(EXECUTION_SECCOMP_POLICY.deniedSyscalls.map(({ number }) => number))}
+
+class _SockFilter(ctypes.Structure):
+    _fields_ = [
+        ("code", ctypes.c_ushort),
+        ("jt", ctypes.c_ubyte),
+        ("jf", ctypes.c_ubyte),
+        ("k", ctypes.c_uint32),
+    ]
+
+class _SockFprog(ctypes.Structure):
+    _fields_ = [
+        ("len", ctypes.c_ushort),
+        ("filter", ctypes.POINTER(_SockFilter)),
+    ]
+
+def _install_execution_filter():
+    _BPF_LD_W_ABS = 0x20
+    _BPF_JMP_JEQ_K = 0x15
+    _BPF_JMP_JSET_K = 0x45
+    _BPF_RET_K = 0x06
+    _AUDIT_ARCH_X86_64 = 0xC000003E
+    _SECCOMP_RET_KILL_PROCESS = 0x80000000
+    _SECCOMP_RET_ERRNO_EPERM = 0x00050000 | errno.EPERM
+    _SECCOMP_RET_ALLOW = 0x7FFF0000
+    _X32_SYSCALL_BIT = 0x40000000
+    _PR_SET_NO_NEW_PRIVS = 38
+    _PR_SET_SECCOMP = 22
+    _SECCOMP_MODE_FILTER = 2
+
+    _instructions = [
+        (_BPF_LD_W_ABS, 0, 0, 4),
+        (_BPF_JMP_JEQ_K, 1, 0, _AUDIT_ARCH_X86_64),
+        (_BPF_RET_K, 0, 0, _SECCOMP_RET_KILL_PROCESS),
+        (_BPF_LD_W_ABS, 0, 0, 0),
+        (_BPF_JMP_JSET_K, 0, 1, _X32_SYSCALL_BIT),
+        (_BPF_RET_K, 0, 0, _SECCOMP_RET_ERRNO_EPERM),
+    ]
+    for _syscall in _seccomp_syscalls:
+        _instructions.append((_BPF_JMP_JEQ_K, 0, 1, _syscall))
+        _instructions.append((_BPF_RET_K, 0, 0, _SECCOMP_RET_ERRNO_EPERM))
+    _instructions.append((_BPF_RET_K, 0, 0, _SECCOMP_RET_ALLOW))
+    _program_type = _SockFilter * len(_instructions)
+    _program = _program_type(*(_SockFilter(*_instruction) for _instruction in _instructions))
+    _filter = _SockFprog(len=len(_instructions), filter=_program)
+    _libc = ctypes.CDLL(None, use_errno=True)
+    if _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "PR_SET_NO_NEW_PRIVS failed")
+    if _libc.prctl(_PR_SET_SECCOMP, _SECCOMP_MODE_FILTER, ctypes.byref(_filter), 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "PR_SET_SECCOMP failed")
+
+_install_execution_filter()
 
 def emit_plot(title, spec):
     _artifacts.append({"title": title, "kind": "plot", "spec": spec})
@@ -88,6 +195,7 @@ def emit_markdown(title, markdown):
 _scope = {
     "__builtins__": builtins.__dict__,
     "__name__": "__main__",
+    "_aginti_seccomp_policy_digest": _seccomp_policy_digest,
     "emit_plot": emit_plot,
     "emit_table": emit_table,
     "emit_markdown": emit_markdown,
@@ -108,6 +216,7 @@ finally:
 `;
 
 const PYTHON_RUNTIME_PROBE = String.raw`
+import ctypes
 import errno
 import json
 import os
@@ -120,6 +229,40 @@ for _line in open("/proc/self/status", "r", encoding="utf-8"):
     if ":" in _line:
         _key, _value = _line.split(":", 1)
         _status[_key] = _value.strip()
+
+_libc = ctypes.CDLL(None, use_errno=True)
+_libc.syscall.restype = ctypes.c_long
+
+def _syscall_denied(_number, *_arguments):
+    ctypes.set_errno(0)
+    _result = _libc.syscall(ctypes.c_long(_number), *_arguments)
+    return _result == -1 and ctypes.get_errno() == errno.EPERM
+
+_execve_denied = _syscall_denied(
+    59,
+    ctypes.c_char_p(b"/aginti-probe-must-not-exist"),
+    ctypes.c_void_p(),
+    ctypes.c_void_p(),
+)
+_execveat_denied = _syscall_denied(
+    322,
+    ctypes.c_int(-100),
+    ctypes.c_char_p(b"/aginti-probe-must-not-exist"),
+    ctypes.c_void_p(),
+    ctypes.c_void_p(),
+    ctypes.c_int(0),
+)
+_clone_denied = _syscall_denied(
+    56,
+    ctypes.c_ulong(0xFFFFFFFFFFFFFFFF),
+    ctypes.c_void_p(),
+    ctypes.c_void_p(),
+    ctypes.c_void_p(),
+    ctypes.c_void_p(),
+)
+_clone3_denied = _syscall_denied(435, ctypes.c_void_p(), ctypes.c_size_t(0))
+_unshare_denied = _syscall_denied(272, ctypes.c_int(0))
+_x32_denied = _syscall_denied(0x40000000 | 59, ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p())
 
 _workspace_was_empty = os.listdir("/work") == []
 with open("/work/.aginti-runtime-probe", "w", encoding="utf-8") as _handle:
@@ -167,6 +310,13 @@ _payload = {
     "boundingCapabilities": _status.get("CapBnd", ""),
     "noNewPrivileges": _status.get("NoNewPrivs", ""),
     "seccompMode": _status.get("Seccomp", ""),
+    "seccompPolicyDigest": _aginti_seccomp_policy_digest,
+    "execveDenied": _execve_denied,
+    "execveatDenied": _execveat_denied,
+    "cloneDenied": _clone_denied,
+    "clone3Denied": _clone3_denied,
+    "unshareDenied": _unshare_denied,
+    "x32Denied": _x32_denied,
     "addressSpaceLimit": list(resource.getrlimit(resource.RLIMIT_AS)),
     "cpuLimit": list(resource.getrlimit(resource.RLIMIT_CPU)),
     "fileLimit": list(resource.getrlimit(resource.RLIMIT_FSIZE)),
@@ -395,8 +545,15 @@ export function validateExecutionResult(input, expected = {}) {
   return Object.freeze({ ...unsigned, resultDigest: expectedDigest });
 }
 
-export function buildExecutionWorkerCommand() {
+export function buildExecutionWorkerCommand({ runtimeRoot = null } = {}) {
+  if (runtimeRoot !== null && (typeof runtimeRoot !== "string" || !path.isAbsolute(runtimeRoot)
+      || path.normalize(runtimeRoot) !== runtimeRoot || runtimeRoot === "/")) {
+    throw new TypeError("runtimeRoot must be null or a dedicated canonical absolute path");
+  }
   const paths = EXECUTION_RUNTIME_PATHS;
+  const runtimeMounts = runtimeRoot
+    ? ["--ro-bind", runtimeRoot, "/"]
+    : ["--ro-bind", "/usr", "/usr", "--ro-bind", "/lib", "/lib", "--ro-bind", "/lib64", "/lib64"];
   return Object.freeze({
     command: paths.bwrap,
     args: Object.freeze([
@@ -408,9 +565,7 @@ export function buildExecutionWorkerCommand() {
       "--new-session",
       "--clearenv",
       "--cap-drop", "ALL",
-      "--ro-bind", "/usr", "/usr",
-      "--ro-bind", "/lib", "/lib",
-      "--ro-bind", "/lib64", "/lib64",
+      ...runtimeMounts,
       "--proc", "/proc",
       "--dev", "/dev",
       "--size", String(EXECUTION_LIMITS.maximumWorkspaceBytes),
@@ -474,16 +629,44 @@ async function executableIdentity(pathname, filesystem = fs) {
   return Object.freeze({ ...safeExecutableStat(stat, pathname), sha256: sha256(content) });
 }
 
-export async function inspectExecutionWorkerRuntime({ filesystem = fs } = {}) {
+export async function inspectExecutionWorkerRuntime({
+  filesystem = fs,
+  runtimeBundleDirectory = null,
+  expectedRuntimeBundleRootDigest,
+  testOnlyAllowUntrustedRuntimeBundle = false,
+} = {}) {
+  if (process.platform !== "linux" || process.arch !== "x64") {
+    fail("EXECUTION_RUNTIME_UNAVAILABLE", "execution runtime requires Linux x86_64 for its verified syscall policy.");
+  }
+  if (runtimeBundleDirectory !== null && (typeof runtimeBundleDirectory !== "string"
+      || !path.isAbsolute(runtimeBundleDirectory) || path.normalize(runtimeBundleDirectory) !== runtimeBundleDirectory)) {
+    throw new TypeError("runtimeBundleDirectory must be null or a canonical absolute path");
+  }
+  if (typeof testOnlyAllowUntrustedRuntimeBundle !== "boolean") {
+    throw new TypeError("testOnlyAllowUntrustedRuntimeBundle must be a boolean");
+  }
+  if (expectedRuntimeBundleRootDigest !== undefined
+      && (typeof expectedRuntimeBundleRootDigest !== "string" || !DIGEST.test(expectedRuntimeBundleRootDigest))) {
+    throw new TypeError("expectedRuntimeBundleRootDigest must be a contract digest");
+  }
+  const bundle = runtimeBundleDirectory
+    ? await validateExecutionRuntimeBundle({
+      bundleDirectory: runtimeBundleDirectory,
+      filesystem,
+      expectedRootDigest: expectedRuntimeBundleRootDigest,
+      testOnlyAllowUntrustedOwnership: testOnlyAllowUntrustedRuntimeBundle,
+    })
+    : null;
   const executables = [];
-  for (const pathname of Object.values(EXECUTION_RUNTIME_PATHS)) {
+  const inspectedPaths = bundle ? [EXECUTION_RUNTIME_PATHS.bwrap] : Object.values(EXECUTION_RUNTIME_PATHS);
+  for (const pathname of inspectedPaths) {
     executables.push(await executableIdentity(pathname, filesystem));
   }
   const policy = Object.freeze({
-    profile: EXECUTION_RUNTIME_PROFILE,
-    rootFilesystem: "empty-with-fixed-read-only-runtime-binds",
+    profile: bundle ? `${EXECUTION_RUNTIME_PROFILE}+${EXECUTION_RUNTIME_BUNDLE_PROFILE}` : EXECUTION_RUNTIME_PROFILE,
+    rootFilesystem: bundle ? "sealed-curated-runtime-root" : "empty-with-fixed-read-only-runtime-binds",
     network: "unshared-none",
-    runtimeReadOnlyMounts: Object.freeze(["/usr", "/lib", "/lib64"]),
+    runtimeReadOnlyMounts: Object.freeze(bundle ? ["sealed-runtime-root:/"] : ["/usr", "/lib", "/lib64"]),
     hostDataMounts: false,
     homeMount: false,
     runtimeCredentials: false,
@@ -492,10 +675,12 @@ export async function inspectExecutionWorkerRuntime({ filesystem = fs } = {}) {
     capabilities: "drop-all",
     noNewPrivileges: "kernel-verified-by-live-probe",
     nestedUserNamespaces: false,
-    seccomp: "service-boundary-required-for-public-activation",
+    seccomp: "wrapper-installed-x86_64-cbpf-deny-process-creation-and-kernel-attack-surface",
     workspace: "ephemeral-bounded-tmpfs",
-    runtimeTree: "broad-read-only-host-runtime-bind",
-    childProcessExecution: "not-yet-restricted-inside-namespace",
+    runtimeTree: bundle ? "manifest-verified-curated-runtime-root" : "broad-read-only-host-runtime-bind",
+    childProcessExecution: bundle
+      ? "seccomp-denied-after-python-start-with-python-prlimit-runtime-allowlist"
+      : "seccomp-denied-after-python-start-but-broad-host-runtime-remains-readable",
     sourceTransport: "stdin",
     environment: Object.freeze(["HOME=/work", "TMPDIR=/work", "PATH=/usr/bin", "LANG=C.UTF-8", "PWD=/work"]),
     limits: EXECUTION_LIMITS,
@@ -515,18 +700,23 @@ export async function inspectExecutionWorkerRuntime({ filesystem = fs } = {}) {
     artifactPolicySourceSha256: sha256(artifactSource),
     pythonWrapperSha256: sha256(PYTHON_WRAPPER),
     runtimeProbeSha256: sha256(PYTHON_RUNTIME_PROBE),
-    commandDigest: contractDigest(buildExecutionWorkerCommand()),
+    seccompPolicyDigest: EXECUTION_SECCOMP_POLICY_DIGEST,
+    commandDigest: contractDigest(buildExecutionWorkerCommand({ runtimeRoot: bundle?.rootPath ?? null })),
   });
   const identity = Object.freeze({
     executables: Object.freeze(executables),
+    runtimeBundleRootDigest: bundle?.rootDigest ?? null,
     policyDigest: contractDigest(policy),
     implementation,
   });
   return Object.freeze({
-    profile: EXECUTION_RUNTIME_PROFILE,
+    profile: policy.profile,
     policy,
     policyDigest: identity.policyDigest,
     implementation,
+    minimalRuntimeRoot: bundle !== null,
+    runtimeBundleDigestPinned: bundle !== null && expectedRuntimeBundleRootDigest === bundle.rootDigest,
+    runtimeBundle: bundle,
     runtimeDigest: contractDigest(identity),
   });
 }
@@ -586,6 +776,8 @@ function validateRuntimeProbe(input, { hostNetworkNamespace }) {
       "schemaVersion", "uid", "gid", "cwd", "hostname", "environment", "privatePathsAbsent",
       "workspaceWasEmpty", "workspaceRoundTrip", "usrReadOnly", "networkBlocked",
       "effectiveCapabilities", "boundingCapabilities", "noNewPrivileges", "seccompMode",
+      "seccompPolicyDigest", "execveDenied", "execveatDenied", "cloneDenied", "clone3Denied",
+      "unshareDenied", "x32Denied",
       "addressSpaceLimit", "cpuLimit", "fileLimit", "openFileLimit", "processLimit", "coreLimit",
       "isolatedImportPath", "networkNamespace", "networkInterfaces", "ipv4RouteCount",
     ],
@@ -593,6 +785,8 @@ function validateRuntimeProbe(input, { hostNetworkNamespace }) {
       "schemaVersion", "uid", "gid", "cwd", "hostname", "environment", "privatePathsAbsent",
       "workspaceWasEmpty", "workspaceRoundTrip", "usrReadOnly", "networkBlocked",
       "effectiveCapabilities", "boundingCapabilities", "noNewPrivileges", "seccompMode",
+      "seccompPolicyDigest", "execveDenied", "execveatDenied", "cloneDenied", "clone3Denied",
+      "unshareDenied", "x32Denied",
       "addressSpaceLimit", "cpuLimit", "fileLimit", "openFileLimit", "processLimit", "coreLimit",
       "isolatedImportPath", "networkNamespace", "networkInterfaces", "ipv4RouteCount",
     ],
@@ -615,7 +809,9 @@ function validateRuntimeProbe(input, { hostNetworkNamespace }) {
     probe.effectiveCapabilities === "0000000000000000" &&
     probe.boundingCapabilities === "0000000000000000" &&
     probe.noNewPrivileges === "1" &&
-    (probe.seccompMode === "0" || probe.seccompMode === "2") &&
+    probe.seccompMode === "2" && probe.seccompPolicyDigest === EXECUTION_SECCOMP_POLICY_DIGEST &&
+    probe.execveDenied === true && probe.execveatDenied === true && probe.cloneDenied === true
+    && probe.clone3Denied === true && probe.unshareDenied === true && probe.x32Denied === true &&
     exactLimit(probe.addressSpaceLimit, EXECUTION_LIMITS.addressSpaceBytes) &&
     exactLimit(probe.cpuLimit, EXECUTION_LIMITS.cpuSeconds) &&
     exactLimit(probe.fileLimit, EXECUTION_LIMITS.maximumFileBytes) &&
@@ -637,7 +833,10 @@ function validateRuntimeProbe(input, { hostNetworkNamespace }) {
     readOnlyRuntime: true,
     ephemeralWorkspace: true,
     isolatedImportPath: true,
-    seccomp: probe.seccompMode === "2",
+    seccomp: true,
+    seccompPolicyVerified: true,
+    seccompPolicyDigest: EXECUTION_SECCOMP_POLICY_DIGEST,
+    deniedSyscallsProven: Object.freeze(["execve", "execveat", "clone", "clone3", "unshare", "x32-execve"]),
   });
   return Object.freeze({ ...attestation, proofDigest: contractDigest(attestation) });
 }
@@ -646,6 +845,9 @@ export async function probeExecutionWorkerRuntime({
   spawnImpl = nodeSpawn,
   filesystem = fs,
   timeoutMs = RUNTIME_PROBE_TIMEOUT_MS,
+  runtimeBundleDirectory = null,
+  expectedRuntimeBundleRootDigest,
+  testOnlyAllowUntrustedRuntimeBundle = false,
 } = {}) {
   if (typeof spawnImpl !== "function") throw new TypeError("spawnImpl must be a function");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 10_000) {
@@ -657,7 +859,15 @@ export async function probeExecutionWorkerRuntime({
   } catch {
     fail("EXECUTION_RUNTIME_UNAVAILABLE", "host network namespace identity is unavailable.");
   }
-  const command = buildExecutionWorkerCommand();
+  const bundle = runtimeBundleDirectory
+    ? await validateExecutionRuntimeBundle({
+      bundleDirectory: runtimeBundleDirectory,
+      filesystem,
+      expectedRootDigest: expectedRuntimeBundleRootDigest,
+      testOnlyAllowUntrustedOwnership: testOnlyAllowUntrustedRuntimeBundle,
+    })
+    : null;
+  const command = buildExecutionWorkerCommand({ runtimeRoot: bundle?.rootPath ?? null });
   let child;
   try {
     child = spawnImpl(command.command, command.args, {
@@ -830,6 +1040,9 @@ export function createPythonExecutionWorker({
   clock = () => performance.now(),
   runtimeProbeImpl = probeExecutionWorkerRuntime,
   testOnlyAllowMissingSeccomp = false,
+  runtimeBundleDirectory = null,
+  expectedRuntimeBundleRootDigest,
+  testOnlyAllowUntrustedRuntimeBundle = false,
 } = {}) {
   if (typeof workerId !== "string" || !WORKER_ID.test(workerId)) {
     throw new TypeError("workerId must be an opaque worker_* identifier");
@@ -842,6 +1055,17 @@ export function createPythonExecutionWorker({
   if (typeof clock !== "function") throw new TypeError("clock must be a function");
   if (typeof runtimeProbeImpl !== "function") throw new TypeError("runtimeProbeImpl must be a function");
   if (typeof testOnlyAllowMissingSeccomp !== "boolean") throw new TypeError("testOnlyAllowMissingSeccomp must be a boolean");
+  if (runtimeBundleDirectory !== null && (typeof runtimeBundleDirectory !== "string"
+      || !path.isAbsolute(runtimeBundleDirectory) || path.normalize(runtimeBundleDirectory) !== runtimeBundleDirectory)) {
+    throw new TypeError("runtimeBundleDirectory must be null or a canonical absolute path");
+  }
+  if (typeof testOnlyAllowUntrustedRuntimeBundle !== "boolean") {
+    throw new TypeError("testOnlyAllowUntrustedRuntimeBundle must be a boolean");
+  }
+  if (expectedRuntimeBundleRootDigest !== undefined
+      && (typeof expectedRuntimeBundleRootDigest !== "string" || !DIGEST.test(expectedRuntimeBundleRootDigest))) {
+    throw new TypeError("expectedRuntimeBundleRootDigest must be a contract digest");
+  }
   let activeJobs = 0;
   let degraded = false;
   let runtimeInFlight = null;
@@ -854,8 +1078,19 @@ export function createPythonExecutionWorker({
       return lastRuntime;
     }
     runtimeInFlight ||= Promise.all([
-      inspectExecutionWorkerRuntime({ filesystem }),
-      runtimeProbeImpl({ spawnImpl, filesystem }),
+      inspectExecutionWorkerRuntime({
+        filesystem,
+        runtimeBundleDirectory,
+        expectedRuntimeBundleRootDigest,
+        testOnlyAllowUntrustedRuntimeBundle,
+      }),
+      runtimeProbeImpl({
+        spawnImpl,
+        filesystem,
+        runtimeBundleDirectory,
+        expectedRuntimeBundleRootDigest,
+        testOnlyAllowUntrustedRuntimeBundle,
+      }),
     ]).then(([identity, proof]) => Object.freeze({
       ...identity,
       proof,
@@ -877,7 +1112,11 @@ export function createPythonExecutionWorker({
 
   async function capabilities() {
     const inspected = await runtime({ allowRecent: true });
-    const activationReady = EXECUTION_PUBLIC_ACTIVATION_ENABLED && inspected.proof.seccomp === true && !degraded;
+    const activationReady = EXECUTION_PUBLIC_ACTIVATION_ENABLED
+      && inspected.minimalRuntimeRoot
+      && inspected.runtimeBundleDigestPinned
+      && inspected.proof.seccompPolicyVerified === true
+      && !degraded;
     const admission = Object.freeze({
       state: !activationReady
         ? "blocked"
@@ -896,12 +1135,18 @@ export function createPythonExecutionWorker({
         runtimeDigest: inspected.runtimeDigest,
         proofDigest: inspected.proof.proofDigest,
         seccomp: inspected.proof.seccomp,
+        seccompPolicyVerified: inspected.proof.seccompPolicyVerified,
+        seccompPolicyDigest: inspected.proof.seccompPolicyDigest,
+        deniedSyscallsProven: inspected.proof.deniedSyscallsProven,
+        minimalRuntimeRoot: inspected.minimalRuntimeRoot,
+        runtimeBundleDigestPinned: inspected.runtimeBundleDigestPinned,
+        runtimeBundleRootDigest: inspected.runtimeBundle?.rootDigest ?? null,
       }),
       languages: Object.freeze(["python"]),
       artifacts: Object.freeze({ schemaVersion: "1", kinds: Object.freeze(["plot", "table", "markdown"]) }),
       limits: EXECUTION_LIMITS,
       executionGate: Object.freeze({
-        requiresInheritedSeccomp: true,
+        requiresVerifiedSeccompPolicy: true,
         testOnlyBypassConfigured: testOnlyAllowMissingSeccomp,
       }),
     });
@@ -909,8 +1154,10 @@ export function createPythonExecutionWorker({
     const activation = Object.freeze({
       publicReady: activationReady,
       blockers: Object.freeze(activationReady ? [] : [
-        ...(!inspected.proof.seccomp ? ["service-seccomp-policy-unproven"] : []),
-        "minimal-runtime-root-unproven",
+        ...(!inspected.proof.seccompPolicyVerified ? ["execution-seccomp-policy-unproven"] : []),
+        ...(!inspected.minimalRuntimeRoot ? ["minimal-runtime-root-unproven"] : []),
+        ...(inspected.minimalRuntimeRoot && !inspected.runtimeBundleDigestPinned
+          ? ["runtime-bundle-digest-unpinned"] : []),
         "aggregate-cgroup-containment-unproven",
         ...(degraded ? ["worker-termination-degraded"] : []),
         "public-activation-locked",
@@ -954,7 +1201,9 @@ export function createPythonExecutionWorker({
       activeJobs -= 1;
       throw error;
     }
-    if ((!EXECUTION_PUBLIC_ACTIVATION_ENABLED || !inspected.proof.seccomp) && !testOnlyAllowMissingSeccomp) {
+    if ((!EXECUTION_PUBLIC_ACTIVATION_ENABLED || !inspected.minimalRuntimeRoot
+        || !inspected.runtimeBundleDigestPinned
+        || !inspected.proof.seccompPolicyVerified) && !testOnlyAllowMissingSeccomp) {
       activeJobs -= 1;
       fail("EXECUTION_UNAVAILABLE", "execution requires the hardened service boundary.", { status: 503 });
     }
@@ -972,7 +1221,7 @@ export function createPythonExecutionWorker({
       });
     }
     const started = clock();
-    const command = buildExecutionWorkerCommand();
+    const command = buildExecutionWorkerCommand({ runtimeRoot: inspected.runtimeBundle?.rootPath ?? null });
     let child;
     try {
       child = spawnImpl(command.command, command.args, {
