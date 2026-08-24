@@ -805,7 +805,7 @@ async function runStaticBoundaryChecks(surface) {
       assert.match(consumer, /capabilityEnabled:\s*false/u);
       assert.match(consumer, /runtimeActivationIncluded:\s*false/u);
       assert.match(consumer, /repositoryFenceAcquisitionIncluded:\s*false/u);
-      assert.match(consumer, /descriptorBoundIdempotencyStore:\s*false/u);
+      assert.match(consumer, /descriptorBoundIdempotencyStore:\s*true/u);
       assert.doesNotMatch(
         consumer,
         /acquireRetainedIntegrationRuntimeRepositoryFence|createAgintiIntegrationRuntimeAuthority|createIntegrationServer|createNativeIntegrationSessionService/u,

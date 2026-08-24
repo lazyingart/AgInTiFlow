@@ -1105,7 +1105,7 @@ async function main() {
         assert.equal(summary.runtimeBundle.firstBlocker?.component, "idempotencyStore");
         assert.equal(
           summary.runtimeBundle.firstBlocker?.code,
-          "INTEGRATION_DESCRIPTOR_BOUND_IDEMPOTENCY_UNAVAILABLE"
+          "INTEGRATION_IDEMPOTENCY_TRUSTED_RECOVERY_RECEIPT_AUTHORITY_UNAVAILABLE"
         );
       } else {
         assert.equal(summary.runtimeBundle.firstBlocker?.component, "storageAuthority");

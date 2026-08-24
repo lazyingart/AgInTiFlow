@@ -11,6 +11,13 @@ import {
 } from "./integration-event-ledger-store.js";
 import { NATIVE_INTEGRATION_EXECUTOR_PROOF } from "./integration-native-executor.js";
 import {
+  INTEGRATION_RETAINED_IDEMPOTENCY_LOCK_FILE,
+  INTEGRATION_RETAINED_IDEMPOTENCY_MAX_RESPONSE_BYTES,
+  INTEGRATION_RETAINED_IDEMPOTENCY_STORE_LIMITATIONS,
+  assertRetainedIntegrationIdempotencyStore,
+  createRetainedIntegrationIdempotencyStore,
+} from "./integration-retained-idempotency-store.js";
+import {
   NATIVE_RUNTIME_ROOTS_ATTESTATION_VERSION,
   validateNativeRuntimeRootsAttestation,
 } from "./integration-native-runtime-roots.js";
@@ -93,7 +100,10 @@ export const INTEGRATION_PRODUCTION_RUNTIME_BUNDLE_LIMITATIONS = deepFreeze(
     descriptorBoundSessionState: true,
     descriptorBoundEventLedger: true,
     descriptorBoundIdempotencyNamespace: true,
-    descriptorBoundIdempotencyStore: false,
+    descriptorBoundIdempotencyStore: true,
+    idempotencyRecoveryAuthorityBound: false,
+    trustedIdempotencyRecoveryReceiptAuthorityBound: false,
+    idempotencyIntegrationApiCompatible: false,
     nativeExecutorRetainedSessionBinding: false,
     sandboxCapabilityEnabled: false,
     publicArtifactEvents: false,
@@ -103,6 +113,7 @@ export const INTEGRATION_PRODUCTION_RUNTIME_BUNDLE_LIMITATIONS = deepFreeze(
     repositoryKernelLimitations: INTEGRATION_RETAINED_REPOSITORY_KERNEL_LIMITATIONS,
     sessionStateLimitations: INTEGRATION_RETAINED_SESSION_STATE_STORE_LIMITATIONS,
     eventLedgerLimitations: INTEGRATION_RETAINED_EVENT_LEDGER_BUNDLE_LIMITATIONS,
+    idempotencyStoreLimitations: INTEGRATION_RETAINED_IDEMPOTENCY_STORE_LIMITATIONS,
   })
 );
 
@@ -111,6 +122,12 @@ const DEFAULT_REPOSITORY_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 const DEFAULT_SESSION_STATE_BYTES = 512 * 1024;
 const DEFAULT_EVENT_LEDGER_EVENTS = 10_000;
 const DEFAULT_EVENT_LEDGER_BYTES = 8 * 1024 * 1024;
+const DEFAULT_IDEMPOTENCY_SNAPSHOT_BYTES = 16 * 1024 * 1024;
+const DEFAULT_IDEMPOTENCY_RECORDS = 7;
+const DEFAULT_IDEMPOTENCY_RESPONSE_BYTES =
+  INTEGRATION_RETAINED_IDEMPOTENCY_MAX_RESPONSE_BYTES;
+const DEFAULT_IDEMPOTENCY_PENDING_LEASE_MS = 30_000;
+const DEFAULT_IDEMPOTENCY_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_LOCK_WAIT_MS = 3_000;
 const ZERO_DIGEST = "0".repeat(64);
 const STORAGE_SYSTEM_ERROR_CODES = new Set([
@@ -136,7 +153,7 @@ const STORAGE_SYSTEM_ERROR_CODES = new Set([
 const STATIC_BLOCKERS = deepFreeze([
   {
     component: "idempotencyStore",
-    code: "INTEGRATION_DESCRIPTOR_BOUND_IDEMPOTENCY_UNAVAILABLE",
+    code: "INTEGRATION_IDEMPOTENCY_TRUSTED_RECOVERY_RECEIPT_AUTHORITY_UNAVAILABLE",
   },
   {
     component: "sandbox",
@@ -229,7 +246,7 @@ function throwNormalizedCompositionError(error) {
       "Production runtime bundle storage composition is unavailable."
     );
   }
-  if (/^(?:INTEGRATION|PUBLIC)_[A-Z0-9_]+$/u.test(rawCode)) throw error;
+  if (/^(?:IDEMPOTENCY|INTEGRATION|PUBLIC)_[A-Z0-9_]+$/u.test(rawCode)) throw error;
   bundleFail(
     "INTEGRATION_RUNTIME_BUNDLE_UNAVAILABLE",
     "Production runtime bundle composition is unavailable."
@@ -241,6 +258,10 @@ function failureComponent(code) {
   if (code.startsWith("INTEGRATION_REPOSITORY_")) return "repository";
   if (code.startsWith("INTEGRATION_SESSION_STATE_")) return "sessionState";
   if (code.startsWith("PUBLIC_EVENT_LEDGER_")) return "eventLedger";
+  if (
+    code.startsWith("IDEMPOTENCY_") ||
+    code.startsWith("INTEGRATION_IDEMPOTENCY_")
+  ) return "idempotencyStore";
   return "runtimeBundle";
 }
 
@@ -317,6 +338,7 @@ export function integrationProductionRuntimeBundlePaths(stateRootInput) {
   const repository = directory(INTEGRATION_PRODUCTION_RUNTIME_BUNDLE_LAYOUT.repository);
   const sessions = directory(INTEGRATION_PRODUCTION_RUNTIME_BUNDLE_LAYOUT.sessions);
   const eventLedger = directory(INTEGRATION_PRODUCTION_RUNTIME_BUNDLE_LAYOUT.eventLedger);
+  const idempotency = directory(INTEGRATION_PRODUCTION_RUNTIME_BUNDLE_LAYOUT.idempotency);
   return deepFreeze({
     stateRoot,
     repository,
@@ -326,7 +348,8 @@ export function integrationProductionRuntimeBundlePaths(stateRootInput) {
     workspace: directory(INTEGRATION_PRODUCTION_RUNTIME_BUNDLE_LAYOUT.workspace),
     eventLedger,
     eventLedgerLock: path.join(eventLedger, INTEGRATION_RETAINED_EVENT_LEDGER_LOCK_FILE),
-    idempotency: directory(INTEGRATION_PRODUCTION_RUNTIME_BUNDLE_LAYOUT.idempotency),
+    idempotency,
+    idempotencyLock: path.join(idempotency, INTEGRATION_RETAINED_IDEMPOTENCY_LOCK_FILE),
   });
 }
 
@@ -482,11 +505,18 @@ function componentEvidence(state = null) {
       proofDigest: state?.eventLedgerBundle?.attestation?.digest || ZERO_DIGEST,
     }),
     idempotencyStore: Object.freeze({
-      composed: false,
-      healthy: false,
+      composed,
+      healthy: composed,
       namespaceDescriptorBound: composed,
+      descriptorBound: composed,
       transactionalStore: false,
-      proofDigest: ZERO_DIGEST,
+      recoveryAuthorityBound: false,
+      trustedRecoveryReceiptAuthorityBound: false,
+      publicMutationResponseByteEnvelopeCovered:
+        state?.idempotencyStore?.attestation?.publicMutationResponseByteEnvelopeCovered === true,
+      boundedTransactionalSubstrate: composed,
+      integrationApiCompatibleWhenRecoveryBound: false,
+      proofDigest: state?.idempotencyStore?.attestation?.digest || ZERO_DIGEST,
     }),
     nativeExecutor: Object.freeze({
       lexicalProofPresent: true,
@@ -573,7 +603,7 @@ function buildBundleAttestation(state) {
     repositoryProofDigest: state.repository.integrationRuntimeRepositoryAttestation.digest,
     sessionStateProofDigest: state.sessionStateStore.attestation.digest,
     eventLedgerProofDigest: state.eventLedgerBundle.attestation.digest,
-    idempotencyProofDigest: ZERO_DIGEST,
+    idempotencyProofDigest: state.idempotencyStore.attestation.digest,
     nativeExecutorProofDigest: NATIVE_INTEGRATION_EXECUTOR_PROOF.digest,
     blockers: health.blockers,
     limitations: INTEGRATION_PRODUCTION_RUNTIME_BUNDLE_LIMITATIONS,
@@ -657,6 +687,7 @@ async function probeBundle(state, probe) {
       state.repositoryBinding,
       state.sessionBinding,
       state.eventLedgerBinding,
+      state.idempotencyBinding,
     ]) {
       assertIntegrationRetainedFilePrimitives(binding.files, binding.directoryExpected);
       assertIntegrationRetainedRegularFileLock(binding.lock, binding.lockExpected);
@@ -668,10 +699,22 @@ async function probeBundle(state, probe) {
       );
       assertBundleLive(state);
     }
-    assertIntegrationRetainedFilePrimitives(
-      state.idempotencyFiles,
+    assertRetainedIntegrationIdempotencyStore(
+      state.idempotencyStore,
       state.idempotencyBinding.expected
     );
+    const idempotencyHealth = await state.idempotencyStore.health();
+    assertBundleLive(state);
+    if (
+      idempotencyHealth.healthy !== true ||
+      idempotencyHealth.recoveryAuthorityBound !== false ||
+      idempotencyHealth.proofDigest !== state.idempotencyStore.attestation.digest
+    ) {
+      bundleFail(
+        "INTEGRATION_RUNTIME_BUNDLE_POISONED",
+        "Production runtime bundle idempotency substrate changed."
+      );
+    }
     assertRetainedIntegrationSessionStateStore(
       state.sessionStateStore,
       state.sessionBinding.expected
@@ -806,15 +849,21 @@ export async function openIntegrationProductionRuntimeBundle(input) {
       paths.stateRoot,
       INTEGRATION_PRODUCTION_RUNTIME_BUNDLE_LAYOUT.workspace
     );
-    const idempotencyBinding = await openDescriptorDirectory(
+    const idempotencyBinding = await openDirectoryBinding({
       authority,
-      paths.stateRoot,
-      INTEGRATION_PRODUCTION_RUNTIME_BUNDLE_LAYOUT.idempotency
-    );
-    const idempotencyFiles = createIntegrationRetainedFilePrimitives(
-      idempotencyBinding.directory,
-      idempotencyBinding.expected
-    );
+      stateRoot: paths.stateRoot,
+      relativeSegments: INTEGRATION_PRODUCTION_RUNTIME_BUNDLE_LAYOUT.idempotency,
+      lockFileName: INTEGRATION_RETAINED_IDEMPOTENCY_LOCK_FILE,
+      lockPath: paths.idempotencyLock,
+      helperProof,
+      capacity: {
+        maxSnapshotBytes: DEFAULT_IDEMPOTENCY_SNAPSHOT_BYTES,
+        maxRecords: DEFAULT_IDEMPOTENCY_RECORDS,
+        maxResponseBytes: DEFAULT_IDEMPOTENCY_RESPONSE_BYTES,
+        pendingLeaseMs: DEFAULT_IDEMPOTENCY_PENDING_LEASE_MS,
+        retentionMs: DEFAULT_IDEMPOTENCY_RETENTION_MS,
+      },
+    });
     const repositoryKernel = createRetainedIntegrationRuntimeRepositoryKernel(
       repositoryBinding.files,
       repositoryBinding.lock,
@@ -845,6 +894,22 @@ export async function openIntegrationProductionRuntimeBundle(input) {
       eventLedgerBinding.lock,
       eventLedgerBinding.expected
     );
+    const idempotencyStore = createRetainedIntegrationIdempotencyStore(
+      idempotencyBinding.files,
+      idempotencyBinding.lock,
+      idempotencyBinding.expected
+    );
+    const initialIdempotencyHealth = await idempotencyStore.health();
+    if (
+      initialIdempotencyHealth.healthy !== true ||
+      initialIdempotencyHealth.recoveryAuthorityBound !== false ||
+      initialIdempotencyHealth.proofDigest !== idempotencyStore.attestation.digest
+    ) {
+      bundleFail(
+        "INTEGRATION_RUNTIME_BUNDLE_UNAVAILABLE",
+        "Production runtime bundle idempotency substrate failed initial verification."
+      );
+    }
     await authority.recheckNamedBinding();
     const state = {
       authority,
@@ -854,7 +919,7 @@ export async function openIntegrationProductionRuntimeBundle(input) {
       eventLedgerBinding,
       workspaceBinding,
       idempotencyBinding,
-      idempotencyFiles,
+      idempotencyStore,
       repositoryKernel,
       sessionStateStore,
       repositoryExpected,

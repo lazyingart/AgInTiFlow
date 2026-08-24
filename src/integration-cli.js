@@ -185,7 +185,9 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   }
 
   // HOLD: dependency-enabled production serve remains unavailable until the
-  // runtime, event-ledger, and idempotency authorities are descriptor-bound.
+  // descriptor-bound idempotency store has a trusted, scope-bound recovery
+  // receipt authority and the remaining runtime, sandbox, and public-artifact
+  // gates are composed.
   const integrationServer = createIntegrationServer({
     config,
     trustedPrincipalProxyClient,

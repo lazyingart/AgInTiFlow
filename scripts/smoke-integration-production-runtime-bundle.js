@@ -12,6 +12,9 @@ import {
   openIntegrationProductionRuntimeBundle,
   preflightIntegrationProductionRuntimeBundle,
 } from "../src/integration-production-runtime-bundle.js";
+import {
+  INTEGRATION_RETAINED_IDEMPOTENCY_SNAPSHOT_FILE,
+} from "../src/integration-retained-idempotency-store.js";
 import { contractDigest } from "../src/integration-policy.js";
 
 const UID = process.getuid();
@@ -73,6 +76,7 @@ async function provisionRuntimeRoot(stateRoot, { omitEventLock = false } = {}) {
   await ensureLockFile(paths.repositoryLock);
   await ensureLockFile(paths.sessionLock);
   if (!omitEventLock) await ensureLockFile(paths.eventLedgerLock);
+  await ensureLockFile(paths.idempotencyLock);
   return paths;
 }
 
@@ -215,6 +219,9 @@ async function run() {
     path.join(os.tmpdir(), "aginti-production-runtime-lock-replacement-")
   );
   const failedRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-production-runtime-failed-"));
+  const idempotencyCorruptionRoot = await fs.mkdtemp(
+    path.join(os.tmpdir(), "aginti-production-runtime-idempotency-corrupt-")
+  );
   try {
     const paths = await provisionRuntimeRoot(stateRoot);
     assert.equal(paths.repository, path.join(stateRoot, "runtime-authority", "repository"));
@@ -230,7 +237,7 @@ async function run() {
     assert.equal(check.firstBlocker.component, "idempotencyStore");
     assert.equal(
       check.firstBlocker.code,
-      "INTEGRATION_DESCRIPTOR_BOUND_IDEMPOTENCY_UNAVAILABLE"
+      "INTEGRATION_IDEMPOTENCY_TRUSTED_RECOVERY_RECEIPT_AUTHORITY_UNAVAILABLE"
     );
     assert.equal(check.components.storageAuthority.descriptorBound, true);
     assert.equal(check.components.repository.descriptorBound, true);
@@ -240,7 +247,14 @@ async function run() {
     assert.equal(check.components.eventLedger.runtimeAppendView, true);
     assert.equal(check.components.eventLedger.sessionReadView, true);
     assert.equal(check.components.idempotencyStore.namespaceDescriptorBound, true);
+    assert.equal(check.components.idempotencyStore.descriptorBound, true);
     assert.equal(check.components.idempotencyStore.transactionalStore, false);
+    assert.equal(check.components.idempotencyStore.recoveryAuthorityBound, false);
+    assert.equal(check.components.idempotencyStore.trustedRecoveryReceiptAuthorityBound, false);
+    assert.equal(check.components.idempotencyStore.publicMutationResponseByteEnvelopeCovered, true);
+    assert.equal(check.components.idempotencyStore.boundedTransactionalSubstrate, true);
+    assert.equal(check.components.idempotencyStore.integrationApiCompatibleWhenRecoveryBound, false);
+    assert.notEqual(check.components.idempotencyStore.proofDigest, "0".repeat(64));
     assert.equal(check.components.nativeExecutor.lexicalProofPresent, true);
     assert.equal(check.components.nativeExecutor.retainedSessionStateBound, false);
     assert.equal(check.components.nativeExecutor.artifactEvents, false);
@@ -266,7 +280,7 @@ async function run() {
     assert.equal(bundle.attestation.capabilityEnabled, false);
     assert.equal(bundle.attestation.httpServingEnabled, false);
     assert.equal(bundle.attestation.runtimeActivated, false);
-    assert.equal(bundle.attestation.idempotencyProofDigest, "0".repeat(64));
+    assert.notEqual(bundle.attestation.idempotencyProofDigest, "0".repeat(64));
     assert.equal(bundle.attestation.blockers[0].component, "idempotencyStore");
     assert.equal(bundle.attestation.limitations, INTEGRATION_PRODUCTION_RUNTIME_BUNDLE_LIMITATIONS);
     assert.equal("start" in bundle, false);
@@ -366,6 +380,28 @@ async function run() {
     assert.equal((await recoveredFromFactoryFailure.health()).healthy, true);
     await recoveredFromFactoryFailure.close();
 
+    const corruptIdempotencyPaths = await provisionRuntimeRoot(idempotencyCorruptionRoot);
+    await fs.writeFile(
+      path.join(
+        corruptIdempotencyPaths.idempotency,
+        INTEGRATION_RETAINED_IDEMPOTENCY_SNAPSHOT_FILE
+      ),
+      "{}\n",
+      { mode: 0o600 }
+    );
+    await expectCode(
+      () => openIntegrationProductionRuntimeBundle({
+        stateRoot: idempotencyCorruptionRoot,
+      }),
+      "IDEMPOTENCY_STORE_CORRUPT"
+    );
+    const corruptIdempotencyCheck = await checkIntegrationProductionRuntimeBundle({
+      stateRoot: idempotencyCorruptionRoot,
+    });
+    assert.equal(corruptIdempotencyCheck.healthy, false);
+    assert.equal(corruptIdempotencyCheck.firstBlocker.component, "idempotencyStore");
+    assert.equal(corruptIdempotencyCheck.firstBlocker.code, "IDEMPOTENCY_STORE_CORRUPT");
+
     const [cliSource, serverSource, bundleSource] = await Promise.all([
       fs.readFile(new URL("../src/integration-cli.js", import.meta.url), "utf8"),
       fs.readFile(new URL("../src/integration-server.js", import.meta.url), "utf8"),
@@ -384,6 +420,7 @@ async function run() {
     await fs.rm(lockModeRoot, { recursive: true, force: true });
     await fs.rm(lockReplacementRoot, { recursive: true, force: true });
     await fs.rm(failedRoot, { recursive: true, force: true });
+    await fs.rm(idempotencyCorruptionRoot, { recursive: true, force: true });
   }
 
   process.stdout.write("integration production runtime bundle smoke: ok\n");
