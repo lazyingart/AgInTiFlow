@@ -713,6 +713,326 @@ function constrainWriteFilePaths(tool, paths = []) {
   };
 }
 
+function exactSeparatorRepairCandidate(target = {}) {
+  if (
+    target.kind !== "membership" ||
+    target.negated === true ||
+    !String(target.search || "") ||
+    !String(target.literal || "").trim()
+  ) {
+    return "";
+  }
+  const search = String(target.search);
+  const literal = String(target.literal).trim();
+  const comparableSearch = target.caseFolded
+    ? search.toLocaleLowerCase("en-US")
+    : search;
+  const comparableLiteral = target.caseFolded
+    ? literal.toLocaleLowerCase("en-US")
+    : literal;
+  if (comparableSearch.includes(comparableLiteral)) return "";
+  const tokens = literal.split(/\s+/u).filter(Boolean);
+  if (tokens.length < 2 || tokens.length > 8) return "";
+  const escapedTokens = tokens.map((token) =>
+    token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  );
+  const pattern = new RegExp(
+    escapedTokens.join("[\\s\\p{P}\\p{S}]+"),
+    target.caseFolded ? "giu" : "gu"
+  );
+  const matches = [...search.matchAll(pattern)];
+  if (matches.length !== 1 || !Number.isInteger(matches[0].index)) return "";
+  const start = matches[0].index;
+  const end = start + matches[0][0].length;
+  const candidate = `${search.slice(0, start)}${literal}${search.slice(end)}`;
+  return candidate !== search && candidate.length <= 4000 ? candidate : "";
+}
+
+function exactDuplicateDecisiveLineRemovalCandidate(target = {}) {
+  if (
+    target.kind !== "index-comparison" ||
+    Number(target.decisiveDuplicateCount || 0) < 2 ||
+    !String(target.search || "") ||
+    !String(target.decisiveText || "")
+  ) {
+    return "";
+  }
+  const lines = String(target.search).replace(/\r/g, "").split("\n");
+  const matchingIndexes = lines
+    .map((line, index) => (line === target.decisiveText ? index : -1))
+    .filter((index) => index >= 0);
+  if (matchingIndexes.length !== 1 || lines.length < 2) return "";
+  lines.splice(matchingIndexes[0], 1);
+  const candidate = lines.join("\n");
+  return candidate && candidate.length <= 4000 ? candidate : "";
+}
+
+function regexLiteral(value, { caseFolded = false } = {}) {
+  const text = String(value || "");
+  if (!text || text.length > 64 || /[\r\n]/u.test(text)) return "";
+  if (caseFolded && /[^\x00-\x7F]/u.test(text)) return "";
+  return [...text].map((character) => {
+    if (caseFolded && /[A-Za-z]/u.test(character)) {
+      const lower = character.toLowerCase();
+      const upper = character.toUpperCase();
+      return lower === upper ? lower : `[${lower}${upper}]`;
+    }
+    return character.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  }).join("");
+}
+
+function prematureComparisonOccurrence(target = {}) {
+  if (target.kind !== "index-comparison") return "";
+  const operator = String(target.operator || "");
+  const decisiveSide = String(target.decisiveSide || "");
+  const side =
+    (["<", "<="].includes(operator) && decisiveSide === "right")
+      ? "right"
+      : ([">", ">="].includes(operator) && decisiveSide === "left")
+        ? "left"
+        : "";
+  if (!side) return "";
+  const alternatives = Array.isArray(target[`${side}Alternatives`]) &&
+      target[`${side}Alternatives`].length
+    ? target[`${side}Alternatives`].map(String)
+    : [String(target[side] || "")];
+  const search = String(target.search || "");
+  const comparableSearch = target.caseFolded
+    ? search.toLocaleLowerCase("en-US")
+    : search;
+  const selected = alternatives
+    .map((literal) => ({
+      literal,
+      index: comparableSearch.indexOf(
+        target.caseFolded ? literal.toLocaleLowerCase("en-US") : literal
+      ),
+    }))
+    .filter((item) => item.literal && item.index >= 0)
+    .sort((left, right) => left.index - right.index || right.literal.length - left.literal.length)[0];
+  if (!selected) return null;
+  let tokenStart = selected.index;
+  let tokenEnd = selected.index + selected.literal.length;
+  while (tokenStart > 0 && /[\p{L}\p{N}_-]/u.test(search[tokenStart - 1])) tokenStart -= 1;
+  while (tokenEnd < search.length && /[\p{L}\p{N}_-]/u.test(search[tokenEnd])) tokenEnd += 1;
+  const token = search.slice(tokenStart, tokenEnd);
+  const matchStart = selected.index - tokenStart;
+  return {
+    literal: selected.literal,
+    index: selected.index,
+    token,
+    markedToken: token
+      ? `${token.slice(0, matchStart)}[${token.slice(matchStart, matchStart + selected.literal.length)}]${token.slice(matchStart + selected.literal.length)}`
+      : "",
+  };
+}
+
+function prematureComparisonLiteral(target = {}) {
+  return prematureComparisonOccurrence(target)?.literal || "";
+}
+
+function prematureComparisonRepairPattern(target = {}) {
+  const occurrence = prematureComparisonOccurrence(target);
+  const premature = regexLiteral(occurrence?.literal, {
+    caseFolded: target.caseFolded === true,
+  });
+  if (!premature) return "";
+  const operator = String(target.operator || "");
+  const prerequisiteSide = ["<", "<="].includes(operator) ? "left" : "right";
+  const prerequisites = Array.isArray(target[`${prerequisiteSide}Alternatives`]) &&
+      target[`${prerequisiteSide}Alternatives`].length
+    ? target[`${prerequisiteSide}Alternatives`]
+    : [target[prerequisiteSide]];
+  const prerequisitePattern = prerequisites
+    .map((literal) => regexLiteral(literal, { caseFolded: target.caseFolded === true }))
+    .filter(Boolean)
+    .map((literal) => `(?:${literal})`)
+    .join("|");
+  const absence = `(?![\\s\\S]*${premature})[\\s\\S]+`;
+  if (!prerequisitePattern) return `^(?:${absence})$`;
+  const prerequisiteBeforeFirstPremature =
+    `(?:(?!${premature})[\\s\\S])*(?:${prerequisitePattern})[\\s\\S]*${premature}[\\s\\S]*`;
+  return `^(?:${absence}|${prerequisiteBeforeFirstPremature})$`;
+}
+
+function constrainFailedTestApplyPatch(tool, targets = []) {
+  if (!tool || !Array.isArray(targets) || targets.length === 0) return tool;
+  const validTargets = targets
+    .map((target) => ({
+      kind: String(target?.kind || "index-comparison"),
+      path: String(target?.path || "").trim(),
+      search: String(target?.search || ""),
+      line: Math.max(0, Number(target?.line || 0)),
+      left: String(target?.left || ""),
+      operator: String(target?.operator || ""),
+      right: String(target?.right || ""),
+      leftAlternatives: Array.isArray(target?.leftAlternatives)
+        ? target.leftAlternatives.map(String).slice(0, 8)
+        : [],
+      rightAlternatives: Array.isArray(target?.rightAlternatives)
+        ? target.rightAlternatives.map(String).slice(0, 8)
+        : [],
+      leftAggregation: String(target?.leftAggregation || "first"),
+      rightAggregation: String(target?.rightAggregation || "first"),
+      decisiveText: String(target?.decisiveText || ""),
+      decisiveSide: String(target?.decisiveSide || ""),
+      decisiveDuplicateCount: Math.max(0, Number(target?.decisiveDuplicateCount || 0)),
+      literal: String(target?.literal || ""),
+      anchorLiteral: String(target?.anchorLiteral || ""),
+      negated: target?.negated === true,
+      caseFolded: target?.caseFolded === true,
+    }))
+    .filter((target) => target.path && target.search)
+    .slice(0, 4);
+  if (!validTargets.length) return tool;
+  const paths = [...new Set(validTargets.map((target) => target.path))];
+  const searches = [...new Set(validTargets.map((target) => target.search))];
+  const properties = tool.function?.parameters?.properties || {};
+  const relationGuidance = validTargets
+    .filter(
+      (target) =>
+        target.kind === "membership" ||
+        (target.left && target.right && ["<", "<=", ">", ">="].includes(target.operator))
+    )
+    .map((target) => {
+      if (target.kind === "membership") {
+        const haystack = target.caseFolded
+          ? target.search.toLocaleLowerCase("en-US")
+          : target.search;
+        const literal = target.caseFolded
+          ? target.literal.toLocaleLowerCase("en-US")
+          : target.literal;
+        const presentInSearch = literal ? haystack.includes(literal) : false;
+        return [
+          `Required content rule: ${JSON.stringify(target.literal)} must ${target.negated ? "be absent" : "appear"}${target.caseFolded ? " (case-insensitive)" : ""}.`,
+          target.negated && presentInSearch
+            ? "Remove or naturally rephrase that occurrence while preserving the intended fact."
+            : target.anchorLiteral
+              ? `Keep the fact associated with ${JSON.stringify(target.anchorLiteral)}, and use the required wording naturally.`
+              : "Make the content rule true.",
+        ].join(" ");
+      }
+      const haystack = target.caseFolded ? target.search.toLocaleLowerCase("en-US") : target.search;
+      const left = target.caseFolded ? target.left.toLocaleLowerCase("en-US") : target.left;
+      const right = target.caseFolded ? target.right.toLocaleLowerCase("en-US") : target.right;
+      const leftIndex = haystack.indexOf(left);
+      const rightIndex = haystack.indexOf(right);
+      const grouped = target.leftAlternatives.length > 1 || target.rightAlternatives.length > 1;
+      const comparison = grouped
+        ? `${target.leftAggregation} first-match ${JSON.stringify(target.leftAlternatives)} ` +
+          `${target.operator} ${target.rightAggregation} first-match ${JSON.stringify(target.rightAlternatives)}`
+        : `first ${JSON.stringify(target.left)} ${target.operator} first ${JSON.stringify(target.right)}`;
+      if (["<", "<="].includes(target.operator) && rightIndex >= 0 && (leftIndex < 0 || leftIndex > rightIndex)) {
+        return `Ordering rule: ${comparison}${target.caseFolded ? " (case-insensitive)" : ""}. Rewrite the earlier occurrence so ${JSON.stringify(target.left)} comes first; appending later text is insufficient.`;
+      }
+      if ([">", ">="].includes(target.operator) && leftIndex >= 0 && (rightIndex < 0 || rightIndex > leftIndex)) {
+        return `Ordering rule: ${comparison}${target.caseFolded ? " (case-insensitive)" : ""}. Rewrite the earlier occurrence so ${JSON.stringify(target.right)} comes first; appending later text is insufficient.`;
+      }
+      return `Ordering rule: ${comparison}${target.caseFolded ? " (case-insensitive)" : ""}. Make that first-occurrence order true.`;
+    });
+  const cleanupGuidance = validTargets.some((target) => target.kind === "control-plane-leak")
+    ? ["Remove internal tool, schema, validator, or recovery prose from the selected artifact line."]
+    : [];
+  const selectedLocations = [...new Set(
+    validTargets.map((target) => `${target.path}${target.line ? ` line ${target.line}` : ""}`)
+  )];
+  const replacementGuidance = [
+    "Write only concise natural project content for the replacement field.",
+    ...cleanupGuidance,
+    ...relationGuidance,
+    "Preserve the underlying task fact and provenance, but do not repeat the search text unchanged or copy these instructions into the artifact.",
+  ].join(" ");
+  const separatorRepairCandidate =
+    validTargets.length === 1 ? exactSeparatorRepairCandidate(validTargets[0]) : "";
+  const duplicateRemovalCandidate =
+    validTargets.length === 1 && !separatorRepairCandidate
+      ? exactDuplicateDecisiveLineRemovalCandidate(validTargets[0])
+      : "";
+  const exactReplacementCandidate = separatorRepairCandidate || duplicateRemovalCandidate;
+  const prematureLiteral =
+    validTargets.length === 1 && !exactReplacementCandidate
+      ? prematureComparisonLiteral(validTargets[0])
+      : "";
+  const prematureOccurrence =
+    validTargets.length === 1 && !exactReplacementCandidate
+      ? prematureComparisonOccurrence(validTargets[0])
+      : null;
+  const prematureRepairPattern =
+    validTargets.length === 1 && !exactReplacementCandidate
+      ? prematureComparisonRepairPattern(validTargets[0])
+      : "";
+  const replacementOnlyRepair = Boolean(prematureRepairPattern);
+  const replacementProperty = {
+    ...(properties.replace || { type: "string" }),
+    minLength: 1,
+    ...(replacementOnlyRepair ? { maxLength: 4000 } : {}),
+    ...(exactReplacementCandidate ? { enum: [exactReplacementCandidate] } : {}),
+    ...(prematureRepairPattern ? { pattern: prematureRepairPattern } : {}),
+    description: exactReplacementCandidate
+      ? `${replacementGuidance} ${separatorRepairCandidate
+        ? "A single lossless separator normalization"
+        : "A single lossless duplicate-line removal"} satisfies this exact retained rule; use the only allowed replacement value.`
+      : prematureLiteral
+        ? `The replacement must either omit the premature operand ${JSON.stringify(prematureLiteral)}${prematureOccurrence?.markedToken ? `, currently matched inside ${JSON.stringify(prematureOccurrence.markedToken)}` : ""}, or place the required counterpart before its first occurrence. Rewrite the containing word or sentence naturally so the retained first-match relation can advance. ${replacementGuidance}`
+        : replacementGuidance,
+  };
+  return {
+    ...tool,
+    function: {
+      ...tool.function,
+      ...(replacementOnlyRepair ? { name: "rewrite_text_excerpt" } : {}),
+      description: [
+        replacementOnlyRepair
+          ? "Rewrite one exact earlier text excerpt selected by retained failed-test evidence. The runtime owns its path and exact anchor; return only the complete revised excerpt, not the whole file."
+          : "Repair one exact earlier occurrence selected by retained failed-test evidence.",
+        `Selected location${selectedLocations.length === 1 ? "" : "s"}: ${selectedLocations.join(", ")}.`,
+        replacementOnlyRepair
+          ? "The runtime translates this bounded rewrite into an exact transactional patch and rejects unrelated or nonrepairing changes."
+          : "Use the path and search enum values exactly, then provide a materially different natural replacement. A unified patch remains available only when the repair belongs in a separate canonical producer source.",
+      ].join(" "),
+      parameters: {
+        ...(replacementOnlyRepair
+          ? {
+              type: "object",
+              properties: {
+                revisedText: {
+                  ...replacementProperty,
+                  description: `Return only the complete revised excerpt. Do not return the surrounding file. ${replacementProperty.description}`,
+                },
+              },
+              required: ["revisedText"],
+              additionalProperties: false,
+            }
+          : {
+              ...tool.function.parameters,
+              properties: {
+                ...properties,
+                path: {
+                  ...(properties.path || { type: "string" }),
+                  enum: paths,
+                  description: "Evidence-derived task-owned path containing the decisive first occurrence.",
+                },
+                search: {
+                  ...(properties.search || { type: "string" }),
+                  enum: searches,
+                  description: "Exact unique current line containing the decisive first occurrence.",
+                },
+                replace: replacementProperty,
+                ...(properties.expectedReplacements
+                  ? {
+                      expectedReplacements: {
+                        ...properties.expectedReplacements,
+                        enum: [1],
+                        description: "The evidence-derived decisive line is unique and must be replaced exactly once.",
+                      },
+                    }
+                  : {}),
+              },
+            }),
+      },
+    },
+  };
+}
+
 function constrainRunCommand(tool, command = "", description = "") {
   if (!tool || !command) return tool;
   const commandSchema = tool.function?.parameters?.properties?.command || { type: "string" };
@@ -731,6 +1051,40 @@ function constrainRunCommand(tool, command = "", description = "") {
             description: "Exact retained verification command required after the latest canonical-source mutation.",
           },
         },
+      },
+    },
+  };
+}
+
+function constrainRepositoryStateCommit(tool, paths = []) {
+  if (!tool || !Array.isArray(paths) || paths.length === 0) return null;
+  const retainedPaths = [...new Set(paths.map((item) => String(item || "").trim()).filter(Boolean))]
+    .slice(0, 32);
+  if (!retainedPaths.length) return null;
+  return {
+    ...tool,
+    function: {
+      ...tool.function,
+      name: "commit_project_changes",
+      description: [
+        "Commit the current task-owned project changes after a clean-worktree acceptance gate failed.",
+        "The runtime stages only its evidence-derived changed paths, creates one local commit with the supplied concise message, and leaves unrelated paths untouched.",
+        "Do not use this tool to change source content or to claim that verification passed; the exact retained verifier is offered in the next phase.",
+        `Task-owned paths: ${retainedPaths.join(", ")}.`,
+      ].join(" "),
+      parameters: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            minLength: 3,
+            maxLength: 120,
+            pattern: "^[^\\r\\n\\u0000]+$",
+            description: "A concise factual Git commit subject for the completed task-owned change.",
+          },
+        },
+        required: ["message"],
+        additionalProperties: false,
       },
     },
   };
@@ -911,8 +1265,10 @@ function compactToolNames({ config, goal, profile, messages }) {
  *
  * Hosted providers and an explicit `toolSurfacePolicy: "full"` retain every
  * valid, enabled descriptor. Local/loopback providers default to a compact,
- * task-shaped surface. Returned entries are the original descriptor objects;
- * this module never creates a tool the caller did not register.
+ * task-shaped surface. Returned entries normally reuse the original descriptor
+ * objects. A failed-test repair may expose one bounded internal rewrite alias
+ * over the registered apply_patch tool; runtime validation still owns the exact
+ * path, anchor, and transactional mutation.
  */
 export function selectProgressiveTools(
   tools,
@@ -923,6 +1279,10 @@ export function selectProgressiveTools(
   const finish = enabled.find(({ name }) => name === "finish")?.tool;
   if (!finish) {
     throw new TypeError("An enabled, valid finish function tool must exist in the input tool array");
+  }
+
+  if (config.verifiedCompletionPending === true) {
+    return [finish];
   }
 
   if (
@@ -936,21 +1296,62 @@ export function selectProgressiveTools(
 
   if (config.testFailureRepairActive === true) {
     const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    if (config.testFailureRepositoryStateRepair === true) {
+      const runCommand = available.get("run_command");
+      const commitProjectChanges = constrainRepositoryStateCommit(
+        runCommand,
+        config.repositoryStateRepairCommitPaths
+      );
+      if (commitProjectChanges) {
+        return [commitProjectChanges, finish].filter(Boolean);
+      }
+      const repositoryStateTool = runCommand
+        ? {
+            ...runCommand,
+            function: {
+              ...runCommand.function,
+              description: [
+                "Resolve the retained repository-state verification gate without changing task content merely to alter Git status.",
+                "Inspect status and diff, preserve intended task-owned changes, run appropriate checks, stage and commit only those changes, then rerun the exact retained verification command.",
+              ].join(" "),
+            },
+          }
+        : null;
+      return [repositoryStateTool, finish].filter(Boolean);
+    }
+    const constrainedRepairPatch = constrainFailedTestApplyPatch(
+      available.get("apply_patch"),
+      config.testFailureRepairPatchTargets
+    );
     const constrainedInstructionCreate = constrainWriteFilePaths(
       available.get("write_file"),
       Array.isArray(config.testFailureRepairAllowedCreates)
         ? config.testFailureRepairAllowedCreates
         : []
     );
-    return [
-      "read_file",
-      "search_files",
-      "apply_patch",
-      ...(constrainedInstructionCreate ? ["write_file"] : []),
-      "run_command",
-      "finish",
-    ]
-      .map((name) => (name === "write_file" ? constrainedInstructionCreate : available.get(name)))
+    const toolNames = config.testFailureRepairMutationRequired === true
+      ? [
+          ...(config.testFailureRepairNeedsPatchContext === true
+            ? ["read_file", "search_files"]
+            : []),
+          "apply_patch",
+          ...(constrainedInstructionCreate ? ["write_file"] : []),
+          "finish",
+        ]
+      : [
+          "read_file",
+          "search_files",
+          "apply_patch",
+          ...(constrainedInstructionCreate ? ["write_file"] : []),
+          "run_command",
+          "finish",
+        ];
+    return toolNames
+      .map((name) => {
+        if (name === "apply_patch") return constrainedRepairPatch;
+        if (name === "write_file") return constrainedInstructionCreate;
+        return available.get(name);
+      })
       .filter(Boolean);
   }
 

@@ -28,7 +28,7 @@ const READ_ONLY_PATTERNS = [
   /^file(?:\s+[-\w./~*]+)+$/,
   /^stat(?:\s+[-\w./~*]+)+$/,
   /^sha256sum(?:\s+[-\w./~*]+)+$/,
-  /^sed\s+-n\s+['"0-9,:p\s-]+\s+[-\w./~*]+$/,
+  /^sed\s+-n\s+['"0-9,:p\s-]+(?:\s+[-\w./~*]+)?$/,
   /^git\s+(status|branch|log|show|diff(?:\s+--stat)?|remote\s+-v)(?:\s+.+)?$/,
   /^git\s+rev-parse(?:\s+(?:--show-toplevel|--git-dir|--is-inside-work-tree|--show-prefix|--show-cdup|--verify|--short(?:=\d+)?|[-\w./@^{}~:]+))+$/,
   /^git\s+ls-files(?:\s+(?:--(?:cached|deleted|modified|others|ignored|stage|unmerged|exclude-standard)|[-\w./*]+))*$/,
@@ -343,6 +343,21 @@ function validationCommandDeclaresOutput(tokens = []) {
   ) {
     return true;
   }
+  if (
+    /^python(?:3(?:\.\d+)*)?$/.test(executable) &&
+    /\.py$/i.test(String(args[0] || "")) &&
+    commandHasOption(args.slice(1), [
+      "-o",
+      "--output",
+      "--output-dir",
+      "--output-directory",
+      "--output-file",
+      "--report-file",
+      "--save",
+    ])
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -538,6 +553,40 @@ function structuredNativeTestRunner(tokens = [], command = "") {
   };
 }
 
+function structuredPythonValidationScript(tokens = [], command = "") {
+  const executable = String(tokens[0] || "").split(/[/\\]/).at(-1)?.toLowerCase();
+  if (!/^python(?:3(?:\.\d+)*)?$/.test(executable)) return null;
+  let index = 1;
+  while (index < tokens.length && String(tokens[index] || "").startsWith("-")) {
+    const option = String(tokens[index] || "");
+    if (/^-(?:B|E|I|O|OO|P|q|s|S|u|v|x)$/.test(option)) {
+      index += 1;
+      continue;
+    }
+    if (/^-(?:W|X)$/.test(option) && tokens[index + 1]) {
+      index += 2;
+      continue;
+    }
+    if (/^-(?:W|X).+/.test(option)) {
+      index += 1;
+      continue;
+    }
+    return null;
+  }
+  const script = String(tokens[index] || "").replace(/\\/g, "/");
+  if (!/\.py$/i.test(script)) return null;
+  const basename = script.toLowerCase().split("/").filter(Boolean).at(-1) || "";
+  const validationBasename =
+    /(?:^|[._-])(?:acceptance|audit|check|contract|spec|test|validat(?:e|ion)?|verif(?:y|ication))(?:[._-]|$)/.test(
+      basename.replace(/\.py$/i, "")
+    );
+  if (!validationBasename) return null;
+  return {
+    substantiveTest: true,
+    mayMutateProject: validationCommandMayMutateProject(command),
+  };
+}
+
 function structuredValidationCommand(command = "") {
   const shellSequence = parseTopLevelShellSequence(command);
   if (
@@ -551,6 +600,9 @@ function structuredValidationCommand(command = "") {
   const tokens = tokenizeShellWords(command);
   if (!boundedTestArguments(tokens)) return null;
   const executable = String(tokens[0] || "").split(/[/\\]/).at(-1)?.toLowerCase();
+
+  const pythonValidationScript = structuredPythonValidationScript(tokens, command);
+  if (pythonValidationScript) return pythonValidationScript;
 
   if (["npm", "pnpm", "yarn", "bun"].includes(executable)) {
     const scriptName = packageManagerScriptName(tokens);

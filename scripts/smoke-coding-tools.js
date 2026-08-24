@@ -7,6 +7,8 @@ import {
   buildModelTimeoutRetryMessages,
   genericArtifactFilenameBlock,
   modelTimeoutRetryRoute,
+  applyModelTimeoutRetryRoute,
+  recoverFocusedTextRewriteWithWritingSpecialist,
   repairModelMessageHistory,
   shouldResetStaticDiscoveryPhase,
   runAgent,
@@ -16,6 +18,7 @@ import {
   shellDiagnosticHint,
   skippedAfterBlockedToolResult,
 } from "../src/agent-runner.js";
+import { createToolContract, resolveDispatchableToolCallBatch } from "../src/tool-contract.js";
 import { formatBehaviorContractForPrompt } from "../src/behavior-contract.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { readCodebaseMap } from "../src/codebase-map.js";
@@ -648,6 +651,14 @@ try {
   );
   assert(readonlyVersionPipelinePolicy.allowed, "read-only version probe pipelines should not require package-install-policy=allow");
   assert(readonlyVersionPipelinePolicy.category === "read-only", "read-only version probe pipelines should be classified as read-only");
+  const readonlyDiffSlicePolicy = evaluateCommandPolicy(
+    "git diff -- src/agent-runner.js | sed -n '1,240p'",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(
+    readonlyDiffSlicePolicy.allowed && readonlyDiffSlicePolicy.category === "read-only",
+    "a bounded sed print filter made a read-only Git diff pipeline require broad shell access"
+  );
   const nodeNpmTestPolicy = evaluateCommandPolicy(
     'cd /workspace && node --version && npm test 2>&1; echo "EXIT:$?"',
     dockerWorkspaceNoInstallsPolicy
@@ -1308,6 +1319,128 @@ try {
     localTimeoutRoute.model === "localllm-fast" && localTimeoutRoute.retryTimeoutMs === 90000,
     "LocalLLM timeout retry did not switch to its same-boundary fast route"
   );
+  const adoptedLocalTimeoutRoute = applyModelTimeoutRetryRoute(
+    { provider: "localllm", model: "localllm-deep", routingMode: "manual" },
+    localTimeoutRoute
+  );
+  assert(
+    adoptedLocalTimeoutRoute.model === "localllm-fast" &&
+      adoptedLocalTimeoutRoute.modelTimeoutRecoveryActive === true &&
+      /continuing this run/.test(adoptedLocalTimeoutRoute.routeReason),
+    "a successful in-provider timeout retry was not retained for later steps in the same run"
+  );
+  const focusedRewriteDescriptor = {
+    type: "function",
+    function: {
+      name: "rewrite_text_excerpt",
+      description: "Rewrite one evidence-selected excerpt.",
+      parameters: {
+        type: "object",
+        properties: {
+          revisedText: {
+            type: "string",
+            minLength: 1,
+            maxLength: 4000,
+            pattern: "^(?:(?!load)[\\s\\S])+$",
+            description:
+              "Return only the complete revised excerpt. Remove the premature first-match operand while preserving the technical meaning.",
+          },
+        },
+        required: ["revisedText"],
+        additionalProperties: false,
+      },
+    },
+  };
+  const focusedRewriteContract = createToolContract([focusedRewriteDescriptor]);
+  const invalidFocusedRewriteCall = {
+    id: "focused-rewrite-smoke",
+    type: "function",
+    function: {
+      name: "rewrite_text_excerpt",
+      arguments: JSON.stringify({ revisedText: "A carefully preloaded technical summary." }),
+    },
+  };
+  const invalidFocusedRewrite = resolveDispatchableToolCallBatch(
+    [invalidFocusedRewriteCall],
+    focusedRewriteContract
+  );
+  assert(
+    !invalidFocusedRewrite.ok &&
+      invalidFocusedRewrite.errors.some((error) => error.code === "ARGUMENT_PATTERN_MISMATCH"),
+    "focused rewrite smoke input did not exercise the semantic pattern failure"
+  );
+  const focusedWriterCalls = [];
+  const focusedRewriteState = {
+    meta: {
+      failedTestDiagnostic: {
+        mutationRevision: 7,
+        failureSignature: "generic-first-occurrence-relation",
+      },
+    },
+  };
+  const focusedRewriteConfig = {
+    provider: "localllm",
+    model: "localllm-fast",
+    baseURL: "http://127.0.0.1:8008/v1",
+    testFailureSignature: "generic-first-occurrence-relation",
+    testFailureRepairPatchTargets: [{
+      path: "notes/handoff.md",
+      search: "A carefully preloaded technical summary.",
+    }],
+    writingClientFactory: (writingConfig) => {
+      focusedWriterCalls.push(writingConfig);
+      return {
+        chat: {
+          completions: {
+            create: async () => ({
+              choices: [{
+                message: {
+                  content: JSON.stringify({
+                    draft: "A carefully prepared technical summary.",
+                    revision_notes: [],
+                    continuity_notes: [],
+                    format_handoff: {},
+                    quality_checks: ["constraint satisfied"],
+                    questions: [],
+                  }),
+                },
+              }],
+            }),
+          },
+        },
+      };
+    },
+  };
+  const recoveredFocusedRewrite = await recoverFocusedTextRewriteWithWritingSpecialist(
+    focusedRewriteConfig,
+    focusedRewriteState,
+    [invalidFocusedRewriteCall],
+    focusedRewriteContract,
+    invalidFocusedRewrite
+  );
+  assert(recoveredFocusedRewrite?.ok, "writing specialist did not recover the bounded semantic rewrite");
+  assert(
+    recoveredFocusedRewrite.recoveredFocusedTextRewrite === true &&
+      JSON.parse(recoveredFocusedRewrite.acceptedToolCalls[0].function.arguments).revisedText ===
+        "A carefully prepared technical summary.",
+    "writing specialist recovery did not return a schema-valid focused rewrite call"
+  );
+  assert(
+    focusedWriterCalls.length === 1 &&
+      focusedWriterCalls[0].provider === "localllm" &&
+      focusedWriterCalls[0].model === "localllm-fast",
+    "focused rewrite recovery crossed the active provider/model boundary"
+  );
+  assert(
+    (await recoverFocusedTextRewriteWithWritingSpecialist(
+      focusedRewriteConfig,
+      focusedRewriteState,
+      [invalidFocusedRewriteCall],
+      focusedRewriteContract,
+      invalidFocusedRewrite
+    )) === null && focusedWriterCalls.length === 1,
+    "focused rewrite recovery repeated for the same retained failure state"
+  );
   const defaultLocalTimeoutRoute = modelTimeoutRetryRoute({
     provider: "localllm",
     model: "localllm-fast",
@@ -1511,6 +1644,25 @@ try {
   );
   const unifiedText = await fs.readFile(path.join(workspace, "unified-target.txt"), "utf8");
   assert(unified.ok && unifiedText === "alpha\nnew\nomega\n", "unified apply_patch did not update expected file");
+
+  await fs.writeFile(path.join(workspace, "no-op-patch-target.txt"), "already correct\n", "utf8");
+  const noOpPatchError = await executeWorkspaceTool(
+    "apply_patch",
+    {
+      path: "no-op-patch-target.txt",
+      search: "already correct",
+      replace: "already correct",
+      expectedReplacements: 1,
+    },
+    { commandCwd: workspace, allowFileTools: true }
+  )
+    .then(() => "")
+    .catch((error) => String(error?.message || error));
+  assert(
+    /patch made no changes/i.test(noOpPatchError) &&
+      (await fs.readFile(path.join(workspace, "no-op-patch-target.txt"), "utf8")) === "already correct\n",
+    "an exact byte-identical replacement was reported as a successful mutation"
+  );
 
   await fs.writeFile(path.join(workspace, "hybrid-patch-target.txt"), "alpha\nold\nomega\n", "utf8");
   const hybridPatch = await executeWorkspaceTool(
@@ -1858,6 +2010,7 @@ try {
           "node_profile_cli_package_manifest",
           "python_profile_helper_test_report",
           "model_timeout_compact_retry_messages",
+          "focused_text_rewrite_specialist_recovery",
         ],
       },
       null,

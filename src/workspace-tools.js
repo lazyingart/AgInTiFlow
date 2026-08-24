@@ -1035,6 +1035,7 @@ async function applyPatch(config, args) {
   if (matches > 20) throw new Error(`Patch would replace too many sections (${matches}).`);
 
   const afterText = beforeText.split(search).join(replace);
+  if (afterText === beforeText) throw new Error(`Patch made no changes to ${target.relativePath}.`);
   const change = await writeChange(target, afterText, "apply_patch", {
     replacements: matches,
     searchPreview: compactPreview(search),

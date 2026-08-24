@@ -15,24 +15,41 @@ import {
 } from "../src/scs-controller.js";
 import {
   announceConvergenceOutputPhase,
+  applyContinuationContractTransition,
   artifactValidationAcceptanceIsCurrent,
   artifactValidationFinishBlock,
   artifactValidationScopeBlock,
+  buildConstrainedRecoveryRequest,
+  buildFailedTestRecoveryPacket,
+  buildTaskOwnedCommitCommand,
   canonicalizeVerifiedArtifactCompletion,
   completedDeepResearchReuse,
   completionEvidenceNeedsCommand,
+  compactFailedTestEvidence,
   enqueueFailedTestRepairInstruction,
+  failedTestRequiresCleanRepositoryState,
+  failedTestRepairPatchBlock,
+  failedTestAliasedIndexComparisons,
+  failedTestIndexComparisons,
+  failedTestLiteralOperands,
+  failedTestMembershipPredicates,
+  isCompletedContinuationNoop,
   isSubstantiveTestCommand,
   nextStepRuntimeConfig,
   projectAcceptanceFromMarkdown,
+  projectTestVerificationFinishBlock,
   recordCanonicalGeneratedOutputProgress,
   recordProjectVerificationOutcome,
   recordExactOutputProgress,
   recordStaticDiscoveryProgress,
   resetGoalScopedRuntimeState,
+  resetSameTaskExecutionContract,
   resetStaticDiscoveryAfterContextLoss,
+  shellDiagnosticHint,
   rememberCompletedDeepResearch,
+  unchangedFailedTestRerunBlock,
   repeatedNoProgressToolBlock,
+  regressiveInversePatchBlock,
   repeatedSuccessfulMutationBlock,
   repeatedStaticToolBlock,
   reopenedArtifactRepairPending,
@@ -375,6 +392,59 @@ try {
       missingStandaloneGitAction.missingGitActions?.includes("push"),
     "an explicit missing Git action was ignored when external evidence was otherwise optional"
   );
+  const staleMutationCommitEvidence = evaluateScsEvidence(
+    {
+      requiresExternalEvidence: false,
+      requiredEvidence: [],
+      requiredToolCalls: [],
+      requiredGitActions: ["commit"],
+      requiredGitRevision: 5,
+      requiredGitMutationRevision: 9,
+    },
+    buildScsEvidenceLedger({
+      state: {
+        messages: [
+          toolMessage({
+            toolName: "run_command",
+            ok: true,
+            exitCode: 0,
+            args: { command: "git commit --allow-empty -m 'stale mutation'" },
+            goalRevision: 5,
+            projectMutationRevision: 8,
+          }),
+        ],
+      },
+    })
+  );
+  assert(
+    !staleMutationCommitEvidence.ok && staleMutationCommitEvidence.missingGitActions?.includes("commit"),
+    "a commit predating the latest project mutation satisfied Git evidence"
+  );
+  const currentMutationCommitEvidence = evaluateScsEvidence(
+    {
+      requiresExternalEvidence: false,
+      requiredEvidence: [],
+      requiredToolCalls: [],
+      requiredGitActions: ["commit"],
+      requiredGitRevision: 5,
+      requiredGitMutationRevision: 9,
+    },
+    buildScsEvidenceLedger({
+      state: {
+        messages: [
+          toolMessage({
+            toolName: "run_command",
+            ok: true,
+            exitCode: 0,
+            args: { command: "git commit --allow-empty -m 'current mutation'" },
+            goalRevision: 5,
+            projectMutationRevision: 9,
+          }),
+        ],
+      },
+    })
+  );
+  assert(currentMutationCommitEvidence.ok, "a current-mutation commit was not accepted as Git evidence");
   const outOfOrderGitActions = evaluateScsEvidence(
     {
       requiresExternalEvidence: false,
@@ -586,6 +656,26 @@ try {
       `a common bounded read-only command was treated as a project mutation: ${command}`
     );
   }
+  const acceptanceValidator =
+    "python3 /tmp/supervision/acceptance/context_contract.py --root /tmp/workspace --phase final";
+  const acceptanceClassification = classifyCommand(acceptanceValidator);
+  assert(
+    acceptanceClassification.category === "test" &&
+      acceptanceClassification.writesWorkspace === false &&
+      acceptanceClassification.substantiveTest === true,
+    "a structurally named Python acceptance validator was treated as an arbitrary mutating script"
+  );
+  assert(
+    classifyCommand(`${acceptanceValidator} --output report.json`).writesWorkspace === true,
+    "a Python acceptance validator with an explicit output destination was treated as read-only"
+  );
+  assert(
+    shellDiagnosticHint("git commit -m 'update'", {
+      ok: false,
+      stdout: "Changes not staged for commit:\nno changes added to commit",
+    }).includes("stage only the task-owned paths"),
+    "a failed unstaged Git commit did not provide bounded staging recovery"
+  );
   for (const command of [
     "curl -o report.md https://example.com/report.md",
     "curl -oreport.md https://example.com/report.md",
@@ -2550,6 +2640,7 @@ try {
       goalContract: { revision: 2 },
       projectVerification: { mutationRevision: 4 },
       scs: { taskContract: { exactOutputPaths: ["old-output.md"] } },
+      verifiedCompletionCandidate: { version: 1, mutationRevision: 4, goalRevision: 1 },
       completedDeepResearch: [{ goalKey: "retained-other-goal" }],
     },
   };
@@ -2557,9 +2648,127 @@ try {
   assert(removedGoalState.includes("artifactProgress"), "new goal did not clear stale artifact progress");
   assert(!newGoalState.meta.projectVerification, "new goal retained stale project verification");
   assert(!newGoalState.meta.scs, "new goal retained the previous SCS task contract");
+  assert(
+    !newGoalState.meta.verifiedCompletionCandidate,
+    "new goal retained a prior verification completion candidate"
+  );
   assert(!newGoalState.meta.durableEvidenceCategories, "new goal inherited completed evidence categories");
   assert(newGoalState.meta.goalContract?.revision === 2, "new goal reset its durable goal contract");
   assert(newGoalState.meta.completedDeepResearch?.length === 1, "new goal discarded goal-keyed research cache");
+
+  const durableVerification = {
+    mutationRevision: 4,
+    requiredOutputs: ["handoff.md", "coverage.json"],
+    requiredCommands: ["node scripts/check-handoff.js"],
+  };
+  const concreteContinuationState = {
+    goal: "Repair the source provenance in the existing handoff.",
+    plan: "Inspect one old output and repair it.",
+    meta: {
+      goalContract: {
+        version: 2,
+        revision: 3,
+        status: "paused",
+        taskGoal: "Create and validate the experiment handoff.",
+        currentRequest: "Repair the source provenance in the existing handoff.",
+      },
+      artifactProgress: { complete: true, exactOutputPaths: ["README.md"] },
+      completionEvidenceRepair: { attempts: 1 },
+      failedTestRecoveryPacket: { content: "old repair" },
+      projectVerification: durableVerification,
+      scs: {
+        taskContract: { exactOutputPaths: ["README.md"] },
+        acceptanceCriteria: ["Only the old output is in scope."],
+      },
+      toolLoop: { staticCounts: { stale: 2 }, staticTotal: 2 },
+    },
+  };
+  const concreteContinuation =
+    "Two follow-up notes arrived. Continue the same task from saved state: update the existing handoff and coverage, validate the repository state, and commit the coherent update.";
+  const leadingContinuationState = structuredClone(concreteContinuationState);
+  const leadingContinuationUpdate = applyContinuationContractTransition(
+    leadingContinuationState,
+    `Continue the same task from the saved state. Restore the damaged source ledger, rerun validation, and commit the coherent repair. ${"Preserve the complete retained context while applying this concrete correction. ".repeat(12)}`,
+    { at: "2026-08-24T09:59:00.000Z" }
+  );
+  assert(
+    leadingContinuationUpdate?.preserveTaskBoundary &&
+      leadingContinuationUpdate?.refreshExecutionContract,
+    "a leading bare continuation clause followed by concrete details became a new task"
+  );
+  const concreteGoalUpdate = applyContinuationContractTransition(
+    concreteContinuationState,
+    concreteContinuation,
+    { at: "2026-08-24T10:00:00.000Z" }
+  );
+  assert(concreteGoalUpdate?.preserveTaskBoundary, "a concrete same-task interruption lost task continuity");
+  assert(concreteGoalUpdate?.refreshExecutionContract, "a concrete same-task interruption retained stale acceptance state");
+  assert(
+    concreteContinuationState.goal === concreteContinuation,
+    "a concrete interruption did not become the active execution goal"
+  );
+  assert(concreteContinuationState.plan === "", "a concrete interruption retained the obsolete phase plan");
+  assert(!concreteContinuationState.meta.scs, "a concrete interruption retained the obsolete SCS contract");
+  assert(!concreteContinuationState.meta.artifactProgress, "a concrete interruption retained stale artifact scope");
+  assert(
+    concreteContinuationState.meta.projectVerification === durableVerification,
+    "a concrete interruption discarded durable project evidence"
+  );
+  assert(
+    concreteContinuationState.meta.goalContract.taskGoal === "Create and validate the experiment handoff." &&
+      concreteContinuationState.meta.goalContract.activeGoal === concreteContinuation &&
+      concreteContinuationState.meta.goalContract.activeGoalRevision === 4,
+    "the goal contract did not separate durable task lineage from the active interruption"
+  );
+
+  const bareContinuationState = {
+    goal: concreteContinuation,
+    plan: "Update both retained outputs, validate, and commit.",
+    meta: {
+      goalContract: {
+        ...concreteContinuationState.meta.goalContract,
+        status: "paused",
+      },
+      artifactProgress: { complete: false, exactOutputPaths: ["handoff.md", "coverage.json"] },
+      projectVerification: durableVerification,
+      scs: { taskContract: { exactOutputPaths: ["handoff.md", "coverage.json"] } },
+    },
+  };
+  const retainedPlan = bareContinuationState.plan;
+  const retainedScs = bareContinuationState.meta.scs;
+  const bareGoalUpdate = applyContinuationContractTransition(
+    bareContinuationState,
+    "Continue the same task from the saved state.",
+    { at: "2026-08-24T10:05:00.000Z" }
+  );
+  assert(bareGoalUpdate?.preserveTaskBoundary, "a bare resume lost task continuity");
+  assert(!bareGoalUpdate?.refreshExecutionContract, "a bare resume unnecessarily refreshed the active contract");
+  assert(bareContinuationState.goal === concreteContinuation, "a bare resume forgot the latest concrete instruction");
+  assert(bareContinuationState.plan === retainedPlan, "a bare resume discarded the approved active plan");
+  assert(bareContinuationState.meta.scs === retainedScs, "a bare resume discarded the active SCS phase");
+  assert(
+    bareContinuationState.meta.goalContract.activeGoalRevision === 4,
+    "a bare resume fabricated a new active-goal revision"
+  );
+
+  const isolatedRefreshState = {
+    plan: "old plan",
+    meta: {
+      goalContract: { revision: 8 },
+      artifactProgress: {},
+      scs: {},
+      projectVerification: durableVerification,
+    },
+  };
+  const isolatedRemoved = resetSameTaskExecutionContract(isolatedRefreshState, 8);
+  assert(
+    isolatedRemoved.includes("artifactProgress") && isolatedRemoved.includes("scs"),
+    "same-task contract refresh did not report the removed per-turn state"
+  );
+  assert(
+    isolatedRefreshState.meta.projectVerification === durableVerification,
+    "same-task contract refresh removed durable verification evidence"
+  );
 
   const optionalVisualContract = deriveScsTaskContract({
     goal: "Repair the repository, verify it, commit, and push the intentional work.",
@@ -2841,6 +3050,1098 @@ try {
     ) === null,
     "an explicit status polling command was incorrectly blocked"
   );
+  const failedValidationCommand =
+    "python3 /tmp/supervision/acceptance/context_contract.py --root /tmp/workspace --phase final";
+  const failedValidationState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 6,
+        testRuns: [
+          {
+            command: failedValidationCommand,
+            mutationRevision: 6,
+            passed: false,
+            failureEvidenceVersion: 2,
+            failureSignature: "same-failure",
+          },
+        ],
+      },
+    },
+  };
+  assert(
+    unchangedFailedTestRerunBlock(
+      failedValidationState,
+      "run_command",
+      { command: failedValidationCommand },
+      { commandCwd: workspace }
+    )?.category === "unchanged-failed-test-rerun",
+    "an unchanged failed validator could rerun before a repair mutation"
+  );
+  const repositoryCleanGateFailure = {
+    ...failedValidationState,
+    meta: {
+      projectVerification: {
+        ...failedValidationState.meta.projectVerification,
+        testRuns: [{
+          ...failedValidationState.meta.projectVerification.testRuns[0],
+          failureSignature: "repository-state-gate",
+          failureSummary:
+            "File contract.py, line 77 -> require(git_output(root, \"status\", \"--short\") == \"\", \"repository worktree is not clean\")",
+        }],
+      },
+    },
+  };
+  assert(
+    failedTestRequiresCleanRepositoryState(
+      repositoryCleanGateFailure.meta.projectVerification.testRuns[0]
+    ),
+    "a standard empty git-status assertion was not classified as a repository-state gate"
+  );
+  assert(
+    !failedTestRequiresCleanRepositoryState({
+      failureSummary: "The generated prose says the repository worktree is not clean.",
+    }),
+    "plain task prose was mistaken for a repository-state gate without Git-status evidence"
+  );
+  assert(
+    unchangedFailedTestRerunBlock(
+      repositoryCleanGateFailure,
+      "run_command",
+      { command: failedValidationCommand },
+      { commandCwd: workspace }
+    ) === null,
+    "a clean-worktree verification gate could not rerun after a Git-state repair"
+  );
+  const oversizedRepositoryState = {
+    ...repositoryCleanGateFailure,
+    goal: "Complete the current repository task and preserve its established acceptance contract.",
+    messages: [
+      {
+        role: "system",
+        content: "Use evidence and enabled tools only. ".repeat(500),
+      },
+      ...Array.from({ length: 40 }, (_, index) => ({
+        role: "user",
+        content: `Historical context ${index}: ${"bounded but no longer operational. ".repeat(80)}`,
+      })),
+    ],
+  };
+  const repositoryRecoveryRequest = buildConstrainedRecoveryRequest(
+    oversizedRepositoryState,
+    { provider: "localllm", taskProfile: "qa", contextWindowTokens: 32768 },
+    {},
+    9
+  );
+  const repositoryRecoveryText = JSON.stringify(repositoryRecoveryRequest?.messages || []);
+  assert(
+    repositoryRecoveryRequest?.mode === "repository-state-repair",
+    "repository-state recovery did not activate its generic narrow execution context"
+  );
+  assert(
+    repositoryRecoveryRequest?.maxOutputTokens === 1536,
+    "repository-state recovery did not reserve enough bounded output for its multi-action phase"
+  );
+  assert(
+    repositoryRecoveryText.includes(failedValidationCommand),
+    "repository-state recovery lost the exact retained verification command"
+  );
+  assert(
+    /not a content defect/i.test(repositoryRecoveryText) &&
+      !/apply one minimal patch to the canonical producer/i.test(repositoryRecoveryText),
+    "repository-state recovery retained contradictory content-mutation guidance"
+  );
+  assert(
+    repositoryRecoveryRequest.messageChars < JSON.stringify(oversizedRepositoryState.messages).length / 4,
+    "repository-state recovery did not materially reduce irrelevant historical context"
+  );
+  const boundedCommitCommand = buildTaskOwnedCommitCommand(
+    ["handoff.md", "notes/review's-summary.md"],
+    "Polish verified handoff prose"
+  );
+  assert(
+    boundedCommitCommand.includes("git add -- 'handoff.md'") &&
+      boundedCommitCommand.includes("'notes/review'\"'\"'s-summary.md'") &&
+      boundedCommitCommand.includes("git commit -m 'Polish verified handoff prose'") &&
+      !boundedCommitCommand.includes("git add -A") &&
+      !boundedCommitCommand.includes("git add -- ."),
+    "the task-owned commit routine did not shell-quote its exact evidence-derived paths"
+  );
+  assert(
+    buildTaskOwnedCommitCommand(["../outside.md"], "Unsafe path") === "" &&
+      buildTaskOwnedCommitCommand(["handoff.md"], "bad\nsubject") === "",
+    "the task-owned commit routine accepted an escaped path or multiline subject"
+  );
+  const nonTextCommitCommand = buildTaskOwnedCommitCommand(
+    ["assets/preview.png", "AGENTS.md", "Makefile"],
+    "Commit verified project assets"
+  );
+  assert(
+    nonTextCommitCommand.includes("'assets/preview.png'") &&
+      nonTextCommitCommand.includes("'AGENTS.md'") &&
+      nonTextCommitCommand.includes("'Makefile'"),
+    "the task-owned commit routine reused the plain-text recovery evidence filter"
+  );
+  const windowsCommitCommand = buildTaskOwnedCommitCommand(
+    ["src/runtime file.js", "assets/preview.png"],
+    "Commit verified project assets",
+    { platform: "win32" }
+  );
+  assert(
+    windowsCommitCommand ===
+      'git add -- "src/runtime file.js" "assets/preview.png" && git commit -m "Commit verified project assets"' &&
+      buildTaskOwnedCommitCommand(["src/runtime.js"], "unsafe %PATH% subject", {
+        platform: "win32",
+      }) === "",
+    "the task-owned commit routine did not use a conservative cmd.exe-safe command"
+  );
+  assert(
+    buildTaskOwnedCommitCommand([".private/token.txt"], "Unsafe private path") === "" &&
+      buildTaskOwnedCommitCommand(["secrets/key.txt"], "Unsafe secret path") === "",
+    "the task-owned commit routine accepted a protected workspace path"
+  );
+  const pendingVerificationState = {
+    goal: "Finish the current task after fresh verification.",
+    messages: oversizedRepositoryState.messages,
+    meta: {
+      projectVerification: {
+        mutationRevision: 7,
+        testRuns: [{
+          command: failedValidationCommand,
+          mutationRevision: 6,
+          passed: true,
+        }],
+      },
+    },
+  };
+  const pendingVerificationRequest = buildConstrainedRecoveryRequest(
+    pendingVerificationState,
+    { provider: "localllm", taskProfile: "qa", maxOutputTokens: 320 },
+    {},
+    10
+  );
+  const pendingVerificationText = JSON.stringify(pendingVerificationRequest?.messages || []);
+  assert(
+    pendingVerificationRequest?.mode === "exact-verification",
+    "a post-mutation verification turn did not activate the generic narrow execution context"
+  );
+  assert(
+    pendingVerificationRequest?.maxOutputTokens === 320,
+    "a narrower explicit output limit was not preserved"
+  );
+  assert(
+    pendingVerificationText.includes(failedValidationCommand) &&
+      /run the exact retained verification command now/i.test(pendingVerificationText),
+    "post-mutation verification lost its one remaining concrete action"
+  );
+  const verifiedCompletionState = {
+    goal: "Finish the current task after fresh verification.",
+    messages: oversizedRepositoryState.messages,
+    meta: {
+      goalContract: { revision: 11 },
+      projectVerification: {
+        mutationRevision: 8,
+        testRuns: [{
+          command: failedValidationCommand,
+          mutationRevision: 7,
+          passed: true,
+        }],
+      },
+    },
+  };
+  const freshPassingVerification = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: failedValidationCommand },
+    stdout: "Acceptance contract passed.\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(verifiedCompletionState, freshPassingVerification, {
+    commandCwd: workspace,
+    taskProfile: "qa",
+    testVerificationPending: true,
+    testVerificationCommand: failedValidationCommand,
+  });
+  assert(
+    verifiedCompletionState.meta.verifiedCompletionCandidate?.mutationRevision === 8 &&
+      verifiedCompletionState.meta.verifiedCompletionCandidate?.goalRevision === 11,
+    "a fresh bounded verifier pass did not record a revision-bound completion candidate"
+  );
+  const verifiedCompletionRuntime = nextStepRuntimeConfig(
+    { provider: "localllm", taskProfile: "qa" },
+    verifiedCompletionState
+  );
+  assert(
+    verifiedCompletionRuntime.verifiedCompletionPending === true,
+    "a current recovery verifier pass did not activate bounded completion"
+  );
+  const verifiedCompletionRequest = buildConstrainedRecoveryRequest(
+    verifiedCompletionState,
+    { provider: "localllm", taskProfile: "qa" },
+    {},
+    11,
+    verifiedCompletionRuntime
+  );
+  const verifiedCompletionText = JSON.stringify(verifiedCompletionRequest?.messages || []);
+  assert(
+    verifiedCompletionRequest?.mode === "verified-completion" &&
+      verifiedCompletionRequest?.maxOutputTokens === 768,
+    "fresh passing evidence did not narrow the final response turn"
+  );
+  assert(
+    /call finish once/i.test(verifiedCompletionText) &&
+      !/run the exact retained verification command now/i.test(verifiedCompletionText),
+    "bounded completion asked the agent to repeat an already passing verifier"
+  );
+  const staleCompletionState = structuredClone(verifiedCompletionState);
+  staleCompletionState.meta.projectVerification.mutationRevision += 1;
+  assert(
+    nextStepRuntimeConfig(
+      { provider: "localllm", taskProfile: "qa" },
+      staleCompletionState
+    ).verifiedCompletionPending !== true,
+    "a later mutation revision reused stale completion evidence"
+  );
+  const repairCompletionState = structuredClone(verifiedCompletionState);
+  repairCompletionState.meta.completionEvidenceRepair = { attempts: 1 };
+  assert(
+    nextStepRuntimeConfig(
+      { provider: "localllm", taskProfile: "qa" },
+      repairCompletionState
+    ).verifiedCompletionPending === true,
+    "an older repair record suppressed a newer exact verifier pass"
+  );
+  assert(
+    buildConstrainedRecoveryRequest(
+      { goal: "Inspect a project.", messages: [], meta: {} },
+      { provider: "localllm", taskProfile: "code" },
+      {},
+      1
+    ) === null,
+    "ordinary agent work was incorrectly narrowed to a recovery-only context"
+  );
+  assert(
+    unchangedFailedTestRerunBlock(
+      {
+        meta: {
+          projectVerification: {
+            mutationRevision: 6,
+            testRuns: [
+              {
+                command: failedValidationCommand,
+                mutationRevision: 6,
+                passed: false,
+                failureSignature: "legacy-evidence",
+              },
+            ],
+          },
+        },
+      },
+      "run_command",
+      { command: failedValidationCommand },
+      { commandCwd: workspace }
+    ) === null,
+    "a retained failure with an obsolete evidence schema could not refresh once"
+  );
+  assert(
+    unchangedFailedTestRerunBlock(
+      {
+        meta: {
+          projectVerification: {
+            ...failedValidationState.meta.projectVerification,
+            mutationRevision: 7,
+          },
+        },
+      },
+      "run_command",
+      { command: failedValidationCommand },
+      { commandCwd: workspace }
+    ) === null,
+    "a repair mutation did not reopen the exact failed validator"
+  );
+  assert(
+    unchangedFailedTestRerunBlock(
+      failedValidationState,
+      "run_command",
+      { command: "git diff --check" },
+      { commandCwd: workspace }
+    ) === null,
+    "failed-test gating blocked a different diagnostic command"
+  );
+  assert(
+    projectTestVerificationFinishBlock(failedValidationState)?.category === "project-test-current-failure",
+    "a current unresolved substantive test failure did not block completion"
+  );
+  const staleValidationState = {
+    meta: {
+      projectVerification: {
+        ...failedValidationState.meta.projectVerification,
+        mutationRevision: 7,
+      },
+    },
+  };
+  assert(
+    projectTestVerificationFinishBlock(staleValidationState)?.category === "project-test-verification-stale",
+    "a real mutation after a failed test did not require fresh passing evidence"
+  );
+  const repairedValidationState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 7,
+        testRuns: [
+          ...failedValidationState.meta.projectVerification.testRuns,
+          {
+            command: failedValidationCommand,
+            mutationRevision: 7,
+            passed: true,
+          },
+        ],
+      },
+    },
+  };
+  assert(
+    projectTestVerificationFinishBlock(repairedValidationState) === null,
+    "a passing rerun at the current real mutation revision did not reopen completion"
+  );
+  const tracebackEvidence = compactFailedTestEvidence(
+    {
+      stderr: [
+        "Traceback (most recent call last):",
+        `  File "${workspace}/acceptance_check.py", line 89, in main`,
+        '    require("needle" in folded and folded.index("before") < folded.index("needle"), "order failed")',
+        `  File "${workspace}/acceptance_check.py", line 17, in require`,
+        "    raise AssertionError(message)",
+        "AssertionError: order failed",
+      ].join("\n"),
+    },
+    { commandCwd: workspace }
+  );
+  assert(
+    tracebackEvidence.failureSummary.includes(
+      'require("needle" in folded and folded.index("before") < folded.index("needle")'
+    ),
+    "failed-test compaction discarded the traceback source expression needed for diagnosis"
+  );
+  assert(
+    tracebackEvidence.failureSummary.includes("AssertionError: order failed"),
+    "failed-test compaction discarded the terminal assertion"
+  );
+  assert(
+    tracebackEvidence.failureEvidenceVersion === 2,
+    "failed-test compaction did not stamp the current evidence schema"
+  );
+  assert(
+    JSON.stringify(failedTestLiteralOperands(tracebackEvidence.failureSummary)) ===
+      JSON.stringify(["needle", "before", "order failed"]),
+    "literal validator operands were not derived generically from traceback evidence"
+  );
+  assert(
+    JSON.stringify(failedTestIndexComparisons(tracebackEvidence.failureSummary)) ===
+      JSON.stringify([
+        {
+          variable: "folded",
+          left: "before",
+          operator: "<",
+          right: "needle",
+        },
+      ]),
+    "index-order predicates were not derived generically from traceback evidence"
+  );
+  const membershipFailureSummary =
+    'Traceback context: File "/tmp/acceptance_check.py", line 9, in main -> require("{\\"id\\"" not in report and "transport.jsonl" not in folded, "raw transport copied")';
+  assert(
+    JSON.stringify(failedTestMembershipPredicates(membershipFailureSummary)) ===
+      JSON.stringify([
+        { variable: "report", literal: '{"id"', negated: true },
+        { variable: "folded", literal: "transport.jsonl", negated: true },
+      ]),
+    "escaped membership predicates were not derived generically from traceback evidence"
+  );
+  assert(
+    !tracebackEvidence.failureSummary.includes(workspace),
+    "failed-test compaction leaked the absolute workspace path"
+  );
+  const completedContinuation = {
+    preserveTaskBoundary: true,
+    previousStatus: "completed",
+  };
+  assert(
+    !isCompletedContinuationNoop(
+      completedContinuation,
+      "Continue the same task from the saved state.",
+      failedValidationState
+    ),
+    "a legacy completed label bypassed retained failed-test evidence on resume"
+  );
+  assert(
+    isCompletedContinuationNoop(
+      completedContinuation,
+      "Continue the same task from the saved state.",
+      { meta: {} }
+    ),
+    "a genuinely completed task lost idempotent bare-resume behavior"
+  );
+  const missingRecoveryPacketState = {
+    meta: {
+      testFailureRepair: { key: "6:same-failure" },
+      projectVerification: failedValidationState.meta.projectVerification,
+    },
+    messages: [],
+  };
+  const rebuiltRepair = enqueueFailedTestRepairInstruction(missingRecoveryPacketState, [
+    { projectTest: failedValidationState.meta.projectVerification.testRuns[0] },
+  ]);
+  assert(
+    rebuiltRepair?.rebuildRecoveryPacket === true,
+    "a same-task refresh could not rebuild a missing failed-test evidence packet"
+  );
+  missingRecoveryPacketState.meta.failedTestRecoveryPacket = {
+    packetVersion: 7,
+    content: "Bounded failed-test evidence packet v7.",
+    mutationRevision: 6,
+    failureSignature: "same-failure",
+  };
+  assert(
+    enqueueFailedTestRepairInstruction(missingRecoveryPacketState, [
+      { projectTest: failedValidationState.meta.projectVerification.testRuns[0] },
+    ]) === null,
+    "an already-current failed-test evidence packet was redundantly rebuilt"
+  );
+  await fs.writeFile(
+    path.join(workspace, "ordered-report.md"),
+    "The needle marker appears first.\nThe before marker appears later.\n",
+    "utf8"
+  );
+  const literalPacketState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 0,
+        discoveredTests: ["ordered-report.md"],
+        lastMutation: { paths: ["ordered-report.md"] },
+        testRuns: [
+          {
+            command: "python acceptance_check.py",
+            mutationRevision: 0,
+            passed: false,
+            failureEvidenceVersion: 2,
+            failureSignature: "literal-order",
+            failureSummary: tracebackEvidence.failureSummary,
+          },
+        ],
+      },
+    },
+  };
+  const literalPacket = await buildFailedTestRecoveryPacket(
+    { commandCwd: workspace },
+    literalPacketState
+  );
+  assert(
+    literalPacket.content.includes('"needle": exact first match line 1') &&
+      literalPacket.content.includes('"before": exact first match line 2') &&
+      /folded\.index\("before"\) < folded\.index\("needle"\) => \d+ < \d+ is false/.test(
+        literalPacket.content
+      ) &&
+      literalPacket.content.includes("An edit after both first-match offsets cannot change it"),
+    "failed-test recovery did not include bounded literal first-match evidence"
+  );
+  assert(
+    literalPacketState.meta.failedTestDiagnostic?.focuses?.some(
+      (focus) =>
+        focus.path === "ordered-report.md" &&
+        focus.left === "before" &&
+        focus.operator === "<" &&
+        focus.right === "needle" &&
+        focus.decisiveLine === 1 &&
+        focus.directSearch === "The needle marker appears first."
+    ),
+    "failed-test recovery did not persist a generic first-match repair focus"
+  );
+  const irrelevantFailedTestPatch = await failedTestRepairPatchBlock(
+    literalPacketState,
+    "apply_patch",
+    {
+      path: "ordered-report.md",
+      search: "The before marker appears later.",
+      replace: "The before marker remains later.",
+    },
+    { commandCwd: workspace }
+  );
+  assert(
+    irrelevantFailedTestPatch?.category === "failed-test-irrelevant-patch",
+    "a same-file patch after the decisive first occurrence was not blocked"
+  );
+  assert(
+    irrelevantFailedTestPatch.diagnosticHint.includes(
+      'folded.index("before") < folded.index("needle")'
+    ) &&
+      irrelevantFailedTestPatch.diagnosticHint.includes('first "needle" occurs at line 1') &&
+      irrelevantFailedTestPatch.reason.includes("starts at line 2"),
+    "an irrelevant patch block omitted the exact dynamically evaluated repair location"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      literalPacketState,
+      "apply_patch",
+      {
+        path: "ordered-report.md",
+        search: "The needle marker appears first.",
+        replace: "The marker appears first.",
+      },
+      { commandCwd: workspace }
+    ))?.category === "failed-test-nonrepairing-patch",
+    "a decisive patch that removed a required operand was not rejected transactionally"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      literalPacketState,
+      "apply_patch",
+      {
+        path: "ordered-report.md",
+        search: "The needle marker appears first.",
+        replace: "The needle marker appears first. The before marker was appended later.",
+      },
+      { commandCwd: workspace }
+    ))?.category === "failed-test-nonrepairing-patch",
+    "a decisive patch that retained the failing first occurrence was not rejected transactionally"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      literalPacketState,
+      "apply_patch",
+      {
+        path: "ordered-report.md",
+        search: "The needle marker appears first.",
+        replace: "The before marker now appears before the needle marker.",
+      },
+      { commandCwd: workspace }
+    )) === null,
+    "a decisive patch that makes the retained relation true was incorrectly blocked"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      literalPacketState,
+      "apply_patch",
+      {
+        path: "ordered-report.md",
+        search: "The needle marker appears first.",
+        replace:
+          "The before marker now appears before the needle marker. The retained validator requires this wording.",
+      },
+      { commandCwd: workspace }
+    ))?.category === "failed-test-control-plane-leak",
+    "internal repair guidance was allowed to leak into a tested artifact"
+  );
+  await fs.writeFile(path.join(workspace, "producer.js"), "export const value = 1;\n", "utf8");
+  assert(
+    (await failedTestRepairPatchBlock(
+      literalPacketState,
+      "apply_patch",
+      {
+        path: "producer.js",
+        search: "value = 1",
+        replace: "value = 2",
+      },
+      { commandCwd: workspace }
+    )) === null,
+    "a patch to a separate canonical producer was incorrectly blocked"
+  );
+  await fs.writeFile(
+    path.join(workspace, "membership-report.md"),
+    "Source transport.jsonl was copied here.\nSafe summary follows.\nA second transport.jsonl reference remains.\n",
+    "utf8"
+  );
+  const membershipPacketState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 0,
+        discoveredTests: ["membership-report.md"],
+        lastMutation: { paths: ["membership-report.md"] },
+        testRuns: [
+          {
+            command: "python acceptance_check.py",
+            mutationRevision: 0,
+            passed: false,
+            failureEvidenceVersion: 2,
+            failureSignature: "membership-exclusion",
+            failureSummary: membershipFailureSummary,
+          },
+        ],
+      },
+    },
+  };
+  const membershipPacket = await buildFailedTestRecoveryPacket(
+    { commandCwd: workspace },
+    membershipPacketState
+  );
+  assert(
+    membershipPacket.content.includes(
+      '"transport.jsonl" not in folded => found at offset'
+    ) &&
+      membershipPacketState.meta.failedTestDiagnostic?.focuses?.some(
+        (focus) =>
+          focus.kind === "membership" &&
+          focus.path === "membership-report.md" &&
+          focus.literal === "transport.jsonl" &&
+          focus.negated === true &&
+          focus.caseFolded === true &&
+          focus.decisiveLine === 1 &&
+          focus.directSearch === "Source transport.jsonl was copied here."
+      ),
+    "failed-test recovery did not persist a generic membership repair focus"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      membershipPacketState,
+      "apply_patch",
+      {
+        path: "membership-report.md",
+        search: "Safe summary follows.",
+        replace: "A safe summary follows.",
+      },
+      { commandCwd: workspace }
+    ))?.category === "failed-test-irrelevant-patch",
+    "a patch after a forbidden membership occurrence was not blocked"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      membershipPacketState,
+      "apply_patch",
+      {
+        path: "membership-report.md",
+        search: "Source transport.jsonl was copied here.",
+        replace: "Source transport.jsonl remains here.",
+      },
+      { commandCwd: workspace }
+    ))?.category === "failed-test-nonrepairing-patch",
+    "a decisive patch retaining a forbidden membership literal was not blocked"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      membershipPacketState,
+      "apply_patch",
+      {
+        path: "membership-report.md",
+        search: "Source transport.jsonl was copied here.",
+        replace: "Source material was summarized without copying transport records.",
+      },
+      { commandCwd: workspace }
+    )) === null,
+    "a decisive patch making monotonic progress on a membership exclusion was incorrectly blocked"
+  );
+  const requiredMembershipFailureSummary =
+    'Traceback context: File "/tmp/acceptance_check.py", line 10, in main -> require("alpha" in folded and "beta marker" in folded, "required marker missing")';
+  await fs.writeFile(
+    path.join(workspace, "required-membership-report.md"),
+    "The alpha marker is present.\n",
+    "utf8"
+  );
+  const requiredMembershipState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 0,
+        discoveredTests: ["required-membership-report.md"],
+        lastMutation: { paths: ["required-membership-report.md"] },
+        testRuns: [
+          {
+            command: "python acceptance_check.py",
+            mutationRevision: 0,
+            passed: false,
+            failureEvidenceVersion: 2,
+            failureSignature: "membership-inclusion",
+            failureSummary: requiredMembershipFailureSummary,
+          },
+        ],
+      },
+    },
+  };
+  await buildFailedTestRecoveryPacket({ commandCwd: workspace }, requiredMembershipState);
+  assert(
+    requiredMembershipState.meta.failedTestDiagnostic?.focuses?.some(
+      (focus) =>
+        focus.kind === "membership" &&
+        focus.literal === "beta marker" &&
+        focus.negated === false &&
+        focus.anchorLiteral === "alpha" &&
+        focus.directSearch === "The alpha marker is present."
+    ),
+    "a missing membership literal did not inherit a present same-expression repair anchor"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      requiredMembershipState,
+      "apply_patch",
+      {
+        path: "required-membership-report.md",
+        search: "The alpha marker is present.",
+        replace: "The alpha marker is still present.",
+      },
+      { commandCwd: workspace }
+    ))?.category === "failed-test-nonrepairing-patch",
+    "an anchored patch that left a required membership literal absent was not blocked"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      requiredMembershipState,
+      "apply_patch",
+      {
+        path: "required-membership-report.md",
+        search: "The alpha marker is present.",
+        replace: "The alpha and beta marker are present.",
+      },
+      { commandCwd: workspace }
+    )) === null,
+    "an anchored patch that supplied a required membership literal was incorrectly blocked"
+  );
+  await fs.writeFile(
+    path.join(workspace, "control-leak-report.md"),
+    "Result: the exact search is an evidence-derived anchor containing the related assertion operand.\n",
+    "utf8"
+  );
+  const controlLeakState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 0,
+        discoveredTests: ["control-leak-report.md"],
+        lastMutation: { paths: ["control-leak-report.md"] },
+        testRuns: [
+          {
+            command: "python acceptance_check.py",
+            mutationRevision: 0,
+            passed: false,
+            failureEvidenceVersion: 2,
+            failureSignature: "formatting-failure",
+            failureSummary: "Failure evidence: AssertionError: report formatting failed",
+          },
+        ],
+      },
+    },
+  };
+  const controlLeakPacket = await buildFailedTestRecoveryPacket(
+    { commandCwd: workspace },
+    controlLeakState
+  );
+  assert(
+    controlLeakPacket.content.includes("Internal repair guidance detected") &&
+      controlLeakState.meta.failedTestDiagnostic?.focuses?.some(
+        (focus) =>
+          focus.kind === "control-plane-leak" &&
+          focus.path === "control-leak-report.md" &&
+          focus.decisiveLine === 1
+      ),
+    "existing control-plane prose was not retained as repair evidence"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      controlLeakState,
+      "apply_patch",
+      {
+        path: "control-leak-report.md",
+        search:
+          "Result: the exact search is an evidence-derived anchor containing the related assertion operand.",
+        replace: "Result: the report contains the verified measurement summary.",
+      },
+      { commandCwd: workspace }
+    )) === null,
+    "a patch removing existing control-plane leakage was incorrectly blocked"
+  );
+  const multiFocusProgressState = structuredClone(controlLeakState);
+  multiFocusProgressState.meta.failedTestDiagnostic.focuses.push({
+    kind: "membership",
+    path: "control-leak-report.md",
+    variable: "report",
+    literal: "required calibration marker",
+    negated: false,
+    caseFolded: true,
+    decisiveLine: 1,
+    directSearch:
+      "Result: the exact search is an evidence-derived anchor containing the related assertion operand.",
+  });
+  assert(
+    (await failedTestRepairPatchBlock(
+      multiFocusProgressState,
+      "apply_patch",
+      {
+        path: "control-leak-report.md",
+        search:
+          "Result: the exact search is an evidence-derived anchor containing the related assertion operand.",
+        replace: "Result: the report contains a concise measurement summary.",
+      },
+      { commandCwd: workspace }
+    )) === null,
+    "a transaction improving one retained focus while preserving another was incorrectly blocked"
+  );
+  const multiFocusRegressionState = structuredClone(controlLeakState);
+  multiFocusRegressionState.meta.failedTestDiagnostic.focuses.push({
+    kind: "membership",
+    path: "control-leak-report.md",
+    variable: "report",
+    literal: "Result:",
+    negated: false,
+    caseFolded: false,
+    decisiveLine: 1,
+    directSearch:
+      "Result: the exact search is an evidence-derived anchor containing the related assertion operand.",
+  });
+  assert(
+    (await failedTestRepairPatchBlock(
+      multiFocusRegressionState,
+      "apply_patch",
+      {
+        path: "control-leak-report.md",
+        search:
+          "Result: the exact search is an evidence-derived anchor containing the related assertion operand.",
+        replace: "The report contains a concise measurement summary.",
+      },
+      { commandCwd: workspace }
+    ))?.category === "failed-test-regression",
+    "a transaction that repaired one focus by regressing another was not rejected"
+  );
+  const validatorPath = path.join(tempRoot, "acceptance_check.py");
+  await fs.writeFile(
+    validatorPath,
+    [
+      "def require(value, message):",
+      "    if not value:",
+      "        raise AssertionError(message)",
+      "",
+      "def validate(report):",
+      "    folded = report.casefold()",
+      '    first_index = folded.find("first marker")',
+      '    second_index = folded.find("second marker")',
+      '    require(first_index < second_index, "marker order failed")',
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  const sourceEvidenceState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 0,
+        discoveredTests: ["required-membership-report.md"],
+        lastMutation: { paths: ["required-membership-report.md"] },
+        testRuns: [
+          {
+            command: `python3 ${validatorPath}`,
+            mutationRevision: 0,
+            passed: false,
+            failureEvidenceVersion: 2,
+            failureSignature: "derived-order",
+            failureSummary:
+              `Traceback context: File "${validatorPath}", line 9, in validate -> ` +
+              'require(first_index < second_index, "marker order failed")',
+          },
+        ],
+      },
+    },
+  };
+  const sourceEvidencePacket = await buildFailedTestRecoveryPacket(
+    { commandCwd: workspace },
+    sourceEvidenceState
+  );
+  assert(
+    sourceEvidencePacket.content.includes("Exact validator source around acceptance_check.py:9") &&
+      sourceEvidencePacket.content.includes('first_index = folded.find("first marker")') &&
+      sourceEvidencePacket.content.includes('second_index = folded.find("second marker")'),
+    "a command-bound traceback source excerpt was not retained for derived-value diagnosis"
+  );
+  const aliasedValidatorPath = path.join(tempRoot, "aliased_acceptance_check.py");
+  const aliasedValidatorSource = [
+    "def require(value, message):",
+    "    if not value:",
+    "        raise AssertionError(message)",
+    "",
+    "def validate(report):",
+    "    folded = report.casefold()",
+    '    preflight_index = min(index for index in (folded.find("preflight"), folded.find("fit check")) if index >= 0)',
+    '    baseline_index = min(index for index in (folded.find("baseline marker"), folded.find("measurement")) if index >= 0)',
+    '    require(preflight_index < baseline_index, "preflight must precede baseline")',
+    "",
+  ].join("\n");
+  await fs.writeFile(aliasedValidatorPath, aliasedValidatorSource, "utf8");
+  const aliasedComparisons = failedTestAliasedIndexComparisons(
+    aliasedValidatorSource,
+    'Traceback context: require(preflight_index < baseline_index, "preflight must precede baseline")'
+  );
+  assert(
+    aliasedComparisons.length === 1 &&
+      aliasedComparisons[0].operator === "<" &&
+      aliasedComparisons[0].leftAggregation === "min" &&
+      aliasedComparisons[0].rightAggregation === "min" &&
+      aliasedComparisons[0].leftAlternatives.join("|") === "preflight|fit check" &&
+      aliasedComparisons[0].rightAlternatives.join("|") === "baseline marker|measurement",
+    "aliased first-match groups were not derived generically from validator source"
+  );
+  await fs.writeFile(
+    path.join(workspace, "aliased-order-report.md"),
+    "The baseline marker appears first.\nThe fit check appears later.\nThe baseline marker appears first.\n",
+    "utf8"
+  );
+  const aliasedOrderState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 0,
+        discoveredTests: ["aliased-order-report.md"],
+        lastMutation: { paths: ["aliased-order-report.md"] },
+        testRuns: [
+          {
+            command: `python3 ${aliasedValidatorPath}`,
+            mutationRevision: 0,
+            passed: false,
+            failureEvidenceVersion: 2,
+            failureSignature: "aliased-derived-order",
+            failureSummary:
+              `Traceback context: File "${aliasedValidatorPath}", line 9, in validate -> ` +
+              'require(preflight_index < baseline_index, "preflight must precede baseline")',
+          },
+        ],
+      },
+    },
+  };
+  const aliasedOrderPacket = await buildFailedTestRecoveryPacket(
+    { commandCwd: workspace },
+    aliasedOrderState
+  );
+  const aliasedOrderFocus = aliasedOrderState.meta.failedTestDiagnostic?.focuses?.find(
+    (focus) => focus.path === "aliased-order-report.md" && focus.kind === "index-comparison"
+  );
+  assert(
+    aliasedOrderPacket.content.includes('min first-match ["preflight","fit check"]') &&
+      aliasedOrderFocus?.decisiveLine === 1 &&
+      aliasedOrderFocus?.directSearch ===
+        "The baseline marker appears first.\nThe fit check appears later." &&
+      aliasedOrderFocus?.leftAlternatives?.join("|") === "preflight|fit check" &&
+      aliasedOrderFocus?.rightAlternatives?.join("|") === "baseline marker|measurement",
+    "the failed-test packet did not retain the decisive aliased first-match relation"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      aliasedOrderState,
+      "apply_patch",
+      {
+        path: "aliased-order-report.md",
+        search: "The fit check appears later.",
+        replace: "The preflight appears later.",
+      },
+      { commandCwd: workspace }
+    ))?.category === "failed-test-irrelevant-patch",
+    "a patch after the decisive aliased first match was not rejected"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      aliasedOrderState,
+      "apply_patch",
+      {
+        path: "aliased-order-report.md",
+        search: "The baseline marker appears first.\nThe fit check appears later.",
+        replace:
+          "The preflight appears before the baseline marker.\nThe fit check appears later.",
+      },
+      { commandCwd: workspace }
+    )) === null,
+    "a patch satisfying an aliased first-match relation was incorrectly blocked"
+  );
+  await fs.writeFile(
+    path.join(workspace, "partial-order-report.md"),
+    "Repeated blocker.\nUnique context.\nRepeated blocker.\nDesired marker.\n",
+    "utf8"
+  );
+  const partialOrderState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 0,
+        testRuns: [
+          {
+            command: "python partial_order_check.py",
+            mutationRevision: 0,
+            passed: false,
+            failureEvidenceVersion: 2,
+            failureSignature: "partial-derived-order",
+          },
+        ],
+      },
+      failedTestDiagnostic: {
+        packetVersion: 7,
+        mutationRevision: 0,
+        failureSignature: "partial-derived-order",
+        focuses: [
+          {
+            kind: "index-comparison",
+            path: "partial-order-report.md",
+            variable: "folded",
+            left: "desired marker",
+            operator: "<",
+            right: "repeated blocker",
+            leftAlternatives: ["desired marker"],
+            rightAlternatives: ["repeated blocker"],
+            leftAggregation: "min",
+            rightAggregation: "min",
+            caseFolded: true,
+            decisiveLine: 1,
+            directSearch: "Repeated blocker.\nUnique context.",
+          },
+        ],
+      },
+    },
+  };
+  assert(
+    (await failedTestRepairPatchBlock(
+      partialOrderState,
+      "apply_patch",
+      {
+        path: "partial-order-report.md",
+        search: "Repeated blocker.\nUnique context.",
+        replace: "Unique context.",
+      },
+      { commandCwd: workspace }
+    )) === null,
+    "a duplicate removal that reduced a retained ordering violation was incorrectly blocked"
+  );
+  const inversePatchState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 5,
+        mutationHistory: [
+          {
+            revision: 5,
+            toolName: "apply_patch",
+            paths: ["report.md"],
+            patch: {
+              path: "report.md",
+              searchHash: "old-content-hash",
+              replaceHash: "new-content-hash",
+            },
+          },
+        ],
+        testRuns: [
+          {
+            mutationRevision: 4,
+            passed: false,
+            failureSignature: "earlier-failure",
+          },
+          {
+            mutationRevision: 5,
+            passed: false,
+            failureSignature: "later-failure",
+          },
+        ],
+      },
+    },
+  };
+  assert(
+    regressiveInversePatchBlock(
+      inversePatchState,
+      "apply_patch",
+      {
+        path: "report.md",
+        search: "new content",
+        replace: "old content",
+        searchHash: "new-content-hash",
+        replaceHash: "old-content-hash",
+      },
+      { commandCwd: workspace }
+    )?.category === "failed-test-regressive-inverse-patch",
+    "an exact inverse that restored a known earlier failure was not blocked"
+  );
   const repeatedPatchArgs = {
     path: "analysis.py",
     search: "signal = raw_signal",
@@ -3026,6 +4327,57 @@ try {
   assert(
     deleteOutputBlock?.category === "artifact-validation-delete-output",
     "artifact validation allowed delete-and-recreate repair of an exact output"
+  );
+  const recordStreamContract = deriveScsTaskContract({
+    goal:
+      "Read records.jsonl as the complete source, update handoff.md and coverage.json, validate the outputs, and commit the coherent result.",
+    taskProfile: "writing",
+  });
+  assert(
+    recordStreamContract.exactInputPaths.includes("records.jsonl"),
+    "newline-delimited source records were not inferred as an exact input"
+  );
+  const protectedInputState = {
+    goal: "Continue the same task from the saved state.",
+    commandCwd: workspace,
+    meta: {
+      goalContract: {
+        revision: 6,
+        currentRequest: "Continue the same task from the saved state.",
+        activeGoal:
+          "Read records.jsonl as the complete source, update handoff.md and coverage.json, validate the outputs, and commit the coherent result.",
+        activeGoalRevision: 5,
+      },
+      projectVerification: {
+        mutationRevision: 3,
+        requiredOutputs: ["handoff.md", "coverage.json"],
+      },
+      artifactProgress: {
+        exactOutputPaths: ["handoff.md", "coverage.json"],
+        needsRepair: true,
+      },
+    },
+  };
+  assert(
+    artifactValidationScopeBlock(
+      protectedInputState,
+      "write_file",
+      { path: "records.jsonl", content: "replacement", mode: "overwrite" },
+      { commandCwd: workspace, taskProfile: "writing", artifactValidationPhase: true }
+    )?.category === "artifact-validation-input-mutation",
+    "artifact validation allowed an inferred source ledger to be overwritten"
+  );
+  assert(
+    artifactValidationScopeBlock(
+      protectedInputState,
+      "apply_patch",
+      {
+        patch:
+          "*** Begin Patch\n*** Update File: handoff.md\n@@\n-old\n+new\n*** End Patch",
+      },
+      { commandCwd: workspace, taskProfile: "writing", artifactValidationPhase: true }
+    ) === null,
+    "source-input protection blocked a declared output repair"
   );
   for (const patch of [
     '*** Begin Patch\n*** Delete File: "report.md"\n*** End Patch',

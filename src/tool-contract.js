@@ -84,6 +84,12 @@ function addSchemaError(context, code, path, message) {
   context.errors.push({ code, path, message });
 }
 
+function schemaFieldRequirement(schema) {
+  if (typeof schema?.description !== "string") return "";
+  const description = schema.description.replace(/\s+/g, " ").trim();
+  return description ? description.slice(0, 320) : "";
+}
+
 function validateSchemaValue(value, schema, path, context, depth = 0) {
   context.nodes += 1;
   if (context.nodes > MAX_VALIDATION_NODES || depth > 32) {
@@ -118,7 +124,13 @@ function validateSchemaValue(value, schema, path, context, depth = 0) {
     if (typeof schema.pattern === "string") {
       try {
         if (!new RegExp(schema.pattern).test(value)) {
-          addSchemaError(context, "ARGUMENT_PATTERN_MISMATCH", path, "does not match the required pattern");
+          const requirement = schemaFieldRequirement(schema);
+          addSchemaError(
+            context,
+            "ARGUMENT_PATTERN_MISMATCH",
+            path,
+            `does not match the required pattern${requirement ? `; field requirement: ${requirement}` : ""}`
+          );
         }
       } catch {
         addSchemaError(context, "TOOL_SCHEMA_INVALID", path, "uses an invalid pattern");

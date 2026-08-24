@@ -18,6 +18,7 @@ import {
   completionContractGoal,
   integrationTextWorkspaceToolExecutionBlock,
   nextStepRuntimeConfig,
+  recoverFocusedWholeFileWriteAsExactPatch,
   runAgent,
 } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
@@ -635,6 +636,44 @@ assert(
   committedArtifactRuntime.artifactValidationNeedsGitEvidence === false,
   "a durable matching commit was forgotten after compaction"
 );
+const bareResumeCommitState = {
+  goal: "Continue the same task from the saved state.",
+  meta: {
+    taskProfile: "writing",
+    goalContract: {
+      revision: 6,
+      currentRequest: "Continue the same task from the saved state.",
+      activeGoal: "Update handoff.md from records.jsonl, validate it, and commit the coherent result.",
+      activeGoalRevision: 5,
+    },
+    projectVerification: {
+      mutationRevision: 9,
+      requiredOutputs: ["handoff.md"],
+    },
+    durableEvidenceCategories: ["git"],
+    durableGitActions: ["commit"],
+    durableGitEvidence: [{ action: "commit", goalRevision: 5, mutationRevision: 8 }],
+    artifactProgress: { complete: true, exactOutputPaths: ["handoff.md"], usedValidationTools: [] },
+  },
+  messages: [],
+};
+assert(
+  nextStepRuntimeConfig({ taskProfile: "writing" }, bareResumeCommitState)
+    .artifactValidationNeedsGitEvidence === true,
+  "a commit predating the latest mutation satisfied a bare resumed task"
+);
+const currentMutationCommitState = {
+  ...bareResumeCommitState,
+  meta: {
+    ...bareResumeCommitState.meta,
+    durableGitEvidence: [{ action: "commit", goalRevision: 5, mutationRevision: 9 }],
+  },
+};
+assert(
+  nextStepRuntimeConfig({ taskProfile: "writing" }, currentMutationCommitState)
+    .artifactValidationNeedsGitEvidence === false,
+  "a commit covering the active goal and latest mutation was not retained"
+);
 const pendingCanonicalCommandRuntime = nextStepRuntimeConfig(
   { taskProfile: "data" },
   {
@@ -705,6 +744,37 @@ sameNames(
   "failed-test repair did not receive the bounded diagnose-patch-retest tool surface"
 );
 
+const mutationOnlyFailedTestRepairTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+  },
+  goal: "Repair the current project after an unchanged failing test rerun.",
+  profile: "data",
+});
+sameNames(
+  mutationOnlyFailedTestRepairTools,
+  ["apply_patch", "finish"],
+  "an unchanged failed-test rerun did not close discovery until a real mutation"
+);
+
+const failedTestPatchContextTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    testFailureRepairNeedsPatchContext: true,
+  },
+  goal: "Repair the current project after an unchanged replacement.",
+  profile: "data",
+});
+sameNames(
+  failedTestPatchContextTools,
+  ["read_file", "search_files", "apply_patch", "finish"],
+  "a failed no-op patch did not reopen one bounded diagnostic source turn"
+);
+
 const failedTestRepairWithRequiredInstruction = selectProgressiveTools(allTools, {
   config: {
     provider: "localllm",
@@ -747,23 +817,617 @@ const continuedFailedTestRepairRuntime = nextStepRuntimeConfig(
   }
 );
 assertStrict.equal(
-  continuedFailedTestRepairRuntime.testFailureRepairActive,
+  continuedFailedTestRepairRuntime.testVerificationPending,
   true,
-  "a partial repair forgot the retained failed test after the mutation revision advanced"
+  "a real repair mutation did not require the retained failed test before more edits"
 );
 assertStrict.equal(
-  continuedFailedTestRepairRuntime.testFailureCommand,
+  continuedFailedTestRepairRuntime.testVerificationCommand,
   "python -m pytest -q",
-  "a partial repair lost the retained failing test command"
+  "a real repair mutation lost the exact retained verification command"
+);
+const mutationGatedRepairRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "qa" },
+  {
+    meta: {
+      projectVerification: {
+        mutationRevision: 1,
+        testRuns: [
+          {
+            command: "python -m pytest -q",
+            mutationRevision: 1,
+            passed: false,
+            failureSignature: "current-failure",
+          },
+        ],
+      },
+      toolLoop: {
+        stagnationEpoch: 4,
+        recent: [
+          {
+            category: "unchanged-failed-test-rerun",
+            stagnationEpoch: 4,
+          },
+        ],
+      },
+    },
+    messages: [],
+  }
+);
+assertStrict.equal(
+  mutationGatedRepairRuntime.testFailureRepairMutationRequired,
+  true,
+  "a blocked unchanged validator did not advance failed-test recovery to mutation-only mode"
+);
+const repositoryStateRepairRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "qa" },
+  {
+    meta: {
+      projectVerification: {
+        mutationRevision: 2,
+        testRuns: [{
+          command: "python acceptance.py --phase final",
+          mutationRevision: 2,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "repository-state-gate",
+          failureSummary:
+            "require(git_output(root, \"status\", \"--short\") == \"\", \"repository worktree is not clean\")",
+        }],
+      },
+    },
+    messages: [],
+  }
+);
+assertStrict.equal(
+  repositoryStateRepairRuntime.testFailureRepositoryStateRepair,
+  true,
+  "an empty Git-status assertion did not activate repository-state repair"
+);
+assertStrict.equal(
+  repositoryStateRepairRuntime.testFailureRepairMutationRequired,
+  false,
+  "a repository-state repair incorrectly required another content mutation"
+);
+const repositoryStateRepairTools = selectProgressiveTools(allTools, {
+  config: repositoryStateRepairRuntime,
+  goal: "Finish the verified task and leave the repository clean.",
+  profile: "qa",
+});
+sameNames(
+  repositoryStateRepairTools,
+  ["run_command", "finish"],
+  "repository-state repair exposed document mutation tools"
+);
+assert(
+  /stage and commit only those changes/i.test(
+    repositoryStateRepairTools.find((item) => item.function.name === "run_command")?.function.description || ""
+  ),
+  "repository-state repair did not explain the bounded Git workflow"
+);
+const taskOwnedRepositoryState = {
+  meta: {
+    goalContract: { revision: 6 },
+    projectVerification: {
+      mutationRevision: 5,
+      commandRuns: [{
+        command: "git add -- old.md && git commit -m 'Prior task'",
+        ok: true,
+        mutationRevision: 2,
+      }],
+      mutationHistory: [
+        { revision: 1, paths: ["old.md"] },
+        { revision: 4, paths: ["handoff.md"] },
+        { revision: 5, paths: ["notes/summary.md", "handoff.md"] },
+      ],
+      testRuns: [{
+        command: "python acceptance.py --phase final",
+        mutationRevision: 5,
+        passed: false,
+        failureEvidenceVersion: 2,
+        failureSignature: "repository-state-gate-with-owned-paths",
+        failureSummary:
+          "require(git_output(root, \"status\", \"--short\") == \"\", \"repository worktree is not clean\")",
+      }],
+    },
+  },
+  messages: [],
+};
+const taskOwnedRepositoryRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "qa" },
+  taskOwnedRepositoryState
+);
+assertStrict.deepEqual(
+  taskOwnedRepositoryRuntime.repositoryStateRepairCommitPaths,
+  ["handoff.md", "notes/summary.md"],
+  "repository-state repair did not isolate agent-owned paths since the latest successful commit"
+);
+const taskOwnedRepositoryTools = selectProgressiveTools(allTools, {
+  config: taskOwnedRepositoryRuntime,
+  goal: "Finish the verified task and leave the repository clean.",
+  profile: "qa",
+});
+sameNames(
+  taskOwnedRepositoryTools,
+  ["commit_project_changes", "finish"],
+  "repository-state repair exposed an open-ended shell after task-owned paths were known"
+);
+assertStrict.deepEqual(
+  taskOwnedRepositoryTools[0].function.parameters.required,
+  ["message"],
+  "the task-owned commit tool delegated path selection back to the model"
+);
+const verifiedCompletionTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    taskProfile: "qa",
+    verifiedCompletionPending: true,
+    artifactValidationPhase: true,
+    testFailureRepairActive: true,
+  },
+  goal: "Conclude from current verified evidence.",
+  profile: "qa",
+});
+sameNames(
+  verifiedCompletionTools,
+  ["finish"],
+  "verified completion exposed tools that could repeat or mutate completed work"
+);
+const retainedPacketRepairRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "qa" },
+  {
+    meta: {
+      projectVerification: {
+        mutationRevision: 3,
+        testRuns: [
+          {
+            command: "python -m pytest -q",
+            mutationRevision: 3,
+            passed: false,
+            failureEvidenceVersion: 2,
+            failureSignature: "retained-failure",
+          },
+        ],
+      },
+      failedTestRecoveryPacket: {
+        packetVersion: 7,
+        mutationRevision: 3,
+        failureSignature: "retained-failure",
+        content: "Bounded failed-test evidence packet v7.",
+      },
+      failedTestDiagnostic: {
+        packetVersion: 7,
+        mutationRevision: 3,
+        failureSignature: "retained-failure",
+        at: "2026-08-24T02:00:00.000Z",
+        focuses: [],
+      },
+      toolLoop: {
+        stagnationEpoch: 9,
+        recent: [],
+      },
+    },
+    messages: [],
+  }
+);
+assertStrict.equal(
+  retainedPacketRepairRuntime.testFailureRepairMutationRequired,
+  true,
+  "a current retained evidence packet lost its mutation gate across a resume boundary"
+);
+assertStrict.equal(
+  retainedPacketRepairRuntime.testFailureRepairNeedsPatchContext,
+  true,
+  "a fresh retained evidence packet did not allow one bounded diagnostic source turn"
+);
+sameNames(
+  selectProgressiveTools(allTools, {
+    config: retainedPacketRepairRuntime,
+    goal: "Resume the current failed-test repair from retained evidence.",
+    profile: "qa",
+  }),
+  ["read_file", "search_files", "apply_patch", "finish"],
+  "a fresh retained evidence packet exposed an unbounded failed-test tool surface"
+);
+const focusedPatchRepairRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "qa" },
+  {
+    meta: {
+      projectVerification: {
+        mutationRevision: 5,
+        testRuns: [
+          {
+            command: "python -m pytest -q",
+            mutationRevision: 5,
+            passed: false,
+            failureEvidenceVersion: 2,
+            failureSignature: "focused-failure",
+          },
+        ],
+      },
+      failedTestRecoveryPacket: {
+        packetVersion: 7,
+        mutationRevision: 5,
+        failureSignature: "focused-failure",
+        content: "Bounded failed-test evidence packet v7.",
+      },
+      failedTestDiagnostic: {
+        packetVersion: 7,
+        mutationRevision: 5,
+        failureSignature: "focused-failure",
+        at: "2026-08-24T02:00:00.000Z",
+        focuses: [
+          {
+            path: "report.md",
+            decisiveLine: 2,
+            directSearch: "The earlier marker is incorrect.",
+            left: "correct",
+            operator: "<",
+            right: "incorrect",
+            caseFolded: true,
+          },
+          {
+            kind: "membership",
+            path: "report.md",
+            decisiveLine: 2,
+            directSearch: "The earlier marker is incorrect.",
+            literal: "required marker",
+            negated: false,
+            anchorLiteral: "earlier marker",
+            caseFolded: true,
+          },
+        ],
+      },
+      toolLoop: {
+        stagnationEpoch: 10,
+        recent: [
+          {
+            category: "failed-test-irrelevant-patch",
+            failureSignature: "focused-failure",
+            failedTestMutationRevision: 5,
+            ok: false,
+            blocked: true,
+            at: "2026-08-24T02:00:01.000Z",
+          },
+          {
+            category: "failed-test-irrelevant-patch",
+            failureSignature: "focused-failure",
+            failedTestMutationRevision: 5,
+            ok: false,
+            blocked: true,
+            at: "2026-08-24T02:00:02.000Z",
+          },
+          {
+            toolName: "read_file",
+            ok: true,
+            blocked: false,
+            at: "2026-08-24T02:00:03.000Z",
+          },
+        ],
+      },
+    },
+    messages: [],
+  }
+);
+assertStrict.deepEqual(
+  focusedPatchRepairRuntime.testFailureRepairPatchTargets,
+  [
+    {
+      kind: "index-comparison",
+      path: "report.md",
+      search: "The earlier marker is incorrect.",
+      line: 2,
+      left: "correct",
+      operator: "<",
+      right: "incorrect",
+      literal: "",
+      anchorLiteral: "",
+      negated: false,
+      caseFolded: true,
+    },
+    {
+      kind: "membership",
+      path: "report.md",
+      search: "The earlier marker is incorrect.",
+      line: 2,
+      left: "",
+      operator: "",
+      right: "",
+      literal: "required marker",
+      anchorLiteral: "earlier marker",
+      negated: false,
+      caseFolded: true,
+    },
+  ],
+  "repeated evidence-proven late patches did not activate a generic focused repair target"
+);
+const focusedPatchRepairTools = selectProgressiveTools(allTools, {
+  config: focusedPatchRepairRuntime,
+  goal: "Repair the exact earlier occurrence after repeated irrelevant patches.",
+  profile: "qa",
+});
+sameNames(
+  focusedPatchRepairTools,
+  ["apply_patch", "finish"],
+  "focused failed-test repair reopened unrelated tools"
+);
+const focusedApplyPatch = focusedPatchRepairTools.find(
+  (tool) => tool.function.name === "apply_patch"
+);
+const focusedReplacementDescription =
+  focusedApplyPatch.function.parameters.properties.replace.description;
+assertStrict.deepEqual(
+  focusedApplyPatch.function.parameters.properties.path.enum,
+  ["report.md"],
+  "focused failed-test repair did not constrain the exact task-owned path"
+);
+assertStrict.ok(
+  focusedReplacementDescription.includes('first "correct" < first "incorrect"') &&
+    focusedReplacementDescription.includes("appending later text is insufficient") &&
+    focusedReplacementDescription.includes('"required marker" must appear'),
+  "focused failed-test repair dropped one of multiple evidence-derived constraints on the same line"
+);
+assertStrict.ok(
+  focusedApplyPatch.function.parameters.properties.replace.pattern === undefined &&
+    focusedReplacementDescription.includes("natural project content") &&
+    !focusedApplyPatch.function.description.includes("The earlier marker is incorrect."),
+  "focused failed-test repair should explain natural artifact content without a brittle phrase blacklist"
+);
+assertStrict.deepEqual(
+  focusedApplyPatch.function.parameters.properties.search.enum,
+  ["The earlier marker is incorrect."],
+  "focused failed-test repair did not constrain the evidence-derived decisive line"
+);
+const separatorRepairTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    testFailureRepairPatchTargets: [
+      {
+        kind: "membership",
+        path: "report.md",
+        search: "Keep the required-marker beside the verified value.",
+        line: 3,
+        literal: "required marker",
+        anchorLiteral: "verified value",
+        negated: false,
+        caseFolded: true,
+      },
+    ],
+  },
+  goal: "Repair the retained exact membership failure.",
+  profile: "qa",
+});
+const separatorRepairPatch = separatorRepairTools.find(
+  (tool) => tool.function.name === "apply_patch"
+);
+assertStrict.deepEqual(
+  separatorRepairPatch.function.parameters.properties.replace.enum,
+  ["Keep the required marker beside the verified value."],
+  "an unambiguous separator-only membership repair was not exposed as an exact evidence-derived value"
+);
+assertStrict.ok(
+  separatorRepairPatch.function.parameters.properties.replace.description.includes(
+    "single lossless separator normalization"
+  ),
+  "the exact separator repair omitted its generic rationale"
+);
+const duplicateLineRepairTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    testFailureRepairPatchTargets: [
+      {
+        kind: "index-comparison",
+        path: "report.md",
+        search: "Repeated summary line.\nUnique neighboring context.",
+        line: 1,
+        left: "later marker",
+        operator: "<",
+        right: "repeated summary",
+        decisiveText: "Repeated summary line.",
+        decisiveSide: "right",
+        decisiveDuplicateCount: 3,
+        caseFolded: true,
+      },
+    ],
+  },
+  goal: "Repair the retained first-match relation without duplicating content.",
+  profile: "qa",
+});
+const duplicateLineRepairPatch = duplicateLineRepairTools.find(
+  (tool) => tool.function.name === "apply_patch"
+);
+assertStrict.deepEqual(
+  duplicateLineRepairPatch.function.parameters.properties.replace.enum,
+  ["Unique neighboring context."],
+  "a duplicated decisive line did not yield one lossless evidence-derived removal"
+);
+assertStrict.ok(
+  duplicateLineRepairPatch.function.parameters.properties.replace.description.includes(
+    "single lossless duplicate-line removal"
+  ),
+  "the duplicate-line repair omitted its generic rationale"
+);
+const prematureOperandRepairTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    testFailureRepairPatchTargets: [
+      {
+        kind: "index-comparison",
+        path: "notes.md",
+        search: "A carefully preloaded summary.",
+        line: 4,
+        left: "baseline",
+        operator: "<",
+        right: "load",
+        decisiveText: "A carefully preloaded summary.",
+        decisiveSide: "right",
+        decisiveDuplicateCount: 1,
+        caseFolded: true,
+      },
+    ],
+  },
+  goal: "Repair the retained first-match relation using natural prose.",
+  profile: "qa",
+});
+const prematureOperandRepairPatch = prematureOperandRepairTools.find(
+  (tool) => tool.function.name === "rewrite_text_excerpt"
+);
+const prematureOperandReplace =
+  prematureOperandRepairPatch.function.parameters.properties.revisedText;
+assertStrict.deepEqual(
+  Object.keys(prematureOperandRepairPatch.function.parameters.properties),
+  ["revisedText"],
+  "a single evidence-selected prose repair still exposed redundant path and anchor arguments"
+);
+assertStrict.deepEqual(
+  prematureOperandRepairPatch.function.parameters.required,
+  ["revisedText"],
+  "the replacement-only focused repair did not require revised text"
+);
+assertStrict.ok(
+  prematureOperandRepairPatch.function.description.includes("not the whole file"),
+  "the focused rewrite alias did not distinguish one excerpt from a whole-file replacement"
+);
+assertStrict.ok(
+  typeof prematureOperandReplace.pattern === "string" &&
+    !new RegExp(prematureOperandReplace.pattern).test("A carefully preloaded summary.") &&
+    !new RegExp(prematureOperandReplace.pattern).test("A preloaded summary after the baseline.") &&
+    new RegExp(prematureOperandReplace.pattern).test("A concise technical summary.") &&
+    new RegExp(prematureOperandReplace.pattern).test("A baseline precedes the preloaded summary."),
+  "a single premature comparison operand was not constrained by the evidence-derived relation"
+);
+assertStrict.ok(
+  prematureOperandReplace.description.includes('premature operand "load"') &&
+    prematureOperandReplace.description.includes('"pre[load]ed"') &&
+    prematureOperandReplace.description.includes("place the required counterpart before") &&
+    !prematureOperandReplace.description.includes("preloaded summary"),
+  "premature-operand guidance omitted the containing-token evidence or leaked the full fixture prose"
+);
+const patchContextRepairRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "qa" },
+  {
+    meta: {
+      projectVerification: mutationGatedRepairRuntime.testFailureRepairActive
+        ? {
+            mutationRevision: 0,
+            testRuns: [
+              {
+                command: "python -m pytest -q",
+                mutationRevision: 0,
+                passed: false,
+                failureEvidenceVersion: 2,
+                failureSignature: "baseline-failure",
+              },
+            ],
+          }
+        : {},
+      toolLoop: {
+        stagnationEpoch: 4,
+        recent: [
+          {
+            category: "unchanged-failed-test-rerun",
+            toolName: "run_command",
+            ok: false,
+            stagnationEpoch: 4,
+          },
+          {
+            category: "workspace-patch",
+            toolName: "apply_patch",
+            ok: false,
+            error: "Patch made no changes to report.md.",
+            stagnationEpoch: 4,
+          },
+        ],
+      },
+    },
+    messages: [],
+  }
+);
+assertStrict.equal(
+  patchContextRepairRuntime.testFailureRepairNeedsPatchContext,
+  true,
+  "a no-op repair patch did not request one bounded diagnostic source turn"
+);
+const consumedPatchContextRepairRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "qa" },
+  {
+    meta: {
+      projectVerification: {
+        mutationRevision: 0,
+        testRuns: [
+          {
+            command: "python -m pytest -q",
+            mutationRevision: 0,
+            passed: false,
+            failureEvidenceVersion: 2,
+            failureSignature: "baseline-failure",
+          },
+        ],
+      },
+      testFailurePatchContext: {
+        mutationRevision: 0,
+        failureSignature: "baseline-failure",
+        at: "2026-08-24T01:00:00.000Z",
+      },
+      toolLoop: {
+        stagnationEpoch: 4,
+        recent: [
+          {
+            category: "unchanged-failed-test-rerun",
+            toolName: "run_command",
+            ok: false,
+            stagnationEpoch: 4,
+            at: "2026-08-24T00:59:58.000Z",
+          },
+          {
+            category: "workspace-patch",
+            toolName: "apply_patch",
+            ok: false,
+            error: "Patch made no changes to report.md.",
+            stagnationEpoch: 4,
+            at: "2026-08-24T01:00:00.000Z",
+          },
+          {
+            toolName: "read_file",
+            ok: true,
+            blocked: false,
+            stagnationEpoch: 4,
+            at: "2026-08-24T01:00:01.000Z",
+          },
+        ],
+      },
+    },
+    messages: [],
+  }
+);
+assertStrict.equal(
+  consumedPatchContextRepairRuntime.testFailureRepairNeedsPatchContext,
+  false,
+  "failed-test repair kept reopening discovery after one successful diagnostic source turn"
+);
+sameNames(
+  selectProgressiveTools(allTools, {
+    config: consumedPatchContextRepairRuntime,
+    goal: "Repair the current project after one bounded diagnostic source turn.",
+    profile: "qa",
+  }),
+  ["apply_patch", "finish"],
+  "a consumed failed-test diagnostic turn did not return to mutation-only mode"
 );
 sameNames(
   selectProgressiveTools(allTools, {
     config: continuedFailedTestRepairRuntime,
-    goal: "Continue the coherent repair, then retest.",
+    goal: "Verify the coherent repair before continuing.",
     profile: "qa",
   }),
-  ["read_file", "search_files", "apply_patch", "run_command", "finish"],
-  "a partial repair was forced into test-only mode before the coherent patch was complete"
+  ["run_command", "finish"],
+  "a completed repair mutation did not close broad tools until the retained test reran"
 );
 
 const pendingTestTools = selectProgressiveTools(allTools, {
@@ -1498,6 +2162,109 @@ function contractCall(id, name, args, { raw = false } = {}) {
   };
 }
 
+const focusedTranslationRoot = await fs.mkdtemp(
+  path.join(os.tmpdir(), "agintiflow-focused-write-translation-")
+);
+try {
+  const currentFocusedContent = [
+    "# Report",
+    "The earlier marker is incorrect.",
+    "Keep this trailing evidence.",
+  ].join("\n");
+  const proposedFocusedContent = [
+    "# Report",
+    "The required marker is correct.",
+    "Keep this trailing evidence.",
+    "",
+  ].join("\n");
+  await fs.writeFile(
+    path.join(focusedTranslationRoot, "report.md"),
+    currentFocusedContent,
+    "utf8"
+  );
+  const focusedContract = createToolContract([focusedApplyPatch]);
+  const rejectedWholeFileCall = contractCall("focused-whole-file", "write_file", {
+    path: "report.md",
+    content: proposedFocusedContent,
+    mode: "overwrite",
+  });
+  const rejectedWholeFileValidation = resolveDispatchableToolCallBatch(
+    [rejectedWholeFileCall],
+    focusedContract
+  );
+  assert(!rejectedWholeFileValidation.ok, "unoffered whole-file write unexpectedly passed directly");
+  const translatedFocusedWrite = await recoverFocusedWholeFileWriteAsExactPatch(
+    { commandCwd: focusedTranslationRoot },
+    {
+      meta: {
+        failedTestDiagnostic: {
+          focuses: [
+            {
+              kind: "membership",
+              path: "report.md",
+              directSearch: "The earlier marker is incorrect.",
+            },
+          ],
+        },
+      },
+    },
+    [rejectedWholeFileCall],
+    focusedContract,
+    rejectedWholeFileValidation
+  );
+  assert(translatedFocusedWrite?.ok, "lossless focused whole-file intent was not translated");
+  assert(translatedFocusedWrite.recoveredFocusedWholeFileWrite, "focused translation was not marked");
+  assert(
+    translatedFocusedWrite.terminalNewlineNormalized,
+    "focused translation did not record its bounded terminal-newline normalization"
+  );
+  assertStrict.deepEqual(
+    JSON.parse(translatedFocusedWrite.acceptedToolCalls[0].function.arguments),
+    {
+      path: "report.md",
+      search: "The earlier marker is incorrect.",
+      replace: "The required marker is correct.",
+    },
+    "focused whole-file intent did not become the exact minimal patch"
+  );
+  assertStrict.equal(
+    await fs.readFile(path.join(focusedTranslationRoot, "report.md"), "utf8"),
+    currentFocusedContent,
+    "intent translation mutated the workspace before normal tool dispatch"
+  );
+
+  const driftingWholeFileCall = contractCall("drifting-whole-file", "write_file", {
+    path: "report.md",
+    content: proposedFocusedContent.replace("Keep this trailing evidence.", "Unrelated drift."),
+    mode: "overwrite",
+  });
+  assertStrict.equal(
+    await recoverFocusedWholeFileWriteAsExactPatch(
+      { commandCwd: focusedTranslationRoot },
+      {
+        meta: {
+          failedTestDiagnostic: {
+            focuses: [
+              {
+                kind: "membership",
+                path: "report.md",
+                directSearch: "The earlier marker is incorrect.",
+              },
+            ],
+          },
+        },
+      },
+      [driftingWholeFileCall],
+      focusedContract,
+      resolveDispatchableToolCallBatch([driftingWholeFileCall], focusedContract)
+    ),
+    null,
+    "whole-file intent with unrelated drift was translated into a focused mutation"
+  );
+} finally {
+  await fs.rm(focusedTranslationRoot, { recursive: true, force: true });
+}
+
 const strictWriteDescriptor = {
   type: "function",
   function: {
@@ -2160,6 +2927,56 @@ assert(
 assert(
   !textAsImageRecovery.events.some((event) => event.type === "tool.failed" && event.data?.toolName === "read_image"),
   "plain-text correction still invoked failing image perception"
+);
+
+let recordStreamAsImageStep = 0;
+const recordStreamAsImageRecovery = await runToolContractCase({
+  id: "record-stream-requested-as-image",
+  provider: "localllm",
+  profile: "image",
+  goal: "Inspect the newline-delimited task records and report the latest request.",
+  toolCalls: [contractCall("unused", "read_image", { path: "records.jsonl" })],
+  expectSuccess: true,
+  expectedTargets: ["records.jsonl"],
+  setupWorkspace: async (workspace) => {
+    await fs.writeFile(
+      path.join(workspace, "records.jsonl"),
+      '{"id":"m1","request":"preserve every inbound record"}\n',
+      "utf8"
+    );
+  },
+  responseFactory: () => {
+    recordStreamAsImageStep += 1;
+    return recordStreamAsImageStep === 1
+      ? assistantWithToolCalls([contractCall("records-as-image", "read_image", { path: "records.jsonl" })])
+      : assistantWithToolCalls([
+          contractCall("finish-record-read", "finish", { result: "Preserve every inbound record." }),
+        ]);
+  },
+});
+assert(
+  recordStreamAsImageRecovery.events.some(
+    (event) =>
+      event.type === "tool.auto_corrected" &&
+      event.data?.requestedToolName === "read_image" &&
+      event.data?.toolName === "read_file"
+  ),
+  "newline-delimited text requested through read_image was not corrected to read_file"
+);
+assert(
+  recordStreamAsImageRecovery.events.some(
+    (event) =>
+      event.type === "tool.completed" &&
+      event.data?.toolName === "read_file" &&
+      event.data?.autoCorrected === true
+  ),
+  "corrected newline-delimited text read did not complete with provenance"
+);
+assert(
+  !recordStreamAsImageRecovery.events.some(
+    (event) => event.type === "tool.failed" && event.data?.toolName === "read_image"
+  ),
+  "newline-delimited text correction still invoked failing image perception"
 );
 
 assert(

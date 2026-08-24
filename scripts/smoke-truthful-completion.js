@@ -687,6 +687,82 @@ try {
   );
   assert(failedValidationCanBeRepaired.events.some((event) => event.type === "session.finished"));
 
+  const retainedValidatorRequiresFreshPass = await runCase({
+    id: "retained-validator-requires-fresh-pass",
+    goal: "Repair the current project and verify the result.",
+    taskProfile: "writing",
+    allowShellTool: true,
+    allowFileTools: true,
+    executionTier: "focused",
+    setup: async (workspace) => {
+      await fs.writeFile(path.join(workspace, "report.md"), "status: wrong\n", "utf8");
+      await fs.writeFile(
+        path.join(workspace, "acceptance_check.py"),
+        [
+          "from pathlib import Path",
+          "",
+          "content = Path('report.md').read_text(encoding='utf-8')",
+          "raise SystemExit(0 if content == 'status: correct\\n' else 1)",
+          "",
+        ].join("\n"),
+        "utf8"
+      );
+    },
+    responses: [
+      assistant("", [
+        toolCall("run-retained-validator-failing", "run_command", {
+          command: "python3 acceptance_check.py",
+        }),
+      ]),
+      assistant("", [
+        toolCall("repair-retained-validator-output", "apply_patch", {
+          path: "report.md",
+          search: "status: wrong",
+          replace: "status: correct",
+          expectedReplacements: 1,
+        }),
+      ]),
+      assistant("", [
+        toolCall("finish-before-retained-validator-rerun", "finish", {
+          result: "The project repair is complete and verified.",
+        }),
+      ]),
+      assistant("", [
+        toolCall("run-retained-validator-passing", "run_command", {
+          command: "python3 acceptance_check.py",
+        }),
+      ]),
+      assistant("", [
+        toolCall("finish-after-retained-validator-rerun", "finish", {
+          result: "The project repair and retained validator both passed.",
+        }),
+      ]),
+    ],
+  });
+  assert.equal(
+    retainedValidatorRequiresFreshPass.calls.length,
+    5,
+    "completion accepted stale substantive validation after a real mutation"
+  );
+  assert(
+    retainedValidatorRequiresFreshPass.events.some(
+      (event) =>
+        event.type === "completion.evidence_rejected" &&
+        event.data?.suggestedTestCommands?.includes("python3 acceptance_check.py")
+    ),
+    "completion repair did not retain the exact substantive validator command"
+  );
+  assert(
+    retainedValidatorRequiresFreshPass.events.some(
+      (event) =>
+        event.type === "tool.completed" &&
+        event.data?.args?.command === "python3 acceptance_check.py" &&
+        event.data?.exitCode === 0
+    ),
+    "the retained validator did not pass at the latest mutation revision"
+  );
+  assert(retainedValidatorRequiresFreshPass.events.some((event) => event.type === "session.finished"));
+
   const verifiedEmptyCompletion = await runCase({
     id: "verified-empty-completion",
     goal: "Execute the shell command pwd and report the output.",

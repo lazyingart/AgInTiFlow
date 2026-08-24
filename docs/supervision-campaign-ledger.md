@@ -235,3 +235,35 @@ provider balance. A separate read-only `localllm-deep` review completed with no
 actionable findings. The full `npm test` suite, focused dynamic-step-budget,
 coding-tools, SCS-evidence, and syntax checks all pass before packaging
 AgInTiFlow `0.20.216`.
+
+### Same-session interruption convergence and bounded completion
+
+The `context-interruption-016` campaign exercised a long retained DeepSeek
+session with multiple concrete interruptions, source corrections, an exact
+external acceptance command, and a final clean-repository requirement. The
+agent owned every target edit and commit. Early recovery turns repeatedly read
+the same already-correct diff, showing that token limits alone do not guarantee
+convergence while the available action surface remains open ended.
+
+The reusable repair is driven by runtime state and evidence rather than task
+literals. Mutations invalidate stale tests and prior completion evidence;
+same-task interruptions refresh per-turn acceptance while retaining durable
+evidence; repository-state recovery derives task-owned paths since the latest
+successful commit and offers a bounded `commit_project_changes` action; and
+the runtime constructs the path-scoped Git command. A current-revision exact
+validator creates a one-use completion candidate. The following turn compacts
+the evidence and exposes only `finish`; rejection or mutation invalidates the
+candidate.
+
+The final live continuation converged in three turns: bounded commit, exact
+validator, and truthful finish. The target ended clean at commit `bd74bbd`.
+Repository-repair context compacted from 156,716 to 5,788 characters, and the
+verified-completion context compacted from 23,658 to 5,157 characters.
+
+An independent read-only DeepSeek review then drove three general fixes: a
+dedicated task-owned commit-path validator that supports binary,
+extensionless, and instruction files while rejecting protected paths;
+platform-aware POSIX and Windows command quoting; and recognition of bounded
+stdin `sed -n` pipelines as read-only inspection. Production code contains no
+campaign scenario IDs, target paths, expected prose, commit IDs, or acceptance
+literals.

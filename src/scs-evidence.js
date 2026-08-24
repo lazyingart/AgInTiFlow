@@ -351,7 +351,7 @@ function forbiddenTails(text = "") {
 function inferExactOutputPaths(goal = "") {
   const paths = [];
   const lines = String(goal || "").split(/\n/);
-  const extensionPattern = "md|txt|json|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
+  const extensionPattern = "md|txt|json|jsonl|ndjson|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
   const quotedPathPattern = new RegExp("[\"'`]([^\"'`\\n]{1,220}\\.(?:" + extensionPattern + "))[\"'`]", "gi");
   const pathPattern = new RegExp(
     '(?:^|[\\s：:,，、])((?:~|\\.{1,2}|/|[A-Za-z0-9_\\-\\u4e00-\\u9fff])[\\w./~\\-\\u4e00-\\u9fff]{0,220}\\.(?:' +
@@ -366,7 +366,7 @@ function inferExactOutputPaths(goal = "") {
   const outputListHeader =
     /^(?:#+\s*)?(?:(?:required|final|expected|declared|target|pilot|deliverable)\s+)*(?:create|created files?|files? to create|outputs?|output structure|required outputs?|artifacts?|deliverables?|generated files?|writer requirements|renderer requirements|生成文件|输出结构|輸出結構|输出文件|輸出文件|创建文件|建立文件)(?:\s+(?:outputs?|artifacts?|deliverables?))?\s*[：:]?\s*$/i;
   const nonOutputToolLine =
-    /\b(?:validate|verify|check|compile|run|execute)\s+(?:(?:with|using)\s+)?[`"']?[^`"'\n]*\.(?:md|txt|json|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx)\b/i;
+    /\b(?:validate|verify|check|compile|run|execute)\s+(?:(?:with|using)\s+)?[`"']?[^`"'\n]*\.(?:md|txt|json|jsonl|ndjson|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx)\b/i;
   const negatedOutputLine =
     /\b(?:do not|don't|dont|never|not)\b[^.\n]*(?:output|artifact|create|write|save|store|update|modify|edit)\b|\b(?:do not|don't|dont|never|not)\b[^.\n]*(?:treat|count|consider)\b/i;
   let inOutputList = false;
@@ -446,7 +446,7 @@ function inferExactOutputPaths(goal = "") {
 function inferExactInputPaths(goal = "") {
   const paths = [];
   const lines = String(goal || "").split(/\n/);
-  const extensionPattern = "md|txt|json|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
+  const extensionPattern = "md|txt|json|jsonl|ndjson|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
   const quotedPathPattern = new RegExp("[\"'`]([^\"'`\\n]{1,260}\\.(?:" + extensionPattern + "))[\"'`]", "gi");
   const pathPattern = new RegExp(
     '(?:^|[\\s：:,，、])((?:~|\\.{1,2}|/|[A-Za-z0-9_\\-\\u4e00-\\u9fff])[\\w./~\\-\\u4e00-\\u9fff]{0,260}\\.(?:' +
@@ -490,7 +490,7 @@ function inferDeclaredSourceRoots(goal = "") {
     const candidate = String(match[1] || "").trim();
     if (
       /^(?:~\/|\.{1,2}\/|\/)[^\s]+$/.test(candidate) &&
-      !/\.(?:md|txt|json|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx)$/i.test(candidate)
+      !/\.(?:md|txt|json|jsonl|ndjson|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx)$/i.test(candidate)
     ) {
       roots.push(candidate.replace(/\/+$/, ""));
     }
@@ -1609,8 +1609,10 @@ const PATH_CLAIM_EXTENSIONS = new Set([
   "jpg",
   "js",
   "json",
+  "jsonl",
   "md",
   "mov",
+  "ndjson",
   "mp3",
   "mp4",
   "pdf",
@@ -2615,6 +2617,7 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
         gitAction: gitActions.at(-1),
         gitActions,
         goalRevision: Math.max(0, Number(payload.goalRevision || 0)),
+        mutationRevision: Math.max(0, Number(payload.projectMutationRevision || 0)),
       }
     );
   }
@@ -2730,13 +2733,19 @@ export function evaluateScsEvidence(contract = {}, ledger = {}) {
   const requiredToolCalls = Array.isArray(contract.requiredToolCalls) ? contract.requiredToolCalls : [];
   const ledgerToolNames = new Set(Array.isArray(ledger.toolNames) ? ledger.toolNames : []);
   const requiredGitRevision = Math.max(0, Number(contract.requiredGitRevision || 0));
+  const requiredGitMutationRevision = Math.max(
+    0,
+    Number(contract.requiredGitMutationRevision || 0)
+  );
   const observedGitActionSequence =
     ledgerItems
       .filter(
         (item) =>
           item?.category === "git" &&
           item?.verified !== false &&
-          (requiredGitRevision === 0 || Number(item?.goalRevision || 0) >= requiredGitRevision)
+          (requiredGitRevision === 0 || Number(item?.goalRevision || 0) >= requiredGitRevision) &&
+          (requiredGitMutationRevision === 0 ||
+            Number(item?.mutationRevision || 0) >= requiredGitMutationRevision)
       )
       .flatMap((item) =>
         Array.isArray(item.gitActions)
@@ -2879,6 +2888,7 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
       requiredToolCalls: contract.requiredToolCalls || [],
       requiredGitActions: contract.requiredGitActions || [],
       requiredGitRevision: Number(contract.requiredGitRevision || 0),
+      requiredGitMutationRevision: Number(contract.requiredGitMutationRevision || 0),
       requiredProjectCommands: contract.requiredProjectCommands || [],
       requiredProjectCommandBatchId: contract.requiredProjectCommandBatchId || "",
       requiredProjectCommandRuns: contract.requiredProjectCommandRuns || [],

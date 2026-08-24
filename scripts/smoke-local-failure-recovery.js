@@ -486,6 +486,14 @@ try {
     1,
     "tool-contract recovery should activate exactly once"
   );
+  assert.match(
+    (contractRequests[1]?.messages || [])
+      .filter((message) => message?.role === "user")
+      .map((message) => String(message?.content || ""))
+      .join("\n"),
+    /Schema diagnostics:.*additional property.*Do not repeat the rejected arguments unchanged/iu,
+    "tool-contract recovery did not return bounded actionable schema diagnostics to the model"
+  );
   assert.equal(
     await fs.readFile(path.join(contractWorkspace, "contract-recovered.txt"), "utf8"),
     "recovered after schema violations\n"
