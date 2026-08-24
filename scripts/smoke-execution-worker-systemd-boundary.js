@@ -218,9 +218,14 @@ assert.match(
 assert.match(units.serviceUnit, /\/bin\/aginti-execution-worker\.js$/mu);
 assert.match(units.serviceUnit, /^PrivateNetwork=yes$/mu);
 assert.match(units.serviceUnit, /^ProtectControlGroups=yes$/mu);
-assert.match(units.serviceUnit, /^ProtectProc=invisible$/mu);
+assert.match(units.serviceUnit, /^ProtectKernelTunables=no$/mu);
+assert.match(units.serviceUnit, /^ProtectKernelModules=yes$/mu);
+assert.match(units.serviceUnit, /^ProtectKernelLogs=no$/mu);
+assert.match(units.serviceUnit, /^ProtectHostname=no$/mu);
+assert.match(units.serviceUnit, /^ProtectProc=default$/mu);
 assert.match(units.serviceUnit, /^ProcSubset=all$/mu);
 assert.match(units.serviceUnit, /^Delegate=no$/mu);
+assert.match(units.serviceUnit, /^RestrictAddressFamilies=AF_UNIX AF_INET AF_NETLINK$/mu);
 assert.match(units.serviceUnit, /^MemoryMax=1610612736$/mu);
 assert.match(units.serviceUnit, /^MemorySwapMax=0$/mu);
 assert.match(units.serviceUnit, /^TasksMax=64$/mu);
