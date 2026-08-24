@@ -714,6 +714,19 @@ try {
       exactReadOnlyFormattedReportAuditPolicy.writesWorkspace === false,
     "a literal-file formatted count audit incorrectly required destructive host permission"
   );
+  const exactReadOnlyMultiPatternSummary =
+    "grep -oF -e 'handoff/report.md' -e 'Reviewed master' -e 'ffprobe' report.md | sort | uniq -c";
+  const exactReadOnlyMultiPatternSummaryPolicy = evaluateCommandPolicy(
+    exactReadOnlyMultiPatternSummary,
+    hostWorkspacePolicy
+  );
+  assert(
+    exactReadOnlyMultiPatternSummaryPolicy.allowed &&
+      exactReadOnlyMultiPatternSummaryPolicy.category === "read-only" &&
+      exactReadOnlyMultiPatternSummaryPolicy.needsNetwork === false &&
+      exactReadOnlyMultiPatternSummaryPolicy.writesWorkspace === false,
+    "a bounded grep/sort/uniq count summary incorrectly required destructive host permission"
+  );
   const exactReadOnlyGitIdentityProbe =
     'git status --short && echo "TOPLEVEL=$(git rev-parse --show-toplevel 2>&1)" && echo "BRANCH=$(git rev-parse --abbrev-ref HEAD 2>&1)"';
   const exactReadOnlyGitIdentityProbePolicy = evaluateCommandPolicy(
@@ -797,6 +810,9 @@ try {
     'f=$(cat README.md); printf "%s\\n" "$f"; for s in one; do echo "$s"; done',
     'f=README.md; for s in one; do n=$(grep -oF -- "$s" "$f" | wc -l | tr -d " "); printf -v target "%s" "$n"; done',
     'f=README.md; for s in one; do n=$(grep -oF -- "$s" "$f" | wc -l | tr -d " "); rm -rf "$n"; done',
+    "grep -oF -e 'term' report.md | sort | uniq -c output.txt",
+    "grep -oF -e 'term' report.md | sort | uniq -c > output.txt",
+    'grep -oF -e "$(cat .aginti/.env)" report.md | sort | uniq -c',
     'for s in \'README.md; rm -rf report.md\'; do echo "$s"; done',
   ]) {
     const unsafeLoopSubstitutionPolicy = evaluateCommandPolicy(

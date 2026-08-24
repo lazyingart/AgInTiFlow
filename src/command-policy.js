@@ -96,6 +96,18 @@ function isReadOnlyTrDeleteFilter(command = "") {
   return tokens.length === 3 && tokens[0] === "tr" && tokens[1] === "-d";
 }
 
+function isReadOnlyUniqFilter(command = "") {
+  const normalized = stripBenignRedirections(command);
+  if (hasActiveShellExpansion(normalized)) return false;
+  const tokens = tokenizeShellWords(normalized);
+  if (!tokens.length || tokens[0] !== "uniq") return false;
+  // Restrict uniq to stdin-only display/count options. Positional operands are
+  // intentionally rejected because a second operand is an output file.
+  return tokens.slice(1).every((token) =>
+    /^(?:-[cdui]+|--(?:count|repeated|unique|ignore-case))$/.test(token)
+  );
+}
+
 function isReadOnlySha256Command(command = "") {
   const normalized = stripBenignRedirections(command);
   if (hasActiveShellExpansion(normalized)) return false;
@@ -1390,6 +1402,7 @@ function classifySimpleCommand(normalized) {
     matchAny(READ_ONLY_PATTERNS, commandForPatternMatching) ||
     isReadOnlyPrintfCommand(commandForPatternMatching) ||
     isReadOnlyTrDeleteFilter(commandForPatternMatching) ||
+    isReadOnlyUniqFilter(commandForPatternMatching) ||
     isReadOnlySha256Command(commandForPatternMatching) ||
     isReadOnlyFindCommand(normalized) ||
     (!hasActiveShellExpansion(benignRedirectCommand) && isReadOnlyShellCondition(benignRedirectCommand))
