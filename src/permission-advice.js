@@ -67,6 +67,23 @@ export function isOptionalGeneratedPreviewCleanup(toolName = "", args = {}) {
   );
 }
 
+function goalRequestsDeletion(config = {}, state = {}) {
+  const goal = String(config.goal || state.goal || state.meta?.goalContract?.current || "");
+  return /\b(?:delete|remove|clean\s+up|cleanup|purge|erase|discard|drop)\b|删除|刪除|移除|清理|清除|删掉|刪掉|削除|消去/i.test(
+    goal
+  );
+}
+
+export function isUnrequestedCleanupCommand(toolName = "", args = {}, config = {}, state = {}) {
+  const goal = String(config.goal || state.goal || state.meta?.goalContract?.current || "").trim();
+  if (!goal || toolName !== "run_command" || goalRequestsDeletion(config, state)) return false;
+  const command = String(args.command || args.text || "");
+  return command
+    .split(/(?:&&|;|\n)/)
+    .map((segment) => segment.trim())
+    .some((segment) => /^(?:command\s+)?rm\s+(?:-[A-Za-z]*[fr][A-Za-z]*\s+|--force\s+)/.test(segment));
+}
+
 function quoteShell(value = "") {
   const text = String(value || "");
   return `'${text.replace(/'/g, `'\\''`)}'`;
@@ -180,6 +197,22 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
     };
   }
 
+  if (category === "document-page-visual-batch") {
+    return {
+      ...base,
+      autoRecover: true,
+      summary:
+        "The document review batched multiple rendered pages, so page-specific visual defects could be missed.",
+      instruction:
+        "Continue automatically by calling read_image once for each rendered page. Evaluate clipping, overflow, orphaned headings, sparse spill pages, table splits, margins, and hierarchy on that page before moving to the next one.",
+      options: [
+        "Review page 1 alone, repair any defect, and rebuild before reviewing later pages.",
+        "Review each remaining page in a separate read_image call.",
+        "Finish only after every page has its own accepted visual evidence.",
+      ],
+    };
+  }
+
   if (category === "workspace-write") {
     return {
       ...base,
@@ -258,14 +291,17 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
   }
 
   if (category === "destructive") {
-    if (isOptionalGeneratedPreviewCleanup(toolName, args)) {
+    if (
+      isOptionalGeneratedPreviewCleanup(toolName, args) ||
+      isUnrequestedCleanupCommand(toolName, args, config, state)
+    ) {
       return {
         ...base,
         autoRecover: true,
         summary:
-          "Optional generated-preview cleanup was blocked safely; the verification evidence can remain ignored and the task should continue.",
+          "Unrequested cleanup was blocked safely; generated or verification files can remain ignored and the substantive task should continue.",
         instruction:
-          "Do not retry, rename, or seek approval for this cleanup. Leave the ignored preview files in place, run any remaining read-only checks in a separate call, and finish the requested task when its substantive evidence passes.",
+          "Do not retry, rename, or seek approval for this cleanup. Leave every candidate file in place, run any remaining read-only checks in a separate call, and finish the requested task when its substantive evidence passes.",
         options: [
           "Retain the generated previews as private verification evidence.",
           "Run source hashes, artifact checks, and git status separately without a delete command.",

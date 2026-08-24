@@ -245,6 +245,14 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
       .map((item) => String(item || "").trim())
       .filter(Boolean);
     if (values.length === 0) return { allowed: false, reason: "At least one image path or URL is required.", category: "perception-tools" };
+    if (String(config.taskProfile || "").toLowerCase() === "word" && values.length > 1) {
+      return {
+        allowed: false,
+        reason:
+          "Word-document page review requires one rendered page per image call so clipping, orphaned headings, sparse spill pages, and other page-specific defects cannot be averaged away.",
+        category: "document-page-visual-batch",
+      };
+    }
     if (values.length > 4) return { allowed: false, reason: "Too many images. Maximum is 4.", category: "perception-tools" };
     for (const value of values) {
       if (/^https?:\/\//i.test(value)) {

@@ -23,6 +23,7 @@ import { formatBehaviorContractForPrompt } from "../src/behavior-contract.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { readCodebaseMap } from "../src/codebase-map.js";
 import { classifyCommand, evaluateCommandPolicy } from "../src/command-policy.js";
+import { checkToolUse } from "../src/guardrails.js";
 import { shouldReviewToolResult } from "../src/scs-controller.js";
 import {
   engineeringGuidanceForTask,
@@ -36,6 +37,7 @@ import {
   buildFailedCommandAdvice,
   buildPermissionAdvice,
   isOptionalGeneratedPreviewCleanup,
+  isUnrequestedCleanupCommand,
 } from "../src/permission-advice.js";
 import { runJsonSpecialist } from "../src/json-specialist.js";
 import { SessionStore } from "../src/session-store.js";
@@ -1230,7 +1232,7 @@ try {
     "optional generated-preview cleanup should retain evidence and recover without pausing"
   );
   assert(
-    /leave the ignored preview files in place/i.test(optionalPreviewCleanupAdvice.instruction),
+    /leave every candidate file in place/i.test(optionalPreviewCleanupAdvice.instruction),
     "optional generated-preview cleanup advice did not tell the agent to retain evidence"
   );
   assert(
@@ -1238,6 +1240,65 @@ try {
       command: "rm -f output/final-report.pdf",
     }),
     "a requested final artifact was misclassified as optional preview cleanup"
+  );
+  const mixedValidationCleanupArgs = {
+    command:
+      "python3 validate.py; rm -f output/page-*.png scratch-notes.md; git status --short",
+  };
+  assert(
+    isUnrequestedCleanupCommand(
+      "run_command",
+      mixedValidationCleanupArgs,
+      { goal: "Create and verify a clean document." },
+      {}
+    ),
+    "unrequested cleanup embedded after validation was not recognized as recoverable"
+  );
+  const mixedValidationCleanupAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: mixedValidationCleanupArgs,
+    guard: {
+      category: "destructive",
+      reason: "Destructive shell commands require Allow destructive actions.",
+    },
+    config: { ...dockerWorkspacePolicy, goal: "Create and verify a clean document." },
+    state: { sessionId: "coding-unrequested-cleanup-smoke" },
+  });
+  assert(
+    mixedValidationCleanupAdvice.autoRecover === true,
+    "unrequested cleanup should be skipped without pausing substantive work"
+  );
+  assert(
+    !isUnrequestedCleanupCommand(
+      "run_command",
+      { command: "rm -f output/obsolete.pdf" },
+      { goal: "Delete the obsolete PDF." },
+      {}
+    ),
+    "an explicitly requested deletion was incorrectly treated as optional housekeeping"
+  );
+  const documentPageBatchGuard = checkToolUse({
+    toolName: "read_image",
+    args: { imagePaths: ["build/verification/page-1.png", "build/verification/page-2.png"] },
+    snapshot: {},
+    config: { ...dockerWorkspacePolicy, allowFileTools: true, taskProfile: "word" },
+  });
+  assert(
+    documentPageBatchGuard.allowed === false &&
+      documentPageBatchGuard.category === "document-page-visual-batch",
+    "Word document review did not require one visual call per rendered page"
+  );
+  const documentPageBatchAdvice = buildPermissionAdvice({
+    toolName: "read_image",
+    args: { imagePaths: ["build/verification/page-1.png", "build/verification/page-2.png"] },
+    guard: documentPageBatchGuard,
+    config: { ...dockerWorkspacePolicy, taskProfile: "word" },
+    state: { sessionId: "coding-document-page-visual-batch-smoke" },
+  });
+  assert(
+    documentPageBatchAdvice.autoRecover === true &&
+      /once for each rendered page/i.test(documentPageBatchAdvice.instruction),
+    "Word document page batching did not recover into separate visual checks"
   );
   const failedNetworkAdvice = buildFailedCommandAdvice({
     args: { command: "git clone https://github.com/lazyingart/AgInTiFlow.git" },
