@@ -2957,7 +2957,7 @@ export function finishResultClaimsIncompleteWork(result = "") {
       ""
     )
     .replace(
-      /\b(?:(?:was|were|had\s+been)\s+)?(?:previously|formerly|earlier|already)\s+(?:paused|pending|incomplete|unfinished)\b/gi,
+      /\b(?:(?:was|were|had\s+been)\s+)?(?:previously|formerly|earlier|already)[\s-]+(?:paused|pending|incomplete|unfinished)(?:[\s-]+(?:step|attempt|run|verification|check|phase|command|process|audit))?\b/gi,
       ""
     )
     .replace(/\b(?:not|never)\s+(?:paused|pending|incomplete|unfinished)\b/gi, "")

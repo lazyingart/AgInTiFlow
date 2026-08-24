@@ -29,6 +29,13 @@ assert.equal(
 );
 assert.equal(
   finishResultClaimsIncompleteWork(
+    "The bounded verification (the previously-paused step) passed, and the audit is complete."
+  ),
+  false,
+  "a hyphenated resolved historical pause was mistaken for current unfinished work"
+);
+assert.equal(
+  finishResultClaimsIncompleteWork(
     "The earlier step was paused and the report is still incomplete."
   ),
   true,
