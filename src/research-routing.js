@@ -48,6 +48,22 @@ export function hasExplicitDeepResearchIntent(goal = "", messages = []) {
   );
 }
 
+export function hasLocalResearchWorkspaceIntent(goal = "", messages = []) {
+  const recent = hasAgintiEvidenceScope(goal)
+    ? ""
+    : genuineUserMessages(messages)
+        .slice(-4)
+        .map((message) => scopedChatopsEvidenceGoal(messageText(message.content)))
+        .join("\n");
+  const text = `${scopedChatopsEvidenceGoal(goal)}\n${recent}`;
+  return (
+    /\b(?:this|current|existing|project|workspace|local)\s+(?:folder|directory|repo(?:sitory)?|files?|notes?|sources?|artifacts?)\b/i.test(text) ||
+    /\b(?:task|project|source|research|evidence|notes?|manifest|readme)[-_A-Za-z0-9]*\.(?:md|json|ya?ml|txt|csv|bib|tex)\b/i.test(text) ||
+    /\b(?:inspect|read|reconcile|correct|rewrite|update)\b.{0,120}\b(?:workspace|folder|directory|repo(?:sitory)?|local files?|project notes?|existing notes?)\b/i.test(text) ||
+    /\b(?:git\s+)?commit\b/i.test(text)
+  );
+}
+
 export function toolWasRequested(messages = [], toolName = "") {
   return messages.some((message) => {
     if (
@@ -65,5 +81,9 @@ export function toolWasRequested(messages = [], toolName = "") {
 }
 
 export function shouldStartWithDeepResearch(goal = "", messages = []) {
-  return hasExplicitDeepResearchIntent(goal, messages) && !toolWasRequested(messages, "deep_research");
+  return (
+    hasExplicitDeepResearchIntent(goal, messages) &&
+    !hasLocalResearchWorkspaceIntent(goal, messages) &&
+    !toolWasRequested(messages, "deep_research")
+  );
 }

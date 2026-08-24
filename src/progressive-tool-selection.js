@@ -1,4 +1,7 @@
-import { shouldStartWithDeepResearch } from "./research-routing.js";
+import {
+  hasLocalResearchWorkspaceIntent,
+  shouldStartWithDeepResearch,
+} from "./research-routing.js";
 import { hasAgintiEvidenceScope, scopedChatopsEvidenceGoal } from "./scs-evidence.js";
 import {
   INTEGRATION_TEXT_WORKSPACE_PROFILE_ID,
@@ -1240,6 +1243,13 @@ function compactToolNames({ config, goal, profile, messages }) {
   for (const bundle of explicitBundles) bundleOrder.push(bundle);
   for (const bundle of inferred) {
     if (!bundleOrder.includes(bundle)) bundleOrder.push(bundle);
+  }
+  if (
+    bundleOrder.includes("research") &&
+    hasLocalResearchWorkspaceIntent(goal || config.goal, messages) &&
+    !bundleOrder.includes("code")
+  ) {
+    bundleOrder.push("code");
   }
   if (bundleOrder.length === 0 && explicitProfileTools.length === 0) bundleOrder.push("general");
 

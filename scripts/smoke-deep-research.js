@@ -8,7 +8,11 @@ import { checkToolUse } from "../src/guardrails.js";
 import { flushHousekeeping } from "../src/housekeeping.js";
 import { requestNextStep, toolChoiceForProvider } from "../src/model-client.js";
 import { providerStructuredOutputAttempts } from "../src/provider-contract.js";
-import { hasExplicitDeepResearchIntent } from "../src/research-routing.js";
+import {
+  hasExplicitDeepResearchIntent,
+  hasLocalResearchWorkspaceIntent,
+  shouldStartWithDeepResearch,
+} from "../src/research-routing.js";
 import { SessionStore } from "../src/session-store.js";
 import { canonicalizeWebUrl, isPublicWebUrl, readWebPage, searchWeb } from "../src/web-search.js";
 
@@ -48,6 +52,17 @@ async function main() {
   assert(!excessiveResearch.allowed, "deep_research accepted an excessive query/source budget");
 
   assert(hasExplicitDeepResearchIntent("literature review with primary papers"), "explicit research intent was not detected");
+  const localEvidenceGoal =
+    "Turn the messy project notes in this folder into an evidence review, write sources.json, and commit the intentional work.";
+  assert(hasLocalResearchWorkspaceIntent(localEvidenceGoal), "local research workspace intent was not detected");
+  assert(
+    !shouldStartWithDeepResearch(localEvidenceGoal),
+    "local-source research incorrectly forced deep_research before workspace inspection"
+  );
+  assert(
+    shouldStartWithDeepResearch("Write a deep web research report comparing three primary papers."),
+    "standalone deep research no longer starts with the bounded research workflow"
+  );
   assert(
     !hasExplicitDeepResearchIntent("Create a phone-friendly document from this folder.", [
       {

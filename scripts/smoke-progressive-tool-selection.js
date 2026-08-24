@@ -1475,6 +1475,21 @@ const explicitDeepResearchFollowup = selectProgressiveTools(allTools, {
 });
 assert(names(explicitDeepResearchFollowup).includes("web_search"), "deep-research follow-up did not restore targeted recovery tools");
 
+const localEvidenceResearchStarter = selectProgressiveTools(allTools, {
+  config: { provider: "deepseek" },
+  goal:
+    "Investigate the reliability problem in this folder, correct PROJECT_NOTES.md, write an evidence review and sources.json, then commit the intentional work.",
+  profile: "research",
+});
+assert(names(localEvidenceResearchStarter).includes("deep_research"), "local evidence research omitted deep_research");
+assert(names(localEvidenceResearchStarter).includes("read_file"), "local evidence research omitted read_file");
+assert(names(localEvidenceResearchStarter).includes("write_file"), "local evidence research omitted write_file");
+assert(names(localEvidenceResearchStarter).includes("run_command"), "local evidence research omitted shell/git access");
+assert(
+  !(names(localEvidenceResearchStarter).length === 2 && names(localEvidenceResearchStarter)[0] === "deep_research"),
+  "local evidence research was trapped on deep_research before reading its source material"
+);
+
 const documentRuntimeSnapshot =
   'Step 1/30. Latest runtime snapshot:\n{"pageText":"Workspace file tools are ready. Web search and resumable deep research are available when current evidence is required."}';
 const localDocumentStarter = selectProgressiveTools(allTools, {
