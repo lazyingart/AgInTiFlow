@@ -658,6 +658,41 @@ try {
       exactCompoundReadOnlyAuditPolicy.writesWorkspace === false,
     "a finite read-only prelude and conditional directory audit incorrectly required destructive host permission"
   );
+  const exactReadOnlyGitIdentityProbe =
+    'git status --short && echo "TOPLEVEL=$(git rev-parse --show-toplevel 2>&1)" && echo "BRANCH=$(git rev-parse --abbrev-ref HEAD 2>&1)"';
+  const exactReadOnlyGitIdentityProbePolicy = evaluateCommandPolicy(
+    exactReadOnlyGitIdentityProbe,
+    hostWorkspacePolicy
+  );
+  assert(
+    exactReadOnlyGitIdentityProbePolicy.allowed &&
+      exactReadOnlyGitIdentityProbePolicy.category === "read-only" &&
+      exactReadOnlyGitIdentityProbePolicy.needsNetwork === false &&
+      exactReadOnlyGitIdentityProbePolicy.writesWorkspace === false,
+    "bounded read-only git identity substitutions incorrectly required destructive host permission"
+  );
+  for (const unsafeEchoSubstitution of [
+    'echo "VALUE=$(rm -rf report.md)"',
+    'echo "VALUE=$(cp README.md report.md)"',
+    'echo "VALUE=$(curl https://example.com)"',
+    'echo "VALUE=$(git status; rm -rf report.md)"',
+    'echo "VALUE=$(echo $(pwd))"',
+    'echo "VALUE=$((1 + 1))"',
+    'echo "VALUE=$(git status)" > report.md',
+    'echo "VALUE=`git status`"',
+  ]) {
+    const unsafeEchoSubstitutionPolicy = evaluateCommandPolicy(
+      unsafeEchoSubstitution,
+      hostWorkspacePolicy
+    );
+    assert(
+      !unsafeEchoSubstitutionPolicy.allowed ||
+        unsafeEchoSubstitutionPolicy.category !== "read-only" ||
+        unsafeEchoSubstitutionPolicy.writesWorkspace === true ||
+        unsafeEchoSubstitutionPolicy.needsNetwork === true,
+      `unsafe echo command substitution bypassed the bounded read-only policy: ${unsafeEchoSubstitution}`
+    );
+  }
   for (const unsafeCompoundAudit of [
     'cp README.md copied.md; for d in /tmp; do echo "$d"; done',
     'echo start; for d in /tmp; do if [ -d "$d" ]; then rm -rf "$d"; else echo missing; fi; done',

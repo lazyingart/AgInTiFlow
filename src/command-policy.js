@@ -30,7 +30,7 @@ const READ_ONLY_PATTERNS = [
   /^sha256sum(?:\s+[-\w./~*]+)+$/,
   /^sed\s+-n\s+['"0-9,:p\s-]+(?:\s+[-\w./~*]+)?$/,
   /^git\s+(status|branch|log|show|diff(?:\s+--stat)?|remote\s+-v)(?:\s+.+)?$/,
-  /^git\s+rev-parse(?:\s+(?:--show-toplevel|--git-dir|--is-inside-work-tree|--show-prefix|--show-cdup|--verify|--short(?:=\d+)?|[-\w./@^{}~:]+))+$/,
+  /^git\s+rev-parse(?:\s+(?:--show-toplevel|--git-dir|--is-inside-work-tree|--show-prefix|--show-cdup|--abbrev-ref|--verify|--short(?:=\d+)?|[-\w./@^{}~:]+))+$/,
   /^git\s+ls-files(?:\s+(?:--(?:cached|deleted|modified|others|ignored|stage|unmerged|exclude-standard)|[-\w./*]+))*$/,
   /^node\s+(?:-v|--version)$/,
   /^node\s+[-\w./]+\.(?:c?js|mjs)\s+(?:--help|help|doctor|status|health)(?:\s+[-\w./:=]+)*$/,
@@ -1010,6 +1010,129 @@ function classifySafeEchoRedirect(normalized = "") {
   };
 }
 
+function extractBoundedCommandSubstitutions(value = "") {
+  const text = String(value || "");
+  if (!text.includes("$(") || text.length > 16 * 1024 || text.includes("`")) return null;
+  const commands = [];
+  let template = "";
+  let quote = "";
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote === "'") {
+      template += char;
+      if (char === "'") quote = "";
+      continue;
+    }
+    if (escaped) {
+      template += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      template += char;
+      escaped = true;
+      continue;
+    }
+    if (quote === '"' && char === '"') {
+      template += char;
+      quote = "";
+      continue;
+    }
+    if (!quote && char === "'") {
+      template += char;
+      quote = char;
+      continue;
+    }
+    if (!quote && char === '"') {
+      template += char;
+      quote = '"';
+      continue;
+    }
+    if (char !== "$" || text[index + 1] !== "(") {
+      template += char;
+      continue;
+    }
+    if (text[index + 2] === "(" || commands.length >= 4) return null;
+
+    let inner = "";
+    let innerQuote = "";
+    let innerEscaped = false;
+    let closed = false;
+    index += 2;
+    for (; index < text.length; index += 1) {
+      const innerChar = text[index];
+      if (innerQuote === "'") {
+        inner += innerChar;
+        if (innerChar === "'") innerQuote = "";
+        continue;
+      }
+      if (innerEscaped) {
+        inner += innerChar;
+        innerEscaped = false;
+        continue;
+      }
+      if (innerChar === "\\") {
+        inner += innerChar;
+        innerEscaped = true;
+        continue;
+      }
+      if (innerQuote === '"') {
+        inner += innerChar;
+        if (innerChar === '"') innerQuote = "";
+        else if (innerChar === "$" && text[index + 1] === "(") return null;
+        continue;
+      }
+      if (innerChar === "'" || innerChar === '"') {
+        inner += innerChar;
+        innerQuote = innerChar;
+        continue;
+      }
+      if (innerChar === "$" && text[index + 1] === "(") return null;
+      if (innerChar === "(" || innerChar === "{") return null;
+      if (innerChar === ")") {
+        closed = true;
+        break;
+      }
+      inner += innerChar;
+    }
+    if (!closed || innerQuote || innerEscaped || !inner.trim()) return null;
+    commands.push(inner.trim());
+    template += `AGINTI_READ_VALUE_${commands.length}`;
+  }
+  if (!commands.length || quote || escaped || hasActiveShellExpansion(template)) return null;
+  return { commands, template };
+}
+
+function classifySafeEchoCommandSubstitution(normalized = "") {
+  if (!/^echo\s+/.test(String(normalized || ""))) return null;
+  const extracted = extractBoundedCommandSubstitutions(normalized);
+  if (!extracted) return null;
+  const classifications = extracted.commands.map(
+    (command) => classifyShellSequence(command) || classifyPipelineSequence(command) || classifySimpleCommand(command)
+  );
+  const blocked = classifications.find(
+    (classification) => classification.category === "blocked" || classification.category === "destructive"
+  );
+  if (blocked) return blocked;
+  if (classifications.some(
+    (classification) => classification.category !== "read-only" || classification.writesWorkspace || classification.needsNetwork
+  )) {
+    return null;
+  }
+  const templateClassification = classifySimpleCommand(extracted.template);
+  if (templateClassification.category !== "read-only" || templateClassification.writesWorkspace) return null;
+  return {
+    category: "read-only",
+    needsNetwork: false,
+    writesWorkspace: false,
+    gitOnly: false,
+    boundedCommandSubstitution: true,
+    reason: `Echo uses ${extracted.commands.length} bounded read-only command substitution${extracted.commands.length === 1 ? "" : "s"}.`,
+  };
+}
+
 function classifyGitCleanDryRun(normalized) {
   const match = normalized.match(/^git\s+clean\b([\s\S]*)$/);
   if (!match) return null;
@@ -1150,6 +1273,8 @@ function classifySimpleCommand(normalized) {
   if (envExportClassification) return envExportClassification;
   const echoRedirectClassification = classifySafeEchoRedirect(normalized);
   if (echoRedirectClassification) return echoRedirectClassification;
+  const echoCommandSubstitutionClassification = classifySafeEchoCommandSubstitution(normalized);
+  if (echoCommandSubstitutionClassification) return echoCommandSubstitutionClassification;
 
   if (isUnboundedRecursiveGrep(normalized)) {
     return {
