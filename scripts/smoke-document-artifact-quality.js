@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import {
   evaluateCurrentStateText,
+  evaluateDocumentConsistency,
   evaluatePdfPageBalance,
   extractSupersededLiterals,
 } from "../src/document-artifact-quality.js";
@@ -41,6 +42,41 @@ const currentDocument = evaluateCurrentStateText({
   currentStateRequired: true,
 });
 assert.equal(currentDocument.ok, true, "authoritative current-state prose was rejected");
+
+const supersedesHistory = evaluateCurrentStateText({
+  sourceText: source,
+  outputText: "This document supersedes earlier planning notes. The current owner is Mei.",
+  currentStateRequired: true,
+});
+assert.equal(supersedesHistory.ok, false, "present-tense supersedes history was accepted");
+assert(
+  supersedesHistory.defects.some((item) => item.code === "historical-transition-prose"),
+  "present-tense supersedes did not produce a historical transition defect"
+);
+
+const inconsistentActions = evaluateDocumentConsistency([
+  "Three open actions remain.",
+  "Remaining Actions",
+  "Place filter order 28 August 2026",
+  "Provide wiring diagram 2 September 2026",
+  "Complete safety review 5 September 2026",
+  "Freeze checklist 10 September 2026",
+  "Budget",
+].join("\n"));
+assert.equal(inconsistentActions.ok, false, "declared action count contradicted by the action section was accepted");
+assert.equal(inconsistentActions.actionSectionItemCount, 4);
+assert.equal(inconsistentActions.defects[0]?.code, "action-count-inconsistency");
+
+const consistentActions = evaluateDocumentConsistency([
+  "Four open actions remain.",
+  "Remaining Actions",
+  "Place filter order 28 August 2026",
+  "Provide wiring diagram 2 September 2026",
+  "Complete safety review 5 September 2026",
+  "Freeze checklist 10 September 2026",
+  "Budget",
+].join("\n"));
+assert.equal(consistentActions.ok, true, "matching declared and section action counts were rejected");
 
 function page(
   words,

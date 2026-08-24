@@ -28,8 +28,24 @@ const EXCLUDED_DIRECTORY_NAMES = new Set([
 const INTENTIONAL_SPARSE_PAGE_PATTERN =
   /^(?:appendix|approval|approvals|acknowledgements?|back cover|contact|notes|references|sign[- ]?off|signatures?)\b/i;
 const HISTORICAL_TRANSITION_PATTERN =
-  /\b(?:formerly|no longer|previously|replac(?:ed|ing)|superseded|used to be)\b/i;
+  /\b(?:formerly|no longer|previously|replac(?:ed|ing)|supersed(?:e|ed|es|ing)|used to be)\b/i;
 const MIN_READABLE_MEDIAN_WORD_HEIGHT_PT = 8.8;
+const COUNT_WORDS = new Map([
+  ["zero", 0], ["one", 1], ["two", 2], ["three", 3], ["four", 4], ["five", 5],
+  ["six", 6], ["seven", 7], ["eight", 8], ["nine", 9], ["ten", 10],
+  ["eleven", 11], ["twelve", 12], ["thirteen", 13], ["fourteen", 14], ["fifteen", 15],
+  ["sixteen", 16], ["seventeen", 17], ["eighteen", 18], ["nineteen", 19], ["twenty", 20],
+]);
+const ACTION_COUNT_PATTERN = new RegExp(
+  `\\b(\\d+|${[...COUNT_WORDS.keys()].join("|")})\\s+(?:open|remaining|outstanding|pending)\\s+(?:action items?|actions?|tasks?|items?)\\b`,
+  "gi"
+);
+const ACTION_SECTION_HEADING_PATTERN =
+  /^\s*(?:remaining|open|outstanding|pending)\s+(?:action items?|actions?|tasks?|items?|next steps)\s*$/i;
+const DOCUMENT_SECTION_HEADING_PATTERN =
+  /^\s*(?:appendix|budget|current decisions?|executive summary|notes|references|risks?(?: and mitigations)?|summary)\s*$/i;
+const HUMAN_DATE_PATTERN =
+  /\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:,\s*\d{4})?)\b/gi;
 
 function portablePath(value = "") {
   return String(value || "").replace(/\\/g, "/");
@@ -248,6 +264,47 @@ export function evaluateCurrentStateText({ sourceText = "", outputText = "", cur
   return { ok: defects.length === 0, defects, supersededLiterals, presentSupersededLiterals };
 }
 
+function parsedCount(value = "") {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (/^\d+$/.test(normalized)) return Number.parseInt(normalized, 10);
+  return COUNT_WORDS.get(normalized);
+}
+
+function actionSectionItemCount(outputText = "") {
+  const lines = String(outputText || "").split(/\r?\n/);
+  const headingIndex = lines.findIndex((line) => ACTION_SECTION_HEADING_PATTERN.test(line));
+  if (headingIndex < 0) return 0;
+  const section = [];
+  for (const line of lines.slice(headingIndex + 1)) {
+    if (DOCUMENT_SECTION_HEADING_PATTERN.test(line)) break;
+    section.push(line);
+  }
+  const sectionText = section.join("\n");
+  const dates = new Set(
+    [...sectionText.matchAll(HUMAN_DATE_PATTERN)].map((match) => normalizedComparableText(match[0]))
+  );
+  const bullets = section.filter((line) => /^\s*(?:[-*•]|\d+[.)])\s+\S/.test(line)).length;
+  return Math.max(dates.size, bullets);
+}
+
+export function evaluateDocumentConsistency(outputText = "") {
+  const defects = [];
+  const sectionCount = actionSectionItemCount(outputText);
+  if (sectionCount > 0) {
+    for (const match of String(outputText || "").matchAll(ACTION_COUNT_PATTERN)) {
+      const declaredCount = parsedCount(match[1]);
+      if (Number.isInteger(declaredCount) && declaredCount !== sectionCount) {
+        defects.push({
+          code: "action-count-inconsistency",
+          message: `The document declares ${declaredCount} open action${declaredCount === 1 ? "" : "s"}, but the Remaining Actions section contains ${sectionCount} dated/listed item${sectionCount === 1 ? "" : "s"}. Reconcile the summary and action table before delivery.`,
+        });
+        break;
+      }
+    }
+  }
+  return { ok: defects.length === 0, defects, actionSectionItemCount: sectionCount };
+}
+
 async function collectSourceDocuments(commandCwd) {
   const documents = [];
   let totalBytes = 0;
@@ -419,6 +476,7 @@ export async function validateWordDocumentArtifacts({
       if (artifact.extension === ".pdf") {
         const extracted = await extractPdf(artifact);
         const semantic = evaluateCurrentStateText({ sourceText, outputText: extracted.text, currentStateRequired });
+        const consistency = evaluateDocumentConsistency(extracted.text);
         const pageBalance = evaluatePdfPageBalance(extracted.bbox);
         if (!String(extracted.text || "").trim()) {
           defects.push({
@@ -435,6 +493,7 @@ export async function validateWordDocumentArtifacts({
           });
         }
         defects.push(...semantic.defects.map((item) => ({ ...item, path: artifact.path })));
+        defects.push(...consistency.defects.map((item) => ({ ...item, path: artifact.path })));
         defects.push(...pageBalance.defects.map((item) => ({ ...item, path: artifact.path })));
         artifactReports.push({
           path: artifact.path,
@@ -442,11 +501,13 @@ export async function validateWordDocumentArtifacts({
           textChars: extracted.text.length,
           pageCount: pageBalance.pages.length,
           pages: pageBalance.pages,
+          actionSectionItemCount: consistency.actionSectionItemCount,
           supersededLiterals: semantic.supersededLiterals,
         });
       } else {
         const text = await extractDocxText(artifact);
         const semantic = evaluateCurrentStateText({ sourceText, outputText: text, currentStateRequired });
+        const consistency = evaluateDocumentConsistency(text);
         if (!String(text || "").trim()) {
           defects.push({
             code: "empty-docx-text",
@@ -455,10 +516,12 @@ export async function validateWordDocumentArtifacts({
           });
         }
         defects.push(...semantic.defects.map((item) => ({ ...item, path: artifact.path })));
+        defects.push(...consistency.defects.map((item) => ({ ...item, path: artifact.path })));
         artifactReports.push({
           path: artifact.path,
           extension: artifact.extension,
           textChars: text.length,
+          actionSectionItemCount: consistency.actionSectionItemCount,
           supersededLiterals: semantic.supersededLiterals,
         });
       }
