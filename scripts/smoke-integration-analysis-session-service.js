@@ -131,6 +131,26 @@ function plotArtifact() {
   });
 }
 
+function sourcesArtifact(mode = "web") {
+  return sanitizeIntegrationArtifact({
+    title: "Grounded sources",
+    kind: "sources",
+    spec: {
+      schemaVersion: "1",
+      sources: [{
+        index: 1,
+        title: `Verified ${mode} source`,
+        url: `https://example.test/evidence/${mode}`,
+        snippet: "Bounded evidence persisted before the grounded answer was synthesized.",
+        providers: ["provider-one"],
+        kind: mode === "papers" ? "paper" : "web",
+        publishedDate: "2026-08-25",
+        doi: mode === "papers" ? "10.1234/aginti.search" : null,
+      }],
+    },
+  });
+}
+
 function explicitWorkerCapability() {
   const core = Object.freeze({
     schemaVersion: EXECUTION_WORKER_SCHEMA_VERSION,
@@ -563,12 +583,128 @@ async function explicitPythonDurabilityRoundTrip(temporaryRoot) {
   }
 }
 
+async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
+  const root = path.join(temporaryRoot, "grounded-search-state");
+  const calls = [];
+  const runner = Object.freeze({
+    async run(scope, input, options = {}) {
+      const serialized = JSON.parse(await fs.readFile(await stateFile(root), "utf8"));
+      const persisted = serialized.state.runs.find((run) => run.id === scope.runId);
+      assert(persisted, "run must be durable before the grounded-search runner starts");
+      assert.deepEqual(persisted.search, input.search, "exact search intent must be durable before upstream work");
+      calls.push(Object.freeze({ scope, input }));
+      if (input.prompt === "Trigger a bounded search failure") {
+        const error = new Error("private upstream details must not escape");
+        error.code = "GROUNDED_SEARCH_TIMEOUT";
+        throw error;
+      }
+      const artifacts = input.search === undefined ? [] : [sourcesArtifact(input.search.mode)];
+      for (const artifact of artifacts) await options.onArtifact?.(artifact);
+      const result = plannerResult({
+        text: input.search === undefined ? "Corrected local answer." : `Grounded ${input.search.mode} answer [1].`,
+        artifacts,
+        toolCalls: 0,
+      });
+      await options.onFinal?.(result);
+      return result;
+    },
+  });
+  let service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: runner,
+    stateRoot: root,
+    searchEnabled: true,
+  });
+  let restarted;
+  try {
+    const capabilities = await service.getIntegrationCapabilities();
+    assert.equal(capabilities.search, true);
+    assert.equal(capabilities.analysisSessionAuthority.groundedSearchReady, true);
+    const created = await service.createThread({ title: "Durable grounded search" }, context());
+    const firstSearch = Object.freeze({ mode: "both", limit: 7 });
+    const first = await service.startRun({
+      threadId: created.thread.id,
+      input: { text: "Compare current evidence", search: firstSearch },
+    }, context());
+    await service.waitForIdle();
+    assert.deepEqual(calls[0].input.search, firstSearch);
+    const firstArtifacts = await service.listArtifacts({ runId: first.run.id }, context());
+    assert.equal(firstArtifacts.artifacts.length, 1);
+    assert.equal(firstArtifacts.artifacts[0].kind, "sources");
+
+    const callsBeforeReplay = calls.length;
+    await service.close({ mode: "wait" });
+    service = null;
+    restarted = createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: runner,
+      stateRoot: root,
+      searchEnabled: true,
+    });
+    await restarted.getThread({ threadId: created.thread.id }, context());
+    await restarted.getRunStatus({ runId: first.run.id }, context());
+    await restarted.loadRunEvents(eventsRequest(first.run.id), context());
+    assert.equal(calls.length, callsBeforeReplay, "restart, reload, and replay must never issue another search");
+
+    const sameInput = await restarted.resumeRun({ runId: first.run.id }, context());
+    await restarted.waitForIdle();
+    assert.deepEqual(calls[1].input.search, firstSearch, "same-input Resume must reuse durable search intent");
+
+    const correctedSearch = Object.freeze({ mode: "papers", limit: 4 });
+    const corrected = await restarted.resumeRun({
+      runId: sameInput.run.id,
+      input: { text: "Use peer-reviewed evidence only", search: correctedSearch },
+    }, context());
+    await restarted.waitForIdle();
+    assert.deepEqual(calls[2].input.search, correctedSearch, "corrected Resume may replace search intent");
+
+    await restarted.resumeRun({
+      runId: corrected.run.id,
+      input: { text: "Answer locally without retrieval" },
+    }, context());
+    await restarted.waitForIdle();
+    assert.equal(calls[3].input.search, undefined, "corrected Resume without search must disable retrieval");
+
+    const failedSearch = Object.freeze({ mode: "web", limit: 5 });
+    const failed = await restarted.startRun({
+      threadId: created.thread.id,
+      input: { text: "Trigger a bounded search failure", search: failedSearch },
+    }, context());
+    await restarted.waitForIdle();
+    const failedStatus = (await restarted.getRunStatus({ runId: failed.run.id }, context())).run;
+    assert.equal(failedStatus.status, "failed");
+    assert.equal(failedStatus.error.code, "GROUNDED_SEARCH_TIMEOUT");
+    assert.match(failedStatus.error.message, /prompt and search settings were preserved/u);
+    assert.doesNotMatch(JSON.stringify(failedStatus), /private upstream details/u);
+    const failedState = JSON.parse(await fs.readFile(await stateFile(root), "utf8"));
+    assert.deepEqual(
+      failedState.state.runs.find((run) => run.id === failed.run.id).search,
+      failedSearch,
+      "failed retrieval must retain exact durable search intent"
+    );
+  } finally {
+    await service?.close({ mode: "abort" }).catch(() => {});
+    await restarted?.close({ mode: "abort" }).catch(() => {});
+  }
+
+  const disabledRoot = path.join(temporaryRoot, "grounded-search-disabled-state");
+  const disabled = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: runner, stateRoot: disabledRoot });
+  try {
+    const thread = await disabled.createThread({ title: "Search disabled" }, context());
+    await expectCode(disabled.startRun({
+      threadId: thread.thread.id,
+      input: { text: "Attempt disabled search", search: { mode: "web", limit: 3 } },
+    }, context()), "GROUNDED_SEARCH_NOT_READY");
+  } finally {
+    await disabled.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
 async function main() {
   const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-analysis-session-"));
   const root = path.join(temporaryRoot, "state");
   const fakeRunner = createFakeRunner();
   try {
     await explicitPythonDurabilityRoundTrip(temporaryRoot);
+    await groundedSearchDurabilityRoundTrip(temporaryRoot);
     const service = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: fakeRunner, stateRoot: root });
     assertIntegrationAnalysisSessionService(service, { allowTestOnly: true });
     assert.throws(() => assertIntegrationAnalysisSessionService(service), /test-only/u);

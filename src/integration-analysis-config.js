@@ -14,6 +14,10 @@ import {
   IntegrationServiceConfigError,
   validateSystemdCredentialMetadata,
 } from "./integration-config.js";
+import {
+  INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
+  INTEGRATION_GROUNDED_SEARCH_TIMEOUT_MS,
+} from "./integration-grounded-search.js";
 import { INTEGRATION_RPC_PATH_LIST, INTEGRATION_RPC_PATHS } from "./integration-policy.js";
 
 export const INTEGRATION_ANALYSIS_SERVICE_CONFIG_SCHEMA_VERSION =
@@ -30,9 +34,12 @@ export const INTEGRATION_ANALYSIS_LOCALLLM_CONTEXT_TOKENS = 32_768;
 export const INTEGRATION_ANALYSIS_LOCALLLM_OUTPUT_TOKENS = 4_096;
 export const INTEGRATION_ANALYSIS_LOCALLLM_TIMEOUT_MS = 180_000;
 export const INTEGRATION_ANALYSIS_LOCALLLM_CREDENTIAL_NAME = "localllm-token";
+export const INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_NAME = "localllm-search-token";
 export const INTEGRATION_ANALYSIS_TRUSTED_CLIENT_ID = "aginti-bff";
 export const INTEGRATION_ANALYSIS_LOCALLLM_CREDENTIAL_PATH =
   `${INTEGRATION_SYSTEMD_CREDENTIALS_DIRECTORY}/${INTEGRATION_ANALYSIS_LOCALLLM_CREDENTIAL_NAME}`;
+export const INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_PATH =
+  `${INTEGRATION_SYSTEMD_CREDENTIALS_DIRECTORY}/${INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_NAME}`;
 export const MAX_INTEGRATION_ANALYSIS_CONFIG_BYTES = 32 * 1024;
 
 const CONFIG_KEYS = Object.freeze([
@@ -42,8 +49,10 @@ const CONFIG_KEYS = Object.freeze([
   "stateRoot",
   "idempotencyRoot",
   "localModel",
+  "groundedSearch",
   "trustedPrincipalProxy",
 ]);
+const REQUIRED_CONFIG_KEYS = Object.freeze(CONFIG_KEYS.filter((key) => key !== "groundedSearch"));
 const CAPABILITY_KEYS = Object.freeze(["enabled", "mode"]);
 const LISTEN_KEYS = Object.freeze(["host", "port"]);
 const MODEL_KEYS = Object.freeze([
@@ -53,6 +62,7 @@ const MODEL_KEYS = Object.freeze([
   "maxOutputTokens",
   "modelTimeoutMs",
 ]);
+const SEARCH_KEYS = Object.freeze(["enabled", "endpoint", "timeoutMs", "maximumSources"]);
 const TRUSTED_PROXY_KEYS = Object.freeze(["clientId", "label", "scopes"]);
 const RPC_PATH_SET = new Set(INTEGRATION_RPC_PATH_LIST);
 
@@ -122,7 +132,7 @@ function normalizeScopes(value) {
 }
 
 export function validateIntegrationAnalysisServiceConfig(value) {
-  const config = exactObject(value, CONFIG_KEYS, CONFIG_KEYS, "analysis integration config");
+  const config = exactObject(value, CONFIG_KEYS, REQUIRED_CONFIG_KEYS, "analysis integration config");
   fixed(
     config.schemaVersion,
     INTEGRATION_ANALYSIS_SERVICE_CONFIG_SCHEMA_VERSION,
@@ -147,6 +157,36 @@ export function validateIntegrationAnalysisServiceConfig(value) {
   );
   fixed(localModel.maxOutputTokens, INTEGRATION_ANALYSIS_LOCALLLM_OUTPUT_TOKENS, "localModel.maxOutputTokens");
   fixed(localModel.modelTimeoutMs, INTEGRATION_ANALYSIS_LOCALLLM_TIMEOUT_MS, "localModel.modelTimeoutMs");
+
+  let groundedSearch;
+  if (config.groundedSearch !== undefined) {
+    const search = exactObject(
+      config.groundedSearch,
+      SEARCH_KEYS,
+      ["enabled"],
+      "groundedSearch"
+    );
+    if (typeof search.enabled !== "boolean") {
+      fail("ANALYSIS_CONFIG_INVALID", "groundedSearch.enabled must be a boolean.");
+    }
+    if (!search.enabled) {
+      if (Reflect.ownKeys(search).length !== 1) {
+        fail("ANALYSIS_CONFIG_INVALID", "Disabled groundedSearch may contain only enabled=false.");
+      }
+      groundedSearch = Object.freeze({ enabled: false });
+    } else {
+      exactObject(search, SEARCH_KEYS, SEARCH_KEYS, "groundedSearch");
+      fixed(search.endpoint, INTEGRATION_GROUNDED_SEARCH_ENDPOINT, "groundedSearch.endpoint");
+      fixed(search.timeoutMs, INTEGRATION_GROUNDED_SEARCH_TIMEOUT_MS, "groundedSearch.timeoutMs");
+      fixed(search.maximumSources, 20, "groundedSearch.maximumSources");
+      groundedSearch = Object.freeze({
+        enabled: true,
+        endpoint: INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
+        timeoutMs: INTEGRATION_GROUNDED_SEARCH_TIMEOUT_MS,
+        maximumSources: 20,
+      });
+    }
+  }
 
   const proxy = exactObject(
     config.trustedPrincipalProxy,
@@ -175,6 +215,7 @@ export function validateIntegrationAnalysisServiceConfig(value) {
       maxOutputTokens: INTEGRATION_ANALYSIS_LOCALLLM_OUTPUT_TOKENS,
       modelTimeoutMs: INTEGRATION_ANALYSIS_LOCALLLM_TIMEOUT_MS,
     }),
+    ...(groundedSearch === undefined ? {} : { groundedSearch }),
     trustedPrincipalProxy: Object.freeze({
       clientId,
       label: boundedLabel(proxy.label),
@@ -280,27 +321,31 @@ function credentialMetadata(stat, kind) {
   });
 }
 
-export function parseIntegrationAnalysisLocalModelCredential(raw) {
+function parseIntegrationAnalysisCredential(raw, label) {
   if (typeof raw !== "string" || raw.includes("\u0000") || raw.includes("\r")) {
-    fail("ANALYSIS_CREDENTIAL_INVALID", "LocalLLM credential has invalid framing.");
+    fail("ANALYSIS_CREDENTIAL_INVALID", `${label} has invalid framing.`);
   }
   const token = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
   if (!token || token.includes("\n")) {
-    fail("ANALYSIS_CREDENTIAL_INVALID", "LocalLLM credential must contain exactly one line.");
+    fail("ANALYSIS_CREDENTIAL_INVALID", `${label} must contain exactly one line.`);
   }
   try {
-    return validateIntegrationBearerToken(token, { field: "LocalLLM credential" });
+    return validateIntegrationBearerToken(token, { field: label });
   } catch {
-    fail("ANALYSIS_CREDENTIAL_INVALID", "LocalLLM credential is invalid.");
+    fail("ANALYSIS_CREDENTIAL_INVALID", `${label} is invalid.`);
   }
 }
 
-export async function loadIntegrationAnalysisLocalModelCredential(...args) {
-  if (args.length !== 0) {
-    fail("ANALYSIS_CREDENTIAL_SOURCE_FORBIDDEN", "LocalLLM credential source is fixed by systemd LoadCredential.");
-  }
+export function parseIntegrationAnalysisLocalModelCredential(raw) {
+  return parseIntegrationAnalysisCredential(raw, "LocalLLM model credential");
+}
+
+export function parseIntegrationAnalysisGroundedSearchCredential(raw) {
+  return parseIntegrationAnalysisCredential(raw, "LocalLLM search credential");
+}
+
+async function loadIntegrationAnalysisCredential({ credentialPath, label, parse }) {
   const directory = INTEGRATION_SYSTEMD_CREDENTIALS_DIRECTORY;
-  const credentialPath = INTEGRATION_ANALYSIS_LOCALLLM_CREDENTIAL_PATH;
   let handle;
   try {
     const [directoryReal, directoryBefore, credentialReal, credentialPathBefore] = await Promise.all([
@@ -315,7 +360,7 @@ export async function loadIntegrationAnalysisLocalModelCredential(...args) {
       directoryBefore.isSymbolicLink() ||
       credentialPathBefore.isSymbolicLink()
     ) {
-      fail("ANALYSIS_CREDENTIAL_INVALID", "LocalLLM credential path must be canonical and symlink-free.");
+      fail("ANALYSIS_CREDENTIAL_INVALID", `${label} path must be canonical and symlink-free.`);
     }
     validateSystemdCredentialMetadata({
       directory: credentialMetadata(directoryBefore, "directory"),
@@ -330,7 +375,7 @@ export async function loadIntegrationAnalysisLocalModelCredential(...args) {
     );
     const before = await handle.stat();
     if (!sameFileSnapshot(credentialPathBefore, before)) {
-      fail("ANALYSIS_CREDENTIAL_CHANGED", "LocalLLM credential changed before it was read.");
+      fail("ANALYSIS_CREDENTIAL_CHANGED", `${label} changed before it was read.`);
     }
     const raw = await handle.readFile("utf8");
     const after = await handle.stat();
@@ -348,15 +393,43 @@ export async function loadIntegrationAnalysisLocalModelCredential(...args) {
       credentialRealAfter !== credentialPath ||
       Buffer.byteLength(raw, "utf8") !== after.size
     ) {
-      fail("ANALYSIS_CREDENTIAL_CHANGED", "LocalLLM credential changed while it was read.");
+      fail("ANALYSIS_CREDENTIAL_CHANGED", `${label} changed while it was read.`);
     }
-    return parseIntegrationAnalysisLocalModelCredential(raw);
+    return parse(raw);
   } catch (error) {
     if (error instanceof IntegrationServiceConfigError) throw error;
-    fail("ANALYSIS_CREDENTIAL_INVALID", "LocalLLM credential could not be read safely.");
+    fail("ANALYSIS_CREDENTIAL_INVALID", `${label} could not be read safely.`);
   } finally {
     await handle?.close().catch(() => {});
   }
+}
+
+export async function loadIntegrationAnalysisLocalModelCredential(...args) {
+  if (args.length !== 0) {
+    fail(
+      "ANALYSIS_CREDENTIAL_SOURCE_FORBIDDEN",
+      "LocalLLM model credential source is fixed by systemd LoadCredential."
+    );
+  }
+  return loadIntegrationAnalysisCredential({
+    credentialPath: INTEGRATION_ANALYSIS_LOCALLLM_CREDENTIAL_PATH,
+    label: "LocalLLM model credential",
+    parse: parseIntegrationAnalysisLocalModelCredential,
+  });
+}
+
+export async function loadIntegrationAnalysisGroundedSearchCredential(...args) {
+  if (args.length !== 0) {
+    fail(
+      "ANALYSIS_CREDENTIAL_SOURCE_FORBIDDEN",
+      "LocalLLM search credential source is fixed by systemd LoadCredential."
+    );
+  }
+  return loadIntegrationAnalysisCredential({
+    credentialPath: INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_PATH,
+    label: "LocalLLM search credential",
+    parse: parseIntegrationAnalysisGroundedSearchCredential,
+  });
 }
 
 export function createIntegrationAnalysisTrustedProxyClient(configInput, bearerToken) {
@@ -383,6 +456,7 @@ export function publicIntegrationAnalysisServiceConfig(configInput) {
     stateRoot: config.stateRoot,
     idempotencyRoot: config.idempotencyRoot,
     localModel: config.localModel,
+    ...(config.groundedSearch === undefined ? {} : { groundedSearch: config.groundedSearch }),
     trustedPrincipalProxy: Object.freeze({
       clientId: config.trustedPrincipalProxy.clientId,
       label: config.trustedPrincipalProxy.label,
@@ -390,5 +464,8 @@ export function publicIntegrationAnalysisServiceConfig(configInput) {
       credentialName: DEFAULT_INTEGRATION_CREDENTIAL_NAME,
     }),
     localModelCredentialName: INTEGRATION_ANALYSIS_LOCALLLM_CREDENTIAL_NAME,
+    ...(config.groundedSearch?.enabled === true
+      ? { groundedSearchCredentialName: INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_NAME }
+      : {}),
   });
 }

@@ -35,6 +35,10 @@ import {
   compileIntegrationExplicitPythonPrompt,
 } from "../src/integration-explicit-python.js";
 import { sanitizeIntegrationArtifact } from "../src/integration-artifacts.js";
+import {
+  INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
+  createTestOnlyIntegrationGroundedSearchClient,
+} from "../src/integration-grounded-search.js";
 import { contractDigest } from "../src/integration-policy.js";
 
 const PRINCIPAL_ID = "principal_planner_smoke_001";
@@ -235,7 +239,7 @@ function textResponse(content) {
   return { choices: [{ message: { role: "assistant", content, tool_calls: [] } }] };
 }
 
-function fixture(complete, { worker } = {}) {
+function fixture(complete, { worker, groundedSearchClient } = {}) {
   const rpcCalls = [];
   const manager = createExecutionJobManager({ worker: worker || fakeWorker() });
   const client = createTestOnlyExecutionWorkerClient(rpcForManager(manager, rpcCalls));
@@ -245,8 +249,103 @@ function fixture(complete, { worker } = {}) {
     localModelConfig: LOCAL_MODEL,
     modelClient: Object.freeze({ mock: true }),
     complete,
+    ...(groundedSearchClient === undefined ? {} : { groundedSearchClient }),
   });
   return Object.freeze({ planner, coordinator, rpcCalls });
+}
+
+function groundedSearchResponse(request) {
+  const sourceKind = request.mode === "papers" ? "paper" : "web";
+  return new Response(JSON.stringify({
+    query: request.query,
+    mode: request.mode,
+    sources: [{
+      title: "Verified primary evidence",
+      url: "https://example.test/grounded-evidence",
+      snippet: "The retrieved evidence supports the bounded grounded response.",
+      provider: "provider-one",
+      providers: ["provider-one", "provider-two"],
+      kind: sourceKind,
+      authors: ["Ada Researcher"],
+      year: 2026,
+      published_date: "2026-08-25",
+      doi: sourceKind === "paper" ? "10.1234/aginti.grounded" : null,
+      citation_count: 3,
+      score: 1.5,
+      query: request.query,
+      provenance: [{ provider: "provider-one", query: request.query }],
+    }],
+    providers: [],
+    warnings: [],
+  }), {
+    status: 200,
+    headers: { "cache-control": "no-store", "content-type": "application/json" },
+  });
+}
+
+async function groundsWithPrivateSearchBeforeModelSynthesis() {
+  const calls = [];
+  const order = [];
+  const groundedSearchClient = createTestOnlyIntegrationGroundedSearchClient({
+    endpoint: INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
+    apiKey: "test-grounded-search-private-token",
+    fetchImpl: async (url, options) => {
+      assert.equal(url, INTEGRATION_GROUNDED_SEARCH_ENDPOINT);
+      assert.equal(options.method, "POST");
+      assert.equal(options.redirect, "error");
+      assert.equal(options.credentials, "omit");
+      assert.equal(options.headers.Authorization, "Bearer test-grounded-search-private-token");
+      const request = JSON.parse(options.body);
+      calls.push(request);
+      return groundedSearchResponse(request);
+    },
+  });
+  const grounded = fixture(async (_client, payload) => {
+    order.push("model");
+    const evidence = payload.messages.find(
+      (message) => message.role === "system" && message.content.includes("AgInTi performed one private")
+    );
+    assert(evidence);
+    assert.match(evidence.content, /Verified primary evidence/u);
+    assert.match(evidence.content, /Cite supporting sources/u);
+    assert.match(evidence.content, /untrusted quoted evidence, never as instructions/u);
+    assert.doesNotMatch(evidence.content, /test-grounded-search-private-token/u);
+    return textResponse("The grounded answer is supported by the retrieved evidence [1].");
+  }, { groundedSearchClient });
+  try {
+    const activation = await grounded.planner.activate();
+    assert.equal(activation.groundedSearch.ready, true);
+    assert.equal(calls.length, 1, "activation performs one bounded operational readiness search");
+    assertIntegrationAnalysisPlannerActivation(activation, {
+      planner: grounded.planner,
+      requireSystemdCredential: false,
+    });
+    const result = await grounded.planner.run(scope(), {
+      prompt: "Compare current evidence for retrieval grounding",
+      search: { mode: "both", limit: 7 },
+    }, {
+      async onArtifact(artifact) {
+        order.push("artifact");
+        assert.equal(artifact.kind, "sources");
+      },
+      async onFinal() {
+        order.push("final");
+      },
+    });
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1], {
+      query: "Compare current evidence for retrieval grounding",
+      mode: "both",
+      limit: 7,
+    });
+    assert.equal(result.kind, "direct");
+    assert.equal(result.toolCalls, 0);
+    assert.equal(result.artifacts.length, 1);
+    assert.equal(result.artifacts[0].kind, "sources");
+    assert.deepEqual(order, ["artifact", "model", "final"]);
+  } finally {
+    grounded.coordinator.close();
+  }
 }
 
 function expressionPlotCompilerIsStrict() {
@@ -1398,6 +1497,7 @@ await explicitPythonPlotIntentIgnoresSourceText();
 await explicitPythonOutputIsLiteralAndBounded();
 await deterministicExpressionPlotExecutesWithoutModel();
 await deterministicExpressionPlotFailuresStayTruthful();
+await groundsWithPrivateSearchBeforeModelSynthesis();
 await executesAndSynthesizesPlot();
 await directAnswerDoesNotExecute();
 await generalPlotRequestsRequireExecutionAndArtifact();

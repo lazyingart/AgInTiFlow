@@ -4,6 +4,7 @@ import { types as utilTypes } from "node:util";
 import {
   DEFAULT_INTEGRATION_ANALYSIS_CONFIG_PATH,
   createIntegrationAnalysisTrustedProxyClient,
+  loadIntegrationAnalysisGroundedSearchCredential,
   loadIntegrationAnalysisLocalModelCredential,
   loadIntegrationAnalysisServiceConfig,
   publicIntegrationAnalysisServiceConfig,
@@ -20,8 +21,24 @@ const FORBIDDEN_SECRET_ENVIRONMENT = Object.freeze([
   "AGINTI_INTEGRATION_BEARER_TOKEN_FILE",
   "AGINTI_INTEGRATION_TOKEN_FILE",
   "AGINTI_LOCALLLM_API_KEY",
+  "AGINTI_LOCALLLM_SEARCH_API_KEY",
+  "AGINTI_LOCALLLM_SEARCH_API_KEY_FILE",
+  "AGINTI_LOCALLLM_SEARCH_TOKEN",
+  "AGINTI_LOCALLLM_SEARCH_TOKEN_FILE",
+  "AGINTI_GROUNDED_SEARCH_API_KEY",
+  "AGINTI_GROUNDED_SEARCH_API_KEY_FILE",
+  "AGINTI_GROUNDED_SEARCH_TOKEN",
+  "AGINTI_GROUNDED_SEARCH_TOKEN_FILE",
   "LOCALLLM_API_KEY",
+  "LOCALLLM_SEARCH_API_KEY",
+  "LOCALLLM_SEARCH_API_KEY_FILE",
+  "LOCALLLM_SEARCH_TOKEN",
+  "LOCALLLM_SEARCH_TOKEN_FILE",
   "LOCAL_LLM_API_KEY",
+  "LOCAL_LLM_SEARCH_API_KEY",
+  "LOCAL_LLM_SEARCH_API_KEY_FILE",
+  "LOCAL_LLM_SEARCH_TOKEN",
+  "LOCAL_LLM_SEARCH_TOKEN_FILE",
 ]);
 const MAIN_OPTION_KEYS = Object.freeze(["env", "filePolicy", "processLike", "stdout", "waitForSignal"]);
 const FILE_POLICY_KEYS = Object.freeze(["allowRootOwner", "ownerUid"]);
@@ -109,6 +126,7 @@ function summary(config, status) {
     stateRoot: publicConfig.stateRoot,
     idempotencyRoot: publicConfig.idempotencyRoot,
     localModel: publicConfig.localModel,
+    ...(publicConfig.groundedSearch === undefined ? {} : { groundedSearch: publicConfig.groundedSearch }),
     trustedPrincipalProxy: publicConfig.trustedPrincipalProxy,
   });
 }
@@ -136,9 +154,12 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   const env = options.env || process.env;
   assertCredentialEnvironment(env);
   const config = await loadIntegrationAnalysisServiceConfig(parsed.configPath, options.filePolicy || {});
-  const [proxyToken, localModelApiKey] = await Promise.all([
+  const [proxyToken, localModelApiKey, groundedSearchApiKey] = await Promise.all([
     loadTrustedPrincipalProxyCredential(),
     loadIntegrationAnalysisLocalModelCredential(),
+    config.groundedSearch?.enabled === true
+      ? loadIntegrationAnalysisGroundedSearchCredential()
+      : Promise.resolve(undefined),
   ]);
   const trustedPrincipalProxyClient = createIntegrationAnalysisTrustedProxyClient(config, proxyToken);
   const stdout = options.stdout || process.stdout;
@@ -152,6 +173,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     config,
     trustedPrincipalProxyClient,
     localModelApiKey,
+    ...(groundedSearchApiKey === undefined ? {} : { groundedSearchApiKey }),
   });
   await integrationServer.start();
   let handedOff = false;

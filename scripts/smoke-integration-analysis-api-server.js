@@ -17,6 +17,7 @@ import {
   DEFAULT_INTEGRATION_ANALYSIS_SERVICE_STATE_ROOT,
   INTEGRATION_ANALYSIS_LISTEN_HOST,
   INTEGRATION_ANALYSIS_LISTEN_PORT,
+  INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_NAME,
   INTEGRATION_ANALYSIS_LOCALLLM_BASE_URL,
   INTEGRATION_ANALYSIS_LOCALLLM_CONTEXT_TOKENS,
   INTEGRATION_ANALYSIS_LOCALLLM_MODEL,
@@ -26,7 +27,9 @@ import {
   INTEGRATION_ANALYSIS_TRUSTED_CLIENT_ID,
   createIntegrationAnalysisTrustedProxyClient,
   loadIntegrationAnalysisServiceConfig,
+  parseIntegrationAnalysisGroundedSearchCredential,
   parseIntegrationAnalysisLocalModelCredential,
+  publicIntegrationAnalysisServiceConfig,
   validateIntegrationAnalysisServiceConfig,
 } from "../src/integration-analysis-config.js";
 import {
@@ -34,7 +37,12 @@ import {
   createIntegrationAnalysisServer,
   createTestOnlyIntegrationAnalysisServerLifecycle,
   integrationAnalysisListenOptions,
+  composeProductionIntegrationAnalysisServer,
 } from "../src/integration-analysis-server.js";
+import {
+  INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
+  INTEGRATION_GROUNDED_SEARCH_TIMEOUT_MS,
+} from "../src/integration-grounded-search.js";
 import { parseIntegrationAnalysisCliArguments } from "../src/integration-analysis-cli.js";
 import { INTEGRATION_RPC_PATH_LIST, INTEGRATION_RPC_PATHS, buildFixedIntegrationPolicy, contractDigest } from "../src/integration-policy.js";
 
@@ -293,6 +301,53 @@ assert.deepEqual(parseIntegrationAnalysisCliArguments(["doctor"]), {
   configPath: "/etc/agintiflow/integration-analysis.json",
 });
 assert.equal(parseIntegrationAnalysisLocalModelCredential(`${TOKEN}\n`), TOKEN);
+assert.equal(parseIntegrationAnalysisGroundedSearchCredential(`${TOKEN}\n`), TOKEN);
+const disabledSearchConfig = validateIntegrationAnalysisServiceConfig(validConfig({
+  groundedSearch: { enabled: false },
+}));
+assert.equal(disabledSearchConfig.groundedSearch.enabled, false);
+assert.equal(
+  Object.prototype.hasOwnProperty.call(publicIntegrationAnalysisServiceConfig(disabledSearchConfig), "groundedSearchCredentialName"),
+  false
+);
+const enabledSearchConfig = validateIntegrationAnalysisServiceConfig(validConfig({
+  groundedSearch: {
+    enabled: true,
+    endpoint: INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
+    timeoutMs: INTEGRATION_GROUNDED_SEARCH_TIMEOUT_MS,
+    maximumSources: 20,
+  },
+}));
+assert.equal(
+  publicIntegrationAnalysisServiceConfig(enabledSearchConfig).groundedSearchCredentialName,
+  INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_NAME
+);
+await assert.rejects(
+  () => composeProductionIntegrationAnalysisServer({
+    config: enabledSearchConfig,
+    trustedPrincipalProxyClient: {},
+    localModelApiKey: TOKEN,
+  }),
+  (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
+);
+await assert.rejects(
+  () => composeProductionIntegrationAnalysisServer({
+    config: enabledSearchConfig,
+    trustedPrincipalProxyClient: {},
+    localModelApiKey: TOKEN,
+    groundedSearchApiKey: TOKEN,
+  }),
+  (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
+);
+await assert.rejects(
+  () => composeProductionIntegrationAnalysisServer({
+    config: disabledSearchConfig,
+    trustedPrincipalProxyClient: {},
+    localModelApiKey: TOKEN,
+    groundedSearchApiKey: TOKEN,
+  }),
+  (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
+);
 
 const serverCompositionSource = await fs.readFile(
   new URL("../src/integration-analysis-server.js", import.meta.url),
@@ -312,6 +367,11 @@ assert.doesNotMatch(
   serverCompositionSource,
   /activationProof:\s*startupProof/u,
   "production sessions must not accept a detached readiness proof"
+);
+assert.match(
+  serverCompositionSource,
+  /groundedSearchConfig:[\s\S]*?apiKey:\s*options\.groundedSearchApiKey/u,
+  "grounded search must use its distinct systemd credential"
 );
 
 const configRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-analysis-config-"));

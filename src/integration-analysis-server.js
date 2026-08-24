@@ -393,11 +393,27 @@ export function createIntegrationAnalysisServer(options = {}) {
 export async function composeProductionIntegrationAnalysisServer(options = {}) {
   exactOptions(
     options,
-    ["config", "trustedPrincipalProxyClient", "localModelApiKey"],
+    ["config", "trustedPrincipalProxyClient", "localModelApiKey", "groundedSearchApiKey"],
     ["config", "trustedPrincipalProxyClient", "localModelApiKey"],
     "analysis production composition options"
   );
   const config = validateIntegrationAnalysisServiceConfig(options.config);
+  const searchEnabled = config.groundedSearch?.enabled === true;
+  const searchCredentialPresent = Object.prototype.hasOwnProperty.call(options, "groundedSearchApiKey");
+  if (searchEnabled !== searchCredentialPresent) {
+    fail(
+      "ANALYSIS_CREDENTIAL_INVALID",
+      searchEnabled
+        ? "The enabled private grounded search route requires its distinct systemd credential."
+        : "A grounded search credential is forbidden while grounded search is disabled."
+    );
+  }
+  if (searchEnabled && options.groundedSearchApiKey === options.localModelApiKey) {
+    fail(
+      "ANALYSIS_CREDENTIAL_INVALID",
+      "Grounded search and LocalLLM model access require distinct systemd credentials."
+    );
+  }
   let coordinator;
   let sessionService;
   let server;
@@ -409,6 +425,16 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
         ...config.localModel,
         apiKey: options.localModelApiKey,
       },
+      ...(searchEnabled
+        ? {
+            groundedSearchConfig: {
+              endpoint: config.groundedSearch.endpoint,
+              timeoutMs: config.groundedSearch.timeoutMs,
+              maximumSources: config.groundedSearch.maximumSources,
+              apiKey: options.groundedSearchApiKey,
+            },
+          }
+        : {}),
     });
     const plannerActivation = await planner.activate();
     const startupProof = plannerActivation.readinessProof;

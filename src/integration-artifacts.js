@@ -1,6 +1,10 @@
+import { types as utilTypes } from "node:util";
+
 import {
   AGENT_WORKER_SCHEMA_VERSION,
   INTEGRATION_ARTIFACT_KINDS,
+  INTEGRATION_MAXIMUM_SEARCH_SOURCES,
+  INTEGRATION_SEARCH_ARTIFACT_KIND,
   IntegrationValidationError,
   contractDigest,
   integrationBoundedText,
@@ -14,6 +18,8 @@ export const MAX_INTEGRATION_PUBLIC_ARTIFACT_BYTES = 48 * 1024;
 
 const PLOT_TYPES = new Set(["line", "bar", "scatter", "area"]);
 const MAX_PLOT_MAGNITUDE = Number.MAX_SAFE_INTEGER;
+const CREDENTIAL_QUERY_NAME =
+  /(?:(?:^|[_-])(?:access[_-]?token|api[_-]?key|auth(?:orization)?|credential|key|password|secret|signature|token)(?:$|[_-])|^(?:(?:aws|google)?accesskeyid|googleaccessid|sig)$)/iu;
 const ABSOLUTE_PATH_PATTERN =
   /(?:^|[\s("'`])(?:\/(?:workspace|home|users|root|etc|usr|var|opt|srv|run|tmp|proc|sys|dev|mnt|media|aginti-(?:home|cache|env))(?:\/[^\s"'`<>)\]]*)?|[A-Za-z]:\\[^\s"'`<>)\]]*)/giu;
 
@@ -56,6 +62,38 @@ function validateLabel(value, label, maximum = 120) {
   const text = integrationBoundedText(redactPublicText(value), label, maximum, { minimum: 1, presentational: true }).trim();
   if (!text) integrationInvalid(`${label} must contain a non-whitespace character`);
   return text;
+}
+
+function denseDataArray(value, label, { minimum = 0, maximum } = {}) {
+  if (
+    !Array.isArray(value) ||
+    utilTypes.isProxy(value) ||
+    Object.getPrototypeOf(value) !== Array.prototype ||
+    value.length < minimum ||
+    value.length > maximum
+  ) {
+    integrationInvalid(`${label} must contain ${minimum}-${maximum} entries`);
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (key === "length") continue;
+    const descriptor = descriptors[key];
+    if (
+      typeof key !== "string" ||
+      !/^(?:0|[1-9][0-9]*)$/u.test(key) ||
+      Number(key) >= value.length ||
+      !descriptor.enumerable ||
+      !Object.prototype.hasOwnProperty.call(descriptor, "value")
+    ) {
+      integrationInvalid(`${label} must contain only dense enumerable data entries`);
+    }
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.prototype.hasOwnProperty.call(descriptors, String(index))) {
+      integrationInvalid(`${label} may not contain sparse entries`);
+    }
+  }
+  return value;
 }
 
 export function validateIntegrationPlotSpec(value) {
@@ -180,9 +218,112 @@ export function validateIntegrationMarkdownSpec(value) {
   return Object.freeze({ schemaVersion: AGENT_WORKER_SCHEMA_VERSION, markdown });
 }
 
+function validateSourceUrl(value, label) {
+  const raw = integrationBoundedText(value, label, 2_048, { minimum: 1 });
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    integrationInvalid(`${label} must be an HTTPS URL`);
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    !parsed.hostname ||
+    parsed.username ||
+    parsed.password ||
+    (parsed.port && parsed.port !== "443") ||
+    parsed.hash
+  ) {
+    integrationInvalid(`${label} must be a credential-free HTTPS URL without a fragment`);
+  }
+  for (const [key] of parsed.searchParams) {
+    if (CREDENTIAL_QUERY_NAME.test(key)) {
+      integrationInvalid(`${label} may not contain credential query fields`);
+    }
+  }
+  return parsed.href;
+}
+
+function validateSourceDate(value, label) {
+  if (value === null) return null;
+  const text = integrationBoundedText(value, label, 10, { minimum: 10 });
+  const parsed = new Date(`${text}T00:00:00.000Z`);
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/u.test(text) ||
+    !Number.isFinite(parsed.getTime()) ||
+    parsed.toISOString().slice(0, 10) !== text
+  ) {
+    integrationInvalid(`${label} must be a canonical calendar date or null`);
+  }
+  return text;
+}
+
+function validateSourceDoi(value, label) {
+  if (value === null) return null;
+  const text = integrationBoundedText(value, label, 300, { minimum: 7, presentational: true }).trim();
+  if (!/^10\.\d{4,9}\/[A-Za-z0-9][A-Za-z0-9._;()/:+-]*$/u.test(text)) {
+    integrationInvalid(`${label} must be a DOI or null`);
+  }
+  return text;
+}
+
+export function validateIntegrationSourcesSpec(value) {
+  const spec = integrationExactKeys(value, ["schemaVersion", "sources"], "sources spec", [
+    "schemaVersion",
+    "sources",
+  ]);
+  if (spec.schemaVersion !== AGENT_WORKER_SCHEMA_VERSION) {
+    integrationInvalid("sources spec schemaVersion must be 1");
+  }
+  const sourceItems = denseDataArray(spec.sources, "sources", {
+    minimum: 1,
+    maximum: INTEGRATION_MAXIMUM_SEARCH_SOURCES,
+  });
+  const sources = sourceItems.map((source, offset) => {
+    const item = integrationExactKeys(
+      source,
+      ["index", "title", "url", "snippet", "providers", "kind", "publishedDate", "doi"],
+      `sources[${offset}]`,
+      ["index", "title", "url", "snippet", "providers", "kind", "publishedDate", "doi"]
+    );
+    if (item.index !== offset + 1) {
+      integrationInvalid(`sources[${offset}].index must match its one-based position`);
+    }
+    const providerItems = denseDataArray(item.providers, `sources[${offset}].providers`, {
+      minimum: 1,
+      maximum: 12,
+    });
+    const providers = providerItems.map((provider, index) =>
+      validateLabel(provider, `sources[${offset}].providers[${index}]`, 100)
+    );
+    if (new Set(providers).size !== providers.length) {
+      integrationInvalid(`sources[${offset}].providers must be unique`);
+    }
+    if (item.kind !== "web" && item.kind !== "paper") {
+      integrationInvalid(`sources[${offset}].kind must be web or paper`);
+    }
+    return Object.freeze({
+      index: item.index,
+      title: validateLabel(item.title, `sources[${offset}].title`, 500),
+      url: validateSourceUrl(item.url, `sources[${offset}].url`),
+      snippet: integrationBoundedText(
+        redactPublicText(item.snippet),
+        `sources[${offset}].snippet`,
+        4_000,
+        { presentational: true }
+      ).trim(),
+      providers: Object.freeze(providers),
+      kind: item.kind,
+      publishedDate: validateSourceDate(item.publishedDate, `sources[${offset}].publishedDate`),
+      doi: validateSourceDoi(item.doi, `sources[${offset}].doi`),
+    });
+  });
+  return Object.freeze({ schemaVersion: AGENT_WORKER_SCHEMA_VERSION, sources: Object.freeze(sources) });
+}
+
 function normalizeArtifactKind(input = {}) {
   const kind = String(input.kind || input.type || "").trim();
-  if (INTEGRATION_ARTIFACT_KINDS.includes(kind)) return kind;
+  if (INTEGRATION_ARTIFACT_KINDS.includes(kind) || kind === INTEGRATION_SEARCH_ARTIFACT_KIND) return kind;
   if (kind === "plot.v1") return "plot";
   if (kind === "table.v1") return "table";
   if (kind === "markdown.v1" || kind === "md") return "markdown";
@@ -210,24 +351,35 @@ function normalizeArtifactSpec(kind, input = {}) {
       ...(input.plot || input),
     };
   }
+  if (kind === INTEGRATION_SEARCH_ARTIFACT_KIND) {
+    return {
+      schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
+      sources: input.sources || [],
+    };
+  }
   return {};
 }
 
 export function sanitizeIntegrationArtifact(input = {}) {
   const artifact = integrationExactKeys(
     input,
-    ["id", "title", "kind", "type", "spec", "markdown", "content", "columns", "rows", "table", "plot"],
+    ["id", "title", "kind", "type", "spec", "markdown", "content", "columns", "rows", "table", "plot", "sources"],
     "artifact"
   );
   const kind = normalizeArtifactKind(artifact);
   if (!kind) integrationInvalid("artifact kind is unsupported");
-  const title = validateLabel(artifact.title || (kind === "markdown" ? "Markdown" : "Artifact"), "artifact title");
+  const title = validateLabel(
+    artifact.title || (kind === "markdown" ? "Markdown" : kind === INTEGRATION_SEARCH_ARTIFACT_KIND ? "Grounded sources" : "Artifact"),
+    "artifact title"
+  );
   const spec =
     kind === "plot"
       ? validateIntegrationPlotSpec(normalizeArtifactSpec(kind, artifact))
       : kind === "table"
         ? validateIntegrationTableSpec(normalizeArtifactSpec(kind, artifact))
-        : validateIntegrationMarkdownSpec(normalizeArtifactSpec(kind, artifact));
+        : kind === "markdown"
+          ? validateIntegrationMarkdownSpec(normalizeArtifactSpec(kind, artifact))
+          : validateIntegrationSourcesSpec(normalizeArtifactSpec(kind, artifact));
   const id = validateIntegrationArtifactId(artifact.id || stableArtifactId({ kind, title, spec }));
   const normalized = { id, title, kind, spec };
   if (Buffer.byteLength(JSON.stringify(normalized)) > MAX_INTEGRATION_PUBLIC_ARTIFACT_BYTES) {

@@ -30,6 +30,9 @@ export const INTEGRATION_RPC_PATHS = Object.freeze({
 
 export const INTEGRATION_RPC_PATH_LIST = Object.freeze(Object.values(INTEGRATION_RPC_PATHS));
 export const INTEGRATION_ARTIFACT_KINDS = Object.freeze(["plot", "table", "markdown"]);
+export const INTEGRATION_SEARCH_ARTIFACT_KIND = "sources";
+export const INTEGRATION_SEARCH_MODES = Object.freeze(["web", "papers", "both"]);
+export const INTEGRATION_MAXIMUM_SEARCH_SOURCES = 20;
 export const INTEGRATION_RUN_STATUSES = Object.freeze(["starting", "running", "completed", "failed", "cancelled"]);
 export const INTEGRATION_THREAD_STATUSES = Object.freeze(["idle", "running", "deleting"]);
 export const REQUIRED_INTEGRATION_ISOLATION_ASSERTIONS = Object.freeze([
@@ -301,10 +304,27 @@ function validateTitle(value, { optional = false } = {}) {
 
 function validateInput(value, { optional = false } = {}) {
   if (optional && value === undefined) return undefined;
-  const input = integrationExactKeys(value, ["text"], "input", ["text"]);
+  const input = integrationExactKeys(value, ["text", "search"], "input", ["text"]);
   const text = integrationBoundedText(input.text, "input.text", 32_000, { minimum: 1 }).trim();
   if (!text) integrationInvalid("input.text must contain a non-whitespace character");
-  return Object.freeze({ text });
+  return Object.freeze({
+    text,
+    ...(input.search === undefined ? {} : { search: validateIntegrationSearch(input.search) }),
+  });
+}
+
+export function validateIntegrationSearch(value) {
+  const search = integrationExactKeys(value, ["mode", "limit"], "input.search", ["mode", "limit"]);
+  if (!INTEGRATION_SEARCH_MODES.includes(search.mode)) {
+    integrationInvalid("input.search.mode must be web, papers, or both");
+  }
+  return Object.freeze({
+    mode: search.mode,
+    limit: integrationBoundedInteger(search.limit, "input.search.limit", {
+      minimum: 1,
+      maximum: INTEGRATION_MAXIMUM_SEARCH_SOURCES,
+    }),
+  });
 }
 
 export function sanitizeIntegrationRequest(pathname, value = {}) {
@@ -683,7 +703,11 @@ export function validateIntegrationIsolationAttestation(value) {
   });
 }
 
-export function integrationCapabilitiesResponse({ enabled = false, cancel = false, resume = false } = {}) {
+export function integrationCapabilitiesResponse({ enabled = false, cancel = false, resume = false, search = false } = {}) {
+  const searchEnabled = Boolean(enabled && search);
+  const artifactKinds = searchEnabled
+    ? [...INTEGRATION_ARTIFACT_KINDS, INTEGRATION_SEARCH_ARTIFACT_KIND]
+    : [...INTEGRATION_ARTIFACT_KINDS];
   return Object.freeze({
     schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
     enabled: Boolean(enabled),
@@ -695,8 +719,17 @@ export function integrationCapabilitiesResponse({ enabled = false, cancel = fals
       retry: false,
     }),
     attachments: Object.freeze({ enabled: false }),
+    ...(searchEnabled
+      ? {
+          search: Object.freeze({
+            enabled: true,
+            modes: Object.freeze([...INTEGRATION_SEARCH_MODES]),
+            maximumSources: INTEGRATION_MAXIMUM_SEARCH_SOURCES,
+          }),
+        }
+      : {}),
     artifacts: Object.freeze({
-      kinds: Object.freeze([...INTEGRATION_ARTIFACT_KINDS]),
+      kinds: Object.freeze(artifactKinds),
       schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
     }),
   });

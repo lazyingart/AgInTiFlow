@@ -13,13 +13,17 @@ import {
   AGENT_WORKER_SCHEMA_VERSION,
   INTEGRATION_API_PREFIX,
   INTEGRATION_ARTIFACT_KINDS,
+  INTEGRATION_MAXIMUM_SEARCH_SOURCES,
   INTEGRATION_RPC_PATHS,
+  INTEGRATION_SEARCH_ARTIFACT_KIND,
+  INTEGRATION_SEARCH_MODES,
   INTEGRATION_RPC_PATH_LIST,
   INTEGRATION_RUN_STATUSES,
   INTEGRATION_THREAD_STATUSES,
   IntegrationValidationError,
   assertFixedIntegrationPolicy,
   buildFixedIntegrationPolicy,
+  canonicalJson,
   contractDigest,
   integrationBoundedInteger,
   integrationBoundedText,
@@ -665,8 +669,8 @@ function assertAnalysisMutationRecoveryAuthority(value) {
   return assertCanonicalProofDigest(proof, "analysis mutation recovery authority");
 }
 
-function assertAnalysisSessionAuthority(value, startupProof, mutationRecoveryAuthority) {
-  const keys = [
+function assertAnalysisSessionAuthority(value, startupProof, mutationRecoveryAuthority, { searchExpected = false } = {}) {
+  const baseKeys = [
     "schemaVersion",
     "owner",
     "authority",
@@ -723,6 +727,13 @@ function assertAnalysisSessionAuthority(value, startupProof, mutationRecoveryAut
     "limitsDigest",
     "digest",
   ];
+  const searchKeys = [
+    "groundedSearchReady",
+    "groundedSearchActivationDigest",
+    "groundedSearchIntentPersistedBeforeLaunch",
+    "groundedSearchReplayIsReadOnly",
+  ];
+  const keys = searchExpected ? [...baseKeys, ...searchKeys] : baseKeys;
   const proof = exactDataObject(value, keys, keys, "analysis session authority", { frozen: true });
   if (
     proof.schemaVersion !== INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION ||
@@ -767,6 +778,12 @@ function assertAnalysisSessionAuthority(value, startupProof, mutationRecoveryAut
     proof.artifactBeforeTerminal !== true ||
     proof.exactCancellation !== true ||
     proof.interruptedRunRecovery !== true ||
+    (searchExpected && (
+      proof.groundedSearchReady !== true ||
+      proof.groundedSearchActivationDigest === ZERO_DIGEST ||
+      proof.groundedSearchIntentPersistedBeforeLaunch !== true ||
+      proof.groundedSearchReplayIsReadOnly !== true
+    )) ||
     proof.durableMutationReceipts !== true ||
     proof.mutationRecoveryAuthorityDigest !== mutationRecoveryAuthority.digest ||
     proof.rawExecutionSourcePersisted !== false ||
@@ -783,6 +800,7 @@ function assertAnalysisSessionAuthority(value, startupProof, mutationRecoveryAut
     "stateRootDigest",
     "limitsDigest",
     "mutationRecoveryAuthorityDigest",
+    ...(searchExpected ? ["groundedSearchActivationDigest"] : []),
   ]) {
     digestField(proof[key], `analysis session authority ${key}`);
   }
@@ -875,7 +893,7 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
   const serviceCapabilities = await sessionService.getIntegrationCapabilities({ policy });
   exactDataObject(
     serviceCapabilities,
-    ["analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume"],
+    ["analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume", "search"],
     ["analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume"],
     "analysis service capabilities",
     { frozen: true }
@@ -883,13 +901,17 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
   if (serviceCapabilities.cancel !== true || serviceCapabilities.resume !== true) {
     throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis actions are unavailable.", { status: 503 });
   }
+  if (serviceCapabilities.search !== undefined && serviceCapabilities.search !== true) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis search capability is invalid.", { status: 503 });
+  }
   const mutationRecoveryAuthority = assertAnalysisMutationRecoveryAuthority(
     serviceCapabilities.mutationRecoveryAuthority
   );
   const sessionAuthority = assertAnalysisSessionAuthority(
     serviceCapabilities.analysisSessionAuthority,
     startupProof,
-    mutationRecoveryAuthority
+    mutationRecoveryAuthority,
+    { searchExpected: serviceCapabilities.search === true }
   );
   const stateRootDigest = fixedStorageRootDigest(options.stateRoot, "stateRoot", "analysis state root");
   const idempotencyRootDigest = fixedStorageRootDigest(
@@ -1067,6 +1089,7 @@ function activatedCapabilitiesForService(options, activationMetadata) {
     enabled: true,
     cancel: metadata.serviceCapabilities.cancel,
     resume: metadata.serviceCapabilities.resume,
+    search: metadata.serviceCapabilities.search === true,
   });
 }
 
@@ -1380,7 +1403,7 @@ export function createActivatedIntegrationAnalysisRouter(options = {}) {
 }
 
 function assertPublicCapabilityResponse(value = {}) {
-  const response = integrationExactKeys(value, ["schemaVersion", "enabled", "agent", "model", "actions", "attachments", "artifacts"], "agent capabilities", [
+  const response = integrationExactKeys(value, ["schemaVersion", "enabled", "agent", "model", "actions", "attachments", "search", "artifacts"], "agent capabilities", [
     "schemaVersion",
     "enabled",
     "agent",
@@ -1396,18 +1419,39 @@ function assertPublicCapabilityResponse(value = {}) {
   const model = integrationExactKeys(response.model, ["label"], "agent capabilities model", ["label"]);
   const actions = integrationExactKeys(response.actions, ["cancel", "resume", "retry"], "agent capabilities actions", ["cancel", "resume", "retry"]);
   const attachments = integrationExactKeys(response.attachments, ["enabled"], "agent capabilities attachments", ["enabled"]);
+  const search = response.search === undefined
+    ? { enabled: false, modes: [], maximumSources: 0 }
+    : integrationExactKeys(
+        response.search,
+        ["enabled", "modes", "maximumSources"],
+        "agent capabilities search",
+        ["enabled", "modes", "maximumSources"]
+      );
   const artifacts = integrationExactKeys(response.artifacts, ["kinds", "schemaVersion"], "agent capabilities artifacts", ["kinds", "schemaVersion"]);
   if (agent.kind !== "aginti" || agent.label !== "AgInTi Agent") integrationInvalid("agent authority must be AgInTi");
   if (model.label !== "LocalLLM") integrationInvalid("agent inference label must be LocalLLM");
-  if (![actions.cancel, actions.resume, actions.retry, attachments.enabled].every((flag) => typeof flag === "boolean")) {
+  if (![actions.cancel, actions.resume, actions.retry, attachments.enabled, search.enabled].every((flag) => typeof flag === "boolean")) {
     integrationInvalid("agent capability flags must be booleans");
   }
   if (actions.retry !== false || attachments.enabled !== false) integrationInvalid("retry and attachments are not enabled in protocol v1");
+  const searchModes = search.enabled ? [...INTEGRATION_SEARCH_MODES] : [];
+  if (
+    !Array.isArray(search.modes) ||
+    canonicalJson(search.modes) !== canonicalJson(searchModes) ||
+    (search.enabled
+      ? search.maximumSources !== INTEGRATION_MAXIMUM_SEARCH_SOURCES
+      : search.maximumSources !== 0) ||
+    (search.enabled && !response.enabled)
+  ) {
+    integrationInvalid("agent search capabilities are invalid");
+  }
+  const artifactKinds = search.enabled
+    ? [...INTEGRATION_ARTIFACT_KINDS, INTEGRATION_SEARCH_ARTIFACT_KIND]
+    : [...INTEGRATION_ARTIFACT_KINDS];
   if (
     artifacts.schemaVersion !== AGENT_WORKER_SCHEMA_VERSION ||
     !Array.isArray(artifacts.kinds) ||
-    artifacts.kinds.length !== INTEGRATION_ARTIFACT_KINDS.length ||
-    artifacts.kinds.some((kind, index) => kind !== INTEGRATION_ARTIFACT_KINDS[index])
+    canonicalJson(artifacts.kinds) !== canonicalJson(artifactKinds)
   ) {
     integrationInvalid("agent artifact capabilities are invalid");
   }
@@ -1419,8 +1463,17 @@ function assertPublicCapabilityResponse(value = {}) {
     model: Object.freeze({ label: "LocalLLM" }),
     actions: Object.freeze({ cancel: actions.cancel, resume: actions.resume, retry: false }),
     attachments: Object.freeze({ enabled: false }),
+    ...(search.enabled
+      ? {
+          search: Object.freeze({
+            enabled: true,
+            modes: Object.freeze(searchModes),
+            maximumSources: INTEGRATION_MAXIMUM_SEARCH_SOURCES,
+          }),
+        }
+      : {}),
     artifacts: Object.freeze({
-      kinds: Object.freeze([...INTEGRATION_ARTIFACT_KINDS]),
+      kinds: Object.freeze(artifactKinds),
       schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
     }),
   });

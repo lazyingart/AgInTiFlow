@@ -32,6 +32,7 @@ import {
   integrationBoundedText,
   integrationExactKeys,
   integrationRpcPathIsMutation,
+  validateIntegrationSearch,
   validateIntegrationIdempotencyKey,
   validateIntegrationArtifactId,
   validateIntegrationRunId,
@@ -219,6 +220,12 @@ function publicFailureMessage(error, code = publicErrorCode(error)) {
   }
   if (code === "ANALYSIS_CONTEXT_BUDGET_EXCEEDED") {
     return "This request is too large for the local analysis context. Shorten it or split it into smaller steps, then resume.";
+  }
+  if (code === "GROUNDED_SEARCH_NO_USABLE_SOURCES") {
+    return "Search completed, but no safe evidence sources were available. Resume to try again or choose another search mode.";
+  }
+  if (code.startsWith("GROUNDED_SEARCH_")) {
+    return "Grounded search is temporarily unavailable. Your prompt and search settings were preserved; resume this run to try again.";
   }
   return "Analysis could not be completed. You can resume this run.";
 }
@@ -722,6 +729,7 @@ function validateRun(run, scope, threadIds) {
       "error",
       "authority",
       "inputMessageId",
+      "search",
       "events",
     ],
     [
@@ -754,6 +762,14 @@ function validateRun(run, scope, threadIds) {
     corrupt();
   }
   if (!RUN_SCHEDULING_STATES.has(run.schedulingState)) corrupt();
+  if (run.search !== undefined) {
+    try {
+      const normalizedSearch = validateIntegrationSearch(run.search);
+      if (canonicalJson(normalizedSearch) !== canonicalJson(run.search)) corrupt();
+    } catch (error) {
+      corrupt(error);
+    }
+  }
   if (typeof run.inputMessageId !== "string" || !/^msg_[A-Za-z0-9_-]{16,96}$/u.test(run.inputMessageId)) corrupt();
   if (!Array.isArray(run.events) || run.events.length < 1 || run.events.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumEventsPerRun) corrupt();
   try {
@@ -1346,6 +1362,12 @@ function createService(options, { testOnly }) {
         : ZERO_DIGEST;
   const fixedCoordinatorDigest = plannerActivation?.coordinatorDigest || ZERO_DIGEST;
   const plannerActivationDigest = plannerActivation?.digest || ZERO_DIGEST;
+  const searchEnabled = testOnly
+    ? options.searchEnabled === true
+    : plannerActivation?.groundedSearch?.enabled === true && plannerActivation?.groundedSearch?.ready === true;
+  if (testOnly && options.searchEnabled !== undefined && typeof options.searchEnabled !== "boolean") {
+    fail("ANALYSIS_CONFIGURATION_INVALID", "Test grounded search capability flag is invalid.", { status: 500 });
+  }
   const fixedMutationRecoveryAuthority = mutationRecoveryAuthority();
   const activeRuns = new Map();
   const runQueue = [];
@@ -1676,7 +1698,11 @@ function createService(options, { testOnly }) {
       selected.unshift(Object.freeze({ role: message.role, content }));
       totalBytes += bytes;
     }
-    return Object.freeze({ prompt, conversation: Object.freeze(selected) });
+    return Object.freeze({
+      prompt,
+      conversation: Object.freeze(selected),
+      ...(run.search === undefined ? {} : { search: validateIntegrationSearch(run.search) }),
+    });
   }
 
   function planSteps(phase, failed = false) {
@@ -1903,7 +1929,7 @@ function createService(options, { testOnly }) {
     });
   }
 
-  function normalizeRunnerResult(value) {
+  function normalizeRunnerResult(value, { searchExpected = false } = {}) {
     const result = exact(
       value,
       ["schemaVersion", "text", "kind", "toolCalls", "executionStatus", "artifacts"],
@@ -1925,9 +1951,17 @@ function createService(options, { testOnly }) {
     if (!Array.isArray(result.artifacts) || result.artifacts.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerRun) {
       fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis runner artifacts exceed their bound.", { status: 502 });
     }
+    const artifacts = Object.freeze(result.artifacts.map(sanitizeIntegrationArtifact));
+    const sources = artifacts.filter((artifact) => artifact.kind === "sources");
     if (
-      (result.kind === "direct" && (result.toolCalls !== 0 || result.executionStatus !== null || result.artifacts.length !== 0)) ||
-      (result.kind === "analysis" && (result.toolCalls < 1 || result.executionStatus === null))
+      (result.kind === "direct" && (
+        result.toolCalls !== 0 ||
+        result.executionStatus !== null ||
+        artifacts.some((artifact) => artifact.kind !== "sources")
+      )) ||
+      (result.kind === "analysis" && (result.toolCalls < 1 || result.executionStatus === null)) ||
+      (!searchExpected && sources.length !== 0) ||
+      (searchExpected && sources.length !== 1)
     ) {
       fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis runner result fields are inconsistent.", { status: 502 });
     }
@@ -1938,7 +1972,7 @@ function createService(options, { testOnly }) {
       kind: result.kind,
       toolCalls: result.toolCalls,
       executionStatus: result.executionStatus,
-      artifacts: Object.freeze(result.artifacts.map(sanitizeIntegrationArtifact)),
+      artifacts,
     });
   }
 
@@ -2052,11 +2086,13 @@ function createService(options, { testOnly }) {
                 status: 502,
               });
             }
-            finalCallbackDigest = contractDigest(normalizeRunnerResult(value));
+            finalCallbackDigest = contractDigest(normalizeRunnerResult(value, {
+              searchExpected: input.search !== undefined,
+            }));
           },
         })
       );
-      const result = normalizeRunnerResult(runnerResult);
+      const result = normalizeRunnerResult(runnerResult, { searchExpected: input.search !== undefined });
       if (finalCallbackCount !== 1 || finalCallbackDigest !== contractDigest(result)) {
         fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis runner final callback disagreed with its result.", {
           status: 502,
@@ -2148,6 +2184,12 @@ function createService(options, { testOnly }) {
         : payload.threadId
     );
     const prompt = publicText(normalizePrompt(payload.input?.text ?? ""), "analysis prompt");
+    const search = payload.input?.search === undefined
+      ? undefined
+      : validateIntegrationSearch(payload.input.search);
+    if (search !== undefined && !searchEnabled) {
+      conflict("GROUNDED_SEARCH_NOT_READY", "Grounded search is not enabled for this Agent runtime.");
+    }
     const runId = newRunId();
     const controller = new AbortController();
     const entry = newScheduledEntry(scope, threadId, runId, controller);
@@ -2225,11 +2267,13 @@ function createService(options, { testOnly }) {
                 threadId,
                 runId,
                 contextDigest: thread.authority.contextDigest,
+                ...(search === undefined ? {} : { search }),
               }),
               runtimeRevision: thread.revision + 1,
               contextDigest: thread.authority.contextDigest,
             },
             inputMessageId: inputMessage.id,
+            ...(search === undefined ? {} : { search }),
             events: [],
           };
           appendEvent(record, "run.status", { status: "starting" }, createdAt);
@@ -2414,6 +2458,14 @@ function createService(options, { testOnly }) {
       artifactBeforeTerminal: true,
       exactCancellation: true,
       interruptedRunRecovery: true,
+      ...(searchEnabled
+        ? {
+            groundedSearchReady: true,
+            groundedSearchActivationDigest: plannerActivation?.groundedSearch?.digest || ZERO_DIGEST,
+            groundedSearchIntentPersistedBeforeLaunch: true,
+            groundedSearchReplayIsReadOnly: true,
+          }
+        : {}),
       durableMutationReceipts: true,
       mutationRecoveryAuthorityDigest: fixedMutationRecoveryAuthority.digest,
       rawExecutionSourcePersisted: false,
@@ -2433,6 +2485,7 @@ function createService(options, { testOnly }) {
         mutationRecoveryAuthority: fixedMutationRecoveryAuthority,
         cancel: true,
         resume: true,
+        ...(searchEnabled ? { search: true } : {}),
       });
     },
 
@@ -2602,7 +2655,7 @@ function createService(options, { testOnly }) {
 
     async startRun(payload, context) {
       exact(payload, ["threadId", "input"], ["threadId", "input"], "start run request");
-      exact(payload.input, ["text"], ["text"], "start run input");
+      exact(payload.input, ["text", "search"], ["text"], "start run input");
       const run = await createRun(payload, context, null);
       return Object.freeze({ run });
     },
@@ -2712,21 +2765,31 @@ function createService(options, { testOnly }) {
 
     async resumeRun(payload, context) {
       exact(payload, ["runId", "input"], ["runId"], "resume run request");
-      if (payload.input !== undefined) exact(payload.input, ["text"], ["text"], "resume run input");
+      if (payload.input !== undefined) exact(payload.input, ["text", "search"], ["text"], "resume run input");
       const scope = normalizeScopeFromContext(context);
       const previous = await inspect(scope, (state) => findRun(state, payload.runId));
       if (!TERMINAL_RUN_STATUSES.has(previous.status)) conflict("ANALYSIS_RUN_NOT_RESUMABLE", "Run cannot be resumed.");
-      let text = payload.input?.text;
-      if (text === undefined) {
-        text = await inspect(scope, (state) => {
+      let nextInput;
+      if (payload.input === undefined) {
+        nextInput = await inspect(scope, (state) => {
           const run = findRun(state, payload.runId);
           const thread = findThread(state, run.threadId);
           const message = thread.messages.find((item) => item.id === run.inputMessageId);
           if (!message || message.role !== "user") corrupt();
-          return message.content;
+          return Object.freeze({
+            text: message.content,
+            ...(run.search === undefined ? {} : { search: validateIntegrationSearch(run.search) }),
+          });
+        });
+      } else {
+        nextInput = Object.freeze({
+          text: payload.input.text,
+          ...(payload.input.search === undefined
+            ? {}
+            : { search: validateIntegrationSearch(payload.input.search) }),
         });
       }
-      const run = await createRun({ input: { text } }, context, payload.runId);
+      const run = await createRun({ input: nextInput }, context, payload.runId);
       return Object.freeze({ run });
     },
 
@@ -2790,7 +2853,7 @@ export function createIntegrationAnalysisSessionService(value = {}) {
 export function createTestOnlyIntegrationAnalysisSessionService(value = {}) {
   const options = exact(
     value,
-    ["analysisRunner", "stateRoot", "now", "activationProof"],
+    ["analysisRunner", "stateRoot", "now", "activationProof", "searchEnabled"],
     ["analysisRunner", "stateRoot"],
     "test analysis session service configuration"
   );
