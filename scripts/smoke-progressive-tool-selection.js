@@ -1475,6 +1475,49 @@ const explicitDeepResearchFollowup = selectProgressiveTools(allTools, {
 });
 assert(names(explicitDeepResearchFollowup).includes("web_search"), "deep-research follow-up did not restore targeted recovery tools");
 
+const documentRuntimeSnapshot =
+  'Step 1/30. Latest runtime snapshot:\n{"pageText":"Workspace file tools are ready. Web search and resumable deep research are available when current evidence is required."}';
+const localDocumentStarter = selectProgressiveTools(allTools, {
+  config: { provider: "deepseek" },
+  goal: "Turn the files in this folder into an editable, phone-friendly handoff and finish it properly.",
+  profile: "word",
+  messages: [
+    { role: "user", content: "Turn the files in this folder into an editable, phone-friendly handoff and finish it properly." },
+    { role: "user", content: documentRuntimeSnapshot },
+  ],
+});
+assert(names(localDocumentStarter).includes("read_file"), "local document start omitted workspace reading tools");
+assert(names(localDocumentStarter).includes("write_file"), "local document start omitted workspace writing tools");
+assert(
+  !(names(localDocumentStarter).length === 2 && names(localDocumentStarter)[0] === "deep_research"),
+  "runtime snapshot prose forced a local document task into deep research"
+);
+
+const documentRepairAfterCompaction = selectProgressiveTools(allTools, {
+  config: { provider: "deepseek" },
+  goal: "Turn the files in this folder into an editable, phone-friendly handoff and finish it properly.",
+  profile: "word",
+  messages: [
+    {
+      role: "user",
+      content:
+        "The runtime proactively compacted a long agent history before the provider context became inefficient or unstable. Authoritative current goal: create the document.",
+    },
+    {
+      role: "user",
+      content:
+        "The previous tool-call batch was rejected before dispatch. Reason code: TOOL_NOT_OFFERED. Rejected request: apply_patch. Tools offered in that turn: deep_research, finish.",
+    },
+    { role: "user", content: documentRuntimeSnapshot },
+  ],
+});
+assert(names(documentRepairAfterCompaction).includes("apply_patch"), "document repair after compaction omitted apply_patch");
+assert(names(documentRepairAfterCompaction).includes("run_command"), "document repair after compaction omitted build verification");
+assert(
+  !(names(documentRepairAfterCompaction).length === 2 && names(documentRepairAfterCompaction)[0] === "deep_research"),
+  "post-failure runtime scaffolding regressed a local document repair into deep research"
+);
+
 const scopedArtifactPrompt = `You are a persistent workspace agent. The surrounding policy mentions an evidence review.
 AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Create one plain-text artifact and verify it."}
 Repository evidence to consult as relevant: literature review, evidence review, research report.`;

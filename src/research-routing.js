@@ -6,11 +6,36 @@ function messageText(content) {
   return content.map((part) => part?.text || part?.content || "").filter(Boolean).join("\n");
 }
 
+const RUNTIME_USER_MESSAGE_PATTERNS = Object.freeze([
+  /^Step \d+\/\d+\b.*Latest runtime snapshot:/i,
+  /^Retained runtime tool evidence\./i,
+  /^The runtime proactively compacted a long agent history/i,
+  /^A previous agent-step model request timed out/i,
+  /^Continue from this compacted, valid transcript/i,
+  /^Previous assistant response retained as compacted history/i,
+  /^Highest-priority retained state:/i,
+  /^Bounded failed-test evidence packet(?: v\d+)?\./i,
+  /^Verification is still failing,/i,
+  /^The previous tool-call batch was rejected before dispatch\./i,
+  /^Loop guard:/i,
+  /^Runtime phase transition:/i,
+]);
+
+function isRuntimeUserMessage(content = "") {
+  const text = String(content || "").trim();
+  return RUNTIME_USER_MESSAGE_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function genuineUserMessages(messages = []) {
+  return messages.filter(
+    (message) => message?.role === "user" && !isRuntimeUserMessage(messageText(message.content))
+  );
+}
+
 export function hasExplicitDeepResearchIntent(goal = "", messages = []) {
   const recent = hasAgintiEvidenceScope(goal)
     ? ""
-    : messages
-        .filter((message) => message?.role === "user")
+    : genuineUserMessages(messages)
         .slice(-4)
         .map((message) => scopedChatopsEvidenceGoal(messageText(message.content)))
         .join("\n");
@@ -24,12 +49,19 @@ export function hasExplicitDeepResearchIntent(goal = "", messages = []) {
 }
 
 export function toolWasRequested(messages = [], toolName = "") {
-  return messages.some(
-    (message) =>
+  return messages.some((message) => {
+    if (
       message?.role === "assistant" &&
       Array.isArray(message.tool_calls) &&
       message.tool_calls.some((call) => call?.function?.name === toolName)
-  );
+    ) {
+      return true;
+    }
+    if (message?.role !== "user") return false;
+    const content = messageText(message.content);
+    if (!/^Retained runtime tool evidence\./i.test(content.trim())) return false;
+    return new RegExp(`^Tool:\\s*${String(toolName).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "im").test(content);
+  });
 }
 
 export function shouldStartWithDeepResearch(goal = "", messages = []) {

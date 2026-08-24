@@ -49,6 +49,21 @@ async function main() {
 
   assert(hasExplicitDeepResearchIntent("literature review with primary papers"), "explicit research intent was not detected");
   assert(
+    !hasExplicitDeepResearchIntent("Create a phone-friendly document from this folder.", [
+      {
+        role: "user",
+        content:
+          'Step 2/30. Latest runtime snapshot:\n{"pageText":"Web search and resumable deep research are available when current evidence is required."}',
+      },
+      {
+        role: "user",
+        content:
+          "The previous tool-call batch was rejected before dispatch. Tools offered in that turn: deep_research, finish.",
+      },
+    ]),
+    "runtime control prose was misclassified as genuine deep-research intent"
+  );
+  assert(
     toolChoiceForProvider({ provider: "deepseek" }, []) === "auto",
     "provider-neutral research routing added an unsupported named tool_choice"
   );
