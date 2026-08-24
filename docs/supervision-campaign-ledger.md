@@ -306,3 +306,27 @@ work, produced a visually inspected nine-page XeLaTeX research report, and
 delivered one concise message plus the PDF through the verified WeCom transport.
 The follow-up message was preserved in the same chat session. The reusable fix
 is AgenticApp commit `e705bb0`; no AgInTiFlow release change was required.
+
+### Durable background-job recovery after foreground interruption
+
+`long-job-recovery-019` exercised installed AgInTiFlow `0.20.217` with a normal
+laboratory-export request whose terminal could disconnect. The DeepSeek-backed
+agent inspected the checked-in resumable scripts, rejected duplicate execution,
+and selected the generic `start_long_job` routine. The campaign interrupted only
+the foreground AgInTi pane after durable admission; the independent job tmux
+continued, completed eight delayed batches, ran deferred verification, and
+cleaned up its own tmux session.
+
+The same AgInTi session then resumed from retained state. It recovered the exact
+job ID through `long_job_status`, independently reran the project verifier,
+confirmed the artifact and checksum, and finished without calling
+`start_long_job` again. Proactive context compaction reduced the resumed history
+from 190,805 to 30,680 characters while preserving the job identity and original
+task boundary.
+
+The independent acceptance contract verified one process invocation, one durable
+job directory, attempt `1`, command and verifier exit `0`, the required durable
+event sequence, a project handoff with exact status and verification commands,
+and no lingering job tmux session. No source patch or npm release was needed;
+this run validates the published package's general long-job, resume, context,
+deduplication, and cleanup contracts without task-specific routing.
