@@ -194,7 +194,6 @@ RestrictSUIDSGID=yes
 RemoveIPC=yes
 KeyringMode=private
 DevicePolicy=closed
-SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_NETLINK
 InaccessiblePaths=/home /root /media /mnt
 ReadOnlyPaths=${paths.workerReleaseDirectory} ${paths.runtimeBundleDirectory}

@@ -226,6 +226,7 @@ assert.match(units.serviceUnit, /^ProtectProc=default$/mu);
 assert.match(units.serviceUnit, /^ProcSubset=all$/mu);
 assert.match(units.serviceUnit, /^Delegate=no$/mu);
 assert.match(units.serviceUnit, /^RestrictAddressFamilies=AF_UNIX AF_INET AF_NETLINK$/mu);
+assert.doesNotMatch(units.serviceUnit, /^SystemCallArchitectures=/mu);
 assert.match(units.serviceUnit, /^MemoryMax=1610612736$/mu);
 assert.match(units.serviceUnit, /^MemorySwapMax=0$/mu);
 assert.match(units.serviceUnit, /^TasksMax=64$/mu);
