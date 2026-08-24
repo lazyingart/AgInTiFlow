@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runAgent } from "../src/agent-runner.js";
+import { RESEARCH_VERSION } from "../src/deep-research.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { classifyCommand, evaluateCommandPolicy } from "../src/command-policy.js";
 import {
@@ -4338,6 +4339,7 @@ try {
     {
       ok: true,
       toolName: "deep_research",
+      version: RESEARCH_VERSION,
       researchId: "research-one",
       status: "completed",
       reportPath: path.join(workspace, "report.md"),
@@ -4354,6 +4356,16 @@ try {
     reusedResearch?.duplicateSuppressed && reusedResearch.reportPath === path.join(workspace, "report.md"),
     "same-goal deep research did not reuse an already completed exact report"
   );
+  completedResearchState.meta.completedDeepResearch[0].result.version = RESEARCH_VERSION - 1;
+  assert(
+    completedDeepResearchReuse(
+      completedResearchState,
+      { query: "A model-expanded query", outputPath: "report.md", refresh: true },
+      { commandCwd: workspace }
+    ) === null,
+    "a stale deep-research engine result was reused after the report contract changed"
+  );
+  completedResearchState.meta.completedDeepResearch[0].result.version = RESEARCH_VERSION;
   completedResearchState.meta.goalContract = { revision: 2, currentHash: "goal-two" };
   assert(
     completedDeepResearchReuse(

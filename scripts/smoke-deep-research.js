@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { auditResearchSynthesis, deepResearch } from "../src/deep-research.js";
+import { auditResearchSynthesis, deepResearch, RESEARCH_VERSION } from "../src/deep-research.js";
 import { checkToolUse } from "../src/guardrails.js";
 import { flushHousekeeping } from "../src/housekeeping.js";
 import { requestNextStep, toolChoiceForProvider } from "../src/model-client.js";
@@ -58,6 +58,50 @@ async function main() {
   assert(
     !shouldStartWithDeepResearch(localEvidenceGoal),
     "local-source research incorrectly forced deep_research before workspace inspection"
+  );
+  const inspectedLocalEvidenceMessages = [
+    { role: "user", content: localEvidenceGoal },
+    {
+      role: "assistant",
+      tool_calls: [{ id: "inspect-notes", function: { name: "read_file", arguments: '{"path":"PROJECT_NOTES.md"}' } }],
+    },
+    {
+      role: "assistant",
+      tool_calls: [{ id: "inspect-sources", function: { name: "read_file", arguments: '{"path":"sources.json"}' } }],
+    },
+  ];
+  assert(
+    shouldStartWithDeepResearch(localEvidenceGoal, inspectedLocalEvidenceMessages),
+    "local-source research did not enter bounded deep research after workspace inspection"
+  );
+  assert(
+    !shouldStartWithDeepResearch(localEvidenceGoal, [
+      ...inspectedLocalEvidenceMessages,
+      {
+        role: "assistant",
+        tool_calls: [{ id: "current-research", function: { name: "deep_research", arguments: "{}" } }],
+      },
+    ]),
+    "the current request repeated deep research after already requesting it"
+  );
+  assert(
+    shouldStartWithDeepResearch(localEvidenceGoal, [
+      ...inspectedLocalEvidenceMessages,
+      {
+        role: "assistant",
+        tool_calls: [{ id: "old-research", function: { name: "deep_research", arguments: "{}" } }],
+      },
+      { role: "user", content: "Refresh this evidence review because the current report quality is not acceptable." },
+      {
+        role: "assistant",
+        tool_calls: [{ id: "refresh-report", function: { name: "read_file", arguments: '{"path":"agent-reliability-evidence-review.md"}' } }],
+      },
+      {
+        role: "assistant",
+        tool_calls: [{ id: "refresh-sources", function: { name: "read_file", arguments: '{"path":"sources.json"}' } }],
+      },
+    ]),
+    "a completed research call from an older user intent suppressed a fresh bounded research pass"
   );
   assert(
     shouldStartWithDeepResearch("Write a deep web research report comparing three primary papers."),
@@ -509,6 +553,7 @@ async function main() {
     },
     store
   );
+  assert(research.version === RESEARCH_VERSION, "deep research did not expose its result-schema version");
   assert(research.ok && research.sourceCount === 2, `deep research failed: ${research.error || "unknown"}`);
   assert(
     researchSearchProviders.length === 2 && researchSearchProviders.every((provider) => provider === "multi"),

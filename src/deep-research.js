@@ -14,7 +14,7 @@ import {
 } from "./web-search.js";
 import { resolveWorkspacePath } from "./workspace-tools.js";
 
-const RESEARCH_VERSION = 13;
+export const RESEARCH_VERSION = 14;
 const DEPTH_BUDGETS = Object.freeze({
   quick: Object.freeze({ maxQueries: 3, maxSources: 6, concurrency: 3, gapPasses: 0 }),
   standard: Object.freeze({ maxQueries: 6, maxSources: 12, concurrency: 4, gapPasses: 1 }),
@@ -1961,6 +1961,7 @@ function publicResult(state, paths, extra = {}) {
   return {
     ok: state.status === "completed",
     toolName: "deep_research",
+    version: state.version || RESEARCH_VERSION,
     researchId: state.researchId,
     status: state.status,
     stage: state.stage,

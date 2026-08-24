@@ -1489,6 +1489,32 @@ assert(
   !(names(localEvidenceResearchStarter).length === 2 && names(localEvidenceResearchStarter)[0] === "deep_research"),
   "local evidence research was trapped on deep_research before reading its source material"
 );
+const localEvidenceResearchAfterInspection = selectProgressiveTools(allTools, {
+  config: { provider: "deepseek" },
+  goal:
+    "Investigate the reliability problem in this folder, correct PROJECT_NOTES.md, write an evidence review and sources.json, then commit the intentional work.",
+  profile: "research",
+  messages: [
+    {
+      role: "user",
+      content:
+        "Investigate the reliability problem in this folder, correct PROJECT_NOTES.md, write an evidence review and sources.json, then commit the intentional work.",
+    },
+    {
+      role: "assistant",
+      tool_calls: [{ id: "local-notes", function: { name: "read_file", arguments: '{"path":"PROJECT_NOTES.md"}' } }],
+    },
+    {
+      role: "assistant",
+      tool_calls: [{ id: "local-sources", function: { name: "read_file", arguments: '{"path":"sources.json"}' } }],
+    },
+  ],
+});
+sameNames(
+  localEvidenceResearchAfterInspection,
+  ["deep_research", "finish"],
+  "local evidence research did not enter the bounded research engine after inspection"
+);
 
 const documentRuntimeSnapshot =
   'Step 1/30. Latest runtime snapshot:\n{"pageText":"Workspace file tools are ready. Web search and resumable deep research are available when current evidence is required."}';

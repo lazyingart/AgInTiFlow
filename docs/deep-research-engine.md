@@ -10,6 +10,15 @@ Simple questions should stay on the fast path. A deep-research run spends more
 queries and model calls only when breadth, verification, and traceability add
 real value.
 
+For a request that combines local workspace evidence with web research, the
+outer agent first receives normal inspection tools. After it has read two
+relevant files, or read one file plus inspected/searched the project, the next
+research turn is constrained to `deep_research` and `finish`. This keeps local
+notes authoritative without letting an agent silently replace a requested
+multi-source review with ad hoc browsing. Tool history is scoped to the newest
+genuine user request, so a completed research call from an older task does not
+suppress a later correction or refresh.
+
 ## Architecture
 
 The implementation follows the strongest production patterns without making
@@ -205,7 +214,10 @@ To resume a partial or completed same-query run, pass the returned
 `refresh=true` is explicit. A transient run that retrieved zero allowed sources
 is marked failed, preserves its attempts, and retries retrieval on resume
 instead of caching an empty report as success. Checkpoint schema changes
-invalidate old cached runs automatically.
+invalidate old cached runs automatically. The public tool result also carries
+the research schema version; the outer session reuses a completed result only
+when that version matches the installed engine. Versionless or older retained
+results are refreshed instead of being presented as current evidence.
 
 `outputPath` is optional and must name a Markdown file inside the active
 workspace. Repository internals such as `.git`, dependency trees such as

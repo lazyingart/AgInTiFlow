@@ -62,7 +62,7 @@ import {
 import { refreshCodebaseMap } from "./codebase-map.js";
 import { readImage, researchWrapper, webResearch } from "./perception-tools.js";
 import { readWebPage, searchWeb } from "./web-search.js";
-import { deepResearch } from "./deep-research.js";
+import { deepResearch, RESEARCH_VERSION } from "./deep-research.js";
 import { runJsonSpecialist, runJsonSpecialistBatch } from "./json-specialist.js";
 import { runWritingSpecialist } from "./writing-specialist.js";
 import { runParallelScouts, shouldRunParallelScouts } from "./parallel-scouts.js";
@@ -5846,6 +5846,7 @@ export function rememberCompletedDeepResearch(state = {}, args = {}, config = {}
     result: {
       ok: true,
       toolName: "deep_research",
+      version: Number(result.version || 0),
       researchId: result.researchId || identity.researchId,
       status: result.status || "completed",
       stage: result.stage || "completed",
@@ -5878,6 +5879,7 @@ export function completedDeepResearchReuse(state = {}, args = {}, config = {}) {
   const records = Array.isArray(state.meta?.completedDeepResearch) ? state.meta.completedDeepResearch : [];
   const match = [...records].reverse().find((item) => {
     if (item.goalKey !== goalKey) return false;
+    if (Number(item.result?.version || 0) !== RESEARCH_VERSION) return false;
     return Boolean(
       (identity.requestedOutputPath && item.requestedOutputPath === identity.requestedOutputPath) ||
       (identity.researchId && item.researchId === identity.researchId) ||

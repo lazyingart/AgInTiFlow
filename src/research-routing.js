@@ -32,6 +32,37 @@ function genuineUserMessages(messages = []) {
   );
 }
 
+function currentIntentMessages(messages = []) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "user" || isRuntimeUserMessage(messageText(message.content))) continue;
+    return messages.slice(index);
+  }
+  return messages;
+}
+
+function requestedToolCount(messages = [], toolName = "") {
+  const escapedName = String(toolName).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const retainedPattern = new RegExp(`^Tool:\\s*${escapedName}\\s*$`, "gim");
+  return messages.reduce((count, message) => {
+    if (message?.role === "assistant" && Array.isArray(message.tool_calls)) {
+      return count + message.tool_calls.filter((call) => call?.function?.name === toolName).length;
+    }
+    if (message?.role !== "user") return count;
+    const content = messageText(message.content);
+    if (!/^Retained runtime tool evidence\./i.test(content.trim())) return count;
+    return count + [...content.matchAll(retainedPattern)].length;
+  }, 0);
+}
+
+function localWorkspaceInspectionReady(messages = []) {
+  const current = currentIntentMessages(messages);
+  const reads = requestedToolCount(current, "read_file");
+  const supportingInspection = ["inspect_project", "list_files", "search_files", "run_command"]
+    .reduce((count, toolName) => count + requestedToolCount(current, toolName), 0);
+  return reads >= 2 || (reads >= 1 && supportingInspection >= 1);
+}
+
 export function hasExplicitDeepResearchIntent(goal = "", messages = []) {
   const recent = hasAgintiEvidenceScope(goal)
     ? ""
@@ -65,25 +96,13 @@ export function hasLocalResearchWorkspaceIntent(goal = "", messages = []) {
 }
 
 export function toolWasRequested(messages = [], toolName = "") {
-  return messages.some((message) => {
-    if (
-      message?.role === "assistant" &&
-      Array.isArray(message.tool_calls) &&
-      message.tool_calls.some((call) => call?.function?.name === toolName)
-    ) {
-      return true;
-    }
-    if (message?.role !== "user") return false;
-    const content = messageText(message.content);
-    if (!/^Retained runtime tool evidence\./i.test(content.trim())) return false;
-    return new RegExp(`^Tool:\\s*${String(toolName).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "im").test(content);
-  });
+  return requestedToolCount(messages, toolName) > 0;
 }
 
 export function shouldStartWithDeepResearch(goal = "", messages = []) {
-  return (
-    hasExplicitDeepResearchIntent(goal, messages) &&
-    !hasLocalResearchWorkspaceIntent(goal, messages) &&
-    !toolWasRequested(messages, "deep_research")
-  );
+  if (!hasExplicitDeepResearchIntent(goal, messages)) return false;
+  const current = currentIntentMessages(messages);
+  if (toolWasRequested(current, "deep_research")) return false;
+  if (hasLocalResearchWorkspaceIntent(goal, messages) && !localWorkspaceInspectionReady(current)) return false;
+  return true;
 }
