@@ -19,6 +19,7 @@ import {
 import {
   INTEGRATION_ANALYSIS_MAX_TOOL_CALLS,
   assertIntegrationAnalysisPlanner,
+  assertIntegrationAnalysisPlannerActivation,
   createTestOnlyIntegrationAnalysisPlanner,
 } from "../src/integration-analysis-planner.js";
 import { sanitizeIntegrationArtifact } from "../src/integration-artifacts.js";
@@ -419,9 +420,91 @@ async function enforcesToolLoopAndCancellation() {
   aborted.coordinator.close();
 }
 
+async function correctsUnavailableImportsAndBrandsActivation() {
+  let step = 0;
+  const corrected = fixture(async (_client, payload) => {
+    step += 1;
+    if (step === 1) {
+      assert.equal(payload.tool_choice, "required");
+      return toolResponse("import numpy as np\nprint(np.arange(3))");
+    }
+    if (step === 2) {
+      assert.equal(payload.tool_choice, "required");
+      const feedback = JSON.parse(payload.messages.at(-1).content);
+      assert.equal(feedback.ok, false);
+      assert.equal(feedback.status, "failed");
+      assert.match(feedback.stderr, /numpy/u);
+      assert.match(feedback.correction, /different corrected Python source/u);
+      return toolResponse("values = [1, 4, 9]\nemit_markdown('Squares', '1, 4, 9')");
+    }
+    return textResponse("The corrected standard-library analysis completed.");
+  });
+  const result = await corrected.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000066"),
+    { prompt: "Run Python and show the squares." }
+  );
+  assert.equal(result.toolCalls, 2);
+  assert.equal(result.executionStatus, "succeeded");
+  assert.equal(
+    corrected.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    1
+  );
+
+  const activation = await corrected.planner.activate();
+  assert.equal(activation.plannerDigest, corrected.planner.attestation.digest);
+  assert.equal(activation.coordinatorDigest, corrected.coordinator.attestation.digest);
+  assert.equal(activation.readinessDigest, activation.readinessProof.digest);
+  assert(Object.isFrozen(activation));
+  assert(Object.isFrozen(activation.readinessProof));
+  assertIntegrationAnalysisPlannerActivation(activation, {
+    planner: corrected.planner,
+    requireSystemdCredential: false,
+  });
+  assert.throws(
+    () => assertIntegrationAnalysisPlannerActivation(activation, { planner: corrected.planner }),
+    /test-only/u
+  );
+  assert.throws(
+    () => assertIntegrationAnalysisPlannerActivation(Object.freeze({ ...activation }), {
+      planner: corrected.planner,
+      requireSystemdCredential: false,
+    }),
+    /not AgInTi-owned/u
+  );
+  const other = fixture(async () => textResponse("unused"));
+  assert.throws(
+    () => assertIntegrationAnalysisPlannerActivation(activation, {
+      planner: other.planner,
+      requireSystemdCredential: false,
+    }),
+    /different planner/u
+  );
+  other.coordinator.close();
+  corrected.coordinator.close();
+
+  let repeatedStep = 0;
+  const repeated = fixture(async () => {
+    repeatedStep += 1;
+    return toolResponse("from pandas import DataFrame\nprint(DataFrame())");
+  });
+  await assert.rejects(
+    repeated.planner.run(scope("run_00000000-0000-4000-8000-000000000067"), {
+      prompt: "Execute Python and show a table.",
+    }),
+    (error) => error?.code === "ANALYSIS_TOOL_LOOP"
+  );
+  assert.equal(repeatedStep, 2);
+  assert.equal(
+    repeated.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    0
+  );
+  repeated.coordinator.close();
+}
+
 await executesAndSynthesizesPlot();
 await directAnswerDoesNotExecute();
 await rejectsOverridesAndMalformedTools();
 await enforcesToolLoopAndCancellation();
+await correctsUnavailableImportsAndBrandsActivation();
 
 console.log("integration analysis planner smoke passed");

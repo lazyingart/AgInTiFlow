@@ -25,10 +25,13 @@ import {
 } from "./context-budget-controller.js";
 
 export const INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION = "aginti-integration-analysis-planner-v1";
+export const INTEGRATION_ANALYSIS_PLANNER_ACTIVATION_SCHEMA_VERSION =
+  "aginti-integration-analysis-planner-activation-v1";
 export const INTEGRATION_ANALYSIS_MAX_TOOL_CALLS = 2;
 export const INTEGRATION_ANALYSIS_MAX_CONVERSATION_MESSAGES = 24;
 
 const PLANNER_BRAND = new WeakSet();
+const PLANNER_ACTIVATION_METADATA = new WeakMap();
 const PUBLIC_TEXT_MAX_BYTES = 16 * 1024;
 const PROMPT_MAX_BYTES = 16 * 1024;
 const CONVERSATION_MESSAGE_MAX_BYTES = 8 * 1024;
@@ -52,6 +55,24 @@ const EXECUTION_STATES = new Set([
   "artifact_invalid",
   "termination_unproven",
   "worker_error",
+]);
+const COMMON_UNAVAILABLE_PYTHON_PACKAGES = new Set([
+  "cv2",
+  "matplotlib",
+  "numpy",
+  "openpyxl",
+  "pandas",
+  "pil",
+  "plotly",
+  "polars",
+  "requests",
+  "scipy",
+  "seaborn",
+  "sklearn",
+  "statsmodels",
+  "sympy",
+  "tensorflow",
+  "torch",
 ]);
 const ABSOLUTE_PATH_PATTERN =
   /(?:^|[\s("'`<>\[{=])(?:file:\/\/\/[^\s"'`<>)\]}]+|\/(?!\/)[^\s"'`<>)\]}]+|[A-Za-z]:[\\/][^\s"'`<>)\]}]+|\\\\[^\\/\s"'`<>)\]}]+\\[^\s"'`<>)\]}]+)/giu;
@@ -96,6 +117,7 @@ const SYSTEM_PROMPT = [
   `You may either answer directly or call exactly ${INTEGRATION_ANALYSIS_TOOL_NAME}.`,
   "When the user asks you to run or execute code, calculate with Python, or show a plot/chart, you must call the tool; never merely describe code or claim execution.",
   "The tool is Python 3.12 standard-library-only, networkless, processless, and isolated from the host filesystem. Keep all inputs and computation in memory.",
+  "Do not import unavailable third-party packages such as numpy, pandas, matplotlib, seaborn, scipy, plotly, sklearn, polars, requests, PIL, cv2, torch, tensorflow, openpyxl, statsmodels, or sympy. Rewrite the calculation with Python's standard library and the supplied artifact helpers.",
   "For UI output, call emit_plot(title, spec), emit_table(title, spec), or emit_markdown(title, markdown). These helpers are already defined. Do not import plotting packages.",
   "A categorical plot spec is {schemaVersion:'1',type:'line'|'bar'|'area',labels:[...],series:[{name:'...',data:[finite numbers]}]}. A scatter series instead uses points:[{x:number,y:number}].",
   "A table spec is {schemaVersion:'1',columns:[{key:'number',label:'Number'},{key:'square',label:'Square'}],rows:[{number:1,square:1}]}. Rows are objects keyed by column key; do not use headers or positional row arrays.",
@@ -462,7 +484,7 @@ function artifactSummary(input) {
 }
 
 function modelToolResult(result) {
-  return Object.freeze({
+  const feedback = {
     ok: result.ok === true,
     status: String(result.status || "worker_error"),
     exitCode: Number.isSafeInteger(result.exitCode) ? result.exitCode : null,
@@ -471,7 +493,89 @@ function modelToolResult(result) {
     outputTruncated: result.outputTruncated === true,
     durationMs: Number.isFinite(result.durationMs) ? Math.max(0, Math.round(result.durationMs)) : 0,
     artifacts: Object.freeze(result.artifacts.map(artifactSummary)),
+  };
+  if (!feedback.ok) {
+    feedback.correction =
+      "Submit a different corrected Python source now. Use only the Python 3.12 standard library; do not import numpy, pandas, matplotlib, seaborn, scipy, plotly, sklearn, polars, requests, PIL, cv2, torch, tensorflow, openpyxl, statsmodels, or sympy. Use the exact emit_plot, emit_table, and emit_markdown schemas from the system instruction.";
+  }
+  return Object.freeze(feedback);
+}
+
+function commonUnavailablePythonImports(source) {
+  const found = new Set();
+  for (const rawLine of String(source || "").split("\n")) {
+    const line = rawLine.trim();
+    const fromMatch = /^from\s+([A-Za-z_][A-Za-z0-9_.]*)\s+import\s+/u.exec(line);
+    if (fromMatch) {
+      const root = fromMatch[1].split(".")[0].toLowerCase();
+      if (COMMON_UNAVAILABLE_PYTHON_PACKAGES.has(root)) found.add(root);
+      continue;
+    }
+    const importMatch = /^import\s+([^#;]+)/u.exec(line);
+    if (!importMatch) continue;
+    for (const clause of importMatch[1].split(",")) {
+      const root = clause.trim().split(/\s+as\s+/u)[0].split(".")[0].toLowerCase();
+      if (COMMON_UNAVAILABLE_PYTHON_PACKAGES.has(root)) found.add(root);
+    }
+  }
+  return Object.freeze([...found].sort());
+}
+
+function preflightRejectedExecution(source) {
+  const packages = commonUnavailablePythonImports(source);
+  if (packages.length === 0) return null;
+  return Object.freeze({
+    ok: false,
+    status: "failed",
+    exitCode: null,
+    stdout: "",
+    stderr: `Unavailable third-party Python imports were rejected: ${packages.join(", ")}.`,
+    outputTruncated: false,
+    durationMs: 0,
+    artifacts: Object.freeze([]),
+    resultDigest: null,
   });
+}
+
+function validateCoordinatorReadinessProof(value) {
+  const fields = [
+    "schemaVersion",
+    "ready",
+    "publicActivationReady",
+    "workerCapabilityDigest",
+    "workerHealthDigest",
+    "coordinatorProtocolDigest",
+    "coordinatorHealthDigest",
+    "runtimeProfile",
+    "runtimeBundleRootDigest",
+    "seccompPolicyDigest",
+    "cgroupPolicyDigest",
+    "digest",
+  ];
+  const proof = exactObject(value, fields, fields, "analysis coordinator readiness proof", {
+    code: "ANALYSIS_ACTIVATION_INVALID",
+    status: 503,
+  });
+  if (
+    !Object.isFrozen(proof) ||
+    proof.schemaVersion !== "aginti-integration-analysis-coordinator-v1" ||
+    proof.ready !== true ||
+    proof.publicActivationReady !== true ||
+    typeof proof.runtimeProfile !== "string" ||
+    !/^[A-Za-z0-9._+~-]{1,192}$/u.test(proof.runtimeProfile)
+  ) {
+    fail("ANALYSIS_ACTIVATION_INVALID", "Analysis coordinator readiness is not activation-capable.");
+  }
+  for (const field of fields.slice(3).filter((field) => field !== "runtimeProfile")) {
+    if (typeof proof[field] !== "string" || !/^[a-f0-9]{64}$/u.test(proof[field])) {
+      fail("ANALYSIS_ACTIVATION_INVALID", "Analysis coordinator readiness proof contains an invalid digest.");
+    }
+  }
+  const { digest: suppliedDigest, ...unsigned } = proof;
+  if (suppliedDigest !== contractDigest(unsigned)) {
+    fail("ANALYSIS_ACTIVATION_INVALID", "Analysis coordinator readiness proof digest is invalid.");
+  }
+  return proof;
 }
 
 function completionPayload(messages, modelConfig, { requireTool = false, disableTools = false } = {}) {
@@ -570,6 +674,37 @@ function createPlanner({ coordinator, localModelConfig, modelClient, complete, r
   });
   const attestation = Object.freeze({ ...proofUnsigned, digest: contractDigest(proofUnsigned) });
 
+  async function activate(optionsValue = {}) {
+    const options = exactObject(optionsValue, ["signal"], [], "analysis planner activation options", {
+      code: "ANALYSIS_ACTIVATION_INVALID",
+      status: 500,
+    });
+    if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) {
+      fail("ANALYSIS_ACTIVATION_INVALID", "Analysis planner activation signal is invalid.");
+    }
+    const readinessProof = validateCoordinatorReadinessProof(
+      await coordinator.readiness({ signal: options.signal })
+    );
+    const unsigned = Object.freeze({
+      schemaVersion: INTEGRATION_ANALYSIS_PLANNER_ACTIVATION_SCHEMA_VERSION,
+      owner: "aginti",
+      authority: "aginti",
+      ready: true,
+      publicActivationReady: true,
+      plannerDigest: attestation.digest,
+      coordinatorDigest: coordinator.attestation.digest,
+      modelBindingDigest: attestation.fixedModelBindingDigest,
+      readinessDigest: readinessProof.digest,
+      readinessProof,
+    });
+    const activation = Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
+    PLANNER_ACTIVATION_METADATA.set(
+      activation,
+      Object.freeze({ planner, coordinator, requireSystemdCredential })
+    );
+    return activation;
+  }
+
   async function run(scopeValue, inputValue, optionsValue = {}) {
     const scope = normalizeScope(scopeValue);
     const input = normalizeRunInput(inputValue);
@@ -586,6 +721,7 @@ function createPlanner({ coordinator, localModelConfig, modelClient, complete, r
     const executionDigests = new Set();
     let toolCalls = 0;
     let executionStatus = null;
+    const explicitExecution = EXPLICIT_EXECUTION_INTENT.test(input.prompt);
 
     const emitProgress = async (phase, details = {}) => {
       assertNotAborted(signal);
@@ -602,7 +738,9 @@ function createPlanner({ coordinator, localModelConfig, modelClient, complete, r
       await emitProgress("planning");
       for (let modelStep = 0; modelStep <= INTEGRATION_ANALYSIS_MAX_TOOL_CALLS; modelStep += 1) {
         assertNotAborted(signal);
-        const requireTool = modelStep === 0 && EXPLICIT_EXECUTION_INTENT.test(input.prompt);
+        const requireTool =
+          explicitExecution &&
+          (toolCalls === 0 || (toolCalls < INTEGRATION_ANALYSIS_MAX_TOOL_CALLS && executionStatus !== "succeeded"));
         const disableTools = toolCalls >= INTEGRATION_ANALYSIS_MAX_TOOL_CALLS;
         const payload = completionPayload(messages, modelConfig, { requireTool, disableTools });
         assertWithinModelContext(payload, modelConfig);
@@ -648,27 +786,39 @@ function createPlanner({ coordinator, localModelConfig, modelClient, complete, r
           toolCallNumber: toolCalls + 1,
           executionState: "starting",
         });
-        const execution = await coordinator.execute(scope, assistant.toolCall.args, {
-          signal,
-          async onProgress(progress) {
-            const state = EXECUTION_STATES.has(progress?.state) ? progress.state : "running";
-            if (state === lastExecutionState) return;
-            lastExecutionState = state;
-            await emitProgress("executing", {
-              toolName: INTEGRATION_ANALYSIS_TOOL_NAME,
-              toolCallNumber: toolCalls + 1,
-              executionState: state,
-            });
-          },
-          async onArtifact(value) {
-            const artifact = publicArtifact(value);
-            if (artifactIds.has(artifact.id)) return;
-            artifactIds.add(artifact.id);
-            artifacts.push(artifact);
-            await options.onArtifact?.(artifact);
-            assertNotAborted(signal);
-          },
-        });
+        const rejectedExecution = preflightRejectedExecution(assistant.toolCall.args.source);
+        let execution;
+        if (rejectedExecution) {
+          lastExecutionState = "failed";
+          await emitProgress("executing", {
+            toolName: INTEGRATION_ANALYSIS_TOOL_NAME,
+            toolCallNumber: toolCalls + 1,
+            executionState: "failed",
+          });
+          execution = rejectedExecution;
+        } else {
+          execution = await coordinator.execute(scope, assistant.toolCall.args, {
+            signal,
+            async onProgress(progress) {
+              const state = EXECUTION_STATES.has(progress?.state) ? progress.state : "running";
+              if (state === lastExecutionState) return;
+              lastExecutionState = state;
+              await emitProgress("executing", {
+                toolName: INTEGRATION_ANALYSIS_TOOL_NAME,
+                toolCallNumber: toolCalls + 1,
+                executionState: state,
+              });
+            },
+            async onArtifact(value) {
+              const artifact = publicArtifact(value);
+              if (artifactIds.has(artifact.id)) return;
+              artifactIds.add(artifact.id);
+              artifacts.push(artifact);
+              await options.onArtifact?.(artifact);
+              assertNotAborted(signal);
+            },
+          });
+        }
         toolCalls += 1;
         executionStatus = execution.status;
         const feedback = modelToolResult(execution);
@@ -688,7 +838,7 @@ function createPlanner({ coordinator, localModelConfig, modelClient, complete, r
     }
   }
 
-  const planner = Object.freeze({ attestation, run });
+  const planner = Object.freeze({ attestation, activate, run });
   PLANNER_BRAND.add(planner);
   return planner;
 }
@@ -700,6 +850,43 @@ export function assertIntegrationAnalysisPlanner(value, { requireSystemdCredenti
   if (requireSystemdCredential && value.attestation.modelTransport !== "localllm-fixed-loopback") {
     throw new TypeError("integration analysis planner lacks its fixed LocalLLM binding");
   }
+  return value;
+}
+
+export function assertIntegrationAnalysisPlannerActivation(
+  value,
+  { planner, requireSystemdCredential = true } = {}
+) {
+  const metadata = value && PLANNER_ACTIVATION_METADATA.get(value);
+  if (!metadata || !Object.isFrozen(value)) {
+    throw new TypeError("integration analysis planner activation is not AgInTi-owned");
+  }
+  if (requireSystemdCredential && metadata.requireSystemdCredential !== true) {
+    throw new TypeError("integration analysis planner activation is test-only");
+  }
+  if (planner !== undefined && metadata.planner !== assertIntegrationAnalysisPlanner(planner, {
+    requireSystemdCredential,
+  })) {
+    throw new TypeError("integration analysis planner activation belongs to a different planner");
+  }
+  if (
+    value.schemaVersion !== INTEGRATION_ANALYSIS_PLANNER_ACTIVATION_SCHEMA_VERSION ||
+    value.owner !== "aginti" ||
+    value.authority !== "aginti" ||
+    value.ready !== true ||
+    value.publicActivationReady !== true ||
+    value.plannerDigest !== metadata.planner.attestation.digest ||
+    value.coordinatorDigest !== metadata.coordinator.attestation.digest ||
+    value.modelBindingDigest !== metadata.planner.attestation.fixedModelBindingDigest ||
+    value.readinessDigest !== value.readinessProof?.digest
+  ) {
+    throw new TypeError("integration analysis planner activation identity is invalid");
+  }
+  const { digest: suppliedDigest, ...unsigned } = value;
+  if (suppliedDigest !== contractDigest(unsigned)) {
+    throw new TypeError("integration analysis planner activation digest is invalid");
+  }
+  validateCoordinatorReadinessProof(value.readinessProof);
   return value;
 }
 
