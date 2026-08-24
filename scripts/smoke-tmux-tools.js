@@ -261,6 +261,24 @@ try {
   assert.equal(dockerNestedAginti.allowed, false, "Docker run_command should block nested aginti CLI calls");
   assert.equal(dockerNestedAginti.category, "nested-aginti", "nested aginti block should be categorized");
 
+  const dockerShellNestedAginti = checkToolUse({
+    toolName: "run_command",
+    args: { command: "bash -lc 'aginti doctor --json'" },
+    config: dockerConfig,
+  });
+  assert.equal(dockerShellNestedAginti.allowed, false, "Docker shell -c should not bypass the nested aginti guard");
+  assert.equal(dockerShellNestedAginti.category, "nested-aginti", "shell-nested aginti block should be categorized");
+
+  const dockerAgintiLiteral = checkToolUse({
+    toolName: "run_command",
+    args: {
+      command:
+        "/aginti-env/python/bin/python3 -c \"import docx; print('aginti has all')\"; cat /aginti-env/python/pyvenv.cfg",
+    },
+    config: dockerConfig,
+  });
+  assert.equal(dockerAgintiLiteral.allowed, true, "AgInTi text and /aginti-env paths must not be treated as nested CLI calls");
+
   console.log(
     JSON.stringify(
       {
@@ -291,6 +309,8 @@ try {
           "docker-run-command-tmux-search-allowed",
           "docker-run-command-npx-aginti-guardrail",
           "docker-run-command-nested-aginti-guardrail",
+          "docker-run-command-shell-nested-aginti-guardrail",
+          "docker-run-command-aginti-literal-and-env-path",
         ],
       },
       null,

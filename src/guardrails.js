@@ -7,6 +7,7 @@ import { checkMcpToolUse, isMcpBridgeTool } from "./mcp/policy.js";
 import { AGENTLINK_TOOL_NAMES, checkAgentLinkToolUse } from "./agentlink.js";
 import { normalizeProviderId } from "./provider-contract.js";
 import { resolveAuxiliaryImageEndpoint } from "./auxiliary-tools.js";
+import { splitTopLevelShellCommands, tokenizeShellWords } from "./shell-syntax.js";
 
 const DESTRUCTIVE_KEYWORDS = [
   "delete",
@@ -80,7 +81,49 @@ function isNpxAgintiCommand(command = "") {
 }
 
 function isAgintiCliCommand(command = "") {
-  return /(?:^|[\s;&|('"])(?:node\s+[-\w./]*aginti-cli\.js|aginti)(?:\s|$)/i.test(command);
+  const executableIndex = (tokens = []) => {
+    let index = 0;
+    const assignment = /^[A-Za-z_][A-Za-z0-9_]*=/;
+    while (assignment.test(tokens[index] || "")) index += 1;
+
+    if (pathBase(tokens[index]) === "env") {
+      index += 1;
+      while (/^-/.test(tokens[index] || "") || assignment.test(tokens[index] || "")) index += 1;
+    }
+    while (["command", "exec", "nohup", "sudo"].includes(pathBase(tokens[index]))) {
+      index += 1;
+      while (/^-/.test(tokens[index] || "")) index += 1;
+    }
+    return index;
+  };
+
+  const inspect = (source = "", depth = 0) => {
+    if (depth > 2) return false;
+    for (const segment of splitTopLevelShellCommands(source)) {
+      const tokens = tokenizeShellWords(segment);
+      if (!tokens.length) continue;
+      const index = executableIndex(tokens);
+      const executable = pathBase(tokens[index]);
+      if (/^aginti(?:\.exe)?$/i.test(executable)) return true;
+      if (/^node(?:\.exe)?$/i.test(executable)) {
+        const script = tokens.slice(index + 1).find((token) => !token.startsWith("-"));
+        if (/^aginti-cli\.js$/i.test(pathBase(script))) return true;
+      }
+      if (/^(?:ba|z)?sh$/i.test(executable)) {
+        const commandOption = tokens.findIndex(
+          (token, tokenIndex) => tokenIndex > index && /^-[^-]*c[^-]*$/.test(token)
+        );
+        if (commandOption >= 0 && inspect(tokens[commandOption + 1] || "", depth + 1)) return true;
+      }
+    }
+    return false;
+  };
+
+  return inspect(command);
+}
+
+function pathBase(value = "") {
+  return String(value || "").replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() || "";
 }
 
 function normalizeDomain(hostname) {
