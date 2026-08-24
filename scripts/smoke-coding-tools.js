@@ -1062,6 +1062,24 @@ try {
   assert(safeChmodAndRunPolicy.allowed, "safe workspace chmod + script run sequence should be allowed in docker-workspace allow mode");
   const unsafeChmodPolicy = evaluateCommandPolicy("chmod +x /etc/passwd", dockerWorkspacePolicy);
   assert(!unsafeChmodPolicy.allowed, "chmod outside the workspace should be blocked");
+  const documentBuildSequencePolicy = evaluateCommandPolicy(
+    "sha256sum README.md PROJECT_NOTES.md source/budget.csv source/meeting-notes.txt source/style-notes.md > /tmp/src-before.sha256 && cat /tmp/src-before.sha256 && echo '---' && chmod +x build.sh scripts/*.py && ./build.sh",
+    dockerWorkspacePolicy
+  );
+  assert(
+    documentBuildSequencePolicy.allowed,
+    "bounded document build sequence with workspace-local chmod glob should be allowed in trusted Docker mode"
+  );
+  assert(
+    documentBuildSequencePolicy.category === "general-shell",
+    "document build sequence should remain broad trusted shell, not destructive"
+  );
+  const hostGlobChmodPolicy = evaluateCommandPolicy("chmod +x scripts/*.py", hostWorkspacePolicy);
+  assert(!hostGlobChmodPolicy.allowed, "host workspace chmod globs should require explicit trusted host access");
+  const recursiveChmodPolicy = evaluateCommandPolicy("chmod -R +x scripts", dockerWorkspacePolicy);
+  assert(!recursiveChmodPolicy.allowed, "recursive chmod should remain outside the bounded permission-change policy");
+  const parentTraversalChmodPolicy = evaluateCommandPolicy("chmod +x scripts/../outside.py", dockerWorkspacePolicy);
+  assert(!parentTraversalChmodPolicy.allowed, "chmod parent traversal should remain blocked");
   const hostWorkspaceChmodPolicy = evaluateCommandPolicy("chmod +x android-app/gradlew && echo \"CHMOD_OK\"", hostWorkspacePolicy);
   assert(hostWorkspaceChmodPolicy.allowed, "host mode should allow workspace-local chmod without full-host destructive access");
   assert(
