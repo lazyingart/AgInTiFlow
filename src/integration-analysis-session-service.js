@@ -60,7 +60,7 @@ export const INTEGRATION_ANALYSIS_SESSION_LIMITS = Object.freeze({
   maximumMutationReceiptsPerScope: 1024,
   maximumMutationReceiptResponseBytes: 256 * 1024,
   maximumStateBytes: 4 * 1024 * 1024,
-  maximumPromptBytes: 16 * 1024,
+  maximumPromptBytes: 32 * 1024,
   maximumConversationMessages: 24,
   maximumConversationMessageBytes: 8 * 1024,
   maximumConversationBytes: 48 * 1024,
@@ -192,6 +192,35 @@ function publicText(value, label, maximum = 32_000) {
 function publicErrorCode(error) {
   const code = String(error?.publicCode || error?.code || "ANALYSIS_FAILED").trim();
   return /^[A-Z][A-Z0-9_]{0,95}$/u.test(code) ? code : "ANALYSIS_FAILED";
+}
+
+function publicFailureMessage(error, code = publicErrorCode(error)) {
+  const plannerMessage = String(error?.message || "");
+  if (code === "ANALYSIS_EXPLICIT_PYTHON_INVALID") {
+    return "Python was not run because the request was ambiguous or malformed. Use exactly one fenced block labelled python and a direct instruction such as ‘Run this code.’";
+  }
+  if (code === "ANALYSIS_PLOT_ARTIFACT_REQUIRED") {
+    return "Python ran, but it did not produce the requested plot. Call emit_plot(...) and resume with corrected code.";
+  }
+  if (code === "ANALYSIS_EXECUTION_FAILED") {
+    if (plannerMessage === "The requested Python execution timed out.") {
+      return "Python execution timed out after 10 seconds. Reduce the work or split it into smaller steps, then resume.";
+    }
+    if (plannerMessage === "The requested Python uses packages unavailable in the bounded standard-library runtime.") {
+      return "Python was not run because this execution sandbox supports the standard library only. Remove third-party imports, then resume.";
+    }
+    return "Python execution failed. Check the code for syntax or runtime errors and unavailable packages, then resume with corrected code.";
+  }
+  if (code === "ANALYSIS_MODEL_UNAVAILABLE") {
+    return "The local analysis model is temporarily unavailable. Resume this run to try again.";
+  }
+  if (code === "ANALYSIS_PYTHON_TOOL_REQUIRED" || code === "ANALYSIS_TOOL_REQUIRED") {
+    return "The agent could not form a valid bounded Python execution request. Make the run instruction explicit, then resume.";
+  }
+  if (code === "ANALYSIS_CONTEXT_BUDGET_EXCEEDED") {
+    return "This request is too large for the local analysis context. Shorten it or split it into smaller steps, then resume.";
+  }
+  return "Analysis could not be completed. You can resume this run.";
 }
 
 function byteLength(value) {
@@ -1973,12 +2002,13 @@ function createService(options, { testOnly }) {
         run.error = null;
         appendEvent(run, "run.cancelled", {}, failedAt);
       } else {
+        const errorCode = publicErrorCode(error);
         run.status = "failed";
         run.schedulingState = "terminal";
         run.completedAt = failedAt;
         run.error = {
-          code: publicErrorCode(error),
-          message: "Analysis could not be completed. You can resume this run.",
+          code: errorCode,
+          message: publicFailureMessage(error, errorCode),
         };
         appendEvent(run, "run.failed", {}, failedAt);
       }

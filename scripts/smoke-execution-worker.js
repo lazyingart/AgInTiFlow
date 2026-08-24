@@ -70,6 +70,33 @@ expectWorkerError(() => validateExecutionJobRequest({ ...valid, sourceSha256: "0
 expectWorkerError(() => validateExecutionJobRequest({ ...valid, language: "shell" }), "EXECUTION_REQUEST_INVALID");
 expectWorkerError(() => validateExecutionJobRequest({ ...valid, source: "x\0y", sourceSha256: sha256("x\0y") }), "EXECUTION_REQUEST_INVALID");
 expectWorkerError(() => validateExecutionJobRequest({ ...valid, source: "x\u0001y", sourceSha256: sha256("x\u0001y") }), "EXECUTION_REQUEST_INVALID");
+const malformedHighSurrogate = "print('x')\ud800";
+const malformedLowSurrogate = "print('x')\udc00";
+assert.equal(
+  sha256(malformedHighSurrogate),
+  sha256(malformedLowSurrogate),
+  "Node's UTF-8 replacement encoding demonstrates why scalar validation must precede hashing"
+);
+expectWorkerError(
+  () => validateExecutionJobRequest({
+    ...valid,
+    source: malformedHighSurrogate,
+    sourceSha256: sha256(malformedHighSurrogate),
+  }),
+  "EXECUTION_REQUEST_INVALID"
+);
+expectWorkerError(
+  () => validateExecutionJobRequest({
+    ...valid,
+    source: malformedLowSurrogate,
+    sourceSha256: sha256(malformedLowSurrogate),
+  }),
+  "EXECUTION_REQUEST_INVALID"
+);
+expectWorkerError(
+  () => validateExecutionJobRequest({ ...valid, stdin: "x\ud800", sourceSha256: sha256(valid.source) }),
+  "EXECUTION_REQUEST_INVALID"
+);
 expectWorkerError(() => validateExecutionJobRequest({ ...valid, timeoutMs: EXECUTION_LIMITS.maximumWallTimeMs + 1 }), "EXECUTION_REQUEST_INVALID");
 expectWorkerError(
   () => validateExecutionJobRequest({ ...valid, source: "x".repeat(EXECUTION_LIMITS.maximumSourceBytes + 1), sourceSha256: sha256("x".repeat(EXECUTION_LIMITS.maximumSourceBytes + 1)) }),

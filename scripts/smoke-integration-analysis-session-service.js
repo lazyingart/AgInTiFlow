@@ -4,17 +4,34 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import {
+  EXECUTION_WORKER_API_SCHEMA_VERSION,
+  EXECUTION_WORKER_RPC_PATHS,
+} from "../src/execution-worker-api.js";
+import { createTestOnlyExecutionWorkerClient } from "../src/execution-worker-client.js";
+import { createExecutionJobManager } from "../src/execution-worker-jobs.js";
+import {
+  EXECUTION_LIMITS,
+  EXECUTION_RESULT_SCHEMA_VERSION,
+  EXECUTION_WORKER_SCHEMA_VERSION,
+  validateExecutionResult,
+} from "../src/execution-worker.js";
 import { INTEGRATION_IDEMPOTENCY_REQUEST_HASH_ALGORITHM } from "../src/integration-api.js";
 import {
   INTEGRATION_ANALYSIS_MAX_TOOL_CALLS,
   INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION,
+  createTestOnlyIntegrationAnalysisPlanner,
 } from "../src/integration-analysis-planner.js";
-import { INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION } from "../src/integration-analysis-coordinator.js";
+import {
+  INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION,
+  createTestOnlyIntegrationAnalysisCoordinator,
+} from "../src/integration-analysis-coordinator.js";
 import {
   INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION,
   assertIntegrationAnalysisSessionService,
   createTestOnlyIntegrationAnalysisSessionService,
 } from "../src/integration-analysis-session-service.js";
+import { sanitizeIntegrationArtifact } from "../src/integration-artifacts.js";
 import { INTEGRATION_RPC_PATHS, canonicalJson, contractDigest } from "../src/integration-policy.js";
 import { validatePublicIntegrationEvent } from "../src/integration-events.js";
 
@@ -25,6 +42,24 @@ const OTHER_BROWSER_SESSION_ID = "c".repeat(64);
 const ZERO_DIGEST = "0".repeat(64);
 const RAW_SOURCE_MARKER = "RAW_EXECUTION_SOURCE_SHOULD_NOT_PERSIST";
 const RAW_STDOUT_MARKER = "RAW_EXECUTION_STDOUT_SHOULD_NOT_PERSIST";
+const EXPLICIT_PYTHON_SOURCE_MARKER = "RAW_EXPLICIT_PYTHON_AUTHORITATIVE_BOUNDARY_7f8c91";
+const EXPLICIT_PYTHON_SOURCE = [
+  `# ${EXPLICIT_PYTHON_SOURCE_MARKER}`,
+  "values = [1, 4, 9]",
+  "print('sum=' + str(sum(values)))",
+  "emit_plot('Durable squares', {'schemaVersion':'1','type':'line','labels':['1','2','3'],'series':[{'name':'square','data':values}]})",
+].join("\n");
+const EXPLICIT_PYTHON_PROMPT =
+  `Run this Python code and show the plot.\n\n\`\`\`python\n${EXPLICIT_PYTHON_SOURCE}\n\`\`\``;
+const EXPLICIT_WORKER_ID = "worker_session_explicit_python_000001";
+const EXPLICIT_LOCAL_MODEL = Object.freeze({
+  baseURL: "http://127.0.0.1:8008/v1",
+  model: "localllm-analysis-session-smoke",
+  apiKey: "test-only-explicit-python-session-key",
+  contextWindowTokens: 32_768,
+  maxOutputTokens: 1_024,
+  modelTimeoutMs: 30_000,
+});
 
 function context(principalId = PRINCIPAL_ID, browserSessionId = BROWSER_SESSION_ID) {
   return Object.freeze({ principalId, browserSessionId });
@@ -96,6 +131,154 @@ function plotArtifact() {
   });
 }
 
+function explicitWorkerCapability() {
+  const core = Object.freeze({
+    schemaVersion: EXECUTION_WORKER_SCHEMA_VERSION,
+    workerId: EXPLICIT_WORKER_ID,
+    implementation: "aginti-execution-worker",
+    implementationVersion: "1",
+    runtime: Object.freeze({
+      profile: "python-bwrap-netless-v1",
+      policyDigest: "8".repeat(64),
+      runtimeDigest: "9".repeat(64),
+      proofDigest: "a".repeat(64),
+      seccomp: true,
+      seccompPolicyVerified: true,
+      seccompPolicyDigest: "b".repeat(64),
+      deniedSyscallsProven: true,
+      minimalRuntimeRoot: true,
+      runtimeBundleDigestPinned: true,
+      runtimeBundleRootDigest: "c".repeat(64),
+    }),
+    containment: Object.freeze({
+      aggregateCgroupVerified: true,
+      cgroupPolicyDigest: "d".repeat(64),
+    }),
+    languages: Object.freeze(["python"]),
+    artifacts: Object.freeze({ schemaVersion: "1", kinds: Object.freeze(["plot", "table", "markdown"]) }),
+    limits: EXECUTION_LIMITS,
+    executionGate: Object.freeze({
+      requiresVerifiedSeccompPolicy: true,
+      requiresAggregateCgroupContainment: true,
+      testOnlyBypassConfigured: false,
+    }),
+  });
+  const capabilityDigest = contractDigest(core);
+  const admission = Object.freeze({ state: "ready", activeJobs: 0, maximumConcurrentJobs: 2 });
+  const activation = Object.freeze({ publicReady: true, blockers: Object.freeze([]) });
+  return Object.freeze({
+    ...core,
+    ready: true,
+    admission,
+    activation,
+    capabilityDigest,
+    healthDigest: contractDigest({ capabilityDigest, ready: true, admission, activation }),
+  });
+}
+
+function explicitWorkerArtifact(request) {
+  const artifact = Object.freeze({
+    title: "Durable explicit Python squares",
+    kind: "plot",
+    spec: Object.freeze({
+      schemaVersion: "1",
+      type: "line",
+      xLabel: "n",
+      yLabel: "n squared",
+      labels: Object.freeze(["1", "2", "3"]),
+      series: Object.freeze([
+        Object.freeze({ name: "square", data: Object.freeze([1, 4, 9]) }),
+      ]),
+    }),
+  });
+  return sanitizeIntegrationArtifact({
+    id: `art_${contractDigest({
+      jobId: request.jobId,
+      attempt: request.attempt,
+      index: 0,
+      kind: artifact.kind,
+      title: artifact.title,
+      spec: artifact.spec,
+    }).slice(0, 64)}`,
+    ...artifact,
+  });
+}
+
+function explicitWorkerResult(request, signal) {
+  const status = signal?.aborted ? "cancelled" : "succeeded";
+  const unsigned = Object.freeze({
+    schemaVersion: EXECUTION_RESULT_SCHEMA_VERSION,
+    jobId: request.jobId,
+    attempt: request.attempt,
+    sourceSha256: request.sourceSha256,
+    status,
+    exitCode: status === "succeeded" ? 0 : null,
+    stdout: status === "succeeded" ? "sum=14\n" : "",
+    stderr: "",
+    outputTruncated: false,
+    durationMs: 8,
+    artifacts: status === "succeeded" ? Object.freeze([explicitWorkerArtifact(request)]) : Object.freeze([]),
+  });
+  return validateExecutionResult({ ...unsigned, resultDigest: contractDigest(unsigned) }, request);
+}
+
+function explicitRpcForManager(manager, calls) {
+  return async (pathname, body) => {
+    let response;
+    if (pathname === EXECUTION_WORKER_RPC_PATHS.capabilities) response = await manager.capabilities();
+    else if (pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart) response = await manager.start(body);
+    else if (pathname === EXECUTION_WORKER_RPC_PATHS.jobsStatus) response = manager.status(body);
+    else if (pathname === EXECUTION_WORKER_RPC_PATHS.jobsEvents) response = manager.events(body);
+    else if (pathname === EXECUTION_WORKER_RPC_PATHS.jobsCancel) response = manager.cancel(body);
+    else if (pathname === EXECUTION_WORKER_RPC_PATHS.artifactsList) response = manager.listArtifacts(body);
+    else if (pathname === EXECUTION_WORKER_RPC_PATHS.artifactsGet) response = manager.getArtifact(body);
+    else throw new Error("unexpected explicit Python execution RPC path");
+    calls.push(Object.freeze({ pathname, body, response }));
+    return Object.freeze({ schemaVersion: EXECUTION_WORKER_API_SCHEMA_VERSION, response });
+  };
+}
+
+function createExplicitPythonRunnerFixture() {
+  const workerSources = [];
+  const rpcCalls = [];
+  let modelCalls = 0;
+  const worker = Object.freeze({
+    capabilities: async () => explicitWorkerCapability(),
+    async execute(request, { signal } = {}) {
+      workerSources.push(request.source);
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 5);
+        signal?.addEventListener?.("abort", () => {
+          clearTimeout(timer);
+          resolve();
+        }, { once: true });
+      });
+      return explicitWorkerResult(request, signal);
+    },
+  });
+  const manager = createExecutionJobManager({ worker });
+  const client = createTestOnlyExecutionWorkerClient(explicitRpcForManager(manager, rpcCalls));
+  const coordinator = createTestOnlyIntegrationAnalysisCoordinator(client, { pollMs: 25 });
+  const planner = createTestOnlyIntegrationAnalysisPlanner({
+    coordinator,
+    localModelConfig: EXPLICIT_LOCAL_MODEL,
+    modelClient: Object.freeze({ testOnly: true }),
+    async complete() {
+      modelCalls += 1;
+      throw new Error("LocalLLM must not run for an explicit fenced-Python request");
+    },
+  });
+  return Object.freeze({
+    planner,
+    coordinator,
+    rpcCalls,
+    workerSources,
+    get modelCalls() {
+      return modelCalls;
+    },
+  });
+}
+
 function runnerError(code, message) {
   const error = new Error(message);
   error.code = code;
@@ -153,6 +336,12 @@ function createFakeRunner() {
             },
           }));
         });
+      }
+      if (input.prompt.includes("plot artifact rejection")) {
+        throw runnerError(
+          "ANALYSIS_PLOT_ARTIFACT_REQUIRED",
+          `poisoned ${RAW_SOURCE_MARKER} /root/private/plot.log`
+        );
       }
       if (input.prompt.includes("fail")) {
         throw runnerError("ANALYSIS_MODEL_UNAVAILABLE", `private ${RAW_SOURCE_MARKER} /root/private/model.log`);
@@ -257,11 +446,129 @@ async function stateFile(root) {
   return path.join(root, "scopes", scopeEntries[0], "state.json");
 }
 
+async function explicitPythonDurabilityRoundTrip(temporaryRoot) {
+  const root = path.join(temporaryRoot, "explicit-python-state");
+  const fixture = createExplicitPythonRunnerFixture();
+  let service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: fixture.planner,
+    stateRoot: root,
+  });
+  let restarted = null;
+  try {
+    const created = await service.createThread({ title: "Explicit Python durability" }, context());
+    const threadId = created.thread.id;
+    const started = await service.startRun(
+      { threadId, input: { text: EXPLICIT_PYTHON_PROMPT } },
+      context()
+    );
+    const runId = started.run.id;
+    await service.waitForIdle();
+
+    const completed = (await service.getRunStatus({ runId }, context())).run;
+    assert.equal(
+      completed.status,
+      "completed",
+      `explicit Python run failed: ${JSON.stringify({ error: completed.error, rpc: fixture.rpcCalls.map(({ pathname, response }) => ({ pathname, state: response?.state, errorCode: response?.errorCode })), workerSourceCount: fixture.workerSources.length, modelCalls: fixture.modelCalls })}`
+    );
+    assert.match(completed.output, /Python execution completed successfully/u);
+    assert.match(completed.output, /sum=14/u);
+    assert.doesNotMatch(completed.output, new RegExp(EXPLICIT_PYTHON_SOURCE_MARKER, "u"));
+    assert.equal(fixture.modelCalls, 0, "explicit fenced Python must bypass LocalLLM");
+    assert.deepEqual(fixture.workerSources, [EXPLICIT_PYTHON_SOURCE]);
+    assert.equal(
+      fixture.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+      1,
+      "explicit fenced Python must create exactly one bounded worker job"
+    );
+
+    const eventResult = await service.loadRunEvents(eventsRequest(runId), context());
+    const events = await eventResult.publicEventLedger.loadEventsAfter(0);
+    assertLedger(events, runId, threadId);
+    const eventTypes = events.map(({ type }) => type);
+    assert.equal(eventTypes.filter((type) => type === "tool.started").length, 1);
+    assert.equal(eventTypes.filter((type) => type === "tool.completed").length, 1);
+    assert.equal(eventTypes.filter((type) => type === "tool.failed").length, 0);
+    assert.equal(eventTypes.filter((type) => type === "artifact.created").length, 1);
+    assert.equal(eventTypes.filter((type) => type === "run.completed").length, 1);
+    assert.ok(eventTypes.indexOf("plan.updated") < eventTypes.indexOf("tool.started"));
+    assert.ok(eventTypes.indexOf("tool.started") < eventTypes.indexOf("tool.completed"));
+    assert.ok(eventTypes.indexOf("tool.completed") < eventTypes.indexOf("run.completed"));
+    assert.ok(eventTypes.indexOf("artifact.created") < eventTypes.indexOf("run.completed"));
+    assert.ok(eventTypes.indexOf("output.completed") < eventTypes.indexOf("run.completed"));
+    assert.doesNotMatch(JSON.stringify(events), new RegExp(EXPLICIT_PYTHON_SOURCE_MARKER, "u"));
+    for (const event of events.filter(({ type }) =>
+      type.startsWith("tool.") || type === "run.completed" || type === "output.completed"
+    )) {
+      assert.doesNotMatch(JSON.stringify(event.payload), new RegExp(EXPLICIT_PYTHON_SOURCE_MARKER, "u"));
+    }
+
+    const artifacts = await service.listArtifacts({ runId }, context());
+    assert.deepEqual(artifacts.artifacts.map(({ kind }) => kind), ["plot"]);
+    const thread = (await service.getThread({ threadId }, context())).thread;
+    assert.deepEqual(thread.messages.map(({ role }) => role), ["user", "assistant"]);
+    assert.equal(thread.messages[0].content, EXPLICIT_PYTHON_PROMPT);
+    assert.doesNotMatch(thread.messages[1].content, new RegExp(EXPLICIT_PYTHON_SOURCE_MARKER, "u"));
+    assert.equal(
+      thread.messages.filter(({ content }) => content.includes(EXPLICIT_PYTHON_SOURCE_MARKER)).length,
+      1,
+      "the authoritative user message must be the only public source boundary"
+    );
+
+    const persistedFile = await stateFile(root);
+    const persistedText = await fs.readFile(persistedFile, "utf8");
+    assert.equal(
+      persistedText.split(EXPLICIT_PYTHON_SOURCE_MARKER).length - 1,
+      1,
+      "raw explicit Python must be persisted exactly once, inside the user message"
+    );
+    assert.equal((await fs.stat(persistedFile)).mode & 0o777, 0o600);
+
+    await expectCode(
+      service.getRunStatus({ runId }, context(PRINCIPAL_ID, OTHER_BROWSER_SESSION_ID)),
+      "NOT_FOUND"
+    );
+    await expectCode(
+      service.loadRunEvents(eventsRequest(runId), context(OTHER_PRINCIPAL_ID, BROWSER_SESSION_ID)),
+      "NOT_FOUND"
+    );
+
+    await service.close({ mode: "wait" });
+    service = null;
+    restarted = createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: fixture.planner,
+      stateRoot: root,
+    });
+    const replayedRun = (await restarted.getRunStatus({ runId }, context())).run;
+    assert.equal(replayedRun.status, "completed");
+    assert.equal(replayedRun.eventCursor.lastHash, completed.eventCursor.lastHash);
+    const replayResult = await restarted.loadRunEvents(eventsRequest(runId), context());
+    const replayedEvents = await replayResult.publicEventLedger.loadEventsAfter(0);
+    assert.deepEqual(replayedEvents, events, "explicit Python event replay changed after restart");
+    assert.deepEqual(
+      (await restarted.getThread({ threadId }, context())).thread.messages,
+      thread.messages,
+      "explicit Python message replay changed after restart"
+    );
+    assert.deepEqual(
+      (await restarted.listArtifacts({ runId }, context())).artifacts,
+      artifacts.artifacts,
+      "explicit Python artifacts changed after restart"
+    );
+    assert.deepEqual(fixture.workerSources, [EXPLICIT_PYTHON_SOURCE], "terminal replay must not rerun Python");
+    assert.equal(fixture.modelCalls, 0, "terminal replay must not invoke LocalLLM");
+  } finally {
+    await service?.close({ mode: "abort" }).catch(() => {});
+    await restarted?.close({ mode: "abort" }).catch(() => {});
+    fixture.coordinator.close();
+  }
+}
+
 async function main() {
   const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-analysis-session-"));
   const root = path.join(temporaryRoot, "state");
   const fakeRunner = createFakeRunner();
   try {
+    await explicitPythonDurabilityRoundTrip(temporaryRoot);
     const service = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: fakeRunner, stateRoot: root });
     assertIntegrationAnalysisSessionService(service, { allowTestOnly: true });
     assert.throws(() => assertIntegrationAnalysisSessionService(service), /test-only/u);
@@ -563,6 +870,10 @@ async function main() {
     const failed = (await restarted.getRunStatus({ runId: failedStarted.run.id }, context())).run;
     assert.equal(failed.status, "failed");
     assert.equal(failed.error.code, "ANALYSIS_MODEL_UNAVAILABLE");
+    assert.equal(
+      failed.error.message,
+      "The local analysis model is temporarily unavailable. Resume this run to try again."
+    );
     assert.doesNotMatch(failed.error.message, /private|root|source/iu);
 
     const failedResultThread = await restarted.createThread({ title: "Failed runner result" }, context());
@@ -580,6 +891,10 @@ async function main() {
     assert.equal(failedResult.status, "failed");
     assert.equal(failedResult.output, "");
     assert.equal(failedResult.error.code, "ANALYSIS_EXECUTION_FAILED");
+    assert.equal(
+      failedResult.error.message,
+      "Python execution failed. Check the code for syntax or runtime errors and unavailable packages, then resume with corrected code."
+    );
     const failedResultEventsResponse = await restarted.loadRunEvents(
       eventsRequest(failedResult.id),
       context()
@@ -599,6 +914,34 @@ async function main() {
       await restarted.getThread({ threadId: failedResultThread.thread.id }, context())
     ).thread.messages;
     assert.deepEqual(failedResultMessages.map(({ role }) => role), ["user"]);
+
+    const missingPlotThread = await restarted.createThread({ title: "Missing plot" }, context());
+    const missingPlotStarted = await restarted.startRun(
+      { threadId: missingPlotThread.thread.id, input: { text: "plot artifact rejection" } },
+      context()
+    );
+    await restarted.waitForIdle();
+    const missingPlot = (
+      await restarted.getRunStatus({ runId: missingPlotStarted.run.id }, context())
+    ).run;
+    assert.equal(missingPlot.status, "failed");
+    assert.equal(missingPlot.output, "");
+    assert.deepEqual(missingPlot.error, {
+      code: "ANALYSIS_PLOT_ARTIFACT_REQUIRED",
+      message: "Python ran, but it did not produce the requested plot. Call emit_plot(...) and resume with corrected code.",
+    });
+    assert.doesNotMatch(JSON.stringify(missingPlot), new RegExp(`${RAW_SOURCE_MARKER}|/root/private`, "u"));
+    const missingPlotEventsResponse = await restarted.loadRunEvents(
+      eventsRequest(missingPlot.id),
+      context()
+    );
+    const missingPlotEvents = await missingPlotEventsResponse.publicEventLedger.loadEventsAfter(0);
+    assert.equal(missingPlotEvents.at(-1).type, "run.failed");
+    assert.equal(missingPlotEvents.some(({ type }) => type.startsWith("output.")), false);
+    assert.deepEqual(
+      (await restarted.getThread({ threadId: missingPlotThread.thread.id }, context())).thread.messages.map(({ role }) => role),
+      ["user"]
+    );
 
     const resumed = await restarted.resumeRun(
       { runId: failed.id, input: { text: "Run Python and show the plot now" } },

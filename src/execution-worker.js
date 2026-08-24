@@ -420,7 +420,11 @@ function exactObject(input, allowed, required, label, { code = "EXECUTION_REQUES
 }
 
 function boundedUtf8(value, label, { minimum = 0, maximum } = {}) {
-  if (typeof value !== "string" || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)) {
+  if (
+    typeof value !== "string" ||
+    !value.isWellFormed() ||
+    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)
+  ) {
     fail("EXECUTION_REQUEST_INVALID", `${label} must be bounded UTF-8 text.`, { status: 400 });
   }
   const bytes = Buffer.byteLength(value, "utf8");

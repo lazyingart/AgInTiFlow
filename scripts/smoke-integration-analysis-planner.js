@@ -28,6 +28,12 @@ import {
   IntegrationExpressionPlotError,
   compileIntegrationExpressionPlotPrompt,
 } from "../src/integration-expression-plot.js";
+import {
+  INTEGRATION_EXPLICIT_PYTHON_SCHEMA_VERSION,
+  IntegrationExplicitPythonError,
+  classifyIntegrationExplicitPythonPrompt,
+  compileIntegrationExplicitPythonPrompt,
+} from "../src/integration-explicit-python.js";
 import { sanitizeIntegrationArtifact } from "../src/integration-artifacts.js";
 import { contractDigest } from "../src/integration-policy.js";
 
@@ -324,6 +330,468 @@ function expressionPlotCompilerIsStrict() {
       prompt
     );
   }
+}
+
+function explicitPythonCompilerIsStrict() {
+  const source = "values = [1, 4, 9]\nprint(values)";
+  const exact = compileIntegrationExplicitPythonPrompt(
+    `Please run this Python code and show the result.\n\n\`\`\`python\n${source}\n\`\`\``
+  );
+  assert(exact);
+  assert(Object.isFrozen(exact));
+  assert.equal(exact.schemaVersion, INTEGRATION_EXPLICIT_PYTHON_SCHEMA_VERSION);
+  assert.equal(exact.source, source);
+  assert.equal(exact.stdin, "");
+  assert.equal(exact.timeoutMs, 10_000);
+
+  const chinese = compileIntegrationExplicitPythonPrompt("请执行下面代码\n```python\nprint('好')\n```");
+  assert.equal(chinese.source, "print('好')");
+  for (const prompt of [
+    "Kindly run this Python code\n```python\nprint(1)\n```",
+    "I'd like you to run this Python code\n```python\nprint(1)\n```",
+    "Let's run this Python code\n```python\nprint(1)\n```",
+    "請執行下面的程式碼\n```python\nprint('好')\n```",
+    "Run and show the plot.\n```python\nprint(1)\n```",
+    "Run and show the output.\n```python\nprint(1)\n```",
+    "Execute and return the result.\n```python\nprint(1)\n```",
+    "Execute and show both stdout and messages.\n```python\nprint(1)\n```",
+    "Run, show output.\n```python\nprint(1)\n```",
+    "Run; then show output.\n```python\nprint(1)\n```",
+    "Run, I need a plot.\n```python\nprint(1)\n```",
+    "Execute; I would like a graph.\n```python\nprint(1)\n```",
+    "执行：\n```python\nprint(1)\n```",
+    "執行一下:\n```python\nprint(1)\n```",
+  ]) {
+    assert.equal(classifyIntegrationExplicitPythonPrompt(prompt).kind, "execute", prompt);
+  }
+
+  for (const prompt of [
+    "Explain this code:\n```python\nprint(1)\n```",
+    "Do not run this code:\n```python\nprint(1)\n```",
+    "The user said run this code:\n```python\nprint(1)\n```",
+    "```python\nprint(1)\n```",
+    "Run this code without providing a fenced block.",
+  ]) {
+    assert.equal(compileIntegrationExplicitPythonPrompt(prompt), null, prompt);
+  }
+
+  for (const prompt of [
+    "Run this:\n```py\nprint(1)\n```",
+    "Run this:\n```python3\nprint(1)\n```",
+    "Run this:\n```python\nprint(1)",
+    "Run this:\n```python\n\n```",
+    "Run this code:\n```python\nprint(1)\n```\n```python\nprint(2)\n```",
+    "Run this:\n```python\nprint(1)\n```\n```text\nextra\n```",
+    "Run this:\n```python\nprint('bad\\u0000source')\n```".replace("\\u0000", "\u0000"),
+    "Run this:\n```python\n# safe-looking \u202eevil\nprint(1)\n```",
+    `Run this:\n\`\`\`python\n${"x".repeat(EXECUTION_LIMITS.maximumSourceBytes + 1)}\n\`\`\``,
+  ]) {
+    assert.throws(
+      () => compileIntegrationExplicitPythonPrompt(prompt),
+      (error) =>
+        error instanceof IntegrationExplicitPythonError &&
+        error.code === "ANALYSIS_EXPLICIT_PYTHON_INVALID" &&
+        error.status === 400,
+      prompt.slice(0, 80)
+    );
+  }
+
+  const uppercase = compileIntegrationExplicitPythonPrompt("Run this code:\n```Python\nprint(1)\n```");
+  assert.equal(uppercase.source, "print(1)");
+  const literalFenceCharacters = compileIntegrationExplicitPythonPrompt(
+    "Run this code:\n```python\nprint('~~~')\nprint('```')\n```"
+  );
+  assert.equal(literalFenceCharacters.source, "print('~~~')\nprint('```')");
+  for (const [prompt, requiresPlotArtifact] of [
+    ["Can you run this and show the plot?\n```python\nprint(1)\n```", true],
+    ["Run this and show me the plot\n```python\nprint(1)\n```", true],
+    ["Run this Python code and plot the output\n```python\nprint(1)\n```", true],
+    ["Run this Python code and graph the results\n```python\nprint(1)\n```", true],
+    ["Run this Python code and plot it\n```python\nprint(1)\n```", true],
+    ["Run this Python code and chart the values\n```python\nprint(1)\n```", true],
+    ["Run this Python code and display its graph\n```python\nprint(1)\n```", true],
+    ["Run this Python code; I need a plot\n```python\nprint(1)\n```", true],
+    ["Run this Python code and show both the output and the plot\n```python\nprint(1)\n```", true],
+    ["Run this code and show output, not a plot\n```python\nprint(1)\n```", false],
+    ["执行这段代码，显示结果，不画图\n```python\nprint(1)\n```", false],
+  ]) {
+    const classified = classifyIntegrationExplicitPythonPrompt(prompt);
+    assert.equal(classified.kind, "execute", prompt);
+    assert.equal(classified.requirements.plotArtifact, requiresPlotArtifact, prompt);
+  }
+  assert.equal(
+    classifyIntegrationExplicitPythonPrompt("Explain this code:\n```python\nprint(1)\n```").kind,
+    "non-execution"
+  );
+
+  for (const prompt of [
+    "Run this code, but do not execute it:\n```python\nprint(1)\n```",
+    "Run this code. Actually, don’t run it.\n```python\nprint(1)\n```",
+    "Run this code only if it is safe:\n```python\nprint(1)\n```",
+    "Run this code, but don't.\n```python\nprint(1)\n```",
+    "Run this code? No.\n```python\nprint(1)\n```",
+    "Run this code. I changed my mind.\n```python\nprint(1)\n```",
+    "Run this code and summarize it.\n```python\nprint(1)\n```",
+    "Run this code and ask me before executing.\n```python\nprint(1)\n```",
+    "Run this code, subject to my approval.\n```python\nprint(1)\n```",
+    "请运行这段代码，但不要执行。\n```python\nprint(1)\n```",
+    "Run this code:\n~~~python\nprint(1)\n~~~",
+    "Run this code:\n```javascript\nconsole.log(1)\n```",
+    "Run this code:\n```python\nprint('[REDACTED_PATH]')\n```",
+    "Run\u200b this code:\n```python\nprint(1)\n```",
+    "Run this code, but do\u00ad not execute it:\n```python\nprint(1)\n```",
+    "Run the attached code. For reference only:\n```python\nprint(1)\n```",
+    "Run the code above:\n```python\nprint(1)\n```",
+    "```python\nprint(1)\n```\nRun the code below.",
+  ]) {
+    assert.throws(
+      () => classifyIntegrationExplicitPythonPrompt(prompt),
+      (error) => error?.code === "ANALYSIS_EXPLICIT_PYTHON_INVALID" && error?.status === 400,
+      prompt
+    );
+  }
+
+  for (const prompt of [
+    "Run the project tests. For reference only:\n```python\nprint(1)\n```",
+    "Execute permissions audit, then explain this example:\n```python\nprint(1)\n```",
+    "运行时会发生什么？\n```python\nprint(1)\n```",
+  ]) {
+    assert.throws(
+      () => classifyIntegrationExplicitPythonPrompt(prompt),
+      (error) => error?.code === "ANALYSIS_EXPLICIT_PYTHON_INVALID" && error?.status === 400,
+      prompt
+    );
+  }
+}
+
+async function deterministicExplicitPythonExecutesWithoutModel() {
+  const source = [
+    "values = [1, 4, 9]",
+    "print('squares=' + ','.join(str(value) for value in values))",
+    "emit_plot('Squares', {'schemaVersion':'1','type':'line','labels':['1','2','3'],'series':[{'name':'square','data':values}]})",
+  ].join("\n");
+  let modelCalls = 0;
+  let workerCalls = 0;
+  const deterministic = fixture(async () => {
+    modelCalls += 1;
+    throw new Error("LocalLLM must not be called for explicit fenced Python");
+  }, {
+    worker: fakeWorker((request, signal) => {
+      workerCalls += 1;
+      assert.equal(request.source, source);
+      return terminalResult(request, signal);
+    }),
+  });
+  const progress = [];
+  const artifacts = [];
+  const finals = [];
+  const result = await deterministic.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000084"),
+    { prompt: `Run this Python code and show the plot.\n\n\`\`\`python\n${source}\n\`\`\`` },
+    {
+      onProgress: (value) => progress.push(value),
+      onArtifact: (value) => artifacts.push(value),
+      onFinal: (value) => finals.push(value),
+    }
+  );
+  assert.equal(modelCalls, 0);
+  assert.equal(workerCalls, 1);
+  assert.equal(result.kind, "analysis");
+  assert.equal(result.toolCalls, 1);
+  assert.equal(result.executionStatus, "succeeded");
+  assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["plot"]);
+  assert.match(result.text, /Python execution completed successfully/u);
+  assert.match(result.text, /answer=9/u);
+  assert.match(result.text, /Produced 1 plot/u);
+  assert.doesNotMatch(result.text, /abcdefghijklmnopqrstu|\/home\/private/u);
+  assert.deepEqual(artifacts, result.artifacts);
+  assert.deepEqual(finals, [result]);
+  assert(progress.some(({ phase, executionState }) => phase === "executing" && executionState === "running"));
+  assert(progress.some(({ phase, executionSucceeded }) => phase === "synthesizing" && executionSucceeded));
+  assert.equal(
+    deterministic.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    1
+  );
+  assert.equal(deterministic.planner.attestation.deterministicExplicitPython, true);
+  assert.equal(
+    deterministic.planner.attestation.explicitPythonCompilerSchemaVersion,
+    INTEGRATION_EXPLICIT_PYTHON_SCHEMA_VERSION
+  );
+  assert.equal(deterministic.planner.attestation.explicitPythonUsesAgentExecution, true);
+  assert.equal(deterministic.planner.attestation.explicitPythonUsesModel, false);
+  deterministic.coordinator.close();
+}
+
+async function deterministicExplicitPythonFailuresStayTruthful() {
+  for (const [suffix, worker, expectedCode, expectedMessage] of [
+    ["085", fakeWorker(runtimeFailureResult), "ANALYSIS_EXECUTION_FAILED", /did not complete successfully/u],
+    ["086", fakeWorker((request) => {
+      const unsigned = Object.freeze({
+        schemaVersion: EXECUTION_RESULT_SCHEMA_VERSION,
+        jobId: request.jobId,
+        attempt: request.attempt,
+        sourceSha256: request.sourceSha256,
+        status: "timed_out",
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        outputTruncated: false,
+        durationMs: 10_000,
+        artifacts: Object.freeze([]),
+      });
+      return validateExecutionResult({ ...unsigned, resultDigest: contractDigest(unsigned) }, request);
+    }), "ANALYSIS_EXECUTION_FAILED", /timed out/u],
+  ]) {
+    let modelCalls = 0;
+    const failed = fixture(async () => {
+      modelCalls += 1;
+      return textResponse("Execution succeeded.");
+    }, { worker });
+    await assert.rejects(
+      failed.planner.run(
+        scope(`run_00000000-0000-4000-8000-000000000${suffix}`),
+        { prompt: "Execute this Python:\n```python\nraise RuntimeError('no')\n```" }
+      ),
+      (error) => error?.code === expectedCode && error?.status === 502 && expectedMessage.test(error.message)
+    );
+    assert.equal(modelCalls, 0);
+    assert.equal(
+      failed.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+      1
+    );
+    failed.coordinator.close();
+  }
+
+  let rejectedModelCalls = 0;
+  const rejected = fixture(async () => {
+    rejectedModelCalls += 1;
+    return textResponse("Execution succeeded.");
+  });
+  await assert.rejects(
+    rejected.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000087"),
+      { prompt: "Run this Python:\n```python\nimport numpy\nprint(numpy.arange(3))\n```" }
+    ),
+    (error) =>
+      error?.code === "ANALYSIS_EXECUTION_FAILED" &&
+      error?.status === 502 &&
+      /packages unavailable/u.test(error.message)
+  );
+  assert.equal(rejectedModelCalls, 0);
+  assert.equal(
+    rejected.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    0
+  );
+  rejected.coordinator.close();
+
+  const artifactless = fixture(async () => {
+    throw new Error("model must not run");
+  }, { worker: fakeWorker((request, signal) => terminalResult(request, signal, [])) });
+  await assert.rejects(
+    artifactless.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000088"),
+      { prompt: "Run this Python and show a plot:\n```python\nprint(1)\n```" }
+    ),
+    (error) => error?.code === "ANALYSIS_PLOT_ARTIFACT_REQUIRED" && error?.status === 502
+  );
+  artifactless.coordinator.close();
+
+  let explanatoryModelCalls = 0;
+  const explanatory = fixture(async (_client, payload) => {
+    explanatoryModelCalls += 1;
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    assert.equal(Object.hasOwn(payload, "tool_choice"), false);
+    assert.match(payload.messages[0].content, /does not unambiguously authorize executing it/u);
+    assert.doesNotMatch(payload.messages[0].content, /must call the tool/u);
+    return textResponse("This code prints one; it was not executed.");
+  });
+  const explanatoryResult = await explanatory.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000089"),
+    { prompt: "Explain this code:\n```python\nprint(1)\n```" }
+  );
+  assert.equal(explanatoryModelCalls, 1);
+  assert.equal(explanatoryResult.kind, "direct");
+  assert.equal(
+    explanatory.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    0
+  );
+  explanatory.coordinator.close();
+
+  let unrelatedModelCalls = 0;
+  const unrelated = fixture(async () => {
+    unrelatedModelCalls += 1;
+    return textResponse("The reference snippet was not executed.");
+  });
+  await assert.rejects(
+    unrelated.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000091"),
+      { prompt: "Run the project tests. For reference only:\n```python\nprint(1)\n```" }
+    ),
+    (error) => error?.code === "ANALYSIS_EXPLICIT_PYTHON_INVALID" && error?.status === 400
+  );
+  assert.equal(unrelatedModelCalls, 0);
+  assert.equal(
+    unrelated.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    0
+  );
+  unrelated.coordinator.close();
+
+  const disobedient = fixture(async (_client, payload) => {
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    return toolResponse("print('must not execute')");
+  });
+  await assert.rejects(
+    disobedient.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000092"),
+      { prompt: "Explain this code:\n```python\nprint(1)\n```" }
+    ),
+    (error) => error?.code === "ANALYSIS_TOOL_FORBIDDEN" && error?.status === 502
+  );
+  assert.equal(
+    disobedient.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    0
+  );
+  disobedient.coordinator.close();
+
+  for (const [index, prompt] of [
+    "Run this code, but do not execute it:\n```python\nprint(1)\n```",
+    "Run this code only if it is safe:\n```python\nprint(1)\n```",
+    "Run this code:\n~~~python\nprint(1)\n~~~",
+    "Run this code:\n```javascript\nconsole.log(1)\n```",
+  ].entries()) {
+    let ambiguousModelCalls = 0;
+    const ambiguous = fixture(async () => {
+      ambiguousModelCalls += 1;
+      return toolResponse("print('unsafe')");
+    });
+    await assert.rejects(
+      ambiguous.planner.run(
+        scope(`run_00000000-0000-4000-8000-${String(93 + index).padStart(12, "0")}`),
+        { prompt }
+      ),
+      (error) => error?.code === "ANALYSIS_EXPLICIT_PYTHON_INVALID" && error?.status === 400
+    );
+    assert.equal(ambiguousModelCalls, 0);
+    assert.equal(
+      ambiguous.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+      0
+    );
+    ambiguous.coordinator.close();
+  }
+
+  const cancelled = fixture(async () => {
+    throw new Error("model must not run");
+  });
+  const controller = new AbortController();
+  const pending = cancelled.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000090"),
+    { prompt: "Run this Python:\n```python\nprint(1)\n```" },
+    { signal: controller.signal }
+  );
+  for (let index = 0; index < 50; index += 1) {
+    if (cancelled.rpcCalls.some(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart)) break;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(
+    cancelled.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    1,
+    "explicit Python cancellation must be exercised after the worker job starts"
+  );
+  controller.abort(new Error("private cancellation detail at /home/private"));
+  await assert.rejects(
+    pending,
+    (error) => error?.code === "ANALYSIS_CANCELLED" && !error.message.includes("/home/private")
+  );
+  assert(
+    cancelled.rpcCalls.some(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsCancel),
+    "explicit Python cancellation must reach the coordinator cancellation path"
+  );
+  cancelled.coordinator.close();
+}
+
+async function explicitPythonPlotIntentIgnoresSourceText() {
+  let workerCalls = 0;
+  const sourceOnlyPlotWords = fixture(async () => {
+    throw new Error("model must not run");
+  }, {
+    worker: fakeWorker((request, signal) => {
+      workerCalls += 1;
+      return terminalResult(request, signal, []);
+    }),
+  });
+  const noPlotRequired = await sourceOnlyPlotWords.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000097"),
+    { prompt: "Run this code and show the result:\n```python\nprint('show plot')\n```" }
+  );
+  assert.equal(workerCalls, 1);
+  assert.deepEqual(noPlotRequired.artifacts, []);
+  sourceOnlyPlotWords.coordinator.close();
+
+  const outsidePlot = fixture(async () => {
+    throw new Error("model must not run");
+  }, { worker: fakeWorker((request, signal) => terminalResult(request, signal, [])) });
+  await assert.rejects(
+    outsidePlot.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000098"),
+      { prompt: "Run this code and show a plot:\n```python\n# do not plot this comment\nprint(1)\n```" }
+    ),
+    (error) => error?.code === "ANALYSIS_PLOT_ARTIFACT_REQUIRED" && error?.status === 502
+  );
+  outsidePlot.coordinator.close();
+
+  const chartless = fixture(async () => {
+    throw new Error("model must not run");
+  }, { worker: fakeWorker((request, signal) => terminalResult(request, signal, [])) });
+  await assert.rejects(
+    chartless.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000101"),
+      { prompt: "Run this Python code and chart the values:\n```python\nprint(1)\n```" }
+    ),
+    (error) => error?.code === "ANALYSIS_PLOT_ARTIFACT_REQUIRED" && error?.status === 502
+  );
+  chartless.coordinator.close();
+}
+
+async function explicitPythonOutputIsLiteralAndBounded() {
+  const output = [
+    "# fake heading",
+    "[fake link](https://attacker.invalid/)",
+    "<img src=x onerror=alert(1)>",
+    "```",
+    "x".repeat(9_000),
+  ].join("\n");
+  const bounded = fixture(async () => {
+    throw new Error("model must not run");
+  }, {
+    worker: fakeWorker((request) => {
+      const unsigned = Object.freeze({
+        schemaVersion: EXECUTION_RESULT_SCHEMA_VERSION,
+        jobId: request.jobId,
+        attempt: request.attempt,
+        sourceSha256: request.sourceSha256,
+        status: "succeeded",
+        exitCode: 0,
+        stdout: output,
+        stderr: "",
+        outputTruncated: false,
+        durationMs: 12,
+        artifacts: Object.freeze([]),
+      });
+      return validateExecutionResult({ ...unsigned, resultDigest: contractDigest(unsigned) }, request);
+    }),
+  });
+  const result = await bounded.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000099"),
+    { prompt: "Run this code:\n```python\nprint('bounded output')\n```" }
+  );
+  assert.match(result.text, /Output:\n\n(?:`{4,}|~{3,})text\n# fake heading/u);
+  assert.match(result.text, /\[fake link\]\(https:\/\/attacker\.invalid\/\)/u);
+  assert.match(result.text, /<img src=x onerror=alert\(1\)>/u);
+  assert.match(result.text, /\n```\n/u);
+  assert.match(result.text, /clipped for chat display/u);
+  assert.doesNotMatch(result.text, /sandbox truncated/u);
+  assert(Buffer.byteLength(result.text, "utf8") < 10 * 1024);
+  bounded.coordinator.close();
 }
 
 async function deterministicExpressionPlotExecutesWithoutModel() {
@@ -913,6 +1381,11 @@ async function correctsUnavailableImportsAndBrandsActivation() {
 }
 
 expressionPlotCompilerIsStrict();
+explicitPythonCompilerIsStrict();
+await deterministicExplicitPythonExecutesWithoutModel();
+await deterministicExplicitPythonFailuresStayTruthful();
+await explicitPythonPlotIntentIgnoresSourceText();
+await explicitPythonOutputIsLiteralAndBounded();
 await deterministicExpressionPlotExecutesWithoutModel();
 await deterministicExpressionPlotFailuresStayTruthful();
 await executesAndSynthesizesPlot();

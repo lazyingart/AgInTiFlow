@@ -169,6 +169,9 @@ export function integrationBoundedText(value, label, maximum, { minimum = 0, pre
   if (typeof value !== "string" || value.length < minimum || value.length > maximum) {
     integrationInvalid(`${label} must contain ${minimum}-${maximum} characters`);
   }
+  if (!value.isWellFormed()) {
+    integrationInvalid(`${label} contains ill-formed Unicode text`);
+  }
   if (/\u0000|[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)) {
     integrationInvalid(`${label} contains forbidden control characters`);
   }
