@@ -482,15 +482,20 @@ async function runCore() {
   const authorities = [];
   let consumerMocks = [];
   try {
-    const [serverSource, runtimeSource, sessionSource] = await Promise.all([
+    const [serverSource, runtimeSource, sessionSource, productionBundleSource] = await Promise.all([
       fs.readFile(new URL("../src/integration-server.js", import.meta.url), "utf8"),
       fs.readFile(new URL("../src/integration-runtime-authority.js", import.meta.url), "utf8"),
       fs.readFile(new URL("../src/integration-session-service.js", import.meta.url), "utf8"),
+      fs.readFile(new URL("../src/integration-production-runtime-bundle.js", import.meta.url), "utf8"),
     ]);
     assert.match(serverSource, /export const INTEGRATION_MOUNT_CAPABILITY_ENABLED = false;/u);
     assert.equal(serverSource.includes("createRetainedIntegrationEventLedgerBundle"), false);
     assert.equal(runtimeSource.includes("createRetainedIntegrationEventLedgerBundle"), false);
     assert.equal(sessionSource.includes("createRetainedIntegrationEventLedgerBundle"), false);
+    assert.equal(productionBundleSource.includes("createRetainedIntegrationEventLedgerBundle"), true);
+    assert.match(productionBundleSource, /capabilityEnabled:\s*false/u);
+    assert.match(productionBundleSource, /httpServingEnabled:\s*false/u);
+    assert.match(productionBundleSource, /runtimeActivationIncluded:\s*false/u);
 
     const main = await openFixture(path.join(smokeRoot, "main"), "retained-ledger-bundle-main");
     authorities.push(main.authority);

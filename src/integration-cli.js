@@ -9,6 +9,7 @@ import {
   loadTrustedPrincipalProxyCredential,
   publicIntegrationServiceConfig,
 } from "./integration-config.js";
+import { checkIntegrationProductionRuntimeBundle } from "./integration-production-runtime-bundle.js";
 import { createIntegrationServer } from "./integration-server.js";
 
 const FORBIDDEN_SECRET_ENVIRONMENT = Object.freeze([
@@ -124,7 +125,7 @@ function writeJsonLine(stream, value) {
   stream.write(`${JSON.stringify(value)}\n`);
 }
 
-function safeServiceSummary(config, status) {
+function safeServiceSummary(config, status, runtimeBundle = null) {
   const publicConfig = publicIntegrationServiceConfig(config);
   return Object.freeze({
     ok: true,
@@ -134,6 +135,12 @@ function safeServiceSummary(config, status) {
     listen: publicConfig.listen,
     stateRoot: publicConfig.stateRoot,
     trustedPrincipalProxy: publicConfig.trustedPrincipalProxy,
+    ...(runtimeBundle
+      ? {
+          implementationReady: runtimeBundle.implementationReady === true,
+          runtimeBundle,
+        }
+      : {}),
   });
 }
 
@@ -169,7 +176,10 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   const stdout = options.stdout || process.stdout;
 
   if (parsed.command === "check") {
-    const summary = safeServiceSummary(config, "checked-disabled");
+    const runtimeBundle = await checkIntegrationProductionRuntimeBundle({
+      stateRoot: config.stateRoot,
+    });
+    const summary = safeServiceSummary(config, "checked-disabled", runtimeBundle);
     writeJsonLine(stdout, summary);
     return summary;
   }

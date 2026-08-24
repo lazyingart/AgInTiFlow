@@ -791,6 +791,7 @@ async function runStaticBoundaryChecks(surface) {
   assert.match(config, /capability:\s*Object\.freeze\(\{ enabled: false \}\)/u);
   const sourceDirectory = fileURLToPath(new URL("../src/", import.meta.url));
   for (const consumerName of [
+    "integration-production-runtime-bundle.js",
     "integration-native-executor.js",
     "integration-runtime-authority.js",
     "integration-native-runtime-roots.js",
@@ -800,6 +801,18 @@ async function runStaticBoundaryChecks(surface) {
     "session-store.js",
   ]) {
     const consumer = await fs.readFile(path.join(sourceDirectory, consumerName), "utf8");
+    if (consumerName === "integration-production-runtime-bundle.js") {
+      assert.match(consumer, /capabilityEnabled:\s*false/u);
+      assert.match(consumer, /runtimeActivationIncluded:\s*false/u);
+      assert.match(consumer, /repositoryFenceAcquisitionIncluded:\s*false/u);
+      assert.match(consumer, /descriptorBoundIdempotencyStore:\s*false/u);
+      assert.doesNotMatch(
+        consumer,
+        /acquireRetainedIntegrationRuntimeRepositoryFence|createAgintiIntegrationRuntimeAuthority|createIntegrationServer|createNativeIntegrationSessionService/u,
+        `${consumerName} may compose the repository-state surface only before runtime activation.`
+      );
+      continue;
+    }
     assert.doesNotMatch(
       consumer,
       /integration-retained-native-session-repository-state|(?:create|assert)RetainedIntegrationNativeSessionRepositoryState/u,
