@@ -16,7 +16,7 @@ const READ_ONLY_PATTERNS = [
   /^which\s+[-\w.]+(?:\s+[-\w.]+)*$/,
   /^command\s+-v\s+[-\w.]+$/,
   /^uname(?:\s+-a)?$/,
-  /^ls(?:\s+[-\w./~*]+)*$/,
+  /^ls(?:\s+(?:"[^"\n]*"|'[^'\n]*'|[-\w./~*]+))*$/,
   /^find(?:\s+[./~\w-]+)*(?:\s+-maxdepth\s+\d+)?(?:\s+-type\s+[fd])?$/,
   /^rg(?:\s+.+)?$/,
   /^grep(?:\s+.+)?$/,
@@ -1389,6 +1389,135 @@ function broadForLoopClassification(normalized, reason) {
   };
 }
 
+function findUnquotedShellWord(value = "", expectedWord = "", startIndex = 0) {
+  const text = String(value || "");
+  const word = String(expectedWord || "");
+  let quote = "";
+  let escaped = false;
+
+  for (let index = 0; index <= text.length - word.length; index += 1) {
+    const char = text[index];
+    if (quote === "'") {
+      if (char === "'") quote = "";
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote === '"') {
+      if (char === '"') quote = "";
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (index < Math.max(0, startIndex) || text.slice(index, index + word.length) !== word) continue;
+    const before = index > 0 ? text[index - 1] : "";
+    const after = text[index + word.length] || "";
+    if ((!before || !/[A-Za-z0-9_]/.test(before)) && (!after || !/[A-Za-z0-9_]/.test(after))) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function trimShellListBoundary(value = "") {
+  return String(value || "")
+    .replace(/^[\s;]+/, "")
+    .replace(/[\s;]+$/, "")
+    .trim();
+}
+
+function classifyReadOnlyCommandList(value = "") {
+  const text = trimShellListBoundary(value);
+  if (!text) {
+    return {
+      category: "read-only",
+      needsNetwork: false,
+      writesWorkspace: false,
+      emptyCommandList: true,
+    };
+  }
+  const sequence = splitTopLevelShellSequence(text);
+  if (sequence && sequence.parts.length > READ_ONLY_FOR_LOOP_MAX_COMMANDS) {
+    return broadForLoopClassification(text, "the command list is too large");
+  }
+  return classifyShellSequence(text) || classifyPipelineSequence(text) || classifySimpleCommand(text);
+}
+
+function isReadOnlyShellCondition(value = "") {
+  const tokens = tokenizeShellWords(trimShellListBoundary(value));
+  let option = "";
+  let candidate = "";
+  if (tokens.length === 4 && tokens[0] === "[" && tokens[3] === "]") {
+    [, option, candidate] = tokens;
+  } else if (tokens.length === 3 && tokens[0] === "test") {
+    [, option, candidate] = tokens;
+  } else {
+    return false;
+  }
+  return /^-[efdx]$/.test(option) &&
+    !candidate.startsWith("-") &&
+    READ_ONLY_FOR_LOOP_LITERAL_PATTERN.test(candidate);
+}
+
+function classifyReadOnlyLoopBody(bodySource = "") {
+  const text = String(bodySource || "").trim();
+  const controlWords = ["if", "then", "else", "elif", "fi", "for", "do", "done", "while", "until", "case", "esac"];
+  const presentControls = controlWords.filter((word) => findUnquotedShellWord(text, word) >= 0);
+  if (!presentControls.length) return classifyReadOnlyCommandList(text);
+
+  if (presentControls.some((word) => !["if", "then", "else", "fi"].includes(word))) {
+    return broadForLoopClassification(text, "the body contains nested or unsupported control flow");
+  }
+
+  const ifIndex = findUnquotedShellWord(text, "if");
+  const thenIndex = findUnquotedShellWord(text, "then", ifIndex + 2);
+  const elseIndex = findUnquotedShellWord(text, "else", thenIndex + 4);
+  const fiIndex = findUnquotedShellWord(text, "fi", elseIndex + 4);
+  if (ifIndex < 0 || thenIndex < 0 || elseIndex < 0 || fiIndex < 0 ||
+      findUnquotedShellWord(text, "if", ifIndex + 2) >= 0 ||
+      findUnquotedShellWord(text, "then", thenIndex + 4) >= 0 ||
+      findUnquotedShellWord(text, "else", elseIndex + 4) >= 0 ||
+      findUnquotedShellWord(text, "fi", fiIndex + 2) >= 0) {
+    return broadForLoopClassification(text, "the conditional is not a single bounded if/else block");
+  }
+
+  const prefix = trimShellListBoundary(text.slice(0, ifIndex));
+  const condition = trimShellListBoundary(text.slice(ifIndex + 2, thenIndex));
+  const thenBranch = trimShellListBoundary(text.slice(thenIndex + 4, elseIndex));
+  const elseBranch = trimShellListBoundary(text.slice(elseIndex + 4, fiIndex));
+  const suffix = trimShellListBoundary(text.slice(fiIndex + 2));
+  if (!isReadOnlyShellCondition(condition) || !thenBranch || !elseBranch) {
+    return broadForLoopClassification(text, "the conditional test or branch is not bounded read-only syntax");
+  }
+
+  const classifications = [prefix, thenBranch, elseBranch, suffix]
+    .filter(Boolean)
+    .map((part) => classifyReadOnlyCommandList(part));
+  const blocked = classifications.find(
+    (classification) => classification.category === "blocked" || classification.category === "destructive"
+  );
+  if (blocked) return { ...blocked, gitOnly: false };
+  if (classifications.some(
+    (classification) => classification.category !== "read-only" || classification.writesWorkspace
+  )) {
+    return broadForLoopClassification(text, "a conditional branch is not read-only");
+  }
+  return {
+    category: "read-only",
+    needsNetwork: false,
+    writesWorkspace: false,
+    boundedConditional: true,
+  };
+}
+
 function classifyReadOnlyForLoop(normalized) {
   const text = String(normalized || "").trim();
   if (!/^for\s+/.test(text)) return null;
@@ -1416,9 +1545,8 @@ function classifyReadOnlyForLoop(normalized) {
     );
   }
 
-  const unquotedBody = stripQuotedSegments(bodySource);
-  if (/[|&<>(){}]/.test(unquotedBody) || hasActiveShellCommandSubstitution(bodySource)) {
-    return broadForLoopClassification(text, "the body uses control, redirection, or substitution syntax");
+  if (hasActiveShellCommandSubstitution(bodySource)) {
+    return broadForLoopClassification(text, "the body uses command substitution");
   }
 
   const escapedVariable = shellIdentifierPattern(variableName);
@@ -1436,23 +1564,12 @@ function classifyReadOnlyForLoop(normalized) {
     if (hasActiveShellExpansion(expandedBody) || hasActiveShellCommandSubstitution(expandedBody)) {
       return broadForLoopClassification(text, "the body contains expansion beyond the loop variable");
     }
-    const sequence = splitTopLevelShellSequence(expandedBody);
-    const commands = sequence?.parts || [expandedBody.trim()];
-    if (
-      !commands.length ||
-      commands.length > READ_ONLY_FOR_LOOP_MAX_COMMANDS ||
-      (sequence && sequence.separators.some((separator) => ![";", "newline"].includes(separator)))
-    ) {
-      return broadForLoopClassification(text, "the body is not a bounded sequential command list");
+    const classification = classifyReadOnlyLoopBody(expandedBody);
+    if (classification.category === "blocked" || classification.category === "destructive") {
+      return { ...classification, gitOnly: false };
     }
-    for (const command of commands) {
-      const classification = classifySimpleCommand(command);
-      if (classification.category === "blocked" || classification.category === "destructive") {
-        return { ...classification, gitOnly: false };
-      }
-      if (classification.category !== "read-only" || classification.writesWorkspace) {
-        return broadForLoopClassification(text, `body command is ${classification.category}`);
-      }
+    if (classification.category !== "read-only" || classification.writesWorkspace) {
+      return broadForLoopClassification(text, `body is ${classification.category}`);
     }
   }
 
@@ -1463,6 +1580,46 @@ function classifyReadOnlyForLoop(normalized) {
     gitOnly: false,
     boundedForLoop: true,
     reason: `Finite read-only shell loop over ${items.length} literal item${items.length === 1 ? "" : "s"}.`,
+  };
+}
+
+function classifyReadOnlyCompoundSequence(normalized) {
+  const text = String(normalized || "").trim();
+  if (!text || /^for\s+/.test(text) || hasActiveShellCommandSubstitution(text)) return null;
+
+  let forIndex = findUnquotedShellWord(text, "for");
+  const startsAtCommandBoundary = (index) => {
+    let boundary = index - 1;
+    while (boundary >= 0 && /[ \t]/.test(text[boundary])) boundary -= 1;
+    return boundary >= 0 && /[;\n\r]/.test(text[boundary]);
+  };
+  while (forIndex > 0 && !startsAtCommandBoundary(forIndex)) {
+    forIndex = findUnquotedShellWord(text, "for", forIndex + 3);
+  }
+  if (forIndex <= 0) return null;
+
+  const prefixSource = trimShellListBoundary(text.slice(0, forIndex));
+  const loopSource = text.slice(forIndex).trim();
+  const prefixClassification = classifyReadOnlyCommandList(prefixSource);
+  if (prefixClassification.category === "blocked" || prefixClassification.category === "destructive") {
+    return { ...prefixClassification, gitOnly: false };
+  }
+  if (prefixClassification.category !== "read-only" || prefixClassification.writesWorkspace) {
+    return broadForLoopClassification(text, "the command prelude is not read-only");
+  }
+  const loopClassification = classifyReadOnlyForLoop(loopSource);
+  if (!loopClassification) return null;
+  if (loopClassification.category !== "read-only" || loopClassification.writesWorkspace) {
+    return loopClassification;
+  }
+  return {
+    category: "read-only",
+    needsNetwork: false,
+    writesWorkspace: false,
+    gitOnly: false,
+    boundedForLoop: true,
+    boundedCompoundSequence: true,
+    reason: "Finite read-only command prelude followed by a bounded read-only shell loop.",
   };
 }
 
@@ -1630,7 +1787,7 @@ export function classifyCommand(command) {
   const normalized = String(command || "").trim();
   if (!normalized) return { category: "blocked", reason: "Command is empty." };
 
-  return classifyBackgroundShell(normalized) || classifyReadOnlyForLoop(normalized) || classifyCdCommand(normalized) || classifyShellSequence(normalized) || classifyPipelineSequence(normalized) || classifySimpleCommand(normalized);
+  return classifyBackgroundShell(normalized) || classifyReadOnlyCompoundSequence(normalized) || classifyReadOnlyForLoop(normalized) || classifyCdCommand(normalized) || classifyShellSequence(normalized) || classifyPipelineSequence(normalized) || classifySimpleCommand(normalized);
 }
 
 export function evaluateCommandPolicy(command, config = {}) {

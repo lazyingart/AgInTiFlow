@@ -635,6 +635,48 @@ try {
       `unsafe or dynamic shell loop bypassed the bounded read-only policy: ${unsafeLoop}`
     );
   }
+  const exactCompoundReadOnlyAudit = [
+    'echo "=== CWD ==="',
+    'pwd',
+    'echo "=== workspace listing ==="',
+    'ls -la',
+    'echo "=== workspace git status ==="',
+    'git status --short 2>&1 | head -40',
+    'echo "=== read roots ==="',
+    'for d in /home/lachlan/ProjectsLFS/AgenticApp /home/lachlan/ProjectsLFS/Musia /home/lachlan/ProjectsLFS/LALACHAN /home/lachlan/DiskMech/Projects/lazyedit; do echo "--- $d ---"; if [ -d "$d" ]; then ls -la "$d" 2>&1 | head -80; else echo "MISSING"; fi; done',
+  ].join("; ");
+  const exactCompoundReadOnlyAuditPolicy = evaluateCommandPolicy(
+    exactCompoundReadOnlyAudit,
+    hostReadRootPolicy
+  );
+  assert(
+    exactCompoundReadOnlyAuditPolicy.allowed &&
+      exactCompoundReadOnlyAuditPolicy.category === "read-only" &&
+      exactCompoundReadOnlyAuditPolicy.boundedForLoop === true &&
+      exactCompoundReadOnlyAuditPolicy.boundedCompoundSequence === true &&
+      exactCompoundReadOnlyAuditPolicy.needsNetwork === false &&
+      exactCompoundReadOnlyAuditPolicy.writesWorkspace === false,
+    "a finite read-only prelude and conditional directory audit incorrectly required destructive host permission"
+  );
+  for (const unsafeCompoundAudit of [
+    'cp README.md copied.md; for d in /tmp; do echo "$d"; done',
+    'echo start; for d in /tmp; do if [ -d "$d" ]; then rm -rf "$d"; else echo missing; fi; done',
+    'echo start; for d in /tmp; do if [ -d "$d" ]; then curl https://example.com; else echo missing; fi; done',
+    'echo start; for d in /tmp; do if [ -d "$d" ]; then echo "$d" > report.md; else echo missing; fi; done',
+    'echo start; for d in /tmp; do if [ -d "$(pwd)" ]; then ls; else echo missing; fi; done',
+    'echo start; for d in /tmp; do if [ -d "$d" ]; then if [ -f "$d/x" ]; then cat "$d/x"; else echo missing; fi; else echo absent; fi; done',
+    'echo start; for d in $ROOTS; do if [ -d "$d" ]; then ls "$d"; else echo missing; fi; done',
+    'echo start; for d in /tmp; do if [ -d "$d" ]; then ls "$d"; else echo missing; fi; done; rm -rf report.md',
+  ]) {
+    const unsafeCompoundAuditPolicy = evaluateCommandPolicy(unsafeCompoundAudit, hostReadRootPolicy);
+    assert(
+      !unsafeCompoundAuditPolicy.allowed ||
+        unsafeCompoundAuditPolicy.category !== "read-only" ||
+        unsafeCompoundAuditPolicy.writesWorkspace === true ||
+        unsafeCompoundAuditPolicy.needsNetwork === true,
+      `unsafe compound shell audit bypassed the bounded read-only policy: ${unsafeCompoundAudit}`
+    );
+  }
   const readRootDoctorPolicy = evaluateCommandPolicy(
     `cd ${externalReadRoot} && node bin/musia.js doctor --json 2>&1 | head -80`,
     hostReadRootPolicy
