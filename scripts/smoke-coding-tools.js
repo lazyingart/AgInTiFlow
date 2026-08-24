@@ -687,6 +687,33 @@ try {
       exactReadOnlyReportLiteralAuditPolicy.writesWorkspace === false,
     "a bounded report literal-count audit incorrectly required destructive host permission"
   );
+  const exactReadOnlyFormattedReportAudit = [
+    "f=media-routine-readiness.md",
+    "printf 'lines\\tbytes\\tsha256\\n'",
+    'wc -lc "$f"',
+    'sha256sum "$f"',
+    "printf '\\n--- literal occurrence counts (bounded) ---\\n'",
+    "for s in \\",
+    "  '/home/lachlan/ProjectsLFS/Musia' \\",
+    "  '/home/lachlan/ProjectsLFS/AgenticApp' \\",
+    "  'music generation' \\",
+    "; do",
+    '  n=$(grep -oF -- "$s" "$f" | wc -l | tr -d \' \')',
+    '  printf \'%-58s %s\\n\' "$s" "$n"',
+    "done",
+  ].join("\n");
+  const exactReadOnlyFormattedReportAuditPolicy = evaluateCommandPolicy(
+    exactReadOnlyFormattedReportAudit,
+    hostWorkspacePolicy
+  );
+  assert(
+    exactReadOnlyFormattedReportAuditPolicy.allowed &&
+      exactReadOnlyFormattedReportAuditPolicy.category === "read-only" &&
+      exactReadOnlyFormattedReportAuditPolicy.boundedForLoop === true &&
+      exactReadOnlyFormattedReportAuditPolicy.needsNetwork === false &&
+      exactReadOnlyFormattedReportAuditPolicy.writesWorkspace === false,
+    "a literal-file formatted count audit incorrectly required destructive host permission"
+  );
   const exactReadOnlyGitIdentityProbe =
     'git status --short && echo "TOPLEVEL=$(git rev-parse --show-toplevel 2>&1)" && echo "BRANCH=$(git rev-parse --abbrev-ref HEAD 2>&1)"';
   const exactReadOnlyGitIdentityProbePolicy = evaluateCommandPolicy(
@@ -765,6 +792,11 @@ try {
     'for s in README.md; do n=$(curl https://example.com); echo "$n :: $s"; done',
     'for s in README.md; do n=$(cat "$s"); echo "$n :: $s"; done',
     'for s in README.md; do n=$(grep -c -- "$s" README.md); rm -rf "$n"; done',
+    'f=README.md; printf "%s\\n" "$(cat .aginti/.env)"; for s in one; do echo "$s"; done',
+    'f=README.md; printf "%s\\n" "$f" > copied.md; for s in one; do echo "$s"; done',
+    'f=$(cat README.md); printf "%s\\n" "$f"; for s in one; do echo "$s"; done',
+    'f=README.md; for s in one; do n=$(grep -oF -- "$s" "$f" | wc -l | tr -d " "); printf -v target "%s" "$n"; done',
+    'f=README.md; for s in one; do n=$(grep -oF -- "$s" "$f" | wc -l | tr -d " "); rm -rf "$n"; done',
     'for s in \'README.md; rm -rf report.md\'; do echo "$s"; done',
   ]) {
     const unsafeLoopSubstitutionPolicy = evaluateCommandPolicy(

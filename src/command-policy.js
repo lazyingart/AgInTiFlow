@@ -78,6 +78,35 @@ function stripBenignRedirections(command = "") {
     .trim();
 }
 
+function isReadOnlyPrintfCommand(command = "") {
+  const normalized = stripBenignRedirections(command);
+  if (!/^printf(?:\s|$)/.test(normalized) || hasActiveShellExpansion(normalized)) return false;
+  const tokens = tokenizeShellWords(normalized);
+  if (!tokens.length || tokens[0] !== "printf") return false;
+  // Bash's `printf -v name ...` mutates shell state and can influence a later
+  // command. Ordinary printf writes only to stdout and is safe once expansion
+  // and redirection checks have passed.
+  return !tokens.slice(1).some((token) => token === "-v" || /^-v[A-Za-z_]/.test(token));
+}
+
+function isReadOnlyTrDeleteFilter(command = "") {
+  const normalized = stripBenignRedirections(command);
+  if (hasActiveShellExpansion(normalized)) return false;
+  const tokens = tokenizeShellWords(normalized);
+  return tokens.length === 3 && tokens[0] === "tr" && tokens[1] === "-d";
+}
+
+function isReadOnlySha256Command(command = "") {
+  const normalized = stripBenignRedirections(command);
+  if (hasActiveShellExpansion(normalized)) return false;
+  const tokens = tokenizeShellWords(normalized);
+  if (tokens[0] !== "sha256sum" || tokens.length < 2) return false;
+  const paths = tokens.slice(1).filter((token) => token !== "--");
+  return paths.length > 0 && paths.every((token) =>
+    !token.startsWith("-") && READ_ONLY_FOR_LOOP_LITERAL_PATTERN.test(token)
+  );
+}
+
 function isReadOnlyFindCommand(command = "") {
   const normalized = stripBenignRedirections(command);
   if (!/^find\s+/.test(normalized)) return false;
@@ -1359,6 +1388,9 @@ function classifySimpleCommand(normalized) {
 
   if (
     matchAny(READ_ONLY_PATTERNS, commandForPatternMatching) ||
+    isReadOnlyPrintfCommand(commandForPatternMatching) ||
+    isReadOnlyTrDeleteFilter(commandForPatternMatching) ||
+    isReadOnlySha256Command(commandForPatternMatching) ||
     isReadOnlyFindCommand(normalized) ||
     (!hasActiveShellExpansion(benignRedirectCommand) && isReadOnlyShellCondition(benignRedirectCommand))
   ) {
@@ -1711,6 +1743,23 @@ function loopBodyHasOnlyBoundedReadOnlyExpansions(bodySource = "") {
 function isBoundedReadOnlyScalarCommand(command = "") {
   const normalized = stripBenignRedirections(command);
   if (!normalized || hasActiveShellExpansion(normalized)) return false;
+  const pipeline = splitTopLevelPipeline(normalized);
+  if (pipeline) {
+    if (pipeline.length > 4) return false;
+    const classifications = pipeline.map((part) => classifySimpleCommand(part));
+    if (classifications.some(
+      (classification) => classification.category !== "read-only" || classification.writesWorkspace
+    )) {
+      return false;
+    }
+    const producers = [...pipeline];
+    if (isReadOnlyTrDeleteFilter(producers.at(-1))) producers.pop();
+    const finalProducer = stripBenignRedirections(producers.at(-1) || "");
+    const finalTokens = tokenizeShellWords(finalProducer);
+    return finalTokens[0] === "wc" &&
+      finalTokens.length === 2 &&
+      ["-l", "--lines"].includes(finalTokens[1]);
+  }
   const tokens = tokenizeShellWords(normalized);
   if (!tokens.length) return false;
   if (["grep", "rg"].includes(tokens[0])) {
@@ -1721,17 +1770,109 @@ function isBoundedReadOnlyScalarCommand(command = "") {
   return tokens[0] === "wc" && tokens.slice(1).includes("-l");
 }
 
+function parseReadOnlyLoopBodySequence(value = "") {
+  const text = String(value || "");
+  const commands = [];
+  const separators = [];
+  let current = "";
+  let quote = "";
+  let escaped = false;
+  let substitutionDepth = 0;
+
+  const push = (separator) => {
+    const command = current.trim();
+    if (!command) return false;
+    commands.push(command);
+    separators.push(separator);
+    current = "";
+    return true;
+  };
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote === "'") {
+      current += char;
+      if (char === "'") quote = "";
+      continue;
+    }
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      quote = quote === '"' ? "" : '"';
+      current += char;
+      continue;
+    }
+    if (!quote && char === "'") {
+      quote = "'";
+      current += char;
+      continue;
+    }
+    if (char === "$" && text[index + 1] === "(") {
+      substitutionDepth += 1;
+      current += "$(";
+      index += 1;
+      continue;
+    }
+    if (!quote && char === ")" && substitutionDepth > 0) {
+      substitutionDepth -= 1;
+      current += char;
+      continue;
+    }
+    if (!quote && substitutionDepth === 0) {
+      const pair = text.slice(index, index + 2);
+      if (pair === "&&" || pair === "||") {
+        if (!push(pair)) return null;
+        index += 1;
+        continue;
+      }
+      if (char === ";" || char === "\n") {
+        if (current.trim() && !push(char === "\n" ? "newline" : char)) return null;
+        continue;
+      }
+    }
+    current += char;
+  }
+  if (quote || escaped || substitutionDepth !== 0) return null;
+  if (current.trim()) commands.push(current.trim());
+  if (!commands.length || separators.length >= commands.length) return null;
+  return { commands, separators };
+}
+
+function commandHasUnbalancedSubstitution(value = "") {
+  const text = String(value || "");
+  let depth = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === "$" && text[index + 1] === "(") {
+      depth += 1;
+      index += 1;
+      continue;
+    }
+    if (text[index] === ")" && depth > 0) depth -= 1;
+  }
+  return depth !== 0;
+}
+
 function sanitizeReadOnlyLoopAssignments(bodySource = "") {
   const text = String(bodySource || "").trim();
-  const sequence = parseTopLevelShellSequence(text);
-  if (
-    !sequence.commands.length ||
-    sequence.openQuote ||
-    sequence.trailingEscape ||
-    sequence.trailingSeparator
-  ) {
-    return null;
-  }
+  const standardSequence = parseTopLevelShellSequence(text);
+  const standardIsUsable =
+    standardSequence.commands.length > 0 &&
+    !standardSequence.openQuote &&
+    !standardSequence.trailingEscape &&
+    !standardSequence.trailingSeparator &&
+    !standardSequence.commands.some(commandHasUnbalancedSubstitution);
+  const sequence = standardIsUsable
+    ? standardSequence
+    : parseReadOnlyLoopBodySequence(text);
+  if (!sequence) return null;
 
   const assigned = new Map();
   const commands = [];
@@ -1741,7 +1882,7 @@ function sanitizeReadOnlyLoopAssignments(bodySource = "") {
       const escapedName = shellIdentifierPattern(name);
       const reference = new RegExp(`\\$(?:\\{${escapedName}\\}|${escapedName}(?![A-Za-z0-9_]))`, "g");
       if (!reference.test(command)) continue;
-      if (!/^echo\s+/.test(command)) return null;
+      if (!/^(?:echo|printf)\s+/.test(command)) return null;
       command = command.replace(reference, `AGINTI_READ_VALUE_${name}`);
       state.used = true;
     }
@@ -1780,9 +1921,159 @@ function sanitizeReadOnlyLoopAssignments(bodySource = "") {
 
   let sanitized = commands[0];
   for (let index = 1; index < commands.length; index += 1) {
-    sanitized += ` ${sequence.separators[index - 1] || ";"} ${commands[index]}`;
+    const separator = sequence.separators[index - 1] === "newline"
+      ? "\n"
+      : sequence.separators[index - 1] || ";";
+    sanitized += separator === "\n"
+      ? `\n${commands[index]}`
+      : ` ${separator} ${commands[index]}`;
   }
   return sanitized;
+}
+
+const READ_ONLY_LITERAL_ASSIGNMENT_MAX = 8;
+
+function boundedLiteralAssignment(command = "") {
+  const source = String(command || "").trim();
+  if (!source || hasActiveShellExpansion(source)) return null;
+  const tokens = tokenizeShellWords(source);
+  if (tokens.length !== 1) return null;
+  const match = tokens[0].match(/^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]+)$/);
+  if (!match) return null;
+  const [, name, value] = match;
+  if (
+    value.startsWith("-") ||
+    !READ_ONLY_FOR_LOOP_LITERAL_PATTERN.test(value) ||
+    /[\r\n]/.test(value)
+  ) {
+    return null;
+  }
+  return { name, value };
+}
+
+function replaceBoundedLiteralReferences(source = "", name = "", value = "") {
+  const text = String(source || "");
+  let result = "";
+  let quote = "";
+  let escaped = false;
+  let replacements = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote === "'") {
+      result += char;
+      if (char === "'") quote = "";
+      continue;
+    }
+    if (escaped) {
+      result += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      result += char;
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      quote = quote === '"' ? "" : '"';
+      result += char;
+      continue;
+    }
+    if (!quote && char === "'") {
+      quote = "'";
+      result += char;
+      continue;
+    }
+    if (char !== "$") {
+      result += char;
+      continue;
+    }
+    const braced = text.startsWith(`\${${name}}`, index);
+    const bare = text.startsWith(`$${name}`, index) &&
+      !/[A-Za-z0-9_]/.test(text[index + name.length + 1] || "");
+    if (!braced && !bare) {
+      result += char;
+      continue;
+    }
+    result += quote === '"' || !/\s/.test(value) ? value : `'${value}'`;
+    replacements += 1;
+    index += braced ? name.length + 2 : name.length;
+  }
+  return { text: result, replacements };
+}
+
+function joinParsedShellSequence(commands = [], separators = []) {
+  let result = commands[0] || "";
+  for (let index = 1; index < commands.length; index += 1) {
+    const separator = separators[index - 1] === "newline"
+      ? "\n"
+      : separators[index - 1] || ";";
+    result += separator === "\n"
+      ? `\n${commands[index]}`
+      : ` ${separator} ${commands[index]}`;
+  }
+  return result;
+}
+
+function sanitizeReadOnlyCompoundLiteralAssignments({
+  prefixSource = "",
+  loopSource = "",
+  suffixSource = "",
+  loopVariable = "",
+} = {}) {
+  const parsed = parseTopLevelShellSequence(prefixSource);
+  if (
+    !parsed.commands.length ||
+    parsed.openQuote ||
+    parsed.trailingEscape ||
+    parsed.trailingSeparator
+  ) {
+    return null;
+  }
+
+  const assignments = new Map();
+  const commands = [];
+  for (const sourceCommand of parsed.commands) {
+    const assignment = boundedLiteralAssignment(sourceCommand);
+    if (assignment) {
+      if (
+        assignments.has(assignment.name) ||
+        assignment.name === loopVariable ||
+        assignments.size >= READ_ONLY_LITERAL_ASSIGNMENT_MAX
+      ) {
+        return null;
+      }
+      assignments.set(assignment.name, { value: assignment.value, used: false });
+      commands.push("true");
+      continue;
+    }
+    let command = sourceCommand;
+    for (const [name, state] of assignments.entries()) {
+      const replaced = replaceBoundedLiteralReferences(command, name, state.value);
+      command = replaced.text;
+      state.used ||= replaced.replacements > 0;
+    }
+    commands.push(command);
+  }
+  if (!assignments.size) {
+    return { prefixSource, loopSource, suffixSource };
+  }
+
+  let sanitizedLoop = loopSource;
+  let sanitizedSuffix = suffixSource;
+  for (const [name, state] of assignments.entries()) {
+    const loopReplacement = replaceBoundedLiteralReferences(sanitizedLoop, name, state.value);
+    sanitizedLoop = loopReplacement.text;
+    const suffixReplacement = replaceBoundedLiteralReferences(sanitizedSuffix, name, state.value);
+    sanitizedSuffix = suffixReplacement.text;
+    state.used ||= loopReplacement.replacements > 0 || suffixReplacement.replacements > 0;
+  }
+  if ([...assignments.values()].some((state) => !state.used)) return null;
+  return {
+    prefixSource: joinParsedShellSequence(commands, parsed.separators),
+    loopSource: sanitizedLoop,
+    suffixSource: sanitizedSuffix,
+  };
 }
 
 function classifyReadOnlyForLoop(normalized) {
@@ -1801,7 +2092,11 @@ function classifyReadOnlyForLoop(normalized) {
   if (hasActiveShellExpansion(itemSource) || hasActiveShellCommandSubstitution(itemSource)) {
     return broadForLoopClassification(text, "the item list is dynamic");
   }
-  const items = tokenizeShellWords(itemSource);
+  // A model commonly formats a finite literal list with shell line
+  // continuations. Removing only the exact backslash-newline token preserves
+  // the same static list without admitting arbitrary escapes or expansion.
+  const normalizedItemSource = itemSource.replace(/\\\r?\n/g, " ");
+  const items = tokenizeShellWords(normalizedItemSource);
   if (!items.length || items.length > READ_ONLY_FOR_LOOP_MAX_ITEMS) {
     return broadForLoopClassification(text, "the item list is empty or unbounded");
   }
@@ -1862,12 +2157,26 @@ function classifyReadOnlyCompoundSequence(normalized) {
   }
   if (forIndex < 0) return null;
 
-  const prefixSource = trimShellListBoundary(text.slice(0, forIndex));
+  let prefixSource = trimShellListBoundary(text.slice(0, forIndex));
   const doneIndex = findUnquotedShellWord(text, "done", forIndex + 3);
   if (doneIndex < 0) return null;
-  const loopSource = text.slice(forIndex, doneIndex + 4).trim();
-  const suffixSource = trimShellListBoundary(text.slice(doneIndex + 4));
+  let loopSource = text.slice(forIndex, doneIndex + 4).trim();
+  let suffixSource = trimShellListBoundary(text.slice(doneIndex + 4));
   if (!prefixSource && !suffixSource) return null;
+
+  const loopVariable = loopSource.match(/^for[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+in\b/)?.[1] || "";
+  if (prefixSource) {
+    const sanitized = sanitizeReadOnlyCompoundLiteralAssignments({
+      prefixSource,
+      loopSource,
+      suffixSource,
+      loopVariable,
+    });
+    if (!sanitized) {
+      return broadForLoopClassification(text, "the prelude contains an unsafe or unused shell assignment");
+    }
+    ({ prefixSource, loopSource, suffixSource } = sanitized);
+  }
 
   for (const [label, source] of [["prelude", prefixSource], ["suffix", suffixSource]]) {
     if (!source) continue;

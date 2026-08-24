@@ -7,10 +7,40 @@ import { fileURLToPath } from "node:url";
 import { runAgent } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { SessionStore } from "../src/session-store.js";
+import { finishResultClaimsIncompleteWork } from "../src/scs-evidence.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-truthful-completion-"));
 process.env.AGINTIFLOW_HOME = path.join(tempRoot, "home");
+
+assert.equal(
+  finishResultClaimsIncompleteWork(
+    "The report is complete and the verification that was previously paused now passes. No work remains."
+  ),
+  false,
+  "historical paused wording was mistaken for current unfinished work"
+);
+assert.equal(
+  finishResultClaimsIncompleteWork(
+    "The earlier step was paused, but the report is complete and verified now."
+  ),
+  false,
+  "resolved historical pause was mistaken for current unfinished work"
+);
+assert.equal(
+  finishResultClaimsIncompleteWork(
+    "The earlier step was paused and the report is still incomplete."
+  ),
+  true,
+  "historical-pause normalization hid genuinely incomplete current work"
+);
+assert.equal(
+  finishResultClaimsIncompleteWork(
+    "The earlier report was complete, but the current task is unfinished."
+  ),
+  true,
+  "historical wording hid an unrelated current unfinished task"
+);
 
 function assistant(content, toolCalls = []) {
   return {

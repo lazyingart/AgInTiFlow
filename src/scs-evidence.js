@@ -2952,6 +2952,14 @@ export function finishResultClaimsBlocker(result = "") {
 
 export function finishResultClaimsIncompleteWork(result = "") {
   const text = String(result || "")
+    .replace(
+      /\b(?:earlier|previous|prior|former)\s+(?:step|attempt|run|verification|check|phase|command|process|audit)\s+(?:was|were|had\s+been)\s+(?:paused|pending|incomplete|unfinished)\b/gi,
+      ""
+    )
+    .replace(
+      /\b(?:(?:was|were|had\s+been)\s+)?(?:previously|formerly|earlier|already)\s+(?:paused|pending|incomplete|unfinished)\b/gi,
+      ""
+    )
     .replace(/\b(?:not|never)\s+(?:paused|pending|incomplete|unfinished)\b/gi, "")
     .replace(/\b(?:no|without)\s+(?:remaining|pending|unfinished)\s+(?:work|steps?|tasks?|actions?)\b/gi, "");
   const explicitIncompleteState =
