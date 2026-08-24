@@ -187,7 +187,7 @@ ProtectKernelLogs=yes
 ProtectClock=yes
 ProtectHostname=yes
 ProtectProc=invisible
-ProcSubset=pid
+ProcSubset=all
 LockPersonality=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
@@ -525,6 +525,7 @@ export async function attestExecutionWorkerDeploymentInputs({
   const paths = deploymentPaths({ workerReleaseDigest, runtimeBundleDigest });
   await Promise.all([
     attestRootControlledPath(filesystem, EXECUTION_WORKER_NODE_PATH, "file"),
+    attestRootControlledPath(filesystem, paths.workerReleaseDirectory, "directory", { exactMode: 0o755 }),
     attestRootControlledPath(filesystem, paths.workerEntrypoint, "file"),
     attestRootControlledPath(filesystem, paths.runtimeBundleDirectory, "directory"),
     attestRootControlledPath(filesystem, paths.runtimeBundleRoot, "directory", { exactMode: 0o555 }),
@@ -535,8 +536,11 @@ export async function attestExecutionWorkerDeploymentInputs({
     filesystem.lstat(EXECUTION_WORKER_NODE_PATH),
     filesystem.lstat(paths.workerEntrypoint),
   ]);
-  if ((nodeStat.mode & 0o111) === 0 || (entrypointStat.mode & 0o111) === 0) {
-    fail("EXECUTION_DEPLOYMENT_INPUT_UNTRUSTED", "worker launch files must be executable.");
+  if ((nodeStat.mode & 0o005) !== 0o005 || (entrypointStat.mode & 0o005) !== 0o005) {
+    fail(
+      "EXECUTION_DEPLOYMENT_INPUT_UNTRUSTED",
+      "worker launch files must be readable and executable by the dedicated service user."
+    );
   }
   const credential = await readBounded(
     filesystem,

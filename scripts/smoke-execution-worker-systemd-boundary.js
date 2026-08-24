@@ -218,6 +218,8 @@ assert.match(
 assert.match(units.serviceUnit, /\/bin\/aginti-execution-worker\.js$/mu);
 assert.match(units.serviceUnit, /^PrivateNetwork=yes$/mu);
 assert.match(units.serviceUnit, /^ProtectControlGroups=yes$/mu);
+assert.match(units.serviceUnit, /^ProtectProc=invisible$/mu);
+assert.match(units.serviceUnit, /^ProcSubset=all$/mu);
 assert.match(units.serviceUnit, /^Delegate=no$/mu);
 assert.match(units.serviceUnit, /^MemoryMax=1610612736$/mu);
 assert.match(units.serviceUnit, /^MemorySwapMax=0$/mu);
@@ -394,6 +396,30 @@ assert.equal(installedUnits.socketUnitSha256, units.socketUnitSha256);
 
 filesystem = deploymentFixture(units);
 filesystem.mutate(units.deployment.workerReleaseDirectory, { uid: 1000 });
+await expectCode(
+  () => attestExecutionWorkerDeploymentInputs({
+    workerReleaseDigest: WORKER_RELEASE_DIGEST,
+    runtimeBundleDigest: RUNTIME_BUNDLE_DIGEST,
+    filesystem,
+    runtimeBundleValidator,
+  }),
+  "EXECUTION_DEPLOYMENT_INPUT_UNTRUSTED"
+);
+
+filesystem = deploymentFixture(units);
+filesystem.mutate(units.deployment.workerReleaseDirectory, { mode: 0o700 });
+await expectCode(
+  () => attestExecutionWorkerDeploymentInputs({
+    workerReleaseDigest: WORKER_RELEASE_DIGEST,
+    runtimeBundleDigest: RUNTIME_BUNDLE_DIGEST,
+    filesystem,
+    runtimeBundleValidator,
+  }),
+  "EXECUTION_DEPLOYMENT_INPUT_UNTRUSTED"
+);
+
+filesystem = deploymentFixture(units);
+filesystem.mutate(units.deployment.workerEntrypoint, { mode: 0o700 });
 await expectCode(
   () => attestExecutionWorkerDeploymentInputs({
     workerReleaseDigest: WORKER_RELEASE_DIGEST,
