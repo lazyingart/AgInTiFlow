@@ -267,3 +267,21 @@ platform-aware POSIX and Windows command quoting; and recognition of bounded
 stdin `sed -n` pipelines as read-only inspection. Production code contains no
 campaign scenario IDs, target paths, expected prose, commit IDs, or acceptance
 literals.
+
+### Live inbox requirement coalescing
+
+The next installed-release run tested actual mid-turn input rather than a
+sequence of explicit resume commands. A DeepSeek task started from a normal
+repository-writing request. While its first model call was active, two
+independent corrections were appended through `aginti queue`. Both received
+distinct durable inbox IDs and were applied exactly once at the first safe tool
+boundary, before the source note was read.
+
+AgInTiFlow `0.20.217` retained both corrections through later context
+compaction, produced one concise artifact, removed every superseded value,
+preserved the source note, added only narrowly scoped runtime ignore rules,
+committed the intentional files, and left the target repository clean. An
+external semantic and repository-state contract passed at target commit
+`f19ff4b`. No AgInTiFlow source change or task-specific prompt branch was
+needed; the run validates the generic inbox, context, evidence, and completion
+contracts in the published package.
