@@ -881,6 +881,7 @@ function summarizeRetainedSourceEvidence(messages = [], limit = 28) {
 
 const COMPACTION_STATE_TOOL_NAMES = new Set([
   "inspect_project",
+  "deep_research",
   "read_file",
   "list_files",
   "search_files",
@@ -923,6 +924,17 @@ function compactRetainedToolPayload(toolName, payload = {}, args = {}) {
     result.sourceDirs = compactPathItems(payload.sourceDirs, 16, ["path", "kind"]);
     result.topLevel = compactPathItems(payload.topLevel, 32, ["path", "type", "size"]);
     result.files = compactPathItems(payload.files, 48, ["path", "size"]);
+  } else if (toolName === "deep_research") {
+    result.version = Number(payload.version || 0);
+    result.researchId = compactSingleLine(payload.researchId, 180);
+    result.status = compactSingleLine(payload.status, 80);
+    result.stage = compactSingleLine(payload.stage, 80);
+    result.reportPath = compactSingleLine(payload.reportPath, 500);
+    result.artifactPath = compactSingleLine(payload.artifactPath, 500);
+    result.queryCount = Math.max(0, Number(payload.queryCount || 0));
+    result.sourceCount = Math.max(0, Number(payload.sourceCount || 0));
+    result.coverage = payload.coverage && typeof payload.coverage === "object" ? payload.coverage : {};
+    result.audit = payload.audit && typeof payload.audit === "object" ? payload.audit : {};
   } else if (toolName === "read_file") {
     if (Number.isFinite(Number(payload.bytes))) result.bytes = Number(payload.bytes);
     const content = String(payload.content || payload.contentPreview || "");
@@ -981,11 +993,13 @@ function retainedToolStateMessages(messages = [], limit = 12) {
   }
 
   const records = [...recordsByKey.values()];
-  const latestInspection = [...records].reverse().find((record) => record.name === "inspect_project");
+  const pinned = ["inspect_project", "deep_research"]
+    .map((name) => [...records].reverse().find((record) => record.name === name))
+    .filter(Boolean);
   const remaining = records
-    .filter((record) => record !== latestInspection)
-    .slice(-Math.max(0, Number(limit) - (latestInspection ? 1 : 0)));
-  const selected = [latestInspection, ...remaining].filter(Boolean).sort((left, right) => left.ordinal - right.ordinal);
+    .filter((record) => !pinned.includes(record))
+    .slice(-Math.max(0, Number(limit) - pinned.length));
+  const selected = [...pinned, ...remaining].sort((left, right) => left.ordinal - right.ordinal);
 
   return selected.flatMap((record, index) => {
     const id = `aginti-compacted-tool-${index + 1}`;

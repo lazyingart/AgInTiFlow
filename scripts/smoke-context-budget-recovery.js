@@ -125,57 +125,94 @@ const sentPlan = capturedPayload.messages.map((message) => message.content || ""
 assert.ok(sentPlan.includes(HEAD), "plan request lost the exact task head");
 assert.ok(sentPlan.includes(TAIL), "plan request lost the latest task tail");
 
+const compactionState = {
+  goal: hugeGoal,
+  plan: "Use the existing routine and verify its artifact.",
+  messages: [
+    { role: "system", content: "SYSTEM-HEAD\n" + "policy ".repeat(10000) + "\nSYSTEM-TAIL" },
+    { role: "user", content: "first request" },
+    {
+      role: "user",
+      content:
+        "The runtime proactively compacted a long agent history before the provider context became inefficient or unstable. OLD-COMPACTION-MUST-NOT-RECUR",
+    },
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        {
+          id: "deep-research-complete",
+          type: "function",
+          function: {
+            name: "deep_research",
+            arguments: '{"query":"reliability evidence","outputPath":"reports/reliability.md"}',
+          },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "deep-research-complete",
+      content: JSON.stringify({
+        ok: true,
+        toolName: "deep_research",
+        version: 14,
+        researchId: "reliability-evidence-v14",
+        status: "completed",
+        stage: "completed",
+        reportPath: "reports/reliability.md",
+        artifactPath: ".aginti/deep-research-reliability.json",
+        queryCount: 10,
+        sourceCount: 16,
+        coverage: { requiredFirstPartyVerified: true },
+        audit: { citationCoverage: 1 },
+      }),
+    },
+    {
+      role: "tool",
+      content: JSON.stringify({
+        ok: true,
+        toolName: "read_file",
+        path: "/evidence/Musia/SKILL.md",
+        bytes: 2048,
+        sha256: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        contentTruncated: false,
+        content: [
+          "---",
+          "name: musia-music-production",
+          "description: Create and review songs through the established Musia production workflow.",
+          "---",
+          "# Musia Music Production",
+          "Use the existing CLI and preserve the reviewed song artifacts.",
+        ].join("\n"),
+        commandEvidence: [{ command: "node bin/musia.js doctor --json" }],
+        pathEvidence: [{ path: "bin/musia.js" }],
+      }),
+    },
+    {
+      role: "tool",
+      content: JSON.stringify({
+        ok: true,
+        toolName: "list_files",
+        path: "/evidence/LALACHAN/scripts",
+        entries: [{ path: "scripts/xyq_cdp_browser.py" }, { path: "scripts/wait_downloaded_mp4.sh" }],
+      }),
+    },
+    { role: "user", content: "latest interruption: send the finished PDF to this exact chat" },
+  ],
+};
 const runtimeMessages = buildContextBudgetCompactionMessages(
-  {
-    goal: hugeGoal,
-    plan: "Use the existing routine and verify its artifact.",
-    messages: [
-      { role: "system", content: "SYSTEM-HEAD\n" + "policy ".repeat(10000) + "\nSYSTEM-TAIL" },
-      { role: "user", content: "first request" },
-      {
-        role: "user",
-        content:
-          "The runtime proactively compacted a long agent history before the provider context became inefficient or unstable. OLD-COMPACTION-MUST-NOT-RECUR",
-      },
-      {
-        role: "tool",
-        content: JSON.stringify({
-          ok: true,
-          toolName: "read_file",
-          path: "/evidence/Musia/SKILL.md",
-          bytes: 2048,
-          sha256: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-          contentTruncated: false,
-          content: [
-            "---",
-            "name: musia-music-production",
-            "description: Create and review songs through the established Musia production workflow.",
-            "---",
-            "# Musia Music Production",
-            "Use the existing CLI and preserve the reviewed song artifacts.",
-          ].join("\n"),
-          commandEvidence: [{ command: "node bin/musia.js doctor --json" }],
-          pathEvidence: [{ path: "bin/musia.js" }],
-        }),
-      },
-      {
-        role: "tool",
-        content: JSON.stringify({
-          ok: true,
-          toolName: "list_files",
-          path: "/evidence/LALACHAN/scripts",
-          entries: [{ path: "scripts/xyq_cdp_browser.py" }, { path: "scripts/wait_downloaded_mp4.sh" }],
-        }),
-      },
-      { role: "user", content: "latest interruption: send the finished PDF to this exact chat" },
-    ],
-  },
+  compactionState,
   config,
   { title: "", url: "" },
   3,
   { reason: "test context recovery" }
 );
 const runtimeText = runtimeMessages.map((message) => message.content || "").join("\n");
+const retainedNativeDeepResearch = runtimeMessages.find((message) =>
+  Array.isArray(message.tool_calls) &&
+  message.tool_calls.some((call) => call?.function?.name === "deep_research")
+);
 assert.ok(
   estimateMessageTokens(runtimeMessages) <= 12288,
   "runtime compaction exceeded the bounded LocalLLM retry target"
@@ -193,8 +230,27 @@ assert.ok(runtimeText.includes("sha256=1234567890abcdef"));
 assert.ok(runtimeText.includes("content=complete"));
 assert.ok(runtimeText.includes("node bin/musia.js doctor --json"));
 assert.ok(runtimeText.includes("scripts/xyq_cdp_browser.py"));
+assert.ok(retainedNativeDeepResearch, "native compaction lost the completed deep_research call");
+assert.ok(runtimeText.includes("reliability-evidence-v14"));
+assert.ok(runtimeText.includes('"version":14'));
 assert.ok(!runtimeText.includes("OLD-COMPACTION-MUST-NOT-RECUR"));
 assert.match(runtimeText, /Do not reread a listed source solely because compaction occurred/);
 assert.match(runtimeText, /never restart a full-file read loop after compaction/);
+
+const deepSeekRuntimeMessages = buildContextBudgetCompactionMessages(
+  compactionState,
+  { ...config, provider: "deepseek", model: "deepseek-chat" },
+  { title: "", url: "" },
+  3,
+  { reason: "test DeepSeek context recovery" }
+);
+const deepSeekRuntimeText = deepSeekRuntimeMessages.map((message) => message.content || "").join("\n");
+assert.ok(deepSeekRuntimeText.includes("Tool: deep_research"));
+assert.ok(deepSeekRuntimeText.includes("reliability-evidence-v14"));
+assert.ok(deepSeekRuntimeText.includes('"version":14'));
+assert.ok(
+  estimateMessageTokens(deepSeekRuntimeMessages) <= 12288,
+  "DeepSeek runtime compaction exceeded the bounded retry target"
+);
 
 console.log("context budget recovery smoke passed");

@@ -1515,6 +1515,36 @@ sameNames(
   ["deep_research", "finish"],
   "local evidence research did not enter the bounded research engine after inspection"
 );
+const localEvidenceAfterDeepResearchCompaction = selectProgressiveTools(allTools, {
+  config: { provider: "deepseek" },
+  goal:
+    "Investigate the reliability problem in this folder, correct PROJECT_NOTES.md, write an evidence review and sources.json, then commit the intentional work.",
+  profile: "research",
+  messages: [
+    {
+      role: "user",
+      content:
+        "The runtime proactively compacted a long agent history before the provider context became inefficient or unstable.",
+    },
+    {
+      role: "user",
+      content: [
+        "Retained runtime tool evidence. This operation already completed; use its result and do not repeat it solely because context was compacted.",
+        "Tool: deep_research",
+        'Arguments: {"query":"reliability evidence"}',
+        'Verified result: {"ok":true,"version":14,"status":"completed"}',
+      ].join("\n"),
+    },
+  ],
+});
+assert(
+  names(localEvidenceAfterDeepResearchCompaction).includes("read_file"),
+  "post-research compaction did not restore local workspace tools"
+);
+assert(
+  !(names(localEvidenceAfterDeepResearchCompaction).length === 2 && names(localEvidenceAfterDeepResearchCompaction)[0] === "deep_research"),
+  "post-research compaction forgot the completed bounded research call"
+);
 
 const documentRuntimeSnapshot =
   'Step 1/30. Latest runtime snapshot:\n{"pageText":"Workspace file tools are ready. Web search and resumable deep research are available when current evidence is required."}';
