@@ -583,6 +583,58 @@ try {
     ...hostWorkspacePolicy,
     readOnlyRoots: [externalReadRoot],
   };
+  const exactReadOnlySkillLoop = [
+    "for f in",
+    "/home/lachlan/.agintiflow/skillmesh/skills/lazyedit-publish-workflow/SKILL.md",
+    "/home/lachlan/.codex/skills/musia-music-production/SKILL.md",
+    "/home/lachlan/.codex/skills/musia-lalachan-mv-workflow/SKILL.md",
+    "/home/lachlan/.codex/skills/lalachan-xyq-browser-video/SKILL.md",
+    "/home/lachlan/.nvm/versions/node/v22.21.0/lib/node_modules/@lazyingart/agintiflow/skills/browser-automation/SKILL.md",
+    "/home/lachlan/.codex/skills/musia-song-localization/SKILL.md;",
+    'do echo "===== $f ====="; wc -l "$f"; done',
+  ].join(" ");
+  const exactReadOnlySkillLoopPolicy = evaluateCommandPolicy(exactReadOnlySkillLoop, hostWorkspacePolicy);
+  assert(
+    exactReadOnlySkillLoopPolicy.allowed &&
+      exactReadOnlySkillLoopPolicy.category === "read-only" &&
+      exactReadOnlySkillLoopPolicy.boundedForLoop === true &&
+      exactReadOnlySkillLoopPolicy.needsNetwork === false &&
+      exactReadOnlySkillLoopPolicy.writesWorkspace === false,
+    "a finite echo/wc skill audit loop incorrectly required destructive host permission"
+  );
+  const multilineReadOnlyLoopPolicy = evaluateCommandPolicy(
+    [
+      "for target in README.md package.json",
+      "do",
+      '  echo "== ${target} =="',
+      '  wc -l "$target"',
+      "done",
+    ].join("\n"),
+    hostWorkspacePolicy
+  );
+  assert(
+    multilineReadOnlyLoopPolicy.allowed && multilineReadOnlyLoopPolicy.category === "read-only",
+    "a multiline finite read-only loop was not recognized"
+  );
+  for (const unsafeLoop of [
+    'for f in README.md; do rm -rf "$f"; done',
+    'for f in README.md; do curl "https://example.com/$f"; done',
+    'for f in README.md; do cp "$f" copied.md; done',
+    'for f in README.md; do echo "$f" > report.md; done',
+    'for f in $(find . -type f); do wc -l "$f"; done',
+    'for f in *.md; do wc -l "$f"; done',
+    'for f in --pre=unsafe-helper; do rg pattern "$f"; done',
+    'for f in $FILES; do wc -l "$f"; done',
+    'for f in README.md; do wc -l "${f:-package.json}"; done',
+    'for f in README.md; do for g in package.json; do wc -l "$g"; done; done',
+    'for f in README.md; do wc -l "$f" & done',
+  ]) {
+    const unsafeLoopPolicy = evaluateCommandPolicy(unsafeLoop, hostWorkspacePolicy);
+    assert(
+      !unsafeLoopPolicy.allowed && unsafeLoopPolicy.category !== "read-only",
+      `unsafe or dynamic shell loop bypassed the bounded read-only policy: ${unsafeLoop}`
+    );
+  }
   const readRootDoctorPolicy = evaluateCommandPolicy(
     `cd ${externalReadRoot} && node bin/musia.js doctor --json 2>&1 | head -80`,
     hostReadRootPolicy

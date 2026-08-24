@@ -1372,6 +1372,100 @@ function classifyShellSequence(normalized) {
   };
 }
 
+const READ_ONLY_FOR_LOOP_MAX_ITEMS = 64;
+const READ_ONLY_FOR_LOOP_MAX_COMMANDS = 16;
+const READ_ONLY_FOR_LOOP_LITERAL_PATTERN = /^[A-Za-z0-9_@%+=:,./~+-]+$/;
+
+function shellIdentifierPattern(value = "") {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function broadForLoopClassification(normalized, reason) {
+  return {
+    category: "general-shell",
+    needsNetwork: false,
+    writesWorkspace: true,
+    reason: `Shell for-loop is outside the bounded read-only form (${reason}): ${normalized}`,
+  };
+}
+
+function classifyReadOnlyForLoop(normalized) {
+  const text = String(normalized || "").trim();
+  if (!/^for\s+/.test(text)) return null;
+  if (text.length > 64 * 1024) {
+    return broadForLoopClassification(text, "command is too large");
+  }
+
+  const match = text.match(
+    /^for[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+in[ \t]+([\s\S]*?)(?:;|\n)[ \t]*do\s+([\s\S]*?)(?:;|\n)[ \t]*done[ \t]*$/
+  );
+  if (!match) return broadForLoopClassification(text, "unsupported loop syntax");
+
+  const [, variableName, itemSource, bodySource] = match;
+  if (hasActiveShellExpansion(itemSource) || hasActiveShellCommandSubstitution(itemSource)) {
+    return broadForLoopClassification(text, "the item list is dynamic");
+  }
+  const items = tokenizeShellWords(itemSource);
+  if (!items.length || items.length > READ_ONLY_FOR_LOOP_MAX_ITEMS) {
+    return broadForLoopClassification(text, "the item list is empty or unbounded");
+  }
+  if (items.some((item) => item.startsWith("-") || !READ_ONLY_FOR_LOOP_LITERAL_PATTERN.test(item))) {
+    return broadForLoopClassification(
+      text,
+      "items must be finite literal words or paths without option prefixes or globs"
+    );
+  }
+
+  const unquotedBody = stripQuotedSegments(bodySource);
+  if (/[|&<>(){}]/.test(unquotedBody) || hasActiveShellCommandSubstitution(bodySource)) {
+    return broadForLoopClassification(text, "the body uses control, redirection, or substitution syntax");
+  }
+
+  const escapedVariable = shellIdentifierPattern(variableName);
+  const variableReference = new RegExp(
+    `\\$(?:\\{${escapedVariable}\\}|${escapedVariable}(?![A-Za-z0-9_]))`,
+    "g"
+  );
+  const referenceCount = [...bodySource.matchAll(variableReference)].length;
+  if (!referenceCount) {
+    return broadForLoopClassification(text, "the body does not consume the loop item");
+  }
+
+  for (const item of items) {
+    const expandedBody = bodySource.replace(variableReference, item);
+    if (hasActiveShellExpansion(expandedBody) || hasActiveShellCommandSubstitution(expandedBody)) {
+      return broadForLoopClassification(text, "the body contains expansion beyond the loop variable");
+    }
+    const sequence = splitTopLevelShellSequence(expandedBody);
+    const commands = sequence?.parts || [expandedBody.trim()];
+    if (
+      !commands.length ||
+      commands.length > READ_ONLY_FOR_LOOP_MAX_COMMANDS ||
+      (sequence && sequence.separators.some((separator) => ![";", "newline"].includes(separator)))
+    ) {
+      return broadForLoopClassification(text, "the body is not a bounded sequential command list");
+    }
+    for (const command of commands) {
+      const classification = classifySimpleCommand(command);
+      if (classification.category === "blocked" || classification.category === "destructive") {
+        return { ...classification, gitOnly: false };
+      }
+      if (classification.category !== "read-only" || classification.writesWorkspace) {
+        return broadForLoopClassification(text, `body command is ${classification.category}`);
+      }
+    }
+  }
+
+  return {
+    category: "read-only",
+    needsNetwork: false,
+    writesWorkspace: false,
+    gitOnly: false,
+    boundedForLoop: true,
+    reason: `Finite read-only shell loop over ${items.length} literal item${items.length === 1 ? "" : "s"}.`,
+  };
+}
+
 function splitTopLevelPipeline(command = "") {
   const parts = [];
   let current = "";
@@ -1536,7 +1630,7 @@ export function classifyCommand(command) {
   const normalized = String(command || "").trim();
   if (!normalized) return { category: "blocked", reason: "Command is empty." };
 
-  return classifyBackgroundShell(normalized) || classifyCdCommand(normalized) || classifyShellSequence(normalized) || classifyPipelineSequence(normalized) || classifySimpleCommand(normalized);
+  return classifyBackgroundShell(normalized) || classifyReadOnlyForLoop(normalized) || classifyCdCommand(normalized) || classifyShellSequence(normalized) || classifyPipelineSequence(normalized) || classifySimpleCommand(normalized);
 }
 
 export function evaluateCommandPolicy(command, config = {}) {
