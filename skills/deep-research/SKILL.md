@@ -34,7 +34,9 @@ When the user requests a specific Markdown report filename, pass it as
 `outputPath` so the bounded engine writes the complete report directly into the
 workspace. Do not try to read or copy a private session artifact afterward.
 Preserve explicit evidence requirements with `requirePdf`,
-`minIndependentSources`, and `includeNegativeEvidence` when they are present.
+`minIndependentSources`, `includeNegativeEvidence`, `requireRecommendations`,
+`requireVerificationMethod`, and `includeEvidenceAppendix` when they are
+present.
 The engine also derives them from the authoritative original request so a
 shortened planner query cannot discard them.
 
@@ -85,6 +87,16 @@ Direct PDF candidates use the engine's bounded document-size path, so do not
 reject an ordinary multi-megabyte system card using the lower HTML-page limit.
 Browser-verification, CAPTCHA, and access-challenge pages are unreadable; their
 warning text is not evidence.
+
+Treat a requested report as a reader-facing decision artifact, never an
+execution transcript. Do not dump the full raw prompt, task IDs, transport IDs,
+schemas, or orchestration instructions into it. When recommendations are
+requested, each must be concrete and traceable to verified evidence. Always
+make limitations explicit. When requested, the engine adds a reproducible
+verification method and an exact-quote evidence appendix from the deterministic
+evidence ledger. It separates verified sources from pages inspected but not
+cited, instead of padding the bibliography with unreadable or unsupported
+entries.
 
 Return the substantive answer naturally. Include useful citations and the
 report path; do not narrate internal query loops or model calls. If coverage or

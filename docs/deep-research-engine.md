@@ -35,6 +35,11 @@ every query an unbounded agent swarm:
    paper set erase the requested source class. Search snippets can guide
    discovery, but they cannot satisfy verified first-party coverage or enter
    synthesis as cited evidence.
+   Phrases such as “official Temporal docs” retain this requirement even when a
+   product name occurs between `official` and `docs`. Product-owned root pages
+   and vendor blogs are classified using the named discovery route; unrelated
+   third-party pages are not promoted merely because their URL repeats one
+   query word.
    Canonical duplicates found by multiple providers are promoted and retain
    per-provider rank evidence. Multi-domain corpora receive separate bounded `site:`
    queries matched to entity-specific subquestions instead of one fragile OR
@@ -99,6 +104,10 @@ every query an unbounded agent swarm:
    rather than arbitrary page text. Every substantive paragraph and finding
    cites exact evidence IDs instead of merely naming a source. A failed main
    synthesis gets one same-provider fast-model fallback.
+   A request for practical recommendations becomes a completion obligation:
+   every recommendation must cite verified evidence, and the run fails closed
+   rather than delivering an unsupported advice section. The renderer uses the
+   compact research objective instead of dumping the raw task prompt.
 9. **Audit**: deterministic code removes unknown or unverified evidence IDs,
    derives visible source citations from accepted evidence records, removes
    unsupported synthesis statements, then reports claim, quotation, citation,
@@ -109,6 +118,13 @@ every query an unbounded agent swarm:
     Markdown report is saved beside it by default, or written directly to a
     guarded workspace-relative `outputPath` when the caller requests a durable
     filename, then sent to the canvas.
+
+The reader-facing report always includes an explicit limitations section and
+separates quote-verified sources from inspected-but-uncited pages. When the
+original request asks for reproducibility or exact quotations, deterministic
+rendering adds a verification procedure, retrieval timestamps and SHA-256
+digests, and a verified-evidence appendix. These sections come from the
+retrieval/evidence ledger, not model memory.
 
 This combines the orchestrator/worker and separate citation-pass lessons
 described by [Anthropic's production research
@@ -136,6 +152,8 @@ the authoritative original user goal. A planner may shorten the research
 question, but cannot silently drop requirements such as “compare at least three
 independent primary sources,” “read a paper/PDF when available,” or “include
 negative evidence.” These requirements are fingerprinted and checkpointed.
+The same contract covers practical recommendations, reproducible verification
+methods, and exact-quote evidence appendices.
 
 Planning and evidence extraction deliberately use the configured routing model
 when it belongs to a hosted active provider. Synthesis uses the configured main

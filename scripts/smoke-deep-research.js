@@ -441,6 +441,7 @@ async function main() {
                   ],
                 }],
                 keyFindings: [{ claim: "Claims retain exact evidence IDs.", evidenceIds: ["S1-C1", "S2-C1"], confidence: "high" }],
+                recommendations: [],
                 contradictions: [],
                 uncertainties: [],
                 nextQuestions: [],
@@ -601,6 +602,7 @@ async function main() {
                   executiveSummaryEvidenceIds: ["S1-C1"],
                   sections: [{ heading: "Claim", paragraphs: [{ text: "The gain was measured.", evidenceIds: ["S1-C1"] }] }],
                   keyFindings: [],
+                  recommendations: [],
                   contradictions: [],
                   uncertainties: ["The exact source was inaccessible."],
                   nextQuestions: [],
@@ -734,6 +736,7 @@ async function main() {
                     { claim: "A second independent source corroborates the measurement.", evidenceIds: ["S2-C1"], confidence: "high" },
                     { claim: "A third independent source supplies separate evidence.", evidenceIds: ["S3-C1"], confidence: "high" },
                   ],
+                  recommendations: [],
                   contradictions: [],
                   uncertainties: ["Benchmark scope remains limited."],
                   nextQuestions: [],
@@ -1004,6 +1007,95 @@ async function main() {
     "a bounded official PDF was still constrained by the generic 2 MiB page limit"
   );
 
+  const namedOfficialResearch = await deepResearch(
+    {
+      query: "Compare official Temporal docs and official LangGraph docs for durable agent execution.",
+      depth: "quick",
+      sourcePolicy: "primary",
+      maxQueries: 1,
+      maxSources: 2,
+      gapPasses: 0,
+      researchId: "named-official-products-smoke",
+      outputPath: "reports/named-official-products.md",
+      dryRun: true,
+    },
+    {
+      provider: "mock",
+      model: "mock-agent",
+      commandCwd: researchWorkspace,
+      webSearchImpl: async ({ query }) => ({
+        ok: true,
+        toolName: "web_search",
+        provider: "test",
+        query,
+        results: /official system card engineering blog architecture/i.test(query)
+          ? [
+              {
+                rank: 1,
+                title: "Durable Execution Solutions",
+                url: "https://temporal.io/blog/durable-execution-solutions",
+                canonicalUrl: "https://temporal.io/blog/durable-execution-solutions",
+                domain: "temporal.io",
+                snippet: "Temporal explains durable execution and workflow recovery.",
+                provider: "test",
+              },
+              {
+                rank: 2,
+                title: "Third-party retry commentary",
+                url: "https://appscale.example.org/blog/retry-commentary",
+                canonicalUrl: "https://appscale.example.org/blog/retry-commentary",
+                domain: "appscale.example.org",
+                snippet: "A secondary opinion about retry behavior.",
+                provider: "test",
+              },
+            ]
+          : [
+              {
+                rank: 1,
+                title: "LangGraph",
+                url: "https://www.langchain.com/langgraph",
+                canonicalUrl: "https://www.langchain.com/langgraph",
+                domain: "langchain.com",
+                snippet: "LangGraph provides durable execution for long-running stateful agents.",
+                provider: "test",
+              },
+              {
+                rank: 2,
+                title: "Generic durable systems survey",
+                url: "https://link.springer.com/article/generic-durable-systems",
+                canonicalUrl: "https://link.springer.com/article/generic-durable-systems",
+                domain: "link.springer.com",
+                snippet: "A broad survey with little agent-specific implementation detail.",
+                provider: "test",
+              },
+            ],
+      }),
+      webPageReaderImpl: async ({ url }) => ({
+        ok: true,
+        toolName: "read_web_page",
+        url,
+        title: url.includes("temporal.io") ? "Temporal Durable Execution" : "LangGraph",
+        readable: true,
+        contentType: "text/html",
+        retrievedAt: "2026-08-25T00:00:00.000Z",
+        sha256: (url.includes("temporal.io") ? "1" : "2").repeat(64),
+        content: "The official product page documents durable execution, checkpointing, and recovery behavior.",
+        passages: ["The official product page documents durable execution, checkpointing, and recovery behavior."],
+      }),
+    },
+    new SessionStore(path.join(tempRoot, "sessions"), "named-official-products-smoke")
+  );
+  assert(namedOfficialResearch.ok, `named official product research failed: ${namedOfficialResearch.error || "unknown"}`);
+  assert(namedOfficialResearch.requirements.officialDiscovery, "'official Temporal docs' did not preserve first-party discovery intent");
+  assert(
+    namedOfficialResearch.sources.map((source) => source.domain).sort().join(",") === "langchain.com,temporal.io",
+    `named first-party product pages were displaced by weaker filler: ${namedOfficialResearch.sources.map((source) => source.domain).join(", ")}`
+  );
+  assert(namedOfficialResearch.sources.every((source) => source.firstParty), "a named official product root was not classified as first-party");
+  const namedOfficialReport = await fs.readFile(namedOfficialResearch.reportPath, "utf8");
+  assert(namedOfficialReport.includes("## Limitations, Uncertainties, And Coverage Gaps"), "research report omitted an explicit limitations section");
+  assert(namedOfficialReport.includes("## Sources Inspected But Not Cited"), "dry-run report hid the uncited-source boundary");
+
   const scholarlyGapCalls = [];
   const scholarlyGapResearch = await deepResearch(
     {
@@ -1070,6 +1162,7 @@ async function main() {
                     paragraphs: [{ text: "Two primary sources support the result.", evidenceIds: ["S1-C1", "S2-C1"] }],
                   }],
                   keyFindings: [{ claim: "Independent evidence was recovered.", evidenceIds: ["S1-C1", "S2-C1"], confidence: "high" }],
+                  recommendations: [],
                   contradictions: [],
                   uncertainties: [],
                   nextQuestions: [],
@@ -1209,6 +1302,7 @@ async function main() {
                     evidenceIds: ["S1-C1", "S2-C1", "S3-C1"],
                     confidence: "high",
                   }],
+                  recommendations: [],
                   contradictions: [],
                   uncertainties: ["Real throughput depends on local hardware."],
                   nextQuestions: [],
