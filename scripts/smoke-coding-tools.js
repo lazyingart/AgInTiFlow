@@ -1074,6 +1074,22 @@ try {
     documentBuildSequencePolicy.category === "general-shell",
     "document build sequence should remain broad trusted shell, not destructive"
   );
+  const documentIntegrityBuildPolicy = evaluateCommandPolicy(
+    "set -e; mkdir -p output .verification; echo '== source hashes BEFORE build =='; sha256sum README.md PROJECT_NOTES.md source/budget.csv source/meeting-notes.txt source/style-notes.md | tee .verification/src-before.sha256; echo '== chmod + build =='; chmod +x build.sh scripts/*.py; ./build.sh; echo '== source hashes AFTER build (must match BEFORE) =='; sha256sum README.md PROJECT_NOTES.md source/budget.csv source/meeting-notes.txt source/style-notes.md | tee .verification/src-after.sha256; diff .verification/src-before.sha256 .verification/src-after.sha256 && echo 'SOURCE FILES UNCHANGED (byte-for-byte preserved)'",
+    dockerWorkspacePolicy
+  );
+  assert(
+    documentIntegrityBuildPolicy.allowed,
+    "document integrity build with bounded workspace tee targets should be allowed in trusted Docker mode"
+  );
+  assert(
+    documentIntegrityBuildPolicy.category === "general-shell",
+    "document integrity build should remain broad trusted shell, not destructive"
+  );
+  const externalTeePolicy = evaluateCommandPolicy("tee /etc/aginti-test", dockerWorkspacePolicy);
+  assert(!externalTeePolicy.allowed, "tee outside the workspace should remain blocked");
+  const globTeePolicy = evaluateCommandPolicy("tee reports/*.txt", dockerWorkspacePolicy);
+  assert(!globTeePolicy.allowed, "tee wildcard targets should remain blocked");
   const hostGlobChmodPolicy = evaluateCommandPolicy("chmod +x scripts/*.py", hostWorkspacePolicy);
   assert(!hostGlobChmodPolicy.allowed, "host workspace chmod globs should require explicit trusted host access");
   const recursiveChmodPolicy = evaluateCommandPolicy("chmod -R +x scripts", dockerWorkspacePolicy);

@@ -733,7 +733,7 @@ function classifyBackgroundShell(normalized = "") {
 
 const SAFE_WORKSPACE_WRITE_PATTERNS = [/^mkdir\s+-p\s+[-\w./]+$/];
 const SAFE_CHMOD_MODE_PATTERN = /^[-+=,rwxugoXst0-7]+$/;
-const SAFE_CHMOD_TARGET_LIMIT = 64;
+const SAFE_WORKSPACE_TARGET_LIMIT = 64;
 const SAFE_ENV_ASSIGNMENT_NAMES = new Set(["ANDROID_HOME", "ANDROID_SDK_ROOT", "JAVA_HOME", "GRADLE_USER_HOME", "PATH"]);
 const SAFE_ENV_VALUE_PATTERN = /^[-\w./:@+,%]+$/;
 
@@ -1010,7 +1010,7 @@ function classifyWorkspacePermissionChange(normalized = "") {
   if (tokens[index] !== "chmod") return null;
   const mode = String(tokens[index + 1] || "");
   const targets = tokens.slice(index + 2);
-  if (!SAFE_CHMOD_MODE_PATTERN.test(mode) || !targets.length || targets.length > SAFE_CHMOD_TARGET_LIMIT) {
+  if (!SAFE_CHMOD_MODE_PATTERN.test(mode) || !targets.length || targets.length > SAFE_WORKSPACE_TARGET_LIMIT) {
     return null;
   }
   const unsafeTarget = targets.find((target) => !isSafeWorkspaceChmodTarget(target));
@@ -1027,6 +1027,33 @@ function classifyWorkspacePermissionChange(normalized = "") {
     virtualWorkspacePath: targets.some((target) => target.startsWith("/workspace/")),
     permissionTargetsContainGlob: targets.some((target) => target.includes("*")),
     reason: `Command changes workspace file mode for ${targets.length} bounded target${targets.length === 1 ? "" : "s"}.`,
+  };
+}
+
+function classifyWorkspaceTee(normalized = "") {
+  if (hasActiveShellExpansion(normalized)) return null;
+  const tokens = tokenizeShellWords(normalized);
+  if (tokens[0] !== "tee") return null;
+  let index = 1;
+  if (["-a", "--append"].includes(tokens[index])) index += 1;
+  if (tokens[index] === "--") index += 1;
+  const targets = tokens.slice(index);
+  if (!targets.length || targets.length > SAFE_WORKSPACE_TARGET_LIMIT) return null;
+  const unsafeTarget = targets.find(
+    (target) => target.includes("*") || !isSafeWorkspaceChmodTarget(target)
+  );
+  if (unsafeTarget) {
+    return {
+      category: "blocked",
+      reason: `tee target must be a bounded literal workspace-relative path: ${unsafeTarget}`,
+    };
+  }
+  return {
+    category: "workspace-write",
+    needsNetwork: false,
+    writesWorkspace: true,
+    virtualWorkspacePath: targets.some((target) => target.startsWith("/workspace/")),
+    reason: `Command writes standard input to ${targets.length} bounded workspace target${targets.length === 1 ? "" : "s"}.`,
   };
 }
 
@@ -1427,6 +1454,8 @@ function classifySimpleCommand(normalized) {
   }
   const permissionChangeClassification = classifyWorkspacePermissionChange(normalized);
   if (permissionChangeClassification) return permissionChangeClassification;
+  const teeClassification = classifyWorkspaceTee(normalized);
+  if (teeClassification) return teeClassification;
   const gitCloneClassification = classifyGitClone(normalized);
   if (gitCloneClassification) return gitCloneClassification;
   const envExportClassification = classifySafeEnvExport(normalized);
