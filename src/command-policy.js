@@ -1357,7 +1357,11 @@ function classifySimpleCommand(normalized) {
     };
   }
 
-  if (matchAny(READ_ONLY_PATTERNS, commandForPatternMatching) || isReadOnlyFindCommand(normalized)) {
+  if (
+    matchAny(READ_ONLY_PATTERNS, commandForPatternMatching) ||
+    isReadOnlyFindCommand(normalized) ||
+    (!hasActiveShellExpansion(benignRedirectCommand) && isReadOnlyShellCondition(benignRedirectCommand))
+  ) {
     return {
       category: "read-only",
       needsNetwork: false,
@@ -1767,7 +1771,7 @@ function classifyReadOnlyForLoop(normalized) {
 
 function classifyReadOnlyCompoundSequence(normalized) {
   const text = String(normalized || "").trim();
-  if (!text || /^for\s+/.test(text) || hasActiveShellCommandSubstitution(text)) return null;
+  if (!text || hasActiveShellCommandSubstitution(text)) return null;
 
   let forIndex = findUnquotedShellWord(text, "for");
   const startsAtCommandBoundary = (index) => {
@@ -1778,16 +1782,24 @@ function classifyReadOnlyCompoundSequence(normalized) {
   while (forIndex > 0 && !startsAtCommandBoundary(forIndex)) {
     forIndex = findUnquotedShellWord(text, "for", forIndex + 3);
   }
-  if (forIndex <= 0) return null;
+  if (forIndex < 0) return null;
 
   const prefixSource = trimShellListBoundary(text.slice(0, forIndex));
-  const loopSource = text.slice(forIndex).trim();
-  const prefixClassification = classifyReadOnlyCommandList(prefixSource);
-  if (prefixClassification.category === "blocked" || prefixClassification.category === "destructive") {
-    return { ...prefixClassification, gitOnly: false };
-  }
-  if (prefixClassification.category !== "read-only" || prefixClassification.writesWorkspace) {
-    return broadForLoopClassification(text, "the command prelude is not read-only");
+  const doneIndex = findUnquotedShellWord(text, "done", forIndex + 3);
+  if (doneIndex < 0) return null;
+  const loopSource = text.slice(forIndex, doneIndex + 4).trim();
+  const suffixSource = trimShellListBoundary(text.slice(doneIndex + 4));
+  if (!prefixSource && !suffixSource) return null;
+
+  for (const [label, source] of [["prelude", prefixSource], ["suffix", suffixSource]]) {
+    if (!source) continue;
+    const classification = classifyReadOnlyCommandList(source);
+    if (classification.category === "blocked" || classification.category === "destructive") {
+      return { ...classification, gitOnly: false };
+    }
+    if (classification.category !== "read-only" || classification.writesWorkspace) {
+      return broadForLoopClassification(text, `the command ${label} is not read-only`);
+    }
   }
   const loopClassification = classifyReadOnlyForLoop(loopSource);
   if (!loopClassification) return null;
@@ -1801,7 +1813,7 @@ function classifyReadOnlyCompoundSequence(normalized) {
     gitOnly: false,
     boundedForLoop: true,
     boundedCompoundSequence: true,
-    reason: "Finite read-only command prelude followed by a bounded read-only shell loop.",
+    reason: "A bounded read-only shell loop has only finite read-only command context.",
   };
 }
 

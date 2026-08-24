@@ -658,6 +658,21 @@ try {
       exactCompoundReadOnlyAuditPolicy.writesWorkspace === false,
     "a finite read-only prelude and conditional directory audit incorrectly required destructive host permission"
   );
+  const exactReadOnlyExistenceLoopWithSuffix =
+    'for f in scripts/xyq_cdp_browser.py scripts/xyq_chrome/launch_chrome.sh scripts/xyq_chrome/watch_thread_dom_download.py scripts/musia_mv_finalize.sh; do test -e "/home/lachlan/ProjectsLFS/LALACHAN/$f" && echo "OK   $f" || echo "MISS $f"; done; echo "---mv_packs---"; ls -1 /home/lachlan/ProjectsLFS/Musia/data/mv_packs 2>&1; echo "---creative_projects---"; ls -1 /home/lachlan/ProjectsLFS/Musia/data/creative_projects 2>&1 | head -20';
+  const exactReadOnlyExistenceLoopWithSuffixPolicy = evaluateCommandPolicy(
+    exactReadOnlyExistenceLoopWithSuffix,
+    hostReadRootPolicy
+  );
+  assert(
+    exactReadOnlyExistenceLoopWithSuffixPolicy.allowed &&
+      exactReadOnlyExistenceLoopWithSuffixPolicy.category === "read-only" &&
+      exactReadOnlyExistenceLoopWithSuffixPolicy.boundedForLoop === true &&
+      exactReadOnlyExistenceLoopWithSuffixPolicy.boundedCompoundSequence === true &&
+      exactReadOnlyExistenceLoopWithSuffixPolicy.needsNetwork === false &&
+      exactReadOnlyExistenceLoopWithSuffixPolicy.writesWorkspace === false,
+    "a finite read-only existence loop with bounded list suffix incorrectly required destructive host permission"
+  );
   const exactReadOnlyGitIdentityProbe =
     'git status --short && echo "TOPLEVEL=$(git rev-parse --show-toplevel 2>&1)" && echo "BRANCH=$(git rev-parse --abbrev-ref HEAD 2>&1)"';
   const exactReadOnlyGitIdentityProbePolicy = evaluateCommandPolicy(
@@ -754,6 +769,9 @@ try {
     'echo start; for d in /tmp; do if [ -d "$d" ]; then if [ -f "$d/x" ]; then cat "$d/x"; else echo missing; fi; else echo absent; fi; done',
     'echo start; for d in $ROOTS; do if [ -d "$d" ]; then ls "$d"; else echo missing; fi; done',
     'echo start; for d in /tmp; do if [ -d "$d" ]; then ls "$d"; else echo missing; fi; done; rm -rf report.md',
+    'for f in README.md; do test -e "$f" && echo ok || echo missing; done; cp README.md copied.md',
+    'for f in README.md; do test -e "$f" && echo ok || echo missing; done; curl https://example.com',
+    'for f in README.md; do test -e "$f" && echo ok || echo missing; done; echo done > report.md',
   ]) {
     const unsafeCompoundAuditPolicy = evaluateCommandPolicy(unsafeCompoundAudit, hostReadRootPolicy);
     assert(
