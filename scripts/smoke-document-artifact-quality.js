@@ -42,14 +42,19 @@ const currentDocument = evaluateCurrentStateText({
 });
 assert.equal(currentDocument.ok, true, "authoritative current-state prose was rejected");
 
-function page(words, { height = 842, startY = 60, endY = 700, heading = "Section" } = {}) {
+function page(
+  words,
+  { height = 842, startY = 60, endY = 700, heading = "Section", wordHeight = 10 } = {}
+) {
   const items = [];
   const count = Math.max(1, words);
   for (let index = 0; index < count; index += 1) {
     const ratio = count === 1 ? 0 : index / (count - 1);
     const y = startY + (endY - startY) * ratio;
     const text = index === 0 ? heading : `word${index}`;
-    items.push(`<word xMin="60" yMin="${y.toFixed(2)}" xMax="100" yMax="${(y + 10).toFixed(2)}">${text}</word>`);
+    items.push(
+      `<word xMin="60" yMin="${y.toFixed(2)}" xMax="100" yMax="${(y + wordHeight).toFixed(2)}">${text}</word>`
+    );
   }
   items.push(`<word xMin="250" yMin="810" xMax="300" yMax="820">footer</word>`);
   return `<page width="595" height="${height}">${items.join("")}</page>`;
@@ -66,5 +71,19 @@ const intentionalAppendix = evaluatePdfPageBalance(
   `<doc>${page(220)}${page(35, { endY: 170, heading: "Appendix" })}</doc>`
 );
 assert.equal(intentionalAppendix.ok, true, "an intentional sparse appendix page was rejected");
+
+const undersizedOnePage = evaluatePdfPageBalance(
+  `<doc>${page(340, { wordHeight: 8.3 })}</doc>`
+);
+assert.equal(undersizedOnePage.ok, false, "undersized one-page typography was accepted");
+assert(
+  undersizedOnePage.defects.some((item) => item.code === "undersized-document-text"),
+  "undersized typography did not produce a reader-facing defect"
+);
+
+const readableOnePage = evaluatePdfPageBalance(
+  `<doc>${page(260, { wordHeight: 9.4 })}</doc>`
+);
+assert.equal(readableOnePage.ok, true, "readable one-page typography was rejected");
 
 console.log("document artifact quality smoke test passed");

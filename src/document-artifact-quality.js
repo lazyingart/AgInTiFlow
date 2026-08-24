@@ -29,6 +29,7 @@ const INTENTIONAL_SPARSE_PAGE_PATTERN =
   /^(?:appendix|approval|approvals|acknowledgements?|back cover|contact|notes|references|sign[- ]?off|signatures?)\b/i;
 const HISTORICAL_TRANSITION_PATTERN =
   /\b(?:formerly|no longer|previously|replac(?:ed|ing)|superseded|used to be)\b/i;
+const MIN_READABLE_MEDIAN_WORD_HEIGHT_PT = 8.8;
 
 function portablePath(value = "") {
   return String(value || "").replace(/\\/g, "/");
@@ -175,14 +176,27 @@ export function evaluatePdfPageBalance(bboxXml = "") {
     const yValues = contentWords.flatMap((word) => [word.yMin, word.yMax]).filter(Number.isFinite);
     const usableHeight = Math.max(1, Number(page.height || 0) - 120);
     const occupiedHeight = yValues.length ? Math.max(...yValues) - Math.min(...yValues) : 0;
+    const wordHeights = contentWords
+      .map((word) => word.yMax - word.yMin)
+      .filter((value) => Number.isFinite(value) && value > 0);
     return {
       page: index + 1,
       wordCount: contentWords.length,
       occupiedRatio: occupiedHeight / usableHeight,
+      medianWordHeight: median(wordHeights),
       leadingText: contentWords.slice(0, 16).map((word) => word.text).join(" ").trim(),
     };
   });
   const defects = [];
+  const documentMedianWordHeight = median(
+    metrics.flatMap((item) => Array(item.wordCount).fill(item.medianWordHeight))
+  );
+  if (documentMedianWordHeight > 0 && documentMedianWordHeight < MIN_READABLE_MEDIAN_WORD_HEIGHT_PT) {
+    defects.push({
+      code: "undersized-document-text",
+      message: `The document's median rendered word height is ${documentMedianWordHeight.toFixed(1)} pt, below the ${MIN_READABLE_MEDIAN_WORD_HEIGHT_PT.toFixed(1)} pt readability floor. Keep normal body type and rebalance coherent sections across pages instead of shrinking text to force a page count.`,
+    });
+  }
   if (metrics.length > 1) {
     const priorWordCounts = metrics.slice(0, -1).map((item) => item.wordCount).filter((value) => value > 0);
     const last = metrics.at(-1);
@@ -204,6 +218,7 @@ export function evaluatePdfPageBalance(bboxXml = "") {
     ok: pages.length > 0 && defects.length === 0,
     checked: pages.length > 0,
     pages: metrics,
+    documentMedianWordHeight,
     defects,
   };
 }
