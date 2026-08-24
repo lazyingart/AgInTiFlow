@@ -23,6 +23,50 @@ const DOCKER_WORKSPACE_PATH_FAILURE_PATTERNS = [
   /cannot statx? ['"][^'"]+['"]:\s+No such file or directory/i,
 ];
 
+function unquoteShellToken(value = "") {
+  const text = String(value || "").trim();
+  if (
+    text.length >= 2 &&
+    ((text.startsWith("'") && text.endsWith("'")) ||
+      (text.startsWith('"') && text.endsWith('"')))
+  ) {
+    return text.slice(1, -1);
+  }
+  return text;
+}
+
+function isGeneratedVerificationPreviewPath(value = "") {
+  const target = unquoteShellToken(value).replace(/\\/g, "/");
+  if (
+    !target ||
+    target.startsWith("/") ||
+    target.includes("..") ||
+    /[*?\[\]{}$`]/.test(target)
+  ) {
+    return false;
+  }
+  return (
+    /^(?:build|artifacts)\/verification\/[A-Za-z0-9._/-]+\.(?:png|jpe?g|webp)$/i.test(target) ||
+    /^output\/preview[-_][A-Za-z0-9._-]+\.(?:png|jpe?g|webp)$/i.test(target)
+  );
+}
+
+export function isOptionalGeneratedPreviewCleanup(toolName = "", args = {}) {
+  if (toolName !== "run_command") return false;
+  const firstSegment = String(args.command || args.text || "")
+    .trim()
+    .split(/(?:&&|;|\n)/, 1)[0]
+    .trim();
+  const match = firstSegment.match(/^rm\s+-f\s+(.+)$/);
+  if (!match) return false;
+  const targets = match[1].trim().split(/\s+/).filter(Boolean);
+  return (
+    targets.length > 0 &&
+    targets.length <= 20 &&
+    targets.every((target) => isGeneratedVerificationPreviewPath(target))
+  );
+}
+
 function quoteShell(value = "") {
   const text = String(value || "");
   return `'${text.replace(/'/g, `'\\''`)}'`;
@@ -214,6 +258,21 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
   }
 
   if (category === "destructive") {
+    if (isOptionalGeneratedPreviewCleanup(toolName, args)) {
+      return {
+        ...base,
+        autoRecover: true,
+        summary:
+          "Optional generated-preview cleanup was blocked safely; the verification evidence can remain ignored and the task should continue.",
+        instruction:
+          "Do not retry, rename, or seek approval for this cleanup. Leave the ignored preview files in place, run any remaining read-only checks in a separate call, and finish the requested task when its substantive evidence passes.",
+        options: [
+          "Retain the generated previews as private verification evidence.",
+          "Run source hashes, artifact checks, and git status separately without a delete command.",
+          "Continue to a real content or layout repair if validation still reports a defect.",
+        ],
+      };
+    }
     return {
       ...base,
       summary:

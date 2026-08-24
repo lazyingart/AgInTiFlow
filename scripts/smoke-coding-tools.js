@@ -32,7 +32,11 @@ import {
 import { createPlan } from "../src/model-client.js";
 import { selectModelRoute } from "../src/model-routing.js";
 import { listParallelScouts, runParallelScouts, shouldRunParallelScouts } from "../src/parallel-scouts.js";
-import { buildFailedCommandAdvice, buildPermissionAdvice } from "../src/permission-advice.js";
+import {
+  buildFailedCommandAdvice,
+  buildPermissionAdvice,
+  isOptionalGeneratedPreviewCleanup,
+} from "../src/permission-advice.js";
 import { runJsonSpecialist } from "../src/json-specialist.js";
 import { SessionStore } from "../src/session-store.js";
 import { getTaskProfile } from "../src/task-profiles.js";
@@ -1202,6 +1206,38 @@ try {
   assert(
     destructiveAdvice.destructiveApprovalCommand.includes("--allow-destructive"),
     "destructive advice did not provide an explicit approval command"
+  );
+  const optionalPreviewCleanupArgs = {
+    command:
+      "rm -f build/verification/page-1.png build/verification/page-2.png; git status --short",
+  };
+  assert(
+    isOptionalGeneratedPreviewCleanup("run_command", optionalPreviewCleanupArgs),
+    "bounded generated verification-preview cleanup was not recognized"
+  );
+  const optionalPreviewCleanupAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: optionalPreviewCleanupArgs,
+    guard: {
+      category: "destructive",
+      reason: "Destructive shell commands require Allow destructive actions.",
+    },
+    config: dockerWorkspacePolicy,
+    state: { sessionId: "coding-optional-preview-cleanup-smoke" },
+  });
+  assert(
+    optionalPreviewCleanupAdvice.autoRecover === true,
+    "optional generated-preview cleanup should retain evidence and recover without pausing"
+  );
+  assert(
+    /leave the ignored preview files in place/i.test(optionalPreviewCleanupAdvice.instruction),
+    "optional generated-preview cleanup advice did not tell the agent to retain evidence"
+  );
+  assert(
+    !isOptionalGeneratedPreviewCleanup("run_command", {
+      command: "rm -f output/final-report.pdf",
+    }),
+    "a requested final artifact was misclassified as optional preview cleanup"
   );
   const failedNetworkAdvice = buildFailedCommandAdvice({
     args: { command: "git clone https://github.com/lazyingart/AgInTiFlow.git" },

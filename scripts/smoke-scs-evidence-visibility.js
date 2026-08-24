@@ -270,8 +270,8 @@ const wordDocumentContract = deriveScsTaskContract({
 });
 assert.deepEqual(
   wordDocumentContract.requiredEvidence.map((item) => item.category).sort(),
-  ["artifact", "command", "file"],
-  "Word document production must require written files, validation, and durable artifacts"
+  ["artifact", "command", "file", "visual"],
+  "Word document production must require written files, validation, durable artifacts, and visual evidence"
 );
 
 const groundingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aginti-source-grounding-"));
