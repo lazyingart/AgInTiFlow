@@ -29,8 +29,7 @@ const SAFE_SEQUENTIAL_READ_TOOLS = new Set([
 const MAX_VALIDATION_ERRORS = 8;
 const MAX_VALIDATION_NODES = 50_000;
 const MAX_SAFE_SEQUENTIAL_READ_CALLS = 4;
-const MAX_RECOVERABLE_SEQUENTIAL_CALLS = 4;
-const MAX_REPORTED_SAFE_READ_CALLS = 12;
+const MAX_REPORTED_SEQUENTIAL_CALLS = 12;
 
 function cloneValue(value) {
   return structuredClone(value);
@@ -436,9 +435,12 @@ export function resolveDispatchableToolCallBatch(toolCalls, contract) {
   const onlyExceededBatchLimit =
     errors.length > 0 && errors.every((error) => error?.code === "TOO_MANY_TOOL_CALLS");
   const safeReadBatch = isSafeSequentialReadBatch(calls);
-  const recoverableCallLimit = safeReadBatch
-    ? MAX_REPORTED_SAFE_READ_CALLS
-    : MAX_RECOVERABLE_SEQUENTIAL_CALLS;
+  // The model may report a bounded batch even though the runtime deliberately
+  // dispatches only one mixed/mutating call at a time. Validate every reported
+  // call against the authenticated contract, then defer the untouched suffix.
+  // This keeps writes sequential without turning a harmless fifth call into a
+  // whole-turn failure.
+  const recoverableCallLimit = MAX_REPORTED_SEQUENTIAL_CALLS;
   if (
     !onlyExceededBatchLimit ||
     calls.length <= 1 ||

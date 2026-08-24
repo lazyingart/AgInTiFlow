@@ -2281,6 +2281,27 @@ try {
     shellMutationState.meta.projectVerification?.mutationRevision === 1,
     "git metadata incorrectly invalidated current project-content verification"
   );
+  const gitMetadataWithObservationsResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command:
+        "git add report.md && git commit -m 'record verified report' && echo '=== status ===' && git status --porcelain && git log -1 --oneline",
+    },
+    stdout: "=== status ===\nabc123 record verified report",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(shellMutationState, gitMetadataWithObservationsResult, {
+    commandCwd: workspace,
+    taskProfile: "writing",
+    allowShellTool: true,
+    sandboxMode: "host",
+  });
+  assert(
+    shellMutationState.meta.projectVerification?.mutationRevision === 1,
+    "metadata-only Git chain with observational output invalidated current verification"
+  );
   const gitCheckoutResult = {
     toolName: "run_command",
     ok: true,

@@ -826,6 +826,12 @@ function summarizeRetainedSourceEvidence(messages = [], limit = 28) {
     const parts = [`tool=${toolName}`];
     if (sourcePath) parts.push(`path=${sourcePath}`);
     if (Number.isFinite(Number(payload.bytes))) parts.push(`bytes=${Number(payload.bytes)}`);
+    if (payload.sha256) parts.push(`sha256=${String(payload.sha256).slice(0, 16)}`);
+    if (payload.contentTruncated === true || payload.contentTruncatedByLines === true) {
+      parts.push("content=truncated");
+    } else if (toolName === "read_file" && typeof payload.content === "string") {
+      parts.push("content=complete");
+    }
     if (payload.summary) parts.push(`summary=${compactSingleLine(payload.summary, 220)}`);
     if (toolName === "read_file") {
       const semantic = summarizeReadSemanticEvidence(payload);
@@ -1249,6 +1255,7 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
     "",
     "Retained source evidence summaries (already inspected; reread an exact source only when its needed content is absent here):",
     "Do not reread a listed source solely because compaction occurred.",
+    "A content=complete entry is authoritative for that recorded sha256. Use search_files or one bounded range read only when an exact edit anchor is absent; never restart a full-file read loop after compaction.",
     ...(retainedSourceEvidence.length
       ? retainedSourceEvidence.map((item) => `- ${item}`)
       : ["- No structured source evidence was available before compaction."]),
@@ -5986,6 +5993,17 @@ const WORKTREE_CHANGING_GIT_ACTIONS = new Set([
 
 function commandCanMutateProjectContent(command = "", commandPolicy = {}) {
   if (commandPolicy.writesWorkspace !== true && commandPolicy.mayMutateProject !== true) return false;
+  const sequence = parseTopLevelShellSequence(String(command || ""));
+  if (
+    sequence.commands.length > 1 &&
+    !sequence.openQuote &&
+    !sequence.trailingEscape &&
+    !sequence.trailingSeparator
+  ) {
+    return sequence.commands.some((segment) =>
+      commandCanMutateProjectContent(segment, classifyCommand(segment))
+    );
+  }
   const category = String(commandPolicy.category || "");
   if (!["git-workflow", "git-remote"].includes(category)) return true;
   if (/\bgit\s+clone\b/i.test(String(command || ""))) return true;
@@ -11787,9 +11805,9 @@ export async function runAgent(config) {
           content: [
             "Runtime batching note: the valid tool batch exceeded the bounded per-turn dispatch limit.",
             `The first ${toolCalls.length} call(s) ran sequentially; do not repeat them.`,
-            "These remaining read-only calls were deferred and did not run:",
+            "These remaining calls were deferred and did not run:",
             ...deferredSummary,
-            "Request only the specific deferred reads still needed, in a bounded batch, then move to the requested artifact.",
+            "Review the deferred list, request only the calls still needed in a bounded batch, and do not assume any deferred write or command ran.",
           ].join("\n"),
         });
       }

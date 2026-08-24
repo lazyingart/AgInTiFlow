@@ -2471,6 +2471,25 @@ assert(recoveredMixedBatch.ok, "valid mixed batch could not recover through boun
 assert(recoveredMixedBatch.recoveredSequentially, "mixed batch recovery was not recorded");
 assert(recoveredMixedBatch.acceptedToolCalls.length === 1, "mixed batch recovery dispatched more than one call");
 assert(recoveredMixedBatch.deferredToolCalls.length === 1, "mixed batch recovery did not defer the extra call");
+const fiveCallMixedBatch = [
+  ...safeReadCalls,
+  contractCall("safe-read-four", "read_file", { path: "fourth.txt" }),
+  contractCall("deferred-write-five", "write_file", { path: "later.txt", content: "later" }),
+];
+const recoveredFiveCallMixedBatch = resolveDispatchableToolCallBatch(
+  fiveCallMixedBatch,
+  createToolContract([...safeReadDescriptors, strictWriteDescriptor])
+);
+assert(recoveredFiveCallMixedBatch.ok, "five-call mixed batch was rejected instead of bounded deferral");
+assert(
+  recoveredFiveCallMixedBatch.acceptedToolCalls.length === 1 &&
+    recoveredFiveCallMixedBatch.deferredToolCalls.length === 4,
+  "five-call mixed batch did not dispatch exactly one call and preserve the suffix"
+);
+assert(
+  recoveredFiveCallMixedBatch.deferredToolCalls.at(-1)?.function?.name === "write_file",
+  "bounded mixed recovery lost or executed the deferred write"
+);
 const oversizedReadCalls = Array.from({ length: 5 }, (_, index) =>
   contractCall(`read-${index}`, "read_file", { path: `file-${index}.txt` })
 );
@@ -2491,6 +2510,13 @@ const excessiveReadBatch = Array.from({ length: 13 }, (_, index) =>
 assert(
   !resolveDispatchableToolCallBatch(excessiveReadBatch, safeReadContract).ok,
   "unbounded safe read batch escaped the reported-call cap"
+);
+assert(
+  !resolveDispatchableToolCallBatch(
+    [...excessiveReadBatch.slice(0, 12), contractCall("excessive-write", "write_file", { path: "later.txt", content: "later" })],
+    createToolContract([...safeReadDescriptors, strictWriteDescriptor])
+  ).ok,
+  "unbounded mixed batch escaped the reported-call cap"
 );
 
 for (const [label, call, expectedCode] of [

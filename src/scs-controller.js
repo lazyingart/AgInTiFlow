@@ -354,7 +354,7 @@ function fallbackHardContractPlan(goal = "", contract = {}, studentReason = "", 
     forbiddenTextTerms.length ? `5. Ensure the output does not contain these forbidden term(s): ${forbiddenTextTerms.join(", ")}.` : "",
     requiredToolCalls.length ? `6. Call these explicitly required tool(s) before finish: ${requiredToolCalls.join(", ")}.` : "",
     selectedSkillPaths.length
-      ? `7. Read the selected Markdown guidance at these exact paths before choosing an interface: ${selectedSkillPaths.join(", ")}. Skill IDs are not commands.`
+      ? `7. Read the selected Markdown guidance once before choosing an interface: ${selectedSkillPaths.join(", ")}. If retained source evidence records the path as already inspected, use that evidence and do not reread it solely after compaction. Skill IDs are not commands.`
       : "",
     readOnlyRoots.length
       ? `8. Inspect only the exact active read-only roots or their children with structured read tools: ${readOnlyRoots.join(", ")}. Do not pass --read-root to an in-task command.`

@@ -144,6 +144,8 @@ const runtimeMessages = buildContextBudgetCompactionMessages(
           toolName: "read_file",
           path: "/evidence/Musia/SKILL.md",
           bytes: 2048,
+          sha256: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          contentTruncated: false,
           content: [
             "---",
             "name: musia-music-production",
@@ -187,9 +189,12 @@ assert.ok(runtimeText.includes("Retained source evidence"));
 assert.ok(runtimeText.includes("/evidence/Musia/SKILL.md"));
 assert.ok(runtimeText.includes("Create and review songs through the established Musia production workflow"));
 assert.ok(runtimeText.includes("# Musia Music Production"));
+assert.ok(runtimeText.includes("sha256=1234567890abcdef"));
+assert.ok(runtimeText.includes("content=complete"));
 assert.ok(runtimeText.includes("node bin/musia.js doctor --json"));
 assert.ok(runtimeText.includes("scripts/xyq_cdp_browser.py"));
 assert.ok(!runtimeText.includes("OLD-COMPACTION-MUST-NOT-RECUR"));
 assert.match(runtimeText, /Do not reread a listed source solely because compaction occurred/);
+assert.match(runtimeText, /never restart a full-file read loop after compaction/);
 
 console.log("context budget recovery smoke passed");

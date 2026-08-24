@@ -67,11 +67,40 @@ export function isOptionalGeneratedPreviewCleanup(toolName = "", args = {}) {
   );
 }
 
+export function isRecoverableDynamicEvidenceWrite(toolName = "", args = {}, guard = {}) {
+  if (toolName !== "run_command" || guard?.category !== "destructive") return false;
+  const command = String(args.command || args.text || "");
+  if (!/\btee\s+/i.test(command)) return false;
+  if (
+    /(?:^|[;&|\n]\s*)(?:command\s+)?(?:rm|rmdir|mv|chmod|chown)\b/i.test(command) ||
+    /\bgit\s+(?:checkout|switch|reset|clean)\b/i.test(command) ||
+    /(?:^|\s)-delete(?:\s|$)/i.test(command)
+  ) {
+    return false;
+  }
+  const dynamicWorkspaceEvidenceTarget = new RegExp(
+    String.raw`\btee\s+(?:--?append\s+|-a\s+)?["']?(?:\.aginti|artifacts|build/verification|output/verification)/[^\n;|]*\$\{?[A-Z_][A-Z0-9_]*\}?`,
+    "i"
+  );
+  return dynamicWorkspaceEvidenceTarget.test(command);
+}
+
 function goalRequestsDeletion(config = {}, state = {}) {
   const goal = String(config.goal || state.goal || state.meta?.goalContract?.current || "");
-  return /\b(?:delete|remove|clean\s+up|cleanup|purge|erase|discard|drop)\b|删除|刪除|移除|清理|清除|删掉|刪掉|削除|消去/i.test(
-    goal
-  );
+  const deletionIntent = /\b(?:delete|remove|clean\s+up|cleanup|purge|erase|discard|drop)\b|删除|刪除|移除|清理|清除|删掉|刪掉|削除|消去/i;
+  if (!deletionIntent.test(goal)) return false;
+
+  // A safety constraint such as "do not delete" is the opposite of
+  // authorization. Strip bounded negated phrases before looking for a genuine
+  // deletion request elsewhere in the goal.
+  const withoutNegatedDeletion = goal
+    .replace(
+      /\b(?:do\s+not|don't|dont|never|must\s+not|should\s+not|shouldn't|without)\s+(?:retry(?:ing)?\s+or\s+)?(?:delete|remove|clean\s+up|cleanup|purge|erase|discard|drop)(?:\s+any)?\b/gi,
+      " "
+    )
+    .replace(/(?:不要|不可|禁止|无需|無需|不需要)(?:再)?(?:删除|刪除|移除|清理|清除|删掉|刪掉)/g, " ")
+    .replace(/(?:削除|消去)(?:しない|するな|不要)/g, " ");
+  return deletionIntent.test(withoutNegatedDeletion);
 }
 
 export function isUnrequestedCleanupCommand(toolName = "", args = {}, config = {}, state = {}) {
@@ -291,6 +320,21 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
   }
 
   if (category === "destructive") {
+    if (isRecoverableDynamicEvidenceWrite(toolName, args, { category, reason })) {
+      return {
+        ...base,
+        autoRecover: true,
+        summary:
+          "A generated-evidence command used a shell-expanded output filename that the workspace guard could not prove safe. The command stayed blocked, but no destructive permission is needed.",
+        instruction:
+          "Do not retry the same command and do not request destructive approval. Reissue the check with fresh literal workspace-relative evidence paths under `.aginti/verification/`; avoid variables, globs, and `/tmp` in tee/redirection targets, then continue the substantive validation.",
+        options: [
+          "Use a literal timestamp or nonce already written into the command text.",
+          "Keep every log, hash file, and render under `.aginti/verification/`.",
+          "Split the build and evidence checks into smaller commands if that makes each output path explicit.",
+        ],
+      };
+    }
     if (
       isOptionalGeneratedPreviewCleanup(toolName, args) ||
       isUnrequestedCleanupCommand(toolName, args, config, state)

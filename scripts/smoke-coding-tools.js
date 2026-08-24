@@ -14,6 +14,7 @@ import {
   runAgent,
   sanitizeToolResult,
   toolResultForModel,
+  shouldPauseForPermissionAdvice,
   shouldShortCircuitToolBatch,
   shellDiagnosticHint,
   skippedAfterBlockedToolResult,
@@ -1310,6 +1311,79 @@ try {
       {}
     ),
     "an explicitly requested deletion was incorrectly treated as optional housekeeping"
+  );
+  assert(
+    isUnrequestedCleanupCommand(
+      "run_command",
+      { command: "rm -rf /tmp/run-a /tmp/run-b" },
+      {
+        goal:
+          "Continue the deterministic comparison. Do not delete any project or temporary directory; use fresh paths instead.",
+      },
+      {}
+    ),
+    "a negated deletion constraint was mistaken for destructive authorization"
+  );
+  const negatedCleanupAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: { command: "rm -rf /tmp/run-a /tmp/run-b" },
+    guard: {
+      category: "destructive",
+      reason: "Destructive shell commands require Allow destructive actions.",
+    },
+    config: {
+      ...dockerWorkspacePolicy,
+      goal: "Do not delete any project or temporary directory; keep working on the build.",
+    },
+    state: { sessionId: "coding-negated-cleanup-smoke" },
+  });
+  assert(
+    negatedCleanupAdvice.autoRecover === true,
+    "blocked cleanup under a do-not-delete goal should recover without pausing"
+  );
+  const dynamicEvidenceAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: {
+      command:
+        'STAMP=$(date -u +%Y%m%dT%H%M%SZ); bash build.sh 2>&1 | tee ".aginti/build-${STAMP}.log"',
+    },
+    guard: {
+      category: "destructive",
+      reason:
+        'Command contains a write-capable or destructive token: tee ".aginti/build-${STAMP}.log"',
+    },
+    config: {
+      ...dockerWorkspacePolicy,
+      goal: "Build twice and retain deterministic evidence without deleting anything.",
+    },
+    state: { sessionId: "coding-dynamic-evidence-smoke" },
+  });
+  assert(
+    dynamicEvidenceAdvice.autoRecover === true &&
+      /literal workspace-relative evidence paths/i.test(dynamicEvidenceAdvice.instruction),
+    "dynamic evidence filename false positive should recover into literal workspace paths"
+  );
+  assert(
+    !shouldPauseForPermissionAdvice({ blocked: true, permissionAdvice: dynamicEvidenceAdvice }),
+    "dynamic evidence filename recovery still produced a permission pause"
+  );
+  const destructiveDynamicEvidenceAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: {
+      command:
+        'rm -rf output; STAMP=$(date -u +%Y%m%dT%H%M%SZ); bash build.sh 2>&1 | tee ".aginti/build-${STAMP}.log"',
+    },
+    guard: {
+      category: "destructive",
+      reason: "Destructive shell commands require Allow destructive actions.",
+    },
+    config: { ...dockerWorkspacePolicy, goal: "Build and verify the document." },
+    state: { sessionId: "coding-destructive-dynamic-evidence-smoke" },
+  });
+  assert(
+    destructiveDynamicEvidenceAdvice.autoRecover === true &&
+      /Unrequested cleanup was blocked safely/i.test(destructiveDynamicEvidenceAdvice.summary),
+    "a real cleanup token should not be mislabeled as only dynamic evidence formatting"
   );
   const documentPageBatchGuard = checkToolUse({
     toolName: "read_image",
