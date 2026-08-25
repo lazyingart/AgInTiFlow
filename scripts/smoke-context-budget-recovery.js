@@ -51,6 +51,25 @@ const artifactContract = deriveScsTaskContract({
   taskProfile: "chatops",
 });
 assert.equal(artifactContract.requiresExternalEvidence, true, "real chat artifact work lost its evidence gate");
+const retainedReportContract = deriveScsTaskContract({
+  goal: [
+    "The completed evidence is already saved in tmp/reliability-evidence-pass.md and must remain read-only.",
+    "Read only missing bounded ranges of tmp/reliability-evidence-pass.md.",
+    "Rewrite agent-reliability-evidence-review.md as a concise decision document.",
+    "Rebuild sources.json so it contains only cited sources.",
+  ].join("\n"),
+  taskProfile: "research",
+});
+assert.deepEqual(
+  retainedReportContract.exactOutputPaths,
+  ["agent-reliability-evidence-review.md", "sources.json"],
+  "report continuation confused an existing saved input with rewrite/rebuild outputs"
+);
+assert.deepEqual(
+  retainedReportContract.exactInputPaths,
+  ["tmp/reliability-evidence-pass.md"],
+  "report continuation lost the read-only evidence input"
+);
 assert.ok(artifactContract.requiredEvidence.some((item) => item.category === "artifact"));
 const scopedArtifactRootContract = deriveScsTaskContract({
   goal:
@@ -355,11 +374,60 @@ function noisyFullReadPair(index, generation) {
   ];
 }
 
+function boundedOutputReadPair(index, generation) {
+  const id = `output-${generation}-${index}`;
+  return [
+    {
+      role: "assistant",
+      content: "",
+      reasoning_content: "Inspect the existing mutable output.",
+      tool_calls: [
+        {
+          id,
+          type: "function",
+          function: {
+            name: "read_file",
+            arguments: JSON.stringify({
+              path: "agent-reliability-evidence-review.md",
+              startLine: 1 + (index - 1) * 40,
+              lineLimit: 40,
+            }),
+          },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: id,
+      content: JSON.stringify({
+        ok: true,
+        toolName: "read_file",
+        path: "agent-reliability-evidence-review.md",
+        startLine: 1 + (index - 1) * 40,
+        lineLimit: 40,
+        lineCount: 240,
+        bytes: 24000,
+        sha256: `${generation}${String(index).padStart(2, "0")}`.repeat(24).slice(0, 64),
+        contentTruncated: false,
+        content: `MUTABLE-OUTPUT-${generation}-${index}\n${"old output content ".repeat(170)}`,
+      }),
+    },
+  ];
+}
+
 const twiceCompactedState = {
   ...compactionState,
+  meta: {
+    scs: {
+      taskContract: {
+        exactOutputPaths: ["agent-reliability-evidence-review.md", "sources.json"],
+      },
+    },
+  },
   messages: [
     ...deepSeekRuntimeMessages,
     ...Array.from({ length: 14 }, (_, index) => noisyFullReadPair(index + 1, 2)).flat(),
+    ...Array.from({ length: 6 }, (_, index) => boundedOutputReadPair(index + 1, 2)).flat(),
   ],
 };
 const twiceCompacted = buildContextBudgetCompactionMessages(
@@ -381,9 +449,11 @@ assert.equal(
 
 const thriceCompactedState = {
   ...compactionState,
+  meta: twiceCompactedState.meta,
   messages: [
     ...twiceCompacted,
     ...Array.from({ length: 14 }, (_, index) => noisyFullReadPair(index + 1, 3)).flat(),
+    ...Array.from({ length: 6 }, (_, index) => boundedOutputReadPair(index + 1, 3)).flat(),
   ],
 };
 const thriceCompacted = buildContextBudgetCompactionMessages(

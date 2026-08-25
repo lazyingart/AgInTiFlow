@@ -373,9 +373,9 @@ function inferExactOutputPaths(goal = "") {
     "gi"
   );
   const directOutputAction =
-    /\b(save|saved|write|written|output|create|store|update|modify|edit)\b|保存|写入|寫入|输出|輸出|创建|建立|更新|修改|编辑|編輯/i;
+    /\b(save|write|rewrite|output|create|rebuild|replace|regenerate|generate|store|update|modify|edit)\b|保存|写入|寫入|重写|重寫|输出|輸出|创建|建立|重建|替换|替換|重新生成|生成|更新|修改|编辑|編輯/i;
   const directOutputActionGlobal =
-    /\b(save|saved|write|written|output|create|store|update|modify|edit)\b|保存|写入|寫入|输出|輸出|创建|建立|更新|修改|编辑|編輯/gi;
+    /\b(save|write|rewrite|output|create|rebuild|replace|regenerate|generate|store|update|modify|edit)\b|保存|写入|寫入|重写|重寫|输出|輸出|创建|建立|重建|替换|替換|重新生成|生成|更新|修改|编辑|編輯/gi;
   const outputListHeader =
     /^(?:#+\s*)?(?:(?:required|final|expected|declared|target|pilot|deliverable)\s+)*(?:create|created files?|files? to create|outputs?|output structure|required outputs?|artifacts?|deliverables?|generated files?|writer requirements|renderer requirements|生成文件|输出结构|輸出結構|输出文件|輸出文件|创建文件|建立文件)(?:\s+(?:outputs?|artifacts?|deliverables?))?\s*[：:]?\s*$/i;
   const nonOutputToolLine =
@@ -470,7 +470,7 @@ function inferExactInputPaths(goal = "") {
   const inputAction =
     /\b(use|using|read|load|fill|upload|attach|import|select|choose|reference|input|from|fix|repair|patch|correct)\b|使用|读取|讀取|加载|載入|填写|填入|上传|上傳|附加|导入|導入|选择|選擇|选取|選取|参考|參考|素材|图片|圖片|照片|提示词|提示詞|修复|修正|更正|从|從/i;
   const directOutputAction =
-    /\b(save|saved|write|written|output|create|store|update|modify|edit)\b|保存|写入|寫入|输出|輸出|创建|建立|更新|修改|编辑|編輯/i;
+    /\b(save|write|rewrite|output|create|rebuild|replace|regenerate|generate|store|update|modify|edit)\b|保存|写入|寫入|重写|重寫|输出|輸出|创建|建立|重建|替换|替換|重新生成|生成|更新|修改|编辑|編輯/i;
   const pushPath = (raw = "") => {
     const cleaned = String(raw || "").trim();
     if (!cleaned || /[{}]/.test(cleaned)) return;

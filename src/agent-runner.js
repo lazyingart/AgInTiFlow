@@ -995,7 +995,7 @@ function compactRetainedToolPayload(toolName, payload = {}, args = {}) {
     result.contentTruncatedByLines = payload.contentTruncatedByLines === true;
     if (payload.sha256) result.sha256 = compactSingleLine(payload.sha256, 96);
     const content = String(payload.content || payload.contentPreview || "");
-    if (content) result.content = compactMultiline(content, 4200);
+    if (content) result.content = compactMultiline(content, 3000);
     if (Array.isArray(payload.pathEvidence)) {
       result.pathEvidence = compactPathItems(payload.pathEvidence, 12, ["path", "source"]);
     }
@@ -1018,7 +1018,22 @@ function compactRetainedToolPayload(toolName, payload = {}, args = {}) {
   return redactValue(result);
 }
 
-function retainedToolRecordPriority(record = {}) {
+function retainedPathMatchesOutput(sourcePath = "", outputPaths = []) {
+  const normalize = (value = "") =>
+    String(value || "")
+      .replace(/\\/g, "/")
+      .replace(/^\.\//, "")
+      .replace(/\/{2,}/g, "/")
+      .replace(/\/$/, "");
+  const source = normalize(sourcePath);
+  if (!source) return false;
+  return outputPaths.some((candidate) => {
+    const output = normalize(candidate);
+    return output && (source === output || source.endsWith(`/${output}`) || output.endsWith(`/${source}`));
+  });
+}
+
+function retainedToolRecordPriority(record = {}, outputPaths = []) {
   const name = String(record.name || "");
   const args = record.args || {};
   const payload = record.payload || {};
@@ -1032,11 +1047,13 @@ function retainedToolRecordPriority(record = {}) {
   } else if (name === "read_file") {
     const range = retainedReadRange(payload, args);
     priority = range.lineLimit > 0 ? 750 : 600;
+    const sourcePath = String(payload.path || args.path || "").trim();
+    if (retainedPathMatchesOutput(sourcePath, outputPaths)) priority -= 220;
   } else if (["search_files", "list_files"].includes(name)) priority = 400;
   return priority + Math.min(0.999, Math.max(0, Number(record.ordinal) || 0) / 100000);
 }
 
-function retainedToolStateMessages(messages = [], limit = 12) {
+function retainedToolStateMessages(messages = [], limit = 12, outputPaths = []) {
   const callsById = new Map();
   const recordsByKey = new Map();
   let ordinal = 0;
@@ -1086,7 +1103,7 @@ function retainedToolStateMessages(messages = [], limit = 12) {
   const selected = [...records]
     .sort(
       (left, right) =>
-        retainedToolRecordPriority(right) - retainedToolRecordPriority(left) ||
+        retainedToolRecordPriority(right, outputPaths) - retainedToolRecordPriority(left, outputPaths) ||
         right.ordinal - left.ordinal
     )
     .slice(0, Math.max(1, Number(limit) || 12))
@@ -1118,8 +1135,8 @@ function retainedToolStateMessages(messages = [], limit = 12) {
   });
 }
 
-function retainedToolStateTextMessages(messages = [], limit = 12) {
-  const nativeMessages = retainedToolStateMessages(messages, limit);
+function retainedToolStateTextMessages(messages = [], limit = 12, outputPaths = []) {
+  const nativeMessages = retainedToolStateMessages(messages, limit, outputPaths);
   const retained = [];
   for (let index = 0; index < nativeMessages.length; index += 2) {
     const assistantMessage = nativeMessages[index];
@@ -1139,13 +1156,13 @@ function retainedToolStateTextMessages(messages = [], limit = 12) {
   return retained;
 }
 
-function retainedToolPairPriority(pair = [], order = 0) {
+function retainedToolPairPriority(pair = [], order = 0, outputPaths = []) {
   const assistantCall = pair[0]?.tool_calls?.[0];
   const retained = pair.length === 1 ? parseRetainedToolEvidenceMessage(pair[0]) : null;
   const name = String(retained?.name || assistantCall?.function?.name || "");
   const args = retained?.args || safeParseToolContent(assistantCall?.function?.arguments) || {};
   const payload = retained?.payload || safeParseToolContent(pair[1]?.content) || {};
-  return retainedToolRecordPriority({ name, args, payload, ordinal: order });
+  return retainedToolRecordPriority({ name, args, payload, ordinal: order }, outputPaths);
 }
 
 function isRuntimeCompactionRequest(content = "") {
@@ -1327,9 +1344,10 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
   // synthetic pairs, so preserve their bounded evidence as explicit runtime
   // context instead of fabricating assistant reasoning.
   const deepSeekCompaction = normalizeProviderId(config.provider, "") === "deepseek";
+  const exactOutputPaths = exactOutputPathsForState(state);
   const retainedToolMessages = deepSeekCompaction
-    ? retainedToolStateTextMessages(messages)
-    : retainedToolStateMessages(messages);
+    ? retainedToolStateTextMessages(messages, 12, exactOutputPaths)
+    : retainedToolStateMessages(messages, 12, exactOutputPaths);
   const snapshotSummary = {
     step,
     maxSteps: config.maxSteps,
@@ -1407,7 +1425,7 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
   }));
   const boundedContent = compactTextForTokenBudget(
     compactedContent,
-    Math.max(1024, Math.floor(targetTokens * 0.52)),
+    Math.max(1024, Math.floor(targetTokens * (retainedToolMessages.length ? 0.4 : 0.52))),
     { headFraction: 0.58 }
   );
   const baseMessages = [
@@ -1423,7 +1441,7 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
     retainedPairs.push({
       pair,
       order: retainedPairs.length,
-      priority: retainedToolPairPriority(pair, retainedPairs.length),
+      priority: retainedToolPairPriority(pair, retainedPairs.length, exactOutputPaths),
     });
   }
   const selectedPairs = [];
