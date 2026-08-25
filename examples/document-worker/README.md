@@ -18,22 +18,35 @@ The service receives it only through systemd at:
 
 Do not put that value in the JSON config, an environment variable, an argument,
 logs, documentation, or Git. The dedicated `aginti-document-worker` user/group,
-release symlink, config, and credential must be created by a reviewed deployment
-step; this example does not create them.
+selected release path, config, and credential must be created by a reviewed
+deployment step; this example does not create them. Before installing the unit,
+deployment must replace `RELEASE_SHA256` with the exact lowercase SHA-256 release
+identifier. No mutable `current` entry is permitted beside `releases` and
+`runtimes` under `/opt/agintiflow-document-worker`.
+The root-only installer creates the mode `0755` `releases` child and performs
+each no-replace release rename inside that child; the application root itself
+can remain frozen at mode `0555` throughout staging.
 
-The unit never uses the workstation's `/usr/bin/node` (currently Node 18 and
-below the package's Node 22 floor). It pins the workstation's versioned Node
-22.21.0 path recorded in `runtime-manifest.json`. `ProtectHome=tmpfs` hides the
-rest of the home hierarchy while `BindReadOnlyPaths` exposes that one verified
-executable read-only inside the unit. Before enable, deployment must verify the
-version, SHA-256, ownership, and mode, then run both the CLI check and real
-bwrap/latexmk/qpdf activation canary under the installed unit.
-`ExecStartPre` repeats the owner/mode/size/hash check on every start using the
-root-owned system Node without reading credentials. The Node 22 worker repeats
-the check after exec and fails unless it is non-root, `/home/lachlan` contains
-only the bind-created path to that Node binary, and `/proc/self/mountinfo`
-proves the exact binary bind is read-only. Thus a later automatic restart does
-not trust deployment-time evidence alone.
+The unit never executes the workstation's `/usr/bin/node` or a user-owned Node
+path. A reviewed root bootstrap first verifies the versioned Node 22.21.0
+source, then installs the exact binary at the immutable `/opt` path recorded in
+`runtime-manifest.json`. The binary and its four application runtime
+directories are all `root:root` mode `0555`; `/` and `/opt` remain `root:root`
+mode `0755`. `ProtectHome=tmpfs` therefore needs no home-directory exception.
+Before enable, deployment must verify the version, SHA-256, ownership, mode,
+size, ancestry, and exact runtime inventories, then run both the CLI check and
+real bwrap/latexmk/qpdf activation canary under the installed unit.
+Both `ExecStartPre` checks and `ExecStart` use that same immutable Node. The
+worker repeats the no-follow identity, hash, stable-ancestry, and inventory
+checks after exec and fails unless it is running from that exact path as the
+non-root service user/group. Thus a later automatic restart does not trust
+deployment-time evidence alone.
+The second `ExecStartPre` is the exact in-unit `check`: it runs one bounded,
+network-isolated LaTeX/qpdf canary even while `creation.enabled=false`. Its
+success is deployment evidence only; live readiness still advertises
+`compiler:null`, and the compile endpoint remains disabled. The probe never
+stages or commits worker-store objects, removes its private temporary tree, and
+zeroes its process-local artifact buffers before returning.
 The exact installed candidate unit must complete `aginti-document-worker check`
 successfully before LazyEdge route activation, AgInTi broker activation, or Web
 exposure is allowed; static unit verification is not a substitute for that

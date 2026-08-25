@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +14,8 @@ import {
 } from "../src/integration-document-worker-config.js";
 import { parseIntegrationDocumentWorkerArguments } from "../src/integration-document-worker-cli.js";
 import {
+  DOCUMENT_WORKER_NODE_RUNTIME,
+  DOCUMENT_WORKER_RUNTIME_ANCESTRY,
   assertIntegrationDocumentWorkerRuntimeActivation,
   verifyIntegrationDocumentWorkerNodeRuntime,
 } from "../src/integration-document-worker-runtime.js";
@@ -23,6 +26,9 @@ const unit = await fs.readFile(path.join(exampleRoot, "aginti-document-worker.se
 const configText = await fs.readFile(path.join(exampleRoot, "document-worker.json"), "utf8");
 const runtimeManifest = JSON.parse(await fs.readFile(path.join(exampleRoot, "runtime-manifest.json"), "utf8"));
 const config = validateIntegrationDocumentWorkerConfig(JSON.parse(configText));
+const runtimePath = "/opt/agintiflow-document-worker/runtimes/node-v22.21.0-29e9c28204d89d85/bin/node";
+const releasePath = "/opt/agintiflow-document-worker/releases/RELEASE_SHA256";
+const unitLines = unit.trimEnd().split("\n");
 
 assert.equal(config.listen.host, "127.0.0.1");
 assert.equal(config.listen.port, 18102);
@@ -34,20 +40,20 @@ assert.match(unit, /^Group=aginti-document-worker$/mu);
 assert.match(unit, /^UMask=0077$/mu);
 assert.match(unit, /^StateDirectory=aginti-document-worker$/mu);
 assert.match(unit, /^StateDirectoryMode=0700$/mu);
-assert.match(
-  unit,
-  /^ExecStart=\/home\/lachlan\/\.nvm\/versions\/node\/v22\.21\.0\/bin\/node /mu
-);
-assert.match(
-  unit,
-  /^ExecStartPre=\/usr\/bin\/node \/opt\/agintiflow-document-worker\/current\/bin\/aginti-document-worker-runtime-check\.js$/mu
-);
-assert.doesNotMatch(unit, /^ExecStart=\/usr\/bin\/node /mu);
+assert.deepEqual(unitLines.filter((line) => line.startsWith("Environment=")), [
+  "Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+]);
+assert.doesNotMatch(unit, /^EnvironmentFile=/mu);
+assert.deepEqual(unitLines.filter((line) => line.startsWith("ExecStartPre=")), [
+  `ExecStartPre=${runtimePath} ${releasePath}/bin/aginti-document-worker-runtime-check.js`,
+  `ExecStartPre=${runtimePath} ${releasePath}/bin/aginti-document-worker.js check --config /etc/agintiflow/document-worker.json`,
+]);
+assert.deepEqual(unitLines.filter((line) => line.startsWith("ExecStart=")), [
+  `ExecStart=${runtimePath} ${releasePath}/bin/aginti-document-worker.js serve --config /etc/agintiflow/document-worker.json`,
+]);
+assert.doesNotMatch(unit, /\/home\/lachlan|\.nvm|\/usr\/bin\/node|\/current(?:\/|$)/u);
 assert.match(unit, /^ProtectHome=tmpfs$/mu);
-assert.match(
-  unit,
-  /^BindReadOnlyPaths=\/home\/lachlan\/\.nvm\/versions\/node\/v22\.21\.0\/bin\/node$/mu
-);
+assert.doesNotMatch(unit, /^BindReadOnlyPaths=/mu);
 assert.match(
   unit,
   new RegExp(`^LoadCredential=${DOCUMENT_WORKER_UPSTREAM_CREDENTIAL_NAME}:/etc/agintiflow/credentials/document-worker-upstream-token$`, "mu")
@@ -62,35 +68,156 @@ assert.match(unit, /^SocketBindAllow=tcp:18102$/mu);
 assert.match(unit, /^MemorySwapMax=0$/mu);
 assert.match(unit, /^LimitCORE=0$/mu);
 assert.doesNotMatch(unit, /^ConditionPathIsReadWrite=/mu);
-assert.doesNotMatch(unit, /^Environment(?:File)?=/mu);
 assert.doesNotMatch(unit, /Bearer\s+[A-Za-z0-9._~+/=-]{32,}/u);
 assert.deepEqual(runtimeManifest, {
   schemaVersion: "aginti-document-worker-runtime-manifest-v1",
   node: {
-    path: "/home/lachlan/.nvm/versions/node/v22.21.0/bin/node",
+    path: runtimePath,
     version: "v22.21.0",
     sha256: "29e9c28204d89d85cc426b518b4a7c6e32aafecd5e447d65301ffb2c1c15335a",
-    owner: "lachlan",
-    group: "lachlan",
-    mode: "0755",
+    owner: "root",
+    group: "root",
+    mode: "0555",
     size: 123351032,
-    unitMount: "read-only",
+    unitMount: "none",
+  },
+  immutableAncestry: {
+    owner: "root",
+    group: "root",
+    mode: "0555",
+    applicationRootEntries: ["releases", "runtimes"],
+    paths: [
+      "/opt/agintiflow-document-worker",
+      "/opt/agintiflow-document-worker/runtimes",
+      "/opt/agintiflow-document-worker/runtimes/node-v22.21.0-29e9c28204d89d85",
+      "/opt/agintiflow-document-worker/runtimes/node-v22.21.0-29e9c28204d89d85/bin",
+    ],
   },
 });
-assert.equal((await verifyIntegrationDocumentWorkerNodeRuntime()).sha256, runtimeManifest.node.sha256);
+assert.deepEqual(DOCUMENT_WORKER_NODE_RUNTIME, {
+  path: runtimePath,
+  version: runtimeManifest.node.version,
+  sha256: runtimeManifest.node.sha256,
+  uid: 0,
+  gid: 0,
+  mode: 0o555,
+  size: runtimeManifest.node.size,
+});
+assert.deepEqual(DOCUMENT_WORKER_RUNTIME_ANCESTRY, [
+  { path: "/", uid: 0, gid: 0, mode: 0o755 },
+  { path: "/opt", uid: 0, gid: 0, mode: 0o755 },
+  {
+    path: "/opt/agintiflow-document-worker",
+    uid: 0,
+    gid: 0,
+    mode: 0o555,
+    expectedEntries: ["releases", "runtimes"],
+  },
+  {
+    path: "/opt/agintiflow-document-worker/runtimes",
+    uid: 0,
+    gid: 0,
+    mode: 0o555,
+    expectedEntries: ["node-v22.21.0-29e9c28204d89d85"],
+  },
+  {
+    path: "/opt/agintiflow-document-worker/runtimes/node-v22.21.0-29e9c28204d89d85",
+    uid: 0,
+    gid: 0,
+    mode: 0o555,
+    expectedEntries: ["bin"],
+  },
+  {
+    path: "/opt/agintiflow-document-worker/runtimes/node-v22.21.0-29e9c28204d89d85/bin",
+    uid: 0,
+    gid: 0,
+    mode: 0o555,
+    expectedEntries: ["node"],
+  },
+]);
+await assert.rejects(
+  () => verifyIntegrationDocumentWorkerNodeRuntime(),
+  (error) => error?.code === "DOCUMENT_WORKER_RUNTIME_INVALID",
+  "runtime identity must fail closed when the sealed /opt runtime is not installed"
+);
 const preflight = spawnSync(
-  "/usr/bin/node",
+  process.execPath,
   [path.join(repositoryRoot, "bin", "aginti-document-worker-runtime-check.js")],
   { encoding: "utf8", env: Object.freeze({ PATH: "/usr/bin:/bin" }) }
 );
-assert.equal(preflight.status, 0, preflight.stderr);
+assert.equal(preflight.status, 1, preflight.stderr);
 assert.equal(preflight.stdout, "");
-assert.equal(preflight.stderr, "");
+assert.equal(preflight.stderr, "aginti-document-worker-runtime-check: RUNTIME_IDENTITY_INVALID\n");
 await assert.rejects(
   () => assertIntegrationDocumentWorkerRuntimeActivation(),
   (error) => error?.code === "DOCUMENT_WORKER_RUNTIME_INVALID",
-  "runtime activation must fail closed outside ProtectHome=tmpfs and its exact read-only bind"
+  "runtime activation must fail closed outside the exact installed runtime and service-user namespace"
 );
+
+const runtimeFixture = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-document-worker-runtime-tree-"));
+const fixtureApplicationRoot = path.join(runtimeFixture, "agintiflow-document-worker");
+const fixtureVersionRoot = path.join(
+  fixtureApplicationRoot,
+  "runtimes",
+  "node-v22.21.0-29e9c28204d89d85"
+);
+const fixtureBinRoot = path.join(fixtureVersionRoot, "bin");
+const fixtureNode = path.join(fixtureBinRoot, "node");
+const fixtureReleaseId = "0".repeat(64);
+const fixtureReleaseRoot = path.join(fixtureApplicationRoot, "releases", fixtureReleaseId);
+try {
+  await fs.mkdir(fixtureReleaseRoot, { recursive: true, mode: 0o755 });
+  await fs.mkdir(fixtureBinRoot, { recursive: true, mode: 0o755 });
+  await fs.copyFile(process.execPath, fixtureNode, fsConstants.COPYFILE_FICLONE);
+  await fs.chmod(fixtureNode, 0o555);
+  for (const directory of [
+    fixtureApplicationRoot,
+    path.join(fixtureApplicationRoot, "runtimes"),
+    fixtureVersionRoot,
+    fixtureBinRoot,
+  ]) await fs.chmod(directory, 0o555);
+  const fixtureProof = spawnSync("/usr/bin/bwrap", [
+    "--unshare-all",
+    "--unshare-user",
+    "--uid", "0",
+    "--gid", "0",
+    "--die-with-parent",
+    "--new-session",
+    "--clearenv",
+    "--cap-drop", "ALL",
+    "--ro-bind", "/usr", "/usr",
+    "--ro-bind", "/lib", "/lib",
+    "--ro-bind", "/lib64", "/lib64",
+    "--ro-bind", "/bin", "/bin",
+    "--proc", "/proc",
+    "--dev", "/dev",
+    "--tmpfs", "/tmp",
+    "--dir", "/opt",
+    "--ro-bind", fixtureApplicationRoot, "/opt/agintiflow-document-worker",
+    "--ro-bind", repositoryRoot, `/opt/agintiflow-document-worker/releases/${fixtureReleaseId}`,
+    "--setenv", "PATH", "/usr/bin:/bin",
+    "--setenv", "HOME", "/tmp",
+    runtimePath,
+    "--input-type=module",
+    "-e",
+    `import { verifyIntegrationDocumentWorkerNodeRuntime } from "file:///opt/agintiflow-document-worker/releases/${fixtureReleaseId}/src/integration-document-worker-runtime.js"; await verifyIntegrationDocumentWorkerNodeRuntime(); process.stdout.write("sealed runtime tree passed\\n");`,
+  ], {
+    encoding: "utf8",
+    env: Object.freeze({ PATH: "/usr/bin:/bin" }),
+  });
+  assert.equal(fixtureProof.status, 0, fixtureProof.stderr);
+  assert.equal(fixtureProof.signal, null);
+  assert.equal(fixtureProof.stdout, "sealed runtime tree passed\n");
+  assert.equal(fixtureProof.stderr, "");
+} finally {
+  for (const directory of [
+    fixtureApplicationRoot,
+    path.join(fixtureApplicationRoot, "runtimes"),
+    fixtureVersionRoot,
+    fixtureBinRoot,
+  ]) await fs.chmod(directory, 0o700).catch(() => {});
+  await fs.rm(runtimeFixture, { recursive: true, force: true });
+}
 
 assert.deepEqual(parseIntegrationDocumentWorkerArguments([
   "serve",

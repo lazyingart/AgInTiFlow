@@ -100,6 +100,7 @@ function createService({ config, store, compileImpl, inspectRuntimeImpl }) {
   let closed = false;
   let readiness = null;
   let activeCompiles = 0;
+  let compilerRuntimePromise = null;
   const compileWaiters = [];
   const inFlight = new Map();
 
@@ -165,32 +166,56 @@ function createService({ config, store, compileImpl, inspectRuntimeImpl }) {
     }
   }
 
-  async function activate() {
-    if (closed) documentWorkerFail("WORKER_UNAVAILABLE", "Document worker is closed.", { status: 503 });
-    if (activated) return readiness;
-    await store.inspect();
-    let runtime = null;
-    if (normalizedConfig.creation.enabled) {
-      try {
-        runtime = await inspectRuntimeImpl();
-      } catch (error) {
-        throw mapCompilerError(error);
-      }
-      if (
-        runtime?.ready !== true ||
-        runtime.networkNone !== true ||
-        runtime.shellEscape !== false ||
-        typeof runtime.runtimeDigest !== "string" ||
-        !/^[a-f0-9]{64}$/u.test(runtime.runtimeDigest) ||
-        typeof runtime.activationProbeDigest !== "string" ||
-        !/^[a-f0-9]{64}$/u.test(runtime.activationProbeDigest)
-      ) {
-        documentWorkerFail("WORKER_UNAVAILABLE", "TeX activation canary is invalid.", { status: 503 });
-      }
+  async function inspectCompilerRuntime() {
+    if (!compilerRuntimePromise) {
+      compilerRuntimePromise = Promise.resolve().then(async () => {
+        let runtime;
+        try {
+          runtime = await inspectRuntimeImpl();
+        } catch (error) {
+          throw mapCompilerError(error);
+        }
+        if (
+          runtime?.ready !== true ||
+          runtime.networkNone !== true ||
+          runtime.shellEscape !== false ||
+          typeof runtime.runtimeDigest !== "string" ||
+          !/^[a-f0-9]{64}$/u.test(runtime.runtimeDigest) ||
+          typeof runtime.activationProbeDigest !== "string" ||
+          !/^[a-f0-9]{64}$/u.test(runtime.activationProbeDigest)
+        ) {
+          documentWorkerFail("WORKER_UNAVAILABLE", "TeX activation canary is invalid.", { status: 503 });
+        }
+        return runtime;
+      }).catch((error) => {
+        compilerRuntimePromise = null;
+        throw error;
+      });
     }
-    readiness = readinessResponse(normalizedConfig, runtime);
+    return compilerRuntimePromise;
+  }
+
+  async function activateInternal(requireCompilerCanary) {
+    if (closed) documentWorkerFail("WORKER_UNAVAILABLE", "Document worker is closed.", { status: 503 });
+    if (activated) {
+      if (requireCompilerCanary) await inspectCompilerRuntime();
+      return readiness;
+    }
+    await store.inspect();
+    const runtime = normalizedConfig.creation.enabled || requireCompilerCanary
+      ? await inspectCompilerRuntime()
+      : null;
+    readiness = readinessResponse(normalizedConfig, normalizedConfig.creation.enabled ? runtime : null);
     activated = true;
     return readiness;
+  }
+
+  async function activate() {
+    return activateInternal(false);
+  }
+
+  async function check() {
+    return activateInternal(true);
   }
 
   async function compile(requestInput, { signal } = {}) {
@@ -244,6 +269,7 @@ function createService({ config, store, compileImpl, inspectRuntimeImpl }) {
     schemaVersion: DOCUMENT_WORKER_SERVICE_SCHEMA_VERSION,
     config: normalizedConfig,
     activate,
+    check,
     readiness(requestInput) {
       assertActive();
       validateDocumentWorkerReadinessRequest(requestInput);

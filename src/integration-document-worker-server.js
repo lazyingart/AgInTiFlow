@@ -473,7 +473,7 @@ export function createIntegrationDocumentWorkerServer(options = {}) {
     schemaVersion: DOCUMENT_WORKER_SERVER_SCHEMA_VERSION,
     server,
     config,
-    check: () => service.activate(),
+    check: () => service.check(),
     start,
     close,
     get lifecycle() {

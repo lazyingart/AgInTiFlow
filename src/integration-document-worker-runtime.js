@@ -3,24 +3,49 @@ import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 
 export const DOCUMENT_WORKER_NODE_RUNTIME = Object.freeze({
-  path: "/home/lachlan/.nvm/versions/node/v22.21.0/bin/node",
+  path: "/opt/agintiflow-document-worker/runtimes/node-v22.21.0-29e9c28204d89d85/bin/node",
   version: "v22.21.0",
   sha256: "29e9c28204d89d85cc426b518b4a7c6e32aafecd5e447d65301ffb2c1c15335a",
-  uid: 1000,
-  gid: 1000,
-  mode: 0o755,
+  uid: 0,
+  gid: 0,
+  mode: 0o555,
   size: 123_351_032,
 });
 
 const O_NOFOLLOW = Number(fsConstants.O_NOFOLLOW || 0);
 const O_CLOEXEC = Number(fsConstants.O_CLOEXEC || 0);
-const EXPECTED_HOME_TREE = Object.freeze([
-  Object.freeze(["/home/lachlan", Object.freeze([".nvm"])]),
-  Object.freeze(["/home/lachlan/.nvm", Object.freeze(["versions"])]),
-  Object.freeze(["/home/lachlan/.nvm/versions", Object.freeze(["node"])]),
-  Object.freeze(["/home/lachlan/.nvm/versions/node", Object.freeze(["v22.21.0"])]),
-  Object.freeze(["/home/lachlan/.nvm/versions/node/v22.21.0", Object.freeze(["bin"])]),
-  Object.freeze(["/home/lachlan/.nvm/versions/node/v22.21.0/bin", Object.freeze(["node"])]),
+const O_DIRECTORY = Number(fsConstants.O_DIRECTORY || 0);
+export const DOCUMENT_WORKER_RUNTIME_ANCESTRY = Object.freeze([
+  Object.freeze({ path: "/", uid: 0, gid: 0, mode: 0o755 }),
+  Object.freeze({ path: "/opt", uid: 0, gid: 0, mode: 0o755 }),
+  Object.freeze({
+    path: "/opt/agintiflow-document-worker",
+    uid: 0,
+    gid: 0,
+    mode: 0o555,
+    expectedEntries: Object.freeze(["releases", "runtimes"]),
+  }),
+  Object.freeze({
+    path: "/opt/agintiflow-document-worker/runtimes",
+    uid: 0,
+    gid: 0,
+    mode: 0o555,
+    expectedEntries: Object.freeze(["node-v22.21.0-29e9c28204d89d85"]),
+  }),
+  Object.freeze({
+    path: "/opt/agintiflow-document-worker/runtimes/node-v22.21.0-29e9c28204d89d85",
+    uid: 0,
+    gid: 0,
+    mode: 0o555,
+    expectedEntries: Object.freeze(["bin"]),
+  }),
+  Object.freeze({
+    path: "/opt/agintiflow-document-worker/runtimes/node-v22.21.0-29e9c28204d89d85/bin",
+    uid: 0,
+    gid: 0,
+    mode: 0o555,
+    expectedEntries: Object.freeze(["node"]),
+  }),
 ]);
 let activationPromise = null;
 
@@ -62,9 +87,51 @@ async function hashOpenFile(handle, size) {
   return digest.digest("hex");
 }
 
+function verifyEntries(entries, contract) {
+  const sorted = entries.sort();
+  if (sorted.length !== contract.expectedEntries.length) throw runtimeError();
+  for (let index = 0; index < sorted.length; index += 1) {
+    if (sorted[index] !== contract.expectedEntries[index]) throw runtimeError();
+  }
+}
+
+async function verifyRuntimeAncestry() {
+  const identities = [];
+  for (const contract of DOCUMENT_WORKER_RUNTIME_ANCESTRY) {
+    let handle;
+    try {
+      const [real, named] = await Promise.all([fs.realpath(contract.path), fs.lstat(contract.path)]);
+      if (
+        real !== contract.path ||
+        named.isSymbolicLink() ||
+        !named.isDirectory() ||
+        named.uid !== contract.uid ||
+        named.gid !== contract.gid ||
+        (named.mode & 0o777) !== contract.mode
+      ) throw runtimeError();
+      handle = await fs.open(
+        contract.path,
+        fsConstants.O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+      );
+      const before = await handle.stat();
+      if (!sameIdentity(named, before)) throw runtimeError();
+      if (contract.expectedEntries) {
+        verifyEntries(await fs.readdir(contract.path), contract);
+      }
+      const [after, afterNamed] = await Promise.all([handle.stat(), fs.lstat(contract.path)]);
+      if (!sameIdentity(before, after) || !sameIdentity(after, afterNamed)) throw runtimeError();
+      identities.push(afterNamed);
+    } finally {
+      await handle?.close().catch(() => {});
+    }
+  }
+  return identities;
+}
+
 export async function verifyIntegrationDocumentWorkerNodeRuntime() {
   let handle;
   try {
+    const ancestryBefore = await verifyRuntimeAncestry();
     const [real, named] = await Promise.all([
       fs.realpath(DOCUMENT_WORKER_NODE_RUNTIME.path),
       fs.lstat(DOCUMENT_WORKER_NODE_RUNTIME.path),
@@ -86,11 +153,17 @@ export async function verifyIntegrationDocumentWorkerNodeRuntime() {
     const before = await handle.stat();
     if (!sameIdentity(named, before)) throw runtimeError();
     const sha256 = await hashOpenFile(handle, before.size);
-    const [after, afterNamed] = await Promise.all([handle.stat(), fs.lstat(DOCUMENT_WORKER_NODE_RUNTIME.path)]);
+    const [after, afterNamed, ancestryAfter] = await Promise.all([
+      handle.stat(),
+      fs.lstat(DOCUMENT_WORKER_NODE_RUNTIME.path),
+      verifyRuntimeAncestry(),
+    ]);
     if (
       sha256 !== DOCUMENT_WORKER_NODE_RUNTIME.sha256 ||
       !sameIdentity(before, after) ||
-      !sameIdentity(after, afterNamed)
+      !sameIdentity(after, afterNamed) ||
+      ancestryBefore.length !== ancestryAfter.length ||
+      ancestryBefore.some((identity, index) => !sameIdentity(identity, ancestryAfter[index]))
     ) throw runtimeError();
     return Object.freeze({ ...DOCUMENT_WORKER_NODE_RUNTIME });
   } catch (error) {
@@ -101,41 +174,14 @@ export async function verifyIntegrationDocumentWorkerNodeRuntime() {
   }
 }
 
-function unescapeMountPath(value) {
-  return value.replace(/\\(040|011|012|134)/gu, (match, code) => ({
-    "040": " ",
-    "011": "\t",
-    "012": "\n",
-    "134": "\\",
-  })[code] || match);
-}
-
-function hasReadOnlyRuntimeBind(mountInfo) {
-  return String(mountInfo || "").split("\n").some((line) => {
-    const separator = line.indexOf(" - ");
-    if (separator < 0) return false;
-    const fields = line.slice(0, separator).split(" ");
-    if (fields.length < 6 || unescapeMountPath(fields[4]) !== DOCUMENT_WORKER_NODE_RUNTIME.path) return false;
-    return fields[5].split(",").includes("ro");
-  });
-}
-
 async function verifyRuntimeNamespace() {
   if (
     process.execPath !== DOCUMENT_WORKER_NODE_RUNTIME.path ||
     typeof process.getuid !== "function" ||
+    typeof process.getgid !== "function" ||
     process.getuid() === 0 ||
-    process.getuid() === DOCUMENT_WORKER_NODE_RUNTIME.uid
+    process.getgid() === 0
   ) throw runtimeError();
-  for (const [directory, expectedEntries] of EXPECTED_HOME_TREE) {
-    const entries = (await fs.readdir(directory)).sort();
-    if (entries.length !== expectedEntries.length) throw runtimeError();
-    for (let index = 0; index < entries.length; index += 1) {
-      if (entries[index] !== expectedEntries[index]) throw runtimeError();
-    }
-  }
-  const mountInfo = await fs.readFile("/proc/self/mountinfo", "utf8");
-  if (!hasReadOnlyRuntimeBind(mountInfo)) throw runtimeError();
 }
 
 export async function assertIntegrationDocumentWorkerRuntimeActivation() {

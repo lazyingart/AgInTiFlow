@@ -132,6 +132,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
       const result = Object.freeze({
         ok: true,
         status: "checked-document-worker",
+        realCompilerCanary: true,
         config: publicIntegrationDocumentWorkerConfig(config),
         readiness,
       });

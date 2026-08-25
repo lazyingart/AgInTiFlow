@@ -118,17 +118,36 @@ try {
   });
   await store.commit(testCommitRequest(staged, TEST_SCOPE, "server-floor"));
   const config = testDocumentWorkerConfig(false);
-  const service = createTestOnlyIntegrationDocumentWorkerService({ config, store });
+  let canaryCalls = 0;
+  const service = createTestOnlyIntegrationDocumentWorkerService({
+    config,
+    store,
+    inspectRuntimeImpl: async () => {
+      canaryCalls += 1;
+      return Object.freeze({
+        ready: true,
+        networkNone: true,
+        shellEscape: false,
+        runtimeDigest: "6".repeat(64),
+        activationProbeDigest: "7".repeat(64),
+      });
+    },
+  });
   server = createIntegrationDocumentWorkerServer({
     config,
     service,
     bearerToken: TEST_BEARER_TOKEN,
   });
+  const checked = await server.check();
+  assert.equal(checked.creationEnabled, false);
+  assert.equal(checked.compiler, null);
+  assert.equal(canaryCalls, 1, "server.check must execute the disabled-floor compiler canary");
   assert.deepEqual(await server.start(), {
     address: DOCUMENT_WORKER_LISTEN_HOST,
     port: DOCUMENT_WORKER_LISTEN_PORT,
     family: "IPv4",
   });
+  assert.equal(canaryCalls, 1, "server startup must reuse the successful exact check");
 
   const readiness = await requestJson(DOCUMENT_WORKER_ROUTES.readiness, {
     schemaVersion: DOCUMENT_WORKER_SCHEMA_VERSIONS.readinessRequest,

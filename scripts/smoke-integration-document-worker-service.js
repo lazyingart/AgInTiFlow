@@ -43,17 +43,29 @@ try {
   });
   const floorCommit = testCommitRequest(floorStaged, TEST_SCOPE, "creation-floor");
   await floorStore.commit(floorCommit);
+  let floorCanaryCalls = 0;
   const floorService = createTestOnlyIntegrationDocumentWorkerService({
     config: testDocumentWorkerConfig(false),
     store: floorStore,
-    inspectRuntimeImpl() {
-      throw new Error("creation-disabled activation must not probe the compiler");
+    inspectRuntimeImpl: async () => {
+      floorCanaryCalls += 1;
+      return Object.freeze({
+        ready: true,
+        networkNone: true,
+        shellEscape: false,
+        runtimeDigest: "2".repeat(64),
+        activationProbeDigest: "3".repeat(64),
+      });
     },
   });
   const readiness = await floorService.activate();
+  assert.equal(floorCanaryCalls, 0, "disabled API startup must not claim compiler activation");
   assert.equal(readiness.ready, true);
   assert.equal(readiness.creationEnabled, false);
   assert.equal(readiness.compiler, null);
+  assert.equal((await floorService.check()).compiler, null);
+  assert.equal((await floorService.check()).compiler, null);
+  assert.equal(floorCanaryCalls, 1, "the exact check must run and cache one compiler canary");
   assert.equal(floorService.readiness({
     schemaVersion: "aginti-document-worker-readiness-request-v1",
   }).digest, readiness.digest);
@@ -70,6 +82,27 @@ try {
     "ARTIFACT_CONTENT_GONE"
   );
   await floorService.close();
+
+  const failedCheckRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-document-worker-check-failure-"));
+  roots.push(failedCheckRoot);
+  const failedCheckStore = await openIntegrationDocumentWorkerStore({ stateRoot: failedCheckRoot });
+  let failedCanaryCalls = 0;
+  const failedCheckService = createTestOnlyIntegrationDocumentWorkerService({
+    config: testDocumentWorkerConfig(false),
+    store: failedCheckStore,
+    inspectRuntimeImpl() {
+      failedCanaryCalls += 1;
+      throw new Error("offline compiler canary failed");
+    },
+  });
+  await expectCode(() => failedCheckService.check(), "WORKER_UNAVAILABLE");
+  assert.equal(failedCanaryCalls, 1);
+  assert.throws(
+    () => failedCheckService.readiness({ schemaVersion: "aginti-document-worker-readiness-request-v1" }),
+    (error) => error?.code === "WORKER_UNAVAILABLE",
+    "a failed check must not activate the service"
+  );
+  await failedCheckService.close();
 
   const concurrencyRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-document-worker-concurrency-"));
   roots.push(concurrencyRoot);

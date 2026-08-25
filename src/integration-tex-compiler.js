@@ -224,34 +224,41 @@ async function runtimeDigest() {
 
 export async function inspectIntegrationTexCompilerRuntime() {
   const expectedRuntimeDigest = await runtimeDigest();
-  const probe = await compileIntegrationTexDocument({
-    filename: "aginti-runtime-probe.tex",
-    source: [
-      "\\documentclass{article}",
-      "\\begin{document}",
-      "AgInTi TeX runtime probe.",
-      "\\end{document}",
-      "",
-    ].join("\n"),
-  });
-  const receipt = validateIntegrationTexCompileReceipt(probe.receipt);
-  if (
-    receipt.compilerDigest !== expectedRuntimeDigest ||
-    !Array.isArray(probe.artifacts) ||
-    probe.artifacts.length !== 2 ||
-    !probe.artifacts.every((artifact) => inspectPrivateIntegrationFileArtifact(artifact))
-  ) {
-    fail("ANALYSIS_TEX_RUNTIME_UNAVAILABLE", "The fixed TeX runtime probe failed.", { status: 503 });
+  let probe;
+  try {
+    probe = await compileIntegrationTexDocument({
+      filename: "aginti-runtime-probe.tex",
+      source: [
+        "\\documentclass{article}",
+        "\\begin{document}",
+        "AgInTi TeX runtime probe.",
+        "\\end{document}",
+        "",
+      ].join("\n"),
+    });
+    const receipt = validateIntegrationTexCompileReceipt(probe.receipt);
+    if (
+      receipt.compilerDigest !== expectedRuntimeDigest ||
+      !Array.isArray(probe.artifacts) ||
+      probe.artifacts.length !== 2 ||
+      !probe.artifacts.every((artifact) => inspectPrivateIntegrationFileArtifact(artifact))
+    ) {
+      fail("ANALYSIS_TEX_RUNTIME_UNAVAILABLE", "The fixed TeX runtime probe failed.", { status: 503 });
+    }
+    return Object.freeze({
+      schemaVersion: INTEGRATION_TEX_COMPILER_SCHEMA_VERSION,
+      ready: true,
+      networkNone: true,
+      shellEscape: false,
+      limits: INTEGRATION_TEX_LIMITS,
+      runtimeDigest: expectedRuntimeDigest,
+      activationProbeDigest: receipt.digest,
+    });
+  } finally {
+    for (const artifact of probe?.artifacts || []) {
+      inspectPrivateIntegrationFileArtifact(artifact)?.bytes?.fill(0);
+    }
   }
-  return Object.freeze({
-    schemaVersion: INTEGRATION_TEX_COMPILER_SCHEMA_VERSION,
-    ready: true,
-    networkNone: true,
-    shellEscape: false,
-    limits: INTEGRATION_TEX_LIMITS,
-    runtimeDigest: expectedRuntimeDigest,
-    activationProbeDigest: receipt.digest,
-  });
 }
 
 function buildCommand(inputDirectory, filename, pdfFilename) {
