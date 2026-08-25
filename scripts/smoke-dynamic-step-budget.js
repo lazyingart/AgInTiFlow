@@ -2885,6 +2885,152 @@ try {
     "the goal contract did not separate durable task lineage from the active interruption"
   );
 
+  const exactVerifier = "python3 /tmp/security_labshare_contract.py";
+  const exactStatus = "git status --short";
+  const retainedUnitTest = "python3 -m unittest discover -s tests -v";
+  const freshCommandState = {
+    goal: "Repair and verify the current security task.",
+    plan: "The prior implementation and validation are complete.",
+    messages: [
+      toolMessage({
+        ok: true,
+        toolName: "run_command",
+        args: { command: retainedUnitTest },
+        exitCode: 0,
+        stdout: "OK",
+        projectMutationRevision: 7,
+        goalRevision: 5,
+      }),
+      toolMessage({
+        ok: true,
+        toolName: "run_command",
+        args: { command: exactVerifier },
+        exitCode: 0,
+        stdout: "security_labshare_contract: PASS",
+        projectMutationRevision: 7,
+        requiredCommandBatchId: "required-command-batch-2",
+        requiredProjectCommand: exactVerifier,
+        goalRevision: 5,
+      }),
+      toolMessage({
+        ok: true,
+        toolName: "run_command",
+        args: { command: exactStatus },
+        exitCode: 0,
+        stdout: "",
+        projectMutationRevision: 7,
+        requiredCommandBatchId: "required-command-batch-2",
+        requiredProjectCommand: exactStatus,
+        goalRevision: 5,
+      }),
+    ],
+    meta: {
+      taskProfile: "security",
+      goalContract: {
+        version: 3,
+        revision: 5,
+        status: "completed",
+        taskGoal: "Repair and verify the current security task.",
+        activeGoal: "Repair and verify the current security task.",
+        currentRequest: "Repair and verify the current security task.",
+        history: [{ revision: 5, taskHash: "same-security-task" }],
+      },
+      projectVerification: {
+        mutationRevision: 7,
+        requiredCommands: [retainedUnitTest],
+        contractRequiredCommands: [exactVerifier, exactStatus],
+        requiredCommandBatchSequence: 2,
+        requiredCommandBatch: {
+          id: "required-command-batch-2",
+          key: JSON.stringify([exactVerifier, exactStatus]),
+          requiredCommands: [exactVerifier, exactStatus],
+          goalRevision: 5,
+          completedCommands: [exactVerifier, exactStatus],
+          completedRuns: [
+            { command: exactVerifier, mutationRevision: 7 },
+            { command: exactStatus, mutationRevision: 7 },
+          ],
+          startedMutationRevision: 7,
+          lastMutationRevision: 7,
+          complete: true,
+        },
+        commandRuns: [{
+          command: retainedUnitTest,
+          mutationRevision: 7,
+          ok: true,
+        }],
+        testRuns: [],
+      },
+    },
+  };
+  const freshCommandRequest =
+    "Continue the same corrective task. Run `python3 /tmp/security_labshare_contract.py`, verify `git status --short`, and finish without editing or recommitting files.";
+  const freshCommandUpdate = applyContinuationContractTransition(
+    freshCommandState,
+    freshCommandRequest,
+    { at: "2026-08-26T04:00:00.000Z" }
+  );
+  assert(
+    freshCommandUpdate?.preserveTaskBoundary && freshCommandUpdate?.refreshExecutionContract,
+    "an explicit same-task command rerun did not refresh the execution contract"
+  );
+  assert(
+    JSON.stringify(freshCommandState.meta.activeExecutionContract.requiredProjectCommands) ===
+      JSON.stringify([exactVerifier, exactStatus]),
+    "the current turn lost an explicitly verified inline command"
+  );
+  assert(
+    freshCommandState.meta.projectVerification.requiredCommandBatch.goalRevision === 6,
+    "the fresh command batch was not bound to the current goal revision"
+  );
+  assert(
+    freshCommandState.meta.projectVerification.requiredCommandBatch.completedCommands.length === 0,
+    "retained command evidence pre-completed a current-turn rerun obligation"
+  );
+  const freshCommandConfig = {
+    taskProfile: "security",
+    commandCwd: workspace,
+  };
+  let freshCommandRuntime = nextStepRuntimeConfig(freshCommandConfig, freshCommandState);
+  assert(
+    freshCommandRuntime.requiredProjectCommandPending === true,
+    "the current-turn verifier was not marked pending"
+  );
+  assert(
+    freshCommandRuntime.requiredProjectCommand === exactVerifier,
+    "the first explicitly repeated command was not pending"
+  );
+  const verifierResult = {
+    ok: true,
+    toolName: "run_command",
+    args: { command: exactVerifier },
+    exitCode: 0,
+    stdout: "security_labshare_contract: PASS",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(freshCommandState, verifierResult, freshCommandConfig);
+  freshCommandState.messages.push(toolMessage(verifierResult));
+  freshCommandRuntime = nextStepRuntimeConfig(freshCommandConfig, freshCommandState);
+  assert(
+    freshCommandRuntime.requiredProjectCommand === exactStatus,
+    "the second current-turn command was not retained after the verifier passed"
+  );
+  const statusResult = {
+    ok: true,
+    toolName: "run_command",
+    args: { command: exactStatus },
+    exitCode: 0,
+    stdout: "",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(freshCommandState, statusResult, freshCommandConfig);
+  freshCommandState.messages.push(toolMessage(statusResult));
+  freshCommandRuntime = nextStepRuntimeConfig(freshCommandConfig, freshCommandState);
+  assert(
+    freshCommandRuntime.requiredProjectCommandPending !== true,
+    "the fresh command batch stayed pending after both exact commands passed"
+  );
+
   const bareContinuationState = {
     goal: concreteContinuation,
     plan: "Update both retained outputs, validate, and commit.",

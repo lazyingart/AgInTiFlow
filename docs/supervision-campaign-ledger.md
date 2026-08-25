@@ -379,3 +379,32 @@ local report paths and existing-document revision language now count as local
 workspace intent, so surrounding research policy does not force a new deep
 research route. The phrase `page-safe` no longer creates a browser-evidence
 requirement. Focused routing/evidence smokes and the full npm suite pass.
+
+### Fresh current-turn command evidence on retained sessions
+
+`security-labshare-035` exercised a long-lived LocalLLM security-repair
+session after the target repository was already fixed, committed, and clean.
+The follow-up prompt deliberately asked the agent not to edit or recommit. It
+required only the exact hidden verifier and `git status --short`, while allowing
+all other passing implementation and unit-test evidence to remain reusable.
+
+Installed AgInTiFlow `0.20.250` incorrectly finished after `inspect_project`.
+It reused the old verifier/status evidence and never executed either command in
+the current turn. The defect was not model quality: the runtime had failed to
+turn explicit commands in a concrete same-task interruption into a fresh,
+revision-bound evidence obligation.
+
+The runtime now records explicit current-turn commands in the active execution
+contract and creates a fresh command batch for only that subset. Unrelated
+passing evidence from the unchanged mutation revision remains valid, while old
+runs of the newly requested commands cannot pre-complete the batch. Inline
+command extraction also recognizes natural `verify`, `validate`, `check`,
+`confirm`, and rerun wording in English and Chinese.
+
+The same real session was replayed against the patched source at goal revision
+`34`. Its event ledger records both commands under
+`required-command-batch-3`: the exact external security contract returned
+`security_labshare_contract: PASS`, and `git status --short` returned empty.
+The target stayed at commit `2b35928` with no mutation. Focused planning,
+truthful-completion, and dynamic-budget regressions pass, as does the complete
+AgInTiFlow npm suite. The fix is released in AgInTiFlow `0.20.251`.

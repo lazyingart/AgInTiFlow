@@ -980,9 +980,9 @@ function prefixRequestsInlineCommandExecution(prefix = "") {
   while (preamble.test(clause)) clause = clause.replace(preamble, "").trim();
   clause = clause.replace(/(?:[:：]|--?)\s*$/, "").trim();
   return (
-    /^(?:run|execute|invoke|launch)(?:\s+(?:(?:the|this|that)\s+)?(?:following\s+)?command(?:\s+named)?)?\s*$/i.test(
+    /^(?:run|rerun|re-run|execute|invoke|launch|verify|validate|check|confirm)(?:\s+(?:(?:the|this|that)\s+)?(?:following\s+)?command(?:\s+named)?)?\s*$/i.test(
       clause
-    ) || /^(?:运行|運行|执行|執行|调用|調用)\s*$/.test(clause)
+    ) || /^(?:运行|運行|执行|執行|调用|調用|验证|驗證|检查|檢查|确认|確認)\s*$/.test(clause)
   );
 }
 
@@ -1239,9 +1239,19 @@ export function augmentScsTaskContractWithProjectVerification(contract = {}, sta
     ...verificationRequiredProjectCommands,
   ].map(normalizeProjectCommand).filter(Boolean)).slice(0, 24);
   const requiredCommandBatch = verification.requiredCommandBatch;
+  const batchRequiredCommands = unique(
+    (Array.isArray(requiredCommandBatch?.requiredCommands)
+      ? requiredCommandBatch.requiredCommands
+      : requiredCommandBatch?.key === JSON.stringify(requiredProjectCommands)
+        ? requiredProjectCommands
+        : [])
+      .map(normalizeProjectCommand)
+      .filter((command) => command && requiredProjectCommands.includes(command))
+  );
   const requiredProjectCommandBatchId =
     requiredCommandBatch &&
-    requiredCommandBatch.key === JSON.stringify(requiredProjectCommands) &&
+    batchRequiredCommands.length > 0 &&
+    requiredCommandBatch.key === JSON.stringify(batchRequiredCommands) &&
     requiredCommandBatch.id
       ? String(requiredCommandBatch.id)
       : "";
@@ -1286,7 +1296,7 @@ export function augmentScsTaskContractWithProjectVerification(contract = {}, sta
     requiredProjectCommands,
     requiredProjectCommandBatchId,
     requiredProjectCommandBatchCommands: requiredProjectCommandBatchId
-      ? requiredProjectCommands
+      ? batchRequiredCommands
       : [],
     requiredProjectCommandRuns,
     projectMutationRevision: mutationRevision,

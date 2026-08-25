@@ -3066,10 +3066,25 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
     removed.push(key);
   }
   state.plan = "";
+  const activeRevision = Math.max(0, Number(revision || state.meta?.goalContract?.revision || 0));
+  const currentRequest = String(state.meta?.goalContract?.currentRequest || state.goal || "").trim();
+  const currentTurnCommands = normalizedRequiredProjectCommands(
+    deriveScsTaskContract({
+      goal: currentRequest,
+      taskProfile: state.meta?.taskProfile || "auto",
+    }).requiredProjectCommands
+  );
   state.meta.activeExecutionContract = {
-    revision: Math.max(0, Number(revision || state.meta?.goalContract?.revision || 0)),
+    revision: activeRevision,
     refreshedAt: new Date().toISOString(),
+    requiredProjectCommands: currentTurnCommands,
   };
+  const verification = state.meta.projectVerification;
+  if (verification && typeof verification === "object" && currentTurnCommands.length) {
+    startRequiredCommandBatch(verification, currentTurnCommands, {
+      goalRevision: activeRevision,
+    });
+  }
   return removed;
 }
 
@@ -4289,10 +4304,27 @@ function effectiveRequiredProjectCommands(state = {}, verification = {}, config 
 
 function currentRequiredCommandBatch(verification = {}, requiredCommands = []) {
   const batch = verification.requiredCommandBatch;
-  const key = requiredCommandBatchKey(requiredCommands);
-  if (!batch || typeof batch !== "object" || !key || batch.key !== key || !batch.id) return null;
+  const effectiveCommands = normalizedRequiredProjectCommands(requiredCommands);
+  const batchCommands = normalizedRequiredProjectCommands(
+    Array.isArray(batch?.requiredCommands)
+      ? batch.requiredCommands
+      : batch?.key === requiredCommandBatchKey(effectiveCommands)
+        ? effectiveCommands
+        : []
+  );
+  if (
+    !batch ||
+    typeof batch !== "object" ||
+    !batch.id ||
+    !batchCommands.length ||
+    batch.key !== requiredCommandBatchKey(batchCommands) ||
+    batchCommands.some((command) => !effectiveCommands.includes(command))
+  ) {
+    return null;
+  }
   return {
     ...batch,
+    requiredCommands: batchCommands,
     completedCommands: Array.isArray(batch.completedCommands)
       ? batch.completedCommands.map(normalizeProjectCommand).filter(Boolean)
       : [],
@@ -4307,13 +4339,20 @@ function currentRequiredCommandBatch(verification = {}, requiredCommands = []) {
   };
 }
 
-function startRequiredCommandBatch(verification = {}, requiredCommands = []) {
+function startRequiredCommandBatch(
+  verification = {},
+  requiredCommands = [],
+  { goalRevision = 0 } = {}
+) {
+  const normalizedCommands = normalizedRequiredProjectCommands(requiredCommands);
   const sequence = Math.max(0, Number(verification.requiredCommandBatchSequence || 0)) + 1;
   verification.requiredCommandBatchSequence = sequence;
   const revision = Math.max(0, Number(verification.mutationRevision || 0));
   const batch = {
     id: `required-command-batch-${sequence}`,
-    key: requiredCommandBatchKey(requiredCommands),
+    key: requiredCommandBatchKey(normalizedCommands),
+    requiredCommands: normalizedCommands,
+    goalRevision: Math.max(0, Number(goalRevision || 0)),
     completedCommands: [],
     completedRuns: [],
     startedMutationRevision: revision + 1,
@@ -4474,7 +4513,7 @@ function requiredCommandRunIsCurrent(
   if (!required || !commandMatches) return false;
   const requiredCommands = verificationRequiredProjectCommands(verification);
   const batch = currentRequiredCommandBatch(verification, requiredCommands);
-  if (batch?.id) {
+  if (batch?.id && batch.requiredCommands.includes(required)) {
     const accepted = batch.completedRuns.find((item) => item.command === required);
     return Boolean(
       accepted &&
@@ -4597,21 +4636,45 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         commandCanMutateProjectContent(mutationCommand, commandPolicy)
     );
     let requiredBatch = currentRequiredCommandBatch(verification, requiredCommands);
+    const activeExecutionContract = state.meta?.activeExecutionContract;
+    const activeTurnCommands =
+      Number(activeExecutionContract?.revision || 0) ===
+      Number(state.meta?.goalContract?.revision || 0)
+        ? normalizedRequiredProjectCommands(activeExecutionContract?.requiredProjectCommands)
+        : [];
+    if (
+      !requiredBatch &&
+      requiredCommand &&
+      activeTurnCommands.includes(requiredCommand)
+    ) {
+      requiredBatch = startRequiredCommandBatch(verification, activeTurnCommands, {
+        goalRevision: state.meta?.goalContract?.revision || 0,
+      });
+    }
+    let batchRequiredCommands = requiredBatch?.requiredCommands || requiredCommands;
     if (projectContentMutation) {
       delete state.meta.verifiedCompletionCandidate;
       if (
         requiredCommand &&
+        batchRequiredCommands.includes(requiredCommand) &&
         (!requiredBatch ||
           requiredBatch.complete ||
           requiredBatch.completedCommands.includes(requiredCommand))
       ) {
-        requiredBatch = startRequiredCommandBatch(verification, requiredCommands);
+        requiredBatch = startRequiredCommandBatch(verification, batchRequiredCommands, {
+          goalRevision: state.meta?.goalContract?.revision || 0,
+        });
+        batchRequiredCommands = requiredBatch.requiredCommands;
       }
       verification.mutationRevision += 1;
-      if (requiredCommand && requiredBatch) {
+      if (
+        requiredCommand &&
+        requiredBatch &&
+        requiredBatch.requiredCommands.includes(requiredCommand)
+      ) {
         invalidateRequiredBatchValidations(
           requiredBatch,
-          requiredCommands,
+          requiredBatch.requiredCommands,
           config,
           requiredCommand
         );
@@ -4640,17 +4703,19 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     };
     if (requiredCommand && commandSucceeded) {
       if (!requiredBatch && requiredMutatingCommands.length === 0) {
-        requiredBatch = startRequiredCommandBatch(verification, requiredCommands);
+        requiredBatch = startRequiredCommandBatch(verification, requiredCommands, {
+          goalRevision: state.meta?.goalContract?.revision || 0,
+        });
         requiredBatch.startedMutationRevision = verification.mutationRevision;
         requiredBatch.lastMutationRevision = verification.mutationRevision;
       }
-      if (requiredBatch) {
+      if (requiredBatch?.requiredCommands.includes(requiredCommand)) {
         recordRequiredBatchRun(
           requiredBatch,
           requiredCommand,
           verification.mutationRevision
         );
-        requiredBatch.complete = requiredCommands.every((candidate) =>
+        requiredBatch.complete = requiredBatch.requiredCommands.every((candidate) =>
           requiredBatch.completedCommands.includes(candidate)
         );
         verification.requiredCommandBatch = requiredBatch;
