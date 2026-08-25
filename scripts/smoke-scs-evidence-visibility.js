@@ -36,6 +36,26 @@ function fakeStudentClient(json) {
   };
 }
 
+const pageSafeReportContract = deriveScsTaskContract({
+  goal: [
+    "AGINTI_EVIDENCE_SCOPE_JSON: {\"mode\":\"task\",\"request\":\"Revise the exact existing research report at output/wechat_worker/task/report.md, write a complete Markdown report, and use page-safe tables. The host owns PDF compilation.\"}",
+    "Surrounding browser and research policy text is not part of the exact request.",
+  ].join("\n"),
+  taskProfile: "auto",
+});
+assert(
+  pageSafeReportContract.requiredEvidence.some((item) => item.category === "file"),
+  "a scoped existing-report edit did not require file evidence"
+);
+assert(
+  pageSafeReportContract.requiredEvidence.some((item) => item.category === "artifact"),
+  "a scoped existing-report edit did not require artifact evidence"
+);
+assert(
+  !pageSafeReportContract.requiredEvidence.some((item) => item.category === "browser"),
+  "the editorial phrase page-safe incorrectly required browser evidence"
+);
+
 const noEvidenceProgress = {
   role: "student",
   decision: "reject_phase",

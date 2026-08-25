@@ -353,3 +353,29 @@ prompt in one model turn. Independent event inspection found zero tool calls,
 zero permission events, one normal `session.finished`, a complete 1,893-byte
 answer, and no task artifact mutation. This was an AgenticApp integration fix;
 no AgInTiFlow runtime or npm release change was required.
+
+### Reader-facing report quality and local editorial routing
+
+`research-pdf-quality-034` exercised a normal scheduled-research packet through
+the AgInTi-backed LabCanvas worker. DeepSeek revised an existing local report
+into a 17,557-byte Chinese scientific review with nine traceable sources,
+source-level methods/results/limitations, cross-source synthesis and tensions,
+explicit evidence boundaries, actionable experiments, and references. The
+first host compile exposed a nearly empty final page, and the prior agent repair
+claimed success without changing the source.
+
+LabCanvas now treats the PDF as a different deliverable from the concise chat
+brief. It audits every configured content dimension, keeps orchestration
+provenance out of the reader document, extracts text per page, renders private
+page previews, rejects orphan pages, retries one conservative compact layout,
+rebuilds stale sibling PDFs, and can deterministically adopt a corrected
+host-built PDF during stored-result repair. The accepted four-page PDF has
+embedded CJK fonts, page body counts `1584, 1988, 1416, 2058`, and no visual or
+layout issues. Stored replay covered every task item with no model rerun or
+external write.
+
+The scenario also exposed two general AgInTi routing false positives. Explicit
+local report paths and existing-document revision language now count as local
+workspace intent, so surrounding research policy does not force a new deep
+research route. The phrase `page-safe` no longer creates a browser-evidence
+requirement. Focused routing/evidence smokes and the full npm suite pass.

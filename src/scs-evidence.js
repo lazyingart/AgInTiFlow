@@ -793,7 +793,17 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   if (textHas(mandatoryEvidenceText, /\b(artifact|canvas|pdf|image|video|screenshot|cover|plot|chart|figure|docx|archive|copy to|export|generated|generate|draft)\b/) || /输出|产物|图片|视频|截图|封面|生成/.test(mandatoryEvidenceText)) {
     categories.add("artifact");
   }
-  if (textHas(mandatoryEvidenceText, /\b(browser|chrome|chromium|cdp|devtools|playwright|selenium|web[- ]?ui|website|page|tab|composer|click|type|upload|attach|submit|form)\b/) || /浏览器|网页|页面|上传|提交|附件|资产库/.test(mandatoryEvidenceText)) {
+  if (
+    textHas(
+      mandatoryEvidenceText,
+      /\b(browser|chrome|chromium|cdp|devtools|playwright|selenium|web[- ]?(?:ui|page)|website|tab|composer|click|type|upload|attach|submit|form)\b/
+    ) ||
+    textHas(
+      mandatoryEvidenceText,
+      /\b(?:browse|navigate|open|refresh|visit)\b[^.\n;]{0,60}\b(?:page|site)\b|\b(?:page|site)\b[^.\n;]{0,60}\b(?:click|open|submit|upload)\b/
+    ) ||
+    /浏览器|网页|页面|上传|提交|附件|资产库/.test(mandatoryEvidenceText)
+  ) {
     categories.add("browser");
   }
   if (textHas(mandatoryEvidenceText, /\b(screenshot|visible|visual|see|inspect image|open image|read_image|thumbnail)\b/) || /截图|可见|缩略图/.test(mandatoryEvidenceText)) {

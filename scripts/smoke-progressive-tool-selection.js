@@ -1647,6 +1647,22 @@ assert(
   "surrounding policy prose incorrectly forced a scoped artifact task into deep research"
 );
 
+const scopedExistingReportEditPrompt = `Generic research worker policy.
+AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Revise the exact existing research report at output/wechat_worker/task/report.md. Preserve the evidence, write the revised Markdown under this task's artifact directory, and use page-safe tables. The host owns PDF compilation."}
+Surrounding routine text mentions literature review, evidence review, research report, and web sources.`;
+const scopedExistingReportEditTools = selectProgressiveTools(allTools, {
+  config: { provider: "deepseek", progressiveTools: true },
+  goal: scopedExistingReportEditPrompt,
+  profile: "auto",
+  messages: [{ role: "user", content: scopedExistingReportEditPrompt }],
+});
+assert(names(scopedExistingReportEditTools).includes("read_file"), "scoped existing-report edit omitted read_file");
+assert(names(scopedExistingReportEditTools).includes("write_file"), "scoped existing-report edit omitted write_file");
+assert(
+  !(names(scopedExistingReportEditTools).length === 2 && names(scopedExistingReportEditTools)[0] === "deep_research"),
+  "scoped existing-report edit was incorrectly forced into deep_research"
+);
+
 const scopedDeepResearchPrompt = `Generic workspace policy.
 AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Write a deep research evidence review comparing three primary papers."}`;
 const scopedDeepResearchTools = selectProgressiveTools(allTools, {

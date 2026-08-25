@@ -89,6 +89,8 @@ export function hasLocalResearchWorkspaceIntent(goal = "", messages = []) {
   const text = `${scopedChatopsEvidenceGoal(goal)}\n${recent}`;
   return (
     /\b(?:this|current|existing|project|workspace|local)\s+(?:folder|directory|repo(?:sitory)?|files?|notes?|sources?|artifacts?)\b/i.test(text) ||
+    /(?:^|[\s`'"(])(?:~\/|\.{1,2}\/|\/)?(?:[^\s`'"()\/]+\/)+[^\s`'"()\/]+\.(?:bib|csv|docx?|json|md|pdf|tex|txt|ya?ml)\b/i.test(text) ||
+    /\b(?:edit|revise|rewrite|proofread|correct|polish|read|inspect|update)\b[^.\n;]{0,160}\b(?:exact|existing|current|saved|local)\b[^.\n;]{0,80}\b(?:document|file|manuscript|markdown|notes?|report|source)\b/i.test(text) ||
     /\b(?:task|project|source|research|evidence|notes?|manifest|readme)[-_A-Za-z0-9]*\.(?:md|json|ya?ml|txt|csv|bib|tex)\b/i.test(text) ||
     /\b(?:inspect|read|reconcile|correct|rewrite|update)\b.{0,120}\b(?:workspace|folder|directory|repo(?:sitory)?|local files?|project notes?|existing notes?)\b/i.test(text) ||
     /\b(?:git\s+)?commit\b/i.test(text)
