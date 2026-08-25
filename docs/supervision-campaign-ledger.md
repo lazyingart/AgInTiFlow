@@ -330,3 +330,26 @@ event sequence, a project handoff with exact status and verification commands,
 and no lingering job tmux session. No source patch or npm release was needed;
 this run validates the published package's general long-job, resume, context,
 deduplication, and cleanup contracts without task-specific routing.
+
+### Host-managed response roles and permission integrity
+
+`permission-resilient-synthesis-030` traced a real LabCanvas career-report
+failure to the integration boundary rather than weakening AgInTiFlow's
+permission guard. LabCanvas invoked the host-managed report under the role
+`career_research`, while its response-only classifier recognized only the older
+`career_daily` alias. The model was consequently offered file tools in a safe,
+read-only run; when it tried to save its already synthesized report,
+AgInTiFlow correctly persisted a `permission_required` pause.
+
+LabCanvas now classifies the full `career-research-*` and
+`daily-organizer-*` role families as host-managed response turns. Those turns
+use AgInTi's `chatops` profile with shell, file, and auxiliary tools disabled;
+the host owns persistence, compilation, quality validation, and delivery.
+General worker roles retain their existing writable Docker contract, and safe
+mode still blocks genuine unapproved writes.
+
+A fresh installed `0.20.248` DeepSeek run completed the imperfect synthesis
+prompt in one model turn. Independent event inspection found zero tool calls,
+zero permission events, one normal `session.finished`, a complete 1,893-byte
+answer, and no task artifact mutation. This was an AgenticApp integration fix;
+no AgInTiFlow runtime or npm release change was required.
