@@ -31,6 +31,42 @@ const revision = classifyIntegrationDocumentArtifactIntent("revise it and recomp
 assert.equal(revision.required, true);
 assert.equal(revision.requirements.minimumFigureCount, 1, "explicit revision retains the figure requirement");
 
+const mutationFollowups = [
+  ["add a section on approximation ratios", 1],
+  ["include three references", 1],
+  ["change the title to QAOA Overview", 1],
+  ["remove the figure", 0],
+  ["replace the figure with an objective curve", 1],
+];
+for (const [prompt, minimumFigureCount] of mutationFollowups) {
+  const intent = classifyIntegrationDocumentArtifactIntent(prompt, priorConversation);
+  assert.equal(intent.required, true, `${prompt} must revise the active document`);
+  assert.equal(intent.requirements.minimumFigureCount, minimumFigureCount);
+  assert.equal(
+    classifyIntegrationDocumentArtifactIntent(prompt, []).required,
+    false,
+    `${prompt} must not create a document without an active document conversation`,
+  );
+}
+
+for (const prompt of [
+  "Can you explain the figure?",
+  "Which references should I read next?",
+  "Should I remove the figure?",
+  "Add two and three.",
+  "Include QAOA in your next chat answer.",
+  "Change your answer if new facts emerge.",
+  "Remove ambiguity from your explanation.",
+  "Replace x with y in the equation below.",
+  "Can you explain why someone might say \"remove the figure\"?",
+]) {
+  assert.equal(
+    classifyIntegrationDocumentArtifactIntent(prompt, priorConversation).required,
+    false,
+    `${prompt} must remain an ordinary same-thread conversation`,
+  );
+}
+
 const worker = createDocumentWorkerFixture();
 const client = worker.client();
 const source = [

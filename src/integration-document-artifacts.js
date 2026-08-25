@@ -10,11 +10,12 @@ export const INTEGRATION_DOCUMENT_ARTIFACT_SCHEMA_VERSION = "aginti-integration-
 
 const DOCUMENT_ACTION =
   /^(?:make|create|generate|write|rewrite|revise|update|edit|modify|correct|fix|regenerate|recompile|produce|prepare|compile|typeset|render|export|build|deliver|provide|save)\b/iu;
+const DOCUMENT_FOLLOWUP_MUTATION_ACTION = /^(?:add|include|change|remove|replace)\b/iu;
 const DOCUMENT_NEED_ACTION = /^(?:(?:i|we)\s+)?(?:need|want|require|would\s+like)\b/iu;
 const DOCUMENT_NEED_DELIVERABLE =
   /(?:\.tex\b|\.pdf\b|\b(?:source(?:\s+files?)?|compiled\s+pdf|files?|documents?|reports?|papers?|manuscripts?|artifacts?|outputs?|deliverables?|versions?|formats?)\b)/iu;
 const DOCUMENT_FOLLOWUP_REFERENCE =
-  /\b(?:it|this|that|same|again|latex|tex|pdf|source|files?|documents?|reports?|papers?|manuscripts?|artifacts?|outputs?|deliverables?|title|heading|section|paragraph|wording|grammar|layout|formatting|fonts?|margins?|tables?|figures?|citations?)\b|(?:它|这个|這個|同一|再次|重新|源文件|源码|源碼|文件|文档|文檔|报告|報告|论文|論文|标题|標題|段落|排版|格式|字体|字體|页边距|頁邊距|表格|图片|圖片|引用)/iu;
+  /\b(?:it|this|that|same|again|latex|tex|pdf|source|files?|documents?|reports?|papers?|manuscripts?|artifacts?|outputs?|deliverables?|title|heading|section|paragraph|wording|grammar|layout|formatting|fonts?|margins?|tables?|figures?|citations?|references?)\b|(?:它|这个|這個|同一|再次|重新|源文件|源码|源碼|文件|文档|文檔|报告|報告|论文|論文|标题|標題|段落|排版|格式|字体|字體|页边距|頁邊距|表格|图片|圖片|引用)/iu;
 const DOCUMENT_PAIR_EXCLUSION =
   /\b(?:do\s+not|don't|dont|never|avoid|without|no\s+need\s+to|not\s+asked\s+to)\b[^.!?;\r\n]{0,160}\b(?:latex|tex|pdf)\b|\b(?:latex|tex|pdf)(?:\s+(?:source|file|document))?\s+only\b|\bonly\s+(?:the\s+)?(?:latex|tex|pdf)\b|(?:不要|不用|无需|無需|不需要|禁止|避免)[^。！？；\r\n]{0,100}(?:latex|tex|pdf)/iu;
 const DOCUMENT_FIGURE =
@@ -112,6 +113,7 @@ function requestsDocumentFollowup(value = "") {
   return clauses.some((clause) => {
     const action =
       DOCUMENT_ACTION.test(clause) ||
+      DOCUMENT_FOLLOWUP_MUTATION_ACTION.test(clause) ||
       DOCUMENT_NEED_ACTION.test(clause) ||
       CHINESE_DOCUMENT_ACTION.test(clause);
     const implicitRecompile = /^(?:recompile|regenerate|typeset|render|export)\b/iu.test(clause) ||
