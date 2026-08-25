@@ -26,10 +26,11 @@ export const INTEGRATION_RPC_PATHS = Object.freeze({
   runsResume: "/agent/v1/runs/resume",
   artifactsList: "/agent/v1/artifacts/list",
   artifactsGet: "/agent/v1/artifacts/get",
+  artifactsContent: "/agent/v1/artifacts/content",
 });
 
 export const INTEGRATION_RPC_PATH_LIST = Object.freeze(Object.values(INTEGRATION_RPC_PATHS));
-export const INTEGRATION_ARTIFACT_KINDS = Object.freeze(["plot", "table", "markdown"]);
+export const INTEGRATION_ARTIFACT_KINDS = Object.freeze(["plot", "table", "markdown", "file"]);
 export const INTEGRATION_SEARCH_ARTIFACT_KIND = "sources";
 export const INTEGRATION_SEARCH_MODES = Object.freeze(["web", "papers", "both"]);
 export const INTEGRATION_MAXIMUM_SEARCH_SOURCES = 20;
@@ -401,6 +402,32 @@ export function sanitizeIntegrationRequest(pathname, value = {}) {
       const object = integrationExactKeys(body, ["artifactId"], "request", ["artifactId"]);
       return Object.freeze({ artifactId: validateIntegrationArtifactId(object.artifactId) });
     }
+    case INTEGRATION_RPC_PATHS.artifactsContent: {
+      const object = integrationExactKeys(
+        body,
+        ["artifactId", "metadataOnly", "range"],
+        "request",
+        ["artifactId"]
+      );
+      if (object.metadataOnly !== undefined && typeof object.metadataOnly !== "boolean") {
+        integrationInvalid("metadataOnly must be a boolean");
+      }
+      let range;
+      if (object.range !== undefined) {
+        const candidate = integrationExactKeys(object.range, ["start", "end"], "range", ["start"]);
+        const start = integrationBoundedInteger(candidate.start, "range.start");
+        const end = candidate.end === undefined
+          ? undefined
+          : integrationBoundedInteger(candidate.end, "range.end");
+        if (end !== undefined && end < start) integrationInvalid("range.end must not precede range.start");
+        range = Object.freeze({ start, ...(end === undefined ? {} : { end }) });
+      }
+      return Object.freeze({
+        artifactId: validateIntegrationArtifactId(object.artifactId),
+        ...(object.metadataOnly === undefined ? {} : { metadataOnly: object.metadataOnly }),
+        ...(range === undefined ? {} : { range }),
+      });
+    }
     default:
       integrationInvalid("Unknown agent RPC path", { code: "NOT_FOUND", status: 404 });
   }
@@ -706,7 +733,11 @@ export function validateIntegrationIsolationAttestation(value) {
 export function integrationCapabilitiesResponse({ enabled = false, cancel = false, resume = false, search = false } = {}) {
   const searchEnabled = Boolean(enabled && search);
   const artifactKinds = searchEnabled
-    ? [...INTEGRATION_ARTIFACT_KINDS, INTEGRATION_SEARCH_ARTIFACT_KIND]
+    ? [
+        ...INTEGRATION_ARTIFACT_KINDS.filter((kind) => kind !== "file"),
+        INTEGRATION_SEARCH_ARTIFACT_KIND,
+        "file",
+      ]
     : [...INTEGRATION_ARTIFACT_KINDS];
   return Object.freeze({
     schemaVersion: AGENT_WORKER_SCHEMA_VERSION,

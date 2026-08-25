@@ -5,6 +5,18 @@ import path from "node:path";
 
 import { sanitizeIntegrationArtifact } from "./integration-artifacts.js";
 import {
+  createIntegrationDocumentBlobStore,
+  validateIntegrationDocumentBlobRef,
+} from "./integration-document-blob-store.js";
+import {
+  classifyIntegrationDocumentArtifactIntent,
+  evaluateIntegrationDocumentArtifactCompletion,
+} from "./integration-document-artifacts.js";
+import {
+  INTEGRATION_TEX_TOOL_NAME,
+  inspectPrivateIntegrationFileArtifact,
+} from "./integration-tex-compiler.js";
+import {
   INTEGRATION_ANALYSIS_MAX_TOOL_CALLS,
   INTEGRATION_ANALYSIS_PLANNER_ACTIVATION_SCHEMA_VERSION,
   INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION,
@@ -202,6 +214,9 @@ function publicFailureMessage(error, code = publicErrorCode(error)) {
   }
   if (code === "ANALYSIS_PLOT_ARTIFACT_REQUIRED") {
     return "Python ran, but it did not produce the requested plot. Call emit_plot(...) and resume with corrected code.";
+  }
+  if (code === "ANALYSIS_DOCUMENT_ARTIFACT_REQUIRED") {
+    return "The requested TeX source and structurally valid PDF were not both produced, so this run was not marked complete.";
   }
   if (code === "ANALYSIS_EXECUTION_FAILED") {
     if (plannerMessage === "The requested Python execution timed out.") {
@@ -875,6 +890,10 @@ function validateArtifact(artifact, scope, runsById) {
       "threadId",
       "runId",
       "createdAt",
+      "blobRef",
+      "compileReceiptDigest",
+      "documentRole",
+      "companionSha256",
     ],
     [
       "id",
@@ -906,10 +925,39 @@ function validateArtifact(artifact, scope, runsById) {
   } catch (error) {
     corrupt(error);
   }
+  if (artifact.kind === "file") {
+    try {
+      validateIntegrationDocumentBlobRef(artifact.blobRef);
+      stateDigest(artifact.compileReceiptDigest, "state artifact compileReceiptDigest");
+      stateDigest(artifact.companionSha256, "state artifact companionSha256");
+      if (artifact.documentRole !== "source" && artifact.documentRole !== "pdf") corrupt();
+      if (
+        (artifact.documentRole === "source" && artifact.spec.mime === "application/pdf") ||
+        (artifact.documentRole === "pdf" && artifact.spec.mime !== "application/pdf")
+      ) {
+        corrupt();
+      }
+    } catch (error) {
+      corrupt(error);
+    }
+  } else if (
+    artifact.blobRef !== undefined ||
+    artifact.compileReceiptDigest !== undefined ||
+    artifact.documentRole !== undefined ||
+    artifact.companionSha256 !== undefined
+  ) {
+    corrupt();
+  }
   const createdEvent = run.events.find(
     (event) => event.type === "artifact.created" && event.payload?.artifact?.id === artifact.id
   );
   if (!createdEvent) corrupt();
+  if (
+    (artifact.kind === "file" && createdEvent.payload.receiptDigest !== artifact.compileReceiptDigest) ||
+    (artifact.kind !== "file" && createdEvent.payload.receiptDigest !== undefined)
+  ) {
+    corrupt();
+  }
   const terminalEvent = run.events.find((event) => TERMINAL_EVENT_TYPES.has(event.type));
   if (terminalEvent && createdEvent.seq >= terminalEvent.seq) corrupt();
 }
@@ -1057,13 +1105,28 @@ function validateState(state, expectedScope) {
     }
   }
   const artifactIds = new Set();
+  const artifactBlobRefs = new Set();
   const artifactCounts = new Map();
   for (const artifact of state.artifacts) {
     if (artifactIds.has(artifact.id)) corrupt();
     artifactIds.add(artifact.id);
     validateArtifact(artifact, expectedScope, runsById);
+    if (artifact.kind === "file") {
+      if (artifactBlobRefs.has(artifact.blobRef)) corrupt();
+      artifactBlobRefs.add(artifact.blobRef);
+    }
     artifactCounts.set(artifact.runId, (artifactCounts.get(artifact.runId) || 0) + 1);
     if (artifactCounts.get(artifact.runId) > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerRun) corrupt();
+  }
+  for (const artifact of state.artifacts.filter(({ kind }) => kind === "file")) {
+    if (runsById.get(artifact.runId)?.status !== "completed") continue;
+    const companion = state.artifacts.find((candidate) =>
+      candidate.kind === "file" &&
+      candidate.runId === artifact.runId &&
+      candidate.compileReceiptDigest === artifact.compileReceiptDigest &&
+      candidate.documentRole !== artifact.documentRole
+    );
+    if (!companion || companion.spec.sha256 !== artifact.companionSha256) corrupt();
   }
   for (const run of state.runs) {
     for (const event of run.events) {
@@ -1349,6 +1412,7 @@ function createService(options, { testOnly }) {
     }
   }
   const stateRoot = normalizeStateRoot(options.stateRoot, { testOnly });
+  const documentBlobStore = createIntegrationDocumentBlobStore({ stateRoot });
   const activationProof = validateActivationProof(
     testOnly ? options.activationProof : plannerActivation.readinessProof,
     { required: !testOnly }
@@ -1575,20 +1639,31 @@ function createService(options, { testOnly }) {
     for (const event of run.events) {
       if (!event.type.startsWith("tool.")) continue;
       const callId = event.payload.callId;
-      const entry = calls.get(callId) || { started: false, terminal: false };
-      if (event.type === "tool.started") entry.started = true;
+      const entry = calls.get(callId) || { started: false, terminal: false, label: "Python analysis" };
+      if (event.type === "tool.started") {
+        entry.started = true;
+        entry.label = event.payload.publicLabel;
+      }
       if (TOOL_TERMINAL_EVENT_TYPES.has(event.type)) entry.terminal = true;
       calls.set(callId, entry);
     }
     for (const [callId, state] of calls) {
       if (state.started && !state.terminal) {
+        const tex = state.label === "TeX document compiler";
+        const publicSummary = tex
+          ? eventType === "tool.completed"
+            ? "TeX source and PDF compiled."
+            : /cancelled/iu.test(summary)
+              ? "TeX document compilation was cancelled."
+              : "TeX document compilation did not complete."
+          : summary;
         appendEvent(
           run,
           eventType,
           {
             callId,
-            publicLabel: "Python analysis",
-            publicSummary: summary,
+            publicLabel: state.label,
+            publicSummary,
             at: createdAt,
           },
           createdAt
@@ -1749,7 +1824,10 @@ function createService(options, { testOnly }) {
         maximum: INTEGRATION_ANALYSIS_MAX_TOOL_CALLS,
       });
     }
-    if (progress.toolName !== undefined && progress.toolName !== "execute_python_analysis") {
+    if (
+      progress.toolName !== undefined &&
+      !new Set(["execute_python_analysis", INTEGRATION_TEX_TOOL_NAME]).has(progress.toolName)
+    ) {
       fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis progress tool is invalid.", { status: 502 });
     }
     if (progress.executionState !== undefined && !EXECUTION_STATES.has(progress.executionState)) {
@@ -1768,7 +1846,35 @@ function createService(options, { testOnly }) {
 
   function callIdForProgress(progress) {
     const number = Number(progress.toolCallNumber || Math.max(1, progress.toolCallsCompleted || 1));
-    return `analysis-${Math.min(INTEGRATION_ANALYSIS_MAX_TOOL_CALLS, Math.max(1, number))}`;
+    const prefix = progress.toolName === INTEGRATION_TEX_TOOL_NAME ? "tex-document" : "analysis";
+    return `${prefix}-${Math.min(INTEGRATION_ANALYSIS_MAX_TOOL_CALLS, Math.max(1, number))}`;
+  }
+
+  function toolPresentation(toolName, executionState = "running") {
+    const tex = toolName === INTEGRATION_TEX_TOOL_NAME;
+    const terminalSuccess = new Set(["succeeded", "completed"]).has(executionState);
+    const terminalFailure = new Set([
+      "failed",
+      "timed_out",
+      "output_limited",
+      "cancelled",
+      "sandbox_error",
+      "artifact_invalid",
+      "termination_unproven",
+      "worker_error",
+    ]).has(executionState);
+    return Object.freeze({
+      label: tex ? "TeX document compiler" : "Python analysis",
+      terminalSuccess,
+      terminalFailure,
+      summary: terminalSuccess
+        ? tex ? "TeX source and PDF compiled." : "Bounded Python analysis completed."
+        : terminalFailure
+          ? tex ? "TeX document compilation did not complete." : "Bounded Python analysis did not complete."
+          : new Set(["starting", "queued"]).has(executionState)
+            ? tex ? "TeX document compilation is preparing." : "Bounded Python analysis is preparing."
+            : tex ? "TeX document compilation is running." : "Bounded Python analysis is running.",
+    });
   }
 
   function toolEventState(run, callId) {
@@ -1799,36 +1905,21 @@ function createService(options, { testOnly }) {
         const callId = callIdForProgress(progress);
         const existing = toolEventState(run, callId);
         const executionState = String(progress.executionState || "running");
-        const terminalSuccess = new Set(["succeeded", "completed"]).has(executionState);
-        const terminalFailure = new Set([
-          "failed",
-          "timed_out",
-          "output_limited",
-          "cancelled",
-          "sandbox_error",
-          "artifact_invalid",
-          "termination_unproven",
-          "worker_error",
-        ]).has(executionState);
-        const publicSummary = terminalSuccess
-          ? "Bounded Python analysis completed."
-          : terminalFailure
-            ? "Bounded Python analysis did not complete."
-            : new Set(["starting", "queued"]).has(executionState)
-              ? "Bounded Python analysis is preparing."
-              : "Bounded Python analysis is running.";
+        const presentation = toolPresentation(progress.toolName, executionState);
+        const { terminalSuccess, terminalFailure } = presentation;
+        const publicSummary = presentation.summary;
         if (!existing.started) {
           appendEvent(
             run,
             "tool.started",
-            { callId, publicLabel: "Python analysis", publicSummary, at: createdAt },
+            { callId, publicLabel: presentation.label, publicSummary, at: createdAt },
             createdAt
           );
           if (terminalSuccess || terminalFailure) {
             appendEvent(
               run,
               terminalSuccess ? "tool.completed" : "tool.failed",
-              { callId, publicLabel: "Python analysis", publicSummary, at: createdAt },
+              { callId, publicLabel: presentation.label, publicSummary, at: createdAt },
               createdAt
             );
           }
@@ -1836,21 +1927,21 @@ function createService(options, { testOnly }) {
           appendEvent(
             run,
             "tool.completed",
-            { callId, publicLabel: "Python analysis", publicSummary, at: createdAt },
+            { callId, publicLabel: presentation.label, publicSummary, at: createdAt },
             createdAt
           );
         } else if (!existing.terminal && terminalFailure) {
           appendEvent(
             run,
             "tool.failed",
-            { callId, publicLabel: "Python analysis", publicSummary, at: createdAt },
+            { callId, publicLabel: presentation.label, publicSummary, at: createdAt },
             createdAt
           );
         } else if (!existing.terminal && existing.lastState !== publicSummary) {
           appendEvent(
             run,
             "tool.progress",
-            { callId, publicLabel: "Python analysis", publicSummary, at: createdAt },
+            { callId, publicLabel: presentation.label, publicSummary, at: createdAt },
             createdAt
           );
         } else {
@@ -1867,13 +1958,15 @@ function createService(options, { testOnly }) {
         if (TOOL_TERMINAL_EVENT_TYPES.has(event.type)) openCalls.delete(event.payload.callId);
       }
       for (const callId of openCalls) {
+        const started = run.events.find((event) => event.type === "tool.started" && event.payload.callId === callId);
+        const tex = started?.payload?.publicLabel === "TeX document compiler";
         appendEvent(
           run,
           "tool.completed",
           {
             callId,
-            publicLabel: "Python analysis",
-            publicSummary: "Bounded Python analysis completed.",
+            publicLabel: tex ? "TeX document compiler" : "Python analysis",
+            publicSummary: tex ? "TeX source and PDF compiled." : "Bounded Python analysis completed.",
             at: createdAt,
           },
           createdAt
@@ -1899,34 +1992,69 @@ function createService(options, { testOnly }) {
   }
 
   async function recordArtifact(scope, threadId, runId, rawArtifact) {
+    const privateFile = inspectPrivateIntegrationFileArtifact(rawArtifact);
     const artifact = normalizeOwnedArtifact(rawArtifact, scope, threadId, runId);
-    return mutate(scope, (state) => {
-      const run = findRun(state, runId);
-      if (run.threadId !== threadId) notFound("Run");
-      if (TERMINAL_RUN_STATUSES.has(run.status)) return { changed: false, result: artifact };
-      const existing = state.artifacts.find((item) => item.id === artifact.id);
-      if (existing) return { changed: false, result: ownedArtifact(existing) };
-      const count = state.artifacts.filter((item) => item.runId === runId).length;
-      if (
-        count >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerRun ||
-        state.artifacts.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerScope
-      ) {
-        fail("ANALYSIS_ARTIFACT_CAPACITY_EXHAUSTED", "Run artifact capacity is exhausted.", { status: 409 });
-      }
-      const createdAt = timestamp();
-      const record = {
-        ...artifact,
-        principalId: scope.principalId,
-        browserSessionId: scope.browserSessionId,
-        browserSessionPolicy: "same-browser-session",
-        threadId,
-        runId,
-        createdAt,
-      };
-      state.artifacts.push(record);
-      appendEvent(run, "artifact.created", { artifact }, createdAt);
-      return { changed: true, result: ownedArtifact(record) };
-    });
+    let newlySealedRef = "";
+    try {
+      return await mutate(scope, async (state) => {
+        const run = findRun(state, runId);
+        if (run.threadId !== threadId) notFound("Run");
+        if (TERMINAL_RUN_STATUSES.has(run.status)) return { changed: false, result: artifact };
+        const existing = state.artifacts.find((item) => item.id === artifact.id);
+        if (existing) return { changed: false, result: ownedArtifact(existing) };
+        const count = state.artifacts.filter((item) => item.runId === runId).length;
+        if (
+          count >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerRun ||
+          state.artifacts.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerScope
+        ) {
+          fail("ANALYSIS_ARTIFACT_CAPACITY_EXHAUSTED", "Run artifact capacity is exhausted.", { status: 409 });
+        }
+        let privateMetadata = {};
+        if (artifact.kind === "file") {
+          if (!privateFile) {
+            fail("ANALYSIS_FILE_ARTIFACT_UNSEALED", "File artifacts must originate from the private compiler.", {
+              status: 502,
+            });
+          }
+          const sealed = await documentBlobStore.seal(scope, privateFile.bytes);
+          newlySealedRef = sealed.blobRef;
+          if (sealed.bytes !== artifact.spec.bytes || sealed.sha256 !== artifact.spec.sha256) {
+            fail("ANALYSIS_FILE_ARTIFACT_INVALID", "File artifact metadata disagrees with sealed bytes.", {
+              status: 502,
+            });
+          }
+          privateMetadata = {
+            blobRef: sealed.blobRef,
+            compileReceiptDigest: privateFile.receipt.digest,
+            documentRole: privateFile.role,
+            companionSha256:
+              privateFile.role === "source"
+                ? privateFile.receipt.pdfSha256
+                : privateFile.receipt.sourceSha256,
+          };
+        }
+        const createdAt = timestamp();
+        const record = {
+          ...artifact,
+          ...privateMetadata,
+          principalId: scope.principalId,
+          browserSessionId: scope.browserSessionId,
+          browserSessionPolicy: "same-browser-session",
+          threadId,
+          runId,
+          createdAt,
+        };
+        state.artifacts.push(record);
+        appendEvent(run, "artifact.created", {
+          artifact,
+          ...(privateFile ? { receiptDigest: privateFile.receipt.digest } : {}),
+        }, createdAt);
+        return { changed: true, result: ownedArtifact(record) };
+      });
+    } catch (error) {
+      if (newlySealedRef) await documentBlobStore.remove(scope, newlySealedRef).catch(() => {});
+      throw error;
+    }
   }
 
   function normalizeRunnerResult(value, { searchExpected = false } = {}) {
@@ -2054,6 +2182,7 @@ function createService(options, { testOnly }) {
   async function executeRun(scope, threadId, runId) {
     let finalCallbackDigest = "";
     let finalCallbackCount = 0;
+    const privateDocumentEvidence = [];
     try {
       const input = await mutate(scope, (state) => {
         const run = findRun(state, runId);
@@ -2077,6 +2206,7 @@ function createService(options, { testOnly }) {
           signal: active.controller.signal,
           onProgress: async (progress) => recordProgress(scope, runId, progress),
           onArtifact: async (artifact) => {
+            if (inspectPrivateIntegrationFileArtifact(artifact)) privateDocumentEvidence.push(artifact);
             await recordArtifact(scope, threadId, runId, artifact);
           },
           onFinal: async (value) => {
@@ -2100,6 +2230,13 @@ function createService(options, { testOnly }) {
       }
       if (result.kind === "analysis" && !SUCCESSFUL_EXECUTION_STATUSES.has(result.executionStatus)) {
         fail("ANALYSIS_EXECUTION_FAILED", "Analysis execution did not complete successfully.", { status: 502 });
+      }
+      const documentGate = await evaluateIntegrationDocumentArtifactCompletion(
+        classifyIntegrationDocumentArtifactIntent(input.prompt, input.conversation),
+        privateDocumentEvidence
+      );
+      if (!documentGate.ok) {
+        fail("ANALYSIS_DOCUMENT_ARTIFACT_REQUIRED", documentGate.reason, { status: 502 });
       }
       await completeRun(scope, runId, result);
     } catch (error) {
@@ -2471,6 +2608,12 @@ function createService(options, { testOnly }) {
       rawExecutionSourcePersisted: false,
       rawExecutionStdoutPersisted: false,
       privateRuntimePathsPersisted: false,
+      documentBlobBytesLocalOnly: true,
+      documentBlobOpaqueRefs: true,
+      documentBlobPrivateModes: true,
+      documentBlobSymlinksRejected: true,
+      documentBlobHardlinksRejected: true,
+      documentContentPrincipalAndBrowserSessionBound: true,
       publicActivationLocksChanged: false,
       limitsDigest: contractDigest(INTEGRATION_ANALYSIS_SESSION_LIMITS),
     });
@@ -2639,11 +2782,19 @@ function createService(options, { testOnly }) {
       const scope = normalizeScopeFromContext(context);
       return mutate(
         scope,
-        (state) => {
+        async (state) => {
           const thread = findThread(state, payload.threadId);
           if (thread.status === "running") conflict("ANALYSIS_THREAD_BUSY", "An active thread cannot be deleted.");
           const record = ownedThread(thread);
           const runIds = new Set(state.runs.filter((run) => run.threadId === thread.id).map((run) => run.id));
+          const blobRefs = state.artifacts
+            .filter((artifact) => runIds.has(artifact.runId) && artifact.kind === "file")
+            .map((artifact) => artifact.blobRef);
+          // Delete private bytes while the serialized state mutation still owns
+          // the thread. If unlinking fails, retain the public chat metadata so
+          // the deletion can be repaired and retried instead of orphaning an
+          // unreachable local blob after state has already been committed.
+          for (const blobRef of blobRefs) await documentBlobStore.remove(scope, blobRef);
           state.threads = state.threads.filter((item) => item.id !== thread.id);
           state.runs = state.runs.filter((run) => !runIds.has(run.id));
           state.artifacts = state.artifacts.filter((artifact) => !runIds.has(artifact.runId));
@@ -2820,6 +2971,61 @@ function createService(options, { testOnly }) {
         const artifact = state?.artifacts.find((item) => item.id === artifactId);
         if (!artifact) notFound("Artifact");
         return Object.freeze({ artifact: ownedArtifact(artifact) });
+      });
+    },
+
+    async getArtifactContent(payload, context) {
+      exact(payload, ["artifactId", "metadataOnly", "range"], ["artifactId"], "get artifact content request");
+      if (payload.metadataOnly !== undefined && typeof payload.metadataOnly !== "boolean") {
+        fail("INVALID_REQUEST", "Artifact content metadataOnly must be a boolean.", { status: 400 });
+      }
+      const scope = normalizeScopeFromContext(context);
+      const artifactId = validateIntegrationArtifactId(payload.artifactId);
+      const record = await inspect(scope, (state) => {
+        const artifact = state?.artifacts.find((item) => item.id === artifactId);
+        if (!artifact || artifact.kind !== "file") notFound("Artifact");
+        return Object.freeze({
+          blobRef: artifact.blobRef,
+          filename: artifact.spec.filename,
+          mime: artifact.spec.mime,
+          bytes: artifact.spec.bytes,
+          sha256: artifact.spec.sha256,
+        });
+      });
+      const content = await documentBlobStore.read(scope, record.blobRef, record);
+      if (!content) {
+        fail("ARTIFACT_CONTENT_GONE", "Artifact content is no longer available.", { status: 410 });
+      }
+      let start = 0;
+      let end = record.bytes - 1;
+      let partial = false;
+      if (payload.range !== undefined) {
+        exact(payload.range, ["start", "end"], ["start"], "artifact content range");
+        start = integrationBoundedInteger(payload.range.start, "artifact content range start");
+        if (start >= record.bytes) {
+          fail("RANGE_NOT_SATISFIABLE", "Artifact content range is not satisfiable.", { status: 416 });
+        }
+        end = payload.range.end === undefined
+          ? record.bytes - 1
+          : Math.min(
+              integrationBoundedInteger(payload.range.end, "artifact content range end", { minimum: start }),
+              record.bytes - 1
+            );
+        partial = start !== 0 || end !== record.bytes - 1;
+      }
+      const selected = content.bytes.subarray(start, end + 1);
+      return Object.freeze({
+        schemaVersion: "aginti-artifact-content-v1",
+        artifactId,
+        filename: record.filename,
+        mime: record.mime,
+        totalBytes: record.bytes,
+        sha256: record.sha256,
+        start,
+        end,
+        partial,
+        metadataOnly: payload.metadataOnly === true,
+        content: payload.metadataOnly === true ? null : selected,
       });
     },
 

@@ -14,6 +14,7 @@ import {
   createIntegrationRouter,
   sanitizePublicIntegrationRun,
   sanitizePublicIntegrationThread,
+  writeIntegrationArtifactContentResponse,
 } from "../src/integration-api.js";
 import {
   INTEGRATION_RPC_PATHS,
@@ -444,6 +445,22 @@ function makeService(calls = [], overrides = {}) {
       calls.push({ method: "getArtifact", payload, context });
       return { artifact: publicArtifact({ id: payload.artifactId, ...(overrides.getArtifact || {}) }) };
     },
+    async getArtifactContent(payload, context) {
+      calls.push({ method: "getArtifactContent", payload, context });
+      return {
+        schemaVersion: "aginti-artifact-content-v1",
+        artifactId: payload.artifactId,
+        filename: "report.pdf",
+        mime: "application/pdf",
+        totalBytes: 8,
+        sha256: "1".repeat(64),
+        start: payload.range?.start || 0,
+        end: payload.range?.end ?? 7,
+        partial: payload.range !== undefined,
+        metadataOnly: payload.metadataOnly === true,
+        content: payload.metadataOnly === true ? null : Buffer.from("12345678").subarray(payload.range?.start || 0, (payload.range?.end ?? 7) + 1),
+      };
+    },
   };
 }
 
@@ -640,6 +657,30 @@ assert.deepEqual(Object.keys(sanitizeIntegrationRequest(AGENT_RPC_PATHS.runsResu
 assert.throws(() => sanitizeIntegrationRequest(AGENT_RPC_PATHS.capabilities, { profileDigest: "x" }), /unsupported field/u);
 assert.throws(() => sanitizeIntegrationRequest(AGENT_RPC_PATHS.runsStart, { threadId, input: { text: "x" }, provider: "deepseek" }), /unsupported field/u);
 assert.throws(() => sanitizeIntegrationRequest(AGENT_RPC_PATHS.artifactsList, { threadId, runId }), /Exactly one/u);
+assert.deepEqual(
+  sanitizeIntegrationRequest(AGENT_RPC_PATHS.artifactsContent, {
+    artifactId,
+    metadataOnly: true,
+    range: { start: 4, end: 9 },
+  }),
+  { artifactId, metadataOnly: true, range: { start: 4, end: 9 } }
+);
+assert.deepEqual(
+  sanitizeIntegrationRequest(AGENT_RPC_PATHS.artifactsContent, {
+    artifactId,
+    range: { start: Number.MAX_SAFE_INTEGER },
+  }),
+  { artifactId, range: { start: Number.MAX_SAFE_INTEGER } },
+  "a syntactically valid large browser range reaches the owned artifact boundary and resolves as 416"
+);
+assert.throws(
+  () => sanitizeIntegrationRequest(AGENT_RPC_PATHS.artifactsContent, { artifactId, range: { start: 9, end: 4 } }),
+  /must not precede/u
+);
+assert.throws(
+  () => sanitizeIntegrationRequest(AGENT_RPC_PATHS.artifactsContent, { artifactId, metadataOnly: "yes" }),
+  /boolean/u
+);
 const hiddenRequestField = {};
 Object.defineProperty(hiddenRequestField, "provider", { value: "deepseek", enumerable: false });
 assert.throws(() => sanitizeIntegrationRequest(AGENT_RPC_PATHS.capabilities, hiddenRequestField), /non-enumerable/u);
@@ -700,6 +741,102 @@ assert.throws(
 const generatedA = sanitizeIntegrationArtifact({ title: "Generated", kind: "plot", spec: linePlot() });
 const generatedB = sanitizeIntegrationArtifact({ title: "Generated", kind: "plot", spec: linePlot({ yLabel: "Value" }) });
 assert.notEqual(generatedA.id, generatedB.id);
+const publicFileArtifact = sanitizeIntegrationArtifact({
+  title: "Compiled PDF",
+  kind: "file",
+  spec: {
+    schemaVersion: "1",
+    filename: "report.pdf",
+    mime: "application/pdf",
+    bytes: 1234,
+    sha256: "2".repeat(64),
+  },
+});
+assert.deepEqual(Object.keys(publicFileArtifact.spec), ["schemaVersion", "filename", "mime", "bytes", "sha256"]);
+assert.throws(
+  () => sanitizeIntegrationArtifact({ ...publicFileArtifact, spec: { ...publicFileArtifact.spec, content: "base64" } }),
+  /unsupported field/u
+);
+assert.throws(
+  () => sanitizeIntegrationArtifact({
+    ...publicFileArtifact,
+    spec: { ...publicFileArtifact.spec, filename: " report.pdf" },
+  }),
+  /safe basename/u
+);
+assert.throws(
+  () => sanitizeIntegrationArtifact({
+    ...publicFileArtifact,
+    spec: { ...publicFileArtifact.spec, mime: "Application/PDF" },
+  }),
+  /lowercase/u
+);
+function captureContentResponse(result, options) {
+  const captured = { statusCode: 0, headers: {}, body: undefined };
+  const response = {
+    status(code) { captured.statusCode = code; return this; },
+    set(headers) { captured.headers = { ...headers }; return this; },
+    end(body) { captured.body = body; },
+  };
+  writeIntegrationArtifactContentResponse(response, result, options);
+  return captured;
+}
+const rawRange = captureContentResponse({
+  schemaVersion: "aginti-artifact-content-v1",
+  artifactId,
+  filename: "报告 (final's*).pdf",
+  mime: "application/pdf",
+  totalBytes: 8,
+  sha256: "2".repeat(64),
+  start: 2,
+  end: 5,
+  partial: true,
+  metadataOnly: false,
+  content: Buffer.from("2345"),
+}, { rangeRequested: true });
+assert.equal(rawRange.statusCode, 206);
+assert.equal(rawRange.headers["Content-Range"], "bytes 2-5/8");
+assert.equal(rawRange.headers["Content-Length"], "4");
+assert.equal(rawRange.headers["Cache-Control"], "no-store, private");
+assert.match(
+  rawRange.headers["Content-Disposition"],
+  /filename\*=UTF-8''%E6%8A%A5%E5%91%8A%20%28final%27s%2A%29\.pdf/u
+);
+assert.deepEqual(rawRange.body, Buffer.from("2345"));
+const metadataOnlyResponse = captureContentResponse({
+  schemaVersion: "aginti-artifact-content-v1",
+  artifactId,
+  filename: "report.pdf",
+  mime: "application/pdf",
+  totalBytes: 8,
+  sha256: "2".repeat(64),
+  start: 0,
+  end: 7,
+  partial: false,
+  metadataOnly: true,
+  content: null,
+});
+assert.equal(metadataOnlyResponse.statusCode, 200);
+assert.equal(metadataOnlyResponse.headers["Content-Length"], "0");
+assert.equal(metadataOnlyResponse.headers["X-Artifact-Content-Length"], "8");
+assert.equal(metadataOnlyResponse.body, undefined);
+assert.throws(
+  () => captureContentResponse({
+    schemaVersion: "aginti-artifact-content-v1",
+    artifactId,
+    filename: "report.pdf",
+    mime: "application/pdf",
+    totalBytes: 8,
+    sha256: "2".repeat(64),
+    start: 2,
+    end: 5,
+    partial: true,
+    metadataOnly: false,
+    content: Buffer.from("too short"),
+  }, { rangeRequested: true }),
+  /content range is invalid/u,
+  "raw delivery fails closed when body length disagrees with authenticated metadata"
+);
 assert.throws(() => findIntegrationArtifact([], artifactId), /Artifact not found/u);
 assert.deepEqual(validatePublicAgentEvent(outputEvent), outputEvent);
 assertNoPrivateText(outputEvent);
@@ -732,7 +869,7 @@ assert.throws(
       model: { label: "LocalLLM" },
       actions: { cancel: true, resume: false, retry: false },
       attachments: { enabled: false },
-      artifacts: { kinds: ["plot", "table", "markdown"], schemaVersion: "1" },
+      artifacts: { kinds: ["plot", "table", "markdown", "file"], schemaVersion: "1" },
     }),
   /disabled capabilities/u
 );
@@ -939,6 +1076,18 @@ assert.throws(() => normalizeIntegrationClients({ bearerToken: "x".repeat(4097) 
 assert.throws(() => normalizeIntegrationClients({ bearerToken: `${"x".repeat(31)}!` }), /transport credential grammar/u);
 assert.throws(() => normalizeIntegrationClients({ bearerToken: TOKEN }), /trusted principal proxy/u);
 assert.doesNotThrow(() => normalizeIntegrationClients({ bearerToken: TOKEN, trustedProxy: true }));
+assert.deepEqual(
+  normalizeIntegrationClients({
+    clients: [{
+      id: "artifact-content-client",
+      token: TOKEN,
+      trustedProxy: true,
+      scopes: [AGENT_RPC_PATHS.artifactsContent],
+    }],
+  })[0].scopes,
+  [AGENT_RPC_PATHS.artifactsContent],
+  "the exact local artifact-content RPC is an admissible trusted-proxy scope"
+);
 await smokeSsePostHeaderFailure();
 
 const additiveSourceFiles = [

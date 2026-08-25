@@ -169,7 +169,7 @@ export function validateIntegrationEventPayload(type, value) {
     return Object.freeze({ text: validatePublicOutputText(payload.text, "output.delta text", 4_000, { minimum: 1 }) });
   }
   if (type === "artifact.created" || type === "artifact.updated") {
-    const payload = integrationExactKeys(value, ["artifact"], `${type} payload`, ["artifact"]);
+    const payload = integrationExactKeys(value, ["artifact", "receiptDigest"], `${type} payload`, ["artifact"]);
     const artifact = integrationExactKeys(payload.artifact, ["id", "title", "kind", "spec"], `${type} artifact`, [
       "id",
       "title",
@@ -180,7 +180,17 @@ export function validateIntegrationEventPayload(type, value) {
     if (contractDigest(artifact) !== contractDigest(sanitized)) {
       integrationInvalid(`${type} artifact is not an exact public artifact envelope`, { code: "UNSAFE_PRESENTATION" });
     }
-    return Object.freeze({ artifact: sanitized });
+    if (sanitized.kind === "file") {
+      if (typeof payload.receiptDigest !== "string" || !/^[a-f0-9]{64}$/u.test(payload.receiptDigest)) {
+        integrationInvalid(`${type} file artifact receiptDigest is invalid`);
+      }
+    } else if (payload.receiptDigest !== undefined) {
+      integrationInvalid(`${type} non-file artifact may not carry a receiptDigest`);
+    }
+    return Object.freeze({
+      artifact: sanitized,
+      ...(payload.receiptDigest === undefined ? {} : { receiptDigest: payload.receiptDigest }),
+    });
   }
   if (type === "output.completed" || TERMINAL_EVENT_TYPES.has(type)) {
     integrationExactKeys(value, [], `${type} payload`);

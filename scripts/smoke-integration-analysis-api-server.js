@@ -152,6 +152,12 @@ function sessionAuthority(activationProof, recoveryProof) {
     rawExecutionSourcePersisted: false,
     rawExecutionStdoutPersisted: false,
     privateRuntimePathsPersisted: false,
+    documentBlobBytesLocalOnly: true,
+    documentBlobOpaqueRefs: true,
+    documentBlobPrivateModes: true,
+    documentBlobSymlinksRejected: true,
+    documentBlobHardlinksRejected: true,
+    documentContentPrincipalAndBrowserSessionBound: true,
     publicActivationLocksChanged: false,
     limitsDigest: contractDigest("limits"),
   });

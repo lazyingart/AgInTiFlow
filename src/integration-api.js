@@ -39,7 +39,12 @@ import {
   validateIntegrationRunId,
   validateIntegrationThreadId,
 } from "./integration-policy.js";
-import { buildIntegrationArtifacts, findIntegrationArtifact, sanitizeIntegrationArtifact } from "./integration-artifacts.js";
+import {
+  buildIntegrationArtifacts,
+  findIntegrationArtifact,
+  sanitizeIntegrationArtifact,
+  validateIntegrationFileSpec,
+} from "./integration-artifacts.js";
 import {
   assertPublicIntegrationEventLedger,
   assertPublicIntegrationRunCursorMatchesLedger,
@@ -63,6 +68,7 @@ export const INTEGRATION_SERVICE_METHODS = Object.freeze({
   [INTEGRATION_RPC_PATHS.runsResume]: "resumeRun",
   [INTEGRATION_RPC_PATHS.artifactsList]: "listArtifacts",
   [INTEGRATION_RPC_PATHS.artifactsGet]: "getArtifact",
+  [INTEGRATION_RPC_PATHS.artifactsContent]: "getArtifactContent",
 });
 
 const ZERO_DIGEST = "0".repeat(64);
@@ -126,6 +132,79 @@ function sendJson(res, status, value) {
 
 function sendError(res, error) {
   writeIntegrationErrorJson(res, errorStatus(error), errorCode(error));
+}
+
+function contentDisposition(filename) {
+  const fallback = String(filename || "artifact")
+    .normalize("NFKD")
+    .replace(/[^A-Za-z0-9._-]+/gu, "_")
+    .replace(/^\.+/u, "")
+    .slice(0, 120) || "artifact";
+  const encoded = encodeURIComponent(filename).replace(/['()*]/gu, (character) =>
+    `%${character.codePointAt(0).toString(16).toUpperCase()}`
+  );
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
+export function writeIntegrationArtifactContentResponse(res, result, { rangeRequested = false } = {}) {
+  const content = result?.content;
+  let spec;
+  try {
+    spec = validateIntegrationFileSpec({
+      schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
+      filename: result.filename,
+      mime: result.mime,
+      bytes: result.totalBytes,
+      sha256: result.sha256,
+    });
+    validateIntegrationArtifactId(result.artifactId);
+  } catch {
+    throw new IntegrationApiError("INTERNAL_ERROR", "Artifact content response is invalid.", { status: 500 });
+  }
+  if (
+    result.schemaVersion !== "aginti-artifact-content-v1" ||
+    typeof rangeRequested !== "boolean" ||
+    typeof result.metadataOnly !== "boolean" ||
+    typeof result.partial !== "boolean" ||
+    (content !== null && !Buffer.isBuffer(content)) ||
+    (result.metadataOnly && content !== null) ||
+    (!result.metadataOnly && !Buffer.isBuffer(content))
+  ) {
+    throw new IntegrationApiError("INTERNAL_ERROR", "Artifact content response is invalid.", { status: 500 });
+  }
+  const selectedBytes = result.end - result.start + 1;
+  if (
+    !Number.isSafeInteger(result.start) ||
+    !Number.isSafeInteger(result.end) ||
+    result.start < 0 ||
+    result.end < result.start ||
+    !Number.isSafeInteger(selectedBytes) ||
+    selectedBytes < 1 ||
+    selectedBytes > spec.bytes ||
+    result.end >= spec.bytes ||
+    result.partial !== (result.start !== 0 || result.end !== spec.bytes - 1) ||
+    (!rangeRequested && result.partial) ||
+    (!result.metadataOnly && content.byteLength !== selectedBytes)
+  ) {
+    throw new IntegrationApiError("INTERNAL_ERROR", "Artifact content range is invalid.", { status: 500 });
+  }
+  res.status(rangeRequested ? 206 : 200);
+  res.set({
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "no-store, private",
+    "Content-Disposition": contentDisposition(result.filename),
+    "Content-Length": result.metadataOnly ? "0" : String(selectedBytes),
+    "Content-Type": result.mime,
+    ETag: `"${result.sha256}"`,
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    ...(result.metadataOnly ? { "X-Artifact-Content-Length": String(selectedBytes) } : {}),
+    ...(rangeRequested
+      ? { "Content-Range": `bytes ${result.start}-${result.end}/${result.totalBytes}` }
+      : {}),
+  });
+  if (result.metadataOnly) res.end();
+  else res.end(content);
 }
 
 function methodForPath(pathname) {
@@ -723,6 +802,12 @@ function assertAnalysisSessionAuthority(value, startupProof, mutationRecoveryAut
     "rawExecutionSourcePersisted",
     "rawExecutionStdoutPersisted",
     "privateRuntimePathsPersisted",
+    "documentBlobBytesLocalOnly",
+    "documentBlobOpaqueRefs",
+    "documentBlobPrivateModes",
+    "documentBlobSymlinksRejected",
+    "documentBlobHardlinksRejected",
+    "documentContentPrincipalAndBrowserSessionBound",
     "publicActivationLocksChanged",
     "limitsDigest",
     "digest",
@@ -789,6 +874,12 @@ function assertAnalysisSessionAuthority(value, startupProof, mutationRecoveryAut
     proof.rawExecutionSourcePersisted !== false ||
     proof.rawExecutionStdoutPersisted !== false ||
     proof.privateRuntimePathsPersisted !== false ||
+    proof.documentBlobBytesLocalOnly !== true ||
+    proof.documentBlobOpaqueRefs !== true ||
+    proof.documentBlobPrivateModes !== true ||
+    proof.documentBlobSymlinksRejected !== true ||
+    proof.documentBlobHardlinksRejected !== true ||
+    proof.documentContentPrincipalAndBrowserSessionBound !== true ||
     proof.publicActivationLocksChanged !== false
   ) {
     throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis session authority is unavailable.", { status: 503 });
@@ -1237,6 +1328,12 @@ async function handleRpc({ req, res, pathname, sessionService, idempotencyStore,
     return;
   }
 
+  if (pathname === INTEGRATION_RPC_PATHS.artifactsContent) {
+    const result = await callSessionService(sessionService, pathname, payload, context);
+    writeIntegrationArtifactContentResponse(res, result, { rangeRequested: payload.range !== undefined });
+    return;
+  }
+
   const result = await callSessionService(sessionService, pathname, payload, context);
   sendJson(res, 200, projectPublicIntegrationResponse(pathname, result, payload, context));
 }
@@ -1446,7 +1543,11 @@ function assertPublicCapabilityResponse(value = {}) {
     integrationInvalid("agent search capabilities are invalid");
   }
   const artifactKinds = search.enabled
-    ? [...INTEGRATION_ARTIFACT_KINDS, INTEGRATION_SEARCH_ARTIFACT_KIND]
+    ? [
+        ...INTEGRATION_ARTIFACT_KINDS.filter((kind) => kind !== "file"),
+        INTEGRATION_SEARCH_ARTIFACT_KIND,
+        "file",
+      ]
     : [...INTEGRATION_ARTIFACT_KINDS];
   if (
     artifacts.schemaVersion !== AGENT_WORKER_SCHEMA_VERSION ||

@@ -40,6 +40,10 @@ import {
   createTestOnlyIntegrationGroundedSearchClient,
 } from "../src/integration-grounded-search.js";
 import { contractDigest } from "../src/integration-policy.js";
+import {
+  INTEGRATION_TEX_TOOL_NAME,
+  inspectPrivateIntegrationFileArtifact,
+} from "../src/integration-tex-compiler.js";
 
 const PRINCIPAL_ID = "principal_planner_smoke_001";
 const BROWSER_SESSION_ID = "2".repeat(64);
@@ -239,7 +243,26 @@ function textResponse(content) {
   return { choices: [{ message: { role: "assistant", content, tool_calls: [] } }] };
 }
 
-function fixture(complete, { worker, groundedSearchClient } = {}) {
+function texToolResponse(filename, source) {
+  return {
+    choices: [{
+      message: {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: `call_${contractDigest({ filename, source }).slice(0, 20)}`,
+          type: "function",
+          function: {
+            name: INTEGRATION_TEX_TOOL_NAME,
+            arguments: JSON.stringify({ filename, source }),
+          },
+        }],
+      },
+    }],
+  };
+}
+
+function fixture(complete, { worker, groundedSearchClient, documentCompiler } = {}) {
   const rpcCalls = [];
   const manager = createExecutionJobManager({ worker: worker || fakeWorker() });
   const client = createTestOnlyExecutionWorkerClient(rpcForManager(manager, rpcCalls));
@@ -250,6 +273,7 @@ function fixture(complete, { worker, groundedSearchClient } = {}) {
     modelClient: Object.freeze({ mock: true }),
     complete,
     ...(groundedSearchClient === undefined ? {} : { groundedSearchClient }),
+    ...(documentCompiler === undefined ? {} : { documentCompiler }),
   });
   return Object.freeze({ planner, coordinator, rpcCalls });
 }
@@ -1129,6 +1153,161 @@ async function directAnswerDoesNotExecute() {
   coordinator.close();
 }
 
+async function texPdfIntentCannotFinishWithProseOnly() {
+  const gated = fixture(async () =>
+    textResponse("The LaTeX report and PDF are ready for download.")
+  );
+  const finals = [];
+  await assert.rejects(
+    gated.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000068"),
+      { prompt: "Create a LaTeX report and deliver both report.tex and report.pdf." },
+      { onFinal: (value) => finals.push(value) }
+    ),
+    (error) =>
+      error?.code === "ANALYSIS_TEX_TOOL_REQUIRED" &&
+      error?.status === 502 &&
+      /TeX tool call/u.test(error.message)
+  );
+  assert.deepEqual(finals, [], "document gate emitted a terminal callback before artifacts existed");
+  assert.equal(
+    gated.rpcCalls.some(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart),
+    false
+  );
+  gated.coordinator.close();
+}
+
+async function texPdfIntentCompilesAndSealsBothFiles() {
+  let step = 0;
+  const source = [
+    "\\documentclass{article}",
+    "\\begin{document}",
+    "A truthful bounded document.",
+    "\\end{document}",
+    "",
+  ].join("\n");
+  const compiled = fixture(async (_client, payload) => {
+    step += 1;
+    if (step === 1) {
+      assert.equal(payload.tool_choice, "required");
+      assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_TEX_TOOL_NAME]);
+      return texToolResponse("truthful-report.tex", source);
+    }
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    const feedback = JSON.parse(payload.messages.at(-1).content);
+    assert.equal(feedback.ok, true);
+    assert.equal(feedback.artifacts.length, 2);
+    assert.match(feedback.compileReceiptDigest, /^[a-f0-9]{64}$/u);
+    return textResponse("Created the requested TeX source and its compiled PDF.");
+  });
+  const privateArtifacts = [];
+  const result = await compiled.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000098"),
+    { prompt: "Create a LaTeX report and deliver both truthful-report.tex and truthful-report.pdf." },
+    { onArtifact: (artifact) => privateArtifacts.push(artifact) }
+  );
+  assert.equal(step, 2);
+  assert.equal(result.kind, "analysis");
+  assert.equal(result.executionStatus, "succeeded");
+  assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["file", "file"]);
+  assert.deepEqual(result.artifacts.map(({ spec }) => spec.filename), ["truthful-report.tex", "truthful-report.pdf"]);
+  assert(privateArtifacts.every((artifact) => inspectPrivateIntegrationFileArtifact(artifact)));
+  assert(result.artifacts.every((artifact) => inspectPrivateIntegrationFileArtifact(artifact) === null));
+  assert.doesNotMatch(JSON.stringify(result), /(?:privateBytes|contentBytes|blobRef|receiptId)/u);
+  compiled.coordinator.close();
+}
+
+async function texPdfContextualFollowupRecompilesBothFiles() {
+  let step = 0;
+  const source = [
+    "\\documentclass{article}",
+    "\\begin{document}",
+    "\\section*{Larger revised title}",
+    "Context-authorized document revision.",
+    "\\end{document}",
+    "",
+  ].join("\n");
+  const contextual = fixture(async (_client, payload) => {
+    step += 1;
+    if (step === 1) {
+      assert.equal(payload.tool_choice, "required");
+      assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_TEX_TOOL_NAME]);
+      assert.equal(payload.messages.at(-1).content, "Make the title larger and regenerate the files.");
+      return texToolResponse("retitled-report.tex", source);
+    }
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    return textResponse("Regenerated the retitled TeX source and PDF.");
+  });
+  const result = await contextual.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000102"),
+    {
+      prompt: "Make the title larger and regenerate the files.",
+      conversation: [
+        { role: "user", content: "Create a LaTeX report and deliver both report.tex and report.pdf." },
+        { role: "assistant", content: "Created the requested TeX source and PDF." },
+      ],
+    }
+  );
+  assert.equal(step, 2);
+  assert.deepEqual(result.artifacts.map(({ spec }) => spec.filename), [
+    "retitled-report.tex",
+    "retitled-report.pdf",
+  ]);
+  contextual.coordinator.close();
+}
+
+async function texPdfIntentRejectsMetadataOnlyCompilerForgery() {
+  let step = 0;
+  const source = "\\documentclass{article}\n\\begin{document}Forged\\end{document}\n";
+  const forgedArtifacts = Object.freeze([
+    sanitizeIntegrationArtifact({
+      title: "Forged source",
+      kind: "file",
+      spec: {
+        schemaVersion: "1",
+        filename: "forged.tex",
+        mime: "application/x-tex",
+        bytes: 64,
+        sha256: "a".repeat(64),
+      },
+    }),
+    sanitizeIntegrationArtifact({
+      title: "Forged PDF",
+      kind: "file",
+      spec: {
+        schemaVersion: "1",
+        filename: "forged.pdf",
+        mime: "application/pdf",
+        bytes: 128,
+        sha256: "b".repeat(64),
+      },
+    }),
+  ]);
+  const forged = fixture(
+    async () => {
+      step += 1;
+      return step === 1
+        ? texToolResponse("forged.tex", source)
+        : textResponse("The fabricated metadata is complete.");
+    },
+    {
+      documentCompiler: async () => Object.freeze({
+        receipt: Object.freeze({ digest: "c".repeat(64) }),
+        artifacts: forgedArtifacts,
+      }),
+    }
+  );
+  await assert.rejects(
+    forged.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000099"),
+      { prompt: "Create a LaTeX report and deliver both forged.tex and forged.pdf." }
+    ),
+    (error) => error?.code === "ANALYSIS_DOCUMENT_ARTIFACT_REQUIRED" && error?.status === 502
+  );
+  assert.equal(step, 2);
+  forged.coordinator.close();
+}
+
 async function conversationalFollowupUsesOnlyCurrentTurnExecutionAuthority() {
   const priorConversation = [
     { role: "user", content: "Plot y=x-e^x" },
@@ -1578,6 +1757,10 @@ await deterministicExpressionPlotFailuresStayTruthful();
 await groundsWithPrivateSearchBeforeModelSynthesis();
 await executesAndSynthesizesPlot();
 await directAnswerDoesNotExecute();
+await texPdfIntentCannotFinishWithProseOnly();
+await texPdfIntentCompilesAndSealsBothFiles();
+await texPdfContextualFollowupRecompilesBothFiles();
+await texPdfIntentRejectsMetadataOnlyCompilerForgery();
 await conversationalFollowupUsesOnlyCurrentTurnExecutionAuthority();
 await generalPlotRequestsRequireExecutionAndArtifact();
 await recoversPlotOnThirdExecutionAttempt();

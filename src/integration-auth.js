@@ -183,7 +183,7 @@ export function normalizeIntegrationClientScopes(scopes = ["*"]) {
     .filter(Boolean);
   if (!normalized.length) return ["*"];
   for (const scope of normalized) {
-    if (scope !== "*" && !/^\/agent\/v1\/(?:capabilities|threads\/(?:list|create|get|update|delete)|runs\/(?:start|status|events|cancel|resume)|artifacts\/(?:list|get))$/u.test(scope)) {
+    if (scope !== "*" && !/^\/agent\/v1\/(?:capabilities|threads\/(?:list|create|get|update|delete)|runs\/(?:start|status|events|cancel|resume)|artifacts\/(?:list|get|content))$/u.test(scope)) {
       throw new IntegrationAuthError("AUTH_UNCONFIGURED", `Integration scope is invalid: ${scope}`, {
         status: 503,
       });

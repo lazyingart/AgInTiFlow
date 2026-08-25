@@ -1216,6 +1216,38 @@ async function main() {
       ["user"]
     );
 
+    const missingDocumentThread = await restarted.createThread({ title: "Missing document artifacts" }, context());
+    const missingDocumentStarted = await restarted.startRun(
+      {
+        threadId: missingDocumentThread.thread.id,
+        input: { text: "Create a LaTeX report and deliver both report.tex and report.pdf." },
+      },
+      context()
+    );
+    await restarted.waitForIdle();
+    const missingDocument = (
+      await restarted.getRunStatus({ runId: missingDocumentStarted.run.id }, context())
+    ).run;
+    assert.equal(missingDocument.status, "failed");
+    assert.equal(missingDocument.output, "");
+    assert.deepEqual(missingDocument.error, {
+      code: "ANALYSIS_DOCUMENT_ARTIFACT_REQUIRED",
+      message:
+        "The requested TeX source and structurally valid PDF were not both produced, so this run was not marked complete.",
+    });
+    const missingDocumentEventsResponse = await restarted.loadRunEvents(
+      eventsRequest(missingDocument.id),
+      context()
+    );
+    const missingDocumentEvents = await missingDocumentEventsResponse.publicEventLedger.loadEventsAfter(0);
+    assert.equal(missingDocumentEvents.at(-1).type, "run.failed");
+    assert.equal(missingDocumentEvents.some(({ type }) => type === "run.completed"), false);
+    assert.equal(missingDocumentEvents.some(({ type }) => type.startsWith("output.")), false);
+    assert.deepEqual(
+      (await restarted.getThread({ threadId: missingDocumentThread.thread.id }, context())).thread.messages.map(({ role }) => role),
+      ["user"]
+    );
+
     const resumed = await restarted.resumeRun(
       { runId: failed.id, input: { text: "Run Python and show the plot now" } },
       context()
