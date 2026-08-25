@@ -93,6 +93,7 @@ import { longJobStatus, startLongJob } from "./long-job-tools.js";
 import { executeAgentLinkTool, isAgentLinkTool } from "./agentlink.js";
 import { classifyGoalIntent, isDirectAnswerIntent } from "./goal-intent.js";
 import { normalizeProviderBaseURL, normalizeProviderId, providerRequiresApiKey } from "./provider-contract.js";
+import { resolveProviderHandoff } from "./provider-handoff.js";
 import { ProviderReadinessError, probeProviderRuntime } from "./provider-runtime.js";
 import { probeLocalMaxResources } from "./local-resource-policy.js";
 import {
@@ -11058,7 +11059,78 @@ async function recordPreInferenceFailure({ error, config, state, store, observer
   emitConsole(config, result, { kind: "error", error: true });
 }
 
-export async function runAgent(config) {
+class ProviderHandoffSignal extends Error {
+  constructor({ sessionId, expectedRuntimeRevision, decision }) {
+    super(`Provider handoff requested for ${decision.sourceProvider} -> ${decision.targetProvider}.`);
+    this.name = "ProviderHandoffSignal";
+    this.sessionId = sessionId;
+    this.expectedRuntimeRevision = expectedRuntimeRevision;
+    this.decision = decision;
+  }
+}
+
+async function prepareProviderHandoff({ error, config, state, store, observers, sessionId, stage = "runtime" }) {
+  const decision = resolveProviderHandoff(error, config, { stage });
+  if (!decision) return null;
+
+  state.meta = state.meta || {};
+  const priorAttempts = Number(state.meta.providerHandoff?.attempts || 0);
+  if (priorAttempts >= 1) return null;
+
+  const at = new Date().toISOString();
+  const detail = {
+    version: 1,
+    attempts: priorAttempts + 1,
+    status: "pending",
+    sourceProvider: decision.sourceProvider,
+    sourceModel: decision.sourceModel,
+    targetProvider: decision.targetProvider,
+    targetModel: decision.targetModel,
+    failureCode: decision.failureCode,
+    httpStatus: decision.status || 0,
+    requestedAt: at,
+  };
+  state.meta.providerHandoff = detail;
+  state.updatedAt = at;
+  updateGoalStatus(state, "active", "provider_handoff", at);
+  await store.saveState(state);
+  await store.appendEvent("provider.handoff_requested", detail);
+  observers.event("provider.handoff_requested", { ...detail, sessionId });
+  emitConsole(
+    config,
+    `${decision.sourceProvider}/${decision.sourceModel} is unavailable (${decision.failureCode}); continuing the same session with ${decision.targetProvider}/${decision.targetModel}.`,
+    { kind: "meta" }
+  );
+  return new ProviderHandoffSignal({
+    sessionId,
+    expectedRuntimeRevision: Number(state.meta.runtimeConfig?.revision || 1),
+    decision,
+  });
+}
+
+async function activatePendingProviderHandoff({ config, state, store, observers, sessionId }) {
+  const handoff = state.meta?.providerHandoff;
+  if (
+    !handoff ||
+    handoff.status !== "pending" ||
+    normalizeProviderId(handoff.targetProvider, "") !== normalizeProviderId(config.provider, "") ||
+    String(handoff.targetModel || "") !== String(config.model || "")
+  ) {
+    return;
+  }
+  const detail = {
+    ...handoff,
+    status: "active",
+    activatedAt: new Date().toISOString(),
+  };
+  state.meta.providerHandoff = detail;
+  state.updatedAt = detail.activatedAt;
+  await store.saveState(state);
+  await store.appendEvent("provider.handoff_activated", detail);
+  observers.event("provider.handoff_activated", { ...detail, sessionId });
+}
+
+async function runAgentOnce(config) {
   assertIntegrationRunAgentInvocation(config);
   const incomingConfig = config;
   const sessionId = config.resume || config.sessionId || `web-agent-${crypto.randomUUID()}`;
@@ -11087,6 +11159,11 @@ export async function runAgent(config) {
     state.meta = state.meta || {};
     state.meta.runtimeConfig = runtime.snapshot;
     config = rebuildResumedRuntimeConfig(incomingConfig, runtime.runtimeOverrides, sessionId);
+    // Keep compatibility fields aligned with the authoritative runtime
+    // snapshot. Provider/model patches otherwise leave stale top-level values
+    // that can mislead later diagnostics and legacy session readers.
+    state.provider = config.provider;
+    state.model = config.model;
     const patchedRuntimeFields = runtime.patched
       ? Object.keys(incomingConfig.runtimePatch || {}).filter((field) => isSessionRuntimeField(field))
       : [];
@@ -11261,9 +11338,21 @@ export async function runAgent(config) {
     }
     client = config.clientFactory ? await config.clientFactory(config) : createClient(config);
   } catch (error) {
+    const handoff = await prepareProviderHandoff({
+      error,
+      config,
+      state,
+      store,
+      observers,
+      sessionId,
+      stage: "preflight",
+    });
+    if (handoff) throw handoff;
     await recordPreInferenceFailure({ error, config, state, store, observers, sessionId });
     throw error;
   }
+
+  await activatePendingProviderHandoff({ config, state, store, observers, sessionId });
 
   ensureChatState(state);
 
@@ -12937,6 +13026,9 @@ export async function runAgent(config) {
       ...goalRunMetadata(state),
     };
   } catch (error) {
+    if (error instanceof ProviderHandoffSignal) throw error;
+    const handoff = await prepareProviderHandoff({ error, config, state, store, observers, sessionId });
+    if (handoff) throw handoff;
     if (isModelTimeoutError(error)) {
       const detail = {
         reason: "model_timeout",
@@ -12998,5 +13090,22 @@ export async function runAgent(config) {
     await store.releaseInboxClaims().catch(() => {});
     await closeBrowser(browserState, store);
     await flushHousekeeping();
+  }
+}
+
+export async function runAgent(config) {
+  try {
+    return await runAgentOnce(config);
+  } catch (error) {
+    if (!(error instanceof ProviderHandoffSignal)) throw error;
+    const decision = error.decision;
+    return runAgentOnce({
+      ...config,
+      goal: "",
+      resume: error.sessionId,
+      sessionId: error.sessionId,
+      runtimePatch: decision.runtimePatch,
+      expectedRuntimeRevision: error.expectedRuntimeRevision,
+    });
   }
 }

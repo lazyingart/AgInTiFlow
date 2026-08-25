@@ -148,6 +148,22 @@ function shouldRetryWithoutReasoningEffort(error, payload = {}) {
   return /reasoning[_\s.-]?effort|unsupported parameter|unknown parameter|unrecognized request argument/i.test(message);
 }
 
+function annotateProviderRequestError(error, config = {}, label = "model request") {
+  if (!error || (typeof error !== "object" && typeof error !== "function")) return error;
+  try {
+    Object.defineProperties(error, {
+      agintiProviderRequest: { value: true, configurable: true },
+      agintiProvider: { value: String(config.provider || ""), configurable: true },
+      agintiProviderModel: { value: String(config.model || ""), configurable: true },
+      agintiProviderRequestLabel: { value: String(label || "model request"), configurable: true },
+    });
+  } catch {
+    // Some SDK errors can be non-extensible. Classification still has the
+    // explicit preflight path, while an unmarked runtime error fails normally.
+  }
+  return error;
+}
+
 export async function createChatCompletion(client, payload, config, label = "model request") {
   const preparedPayload = withChatReasoningEffort(payload, config);
   const timeout = resolveModelTimeoutMs(config);
@@ -157,9 +173,13 @@ export async function createChatCompletion(client, payload, config, label = "mod
     } catch (error) {
       if (shouldRetryWithoutReasoningEffort(error, preparedPayload)) {
         const { reasoning_effort: _reasoningEffort, ...retryPayload } = preparedPayload;
-        return client.chat.completions.create(retryPayload, requestOptions(config));
+        try {
+          return await client.chat.completions.create(retryPayload, requestOptions(config));
+        } catch (retryError) {
+          throw annotateProviderRequestError(retryError, config, label);
+        }
       }
-      throw error;
+      throw annotateProviderRequestError(error, config, label);
     }
   }
 
@@ -196,18 +216,22 @@ export async function createChatCompletion(client, payload, config, label = "mod
   } catch (error) {
     if (shouldRetryWithoutReasoningEffort(error, preparedPayload)) {
       const { reasoning_effort: _reasoningEffort, ...retryPayload } = preparedPayload;
-      return await client.chat.completions.create(retryPayload, {
-        ...requestOptions(config),
-        signal: controller.signal,
-      });
+      try {
+        return await client.chat.completions.create(retryPayload, {
+          ...requestOptions(config),
+          signal: controller.signal,
+        });
+      } catch (retryError) {
+        throw annotateProviderRequestError(retryError, config, label);
+      }
     }
     if (timedOut && error?.name !== "ModelTimeoutError") {
       const timeoutError = new Error(`${label} timed out after ${timeout}ms`);
       timeoutError.name = "ModelTimeoutError";
       timeoutError.cause = error;
-      throw timeoutError;
+      throw annotateProviderRequestError(timeoutError, config, label);
     }
-    throw error;
+    throw annotateProviderRequestError(error, config, label);
   } finally {
     if (timer) clearTimeout(timer);
     if (config.abortSignal) {
