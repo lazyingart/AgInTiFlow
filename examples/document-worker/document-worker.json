@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "aginti-document-worker-service-config-v1",
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 18102
+  },
+  "stateRoot": "/var/lib/aginti-document-worker",
+  "creation": {
+    "enabled": false,
+    "maximumConcurrentCompiles": 2
+  }
+}
