@@ -95,12 +95,30 @@ export function hasLocalResearchWorkspaceIntent(goal = "", messages = []) {
   );
 }
 
+export function hasExplicitDeepResearchSuppression(goal = "", messages = []) {
+  const current = currentIntentMessages(messages);
+  const latestUserIntent = [...current]
+    .reverse()
+    .find((message) => message?.role === "user" && !isRuntimeUserMessage(messageText(message.content)));
+  const text = `${scopedChatopsEvidenceGoal(goal)}\n${scopedChatopsEvidenceGoal(
+    messageText(latestUserIntent?.content)
+  )}`;
+  return (
+    /\b(?:do not|don't|must not|never)\s+(?:run|rerun|re-run|repeat|restart|invoke|call|start)\s+(?:the\s+)?(?:deep[_ -]?research|research workflow)\b/i.test(text) ||
+    /\b(?:do not|don't|must not|never)\b[^.!?\n]{0,140}\b(?:run|rerun|re-run|repeat|restart|invoke|call|start)\s+(?:the\s+)?(?:deep[_ -]?research|research workflow)\b/i.test(text) ||
+    /\b(?:reuse|use|continue from|recover from)\b.{0,140}\b(?:completed|existing|retained|saved)\b.{0,180}\b(?:deep[_ -]?research|research (?:result|artifact|evidence|pass))\b/i.test(text) ||
+    /(?:不要|无需|不必|禁止).{0,20}(?:重新|再次|重复)?(?:运行|调用|启动)?(?:深度研究|深入研究|deep[_ -]?research)/iu.test(text) ||
+    /(?:ディープリサーチ|深い調査).{0,20}(?:再実行しない|繰り返さない|呼び出さない)/u.test(text)
+  );
+}
+
 export function toolWasRequested(messages = [], toolName = "") {
   return requestedToolCount(messages, toolName) > 0;
 }
 
 export function shouldStartWithDeepResearch(goal = "", messages = []) {
   if (!hasExplicitDeepResearchIntent(goal, messages)) return false;
+  if (hasExplicitDeepResearchSuppression(goal, messages)) return false;
   const current = currentIntentMessages(messages);
   if (toolWasRequested(current, "deep_research")) return false;
   if (hasLocalResearchWorkspaceIntent(goal, messages) && !localWorkspaceInspectionReady(current)) return false;

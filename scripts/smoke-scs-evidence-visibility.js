@@ -264,6 +264,27 @@ assert(
   "excluding output filenames also removed a real required text term"
 );
 
+const wrappedManifestRepairContract = deriveScsTaskContract({
+  goal: [
+    "The only unresolved content work",
+    "is rebuilding the stale sources.json for the current report.",
+    "The verified claims are retained in",
+    "tmp/reliability-evidence-pass.md. Then write",
+    "sources.json immediately. Do not read any other file.",
+  ].join("\n"),
+  taskProfile: "research",
+});
+assert.deepEqual(
+  wrappedManifestRepairContract.exactOutputPaths,
+  ["sources.json"],
+  "an inflected, soft-wrapped output instruction did not classify its manifest as an exact output"
+);
+assert.deepEqual(
+  wrappedManifestRepairContract.exactInputPaths,
+  ["tmp/reliability-evidence-pass.md"],
+  "a mutable exact output leaked into exact inputs through a later negated read clause"
+);
+
 const wordDocumentContract = deriveScsTaskContract({
   goal: "Create an editable DOCX and a phone-friendly PDF, then verify both outputs.",
   taskProfile: "word",

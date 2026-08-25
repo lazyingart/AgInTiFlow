@@ -1364,6 +1364,33 @@ try {
       `a status wrapper changed the inner command's mutation identity: ${command}`
     );
   }
+  const readOnlyValidatorState = { meta: { goalContract: { revision: 1 } } };
+  const readOnlyValidatorResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command:
+        'python3 tmp/external_agent_reliability_quality.py . ; echo "EXIT=$?"',
+    },
+    stdout: "agent reliability research contract passed\nEXIT=1\n",
+    stderr: "agent reliability research quality failed\n",
+    commandPolicy: {
+      category: "toolchain",
+      writesWorkspace: true,
+      mayMutateProject: false,
+      substantiveTest: false,
+    },
+  };
+  recordProjectVerificationOutcome(readOnlyValidatorState, readOnlyValidatorResult, {
+    commandCwd: workspace,
+    taskProfile: "writing",
+  });
+  assert(
+    readOnlyValidatorState.meta.projectVerification?.mutationRevision === 0 &&
+      readOnlyValidatorResult.projectMutationRevision === 0,
+    "a semantically read-only validator fabricated project mutation progress"
+  );
   const shellMutationState = { meta: { goalContract: { revision: 1 } } };
   const shellMutationResult = {
     toolName: "run_command",
@@ -2479,6 +2506,13 @@ try {
     args: { command: "npm test && git pull --ff-only" },
     stdout: "1 test passed",
     stderr: "",
+    commandPolicy: {
+      category: "git-remote",
+      writesWorkspace: true,
+      mayMutateProject: false,
+      substantiveTest: true,
+      gitOnly: false,
+    },
   };
   recordProjectVerificationOutcome(testBeforePullState, testBeforePullResult, {
     commandCwd: workspace,
@@ -3067,6 +3101,21 @@ try {
     shouldResetStaticDiscoveryPhase({ ok: true, toolName: "write_file", args: { path: "report.md" } }),
     "successful output creation should reset static discovery convergence"
   );
+  assert(
+    !shouldResetStaticDiscoveryPhase({
+      ok: true,
+      toolName: "run_command",
+      args: { command: "python3 - <<'PY'\nprint('inspect only')\nPY" },
+      commandPolicy: {
+        writesWorkspace: true,
+        mayMutateProject: false,
+        substantiveTest: false,
+      },
+      exitCode: 0,
+      stdout: "inspect only",
+    }),
+    "a read-only diagnostic shell probe reset static discovery because of a conservative write heuristic"
+  );
   const uniqueDiscovery = {};
   recordStaticDiscoveryProgress(uniqueDiscovery, "read_file:/reference/A.md");
   recordStaticDiscoveryProgress(uniqueDiscovery, "read_file:/reference/A.md");
@@ -3094,6 +3143,32 @@ try {
   assert(
     JSON.stringify(compactedDiscoveryState.meta.toolLoop.warned) === JSON.stringify(["run_command:keep"]),
     "context recovery did not clear only stale static-read warnings"
+  );
+  const retainedDiscoveryState = {
+    meta: {
+      toolLoop: {
+        recent: [],
+        warned: ["file-read:/reference/A.md"],
+        staticCounts: { "file-read:/reference/A.md": 2 },
+        staticOrder: ["file-read:/reference/A.md"],
+        staticTotal: 1,
+        staticCallTotal: 2,
+      },
+    },
+  };
+  resetStaticDiscoveryAfterContextLoss(
+    retainedDiscoveryState,
+    "proactive-context-compaction",
+    { preserveStaticEvidence: true }
+  );
+  assert(
+    retainedDiscoveryState.meta.toolLoop.staticTotal === 1 &&
+      retainedDiscoveryState.meta.toolLoop.staticCounts["file-read:/reference/A.md"] === 2,
+    "lossless context compaction reopened already completed discovery"
+  );
+  assert(
+    retainedDiscoveryState.meta.toolLoop.lastContextRecovery?.preservedStaticEvidence === true,
+    "lossless context compaction did not record preserved discovery evidence"
   );
   const exactReadSignature = staticToolCallSignature("read_file", { path: "/reference/A.md" }, {
     commandCwd: workspace,
@@ -6065,6 +6140,35 @@ try {
     events: [],
   });
   assert(!staticOnlyDecision.approved, "budget gate treated static discovery alone as implementation progress");
+  const readOnlyShellDecision = decideStepBudgetExtension({
+    config: { scsActive: true, commandCwd: "/tmp/workspace" },
+    budget: createStepBudgetState(
+      { provider: "localllm", maxSteps: 12, dynamicSteps: "on", dynamicStepExtensionLimit: 2, scsActive: true },
+      { meta: {}, stepsCompleted: 0 }
+    ),
+    step: 11,
+    state: {
+      messages: Array.from({ length: 5 }, (_, index) =>
+        toolMessage({
+          toolName: "run_command",
+          ok: true,
+          args: { command: `python3 -c "print('inspect ${index}')"` },
+          commandPolicy: {
+            writesWorkspace: true,
+            mayMutateProject: false,
+            substantiveTest: false,
+          },
+          exitCode: 0,
+          stdout: `inspection ${index}`,
+        })
+      ),
+    },
+    events: [],
+  });
+  assert(
+    !readOnlyShellDecision.approved,
+    "budget gate extended a run containing only read-only diagnostic shell output"
+  );
 
   const mockAutoBudget = createStepBudgetState({ provider: "mock", maxSteps: 4, dynamicSteps: "auto" }, { meta: {}, stepsCompleted: 0 });
   assert(!mockAutoBudget.enabled, "mock provider should not auto-extend unless explicitly enabled");

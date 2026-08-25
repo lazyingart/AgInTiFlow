@@ -1018,7 +1018,7 @@ function compactRetainedToolPayload(toolName, payload = {}, args = {}) {
   return redactValue(result);
 }
 
-function retainedPathMatchesOutput(sourcePath = "", outputPaths = []) {
+function retainedPathMatchesAny(sourcePath = "", candidatePaths = []) {
   const normalize = (value = "") =>
     String(value || "")
       .replace(/\\/g, "/")
@@ -1027,13 +1027,13 @@ function retainedPathMatchesOutput(sourcePath = "", outputPaths = []) {
       .replace(/\/$/, "");
   const source = normalize(sourcePath);
   if (!source) return false;
-  return outputPaths.some((candidate) => {
+  return candidatePaths.some((candidate) => {
     const output = normalize(candidate);
     return output && (source === output || source.endsWith(`/${output}`) || output.endsWith(`/${source}`));
   });
 }
 
-function retainedToolRecordPriority(record = {}, outputPaths = []) {
+function retainedToolRecordPriority(record = {}, outputPaths = [], inputPaths = []) {
   const name = String(record.name || "");
   const args = record.args || {};
   const payload = record.payload || {};
@@ -1048,12 +1048,13 @@ function retainedToolRecordPriority(record = {}, outputPaths = []) {
     const range = retainedReadRange(payload, args);
     priority = range.lineLimit > 0 ? 750 : 600;
     const sourcePath = String(payload.path || args.path || "").trim();
-    if (retainedPathMatchesOutput(sourcePath, outputPaths)) priority -= 220;
+    if (retainedPathMatchesAny(sourcePath, inputPaths)) priority += 260;
+    if (retainedPathMatchesAny(sourcePath, outputPaths)) priority -= 220;
   } else if (["search_files", "list_files"].includes(name)) priority = 400;
   return priority + Math.min(0.999, Math.max(0, Number(record.ordinal) || 0) / 100000);
 }
 
-function retainedToolStateMessages(messages = [], limit = 12, outputPaths = []) {
+function retainedToolStateMessages(messages = [], limit = 12, outputPaths = [], inputPaths = []) {
   const callsById = new Map();
   const recordsByKey = new Map();
   let ordinal = 0;
@@ -1103,7 +1104,8 @@ function retainedToolStateMessages(messages = [], limit = 12, outputPaths = []) 
   const selected = [...records]
     .sort(
       (left, right) =>
-        retainedToolRecordPriority(right, outputPaths) - retainedToolRecordPriority(left, outputPaths) ||
+        retainedToolRecordPriority(right, outputPaths, inputPaths) -
+          retainedToolRecordPriority(left, outputPaths, inputPaths) ||
         right.ordinal - left.ordinal
     )
     .slice(0, Math.max(1, Number(limit) || 12))
@@ -1135,8 +1137,8 @@ function retainedToolStateMessages(messages = [], limit = 12, outputPaths = []) 
   });
 }
 
-function retainedToolStateTextMessages(messages = [], limit = 12, outputPaths = []) {
-  const nativeMessages = retainedToolStateMessages(messages, limit, outputPaths);
+function retainedToolStateTextMessages(messages = [], limit = 12, outputPaths = [], inputPaths = []) {
+  const nativeMessages = retainedToolStateMessages(messages, limit, outputPaths, inputPaths);
   const retained = [];
   for (let index = 0; index < nativeMessages.length; index += 2) {
     const assistantMessage = nativeMessages[index];
@@ -1156,13 +1158,17 @@ function retainedToolStateTextMessages(messages = [], limit = 12, outputPaths = 
   return retained;
 }
 
-function retainedToolPairPriority(pair = [], order = 0, outputPaths = []) {
+function retainedToolPairPriority(pair = [], order = 0, outputPaths = [], inputPaths = []) {
   const assistantCall = pair[0]?.tool_calls?.[0];
   const retained = pair.length === 1 ? parseRetainedToolEvidenceMessage(pair[0]) : null;
   const name = String(retained?.name || assistantCall?.function?.name || "");
   const args = retained?.args || safeParseToolContent(assistantCall?.function?.arguments) || {};
   const payload = retained?.payload || safeParseToolContent(pair[1]?.content) || {};
-  return retainedToolRecordPriority({ name, args, payload, ordinal: order }, outputPaths);
+  return retainedToolRecordPriority(
+    { name, args, payload, ordinal: order },
+    outputPaths,
+    inputPaths
+  );
 }
 
 function isRuntimeCompactionRequest(content = "") {
@@ -1345,9 +1351,10 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
   // context instead of fabricating assistant reasoning.
   const deepSeekCompaction = normalizeProviderId(config.provider, "") === "deepseek";
   const exactOutputPaths = exactOutputPathsForState(state);
+  const exactInputPaths = exactInputPathsForState(state);
   const retainedToolMessages = deepSeekCompaction
-    ? retainedToolStateTextMessages(messages, 12, exactOutputPaths)
-    : retainedToolStateMessages(messages, 12, exactOutputPaths);
+    ? retainedToolStateTextMessages(messages, 12, exactOutputPaths, exactInputPaths)
+    : retainedToolStateMessages(messages, 12, exactOutputPaths, exactInputPaths);
   const snapshotSummary = {
     step,
     maxSteps: config.maxSteps,
@@ -1425,7 +1432,7 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
   }));
   const boundedContent = compactTextForTokenBudget(
     compactedContent,
-    Math.max(1024, Math.floor(targetTokens * (retainedToolMessages.length ? 0.4 : 0.52))),
+    Math.max(1024, Math.floor(targetTokens * (retainedToolMessages.length ? 0.28 : 0.52))),
     { headFraction: 0.58 }
   );
   const baseMessages = [
@@ -1441,7 +1448,12 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
     retainedPairs.push({
       pair,
       order: retainedPairs.length,
-      priority: retainedToolPairPriority(pair, retainedPairs.length, exactOutputPaths),
+      priority: retainedToolPairPriority(
+        pair,
+        retainedPairs.length,
+        exactOutputPaths,
+        exactInputPaths
+      ),
     });
   }
   const selectedPairs = [];
@@ -4356,7 +4368,12 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     // authorize a new invocation of the same command. A recognized trailing
     // status probe reports evidence but does not change the inner command's
     // mutation capability.
-    const commandPolicy = classifyCommand(mutationCommand);
+    const commandPolicy = {
+      ...classifyCommand(mutationCommand),
+      ...(toolResult.commandPolicy && typeof toolResult.commandPolicy === "object"
+        ? toolResult.commandPolicy
+        : {}),
+    };
     const requiredCommands = effectiveRequiredProjectCommands(state, verification, config);
     const requiredCommand = requiredCommands.find(
       (candidate) => projectCommandsEquivalent(candidate, exitProbe.command || command, config)
@@ -5335,16 +5352,31 @@ function expectedRepeatedObservationCommand(command = "") {
   );
 }
 
+function runCommandResultHasDurableProgress(toolResult = {}) {
+  const policy = toolResult.commandPolicy || {};
+  const policyAllowsMutation =
+    policy.mayMutateProject === true ||
+    (policy.mayMutateProject === undefined && policy.writesWorkspace === true);
+  return Boolean(
+    policyAllowsMutation ||
+      policy.substantiveTest === true ||
+      (Array.isArray(toolResult.verifiedGeneratedOutputPaths) &&
+        toolResult.verifiedGeneratedOutputPaths.length > 0)
+  );
+}
+
 function isStaticDiscoveryToolResult(toolResult = {}) {
   if (isStaticDiscoveryToolCall(toolResult.toolName, toolResult.args || {})) return true;
   if (toolResult.toolName !== "run_command") return false;
-  if (toolResult.commandPolicy?.writesWorkspace !== false) return false;
+  if (runCommandResultHasDurableProgress(toolResult)) return false;
   return !expectedRepeatedObservationCommand(toolResult.args?.command);
 }
 
 function successfulToolStateProgress(toolResult = {}) {
   if (!toolResult || toolResult.done || toolResult.ok === false || toolResult.blocked || toolResult.skipped) return false;
-  if (toolResult.toolName === "run_command") return toolResult.commandPolicy?.writesWorkspace === true;
+  if (toolResult.toolName === "run_command") {
+    return runCommandResultHasDurableProgress(toolResult);
+  }
   if (["write_file", "apply_patch"].includes(String(toolResult.toolName || ""))) {
     return successfulProjectMutationPaths(toolResult).length > 0;
   }
@@ -5365,7 +5397,7 @@ function noProgressOutcomeFingerprint(toolResult = {}) {
     toolResult?.toolName !== "run_command" ||
     toolResult?.ok === false ||
     toolResult?.blocked ||
-    toolResult?.commandPolicy?.writesWorkspace === true ||
+    successfulToolStateProgress(toolResult) ||
     expectedRepeatedObservationCommand(toolResult?.args?.command)
   ) {
     return "";
@@ -6179,6 +6211,16 @@ function commandWritesOnlyPrivateVerificationEvidence(command = "") {
 }
 
 function commandCanMutateProjectContent(command = "", commandPolicy = {}) {
+  // The classifier may conservatively mark an interpreter or compound shell
+  // command as workspace-writing while still proving that this exact command
+  // cannot mutate project content. Preserve that stronger semantic result so
+  // validators and inspection probes do not fabricate mutation progress. Git
+  // sequences remain structurally inspected because an aggregate Git policy
+  // can be conservative even when one segment changes the worktree.
+  const category = String(commandPolicy.category || "");
+  const requiresGitMutationInspection =
+    ["git-workflow", "git-remote"].includes(category);
+  if (commandPolicy.mayMutateProject === false && !requiresGitMutationInspection) return false;
   if (commandPolicy.writesWorkspace !== true && commandPolicy.mayMutateProject !== true) return false;
   const sequence = parseTopLevelShellSequence(String(command || ""));
   if (
@@ -6192,7 +6234,6 @@ function commandCanMutateProjectContent(command = "", commandPolicy = {}) {
     );
   }
   if (commandWritesOnlyPrivateVerificationEvidence(command)) return false;
-  const category = String(commandPolicy.category || "");
   if (!["git-workflow", "git-remote"].includes(category)) return true;
   if (/\bgit\s+clone\b/i.test(String(command || ""))) return true;
   // An aggregate Git category can still contain a non-Git build/generator
@@ -6698,6 +6739,18 @@ function exactOutputPathsForState(state = {}) {
     ...progressOutputPaths,
     ...verificationOutputPaths,
   ])].slice(0, 32);
+}
+
+function exactInputPathsForState(state = {}) {
+  const scsInputPaths = Array.isArray(state.meta?.scs?.taskContract?.exactInputPaths)
+    ? state.meta.scs.taskContract.exactInputPaths.filter(Boolean)
+    : [];
+  const outputPaths = new Set(
+    exactOutputPathsForState(state).map((item) => String(item).replace(/\\/g, "/").replace(/^\.\//, ""))
+  );
+  return [...new Set(scsInputPaths)]
+    .filter((item) => !outputPaths.has(String(item).replace(/\\/g, "/").replace(/^\.\//, "")))
+    .slice(0, 32);
 }
 
 async function hashExactOutputFile(absolutePath) {
@@ -7314,7 +7367,11 @@ export function recordStaticDiscoveryProgress(toolLoop = {}, signature = "") {
   };
 }
 
-export function resetStaticDiscoveryAfterContextLoss(state = {}, reason = "context-compaction") {
+export function resetStaticDiscoveryAfterContextLoss(
+  state = {},
+  reason = "context-compaction",
+  options = {}
+) {
   state.meta = state.meta || {};
   const toolLoop = state.meta.toolLoop && typeof state.meta.toolLoop === "object"
     ? state.meta.toolLoop
@@ -7323,6 +7380,16 @@ export function resetStaticDiscoveryAfterContextLoss(state = {}, reason = "conte
   const priorCounts = toolLoop.staticCounts && typeof toolLoop.staticCounts === "object"
     ? toolLoop.staticCounts
     : {};
+  if (options.preserveStaticEvidence === true) {
+    toolLoop.lastContextRecovery = {
+      reason: String(reason || "context-compaction"),
+      at: new Date().toISOString(),
+      priorStaticTotal: Number(priorOrder.length),
+      preservedStaticEvidence: true,
+    };
+    state.meta.toolLoop = toolLoop;
+    return toolLoop.lastContextRecovery;
+  }
   if (priorOrder.length || Object.keys(priorCounts).length) {
     const history = Array.isArray(toolLoop.staticHistory) ? toolLoop.staticHistory : [];
     history.push({
@@ -11043,7 +11110,9 @@ export async function runAgent(config) {
         const tokensAfter = estimateMessageTokens(compactMessages);
         if (charsAfter < contextDecision.charsBefore) {
           state.messages = compactMessages;
-          resetStaticDiscoveryAfterContextLoss(state, "proactive-context-compaction");
+          resetStaticDiscoveryAfterContextLoss(state, "proactive-context-compaction", {
+            preserveStaticEvidence: true,
+          });
           state.meta.contextBudget = recordContextCompaction(contextBudget, {
             step,
             charsBefore: contextDecision.charsBefore,
@@ -11159,7 +11228,9 @@ export async function runAgent(config) {
           };
           state.messages = compactMessages;
           requestMessages = compactMessages;
-          resetStaticDiscoveryAfterContextLoss(state, "local-context-budget-retry");
+          resetStaticDiscoveryAfterContextLoss(state, "local-context-budget-retry", {
+            preserveStaticEvidence: true,
+          });
           state.meta.localContextBudgetRetries = {
             ...contextRetriedSteps,
             [retryKey]: true,
@@ -11207,7 +11278,9 @@ export async function runAgent(config) {
           };
           state.messages = compactMessages;
           requestMessages = compactMessages;
-          resetStaticDiscoveryAfterContextLoss(state, "model-timeout-retry");
+          resetStaticDiscoveryAfterContextLoss(state, "model-timeout-retry", {
+            preserveStaticEvidence: true,
+          });
           state.meta.modelTimeoutRetries = {
             ...retriedSteps,
             [retryKey]: true,

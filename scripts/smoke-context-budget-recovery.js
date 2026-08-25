@@ -415,11 +415,126 @@ function boundedOutputReadPair(index, generation) {
   ];
 }
 
+function exactInputEvidencePair(index) {
+  const id = `exact-input-${index}`;
+  const startLine = 1 + (index - 1) * 45;
+  return [
+    {
+      role: "assistant",
+      content: "",
+      reasoning_content: "Read one bounded exact-input evidence range.",
+      tool_calls: [
+        {
+          id,
+          type: "function",
+          function: {
+            name: "read_file",
+            arguments: JSON.stringify({
+              path: "tmp/reliability-evidence-pass.md",
+              startLine,
+              lineLimit: 45,
+            }),
+          },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: id,
+      content: JSON.stringify({
+        ok: true,
+        toolName: "read_file",
+        path: "tmp/reliability-evidence-pass.md",
+        startLine,
+        lineLimit: 45,
+        lineCount: 180,
+        bytes: 24000,
+        sha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        contentTruncated: false,
+        content: `EXACT-INPUT-RANGE-${index}\n${`source evidence ${index} `.repeat(220)}`,
+      }),
+    },
+  ];
+}
+
+function readOnlyDiagnosticPair(index) {
+  const id = `diagnostic-${index}`;
+  const command = `python3 -c "print('diagnostic ${index}')"`;
+  return [
+    {
+      role: "assistant",
+      content: "",
+      reasoning_content: "Inspect one diagnostic without changing task outputs.",
+      tool_calls: [
+        {
+          id,
+          type: "function",
+          function: { name: "run_command", arguments: JSON.stringify({ command }) },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: id,
+      content: JSON.stringify({
+        ok: true,
+        toolName: "run_command",
+        args: { command },
+        exitCode: 0,
+        stdout: `DIAGNOSTIC-${index}\n${"read-only shell output ".repeat(80)}`,
+      }),
+    },
+  ];
+}
+
+const exactInputCoverageState = {
+  goal: [
+    "Read tmp/reliability-evidence-pass.md as the exact read-only input.",
+    "Rewrite agent-reliability-evidence-review.md.",
+    "Rebuild sources.json.",
+  ].join("\n"),
+  plan: "Use retained evidence and create the two outputs.",
+  meta: {
+    scs: {
+      taskContract: {
+        exactInputPaths: ["tmp/reliability-evidence-pass.md"],
+        exactOutputPaths: ["agent-reliability-evidence-review.md", "sources.json"],
+      },
+    },
+  },
+  messages: [
+    { role: "system", content: `SYSTEM-INPUT-COVERAGE\n${"policy ".repeat(5000)}` },
+    { role: "user", content: "Create a source-grounded reader-facing report." },
+    ...Array.from({ length: 4 }, (_, index) => exactInputEvidencePair(index + 1)).flat(),
+    ...Array.from({ length: 10 }, (_, index) => readOnlyDiagnosticPair(index + 1)).flat(),
+    ...Array.from({ length: 6 }, (_, index) => boundedOutputReadPair(index + 1, 9)).flat(),
+  ],
+};
+const exactInputCoverage = buildContextBudgetCompactionMessages(
+  exactInputCoverageState,
+  { ...config, provider: "deepseek", model: "deepseek-chat" },
+  { title: "", url: "" },
+  20,
+  { reason: "preserve all exact-input source ranges over diagnostics" }
+);
+const exactInputCoverageText = exactInputCoverage.map((message) => message.content || "").join("\n");
+for (let index = 1; index <= 4; index += 1) {
+  assert.ok(
+    exactInputCoverageText.includes(`EXACT-INPUT-RANGE-${index}`),
+    `compaction lost exact input evidence range ${index}`
+  );
+}
+assert.ok(
+  estimateMessageTokens(exactInputCoverage) <= 12288,
+  "exact-input evidence retention exceeded the bounded retry target"
+);
+
 const twiceCompactedState = {
   ...compactionState,
   meta: {
     scs: {
       taskContract: {
+        exactInputPaths: ["reports/reliability.md"],
         exactOutputPaths: ["agent-reliability-evidence-review.md", "sources.json"],
       },
     },
@@ -427,6 +542,7 @@ const twiceCompactedState = {
   messages: [
     ...deepSeekRuntimeMessages,
     ...Array.from({ length: 14 }, (_, index) => noisyFullReadPair(index + 1, 2)).flat(),
+    ...Array.from({ length: 8 }, (_, index) => readOnlyDiagnosticPair(index + 1)).flat(),
     ...Array.from({ length: 6 }, (_, index) => boundedOutputReadPair(index + 1, 2)).flat(),
   ],
 };

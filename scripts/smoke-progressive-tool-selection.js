@@ -1515,6 +1515,43 @@ sameNames(
   ["deep_research", "finish"],
   "local evidence research did not enter the bounded research engine after inspection"
 );
+const retainedEvidenceManifestRepair = selectProgressiveTools(allTools, {
+  config: { provider: "deepseek" },
+  goal:
+    "Investigate the reliability problem in this folder, write an evidence review and sources.json, then commit the intentional work.",
+  profile: "research",
+  messages: [
+    {
+      role: "user",
+      content: [
+        "Resume the saved evidence-review task.",
+        "Do not restart the task, run deep_research, or reopen broad discovery.",
+        "Use the retained completed evidence and rebuild sources.json.",
+      ].join("\n"),
+    },
+    {
+      role: "assistant",
+      tool_calls: [{ id: "retained-sources", function: { name: "read_file", arguments: '{"path":"sources.json"}' } }],
+    },
+    {
+      role: "assistant",
+      tool_calls: [{ id: "retained-evidence", function: { name: "read_file", arguments: '{"path":"tmp/reliability-evidence-pass.md"}' } }],
+    },
+  ],
+});
+assert(
+  names(retainedEvidenceManifestRepair).includes("write_file"),
+  "retained-evidence manifest repair omitted write_file after inspection"
+);
+assert(
+  names(retainedEvidenceManifestRepair).includes("read_file"),
+  "retained-evidence manifest repair omitted bounded source reads"
+);
+assert(
+  !(names(retainedEvidenceManifestRepair).length === 2 &&
+    names(retainedEvidenceManifestRepair)[0] === "deep_research"),
+  "explicit retained-evidence reuse was forced back into deep_research"
+);
 const localEvidenceAfterDeepResearchCompaction = selectProgressiveTools(allTools, {
   config: { provider: "deepseek" },
   goal:

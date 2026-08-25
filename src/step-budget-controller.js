@@ -208,7 +208,25 @@ export function staticToolCallSignature(toolName, args = {}, context = {}) {
 
 function isStaticDiscoveryResult(result = {}) {
   if (!result || result.ok === false || result.blocked || result.done) return false;
-  return isStaticDiscoveryToolCall(result.toolName, result.args || {});
+  if (isStaticDiscoveryToolCall(result.toolName, result.args || {})) return true;
+  if (result.toolName !== "run_command") return false;
+  if (/\b(?:watch|poll|status|queue|sleep)\b|tail\s+-f|tmux\s+capture-pane/i.test(String(result.args?.command || ""))) {
+    return false;
+  }
+  return !runCommandHasConcreteProgress(result);
+}
+
+function runCommandHasConcreteProgress(result = {}) {
+  const policy = result.commandPolicy || {};
+  const policyAllowsMutation =
+    policy.mayMutateProject === true ||
+    (policy.mayMutateProject === undefined && policy.writesWorkspace === true);
+  return Boolean(
+    policyAllowsMutation ||
+      policy.substantiveTest === true ||
+      (Array.isArray(result.verifiedGeneratedOutputPaths) &&
+        result.verifiedGeneratedOutputPaths.length > 0)
+  );
 }
 
 export function summarizeRepeatedStaticDiscovery(recentToolResults = [], context = {}) {
@@ -251,7 +269,7 @@ function hasConcreteProgress(recentToolResults = [], events = []) {
     if (result.ok === false || result.blocked || result.done) return false;
     if (isStaticDiscoveryToolCall(result.toolName, result.args || {})) return false;
     if (!PROGRESS_TOOL_NAMES.has(result.toolName)) return false;
-    if (result.toolName === "run_command") return Boolean(result.stdout || result.stderr || result.exitCode === 0);
+    if (result.toolName === "run_command") return runCommandHasConcreteProgress(result);
     return Boolean(
       result.path ||
         result.artifactPath ||

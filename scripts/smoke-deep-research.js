@@ -9,6 +9,7 @@ import { flushHousekeeping } from "../src/housekeeping.js";
 import { requestNextStep, toolChoiceForProvider } from "../src/model-client.js";
 import { providerStructuredOutputAttempts } from "../src/provider-contract.js";
 import {
+  hasExplicitDeepResearchSuppression,
   hasExplicitDeepResearchIntent,
   hasLocalResearchWorkspaceIntent,
   shouldStartWithDeepResearch,
@@ -106,6 +107,50 @@ async function main() {
   assert(
     shouldStartWithDeepResearch("Write a deep web research report comparing three primary papers."),
     "standalone deep research no longer starts with the bounded research workflow"
+  );
+  const retainedResearchGoal = [
+    "Continue the interrupted evidence-review task from its saved state.",
+    "Do not run deep_research again. Reuse the completed research artifact.",
+    "Rewrite agent-reliability-evidence-review.md from the retained evidence.",
+  ].join("\n");
+  assert(
+    hasExplicitDeepResearchSuppression(retainedResearchGoal),
+    "an explicit completed-research reuse instruction was not detected"
+  );
+  assert(
+    !shouldStartWithDeepResearch(retainedResearchGoal, inspectedLocalEvidenceMessages),
+    "an explicit prohibition still narrowed the next turn to deep_research"
+  );
+  const coordinatedSuppressionGoal = [
+    "Resume the saved evidence-review task.",
+    "Do not restart the task, run deep_research, or reopen broad discovery.",
+    "Use the retained completed evidence and rebuild sources.json.",
+  ].join("\n");
+  assert(
+    hasExplicitDeepResearchSuppression(coordinatedSuppressionGoal),
+    "a coordinated do-not clause did not suppress deep_research"
+  );
+  assert(
+    !shouldStartWithDeepResearch(localEvidenceGoal, [
+      { role: "user", content: coordinatedSuppressionGoal },
+      ...inspectedLocalEvidenceMessages.slice(1),
+    ]),
+    "a resumed retained-evidence repair was forced back into deep_research after inspection"
+  );
+  assert(
+    shouldStartWithDeepResearch(localEvidenceGoal, [
+      ...inspectedLocalEvidenceMessages,
+      { role: "user", content: "Run a fresh deep research pass now; the retained evidence is stale." },
+      {
+        role: "assistant",
+        tool_calls: [{ id: "fresh-report", function: { name: "read_file", arguments: '{"path":"agent-reliability-evidence-review.md"}' } }],
+      },
+      {
+        role: "assistant",
+        tool_calls: [{ id: "fresh-sources", function: { name: "read_file", arguments: '{"path":"sources.json"}' } }],
+      },
+    ]),
+    "an older completed-research context suppressed a newer explicit refresh request"
   );
   assert(
     !hasExplicitDeepResearchIntent("Create a phone-friendly document from this folder.", [

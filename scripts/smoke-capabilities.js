@@ -49,6 +49,20 @@ async function runCliIn(cwd, args, envOverrides = {}) {
   return result.stdout;
 }
 
+async function runCliAllowStopped(args, envOverrides = {}) {
+  try {
+    const stdout = await runCli(args, envOverrides);
+    return { stdout, stderr: "", exitCode: 0 };
+  } catch (error) {
+    if (!Number.isInteger(error?.code)) throw error;
+    return {
+      stdout: String(error.stdout || ""),
+      stderr: String(error.stderr || ""),
+      exitCode: error.code,
+    };
+  }
+}
+
 try {
   await runCli(["init"]);
   const agintiMd = await fs.readFile(path.join(tempRoot, "AGINTI.md"), "utf8");
@@ -188,7 +202,7 @@ try {
   const doctor = JSON.parse(await runCli(["doctor", "--capabilities", "--json"]));
   assert(doctor.project.root === tempRoot, "doctor --capabilities used the wrong project root");
   assert(doctor.project.instructionsPresent, "doctor --capabilities did not report AGINTI.md");
-  const envSandboxRun = await runCli(
+  const envSandboxRun = await runCliAllowStopped(
     ["--provider", "mock", "--routing", "manual", "--model", "mock-agent", "--max-steps", "1", "env sandbox smoke"],
     {
       SANDBOX_MODE: "host",
@@ -196,8 +210,19 @@ try {
       USE_DOCKER_SANDBOX: "false",
     }
   );
-  assert(envSandboxRun.includes("Shell: host policy=allow"), "one-shot CLI did not respect host sandbox env defaults");
-  assert(!envSandboxRun.includes("Docker workspace:"), "one-shot CLI forced Docker despite host sandbox env defaults");
+  assert(envSandboxRun.exitCode === 1, "a step-budget-stopped one-shot CLI run did not report failure");
+  assert(
+    envSandboxRun.stderr.includes("Stopped after 1 steps without finish()."),
+    "a step-budget-stopped one-shot CLI run did not expose its terminal reason"
+  );
+  assert(
+    envSandboxRun.stdout.includes("Shell: host policy=allow"),
+    "one-shot CLI did not respect host sandbox env defaults"
+  );
+  assert(
+    !envSandboxRun.stdout.includes("Docker workspace:"),
+    "one-shot CLI forced Docker despite host sandbox env defaults"
+  );
 
   console.log(
     JSON.stringify(
