@@ -15,6 +15,7 @@ import {
 import {
   DEFAULT_INTEGRATION_ANALYSIS_IDEMPOTENCY_ROOT,
   DEFAULT_INTEGRATION_ANALYSIS_SERVICE_STATE_ROOT,
+  INTEGRATION_ANALYSIS_DOCUMENT_WORKER_CREDENTIAL_NAME,
   INTEGRATION_ANALYSIS_LISTEN_HOST,
   INTEGRATION_ANALYSIS_LISTEN_PORT,
   INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_NAME,
@@ -26,7 +27,10 @@ import {
   INTEGRATION_ANALYSIS_SERVICE_CONFIG_SCHEMA_VERSION,
   INTEGRATION_ANALYSIS_TRUSTED_CLIENT_ID,
   createIntegrationAnalysisTrustedProxyClient,
+  isMissingIntegrationAnalysisDocumentWorkerCredentialError,
+  loadIntegrationAnalysisDocumentWorkerCredential,
   loadIntegrationAnalysisServiceConfig,
+  parseIntegrationAnalysisDocumentWorkerCredential,
   parseIntegrationAnalysisGroundedSearchCredential,
   parseIntegrationAnalysisLocalModelCredential,
   publicIntegrationAnalysisServiceConfig,
@@ -43,6 +47,11 @@ import {
   INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
   INTEGRATION_GROUNDED_SEARCH_TIMEOUT_MS,
 } from "../src/integration-grounded-search.js";
+import {
+  INTEGRATION_DOCUMENT_WORKER_ENDPOINT,
+  INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS,
+} from "../src/integration-document-worker-client.js";
+import { IntegrationServiceConfigError } from "../src/integration-config.js";
 import { parseIntegrationAnalysisCliArguments } from "../src/integration-analysis-cli.js";
 import { INTEGRATION_RPC_PATH_LIST, INTEGRATION_RPC_PATHS, buildFixedIntegrationPolicy, contractDigest } from "../src/integration-policy.js";
 
@@ -152,12 +161,15 @@ function sessionAuthority(activationProof, recoveryProof) {
     rawExecutionSourcePersisted: false,
     rawExecutionStdoutPersisted: false,
     privateRuntimePathsPersisted: false,
-    documentBlobBytesLocalOnly: true,
-    documentBlobOpaqueRefs: true,
-    documentBlobPrivateModes: true,
-    documentBlobSymlinksRejected: true,
-    documentBlobHardlinksRejected: true,
+    documentBytesPersistedByCloud: false,
+    documentSourcePersistedByCloud: false,
+    documentWorkerOpaqueRefs: true,
+    documentWorkerReceiptBindings: true,
+    documentWorkerPairedCommitIntents: true,
+    documentWorkerTwoPhaseDelete: true,
+    documentWorkerDeleteIntentBeforeBytes: true,
     documentContentPrincipalAndBrowserSessionBound: true,
+    documentContentStreamedWithoutCloudBuffering: true,
     publicActivationLocksChanged: false,
     limitsDigest: contractDigest("limits"),
   });
@@ -308,6 +320,27 @@ assert.deepEqual(parseIntegrationAnalysisCliArguments(["doctor"]), {
 });
 assert.equal(parseIntegrationAnalysisLocalModelCredential(`${TOKEN}\n`), TOKEN);
 assert.equal(parseIntegrationAnalysisGroundedSearchCredential(`${TOKEN}\n`), TOKEN);
+assert.equal(parseIntegrationAnalysisDocumentWorkerCredential(`${TOKEN}\n`), TOKEN);
+assert.throws(
+  () => parseIntegrationAnalysisDocumentWorkerCredential(`${TOKEN}\nextra`),
+  (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
+);
+assert.equal(
+  isMissingIntegrationAnalysisDocumentWorkerCredentialError(
+    new IntegrationServiceConfigError("ANALYSIS_CREDENTIAL_MISSING", "missing")
+  ),
+  true
+);
+assert.equal(
+  isMissingIntegrationAnalysisDocumentWorkerCredentialError(
+    new IntegrationServiceConfigError("ANALYSIS_CREDENTIAL_INVALID", "unsafe")
+  ),
+  false
+);
+await assert.rejects(
+  loadIntegrationAnalysisDocumentWorkerCredential("/tmp/caller-selected-token"),
+  (error) => error.code === "ANALYSIS_CREDENTIAL_SOURCE_FORBIDDEN"
+);
 const disabledSearchConfig = validateIntegrationAnalysisServiceConfig(validConfig({
   groundedSearch: { enabled: false },
 }));
@@ -336,6 +369,81 @@ await assert.rejects(
   }),
   (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
 );
+const disabledDocumentWorkerConfig = validateIntegrationAnalysisServiceConfig(validConfig({
+  documentWorker: { enabled: false },
+}));
+assert.equal(disabledDocumentWorkerConfig.documentWorker.enabled, false);
+assert.equal(
+  Object.prototype.hasOwnProperty.call(
+    publicIntegrationAnalysisServiceConfig(disabledDocumentWorkerConfig),
+    "documentWorkerCredentialName"
+  ),
+  false
+);
+const enabledDocumentWorkerConfig = validateIntegrationAnalysisServiceConfig(validConfig({
+  documentWorker: {
+    enabled: true,
+    endpoint: INTEGRATION_DOCUMENT_WORKER_ENDPOINT,
+    timeoutMs: INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS,
+  },
+}));
+assert.deepEqual(enabledDocumentWorkerConfig.documentWorker, {
+  enabled: true,
+  endpoint: "http://127.0.0.1:18120",
+  timeoutMs: 120_000,
+});
+assert.equal(
+  publicIntegrationAnalysisServiceConfig(enabledDocumentWorkerConfig).documentWorkerCredentialName,
+  INTEGRATION_ANALYSIS_DOCUMENT_WORKER_CREDENTIAL_NAME
+);
+const trustedBffClient = createIntegrationAnalysisTrustedProxyClient(enabledDocumentWorkerConfig, TOKEN);
+await assert.rejects(
+  () => composeProductionIntegrationAnalysisServer({
+    config: enabledDocumentWorkerConfig,
+    trustedPrincipalProxyClient: trustedBffClient,
+    localModelApiKey: "B".repeat(48),
+    documentWorkerCredential: TOKEN,
+  }),
+  (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
+);
+assert.throws(
+  () => validateIntegrationAnalysisServiceConfig(validConfig({
+    documentWorker: {
+      enabled: true,
+      endpoint: "http://127.0.0.1:18121",
+      timeoutMs: INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS,
+    },
+  })),
+  (error) => error.code === "ANALYSIS_CONFIG_LOCKED"
+);
+assert.throws(
+  () => validateIntegrationAnalysisServiceConfig(validConfig({
+    documentWorker: {
+      enabled: true,
+      endpoint: INTEGRATION_DOCUMENT_WORKER_ENDPOINT,
+      timeoutMs: 30_000,
+    },
+  })),
+  (error) => error.code === "ANALYSIS_CONFIG_LOCKED"
+);
+await assert.rejects(
+  () => composeProductionIntegrationAnalysisServer({
+    config: disabledDocumentWorkerConfig,
+    trustedPrincipalProxyClient: {},
+    localModelApiKey: TOKEN,
+    documentWorkerCredential: `${TOKEN}B`,
+  }),
+  (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
+);
+await assert.rejects(
+  () => composeProductionIntegrationAnalysisServer({
+    config: enabledDocumentWorkerConfig,
+    trustedPrincipalProxyClient: {},
+    localModelApiKey: TOKEN,
+    documentWorkerCredential: TOKEN,
+  }),
+  (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
+);
 await assert.rejects(
   () => composeProductionIntegrationAnalysisServer({
     config: enabledSearchConfig,
@@ -359,6 +467,15 @@ const serverCompositionSource = await fs.readFile(
   new URL("../src/integration-analysis-server.js", import.meta.url),
   "utf8"
 );
+const cliCompositionSource = await fs.readFile(
+  new URL("../src/integration-analysis-cli.js", import.meta.url),
+  "utf8"
+);
+assert.match(
+  cliCompositionSource,
+  /loadIntegrationAnalysisDocumentWorkerCredential\(\)\.catch\(\(error\)\s*=>\s*\{[\s\S]*?isMissingIntegrationAnalysisDocumentWorkerCredentialError\(error\)[\s\S]*?throw error/u,
+  "only an explicitly absent optional worker credential may degrade startup"
+);
 assert.equal(
   serverCompositionSource.match(/await planner\.activate\(\)/gu)?.length,
   1,
@@ -366,7 +483,7 @@ assert.equal(
 );
 assert.match(
   serverCompositionSource,
-  /plannerActivation,\s*\n\s*\}\);/u,
+  /createIntegrationAnalysisSessionService\(\{[\s\S]*?plannerActivation,[\s\S]*?documentWorkerClient/u,
   "production sessions must receive the branded planner activation"
 );
 assert.doesNotMatch(
@@ -378,6 +495,16 @@ assert.match(
   serverCompositionSource,
   /groundedSearchConfig:[\s\S]*?apiKey:\s*options\.groundedSearchApiKey/u,
   "grounded search must use its distinct systemd credential"
+);
+assert.match(
+  serverCompositionSource,
+  /createIntegrationDocumentWorkerClient\(\{[\s\S]*?endpoint:\s*config\.documentWorker\.endpoint,[\s\S]*?credential:\s*options\.documentWorkerCredential/u,
+  "production document creation must use the fixed credentialed worker client"
+);
+assert.doesNotMatch(
+  serverCompositionSource,
+  /integration-(?:tex-compiler|document-blob-store)|createIntegration(?:TexCompiler|DocumentBlobStore)/u,
+  "cloud production composition must not import compiler or blob authority"
 );
 
 const configRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-analysis-config-"));

@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { Writable } from "node:stream";
 import express from "express";
 import {
   INTEGRATION_IDEMPOTENCY_CONTRACT_VERSION,
@@ -447,18 +448,21 @@ function makeService(calls = [], overrides = {}) {
     },
     async getArtifactContent(payload, context) {
       calls.push({ method: "getArtifactContent", payload, context });
+      const full = Buffer.from("12345678");
+      const selected = full.subarray(payload.range?.start || 0, (payload.range?.end ?? 7) + 1);
       return {
         schemaVersion: "aginti-artifact-content-v1",
         artifactId: payload.artifactId,
         filename: "report.pdf",
         mime: "application/pdf",
         totalBytes: 8,
-        sha256: "1".repeat(64),
+        sha256: crypto.createHash("sha256").update(full).digest("hex"),
         start: payload.range?.start || 0,
         end: payload.range?.end ?? 7,
         partial: payload.range !== undefined,
         metadataOnly: payload.metadataOnly === true,
-        content: payload.metadataOnly === true ? null : Buffer.from("12345678").subarray(payload.range?.start || 0, (payload.range?.end ?? 7) + 1),
+        body: payload.metadataOnly === true ? null : new Response(selected).body,
+        cleanup() {},
       };
     },
   };
@@ -771,17 +775,28 @@ assert.throws(
   }),
   /lowercase/u
 );
-function captureContentResponse(result, options) {
-  const captured = { statusCode: 0, headers: {}, body: undefined };
-  const response = {
-    status(code) { captured.statusCode = code; return this; },
-    set(headers) { captured.headers = { ...headers }; return this; },
-    end(body) { captured.body = body; },
-  };
-  writeIntegrationArtifactContentResponse(response, result, options);
-  return captured;
+class CaptureContentResponse extends Writable {
+  constructor() {
+    super();
+    this.statusCode = 0;
+    this.headers = {};
+    this.chunks = [];
+    this.on("error", () => {});
+  }
+  status(code) { this.statusCode = code; return this; }
+  set(headers) { this.headers = { ...headers }; return this; }
+  _write(chunk, _encoding, callback) { this.chunks.push(Buffer.from(chunk)); callback(); }
 }
-const rawRange = captureContentResponse({
+async function captureContentResponse(result, options) {
+  const response = new CaptureContentResponse();
+  await writeIntegrationArtifactContentResponse(response, result, options);
+  return {
+    statusCode: response.statusCode,
+    headers: response.headers,
+    body: response.chunks.length === 0 ? undefined : Buffer.concat(response.chunks),
+  };
+}
+const rawRange = await captureContentResponse({
   schemaVersion: "aginti-artifact-content-v1",
   artifactId,
   filename: "报告 (final's*).pdf",
@@ -792,7 +807,8 @@ const rawRange = captureContentResponse({
   end: 5,
   partial: true,
   metadataOnly: false,
-  content: Buffer.from("2345"),
+  body: new Response(Buffer.from("2345")).body,
+  cleanup() {},
 }, { rangeRequested: true });
 assert.equal(rawRange.statusCode, 206);
 assert.equal(rawRange.headers["Content-Range"], "bytes 2-5/8");
@@ -803,7 +819,7 @@ assert.match(
   /filename\*=UTF-8''%E6%8A%A5%E5%91%8A%20%28final%27s%2A%29\.pdf/u
 );
 assert.deepEqual(rawRange.body, Buffer.from("2345"));
-const metadataOnlyResponse = captureContentResponse({
+const metadataOnlyResponse = await captureContentResponse({
   schemaVersion: "aginti-artifact-content-v1",
   artifactId,
   filename: "report.pdf",
@@ -814,14 +830,15 @@ const metadataOnlyResponse = captureContentResponse({
   end: 7,
   partial: false,
   metadataOnly: true,
-  content: null,
+  body: null,
+  cleanup() {},
 });
 assert.equal(metadataOnlyResponse.statusCode, 200);
 assert.equal(metadataOnlyResponse.headers["Content-Length"], "0");
 assert.equal(metadataOnlyResponse.headers["X-Artifact-Content-Length"], "8");
 assert.equal(metadataOnlyResponse.body, undefined);
-assert.throws(
-  () => captureContentResponse({
+await assert.rejects(
+  captureContentResponse({
     schemaVersion: "aginti-artifact-content-v1",
     artifactId,
     filename: "report.pdf",
@@ -832,9 +849,10 @@ assert.throws(
     end: 5,
     partial: true,
     metadataOnly: false,
-    content: Buffer.from("too short"),
+    body: new Response(Buffer.from("too short")).body,
+    cleanup() {},
   }, { rangeRequested: true }),
-  /content range is invalid/u,
+  /exceeded its bound/u,
   "raw delivery fails closed when body length disagrees with authenticated metadata"
 );
 assert.throws(() => findIntegrationArtifact([], artifactId), /Artifact not found/u);

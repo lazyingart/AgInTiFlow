@@ -105,14 +105,29 @@ function publicSource(overrides = {}) {
 
 const legacyCapability = integrationCapabilitiesResponse({ enabled: true, cancel: true, resume: true });
 assert.equal(Object.prototype.hasOwnProperty.call(legacyCapability, "search"), false);
-assert.deepEqual(legacyCapability.artifacts.kinds, ["plot", "table", "markdown", "file"]);
+assert.deepEqual(legacyCapability.artifacts.kinds, ["plot", "table", "markdown"]);
+const filesCapability = integrationCapabilitiesResponse({
+  enabled: true,
+  cancel: true,
+  resume: true,
+  files: true,
+});
+assert.deepEqual(filesCapability.artifacts.kinds, ["plot", "table", "markdown", "file"]);
 const searchCapability = integrationCapabilitiesResponse({ enabled: true, cancel: true, resume: true, search: true });
 assert.deepEqual(searchCapability.search, {
   enabled: true,
   modes: ["web", "papers", "both"],
   maximumSources: 20,
 });
-assert.deepEqual(searchCapability.artifacts.kinds, ["plot", "table", "markdown", "sources", "file"]);
+assert.deepEqual(searchCapability.artifacts.kinds, ["plot", "table", "markdown", "sources"]);
+const searchFilesCapability = integrationCapabilitiesResponse({
+  enabled: true,
+  cancel: true,
+  resume: true,
+  search: true,
+  files: true,
+});
+assert.deepEqual(searchFilesCapability.artifacts.kinds, ["plot", "table", "markdown", "sources", "file"]);
 assert.deepEqual(
   assertPublicIntegrationResponse(INTEGRATION_RPC_PATHS.capabilities, searchCapability).search,
   searchCapability.search

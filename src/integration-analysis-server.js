@@ -20,6 +20,7 @@ import {
 } from "./integration-analysis-config.js";
 import { IntegrationServiceConfigError } from "./integration-config.js";
 import { createFileIntegrationIdempotencyStore } from "./integration-idempotency-store.js";
+import { createIntegrationDocumentWorkerClient } from "./integration-document-worker-client.js";
 import { buildFixedIntegrationPolicy } from "./integration-policy.js";
 import {
   createExactIntegrationRouteBoundary,
@@ -91,7 +92,7 @@ function normalizeTrustedProxyClient(value, config) {
 }
 
 function configureHttpServer(server) {
-  server.requestTimeout = 35_000;
+  server.requestTimeout = 125_000;
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 5_000;
   server.maxHeadersCount = 64;
@@ -393,7 +394,7 @@ export function createIntegrationAnalysisServer(options = {}) {
 export async function composeProductionIntegrationAnalysisServer(options = {}) {
   exactOptions(
     options,
-    ["config", "trustedPrincipalProxyClient", "localModelApiKey", "groundedSearchApiKey"],
+    ["config", "trustedPrincipalProxyClient", "localModelApiKey", "groundedSearchApiKey", "documentWorkerCredential"],
     ["config", "trustedPrincipalProxyClient", "localModelApiKey"],
     "analysis production composition options"
   );
@@ -414,11 +415,39 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
       "Grounded search and LocalLLM model access require distinct systemd credentials."
     );
   }
+  const documentWorkerEnabled = config.documentWorker?.enabled === true;
+  const documentCredentialPresent = Object.prototype.hasOwnProperty.call(options, "documentWorkerCredential");
+  const trustedProxyToken = plainDataObject(options.trustedPrincipalProxyClient)
+    ? Object.getOwnPropertyDescriptor(options.trustedPrincipalProxyClient, "token")?.value
+    : undefined;
+  if (!documentWorkerEnabled && documentCredentialPresent) {
+    fail("ANALYSIS_CREDENTIAL_INVALID", "A document worker credential is forbidden while document creation is disabled.");
+  }
+  if (
+    documentCredentialPresent &&
+    new Set([
+      options.localModelApiKey,
+      options.groundedSearchApiKey,
+      trustedProxyToken,
+    ].filter(Boolean)).has(options.documentWorkerCredential)
+  ) {
+    fail(
+      "ANALYSIS_CREDENTIAL_INVALID",
+      "Document worker access requires a credential distinct from model, search, and trusted BFF access."
+    );
+  }
   let coordinator;
   let sessionService;
   let server;
   try {
     coordinator = await createSystemdIntegrationAnalysisCoordinator();
+    const documentWorkerClient = documentCredentialPresent
+      ? createIntegrationDocumentWorkerClient({
+          endpoint: config.documentWorker.endpoint,
+          credential: options.documentWorkerCredential,
+          timeoutMs: config.documentWorker.timeoutMs,
+        })
+      : undefined;
     const planner = createIntegrationAnalysisPlanner({
       coordinator,
       localModelConfig: {
@@ -435,6 +464,7 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
             },
           }
         : {}),
+      ...(documentWorkerClient === undefined ? {} : { documentWorkerClient }),
     });
     const plannerActivation = await planner.activate();
     const startupProof = plannerActivation.readinessProof;
@@ -442,6 +472,7 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
       analysisRunner: planner,
       stateRoot: config.stateRoot,
       plannerActivation,
+      ...(documentWorkerClient === undefined ? {} : { documentWorkerClient }),
     });
     if (typeof sessionService.recoverMutation !== "function") {
       fail(

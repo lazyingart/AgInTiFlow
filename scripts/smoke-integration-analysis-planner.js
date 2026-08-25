@@ -41,9 +41,11 @@ import {
 } from "../src/integration-grounded-search.js";
 import { contractDigest } from "../src/integration-policy.js";
 import {
-  INTEGRATION_TEX_TOOL_NAME,
-  inspectPrivateIntegrationFileArtifact,
-} from "../src/integration-tex-compiler.js";
+  INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
+  inspectIntegrationDocumentWorkerCommittedFileArtifact,
+  inspectIntegrationDocumentWorkerFileArtifact,
+} from "../src/integration-document-worker-client.js";
+import { createDocumentWorkerFixture } from "./test-document-worker-fixture.js";
 
 const PRINCIPAL_ID = "principal_planner_smoke_001";
 const BROWSER_SESSION_ID = "2".repeat(64);
@@ -253,7 +255,7 @@ function texToolResponse(filename, source) {
           id: `call_${contractDigest({ filename, source }).slice(0, 20)}`,
           type: "function",
           function: {
-            name: INTEGRATION_TEX_TOOL_NAME,
+            name: INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
             arguments: JSON.stringify({ filename, source }),
           },
         }],
@@ -262,7 +264,26 @@ function texToolResponse(filename, source) {
   };
 }
 
-function fixture(complete, { worker, groundedSearchClient, documentCompiler } = {}) {
+function malformedTexToolResponse(rawArguments = '{"filename":"truncated.tex","source":') {
+  return {
+    choices: [{
+      message: {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_malformed_tex",
+          type: "function",
+          function: {
+            name: INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
+            arguments: rawArguments,
+          },
+        }],
+      },
+    }],
+  };
+}
+
+function fixture(complete, { worker, groundedSearchClient, documentWorkerClient } = {}) {
   const rpcCalls = [];
   const manager = createExecutionJobManager({ worker: worker || fakeWorker() });
   const client = createTestOnlyExecutionWorkerClient(rpcForManager(manager, rpcCalls));
@@ -273,7 +294,7 @@ function fixture(complete, { worker, groundedSearchClient, documentCompiler } = 
     modelClient: Object.freeze({ mock: true }),
     complete,
     ...(groundedSearchClient === undefined ? {} : { groundedSearchClient }),
-    ...(documentCompiler === undefined ? {} : { documentCompiler }),
+    ...(documentWorkerClient === undefined ? {} : { documentWorkerClient }),
   });
   return Object.freeze({ planner, coordinator, rpcCalls });
 }
@@ -1154,9 +1175,10 @@ async function directAnswerDoesNotExecute() {
 }
 
 async function texPdfIntentCannotFinishWithProseOnly() {
+  const documentWorker = createDocumentWorkerFixture();
   const gated = fixture(async () =>
     textResponse("The LaTeX report and PDF are ready for download.")
-  );
+  , { documentWorkerClient: documentWorker.client() });
   const finals = [];
   await assert.rejects(
     gated.planner.run(
@@ -1179,6 +1201,7 @@ async function texPdfIntentCannotFinishWithProseOnly() {
 
 async function texPdfIntentCompilesAndSealsBothFiles() {
   let step = 0;
+  const documentWorker = createDocumentWorkerFixture();
   const source = [
     "\\documentclass{article}",
     "\\begin{document}",
@@ -1190,35 +1213,35 @@ async function texPdfIntentCompilesAndSealsBothFiles() {
     step += 1;
     if (step === 1) {
       assert.equal(payload.tool_choice, "required");
-      assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_TEX_TOOL_NAME]);
+      assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_DOCUMENT_WORKER_TOOL_NAME]);
       return texToolResponse("truthful-report.tex", source);
     }
-    assert.equal(Object.hasOwn(payload, "tools"), false);
-    const feedback = JSON.parse(payload.messages.at(-1).content);
-    assert.equal(feedback.ok, true);
-    assert.equal(feedback.artifacts.length, 2);
-    assert.match(feedback.compileReceiptDigest, /^[a-f0-9]{64}$/u);
-    return textResponse("Created the requested TeX source and its compiled PDF.");
-  });
+    throw new Error("post-commit model synthesis must not be on the success-critical path");
+  }, { documentWorkerClient: documentWorker.client() });
   const privateArtifacts = [];
   const result = await compiled.planner.run(
     scope("run_00000000-0000-4000-8000-000000000098"),
     { prompt: "Create a LaTeX report and deliver both truthful-report.tex and truthful-report.pdf." },
-    { onArtifact: (artifact) => privateArtifacts.push(artifact) }
+    {
+      onArtifact: (artifact) => privateArtifacts.push(artifact),
+      onDocumentCommitIntent: () => true,
+    }
   );
-  assert.equal(step, 2);
+  assert.equal(step, 1);
   assert.equal(result.kind, "analysis");
   assert.equal(result.executionStatus, "succeeded");
+  assert.equal(result.text, "The TeX source and compiled PDF are ready below.");
   assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["file", "file"]);
   assert.deepEqual(result.artifacts.map(({ spec }) => spec.filename), ["truthful-report.tex", "truthful-report.pdf"]);
-  assert(privateArtifacts.every((artifact) => inspectPrivateIntegrationFileArtifact(artifact)));
-  assert(result.artifacts.every((artifact) => inspectPrivateIntegrationFileArtifact(artifact) === null));
+  assert(privateArtifacts.every((artifact) => inspectIntegrationDocumentWorkerFileArtifact(artifact)));
+  assert(result.artifacts.every((artifact) => inspectIntegrationDocumentWorkerFileArtifact(artifact) === null));
   assert.doesNotMatch(JSON.stringify(result), /(?:privateBytes|contentBytes|blobRef|receiptId)/u);
   compiled.coordinator.close();
 }
 
 async function texPdfContextualFollowupRecompilesBothFiles() {
   let step = 0;
+  const documentWorker = createDocumentWorkerFixture();
   const source = [
     "\\documentclass{article}",
     "\\begin{document}",
@@ -1231,13 +1254,12 @@ async function texPdfContextualFollowupRecompilesBothFiles() {
     step += 1;
     if (step === 1) {
       assert.equal(payload.tool_choice, "required");
-      assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_TEX_TOOL_NAME]);
+      assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_DOCUMENT_WORKER_TOOL_NAME]);
       assert.equal(payload.messages.at(-1).content, "Make the title larger and regenerate the files.");
       return texToolResponse("retitled-report.tex", source);
     }
-    assert.equal(Object.hasOwn(payload, "tools"), false);
-    return textResponse("Regenerated the retitled TeX source and PDF.");
-  });
+    throw new Error("post-commit model synthesis must not run");
+  }, { documentWorkerClient: documentWorker.client() });
   const result = await contextual.planner.run(
     scope("run_00000000-0000-4000-8000-000000000102"),
     {
@@ -1246,9 +1268,10 @@ async function texPdfContextualFollowupRecompilesBothFiles() {
         { role: "user", content: "Create a LaTeX report and deliver both report.tex and report.pdf." },
         { role: "assistant", content: "Created the requested TeX source and PDF." },
       ],
-    }
+    },
+    { onDocumentCommitIntent: () => true }
   );
-  assert.equal(step, 2);
+  assert.equal(step, 1);
   assert.deepEqual(result.artifacts.map(({ spec }) => spec.filename), [
     "retitled-report.tex",
     "retitled-report.pdf",
@@ -1256,33 +1279,228 @@ async function texPdfContextualFollowupRecompilesBothFiles() {
   contextual.coordinator.close();
 }
 
+async function exactQaoaFigurePromptCommitsBeforeFinalCallback() {
+  const prompt = "Write a latex of qaoa compile and give me link of pdf with figures";
+  const source = [
+    "\\documentclass{article}",
+    "\\usepackage{tikz}",
+    "\\begin{document}",
+    "\\section*{QAOA overview}",
+    "\\begin{figure}",
+    "\\centering",
+    "\\begin{tikzpicture}",
+    "\\draw[->] (0,0) -- (2,0);",
+    "\\draw[->] (0,0) -- (0,2);",
+    "\\draw (0,0) -- (1,1) -- (2,1.4);",
+    "\\end{tikzpicture}",
+    "\\caption{Self-contained illustrative objective curve.}",
+    "\\end{figure}",
+    "\\end{document}",
+    "",
+  ].join("\n");
+  let modelCalls = 0;
+  const documentWorker = createDocumentWorkerFixture();
+  const exactPrompt = fixture(async (_client, payload) => {
+    modelCalls += 1;
+    assert.equal(modelCalls, 1, "a committed document must not require a post-commit model call");
+    assert.equal(payload.tool_choice, "required");
+    assert.match(payload.messages[0].content, /at least one nonempty self-contained figure/u);
+    assert.doesNotMatch(payload.messages[0].content, /QAOA/u);
+    assert.equal(payload.messages.at(-1).content, prompt);
+    return texToolResponse("qaoa-figure.tex", source);
+  }, { documentWorkerClient: documentWorker.client() });
+  const privateArtifacts = [];
+  const finalCallbacks = [];
+  const progress = [];
+  const result = await exactPrompt.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000103"),
+    { prompt },
+    {
+      onProgress: (value) => progress.push(value),
+      onArtifact: (artifact) => privateArtifacts.push(artifact),
+      onDocumentCommitIntent: () => true,
+      onFinal: (value) => finalCallbacks.push(value),
+    }
+  );
+  assert.equal(modelCalls, 1);
+  assert.equal(result.text, "The TeX source and compiled PDF are ready below.");
+  assert.equal(result.toolCalls, 1);
+  assert.deepEqual(result.artifacts.map(({ spec }) => spec.filename), ["qaoa-figure.tex", "qaoa-figure.pdf"]);
+  assert(privateArtifacts.every((artifact) => inspectIntegrationDocumentWorkerFileArtifact(artifact)));
+  assert(privateArtifacts.every((artifact) => inspectIntegrationDocumentWorkerCommittedFileArtifact(artifact)));
+  assert.equal(finalCallbacks.length, 1);
+  assert(finalCallbacks[0].artifacts.every((artifact) => inspectIntegrationDocumentWorkerCommittedFileArtifact(artifact)));
+  assert(result.artifacts.every((artifact) => inspectIntegrationDocumentWorkerFileArtifact(artifact) === null));
+  const compileCalls = documentWorker.calls.filter(({ pathname }) => pathname === "/artifact/v1/compile");
+  assert.equal(compileCalls.length, 1);
+  assert.equal(compileCalls[0].request.requirements.minimumFigureCount, 1);
+  assert.equal(documentWorker.calls.filter(({ pathname }) => pathname === "/artifact/v1/commit").length, 1);
+  assert(progress.some((item) =>
+    item.toolName === INTEGRATION_DOCUMENT_WORKER_TOOL_NAME &&
+    item.toolCallNumber === 1 &&
+    item.executionState === "succeeded"
+  ));
+  exactPrompt.coordinator.close();
+}
+
+async function texToolRetriesAreBoundedAndSanitized() {
+  const correctedSource = "\\documentclass{article}\n\\begin{document}Corrected.\\end{document}\n";
+  let malformedStep = 0;
+  const malformedWorker = createDocumentWorkerFixture();
+  const malformed = fixture(async (_client, payload) => {
+    malformedStep += 1;
+    if (malformedStep === 1) return malformedTexToolResponse();
+    assert.equal(malformedStep, 2);
+    assert.match(payload.messages.at(-1).content, /malformed or truncated/u);
+    assert.match(payload.messages.at(-1).content, /exactly one complete compile_tex_document call/u);
+    assert.doesNotMatch(payload.messages.at(-1).content, /(?:compiler|\/private\/|\.log)/u);
+    return texToolResponse("corrected-malformed.tex", correctedSource);
+  }, { documentWorkerClient: malformedWorker.client() });
+  const malformedProgress = [];
+  const malformedResult = await malformed.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000104"),
+    { prompt: "Create a LaTeX source and compiled PDF report." },
+    {
+      onProgress: (value) => malformedProgress.push(value),
+      onDocumentCommitIntent: () => true,
+    }
+  );
+  assert.equal(malformedResult.toolCalls, 2);
+  assert.equal(malformedWorker.calls.filter(({ pathname }) => pathname === "/artifact/v1/compile").length, 1);
+  assert(malformedProgress.some((item) => item.toolCallNumber === 1 && item.executionState === "failed"));
+  assert(malformedProgress.some((item) => item.toolCallNumber === 2 && item.executionState === "succeeded"));
+  malformed.coordinator.close();
+
+  const compileWorker = createDocumentWorkerFixture();
+  compileWorker.failNextCompile("TEX_COMPILE_FAILED");
+  let compileStep = 0;
+  const rejectedSourceMarker = "REJECTED_SOURCE_MUST_NOT_RETURN_IN_CORRECTION";
+  const compileRetry = fixture(async (_client, payload) => {
+    compileStep += 1;
+    if (compileStep === 1) {
+      return texToolResponse(
+        "rejected.tex",
+        `\\documentclass{article}\n\\begin{document}${rejectedSourceMarker}\\end{document}\n`
+      );
+    }
+    assert.equal(compileStep, 2);
+    const correction = payload.messages.at(-1).content;
+    assert.match(correction, /rejected by the bounded TeX compiler/u);
+    assert.match(correction, /Do not discuss or guess compiler diagnostics/u);
+    assert.doesNotMatch(correction, new RegExp(`${rejectedSourceMarker}|/private/|compiler\\.log`, "u"));
+    return texToolResponse("corrected-compile.tex", correctedSource);
+  }, { documentWorkerClient: compileWorker.client() });
+  const compileResult = await compileRetry.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000105"),
+    { prompt: "Create a LaTeX source and compiled PDF report." },
+    { onDocumentCommitIntent: () => true }
+  );
+  assert.equal(compileResult.toolCalls, 2);
+  assert.equal(compileStep, 2);
+  assert.equal(compileWorker.calls.filter(({ pathname }) => pathname === "/artifact/v1/compile").length, 2);
+  compileRetry.coordinator.close();
+
+  const boundedWorker = createDocumentWorkerFixture();
+  boundedWorker.failNextCompile("TEX_COMPILE_FAILED");
+  let boundedStep = 0;
+  const bounded = fixture(async () => {
+    boundedStep += 1;
+    if (boundedStep === 2) boundedWorker.failNextCompile("TEX_COMPILE_FAILED");
+    return texToolResponse(
+      `bounded-${boundedStep}.tex`,
+      `\\documentclass{article}\n\\begin{document}Attempt ${boundedStep}.\\end{document}\n`
+    );
+  }, { documentWorkerClient: boundedWorker.client() });
+  await assert.rejects(
+    bounded.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000106"),
+      { prompt: "Create a LaTeX source and compiled PDF report." },
+      { onDocumentCommitIntent: () => true }
+    ),
+    (error) => error?.code === "ANALYSIS_TEX_COMPILE_FAILED" && error?.status === 422
+  );
+  assert.equal(boundedStep, 2);
+  assert.equal(boundedWorker.calls.filter(({ pathname }) => pathname === "/artifact/v1/compile").length, 2);
+  assert.equal(boundedWorker.calls.some(({ pathname }) => pathname === "/artifact/v1/commit"), false);
+  bounded.coordinator.close();
+}
+
+async function documentReadinessDegradesWithoutBreakingOrdinaryChat() {
+  const offlineWorker = createDocumentWorkerFixture({ available: false });
+  const offline = fixture(async (_client, payload) =>
+    payload.tool_choice === "required"
+      ? texToolResponse(
+          "reactivated.tex",
+          "\\documentclass{article}\n\\begin{document}Reactivated.\\end{document}\n"
+        )
+      : textResponse("Ordinary chat remains available."), {
+    documentWorkerClient: offlineWorker.client(),
+  });
+  const offlineActivation = await offline.planner.activate();
+  assert.equal(offlineActivation.ready, true);
+  assert.equal(offlineActivation.documentWorker, undefined);
+  const ordinary = await offline.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000107"),
+    { prompt: "What is a median?" }
+  );
+  assert.equal(ordinary.kind, "direct");
+  assert.equal(ordinary.text, "Ordinary chat remains available.");
+  offlineWorker.setAvailable(true);
+  await assert.rejects(
+    offline.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000110"),
+      { prompt: "Create a LaTeX source and compiled PDF report." },
+      { onDocumentCommitIntent: () => true }
+    ),
+    (error) => error?.code === "ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE" && error?.status === 503
+  );
+  assert.equal(
+    offlineWorker.calls.filter(({ pathname }) => pathname === "/artifact/v1/compile").length,
+    0,
+    "a recovered route must not bypass the pinned files=false activation"
+  );
+  const reactivated = await offline.planner.activate();
+  assert.equal(reactivated.documentWorker?.creationEnabled, true);
+  const regenerated = await offline.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000111"),
+    { prompt: "Create a LaTeX source and compiled PDF report." },
+    { onDocumentCommitIntent: () => true }
+  );
+  assert.equal(regenerated.executionStatus, "succeeded");
+  offline.coordinator.close();
+
+  const disabledWorker = createDocumentWorkerFixture({ creationEnabled: false });
+  const disabled = fixture(async (_client, payload) => {
+    if (payload.tool_choice === "required") {
+      return texToolResponse(
+        "disabled.tex",
+        "\\documentclass{article}\n\\begin{document}Disabled.\\end{document}\n"
+      );
+    }
+    return textResponse("Ordinary chat remains available while creation is disabled.");
+  }, { documentWorkerClient: disabledWorker.client() });
+  const disabledActivation = await disabled.planner.activate();
+  assert.equal(disabledActivation.ready, true);
+  assert.equal(disabledActivation.documentWorker, undefined);
+  assert.equal((await disabled.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000108"),
+    { prompt: "What is a quartile?" }
+  )).kind, "direct");
+  await assert.rejects(
+    disabled.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000109"),
+      { prompt: "Create a LaTeX source and compiled PDF report." },
+      { onDocumentCommitIntent: () => true }
+    ),
+    (error) => error?.code === "ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE" && error?.status === 503
+  );
+  disabled.coordinator.close();
+}
+
 async function texPdfIntentRejectsMetadataOnlyCompilerForgery() {
   let step = 0;
   const source = "\\documentclass{article}\n\\begin{document}Forged\\end{document}\n";
-  const forgedArtifacts = Object.freeze([
-    sanitizeIntegrationArtifact({
-      title: "Forged source",
-      kind: "file",
-      spec: {
-        schemaVersion: "1",
-        filename: "forged.tex",
-        mime: "application/x-tex",
-        bytes: 64,
-        sha256: "a".repeat(64),
-      },
-    }),
-    sanitizeIntegrationArtifact({
-      title: "Forged PDF",
-      kind: "file",
-      spec: {
-        schemaVersion: "1",
-        filename: "forged.pdf",
-        mime: "application/pdf",
-        bytes: 128,
-        sha256: "b".repeat(64),
-      },
-    }),
-  ]);
+  const documentWorker = createDocumentWorkerFixture();
   const forged = fixture(
     async () => {
       step += 1;
@@ -1290,21 +1508,17 @@ async function texPdfIntentRejectsMetadataOnlyCompilerForgery() {
         ? texToolResponse("forged.tex", source)
         : textResponse("The fabricated metadata is complete.");
     },
-    {
-      documentCompiler: async () => Object.freeze({
-        receipt: Object.freeze({ digest: "c".repeat(64) }),
-        artifacts: forgedArtifacts,
-      }),
-    }
+    { documentWorkerClient: documentWorker.client() }
   );
   await assert.rejects(
     forged.planner.run(
       scope("run_00000000-0000-4000-8000-000000000099"),
-      { prompt: "Create a LaTeX report and deliver both forged.tex and forged.pdf." }
+      { prompt: "Create a LaTeX report and deliver both forged.tex and forged.pdf." },
+      { onDocumentCommitIntent: () => false }
     ),
-    (error) => error?.code === "ANALYSIS_DOCUMENT_ARTIFACT_REQUIRED" && error?.status === 502
+    (error) => error?.code === "ANALYSIS_DOCUMENT_COMMIT_AUTHORITY_REQUIRED" && error?.status === 503
   );
-  assert.equal(step, 2);
+  assert.equal(step, 1);
   forged.coordinator.close();
 }
 
@@ -1760,6 +1974,9 @@ await directAnswerDoesNotExecute();
 await texPdfIntentCannotFinishWithProseOnly();
 await texPdfIntentCompilesAndSealsBothFiles();
 await texPdfContextualFollowupRecompilesBothFiles();
+await exactQaoaFigurePromptCommitsBeforeFinalCallback();
+await texToolRetriesAreBoundedAndSanitized();
+await documentReadinessDegradesWithoutBreakingOrdinaryChat();
 await texPdfIntentRejectsMetadataOnlyCompilerForgery();
 await conversationalFollowupUsesOnlyCurrentTurnExecutionAuthority();
 await generalPlotRequestsRequireExecutionAndArtifact();

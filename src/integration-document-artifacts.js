@@ -1,20 +1,12 @@
-import crypto from "node:crypto";
-import { execFile } from "node:child_process";
-import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
-
-import { MAX_INTEGRATION_FILE_ARTIFACT_BYTES } from "./integration-artifacts.js";
 import {
-  inspectPrivateIntegrationFileArtifact,
-  validateIntegrationTexCompileReceipt,
-} from "./integration-tex-compiler.js";
+  INTEGRATION_DOCUMENT_COMPILE_REQUIREMENTS_SCHEMA_VERSION,
+  inspectIntegrationDocumentWorkerCommittedFileArtifact,
+  inspectIntegrationDocumentWorkerFileArtifact,
+  validateIntegrationDocumentWorkerReceipt,
+} from "./integration-document-worker-client.js";
 
 export const INTEGRATION_DOCUMENT_ARTIFACT_SCHEMA_VERSION = "aginti-integration-document-artifacts-v1";
-
-const execFileAsync = promisify(execFile);
-const QPDF_EXECUTABLE = "/usr/bin/qpdf";
 
 const DOCUMENT_ACTION =
   /^(?:make|create|generate|write|rewrite|revise|update|edit|modify|correct|fix|regenerate|recompile|produce|prepare|compile|typeset|render|export|build|deliver|provide|save)\b/iu;
@@ -25,6 +17,10 @@ const DOCUMENT_FOLLOWUP_REFERENCE =
   /\b(?:it|this|that|same|again|latex|tex|pdf|source|files?|documents?|reports?|papers?|manuscripts?|artifacts?|outputs?|deliverables?|title|heading|section|paragraph|wording|grammar|layout|formatting|fonts?|margins?|tables?|figures?|citations?)\b|(?:它|这个|這個|同一|再次|重新|源文件|源码|源碼|文件|文档|文檔|报告|報告|论文|論文|标题|標題|段落|排版|格式|字体|字體|页边距|頁邊距|表格|图片|圖片|引用)/iu;
 const DOCUMENT_PAIR_EXCLUSION =
   /\b(?:do\s+not|don't|dont|never|avoid|without|no\s+need\s+to|not\s+asked\s+to)\b[^.!?;\r\n]{0,160}\b(?:latex|tex|pdf)\b|\b(?:latex|tex|pdf)(?:\s+(?:source|file|document))?\s+only\b|\bonly\s+(?:the\s+)?(?:latex|tex|pdf)\b|(?:不要|不用|无需|無需|不需要|禁止|避免)[^。！？；\r\n]{0,100}(?:latex|tex|pdf)/iu;
+const DOCUMENT_FIGURE =
+  /\b(?:figures?|plots?|charts?|diagrams?|illustrations?|graphs?|tikz|pgfplots)\b|(?:图|圖|插图|插圖|绘图|繪圖|图表|圖表|示意图|示意圖|曲线|曲線)/iu;
+const DOCUMENT_FIGURE_EXCLUSION =
+  /\b(?:do\s+not|don't|dont|never|avoid|without|remove|omit|exclude|no)\b[^.!?;\r\n]{0,100}\b(?:figures?|plots?|charts?|diagrams?|illustrations?|graphs?|tikz|pgfplots)\b|(?:不要|不用|无需|無需|不需要|删除|刪除|移除|省略|避免)[^。！？；\r\n]{0,80}(?:图|圖|插图|插圖|绘图|繪圖|图表|圖表|示意图|示意圖|曲线|曲線)/iu;
 const CHINESE_DOCUMENT_ACTION = /^(?:请|請|请你|請你|请帮我|請幫我|帮我|幫我)?(?:创建|建立|生成|撰写|撰寫|重写|重寫|修改|修订|修訂|更新|重新生成|重新编译|重新編譯|编译|編譯|导出|導出|准备|準備|制作|製作|交付|排版)/u;
 
 function quotedContextRemoved(value = "") {
@@ -136,10 +132,26 @@ function activeDocumentConversation(conversation = []) {
   let active = false;
   for (const message of conversation) {
     if (!message || message.role !== "user" || typeof message.content !== "string") continue;
-    if (explicitDocumentArtifactIntent(message.content)) active = true;
-    else if (!(active && requestsDocumentFollowup(message.content))) active = false;
+    const text = quotedContextRemoved(message.content);
+    if (DOCUMENT_PAIR_EXCLUSION.test(text)) active = false;
+    else if (explicitDocumentArtifactIntent(message.content)) active = true;
   }
   return active;
+}
+
+function minimumFigureCount(prompt = "", conversation = []) {
+  const current = quotedContextRemoved(prompt);
+  if (DOCUMENT_FIGURE_EXCLUSION.test(current)) return 0;
+  if (DOCUMENT_FIGURE.test(affirmativeDocumentText(current))) return 1;
+  if (!Array.isArray(conversation)) return 0;
+  let required = false;
+  for (const message of conversation) {
+    if (!message || message.role !== "user" || typeof message.content !== "string") continue;
+    const text = quotedContextRemoved(message.content);
+    if (DOCUMENT_FIGURE_EXCLUSION.test(text)) required = false;
+    else if (DOCUMENT_FIGURE.test(affirmativeDocumentText(text))) required = true;
+  }
+  return required ? 1 : 0;
 }
 
 export function classifyIntegrationDocumentArtifactIntent(prompt = "", conversation = []) {
@@ -151,6 +163,11 @@ export function classifyIntegrationDocumentArtifactIntent(prompt = "", conversat
     required,
     kind: required ? "tex-pdf" : "none",
     requiredFormats: Object.freeze(required ? ["tex", "pdf"] : []),
+    requirements: Object.freeze({
+      schemaVersion: INTEGRATION_DOCUMENT_COMPILE_REQUIREMENTS_SCHEMA_VERSION,
+      profile: "self-contained-tex-v1",
+      minimumFigureCount: required ? minimumFigureCount(prompt, conversation) : 0,
+    }),
   });
 }
 
@@ -160,108 +177,6 @@ function artifactFilename(value = {}) {
     return "";
   }
   return path.basename(candidate.trim());
-}
-
-function artifactBytes(value = {}) {
-  const privateFile = inspectPrivateIntegrationFileArtifact(value);
-  return privateFile?.bytes || null;
-}
-
-function validatePdfStructure(value) {
-  const bytes = Buffer.isBuffer(value)
-    ? value
-    : value instanceof Uint8Array
-      ? Buffer.from(value.buffer, value.byteOffset, value.byteLength)
-      : null;
-  if (!bytes || bytes.length < 64 || bytes.length > MAX_INTEGRATION_FILE_ARTIFACT_BYTES) {
-    return Object.freeze({ valid: false, reason: "size-out-of-bounds" });
-  }
-  const head = bytes.subarray(0, Math.min(bytes.length, 1024)).toString("latin1");
-  const headerOffset = head.indexOf("%PDF-");
-  if (
-    headerOffset < 0 ||
-    !/^%PDF-(?:1\.[0-9]|2\.0)(?:[\t \r\n]|$)/u.test(head.slice(headerOffset, headerOffset + 16))
-  ) {
-    return Object.freeze({ valid: false, reason: "invalid-header" });
-  }
-  const tailStart = Math.max(0, bytes.length - 16 * 1024);
-  const tail = bytes.subarray(tailStart).toString("latin1");
-  const eofOffset = tail.lastIndexOf("%%EOF");
-  if (eofOffset < 0 || /[^\0\t\n\f\r ]/u.test(tail.slice(eofOffset + 5))) {
-    return Object.freeze({ valid: false, reason: "invalid-eof" });
-  }
-  const startXrefMatches = [...tail.slice(0, eofOffset).matchAll(/startxref\s+(\d+)/giu)];
-  const xrefOffset = Number(startXrefMatches.at(-1)?.[1]);
-  if (!Number.isSafeInteger(xrefOffset) || xrefOffset < 0 || xrefOffset >= bytes.length) {
-    return Object.freeze({ valid: false, reason: "invalid-startxref" });
-  }
-  const xrefProbe = bytes
-    .subarray(xrefOffset, Math.min(bytes.length, xrefOffset + 2 * 1024 * 1024))
-    .toString("latin1")
-    .trimStart();
-  const tableXref = /^xref\s+\d+\s+\d+\b/u.test(xrefProbe);
-  const streamXref = /^\d+\s+\d+\s+obj\b/u.test(xrefProbe);
-  if (!tableXref && !streamXref) {
-    return Object.freeze({ valid: false, reason: "invalid-xref-target" });
-  }
-  if (bytes.lastIndexOf("endobj", xrefOffset) < headerOffset) {
-    return Object.freeze({ valid: false, reason: "missing-indirect-object" });
-  }
-  if (tableXref) {
-    const trailerOffset = xrefProbe.lastIndexOf("trailer");
-    const trailer = trailerOffset >= 0 ? xrefProbe.slice(trailerOffset) : "";
-    if (
-      !/^trailer\s*<</u.test(trailer) ||
-      !/\/Size\s+\d+\b/u.test(trailer) ||
-      !/\/Root\s+\d+\s+\d+\s+R\b/u.test(trailer)
-    ) {
-      return Object.freeze({ valid: false, reason: "invalid-trailer" });
-    }
-  } else {
-    const dictionaryEnd = xrefProbe.indexOf("stream");
-    const dictionary = dictionaryEnd >= 0 ? xrefProbe.slice(0, dictionaryEnd) : "";
-    if (
-      !/\/Type\s*\/XRef\b/u.test(dictionary) ||
-      !/\/Size\s+\d+\b/u.test(dictionary) ||
-      !/\/Root\s+\d+\s+\d+\s+R\b/u.test(dictionary) ||
-      !/\/W\s*\[[^\]]+\]/u.test(dictionary)
-    ) {
-      return Object.freeze({ valid: false, reason: "invalid-xref-stream" });
-    }
-  }
-  return Object.freeze({ valid: true, reason: "valid-structure" });
-}
-
-export async function validateIntegrationPdfBytes(value) {
-  const structure = validatePdfStructure(value);
-  if (!structure.valid) return structure;
-  const bytes = Buffer.isBuffer(value)
-    ? value
-    : Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-  let temporaryRoot = "";
-  try {
-    temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-pdf-check-"));
-    const temporaryFile = path.join(temporaryRoot, "artifact.pdf");
-    await fs.writeFile(temporaryFile, bytes, { flag: "wx", mode: 0o600 });
-    await execFileAsync(QPDF_EXECUTABLE, ["--check", temporaryFile], {
-      encoding: "utf8",
-      timeout: 15_000,
-      maxBuffer: 64 * 1024,
-      windowsHide: true,
-      env: {
-        LANG: "C",
-        LC_ALL: "C",
-      },
-    });
-    return Object.freeze({ valid: true, reason: "qpdf-clean" });
-  } catch (error) {
-    return Object.freeze({
-      valid: false,
-      reason: error?.code === "ENOENT" ? "validator-unavailable" : "qpdf-rejected",
-    });
-  } finally {
-    if (temporaryRoot) await fs.rm(temporaryRoot, { recursive: true, force: true }).catch(() => {});
-  }
 }
 
 export async function evaluateIntegrationDocumentArtifactCompletion(intent = {}, artifacts = []) {
@@ -279,40 +194,48 @@ export async function evaluateIntegrationDocumentArtifactCompletion(intent = {},
   const receipts = new Map();
   for (const artifact of candidates) {
     const filename = artifactFilename(artifact);
-    const bytes = artifactBytes(artifact);
-    const privateFile = inspectPrivateIntegrationFileArtifact(artifact);
-    if (!filename || !bytes) continue;
+    const privateFile = inspectIntegrationDocumentWorkerFileArtifact(artifact);
+    const committed = inspectIntegrationDocumentWorkerCommittedFileArtifact(artifact);
+    if (!filename || !privateFile || !committed) continue;
     let receipt = null;
     let contentMatchesReceipt = false;
     if (privateFile?.receipt) {
       try {
-        receipt = validateIntegrationTexCompileReceipt(privateFile.receipt);
+        receipt = validateIntegrationDocumentWorkerReceipt(privateFile.receipt);
         const expectedSha256 = privateFile.role === "source" ? receipt.sourceSha256 : receipt.pdfSha256;
         const expectedBytes = privateFile.role === "source" ? receipt.sourceBytes : receipt.pdfBytes;
         contentMatchesReceipt =
           new Set(["source", "pdf"]).has(privateFile.role) &&
-          bytes.byteLength === expectedBytes &&
-          crypto.createHash("sha256").update(bytes).digest("hex") === expectedSha256;
+          artifact?.spec?.bytes === expectedBytes &&
+          artifact?.spec?.sha256 === expectedSha256 &&
+          receipt.verifiedFigureCount >= (intent?.requirements?.minimumFigureCount || 0);
       } catch {}
     }
     if (
       receipt &&
+      committed.receiptDigest === receipt.digest &&
       contentMatchesReceipt &&
       privateFile.role === "source" &&
-      /\.tex$/iu.test(filename) &&
-      /\S/u.test(bytes.toString("utf8"))
+      /\.tex$/iu.test(filename)
     ) {
-      const roles = receipts.get(receipt.digest) || new Set();
+      const key = `${receipt.digest}:${committed.digest}`;
+      const roles = receipts.get(key) || new Set();
       roles.add("source");
-      receipts.set(receipt.digest, roles);
+      receipts.set(key, roles);
     }
     if (/\.pdf$/iu.test(filename)) {
-      if (receipt && contentMatchesReceipt && privateFile.role === "pdf") {
-        // An issued receipt exists only after qpdf succeeds inside the bounded,
-        // networkless compiler. Rechecking outside that sandbox would weaken the boundary.
-        const roles = receipts.get(receipt.digest) || new Set();
+      if (
+        receipt &&
+        committed.receiptDigest === receipt.digest &&
+        contentMatchesReceipt &&
+        privateFile.role === "pdf"
+      ) {
+        // The authenticated workstation worker issues this receipt only after
+        // its networkless compiler and qpdf validation succeed.
+        const key = `${receipt.digest}:${committed.digest}`;
+        const roles = receipts.get(key) || new Set();
         roles.add("pdf");
-        receipts.set(receipt.digest, roles);
+        receipts.set(key, roles);
       } else {
         invalidPdfCount += 1;
       }
@@ -328,7 +251,7 @@ export async function evaluateIntegrationDocumentArtifactCompletion(intent = {},
     missingFormats: Object.freeze(missingFormats),
     invalidPdfCount,
     reason: ok
-      ? "A server-sealed TeX source and qpdf-valid PDF share one compile receipt."
+      ? "A committed worker-sealed TeX source and qpdf-valid PDF share one bound receipt and commit acknowledgement."
       : missingFormats.length === 2
         ? "The requested TeX source and structurally valid PDF artifacts were not both produced."
         : missingFormats[0] === "tex"

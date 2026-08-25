@@ -4,9 +4,11 @@ import { types as utilTypes } from "node:util";
 import {
   DEFAULT_INTEGRATION_ANALYSIS_CONFIG_PATH,
   createIntegrationAnalysisTrustedProxyClient,
+  loadIntegrationAnalysisDocumentWorkerCredential,
   loadIntegrationAnalysisGroundedSearchCredential,
   loadIntegrationAnalysisLocalModelCredential,
   loadIntegrationAnalysisServiceConfig,
+  isMissingIntegrationAnalysisDocumentWorkerCredentialError,
   publicIntegrationAnalysisServiceConfig,
 } from "./integration-analysis-config.js";
 import {
@@ -39,6 +41,10 @@ const FORBIDDEN_SECRET_ENVIRONMENT = Object.freeze([
   "LOCAL_LLM_SEARCH_API_KEY_FILE",
   "LOCAL_LLM_SEARCH_TOKEN",
   "LOCAL_LLM_SEARCH_TOKEN_FILE",
+  "AGINTI_DOCUMENT_ARTIFACT_EDGE_TOKEN",
+  "AGINTI_DOCUMENT_ARTIFACT_EDGE_TOKEN_FILE",
+  "DOCUMENT_ARTIFACT_EDGE_TOKEN",
+  "DOCUMENT_ARTIFACT_EDGE_TOKEN_FILE",
 ]);
 const MAIN_OPTION_KEYS = Object.freeze(["env", "filePolicy", "processLike", "stdout", "waitForSignal"]);
 const FILE_POLICY_KEYS = Object.freeze(["allowRootOwner", "ownerUid"]);
@@ -127,6 +133,7 @@ function summary(config, status) {
     idempotencyRoot: publicConfig.idempotencyRoot,
     localModel: publicConfig.localModel,
     ...(publicConfig.groundedSearch === undefined ? {} : { groundedSearch: publicConfig.groundedSearch }),
+    ...(publicConfig.documentWorker === undefined ? {} : { documentWorker: publicConfig.documentWorker }),
     trustedPrincipalProxy: publicConfig.trustedPrincipalProxy,
   });
 }
@@ -154,11 +161,17 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   const env = options.env || process.env;
   assertCredentialEnvironment(env);
   const config = await loadIntegrationAnalysisServiceConfig(parsed.configPath, options.filePolicy || {});
-  const [proxyToken, localModelApiKey, groundedSearchApiKey] = await Promise.all([
+  const [proxyToken, localModelApiKey, groundedSearchApiKey, documentWorkerCredential] = await Promise.all([
     loadTrustedPrincipalProxyCredential(),
     loadIntegrationAnalysisLocalModelCredential(),
     config.groundedSearch?.enabled === true
       ? loadIntegrationAnalysisGroundedSearchCredential()
+      : Promise.resolve(undefined),
+    config.documentWorker?.enabled === true
+      ? loadIntegrationAnalysisDocumentWorkerCredential().catch((error) => {
+          if (isMissingIntegrationAnalysisDocumentWorkerCredentialError(error)) return undefined;
+          throw error;
+        })
       : Promise.resolve(undefined),
   ]);
   const trustedPrincipalProxyClient = createIntegrationAnalysisTrustedProxyClient(config, proxyToken);
@@ -174,6 +187,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     trustedPrincipalProxyClient,
     localModelApiKey,
     ...(groundedSearchApiKey === undefined ? {} : { groundedSearchApiKey }),
+    ...(documentWorkerCredential === undefined ? {} : { documentWorkerCredential }),
   });
   await integrationServer.start();
   let handedOff = false;

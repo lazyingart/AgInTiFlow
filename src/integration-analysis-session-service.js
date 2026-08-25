@@ -5,17 +5,19 @@ import path from "node:path";
 
 import { sanitizeIntegrationArtifact } from "./integration-artifacts.js";
 import {
-  createIntegrationDocumentBlobStore,
-  validateIntegrationDocumentBlobRef,
-} from "./integration-document-blob-store.js";
-import {
   classifyIntegrationDocumentArtifactIntent,
   evaluateIntegrationDocumentArtifactCompletion,
 } from "./integration-document-artifacts.js";
 import {
-  INTEGRATION_TEX_TOOL_NAME,
-  inspectPrivateIntegrationFileArtifact,
-} from "./integration-tex-compiler.js";
+  INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
+  IntegrationDocumentWorkerError,
+  assertIntegrationDocumentWorkerClient,
+  compareIntegrationDocumentWorkerCodeUnits,
+  inspectIntegrationDocumentWorkerCommittedFileArtifact,
+  inspectIntegrationDocumentWorkerFileArtifact,
+  integrationDocumentWorkerDeletionManifestDigest,
+  validateIntegrationDocumentWorkerRef,
+} from "./integration-document-worker-client.js";
 import {
   INTEGRATION_ANALYSIS_MAX_TOOL_CALLS,
   INTEGRATION_ANALYSIS_PLANNER_ACTIVATION_SCHEMA_VERSION,
@@ -58,7 +60,8 @@ import {
 import { redactSensitiveText } from "./redaction.js";
 
 export const INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION = "aginti-integration-analysis-session-v1";
-export const INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION = "aginti-integration-analysis-state-v2";
+export const INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION = "aginti-integration-analysis-state-v3";
+const LEGACY_INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION = "aginti-integration-analysis-state-v2";
 export const DEFAULT_INTEGRATION_ANALYSIS_STATE_ROOT = "/var/lib/agintiflow-integration/analysis";
 
 export const INTEGRATION_ANALYSIS_SESSION_LIMITS = Object.freeze({
@@ -71,6 +74,7 @@ export const INTEGRATION_ANALYSIS_SESSION_LIMITS = Object.freeze({
   maximumArtifactsPerRun: 32,
   maximumArtifactsPerScope: 1024,
   maximumMutationReceiptsPerScope: 1024,
+  maximumDocumentDeletionIntentsPerScope: 32,
   maximumMutationReceiptResponseBytes: 256 * 1024,
   maximumStateBytes: 4 * 1024 * 1024,
   maximumPromptBytes: 32 * 1024,
@@ -83,7 +87,9 @@ export const INTEGRATION_ANALYSIS_SESSION_LIMITS = Object.freeze({
 });
 
 const ZERO_DIGEST = "0".repeat(64);
+const RECOVERED_DOCUMENT_SUCCESS_TEXT = "The TeX source and compiled PDF are ready below.";
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const TERMINAL_DOCUMENT_DELETION_STATUSES = new Set(["committed", "absent"]);
 const TERMINAL_EVENT_TYPES = new Set(["run.completed", "run.failed", "run.cancelled"]);
 const TOOL_TERMINAL_EVENT_TYPES = new Set(["tool.completed", "tool.failed"]);
 const SUCCESSFUL_EXECUTION_STATUSES = new Set(["succeeded", "completed"]);
@@ -108,6 +114,8 @@ const SESSION_METADATA = new WeakMap();
 const MESSAGE_DIGEST_VERSION = "aginti-analysis-public-message-v1";
 const STATE_SCOPE_DIGEST_VERSION = "aginti-analysis-state-scope-v1";
 const MUTATION_RECEIPT_SCHEMA_VERSION = "aginti-analysis-mutation-receipt-v1";
+const DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION = "aginti-document-commit-intent-v1";
+const DOCUMENT_DELETION_INTENT_SCHEMA_VERSION = "aginti-document-deletion-intent-v1";
 const PRIVATE_PATH_PATTERN =
   /(?:^|[\s("'`<>\[{=])(?:file:\/\/\/[^\s"'`<>)\]}]+|\/(?!\/)[^\s"'`<>)\]}]+|[A-Za-z]:[\\/][^\s"'`<>)\]}]+|\\\\[^\\/\s"'`<>)\]}]+\\[^\s"'`<>)\]}]+)/giu;
 const O_NOFOLLOW = Number(fsConstants.O_NOFOLLOW || 0);
@@ -468,6 +476,8 @@ function initialState(scope) {
     threads: [],
     runs: [],
     artifacts: [],
+    documentCommitIntents: [],
+    documentDeletionIntents: [],
     mutationReceipts: [],
   };
 }
@@ -890,7 +900,7 @@ function validateArtifact(artifact, scope, runsById) {
       "threadId",
       "runId",
       "createdAt",
-      "blobRef",
+      "workerRef",
       "compileReceiptDigest",
       "documentRole",
       "companionSha256",
@@ -927,7 +937,7 @@ function validateArtifact(artifact, scope, runsById) {
   }
   if (artifact.kind === "file") {
     try {
-      validateIntegrationDocumentBlobRef(artifact.blobRef);
+      validateIntegrationDocumentWorkerRef(artifact.workerRef);
       stateDigest(artifact.compileReceiptDigest, "state artifact compileReceiptDigest");
       stateDigest(artifact.companionSha256, "state artifact companionSha256");
       if (artifact.documentRole !== "source" && artifact.documentRole !== "pdf") corrupt();
@@ -941,25 +951,13 @@ function validateArtifact(artifact, scope, runsById) {
       corrupt(error);
     }
   } else if (
-    artifact.blobRef !== undefined ||
+    artifact.workerRef !== undefined ||
     artifact.compileReceiptDigest !== undefined ||
     artifact.documentRole !== undefined ||
     artifact.companionSha256 !== undefined
   ) {
     corrupt();
   }
-  const createdEvent = run.events.find(
-    (event) => event.type === "artifact.created" && event.payload?.artifact?.id === artifact.id
-  );
-  if (!createdEvent) corrupt();
-  if (
-    (artifact.kind === "file" && createdEvent.payload.receiptDigest !== artifact.compileReceiptDigest) ||
-    (artifact.kind !== "file" && createdEvent.payload.receiptDigest !== undefined)
-  ) {
-    corrupt();
-  }
-  const terminalEvent = run.events.find((event) => TERMINAL_EVENT_TYPES.has(event.type));
-  if (terminalEvent && createdEvent.seq >= terminalEvent.seq) corrupt();
 }
 
 function validateMutationReceipt(receipt, scope) {
@@ -1019,11 +1017,245 @@ function validateMutationReceipt(receipt, scope) {
   }
 }
 
+function validateDocumentCommitIntent(intent, scope, runsById, artifacts) {
+  exactState(
+    intent,
+    [
+      "schemaVersion",
+      "receiptDigest",
+      "threadId",
+      "runId",
+      "status",
+      "createdAt",
+      "updatedAt",
+      "objects",
+      "manifestDigest",
+      "workerAckDigest",
+      "committedAt",
+      "eventsPublished",
+    ],
+    [
+      "schemaVersion",
+      "receiptDigest",
+      "threadId",
+      "runId",
+      "status",
+      "createdAt",
+      "updatedAt",
+      "objects",
+      "manifestDigest",
+      "workerAckDigest",
+      "committedAt",
+      "eventsPublished",
+    ],
+    "document commit intent"
+  );
+  if (
+    intent.schemaVersion !== DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION ||
+    !new Set(["pending", "committed"]).has(intent.status)
+  ) {
+    corrupt();
+  }
+  stateDigest(intent.receiptDigest, "document commit receiptDigest");
+  stateDigest(intent.manifestDigest, "document commit manifestDigest");
+  stateTimestamp(intent.createdAt, "document commit createdAt");
+  stateTimestamp(intent.updatedAt, "document commit updatedAt");
+  try {
+    validateIntegrationThreadId(intent.threadId);
+    validateIntegrationRunId(intent.runId);
+  } catch (error) {
+    corrupt(error);
+  }
+  const run = runsById.get(intent.runId);
+  if (!run || run.threadId !== intent.threadId) corrupt();
+  if (!Array.isArray(intent.objects) || intent.objects.length !== 2) corrupt();
+  const expectedRoles = ["source", "pdf"];
+  for (let index = 0; index < intent.objects.length; index += 1) {
+    const object = intent.objects[index];
+    exactState(object, ["ref", "role", "sha256"], ["ref", "role", "sha256"], "document commit object");
+    try {
+      validateIntegrationDocumentWorkerRef(object.ref);
+      stateDigest(object.sha256, "document commit object sha256");
+    } catch (error) {
+      corrupt(error);
+    }
+    if (object.role !== expectedRoles[index]) corrupt();
+    const artifact = artifacts.find((candidate) => candidate.workerRef === object.ref);
+    if (
+      !artifact ||
+      artifact.kind !== "file" ||
+      artifact.runId !== intent.runId ||
+      artifact.documentRole !== object.role ||
+      artifact.compileReceiptDigest !== intent.receiptDigest ||
+      artifact.spec.sha256 !== object.sha256
+    ) {
+      corrupt();
+    }
+  }
+  const expectedManifestDigest = contractDigest({
+    schemaVersion: "aginti-document-worker-artifact-manifest-v1",
+    objects: intent.objects,
+  });
+  if (intent.manifestDigest !== expectedManifestDigest) corrupt();
+  if (intent.status === "pending") {
+    if (intent.workerAckDigest !== null || intent.committedAt !== null || intent.eventsPublished !== false) corrupt();
+  } else {
+    stateDigest(intent.workerAckDigest, "document commit workerAckDigest");
+    stateTimestamp(intent.committedAt, "document commit committedAt");
+    if (typeof intent.eventsPublished !== "boolean") corrupt();
+  }
+}
+
+function validateDocumentDeletionIntent(intent, scope, threadIds, runsById, artifacts) {
+  exactState(
+    intent,
+    [
+      "schemaVersion",
+      "deletionId",
+      "reason",
+      "runId",
+      "threadId",
+      "status",
+      "createdAt",
+      "updatedAt",
+      "objects",
+      "manifestDigest",
+      "workerAckDigest",
+      "tombstoneDigest",
+      "completedAt",
+    ],
+    [
+      "schemaVersion",
+      "deletionId",
+      "reason",
+      "runId",
+      "threadId",
+      "status",
+      "createdAt",
+      "updatedAt",
+      "objects",
+      "manifestDigest",
+      "workerAckDigest",
+      "tombstoneDigest",
+      "completedAt",
+    ],
+    "document deletion intent"
+  );
+  if (
+    intent.schemaVersion !== DOCUMENT_DELETION_INTENT_SCHEMA_VERSION ||
+    typeof intent.deletionId !== "string" ||
+    !/^del_[a-f0-9]{64}$/u.test(intent.deletionId) ||
+    !new Set(["thread-delete", "cancelled-run"]).has(intent.reason) ||
+    !threadIds.has(intent.threadId) ||
+    !new Set(["pending", "prepared", "committed", "absent"]).has(intent.status) ||
+    !Array.isArray(intent.objects) ||
+    intent.objects.length < 1 ||
+    intent.objects.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerScope
+  ) {
+    corrupt();
+  }
+  if (
+    (intent.reason === "thread-delete" && intent.runId !== null) ||
+    (intent.reason === "cancelled-run" && typeof intent.runId !== "string")
+  ) {
+    corrupt();
+  }
+  if (intent.runId !== null) {
+    try {
+      validateIntegrationRunId(intent.runId);
+    } catch (error) {
+      corrupt(error);
+    }
+    const cancelledRun = runsById.get(intent.runId);
+    if (!cancelledRun || cancelledRun.threadId !== intent.threadId || cancelledRun.status !== "cancelled") corrupt();
+  }
+  stateTimestamp(intent.createdAt, "document deletion createdAt");
+  stateTimestamp(intent.updatedAt, "document deletion updatedAt");
+  stateDigest(intent.manifestDigest, "document deletion manifestDigest");
+  const seen = new Set();
+  for (const object of intent.objects) {
+    exactState(object, ["ref", "runId", "receiptDigest"], ["ref", "runId", "receiptDigest"], "document deletion object");
+    try {
+      validateIntegrationDocumentWorkerRef(object.ref);
+      validateIntegrationRunId(object.runId);
+      stateDigest(object.receiptDigest, "document deletion receiptDigest");
+    } catch (error) {
+      corrupt(error);
+    }
+    if (seen.has(object.ref)) corrupt();
+    seen.add(object.ref);
+    const run = runsById.get(object.runId);
+    const artifact = artifacts.find((candidate) => candidate.workerRef === object.ref);
+    if (
+      !run ||
+      run.threadId !== intent.threadId ||
+      !artifact ||
+      artifact.runId !== object.runId ||
+      artifact.compileReceiptDigest !== object.receiptDigest
+    ) {
+      corrupt();
+    }
+    if (intent.reason === "cancelled-run" && object.runId !== intent.runId) corrupt();
+  }
+  const sorted = [...intent.objects].sort((left, right) =>
+    compareIntegrationDocumentWorkerCodeUnits(left.ref, right.ref) ||
+      compareIntegrationDocumentWorkerCodeUnits(left.runId, right.runId)
+  );
+  if (canonicalJson(sorted) !== canonicalJson(intent.objects)) corrupt();
+  const workerScope = {
+    principalId: scope.principalId,
+    browserSessionId: scope.browserSessionId,
+    threadId: intent.threadId,
+  };
+  if (
+    intent.manifestDigest !== integrationDocumentWorkerDeletionManifestDigest({
+      deletionId: intent.deletionId,
+      scope: workerScope,
+      objects: intent.objects,
+    })
+  ) {
+    corrupt();
+  }
+  if (intent.status === "pending") {
+    if (intent.workerAckDigest !== null || intent.tombstoneDigest !== null || intent.completedAt !== null) corrupt();
+  } else if (intent.status === "prepared") {
+    stateDigest(intent.workerAckDigest, "document deletion workerAckDigest");
+    if (intent.tombstoneDigest !== null || intent.completedAt !== null) corrupt();
+  } else if (intent.status === "committed") {
+    stateDigest(intent.workerAckDigest, "document deletion workerAckDigest");
+    stateDigest(intent.tombstoneDigest, "document deletion tombstoneDigest");
+    stateTimestamp(intent.completedAt, "document deletion completedAt");
+  } else {
+    if (intent.workerAckDigest !== null || intent.tombstoneDigest !== null) corrupt();
+    stateTimestamp(intent.completedAt, "document deletion completedAt");
+  }
+}
+
 function validateState(state, expectedScope) {
   exactState(
     state,
-    ["schemaVersion", "scope", "revision", "threads", "runs", "artifacts", "mutationReceipts"],
-    ["schemaVersion", "scope", "revision", "threads", "runs", "artifacts", "mutationReceipts"],
+    [
+      "schemaVersion",
+      "scope",
+      "revision",
+      "threads",
+      "runs",
+      "artifacts",
+      "documentCommitIntents",
+      "documentDeletionIntents",
+      "mutationReceipts",
+    ],
+    [
+      "schemaVersion",
+      "scope",
+      "revision",
+      "threads",
+      "runs",
+      "artifacts",
+      "documentCommitIntents",
+      "documentDeletionIntents",
+      "mutationReceipts",
+    ],
     "analysis state"
   );
   if (state.schemaVersion !== INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION) corrupt();
@@ -1049,10 +1281,14 @@ function validateState(state, expectedScope) {
     !Array.isArray(state.threads) ||
     !Array.isArray(state.runs) ||
     !Array.isArray(state.artifacts) ||
+    !Array.isArray(state.documentCommitIntents) ||
+    !Array.isArray(state.documentDeletionIntents) ||
     !Array.isArray(state.mutationReceipts) ||
     state.threads.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumThreadsPerScope ||
     state.runs.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumRunsPerScope ||
     state.artifacts.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerScope ||
+    state.documentCommitIntents.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerScope / 2 ||
+    state.documentDeletionIntents.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumDocumentDeletionIntentsPerScope ||
     state.mutationReceipts.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumMutationReceiptsPerScope
   ) {
     corrupt();
@@ -1105,15 +1341,15 @@ function validateState(state, expectedScope) {
     }
   }
   const artifactIds = new Set();
-  const artifactBlobRefs = new Set();
+  const artifactWorkerRefs = new Set();
   const artifactCounts = new Map();
   for (const artifact of state.artifacts) {
     if (artifactIds.has(artifact.id)) corrupt();
     artifactIds.add(artifact.id);
     validateArtifact(artifact, expectedScope, runsById);
     if (artifact.kind === "file") {
-      if (artifactBlobRefs.has(artifact.blobRef)) corrupt();
-      artifactBlobRefs.add(artifact.blobRef);
+      if (artifactWorkerRefs.has(artifact.workerRef)) corrupt();
+      artifactWorkerRefs.add(artifact.workerRef);
     }
     artifactCounts.set(artifact.runId, (artifactCounts.get(artifact.runId) || 0) + 1);
     if (artifactCounts.get(artifact.runId) > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerRun) corrupt();
@@ -1128,11 +1364,51 @@ function validateState(state, expectedScope) {
     );
     if (!companion || companion.spec.sha256 !== artifact.companionSha256) corrupt();
   }
+  const commitReceipts = new Set();
+  for (const intent of state.documentCommitIntents) {
+    if (commitReceipts.has(intent.receiptDigest)) corrupt();
+    commitReceipts.add(intent.receiptDigest);
+    validateDocumentCommitIntent(intent, expectedScope, runsById, state.artifacts);
+  }
+  for (const artifact of state.artifacts.filter(({ kind }) => kind === "file")) {
+    if (!commitReceipts.has(artifact.compileReceiptDigest)) corrupt();
+    const intent = state.documentCommitIntents.find(
+      (candidate) => candidate.receiptDigest === artifact.compileReceiptDigest
+    );
+    const run = runsById.get(artifact.runId);
+    const createdEvents = run.events.filter(
+      (event) => event.type === "artifact.created" && event.payload?.artifact?.id === artifact.id
+    );
+    if (
+      (intent.eventsPublished && createdEvents.length !== 1) ||
+      (!intent.eventsPublished && createdEvents.length !== 0) ||
+      createdEvents.some((event) => event.payload.receiptDigest !== artifact.compileReceiptDigest)
+    ) {
+      corrupt();
+    }
+  }
+  const deletionIds = new Set();
+  const deletingThreads = new Set();
+  for (const intent of state.documentDeletionIntents) {
+    if (deletionIds.has(intent.deletionId) || deletingThreads.has(intent.threadId)) corrupt();
+    deletionIds.add(intent.deletionId);
+    deletingThreads.add(intent.threadId);
+    validateDocumentDeletionIntent(intent, expectedScope, threadIds, runsById, state.artifacts);
+  }
   for (const run of state.runs) {
     for (const event of run.events) {
       if (event.type !== "artifact.created" && event.type !== "artifact.updated") continue;
       const artifact = state.artifacts.find((item) => item.id === event.payload.artifact.id);
       if (!artifact || artifact.runId !== run.id || artifact.threadId !== run.threadId) corrupt();
+      if (artifact.kind !== "file" && event.payload.receiptDigest !== undefined) corrupt();
+      const terminalEvent = run.events.find((candidate) => TERMINAL_EVENT_TYPES.has(candidate.type));
+      if (terminalEvent && event.seq >= terminalEvent.seq) corrupt();
+    }
+  }
+  for (const artifact of state.artifacts.filter(({ kind }) => kind !== "file")) {
+    const run = runsById.get(artifact.runId);
+    if (!run.events.some((event) => event.type === "artifact.created" && event.payload?.artifact?.id === artifact.id)) {
+      corrupt();
     }
   }
   for (const thread of state.threads) {
@@ -1141,7 +1417,8 @@ function validateState(state, expectedScope) {
     ).length;
     if (activeRunCount > 1) corrupt();
     const hasActiveRun = activeRunCount === 1;
-    if ((thread.status === "running") !== hasActiveRun || thread.status === "deleting") corrupt();
+    if ((thread.status === "running") !== hasActiveRun) corrupt();
+    if (deletingThreads.has(thread.id) && (hasActiveRun || thread.status !== "idle")) corrupt();
   }
   const mutationReceiptIds = new Set();
   for (const receipt of state.mutationReceipts) {
@@ -1296,7 +1573,12 @@ function parseStateEnvelope(text, expectedScope) {
     ["schemaVersion", "state", "digest"],
     "analysis state envelope"
   );
-  if (envelope.schemaVersion !== INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION) corrupt();
+  if (
+    envelope.schemaVersion !== INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION &&
+    envelope.schemaVersion !== LEGACY_INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION
+  ) {
+    corrupt();
+  }
   stateDigest(envelope.digest, "analysis state envelope digest");
   const unsigned = { schemaVersion: envelope.schemaVersion, state: envelope.state };
   if (envelope.digest !== contractDigest(unsigned)) corrupt();
@@ -1307,6 +1589,26 @@ function parseStateEnvelope(text, expectedScope) {
     corrupt(error);
   }
   if (canonical !== text) corrupt();
+  if (envelope.schemaVersion === LEGACY_INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION) {
+    if (
+      envelope.state?.schemaVersion !== LEGACY_INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION ||
+      !Array.isArray(envelope.state?.artifacts) ||
+      envelope.state.artifacts.some((artifact) => artifact?.kind === "file")
+    ) {
+      // The prototype's v2 file records pointed at cloud-local blob storage.
+      // Never migrate those records into the workstation-worker authority.
+      corrupt();
+    }
+    return validateState(
+      {
+        ...envelope.state,
+        schemaVersion: INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION,
+        documentCommitIntents: [],
+        documentDeletionIntents: [],
+      },
+      expectedScope
+    );
+  }
   return validateState(envelope.state, expectedScope);
 }
 
@@ -1394,6 +1696,7 @@ function openFlags(mode) {
 function createService(options, { testOnly }) {
   const analysisRunner = options.analysisRunner;
   const plannerActivation = options.plannerActivation || null;
+  const documentWorkerClient = options.documentWorkerClient;
   if (!analysisRunner || typeof analysisRunner.run !== "function") {
     fail("ANALYSIS_CONFIGURATION_INVALID", "A trusted analysis runner is required.", { status: 500 });
   }
@@ -1412,7 +1715,19 @@ function createService(options, { testOnly }) {
     }
   }
   const stateRoot = normalizeStateRoot(options.stateRoot, { testOnly });
-  const documentBlobStore = createIntegrationDocumentBlobStore({ stateRoot });
+  if (documentWorkerClient !== undefined) {
+    try {
+      assertIntegrationDocumentWorkerClient(documentWorkerClient, { allowTestOnly: testOnly });
+    } catch (error) {
+      fail("ANALYSIS_CONFIGURATION_INVALID", "The document worker client authority is invalid.", {
+        status: 500,
+        cause: error,
+      });
+    }
+  }
+  if (!testOnly && plannerActivation?.documentWorker !== undefined && documentWorkerClient === undefined) {
+    fail("ANALYSIS_CONFIGURATION_INVALID", "Document worker activation has no bound client.", { status: 500 });
+  }
   const activationProof = validateActivationProof(
     testOnly ? options.activationProof : plannerActivation.readinessProof,
     { required: !testOnly }
@@ -1432,8 +1747,18 @@ function createService(options, { testOnly }) {
   if (testOnly && options.searchEnabled !== undefined && typeof options.searchEnabled !== "boolean") {
     fail("ANALYSIS_CONFIGURATION_INVALID", "Test grounded search capability flag is invalid.", { status: 500 });
   }
+  const documentCreationEnabled = testOnly
+    ? options.documentWorkerEnabled === true
+    : plannerActivation?.documentWorker?.ready === true && plannerActivation?.documentWorker?.creationEnabled === true;
+  if (testOnly && options.documentWorkerEnabled !== undefined && typeof options.documentWorkerEnabled !== "boolean") {
+    fail("ANALYSIS_CONFIGURATION_INVALID", "Test document worker capability flag is invalid.", { status: 500 });
+  }
+  if (documentCreationEnabled && documentWorkerClient === undefined) {
+    fail("ANALYSIS_CONFIGURATION_INVALID", "Enabled document creation requires its worker client.", { status: 500 });
+  }
   const fixedMutationRecoveryAuthority = mutationRecoveryAuthority();
   const activeRuns = new Map();
+  const pendingDocumentArtifacts = new Map();
   const runQueue = [];
   const ownershipLockPath = path.join(stateRoot, ".analysis-session-owner.lock");
   let plannerRunsInFlight = 0;
@@ -1672,11 +1997,55 @@ function createService(options, { testOnly }) {
     }
   }
 
+  function completeRecoveredDocumentRun(state, run, completedAt) {
+    const thread = state.threads.find((candidate) => candidate.id === run.threadId);
+    if (!thread) corrupt();
+    closeOpenTools(run, completedAt, "TeX source and PDF compiled.", "tool.completed");
+    appendEvent(
+      run,
+      "plan.updated",
+      { steps: planSteps("synthesizing").map((step) => ({ ...step, status: "completed" })) },
+      completedAt
+    );
+    for (const chunk of outputChunks(RECOVERED_DOCUMENT_SUCCESS_TEXT)) {
+      appendEvent(run, "output.delta", { text: chunk }, completedAt);
+    }
+    appendEvent(run, "output.completed", {}, completedAt);
+    appendMessage(thread, {
+      role: "assistant",
+      content: RECOVERED_DOCUMENT_SUCCESS_TEXT,
+      runId: run.id,
+      createdAt: completedAt,
+    });
+    run.status = "completed";
+    run.schedulingState = "terminal";
+    run.completedAt = completedAt;
+    run.output = RECOVERED_DOCUMENT_SUCCESS_TEXT;
+    run.error = null;
+    appendEvent(run, "run.completed", {}, completedAt);
+    touchThread(thread, completedAt, { status: "idle", lastRunId: run.id });
+  }
+
   function recoverInterruptedRuns(state) {
     let changed = false;
     const recoveredAt = timestamp();
     for (const run of state.runs) {
       if (TERMINAL_RUN_STATUSES.has(run.status) || activeRuns.has(run.id)) continue;
+      const documentIntents = state.documentCommitIntents.filter((intent) => intent.runId === run.id);
+      if (documentIntents.some((intent) => intent.status === "pending")) {
+        // Do not terminalize a crash-replayable paired document while its
+        // workstation commit ACK is temporarily unavailable. Scoped polling
+        // will retry reconciliation.
+        continue;
+      }
+      if (
+        documentIntents.length > 0 &&
+        documentIntents.every((intent) => intent.status === "committed" && intent.eventsPublished === true)
+      ) {
+        completeRecoveredDocumentRun(state, run, recoveredAt);
+        changed = true;
+        continue;
+      }
       closeOpenTools(run, recoveredAt, "Analysis execution was interrupted.");
       run.status = "failed";
       run.schedulingState = "terminal";
@@ -1699,10 +2068,191 @@ function createService(options, { testOnly }) {
     return changed;
   }
 
+  async function reconcileDocumentCommitIntents(scope, state) {
+    if (!documentWorkerClient) return false;
+    let changed = false;
+    const irrecoverableReceipts = new Set();
+    const irrecoverableRefs = new Set();
+    for (const intent of state.documentCommitIntents.filter(({ status }) => status === "pending")) {
+      const run = state.runs.find((candidate) => candidate.id === intent.runId);
+      // The live planner owns the normal authorize -> worker commit -> ACK
+      // sequence. Reconciliation is only a crash/restart path; committing here
+      // while that planner is active would consume its pending authority before
+      // onDocumentCommitIntent can validate it.
+      if (run && !TERMINAL_RUN_STATUSES.has(run.status) && activeRuns.has(run.id)) continue;
+      if (
+        run?.status === "cancelled" &&
+        state.documentDeletionIntents.some(
+          (deletion) => deletion.reason === "cancelled-run" && deletion.runId === run.id
+        )
+      ) {
+        continue;
+      }
+      try {
+        const ack = await documentWorkerClient.commitArtifacts(
+          scopeWithRun(scope, intent.threadId, intent.runId),
+          { receiptDigest: intent.receiptDigest, objects: intent.objects }
+        );
+        intent.status = "committed";
+        intent.updatedAt = timestamp();
+        intent.workerAckDigest = ack.digest;
+        intent.committedAt = ack.committedAt;
+        publishCommittedDocumentEvents(state, intent, timestamp());
+        changed = true;
+      } catch (error) {
+        if (!(error instanceof IntegrationDocumentWorkerError)) throw error;
+        const transient =
+          error.retryable === true &&
+          (error.workerCode === "" || new Set(["WORKER_UNAVAILABLE", "WORKER_STATE_UNAVAILABLE"]).has(error.workerCode));
+        if (transient) {
+          // A tunnel timeout or explicitly unavailable worker is retryable;
+          // retain the exact pair and its authority for the next scoped poll.
+          continue;
+        }
+        // An authenticated NOT_FOUND/410/409 or invalid protocol response is
+        // authoritative: the staged pair cannot be safely committed. Remove
+        // its invisible metadata so it cannot lock the thread indefinitely.
+        irrecoverableReceipts.add(intent.receiptDigest);
+        for (const object of intent.objects) irrecoverableRefs.add(object.ref);
+        const failedAt = timestamp();
+        const failedRun = state.runs.find((candidate) => candidate.id === intent.runId);
+        if (failedRun && !TERMINAL_RUN_STATUSES.has(failedRun.status)) {
+          const thread = state.threads.find((candidate) => candidate.id === failedRun.threadId);
+          if (!thread) corrupt();
+          closeOpenTools(failedRun, failedAt, "TeX document compilation could not be recovered.");
+          failedRun.status = "failed";
+          failedRun.schedulingState = "terminal";
+          failedRun.completedAt = failedAt;
+          failedRun.output = "";
+          failedRun.error = {
+            code: "ANALYSIS_DOCUMENT_COMMIT_LOST",
+            message: "The workstation no longer has the staged document pair. Resume this run to regenerate it.",
+          };
+          appendEvent(failedRun, "run.failed", {}, failedAt);
+          touchThread(thread, failedAt, { status: "idle", lastRunId: failedRun.id });
+        }
+        pendingDocumentArtifacts.delete(intent.runId);
+        changed = true;
+      }
+    }
+    if (irrecoverableReceipts.size > 0) {
+      state.artifacts = state.artifacts.filter((artifact) => !irrecoverableRefs.has(artifact.workerRef));
+      state.documentCommitIntents = state.documentCommitIntents.filter(
+        (intent) => !irrecoverableReceipts.has(intent.receiptDigest)
+      );
+    }
+    return changed;
+  }
+
+  function publishCommittedDocumentEvents(state, intent, createdAt) {
+    if (intent.status !== "committed" || intent.eventsPublished) return false;
+    const run = state.runs.find((candidate) => candidate.id === intent.runId);
+    if (!run || TERMINAL_RUN_STATUSES.has(run.status)) return false;
+    const records = intent.objects.map((object) =>
+      state.artifacts.find((artifact) => artifact.workerRef === object.ref)
+    );
+    if (records.some((record) => !record)) corrupt();
+    for (const record of records) {
+      appendEvent(run, "artifact.created", {
+        artifact: sanitizeIntegrationArtifact({
+          id: record.id,
+          title: record.title,
+          kind: record.kind,
+          spec: record.spec,
+        }),
+        receiptDigest: intent.receiptDigest,
+      }, createdAt);
+    }
+    intent.eventsPublished = true;
+    intent.updatedAt = createdAt;
+    return true;
+  }
+
+  async function reconcileDocumentDeletionIntents(scope, state) {
+    if (!documentWorkerClient) return false;
+    let changed = false;
+    for (const intent of state.documentDeletionIntents.filter(
+      ({ status }) => !TERMINAL_DOCUMENT_DELETION_STATUSES.has(status)
+    )) {
+      const workerScope = Object.freeze({
+        principalId: scope.principalId,
+        browserSessionId: scope.browserSessionId,
+        threadId: intent.threadId,
+      });
+      try {
+        if (intent.status === "pending") {
+          const prepared = await documentWorkerClient.deleteObjects(workerScope, {
+            deletionId: intent.deletionId,
+            phase: "prepare",
+            objects: intent.objects,
+          });
+          intent.status = prepared.status === "committed" ? "committed" : "prepared";
+          intent.updatedAt = timestamp();
+          intent.workerAckDigest = prepared.digest;
+          intent.tombstoneDigest = prepared.tombstoneDigest;
+          intent.completedAt = prepared.completedAt;
+          changed = true;
+        }
+        if (intent.status === "prepared") {
+          const committed = await documentWorkerClient.deleteObjects(workerScope, {
+            deletionId: intent.deletionId,
+            phase: "commit",
+            objects: intent.objects,
+          });
+          if (committed.status !== "committed") {
+            fail("ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE", "Document deletion is still pending.", { status: 503 });
+          }
+          intent.status = "committed";
+          intent.updatedAt = timestamp();
+          intent.workerAckDigest = committed.digest;
+          intent.tombstoneDigest = committed.tombstoneDigest;
+          intent.completedAt = committed.completedAt;
+          changed = true;
+        }
+      } catch (error) {
+        if (!(error instanceof IntegrationDocumentWorkerError)) throw error;
+        if (
+          (error.status === 404 && error.workerCode === "NOT_FOUND") ||
+          (error.status === 410 && error.workerCode === "ARTIFACT_CONTENT_GONE")
+        ) {
+          // The authenticated worker has authoritatively confirmed that the
+          // exact scoped manifest is absent. The deletion outcome is already
+          // satisfied even if a staged group expired before prepare. Preserve
+          // a distinct cloud observation rather than fabricating a tombstone
+          // ACK, then finish the same metadata/receipt lifecycle as deletion.
+          intent.status = "absent";
+          intent.updatedAt = timestamp();
+          intent.completedAt = intent.updatedAt;
+          changed = true;
+        }
+      }
+    }
+    const cancelledCommitted = state.documentDeletionIntents.filter(
+      (intent) => intent.reason === "cancelled-run" && TERMINAL_DOCUMENT_DELETION_STATUSES.has(intent.status)
+    );
+    if (cancelledCommitted.length > 0) {
+      const refs = new Set(cancelledCommitted.flatMap((intent) => intent.objects.map(({ ref }) => ref)));
+      const runIds = new Set(cancelledCommitted.map(({ runId }) => runId));
+      state.artifacts = state.artifacts.filter((artifact) => !refs.has(artifact.workerRef));
+      state.documentCommitIntents = state.documentCommitIntents.filter(
+        (intent) => !runIds.has(intent.runId)
+      );
+      state.documentDeletionIntents = state.documentDeletionIntents.filter(
+        (intent) => !cancelledCommitted.includes(intent)
+      );
+      for (const runId of runIds) pendingDocumentArtifacts.delete(runId);
+      changed = true;
+    }
+    return changed;
+  }
+
   async function loadRecoveredState(scope, { create = false } = {}) {
     const state = await readState(scope, { create });
     if (!state) return null;
-    if (recoverInterruptedRuns(state)) {
+    const reconciledDocuments = await reconcileDocumentCommitIntents(scope, state);
+    const recoveredRuns = recoverInterruptedRuns(state);
+    const reconciledDeletions = await reconcileDocumentDeletionIntents(scope, state);
+    if (recoveredRuns || reconciledDocuments || reconciledDeletions) {
       state.revision += 1;
       await writeState(scope, state);
     }
@@ -1719,7 +2269,8 @@ function createService(options, { testOnly }) {
       const state = await loadRecoveredState(scope, { create });
       if (!state) return task(null);
       const outcome = await task(state);
-      if (identity) {
+      const receiptDeferred = outcome?.deferReceipt === true;
+      if (identity && !receiptDeferred) {
         const response = projectedMutationResponse(
           scope,
           identity,
@@ -1728,7 +2279,7 @@ function createService(options, { testOnly }) {
         );
         appendMutationReceipt(state, scope, identity, response, timestamp());
       }
-      if (outcome?.changed === true || identity) {
+      if (outcome?.changed === true || (identity && !receiptDeferred)) {
         state.revision += 1;
         await writeState(scope, state);
       }
@@ -1826,7 +2377,7 @@ function createService(options, { testOnly }) {
     }
     if (
       progress.toolName !== undefined &&
-      !new Set(["execute_python_analysis", INTEGRATION_TEX_TOOL_NAME]).has(progress.toolName)
+      !new Set(["execute_python_analysis", INTEGRATION_DOCUMENT_WORKER_TOOL_NAME]).has(progress.toolName)
     ) {
       fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis progress tool is invalid.", { status: 502 });
     }
@@ -1846,12 +2397,12 @@ function createService(options, { testOnly }) {
 
   function callIdForProgress(progress) {
     const number = Number(progress.toolCallNumber || Math.max(1, progress.toolCallsCompleted || 1));
-    const prefix = progress.toolName === INTEGRATION_TEX_TOOL_NAME ? "tex-document" : "analysis";
+    const prefix = progress.toolName === INTEGRATION_DOCUMENT_WORKER_TOOL_NAME ? "tex-document" : "analysis";
     return `${prefix}-${Math.min(INTEGRATION_ANALYSIS_MAX_TOOL_CALLS, Math.max(1, number))}`;
   }
 
   function toolPresentation(toolName, executionState = "running") {
-    const tex = toolName === INTEGRATION_TEX_TOOL_NAME;
+    const tex = toolName === INTEGRATION_DOCUMENT_WORKER_TOOL_NAME;
     const terminalSuccess = new Set(["succeeded", "completed"]).has(executionState);
     const terminalFailure = new Set([
       "failed",
@@ -1992,69 +2543,212 @@ function createService(options, { testOnly }) {
   }
 
   async function recordArtifact(scope, threadId, runId, rawArtifact) {
-    const privateFile = inspectPrivateIntegrationFileArtifact(rawArtifact);
+    const privateFile = inspectIntegrationDocumentWorkerFileArtifact(rawArtifact);
     const artifact = normalizeOwnedArtifact(rawArtifact, scope, threadId, runId);
-    let newlySealedRef = "";
-    try {
-      return await mutate(scope, async (state) => {
+    if (artifact.kind === "file") {
+      if (!privateFile) {
+        fail("ANALYSIS_FILE_ARTIFACT_UNSEALED", "File artifacts must originate from the bound workstation worker.", {
+          status: 502,
+        });
+      }
+      if (
+        privateFile.scope.principalId !== scope.principalId ||
+        privateFile.scope.browserSessionId !== scope.browserSessionId ||
+        privateFile.scope.threadId !== threadId ||
+        privateFile.scope.runId !== runId
+      ) {
+        fail("ANALYSIS_FILE_ARTIFACT_INVALID", "File artifact worker scope disagrees with the active run.", {
+          status: 502,
+        });
+      }
+      const pending = pendingDocumentArtifacts.get(runId) || new Map();
+      const prior = pending.get(privateFile.role);
+      if (prior && prior.artifact.id !== artifact.id) {
+        fail("ANALYSIS_FILE_ARTIFACT_INVALID", "Document worker emitted conflicting artifacts for one role.", {
+          status: 502,
+        });
+      }
+      pending.set(privateFile.role, Object.freeze({ artifact, privateFile }));
+      pendingDocumentArtifacts.set(runId, pending);
+      if (pending.size < 2) return artifact;
+      const source = pending.get("source");
+      const pdf = pending.get("pdf");
+      if (
+        !source ||
+        !pdf ||
+        source.privateFile.receipt.digest !== pdf.privateFile.receipt.digest ||
+        source.artifact.spec.sha256 !== pdf.privateFile.receipt.sourceSha256 ||
+        pdf.artifact.spec.sha256 !== source.privateFile.receipt.pdfSha256
+      ) {
+        fail("ANALYSIS_FILE_ARTIFACT_INVALID", "Document worker artifacts are not one receipt-bound pair.", {
+          status: 502,
+        });
+      }
+      const pair = [source, pdf];
+      const stored = await mutate(scope, async (state) => {
         const run = findRun(state, runId);
         if (run.threadId !== threadId) notFound("Run");
-        if (TERMINAL_RUN_STATUSES.has(run.status)) return { changed: false, result: artifact };
-        const existing = state.artifacts.find((item) => item.id === artifact.id);
-        if (existing) return { changed: false, result: ownedArtifact(existing) };
+        if (TERMINAL_RUN_STATUSES.has(run.status)) {
+          fail("ANALYSIS_CANCELLED", "Document capture lost its active run authority.", { status: 499 });
+        }
+        const existingPair = pair.map(({ artifact: candidate }) =>
+          state.artifacts.find((item) => item.id === candidate.id)
+        );
+        if (existingPair.every(Boolean)) return { changed: false, result: ownedArtifact(existingPair[1]) };
+        if (existingPair.some(Boolean)) corrupt();
         const count = state.artifacts.filter((item) => item.runId === runId).length;
         if (
-          count >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerRun ||
-          state.artifacts.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerScope
+          count > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerRun - 2 ||
+          state.artifacts.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerScope - 2 ||
+          state.documentCommitIntents.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerScope / 2
         ) {
           fail("ANALYSIS_ARTIFACT_CAPACITY_EXHAUSTED", "Run artifact capacity is exhausted.", { status: 409 });
         }
-        let privateMetadata = {};
-        if (artifact.kind === "file") {
-          if (!privateFile) {
-            fail("ANALYSIS_FILE_ARTIFACT_UNSEALED", "File artifacts must originate from the private compiler.", {
-              status: 502,
-            });
-          }
-          const sealed = await documentBlobStore.seal(scope, privateFile.bytes);
-          newlySealedRef = sealed.blobRef;
-          if (sealed.bytes !== artifact.spec.bytes || sealed.sha256 !== artifact.spec.sha256) {
-            fail("ANALYSIS_FILE_ARTIFACT_INVALID", "File artifact metadata disagrees with sealed bytes.", {
-              status: 502,
-            });
-          }
-          privateMetadata = {
-            blobRef: sealed.blobRef,
-            compileReceiptDigest: privateFile.receipt.digest,
-            documentRole: privateFile.role,
-            companionSha256:
-              privateFile.role === "source"
-                ? privateFile.receipt.pdfSha256
-                : privateFile.receipt.sourceSha256,
-          };
-        }
         const createdAt = timestamp();
-        const record = {
-          ...artifact,
-          ...privateMetadata,
+        const records = pair.map(({ artifact: candidate, privateFile: metadata }) => ({
+          ...candidate,
+          workerRef: metadata.workerRef,
+          compileReceiptDigest: metadata.receipt.digest,
+          documentRole: metadata.role,
+          companionSha256: metadata.role === "source" ? metadata.receipt.pdfSha256 : metadata.receipt.sourceSha256,
           principalId: scope.principalId,
           browserSessionId: scope.browserSessionId,
           browserSessionPolicy: "same-browser-session",
           threadId,
           runId,
           createdAt,
-        };
-        state.artifacts.push(record);
-        appendEvent(run, "artifact.created", {
-          artifact,
-          ...(privateFile ? { receiptDigest: privateFile.receipt.digest } : {}),
-        }, createdAt);
-        return { changed: true, result: ownedArtifact(record) };
+        }));
+        const objects = records.map((record) => Object.freeze({
+          ref: record.workerRef,
+          role: record.documentRole,
+          sha256: record.spec.sha256,
+        }));
+        const receiptDigest = records[0].compileReceiptDigest;
+        state.artifacts.push(...records);
+        state.documentCommitIntents.push({
+          schemaVersion: DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION,
+          receiptDigest,
+          threadId,
+          runId,
+          status: "pending",
+          createdAt,
+          updatedAt: createdAt,
+          objects,
+          manifestDigest: contractDigest({
+            schemaVersion: "aginti-document-worker-artifact-manifest-v1",
+            objects,
+          }),
+          workerAckDigest: null,
+          committedAt: null,
+          eventsPublished: false,
+        });
+        return { changed: true, result: ownedArtifact(records[1]) };
       });
-    } catch (error) {
-      if (newlySealedRef) await documentBlobStore.remove(scope, newlySealedRef).catch(() => {});
-      throw error;
+      pendingDocumentArtifacts.delete(runId);
+      return stored;
     }
+    return await mutate(scope, async (state) => {
+      const run = findRun(state, runId);
+      if (run.threadId !== threadId) notFound("Run");
+      if (TERMINAL_RUN_STATUSES.has(run.status)) return { changed: false, result: artifact };
+      const existing = state.artifacts.find((item) => item.id === artifact.id);
+      if (existing) return { changed: false, result: ownedArtifact(existing) };
+      const count = state.artifacts.filter((item) => item.runId === runId).length;
+      if (
+        count >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerRun ||
+        state.artifacts.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerScope
+      ) {
+        fail("ANALYSIS_ARTIFACT_CAPACITY_EXHAUSTED", "Run artifact capacity is exhausted.", { status: 409 });
+      }
+      const createdAt = timestamp();
+      const record = {
+        ...artifact,
+        principalId: scope.principalId,
+        browserSessionId: scope.browserSessionId,
+        browserSessionPolicy: "same-browser-session",
+        threadId,
+        runId,
+        createdAt,
+      };
+      state.artifacts.push(record);
+      appendEvent(run, "artifact.created", { artifact }, createdAt);
+      return { changed: true, result: ownedArtifact(record) };
+    });
+  }
+
+  async function acknowledgeCommittedDocumentArtifacts(scope, threadId, runId, rawArtifacts) {
+    const files = Array.isArray(rawArtifacts)
+      ? rawArtifacts.filter((artifact) => inspectIntegrationDocumentWorkerFileArtifact(artifact))
+      : [];
+    if (files.length === 0) return;
+    if (files.length !== 2) {
+      fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis runner returned an incomplete document pair.", { status: 502 });
+    }
+    const commits = files.map((artifact) => inspectIntegrationDocumentWorkerCommittedFileArtifact(artifact));
+    if (!commits[0] || !commits[1] || commits[0].digest !== commits[1].digest) {
+      fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis runner returned an uncommitted document pair.", { status: 502 });
+    }
+    const receiptDigest = inspectIntegrationDocumentWorkerFileArtifact(files[0]).receipt.digest;
+    await mutate(scope, (state) => {
+      const intent = state.documentCommitIntents.find((candidate) =>
+        candidate.runId === runId && candidate.receiptDigest === receiptDigest
+      );
+      if (!intent || intent.threadId !== threadId) corrupt();
+      if (intent.status === "committed") {
+        if (intent.workerAckDigest !== commits[0].digest) corrupt();
+        return { changed: false, result: null };
+      }
+      intent.status = "committed";
+      intent.updatedAt = timestamp();
+      intent.workerAckDigest = commits[0].digest;
+      intent.committedAt = commits[0].committedAt;
+      publishCommittedDocumentEvents(state, intent, intent.updatedAt);
+      return { changed: true, result: null };
+    });
+  }
+
+  async function authorizeDocumentCommit(scope, threadId, runId, rawArtifacts) {
+    const files = Array.isArray(rawArtifacts)
+      ? rawArtifacts.map((artifact) => ({
+          artifact,
+          metadata: inspectIntegrationDocumentWorkerFileArtifact(artifact),
+        }))
+      : [];
+    if (
+      files.length !== 2 ||
+      files.some(({ metadata }) => !metadata) ||
+      files[0].metadata.role !== "source" ||
+      files[1].metadata.role !== "pdf" ||
+      files[0].metadata.receipt.digest !== files[1].metadata.receipt.digest
+    ) {
+      fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Document commit authorization pair is invalid.", { status: 502 });
+    }
+    const receiptDigest = files[0].metadata.receipt.digest;
+    return mutate(scope, (state) => {
+      const run = findRun(state, runId);
+      if (run.threadId !== threadId || TERMINAL_RUN_STATUSES.has(run.status)) {
+        fail("ANALYSIS_CANCELLED", "Document commit lost its active run authority.", { status: 499 });
+      }
+      const intent = state.documentCommitIntents.find((candidate) =>
+        candidate.runId === runId && candidate.receiptDigest === receiptDigest
+      );
+      const expectedObjects = files.map(({ artifact, metadata }) => ({
+        ref: metadata.workerRef,
+        role: metadata.role,
+        sha256: artifact.spec.sha256,
+      }));
+      if (
+        !intent ||
+        intent.threadId !== threadId ||
+        intent.status !== "pending" ||
+        canonicalJson(intent.objects) !== canonicalJson(expectedObjects)
+      ) {
+        fail("ANALYSIS_DOCUMENT_COMMIT_AUTHORITY_REQUIRED", "Document commit intent is unavailable.", {
+          status: 503,
+        });
+      }
+      return { changed: false, result: true };
+    });
   }
 
   function normalizeRunnerResult(value, { searchExpected = false } = {}) {
@@ -2079,7 +2773,16 @@ function createService(options, { testOnly }) {
     if (!Array.isArray(result.artifacts) || result.artifacts.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerRun) {
       fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis runner artifacts exceed their bound.", { status: 502 });
     }
-    const artifacts = Object.freeze(result.artifacts.map(sanitizeIntegrationArtifact));
+    const artifacts = Object.freeze(result.artifacts.map((artifact) => {
+      const publicArtifact = sanitizeIntegrationArtifact(artifact);
+      // Worker provenance and commit acknowledgement are non-enumerable
+      // WeakMap authority attached to the exact returned object. Preserve that
+      // object internally after validating its public projection; cloning it
+      // here would turn a committed file into an unsealed public lookalike.
+      return publicArtifact.kind === "file" && inspectIntegrationDocumentWorkerFileArtifact(artifact)
+        ? artifact
+        : publicArtifact;
+    }));
     const sources = artifacts.filter((artifact) => artifact.kind === "sources");
     if (
       (result.kind === "direct" && (
@@ -2115,11 +2818,22 @@ function createService(options, { testOnly }) {
 
   async function completeRun(scope, runId, result) {
     for (const artifact of result.artifacts) {
+      // File artifacts are captured as an exact worker-sealed pair before the
+      // worker commit. The planner intentionally returns only their public
+      // projection, so replaying those clones through recordArtifact would
+      // discard provenance and falsely reject a valid committed run.
+      if (artifact.kind === "file") continue;
       await recordArtifact(scope, findRunThreadIdForActive(runId), runId, artifact);
     }
     return mutate(scope, (state) => {
       const run = findRun(state, runId);
       if (TERMINAL_RUN_STATUSES.has(run.status)) return { changed: false, result: ownedRun(run) };
+      const documentIntents = state.documentCommitIntents.filter((intent) => intent.runId === runId);
+      if (documentIntents.some((intent) => intent.status !== "committed" || intent.eventsPublished !== true)) {
+        fail("ANALYSIS_DOCUMENT_ARTIFACT_REQUIRED", "Document artifacts were not durably committed.", {
+          status: 502,
+        });
+      }
       const thread = findThread(state, run.threadId);
       const completedAt = timestamp();
       closeOpenTools(run, completedAt, "Bounded Python analysis completed.", "tool.completed");
@@ -2148,9 +2862,24 @@ function createService(options, { testOnly }) {
     return mutate(scope, (state) => {
       const run = findRun(state, runId);
       if (TERMINAL_RUN_STATUSES.has(run.status)) return { changed: false, result: ownedRun(run) };
+      const cancelled = error?.code === "ANALYSIS_CANCELLED" || activeRuns.get(runId)?.controller.signal.aborted;
+      const documentIntents = state.documentCommitIntents.filter((intent) => intent.runId === runId);
+      if (
+        !cancelled &&
+        documentIntents.length > 0 &&
+        documentIntents.every((intent) => intent.status === "committed" && intent.eventsPublished === true)
+      ) {
+        completeRecoveredDocumentRun(state, run, timestamp());
+        return { changed: true, result: ownedRun(run) };
+      }
+      if (
+        !cancelled &&
+        documentIntents.some((intent) => intent.status === "pending")
+      ) {
+        return { changed: false, result: ownedRun(run) };
+      }
       const thread = findThread(state, run.threadId);
       const failedAt = timestamp();
-      const cancelled = error?.code === "ANALYSIS_CANCELLED" || activeRuns.get(runId)?.controller.signal.aborted;
       closeOpenTools(
         run,
         failedAt,
@@ -2206,9 +2935,11 @@ function createService(options, { testOnly }) {
           signal: active.controller.signal,
           onProgress: async (progress) => recordProgress(scope, runId, progress),
           onArtifact: async (artifact) => {
-            if (inspectPrivateIntegrationFileArtifact(artifact)) privateDocumentEvidence.push(artifact);
+            if (inspectIntegrationDocumentWorkerFileArtifact(artifact)) privateDocumentEvidence.push(artifact);
             await recordArtifact(scope, threadId, runId, artifact);
           },
+          onDocumentCommitIntent: async (fileArtifacts) =>
+            authorizeDocumentCommit(scope, threadId, runId, fileArtifacts),
           onFinal: async (value) => {
             finalCallbackCount += 1;
             if (finalCallbackCount > 1) {
@@ -2216,6 +2947,7 @@ function createService(options, { testOnly }) {
                 status: 502,
               });
             }
+            await acknowledgeCommittedDocumentArtifacts(scope, threadId, runId, value?.artifacts);
             finalCallbackDigest = contractDigest(normalizeRunnerResult(value, {
               searchExpected: input.search !== undefined,
             }));
@@ -2241,6 +2973,8 @@ function createService(options, { testOnly }) {
       await completeRun(scope, runId, result);
     } catch (error) {
       await failRun(scope, runId, error).catch(() => {});
+    } finally {
+      pendingDocumentArtifacts.delete(runId);
     }
   }
 
@@ -2337,6 +3071,9 @@ function createService(options, { testOnly }) {
         scope,
         (state) => {
           const thread = findThread(state, threadId);
+          if (state.documentDeletionIntents.some((intent) => intent.threadId === thread.id)) {
+            conflict("ANALYSIS_THREAD_DELETE_PENDING", "Thread deletion must finish before another run can start.");
+          }
           if (thread.status === "running") conflict("ANALYSIS_THREAD_BUSY", "Thread already has an active run.");
           if (state.runs.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumRunsPerScope) {
             conflict("ANALYSIS_RUN_CAPACITY_EXHAUSTED", "Run capacity is exhausted.");
@@ -2608,12 +3345,15 @@ function createService(options, { testOnly }) {
       rawExecutionSourcePersisted: false,
       rawExecutionStdoutPersisted: false,
       privateRuntimePathsPersisted: false,
-      documentBlobBytesLocalOnly: true,
-      documentBlobOpaqueRefs: true,
-      documentBlobPrivateModes: true,
-      documentBlobSymlinksRejected: true,
-      documentBlobHardlinksRejected: true,
+      documentBytesPersistedByCloud: false,
+      documentSourcePersistedByCloud: false,
+      documentWorkerOpaqueRefs: true,
+      documentWorkerReceiptBindings: true,
+      documentWorkerPairedCommitIntents: true,
+      documentWorkerTwoPhaseDelete: true,
+      documentWorkerDeleteIntentBeforeBytes: true,
       documentContentPrincipalAndBrowserSessionBound: true,
+      documentContentStreamedWithoutCloudBuffering: true,
       publicActivationLocksChanged: false,
       limitsDigest: contractDigest(INTEGRATION_ANALYSIS_SESSION_LIMITS),
     });
@@ -2629,6 +3369,7 @@ function createService(options, { testOnly }) {
         cancel: true,
         resume: true,
         ...(searchEnabled ? { search: true } : {}),
+        ...(documentCreationEnabled ? { files: true } : {}),
       });
     },
 
@@ -2768,6 +3509,9 @@ function createService(options, { testOnly }) {
         scope,
         (state) => {
           const thread = findThread(state, payload.threadId);
+          if (state.documentDeletionIntents.some((intent) => intent.threadId === thread.id)) {
+            conflict("ANALYSIS_THREAD_DELETE_PENDING", "Thread deletion must finish before it can be changed.");
+          }
           if (thread.title === title) return { changed: false, result: Object.freeze({ thread: ownedThread(thread) }) };
           touchThread(thread, timestamp());
           thread.title = title;
@@ -2780,25 +3524,135 @@ function createService(options, { testOnly }) {
     async deleteThread(payload, context) {
       exact(payload, ["threadId"], ["threadId"], "delete thread request");
       const scope = normalizeScopeFromContext(context);
-      return mutate(
+      normalizedMutationIdentity(scope, INTEGRATION_RPC_PATHS.threadsDelete, payload, context, {
+        required: !testOnly,
+      });
+      const prepared = await mutate(
         scope,
-        async (state) => {
+        (state) => {
           const thread = findThread(state, payload.threadId);
           if (thread.status === "running") conflict("ANALYSIS_THREAD_BUSY", "An active thread cannot be deleted.");
           const record = ownedThread(thread);
           const runIds = new Set(state.runs.filter((run) => run.threadId === thread.id).map((run) => run.id));
-          const blobRefs = state.artifacts
+          const objects = state.artifacts
             .filter((artifact) => runIds.has(artifact.runId) && artifact.kind === "file")
-            .map((artifact) => artifact.blobRef);
-          // Delete private bytes while the serialized state mutation still owns
-          // the thread. If unlinking fails, retain the public chat metadata so
-          // the deletion can be repaired and retried instead of orphaning an
-          // unreachable local blob after state has already been committed.
-          for (const blobRef of blobRefs) await documentBlobStore.remove(scope, blobRef);
+            .map((artifact) => Object.freeze({
+              ref: artifact.workerRef,
+              runId: artifact.runId,
+              receiptDigest: artifact.compileReceiptDigest,
+            }))
+            .sort((left, right) =>
+              compareIntegrationDocumentWorkerCodeUnits(left.ref, right.ref) ||
+                compareIntegrationDocumentWorkerCodeUnits(left.runId, right.runId)
+            );
+          if (objects.length === 0) {
+            state.threads = state.threads.filter((item) => item.id !== thread.id);
+            state.runs = state.runs.filter((run) => !runIds.has(run.id));
+            state.artifacts = state.artifacts.filter((artifact) => !runIds.has(artifact.runId));
+            state.documentCommitIntents = state.documentCommitIntents.filter((intent) => !runIds.has(intent.runId));
+            const result = Object.freeze({ deleted: true, thread: record, threadId: thread.id });
+            return {
+              changed: true,
+              result: Object.freeze({ direct: true, ...result }),
+              receiptResult: result,
+            };
+          }
+          if (!documentWorkerClient) {
+            fail("ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE", "Document deletion requires the private workstation worker.", {
+              status: 503,
+            });
+          }
+          if (state.documentDeletionIntents.some(
+            (intent) => intent.threadId === thread.id && intent.reason === "cancelled-run"
+          )) {
+            conflict("ANALYSIS_THREAD_DELETE_PENDING", "Cancelled document cleanup must finish before thread deletion.");
+          }
+          const existing = state.documentDeletionIntents.find(
+            (intent) => intent.threadId === thread.id && intent.reason === "thread-delete"
+          );
+          if (existing) {
+            return {
+              changed: false,
+              deferReceipt: true,
+              result: Object.freeze({ direct: false, deletionId: existing.deletionId, thread: record }),
+            };
+          }
+          if (
+            state.documentDeletionIntents.length >=
+            INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumDocumentDeletionIntentsPerScope
+          ) {
+            conflict("ANALYSIS_DOCUMENT_DELETE_CAPACITY_EXHAUSTED", "Document deletion capacity is exhausted.");
+          }
+          const workerScope = Object.freeze({
+            principalId: scope.principalId,
+            browserSessionId: scope.browserSessionId,
+            threadId: thread.id,
+          });
+          const deletionId = `del_${contractDigest({
+            schemaVersion: "aginti-document-deletion-id-v1",
+            reason: "thread-delete",
+            scope: workerScope,
+            objects,
+          })}`;
+          const createdAt = timestamp();
+          state.documentDeletionIntents.push({
+            schemaVersion: DOCUMENT_DELETION_INTENT_SCHEMA_VERSION,
+            deletionId,
+            reason: "thread-delete",
+            runId: null,
+            threadId: thread.id,
+            status: "pending",
+            createdAt,
+            updatedAt: createdAt,
+            objects,
+            manifestDigest: integrationDocumentWorkerDeletionManifestDigest({
+              deletionId,
+              scope: workerScope,
+              objects,
+            }),
+            workerAckDigest: null,
+            tombstoneDigest: null,
+            completedAt: null,
+          });
+          return {
+            changed: true,
+            deferReceipt: true,
+            result: Object.freeze({ direct: false, deletionId, thread: record }),
+          };
+        },
+        { receipt: { pathname: INTEGRATION_RPC_PATHS.threadsDelete, payload, context } }
+      );
+      if (prepared.direct) {
+        return Object.freeze({ deleted: true, thread: prepared.thread, threadId: prepared.threadId });
+      }
+      const acknowledged = await inspect(scope, (state) => {
+        const intent = state.documentDeletionIntents.find(({ deletionId }) => deletionId === prepared.deletionId);
+        return intent ? Object.freeze({ status: intent.status }) : null;
+      });
+      if (!TERMINAL_DOCUMENT_DELETION_STATUSES.has(acknowledged?.status)) {
+        fail("ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE", "Document deletion is durably pending workstation acknowledgement.", {
+          status: 503,
+        });
+      }
+      return mutate(
+        scope,
+        (state) => {
+          const thread = findThread(state, payload.threadId);
+          const intent = state.documentDeletionIntents.find(({ deletionId }) => deletionId === prepared.deletionId);
+          if (!intent || intent.threadId !== thread.id || !TERMINAL_DOCUMENT_DELETION_STATUSES.has(intent.status)) {
+            corrupt();
+          }
+          const record = ownedThread(thread);
+          const runIds = new Set(state.runs.filter((run) => run.threadId === thread.id).map((run) => run.id));
           state.threads = state.threads.filter((item) => item.id !== thread.id);
           state.runs = state.runs.filter((run) => !runIds.has(run.id));
           state.artifacts = state.artifacts.filter((artifact) => !runIds.has(artifact.runId));
-          return { changed: true, result: Object.freeze({ deleted: true, thread: record, threadId: thread.id }) };
+          state.documentCommitIntents = state.documentCommitIntents.filter((commit) => !runIds.has(commit.runId));
+          state.documentDeletionIntents = state.documentDeletionIntents.filter(
+            ({ deletionId }) => deletionId !== intent.deletionId
+          );
+          const result = Object.freeze({ deleted: true, thread: record, threadId: thread.id });
+          return { changed: true, result, receiptResult: result };
         },
         { receipt: { pathname: INTEGRATION_RPC_PATHS.threadsDelete, payload, context } }
       );
@@ -2889,6 +3743,87 @@ function createService(options, { testOnly }) {
           }
           const thread = findThread(state, run.threadId);
           const cancelledAt = timestamp();
+          const committedDocuments = state.documentCommitIntents.filter((intent) => intent.runId === run.id);
+          if (
+            committedDocuments.length > 0 &&
+            committedDocuments.every(
+              (intent) => intent.status === "committed" && intent.eventsPublished === true
+            )
+          ) {
+            // The workstation pair is already ACKed, publicly replayable, and
+            // accessible. That is the document success boundary; completing
+            // deterministically avoids deleting metadata referenced by events
+            // when cancellation races the runner's final return.
+            completeRecoveredDocumentRun(state, run, cancelledAt);
+            const completed = ownedRun(run);
+            return {
+              changed: true,
+              result: completed,
+              receiptResult: Object.freeze({ run: completed }),
+            };
+          }
+          const objects = state.artifacts
+            .filter((artifact) => artifact.runId === run.id && artifact.kind === "file")
+            .map((artifact) => Object.freeze({
+              ref: artifact.workerRef,
+              runId: run.id,
+              receiptDigest: artifact.compileReceiptDigest,
+            }))
+            .sort((left, right) => compareIntegrationDocumentWorkerCodeUnits(left.ref, right.ref));
+          if (objects.length !== 0 && objects.length !== 2) corrupt();
+          if (objects.length > 0) {
+            if (!documentWorkerClient) {
+              fail(
+                "ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE",
+                "Document cancellation cleanup requires the private workstation worker.",
+                { status: 503 }
+              );
+            }
+            if (
+              state.documentDeletionIntents.length >=
+                INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumDocumentDeletionIntentsPerScope &&
+              !state.documentDeletionIntents.some(
+                (intent) => intent.reason === "cancelled-run" && intent.runId === run.id
+              )
+            ) {
+              conflict("ANALYSIS_DOCUMENT_DELETE_CAPACITY_EXHAUSTED", "Document cancellation cleanup is full.");
+            }
+            if (!state.documentDeletionIntents.some(
+              (intent) => intent.reason === "cancelled-run" && intent.runId === run.id
+            )) {
+              const workerScope = Object.freeze({
+                principalId: scope.principalId,
+                browserSessionId: scope.browserSessionId,
+                threadId: thread.id,
+              });
+              const deletionId = `del_${contractDigest({
+                schemaVersion: "aginti-document-deletion-id-v1",
+                reason: "cancelled-run",
+                runId: run.id,
+                scope: workerScope,
+                objects,
+              })}`;
+              state.documentDeletionIntents.push({
+                schemaVersion: DOCUMENT_DELETION_INTENT_SCHEMA_VERSION,
+                deletionId,
+                reason: "cancelled-run",
+                runId: run.id,
+                threadId: thread.id,
+                status: "pending",
+                createdAt: cancelledAt,
+                updatedAt: cancelledAt,
+                objects,
+                manifestDigest: integrationDocumentWorkerDeletionManifestDigest({
+                  deletionId,
+                  scope: workerScope,
+                  objects,
+                }),
+                workerAckDigest: null,
+                tombstoneDigest: null,
+                completedAt: null,
+              });
+            }
+          }
           run.cancelRequestedAt = cancelledAt;
           run.completedAt = cancelledAt;
           run.status = "cancelled";
@@ -2911,6 +3846,10 @@ function createService(options, { testOnly }) {
           new IntegrationAnalysisSessionError("ANALYSIS_CANCELLED", "Analysis was cancelled.", { status: 499 })
         );
       }
+      // Drive a durable staged-or-committed worker cleanup after aborting the
+      // live planner. A tunnel outage leaves the private deletion intent for
+      // restart replay and blocks further use of this thread until it ACKs.
+      await inspect(scope, () => null);
       return Object.freeze({ run: result });
     },
 
@@ -2957,6 +3896,13 @@ function createService(options, { testOnly }) {
           .filter((artifact) =>
             payload.threadId ? artifact.threadId === payload.threadId : artifact.runId === payload.runId
           )
+          .filter((artifact) =>
+            artifact.kind !== "file" || state.documentCommitIntents.some((intent) =>
+              intent.receiptDigest === artifact.compileReceiptDigest &&
+              intent.status === "committed" &&
+              intent.eventsPublished === true
+            )
+          )
           .slice(-32)
           .map(ownedArtifact);
         return Object.freeze({ artifacts: Object.freeze(artifacts) });
@@ -2969,7 +3915,15 @@ function createService(options, { testOnly }) {
       const artifactId = validateIntegrationArtifactId(payload.artifactId);
       return inspect(scope, (state) => {
         const artifact = state?.artifacts.find((item) => item.id === artifactId);
-        if (!artifact) notFound("Artifact");
+        if (
+          !artifact ||
+          (artifact.kind === "file" && !state.documentCommitIntents.some((intent) =>
+            intent.receiptDigest === artifact.compileReceiptDigest && intent.status === "committed"
+              && intent.eventsPublished === true
+          ))
+        ) {
+          notFound("Artifact");
+        }
         return Object.freeze({ artifact: ownedArtifact(artifact) });
       });
     },
@@ -2984,36 +3938,73 @@ function createService(options, { testOnly }) {
       const record = await inspect(scope, (state) => {
         const artifact = state?.artifacts.find((item) => item.id === artifactId);
         if (!artifact || artifact.kind !== "file") notFound("Artifact");
+        const commit = state.documentCommitIntents.find((intent) =>
+          intent.receiptDigest === artifact.compileReceiptDigest && intent.runId === artifact.runId
+        );
+        if (!commit || commit.status !== "committed" || commit.eventsPublished !== true) notFound("Artifact");
+        const deletion = state.documentDeletionIntents.find((intent) => intent.threadId === artifact.threadId);
+        if (deletion?.status === "committed") {
+          fail("ARTIFACT_CONTENT_GONE", "Artifact content was durably deleted.", { status: 410 });
+        }
         return Object.freeze({
-          blobRef: artifact.blobRef,
+          workerRef: artifact.workerRef,
+          receiptDigest: artifact.compileReceiptDigest,
+          threadId: artifact.threadId,
+          runId: artifact.runId,
           filename: artifact.spec.filename,
           mime: artifact.spec.mime,
           bytes: artifact.spec.bytes,
           sha256: artifact.spec.sha256,
         });
       });
-      const content = await documentBlobStore.read(scope, record.blobRef, record);
-      if (!content) {
-        fail("ARTIFACT_CONTENT_GONE", "Artifact content is no longer available.", { status: 410 });
+      if (!documentWorkerClient) {
+        fail("ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE", "The private workstation document worker is unavailable.", {
+          status: 503,
+        });
       }
-      let start = 0;
-      let end = record.bytes - 1;
-      let partial = false;
+      let range;
       if (payload.range !== undefined) {
         exact(payload.range, ["start", "end"], ["start"], "artifact content range");
-        start = integrationBoundedInteger(payload.range.start, "artifact content range start");
+        const start = integrationBoundedInteger(payload.range.start, "artifact content range start");
         if (start >= record.bytes) {
           fail("RANGE_NOT_SATISFIABLE", "Artifact content range is not satisfiable.", { status: 416 });
         }
-        end = payload.range.end === undefined
-          ? record.bytes - 1
-          : Math.min(
-              integrationBoundedInteger(payload.range.end, "artifact content range end", { minimum: start }),
-              record.bytes - 1
-            );
-        partial = start !== 0 || end !== record.bytes - 1;
+        range = Object.freeze({
+          start,
+          ...(payload.range.end === undefined
+            ? {}
+            : { end: integrationBoundedInteger(payload.range.end, "artifact content range end", { minimum: start }) }),
+        });
       }
-      const selected = content.bytes.subarray(start, end + 1);
+      let content;
+      try {
+        content = await documentWorkerClient.content(
+          scopeWithRun(scope, record.threadId, record.runId),
+          {
+            ref: record.workerRef,
+            receiptDigest: record.receiptDigest,
+            filename: record.filename,
+            mime: record.mime,
+            bytes: record.bytes,
+            sha256: record.sha256,
+            metadataOnly: payload.metadataOnly === true,
+            ...(range === undefined ? {} : { range }),
+          },
+          { signal: context?.abortSignal }
+        );
+      } catch (error) {
+        if (error instanceof IntegrationDocumentWorkerError) {
+          fail(error.code, error.message, { status: error.status, cause: error });
+        }
+        throw error;
+      }
+      if (content.status === 404) notFound("Artifact");
+      if (content.status === 410) {
+        fail("ARTIFACT_CONTENT_GONE", "Artifact content is no longer available.", { status: 410 });
+      }
+      if (content.status === 416) {
+        fail("RANGE_NOT_SATISFIABLE", "Artifact content range is not satisfiable.", { status: 416 });
+      }
       return Object.freeze({
         schemaVersion: "aginti-artifact-content-v1",
         artifactId,
@@ -3021,11 +4012,12 @@ function createService(options, { testOnly }) {
         mime: record.mime,
         totalBytes: record.bytes,
         sha256: record.sha256,
-        start,
-        end,
-        partial,
+        start: content.start,
+        end: content.end,
+        partial: content.start !== 0 || content.end !== record.bytes - 1,
         metadataOnly: payload.metadataOnly === true,
-        content: payload.metadataOnly === true ? null : selected,
+        body: content.body,
+        cleanup: content.cleanup,
       });
     },
 
@@ -3049,7 +4041,7 @@ export function assertIntegrationAnalysisSessionService(value, { allowTestOnly =
 export function createIntegrationAnalysisSessionService(value = {}) {
   const options = exact(
     value,
-    ["analysisRunner", "plannerActivation", "stateRoot"],
+    ["analysisRunner", "plannerActivation", "stateRoot", "documentWorkerClient"],
     ["analysisRunner", "plannerActivation"],
     "analysis session service configuration"
   );
@@ -3059,7 +4051,7 @@ export function createIntegrationAnalysisSessionService(value = {}) {
 export function createTestOnlyIntegrationAnalysisSessionService(value = {}) {
   const options = exact(
     value,
-    ["analysisRunner", "stateRoot", "now", "activationProof", "searchEnabled"],
+    ["analysisRunner", "stateRoot", "now", "activationProof", "searchEnabled", "documentWorkerClient", "documentWorkerEnabled"],
     ["analysisRunner", "stateRoot"],
     "test analysis session service configuration"
   );

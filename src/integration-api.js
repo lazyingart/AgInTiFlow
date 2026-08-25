@@ -146,8 +146,8 @@ function contentDisposition(filename) {
   return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
 }
 
-export function writeIntegrationArtifactContentResponse(res, result, { rangeRequested = false } = {}) {
-  const content = result?.content;
+export async function writeIntegrationArtifactContentResponse(res, result, { rangeRequested = false } = {}) {
+  const body = result?.body;
   let spec;
   try {
     spec = validateIntegrationFileSpec({
@@ -166,9 +166,9 @@ export function writeIntegrationArtifactContentResponse(res, result, { rangeRequ
     typeof rangeRequested !== "boolean" ||
     typeof result.metadataOnly !== "boolean" ||
     typeof result.partial !== "boolean" ||
-    (content !== null && !Buffer.isBuffer(content)) ||
-    (result.metadataOnly && content !== null) ||
-    (!result.metadataOnly && !Buffer.isBuffer(content))
+    (result.metadataOnly && body !== null) ||
+    (!result.metadataOnly && (!body || typeof body.getReader !== "function")) ||
+    typeof result.cleanup !== "function"
   ) {
     throw new IntegrationApiError("INTERNAL_ERROR", "Artifact content response is invalid.", { status: 500 });
   }
@@ -183,8 +183,7 @@ export function writeIntegrationArtifactContentResponse(res, result, { rangeRequ
     selectedBytes > spec.bytes ||
     result.end >= spec.bytes ||
     result.partial !== (result.start !== 0 || result.end !== spec.bytes - 1) ||
-    (!rangeRequested && result.partial) ||
-    (!result.metadataOnly && content.byteLength !== selectedBytes)
+    (!rangeRequested && result.partial)
   ) {
     throw new IntegrationApiError("INTERNAL_ERROR", "Artifact content range is invalid.", { status: 500 });
   }
@@ -203,8 +202,67 @@ export function writeIntegrationArtifactContentResponse(res, result, { rangeRequ
       ? { "Content-Range": `bytes ${result.start}-${result.end}/${result.totalBytes}` }
       : {}),
   });
-  if (result.metadataOnly) res.end();
-  else res.end(content);
+  if (result.metadataOnly) {
+    try {
+      res.end();
+    } finally {
+      result.cleanup();
+    }
+    return;
+  }
+  const reader = body.getReader();
+  let sent = 0;
+  let complete = false;
+  const hash = rangeRequested ? null : crypto.createHash("sha256");
+  const cancel = () => {
+    if (!complete) Promise.resolve(reader.cancel(new Error("artifact response closed"))).catch(() => {});
+  };
+  res.once("close", cancel);
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      if (!(chunk.value instanceof Uint8Array) || chunk.value.byteLength < 1) {
+        throw new IntegrationApiError("INTERNAL_ERROR", "Artifact content stream is invalid.", { status: 500 });
+      }
+      sent += chunk.value.byteLength;
+      if (sent > selectedBytes) {
+        throw new IntegrationApiError("INTERNAL_ERROR", "Artifact content stream exceeded its bound.", { status: 500 });
+      }
+      const bytes = Buffer.from(chunk.value.buffer, chunk.value.byteOffset, chunk.value.byteLength);
+      hash?.update(bytes);
+      if (!res.write(bytes)) {
+        await new Promise((resolve, reject) => {
+          const cleanup = () => {
+            res.off("drain", onDrain);
+            res.off("close", onClose);
+            res.off("error", onError);
+          };
+          const onDrain = () => { cleanup(); resolve(); };
+          const onClose = () => { cleanup(); reject(new Error("artifact response closed")); };
+          const onError = (error) => { cleanup(); reject(error); };
+          res.once("drain", onDrain);
+          res.once("close", onClose);
+          res.once("error", onError);
+        });
+      }
+    }
+    if (sent !== selectedBytes || (hash && hash.digest("hex") !== spec.sha256)) {
+      throw new IntegrationApiError("INTERNAL_ERROR", "Artifact content stream failed integrity validation.", {
+        status: 500,
+      });
+    }
+    complete = true;
+    res.end();
+  } catch (error) {
+    res.destroy?.(error);
+    throw error;
+  } finally {
+    res.off("close", cancel);
+    if (!complete) await reader.cancel(new Error("artifact stream incomplete")).catch(() => {});
+    reader.releaseLock?.();
+    result.cleanup();
+  }
 }
 
 function methodForPath(pathname) {
@@ -802,12 +860,15 @@ function assertAnalysisSessionAuthority(value, startupProof, mutationRecoveryAut
     "rawExecutionSourcePersisted",
     "rawExecutionStdoutPersisted",
     "privateRuntimePathsPersisted",
-    "documentBlobBytesLocalOnly",
-    "documentBlobOpaqueRefs",
-    "documentBlobPrivateModes",
-    "documentBlobSymlinksRejected",
-    "documentBlobHardlinksRejected",
+    "documentBytesPersistedByCloud",
+    "documentSourcePersistedByCloud",
+    "documentWorkerOpaqueRefs",
+    "documentWorkerReceiptBindings",
+    "documentWorkerPairedCommitIntents",
+    "documentWorkerTwoPhaseDelete",
+    "documentWorkerDeleteIntentBeforeBytes",
     "documentContentPrincipalAndBrowserSessionBound",
+    "documentContentStreamedWithoutCloudBuffering",
     "publicActivationLocksChanged",
     "limitsDigest",
     "digest",
@@ -874,12 +935,15 @@ function assertAnalysisSessionAuthority(value, startupProof, mutationRecoveryAut
     proof.rawExecutionSourcePersisted !== false ||
     proof.rawExecutionStdoutPersisted !== false ||
     proof.privateRuntimePathsPersisted !== false ||
-    proof.documentBlobBytesLocalOnly !== true ||
-    proof.documentBlobOpaqueRefs !== true ||
-    proof.documentBlobPrivateModes !== true ||
-    proof.documentBlobSymlinksRejected !== true ||
-    proof.documentBlobHardlinksRejected !== true ||
+    proof.documentBytesPersistedByCloud !== false ||
+    proof.documentSourcePersistedByCloud !== false ||
+    proof.documentWorkerOpaqueRefs !== true ||
+    proof.documentWorkerReceiptBindings !== true ||
+    proof.documentWorkerPairedCommitIntents !== true ||
+    proof.documentWorkerTwoPhaseDelete !== true ||
+    proof.documentWorkerDeleteIntentBeforeBytes !== true ||
     proof.documentContentPrincipalAndBrowserSessionBound !== true ||
+    proof.documentContentStreamedWithoutCloudBuffering !== true ||
     proof.publicActivationLocksChanged !== false
   ) {
     throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis session authority is unavailable.", { status: 503 });
@@ -984,7 +1048,7 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
   const serviceCapabilities = await sessionService.getIntegrationCapabilities({ policy });
   exactDataObject(
     serviceCapabilities,
-    ["analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume", "search"],
+    ["analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume", "search", "files"],
     ["analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume"],
     "analysis service capabilities",
     { frozen: true }
@@ -994,6 +1058,9 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
   }
   if (serviceCapabilities.search !== undefined && serviceCapabilities.search !== true) {
     throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis search capability is invalid.", { status: 503 });
+  }
+  if (serviceCapabilities.files !== undefined && serviceCapabilities.files !== true) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis file capability is invalid.", { status: 503 });
   }
   const mutationRecoveryAuthority = assertAnalysisMutationRecoveryAuthority(
     serviceCapabilities.mutationRecoveryAuthority
@@ -1158,6 +1225,7 @@ async function capabilitiesForService({ sessionService, idempotencyStore, policy
     enabled: readiness.enabled,
     cancel: false,
     resume: false,
+    files: false,
   });
 }
 
@@ -1181,6 +1249,7 @@ function activatedCapabilitiesForService(options, activationMetadata) {
     cancel: metadata.serviceCapabilities.cancel,
     resume: metadata.serviceCapabilities.resume,
     search: metadata.serviceCapabilities.search === true,
+    files: metadata.serviceCapabilities.files === true,
   });
 }
 
@@ -1330,7 +1399,7 @@ async function handleRpc({ req, res, pathname, sessionService, idempotencyStore,
 
   if (pathname === INTEGRATION_RPC_PATHS.artifactsContent) {
     const result = await callSessionService(sessionService, pathname, payload, context);
-    writeIntegrationArtifactContentResponse(res, result, { rangeRequested: payload.range !== undefined });
+    await writeIntegrationArtifactContentResponse(res, result, { rangeRequested: payload.range !== undefined });
     return;
   }
 
@@ -1542,13 +1611,13 @@ function assertPublicCapabilityResponse(value = {}) {
   ) {
     integrationInvalid("agent search capabilities are invalid");
   }
-  const artifactKinds = search.enabled
-    ? [
-        ...INTEGRATION_ARTIFACT_KINDS.filter((kind) => kind !== "file"),
-        INTEGRATION_SEARCH_ARTIFACT_KIND,
-        "file",
-      ]
-    : [...INTEGRATION_ARTIFACT_KINDS];
+  const fileEnabled = artifacts.kinds?.includes?.("file") === true;
+  if (fileEnabled && !response.enabled) integrationInvalid("disabled capabilities may not advertise file artifacts");
+  const artifactKinds = [
+    ...INTEGRATION_ARTIFACT_KINDS.filter((kind) => kind !== "file"),
+    ...(search.enabled ? [INTEGRATION_SEARCH_ARTIFACT_KIND] : []),
+    ...(fileEnabled ? ["file"] : []),
+  ];
   if (
     artifacts.schemaVersion !== AGENT_WORKER_SCHEMA_VERSION ||
     !Array.isArray(artifacts.kinds) ||

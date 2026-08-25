@@ -18,6 +18,10 @@ import {
   INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
   INTEGRATION_GROUNDED_SEARCH_TIMEOUT_MS,
 } from "./integration-grounded-search.js";
+import {
+  INTEGRATION_DOCUMENT_WORKER_ENDPOINT,
+  INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS,
+} from "./integration-document-worker-client.js";
 import { INTEGRATION_RPC_PATH_LIST, INTEGRATION_RPC_PATHS } from "./integration-policy.js";
 
 export const INTEGRATION_ANALYSIS_SERVICE_CONFIG_SCHEMA_VERSION =
@@ -35,11 +39,14 @@ export const INTEGRATION_ANALYSIS_LOCALLLM_OUTPUT_TOKENS = 4_096;
 export const INTEGRATION_ANALYSIS_LOCALLLM_TIMEOUT_MS = 180_000;
 export const INTEGRATION_ANALYSIS_LOCALLLM_CREDENTIAL_NAME = "localllm-token";
 export const INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_NAME = "localllm-search-token";
+export const INTEGRATION_ANALYSIS_DOCUMENT_WORKER_CREDENTIAL_NAME = "document-artifact-edge-token";
 export const INTEGRATION_ANALYSIS_TRUSTED_CLIENT_ID = "aginti-bff";
 export const INTEGRATION_ANALYSIS_LOCALLLM_CREDENTIAL_PATH =
   `${INTEGRATION_SYSTEMD_CREDENTIALS_DIRECTORY}/${INTEGRATION_ANALYSIS_LOCALLLM_CREDENTIAL_NAME}`;
 export const INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_PATH =
   `${INTEGRATION_SYSTEMD_CREDENTIALS_DIRECTORY}/${INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_NAME}`;
+export const INTEGRATION_ANALYSIS_DOCUMENT_WORKER_CREDENTIAL_PATH =
+  `${INTEGRATION_SYSTEMD_CREDENTIALS_DIRECTORY}/${INTEGRATION_ANALYSIS_DOCUMENT_WORKER_CREDENTIAL_NAME}`;
 export const MAX_INTEGRATION_ANALYSIS_CONFIG_BYTES = 32 * 1024;
 
 const CONFIG_KEYS = Object.freeze([
@@ -50,9 +57,12 @@ const CONFIG_KEYS = Object.freeze([
   "idempotencyRoot",
   "localModel",
   "groundedSearch",
+  "documentWorker",
   "trustedPrincipalProxy",
 ]);
-const REQUIRED_CONFIG_KEYS = Object.freeze(CONFIG_KEYS.filter((key) => key !== "groundedSearch"));
+const REQUIRED_CONFIG_KEYS = Object.freeze(
+  CONFIG_KEYS.filter((key) => key !== "groundedSearch" && key !== "documentWorker")
+);
 const CAPABILITY_KEYS = Object.freeze(["enabled", "mode"]);
 const LISTEN_KEYS = Object.freeze(["host", "port"]);
 const MODEL_KEYS = Object.freeze([
@@ -63,6 +73,7 @@ const MODEL_KEYS = Object.freeze([
   "modelTimeoutMs",
 ]);
 const SEARCH_KEYS = Object.freeze(["enabled", "endpoint", "timeoutMs", "maximumSources"]);
+const DOCUMENT_WORKER_KEYS = Object.freeze(["enabled", "endpoint", "timeoutMs"]);
 const TRUSTED_PROXY_KEYS = Object.freeze(["clientId", "label", "scopes"]);
 const RPC_PATH_SET = new Set(INTEGRATION_RPC_PATH_LIST);
 
@@ -188,6 +199,29 @@ export function validateIntegrationAnalysisServiceConfig(value) {
     }
   }
 
+  let documentWorker;
+  if (config.documentWorker !== undefined) {
+    const worker = exactObject(config.documentWorker, DOCUMENT_WORKER_KEYS, ["enabled"], "documentWorker");
+    if (typeof worker.enabled !== "boolean") {
+      fail("ANALYSIS_CONFIG_INVALID", "documentWorker.enabled must be a boolean.");
+    }
+    if (!worker.enabled) {
+      if (Reflect.ownKeys(worker).length !== 1) {
+        fail("ANALYSIS_CONFIG_INVALID", "Disabled documentWorker may contain only enabled=false.");
+      }
+      documentWorker = Object.freeze({ enabled: false });
+    } else {
+      exactObject(worker, DOCUMENT_WORKER_KEYS, DOCUMENT_WORKER_KEYS, "documentWorker");
+      fixed(worker.endpoint, INTEGRATION_DOCUMENT_WORKER_ENDPOINT, "documentWorker.endpoint");
+      fixed(worker.timeoutMs, INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS, "documentWorker.timeoutMs");
+      documentWorker = Object.freeze({
+        enabled: true,
+        endpoint: INTEGRATION_DOCUMENT_WORKER_ENDPOINT,
+        timeoutMs: INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS,
+      });
+    }
+  }
+
   const proxy = exactObject(
     config.trustedPrincipalProxy,
     TRUSTED_PROXY_KEYS,
@@ -216,6 +250,7 @@ export function validateIntegrationAnalysisServiceConfig(value) {
       modelTimeoutMs: INTEGRATION_ANALYSIS_LOCALLLM_TIMEOUT_MS,
     }),
     ...(groundedSearch === undefined ? {} : { groundedSearch }),
+    ...(documentWorker === undefined ? {} : { documentWorker }),
     trustedPrincipalProxy: Object.freeze({
       clientId,
       label: boundedLabel(proxy.label),
@@ -344,21 +379,35 @@ export function parseIntegrationAnalysisGroundedSearchCredential(raw) {
   return parseIntegrationAnalysisCredential(raw, "LocalLLM search credential");
 }
 
+export function parseIntegrationAnalysisDocumentWorkerCredential(raw) {
+  return parseIntegrationAnalysisCredential(raw, "document artifact edge credential");
+}
+
 async function loadIntegrationAnalysisCredential({ credentialPath, label, parse }) {
   const directory = INTEGRATION_SYSTEMD_CREDENTIALS_DIRECTORY;
   let handle;
   try {
-    const [directoryReal, directoryBefore, credentialReal, credentialPathBefore] = await Promise.all([
+    let directoryBefore;
+    let credentialPathBefore;
+    try {
+      directoryBefore = await fs.lstat(directory);
+      credentialPathBefore = await fs.lstat(credentialPath);
+    } catch (error) {
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+        fail("ANALYSIS_CREDENTIAL_MISSING", `${label} is not installed.`);
+      }
+      throw error;
+    }
+    if (directoryBefore.isSymbolicLink() || credentialPathBefore.isSymbolicLink()) {
+      fail("ANALYSIS_CREDENTIAL_INVALID", `${label} path must be canonical and symlink-free.`);
+    }
+    const [directoryReal, credentialReal] = await Promise.all([
       fs.realpath(directory),
-      fs.lstat(directory),
       fs.realpath(credentialPath),
-      fs.lstat(credentialPath),
     ]);
     if (
       directoryReal !== directory ||
-      credentialReal !== credentialPath ||
-      directoryBefore.isSymbolicLink() ||
-      credentialPathBefore.isSymbolicLink()
+      credentialReal !== credentialPath
     ) {
       fail("ANALYSIS_CREDENTIAL_INVALID", `${label} path must be canonical and symlink-free.`);
     }
@@ -404,6 +453,10 @@ async function loadIntegrationAnalysisCredential({ credentialPath, label, parse 
   }
 }
 
+export function isMissingIntegrationAnalysisDocumentWorkerCredentialError(error) {
+  return error instanceof IntegrationServiceConfigError && error.code === "ANALYSIS_CREDENTIAL_MISSING";
+}
+
 export async function loadIntegrationAnalysisLocalModelCredential(...args) {
   if (args.length !== 0) {
     fail(
@@ -432,6 +485,20 @@ export async function loadIntegrationAnalysisGroundedSearchCredential(...args) {
   });
 }
 
+export async function loadIntegrationAnalysisDocumentWorkerCredential(...args) {
+  if (args.length !== 0) {
+    fail(
+      "ANALYSIS_CREDENTIAL_SOURCE_FORBIDDEN",
+      "Document artifact edge credential source is fixed by systemd LoadCredential."
+    );
+  }
+  return loadIntegrationAnalysisCredential({
+    credentialPath: INTEGRATION_ANALYSIS_DOCUMENT_WORKER_CREDENTIAL_PATH,
+    label: "document artifact edge credential",
+    parse: parseIntegrationAnalysisDocumentWorkerCredential,
+  });
+}
+
 export function createIntegrationAnalysisTrustedProxyClient(configInput, bearerToken) {
   const config = validateIntegrationAnalysisServiceConfig(configInput);
   try {
@@ -457,6 +524,7 @@ export function publicIntegrationAnalysisServiceConfig(configInput) {
     idempotencyRoot: config.idempotencyRoot,
     localModel: config.localModel,
     ...(config.groundedSearch === undefined ? {} : { groundedSearch: config.groundedSearch }),
+    ...(config.documentWorker === undefined ? {} : { documentWorker: config.documentWorker }),
     trustedPrincipalProxy: Object.freeze({
       clientId: config.trustedPrincipalProxy.clientId,
       label: config.trustedPrincipalProxy.label,
@@ -466,6 +534,9 @@ export function publicIntegrationAnalysisServiceConfig(configInput) {
     localModelCredentialName: INTEGRATION_ANALYSIS_LOCALLLM_CREDENTIAL_NAME,
     ...(config.groundedSearch?.enabled === true
       ? { groundedSearchCredentialName: INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_NAME }
+      : {}),
+    ...(config.documentWorker?.enabled === true
+      ? { documentWorkerCredentialName: INTEGRATION_ANALYSIS_DOCUMENT_WORKER_CREDENTIAL_NAME }
       : {}),
   });
 }

@@ -581,6 +581,43 @@ async function expectCode(promise, code) {
   });
 }
 
+async function concurrentNoFileDeleteStartRoundTrip(temporaryRoot, analysisRunner) {
+  const stateRoot = path.join(temporaryRoot, "concurrent-no-file-delete-state");
+  const service = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner, stateRoot });
+  try {
+    const created = await service.createThread({ title: "Atomic delete boundary" }, context());
+    const deletePayload = Object.freeze({ threadId: created.thread.id });
+    const deleteContext = mutationContext(
+      INTEGRATION_RPC_PATHS.threadsDelete,
+      deletePayload,
+      "concurrent-delete-receipt-key-0001"
+    );
+    const startPayload = Object.freeze({
+      threadId: created.thread.id,
+      input: Object.freeze({ text: "This run must not slip through the delete boundary." }),
+    });
+    const [deleted, started] = await Promise.allSettled([
+      service.deleteThread(deletePayload, deleteContext),
+      service.startRun(startPayload, context()),
+    ]);
+    assert.equal(deleted.status, "fulfilled");
+    assert.equal(deleted.value.deleted, true);
+    assert.equal(started.status, "rejected");
+    assert.equal(started.reason?.code, "NOT_FOUND");
+    assert.deepEqual(await service.recoverMutation(recoveryRequestFor(deleteContext)), {
+      schemaVersion: "1",
+      deleted: true,
+      threadId: created.thread.id,
+    });
+    const persisted = JSON.parse(await fs.readFile(await stateFile(stateRoot), "utf8"));
+    assert.equal(persisted.state.threads.some(({ id }) => id === created.thread.id), false);
+    assert.equal(persisted.state.runs.some(({ threadId }) => threadId === created.thread.id), false);
+    assert.equal(persisted.state.mutationReceipts.length, 1);
+  } finally {
+    await service.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
 function assertLedger(events, runId, threadId) {
   assert.ok(events.length > 0);
   let previousHash = ZERO_DIGEST;
@@ -842,6 +879,7 @@ async function main() {
     await explicitPythonDurabilityRoundTrip(temporaryRoot);
     await plotThenProseContinuationRoundTrip(temporaryRoot);
     await groundedSearchDurabilityRoundTrip(temporaryRoot);
+    await concurrentNoFileDeleteStartRoundTrip(temporaryRoot, fakeRunner);
     const service = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: fakeRunner, stateRoot: root });
     assertIntegrationAnalysisSessionService(service, { allowTestOnly: true });
     assert.throws(() => assertIntegrationAnalysisSessionService(service), /test-only/u);

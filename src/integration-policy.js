@@ -730,15 +730,14 @@ export function validateIntegrationIsolationAttestation(value) {
   });
 }
 
-export function integrationCapabilitiesResponse({ enabled = false, cancel = false, resume = false, search = false } = {}) {
+export function integrationCapabilitiesResponse({ enabled = false, cancel = false, resume = false, search = false, files = false } = {}) {
   const searchEnabled = Boolean(enabled && search);
-  const artifactKinds = searchEnabled
-    ? [
-        ...INTEGRATION_ARTIFACT_KINDS.filter((kind) => kind !== "file"),
-        INTEGRATION_SEARCH_ARTIFACT_KIND,
-        "file",
-      ]
-    : [...INTEGRATION_ARTIFACT_KINDS];
+  const fileEnabled = Boolean(enabled && files);
+  const artifactKinds = [
+    ...INTEGRATION_ARTIFACT_KINDS.filter((kind) => kind !== "file"),
+    ...(searchEnabled ? [INTEGRATION_SEARCH_ARTIFACT_KIND] : []),
+    ...(fileEnabled ? ["file"] : []),
+  ];
   return Object.freeze({
     schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
     enabled: Boolean(enabled),
