@@ -838,19 +838,38 @@ function retainedReadRange(payload = {}, args = {}) {
   };
 }
 
+function parseRetainedToolEvidenceMessage(message = {}) {
+  if (message?.role !== "user") return null;
+  const content = String(message.content || "");
+  if (!/^Retained runtime tool evidence\./i.test(content.trim())) return null;
+  const match = content.match(
+    /^Retained runtime tool evidence\.[^\n]*\nTool:\s*([^\n]+)\nArguments:\s*([^\n]+)\nVerified result:\s*([\s\S]+)$/i
+  );
+  if (!match) return null;
+  const name = String(match[1] || "").trim();
+  const args = safeParseToolContent(match[2]) || {};
+  const payload = safeParseToolContent(match[3]);
+  if (!name || !COMPACTION_STATE_TOOL_NAMES.has(name) || !payload || typeof payload !== "object") {
+    return null;
+  }
+  return { name, args, payload };
+}
+
 function summarizeRetainedSourceEvidence(messages = [], limit = 28) {
   const bySource = new Map();
   for (const message of messages) {
-    if (message?.role !== "tool") continue;
-    const payload = safeParseToolContent(message.content);
+    const retained = parseRetainedToolEvidenceMessage(message);
+    if (message?.role !== "tool" && !retained) continue;
+    const payload = retained?.payload || safeParseToolContent(message.content);
     if (!payload || payload.ok === false || payload.blocked || payload.skipped) continue;
-    const toolName = String(payload.toolName || payload.name || "");
+    const toolName = String(retained?.name || payload.toolName || payload.name || "");
     if (!["read_file", "list_files", "search_files", "inspect_project", "run_command"].includes(toolName)) {
       continue;
     }
-    const sourcePath = String(payload.path || payload.args?.path || "").trim();
-    const command = String(payload.args?.command || "").trim();
-    const readRange = toolName === "read_file" ? retainedReadRange(payload, payload.args || {}) : null;
+    const args = retained?.args || payload.args || {};
+    const sourcePath = String(payload.path || args.path || "").trim();
+    const command = String(args.command || "").trim();
+    const readRange = toolName === "read_file" ? retainedReadRange(payload, args) : null;
     const key = `${toolName}:${sourcePath || command}${readRange ? `:${readRange.key}` : ""}`;
     const parts = [`tool=${toolName}`];
     if (sourcePath) parts.push(`path=${sourcePath}`);
@@ -986,6 +1005,7 @@ function compactRetainedToolPayload(toolName, payload = {}, args = {}) {
     result.results = compactPathItems(payload.results, 24, ["path", "file", "line", "match"]);
   } else if (toolName === "run_command") {
     result.args = { command: compactMultiline(args.command || payload.args?.command || "", 1200) };
+    if (payload.changed !== undefined) result.changed = Boolean(payload.changed);
     if (Number.isFinite(Number(payload.exitCode))) result.exitCode = Number(payload.exitCode);
     if (payload.stdout) result.stdout = compactMultiline(payload.stdout, 1800);
     if (payload.stderr) result.stderr = compactMultiline(payload.stderr, 1200);
@@ -998,11 +1018,51 @@ function compactRetainedToolPayload(toolName, payload = {}, args = {}) {
   return redactValue(result);
 }
 
+function retainedToolRecordPriority(record = {}) {
+  const name = String(record.name || "");
+  const args = record.args || {};
+  const payload = record.payload || {};
+  let priority = 100;
+  if (name === "deep_research") priority = 1000;
+  else if (name === "inspect_project") priority = 900;
+  else if (["apply_patch", "write_file"].includes(name)) priority = 850;
+  else if (name === "run_command") {
+    const exitCode = Number(payload.exitCode);
+    priority = payload.changed === true || (Number.isFinite(exitCode) && exitCode !== 0) ? 800 : 500;
+  } else if (name === "read_file") {
+    const range = retainedReadRange(payload, args);
+    priority = range.lineLimit > 0 ? 750 : 600;
+  } else if (["search_files", "list_files"].includes(name)) priority = 400;
+  return priority + Math.min(0.999, Math.max(0, Number(record.ordinal) || 0) / 100000);
+}
+
 function retainedToolStateMessages(messages = [], limit = 12) {
   const callsById = new Map();
   const recordsByKey = new Map();
   let ordinal = 0;
+  const retainRecord = (name, args = {}, payload = {}) => {
+    if (!COMPACTION_STATE_TOOL_NAMES.has(name)) return;
+    if (!payload || payload.ok === false || payload.blocked || payload.skipped) return;
+    const sourcePath = String(payload.path || args?.path || "").trim();
+    const command = String(args?.command || payload.args?.command || "").trim();
+    const durableIdentity = String(
+      sourcePath || command || payload.researchId || args?.researchId || args?.query || name
+    ).trim();
+    const readRange = name === "read_file" ? retainedReadRange(payload, args) : null;
+    const key = `${name}:${durableIdentity || ordinal}${readRange ? `:${readRange.key}` : ""}`;
+    recordsByKey.set(key, {
+      ordinal: ordinal += 1,
+      name,
+      args: redactValue(args),
+      payload: compactRetainedToolPayload(name, payload, args),
+    });
+  };
   for (const message of messages) {
+    const retained = parseRetainedToolEvidenceMessage(message);
+    if (retained) {
+      retainRecord(retained.name, retained.args, retained.payload);
+      continue;
+    }
     if (message?.role === "assistant" && Array.isArray(message.tool_calls)) {
       for (const call of message.tool_calls) {
         const id = String(call?.id || "").trim();
@@ -1018,27 +1078,19 @@ function retainedToolStateMessages(messages = [], limit = 12) {
     if (message?.role !== "tool") continue;
     const call = callsById.get(String(message.tool_call_id || "").trim());
     const payload = safeParseToolContent(message.content);
-    if (!call || !payload || payload.ok === false || payload.blocked || payload.skipped) continue;
-    const sourcePath = String(payload.path || call.args?.path || "").trim();
-    const command = String(call.args?.command || payload.args?.command || "").trim();
-    const readRange = call.name === "read_file" ? retainedReadRange(payload, call.args) : null;
-    const key = `${call.name}:${sourcePath || command || ordinal}${readRange ? `:${readRange.key}` : ""}`;
-    recordsByKey.set(key, {
-      ordinal: ordinal += 1,
-      name: call.name,
-      args: redactValue(call.args),
-      payload: compactRetainedToolPayload(call.name, payload, call.args),
-    });
+    if (!call || !payload) continue;
+    retainRecord(call.name, call.args, payload);
   }
 
   const records = [...recordsByKey.values()];
-  const pinned = ["inspect_project", "deep_research"]
-    .map((name) => [...records].reverse().find((record) => record.name === name))
-    .filter(Boolean);
-  const remaining = records
-    .filter((record) => !pinned.includes(record))
-    .slice(-Math.max(0, Number(limit) - pinned.length));
-  const selected = [...pinned, ...remaining].sort((left, right) => left.ordinal - right.ordinal);
+  const selected = [...records]
+    .sort(
+      (left, right) =>
+        retainedToolRecordPriority(right) - retainedToolRecordPriority(left) ||
+        right.ordinal - left.ordinal
+    )
+    .slice(0, Math.max(1, Number(limit) || 12))
+    .sort((left, right) => left.ordinal - right.ordinal);
 
   return selected.flatMap((record, index) => {
     const id = `aginti-compacted-tool-${index + 1}`;
@@ -1087,6 +1139,15 @@ function retainedToolStateTextMessages(messages = [], limit = 12) {
   return retained;
 }
 
+function retainedToolPairPriority(pair = [], order = 0) {
+  const assistantCall = pair[0]?.tool_calls?.[0];
+  const retained = pair.length === 1 ? parseRetainedToolEvidenceMessage(pair[0]) : null;
+  const name = String(retained?.name || assistantCall?.function?.name || "");
+  const args = retained?.args || safeParseToolContent(assistantCall?.function?.arguments) || {};
+  const payload = retained?.payload || safeParseToolContent(pair[1]?.content) || {};
+  return retainedToolRecordPriority({ name, args, payload, ordinal: order });
+}
+
 function isRuntimeCompactionRequest(content = "") {
   return /^(?:The runtime proactively compacted a long agent history|A previous agent-step model request timed out|Continue from this compacted, valid transcript)/i.test(
     String(content || "").trim()
@@ -1107,6 +1168,7 @@ function summarizeOriginalRequests(messages = [], limit = 6) {
     if (!content.trim()) continue;
     if (/^Step \d+\/\d+ .*Latest runtime snapshot:/i.test(content)) continue;
     if (/^Previous assistant response retained as compacted history/i.test(content)) continue;
+    if (parseRetainedToolEvidenceMessage(message)) continue;
     if (isRuntimeCompactionRequest(content)) continue;
     if (isRuntimeRecoveryRequest(content)) continue;
     requests.push(compactSingleLine(content, 1200));
@@ -1357,20 +1419,29 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
   ];
   const retainedPairs = [];
   for (let index = 0; index < retainedToolMessages.length; index += deepSeekCompaction ? 1 : 2) {
-    retainedPairs.push(retainedToolMessages.slice(index, index + (deepSeekCompaction ? 1 : 2)));
+    const pair = retainedToolMessages.slice(index, index + (deepSeekCompaction ? 1 : 2));
+    retainedPairs.push({
+      pair,
+      order: retainedPairs.length,
+      priority: retainedToolPairPriority(pair, retainedPairs.length),
+    });
   }
   const selectedPairs = [];
-  for (const pair of retainedPairs.reverse()) {
+  const prioritizedPairs = [...retainedPairs].sort(
+    (left, right) => right.priority - left.priority || right.order - left.order
+  );
+  for (const candidatePair of prioritizedPairs) {
     const candidate = [
       ...baseMessages,
-      ...pair,
-      ...selectedPairs.flat(),
+      ...candidatePair.pair,
+      ...selectedPairs.flatMap((item) => item.pair),
     ];
-    if (estimateMessageTokens(candidate) <= targetTokens) selectedPairs.unshift(pair);
+    if (estimateMessageTokens(candidate) <= targetTokens) selectedPairs.push(candidatePair);
   }
+  selectedPairs.sort((left, right) => left.order - right.order);
   const compactMessages = [
     ...baseMessages,
-    ...selectedPairs.flat(),
+    ...selectedPairs.flatMap((item) => item.pair),
   ];
 
   if (!compactMessages.some((message) => message.role === "system")) {

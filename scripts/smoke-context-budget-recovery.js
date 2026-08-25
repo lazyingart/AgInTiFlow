@@ -322,4 +322,84 @@ assert.ok(
   "DeepSeek runtime compaction exceeded the bounded retry target"
 );
 
+function noisyFullReadPair(index, generation) {
+  const id = `validator-${generation}-${index}`;
+  const file = `tmp/validator-${generation}-${index}.py`;
+  return [
+    {
+      role: "assistant",
+      content: "",
+      reasoning_content: "Inspect the latest validator.",
+      tool_calls: [
+        {
+          id,
+          type: "function",
+          function: { name: "read_file", arguments: JSON.stringify({ path: file }) },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: id,
+      content: JSON.stringify({
+        ok: true,
+        toolName: "read_file",
+        path: file,
+        bytes: 4096,
+        lineCount: 120,
+        sha256: `${generation}${String(index).padStart(2, "0")}`.repeat(24).slice(0, 64),
+        contentTruncated: false,
+        content: `VALIDATOR-${generation}-${index}\n${"broad validator content ".repeat(150)}`,
+      }),
+    },
+  ];
+}
+
+const twiceCompactedState = {
+  ...compactionState,
+  messages: [
+    ...deepSeekRuntimeMessages,
+    ...Array.from({ length: 14 }, (_, index) => noisyFullReadPair(index + 1, 2)).flat(),
+  ],
+};
+const twiceCompacted = buildContextBudgetCompactionMessages(
+  twiceCompactedState,
+  { ...config, provider: "deepseek", model: "deepseek-chat" },
+  { title: "", url: "" },
+  8,
+  { reason: "second DeepSeek compaction" }
+);
+const twiceCompactedText = twiceCompacted.map((message) => message.content || "").join("\n");
+assert.ok(twiceCompactedText.includes("reliability-evidence-v14"));
+assert.ok(twiceCompactedText.includes("EVIDENCE-CHUNK-ONE"));
+assert.ok(twiceCompactedText.includes("EVIDENCE-CHUNK-TWO"));
+assert.equal(
+  (twiceCompactedText.match(/Tool: deep_research/g) || []).length,
+  1,
+  "second DeepSeek compaction duplicated the completed research record"
+);
+
+const thriceCompactedState = {
+  ...compactionState,
+  messages: [
+    ...twiceCompacted,
+    ...Array.from({ length: 14 }, (_, index) => noisyFullReadPair(index + 1, 3)).flat(),
+  ],
+};
+const thriceCompacted = buildContextBudgetCompactionMessages(
+  thriceCompactedState,
+  { ...config, provider: "deepseek", model: "deepseek-chat" },
+  { title: "", url: "" },
+  12,
+  { reason: "third DeepSeek compaction" }
+);
+const thriceCompactedText = thriceCompacted.map((message) => message.content || "").join("\n");
+assert.ok(thriceCompactedText.includes("reliability-evidence-v14"));
+assert.ok(thriceCompactedText.includes("EVIDENCE-CHUNK-ONE"));
+assert.ok(thriceCompactedText.includes("EVIDENCE-CHUNK-TWO"));
+assert.ok(
+  estimateMessageTokens(thriceCompacted) <= 12288,
+  "cumulative DeepSeek compaction exceeded the bounded retry target"
+);
+
 console.log("context budget recovery smoke passed");
