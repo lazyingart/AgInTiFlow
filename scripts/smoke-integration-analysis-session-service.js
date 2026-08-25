@@ -51,6 +51,11 @@ const EXPLICIT_PYTHON_SOURCE = [
 ].join("\n");
 const EXPLICIT_PYTHON_PROMPT =
   `Run this Python code and show the plot.\n\n\`\`\`python\n${EXPLICIT_PYTHON_SOURCE}\n\`\`\``;
+const EXPRESSION_PLOT_PROMPT = "Plot y=x-e^x";
+const PLOT_CONTINUATION_PROMPT =
+  "Continue from the plot and describe the curve in one concise sentence.";
+const PLOT_CONTINUATION_RESPONSE =
+  "The curve rises to its maximum of -1 at x=0, then falls rapidly while remaining negative.";
 const EXPLICIT_WORKER_ID = "worker_session_explicit_python_000001";
 const EXPLICIT_LOCAL_MODEL = Object.freeze({
   baseURL: "http://127.0.0.1:8008/v1",
@@ -258,9 +263,10 @@ function explicitRpcForManager(manager, calls) {
   };
 }
 
-function createExplicitPythonRunnerFixture() {
+function createExplicitPythonRunnerFixture({ complete } = {}) {
   const workerSources = [];
   const rpcCalls = [];
+  const modelPayloads = [];
   let modelCalls = 0;
   const worker = Object.freeze({
     capabilities: async () => explicitWorkerCapability(),
@@ -283,8 +289,10 @@ function createExplicitPythonRunnerFixture() {
     coordinator,
     localModelConfig: EXPLICIT_LOCAL_MODEL,
     modelClient: Object.freeze({ testOnly: true }),
-    async complete() {
+    async complete(...args) {
       modelCalls += 1;
+      modelPayloads.push(args[1]);
+      if (complete) return complete(...args);
       throw new Error("LocalLLM must not run for an explicit fenced-Python request");
     },
   });
@@ -293,10 +301,138 @@ function createExplicitPythonRunnerFixture() {
     coordinator,
     rpcCalls,
     workerSources,
+    modelPayloads,
     get modelCalls() {
       return modelCalls;
     },
   });
+}
+
+async function plotThenProseContinuationRoundTrip(temporaryRoot) {
+  const root = path.join(temporaryRoot, "plot-continuation-state");
+  let firstOutput = "";
+  const fixture = createExplicitPythonRunnerFixture({
+    async complete(_client, payload) {
+      assert.equal(payload.messages.at(-1).role, "user");
+      assert.equal(payload.messages.at(-1).content, PLOT_CONTINUATION_PROMPT);
+      assert.deepEqual(payload.messages.slice(1), [
+        { role: "user", content: EXPRESSION_PLOT_PROMPT },
+        { role: "assistant", content: firstOutput },
+        { role: "user", content: PLOT_CONTINUATION_PROMPT },
+      ], "same-thread continuation lost or reordered its retained conversation");
+      assert.equal("tools" in payload, false, "a direct prose continuation must not expose execution tools");
+      assert.equal("tool_choice" in payload, false, "a direct prose continuation must not authorize a tool choice");
+      assert.equal("parallel_tool_calls" in payload, false);
+      return {
+        choices: [{
+          message: {
+            role: "assistant",
+            content: PLOT_CONTINUATION_RESPONSE,
+            tool_calls: [],
+          },
+        }],
+      };
+    },
+  });
+  let service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: fixture.planner,
+    stateRoot: root,
+  });
+  let restarted = null;
+  try {
+    const created = await service.createThread({ title: "Plot then continue in prose" }, context());
+    const threadId = created.thread.id;
+    const started = await service.startRun({
+      threadId,
+      input: { text: EXPRESSION_PLOT_PROMPT },
+    }, context());
+    const firstRunId = started.run.id;
+    await service.waitForIdle();
+
+    const firstRun = (await service.getRunStatus({ runId: firstRunId }, context())).run;
+    assert.equal(firstRun.status, "completed");
+    firstOutput = firstRun.output;
+    assert.match(firstOutput, /Plotted x - e \^ x/u);
+    assert.equal(fixture.modelCalls, 0, "the deterministic expression plot must bypass LocalLLM");
+    assert.equal(
+      fixture.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+      1,
+      "the first plot turn must create exactly one bounded worker job"
+    );
+    const firstArtifacts = await service.listArtifacts({ runId: firstRunId }, context());
+    assert.equal(firstArtifacts.artifacts.length, 1);
+    assert.equal(firstArtifacts.artifacts[0].kind, "plot");
+    assert.equal(firstArtifacts.artifacts[0].runId, firstRunId);
+    assert.equal(firstArtifacts.artifacts[0].threadId, threadId);
+
+    const resumed = await service.resumeRun({
+      runId: firstRunId,
+      input: { text: PLOT_CONTINUATION_PROMPT },
+    }, context());
+    const successorRunId = resumed.run.id;
+    assert.equal(resumed.run.previousRunId, firstRunId);
+    assert.equal(resumed.run.threadId, threadId);
+    await service.waitForIdle();
+
+    const successor = (await service.getRunStatus({ runId: successorRunId }, context())).run;
+    assert.equal(successor.status, "completed");
+    assert.equal(successor.previousRunId, firstRunId);
+    assert.equal(successor.output, PLOT_CONTINUATION_RESPONSE);
+    assert.equal(fixture.modelCalls, 1, "the prose continuation must use exactly one direct model turn");
+    assert.equal(fixture.modelPayloads.length, 1);
+    assert.equal(
+      fixture.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+      1,
+      "the prose continuation must not create another execution-worker job"
+    );
+    assert.equal(fixture.workerSources.length, 1);
+
+    const successorArtifacts = await service.listArtifacts({ runId: successorRunId }, context());
+    assert.deepEqual(successorArtifacts.artifacts, []);
+    assert.deepEqual(
+      (await service.listArtifacts({ runId: firstRunId }, context())).artifacts,
+      firstArtifacts.artifacts,
+      "the successor must retain the first run's plot artifact and ownership"
+    );
+    const loadedArtifact = await service.getArtifact({ artifactId: firstArtifacts.artifacts[0].id }, context());
+    assert.equal(loadedArtifact.artifact.runId, firstRunId);
+    assert.equal(loadedArtifact.artifact.threadId, threadId);
+
+    const thread = (await service.getThread({ threadId }, context())).thread;
+    assert.deepEqual(thread.messages.map(({ role }) => role), ["user", "assistant", "user", "assistant"]);
+    assert.deepEqual(thread.messages.map(({ content }) => content), [
+      EXPRESSION_PLOT_PROMPT,
+      firstOutput,
+      PLOT_CONTINUATION_PROMPT,
+      PLOT_CONTINUATION_RESPONSE,
+    ]);
+    assert.deepEqual(thread.messages.map(({ runId }) => runId), [
+      firstRunId,
+      firstRunId,
+      successorRunId,
+      successorRunId,
+    ]);
+
+    await service.close({ mode: "wait" });
+    service = null;
+    restarted = createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: fixture.planner,
+      stateRoot: root,
+    });
+    assert.equal((await restarted.getRunStatus({ runId: successorRunId }, context())).run.previousRunId, firstRunId);
+    assert.deepEqual((await restarted.getThread({ threadId }, context())).thread.messages, thread.messages);
+    assert.deepEqual(
+      (await restarted.listArtifacts({ runId: firstRunId }, context())).artifacts,
+      firstArtifacts.artifacts,
+      "the first plot artifact changed after durable restart"
+    );
+    assert.equal(fixture.workerSources.length, 1, "durable replay must not rerun either turn");
+    assert.equal(fixture.modelCalls, 1, "durable replay must not repeat the prose completion");
+  } finally {
+    await service?.close({ mode: "abort" }).catch(() => {});
+    await restarted?.close({ mode: "abort" }).catch(() => {});
+    fixture.coordinator.close();
+  }
 }
 
 function runnerError(code, message) {
@@ -704,6 +840,7 @@ async function main() {
   const fakeRunner = createFakeRunner();
   try {
     await explicitPythonDurabilityRoundTrip(temporaryRoot);
+    await plotThenProseContinuationRoundTrip(temporaryRoot);
     await groundedSearchDurabilityRoundTrip(temporaryRoot);
     const service = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: fakeRunner, stateRoot: root });
     assertIntegrationAnalysisSessionService(service, { allowTestOnly: true });

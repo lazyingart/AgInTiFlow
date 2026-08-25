@@ -1129,6 +1129,74 @@ async function directAnswerDoesNotExecute() {
   coordinator.close();
 }
 
+async function conversationalFollowupUsesOnlyCurrentTurnExecutionAuthority() {
+  const priorConversation = [
+    { role: "user", content: "Plot y=x-e^x" },
+    {
+      role: "assistant",
+      content: "Plotted y=x-e^x from x=-10 to x=10 with 401 finite samples.",
+    },
+  ];
+  let directModelCalls = 0;
+  const direct = fixture(async (_client, payload) => {
+    directModelCalls += 1;
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    assert.equal(Object.hasOwn(payload, "tool_choice"), false);
+    assert.match(payload.messages[0].content, /Only the current user message can authorize execution/u);
+    assert.deepEqual(payload.messages.slice(1, -1), priorConversation);
+    assert.equal(
+      payload.messages.at(-1).content,
+      "Continue from the plot and describe the curve in one concise sentence."
+    );
+    return textResponse("The curve rises to its maximum of -1 at x=0, then falls rapidly while remaining negative.");
+  });
+  const directResult = await direct.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000084"),
+    {
+      prompt: "Continue from the plot and describe the curve in one concise sentence.",
+      conversation: priorConversation,
+    }
+  );
+  assert.equal(directModelCalls, 1);
+  assert.equal(directResult.kind, "direct");
+  assert.equal(directResult.toolCalls, 0);
+  assert.equal(directResult.executionStatus, null);
+  assert.deepEqual(directResult.artifacts, []);
+  assert.equal(
+    direct.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    0
+  );
+  direct.coordinator.close();
+
+  let explicitModelCalls = 0;
+  const explicit = fixture(async (_client, payload) => {
+    explicitModelCalls += 1;
+    assert.equal(Object.hasOwn(payload, "tools"), true);
+    if (explicitModelCalls === 1) {
+      assert.equal(payload.tool_choice, "required");
+      return toolResponse("value = 0 - 1\nprint(value)");
+    }
+    assert.equal(payload.tool_choice, "auto");
+    return textResponse("At x=0, the curve has value -1.");
+  });
+  const explicitResult = await explicit.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000085"),
+    {
+      prompt: "Continue from the plot and run Python to calculate the y-value at x=0.",
+      conversation: priorConversation,
+    }
+  );
+  assert.equal(explicitModelCalls, 2);
+  assert.equal(explicitResult.kind, "analysis");
+  assert.equal(explicitResult.toolCalls, 1);
+  assert.equal(explicitResult.executionStatus, "succeeded");
+  assert.equal(
+    explicit.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    1
+  );
+  explicit.coordinator.close();
+}
+
 async function generalPlotRequestsRequireExecutionAndArtifact() {
   let executionCount = 0;
   const worker = fakeWorker((request, signal) => {
@@ -1510,6 +1578,7 @@ await deterministicExpressionPlotFailuresStayTruthful();
 await groundsWithPrivateSearchBeforeModelSynthesis();
 await executesAndSynthesizesPlot();
 await directAnswerDoesNotExecute();
+await conversationalFollowupUsesOnlyCurrentTurnExecutionAuthority();
 await generalPlotRequestsRequireExecutionAndArtifact();
 await recoversPlotOnThirdExecutionAttempt();
 await rejectsFalseCompletionAfterFailedOrArtifactlessExecution();

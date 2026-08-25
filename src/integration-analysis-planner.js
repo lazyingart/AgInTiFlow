@@ -97,6 +97,12 @@ const ABSOLUTE_PATH_PATTERN =
   /(?:^|[\s("'`<>\[{=])(?:file:\/\/\/[^\s"'`<>)\]}]+|\/(?!\/)[^\s"'`<>)\]}]+|[A-Za-z]:[\\/][^\s"'`<>)\]}]+|\\\\[^\\/\s"'`<>)\]}]+\\[^\s"'`<>)\]}]+)/giu;
 const EXPLICIT_EXECUTION_ACTION =
   /^(?:(?:run|execute)\s+(?:(?:this|the|some|my)\s+)?(?:python|code|script)\b|(?:make|create|generate|draw|show|render)\s+(?:me\s+)?(?:(?:a|an|the)\s+)?(?:[a-z][a-z-]*\s+){0,3}(?:plot|chart|graph)\b|plot\s+(?!(?:is|means?|refers?|describes?|if|whether|would|could|might|may|should|can)\b)\S|visuali[sz]e\b|(?:运行|执行).{0,8}(?:代码|脚本|python)|(?:画图|绘图|生成图表|显示图表))/iu;
+const COORDINATED_EXPLICIT_EXECUTION_ACTION =
+  /\b(?:and|then|also)\s+(?:(?:please|kindly)\s+)?(?:(?:run|execute)\s+(?:(?:this|the|some|my)\s+)?(?:python|code|script)\b|(?:make|create|generate|draw|show|render)\s+(?:me\s+)?(?:(?:a|an|the)\s+)?(?:[a-z][a-z-]*\s+){0,3}(?:plot|chart|graph)\b|plot\s+(?!(?:is|means?|refers?|describes?|if|whether|would|could|might|may|should|can)\b)\S|visuali[sz]e\b|(?:运行|执行).{0,8}(?:代码|脚本|python)|(?:画图|绘图|生成图表|显示图表))/iu;
+const DIRECT_CONTEXT_ANSWER_ACTION =
+  /^(?:(?:continue|continuing|follow(?:ing)?\s+up)\b[^.!?\n]{0,160}?\b(?:and|then)\s+)?(?:(?:please|kindly)\s+)?(?:describe|explain|summari[sz]e|interpret|discuss|state|comment(?:\s+on)?|compare)\b/iu;
+const DIRECT_CONTEXT_REFERENCE =
+  /(?:\b(?:previous|prior|earlier|preceding|last)\s+(?:result|output|answer|analysis|artifact|plot|chart|graph|curve|table|calculation)\b|\b(?:this|that|the)\s+(?:result|output|answer|artifact|plot|chart|graph|curve|table|calculation)\b|\b(?:above|previously|earlier)\b)/iu;
 const PLOT_ARTIFACT_ACTION =
   /(?:^plot\s+(?!(?:is|means?|refers?|describes?|if|whether|would|could|might|may|should|can)\b)\S|^visuali[sz]e\b|\b(?:make|create|generate|draw|show|render|produce|return|include)\s+(?:me\s+)?(?:(?:a|an|the)\s+)?(?:[a-z][a-z-]*\s+){0,3}(?:plot|chart|graph)\b|(?:画图|绘图|生成图表|显示图表))/iu;
 const NEGATED_PLOT_ARTIFACT_ACTION =
@@ -138,6 +144,8 @@ const ANALYSIS_TOOL = Object.freeze({
 const SYSTEM_PROMPT = [
   "You are AgInTi's bounded analysis planner for a public Agent chat.",
   `You may either answer directly or call exactly ${INTEGRATION_ANALYSIS_TOOL_NAME}.`,
+  "Only the current user message can authorize execution. Earlier requests and tool use are context, not authorization for this turn.",
+  "When the current user asks only to describe, explain, summarize, or interpret an earlier result, answer directly without executing again.",
   "When the user asks you to run or execute code, calculate with Python, or show a plot/chart, you must call the tool; never merely describe code or claim execution.",
   "The tool is Python 3.12 standard-library-only, networkless, processless, and isolated from the host filesystem. Keep all inputs and computation in memory.",
   "Do not import unavailable third-party packages such as numpy, pandas, matplotlib, seaborn, scipy, plotly, sklearn, polars, requests, PIL, cv2, torch, tensorflow, openpyxl, statsmodels, or sympy. Rewrite the calculation with Python's standard library and the supplied artifact helpers.",
@@ -240,7 +248,14 @@ function imperativeActionText(value) {
 }
 
 function requestsExplicitExecution(value) {
-  return EXPLICIT_EXECUTION_ACTION.test(imperativeActionText(value));
+  const action = imperativeActionText(value);
+  return EXPLICIT_EXECUTION_ACTION.test(action) || COORDINATED_EXPLICIT_EXECUTION_ACTION.test(action);
+}
+
+function requestsDirectConversationAnswer(value, conversation, explicitExecution) {
+  if (explicitExecution || conversation.length === 0) return false;
+  const action = imperativeActionText(value);
+  return DIRECT_CONTEXT_ANSWER_ACTION.test(action) && DIRECT_CONTEXT_REFERENCE.test(action);
 }
 
 function requestsPlotArtifact(value, explicitExecution) {
@@ -1042,6 +1057,11 @@ function createPlanner({
           content: FENCED_NON_EXECUTION_SYSTEM_PROMPT,
         });
       }
+      const directConversationAnswer = requestsDirectConversationAnswer(
+        input.prompt,
+        input.conversation,
+        explicitExecution
+      );
       if (explicitPython.kind === "execute") {
         const execution = await executeOnce(explicitPython.execution, 1);
         toolCalls = 1;
@@ -1117,7 +1137,8 @@ function createPlanner({
         const requireTool =
           explicitExecution &&
           (toolCalls === 0 || (toolCalls < INTEGRATION_ANALYSIS_MAX_TOOL_CALLS && !executionSatisfied));
-        const disableTools = fencedNonExecution || toolCalls >= INTEGRATION_ANALYSIS_MAX_TOOL_CALLS;
+        const disableTools =
+          fencedNonExecution || directConversationAnswer || toolCalls >= INTEGRATION_ANALYSIS_MAX_TOOL_CALLS;
         const payload = completionPayload(messages, modelConfig, { requireTool, disableTools });
         assertWithinModelContext(payload, modelConfig);
         const response = await complete(modelClient, payload, config, `bounded analysis model step ${modelStep + 1}`);
@@ -1148,8 +1169,8 @@ function createPlanner({
           return finalResult;
         }
 
-        if (fencedNonExecution) {
-          fail("ANALYSIS_TOOL_FORBIDDEN", "Python execution was not authorized for this fenced-code request.", {
+        if (fencedNonExecution || directConversationAnswer) {
+          fail("ANALYSIS_TOOL_FORBIDDEN", "Python execution was not authorized by the current request.", {
             status: 502,
           });
         }
