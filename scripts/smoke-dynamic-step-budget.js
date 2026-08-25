@@ -36,6 +36,7 @@ import {
   failedTestMembershipPredicates,
   isCompletedContinuationNoop,
   isSubstantiveTestCommand,
+  mergeDurableGitEvidence,
   nextStepRuntimeConfig,
   projectAcceptanceFromMarkdown,
   projectTestVerificationFinishBlock,
@@ -64,6 +65,7 @@ import {
   evaluateScsEvidence,
   inferGitActionsFromCommand,
   inferSuccessfulGitActionsFromCommandResult,
+  successfulGitCommitProvesFileMutation,
   parseExplicitExitStatus,
   parseNonMutatingExitStatusWrapper,
 } from "../src/scs-evidence.js";
@@ -3056,6 +3058,40 @@ try {
     !completionEvidenceNeedsCommand({ missing: [], missingProjectCommands: [], missingGitActions: [] }),
     "satisfied completion evidence kept command execution open"
   );
+  const stagingVerificationState = {
+    meta: {
+      goalContract: { revision: 1 },
+      projectVerification: {
+        mutationRevision: 2,
+        mutationHistory: [
+          { revision: 1, paths: ["labshare.py"] },
+          { revision: 2, paths: ["tests/test_labshare.py"] },
+        ],
+      },
+    },
+  };
+  recordProjectVerificationOutcome(
+    stagingVerificationState,
+    {
+      ok: true,
+      toolName: "run_command",
+      args: { command: "cd /workspace && git add labshare.py tests/test_labshare.py" },
+      commandPolicy: {
+        category: "git-workflow",
+        gitOnly: true,
+        writesWorkspace: true,
+        mayMutateProject: false,
+      },
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+    },
+    { commandCwd: workspace, sandboxMode: "docker-workspace" }
+  );
+  assert(
+    stagingVerificationState.meta.projectVerification.mutationRevision === 2,
+    "staging task-owned paths invalidated passing project verification"
+  );
   assert(normalizeDynamicStepsMode("always") === "on", "dynamic mode always did not normalize to on");
   assert(normalizeDynamicStepsMode("smart") === "auto", "dynamic mode smart did not normalize to auto");
   const inheritedBudget = createStepBudgetState(
@@ -3301,6 +3337,13 @@ try {
     "a standard empty git-status assertion was not classified as a repository-state gate"
   );
   assert(
+    failedTestRequiresCleanRepositoryState({
+      failureSummary:
+        "Traceback context: require(not status.stdout.strip(), message) | AssertionError: project worktree is not clean",
+    }),
+    "a direct clean-worktree assertion was not classified when the traceback omitted the Git helper call"
+  );
+  assert(
     !failedTestRequiresCleanRepositoryState({
       failureSummary: "The generated prose says the repository worktree is not clean.",
     }),
@@ -3368,6 +3411,38 @@ try {
       !boundedCommitCommand.includes("git add -A") &&
       !boundedCommitCommand.includes("git add -- ."),
     "the task-owned commit routine did not shell-quote its exact evidence-derived paths"
+  );
+  const artifactCommitRecoveryRequest = buildConstrainedRecoveryRequest(
+    {
+      goal: "Commit the accepted security repair.",
+      messages: oversizedRepositoryState.messages,
+      meta: {
+        artifactProgress: { complete: true },
+      },
+    },
+    { provider: "localllm", taskProfile: "security" },
+    {},
+    10,
+    {
+      provider: "localllm",
+      taskProfile: "security",
+      artifactValidationPhase: true,
+      artifactValidationPendingGitActions: ["commit"],
+      artifactValidationCommitPaths: ["SECURITY.md", "labshare.py", "tests/test_labshare.py"],
+    }
+  );
+  const artifactCommitRecoveryText = JSON.stringify(
+    artifactCommitRecoveryRequest?.messages || []
+  );
+  assert(
+    artifactCommitRecoveryRequest?.mode === "artifact-git-completion" &&
+      artifactCommitRecoveryRequest?.maxOutputTokens === 1536,
+    "artifact Git completion did not activate its bounded recovery turn"
+  );
+  assert(
+    /only the required local commit is missing/i.test(artifactCommitRecoveryText) &&
+      /do not inspect unstaged diffs/i.test(artifactCommitRecoveryText),
+    "artifact Git completion did not suppress redundant rediscovery and preview guessing"
   );
   assert(
     buildTaskOwnedCommitCommand(["../outside.md"], "Unsafe path") === "" &&
@@ -3496,6 +3571,23 @@ try {
       !/run the exact retained verification command now/i.test(verifiedCompletionText),
     "bounded completion asked the agent to repeat an already passing verifier"
   );
+  const incompleteCommitCompletionState = structuredClone(verifiedCompletionState);
+  incompleteCommitCompletionState.goal =
+    "Fix the security issue, update SECURITY.md, run tests, commit the repair, and finish cleanly.";
+  incompleteCommitCompletionState.meta.goalContract = {
+    revision: 11,
+    activeGoalRevision: 11,
+    activeGoal: incompleteCommitCompletionState.goal,
+    currentRequest: incompleteCommitCompletionState.goal,
+    taskGoal: incompleteCommitCompletionState.goal,
+  };
+  assert(
+    nextStepRuntimeConfig(
+      { provider: "localllm", taskProfile: "security" },
+      incompleteCommitCompletionState
+    ).verifiedCompletionPending !== true,
+    "one passing test forced finish-only mode while the task's required commit remained unsatisfied"
+  );
   const staleCompletionState = structuredClone(verifiedCompletionState);
   staleCompletionState.meta.projectVerification.mutationRevision += 1;
   assert(
@@ -3522,6 +3614,74 @@ try {
       1
     ) === null,
     "ordinary agent work was incorrectly narrowed to a recovery-only context"
+  );
+  const acceptedArtifactState = {
+    goal: "Fix the security issue, write SECURITY.md, run tests, and commit the repair.",
+    commandCwd: workspace,
+    messages: [],
+    meta: {
+      goalContract: {
+        revision: 9,
+        currentHash: "same-task-hash",
+        currentRequest: "Continue the same task and finish the requested commit.",
+        currentPreview: "Continue the same task and finish the requested commit.",
+        taskGoal: "Fix the security issue, write SECURITY.md, run tests, and commit the repair.",
+        activeGoal: "Fix the security issue, write SECURITY.md, run tests, and commit the repair.",
+        activeGoalRevision: 3,
+        taskRelation: "same-task",
+        history: [{ revision: 9, hash: "same-task-hash", refreshExecutionContract: false }],
+      },
+      projectVerification: {
+        mutationRevision: 8,
+        testRuns: [{
+          command: "python -m unittest discover -s tests -v",
+          mutationRevision: 8,
+          passed: true,
+        }],
+      },
+      artifactProgress: {
+        complete: true,
+        contractKey: "security-artifact-contract",
+        preflightFingerprint: "accepted",
+        preflightGoalRevision: 8,
+        preflightGoalHash: "same-task-hash",
+        preflightContractKey: "security-artifact-contract",
+        preflightMutationRevision: 8,
+        preflight: {
+          evidenceOk: true,
+          semanticOk: true,
+          defectCount: 0,
+          missingEvidence: [],
+          missingToolCalls: [],
+          missingProjectCommands: [],
+          missingGitActions: [],
+        },
+        needsRepair: false,
+        needsCommand: false,
+        needsSourceRead: false,
+        defectCount: 0,
+      },
+    },
+  };
+  const acceptedArtifactRuntime = nextStepRuntimeConfig(
+    { provider: "localllm", taskProfile: "security", commandCwd: workspace },
+    acceptedArtifactState
+  );
+  assert(
+    acceptedArtifactRuntime.verifiedCompletionPending === true &&
+      acceptedArtifactRuntime.artifactValidationPendingGitActions.length === 0,
+    "an identical same-task resume renewed an already satisfied commit or failed to enter finish-only mode"
+  );
+  const acceptedArtifactRecovery = buildConstrainedRecoveryRequest(
+    acceptedArtifactState,
+    { provider: "localllm", taskProfile: "security", commandCwd: workspace },
+    {},
+    12,
+    acceptedArtifactRuntime
+  );
+  assert(
+    acceptedArtifactRecovery?.mode === "verified-completion",
+    "an accepted artifact resume did not narrow to the verified completion turn"
   );
   assert(
     unchangedFailedTestRerunBlock(
@@ -3709,6 +3869,38 @@ try {
       { projectTest: failedValidationState.meta.projectVerification.testRuns[0] },
     ]) === null,
     "an already-current failed-test evidence packet was redundantly rebuilt"
+  );
+  await fs.writeFile(
+    path.join(workspace, "task-referenced-source.py"),
+    "def sanitize(value):\n    return value\n",
+    "utf8"
+  );
+  const taskReferencedPacketState = {
+    goal: "Repair task-referenced-source.py and rerun the external security contract.",
+    meta: {
+      projectVerification: {
+        mutationRevision: 0,
+        discoveredTests: [],
+        testRuns: [{
+          command: "python external_security_contract.py",
+          at: "2026-08-25T12:00:00.000Z",
+          mutationRevision: 0,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "external-contract-no-traceback-source",
+          failureSummary: "AssertionError: audit fields permit newline log injection",
+        }],
+      },
+    },
+  };
+  const taskReferencedPacket = await buildFailedTestRecoveryPacket(
+    { commandCwd: workspace, taskProfile: "security" },
+    taskReferencedPacketState
+  );
+  assert(
+    taskReferencedPacket.paths.includes("task-referenced-source.py") &&
+      taskReferencedPacket.content.includes("def sanitize(value)"),
+    "failed-test recovery ignored an explicitly named canonical workspace source when mutation history was empty"
   );
   await fs.writeFile(
     path.join(workspace, "ordered-report.md"),
@@ -5065,6 +5257,72 @@ try {
       JSON.stringify(["python demo.py"]),
     "a coordinated explicit inline command was lost"
   );
+  const bareVerifierPath =
+    "/home/lachlan/ProjectsLFS/Aginti-Test/supervision/acceptance/security_labshare_contract.py";
+  const bareVerifierContract = deriveScsTaskContract({
+    goal: `Run the visible unittest suite and ${bareVerifierPath}, commit only labshare.py, tests/test_labshare.py, and SECURITY.md, then verify a clean worktree.`,
+    taskProfile: "security",
+  });
+  assert(
+    JSON.stringify(bareVerifierContract.requiredProjectCommands) ===
+      JSON.stringify([`python3 ${bareVerifierPath}`]),
+    "an explicitly requested bare verifier path was not retained as an executable canonical command"
+  );
+  assert(
+    !bareVerifierContract.requiredEvidence.some((item) => item.category === "visual"),
+    "the phrase visible unittest suite fabricated screenshot evidence"
+  );
+  assert(
+    deriveScsTaskContract({
+      goal: `Read ${bareVerifierPath} and explain its checks without running it.`,
+      taskProfile: "writing",
+    }).requiredProjectCommands.length === 0,
+    "a descriptive bare verifier path fabricated an execution requirement"
+  );
+  assert(
+    deriveScsTaskContract({
+      goal: "Open the visible browser preview and inspect the image before finishing.",
+      taskProfile: "design",
+    }).requiredEvidence.some((item) => item.category === "visual"),
+    "a genuine visible browser-preview request lost visual evidence"
+  );
+  assert(
+    successfulGitCommitProvesFileMutation({
+      ok: true,
+      exitCode: 0,
+      args: { command: "git commit -m 'Focused repair'" },
+      stdout: "[main abcdef1] Focused repair\n 3 files changed, 12 insertions(+), 2 deletions(-)\n",
+    }) === true,
+    "a successful non-empty commit did not preserve inherited file-mutation evidence"
+  );
+  assert(
+    successfulGitCommitProvesFileMutation({
+      ok: false,
+      exitCode: 1,
+      args: { command: "git commit -m 'Focused repair'" },
+      stdout: "On branch main\nnothing to commit, working tree clean\n",
+    }) === false,
+    "a no-op commit fabricated file-mutation evidence"
+  );
+  let boundedGitEvidence = [
+    { action: "commit", goalRevision: 12, mutationRevision: 3 },
+  ];
+  for (let index = 0; index < 100; index += 1) {
+    boundedGitEvidence = mergeDurableGitEvidence(boundedGitEvidence, ["add"], {
+      goalRevision: 12,
+      mutationRevision: 3,
+    });
+  }
+  assert(
+    boundedGitEvidence.some(
+      (item) =>
+        item.action === "commit" &&
+        item.goalRevision === 12 &&
+        item.mutationRevision === 3
+    ) &&
+      boundedGitEvidence.filter((item) => item.action === "add").length === 1,
+    "repeated staging evidence evicted a stronger durable commit"
+  );
   for (const goal of [
     "Run this command: `npm test`.",
     "Please run: `npm test`.",
@@ -5346,6 +5604,21 @@ try {
     artifactValidationScopeBlock(
       artifactState,
       "run_command",
+      { command: "git add MEDIA_ROUTINE_READINESS.md" },
+      {
+        commandCwd: workspace,
+        artifactValidationPhase: true,
+        artifactValidationNeedsGitEvidence: true,
+        allowShellTool: true,
+        sandboxMode: "host",
+      }
+    ) === null,
+    "artifact validation blocked bounded staging required before the pending commit"
+  );
+  assert(
+    artifactValidationScopeBlock(
+      artifactState,
+      "run_command",
       { command: "git add MEDIA_ROUTINE_READINESS.md && git commit -m 'verify artifact'" },
       {
         commandCwd: workspace,
@@ -5356,6 +5629,24 @@ try {
       }
     ) === null,
     "artifact validation blocked the git action required by its completion contract"
+  );
+  assert(
+    artifactValidationScopeBlock(
+      artifactState,
+      "run_command",
+      {
+        command:
+          'git add MEDIA_ROUTINE_READINESS.md && git commit -m "verify artifact" -m "Preserve validated output and record the intentional repair."',
+      },
+      {
+        commandCwd: workspace,
+        artifactValidationPhase: true,
+        artifactValidationNeedsGitEvidence: true,
+        allowShellTool: true,
+        sandboxMode: "host",
+      }
+    ) === null,
+    "artifact validation blocked a required commit with a bounded second message paragraph"
   );
   assert(
     artifactValidationScopeBlock(

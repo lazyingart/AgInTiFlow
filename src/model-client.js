@@ -216,6 +216,34 @@ export async function createChatCompletion(client, payload, config, label = "mod
   }
 }
 
+export async function requestDirectResponse(client, config, messages = []) {
+  if (client.mock) {
+    return mockChatResponse(`Mock direct response for: ${config.goal}`);
+  }
+
+  const directMessages = [
+    ...messages,
+    {
+      role: "user",
+      content: [
+        "Response-only scope: return the requested final content directly as the assistant response.",
+        "Do not produce an execution plan, call tools, mention internal runtime details, or stop at a placeholder.",
+        "Preserve every material requirement and all source-grounded details supplied in the current request.",
+      ].join(" "),
+    },
+  ];
+  const payload = {
+    model: config.model,
+    temperature: 0,
+    messages: prepareMessages(config, directMessages),
+    ...(Number(config.maxOutputTokens || 0) > 0
+      ? { max_tokens: Number(config.maxOutputTokens) }
+      : {}),
+  };
+  assertLocalRequestWithinContext(payload, config, "response-only model request");
+  return createChatCompletion(client, payload, config, "response-only model request");
+}
+
 function assertLocalRequestWithinContext(payload = {}, config = {}, label = "agent step request") {
   if (normalizeProviderId(config.provider, "") !== "localllm") return;
   const contextWindowTokens = Number(config.contextWindowTokens || 32768);
@@ -869,6 +897,26 @@ function mockChatResponse(content, toolCalls = []) {
   };
 }
 
+export function planningContinuityContext(state = {}, limit = 2) {
+  const contract = state.meta?.goalContract;
+  const history = Array.isArray(contract?.history) ? contract.history : [];
+  const currentRevision = Math.max(0, Number(contract?.revision || 0));
+  const currentGoal = String(state.goal || "").replace(/\s+/g, " ").trim();
+  const retained = [];
+  const seen = new Set();
+  for (const entry of [...history].reverse()) {
+    if (currentRevision > 0 && Number(entry?.revision || 0) >= currentRevision) continue;
+    const preview = String(entry?.preview || "").replace(/\s+/g, " ").trim();
+    if (!preview || preview === currentGoal || seen.has(preview)) continue;
+    retained.push(
+      compactTextForTokenBudget(redactSensitiveText(preview), 1600, { headFraction: 0.45 })
+    );
+    seen.add(preview);
+    if (retained.length >= Math.max(1, Number(limit || 2))) break;
+  }
+  return retained;
+}
+
 export async function createPlan(client, config, state) {
   const taskProfile = getTaskProfile(config.taskProfile);
   const engineeringGuidance = isRetainedWorkspaceProfile(config)
@@ -883,6 +931,7 @@ export async function createPlan(client, config, state) {
   const projectInstructions = state.meta?.projectInstructions;
   const platform = platformInfo();
   const mcpSummary = summarizeMcpConfig(config.commandCwd || config.baseDir || process.cwd());
+  const continuityContext = planningContinuityContext(state);
   if (client.mock) {
     return [
       "1. Inspect the request and prefer the local shell when available.",
@@ -910,12 +959,17 @@ export async function createPlan(client, config, state) {
         role: "system",
         content: isRetainedWorkspaceProfile(config)
           ? `You are planning a retained ${config.integrationSessionProfile} task. Use only the exact retained workspace tools${isRetainedVisionWorkspaceProfile(config) ? `; read_image accepts only an opaque retained PNG reference and always uses the loopback ${INTEGRATION_RETAINED_VISION_MODEL_ID} route` : "; image perception is disabled"}. Shell execution, browser, canvas, specialists, long jobs, tmux, MCP, and web tools are disabled. ${formatBehaviorContractForPrompt({ mode: "plan" })} Write a concise 3-to-6-step execution plan and finish once verified.`
-          : `You are planning a browser, shell, workspace, and coding-agent task. The plan is only a launchpad: after planning, the runtime will continue with tools until the task is complete or genuinely blocked. Use tools only when the user actually asks for workspace, browser, shell, web, canvas, image, MCP, or specialist work. For greetings, thanks, or simple conversational turns, finish directly; never invent file creation or shell work for them. Prefer real workspace edits/checks over advice-only answers only when the request is an explicit task or deliverable. If a local shell command can satisfy a local task, prefer that before browser actions. Treat any suggested start URL as optional. ${browserStateReconciliationGuidance()} ${formatBehaviorContractForPrompt({ mode: "plan" })} Write a concise execution plan with 3 to 6 steps only for requests that need execution. Mention risks or blockers when relevant. Keep it short and practical.`,
+          : `You are planning a browser, shell, workspace, and coding-agent task. The plan is only a launchpad: after planning, the runtime will continue with tools until the task is complete or genuinely blocked. Use tools only when the user actually asks for workspace, browser, shell, web, canvas, image, MCP, or specialist work. For greetings, thanks, or simple conversational turns, finish directly; never invent file creation or shell work for them. Prefer real workspace edits/checks over advice-only answers only when the request is an explicit task or deliverable. If a local shell command can satisfy a local task, prefer that before browser actions. Treat any suggested start URL as optional. Same-session continuity context is authoritative for named or established commands and routines: never reinterpret an established external verifier as web search or substitute a nearby tool. Never plan destructive cleanup without concrete observed disposable-file evidence and an explicit cleanup requirement. For a clean-worktree gate, inspect scoped Git state, commit only task-owned changes, then rerun the retained verifier. ${browserStateReconciliationGuidance()} ${formatBehaviorContractForPrompt({ mode: "plan" })} Write a concise execution plan with 3 to 6 steps only for requests that need execution. Mention risks or blockers when relevant. Keep it short and practical.`,
       },
       {
         role: "user",
         content: [
           `Goal: ${planGoal}`,
+          continuityContext.length
+            ? `Recent same-session requirements (context only; preserve exact commands and do not repeat completed side effects):\n${continuityContext
+                .map((item, index) => `${index + 1}. ${item}`)
+                .join("\n")}`
+            : "",
           state.startUrl ? `Suggested start URL: ${state.startUrl}` : "",
           config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
           config.allowShellTool
@@ -1022,6 +1076,11 @@ export async function createPlan(client, config, state) {
         role: "user",
         content: [
           `Goal: ${minimalGoal}`,
+          continuityContext.length
+            ? `Recent same-session requirements:\n${continuityContext
+                .map((item, index) => `${index + 1}. ${item}`)
+                .join("\n")}`
+            : "",
           `Task profile: ${isRetainedWorkspaceProfile(config) ? config.integrationSessionProfile : taskProfile.label}. ${isRetainedWorkspaceProfile(config) ? retainedWorkspaceTaskProfilePrompt(config) : taskProfile.prompt}`,
           projectInstructions?.exists
             ? `Project instructions are available at ${projectInstructions.path}; read them when executing.`

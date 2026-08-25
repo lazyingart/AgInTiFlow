@@ -1301,6 +1301,23 @@ export function selectProgressiveTools(
     config.testVerificationPending !== true
   ) {
     const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    const pendingGitActions = Array.isArray(config.artifactValidationPendingGitActions)
+      ? config.artifactValidationPendingGitActions.map((item) => String(item || "").toLowerCase())
+      : [];
+    const boundedCommitPaths = Array.isArray(config.artifactValidationCommitPaths)
+      ? config.artifactValidationCommitPaths
+      : [];
+    if (
+      pendingGitActions.includes("commit") &&
+      pendingGitActions.every((action) => ["add", "commit"].includes(action)) &&
+      boundedCommitPaths.length > 0
+    ) {
+      const commitProjectChanges = constrainRepositoryStateCommit(
+        available.get("run_command"),
+        boundedCommitPaths
+      );
+      if (commitProjectChanges) return [commitProjectChanges, finish].filter(Boolean);
+    }
     return artifactValidationToolNames(config).map((name) => available.get(name)).filter(Boolean);
   }
 
@@ -1363,6 +1380,16 @@ export function selectProgressiveTools(
         return available.get(name);
       })
       .filter(Boolean);
+  }
+
+  if (config.requiredProjectCommandPending === true) {
+    const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    const requiredCommand = constrainRunCommand(
+      available.get("run_command"),
+      config.requiredProjectCommand,
+      "Run this exact user-requested project command now. It is retained as a first-class acceptance requirement. Do not substitute a nearby test, repeat Git operations, or restart discovery. If it fails, its concrete output will reopen bounded repair tools."
+    );
+    return [requiredCommand, finish].filter(Boolean);
   }
 
   if (config.testVerificationPending === true) {

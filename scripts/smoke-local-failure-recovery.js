@@ -49,6 +49,32 @@ const singleFailure = decideLocalFailureRecovery(
 );
 assert.equal(singleFailure.active, false, "one ordinary command failure should not escalate the model");
 
+const codeTierContractViolationState = {
+  meta: {
+    toolLoop: { recent: [] },
+    toolContractViolation: { consecutive: 2, count: 2 },
+  },
+};
+const codeTierContractRecovery = decideLocalFailureRecovery(
+  {
+    ...baseConfig,
+    model: "localllm-code",
+    routeModel: "localllm-fast",
+    localCodeFallbackModel: "localllm-deep",
+  },
+  codeTierContractViolationState
+);
+assert.equal(
+  codeTierContractRecovery.active,
+  true,
+  "repeated schema violations from a strong local tier should still activate local recovery"
+);
+assert.equal(
+  codeTierContractRecovery.model,
+  "localllm-deep",
+  "code-tier contract recovery did not select a different strong local model"
+);
+
 const repeatedState = stateWithRecent([
   failed("apply_patch", "patch:ambiguous-function"),
   failed("apply_patch", "patch:ambiguous-function"),

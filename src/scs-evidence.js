@@ -796,17 +796,27 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   if (
     textHas(
       mandatoryEvidenceText,
-      /\b(browser|chrome|chromium|cdp|devtools|playwright|selenium|web[- ]?(?:ui|page)|website|tab|composer|click|type|upload|attach|submit|form)\b/
+      /\b(browser|chrome|chromium|cdp|devtools|playwright|selenium|web[- ]?(?:ui|page)|website|tab|composer|click|upload|attach|submit|form)\b/
     ) ||
     textHas(
       mandatoryEvidenceText,
       /\b(?:browse|navigate|open|refresh|visit)\b[^.\n;]{0,60}\b(?:page|site)\b|\b(?:page|site)\b[^.\n;]{0,60}\b(?:click|open|submit|upload)\b/
     ) ||
+    textHas(
+      mandatoryEvidenceText,
+      /\btype\b[^.\n;]{0,80}\b(?:into|in)\b[^.\n;]{0,80}\b(?:field|input|box|form|page|site|browser|tab|composer)\b|\btype\s+(?:the\s+)?(?:text|value|password|query)\b[^.\n;]{0,80}\b(?:field|input|box|form|page|site|browser|tab|composer)\b/
+    ) ||
     /浏览器|网页|页面|上传|提交|附件|资产库/.test(mandatoryEvidenceText)
   ) {
     categories.add("browser");
   }
-  if (textHas(mandatoryEvidenceText, /\b(screenshot|visible|visual|see|inspect image|open image|read_image|thumbnail)\b/) || /截图|可见|缩略图/.test(mandatoryEvidenceText)) {
+  if (
+    textHas(
+      mandatoryEvidenceText,
+      /\b(?:screenshot|visual|inspect image|open image|read_image|thumbnails?)\b|\bvisible\s+(?:browser|page|ui|window|image|artifact|result|output|render|preview|screen|thumbnails?)\b|\bsee\s+(?:the\s+)?(?:image|render|preview|page|screen|visual\s+result)\b/
+    ) ||
+    /截图|(?:可见|查看|目视)[^。；\n]{0,40}(?:图像|图片|页面|界面|窗口|渲染|预览|屏幕)|缩略图/.test(mandatoryEvidenceText)
+  ) {
     categories.add("visual");
   }
   if (textHas(text, /\b(publish|deploy|submit|upload to|generate video|external service|npm publish|release)\b/) || /发布|部署|提交|生成视频|外部服务/.test(text)) {
@@ -908,6 +918,13 @@ export function hasAgintiEvidenceScope(goal = "") {
   return Boolean(parseAgintiEvidenceScope(goal));
 }
 
+export function isResponseOnlyEvidenceScope(goal = "") {
+  const payload = parseAgintiEvidenceScope(goal);
+  if (!payload) return false;
+  const mode = String(payload.mode || "").trim().toLowerCase();
+  return ["chat-response", "host-managed-response", "plan-response", "read-only-answer"].includes(mode);
+}
+
 export function scopedChatopsEvidenceGoal(goal = "", taskProfile = "") {
   const payload = parseAgintiEvidenceScope(goal);
   if (!payload) {
@@ -929,7 +946,7 @@ export function scopedChatopsEvidenceGoal(goal = "", taskProfile = "") {
     return text;
   }
   const mode = String(payload.mode || "").trim().toLowerCase();
-  if (["chat-response", "host-managed-response", "plan-response", "read-only-answer"].includes(mode)) {
+  if (isResponseOnlyEvidenceScope(goal)) {
     return "Answer the current chat turn directly without external execution.";
   }
   const request = String(payload.request || "").trim();
@@ -969,9 +986,47 @@ function prefixRequestsInlineCommandExecution(prefix = "") {
   );
 }
 
+function canonicalBareVerifierCommand(rawPath = "") {
+  const candidate = String(rawPath || "").trim();
+  if (
+    !candidate ||
+    candidate.length > 1000 ||
+    /[\u0000-\u001f\u007f\s"'`$&|;<>()[\]{}*?!]/u.test(candidate) ||
+    hasActiveShellExpansion(candidate)
+  ) {
+    return "";
+  }
+  const basename = path.basename(candidate).toLowerCase();
+  if (!/(?:test|verify|check|contract|acceptance|audit|smoke|doctor|lint)/i.test(basename)) {
+    return "";
+  }
+  if (/\.py$/i.test(candidate)) return `python3 ${candidate}`;
+  if (/\.sh$/i.test(candidate)) return `bash ${candidate}`;
+  if (/\.(?:cjs|mjs|js)$/i.test(candidate)) return `node ${candidate}`;
+  return "";
+}
+
+function inferBareRequestedVerifierCommands(goal = "") {
+  const commands = [];
+  const source = stripForbiddenLanguage(goal);
+  const sentencePattern = /(?:^|[!?。！？\n]|\.(?=\s))\s*(?:please\s+|kindly\s+|now\s+)?(?:run|execute|invoke|launch)\b([^!?。！？\n]{0,1200})/gi;
+  const pathPattern = /(?:^|[\s,:，：])((?:(?:~|\.{1,2})?\/|[A-Za-z0-9_-]+\/)[A-Za-z0-9_./~-]*\.(?:py|sh|cjs|mjs|js))(?=$|[.\s,;，；])/gi;
+  for (const sentence of source.matchAll(sentencePattern)) {
+    const clause = String(sentence[1] || "").split(
+      /[,;，；]\s*(?=(?:then\s+)?(?:commit|stage|push|publish|deploy|save|write|edit|patch|create|remove|delete|verify\s+(?:a|the)\s+(?:clean|final)|提交|暂存|推送|发布|保存|写入|编辑|修改|创建|删除|验证工作区)\b)/i,
+      1
+    )[0];
+    for (const match of clause.matchAll(pathPattern)) {
+      const command = canonicalBareVerifierCommand(match[1]);
+      if (command) commands.push(normalizeProjectCommand(command));
+    }
+  }
+  return unique(commands).slice(0, 8);
+}
+
 function inferExplicitRequestedCommands(goal = "") {
   const source = stripForbiddenLanguage(goal);
-  const commands = [];
+  const commands = inferBareRequestedVerifierCommands(source);
   const inlineCode = /(?<!`)`([^`\r\n]+)`(?!`)/g;
   for (const match of source.matchAll(inlineCode)) {
     const index = Number(match.index || 0);
@@ -1121,6 +1176,16 @@ export function inferSuccessfulGitActionsFromCommandResult(payload = {}) {
     return ["commit"];
   }
   return [];
+}
+
+export function successfulGitCommitProvesFileMutation(payload = {}) {
+  if (!inferSuccessfulGitActionsFromCommandResult(payload).includes("commit")) return false;
+  const output = String(payload.stdout || payload.result || "");
+  return (
+    /^\[[^\]\n]+\s+[0-9a-f]{7,}\]\s+\S+/mi.test(output) &&
+    (/(?:^|\n)\s*\d+\s+files?\s+changed\b/mi.test(output) ||
+      /(?:^|\n)\s*(?:create|delete|rename)\s+mode\s+\d+\s+/mi.test(output))
+  );
 }
 
 function observedProjectCommandSatisfies(requiredCommand = "", item = {}) {
@@ -3011,7 +3076,12 @@ export function finishResultClaimsIncompleteWork(result = "") {
       ""
     )
     .replace(/\b(?:not|never)\s+(?:paused|pending|incomplete|unfinished)\b/gi, "")
-    .replace(/\b(?:no|without)\s+(?:remaining|pending|unfinished)\s+(?:work|steps?|tasks?|actions?)\b/gi, "");
+    .replace(
+      /\b(?:no|without)\s+(?:remaining|pending|unfinished)\s+(?:work|steps?|tasks?|actions?|changes?)\b/gi,
+      ""
+    )
+    .replace(/\bno\s+(?:further|additional)\s+(?:work|steps?|tasks?|actions?|changes?)\s+(?:is|are\s+)?(?:needed|required)\b/gi, "")
+    .replace(/\bno\s+need\s+for\s+(?:further|additional)\s+(?:work|steps?|tasks?|actions?|changes?)\b/gi, "");
   const explicitIncompleteState =
     /\b(?:paused|pending|unfinished|incomplete|not\s+(?:yet\s+)?(?:complete|completed|done)|still\s+(?:needs?|requires?)\s+(?:work|implementation|repair|validation|testing|verification))\b/i.test(
       text

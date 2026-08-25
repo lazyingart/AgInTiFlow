@@ -65,6 +65,16 @@ try {
   const outsideRead = await runToolchainCommand(`cat ${path.join(outsideData, "source-note.txt")}`, config);
   assert(outsideRead.stdout.includes("READ_ONLY_HOST_MOUNT_OK"), "Docker normal mode could not read the configured outside data root");
 
+  const hostPathParityFile = path.join(workspace, "host-path-parity.txt");
+  await runToolchainCommand(
+    `python3 -c 'from pathlib import Path; import sys; Path(sys.argv[1]).write_text("HOST_PATH_PARITY_OK\\n", encoding="utf-8")' '${hostPathParityFile}'`,
+    config
+  );
+  assert(
+    (await fs.readFile(hostPathParityFile, "utf8")) === "HOST_PATH_PARITY_OK\n",
+    "Docker workspace mode could not write through the exact host workspace path"
+  );
+
   const abortController = new AbortController();
   const abortCommand = `python3 -c 'import time; time.sleep(20)'`;
   const abortPolicy = evaluateCommandPolicy(abortCommand, { ...config, packageInstallPolicy: "allow" });

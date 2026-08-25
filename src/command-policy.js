@@ -1379,11 +1379,75 @@ function classifyGitClone(normalized) {
   };
 }
 
+function classifyGitCommit(normalized) {
+  if (!/^git\s+commit\b/.test(normalized) || hasActiveShellExpansion(normalized)) {
+    return null;
+  }
+  const tokens = tokenizeShellWords(normalized);
+  if (tokens[0] !== "git" || tokens[1] !== "commit") return null;
+
+  let messageCount = 0;
+  for (let index = 2; index < tokens.length; index += 1) {
+    const token = String(tokens[index] || "");
+    if (["-a", "--allow-empty"].includes(token)) continue;
+    if (!["-m", "--message"].includes(token)) return null;
+    const message = String(tokens[index + 1] || "");
+    if (!message || message.length > 1200 || /[\r\n]/.test(message)) return null;
+    messageCount += 1;
+    index += 1;
+  }
+  if (!messageCount) return null;
+  return {
+    category: "git-workflow",
+    needsNetwork: false,
+    writesWorkspace: true,
+    gitOnly: true,
+    reason:
+      "Local git commit command with bounded literal message text. Agent should inspect status/diff first and stop on unrelated dirty work.",
+  };
+}
+
+function classifyGitAdd(normalized) {
+  if (!/^git\s+add\b/.test(normalized) || hasActiveShellExpansion(normalized)) {
+    return null;
+  }
+  const tokens = tokenizeShellWords(normalized);
+  if (tokens[0] !== "git" || tokens[1] !== "add") return null;
+
+  let index = 2;
+  if (tokens[index] === "--") index += 1;
+  const paths = tokens.slice(index);
+  if (!paths.length || paths.length > 32) return null;
+  if (
+    paths.some(
+      (target) =>
+        target === "." ||
+        target.startsWith("-") ||
+        /[*?\[\]{}]/.test(target) ||
+        !isSafeRelativeDir(target)
+    )
+  ) {
+    return null;
+  }
+  return {
+    category: "git-workflow",
+    needsNetwork: false,
+    writesWorkspace: true,
+    mayMutateProject: false,
+    gitOnly: true,
+    reason: "Git add stages only bounded literal workspace paths.",
+  };
+}
+
 function classifyGitWorkflow(normalized) {
   // Git arguments accepted here are executed through a shell. Keep expansion
   // syntax out of this narrow allowlist while preserving literal commit/tag
   // text protected by single quotes.
   if (hasActiveShellExpansion(normalized)) return null;
+  const add = classifyGitAdd(normalized);
+  if (add) return add;
+  const commit = classifyGitCommit(normalized);
+  if (commit) return commit;
   if (!matchAny(GIT_WORKFLOW_PATTERNS, normalized)) return null;
   const remote = /^git\s+(fetch|pull|push)\b/.test(normalized);
   const writesWorkspace = !/^git\s+fetch\b/.test(normalized);
@@ -2525,6 +2589,7 @@ export function evaluateCommandPolicy(command, config = {}) {
   const dockerWorkspace = sandboxMode === "docker-workspace";
   const packageInstallsAllowed = packageInstallPolicy === "allow";
   const trustedDockerShell = dockerWorkspace && packageInstallsAllowed;
+  const trustedDockerWorkspaceShell = dockerWorkspace;
   const trustedHostShell = sandboxMode === "host" && Boolean(config.allowDestructive);
   const trustedDangerHost = sandboxMode === "host" && Boolean(config.allowDestructive) && Boolean(config.allowPasswords);
 
@@ -2618,7 +2683,7 @@ export function evaluateCommandPolicy(command, config = {}) {
     }
   }
 
-  if (classification.category === "general-shell" && !trustedDockerShell && !trustedHostShell) {
+  if (classification.category === "general-shell" && !trustedDockerWorkspaceShell && !trustedHostShell) {
     return {
       allowed: false,
       ...classification,
@@ -2626,7 +2691,7 @@ export function evaluateCommandPolicy(command, config = {}) {
       reason:
         sandboxMode === "host"
           ? "General shell commands on the host require Allow destructive actions. Prefer Docker workspace mode for broad shell access."
-          : "General Docker shell commands require Package installs = allow in docker-workspace mode.",
+          : "General shell commands require docker-workspace mode or trusted host access.",
       sandboxMode,
       packageInstallPolicy,
     };

@@ -854,6 +854,60 @@ const strongUploadFinish = await reviewScsFinish(
 );
 assert(strongUploadFinish.decision === "finish_allowed", "SCS finish gate should allow satisfied upload evidence");
 
+const refreshedSecurityContract = deriveScsTaskContract({
+  goal: "Fix the security issue and run the regression tests.",
+  taskProfile: "security",
+});
+const staleContractFinish = await reviewScsFinish(
+  { mock: true },
+  { provider: "mock", model: "mock-agent", taskProfile: "security" },
+  {
+    goal: refreshedSecurityContract.outcome,
+    meta: {
+      scs: {
+        taskContract: {
+          ...refreshedSecurityContract,
+          requiredEvidence: [
+            ...refreshedSecurityContract.requiredEvidence,
+            { id: "browser", category: "browser", description: "stale browser evidence" },
+          ],
+        },
+      },
+    },
+    messages: [
+      {
+        role: "tool",
+        content: JSON.stringify({
+          toolName: "write_file",
+          ok: true,
+          path: "SECURITY.md",
+          args: { path: "SECURITY.md" },
+        }),
+      },
+      {
+        role: "tool",
+        content: JSON.stringify({
+          toolName: "run_command",
+          ok: true,
+          exitCode: 0,
+          args: { command: "python -m unittest discover -s tests -v" },
+          stdout: "Ran 10 tests\nOK",
+        }),
+      },
+    ],
+  },
+  "Implemented the security repair and all 10 regression tests pass.",
+  {
+    goal: refreshedSecurityContract.outcome,
+    taskProfile: "security",
+    taskContract: refreshedSecurityContract,
+  }
+);
+assert(
+  staleContractFinish.decision === "finish_allowed",
+  "SCS final review reused an obsolete persisted contract instead of the accepted completion contract"
+);
+
 const codeContract = deriveScsTaskContract({
   goal: "Fix the bug in src/app.js and run the test.",
   taskProfile: "code",
@@ -865,6 +919,10 @@ const commitContract = deriveScsTaskContract({
 const correctionCommitContract = deriveScsTaskContract({
   goal: "Fix analysis.py without changing validated results or artifact names, run the exact tests, commit only the intentional source correction, and verify clean status.",
   taskProfile: "code",
+});
+const pythonTypeAnnotationContract = deriveScsTaskContract({
+  goal: "Continue the security repair. The prior write incorrectly treated safe Python type annotations as credentials. Complete the regression tests and commit the intentional work.",
+  taskProfile: "security",
 });
 const gitStatusLedger = buildScsEvidenceLedger({
   state: {
@@ -905,6 +963,10 @@ assert(
 assert(
   correctionCommitContract.requiredGitActions.includes("commit"),
   "a local without-clause swallowed the later positive commit instruction"
+);
+assert(
+  !pythonTypeAnnotationContract.requiredEvidence.some((item) => item.category === "browser"),
+  "Python type annotations fabricated a browser typing requirement"
 );
 assert(
   correctionCommitContract.exactInputPaths.includes("analysis.py"),

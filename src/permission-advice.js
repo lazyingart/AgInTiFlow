@@ -425,13 +425,39 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
 }
 
 export function buildPermissionAdvice({ toolName = "", args = {}, guard = {}, config = {}, state = {}, reason = "" } = {}) {
+  if (guard.permissionAdvice && typeof guard.permissionAdvice === "object") {
+    return guard.permissionAdvice;
+  }
+  const guardReason = String(reason || guard.reason || "");
+  if (
+    toolName === "run_command" &&
+    /^cd target must be a safe workspace-relative directory:/i.test(guardReason)
+  ) {
+    const command = compactLine(args.command || args.text || "");
+    return {
+      category: "workspace-command-correction",
+      reason: compactLine(guardReason),
+      currentMode: currentMode(config),
+      blockedOperation: command ? `${toolName}: ${command}` : toolName,
+      autoRecover: true,
+      summary:
+        "The command added an unnecessary or out-of-scope cd prefix. The configured project is already the command working directory, so this is a recoverable command-shape error rather than a permission request.",
+      instruction:
+        "Continue automatically from the configured project root. Remove the cd prefix, correct any paths that were relative to the wrong directory, and retry only the intended workspace-bounded command. Do not ask for stronger permissions or package-install access.",
+      options: [
+        "Run the intended command directly from the configured project root.",
+        "Use a safe workspace-relative subdirectory only when the command genuinely belongs there.",
+        "Keep external absolute paths read-only and keep all mutations inside the configured project.",
+      ],
+    };
+  }
   const category = guard.category || "permission";
   return adviceForCategory(category, {
     toolName,
     args,
     config,
     state,
-    reason: reason || guard.reason || "",
+    reason: guardReason,
   });
 }
 
@@ -453,7 +479,73 @@ export function looksLikeDockerLocalhostFailure(args = {}, result = {}, config =
   return looksLikeNetworkFailure(result);
 }
 
+export function goalRevisionCoversActiveTask(state = {}, evidenceRevision = 0) {
+  const goalContract = state.meta?.goalContract || {};
+  const currentRevision = Math.max(0, Number(goalContract.revision || 0));
+  const candidateRevision = Math.max(0, Number(evidenceRevision || 0));
+  if (currentRevision <= 0 || candidateRevision <= 0) return false;
+  if (candidateRevision >= currentRevision) return true;
+
+  const history = Array.isArray(goalContract.history) ? goalContract.history : [];
+  const activeEntry = [...history]
+    .reverse()
+    .find(
+      (item) =>
+        Number(item?.revision || 0) <= currentRevision &&
+        String(item?.taskHash || "").trim()
+    );
+  const activeTaskHash = String(activeEntry?.taskHash || "").trim();
+  if (!activeTaskHash) return false;
+  const activeTaskStartRevision = history
+    .filter((item) => String(item?.taskHash || "").trim() === activeTaskHash)
+    .map((item) => Math.max(0, Number(item?.revision || 0)))
+    .filter(Boolean)
+    .reduce((lowest, revision) => Math.min(lowest, revision), currentRevision);
+  return candidateRevision >= activeTaskStartRevision;
+}
+
+export function isAlreadyCommittedCleanGitNoop(args = {}, result = {}, state = {}) {
+  const command = String(args.command || args.text || "");
+  const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+  if (
+    !/(?:^|[;&|]\s*)git(?:\s+-C\s+(?:"[^"]*"|'[^']*'|\S+))?\s+commit\b/i.test(command) ||
+    !/nothing to commit/i.test(output) ||
+    !/working tree clean/i.test(output)
+  ) {
+    return false;
+  }
+  const mutationRevision = Math.max(
+    0,
+    Number(state.meta?.projectVerification?.mutationRevision || 0)
+  );
+  return (Array.isArray(state.meta?.durableGitEvidence) ? state.meta.durableGitEvidence : []).some(
+    (item) =>
+      String(item?.action || "").toLowerCase() === "commit" &&
+      goalRevisionCoversActiveTask(state, item?.goalRevision) &&
+      Number(item?.mutationRevision || 0) >= mutationRevision
+  );
+}
+
 export function buildFailedCommandAdvice({ args = {}, commandPolicy = {}, commandResult = {}, config = {}, state = {} } = {}) {
+  if (isAlreadyCommittedCleanGitNoop(args, commandResult, state)) {
+    return {
+      category: "repository-already-committed",
+      reason:
+        "Git reported that the current worktree is clean, and durable evidence already contains a commit covering this goal and mutation revision.",
+      currentMode: currentMode(config),
+      blockedOperation: compactLine(args.command || args.text || "git commit"),
+      autoRecover: true,
+      summary:
+        "The requested commit is already satisfied. This no-op is not a permission problem and should not be retried.",
+      instruction:
+        "Do not stage or commit again. Run any still-pending exact verifier once, then call finish from the retained commit and verification evidence.",
+      options: [
+        "Run the pending exact verifier named in the current task contract.",
+        "Call finish when all retained verification is current.",
+      ],
+      failureKind: "repository-already-committed",
+    };
+  }
   if (looksLikeDockerLocalhostFailure(args, commandResult, config)) {
     return {
       ...adviceForCategory("host-local-service", {

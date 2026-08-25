@@ -89,12 +89,15 @@ export function decideLocalFailureRecovery(config = {}, state = {}) {
   const currentModel = safeModel(config.model);
   const currentTier = localLLMModelTier(currentModel)?.id || "";
   const routeModel = safeModel(config.routeModel);
-  if (currentTier !== "fast" && (!routeModel || currentModel !== routeModel)) {
-    return { active: false, reason: "already-strong-route" };
-  }
-
   const failures = recoverableFailureWindow(state);
   const invalidContractCalls = contractViolationCount(state);
+  if (
+    currentTier !== "fast" &&
+    (!routeModel || currentModel !== routeModel) &&
+    invalidContractCalls < 2
+  ) {
+    return { active: false, reason: "already-strong-route" };
+  }
   const signatureCounts = new Map();
   for (const entry of failures) {
     const signature = String(entry?.signature || `${entry?.toolName || "unknown"}:unknown`);

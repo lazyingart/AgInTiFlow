@@ -6,7 +6,13 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "playwright";
-import { createClient, createPlan, requestNextStep, resolveModelTimeoutMs } from "./model-client.js";
+import {
+  createClient,
+  createPlan,
+  requestDirectResponse,
+  requestNextStep,
+  resolveModelTimeoutMs,
+} from "./model-client.js";
 import { SessionStore } from "./session-store.js";
 import {
   assertIntegrationRunAgentInvocation,
@@ -72,7 +78,12 @@ import { hostShellOption, platformInfo, platformLabel } from "./platform.js";
 import { captureTmuxPane, listTmuxSessions, sendTmuxKeys, startTmuxSession } from "./tmux-tools.js";
 import { languageInstruction } from "./i18n.js";
 import { flushHousekeeping } from "./housekeeping.js";
-import { buildFailedCommandAdvice, buildPermissionAdvice } from "./permission-advice.js";
+import {
+  buildFailedCommandAdvice,
+  buildPermissionAdvice,
+  goalRevisionCoversActiveTask,
+  isAlreadyCommittedCleanGitNoop,
+} from "./permission-advice.js";
 import { formatBehaviorContractForPrompt } from "./behavior-contract.js";
 import { browserStateReconciliationGuidance } from "./browser-automation-guidance.js";
 import { summarizeMcpConfig } from "./mcp/config.js";
@@ -122,6 +133,8 @@ import {
   hasScsBlockerEvidence,
   inferGitActionsFromCommand,
   inferSuccessfulGitActionsFromCommandResult,
+  isResponseOnlyEvidenceScope,
+  successfulGitCommitProvesFileMutation,
   isObservationalGitAction,
   gitActionsSatisfyContract,
   parseExplicitExitStatus,
@@ -1319,6 +1332,55 @@ export function applyModelTimeoutRetryRoute(config = {}, retryRoute = {}) {
   };
 }
 
+function sameProviderRoleModel(config = {}, role = "", provider = "") {
+  if (normalizeProviderId(config?.[`${role}Provider`], "") !== provider) return "";
+  const model = String(config?.[`${role}Model`] || "").trim();
+  if (!model || model.length > 256 || /[\u0000-\u001f\u007f]/u.test(model)) return "";
+  const available = Array.isArray(config.localAvailableModels)
+    ? config.localAvailableModels.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  if (provider === "localllm" && available.length > 0 && !available.includes(model)) return "";
+  return model;
+}
+
+export function modelPlanningTimeoutRetryRoute(config = {}) {
+  const provider = normalizeProviderId(config.provider, "");
+  const currentModel = String(config.model || "").trim();
+  const smartRouting = String(config.routingMode || "").trim().toLowerCase() === "smart";
+  const strongerCandidates = smartRouting
+    ? [
+        sameProviderRoleModel(config, "main", provider),
+        sameProviderRoleModel(config, "spare", provider),
+      ].filter(Boolean)
+    : [];
+  const model = strongerCandidates.find((candidate) => candidate !== currentModel) || currentModel;
+  const timeoutMs = modelTimeoutMsForConfig(config);
+  const switchedModel = Boolean(model && model !== currentModel);
+  const retryCap = provider === "localllm" ? 300000 : 240000;
+  const retryTimeoutMs = switchedModel
+    ? Math.min(Math.max(timeoutMs, 60000), retryCap)
+    : Math.min(Math.max(timeoutMs * 2, 120000), retryCap * 2);
+  return {
+    provider,
+    model,
+    previousModel: currentModel,
+    switchedModel,
+    timeoutMs,
+    retryTimeoutMs,
+  };
+}
+
+export function buildPlanningTimeoutFallbackPlan(config = {}, state = {}) {
+  const profile = String(config.taskProfile || state.meta?.taskProfile || "general").trim();
+  return [
+    `1. Reconcile the current ${profile} task with the retained workspace state and exact user request.`,
+    "2. Inspect only the files, evidence, or external state needed to identify the remaining work.",
+    "3. Complete the requested work with the smallest coherent set of changes or actions, preserving valid prior progress.",
+    "4. Run the relevant checks and verify required artifacts or side effects against the request.",
+    "5. Finish with the verified result, or report one concrete blocker without claiming success.",
+  ].join("\n");
+}
+
 function buildCompactedRuntimeMessages(state, config, snapshot, step, options = {}) {
   const messages = Array.isArray(state?.messages) ? state.messages : [];
   const systemMessages = messages
@@ -1529,37 +1591,63 @@ export function buildContextBudgetCompactionMessages(state, config, snapshot, st
   });
 }
 
-export function buildConstrainedRecoveryRequest(
-  state,
-  config,
-  snapshot,
-  step,
+export function buildKnownConstrainedPhasePlan(
+  config = {},
+  state = {},
   runtimeConfig = nextStepRuntimeConfig(config, state)
 ) {
   const repositoryStateRepair = runtimeConfig.testFailureRepositoryStateRepair === true;
+  if (runtimeConfig.testFailureRepairActive === true && !repositoryStateRepair) return null;
+
   const verificationPending = runtimeConfig.testVerificationPending === true;
+  const requiredProjectCommandPending = runtimeConfig.requiredProjectCommandPending === true;
   const verifiedCompletion = runtimeConfig.verifiedCompletionPending === true;
-  if (!repositoryStateRepair && !verificationPending && !verifiedCompletion) return null;
+  const artifactPendingGitActions = Array.isArray(runtimeConfig.artifactValidationPendingGitActions)
+    ? runtimeConfig.artifactValidationPendingGitActions.map((item) => String(item || "").toLowerCase())
+    : [];
+  const artifactCommitPending = Boolean(
+    runtimeConfig.artifactValidationPhase === true &&
+      artifactPendingGitActions.includes("commit") &&
+      artifactPendingGitActions.every((action) => ["add", "commit"].includes(action)) &&
+      Array.isArray(runtimeConfig.artifactValidationCommitPaths) &&
+      runtimeConfig.artifactValidationCommitPaths.length > 0
+  );
+  if (
+    !repositoryStateRepair &&
+    !verificationPending &&
+    !requiredProjectCommandPending &&
+    !verifiedCompletion &&
+    !artifactCommitPending
+  ) {
+    return null;
+  }
 
   const command = String(
-    verificationPending
-      ? runtimeConfig.testVerificationCommand || ""
-      : repositoryStateRepair
-        ? runtimeConfig.testFailureCommand || ""
-        : runtimeConfig.verifiedCompletionCommand || ""
+    requiredProjectCommandPending
+      ? runtimeConfig.requiredProjectCommand || ""
+      : verificationPending
+        ? runtimeConfig.testVerificationCommand || ""
+        : repositoryStateRepair
+          ? runtimeConfig.testFailureCommand || ""
+          : runtimeConfig.verifiedCompletionCommand || ""
   ).trim();
-  if (!verifiedCompletion && !command) return null;
+  if (!verifiedCompletion && !artifactCommitPending && !command) return null;
 
   const mode = repositoryStateRepair
     ? "repository-state-repair"
-    : verificationPending
-      ? "exact-verification"
-      : "verified-completion";
-  const repositoryCommitReady =
+    : requiredProjectCommandPending
+      ? "required-project-command"
+      : verificationPending
+        ? "exact-verification"
+        : verifiedCompletion
+          ? "verified-completion"
+          : "artifact-git-completion";
+  const repositoryCommitReady = Boolean(
     repositoryStateRepair &&
-    Array.isArray(runtimeConfig.repositoryStateRepairCommitPaths) &&
-    runtimeConfig.repositoryStateRepairCommitPaths.length > 0;
-  const effectivePlan = repositoryStateRepair
+      Array.isArray(runtimeConfig.repositoryStateRepairCommitPaths) &&
+      runtimeConfig.repositoryStateRepairCommitPaths.length > 0
+  );
+  const plan = repositoryStateRepair
     ? repositoryCommitReady
       ? [
           "1. Use the offered commit_project_changes tool once; its path scope comes from recorded task-owned mutations.",
@@ -1572,26 +1660,64 @@ export function buildConstrainedRecoveryRequest(
           `3. Run the exact retained verification command after the repository state is clean: ${command}`,
           "4. Finish only after that exact command passes at the current mutation revision.",
         ].join("\n")
-    : verificationPending
+    : artifactCommitPending
       ? [
-          `1. Run the exact retained verification command now: ${command}`,
-          "2. If it passes, finish from the existing evidence without repeating completed work.",
-          "3. If it fails, use the new concrete failure evidence for the next bounded repair turn.",
+          "1. Use the offered commit_project_changes tool once; its path scope comes from recorded task-owned mutations.",
+          "2. Call finish from the existing passing tests and deterministic artifact acceptance.",
+          "3. Do not inspect unstaged diffs, guess preview files, rerun tests, or rewrite accepted output.",
         ].join("\n")
-      : [
-          "1. Reuse the fresh passing verification and retained completion evidence.",
-          "2. Call finish once with a concise, truthful result describing the completed work and verification.",
-          "3. Do not restart discovery, rerun commands, or modify completed sources merely to produce the final response.",
-        ].join("\n");
+      : requiredProjectCommandPending
+        ? [
+            `1. Run the exact user-requested project command now: ${command}`,
+            "2. Do not substitute a nearby test or repeat Git operations.",
+            "3. If it passes, continue from retained evidence; if it fails, repair only from its concrete diagnostics.",
+          ].join("\n")
+        : verificationPending
+          ? [
+              `1. Run the exact retained verification command now: ${command}`,
+              "2. If it passes, finish from the existing evidence without repeating completed work.",
+              "3. If it fails, use the new concrete failure evidence for the next bounded repair turn.",
+            ].join("\n")
+          : [
+              "1. Reuse the fresh passing verification and retained completion evidence.",
+              "2. Call finish once with a concise, truthful result describing the completed work and verification.",
+              "3. Do not restart discovery, rerun commands, or modify completed sources merely to produce the final response.",
+            ].join("\n");
   const recoveryInstruction = repositoryStateRepair
     ? repositoryCommitReady
       ? "The current failure is only a repository-state acceptance gate. The runtime already knows the task-owned changed paths, so call commit_project_changes with a concise factual subject. Do not inspect again or invent another source edit."
       : "The current failure is a repository-state acceptance gate, not a content defect. Use only the offered Git-capable command tool to inspect and cleanly commit task-owned changes, then run the exact retained verifier. Do not invent another source edit."
-    : verificationPending
-      ? "Only fresh verification is pending after a real mutation. Run the exact retained command once. Do not reread or rewrite completed sources unless that fresh run returns a concrete failure."
-      : "Fresh verification already passed at the current mutation revision. Use the finish tool now; do not spend another full-context turn rediscovering or revalidating completed work.";
+    : artifactCommitPending
+      ? "The exact artifact and current source changes already passed deterministic checks. Only the required local commit is missing. Call commit_project_changes with a concise factual subject, then finish; do not restart discovery or validation."
+      : requiredProjectCommandPending
+        ? "A user-requested canonical project command is still missing. Run the exact offered command once now; do not replace it with a familiar test, staging command, or commit retry."
+        : verificationPending
+          ? "Only fresh verification is pending after a real mutation. Run the exact retained command once. Do not reread or rewrite completed sources unless that fresh run returns a concrete failure."
+          : "Fresh verification already passed at the current mutation revision. Use the finish tool now; do not spend another full-context turn rediscovering or revalidating completed work.";
+
+  return {
+    mode,
+    command,
+    plan,
+    recoveryInstruction,
+    runtimeConfig,
+  };
+}
+
+export function buildConstrainedRecoveryRequest(
+  state,
+  config,
+  snapshot,
+  step,
+  runtimeConfig = nextStepRuntimeConfig(config, state)
+) {
+  const phase = buildKnownConstrainedPhasePlan(config, state, runtimeConfig);
+  if (!phase) return null;
+  const { mode, command, plan: effectivePlan, recoveryInstruction } = phase;
+  const repositoryStateRepair = mode === "repository-state-repair";
+  const artifactCommitPending = mode === "artifact-git-completion";
   const requestedOutputCap = Number(runtimeConfig.maxOutputTokens || 0);
-  const phaseDefaultOutputCap = repositoryStateRepair
+  const phaseDefaultOutputCap = repositoryStateRepair || artifactCommitPending
     ? CONSTRAINED_REPOSITORY_RECOVERY_OUTPUT_TOKEN_CAP
     : CONSTRAINED_RECOVERY_OUTPUT_TOKEN_CAP;
   const configuredCap = Number(
@@ -2820,6 +2946,78 @@ async function finishWithDirectAnswer({ config, state, store, observers, session
     result,
     sessionId,
     mode: "direct-answer",
+  });
+  emitConsole(config, result, { kind: "assistant", markdown: true });
+  return {
+    sessionId,
+    result,
+    ...goalRunMetadata(state),
+  };
+}
+
+async function finishWithResponseOnlyModelTurn({ client, config, state, store, observers, sessionId }) {
+  await store.appendEvent("model.requested", {
+    step: 1,
+    provider: config.provider,
+    model: config.model,
+    mode: "response-only",
+  });
+  observers.event("model.requested", {
+    step: 1,
+    provider: config.provider,
+    model: config.model,
+    mode: "response-only",
+  });
+
+  const response = await requestDirectResponse(client, config, state.messages);
+  const rawAssistantMessage = response.choices[0]?.message;
+  if (!rawAssistantMessage) {
+    throw new Error("Response-only model request returned no assistant message.");
+  }
+  if (Array.isArray(rawAssistantMessage.tool_calls) && rawAssistantMessage.tool_calls.length) {
+    throw new Error("Response-only model request returned an unexpected tool call.");
+  }
+  const result = redactSensitiveText(rawAssistantMessage.content || "").trim();
+  if (!result) {
+    throw new Error("Response-only model request returned empty content.");
+  }
+
+  state.meta = state.meta || {};
+  state.meta.responseOnly = {
+    completedAt: new Date().toISOString(),
+    provider: config.provider,
+    model: config.model,
+  };
+  state.stepsCompleted = 1;
+  state.updatedAt = state.meta.responseOnly.completedAt;
+  state.messages.push(preserveAssistantMessage({
+    ...rawAssistantMessage,
+    role: "assistant",
+    content: result,
+    tool_calls: undefined,
+  }));
+  appendChatEntry(state, "assistant", result);
+  updateGoalStatus(state, "completed", "response_only", state.updatedAt);
+  await store.saveState(state);
+  await store.appendEvent("model.responded", {
+    step: 1,
+    content: result,
+    toolCalls: [],
+    mode: "response-only",
+  });
+  await store.appendEvent("session.finished", {
+    result,
+    mode: "response-only",
+  });
+  observers.event("model.responded", {
+    step: 1,
+    content: result,
+    mode: "response-only",
+  });
+  observers.event("session.finished", {
+    result,
+    sessionId,
+    mode: "response-only",
   });
   emitConsole(config, result, { kind: "assistant", markdown: true });
   return {
@@ -4541,6 +4739,9 @@ export function failedTestRequiresCleanRepositoryState(testRun = {}) {
     .replace(/\s+/g, " ")
     .trim();
   if (!summary) return false;
+  const directCleanStateAssertion =
+    /(?:assertionerror|assert(?:ion)?(?:\s+failed)?)[^.!;]{0,200}(?:(?:project|repository)\s+)?(?:work\s*tree|worktree|repository)[^.!;]{0,80}(?:is\s+not\s+clean|must\s+be\s+clean|expected\s+(?:to\s+be\s+)?clean)\b/i.test(summary);
+  if (directCleanStateAssertion) return true;
   const invokesShortStatus =
     /git[a-z_]*\s*\([^)]*["']status["'][^)]*(?:["']--short["']|["']--porcelain(?:=[^"']+)?["'])[^)]*\)/i.test(summary) ||
     /\bgit\s+status\s+(?:--short|--porcelain(?:=\S+)?)\b/i.test(summary);
@@ -4549,6 +4750,38 @@ export function failedTestRequiresCleanRepositoryState(testRun = {}) {
     /\)\s*(?:==|===)\s*(?:""|'')/.test(summary) ||
     /(?:work\s*tree|worktree|repository)[^.!;]{0,80}\bclean\b/i.test(summary);
   return expectsEmptyStatus;
+}
+
+export function recordAlreadyCommittedRepositoryRepair(state = {}, toolResult = {}) {
+  if (
+    !isAlreadyCommittedCleanGitNoop(
+      toolResult.args || {},
+      toolResult,
+      state
+    )
+  ) {
+    return null;
+  }
+  const failed = currentFailedProjectTest(state);
+  if (!failed?.test || !failedTestRequiresCleanRepositoryState(failed.test)) {
+    return null;
+  }
+  state.meta = state.meta || {};
+  const marker = {
+    version: 1,
+    goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+    mutationRevision: Math.max(
+      0,
+      Number(state.meta?.projectVerification?.mutationRevision || 0)
+    ),
+    failureSignature: String(failed.test.failureSignature || ""),
+    command: String(failed.test.command || ""),
+    source: "clean-commit-noop",
+    at: new Date().toISOString(),
+  };
+  state.meta.repositoryStateRepair = marker;
+  toolResult.repositoryStateRepair = marker;
+  return marker;
 }
 
 function projectTestCommandKey(command = "") {
@@ -4582,6 +4815,28 @@ function safeTaskOwnedCommitPath(value = "") {
   }
   if (/\.(?:key|pem|p12|pfx|crt|csr)$/iu.test(candidate)) return "";
   return candidate;
+}
+
+function taskOwnedMutationPathsSinceLatestCommit(verification = {}) {
+  const latestCommittedRevision = [...(verification.commandRuns || [])]
+    .reverse()
+    .find((run) => run?.ok === true && commandIncludesGitCommit(run?.command || ""))
+    ?.mutationRevision;
+  const committedRevision = Math.max(0, Number(latestCommittedRevision || 0));
+  const currentRevision = Math.max(0, Number(verification.mutationRevision || 0));
+  return [
+    ...new Set(
+      (verification.mutationHistory || [])
+        .filter(
+          (mutation) =>
+            Number(mutation?.revision || 0) > committedRevision &&
+            Number(mutation?.revision || 0) <= currentRevision
+        )
+        .flatMap((mutation) => (Array.isArray(mutation?.paths) ? mutation.paths : []))
+        .map(safeTaskOwnedCommitPath)
+        .filter(Boolean)
+    ),
+  ].slice(0, 32);
 }
 
 function shellQuoteArgument(value = "", platform = process.platform) {
@@ -4792,6 +5047,16 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
   const testRun = currentFailedProjectTest(state)?.test;
   if (!testRun) return { content: "", paths: [] };
   const verification = state.meta?.projectVerification || {};
+  const taskContract = deriveScsTaskContract({
+    goal: completionContractGoal(config, state),
+    taskProfile: config.taskProfile || state.meta?.taskProfile || "auto",
+  });
+  const taskReferencedPaths = [
+    ...(Array.isArray(taskContract.exactInputPaths) ? taskContract.exactInputPaths : []),
+    ...(Array.isArray(taskContract.exactOutputPaths) ? taskContract.exactOutputPaths : []),
+  ]
+    .map(safeRecoveryEvidencePath)
+    .filter(Boolean);
   const mutationEvidencePaths = new Set(
     (Array.isArray(verification.lastMutation?.paths) ? verification.lastMutation.paths : [])
       .map(safeRecoveryEvidencePath)
@@ -4800,6 +5065,7 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
   const queue = [
     ...(Array.isArray(verification.discoveredTests) ? verification.discoveredTests : []),
     ...mutationEvidencePaths,
+    ...taskReferencedPaths,
   ]
     .map(safeRecoveryEvidencePath)
     .filter(Boolean);
@@ -6147,9 +6413,31 @@ export function artifactValidationAcceptanceIsCurrent(state = {}) {
     Number(state.meta?.projectVerification?.mutationRevision || 0)
   );
   const acceptedMutationRevision = Math.max(0, Number(progress.preflightMutationRevision || 0));
+  const preservedSameTaskContinuations = (() => {
+    if (
+      acceptedGoalRevision <= 0 ||
+      acceptedGoalRevision >= currentGoalRevision ||
+      !acceptedGoalHash ||
+      acceptedGoalHash !== currentGoalHash
+    ) {
+      return false;
+    }
+    const history = Array.isArray(goalContract.history) ? goalContract.history : [];
+    for (let revision = acceptedGoalRevision + 1; revision <= currentGoalRevision; revision += 1) {
+      const entry = history.find((item) => Number(item?.revision || 0) === revision);
+      if (
+        !entry ||
+        entry.refreshExecutionContract !== false ||
+        String(entry.hash || "") !== currentGoalHash
+      ) {
+        return false;
+      }
+    }
+    return true;
+  })();
   return Boolean(
     currentGoalRevision > 0 &&
-      acceptedGoalRevision === currentGoalRevision &&
+      (acceptedGoalRevision === currentGoalRevision || preservedSameTaskContinuations) &&
       acceptedGoalHash === currentGoalHash &&
       acceptedContractKey === currentContractKey &&
       acceptedMutationRevision === currentMutationRevision
@@ -6220,6 +6508,11 @@ function commandCanMutateProjectContent(command = "", commandPolicy = {}) {
   const category = String(commandPolicy.category || "");
   const requiresGitMutationInspection =
     ["git-workflow", "git-remote"].includes(category);
+  if (requiresGitMutationInspection && commandPolicy.gitOnly === true) {
+    return inferGitActionsFromCommand(command, { requireFailurePropagation: false }).some((action) =>
+      WORKTREE_CHANGING_GIT_ACTIONS.has(action)
+    );
+  }
   if (commandPolicy.mayMutateProject === false && !requiresGitMutationInspection) return false;
   if (commandPolicy.writesWorkspace !== true && commandPolicy.mayMutateProject !== true) return false;
   const sequence = parseTopLevelShellSequence(String(command || ""));
@@ -6233,15 +6526,13 @@ function commandCanMutateProjectContent(command = "", commandPolicy = {}) {
       commandCanMutateProjectContent(segment, classifyCommand(segment))
     );
   }
+  if (commandPolicy.mayMutateProject === false) return false;
   if (commandWritesOnlyPrivateVerificationEvidence(command)) return false;
   if (!["git-workflow", "git-remote"].includes(category)) return true;
   if (/\bgit\s+clone\b/i.test(String(command || ""))) return true;
   // An aggregate Git category can still contain a non-Git build/generator
   // segment. Its write capability remains authoritative.
-  if (commandPolicy.gitOnly !== true) return true;
-  return inferGitActionsFromCommand(command, { requireFailurePropagation: false }).some((action) =>
-    WORKTREE_CHANGING_GIT_ACTIONS.has(action)
-  );
+  return true;
 }
 
 function artifactValidationCommandMatchesRequired(observedCommand = "", requiredCommand = "", config = {}) {
@@ -6275,7 +6566,6 @@ function artifactValidationGitActionAllowed(progress = {}, command = "", command
   );
   if (!observed.length) return false;
   if (!missing.size) return gitActionsSatisfyContract({}, observed);
-  if (!observed.some((action) => missing.has(action))) return false;
 
   const permitted = new Set(missing);
   if (missing.has("commit")) permitted.add("add");
@@ -6285,8 +6575,19 @@ function artifactValidationGitActionAllowed(progress = {}, command = "", command
   }
   if (!observed.every((action) => permitted.has(action) || isObservationalGitAction(action))) return false;
   const consequential = observed.filter((action) => !isObservationalGitAction(action));
+  if (!consequential.length) return false;
+  const stagesPendingCommit =
+    missing.has("commit") && consequential.every((action) => action === "add");
+  if (!stagesPendingCommit && !observed.some((action) => missing.has(action))) return false;
   if (missing.has("push") && consequential.at(-1) !== "push") return false;
-  if (missing.has("commit") && !missing.has("push") && consequential.at(-1) !== "commit") return false;
+  if (
+    !stagesPendingCommit &&
+    missing.has("commit") &&
+    !missing.has("push") &&
+    consequential.at(-1) !== "commit"
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -6917,6 +7218,31 @@ export async function recordCanonicalGeneratedOutputProgress(state = {}, toolRes
   };
 }
 
+export function mergeDurableGitEvidence(
+  existing = [],
+  actions = [],
+  { goalRevision = 0, mutationRevision = 0, limit = 40 } = {}
+) {
+  const merged = new Map();
+  const append = (item = {}) => {
+    const action = String(item.action || "").toLowerCase();
+    if (!action) return;
+    const normalized = {
+      action,
+      goalRevision: Math.max(0, Number(item.goalRevision || 0)),
+      mutationRevision: Math.max(0, Number(item.mutationRevision || 0)),
+    };
+    const key = `${normalized.action}:${normalized.goalRevision}:${normalized.mutationRevision}`;
+    if (merged.has(key)) merged.delete(key);
+    merged.set(key, normalized);
+  };
+  for (const item of Array.isArray(existing) ? existing : []) append(item);
+  for (const action of Array.isArray(actions) ? actions : []) {
+    append({ action, goalRevision, mutationRevision });
+  }
+  return [...merged.values()].slice(-Math.max(1, Number(limit || 40)));
+}
+
 function recordDurableEvidenceCategories(state = {}, toolResult = {}) {
   if (!toolResult || toolResult.ok === false || toolResult.blocked || toolResult.skipped) return;
   state.meta = state.meta || {};
@@ -6935,6 +7261,7 @@ function recordDurableEvidenceCategories(state = {}, toolResult = {}) {
     const gitActions = inferSuccessfulGitActionsFromCommandResult(toolResult);
     if (gitActions.length) {
       categories.add("git");
+      if (successfulGitCommitProvesFileMutation(toolResult)) categories.add("file");
       state.meta.durableGitActions = [
         ...new Set([
           ...(Array.isArray(state.meta.durableGitActions) ? state.meta.durableGitActions : []),
@@ -6945,17 +7272,13 @@ function recordDurableEvidenceCategories(state = {}, toolResult = {}) {
       const existingGitEvidence = Array.isArray(state.meta.durableGitEvidence)
         ? state.meta.durableGitEvidence
         : [];
-      state.meta.durableGitEvidence = [
-        ...existingGitEvidence,
-        ...gitActions.map((action) => ({
-          action,
-          goalRevision,
-          mutationRevision: Math.max(
-            0,
-            Number(state.meta?.projectVerification?.mutationRevision || 0)
-          ),
-        })),
-      ].slice(-40);
+      state.meta.durableGitEvidence = mergeDurableGitEvidence(existingGitEvidence, gitActions, {
+        goalRevision,
+        mutationRevision: Math.max(
+          0,
+          Number(state.meta?.projectVerification?.mutationRevision || 0)
+        ),
+      });
     }
     if (/\b(?:pytest|unittest|npm\s+test|pnpm\s+test|yarn\s+test)\b/i.test(command)) categories.add("test");
   }
@@ -7000,7 +7323,19 @@ function completionTaskContract(config = {}, state = {}) {
   const currentRequest = String(
     state.meta?.goalContract?.currentRequest || state.meta?.goalContract?.currentPreview || ""
   ).trim();
-  if (currentRequest && continuationAddsConcreteRequirement(currentRequest)) {
+  const goalContract = state.meta?.goalContract || {};
+  const currentGoalRevision = Math.max(0, Number(goalContract.revision || 0));
+  const currentHistoryEntry = [...(Array.isArray(goalContract.history) ? goalContract.history : [])]
+    .reverse()
+    .find((item) => Number(item?.revision || 0) === currentGoalRevision);
+  const refreshesExecutionContract = currentHistoryEntry
+    ? currentHistoryEntry.refreshExecutionContract === true
+    : true;
+  if (
+    currentRequest &&
+    refreshesExecutionContract &&
+    continuationAddsConcreteRequirement(currentRequest)
+  ) {
     const currentContract = deriveScsTaskContract({ goal: currentRequest, taskProfile });
     if (currentContract.requiredGitActions.length) {
       contract = {
@@ -7016,7 +7351,6 @@ function completionTaskContract(config = {}, state = {}) {
     }
   }
   if (Array.isArray(contract.requiredGitActions) && contract.requiredGitActions.length) {
-    const goalContract = state.meta?.goalContract || {};
     contract = {
       ...contract,
       requiredGitRevision: Math.max(
@@ -7057,11 +7391,26 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   const retainedFailedTest =
     latestCurrentTest && latestCurrentTest.passed !== true ? latestCurrentTest : null;
   if (retainedFailedTest) {
+    const repositoryStateRepairMarker = state.meta?.repositoryStateRepair;
+    const retainedRepositoryStateRepair = Boolean(
+      repositoryStateRepairMarker &&
+        Number(repositoryStateRepairMarker.version || 0) === 1 &&
+        goalRevisionCoversActiveTask(
+          state,
+          repositoryStateRepairMarker.goalRevision
+        ) &&
+        Number(repositoryStateRepairMarker.mutationRevision || 0) === mutationRevision &&
+        String(repositoryStateRepairMarker.failureSignature || "") ===
+          String(retainedFailedTest.failureSignature || "") &&
+        projectTestCommandKey(repositoryStateRepairMarker.command || "") ===
+          projectTestCommandKey(retainedFailedTest.command || "")
+    );
     runtimeConfig.testFailureRepairActive = true;
     runtimeConfig.testFailureCommand = String(retainedFailedTest.command || "");
     runtimeConfig.testFailureSignature = String(retainedFailedTest.failureSignature || "");
     runtimeConfig.testFailureRepositoryStateRepair =
-      failedTestRequiresCleanRepositoryState(retainedFailedTest);
+      failedTestRequiresCleanRepositoryState(retainedFailedTest) &&
+      !retainedRepositoryStateRepair;
     const completedOutputs = new Set(
       (state.meta?.artifactProgress?.completed || [])
         .map((item) => String(item || "").replace(/\\/g, "/").replace(/^\.\//, ""))
@@ -7171,6 +7520,24 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       diagnosticIsCurrent ? Date.parse(String(diagnostic.at || "")) : Number.NaN,
     ].filter(Number.isFinite);
     const patchContextAt = contextMarkers.length ? Math.max(...contextMarkers) : Number.NaN;
+    const failureAt = Date.parse(String(retainedFailedTest.at || ""));
+    const fallbackSourceContextConsumed =
+      Number.isFinite(failureAt) &&
+      (Array.isArray(toolLoop.recent) ? toolLoop.recent : []).some((entry) => {
+        const entryAt = Date.parse(String(entry?.at || ""));
+        return (
+          Number.isFinite(entryAt) &&
+          entryAt > failureAt &&
+          entry?.ok === true &&
+          entry?.blocked !== true &&
+          ["read_file", "search_files"].includes(String(entry?.toolName || ""))
+        );
+      });
+    const lacksRetainedPatchEvidence = Boolean(
+      !currentRecoveryPacket &&
+        !patchContext &&
+        !diagnosticIsCurrent
+    );
     const patchContextConsumed =
       Number.isFinite(patchContextAt) &&
       (Array.isArray(toolLoop.recent) ? toolLoop.recent : []).some((entry) => {
@@ -7194,31 +7561,24 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
             String(patchContext.failureSignature || "") ===
               String(retainedFailedTest.failureSignature || "")
           ) ||
-          (diagnosticIsCurrent && Number.isFinite(Date.parse(String(diagnostic.at || ""))))
+          (diagnosticIsCurrent && Number.isFinite(Date.parse(String(diagnostic.at || "")))) ||
+          (lacksRetainedPatchEvidence && !fallbackSourceContextConsumed)
         )
     );
     if (runtimeConfig.testFailureRepositoryStateRepair) {
       runtimeConfig.testFailureRepairMutationRequired = false;
       runtimeConfig.testFailureRepairNeedsPatchContext = false;
       runtimeConfig.testFailureRepairPatchTargets = [];
-      const latestCommittedRevision = [...(verification.commandRuns || [])]
-        .reverse()
-        .find((run) => run?.ok === true && commandIncludesGitCommit(run?.command || ""))
-        ?.mutationRevision;
-      const committedRevision = Math.max(0, Number(latestCommittedRevision || 0));
-      runtimeConfig.repositoryStateRepairCommitPaths = [
-        ...new Set(
-          (verification.mutationHistory || [])
-            .filter(
-              (mutation) =>
-                Number(mutation?.revision || 0) > committedRevision &&
-                Number(mutation?.revision || 0) <= mutationRevision
-            )
-            .flatMap((mutation) => (Array.isArray(mutation?.paths) ? mutation.paths : []))
-            .map(safeTaskOwnedCommitPath)
-            .filter(Boolean)
-        ),
-      ].slice(0, 32);
+      runtimeConfig.repositoryStateRepairCommitPaths =
+        taskOwnedMutationPathsSinceLatestCommit(verification);
+    } else if (retainedRepositoryStateRepair) {
+      runtimeConfig.testFailureRepairActive = false;
+      runtimeConfig.testFailureRepairMutationRequired = false;
+      runtimeConfig.testFailureRepairNeedsPatchContext = false;
+      runtimeConfig.testFailureRepairPatchTargets = [];
+      runtimeConfig.repositoryStateRepairSatisfied = true;
+      runtimeConfig.testVerificationPending = true;
+      runtimeConfig.testVerificationCommand = String(retainedFailedTest.command || "");
     }
   } else if (
     !latestCurrentTest &&
@@ -7231,8 +7591,23 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       runtimeConfig.testVerificationCommand = retainedTestCommand;
     }
   }
+  const pendingRequiredProjectCommands = projectVerificationDeficits(
+    state,
+    runtimeConfig
+  ).pendingCommands;
+  if (!retainedFailedTest && pendingRequiredProjectCommands.length > 0) {
+    runtimeConfig.requiredProjectCommandPending = true;
+    runtimeConfig.requiredProjectCommand = pendingRequiredProjectCommands[0];
+    runtimeConfig.pendingRequiredProjectCommands = pendingRequiredProjectCommands;
+  }
   const completionCandidate = state.meta?.verifiedCompletionCandidate;
   const currentGoalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+  const completionCandidateEvidenceReady = completionCandidate
+    ? evaluateScsEvidence(
+        completionTaskContract(config, state),
+        buildScsEvidenceLedger({ state })
+      ).ok
+    : false;
   const completionCandidateCurrent = Boolean(
     completionCandidate &&
       Number(completionCandidate.version || 0) === 1 &&
@@ -7242,6 +7617,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       String(completionCandidate.commandKey || "") ===
         projectTestCommandKey(latestCurrentTest.command || "") &&
       projectTestVerificationFinishBlock(state) === null &&
+      completionCandidateEvidenceReady &&
       !state.meta?.artifactProgress
   );
   if (completionCandidateCurrent) {
@@ -7281,18 +7657,52 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
           ? !gitActionsSatisfyContract(completionContract, durableGitActions)
           : !recordedEvidence.has(category)
       );
+    const artifactValidationPendingGitActions = Array.isArray(completionEvaluation.missingGitActions)
+      ? completionEvaluation.missingGitActions.map((item) => String(item || "").toLowerCase())
+      : [];
+    const artifactValidationCommitPaths =
+      artifactValidationPendingGitActions.includes("commit")
+        ? taskOwnedMutationPathsSinceLatestCommit(verification)
+        : [];
+    const artifactProgress = state.meta.artifactProgress;
+    const acceptedPreflight = artifactProgress.preflight || {};
+    const artifactValidationReadyToFinish = Boolean(
+      artifactValidationAcceptanceIsCurrent(state) &&
+        acceptedPreflight.evidenceOk === true &&
+        acceptedPreflight.semanticOk === true &&
+        (acceptedPreflight.missingEvidence || []).length === 0 &&
+        (acceptedPreflight.missingToolCalls || []).length === 0 &&
+        (acceptedPreflight.missingProjectCommands || []).length === 0 &&
+        (acceptedPreflight.missingGitActions || []).length === 0 &&
+        artifactProgress.needsRepair !== true &&
+        artifactProgress.needsCommand !== true &&
+        artifactProgress.needsSourceRead !== true &&
+        Number(artifactProgress.defectCount ?? acceptedPreflight.defectCount ?? 0) === 0
+    );
     return {
       ...runtimeConfig,
+      ...(artifactValidationReadyToFinish
+        ? {
+            verifiedCompletionPending: true,
+            verifiedCompletionCommand: String(latestCurrentTest?.command || ""),
+          }
+        : {}),
       artifactValidationPhase: true,
       convergenceOutputPhase: false,
       artifactValidationNeedsRepair: state.meta.artifactProgress.needsRepair === true,
       artifactValidationNeedsCommand:
-        state.meta.artifactProgress.needsCommand === true || completionNeedsCommand,
+        !artifactValidationReadyToFinish &&
+        (state.meta.artifactProgress.needsCommand === true || completionNeedsCommand),
       artifactValidationNeedsSourceRead: state.meta.artifactProgress.needsSourceRead === true,
       artifactValidationOutputEmbedded: state.meta.artifactProgress.outputEmbedded === true,
       artifactValidationRepairAttempts: Number(state.meta.artifactProgress.repairAttempts || 0),
-      artifactValidationNeedsGitEvidence: missingCompletionEvidence.includes("git"),
-      artifactValidationNeedsVisualEvidence: missingCompletionEvidence.includes("visual"),
+      artifactValidationNeedsGitEvidence:
+        !artifactValidationReadyToFinish && missingCompletionEvidence.includes("git"),
+      artifactValidationNeedsVisualEvidence:
+        !artifactValidationReadyToFinish && missingCompletionEvidence.includes("visual"),
+      artifactValidationPendingGitActions:
+        artifactValidationReadyToFinish ? [] : artifactValidationPendingGitActions,
+      artifactValidationCommitPaths,
       artifactValidationUsedTools: Array.isArray(state.meta.artifactProgress.usedValidationTools)
         ? state.meta.artifactProgress.usedValidationTools
         : [],
@@ -8187,9 +8597,14 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           prompt: "Inspect this exact generated image as verification evidence. Describe the visible content, readability, clipping, labels, scale, and any defects that require repair.",
         };
   }
-  const repositoryCommitPaths = Array.isArray(config.repositoryStateRepairCommitPaths)
-    ? config.repositoryStateRepairCommitPaths.map(safeTaskOwnedCommitPath).filter(Boolean)
-    : [];
+  const repositoryCommitPaths = [
+    ...(Array.isArray(config.repositoryStateRepairCommitPaths)
+      ? config.repositoryStateRepairCommitPaths
+      : []),
+    ...(Array.isArray(config.artifactValidationCommitPaths)
+      ? config.artifactValidationCommitPaths
+      : []),
+  ].map(safeTaskOwnedCommitPath).filter(Boolean);
   if (
     requestedToolName === "commit_project_changes" &&
     repositoryCommitPaths.length > 0 &&
@@ -8856,6 +9271,20 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           ...(permissionAdvice ? { permissionAdvice } : {}),
         };
         recordProjectVerificationOutcome(state, result, config);
+        const repositoryStateRepair = recordAlreadyCommittedRepositoryRepair(
+          state,
+          result
+        );
+        if (repositoryStateRepair) {
+          await store.appendEvent(
+            "verification.repository_state_repaired",
+            repositoryStateRepair
+          );
+          observers.event(
+            "verification.repository_state_repaired",
+            repositoryStateRepair
+          );
+        }
         const eventResult = sanitizeToolResult(result);
         await store.appendEvent("tool.completed", eventResult);
         observers.event("tool.completed", eventResult);
@@ -9829,6 +10258,7 @@ async function recordToolContractViolation({
     recoveryContext: {
       completedRequestedPaths,
       failedTestCommand: String(currentFailure?.command || ""),
+      failedTestSummary: String(currentFailure?.failureSummary || ""),
       canonicalRepairPaths: repairPaths,
     },
     toolName: "tool_call_batch",
@@ -9870,7 +10300,7 @@ async function recordToolContractRecovery({ config, state, store, observers, ste
   observers.event("tool.contract_recovered", detail);
 }
 
-function toolContractRepairMessage(toolResult) {
+export function toolContractRepairMessage(toolResult) {
   const offered = Array.isArray(toolResult.offeredTools) && toolResult.offeredTools.length
     ? toolResult.offeredTools.join(", ")
     : "finish only, or the exact tools shown by the current native schema";
@@ -9880,6 +10310,10 @@ function toolContractRepairMessage(toolResult) {
   const completedTargets = toolResult.recoveryContext?.completedRequestedPaths || [];
   const repairPaths = toolResult.recoveryContext?.canonicalRepairPaths || [];
   const failedTestCommand = String(toolResult.recoveryContext?.failedTestCommand || "");
+  const failedTestSummary = String(toolResult.recoveryContext?.failedTestSummary || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const verificationToolOffered = toolResult.offeredTools?.includes("run_command") === true;
   const schemaDiagnostics = [...new Set(
     (Array.isArray(toolResult.errors) ? toolResult.errors : [])
       .filter((error) => error?.code !== "TOOL_ARGUMENTS_SCHEMA_INVALID")
@@ -9898,8 +10332,15 @@ function toolContractRepairMessage(toolResult) {
     completedTargets.length
       ? `These targets are already completed and must not be recreated: ${completedTargets.join(", ")}.`
       : "",
-    failedTestCommand
+    failedTestCommand && verificationToolOffered
       ? `The current highest priority is the failing verification command: ${failedTestCommand}.`
+      : "",
+    failedTestCommand && !verificationToolOffered
+      ? [
+          `The retained verification command already failed and is intentionally unavailable until the failure is repaired: ${failedTestCommand}.`,
+          failedTestSummary ? `Failure evidence: ${failedTestSummary}.` : "",
+          "Do not request run_command or rerun that command now; use an offered read or patch tool to address the evidence first.",
+        ].filter(Boolean).join(" ")
       : "",
     schemaDiagnostics.length
       ? `Schema diagnostics: ${schemaDiagnostics.join("; ")}.`
@@ -10026,6 +10467,93 @@ export async function recoverFocusedWholeFileWriteAsExactPatch(
     };
   }
   return null;
+}
+
+export function recoverUnavailableVerificationRerunAsCanonicalRead(
+  config = {},
+  state = {},
+  reportedToolCalls = [],
+  contract = null,
+  validation = {}
+) {
+  const calls = Array.isArray(reportedToolCalls) ? reportedToolCalls : [];
+  const errors = Array.isArray(validation?.errors) ? validation.errors : [];
+  if (
+    validation?.ok === true ||
+    calls.length !== 1 ||
+    !errors.some((error) => error?.code === "TOOL_NOT_OFFERED") ||
+    errors.some((error) => error?.code !== "TOOL_NOT_OFFERED")
+  ) {
+    return null;
+  }
+  const originalCall = calls[0];
+  if (String(originalCall?.function?.name || "") !== "run_command") return null;
+  const descriptors = Array.isArray(contract?.tools) ? contract.tools : [];
+  if (descriptors.some((descriptor) => descriptor?.function?.name === "run_command")) {
+    return null;
+  }
+  const readDescriptor = descriptors.find(
+    (descriptor) =>
+      descriptor?.type === "function" && descriptor.function?.name === "read_file"
+  );
+  if (!readDescriptor) return null;
+
+  const currentFailure = currentFailedProjectTest(state)?.test;
+  const requestedCommand = String(
+    safeParseToolContent(originalCall?.function?.arguments)?.command || ""
+  );
+  const failedCommand = String(currentFailure?.command || "");
+  if (
+    !requestedCommand ||
+    !failedCommand ||
+    !projectCommandsEquivalent(requestedCommand, failedCommand, config)
+  ) {
+    return null;
+  }
+
+  const candidatePaths = [
+    ...(Array.isArray(config.testFailureRepairPatchTargets)
+      ? config.testFailureRepairPatchTargets.map((target) => target?.path)
+      : []),
+    ...(Array.isArray(state.meta?.failedTestRecoveryPacket?.paths)
+      ? state.meta.failedTestRecoveryPacket.paths
+      : []),
+  ]
+    .map(safeRecoveryEvidencePath)
+    .filter(Boolean)
+    .filter((candidate, index, values) => values.indexOf(candidate) === index);
+  if (!candidatePaths.length) return null;
+
+  const allowedPaths = readDescriptor.function?.parameters?.properties?.path?.enum;
+  const schemaAllowedCandidates = Array.isArray(allowedPaths)
+    ? candidatePaths.filter((candidate) => allowedPaths.includes(candidate))
+    : candidatePaths;
+  if (!schemaAllowedCandidates.length) return null;
+  const failureSummary = String(currentFailure?.failureSummary || "");
+  const translatedPath =
+    schemaAllowedCandidates.find(
+      (candidate) =>
+        failureSummary.includes(candidate) ||
+        failureSummary.includes(path.posix.basename(candidate))
+    ) || schemaAllowedCandidates[0];
+  const recoveredCall = {
+    ...originalCall,
+    function: {
+      ...originalCall.function,
+      name: "read_file",
+      arguments: JSON.stringify({ path: translatedPath }),
+    },
+  };
+  const recovered = resolveDispatchableToolCallBatch([recoveredCall], contract);
+  if (!recovered.ok) return null;
+  return {
+    ...recovered,
+    recoveredUnavailableVerificationRerun: true,
+    originalToolName: "run_command",
+    translatedToolName: "read_file",
+    translatedPath,
+    failedCommand,
+  };
 }
 
 export async function recoverFocusedTextRewriteWithWritingSpecialist(
@@ -10703,24 +11231,93 @@ export async function runAgent(config) {
 
     state.meta = state.meta || {};
     state.meta.goalIntent = goalIntent;
-    const executionPolicy =
-      config.executionPolicy ||
-      selectExecutionPolicy({
-        routingMode: config.routingMode,
-        taskProfile: config.taskProfile,
-        complexityScore: config.routeComplexityScore,
-        scsActive: config.scsActive,
-      });
+    const responseOnlyScope = isResponseOnlyEvidenceScope(config.goal || state.goal || "");
+    const executionPolicy = responseOnlyScope
+      ? selectExecutionPolicy({ responseOnly: true })
+      : config.executionPolicy ||
+        selectExecutionPolicy({
+          routingMode: config.routingMode,
+          taskProfile: config.taskProfile,
+          complexityScore: config.routeComplexityScore,
+          scsActive: config.scsActive,
+        });
     state.meta.executionPolicy = executionPolicy;
     await store.appendEvent("execution.policy_selected", executionPolicy);
     observers.event("execution.policy_selected", executionPolicy);
 
-    const scoutsWillRun = shouldRunParallelScouts(config, state);
-    if (!scoutsWillRun) {
+    if (responseOnlyScope) {
+      if (state.plan) {
+        await store.appendEvent("plan.discarded", {
+          reason: "explicit-response-only-scope",
+          previousPlanHash: hashForLog(state.plan),
+        });
+        state.plan = "";
+        await store.savePlan("");
+      }
+      if (state.meta.planSkippedForGoal !== config.goal) {
+        state.meta.planSkippedForGoal = config.goal;
+        const detail = {
+          tier: executionPolicy.tier,
+          reason: executionPolicy.reason,
+          complexityScore: config.routeComplexityScore,
+          mode: "response-only",
+        };
+        await store.appendEvent("plan.skipped", detail);
+        observers.event("plan.skipped", detail);
+      }
+      await store.saveState(state);
+      return await finishWithResponseOnlyModelTurn({
+        client,
+        config,
+        state,
+        store,
+        observers,
+        sessionId,
+      });
+    }
+
+    const knownConstrainedPhase =
+      !state.plan && executionPolicy.requiresPlan
+        ? buildKnownConstrainedPhasePlan(config, state)
+        : null;
+    const scoutsWillRun = !knownConstrainedPhase && shouldRunParallelScouts(config, state);
+    if (!scoutsWillRun && !knownConstrainedPhase) {
       await maybePrepareSurgicalContext(config, state, store, observers);
     }
     if (!state.plan && executionPolicy.requiresPlan) {
-      if (config.scsActive) {
+      if (knownConstrainedPhase) {
+        state.plan = redactSensitiveText(knownConstrainedPhase.plan);
+        const detail = {
+          mode: knownConstrainedPhase.mode,
+          command: redactSensitiveText(knownConstrainedPhase.command),
+          provider: config.provider,
+          model: config.model,
+          reason: "retained evidence already determines the next bounded phase",
+        };
+        state.meta.constrainedPhaseLaunch = {
+          ...detail,
+          at: new Date().toISOString(),
+        };
+        await store.savePlan(state.plan);
+        await store.appendEvent("plan.constrained_phase_reused", detail);
+        await store.appendEvent("plan.created", {
+          plan: state.plan,
+          deterministic: true,
+          constrainedRecoveryMode: knownConstrainedPhase.mode,
+        });
+        await store.saveState(state);
+        observers.event("plan.constrained_phase_reused", detail);
+        observers.event("plan.created", {
+          plan: state.plan,
+          deterministic: true,
+          constrainedRecoveryMode: knownConstrainedPhase.mode,
+        });
+        emitConsole(
+          config,
+          `Reusing the known ${knownConstrainedPhase.mode} phase without another planning request.`,
+          { kind: "meta" }
+        );
+      } else if (config.scsActive) {
         const scsPlanningLane = resolveScsJsonLane(config, "SCS committee");
         const scsValidationMode = resolveScsValidationMode(config);
         await store.appendEvent("scs.plan.requested", {
@@ -10798,16 +11395,111 @@ export async function runAgent(config) {
         try {
           plan = redactSensitiveText(await createPlan(client, config, state));
         } catch (error) {
-          const detail = {
+          if (!isModelTimeoutError(error)) {
+            const detail = {
+              provider: config.provider,
+              model: config.model,
+              taskProfile: config.taskProfile,
+              error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+              name: error?.name || "",
+            };
+            await store.appendEvent("plan.failed", detail);
+            observers.event("plan.failed", detail);
+            throw error;
+          }
+
+          const retryRoute = modelPlanningTimeoutRetryRoute(config);
+          const timeoutDetail = {
             provider: config.provider,
             model: config.model,
+            retryProvider: retryRoute.provider,
+            retryModel: retryRoute.model,
+            switchedModel: retryRoute.switchedModel,
             taskProfile: config.taskProfile,
+            timeoutMs: retryRoute.timeoutMs,
+            retryTimeoutMs: retryRoute.retryTimeoutMs,
             error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
-            name: error?.name || "",
           };
-          await store.appendEvent("plan.failed", detail);
-          observers.event("plan.failed", detail);
-          throw error;
+          state.meta.planTimeoutRecovery = {
+            active: true,
+            ...timeoutDetail,
+            startedAt: new Date().toISOString(),
+          };
+          await store.appendEvent("plan.timeout", timeoutDetail);
+          await store.appendEvent("plan.retry_requested", timeoutDetail);
+          observers.event("plan.timeout", timeoutDetail);
+          observers.event("plan.retry_requested", timeoutDetail);
+          emitConsole(
+            config,
+            `Plan request timed out after ${retryRoute.timeoutMs}ms; retrying once with ${retryRoute.provider}/${retryRoute.model} for ${retryRoute.retryTimeoutMs}ms.`,
+            { kind: "meta" }
+          );
+          await store.saveState(state);
+
+          const retryConfig = {
+            ...config,
+            provider: retryRoute.provider,
+            model: retryRoute.model,
+            modelTimeoutMs: retryRoute.retryTimeoutMs,
+          };
+          try {
+            plan = redactSensitiveText(await createPlan(client, retryConfig, state));
+            const recovered = {
+              ...timeoutDetail,
+              outcome: "model-retry",
+            };
+            await store.appendEvent("plan.timeout_recovered", recovered);
+            observers.event("plan.timeout_recovered", recovered);
+          } catch (retryError) {
+            if (!isModelTimeoutError(retryError)) {
+              const detail = {
+                ...timeoutDetail,
+                retryError: redactSensitiveText(
+                  retryError instanceof Error ? retryError.message : String(retryError)
+                ),
+                retryErrorName: retryError?.name || "",
+              };
+              await store.appendEvent("plan.failed", detail);
+              observers.event("plan.failed", detail);
+              throw retryError;
+            }
+            plan = buildPlanningTimeoutFallbackPlan(config, state);
+            const fallback = {
+              ...timeoutDetail,
+              outcome: "deterministic-launch-plan",
+              retryError: redactSensitiveText(
+                retryError instanceof Error ? retryError.message : String(retryError)
+              ),
+            };
+            state.meta.planTimeoutRecovery.fallback = true;
+            state.meta.planTimeoutRecovery.retryError = fallback.retryError;
+            await store.appendEvent("plan.timeout_fallback", fallback);
+            observers.event("plan.timeout_fallback", fallback);
+            emitConsole(
+              config,
+              "The bounded plan retry also timed out; continuing this invocation with a deterministic launch plan.",
+              { kind: "meta" }
+            );
+          }
+
+          if (retryRoute.switchedModel) {
+            config = applyModelTimeoutRetryRoute(config, retryRoute);
+            state.provider = config.provider;
+            state.model = config.model;
+            state.meta.planTimeoutRecovery.adoptedModel = config.model;
+            state.meta.planTimeoutRecovery.activatedAt = new Date().toISOString();
+            state.meta.runtimeConfig = captureSessionRuntime(config, {
+              revision: state.meta.runtimeConfig?.revision || 1,
+            });
+            const adopted = {
+              provider: config.provider,
+              model: config.model,
+              previousModel: retryRoute.previousModel,
+              source: "plan-timeout-retry",
+            };
+            await store.appendEvent("plan.timeout_route_adopted", adopted);
+            observers.event("plan.timeout_route_adopted", adopted);
+          }
         }
         state.plan = plan;
         await store.savePlan(plan);
@@ -11418,6 +12110,16 @@ export async function runAgent(config) {
         ? { ok: true, calls: [], acceptedToolCalls: [], deferredToolCalls: [] }
         : resolveDispatchableToolCallBatch(rawToolCalls, responseToolContract);
       if (!toolBatchValidation.ok) {
+        const recoveredVerificationRerun = recoverUnavailableVerificationRerunAsCanonicalRead(
+          stepRuntimeConfig,
+          state,
+          rawToolCalls,
+          responseToolContract,
+          toolBatchValidation
+        );
+        if (recoveredVerificationRerun) toolBatchValidation = recoveredVerificationRerun;
+      }
+      if (!toolBatchValidation.ok) {
         const recoveredFocusedWrite = await recoverFocusedWholeFileWriteAsExactPatch(
           stepRuntimeConfig,
           state,
@@ -11533,6 +12235,18 @@ export async function runAgent(config) {
         observers.event("tool.mutation_intent_translated", detail);
       }
 
+      if (toolBatchValidation.recoveredUnavailableVerificationRerun) {
+        const detail = {
+          step,
+          originalToolName: String(toolBatchValidation.originalToolName || ""),
+          translatedToolName: String(toolBatchValidation.translatedToolName || ""),
+          path: String(toolBatchValidation.translatedPath || ""),
+          source: "failed-verifier-canonical-evidence-read",
+        };
+        await store.appendEvent("tool.intent_repaired", detail);
+        observers.event("tool.intent_repaired", detail);
+      }
+
       if (toolBatchValidation.recoveredFocusedTextRewrite) {
         const detail = {
           step,
@@ -11566,6 +12280,7 @@ export async function runAgent(config) {
         preserveAssistantMessage(
           toolBatchValidation.recoveredSequentially ||
           toolBatchValidation.recoveredSingletonEnums ||
+          toolBatchValidation.recoveredUnavailableVerificationRerun ||
           toolBatchValidation.recoveredFocusedWholeFileWrite ||
           toolBatchValidation.recoveredFocusedTextRewrite
             ? {
@@ -11680,6 +12395,7 @@ export async function runAgent(config) {
             events: await store.loadEvents(),
             taskProfile: config.taskProfile,
             goal: config.goal,
+            taskContract: completionDecision.assessment?.contract,
           });
           state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || DEFAULT_SCS_MODE, active: true };
           state.meta.scs.lastStudentDecision = decision;
@@ -11767,6 +12483,7 @@ export async function runAgent(config) {
           content: JSON.stringify(toolResultForModel(toolResult)),
         });
         postBatchToolResults.push(toolResult);
+        recordDurableEvidenceCategories(state, toolResult);
 
         if (toolResult.toolName === "run_command") {
           observers.log("command.output", {
@@ -11890,6 +12607,7 @@ export async function runAgent(config) {
               events: await store.loadEvents(),
               taskProfile: config.taskProfile,
               goal: config.goal,
+              taskContract: completionDecision.assessment?.contract,
             });
             state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || DEFAULT_SCS_MODE, active: true };
             state.meta.scs.lastStudentDecision = decision;

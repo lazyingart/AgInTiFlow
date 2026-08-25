@@ -48,6 +48,20 @@ assert.equal(
   true,
   "historical wording hid an unrelated current unfinished task"
 );
+assert.equal(
+  finishResultClaimsIncompleteWork(
+    "The verifier passed, git status confirms no pending changes, and no further action is needed."
+  ),
+  false,
+  "a clean completed repository was mistaken for pending work"
+);
+assert.equal(
+  finishResultClaimsIncompleteWork(
+    "The verifier passed, git status confirms no pending changes, and there is no need for further action."
+  ),
+  false,
+  "a no-further-action completion statement was mistaken for future work"
+);
 
 function assistant(content, toolCalls = []) {
   return {

@@ -25,6 +25,7 @@ import { normalizeDynamicStepsMode } from "./step-budget-controller.js";
 import { maxStepsForExecutionPolicy, selectExecutionPolicy } from "./execution-policy.js";
 import { normalizeContextBudgetMode } from "./context-budget-controller.js";
 import { BASELINE_PROVIDER, normalizeProviderBaseURL, normalizeProviderId } from "./provider-contract.js";
+import { isResponseOnlyEvidenceScope } from "./scs-evidence.js";
 
 function parseBoolean(value, fallback) {
   if (value === undefined) return fallback;
@@ -237,6 +238,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     taskProfile,
     complexityScore: route.complexityScore,
     scsActive,
+    responseOnly: isResponseOnlyEvidenceScope(args.goal || ""),
   });
   const configuredMaxSteps = overrides.maxSteps ?? args.maxSteps ?? process.env.MAX_STEPS;
   const maxStepsExplicit = configuredMaxSteps !== undefined && String(configuredMaxSteps).trim() !== "";

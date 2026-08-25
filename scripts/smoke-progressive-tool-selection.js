@@ -19,7 +19,9 @@ import {
   integrationTextWorkspaceToolExecutionBlock,
   nextStepRuntimeConfig,
   recoverFocusedWholeFileWriteAsExactPatch,
+  recoverUnavailableVerificationRerunAsCanonicalRead,
   runAgent,
+  toolContractRepairMessage,
 } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { SessionStore } from "../src/session-store.js";
@@ -66,6 +68,87 @@ function names(tools) {
 function sameNames(actual, expected, message) {
   assert(JSON.stringify(names(actual)) === JSON.stringify(expected), `${message}: ${names(actual).join(", ")}`);
 }
+
+const mutationGatedToolRepair = toolContractRepairMessage({
+  code: "TOOL_NOT_OFFERED",
+  offeredTools: ["read_file", "search_files", "apply_patch", "finish"],
+  requestedCalls: [{ name: "run_command", path: "" }],
+  recoveryContext: {
+    failedTestCommand: "python3 external_contract.py",
+    failedTestSummary: "AssertionError: SECURITY.md lacks residual coverage",
+    canonicalRepairPaths: ["SECURITY.md"],
+  },
+  errors: [],
+});
+assert(
+  mutationGatedToolRepair.includes("already failed and is intentionally unavailable"),
+  "mutation-gated tool recovery did not explain why verification is unavailable"
+);
+
+const canonicalReadDescriptor = {
+  type: "function",
+  function: {
+    name: "read_file",
+    description: "Read one workspace file.",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+      additionalProperties: false,
+    },
+  },
+};
+const failedVerifierCommand = "python3 external_contract.py";
+const recoveredVerifierRerun = recoverUnavailableVerificationRerunAsCanonicalRead(
+  { commandCwd: "/tmp/security-project" },
+  {
+    meta: {
+      projectVerification: {
+        mutationRevision: 2,
+        testRuns: [
+          {
+            mutationRevision: 2,
+            passed: false,
+            command: failedVerifierCommand,
+            failureSummary:
+              "AssertionError: SECURITY.md lacks residual coverage",
+          },
+        ],
+      },
+      failedTestRecoveryPacket: {
+        paths: ["labshare.py", "tests/test_labshare.py", "SECURITY.md"],
+      },
+    },
+  },
+  [
+    contractCall("repeat-verifier", "run_command", {
+      command: failedVerifierCommand,
+    }),
+  ],
+  createToolContract([canonicalReadDescriptor]),
+  {
+    ok: false,
+    errors: [{ code: "TOOL_NOT_OFFERED" }],
+  }
+);
+assert(
+  recoveredVerifierRerun?.recoveredUnavailableVerificationRerun === true,
+  "an unavailable exact verifier rerun was not translated into a canonical evidence read"
+);
+assert(
+  JSON.parse(
+    recoveredVerifierRerun.acceptedToolCalls[0].function.arguments
+  ).path === "SECURITY.md",
+  "verifier-rerun recovery did not select the canonical file named by failure evidence"
+);
+assert(
+  mutationGatedToolRepair.includes("SECURITY.md lacks residual coverage"),
+  "mutation-gated tool recovery omitted the retained failure evidence"
+);
+assert(
+  mutationGatedToolRepair.includes("Do not request run_command"),
+  "mutation-gated tool recovery still invites the unavailable verification tool"
+);
 
 async function captureRequestTools(overrides = {}) {
   let payload = null;
@@ -514,6 +597,28 @@ assert(
   "pending git evidence did not reopen the shell after an earlier generator command"
 );
 
+const boundedArtifactCommitTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    artifactValidationPhase: true,
+    artifactValidationNeedsGitEvidence: true,
+    artifactValidationPendingGitActions: ["commit"],
+    artifactValidationCommitPaths: ["SECURITY.md", "labshare.py", "tests/test_labshare.py"],
+  },
+  goal: "Commit only the accepted security repair, then finish.",
+  profile: "code",
+});
+sameNames(
+  boundedArtifactCommitTools,
+  ["commit_project_changes", "finish"],
+  "artifact Git completion exposed open-ended validation tools after task-owned paths were known"
+);
+assertStrict.deepEqual(
+  boundedArtifactCommitTools[0].function.parameters.required,
+  ["message"],
+  "artifact Git completion delegated path selection back to the model"
+);
+
 const resumedArtifactRuntime = nextStepRuntimeConfig(
   {
     goal: "Perform a visual screenshot inspection of the generated plot and commit the intentional changes.",
@@ -580,6 +685,14 @@ const statusOnlyArtifactState = {
       { action: "status", goalRevision: 7 },
       { action: "diff", goalRevision: 7 },
     ],
+    projectVerification: {
+      mutationRevision: 2,
+      mutationHistory: [
+        { revision: 1, paths: ["analysis.py"] },
+        { revision: 2, paths: ["AGINTI.md"] },
+      ],
+      commandRuns: [],
+    },
     artifactProgress: { complete: true, usedValidationTools: ["run_command"] },
   },
   messages: [],
@@ -599,6 +712,29 @@ assert(
   nextStepRuntimeConfig({ taskProfile: "data" }, statusOnlyArtifactState)
     .artifactValidationNeedsCommand === true,
   "a fresh pending commit did not reopen the command tool"
+);
+const boundedStatusOnlyRuntime = nextStepRuntimeConfig(
+  { taskProfile: "data" },
+  statusOnlyArtifactState
+);
+assertStrict.deepEqual(
+  boundedStatusOnlyRuntime.artifactValidationPendingGitActions,
+  ["commit"],
+  "artifact runtime did not retain the exact pending Git action"
+);
+assertStrict.deepEqual(
+  boundedStatusOnlyRuntime.artifactValidationCommitPaths,
+  ["analysis.py", "AGINTI.md"],
+  "artifact runtime did not derive task-owned commit paths from mutation evidence"
+);
+sameNames(
+  selectProgressiveTools(allTools, {
+    config: boundedStatusOnlyRuntime,
+    goal: statusOnlyArtifactState.goal,
+    profile: "data",
+  }),
+  ["commit_project_changes", "finish"],
+  "derived artifact Git recovery did not narrow the live tool surface"
 );
 const staleCommitArtifactRuntime = nextStepRuntimeConfig(
   { taskProfile: "data" },
@@ -627,7 +763,7 @@ const committedArtifactRuntime = nextStepRuntimeConfig(
       durableGitActions: ["status", "diff", "add", "commit"],
       durableGitEvidence: [
         { action: "status", goalRevision: 7 },
-        { action: "commit", goalRevision: 7 },
+        { action: "commit", goalRevision: 7, mutationRevision: 2 },
       ],
     },
   }
@@ -695,6 +831,47 @@ const pendingCanonicalCommandRuntime = nextStepRuntimeConfig(
 assert(
   pendingCanonicalCommandRuntime.artifactValidationNeedsCommand === true,
   "a missing canonical project command did not reopen command execution"
+);
+const exactVerifier =
+  "python3 /home/lachlan/ProjectsLFS/Aginti-Test/supervision/acceptance/security_labshare_contract.py";
+const exactVerifierRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "security" },
+  {
+    goal: `Run ${exactVerifier} and finish only after it passes.`,
+    meta: {
+      goalContract: {
+        revision: 4,
+        activeGoal: `Run ${exactVerifier} and finish only after it passes.`,
+      },
+      projectVerification: {
+        mutationRevision: 2,
+        contractRequiredCommands: [exactVerifier],
+        commandRuns: [],
+        testRuns: [],
+      },
+    },
+    messages: [],
+  }
+);
+assert(
+  exactVerifierRuntime.requiredProjectCommandPending === true &&
+    exactVerifierRuntime.requiredProjectCommand === exactVerifier,
+  "a pending exact verifier did not activate the constrained project-command phase"
+);
+const exactVerifierTools = selectProgressiveTools(allTools, {
+  config: exactVerifierRuntime,
+  goal: `Run ${exactVerifier}.`,
+  profile: "security",
+});
+sameNames(
+  exactVerifierTools,
+  ["run_command", "finish"],
+  "a pending exact verifier left unrelated tools available"
+);
+assertStrict.deepEqual(
+  exactVerifierTools[0].function.parameters.properties.command.enum,
+  [exactVerifier],
+  "the pending exact verifier was not schema-constrained"
 );
 
 const artifactSourceReadTools = selectProgressiveTools(allTools, {
@@ -858,6 +1035,20 @@ assertStrict.equal(
   mutationGatedRepairRuntime.testFailureRepairMutationRequired,
   true,
   "a blocked unchanged validator did not advance failed-test recovery to mutation-only mode"
+);
+assertStrict.equal(
+  mutationGatedRepairRuntime.testFailureRepairNeedsPatchContext,
+  true,
+  "mutation-gated recovery without retained source evidence did not preserve one bounded diagnostic read"
+);
+sameNames(
+  selectProgressiveTools(allTools, {
+    config: mutationGatedRepairRuntime,
+    goal: "Repair the current project after an external validator failure.",
+    profile: "qa",
+  }),
+  ["read_file", "search_files", "apply_patch", "finish"],
+  "source-less mutation recovery withheld the only tools that could identify a canonical repair target"
 );
 const repositoryStateRepairRuntime = nextStepRuntimeConfig(
   { provider: "localllm", taskProfile: "qa" },

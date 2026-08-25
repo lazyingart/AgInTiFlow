@@ -971,6 +971,55 @@ try {
   const pythonDemoPolicy = evaluateCommandPolicy("python3 demo.py 2>&1", dockerWorkspaceNoInstallsPolicy);
   assert(pythonDemoPolicy.allowed, "workspace-local python demo script should be allowed without package installs");
   assert(pythonDemoPolicy.category === "toolchain", "workspace-local python demo script should be classified as toolchain");
+  const broadLocalProbePolicy = evaluateCommandPolicy(
+    'python3 --version; echo "---IMPORT TEST---"; python3 -c "import pathlib; print(pathlib.Path.cwd())" 2>&1; echo "---FILES---"; ls -la 2>&1 | head -20',
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(
+    broadLocalProbePolicy.allowed && broadLocalProbePolicy.category === "general-shell",
+    "networkless general shell inside docker-workspace should not require package-install permission"
+  );
+  const broadLocalHostProbePolicy = evaluateCommandPolicy(
+    'python3 -c "import pathlib; print(pathlib.Path.cwd())"',
+    { ...hostWorkspacePolicy, packageInstallPolicy: "block" }
+  );
+  assert(
+    !broadLocalHostProbePolicy.allowed,
+    "general shell on the host should remain blocked without trusted destructive access"
+  );
+  const explicitBlockedInstallPolicy = evaluateCommandPolicy(
+    "python3 -m pip install requests",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(
+    !explicitBlockedInstallPolicy.allowed && explicitBlockedInstallPolicy.category === "package-install",
+    "decoupling broad shell from install authorization must not allow explicit package installs"
+  );
+  const destructiveNoInstallsPolicy = evaluateCommandPolicy("rm -rf reports", dockerWorkspaceNoInstallsPolicy);
+  assert(
+    !destructiveNoInstallsPolicy.allowed && destructiveNoInstallsPolicy.category === "destructive",
+    "decoupling broad shell from install authorization must not weaken destructive-command guards"
+  );
+  const multiParagraphCommitPolicy = evaluateCommandPolicy(
+    'git commit -m "Harden LabShare" -m "Fix path traversal, avoid shell injection, and preserve normal use."',
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(
+    multiParagraphCommitPolicy.allowed &&
+      multiParagraphCommitPolicy.category === "git-workflow" &&
+      multiParagraphCommitPolicy.gitOnly === true,
+    "a bounded multi-paragraph Git commit message should remain a Git-only workflow"
+  );
+  const boundedTaskCommitPolicy = evaluateCommandPolicy(
+    "git add -- 'labshare.py' 'tests/test_labshare.py' 'SECURITY.md' && git commit -m 'Harden LabShare'",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(
+    boundedTaskCommitPolicy.allowed &&
+      boundedTaskCommitPolicy.category === "git-workflow" &&
+      boundedTaskCommitPolicy.gitOnly === true,
+    "the task-owned add-and-commit routine should remain a bounded Git workflow"
+  );
   const rVersionProbePolicy = evaluateCommandPolicy("R --version 2>&1", dockerWorkspaceNoInstallsPolicy);
   assert(rVersionProbePolicy.allowed, "R version probe should be allowed without package installs");
   assert(rVersionProbePolicy.category === "read-only", "R version probe should be classified as read-only");
@@ -1218,6 +1267,38 @@ try {
   });
   assert(permissionAdvice.suggestedCommand.includes("coding-policy-smoke"), "permission advice did not include resume session id");
   assert(permissionAdvice.suggestedCommand.includes("--sandbox-mode docker-workspace"), "permission advice did not suggest docker-workspace recovery");
+  const wrongWorkspaceCdAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: {
+      command:
+        "cd /home/example/project-parent && python3 -m unittest discover -s tests -v",
+    },
+    guard: {
+      category: "blocked",
+      reason:
+        "cd target must be a safe workspace-relative directory: /home/example/project-parent",
+    },
+    config: {
+      ...dockerWorkspacePolicy,
+      commandCwd: "/home/example/project-parent/current-project",
+    },
+    state: { sessionId: "coding-wrong-workspace-cd-smoke" },
+  });
+  assert(
+    wrongWorkspaceCdAdvice.autoRecover === true,
+    "an unnecessary outside-workspace cd should be corrected in-turn instead of pausing"
+  );
+  assert(
+    /configured project root/i.test(wrongWorkspaceCdAdvice.instruction),
+    "workspace cd correction did not direct the model back to the configured project root"
+  );
+  assert(
+    !shouldPauseForPermissionAdvice({
+      blocked: true,
+      permissionAdvice: wrongWorkspaceCdAdvice,
+    }),
+    "recoverable workspace cd correction still paused the session"
+  );
   const destructiveAdvice = buildPermissionAdvice({
     toolName: "run_command",
     args: { command: "rm -rf reports && git reset --hard" },
@@ -1367,6 +1448,32 @@ try {
     !shouldPauseForPermissionAdvice({ blocked: true, permissionAdvice: dynamicEvidenceAdvice }),
     "dynamic evidence filename recovery still produced a permission pause"
   );
+  const malformedPatchGuard = {
+    allowed: false,
+    category: "workspace-patch",
+    reason: "Patch did not contain any supported file operations.",
+    permissionAdvice: {
+      category: "workspace-patch",
+      autoRecover: true,
+      summary: "The patch format or exact context was not accepted; this is not a permission blocker.",
+      instruction: "Inspect the exact file and retry with a supported focused edit.",
+    },
+  };
+  const malformedPatchAdvice = buildPermissionAdvice({
+    toolName: "apply_patch",
+    args: { patch: "*** a/labshare.py\n*** b/labshare.py" },
+    guard: malformedPatchGuard,
+    config: dockerWorkspacePolicy,
+    state: { sessionId: "coding-malformed-patch-smoke" },
+  });
+  assert(
+    malformedPatchAdvice === malformedPatchGuard.permissionAdvice,
+    "explicit recoverable workspace-patch advice was replaced by generic permission advice"
+  );
+  assert(
+    !shouldPauseForPermissionAdvice({ blocked: true, permissionAdvice: malformedPatchAdvice }),
+    "recoverable malformed patch advice still paused the session for permission"
+  );
   const destructiveDynamicEvidenceAdvice = buildPermissionAdvice({
     toolName: "run_command",
     args: {
@@ -1407,6 +1514,104 @@ try {
     documentPageBatchAdvice.autoRecover === true &&
       /once for each rendered page/i.test(documentPageBatchAdvice.instruction),
     "Word document page batching did not recover into separate visual checks"
+  );
+  const alreadyCommittedAdvice = buildFailedCommandAdvice({
+    args: { command: "git commit -m 'Focused repair'" },
+    commandPolicy: evaluateCommandPolicy("git commit -m 'Focused repair'", dockerWorkspacePolicy),
+    commandResult: {
+      ok: false,
+      exitCode: 1,
+      stdout: "On branch main\nnothing to commit, working tree clean\n",
+    },
+    config: dockerWorkspacePolicy,
+    state: {
+      meta: {
+        goalContract: { revision: 9 },
+        projectVerification: { mutationRevision: 4 },
+        durableGitEvidence: [{ action: "commit", goalRevision: 9, mutationRevision: 4 }],
+      },
+    },
+  });
+  assert(
+    alreadyCommittedAdvice?.failureKind === "repository-already-committed" &&
+      alreadyCommittedAdvice.autoRecover === true &&
+      /should not be retried/i.test(alreadyCommittedAdvice.summary),
+    "a clean no-op commit with current durable evidence did not converge"
+  );
+  const sameTaskContinuationAdvice = buildFailedCommandAdvice({
+    args: { command: "git commit -m 'Focused repair'" },
+    commandPolicy: evaluateCommandPolicy("git commit -m 'Focused repair'", dockerWorkspacePolicy),
+    commandResult: {
+      ok: false,
+      exitCode: 1,
+      stdout: "On branch main\nnothing to commit, working tree clean\n",
+    },
+    config: dockerWorkspacePolicy,
+    state: {
+      meta: {
+        goalContract: {
+          revision: 10,
+          history: [
+            { revision: 9, taskHash: "task-a" },
+            { revision: 10, taskHash: "task-a" },
+          ],
+        },
+        projectVerification: { mutationRevision: 4 },
+        durableGitEvidence: [{ action: "commit", goalRevision: 9, mutationRevision: 4 }],
+      },
+    },
+  });
+  assert(
+    sameTaskContinuationAdvice?.failureKind === "repository-already-committed",
+    "a same-task continuation invalidated a clean commit at the current mutation revision"
+  );
+  const newTaskAdvice = buildFailedCommandAdvice({
+    args: { command: "git commit -m 'Focused repair'" },
+    commandPolicy: evaluateCommandPolicy("git commit -m 'Focused repair'", dockerWorkspacePolicy),
+    commandResult: {
+      ok: false,
+      exitCode: 1,
+      stdout: "On branch main\nnothing to commit, working tree clean\n",
+    },
+    config: dockerWorkspacePolicy,
+    state: {
+      meta: {
+        goalContract: {
+          revision: 10,
+          history: [
+            { revision: 9, taskHash: "task-a" },
+            { revision: 10, taskHash: "task-b" },
+          ],
+        },
+        projectVerification: { mutationRevision: 4 },
+        durableGitEvidence: [{ action: "commit", goalRevision: 9, mutationRevision: 4 }],
+      },
+    },
+  });
+  assert(
+    newTaskAdvice === null,
+    "a commit from a prior task satisfied a genuinely new task"
+  );
+  const staleCommitAdvice = buildFailedCommandAdvice({
+    args: { command: "git commit -m 'Focused repair'" },
+    commandPolicy: evaluateCommandPolicy("git commit -m 'Focused repair'", dockerWorkspacePolicy),
+    commandResult: {
+      ok: false,
+      exitCode: 1,
+      stdout: "On branch main\nnothing to commit, working tree clean\n",
+    },
+    config: dockerWorkspacePolicy,
+    state: {
+      meta: {
+        goalContract: { revision: 9 },
+        projectVerification: { mutationRevision: 4 },
+        durableGitEvidence: [{ action: "commit", goalRevision: 8, mutationRevision: 4 }],
+      },
+    },
+  });
+  assert(
+    staleCommitAdvice === null,
+    "a stale commit from an earlier goal revision satisfied a fresh commit request"
   );
   const failedNetworkAdvice = buildFailedCommandAdvice({
     args: { command: "git clone https://github.com/lazyingart/AgInTiFlow.git" },

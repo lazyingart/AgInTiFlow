@@ -13,6 +13,7 @@ const DOCKER_WORKSPACE = "/workspace";
 const DOCKER_HOME = "/aginti-home";
 const DOCKER_CACHE = "/aginti-cache";
 const DOCKER_ENV = "/aginti-env";
+const DOCKER_GIT_CONFIG = `${DOCKER_HOME}/.gitconfig.aginti-author`;
 const READY_IMAGES = new Set();
 const SANDBOX_LOG_LIMIT = 80;
 const sandboxLogs = [];
@@ -185,10 +186,71 @@ export function dockerReadOnlyHostMounts(config = {}, sandboxMode = normalizeSan
   return uniqueHostMounts([homeParent, "/mnt", "/media", "/Volumes"]);
 }
 
+export function dockerWorkspaceAliasMounts(
+  config = {},
+  sandboxMode = normalizeSandboxMode(config.sandboxMode)
+) {
+  if (sandboxMode !== "docker-workspace") return [];
+  const workspace = path.resolve(String(config.commandCwd || process.cwd()));
+  if (!path.isAbsolute(workspace) || !fsSync.existsSync(workspace)) return [];
+  return workspace === DOCKER_WORKSPACE ? [] : [workspace];
+}
+
 async function ensurePersistentDockerDirs(config) {
   const dirs = persistentDockerDirs(config);
   await Promise.all([fs.mkdir(dirs.home, { recursive: true }), fs.mkdir(dirs.cache, { recursive: true }), fs.mkdir(dirs.env, { recursive: true })]);
   return dirs;
+}
+
+function validGitIdentityValue(value = "") {
+  const text = String(value || "").trim();
+  return text.length > 0 && text.length <= 320 && !/[\r\n\0]/u.test(text);
+}
+
+async function configuredGitIdentity(workspace) {
+  try {
+    const [nameResult, emailResult] = await Promise.all([
+      execFile("git", ["-C", workspace, "config", "--get", "user.name"], {
+        timeout: 5000,
+        maxBuffer: 16 * 1024,
+      }),
+      execFile("git", ["-C", workspace, "config", "--get", "user.email"], {
+        timeout: 5000,
+        maxBuffer: 16 * 1024,
+      }),
+    ]);
+    const name = String(nameResult.stdout || "").trim();
+    const email = String(emailResult.stdout || "").trim();
+    return validGitIdentityValue(name) && validGitIdentityValue(email)
+      ? { name, email }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function ensureDockerGitIdentity(config = {}, dirs = persistentDockerDirs(config)) {
+  const identity = await configuredGitIdentity(path.resolve(config.commandCwd || process.cwd()));
+  if (!identity) return { configured: false, containerPath: "" };
+
+  await fs.mkdir(dirs.home, { recursive: true });
+  const target = path.join(dirs.home, ".gitconfig.aginti-author");
+  const temporary = `${target}.tmp-${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
+  try {
+    await execFile("git", ["config", "--file", temporary, "user.name", identity.name], {
+      timeout: 5000,
+      maxBuffer: 16 * 1024,
+    });
+    await execFile("git", ["config", "--file", temporary, "user.email", identity.email], {
+      timeout: 5000,
+      maxBuffer: 16 * 1024,
+    });
+    await fs.chmod(temporary, 0o600);
+    await fs.rename(temporary, target);
+    return { configured: true, containerPath: DOCKER_GIT_CONFIG };
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => {});
+  }
 }
 
 export async function getDockerSandboxStatus(config) {
@@ -315,6 +377,10 @@ function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, 
   const networkMode = policy.needsNetwork ? "bridge" : "none";
   const toolchain = policy.category === "toolchain";
   const readOnlyHostMountArgs = dockerReadOnlyHostMounts(config, sandboxMode).flatMap((mount) => ["-v", `${mount}:${mount}:ro`]);
+  const workspaceAliasMountArgs = dockerWorkspaceAliasMounts(config, sandboxMode).flatMap((mount) => [
+    "-v",
+    `${mount}:${mount}:${mountMode}`,
+  ]);
   const readOnlyArgs =
     mountMode === "ro"
       ? ["--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m"]
@@ -342,7 +408,11 @@ function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, 
     "NPM_CONFIG_USERCONFIG=/tmp/.npmrc",
     "-e",
     "PIP_DISABLE_PIP_VERSION_CHECK=1",
+    ...(options.gitIdentityConfigured
+      ? ["-e", `GIT_CONFIG_GLOBAL=${DOCKER_GIT_CONFIG}`]
+      : []),
     ...readOnlyHostMountArgs,
+    ...workspaceAliasMountArgs,
     "-v",
     `${config.commandCwd}:${DOCKER_WORKSPACE}:${mountMode}`,
     "-v",
@@ -363,7 +433,14 @@ function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, 
 export async function runDockerSandboxCommand(command, config, policy = evaluateCommandPolicy(command, config), options = {}) {
   const persistentDirs = await ensurePersistentDockerDirs(config);
   const containerName = dockerContainerName();
-  const result = await execDocker(dockerRunArgs(command, config, policy, persistentDirs, { containerName }), {
+  const gitIdentity =
+    policy.gitOnly === true && /\bgit\s+commit\b/i.test(String(command || ""))
+      ? await ensureDockerGitIdentity(config, persistentDirs)
+      : { configured: false, containerPath: "" };
+  const result = await execDocker(dockerRunArgs(command, config, policy, persistentDirs, {
+    containerName,
+    gitIdentityConfigured: gitIdentity.configured === true,
+  }), {
     timeout: dockerExecTimeoutMs(policy),
     maxBuffer: 300 * 1024,
     signal: options.signal,

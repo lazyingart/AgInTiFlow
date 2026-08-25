@@ -56,6 +56,46 @@ try {
     scsActive: true,
   });
   assert(scsPolicy.tier === "thorough" && scsPolicy.requiresPlan, "SCS must not run without a thorough phase plan");
+  const responseOnlyPolicy = selectExecutionPolicy({
+    requestedTier: "thorough",
+    routingMode: "complex",
+    taskProfile: "research",
+    complexityScore: 99,
+    scsActive: true,
+    responseOnly: true,
+  });
+  assert(
+    responseOnlyPolicy.tier === "focused" && !responseOnlyPolicy.requiresPlan,
+    "explicit response-only work should override complexity and SCS planning"
+  );
+
+  const responseOnlyGoal = [
+    "Use the supplied evidence to write a complete reader-facing answer.",
+    "Context: " + "source-grounded lesson evidence ".repeat(120),
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "host-managed-response",
+      request: "Return the complete answer as assistant text.",
+    })}`,
+  ].join("\n");
+  const responseOnlyConfig = resolveRuntimeConfig(
+    {
+      provider: "mock",
+      routingMode: "complex",
+      model: "mock-agent",
+      goal: responseOnlyGoal,
+      taskProfile: "research",
+      enableScs: "full",
+    },
+    {
+      baseDir: runtimeDir,
+      packageDir: repoRoot,
+      provider: "mock",
+      routingMode: "complex",
+      model: "mock-agent",
+    }
+  );
+  assert(responseOnlyConfig.executionTier === "focused", "response-only runtime did not select focused execution");
+  assert(!responseOnlyConfig.executionPolicy.requiresPlan, "response-only runtime still requires a plan");
 
   const simpleConfig = resolveRuntimeConfig(
     {

@@ -697,6 +697,7 @@ function finishRequiresExternalEvidence(goal = "", taskProfile = "") {
 function contractForState(state = {}, context = {}) {
   const scs = state.meta?.scs || {};
   const contract = (
+    context.taskContract ||
     scs.taskContract ||
     deriveScsTaskContract({
       goal: state.goal || context.goal || "",
