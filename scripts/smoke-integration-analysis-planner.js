@@ -394,6 +394,15 @@ function expressionPlotCompilerIsStrict() {
   assert.match(commonNotation.source, /float\(math\.cos\(x\)\)/u);
   assert(compileIntegrationExpressionPlotPrompt("plot sqrt(abs(x))"));
 
+  const dependentVariableNotation = compileIntegrationExpressionPlotPrompt("Plot y=x-e^x");
+  assert(dependentVariableNotation);
+  assert.equal(dependentVariableNotation.expression, "x - e ^ x");
+  assert.match(dependentVariableNotation.source, /_value = \(x - \(math\.e \*\* x\)\)/u);
+
+  const spacedDependentVariableNotation = compileIntegrationExpressionPlotPrompt("Please plot y = sin(x)");
+  assert(spacedDependentVariableNotation);
+  assert.equal(spacedDependentVariableNotation.expression, "sin ( x )");
+
   for (const prompt of [
     "Plot the sales data.",
     "Plot customer-retention by region.",
@@ -406,6 +415,7 @@ function expressionPlotCompilerIsStrict() {
     "Let's not plot x^2.",
     "Could x^2 be plotted without running code?",
     "Plot is a noun in this sentence.",
+    "Plot y=customer retention.",
   ]) {
     assert.equal(compileIntegrationExpressionPlotPrompt(prompt), null, prompt);
   }

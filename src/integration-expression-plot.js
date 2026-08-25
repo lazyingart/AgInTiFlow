@@ -72,7 +72,12 @@ function expressionFromPrompt(value) {
     /^plot\s+(?!(?:is|means?|refers?|describes?|if|whether|would|could|might|may|should|can)\b)([\s\S]+)$/iu
       .exec(imperativeActionText(value));
   if (!match) return null;
-  const expression = match[1].trim().replace(/[?!]\s*$/u, "").trim();
+  const expression = match[1]
+    .trim()
+    .replace(/[?!]\s*$/u, "")
+    .trim()
+    .replace(/^y\s*=\s*/iu, "")
+    .trim();
   if (
     !expression ||
     !(MATH_SIGNAL.test(expression) || NUMERIC_MATH_EXPRESSION.test(expression) || CODE_SYNTAX_SIGNAL.test(expression))
