@@ -204,6 +204,7 @@ const digest = (value) => crypto.createHash("sha256").update(value).digest("hex"
 const durableMutation = {
   revision: 4,
   goalRevision: 7,
+  taskHash: digest("Repair the sensor gateway lifecycle."),
   toolName: "apply_patch",
   paths: ["service_ctl.py"],
   patch: {
@@ -214,7 +215,17 @@ const durableMutation = {
 };
 const durablePatchState = {
   meta: {
-    goalContract: { revision: 7 },
+    goalContract: {
+      revision: 7,
+      taskGoal: "Repair the sensor gateway lifecycle.",
+      history: [
+        {
+          revision: 7,
+          kind: "initial",
+          hash: digest("Repair the sensor gateway lifecycle."),
+        },
+      ],
+    },
     toolLoop: {
       recent: Array.from({ length: 20 }, (_, index) =>
         failed("apply_patch", `later-failure-${index}`)
@@ -240,7 +251,47 @@ assert.equal(
       ...durablePatchState,
       meta: {
         ...durablePatchState.meta,
-        goalContract: { revision: 8 },
+        goalContract: {
+          revision: 8,
+          taskGoal: "Repair the sensor gateway lifecycle.",
+          history: [
+            ...durablePatchState.meta.goalContract.history,
+            {
+              revision: 8,
+              kind: "same-task-continuation",
+              relation: "same-task",
+              taskHash: digest("Repair the sensor gateway lifecycle."),
+            },
+          ],
+        },
+      },
+    },
+    "apply_patch",
+    durablePatchArgs,
+    { commandCwd: process.cwd() }
+  )?.category,
+  "repeated-successful-mutation",
+  "a same-task continuation must not forget an earlier successful mutation"
+);
+assert.equal(
+  repeatedSuccessfulMutationBlock(
+    {
+      ...durablePatchState,
+      meta: {
+        ...durablePatchState.meta,
+        goalContract: {
+          revision: 8,
+          taskGoal: "Implement a separate service migration.",
+          history: [
+            ...durablePatchState.meta.goalContract.history,
+            {
+              revision: 8,
+              kind: "continuation",
+              relation: "new-request",
+              taskHash: digest("Implement a separate service migration."),
+            },
+          ],
+        },
       },
     },
     "apply_patch",
@@ -248,7 +299,24 @@ assert.equal(
     { commandCwd: process.cwd() }
   ),
   null,
-  "a genuine user continuation must permit deliberate reconsideration of an earlier patch"
+  "a genuine new task boundary must not inherit an unrelated mutation block"
+);
+const sanitizedDurablePatchArgs = {
+  ...durablePatchArgs,
+  search: durablePatchArgs.search.slice(0, 20),
+  replace: durablePatchArgs.replace.slice(0, 20),
+  searchHash: digest(durablePatchArgs.search),
+  replaceHash: digest(durablePatchArgs.replace),
+};
+assert.equal(
+  repeatedSuccessfulMutationBlock(
+    durablePatchState,
+    "apply_patch",
+    sanitizedDurablePatchArgs,
+    { commandCwd: process.cwd() }
+  )?.category,
+  "repeated-successful-mutation",
+  "redacted patch previews must use their retained full-content hashes for idempotency"
 );
 assert.equal(
   repeatedSuccessfulMutationBlock(

@@ -4397,9 +4397,13 @@ function clearRequiredCommandBatch(verification = {}) {
 }
 
 function appendProjectMutation(state = {}, verification = {}, mutation = {}, config = {}) {
+  const taskGoal = String(
+    state.meta?.goalContract?.taskGoal || state.goal || ""
+  ).trim();
   const record = {
     ...mutation,
     goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+    taskHash: taskGoal ? hashForLog(taskGoal) : "",
     revision: Math.max(0, Number(mutation.revision || verification.mutationRevision || 0)),
     paths: Array.isArray(mutation.paths)
       ? [...new Set(mutation.paths.map((item) => String(item || "")).filter(Boolean))].slice(0, 24)
@@ -6244,16 +6248,50 @@ export function repeatedSuccessfulMutationBlock(state, toolName, args = {}, conf
       ? [verification.lastMutation]
       : [];
   const targetPath = typeof args.path === "string" ? safeRecoveryEvidencePath(args.path) : "";
-  const searchHash = typeof args.search === "string" ? hashForLog(args.search) : "";
-  const replaceHash = typeof args.replace === "string" ? hashForLog(args.replace) : "";
-  const currentGoalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+  const searchHash = String(
+    args.searchHash || (typeof args.search === "string" ? hashForLog(args.search) : "")
+  );
+  const replaceHash = String(
+    args.replaceHash || (typeof args.replace === "string" ? hashForLog(args.replace) : "")
+  );
+  const goalContract = state.meta?.goalContract || {};
+  const currentGoalRevision = Math.max(0, Number(goalContract.revision || 0));
+  const currentTaskGoal = String(goalContract.taskGoal || state.goal || "").trim();
+  const currentTaskHash = currentTaskGoal ? hashForLog(currentTaskGoal) : "";
+  const goalHistory = Array.isArray(goalContract.history) ? goalContract.history : [];
+  const mutationBelongsToCurrentTask = (mutation = {}) => {
+    const mutationGoalRevision = Math.max(0, Number(mutation.goalRevision || 0));
+    const goalEntry = goalHistory.find(
+      (entry) => Number(entry?.revision || 0) === mutationGoalRevision
+    );
+    const mutationTaskHash = String(
+      mutation.taskHash ||
+      goalEntry?.taskHash ||
+      (goalEntry?.kind === "initial" ? goalEntry?.hash : "") ||
+      ""
+    );
+    if (currentTaskHash && mutationTaskHash) return currentTaskHash === mutationTaskHash;
+    if (mutationGoalRevision === currentGoalRevision) return true;
+    const interveningGoalEntries = goalHistory.filter((entry) => {
+      const revision = Number(entry?.revision || 0);
+      return revision > mutationGoalRevision && revision <= currentGoalRevision;
+    });
+    return (
+      interveningGoalEntries.length > 0 &&
+      interveningGoalEntries.every(
+        (entry) =>
+          String(entry?.relation || "") === "same-task" ||
+          String(entry?.kind || "") === "same-task-continuation"
+      )
+    );
+  };
   let matchingHistoryIndex = -1;
   if (targetPath && searchHash && replaceHash) {
     for (let index = history.length - 1; index >= 0; index -= 1) {
       const mutation = history[index];
       if (
         mutation?.toolName === "apply_patch" &&
-        Number(mutation?.goalRevision || 0) === currentGoalRevision &&
+        mutationBelongsToCurrentTask(mutation) &&
         safeRecoveryEvidencePath(mutation?.patch?.path) === targetPath &&
         String(mutation?.patch?.searchHash || "") === searchHash &&
         String(mutation?.patch?.replaceHash || "") === replaceHash
@@ -6267,7 +6305,7 @@ export function repeatedSuccessfulMutationBlock(state, toolName, args = {}, conf
     matchingHistoryIndex >= 0 &&
     !history.slice(matchingHistoryIndex + 1).some(
       (mutation) =>
-        Number(mutation?.goalRevision || 0) === currentGoalRevision &&
+        mutationBelongsToCurrentTask(mutation) &&
         Number(mutation?.revision || 0) >
           Number(history[matchingHistoryIndex]?.revision || 0)
     );
@@ -6275,7 +6313,7 @@ export function repeatedSuccessfulMutationBlock(state, toolName, args = {}, conf
   if (!alreadyApplied) return null;
   return {
     reason:
-      "This exact patch already succeeded without an intervening successful mutation or user continuation.",
+      "This exact patch already succeeded in the current task lineage without a later successful mutation that changed source state.",
     category: "repeated-successful-mutation",
     permissionAdvice: {
       category: "repeated-successful-mutation",
