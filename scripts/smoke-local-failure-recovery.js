@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -11,7 +12,11 @@ import {
   decideLocalFailureRecovery,
   localFailureRecoveryInstruction,
 } from "../src/local-failure-recovery.js";
-import { nextStepRuntimeConfig, runAgent } from "../src/agent-runner.js";
+import {
+  nextStepRuntimeConfig,
+  repeatedSuccessfulMutationBlock,
+  runAgent,
+} from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { SessionStore } from "../src/session-store.js";
 
@@ -189,6 +194,89 @@ const instruction = localFailureRecoveryInstruction(repeatedDecision);
 assert.match(instruction, /preserve successful work/i);
 assert.match(instruction, /Do not repeat the failing call/i);
 assert.match(instruction, /rerun the smallest relevant verification/i);
+
+const durablePatchArgs = {
+  path: "service_ctl.py",
+  search: "command = f'python gateway_service.py'",
+  replace: "command = [sys.executable, 'gateway_service.py']",
+};
+const digest = (value) => crypto.createHash("sha256").update(value).digest("hex");
+const durableMutation = {
+  revision: 4,
+  goalRevision: 7,
+  toolName: "apply_patch",
+  paths: ["service_ctl.py"],
+  patch: {
+    path: "./service_ctl.py",
+    searchHash: digest(durablePatchArgs.search),
+    replaceHash: digest(durablePatchArgs.replace),
+  },
+};
+const durablePatchState = {
+  meta: {
+    goalContract: { revision: 7 },
+    toolLoop: {
+      recent: Array.from({ length: 20 }, (_, index) =>
+        failed("apply_patch", `later-failure-${index}`)
+      ),
+      stagnationEpoch: 23,
+    },
+    projectVerification: {
+      mutationRevision: 4,
+      mutationHistory: [durableMutation],
+    },
+  },
+};
+assert.equal(
+  repeatedSuccessfulMutationBlock(durablePatchState, "apply_patch", durablePatchArgs, {
+    commandCwd: process.cwd(),
+  })?.category,
+  "repeated-successful-mutation",
+  "a successful exact patch must remain blocked after it falls out of the short tool-loop window"
+);
+assert.equal(
+  repeatedSuccessfulMutationBlock(
+    {
+      ...durablePatchState,
+      meta: {
+        ...durablePatchState.meta,
+        goalContract: { revision: 8 },
+      },
+    },
+    "apply_patch",
+    durablePatchArgs,
+    { commandCwd: process.cwd() }
+  ),
+  null,
+  "a genuine user continuation must permit deliberate reconsideration of an earlier patch"
+);
+assert.equal(
+  repeatedSuccessfulMutationBlock(
+    {
+      ...durablePatchState,
+      meta: {
+        ...durablePatchState.meta,
+        projectVerification: {
+          mutationRevision: 5,
+          mutationHistory: [
+            durableMutation,
+            {
+              revision: 5,
+              goalRevision: 7,
+              toolName: "write_file",
+              paths: ["service_ctl.py"],
+            },
+          ],
+        },
+      },
+    },
+    "apply_patch",
+    durablePatchArgs,
+    { commandCwd: process.cwd() }
+  ),
+  null,
+  "an intervening successful mutation must permit the same exact patch when source state changed"
+);
 
 function assistant(content, toolCalls = []) {
   return {

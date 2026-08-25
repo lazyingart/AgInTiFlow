@@ -877,11 +877,22 @@ function summarizeRetainedSourceEvidence(messages = [], limit = 28) {
     const payload = retained?.payload || safeParseToolContent(message.content);
     if (!payload || payload.ok === false || payload.blocked || payload.skipped) continue;
     const toolName = String(retained?.name || payload.toolName || payload.name || "");
+    const args = retained?.args || payload.args || {};
+    const sourcePath = String(payload.path || args.path || "").trim();
+    if (["apply_patch", "write_file"].includes(toolName) && sourcePath) {
+      for (const [key, record] of bySource.entries()) {
+        if (
+          record.toolName === "read_file" &&
+          retainedPathMatchesAny(record.sourcePath, [sourcePath])
+        ) {
+          bySource.delete(key);
+        }
+      }
+      continue;
+    }
     if (!["read_file", "list_files", "search_files", "inspect_project", "run_command"].includes(toolName)) {
       continue;
     }
-    const args = retained?.args || payload.args || {};
-    const sourcePath = String(payload.path || args.path || "").trim();
     const command = String(args.command || "").trim();
     const readRange = toolName === "read_file" ? retainedReadRange(payload, args) : null;
     const key = `${toolName}:${sourcePath || command}${readRange ? `:${readRange.key}` : ""}`;
@@ -937,9 +948,15 @@ function summarizeRetainedSourceEvidence(messages = [], limit = 28) {
       if (payload.stdout) parts.push(`stdout=${compactSingleLine(payload.stdout, 260)}`);
       if (payload.stderr) parts.push(`stderr=${compactSingleLine(payload.stderr, 220)}`);
     }
-    bySource.set(key, redactSensitiveText(parts.join(" | ")));
+    bySource.set(key, {
+      toolName,
+      sourcePath,
+      text: redactSensitiveText(parts.join(" | ")),
+    });
   }
-  return [...bySource.values()].slice(-Math.max(1, Number(limit) || 28));
+  return [...bySource.values()]
+    .slice(-Math.max(1, Number(limit) || 28))
+    .map((record) => record.text);
 }
 
 const COMPACTION_STATE_TOOL_NAMES = new Set([
@@ -1076,6 +1093,16 @@ function retainedToolStateMessages(messages = [], limit = 12, outputPaths = [], 
     if (!COMPACTION_STATE_TOOL_NAMES.has(name)) return;
     if (!payload || payload.ok === false || payload.blocked || payload.skipped) return;
     const sourcePath = String(payload.path || args?.path || "").trim();
+    if (["apply_patch", "write_file"].includes(name) && sourcePath) {
+      for (const [key, record] of recordsByKey.entries()) {
+        if (
+          record.name === "read_file" &&
+          retainedPathMatchesAny(record.sourcePath, [sourcePath])
+        ) {
+          recordsByKey.delete(key);
+        }
+      }
+    }
     const command = String(args?.command || payload.args?.command || "").trim();
     const durableIdentity = String(
       sourcePath || command || payload.researchId || args?.researchId || args?.query || name
@@ -1085,6 +1112,7 @@ function retainedToolStateMessages(messages = [], limit = 12, outputPaths = [], 
     recordsByKey.set(key, {
       ordinal: ordinal += 1,
       name,
+      sourcePath,
       args: redactValue(args),
       payload: compactRetainedToolPayload(name, payload, args),
     });
@@ -6200,7 +6228,7 @@ export function repeatedSuccessfulMutationBlock(state, toolName, args = {}, conf
     commandCwd: config.commandCwd,
   });
   const stagnationEpoch = Math.max(0, Number(toolLoop.stagnationEpoch || 0));
-  const alreadyApplied = (Array.isArray(toolLoop.recent) ? toolLoop.recent : []).some(
+  const recentlyApplied = (Array.isArray(toolLoop.recent) ? toolLoop.recent : []).some(
     (entry) =>
       entry?.signature === signature &&
       entry?.toolName === "apply_patch" &&
@@ -6209,6 +6237,41 @@ export function repeatedSuccessfulMutationBlock(state, toolName, args = {}, conf
       entry?.successfulMutation === true &&
       Number(entry?.stagnationEpoch || 0) === stagnationEpoch
   );
+  const verification = state.meta?.projectVerification || {};
+  const history = Array.isArray(verification.mutationHistory)
+    ? verification.mutationHistory
+    : verification.lastMutation
+      ? [verification.lastMutation]
+      : [];
+  const targetPath = typeof args.path === "string" ? safeRecoveryEvidencePath(args.path) : "";
+  const searchHash = typeof args.search === "string" ? hashForLog(args.search) : "";
+  const replaceHash = typeof args.replace === "string" ? hashForLog(args.replace) : "";
+  const currentGoalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+  let matchingHistoryIndex = -1;
+  if (targetPath && searchHash && replaceHash) {
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const mutation = history[index];
+      if (
+        mutation?.toolName === "apply_patch" &&
+        Number(mutation?.goalRevision || 0) === currentGoalRevision &&
+        safeRecoveryEvidencePath(mutation?.patch?.path) === targetPath &&
+        String(mutation?.patch?.searchHash || "") === searchHash &&
+        String(mutation?.patch?.replaceHash || "") === replaceHash
+      ) {
+        matchingHistoryIndex = index;
+        break;
+      }
+    }
+  }
+  const persistentlyApplied =
+    matchingHistoryIndex >= 0 &&
+    !history.slice(matchingHistoryIndex + 1).some(
+      (mutation) =>
+        Number(mutation?.goalRevision || 0) === currentGoalRevision &&
+        Number(mutation?.revision || 0) >
+          Number(history[matchingHistoryIndex]?.revision || 0)
+    );
+  const alreadyApplied = recentlyApplied || persistentlyApplied;
   if (!alreadyApplied) return null;
   return {
     reason:

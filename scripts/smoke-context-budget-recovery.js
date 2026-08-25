@@ -341,6 +341,129 @@ assert.ok(
   "DeepSeek runtime compaction exceeded the bounded retry target"
 );
 
+const staleReadAfterMutationState = {
+  goal: "Repair service_ctl.py from current source and verify the service lifecycle tests.",
+  plan: "Use current source state and latest test evidence.",
+  messages: [
+    { role: "system", content: "Preserve current source truth across compaction." },
+    { role: "user", content: "Continue the current service recovery task." },
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        {
+          id: "stale-source-read",
+          type: "function",
+          function: {
+            name: "read_file",
+            arguments: JSON.stringify({ path: "service_ctl.py", startLine: 1, lineLimit: 40 }),
+          },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "stale-source-read",
+      content: JSON.stringify({
+        ok: true,
+        toolName: "read_file",
+        path: "service_ctl.py",
+        startLine: 1,
+        lineLimit: 40,
+        lineCount: 80,
+        bytes: 3200,
+        sha256: "1111111111111111111111111111111111111111111111111111111111111111",
+        contentTruncated: false,
+        content: "STALE-SERVICE-CONTENT command = f'python gateway_service.py'",
+      }),
+    },
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        {
+          id: "current-source-mutation",
+          type: "function",
+          function: {
+            name: "apply_patch",
+            arguments: JSON.stringify({
+              path: "service_ctl.py",
+              search: "command = f'python gateway_service.py'",
+              replace: "command = [sys.executable, 'gateway_service.py']",
+            }),
+          },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "current-source-mutation",
+      content: JSON.stringify({
+        ok: true,
+        toolName: "apply_patch",
+        path: "service_ctl.py",
+        summary: "1 file change applied",
+      }),
+    },
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        {
+          id: "fresh-source-read",
+          type: "function",
+          function: {
+            name: "read_file",
+            arguments: JSON.stringify({ path: "service_ctl.py", startLine: 41, lineLimit: 40 }),
+          },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "fresh-source-read",
+      content: JSON.stringify({
+        ok: true,
+        toolName: "read_file",
+        path: "service_ctl.py",
+        startLine: 41,
+        lineLimit: 40,
+        lineCount: 80,
+        bytes: 3300,
+        sha256: "2222222222222222222222222222222222222222222222222222222222222222",
+        contentTruncated: false,
+        content: "FRESH-SERVICE-CONTENT shell=False and lifecycle helpers are current",
+      }),
+    },
+    ...Array.from({ length: 8 }, (_, index) => readOnlyDiagnosticPair(index + 30)).flat(),
+  ],
+};
+const staleReadAfterMutationMessages = buildContextBudgetCompactionMessages(
+  staleReadAfterMutationState,
+  config,
+  { title: "", url: "" },
+  12,
+  { reason: "discard stale pre-mutation source reads" }
+);
+const staleReadAfterMutationText = staleReadAfterMutationMessages
+  .map((message) => message.content || "")
+  .join("\n");
+assert.ok(
+  !staleReadAfterMutationText.includes("STALE-SERVICE-CONTENT"),
+  "compaction retained a source read that predates a successful mutation of the same file"
+);
+assert.ok(
+  staleReadAfterMutationText.includes("FRESH-SERVICE-CONTENT"),
+  "compaction discarded the bounded source read made after the successful mutation"
+);
+assert.ok(
+  staleReadAfterMutationMessages.some((message) =>
+    Array.isArray(message.tool_calls) &&
+    message.tool_calls.some((call) => call?.function?.name === "apply_patch")
+  ),
+  "compaction discarded the successful mutation while invalidating its stale predecessor read"
+);
+
 function noisyFullReadPair(index, generation) {
   const id = `validator-${generation}-${index}`;
   const file = `tmp/validator-${generation}-${index}.py`;
