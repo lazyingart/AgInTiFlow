@@ -109,7 +109,8 @@ function safeFilename(value) {
     filename !== path.basename(filename) ||
     filename.includes("\\") ||
     !/\.tex$/iu.test(filename) ||
-    Buffer.byteLength(filename, "utf8") > 200 ||
+    filename.length > 240 ||
+    Buffer.byteLength(filename, "utf8") > 240 ||
     /[\u0000-\u001f\u007f]/u.test(filename)
   ) {
     fail("ANALYSIS_TEX_SOURCE_INVALID", "The TeX filename is invalid.", { status: 400 });
@@ -249,6 +250,7 @@ export async function inspectIntegrationTexCompilerRuntime() {
     shellEscape: false,
     limits: INTEGRATION_TEX_LIMITS,
     runtimeDigest: expectedRuntimeDigest,
+    activationProbeDigest: receipt.digest,
   });
 }
 
@@ -606,4 +608,40 @@ export async function compileIntegrationTexDocument(value = {}, options = {}) {
   } finally {
     if (temporaryRoot) await fs.rm(temporaryRoot, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+// This workstation-only adapter exposes the freshly compiled bytes to the
+// durable document-worker store without turning the process-local artifact
+// brand into an authorization mechanism. The worker receipt ledger becomes
+// the sole restart-stable authority before any opaque ref is committed.
+export async function compileIntegrationTexWorkerPayload(value = {}, options = {}) {
+  const compiled = await compileIntegrationTexDocument(value, options);
+  const [sourceArtifact, pdfArtifact] = compiled.artifacts;
+  const sourcePrivate = inspectPrivateIntegrationFileArtifact(sourceArtifact);
+  const pdfPrivate = inspectPrivateIntegrationFileArtifact(pdfArtifact);
+  if (
+    !sourcePrivate ||
+    !pdfPrivate ||
+    sourcePrivate.role !== "source" ||
+    pdfPrivate.role !== "pdf" ||
+    sourcePrivate.receipt !== pdfPrivate.receipt
+  ) {
+    fail("ANALYSIS_TEX_RECEIPT_INVALID", "The TeX compiler did not retain a coherent private result.");
+  }
+  return Object.freeze({
+    schemaVersion: INTEGRATION_TEX_COMPILER_SCHEMA_VERSION,
+    compilerReceipt: sourcePrivate.receipt,
+    source: Object.freeze({
+      filename: sourceArtifact.spec.filename,
+      mime: sourceArtifact.spec.mime,
+      bytes: Buffer.from(sourcePrivate.bytes),
+      sha256: sourceArtifact.spec.sha256,
+    }),
+    pdf: Object.freeze({
+      filename: pdfArtifact.spec.filename,
+      mime: pdfArtifact.spec.mime,
+      bytes: Buffer.from(pdfPrivate.bytes),
+      sha256: pdfArtifact.spec.sha256,
+    }),
+  });
 }

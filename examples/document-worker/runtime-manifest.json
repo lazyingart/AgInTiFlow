@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "aginti-document-worker-runtime-manifest-v1",
+  "node": {
+    "path": "/home/lachlan/.nvm/versions/node/v22.21.0/bin/node",
+    "version": "v22.21.0",
+    "sha256": "29e9c28204d89d85cc426b518b4a7c6e32aafecd5e447d65301ffb2c1c15335a",
+    "owner": "lachlan",
+    "group": "lachlan",
+    "mode": "0755",
+    "size": 123351032,
+    "unitMount": "read-only"
+  }
+}
