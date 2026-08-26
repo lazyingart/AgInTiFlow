@@ -345,6 +345,7 @@ function textToolProtocolPrompt(tools = []) {
     '[TOOL_CALLS]tool_name[ARGS]{"arg":"value"}',
     'A strict id form is also accepted: [TOOL_CALLS]tool_name[ARGS]call_short_id[ARGS]{"arg":"value"}',
     'A JSON block form is accepted too: TOOL_CALLS: ```json [{"name":"tool_name","arguments":{"arg":"value"}}] ```',
+    'A function/parameter form is accepted too: <function=tool_name><parameter=arg>value</parameter></function>.',
     "Return only one or more TOOL_CALLS blocks when calling tools; do not wrap them in markdown.",
     "Keep tool-call JSON valid and complete. For long write_file content, prefer a concise complete file or smaller follow-up edits over emitting huge/truncated JSON.",
     "If no tool is needed, answer normally.",
@@ -395,6 +396,8 @@ export function parseTextToolCalls(content = "") {
   const calls = [];
   for (const call of parseRequestedToolCalls(text)) calls.push(call);
   for (const call of parseXmlToolCalls(text, calls.length)) calls.push(call);
+  for (const call of parseFunctionParameterToolCalls(text, calls.length)) calls.push(call);
+  for (const call of parseStandaloneToolJsonCalls(text, calls.length)) calls.push(call);
   const jsonBlock = text.match(/TOOL_CALLS\s*:\s*```(?:json)?\s*([\s\S]*?)```/i);
   if (jsonBlock?.[1]) {
     try {
@@ -453,7 +456,9 @@ function hasTextToolCallMarker(content = "") {
     text.includes("[TOOL_CALLS]") ||
     /TOOL_CALLS\s*:/i.test(text) ||
     /Requested tools?\s*:/i.test(text) ||
-    /<tool_calls?>/i.test(text)
+    /<tool_calls?>/i.test(text) ||
+    /<function\s*=/i.test(text) ||
+    /^\s*\{\s*"toolName"\s*:/m.test(text)
   );
 }
 
@@ -490,6 +495,124 @@ function parseXmlToolCalls(content = "", offset = 0) {
       function: {
         name,
         arguments: rawArgs || "{}",
+      },
+    });
+  }
+  return calls;
+}
+
+function parseFunctionParameterValue(value = "") {
+  const decoded = decodeXmlToolArgs(value);
+  if (!decoded) return "";
+  if (
+    /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)$/.test(decoded) ||
+    /^[\[{]/.test(decoded)
+  ) {
+    try {
+      return JSON.parse(decoded);
+    } catch {
+      return decoded;
+    }
+  }
+  return decoded;
+}
+
+function parseFunctionParameterToolCalls(content = "", offset = 0) {
+  const text = String(content || "");
+  const calls = [];
+  const functionPattern = /<function\s*=\s*(?:"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)'|([A-Za-z0-9_-]+))\s*>([\s\S]*?)<\/function\s*>/gi;
+  let functionMatch;
+  while ((functionMatch = functionPattern.exec(text))) {
+    const name = String(
+      functionMatch[1] || functionMatch[2] || functionMatch[3] || ""
+    ).trim();
+    const body = String(functionMatch[4] || "");
+    if (!name) continue;
+
+    const args = {};
+    const seen = new Set();
+    let malformed = false;
+    let parameterCount = 0;
+    const parameterPattern = /<parameter\s*=\s*(?:"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)'|([A-Za-z0-9_-]+))\s*>([\s\S]*?)<\/parameter\s*>/gi;
+    let parameterMatch;
+    while ((parameterMatch = parameterPattern.exec(body))) {
+      const parameterName = String(
+        parameterMatch[1] || parameterMatch[2] || parameterMatch[3] || ""
+      ).trim();
+      if (!parameterName || seen.has(parameterName)) {
+        malformed = true;
+        break;
+      }
+      seen.add(parameterName);
+      parameterCount += 1;
+      args[parameterName] = parseFunctionParameterValue(parameterMatch[4]);
+    }
+    const residue = body.replace(
+      /<parameter\s*=\s*(?:"[A-Za-z0-9_-]+"|'[A-Za-z0-9_-]+'|[A-Za-z0-9_-]+)\s*>[\s\S]*?<\/parameter\s*>/gi,
+      ""
+    ).trim();
+    if (
+      malformed ||
+      residue ||
+      (/<parameter\s*=/i.test(body) && parameterCount === 0)
+    ) {
+      continue;
+    }
+    calls.push({
+      id: `text-tool-${offset + calls.length + 1}`,
+      type: "function",
+      function: {
+        name,
+        arguments: JSON.stringify(args),
+      },
+    });
+  }
+  return calls;
+}
+
+function parseStandaloneToolJsonCalls(content = "", offset = 0) {
+  const lines = String(content || "").split(/\r?\n/);
+  const firstToolLine = lines.findIndex((line) =>
+    /^\s*\{\s*"toolName"\s*:/.test(line)
+  );
+  if (firstToolLine < 0) return [];
+  const proseBefore = lines.slice(0, firstToolLine).join("\n");
+  if ((proseBefore.match(/```/g) || []).length % 2 === 1) return [];
+
+  const calls = [];
+  const seen = new Set();
+  for (const rawLine of lines.slice(firstToolLine)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (!/^\{\s*"toolName"\s*:/.test(line) || !line.endsWith("}")) return [];
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return [];
+    }
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed) ||
+      typeof parsed.toolName !== "string" ||
+      !/^[A-Za-z0-9_-]+$/.test(parsed.toolName) ||
+      !parsed.args ||
+      typeof parsed.args !== "object" ||
+      Array.isArray(parsed.args) ||
+      Object.keys(parsed).some((key) => !["toolName", "args", "id"].includes(key))
+    ) {
+      return [];
+    }
+    const signature = JSON.stringify([parsed.toolName, parsed.args]);
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    calls.push({
+      id: String(parsed.id || `text-tool-${offset + calls.length + 1}`),
+      type: "function",
+      function: {
+        name: parsed.toolName,
+        arguments: JSON.stringify(parsed.args),
       },
     });
   }
@@ -566,6 +689,8 @@ function textBeforeToolCallMarker(content = "") {
     .split("TOOL_CALLS:")[0]
     .split(/Requested tools?\s*:/i)[0]
     .split(/<tool_calls?>/i)[0]
+    .split(/<function\s*=/i)[0]
+    .split(/^\s*\{\s*"toolName"\s*:/m)[0]
     .split("<|tool_call>")[0]
     .trim();
 }

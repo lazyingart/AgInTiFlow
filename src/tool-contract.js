@@ -312,6 +312,80 @@ function recoverSingletonEnumReadCall(toolCalls, contract, validation) {
   };
 }
 
+function recoverReadFileRangeAlias(toolCalls, contract, validation) {
+  const calls = Array.isArray(toolCalls) ? toolCalls : [];
+  const errors = Array.isArray(validation?.errors) ? validation.errors : [];
+  if (calls.length !== 1 || !errors.length || contract?.[contractMarker] !== true) return null;
+  const call = calls[0];
+  if (
+    String(call?.function?.name || "") !== "read_file" ||
+    typeof call?.function?.arguments !== "string"
+  ) {
+    return null;
+  }
+  let args;
+  try {
+    args = JSON.parse(call.function.arguments);
+  } catch {
+    return null;
+  }
+  if (
+    !isPlainObject(args) ||
+    typeof args.range !== "string" ||
+    Object.hasOwn(args, "startLine") ||
+    Object.hasOwn(args, "lineLimit")
+  ) {
+    return null;
+  }
+  const specificErrors = errors.filter(
+    (error) => error?.code !== "TOOL_ARGUMENTS_SCHEMA_INVALID"
+  );
+  if (
+    specificErrors.length !== 1 ||
+    specificErrors[0]?.code !== "ARGUMENT_ADDITIONAL_PROPERTY"
+  ) {
+    return null;
+  }
+  const normalizedRange = args.range.trim();
+  const bounded = /^(?:from\s+)?lines?\s+(\d+)\s*(?:-|to|through)\s*(?:line\s+)?(\d+)$/i.exec(
+    normalizedRange
+  ) || /^(\d+)\s*[-:]\s*(\d+)$/.exec(normalizedRange);
+  const openEnded = /^(?:from\s+)?line\s+(\d+)$/i.exec(normalizedRange);
+  if (!bounded && !openEnded) return null;
+  const startLine = Number(bounded?.[1] || openEnded?.[1] || 0);
+  const endLine = Number(bounded?.[2] || 0);
+  if (
+    !Number.isInteger(startLine) ||
+    startLine < 1 ||
+    (bounded && (!Number.isInteger(endLine) || endLine < startLine))
+  ) {
+    return null;
+  }
+  const correctedArgs = { ...args, startLine };
+  delete correctedArgs.range;
+  if (bounded) correctedArgs.lineLimit = endLine - startLine + 1;
+  const correctedCall = {
+    ...call,
+    function: {
+      ...call.function,
+      arguments: JSON.stringify(correctedArgs),
+    },
+  };
+  const correctedValidation = validateToolCallBatch([correctedCall], contract, {
+    maxToolCalls: 1,
+  });
+  if (!correctedValidation.ok) return null;
+  return {
+    ...correctedValidation,
+    acceptedToolCalls: [correctedCall],
+    deferredToolCalls: [],
+    recoveredSequentially: false,
+    recoveredReadRangeAlias: true,
+    argumentCorrections: [{ property: "range", source: "read-file-line-range" }],
+    originalCode: validation.code,
+  };
+}
+
 export function validateToolCallBatch(toolCalls, contract, { maxToolCalls = 1 } = {}) {
   const errors = [];
   const addError = (code, callIndex, message) => {
@@ -427,6 +501,9 @@ export function resolveDispatchableToolCallBatch(toolCalls, contract) {
       recoveredSequentially: false,
     };
   }
+
+  const readRangeRecovery = recoverReadFileRangeAlias(calls, contract, validation);
+  if (readRangeRecovery) return readRangeRecovery;
 
   const singletonEnumRecovery = recoverSingletonEnumReadCall(calls, contract, validation);
   if (singletonEnumRecovery) return singletonEnumRecovery;

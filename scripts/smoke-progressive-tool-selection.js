@@ -16,9 +16,12 @@ import { requestNextStep } from "../src/model-client.js";
 import {
   buildModelTimeoutRetryMessages,
   completionContractGoal,
+  deferUnavailableVerificationRerunUntilMutation,
   integrationTextWorkspaceToolExecutionBlock,
   nextStepRuntimeConfig,
   recoverFocusedWholeFileWriteAsExactPatch,
+  recoverRequiredPatchContextReadWithoutToolCall,
+  recoverStalemateDiscoveryAsExactVerification,
   recoverUnavailableVerificationRerunAsCanonicalRead,
   runAgent,
   toolContractRepairMessage,
@@ -77,12 +80,41 @@ const mutationGatedToolRepair = toolContractRepairMessage({
     failedTestCommand: "python3 external_contract.py",
     failedTestSummary: "AssertionError: SECURITY.md lacks residual coverage",
     canonicalRepairPaths: ["SECURITY.md"],
+    requiredSymbolContracts: [
+      { owner: "service_ctl", symbol: "launch_service" },
+      { owner: "service_ctl", symbol: "wait_until_healthy" },
+    ],
+    topologyViolations: [
+      "launch_service: declared once but not called from production code outside its own definition",
+    ],
+    candidateTopologyCounts: [
+      {
+        owner: "service_ctl",
+        symbol: "launch_service",
+        count: 0,
+        minimumOccurrences: 2,
+      },
+      {
+        owner: "service_ctl",
+        symbol: "wait_until_healthy",
+        count: 0,
+        minimumOccurrences: 2,
+      },
+    ],
   },
   errors: [],
 });
 assert(
   mutationGatedToolRepair.includes("already failed and is intentionally unavailable"),
   "mutation-gated tool recovery did not explain why verification is unavailable"
+);
+assert(
+  mutationGatedToolRepair.includes(
+    "Acceptance seam contract: service_ctl.launch_service, service_ctl.wait_until_healthy"
+  ) &&
+    mutationGatedToolRepair.includes("declared once but not called") &&
+    mutationGatedToolRepair.includes("service_ctl.launch_service=0, requires at least 2"),
+  "tool-contract recovery dropped the retained required-seam topology"
 );
 
 const canonicalReadDescriptor = {
@@ -122,7 +154,7 @@ const recoveredVerifierRerun = recoverUnavailableVerificationRerunAsCanonicalRea
   },
   [
     contractCall("repeat-verifier", "run_command", {
-      command: failedVerifierCommand,
+      command: `cd /tmp/security-project && ${failedVerifierCommand}`,
     }),
   ],
   createToolContract([canonicalReadDescriptor]),
@@ -133,7 +165,7 @@ const recoveredVerifierRerun = recoverUnavailableVerificationRerunAsCanonicalRea
 );
 assert(
   recoveredVerifierRerun?.recoveredUnavailableVerificationRerun === true,
-  "an unavailable exact verifier rerun was not translated into a canonical evidence read"
+  "an unavailable exact verifier rerun with an explicit current-workspace cd was not translated into a canonical evidence read"
 );
 assert(
   JSON.parse(
@@ -148,6 +180,194 @@ assert(
 assert(
   mutationGatedToolRepair.includes("Do not request run_command"),
   "mutation-gated tool recovery still invites the unavailable verification tool"
+);
+const deferredVerifierRerun = deferUnavailableVerificationRerunUntilMutation(
+  {
+    commandCwd: "/tmp/security-project",
+    testFailureRepairMutationRequired: true,
+  },
+  {
+    meta: {
+      projectVerification: {
+        mutationRevision: 2,
+        testRuns: [{
+          mutationRevision: 2,
+          passed: false,
+          command: failedVerifierCommand,
+          failureSignature: "security-failure",
+        }],
+      },
+    },
+  },
+  [
+    contractCall("defer-verifier", "run_command", {
+      command: `cd /tmp/security-project && ${failedVerifierCommand}`,
+    }),
+  ],
+  createToolContract([tool("apply_patch"), tool("finish")]),
+  {
+    ok: false,
+    errors: [{ code: "TOOL_NOT_OFFERED" }],
+  }
+);
+assertStrict.equal(
+  deferredVerifierRerun?.code,
+  "VERIFICATION_DEFERRED_UNTIL_MUTATION",
+  "an exact verifier request was not boundedly deferred after all evidence reads closed"
+);
+assertStrict.equal(
+  deferUnavailableVerificationRerunUntilMutation(
+    {
+      commandCwd: "/tmp/security-project",
+      testFailureRepairMutationRequired: false,
+    },
+    {
+      meta: {
+        projectVerification: {
+          mutationRevision: 2,
+          testRuns: [{
+            mutationRevision: 2,
+            passed: false,
+            command: failedVerifierCommand,
+          }],
+        },
+      },
+    },
+    [contractCall("do-not-defer", "run_command", { command: failedVerifierCommand })],
+    createToolContract([tool("apply_patch"), tool("finish")]),
+    { ok: false, errors: [{ code: "TOOL_NOT_OFFERED" }] }
+  ),
+  null,
+  "verification was deferred even though the runtime had not established mutation-first recovery"
+);
+
+const exactStalemateCommand = "python3 -m unittest discover -s tests -v";
+const exactStalemateRunDescriptor = {
+  type: "function",
+  function: {
+    name: "run_command",
+    description: "Run the one retained verifier.",
+    parameters: {
+      type: "object",
+      properties: {
+        command: { type: "string", enum: [exactStalemateCommand] },
+      },
+      required: ["command"],
+      additionalProperties: false,
+    },
+  },
+};
+const recoveredStalemateVerification = recoverStalemateDiscoveryAsExactVerification(
+  {
+    testFailureStalemateRevalidation: true,
+    testFailureStalemateCommand: exactStalemateCommand,
+  },
+  [contractCall("stale-discovery", "inspect_project", {})],
+  createToolContract([exactStalemateRunDescriptor, tool("finish")]),
+  { ok: false, errors: [{ code: "TOOL_NOT_OFFERED" }] }
+);
+assertStrict.equal(
+  recoveredStalemateVerification?.recoveredStalemateVerification,
+  true,
+  "a benign discovery request did not consume the one exact stale-evidence verifier"
+);
+assertStrict.deepEqual(
+  JSON.parse(
+    recoveredStalemateVerification.acceptedToolCalls[0].function.arguments
+  ),
+  { command: exactStalemateCommand },
+  "stale-evidence recovery did not preserve the contract's exact verifier"
+);
+assertStrict.equal(
+  recoverStalemateDiscoveryAsExactVerification(
+    {
+      testFailureStalemateRevalidation: true,
+      testFailureStalemateCommand: exactStalemateCommand,
+    },
+    [contractCall("unsafe-stale-intent", "apply_patch", {})],
+    createToolContract([exactStalemateRunDescriptor, tool("finish")]),
+    { ok: false, errors: [{ code: "TOOL_NOT_OFFERED" }] }
+  ),
+  null,
+  "a mutation request was incorrectly translated into stale-evidence verification"
+);
+assertStrict.equal(
+  recoverStalemateDiscoveryAsExactVerification(
+    {
+      testFailureStalemateRevalidation: true,
+      testFailureStalemateCommand: exactStalemateCommand,
+    },
+    [contractCall("ambiguous-stale-intent", "read_file", { path: "service_ctl.py" })],
+    createToolContract([
+      {
+        ...exactStalemateRunDescriptor,
+        function: {
+          ...exactStalemateRunDescriptor.function,
+          parameters: {
+            ...exactStalemateRunDescriptor.function.parameters,
+            properties: {
+              command: {
+                type: "string",
+                enum: [exactStalemateCommand, "python3 -m pytest"],
+              },
+            },
+          },
+        },
+      },
+      tool("finish"),
+    ]),
+    { ok: false, errors: [{ code: "TOOL_NOT_OFFERED" }] }
+  ),
+  null,
+  "an ambiguous verifier surface was incorrectly auto-translated"
+);
+
+const mandatoryRefreshPath = "service_ctl.py";
+const mandatoryRefreshReadDescriptor = {
+  ...canonicalReadDescriptor,
+  function: {
+    ...canonicalReadDescriptor.function,
+    parameters: {
+      ...canonicalReadDescriptor.function.parameters,
+      properties: {
+        path: { type: "string", enum: [mandatoryRefreshPath] },
+      },
+    },
+  },
+};
+const recoveredMandatoryRefreshRead = recoverRequiredPatchContextReadWithoutToolCall(
+  {
+    patchContextRefreshRequired: true,
+    patchContextRefreshPath: mandatoryRefreshPath,
+  },
+  [],
+  createToolContract([mandatoryRefreshReadDescriptor, tool("finish")]),
+  { ok: true, calls: [], acceptedToolCalls: [], deferredToolCalls: [] }
+);
+assertStrict.equal(
+  recoveredMandatoryRefreshRead?.recoveredRequiredPatchContextRead,
+  true,
+  "a missing call on a mandatory exact patch-context read was not recovered"
+);
+assertStrict.deepEqual(
+  JSON.parse(
+    recoveredMandatoryRefreshRead.acceptedToolCalls[0].function.arguments
+  ),
+  { path: mandatoryRefreshPath },
+  "mandatory patch-context recovery did not preserve the exact constrained path"
+);
+assertStrict.equal(
+  recoverRequiredPatchContextReadWithoutToolCall(
+    {
+      patchContextRefreshRequired: false,
+      patchContextRefreshPath: mandatoryRefreshPath,
+    },
+    [],
+    createToolContract([mandatoryRefreshReadDescriptor, tool("finish")]),
+    { ok: true, calls: [], acceptedToolCalls: [], deferredToolCalls: [] }
+  ),
+  null,
+  "an ordinary no-tool response was incorrectly converted into a source read"
 );
 
 async function captureRequestTools(overrides = {}) {
@@ -1181,13 +1401,13 @@ const retainedPacketRepairRuntime = nextStepRuntimeConfig(
         ],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 7,
+        packetVersion: 8,
         mutationRevision: 3,
         failureSignature: "retained-failure",
-        content: "Bounded failed-test evidence packet v7.",
+        content: "Bounded failed-test evidence packet v8.",
       },
       failedTestDiagnostic: {
-        packetVersion: 7,
+        packetVersion: 8,
         mutationRevision: 3,
         failureSignature: "retained-failure",
         at: "2026-08-24T02:00:00.000Z",
@@ -1220,6 +1440,212 @@ sameNames(
   ["read_file", "search_files", "apply_patch", "finish"],
   "a fresh retained evidence packet exposed an unbounded failed-test tool surface"
 );
+const packetPathReadState = {
+  meta: {
+    projectVerification: {
+      mutationRevision: 7,
+      testRuns: [{
+        command: "python3 -m unittest discover -s tests -v",
+        mutationRevision: 7,
+        passed: false,
+        failureEvidenceVersion: 2,
+        failureSignature: "packet-path-failure",
+        at: "2026-08-24T02:00:00.000Z",
+      }],
+    },
+    failedTestRecoveryPacket: {
+      packetVersion: 8,
+      mutationRevision: 7,
+      failureSignature: "packet-path-failure",
+      content: "Bounded failed-test evidence packet v8.",
+      paths: ["tests/test_service_ctl.py", "service_ctl.py"],
+      generatedAt: "2026-08-24T02:00:10.000Z",
+    },
+    failedTestFocusedRecovery: {
+      packetVersion: 8,
+      mutationRevision: 7,
+      failureSignature: "packet-path-failure",
+      at: "2026-08-24T02:00:10.000Z",
+    },
+    failedTestDiagnostic: {
+      packetVersion: 8,
+      mutationRevision: 7,
+      failureSignature: "packet-path-failure",
+      at: "2026-08-24T02:00:00.000Z",
+      focuses: [],
+    },
+    toolLoop: {
+      stagnationEpoch: 10,
+      recent: [{
+        toolName: "read_file",
+        path: "service_ctl.py",
+        ok: true,
+        blocked: false,
+        at: "2026-08-24T02:00:11.000Z",
+      }],
+    },
+  },
+  messages: [],
+};
+const onePacketPathUnreadRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "qa" },
+  packetPathReadState
+);
+assertStrict.deepEqual(
+  onePacketPathUnreadRuntime.testFailureRepairContextPaths,
+  ["tests/test_service_ctl.py"],
+  "one successful packet-path read consumed the entire failed-test evidence packet"
+);
+assertStrict.equal(
+  onePacketPathUnreadRuntime.testFailureRepairNeedsPatchContext,
+  true,
+  "the unread acceptance-test path was not retained for one bounded read"
+);
+const onePacketPathUnreadTools = selectProgressiveTools(allTools, {
+  config: onePacketPathUnreadRuntime,
+  goal: "Resume the exact failed-test repair after reading current production source.",
+  profile: "qa",
+});
+sameNames(
+  onePacketPathUnreadTools,
+  ["read_file", "apply_patch", "finish"],
+  "exact packet-path recovery exposed broad search or verification tools"
+);
+assertStrict.deepEqual(
+  onePacketPathUnreadTools[0].function.parameters.properties.path.enum,
+  ["tests/test_service_ctl.py"],
+  "the bounded evidence read was not constrained to the sole unread packet path"
+);
+const allPacketPathsReadRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "qa" },
+  {
+    ...packetPathReadState,
+    meta: {
+      ...packetPathReadState.meta,
+      toolLoop: {
+        stagnationEpoch: 10,
+        recent: [
+          ...packetPathReadState.meta.toolLoop.recent,
+          {
+            toolName: "read_file",
+            path: "tests/test_service_ctl.py",
+            ok: true,
+            blocked: false,
+            at: "2026-08-24T02:00:12.000Z",
+          },
+        ],
+      },
+    },
+  }
+);
+assertStrict.deepEqual(
+  allPacketPathsReadRuntime.testFailureRepairContextPaths,
+  [],
+  "fully consumed packet evidence retained stale unread paths"
+);
+assertStrict.equal(
+  allPacketPathsReadRuntime.testFailureRepairNeedsPatchContext,
+  false,
+  "failed-test recovery did not return to mutation-only mode after every packet path was read once"
+);
+sameNames(
+  selectProgressiveTools(allTools, {
+    config: allPacketPathsReadRuntime,
+    goal: "Apply the coherent source repair after bounded evidence reads.",
+    profile: "qa",
+  }),
+  ["apply_patch", "finish"],
+  "fully consumed packet evidence did not close discovery before mutation"
+);
+const topologyStalemateState = {
+  ...packetPathReadState,
+  meta: {
+    ...packetPathReadState.meta,
+    requiredSymbolRepair: {
+      version: 1,
+      owner: "service_ctl",
+      symbol: "launch_service",
+      path: "service_ctl.py",
+      contracts: [
+        { owner: "service_ctl", symbol: "launch_service", path: "service_ctl.py" },
+        { owner: "service_ctl", symbol: "wait_until_healthy", path: "service_ctl.py" },
+      ],
+      mutationRevision: 7,
+      failureSignature: "packet-path-failure",
+      topologyRetry: {
+        count: 3,
+        violations: ["launch_service is still absent"],
+      },
+    },
+    toolLoop: {
+      stagnationEpoch: 10,
+      recent: [
+        ...packetPathReadState.meta.toolLoop.recent,
+        {
+          toolName: "read_file",
+          path: "tests/test_service_ctl.py",
+          ok: true,
+          blocked: false,
+          at: "2026-08-24T02:00:12.000Z",
+        },
+      ],
+    },
+  },
+};
+const topologyStalemateRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "qa" },
+  topologyStalemateState
+);
+assertStrict.equal(
+  topologyStalemateRuntime.testFailureStalemateRevalidation,
+  true,
+  "repeated semantic topology rejection did not open one exact stale-evidence verifier"
+);
+const topologyStalemateTools = selectProgressiveTools(allTools, {
+  config: topologyStalemateRuntime,
+  goal: "Refresh stale failed-test evidence after repeated semantic rejection.",
+  profile: "qa",
+});
+sameNames(
+  topologyStalemateTools,
+  ["run_command", "finish"],
+  "topology stalemate revalidation exposed tools beyond the exact verifier"
+);
+assertStrict.deepEqual(
+  topologyStalemateTools[0].function.parameters.properties.command.enum,
+  ["python3 -m unittest discover -s tests -v"],
+  "topology stalemate revalidation lost the exact retained verifier"
+);
+const consumedTopologyStalemateRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "qa" },
+  {
+    ...topologyStalemateState,
+    meta: {
+      ...topologyStalemateState.meta,
+      failedTestStalemateRevalidation: {
+        version: 1,
+        mutationRevision: 7,
+        failureSignature: "packet-path-failure",
+        command: "python3 -m unittest discover -s tests -v",
+        topologyRetryCount: 3,
+      },
+    },
+  }
+);
+assertStrict.equal(
+  consumedTopologyStalemateRuntime.testFailureStalemateRevalidation,
+  undefined,
+  "one stale-evidence verifier reopened without new topology rejection evidence"
+);
+sameNames(
+  selectProgressiveTools(allTools, {
+    config: consumedTopologyStalemateRuntime,
+    goal: "Return to the canonical source repair after revalidation.",
+    profile: "qa",
+  }),
+  ["apply_patch", "finish"],
+  "consumed topology revalidation did not return to bounded mutation"
+);
 const focusedPatchRepairRuntime = nextStepRuntimeConfig(
   { provider: "localllm", taskProfile: "qa" },
   {
@@ -1237,13 +1663,13 @@ const focusedPatchRepairRuntime = nextStepRuntimeConfig(
         ],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 7,
+        packetVersion: 8,
         mutationRevision: 5,
         failureSignature: "focused-failure",
-        content: "Bounded failed-test evidence packet v7.",
+        content: "Bounded failed-test evidence packet v8.",
       },
       failedTestDiagnostic: {
-        packetVersion: 7,
+        packetVersion: 8,
         mutationRevision: 5,
         failureSignature: "focused-failure",
         at: "2026-08-24T02:00:00.000Z",
@@ -1544,6 +1970,110 @@ assertStrict.equal(
   patchContextRepairRuntime.testFailureRepairNeedsPatchContext,
   true,
   "a no-op repair patch did not request one bounded diagnostic source turn"
+);
+const exactStalePatchRefreshTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    patchContextRefreshRequired: true,
+    patchContextRefreshPath: "service_ctl.py",
+  },
+  goal: "Repair the service lifecycle from current source.",
+  profile: "qa",
+});
+sameNames(
+  exactStalePatchRefreshTools,
+  ["read_file", "finish"],
+  "stale patch recovery exposed mutation tools before an exact current-source read"
+);
+assertStrict.deepEqual(
+  exactStalePatchRefreshTools[0].function.parameters.properties.path.enum,
+  ["service_ctl.py"],
+  "stale patch recovery did not constrain read_file to the exact affected source"
+);
+assertStrict.deepEqual(
+  Object.keys(exactStalePatchRefreshTools[0].function.parameters.properties),
+  ["path"],
+  "stale patch recovery still allowed a partial range that could omit the repair site"
+);
+assertStrict.deepEqual(
+  exactStalePatchRefreshTools[0].function.parameters.required,
+  ["path"],
+  "stale patch recovery did not require the one complete exact source path"
+);
+const missingSymbolRepairTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    testFailureRequiredSymbolRepair: {
+      kind: "python-patch-object",
+      owner: "service_ctl",
+      symbol: "launch_service",
+      path: "service_ctl.py",
+      contracts: [
+        {
+          kind: "python-patch-object",
+          owner: "service_ctl",
+          symbol: "launch_service",
+          path: "service_ctl.py",
+        },
+        {
+          kind: "python-patch-object",
+          owner: "service_ctl",
+          symbol: "wait_until_healthy",
+          path: "service_ctl.py",
+        },
+      ],
+      topologyRetry: {
+        count: 1,
+        violations: [
+          "launch_service: declared once but not called from production code outside its own definition",
+          "wait_until_healthy: declared once but not called from production code outside its own definition",
+        ],
+        replacementRequirements: [
+          { symbol: "launch_service", minimumOccurrences: 2 },
+          { symbol: "wait_until_healthy", minimumOccurrences: 2 },
+        ],
+      },
+    },
+  },
+  goal: "Implement the missing service launch seam required by the retained test.",
+  profile: "qa",
+});
+sameNames(
+  missingSymbolRepairTools,
+  ["apply_patch", "finish"],
+  "missing-symbol recovery exposed unrelated tools instead of one bounded mutation lane"
+);
+assertStrict.deepEqual(
+  missingSymbolRepairTools[0].function.parameters.properties.path.enum,
+  ["service_ctl.py"],
+  "missing-symbol recovery did not constrain mutation to the canonical implementation source"
+);
+assertStrict.ok(
+  missingSymbolRepairTools[0].function.description.includes("service_ctl.launch_service") &&
+    missingSymbolRepairTools[0].function.description.includes("service_ctl.wait_until_healthy") &&
+    missingSymbolRepairTools[0].function.description.includes("route the tested production path through it"),
+  "the mutation tool omitted the retained missing-symbol acceptance contract"
+);
+assertStrict.ok(
+  missingSymbolRepairTools[0].function.parameters.properties.replace.description
+    .slice(0, 320)
+    .includes("declare each seam exactly once and call each from the tested production path"),
+  "the schema diagnostic prefix still truncates the decisive seam topology"
+);
+assertStrict.equal(
+  missingSymbolRepairTools[0].function.parameters.properties.replace.pattern,
+  undefined,
+  "semantic source topology leaked into a brittle JSON-schema regex instead of the deterministic patch gate"
+);
+assertStrict.ok(
+  missingSymbolRepairTools[0].function.parameters.properties.replace.description.includes(
+    "wait_until_healthy at least 2 times"
+  ),
+  "the schema guidance lost the concrete rejected-candidate reference counts"
 );
 const consumedPatchContextRepairRuntime = nextStepRuntimeConfig(
   { provider: "localllm", taskProfile: "qa" },
@@ -2725,6 +3255,55 @@ assertStrict.deepEqual(
   JSON.parse(repairedSingletonRead.acceptedToolCalls[0].function.arguments),
   { path: "README.md" },
   "singleton enum recovery did not dispatch the only contract-authorized path"
+);
+const readRangeAliasContract = createToolContract([
+  {
+    type: "function",
+    function: {
+      name: "read_file",
+      description: "Read one bounded file range.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", enum: ["service_ctl.py"] },
+          startLine: { type: "integer", minimum: 1 },
+          lineLimit: { type: "integer", minimum: 1 },
+        },
+        required: ["path"],
+        additionalProperties: false,
+      },
+    },
+  },
+]);
+const repairedReadRangeAlias = resolveDispatchableToolCallBatch(
+  [
+    contractCall("read-natural-range", "read_file", {
+      path: "service_ctl.py",
+      range: "from line 60 to line 80",
+    }),
+  ],
+  readRangeAliasContract
+);
+assert(
+  repairedReadRangeAlias.ok && repairedReadRangeAlias.recoveredReadRangeAlias,
+  "a bounded natural-language read_file range was not repaired to the native schema"
+);
+assertStrict.deepEqual(
+  JSON.parse(repairedReadRangeAlias.acceptedToolCalls[0].function.arguments),
+  { path: "service_ctl.py", startLine: 60, lineLimit: 21 },
+  "read_file range recovery produced the wrong native line bounds"
+);
+assert(
+  !resolveDispatchableToolCallBatch(
+    [
+      contractCall("read-ambiguous-range", "read_file", {
+        path: "service_ctl.py",
+        range: "around the service function",
+      }),
+    ],
+    readRangeAliasContract
+  ).ok,
+  "an ambiguous natural-language read range was silently dispatched"
 );
 const multipleReadChoices = createToolContract([
   {

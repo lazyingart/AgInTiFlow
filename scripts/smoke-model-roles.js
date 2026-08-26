@@ -478,6 +478,78 @@ const xmlTextToolCalls = parseTextToolCalls(
 assert(xmlTextToolCalls.length === 2, "XML text tool-call parser did not detect multiple calls");
 assert(xmlTextToolCalls[0].function.name === "inspect_project", "XML text tool-call parser returned wrong first tool");
 assert(xmlTextToolCalls[1].function.arguments.includes('"depth":2'), "XML text tool-call parser returned wrong arguments");
+const functionParameterToolCalls = parseTextToolCalls(
+  'I will inspect the file.\n<function=read_file>\n<parameter=path>\nservice_ctl.py\n</parameter>\n</function>\n</tool_call>'
+);
+assert(
+  functionParameterToolCalls.length === 1,
+  "function/parameter text tool-call parser did not tolerate the local model closing-tag dialect"
+);
+assert(
+  functionParameterToolCalls[0].function.name === "read_file" &&
+    JSON.parse(functionParameterToolCalls[0].function.arguments).path === "service_ctl.py",
+  "function/parameter text tool-call parser returned the wrong name or path"
+);
+const typedFunctionParameterToolCall = parseTextToolCalls(
+  '<function=read_file><parameter=startLine>12</parameter><parameter=includeHidden>false</parameter></function>'
+);
+assert(
+  JSON.parse(typedFunctionParameterToolCall[0].function.arguments).startLine === 12 &&
+    JSON.parse(typedFunctionParameterToolCall[0].function.arguments).includeHidden === false,
+  "function/parameter text tool-call parser did not preserve primitive argument types"
+);
+const normalizedFunctionParameterToolResponse = normalizeTextToolCallResponse({
+  choices: [{
+    message: {
+      role: "assistant",
+      content:
+        'Let me read it.\n<function=read_file><parameter=path>tests/test_service_ctl.py</parameter></function></tool_call>',
+    },
+  }],
+});
+assert(
+  normalizedFunctionParameterToolResponse.choices[0].message.tool_calls?.length === 1 &&
+    normalizedFunctionParameterToolResponse.choices[0].message.content === "Let me read it.",
+  "function/parameter tool response was not normalized into one native call with clean prose"
+);
+const standaloneToolObject = JSON.stringify({
+  toolName: "apply_patch",
+  args: {
+    path: "service_ctl.py",
+    search: "old source",
+    replace: "new source",
+    expectedReplacements: 1,
+  },
+});
+const standaloneToolObjectCalls = parseTextToolCalls(
+  `I will apply the coherent patch now:\n${standaloneToolObject}\n${standaloneToolObject}`
+);
+assert(
+  standaloneToolObjectCalls.length === 1 &&
+    standaloneToolObjectCalls[0].function.name === "apply_patch",
+  "line-delimited standalone tool JSON was not parsed and deduplicated"
+);
+assert(
+  JSON.parse(standaloneToolObjectCalls[0].function.arguments).path === "service_ctl.py",
+  "standalone tool JSON parser lost the exact arguments"
+);
+assert(
+  parseTextToolCalls(`Example only:\n\u0060\u0060\u0060json\n${standaloneToolObject}\n\u0060\u0060\u0060`).length === 0,
+  "a fenced standalone tool example was incorrectly treated as an executable call"
+);
+const normalizedStandaloneToolResponse = normalizeTextToolCallResponse({
+  choices: [{
+    message: {
+      role: "assistant",
+      content: `Applying the patch.\n${standaloneToolObject}`,
+    },
+  }],
+});
+assert(
+  normalizedStandaloneToolResponse.choices[0].message.tool_calls?.length === 1 &&
+    normalizedStandaloneToolResponse.choices[0].message.content === "Applying the patch.",
+  "standalone tool JSON response was not normalized into a clean native call"
+);
 const malformedRequestedToolResponse = normalizeTextToolCallResponse({
   choices: [
     {

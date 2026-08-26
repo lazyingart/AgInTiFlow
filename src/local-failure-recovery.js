@@ -41,20 +41,33 @@ function contractViolationCount(state = {}) {
   return Math.max(0, Number(violation?.consecutive ?? violation?.count ?? 0));
 }
 
-function configuredRecoveryModels(config = {}) {
-  const candidates = [];
+function authenticatedAvailableModels(config = {}) {
+  return Array.isArray(config.localAvailableModels)
+    ? config.localAvailableModels.map((model) => safeModel(model)).filter(Boolean)
+    : [];
+}
+
+function configuredRecoveryModels(config = {}, { preferCode = false } = {}) {
+  const standardCandidates = [];
   if (normalizeProviderId(config.mainProvider, "") === "localllm") {
-    candidates.push(config.mainModel);
+    standardCandidates.push(config.mainModel);
   }
   if (normalizeProviderId(config.spareProvider, "") === "localllm") {
-    candidates.push(config.spareModel);
+    standardCandidates.push(config.spareModel);
   }
-  candidates.push(config.localCodeFallbackModel, LOCALLLM_MODEL_TIERS.deep.model);
+  standardCandidates.push(config.localCodeFallbackModel, LOCALLLM_MODEL_TIERS.deep.model);
+
+  const availableModels = authenticatedAvailableModels(config);
+  const codeModel = safeModel(config.localCodeModel || LOCALLLM_MODEL_TIERS.code.model);
+  const verifiedCodeModel = availableModels.includes(codeModel) ? codeModel : "";
+  const candidates = preferCode
+    ? [verifiedCodeModel, ...standardCandidates]
+    : [...standardCandidates, verifiedCodeModel];
   return [...new Set(candidates.map((model) => safeModel(model)).filter(Boolean))];
 }
 
-function selectRecoveryModel(config = {}, currentModel = "") {
-  for (const candidate of configuredRecoveryModels(config)) {
+function selectRecoveryModel(config = {}, currentModel = "", options = {}) {
+  for (const candidate of configuredRecoveryModels(config, options)) {
     if (candidate === currentModel) continue;
     const tier = localLLMModelTier(candidate)?.id || "";
     if (STRONG_LOCAL_TIERS.has(tier)) return candidate;
@@ -82,15 +95,21 @@ export function decideLocalFailureRecovery(config = {}, state = {}) {
   if (normalizeProviderId(config.provider, "") !== "localllm") {
     return { active: false, reason: "non-local-provider" };
   }
-  if (String(config.routingMode || "").trim().toLowerCase() !== "smart") {
-    return { active: false, reason: "non-smart-routing" };
-  }
 
   const currentModel = safeModel(config.model);
   const currentTier = localLLMModelTier(currentModel)?.id || "";
+  const invalidContractCalls = contractViolationCount(state);
+  const routingMode = String(config.routingMode || "").trim().toLowerCase();
+  const manualContractRecovery =
+    routingMode === "manual" &&
+    invalidContractCalls >= 2 &&
+    (currentTier === "deep" || currentTier === "code");
+  if (routingMode !== "smart" && !manualContractRecovery) {
+    return { active: false, reason: "non-smart-routing" };
+  }
+
   const routeModel = safeModel(config.routeModel);
   const failures = recoverableFailureWindow(state);
-  const invalidContractCalls = contractViolationCount(state);
   if (
     currentTier !== "fast" &&
     (!routeModel || currentModel !== routeModel) &&
@@ -114,7 +133,9 @@ export function decideLocalFailureRecovery(config = {}, state = {}) {
     };
   }
 
-  const model = selectRecoveryModel(config, currentModel);
+  const model = selectRecoveryModel(config, currentModel, {
+    preferCode: currentTier === "deep" && invalidContractCalls >= 2,
+  });
   if (!model) {
     return {
       active: false,
@@ -152,6 +173,7 @@ export function activateLocalFailureRecovery(config = {}, state = {}) {
   const decision = decideLocalFailureRecovery(config, state);
   if (!decision.active || !decision.activated) return decision;
   state.meta = state.meta || {};
+  const activatedAt = new Date().toISOString();
   state.meta.localFailureRecovery = {
     active: true,
     model: decision.model,
@@ -161,8 +183,18 @@ export function activateLocalFailureRecovery(config = {}, state = {}) {
     repeatedSignatureCount: decision.repeatedSignatureCount,
     contractViolationCount: decision.contractViolationCount || 0,
     failedTools: decision.failedTools || [],
-    activatedAt: new Date().toISOString(),
+    activatedAt,
   };
+  const priorContractViolation = state.meta.toolContractViolation;
+  if (priorContractViolation) {
+    state.meta.toolContractViolation = {
+      ...priorContractViolation,
+      count: 0,
+      consecutive: 0,
+      resetAt: activatedAt,
+      resetReason: "local-model-recovery",
+    };
+  }
   return decision;
 }
 
@@ -184,7 +216,25 @@ export function applyLocalFailureRecovery(config = {}, state = {}) {
   };
 }
 
-export function localFailureRecoveryInstruction(decision = {}) {
+export function localFailureRecoveryInstruction(decision = {}, context = {}) {
+  const requiredSymbols = (
+    Array.isArray(context.requiredSymbolRepair?.contracts) &&
+    context.requiredSymbolRepair.contracts.length
+      ? context.requiredSymbolRepair.contracts
+      : context.requiredSymbolRepair?.symbol
+        ? [context.requiredSymbolRepair]
+        : []
+  )
+    .map((contract) => String(contract?.symbol || "").trim())
+    .filter((symbol, index, symbols) => symbol && symbols.indexOf(symbol) === index);
+  const mutationInstruction = context.testFailureRepairMutationRequired === true
+    ? [
+        "The retained failed-test gate requires one coherent source mutation before verification; do not request the unchanged test command first.",
+        requiredSymbols.length
+          ? `Use the offered constrained patch to declare and route production code through: ${requiredSymbols.join(", ")}. Each seam must be called outside its own definition.`
+          : "Use the offered constrained patch to repair the canonical source before requesting verification.",
+      ].join(" ")
+    : "Re-read the exact target and latest error when that tool is offered, choose one different bounded edit or command, then rerun the smallest relevant verification.";
   return [
     `Runtime recovery: the local route changed from ${decision.fromModel || "the fast model"} to ${decision.model || "the configured stronger local model"}.`,
     decision.reason || "Repeated tool failures showed no verified progress.",
@@ -192,6 +242,6 @@ export function localFailureRecoveryInstruction(decision = {}) {
       ? "The invalid calls were rejected before dispatch; use only the currently offered tool names and exact argument schemas."
       : "",
     "Continue from the current files and evidence; preserve successful work and do not restart the task.",
-    "Do not repeat the failing call. Re-read the exact target and latest error, choose one different bounded edit or command, then rerun the smallest relevant verification.",
+    `Do not repeat the failing call. ${mutationInstruction}`,
   ].filter(Boolean).join(" ");
 }

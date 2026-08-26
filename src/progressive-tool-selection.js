@@ -661,26 +661,42 @@ function dataProjectDiscoveryState(messages) {
 function constrainReadFilePaths(tool, paths, phase) {
   if (!tool || paths.length === 0) return tool;
   const pathSchema = tool.function?.parameters?.properties?.path || { type: "string" };
+  const constrainedPath = {
+    ...pathSchema,
+    enum: paths,
+    description:
+      phase === "patch-context-refresh"
+        ? "Exact workspace-relative path whose complete current source must be refreshed before another mutation."
+        : phase === "failed-test-evidence-refresh"
+          ? "Exact unread workspace-relative path retained by the current failed-test evidence packet."
+          : "Exact workspace-relative path discovered by inspect_project.",
+  };
   return {
     ...tool,
     function: {
       ...tool.function,
       description:
-        phase === "read-instructions"
+        phase === "patch-context-refresh"
+          ? "Read the exact current source file after repeated stale patch context. Mutation tools remain unavailable until this fresh read succeeds."
+          : phase === "failed-test-evidence-refresh"
+            ? "Read one exact unread source or acceptance-test file from the current failed-test evidence packet. Each packet path is exposed at most once before mutation-only recovery resumes."
+          : phase === "read-instructions"
           ? "Read one exact project instruction file discovered by inspect_project before data mutation or commands are enabled."
           : phase === "read-tests"
             ? "Read one exact existing test file discovered by inspect_project before data mutation or commands are enabled."
             : "Read one exact existing analyzer or configuration file discovered by inspect_project before data mutation or commands are enabled.",
       parameters: {
         ...tool.function.parameters,
-        properties: {
-          ...tool.function.parameters.properties,
-          path: {
-            ...pathSchema,
-            enum: paths,
-            description: "Exact workspace-relative path discovered by inspect_project.",
-          },
-        },
+        properties:
+          phase === "patch-context-refresh"
+            ? { path: constrainedPath }
+            : {
+                ...tool.function.parameters.properties,
+                path: constrainedPath,
+              },
+        ...(phase === "patch-context-refresh"
+          ? { required: ["path"], additionalProperties: false }
+          : {}),
       },
     },
   };
@@ -1036,6 +1052,129 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
   };
 }
 
+function annotateRequiredSymbolRepair(tool, repair = null) {
+  if (!tool || !repair || !String(repair.symbol || "").trim()) return tool;
+  const path = String(repair.path || "").trim();
+  const owner = String(repair.owner || "canonical source").trim();
+  const symbol = String(repair.symbol || "").trim();
+  const properties = tool.function?.parameters?.properties || {};
+  const pathProperty = properties.path || { type: "string" };
+  const contracts = (
+    Array.isArray(repair.contracts) && repair.contracts.length
+      ? repair.contracts
+      : [{ owner, symbol }]
+  )
+    .map((item) => ({
+      owner: String(item?.owner || owner).trim(),
+      symbol: String(item?.symbol || "").trim(),
+    }))
+    .filter(
+      (item, index, items) =>
+        item.symbol && items.findIndex((candidate) => candidate.symbol === item.symbol) === index
+    );
+  const topologyRetry = repair.topologyRetry || {};
+  const replacementRequirements = (
+    Array.isArray(topologyRetry.replacementRequirements)
+      ? topologyRetry.replacementRequirements
+      : []
+  )
+    .map((item) => ({
+      symbol: String(item?.symbol || "").trim(),
+      minimumOccurrences: Math.max(0, Math.min(8, Number(item?.minimumOccurrences || 0))),
+    }))
+    .filter((item) => item.symbol && item.minimumOccurrences > 0);
+  const priorReplacePattern = String(properties.replace?.pattern || "");
+  // Required-seam topology is a source-level semantic contract. Keep it in
+  // the tool guidance and enforce it with requiredSymbolRepairPatchBlock;
+  // encoding call counts as a JSON-schema regex misclassifies a valid tool
+  // call with a bad candidate patch as a tool-protocol violation.
+  const replacementPattern = priorReplacePattern;
+  const seamNames = contracts.map((item) => `${item.owner}.${item.symbol}`);
+  const topologyContract = [
+    `Required acceptance topology${path ? ` in ${path}` : ""}: ${seamNames.join(", ")}.`,
+    "In one coherent canonical-source patch, declare each seam exactly once and call each from the tested production path outside its own definition.",
+    "Definition-only helpers, duplicate definitions, recursive wrappers, and test edits are invalid.",
+  ].join(" ");
+  const topologyGuidance = Array.isArray(topologyRetry.violations) && topologyRetry.violations.length
+    ? [
+        `The previous candidate was rejected: ${topologyRetry.violations.map(String).join("; ")}.`,
+        replacementRequirements.length
+          ? `Required references inside this replacement: ${replacementRequirements
+              .map((item) => `${item.symbol} at least ${item.minimumOccurrences} times`)
+              .join(", ")}; one reference must be the declaration and another must be a production call outside that seam's body.`
+          : "Submit a materially different patch that resolves those topology defects.",
+      ]
+    : [];
+  return {
+    ...tool,
+    function: {
+      ...tool.function,
+      description: [
+        topologyContract,
+        repair.confirmedAbsent === true
+          ? `The retained acceptance test requires ${owner}.${symbol}, and an exact search proved that seam is absent${path ? ` from ${path}` : ""}.`
+          : `The retained acceptance test requires the implementation seam ${owner}.${symbol}${path ? ` in ${path}` : ""}.`,
+        contracts.length > 1
+          ? `Related seams retained from the same acceptance test: ${contracts
+              .map((item) => `${item.owner}.${item.symbol}`)
+              .join(", ")}.`
+          : "",
+        "Add the smallest real function or method in canonical source and route the tested production path through it so the test double observes the call. Do not edit or dismiss the acceptance test, and do not return the existing source unchanged.",
+        ...topologyGuidance,
+        String(tool.function?.description || "Apply a bounded source repair."),
+      ].filter(Boolean).join(" "),
+      parameters: {
+        ...tool.function.parameters,
+        properties: {
+          ...properties,
+          ...(path
+            ? {
+                path: {
+                  ...pathProperty,
+                  enum: [path],
+                  description: "Exact canonical source path confirmed by retained failed-test evidence.",
+                },
+              }
+            : {}),
+          ...(properties.replace || replacementRequirements.length
+            ? {
+                replace: {
+                  ...(properties.replace || { type: "string" }),
+                  ...(replacementPattern ? { pattern: replacementPattern } : {}),
+                  description: [
+                    topologyContract,
+                    ...topologyGuidance,
+                    String(properties.replace?.description || "Replacement source text."),
+                  ].filter(Boolean).join(" "),
+                },
+              }
+            : {}),
+          ...(properties.patch
+            ? {
+                patch: {
+                  ...properties.patch,
+                  description: [
+                    String(properties.patch.description || "Patch document."),
+                    "If using this mode, update only the constrained canonical source and establish the same one-definition plus production-call topology.",
+                    ...topologyGuidance,
+                  ].filter(Boolean).join(" "),
+                },
+              }
+            : {}),
+          ...(properties.expectedReplacements
+            ? {
+                expectedReplacements: {
+                  ...properties.expectedReplacements,
+                  enum: [1],
+                },
+              }
+            : {}),
+        },
+      },
+    },
+  };
+}
+
 function constrainRunCommand(tool, command = "", description = "") {
   if (!tool || !command) return tool;
   const commandSchema = tool.function?.parameters?.properties?.command || { type: "string" };
@@ -1296,6 +1435,20 @@ export function selectProgressiveTools(
   }
 
   if (
+    config.patchContextRefreshRequired === true &&
+    typeof config.patchContextRefreshPath === "string" &&
+    config.patchContextRefreshPath.trim()
+  ) {
+    const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    const readFile = constrainReadFilePaths(
+      available.get("read_file"),
+      [config.patchContextRefreshPath.trim()],
+      "patch-context-refresh"
+    );
+    return [readFile, finish].filter(Boolean);
+  }
+
+  if (
     config.artifactValidationPhase === true &&
     config.testFailureRepairActive !== true &&
     config.testVerificationPending !== true
@@ -1323,6 +1476,18 @@ export function selectProgressiveTools(
 
   if (config.testFailureRepairActive === true) {
     const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    if (
+      config.testFailureStalemateRevalidation === true &&
+      typeof config.testFailureStalemateCommand === "string" &&
+      config.testFailureStalemateCommand.trim()
+    ) {
+      const verificationCommand = constrainRunCommand(
+        available.get("run_command"),
+        config.testFailureStalemateCommand,
+        "Run this exact retained failing verifier once to refresh stale evidence after repeated semantic repair rejections. This is a bounded stalemate escape hatch, not permission to rerun arbitrary commands or loop unchanged tests."
+      );
+      return [verificationCommand, finish].filter(Boolean);
+    }
     if (config.testFailureRepositoryStateRepair === true) {
       const runCommand = available.get("run_command");
       const commitProjectChanges = constrainRepositoryStateCommit(
@@ -1346,9 +1511,12 @@ export function selectProgressiveTools(
         : null;
       return [repositoryStateTool, finish].filter(Boolean);
     }
-    const constrainedRepairPatch = constrainFailedTestApplyPatch(
-      available.get("apply_patch"),
-      config.testFailureRepairPatchTargets
+    const constrainedRepairPatch = annotateRequiredSymbolRepair(
+      constrainFailedTestApplyPatch(
+        available.get("apply_patch"),
+        config.testFailureRepairPatchTargets
+      ),
+      config.testFailureRequiredSymbolRepair
     );
     const constrainedInstructionCreate = constrainWriteFilePaths(
       available.get("write_file"),
@@ -1356,10 +1524,24 @@ export function selectProgressiveTools(
         ? config.testFailureRepairAllowedCreates
         : []
     );
+    const repairContextPaths = Array.isArray(config.testFailureRepairContextPaths)
+      ? config.testFailureRepairContextPaths
+          .map((item) => String(item || "").replace(/\\/g, "/").replace(/^\.\//, "").trim())
+          .filter(Boolean)
+          .filter((item, index, items) => items.indexOf(item) === index)
+          .slice(0, 8)
+      : [];
+    const constrainedRepairRead = repairContextPaths.length
+      ? constrainReadFilePaths(
+          available.get("read_file"),
+          repairContextPaths,
+          "failed-test-evidence-refresh"
+        )
+      : available.get("read_file");
     const toolNames = config.testFailureRepairMutationRequired === true
       ? [
           ...(config.testFailureRepairNeedsPatchContext === true
-            ? ["read_file", "search_files"]
+            ? ["read_file", ...(repairContextPaths.length ? [] : ["search_files"])]
             : []),
           "apply_patch",
           ...(constrainedInstructionCreate ? ["write_file"] : []),
@@ -1375,6 +1557,7 @@ export function selectProgressiveTools(
         ];
     return toolNames
       .map((name) => {
+        if (name === "read_file") return constrainedRepairRead;
         if (name === "apply_patch") return constrainedRepairPatch;
         if (name === "write_file") return constrainedInstructionCreate;
         return available.get(name);

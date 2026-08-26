@@ -34,12 +34,14 @@ import {
   failedTestIndexComparisons,
   failedTestLiteralOperands,
   failedTestMembershipPredicates,
+  failedTestMockBehaviorContract,
   isCompletedContinuationNoop,
   isSubstantiveTestCommand,
   mergeDurableGitEvidence,
   nextStepRuntimeConfig,
   projectAcceptanceFromMarkdown,
   projectTestVerificationFinishBlock,
+  pythonTopLevelDefinitionDuplicates,
   recordCanonicalGeneratedOutputProgress,
   recordProjectVerificationOutcome,
   recordExactOutputProgress,
@@ -57,6 +59,7 @@ import {
   reopenedArtifactRepairPending,
   shouldResetStaticDiscoveryPhase,
   trimCommandOutput,
+  validateMutatedPythonSourceQuality,
 } from "../src/agent-runner.js";
 import {
   augmentScsTaskContractWithProjectVerification,
@@ -101,6 +104,40 @@ function toolMessage(payload) {
 }
 
 try {
+  assert(
+    pythonTopLevelDefinitionDuplicates(
+      "def start():\n    return 1\n\ndef start():\n    return 2\n"
+    )[0]?.name === "start",
+    "duplicate top-level Python functions were not detected"
+  );
+  assert(
+    pythonTopLevelDefinitionDuplicates(
+      "from typing import overload\n\n@overload\ndef parse(value: str) -> str: ...\n\n@overload\ndef parse(value: int) -> int: ...\n\ndef parse(value):\n    return value\n"
+    ).length === 0,
+    "legitimate Python overload declarations were treated as duplicate implementations"
+  );
+  const pythonQualityWorkspace = path.join(tempRoot, "python-quality-workspace");
+  await fs.mkdir(pythonQualityWorkspace, { recursive: true });
+  await fs.writeFile(
+    path.join(pythonQualityWorkspace, "service_ctl.py"),
+    "def stop_service():\n    return 0\n\ndef stop_service():\n    return 1\n",
+    "utf8"
+  );
+  const duplicateSourceQuality = await validateMutatedPythonSourceQuality(
+    { commandCwd: pythonQualityWorkspace },
+    {
+      meta: {
+        projectVerification: {
+          mutationHistory: [{ revision: 1, paths: ["service_ctl.py"] }],
+        },
+      },
+    }
+  );
+  assert(
+    duplicateSourceQuality.ok === false &&
+      duplicateSourceQuality.defects[0]?.name === "stop_service",
+    "completion source-quality validation accepted a task-mutated duplicate Python definition"
+  );
   assert(normalizeDynamicStepsMode("off") === "off", "dynamic mode off did not normalize");
   for (const command of [
     "npm run build",
@@ -3366,6 +3403,33 @@ try {
   );
   assert(
     repeatedStaticToolBlock(
+      {
+        meta: {
+          projectVerification: { mutationRevision: 4 },
+          toolLoop: {
+            patchContextRequired: {
+              version: 1,
+              path: "service_ctl.py",
+              mutationRevision: 4,
+              goalRevision: 0,
+            },
+            staticCounts: {
+              [staticToolCallSignature("read_file", { path: "service_ctl.py" }, {
+                commandCwd: workspace,
+              })]: 1,
+            },
+            staticTotal: 1,
+          },
+        },
+      },
+      "read_file",
+      { path: "service_ctl.py" },
+      { commandCwd: workspace }
+    ) === null,
+    "the repeated-read guard blocked an exact source refresh required after a stale patch"
+  );
+  assert(
+    repeatedStaticToolBlock(
       { meta: { toolLoop: { staticCounts: { [exactReadSignature]: 1 }, staticTotal: 1 } } },
       "read_file",
       { path: "/reference/A.md", startLine: 200, lineLimit: 80 },
@@ -4005,8 +4069,8 @@ try {
     "a same-task refresh could not rebuild a missing failed-test evidence packet"
   );
   missingRecoveryPacketState.meta.failedTestRecoveryPacket = {
-    packetVersion: 7,
-    content: "Bounded failed-test evidence packet v7.",
+    packetVersion: 8,
+    content: "Bounded failed-test evidence packet v8.",
     mutationRevision: 6,
     failureSignature: "same-failure",
   };
@@ -4185,6 +4249,269 @@ try {
       { commandCwd: workspace }
     )) === null,
     "a patch to a separate canonical producer was incorrectly blocked"
+  );
+  const pythonMockContractSource = [
+    "def test_stale_pid_routes_through_patchable_seams(self):",
+    "    with mock.patch.object(service_behavior, \"launch_service\") as launch:",
+    "        launch.return_value = mock.Mock(pid=32123)",
+    "        with mock.patch.object(service_behavior, \"wait_until_healthy\", return_value=True):",
+    "            result = service_behavior.start_service(state_dir, \"127.0.0.1\", 8765)",
+    "    self.assertEqual(result, 0)",
+    "    self.assertTrue(launch.called)",
+    "",
+  ].join("\n");
+  const pythonMockContract = failedTestMockBehaviorContract(pythonMockContractSource);
+  assert(
+    pythonMockContract.seams.some(
+      (item) =>
+        item.owner === "service_behavior" &&
+        item.symbol === "launch_service" &&
+        item.callExpectation === "called" &&
+        item.returnAttributes.includes("pid=32123")
+    ) &&
+      pythonMockContract.seams.some(
+        (item) =>
+          item.owner === "service_behavior" &&
+          item.symbol === "wait_until_healthy" &&
+          item.returnValue === "True"
+      ) &&
+      pythonMockContract.invocations.some(
+        (item) =>
+          item.owner === "service_behavior" &&
+          item.symbol === "start_service" &&
+          item.assignedTo === "result"
+      ) &&
+      pythonMockContract.resultAssertions.some(
+        (item) => item.variable === "result" && item.expected === "0"
+      ),
+    "the generic Python mock contract did not retain patched returns, observed calls, entrypoint, and result assertion"
+  );
+  await fs.mkdir(path.join(workspace, "tests"), { recursive: true });
+  await fs.writeFile(
+    path.join(workspace, "tests", "test_service_behavior.py"),
+    pythonMockContractSource,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(workspace, "service_behavior.py"),
+    "def start_service(state_dir, host, port):\n    return 2\n",
+    "utf8"
+  );
+  const mockBehaviorPacketState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 1,
+        discoveredTests: ["tests/test_service_behavior.py"],
+        lastMutation: { paths: ["service_behavior.py"] },
+        testRuns: [{
+          command: "python3 -m unittest discover -s tests -v",
+          mutationRevision: 1,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "mock-behavior-contract",
+          failureSummary: [
+            'with mock.patch.object(service_behavior, "launch_service") as launch:',
+            'with mock.patch.object(service_behavior, "wait_until_healthy", return_value=True):',
+            "AssertionError: 2 != 0",
+          ].join(" "),
+        }],
+      },
+    },
+  };
+  const mockBehaviorPacket = await buildFailedTestRecoveryPacket(
+    { commandCwd: workspace },
+    mockBehaviorPacketState
+  );
+  assert(
+    mockBehaviorPacket.content.includes(
+      "Acceptance behavior distilled from the exact current test source"
+    ) &&
+      mockBehaviorPacket.content.includes(
+        "Tested production call(s): service_behavior.start_service -> result"
+      ) &&
+      mockBehaviorPacket.content.includes(
+        "Patchable seam service_behavior.launch_service: explicitly asserted called; test-double attributes pid=32123"
+      ) &&
+      mockBehaviorPacket.content.includes(
+        "Patchable seam service_behavior.wait_until_healthy: test-double return True"
+      ) &&
+      mockBehaviorPacket.content.includes(
+        "Result contract: service_behavior.start_service returns 0"
+      ),
+    "the bounded failed-test packet did not front-load generic mock interaction behavior"
+  );
+  const seamSource = [
+    "def start_service():",
+    "    return 0",
+    "",
+  ].join("\n");
+  await fs.writeFile(path.join(workspace, "service_topology.py"), seamSource, "utf8");
+  const seamFailureSummary = [
+    "Failing test: test_start_routes_through_mockable_seams.",
+    'with mock.patch.object(service_topology, "launch_service") as launch:',
+    'with mock.patch.object(service_topology, "wait_until_healthy", return_value=True):',
+    "AttributeError: module service_topology has no attribute launch_service",
+  ].join(" ");
+  const seamRepairState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 2,
+        testRuns: [
+          {
+            command: "python3 -m unittest discover -s tests -v",
+            mutationRevision: 2,
+            passed: false,
+            failureEvidenceVersion: 2,
+            failureSignature: "required-seam-topology",
+            failureSummary: seamFailureSummary,
+          },
+        ],
+      },
+      failedTestRecoveryPacket: {
+        paths: ["tests/test_service_topology.py", "service_topology.py"],
+        content: seamFailureSummary,
+      },
+    },
+  };
+  const definitionOnlySource = [
+    "def launch_service():",
+    "    return object()",
+    "",
+    "def start_service():",
+    "    return 0",
+    "",
+  ].join("\n");
+  assert(
+    (
+      await failedTestRepairPatchBlock(
+        seamRepairState,
+        "apply_patch",
+        {
+          path: "service_topology.py",
+          search: seamSource,
+          replace: definitionOnlySource,
+          expectedReplacements: 1,
+        },
+        { commandCwd: workspace }
+      )
+    )?.category === "failed-test-required-symbol-topology",
+    "a definition-only acceptance seam repair was allowed without a production call site"
+  );
+  const duplicateDefinitionSource = [
+    "def launch_service():",
+    "    return object()",
+    "",
+    "def launch_service():",
+    "    return object()",
+    "",
+    "def start_service():",
+    "    return launch_service()",
+    "",
+  ].join("\n");
+  assert(
+    (
+      await failedTestRepairPatchBlock(
+        seamRepairState,
+        "apply_patch",
+        {
+          path: "service_topology.py",
+          search: seamSource,
+          replace: duplicateDefinitionSource,
+          expectedReplacements: 1,
+        },
+        { commandCwd: workspace }
+      )
+    )?.category === "failed-test-required-symbol-topology",
+    "duplicate acceptance seam definitions were allowed"
+  );
+  const recursiveDefinitionSource = [
+    "def launch_service():",
+    "    return launch_service()",
+    "",
+    "def start_service():",
+    "    return 0",
+    "",
+  ].join("\n");
+  assert(
+    (
+      await failedTestRepairPatchBlock(
+        seamRepairState,
+        "apply_patch",
+        {
+          path: "service_topology.py",
+          search: seamSource,
+          replace: recursiveDefinitionSource,
+          expectedReplacements: 1,
+        },
+        { commandCwd: workspace }
+      )
+    )?.category === "failed-test-required-symbol-topology",
+    "a recursive seam wrapper was mistaken for production routing"
+  );
+  const routedSeamSource = [
+    "def launch_service():",
+    "    return object()",
+    "",
+    "def start_service():",
+    "    return launch_service()",
+    "",
+  ].join("\n");
+  assert(
+    (await failedTestRepairPatchBlock(
+      seamRepairState,
+      "apply_patch",
+      {
+        path: "service_topology.py",
+        search: seamSource,
+        replace: routedSeamSource,
+        expectedReplacements: 1,
+      },
+      { commandCwd: workspace }
+    )) === null,
+    "a single seam definition routed through production was incorrectly blocked"
+  );
+  assert(
+    (
+      await failedTestRepairPatchBlock(
+        seamRepairState,
+        "apply_patch",
+        {
+          patch: [
+            "*** Begin Patch",
+            "*** Update File: tests/test_service_topology.py",
+            "@@",
+            '-with mock.patch.object(service_topology, "launch_service"):',
+            "+with mock.patch.object(service_topology, 'other_service'):",
+            "*** End Patch",
+          ].join("\n"),
+        },
+        { commandCwd: workspace }
+      )
+    )?.category === "failed-test-required-symbol-path",
+    "a unified test-edit patch bypassed the canonical required-seam source path"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      seamRepairState,
+      "apply_patch",
+      {
+        patch: [
+          "*** Begin Patch",
+          "*** Update File: service_topology.py",
+          "@@",
+          "-def start_service():",
+          "-    return 0",
+          "+def launch_service():",
+          "+    return object()",
+          "+",
+          "+def start_service():",
+          "+    return launch_service()",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      { commandCwd: workspace }
+    )) === null,
+    "a coherent unified source patch with one declaration and production call was blocked"
   );
   await fs.writeFile(
     path.join(workspace, "membership-report.md"),
@@ -4601,7 +4928,7 @@ try {
         ],
       },
       failedTestDiagnostic: {
-        packetVersion: 7,
+        packetVersion: 8,
         mutationRevision: 0,
         failureSignature: "partial-derived-order",
         focuses: [

@@ -219,7 +219,9 @@ const CONSTRAINED_RECOVERY_OUTPUT_TOKEN_CAP = 768;
 const CONSTRAINED_REPOSITORY_RECOVERY_OUTPUT_TOKEN_CAP = 1536;
 const MAX_COMPLETION_EVIDENCE_REPAIR_ATTEMPTS = 4;
 const FAILED_TEST_EVIDENCE_VERSION = 2;
-const FAILED_TEST_RECOVERY_PACKET_VERSION = 7;
+const FAILED_TEST_RECOVERY_PACKET_VERSION = 8;
+const PATCH_CONTEXT_REFRESH_VERSION = 1;
+const REQUIRED_SYMBOL_REPAIR_VERSION = 1;
 const FAILED_TEST_CONTROL_PLANE_PATTERNS = [
   /evidence-derived\s+(?:repair\s+)?anchor/i,
   /related\s+(?:assertion|validator)\s+operand/i,
@@ -1266,6 +1268,83 @@ function retainedFailedTestEvidencePacket(state = {}, messages = []) {
           .startsWith(`Bounded failed-test evidence packet v${FAILED_TEST_RECOVERY_PACKET_VERSION}.`)
     );
   return retained ? compactMultiline(retained.content, 18000) : "";
+}
+
+export function buildFailedTestFocusedRecoveryMessages(
+  state = {},
+  config = {},
+  recoveryInstruction = ""
+) {
+  const currentFailure = currentFailedProjectTest(state)?.test;
+  const packet = retainedFailedTestEvidencePacket(state, state.messages || []);
+  if (!currentFailure || !packet) return Array.isArray(state.messages) ? state.messages : [];
+
+  const systemMessages = (Array.isArray(state.messages) ? state.messages : [])
+    .filter((message) => message?.role === "system")
+    .slice(0, 3)
+    .map((message) => ({
+      role: "system",
+      content: compactMultiline(message.content, 10000),
+    }));
+  if (!systemMessages.length) {
+    systemMessages.push({
+      role: "system",
+      content:
+        "You are AgInTiFlow. Repair the current canonical source from exact retained evidence, use only offered tools, and require passing verification before completion.",
+    });
+  }
+
+  const genuineRequests = summarizeOriginalRequests(
+    Array.isArray(state.chat) && state.chat.length ? state.chat : state.messages,
+    2
+  );
+  const repair = activeRequiredSymbolRepair(state) || currentRequiredSymbolRepair(state);
+  const contracts = (
+    Array.isArray(repair?.contracts) && repair.contracts.length
+      ? repair.contracts
+      : repair?.symbol
+        ? [repair]
+        : []
+  )
+    .map((item) => `${String(item?.owner || "implementation")}.${String(item?.symbol || "")}`)
+    .filter((item) => !item.endsWith("."));
+  const topologyViolations = Array.isArray(repair?.topologyRetry?.violations)
+    ? repair.topologyRetry.violations.map(String).filter(Boolean).slice(0, 6)
+    : [];
+  const content = [
+    "Current-source failed-test recovery handoff.",
+    "Rejected historical patch proposals and superseded source excerpts are intentionally omitted. Only the exact current evidence below is authoritative.",
+    "",
+    "Active goal:",
+    compactMultiline(state.goal || config.goal || "Repair the retained failed verification.", 3200),
+    genuineRequests.length ? "Original/current genuine request:" : "",
+    ...genuineRequests.map((request, index) => `${index + 1}. ${request}`),
+    "",
+    currentFailure.command ? `Exact verification command (run only after mutation): ${currentFailure.command}` : "",
+    contracts.length
+      ? `Required acceptance seams: ${contracts.join(", ")}. Declare each exactly once and call it from the tested production path outside its own definition; a definition-only helper, duplicate, or recursive wrapper is invalid.`
+      : "",
+    topologyViolations.length
+      ? `Latest deterministic topology rejection: ${topologyViolations.join("; ")}.`
+      : "",
+    "",
+    "Exact current test/source evidence:",
+    packet,
+    "",
+    "Next action:",
+    recoveryInstruction ||
+      "Apply one coherent mutation to the canonical producer using the offered schema, then run the exact retained verification. Do not restart discovery or repeat a rejected patch.",
+  ]
+    .filter((line, index, lines) => line !== "" || (index > 0 && lines[index - 1] !== ""))
+    .join("\n");
+
+  return [
+    ...systemMessages,
+    {
+      role: "user",
+      content: compactMultiline(content, 26000),
+    },
+  ];
 }
 
 function compactVerificationCheckpoint(state = {}) {
@@ -3276,7 +3355,41 @@ async function applyContinuationPrompt(state, config, observers) {
       command: String(currentFailure?.command || ""),
       generatedAt: state.updatedAt,
     };
-    state.messages.push({ role: "user", content: retainedTestEvidence.content });
+    if (currentFailure && state.meta?.localFailureRecovery?.active === true) {
+      const runtimeConfig = nextStepRuntimeConfig(config, state);
+      const recoveryInstruction = localFailureRecoveryInstruction(
+        {
+          ...state.meta.localFailureRecovery,
+          activated: false,
+        },
+        {
+          testFailureRepairMutationRequired:
+            runtimeConfig.testFailureRepairMutationRequired === true,
+          requiredSymbolRepair: runtimeConfig.testFailureRequiredSymbolRepair,
+        }
+      );
+      const charsBefore = countMessageChars(state.messages);
+      state.messages = buildFailedTestFocusedRecoveryMessages(
+        state,
+        config,
+        recoveryInstruction
+      );
+      state.meta.failedTestFocusedRecovery = {
+        packetVersion: FAILED_TEST_RECOVERY_PACKET_VERSION,
+        mutationRevision: Number(currentFailure.mutationRevision || 0),
+        failureSignature: String(currentFailure.failureSignature || ""),
+        goalRevision: Number(state.meta?.goalContract?.revision || 0),
+        charsBefore,
+        charsAfter: countMessageChars(state.messages),
+        at: state.updatedAt,
+      };
+      observers.event("history.focused_for_active_local_recovery", {
+        ...state.meta.failedTestFocusedRecovery,
+        model: String(state.meta.localFailureRecovery.model || config.model || ""),
+      });
+    } else {
+      state.messages.push({ role: "user", content: retainedTestEvidence.content });
+    }
   } else {
     delete state.meta.failedTestRecoveryPacket;
   }
@@ -3648,8 +3761,8 @@ function normalizeLeadingWorkspaceCd(command = "", config = {}) {
   const commandCwd = path.resolve(config.commandCwd || process.cwd());
   const target = normalizeWorkspaceInputPath(tokens[1]);
   if (path.resolve(commandCwd, target) !== commandCwd) return normalized;
-  const canonicalRemainder = remainder.replace(/^\s*&&\s*/, " && ");
-  return normalizeProjectCommand(`cd .${canonicalRemainder}`);
+  if (sequence.commands.length === 1) return "cd .";
+  return normalizeProjectCommand(remainder.replace(/^\s*&&\s*/, ""));
 }
 
 function projectCommandsEquivalent(left = "", right = "", config = {}) {
@@ -4121,15 +4234,289 @@ function uniqueBoundedLineAnchor(raw = "", lineNumber = 0, options = {}) {
   return "";
 }
 
+export function failedTestRequiredSymbolContracts(failureSummary = "") {
+  const contracts = [];
+  const patterns = [
+    {
+      kind: "python-patch-object",
+      pattern: /\b(?:mock\.)?patch\.object\(\s*([A-Za-z_$][\w$.]*)\s*,\s*(["'])([A-Za-z_$][\w$]*)\2/g,
+    },
+    {
+      kind: "python-monkeypatch-setattr",
+      pattern: /\bmonkeypatch\.setattr\(\s*([A-Za-z_$][\w$.]*)\s*,\s*(["'])([A-Za-z_$][\w$]*)\2/g,
+    },
+    {
+      kind: "javascript-spy-on",
+      pattern: /\b(?:jest|vi|sinon)\.spyOn\(\s*([A-Za-z_$][\w$.]*)\s*,\s*(["'])([A-Za-z_$][\w$]*)\2/g,
+    },
+  ];
+  const expressions = [
+    ...failedTestExpressions(failureSummary),
+    String(failureSummary || ""),
+  ].filter((item, index, items) => item && items.indexOf(item) === index);
+  for (const expression of expressions) {
+    if (/\bcreate\s*=\s*True\b|\braising\s*=\s*False\b/i.test(expression)) continue;
+    for (const { kind, pattern } of patterns) {
+      pattern.lastIndex = 0;
+      for (const match of expression.matchAll(pattern)) {
+        const owner = String(match[1] || "").trim();
+        const symbol = String(match[3] || "").trim();
+        if (!owner || !symbol) continue;
+        const contract = { kind, owner, symbol };
+        if (
+          !contracts.some(
+            (item) => item.kind === kind && item.owner === owner && item.symbol === symbol
+          )
+        ) {
+          contracts.push(contract);
+        }
+      }
+    }
+  }
+  return contracts.slice(0, 6);
+}
+
+function boundedTestExpression(value = "", limit = 220) {
+  const compacted = compactSingleLine(redactSensitiveText(String(value || "")), limit);
+  return compacted && !/[\u0000-\u001f\u007f]/u.test(compacted) ? compacted : "";
+}
+
+function escapedPatternLiteral(value = "") {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Distill observable mock/spy behavior from an exact current test source.
+ * This is deliberately evidence-only: it identifies patchable seams, supplied
+ * test-double returns, observed calls, tested entrypoints, and simple result
+ * assertions without proposing fixture-specific implementation code.
+ */
+export function failedTestMockBehaviorContract(sourceText = "") {
+  const source = String(sourceText || "").replace(/\r/g, "");
+  if (!source.trim()) return { seams: [], invocations: [], resultAssertions: [] };
+  const seams = [];
+  const appendSeam = (candidate = {}) => {
+    const owner = String(candidate.owner || "").trim();
+    const symbol = String(candidate.symbol || "").trim();
+    if (!owner || !symbol) return;
+    const existing = seams.find((item) => item.owner === owner && item.symbol === symbol);
+    if (existing) {
+      Object.assign(existing, Object.fromEntries(
+        Object.entries(candidate).filter(([, value]) => value !== "" && value !== undefined)
+      ));
+      return;
+    }
+    seams.push({
+      kind: String(candidate.kind || "test-double"),
+      owner,
+      symbol,
+      alias: String(candidate.alias || "").trim(),
+      returnValue: boundedTestExpression(candidate.returnValue || ""),
+      returnAttributes: Array.isArray(candidate.returnAttributes)
+        ? candidate.returnAttributes.slice(0, 8)
+        : [],
+      callExpectation: String(candidate.callExpectation || "unspecified"),
+    });
+  };
+
+  for (const line of source.split("\n")) {
+    const pythonPatch = line.match(
+      /\b(?:mock\.)?patch\.object\(\s*([A-Za-z_$][\w$.]*)\s*,\s*(["'])([A-Za-z_$][\w$]*)\2(.*?)\)\s*(?:as\s+([A-Za-z_$][\w$]*))?/
+    );
+    if (pythonPatch) {
+      const returnMatch = String(pythonPatch[4] || "").match(
+        /\breturn_value\s*=\s*([^,)]+)/
+      );
+      appendSeam({
+        kind: "python-patch-object",
+        owner: pythonPatch[1],
+        symbol: pythonPatch[3],
+        alias: pythonPatch[5] || "",
+        returnValue: returnMatch?.[1] || "",
+      });
+    }
+
+    const monkeypatch = line.match(
+      /\bmonkeypatch\.setattr\(\s*([A-Za-z_$][\w$.]*)\s*,\s*(["'])([A-Za-z_$][\w$]*)\2\s*,\s*(.+?)\s*\)\s*$/
+    );
+    if (monkeypatch) {
+      appendSeam({
+        kind: "python-monkeypatch-setattr",
+        owner: monkeypatch[1],
+        symbol: monkeypatch[3],
+        returnValue: monkeypatch[4],
+      });
+    }
+
+    const javascriptSpy = line.match(
+      /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:jest|vi|sinon)\.spyOn\(\s*([A-Za-z_$][\w$.]*)\s*,\s*(["'])([A-Za-z_$][\w$]*)\3\s*\)(.*)$/
+    );
+    if (javascriptSpy) {
+      const returnMatch = String(javascriptSpy[5] || "").match(
+        /\.(?:mockReturnValue|mockResolvedValue|returns|resolves)\(\s*([^)]*?)\s*\)/
+      );
+      appendSeam({
+        kind: "javascript-spy-on",
+        owner: javascriptSpy[2],
+        symbol: javascriptSpy[4],
+        alias: javascriptSpy[1],
+        returnValue: returnMatch?.[1] || "",
+      });
+    }
+  }
+
+  for (const seam of seams) {
+    if (!seam.alias) continue;
+    const alias = escapedPatternLiteral(seam.alias);
+    const assignment = source.match(new RegExp(`\\b${alias}\\.return_value\\s*=\\s*([^\\n]+)`));
+    if (assignment) {
+      seam.returnValue = boundedTestExpression(assignment[1]);
+      const mockObject = String(assignment[1] || "").match(/\bmock\.Mock\(([^)]*)\)/);
+      if (mockObject) {
+        seam.returnAttributes = String(mockObject[1] || "")
+          .split(",")
+          .map((item) => boundedTestExpression(item, 100))
+          .filter((item) => /^[A-Za-z_$][\w$]*\s*=/.test(item))
+          .slice(0, 8);
+      }
+    }
+    const explicitlyNotCalled = new RegExp(
+      `(?:\\b${alias}\\.assert_not_called\\s*\\(|\\bnot\\s+${alias}\\.called\\b|expect\\(\\s*${alias}\\s*\\)\\.toHaveBeenCalledTimes\\(\\s*0\\s*\\))`
+    ).test(source);
+    const explicitlyCalled = new RegExp(
+      `(?:\\b${alias}\\.called\\b|\\b${alias}\\.assert_called(?:_once)?(?:_with)?\\s*\\(|expect\\(\\s*${alias}\\s*\\)\\.toHaveBeenCalled)`
+    ).test(source);
+    seam.callExpectation = explicitlyNotCalled
+      ? "not-called"
+      : explicitlyCalled
+        ? "called"
+        : "unspecified";
+  }
+
+  const invocations = [];
+  const owners = [...new Set(seams.map((item) => item.owner))];
+  for (const owner of owners) {
+    const ownerPattern = escapedPatternLiteral(owner);
+    const seamSymbols = new Set(
+      seams.filter((item) => item.owner === owner).map((item) => item.symbol)
+    );
+    const invocationPattern = new RegExp(
+      `(?:\\b([A-Za-z_$][\\w$]*)\\s*=\\s*)?\\b${ownerPattern}\\.([A-Za-z_$][\\w$]*)\\s*\\(`,
+      "g"
+    );
+    for (const match of source.matchAll(invocationPattern)) {
+      const symbol = String(match[2] || "");
+      if (!symbol || seamSymbols.has(symbol)) continue;
+      const item = {
+        owner,
+        symbol,
+        assignedTo: String(match[1] || ""),
+      };
+      if (
+        !invocations.some(
+          (candidate) =>
+            candidate.owner === item.owner &&
+            candidate.symbol === item.symbol &&
+            candidate.assignedTo === item.assignedTo
+        )
+      ) {
+        invocations.push(item);
+      }
+    }
+  }
+
+  const resultAssertions = [];
+  for (const invocation of invocations) {
+    if (!invocation.assignedTo) continue;
+    const variable = escapedPatternLiteral(invocation.assignedTo);
+    const pythonAssertion = source.match(
+      new RegExp(`\\b(?:self\\.)?assertEqual\\(\\s*${variable}\\s*,\\s*([^\\n,)]+)`)
+    );
+    const javascriptAssertion = source.match(
+      new RegExp(`\\bexpect\\(\\s*${variable}\\s*\\)\\.(?:toBe|toEqual)\\(\\s*([^)]*?)\\s*\\)`)
+    );
+    const expected = boundedTestExpression(pythonAssertion?.[1] || javascriptAssertion?.[1] || "");
+    if (expected) {
+      resultAssertions.push({
+        variable: invocation.assignedTo,
+        owner: invocation.owner,
+        symbol: invocation.symbol,
+        expected,
+      });
+    }
+  }
+
+  return {
+    seams: seams.slice(0, 8),
+    invocations: invocations.slice(0, 8),
+    resultAssertions: resultAssertions.slice(0, 8),
+  };
+}
+
+function failedTestMockBehaviorDiagnostic(sourceText = "") {
+  const contract = failedTestMockBehaviorContract(sourceText);
+  if (!contract.seams.length) return "";
+  const lines = ["Acceptance behavior distilled from the exact current test source:"];
+  if (contract.invocations.length) {
+    lines.push(
+      `- Tested production call(s): ${contract.invocations
+        .map((item) => `${item.owner}.${item.symbol}${item.assignedTo ? ` -> ${item.assignedTo}` : ""}`)
+        .join(", ")}.`
+    );
+  }
+  for (const seam of contract.seams) {
+    const observations = [];
+    if (seam.callExpectation === "called") observations.push("explicitly asserted called");
+    if (seam.callExpectation === "not-called") observations.push("explicitly asserted not called");
+    if (seam.returnAttributes.length) {
+      observations.push(`test-double attributes ${seam.returnAttributes.join(", ")}`);
+    } else if (seam.returnValue) {
+      observations.push(`test-double return ${seam.returnValue}`);
+    }
+    lines.push(
+      `- Patchable seam ${seam.owner}.${seam.symbol}${observations.length ? `: ${observations.join("; ")}` : ""}.`
+    );
+  }
+  for (const assertion of contract.resultAssertions) {
+    lines.push(
+      `- Result contract: ${assertion.owner}.${assertion.symbol} returns ${assertion.expected} in this scenario.`
+    );
+  }
+  lines.push(
+    "Implementation consequence: keep each required seam as one real canonical-source definition and route the tested production entrypoint through every seam whose call or supplied behavior is part of the scenario. Consume the specified test-double result where the assertion requires it; unused definitions do not satisfy the contract."
+  );
+  return lines.join("\n");
+}
+
+function failedTestRequiredSymbolDiagnostic(testRun = {}) {
+  const contracts = failedTestRequiredSymbolContracts(testRun.failureSummary || "");
+  if (!contracts.length) return "";
+  return [
+    `Required implementation seams extracted from the retained test: ${contracts
+      .map((item) => `${item.owner}.${item.symbol}`)
+      .join(", ")}.`,
+    "These are acceptance-test contracts. If an exact source search confirms one is absent, treat that absence as positive evidence of an implementation gap: add the smallest real function or method in canonical source and route the tested production path through it so the test double can observe the call.",
+    "Do not dismiss or edit the acceptance test merely because the required seam is missing, and do not finish while its verification still fails.",
+  ].join(" ");
+}
+
 function failedTestLiteralDiagnostic(testRun = {}) {
   const operands = failedTestLiteralOperands(testRun.failureSummary || "");
-  if (!operands.length) return "";
+  const requiredSymbolDiagnostic = failedTestRequiredSymbolDiagnostic(testRun);
+  if (!operands.length && !requiredSymbolDiagnostic) return "";
   return [
-    `Literal operands extracted from the retained validator expression: ${operands
-      .map((item) => JSON.stringify(item))
-      .join(", ")}.`,
-    "Search the complete tested artifact for these exact operands and compare their earliest matches or values exactly as the expression does; do not substitute a semantically similar passage.",
-  ].join(" ");
+    ...(operands.length
+      ? [
+          `Literal operands extracted from the retained validator expression: ${operands
+            .map((item) => JSON.stringify(item))
+            .join(", ")}.`,
+          "Search the complete tested artifact for these exact operands and compare their earliest matches or values exactly as the expression does; do not substitute a semantically similar passage.",
+        ]
+      : []),
+    requiredSymbolDiagnostic,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function markdownRequiredOutputs(content = "") {
@@ -4782,6 +5169,26 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       };
       verification.testRuns = [...verification.testRuns, testRun].slice(-24);
       toolResult.projectTest = testRun;
+      if (
+        config.testFailureStalemateRevalidation === true &&
+        projectCommandsEquivalent(
+          command,
+          config.testFailureStalemateCommand || config.testFailureCommand || "",
+          config
+        )
+      ) {
+        state.meta.failedTestStalemateRevalidation = {
+          version: 1,
+          mutationRevision: verification.mutationRevision,
+          failureSignature: String(testRun.failureSignature || ""),
+          command,
+          topologyRetryCount: Math.max(
+            0,
+            Number(config.testFailureTopologyRetryCount || 0)
+          ),
+          at: now,
+        };
+      }
       if (testRun.passed) {
         verification.lastPassingTestRevision = verification.mutationRevision;
         delete state.meta.failedTestRecoveryPacket;
@@ -5170,6 +5577,7 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
   const seen = new Set();
   const excerpts = [];
   const literalDiagnostics = [];
+  const mockBehaviorDiagnostics = [];
   const diagnosticFocuses = [];
   const literalOperands = failedTestLiteralOperands(testRun.failureSummary || "").slice(0, 6);
   const tracebackSourceDocuments = await failedTestTracebackSourceDocuments(testRun, config);
@@ -5202,6 +5610,14 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
     if (!stat?.isFile() || stat.size <= 0 || stat.size > 128000) continue;
     const raw = await fs.readFile(target.absolutePath, "utf8").catch(() => "");
     if (!raw) continue;
+    const mockBehaviorDiagnostic = failedTestMockBehaviorDiagnostic(raw);
+    if (
+      mockBehaviorDiagnostic &&
+      !mockBehaviorDiagnostics.includes(mockBehaviorDiagnostic) &&
+      mockBehaviorDiagnostics.length < 4
+    ) {
+      mockBehaviorDiagnostics.push(mockBehaviorDiagnostic);
+    }
     const remaining = maxChars - retainedChars;
     const safeRaw = redactSensitiveText(raw);
     const excerpt = safeRaw.slice(0, Math.min(6000, remaining));
@@ -5439,6 +5855,7 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
     content: [
       `Bounded failed-test evidence packet v${FAILED_TEST_RECOVERY_PACKET_VERSION}. These are exact current workspace excerpts selected from the discovered test and its local dependencies. Use them to calculate the producing transformation; do not restart broad discovery.`,
       testRun.command ? `Verification command: ${testRun.command}` : "",
+      ...mockBehaviorDiagnostics,
       String(testRun.failureSummary || "").slice(0, 1800),
       ...literalDiagnostics,
       ...tracebackSourceEvidence,
@@ -5678,6 +6095,14 @@ export function toolResultForModel(result) {
 
 export function repeatedStaticToolBlock(state, toolName, args = {}, config = {}) {
   if (!isStaticDiscoveryToolCall(toolName, args)) return null;
+  const requiredPatchRefresh = activePatchContextRefresh(state);
+  if (
+    toolName === "read_file" &&
+    requiredPatchRefresh &&
+    safeRecoveryEvidencePath(args?.path) === requiredPatchRefresh.path
+  ) {
+    return null;
+  }
   const toolLoop = state.meta?.toolLoop || {};
   const signature = staticToolCallSignature(toolName, args || {}, {
     commandCwd: config.commandCwd,
@@ -5827,6 +6252,16 @@ export function unchangedFailedTestRerunBlock(state, toolName, args = {}, config
   const requestedCommand = normalizeLeadingWorkspaceCd(args.command, config);
   const failedCommand = normalizeLeadingWorkspaceCd(currentFailure.test.command, config);
   if (!requestedCommand || requestedCommand !== failedCommand) return null;
+  if (
+    config.testFailureStalemateRevalidation === true &&
+    projectCommandsEquivalent(
+      requestedCommand,
+      config.testFailureStalemateCommand || failedCommand,
+      config
+    )
+  ) {
+    return null;
+  }
 
   const mutationRevision = Math.max(0, Number(currentFailure.mutationRevision || 0));
   return {
@@ -5851,16 +6286,507 @@ export function unchangedFailedTestRerunBlock(state, toolName, args = {}, config
   };
 }
 
-export async function failedTestRepairPatchBlock(state, toolName, args = {}, config = {}) {
+function escapeRequiredSymbolPattern(value = "") {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sourceCodeLinesForTopology(content = "", language = "") {
+  const source = String(content || "").replace(/\r/g, "");
+  const lines = source.split("\n");
+  const output = [];
+  let blockComment = false;
+  let tripleQuote = "";
+  let stringQuote = "";
+  let escaped = false;
+
+  for (const line of lines) {
+    let code = "";
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index];
+      const next = line[index + 1] || "";
+      const triple = line.slice(index, index + 3);
+
+      if (blockComment) {
+        if (char === "*" && next === "/") {
+          blockComment = false;
+          code += "  ";
+          index += 1;
+        } else {
+          code += " ";
+        }
+        continue;
+      }
+      if (tripleQuote) {
+        if (triple === tripleQuote) {
+          code += "   ";
+          index += 2;
+          tripleQuote = "";
+        } else {
+          code += " ";
+        }
+        continue;
+      }
+      if (stringQuote) {
+        code += " ";
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === stringQuote) {
+          stringQuote = "";
+        }
+        continue;
+      }
+      if (language === "python" && (triple === '"""' || triple === "'''")) {
+        tripleQuote = triple;
+        code += "   ";
+        index += 2;
+        continue;
+      }
+      if (language === "javascript" && char === "/" && next === "*") {
+        blockComment = true;
+        code += "  ";
+        index += 1;
+        continue;
+      }
+      if (
+        (language === "python" && char === "#") ||
+        (language === "javascript" && char === "/" && next === "/")
+      ) {
+        code += " ".repeat(line.length - index);
+        break;
+      }
+      if (
+        char === "'" ||
+        char === '"' ||
+        (language === "javascript" && char === "`")
+      ) {
+        stringQuote = char;
+        escaped = false;
+        code += " ";
+        continue;
+      }
+      code += char;
+    }
+    output.push(code);
+  }
+  return output;
+}
+
+function sourceIndentWidth(line = "") {
+  const prefix = String(line || "").match(/^\s*/)?.[0] || "";
+  return prefix.replace(/\t/g, "    ").length;
+}
+
+function pythonRequiredSymbolTopology(content = "", symbol = "") {
+  const codeLines = sourceCodeLinesForTopology(content, "python");
+  const escapedSymbol = escapeRequiredSymbolPattern(symbol);
+  const declarationPattern = new RegExp(
+    `^\\s*(?:async\\s+)?def\\s+${escapedSymbol}\\s*\\(`
+  );
+  const invocationPattern = new RegExp(`\\b${escapedSymbol}\\s*\\(`);
+  const declarations = [];
+
+  for (let index = 0; index < codeLines.length; index += 1) {
+    if (!declarationPattern.test(codeLines[index])) continue;
+    const indentation = sourceIndentWidth(codeLines[index]);
+    let end = codeLines.length - 1;
+    for (let cursor = index + 1; cursor < codeLines.length; cursor += 1) {
+      const candidate = codeLines[cursor];
+      if (!candidate.trim()) continue;
+      if (sourceIndentWidth(candidate) <= indentation) {
+        end = cursor - 1;
+        break;
+      }
+    }
+    declarations.push({ start: index, end });
+  }
+
+  const invocationLines = [];
+  for (let index = 0; index < codeLines.length; index += 1) {
+    if (!invocationPattern.test(codeLines[index])) continue;
+    if (declarationPattern.test(codeLines[index])) continue;
+    if (declarations.some((item) => index >= item.start && index <= item.end)) continue;
+    invocationLines.push(index + 1);
+  }
+  return {
+    declarationCount: declarations.length,
+    declarationLines: declarations.map((item) => item.start + 1),
+    invocationCount: invocationLines.length,
+    invocationLines,
+  };
+}
+
+function javascriptRequiredSymbolTopology(content = "", symbol = "") {
+  const codeLines = sourceCodeLinesForTopology(content, "javascript");
+  const escapedSymbol = escapeRequiredSymbolPattern(symbol);
+  const declarationPatterns = [
+    new RegExp(`\\b(?:async\\s+)?function\\s+${escapedSymbol}\\s*\\(`),
+    new RegExp(`^\\s*(?:(?:public|private|protected|static|async)\\s+)*${escapedSymbol}\\s*\\([^)]*\\)\\s*\\{`),
+    new RegExp(`\\b${escapedSymbol}\\s*:\\s*(?:async\\s+)?function\\s*\\(`),
+    new RegExp(`\\b(?:const|let|var)\\s+${escapedSymbol}\\s*=`),
+  ];
+  const invocationPattern = new RegExp(`\\b${escapedSymbol}\\s*\\(`);
+  const declarations = [];
+
+  for (let index = 0; index < codeLines.length; index += 1) {
+    const line = codeLines[index];
+    if (!declarationPatterns.some((pattern) => pattern.test(line))) continue;
+    let end = index;
+    let depth = 0;
+    let sawBrace = false;
+    for (let cursor = index; cursor < codeLines.length; cursor += 1) {
+      for (const char of codeLines[cursor]) {
+        if (char === "{") {
+          depth += 1;
+          sawBrace = true;
+        } else if (char === "}" && sawBrace) {
+          depth -= 1;
+        }
+      }
+      end = cursor;
+      if (sawBrace && depth <= 0) break;
+      if (!sawBrace) break;
+    }
+    declarations.push({ start: index, end });
+  }
+
+  const invocationLines = [];
+  for (let index = 0; index < codeLines.length; index += 1) {
+    if (!invocationPattern.test(codeLines[index])) continue;
+    if (declarationPatterns.some((pattern) => pattern.test(codeLines[index]))) continue;
+    if (declarations.some((item) => index >= item.start && index <= item.end)) continue;
+    invocationLines.push(index + 1);
+  }
+  return {
+    declarationCount: declarations.length,
+    declarationLines: declarations.map((item) => item.start + 1),
+    invocationCount: invocationLines.length,
+    invocationLines,
+  };
+}
+
+function requiredSymbolTopology(content = "", contract = {}, sourcePath = "") {
+  const extension = path.posix.extname(String(sourcePath || "")).toLocaleLowerCase("en-US");
+  const kind = String(contract?.kind || "");
+  if (kind.startsWith("python-") || extension === ".py") {
+    return pythonRequiredSymbolTopology(content, contract.symbol);
+  }
   if (
-    toolName !== "apply_patch" ||
-    (typeof args.patch === "string" && args.patch.trim()) ||
+    kind.startsWith("javascript-") ||
+    [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"].includes(extension)
+  ) {
+    return javascriptRequiredSymbolTopology(content, contract.symbol);
+  }
+  return null;
+}
+
+function requiredSymbolReferenceCount(content = "", contract = {}, sourcePath = "") {
+  const extension = path.posix.extname(String(sourcePath || "")).toLocaleLowerCase("en-US");
+  const kind = String(contract?.kind || "");
+  const language =
+    kind.startsWith("python-") || extension === ".py"
+      ? "python"
+      : kind.startsWith("javascript-") ||
+          [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"].includes(extension)
+        ? "javascript"
+        : "";
+  if (!language) return 0;
+  const symbol = escapeRequiredSymbolPattern(contract.symbol);
+  const pattern = new RegExp(`\\b${symbol}\\s*\\(`, "g");
+  return sourceCodeLinesForTopology(content, language)
+    .join("\n")
+    .match(pattern)?.length || 0;
+}
+
+function requiredSymbolRepairForPatch(state = {}) {
+  const current = currentRequiredSymbolRepair(state);
+  const active = activeRequiredSymbolRepair(state);
+  if (!active) return current;
+  return {
+    ...(current || {}),
+    ...active,
+    contracts:
+      Array.isArray(current?.contracts) && current.contracts.length
+        ? current.contracts
+        : active.contracts,
+  };
+}
+
+function requiredSymbolRepairBlock(repair = {}, category = "failed-test-required-symbol-topology", details = {}) {
+  const sourcePath = String(repair.path || "the canonical implementation source");
+  const primary = `${String(repair.owner || "implementation")}.${String(repair.symbol || "required seam")}`;
+  return {
+    reason:
+      details.reason ||
+      `The proposed source patch does not establish a valid callable topology for ${primary} in ${sourcePath}.`,
+    category,
+    diagnosticHint:
+      details.diagnosticHint ||
+      "Define each repaired seam exactly once and route the existing production entrypoint through it. A definition-only helper, a duplicate definition, a recursive wrapper, or a test edit does not satisfy the acceptance contract.",
+    permissionAdvice: {
+      category,
+      autoRecover: true,
+      summary: "The patch is structurally inconsistent with the retained acceptance-test seam.",
+      instruction:
+        "Edit only the canonical implementation source. Keep one real seam definition and call it from the production path before rerunning the exact failed test.",
+      options: [
+        "Replace duplicate or recursive helpers with one implementation seam and one production call site.",
+        "Route the existing entrypoint through the seam rather than editing or dismissing the test.",
+        "Use one coherent patch when definition and call-site changes must land together.",
+      ],
+    },
+  };
+}
+
+function applyPatchOperationToSource(content = "", operation = {}) {
+  if (operation.type !== "update" || operation.newPath) return null;
+  let proposedContent = String(content || "");
+  for (const hunk of operation.hunks || []) {
+    const search = String(hunk.search || "");
+    if (!search || proposedContent.split(search).length - 1 !== 1) return null;
+    proposedContent = proposedContent.replace(search, String(hunk.replace ?? ""));
+  }
+  return proposedContent;
+}
+
+async function proposedRequiredSymbolSource(state, args = {}, config = {}) {
+  const repair = requiredSymbolRepairForPatch(state);
+  const repairPath = safeRecoveryEvidencePath(repair?.path);
+  if (!repair || !repairPath) return null;
+
+  let target;
+  try {
+    target = resolveWorkspacePath(config, repairPath);
+  } catch {
+    return null;
+  }
+  const currentContent = await fs.readFile(target.absolutePath, "utf8").catch(() => "");
+  if (!currentContent) return null;
+
+  if (typeof args.patch === "string" && args.patch.trim()) {
+    let operations;
+    try {
+      operations = parsePatchDocument(args.patch);
+    } catch {
+      return null;
+    }
+    const operationPaths = [];
+    for (const operation of operations) {
+      try {
+        operationPaths.push(resolveWorkspacePath(config, operation.path).relativePath);
+        if (operation.newPath) {
+          operationPaths.push(resolveWorkspacePath(config, operation.newPath).relativePath);
+        }
+      } catch {
+        return null;
+      }
+    }
+    if (
+      operationPaths.length !== 1 ||
+      safeRecoveryEvidencePath(operationPaths[0]) !== repairPath
+    ) {
+      return {
+        repair,
+        block: requiredSymbolRepairBlock(
+          repair,
+          "failed-test-required-symbol-path",
+          {
+            reason:
+              `The retained failed test requires a repair in ${repairPath}, but this patch targets ` +
+              `${operationPaths.filter(Boolean).join(", ") || "another path"}.`,
+            diagnosticHint:
+              `During required-seam recovery, apply one coherent patch only to ${repairPath}. Do not bypass the constrained source path with a multi-file patch or edit the acceptance test.`,
+          }
+        ),
+      };
+    }
+    const proposedContent = applyPatchOperationToSource(currentContent, operations[0]);
+    if (proposedContent === null) return null;
+    return { repair, currentContent, proposedContent, path: repairPath };
+  }
+
+  if (
     typeof args.path !== "string" ||
     typeof args.search !== "string" ||
     !args.search
   ) {
     return null;
   }
+  let requestedTarget;
+  try {
+    requestedTarget = resolveWorkspacePath(config, args.path);
+  } catch {
+    return null;
+  }
+  const requestedPath = safeRecoveryEvidencePath(requestedTarget.relativePath);
+  if (requestedPath !== repairPath) {
+    return {
+      repair,
+      block: requiredSymbolRepairBlock(
+        repair,
+        "failed-test-required-symbol-path",
+        {
+          reason:
+            `The retained failed test requires a repair in ${repairPath}, but this patch targets ${requestedPath || "another path"}.`,
+          diagnosticHint:
+            `Edit ${repairPath}, not the acceptance test or a sidecar. Add the required seam there and route its production caller through it.`,
+        }
+      ),
+    };
+  }
+  if (!currentContent.includes(args.search)) return null;
+  return {
+    repair,
+    currentContent,
+    proposedContent: currentContent.split(args.search).join(String(args.replace ?? "")),
+    path: repairPath,
+  };
+}
+
+async function requiredSymbolRepairPatchBlock(state, args = {}, config = {}) {
+  const proposal = await proposedRequiredSymbolSource(state, args, config);
+  if (!proposal) return null;
+  if (proposal.block) return proposal.block;
+
+  const repair = proposal.repair;
+  if (path.posix.extname(proposal.path).toLocaleLowerCase("en-US") === ".py") {
+    const beforeDuplicates = new Map(
+      pythonTopLevelDefinitionDuplicates(proposal.currentContent).map((item) => [
+        `${item.kind}:${item.name}`,
+        item.count,
+      ])
+    );
+    const introducedDuplicates = pythonTopLevelDefinitionDuplicates(
+      proposal.proposedContent
+    ).filter(
+      (item) =>
+        item.count > Number(beforeDuplicates.get(`${item.kind}:${item.name}`) || 1)
+    );
+    if (introducedDuplicates.length) {
+      return requiredSymbolRepairBlock(
+        repair,
+        "failed-test-required-symbol-topology",
+        {
+          reason:
+            `The proposed repair introduces duplicate top-level Python definitions in ${proposal.path}: ` +
+            introducedDuplicates
+              .map((item) => `${item.kind} ${item.name} at lines ${item.lines.join(", ")}`)
+              .join("; ") +
+            ".",
+          diagnosticHint:
+            "Replace or extend the existing definition in one coherent patch. Do not append a second function or class with the same top-level name.",
+        }
+      );
+    }
+  }
+  const contracts = (
+    Array.isArray(repair.contracts) && repair.contracts.length
+      ? repair.contracts
+      : [{ kind: repair.kind, owner: repair.owner, symbol: repair.symbol, path: repair.path }]
+  ).filter(
+    (item, index, items) =>
+      item?.symbol &&
+      (!item.path || safeRecoveryEvidencePath(item.path) === proposal.path) &&
+      items.findIndex((candidate) => candidate?.symbol === item.symbol) === index
+  );
+  const violations = [];
+  const participatingContracts = [];
+  for (const contract of contracts) {
+    const before = requiredSymbolTopology(
+      proposal.currentContent,
+      contract,
+      proposal.path
+    );
+    const after = requiredSymbolTopology(
+      proposal.proposedContent,
+      contract,
+      proposal.path
+    );
+    if (!after) continue;
+    const primary = contract.symbol === repair.symbol;
+    const participates =
+      primary ||
+      Number(before?.declarationCount || 0) > 0 ||
+      Number(after.declarationCount || 0) > 0;
+    if (!participates) continue;
+    participatingContracts.push(contract);
+    if (after.declarationCount !== 1) {
+      violations.push(
+        `${contract.symbol}: expected one declaration, found ${after.declarationCount}`
+      );
+      continue;
+    }
+    if (after.invocationCount < 1) {
+      violations.push(
+        `${contract.symbol}: declared once but not called from production code outside its own definition`
+      );
+    }
+  }
+  if (!violations.length) return null;
+  state.meta = state.meta || {};
+  const priorRetry = activeRequiredSymbolRepair(state)?.topologyRetry || {};
+  const rejectedReplaceHash =
+    typeof args.replace === "string" ? hashForLog(args.replace) : hashForLog(args.patch || "");
+  const replacementRequirements = [];
+  if (typeof args.search === "string" && typeof args.replace === "string") {
+    const replacementCount = proposal.currentContent.split(args.search).length - 1;
+    for (const contract of participatingContracts) {
+      const currentReferences = requiredSymbolReferenceCount(
+        proposal.currentContent,
+        contract,
+        proposal.path
+      );
+      const replacedReferences =
+        requiredSymbolReferenceCount(args.search, contract, proposal.path) *
+        Math.max(1, replacementCount);
+      const outsideReferences = Math.max(0, currentReferences - replacedReferences);
+      const minimumOccurrences = Math.max(0, 2 - outsideReferences);
+      if (minimumOccurrences > 0) {
+        replacementRequirements.push({
+          symbol: String(contract.symbol),
+          minimumOccurrences,
+        });
+      }
+    }
+  }
+  state.meta.requiredSymbolRepair = {
+    ...repair,
+    topologyRetry: {
+      count: Math.max(0, Number(priorRetry.count || 0)) + 1,
+      repeatedReplacementCount:
+        String(priorRetry.rejectedReplaceHash || "") === rejectedReplaceHash
+          ? Math.max(0, Number(priorRetry.repeatedReplacementCount || 0)) + 1
+          : 1,
+      rejectedReplaceHash,
+      violations: violations.slice(0, 6),
+      replacementRequirements: replacementRequirements.slice(0, 6),
+      at: new Date().toISOString(),
+    },
+  };
+  return requiredSymbolRepairBlock(
+    repair,
+    "failed-test-required-symbol-topology",
+    {
+      reason:
+        `The proposed patch would leave invalid required-seam topology in ${proposal.path}: ` +
+        `${violations.join("; ")}.`,
+      diagnosticHint:
+        "Submit one coherent source patch that leaves each participating seam declared exactly once and invoked from a separate production call site. Calls inside the seam's own body do not count.",
+    }
+  );
+}
+
+export async function failedTestRepairPatchBlock(state, toolName, args = {}, config = {}) {
+  if (toolName !== "apply_patch") return null;
+  const requiredSymbolBlock = await requiredSymbolRepairPatchBlock(state, args, config);
+  if (requiredSymbolBlock) return requiredSymbolBlock;
+  if (
+    (typeof args.patch === "string" && args.patch.trim()) ||
+    typeof args.path !== "string" ||
+    typeof args.search !== "string" ||
+    !args.search
+  ) return null;
   const currentFailure = currentFailedProjectTest(state);
   const diagnostic = state.meta?.failedTestDiagnostic;
   if (
@@ -7546,6 +8472,16 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     ...applyLocalFailureRecovery(config, state),
     ...(retainedDataDiscoveryReady ? { dataProjectDiscoveryReady: true } : {}),
   };
+  const patchContextRefresh = activePatchContextRefresh(state);
+  if (patchContextRefresh) {
+    runtimeConfig.patchContextRefreshRequired = true;
+    runtimeConfig.patchContextRefreshPath = patchContextRefresh.path;
+  }
+  const requiredSymbolRepair =
+    activeRequiredSymbolRepair(state) || currentRequiredSymbolRepair(state);
+  if (requiredSymbolRepair) {
+    runtimeConfig.testFailureRequiredSymbolRepair = requiredSymbolRepair;
+  }
   const verification = state.meta?.projectVerification || {};
   const mutationRevision = Number(verification.mutationRevision || 0);
   const testRuns = Array.isArray(verification.testRuns) ? verification.testRuns : [];
@@ -7603,6 +8539,29 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
         entry?.category === "unchanged-failed-test-rerun" &&
         Number(entry?.stagnationEpoch || 0) === stagnationEpoch
     );
+    const topologyRetryCount = Math.max(
+      0,
+      Number(requiredSymbolRepair?.topologyRetry?.count || 0)
+    );
+    const priorStalemateRevalidation = state.meta?.failedTestStalemateRevalidation;
+    const priorRevalidatedTopologyCount = Boolean(
+      priorStalemateRevalidation &&
+        Number(priorStalemateRevalidation.mutationRevision || 0) === mutationRevision &&
+        String(priorStalemateRevalidation.failureSignature || "") ===
+          String(retainedFailedTest.failureSignature || "") &&
+        projectTestCommandKey(priorStalemateRevalidation.command || "") ===
+          projectTestCommandKey(retainedFailedTest.command || "")
+    )
+      ? Math.max(0, Number(priorStalemateRevalidation.topologyRetryCount || 0))
+      : 0;
+    if (
+      runtimeConfig.testFailureRepairMutationRequired === true &&
+      topologyRetryCount - priorRevalidatedTopologyCount >= 2
+    ) {
+      runtimeConfig.testFailureStalemateRevalidation = true;
+      runtimeConfig.testFailureStalemateCommand = String(retainedFailedTest.command || "");
+      runtimeConfig.testFailureTopologyRetryCount = topologyRetryCount;
+    }
     const patchContext = state.meta?.testFailurePatchContext;
     const retainedNoChangePatch = (Array.isArray(toolLoop.recent) ? toolLoop.recent : []).some(
       (entry) =>
@@ -7717,10 +8676,54 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
           ["read_file", "search_files"].includes(String(entry?.toolName || ""))
         );
       });
+    const recoveryPacketPaths = currentRecoveryPacket
+      ? (Array.isArray(state.meta?.failedTestRecoveryPacket?.paths)
+          ? state.meta.failedTestRecoveryPacket.paths
+          : [])
+          .map(safeRecoveryEvidencePath)
+          .filter(Boolean)
+          .filter((item, index, items) => items.indexOf(item) === index)
+          .slice(0, 8)
+      : [];
+    const recoveryPacketContextMarkers = [
+      Date.parse(String(state.meta?.failedTestRecoveryPacket?.generatedAt || "")),
+      Date.parse(String(state.meta?.failedTestFocusedRecovery?.at || "")),
+      failureAt,
+    ].filter(Number.isFinite);
+    const recoveryPacketContextAt = recoveryPacketContextMarkers.length
+      ? Math.max(...recoveryPacketContextMarkers)
+      : Number.NaN;
+    const consumedRecoveryPacketPaths = new Set(
+      Number.isFinite(recoveryPacketContextAt)
+        ? (Array.isArray(toolLoop.recent) ? toolLoop.recent : [])
+            .filter((entry) => {
+              const entryAt = Date.parse(String(entry?.at || ""));
+              return (
+                Number.isFinite(entryAt) &&
+                entryAt > recoveryPacketContextAt &&
+                entry?.ok === true &&
+                entry?.blocked !== true &&
+                String(entry?.toolName || "") === "read_file"
+              );
+            })
+            .map((entry) => safeRecoveryEvidencePath(entry?.path))
+            .filter(Boolean)
+        : []
+    );
+    const unreadRecoveryPacketPaths = recoveryPacketPaths.filter(
+      (item) => !consumedRecoveryPacketPaths.has(item)
+    );
+    const exactRecoveryPacketContextActive = Boolean(
+      recoveryPacketPaths.length && Number.isFinite(recoveryPacketContextAt)
+    );
+    runtimeConfig.testFailureRepairContextPaths = unreadRecoveryPacketPaths;
     runtimeConfig.testFailureRepairNeedsPatchContext = Boolean(
       runtimeConfig.testFailureRepairMutationRequired &&
-        !patchContextConsumed &&
+        !(exactRecoveryPacketContextActive
+          ? unreadRecoveryPacketPaths.length === 0
+          : patchContextConsumed) &&
         (
+          unreadRecoveryPacketPaths.length > 0 ||
           retainedNoChangePatch ||
           (
             patchContext &&
@@ -8338,8 +9341,336 @@ async function refreshArtifactValidationPreflight(
   return state.meta.artifactProgress.preflight;
 }
 
+function toolResultWorkspacePath(toolResult = {}) {
+  for (const candidate of [
+    toolResult?.args?.path,
+    toolResult?.result?.path,
+    toolResult?.path,
+  ]) {
+    const normalized = safeRecoveryEvidencePath(candidate);
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function patchSearchTextWasNotFound(toolResult = {}) {
+  return (
+    String(toolResult.toolName || "") === "apply_patch" &&
+    toolResult.ok === false &&
+    /patch search text was not found/i.test(
+      String(toolResult.error || toolResult.reason || "")
+    )
+  );
+}
+
+export function activePatchContextRefresh(state = {}) {
+  const marker = state.meta?.toolLoop?.patchContextRequired;
+  if (
+    !marker ||
+    Number(marker.version || 0) !== PATCH_CONTEXT_REFRESH_VERSION ||
+    !safeRecoveryEvidencePath(marker.path)
+  ) {
+    return null;
+  }
+  const mutationRevision = Math.max(
+    0,
+    Number(state.meta?.projectVerification?.mutationRevision || 0)
+  );
+  if (Number(marker.mutationRevision || 0) !== mutationRevision) return null;
+  const markerGoalRevision = Math.max(0, Number(marker.goalRevision || 0));
+  const currentGoalRevision = Math.max(
+    0,
+    Number(state.meta?.goalContract?.revision || 0)
+  );
+  if (
+    markerGoalRevision > 0 &&
+    currentGoalRevision > 0 &&
+    !goalRevisionCoversActiveTask(state, markerGoalRevision)
+  ) {
+    return null;
+  }
+  return {
+    ...marker,
+    path: safeRecoveryEvidencePath(marker.path),
+  };
+}
+
+export function patchContextRefreshDecision(state = {}, toolResult = {}) {
+  const idempotencyBlock = Boolean(
+    String(toolResult.toolName || "") === "apply_patch" &&
+      toolResult.ok === false &&
+      toolResult.blocked === true &&
+      toolResult.category === "repeated-successful-mutation"
+  );
+  const currentGoalRevision = Math.max(
+    0,
+    Number(state.meta?.goalContract?.revision || 0)
+  );
+  const currentMutationRevision = Math.max(
+    0,
+    Number(state.meta?.projectVerification?.mutationRevision || 0)
+  );
+  const currentFailureSignature = String(
+    currentFailedProjectTest(state)?.test?.failureSignature || ""
+  );
+  const priorTopologyRefresh = state.meta?.toolLoop?.lastTopologyRefresh;
+  const topologyRefreshAlreadyConsumed = Boolean(
+    priorTopologyRefresh &&
+      Number(priorTopologyRefresh.goalRevision || 0) === currentGoalRevision &&
+      Number(priorTopologyRefresh.mutationRevision || 0) === currentMutationRevision &&
+      String(priorTopologyRefresh.failureSignature || "") === currentFailureSignature
+  );
+  const topologyBlock = Boolean(
+    String(toolResult.toolName || "") === "apply_patch" &&
+      toolResult.ok === false &&
+      toolResult.blocked === true &&
+      toolResult.category === "failed-test-required-symbol-topology" &&
+      !topologyRefreshAlreadyConsumed
+  );
+  const missingSearch = patchSearchTextWasNotFound(toolResult);
+  if (!missingSearch && !idempotencyBlock && !topologyBlock) return null;
+  const targetPath = toolResultWorkspacePath(toolResult);
+  if (!targetPath) return null;
+  const toolLoop = state.meta?.toolLoop || {};
+  const stagnationEpoch = Math.max(0, Number(toolLoop.stagnationEpoch || 0));
+  const recent = Array.isArray(toolLoop.recent) ? toolLoop.recent : [];
+  const samePathRecent = recent.filter(
+    (entry) =>
+      safeRecoveryEvidencePath(entry?.path) === targetPath &&
+      Number(entry?.stagnationEpoch || 0) === stagnationEpoch
+  );
+  const priorMissingSearches = samePathRecent.filter(
+    (entry) =>
+      entry?.toolName === "apply_patch" &&
+      entry?.ok === false &&
+      /patch search text was not found/i.test(String(entry?.error || ""))
+  ).length;
+  const followedIdempotencyBlock = samePathRecent.some(
+    (entry) =>
+      entry?.toolName === "apply_patch" &&
+      entry?.blocked === true &&
+      entry?.category === "repeated-successful-mutation"
+  );
+  const stalePatchFailureCount = priorMissingSearches + (missingSearch ? 1 : 0);
+  if (
+    !idempotencyBlock &&
+    !topologyBlock &&
+    stalePatchFailureCount < 1 &&
+    !followedIdempotencyBlock
+  ) {
+    return null;
+  }
+  const currentFailure = currentFailedProjectTest(state)?.test;
+  return {
+    version: PATCH_CONTEXT_REFRESH_VERSION,
+    path: targetPath,
+    goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+    mutationRevision: Math.max(
+      0,
+      Number(state.meta?.projectVerification?.mutationRevision || 0)
+    ),
+    failureSignature: String(currentFailure?.failureSignature || ""),
+    stalePatchFailureCount,
+    followedIdempotencyBlock: followedIdempotencyBlock || idempotencyBlock,
+    triggerCategory: idempotencyBlock
+      ? "repeated-successful-mutation"
+      : topologyBlock
+        ? "required-symbol-topology"
+        : "stale-patch-search",
+    at: new Date().toISOString(),
+  };
+}
+
+export function consumePatchContextRefreshRead(state = {}, toolResult = {}) {
+  const marker = activePatchContextRefresh(state);
+  if (
+    !marker ||
+    String(toolResult.toolName || "") !== "read_file" ||
+    toolResult.ok === false ||
+    toolResult.blocked === true ||
+    toolResultWorkspacePath(toolResult) !== marker.path
+  ) {
+    return null;
+  }
+  if (marker.triggerCategory === "required-symbol-topology") {
+    state.meta.toolLoop.lastTopologyRefresh = {
+      goalRevision: Math.max(0, Number(marker.goalRevision || 0)),
+      mutationRevision: Math.max(0, Number(marker.mutationRevision || 0)),
+      failureSignature: String(marker.failureSignature || ""),
+      at: new Date().toISOString(),
+    };
+  }
+  delete state.meta.toolLoop.patchContextRequired;
+  return marker;
+}
+
+export function activeRequiredSymbolRepair(state = {}) {
+  const marker = state.meta?.requiredSymbolRepair;
+  if (Number(marker?.version || 0) !== REQUIRED_SYMBOL_REPAIR_VERSION) return null;
+  const currentFailure = currentFailedProjectTest(state)?.test;
+  if (
+    !currentFailure ||
+    Number(marker.mutationRevision || 0) !==
+      Number(state.meta?.projectVerification?.mutationRevision || 0) ||
+    String(marker.failureSignature || "") !==
+      String(currentFailure.failureSignature || "") ||
+    !String(marker.symbol || "").trim()
+  ) {
+    return null;
+  }
+  const markerGoalRevision = Math.max(0, Number(marker.goalRevision || 0));
+  const currentGoalRevision = Math.max(
+    0,
+    Number(state.meta?.goalContract?.revision || 0)
+  );
+  if (
+    markerGoalRevision > 0 &&
+    currentGoalRevision > 0 &&
+    !goalRevisionCoversActiveTask(state, markerGoalRevision)
+  ) {
+    return null;
+  }
+  return {
+    ...marker,
+    path: safeRecoveryEvidencePath(marker.path),
+    owner: String(marker.owner || ""),
+    symbol: String(marker.symbol || ""),
+    contracts: (Array.isArray(marker.contracts) ? marker.contracts : [])
+      .map((item) => ({
+        kind: String(item?.kind || ""),
+        owner: String(item?.owner || ""),
+        symbol: String(item?.symbol || ""),
+        path: safeRecoveryEvidencePath(item?.path),
+      }))
+      .filter((item) => item.owner && item.symbol),
+  };
+}
+
+function requiredSymbolRepairPath(state = {}, owner = "") {
+  const sourcePaths = (state.meta?.failedTestRecoveryPacket?.paths || [])
+    .map((item) => safeRecoveryEvidencePath(item))
+    .filter(Boolean)
+    .filter((item) => !/(?:^|\/)tests?(?:\/|$)/i.test(item));
+  const ownerBasename = String(owner || "")
+    .split(".")
+    .filter(Boolean)
+    .at(-1);
+  return (
+    sourcePaths.find(
+      (item) => path.posix.basename(item, path.posix.extname(item)) === ownerBasename
+    ) || sourcePaths[0] || ""
+  );
+}
+
+export function currentRequiredSymbolRepair(state = {}) {
+  const currentFailure = currentFailedProjectTest(state)?.test;
+  if (!currentFailure) return null;
+  const evidenceText = [
+    String(currentFailure.failureSummary || ""),
+    String(state.meta?.failedTestRecoveryPacket?.content || ""),
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const contracts = failedTestRequiredSymbolContracts(evidenceText);
+  const contract = contracts[0];
+  if (!contract) return null;
+  const repairPath = requiredSymbolRepairPath(state, contract.owner);
+  return {
+    version: REQUIRED_SYMBOL_REPAIR_VERSION,
+    kind: contract.kind,
+    owner: contract.owner,
+    symbol: contract.symbol,
+    path: repairPath,
+    contracts: contracts
+      .map((item) => ({
+        ...item,
+        path: requiredSymbolRepairPath(state, item.owner),
+      }))
+      .filter((item) => !repairPath || item.path === repairPath),
+    confirmedAbsent: false,
+    goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+    mutationRevision: Math.max(
+      0,
+      Number(state.meta?.projectVerification?.mutationRevision || 0)
+    ),
+    failureSignature: String(currentFailure.failureSignature || ""),
+  };
+}
+
+export function requiredSymbolAbsenceDecision(state = {}, toolResult = {}) {
+  if (
+    String(toolResult.toolName || "") !== "search_files" ||
+    toolResult.ok === false ||
+    toolResult.blocked === true ||
+    !Array.isArray(toolResult.results) ||
+    toolResult.results.length !== 0
+  ) {
+    return null;
+  }
+  const currentFailure = currentFailedProjectTest(state)?.test;
+  if (!currentFailure) return null;
+  const query = String(toolResult.query || toolResult.args?.query || "")
+    .toLocaleLowerCase("en-US")
+    .trim();
+  if (!query) return null;
+  const evidenceText = [
+    String(currentFailure.failureSummary || ""),
+    String(state.meta?.failedTestRecoveryPacket?.content || ""),
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const contracts = failedTestRequiredSymbolContracts(evidenceText);
+  const contract = contracts.find((item) =>
+    query.includes(String(item.symbol || "").toLocaleLowerCase("en-US"))
+  );
+  if (!contract) return null;
+  const repairPath = requiredSymbolRepairPath(state, contract.owner);
+  return {
+    version: REQUIRED_SYMBOL_REPAIR_VERSION,
+    kind: contract.kind,
+    owner: contract.owner,
+    symbol: contract.symbol,
+    path: repairPath,
+    contracts: contracts
+      .map((item) => ({
+        ...item,
+        path: requiredSymbolRepairPath(state, item.owner),
+      }))
+      .filter((item) => !repairPath || item.path === repairPath),
+    confirmedAbsent: true,
+    query: String(toolResult.query || toolResult.args?.query || "").slice(0, 300),
+    goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+    mutationRevision: Math.max(
+      0,
+      Number(state.meta?.projectVerification?.mutationRevision || 0)
+    ),
+    failureSignature: String(currentFailure.failureSignature || ""),
+    at: new Date().toISOString(),
+  };
+}
+
 async function applyToolLoopGuard(state, toolResult, store, observers, config = {}) {
   if (!toolResult || toolResult.done) return;
+  const consumedPatchContext = consumePatchContextRefreshRead(state, toolResult);
+  if (consumedPatchContext) {
+    const instruction = [
+      `Fresh current source was read from ${consumedPatchContext.path}.`,
+      "Use only this current content and the latest retained failure evidence for the next repair.",
+      "Do not retry a search string absent from this file; make a materially different bounded mutation or run the exact verification when no further source change is needed.",
+    ].join(" ");
+    state.messages.push({ role: "user", content: instruction });
+    await store.appendEvent("patch_context.refreshed", {
+      path: consumedPatchContext.path,
+      mutationRevision: consumedPatchContext.mutationRevision,
+      goalRevision: consumedPatchContext.goalRevision,
+      instruction,
+    });
+    observers.event("patch_context.refreshed", {
+      path: consumedPatchContext.path,
+      mutationRevision: consumedPatchContext.mutationRevision,
+      goalRevision: consumedPatchContext.goalRevision,
+    });
+  }
   const noChangePatchFailure =
     String(toolResult.toolName || "") === "apply_patch" &&
     toolResult.ok === false &&
@@ -8451,9 +9782,11 @@ async function applyToolLoopGuard(state, toolResult, store, observers, config = 
     commandCwd: config.commandCwd,
   });
   const outcomeFingerprint = noProgressOutcomeFingerprint(toolResult);
+  const requiredPatchContextRefresh = patchContextRefreshDecision(state, toolResult);
   const entry = {
     signature,
     toolName: toolResult.toolName,
+    path: toolResultWorkspacePath(toolResult),
     ok: Boolean(toolResult.ok),
     blocked: Boolean(toolResult.blocked),
     category: String(toolResult.category || toolResult.commandPolicy?.category || ""),
@@ -8472,6 +9805,48 @@ async function applyToolLoopGuard(state, toolResult, store, observers, config = 
   };
   state.meta.toolLoop.recent.push(entry);
   state.meta.toolLoop.recent = state.meta.toolLoop.recent.slice(-20);
+
+  const activeRefresh = activePatchContextRefresh(state);
+  if (requiredPatchContextRefresh && !activeRefresh) {
+    state.meta.toolLoop.patchContextRequired = requiredPatchContextRefresh;
+    const message = [
+      `Patch context refresh required for ${requiredPatchContextRefresh.path}.`,
+      "The next tool turn is restricted to reading that exact current file before any further mutation.",
+      "This preserves successful work and prevents stale or paraphrased patches from looping against source that has already changed.",
+    ].join(" ");
+    state.messages.push({ role: "user", content: message });
+    await store.appendEvent("patch_context.refresh_required", {
+      ...requiredPatchContextRefresh,
+      message,
+    });
+    observers.event("patch_context.refresh_required", {
+      path: requiredPatchContextRefresh.path,
+      stalePatchFailureCount: requiredPatchContextRefresh.stalePatchFailureCount,
+      followedIdempotencyBlock: requiredPatchContextRefresh.followedIdempotencyBlock,
+    });
+  }
+
+  const requiredSymbolRepair = requiredSymbolAbsenceDecision(state, toolResult);
+  if (requiredSymbolRepair && !activeRequiredSymbolRepair(state)) {
+    state.meta.requiredSymbolRepair = requiredSymbolRepair;
+    const target = requiredSymbolRepair.path || "the canonical implementation source";
+    const message = [
+      `Exact search confirmed that the acceptance-test seam ${requiredSymbolRepair.owner}.${requiredSymbolRepair.symbol} is absent from ${target}.`,
+      "This is positive evidence of the implementation gap, not evidence that the test is invalid.",
+      "Use apply_patch to add the smallest real function or method with the signature implied by the test and route the tested production path through it so the mock or spy observes the call.",
+      "Do not edit or dismiss the acceptance test, and do not finish until the exact retained verification passes.",
+    ].join(" ");
+    state.messages.push({ role: "user", content: message });
+    await store.appendEvent("verification.required_symbol_absent", {
+      ...requiredSymbolRepair,
+      message,
+    });
+    observers.event("verification.required_symbol_absent", {
+      owner: requiredSymbolRepair.owner,
+      symbol: requiredSymbolRepair.symbol,
+      path: requiredSymbolRepair.path,
+    });
+  }
 
   if (entry.staticDiscovery && entry.ok && !entry.blocked) {
     recordStaticDiscoveryProgress(state.meta.toolLoop, signature);
@@ -9890,6 +11265,100 @@ function completionRepairProgressCount(events = []) {
   ).length;
 }
 
+export function pythonTopLevelDefinitionDuplicates(content = "") {
+  const lines = String(content || "").split(/\r?\n/);
+  const definitions = new Map();
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(/^(?:(async)\s+)?(def|class)\s+([A-Za-z_]\w*)\b/);
+    if (!match) continue;
+    if (match[2] === "def") {
+      let cursor = index - 1;
+      let overload = false;
+      while (cursor >= 0 && /^@\S/.test(lines[cursor])) {
+        if (/^@(?:typing\.)?overload(?:\b|\()/.test(lines[cursor])) overload = true;
+        cursor -= 1;
+      }
+      if (overload) continue;
+    }
+    const name = match[3];
+    const key = `${match[2]}:${name}`;
+    const prior = definitions.get(key) || {
+      kind: match[2],
+      name,
+      count: 0,
+      lines: [],
+    };
+    prior.count += 1;
+    prior.lines.push(index + 1);
+    definitions.set(key, prior);
+  }
+  return [...definitions.values()].filter((item) => item.count > 1);
+}
+
+export async function validateMutatedPythonSourceQuality(config = {}, state = {}) {
+  const history = Array.isArray(state.meta?.projectVerification?.mutationHistory)
+    ? state.meta.projectVerification.mutationHistory
+    : [];
+  const paths = [];
+  for (const mutation of [...history].reverse()) {
+    for (const candidate of Array.isArray(mutation?.paths) ? mutation.paths : []) {
+      const normalized = safeRecoveryEvidencePath(candidate);
+      if (
+        normalized &&
+        normalized.toLocaleLowerCase("en-US").endsWith(".py") &&
+        !paths.includes(normalized)
+      ) {
+        paths.push(normalized);
+      }
+      if (paths.length >= 24) break;
+    }
+    if (paths.length >= 24) break;
+  }
+  if (!paths.length) {
+    return {
+      ok: true,
+      checked: false,
+      paths: [],
+      defects: [],
+      reason: "No task-mutated Python source required duplicate-definition validation.",
+    };
+  }
+
+  const defects = [];
+  const checkedPaths = [];
+  for (const sourcePath of paths) {
+    let target;
+    try {
+      target = resolveWorkspacePath(config, sourcePath);
+    } catch {
+      continue;
+    }
+    const content = await fs.readFile(target.absolutePath, "utf8").catch(() => null);
+    if (content === null) continue;
+    checkedPaths.push(sourcePath);
+    for (const duplicate of pythonTopLevelDefinitionDuplicates(content)) {
+      defects.push({
+        code: "python-duplicate-top-level-definition",
+        path: sourcePath,
+        ...duplicate,
+      });
+    }
+  }
+  const summary = defects
+    .slice(0, 8)
+    .map((item) => `${item.path}: ${item.kind} ${item.name} at lines ${item.lines.join(", ")}`)
+    .join("; ");
+  return {
+    ok: defects.length === 0,
+    checked: checkedPaths.length > 0,
+    paths: checkedPaths,
+    defects,
+    reason: defects.length
+      ? `Task-mutated Python source contains duplicate top-level definitions: ${summary}. Keep one authoritative production definition for each name, then rerun the project verifier.`
+      : "Task-mutated Python source has no duplicate top-level definitions.",
+  };
+}
+
 async function evaluateCompletionEvidence({ config, state, store }) {
   const taskProfile = config.taskProfile || state.meta?.taskProfile || "auto";
   const contract = completionTaskContract(config, state);
@@ -10052,6 +11521,42 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
       };
     }
   }
+  const sourceQuality = await validateMutatedPythonSourceQuality(config, state);
+  state.meta = state.meta || {};
+  state.meta.sourceCodeQuality = sourceQuality;
+  if (sourceQuality.checked) {
+    const qualityEvent = {
+      step,
+      mode,
+      ok: sourceQuality.ok,
+      reason: sourceQuality.reason,
+      paths: sourceQuality.paths,
+      defects: sourceQuality.defects,
+    };
+    await store.appendEvent("source.quality_assessed", qualityEvent);
+    observers.event("source.quality_assessed", qualityEvent);
+  }
+  if (!sourceQuality.ok) {
+    const priorSemanticReason = assessment.semantic?.checked && !assessment.semantic?.ok
+      ? String(assessment.semantic.reason || "")
+      : "";
+    assessment = {
+      ...assessment,
+      ok: false,
+      sourceQuality,
+      evaluation: {
+        ...assessment.evaluation,
+        ok: false,
+        reason: sourceQuality.reason,
+      },
+      semantic: {
+        ...assessment.semantic,
+        checked: true,
+        ok: false,
+        reason: [priorSemanticReason, sourceQuality.reason].filter(Boolean).join(" "),
+      },
+    };
+  }
   const hasRealBlocker = finishResultClaimsBlocker(candidateResult) && hasScsBlockerEvidence(assessment.ledger);
   if (assessment.ok && !claimsIncompleteWork) return { action: "accept", assessment };
   if (claimsIncompleteWork) {
@@ -10103,6 +11608,13 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
           ok: Boolean(documentQuality.ok),
           reason: documentQuality.reason || "",
           defects: documentQuality.defects || [],
+        }
+      : null,
+    sourceQuality: sourceQuality.checked
+      ? {
+          ok: Boolean(sourceQuality.ok),
+          reason: sourceQuality.reason || "",
+          defects: sourceQuality.defects || [],
         }
       : null,
     progressCount,
@@ -10371,8 +11883,31 @@ async function recordToolContractViolation({
   const priorConsecutive = sameGoal
     ? Number(prior.consecutive ?? prior.count ?? 0)
     : 0;
-  const violationCount = priorConsecutive + 1;
-  const totalViolationCount = (sameGoal ? Number(prior.total || prior.count || 0) : 0) + 1;
+  const currentFailure = currentFailedProjectTest(state)?.test;
+  const deferredVerificationKey = validation.deferUntilMutation === true
+      ? hashForLog(JSON.stringify({
+        goalKey,
+        goalRevision: Number(state.meta?.goalContract?.revision || 0),
+        mutationRevision: Number(currentFailure?.mutationRevision || 0),
+        failureSignature: String(currentFailure?.failureSignature || ""),
+        command: String(currentFailure?.command || ""),
+      }))
+    : "";
+  const firstDeferredVerification = Boolean(
+    deferredVerificationKey &&
+      state.meta.deferredFailedTestVerification?.key !== deferredVerificationKey
+  );
+  if (firstDeferredVerification) {
+    state.meta.deferredFailedTestVerification = {
+      key: deferredVerificationKey,
+      at: new Date().toISOString(),
+      reason: "mutation-required-before-verification",
+    };
+  }
+  const violationIncrement = firstDeferredVerification ? 0 : 1;
+  const violationCount = priorConsecutive + violationIncrement;
+  const totalViolationCount =
+    (sameGoal ? Number(prior.total || prior.count || 0) : 0) + violationIncrement;
   state.meta.toolContractViolation = {
     goalKey,
     count: violationCount,
@@ -10397,11 +11932,55 @@ async function recordToolContractViolation({
   const completedRequestedPaths = requestedCalls
     .map((call) => call.path)
     .filter((item) => item && completedArtifacts.has(item));
-  const currentFailure = currentFailedProjectTest(state)?.test;
   const repairPaths = (state.meta?.failedTestRecoveryPacket?.paths || [])
     .map((item) => String(item || "").replace(/\\/g, "/"))
     .filter((item) => item && !/(?:^|\/)tests?(?:\/|$)/i.test(item))
     .slice(0, 6);
+  const requiredSymbolRepair =
+    activeRequiredSymbolRepair(state) || currentRequiredSymbolRepair(state);
+  const requiredSymbolContracts = (
+    Array.isArray(requiredSymbolRepair?.contracts) && requiredSymbolRepair.contracts.length
+      ? requiredSymbolRepair.contracts
+      : requiredSymbolRepair?.symbol
+        ? [requiredSymbolRepair]
+        : []
+  )
+    .map((item) => ({
+      owner: String(item?.owner || "").slice(0, 160),
+      symbol: String(item?.symbol || "").slice(0, 160),
+    }))
+    .filter((item) => item.owner && item.symbol)
+    .slice(0, 8);
+  const firstReportedArgs = safeParseToolContent(
+    reportedToolCalls[0]?.function?.arguments
+  ) || {};
+  const candidateReplacement = typeof firstReportedArgs.replace === "string"
+    ? firstReportedArgs.replace
+    : typeof firstReportedArgs.patch === "string"
+      ? firstReportedArgs.patch
+      : "";
+  const replacementMinimums = new Map(
+    (Array.isArray(requiredSymbolRepair?.topologyRetry?.replacementRequirements)
+      ? requiredSymbolRepair.topologyRetry.replacementRequirements
+      : [])
+      .map((item) => [
+        String(item?.symbol || ""),
+        Math.max(2, Number(item?.minimumOccurrences || 0)),
+      ])
+      .filter(([symbol]) => symbol)
+  );
+  const candidateTopologyCounts = candidateReplacement
+    ? requiredSymbolContracts.map((item) => {
+        const escaped = item.symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const count = (candidateReplacement.match(new RegExp(`\\b${escaped}\\s*\\(`, "g")) || []).length;
+        return {
+          owner: item.owner,
+          symbol: item.symbol,
+          count,
+          minimumOccurrences: replacementMinimums.get(item.symbol) || 2,
+        };
+      })
+    : [];
   const result = {
     ok: false,
     blocked: true,
@@ -10427,6 +12006,11 @@ async function recordToolContractViolation({
       failedTestCommand: String(currentFailure?.command || ""),
       failedTestSummary: String(currentFailure?.failureSummary || ""),
       canonicalRepairPaths: repairPaths,
+      requiredSymbolContracts,
+      topologyViolations: Array.isArray(requiredSymbolRepair?.topologyRetry?.violations)
+        ? requiredSymbolRepair.topologyRetry.violations.map(String).slice(0, 6)
+        : [],
+      candidateTopologyCounts,
     },
     toolName: "tool_call_batch",
     args: {},
@@ -10481,6 +12065,30 @@ export function toolContractRepairMessage(toolResult) {
     .replace(/\s+/g, " ")
     .trim();
   const verificationToolOffered = toolResult.offeredTools?.includes("run_command") === true;
+  const requiredSymbolContracts = Array.isArray(
+    toolResult.recoveryContext?.requiredSymbolContracts
+  )
+    ? toolResult.recoveryContext.requiredSymbolContracts
+        .map((item) => `${String(item?.owner || "")}.${String(item?.symbol || "")}`)
+        .filter((item) => item !== ".")
+        .slice(0, 8)
+    : [];
+  const topologyViolations = Array.isArray(toolResult.recoveryContext?.topologyViolations)
+    ? toolResult.recoveryContext.topologyViolations.map(String).filter(Boolean).slice(0, 6)
+    : [];
+  const candidateTopologyCounts = Array.isArray(
+    toolResult.recoveryContext?.candidateTopologyCounts
+  )
+    ? toolResult.recoveryContext.candidateTopologyCounts
+        .map((item) => ({
+          owner: String(item?.owner || ""),
+          symbol: String(item?.symbol || ""),
+          count: Math.max(0, Number(item?.count || 0)),
+          minimumOccurrences: Math.max(2, Number(item?.minimumOccurrences || 0)),
+        }))
+        .filter((item) => item.owner && item.symbol)
+        .slice(0, 8)
+    : [];
   const schemaDiagnostics = [...new Set(
     (Array.isArray(toolResult.errors) ? toolResult.errors : [])
       .filter((error) => error?.code !== "TOOL_ARGUMENTS_SCHEMA_INVALID")
@@ -10496,6 +12104,17 @@ export function toolContractRepairMessage(toolResult) {
     `Reason code: ${toolResult.code || "TOOL_CALL_INVALID"}.`,
     requested.length ? `Rejected request: ${requested.join(", ")}.` : "",
     `Tools offered in that turn: ${offered}.`,
+    requiredSymbolContracts.length
+      ? `Acceptance seam contract: ${requiredSymbolContracts.join(", ")}. In the canonical producer, declare each seam exactly once and call each from the tested production path outside its own definition; a definition-only, duplicate, or recursive patch is invalid.`
+      : "",
+    topologyViolations.length
+      ? `Deterministic topology defects to correct: ${topologyViolations.join("; ")}.`
+      : "",
+    candidateTopologyCounts.length
+      ? `Rejected replacement call counts: ${candidateTopologyCounts
+          .map((item) => `${item.owner}.${item.symbol}=${item.count}, requires at least ${item.minimumOccurrences} (one declaration plus one external production call)`)
+          .join("; ")}.`
+      : "",
     completedTargets.length
       ? `These targets are already completed and must not be recreated: ${completedTargets.join(", ")}.`
       : "",
@@ -10506,7 +12125,9 @@ export function toolContractRepairMessage(toolResult) {
       ? [
           `The retained verification command already failed and is intentionally unavailable until the failure is repaired: ${failedTestCommand}.`,
           failedTestSummary ? `Failure evidence: ${failedTestSummary}.` : "",
-          "Do not request run_command or rerun that command now; use an offered read or patch tool to address the evidence first.",
+          toolResult.code === "VERIFICATION_DEFERRED_UNTIL_MUTATION"
+            ? "This exact repeat was deferred without consuming the one bounded correction chance. The current evidence is already complete; mutate the canonical source now."
+            : "Do not request run_command or rerun that command now; use an offered read or patch tool to address the evidence first.",
         ].filter(Boolean).join(" ")
       : "",
     schemaDiagnostics.length
@@ -10719,6 +12340,171 @@ export function recoverUnavailableVerificationRerunAsCanonicalRead(
     originalToolName: "run_command",
     translatedToolName: "read_file",
     translatedPath,
+    failedCommand,
+  };
+}
+
+export function recoverStalemateDiscoveryAsExactVerification(
+  config = {},
+  reportedToolCalls = [],
+  contract = null,
+  validation = {}
+) {
+  const calls = Array.isArray(reportedToolCalls) ? reportedToolCalls : [];
+  const errors = Array.isArray(validation?.errors) ? validation.errors : [];
+  if (
+    validation?.ok === true ||
+    config.testFailureStalemateRevalidation !== true ||
+    calls.length !== 1 ||
+    errors.length === 0 ||
+    errors.some((error) => error?.code !== "TOOL_NOT_OFFERED")
+  ) {
+    return null;
+  }
+
+  const originalCall = calls[0];
+  const requestedToolName = String(originalCall?.function?.name || "");
+  if (!new Set(["inspect_project", "read_file", "search_files"]).has(requestedToolName)) {
+    return null;
+  }
+
+  const exactCommand = String(config.testFailureStalemateCommand || "");
+  if (!exactCommand) return null;
+  const descriptors = Array.isArray(contract?.tools) ? contract.tools : [];
+  const runDescriptor = descriptors.find(
+    (descriptor) =>
+      descriptor?.type === "function" && descriptor.function?.name === "run_command"
+  );
+  const allowedCommands =
+    runDescriptor?.function?.parameters?.properties?.command?.enum;
+  if (
+    !Array.isArray(allowedCommands) ||
+    allowedCommands.length !== 1 ||
+    allowedCommands[0] !== exactCommand
+  ) {
+    return null;
+  }
+
+  const recoveredCall = {
+    ...originalCall,
+    function: {
+      ...originalCall.function,
+      name: "run_command",
+      arguments: JSON.stringify({ command: exactCommand }),
+    },
+  };
+  const recovered = resolveDispatchableToolCallBatch([recoveredCall], contract);
+  if (!recovered.ok) return null;
+  return {
+    ...recovered,
+    recoveredStalemateVerification: true,
+    originalCode: "TOOL_NOT_OFFERED",
+    originalToolName: requestedToolName,
+    translatedToolName: "run_command",
+  };
+}
+
+export function recoverRequiredPatchContextReadWithoutToolCall(
+  config = {},
+  reportedToolCalls = [],
+  contract = null,
+  validation = {}
+) {
+  const calls = Array.isArray(reportedToolCalls) ? reportedToolCalls : [];
+  if (
+    validation?.ok !== true ||
+    calls.length !== 0 ||
+    config.patchContextRefreshRequired !== true
+  ) {
+    return null;
+  }
+  const exactPath = safeRecoveryEvidencePath(config.patchContextRefreshPath);
+  if (!exactPath) return null;
+
+  const descriptors = Array.isArray(contract?.tools) ? contract.tools : [];
+  const actionable = descriptors.filter(
+    (descriptor) =>
+      descriptor?.type === "function" && descriptor.function?.name !== "finish"
+  );
+  if (
+    actionable.length !== 1 ||
+    actionable[0].function?.name !== "read_file"
+  ) {
+    return null;
+  }
+  const allowedPaths =
+    actionable[0].function?.parameters?.properties?.path?.enum;
+  if (
+    !Array.isArray(allowedPaths) ||
+    allowedPaths.length !== 1 ||
+    safeRecoveryEvidencePath(allowedPaths[0]) !== exactPath
+  ) {
+    return null;
+  }
+
+  const recoveredCall = {
+    id: `call_aginti_patch_refresh_${crypto.randomUUID()}`,
+    type: "function",
+    function: {
+      name: "read_file",
+      arguments: JSON.stringify({ path: exactPath }),
+    },
+  };
+  const recovered = resolveDispatchableToolCallBatch([recoveredCall], contract);
+  if (!recovered.ok) return null;
+  return {
+    ...recovered,
+    recoveredRequiredPatchContextRead: true,
+    originalToolName: "",
+    translatedToolName: "read_file",
+    translatedPath: exactPath,
+  };
+}
+
+export function deferUnavailableVerificationRerunUntilMutation(
+  config = {},
+  state = {},
+  reportedToolCalls = [],
+  contract = null,
+  validation = {}
+) {
+  const calls = Array.isArray(reportedToolCalls) ? reportedToolCalls : [];
+  const errors = Array.isArray(validation?.errors) ? validation.errors : [];
+  if (
+    validation?.ok === true ||
+    config.testFailureRepairMutationRequired !== true ||
+    calls.length !== 1 ||
+    !errors.some((error) => error?.code === "TOOL_NOT_OFFERED") ||
+    errors.some((error) => error?.code !== "TOOL_NOT_OFFERED")
+  ) {
+    return null;
+  }
+  const originalCall = calls[0];
+  if (String(originalCall?.function?.name || "") !== "run_command") return null;
+  const descriptors = Array.isArray(contract?.tools) ? contract.tools : [];
+  if (
+    descriptors.some((descriptor) => descriptor?.function?.name === "run_command") ||
+    descriptors.some((descriptor) => descriptor?.function?.name === "read_file")
+  ) {
+    return null;
+  }
+  const currentFailure = currentFailedProjectTest(state)?.test;
+  const requestedCommand = String(
+    safeParseToolContent(originalCall?.function?.arguments)?.command || ""
+  );
+  const failedCommand = String(currentFailure?.command || "");
+  if (
+    !requestedCommand ||
+    !failedCommand ||
+    !projectCommandsEquivalent(requestedCommand, failedCommand, config)
+  ) {
+    return null;
+  }
+  return {
+    ...validation,
+    code: "VERIFICATION_DEFERRED_UNTIL_MUTATION",
+    reason: "The exact retained failing verifier was deferred until a canonical source mutation is accepted.",
+    deferUntilMutation: true,
     failedCommand,
   };
 }
@@ -11964,8 +13750,53 @@ async function runAgentOnce(config) {
         state.meta.runtimeConfig = captureSessionRuntime(config, {
           revision: state.meta.runtimeConfig?.revision || 1,
         });
-        const recoveryInstruction = localFailureRecoveryInstruction(localFailureRecovery);
-        state.messages.push({ role: "user", content: recoveryInstruction });
+        const recoveryRuntimeConfig = nextStepRuntimeConfig(config, state);
+        const recoveryInstruction = localFailureRecoveryInstruction(localFailureRecovery, {
+          testFailureRepairMutationRequired:
+            recoveryRuntimeConfig.testFailureRepairMutationRequired === true,
+          requiredSymbolRepair: recoveryRuntimeConfig.testFailureRequiredSymbolRepair,
+        });
+        const currentFailure = currentFailedProjectTest(state)?.test;
+        let focusedHistoryDetail = null;
+        if (currentFailure) {
+          const recoveryEvidence = await buildFailedTestRecoveryPacket(config, state);
+          if (recoveryEvidence.content) {
+            state.meta.failedTestRecoveryPacket = {
+              packetVersion: FAILED_TEST_RECOVERY_PACKET_VERSION,
+              content: recoveryEvidence.content,
+              paths: recoveryEvidence.paths,
+              mutationRevision: Number(currentFailure.mutationRevision || 0),
+              failureSignature: String(currentFailure.failureSignature || ""),
+              command: String(currentFailure.command || ""),
+              generatedAt: new Date().toISOString(),
+            };
+          }
+          const charsBefore = countMessageChars(state.messages);
+          state.messages = buildFailedTestFocusedRecoveryMessages(
+            state,
+            config,
+            recoveryInstruction
+          );
+          focusedHistoryDetail = {
+            step,
+            fromModel: localFailureRecovery.fromModel,
+            model: localFailureRecovery.model,
+            charsBefore,
+            charsAfter: countMessageChars(state.messages),
+            packetVersion: FAILED_TEST_RECOVERY_PACKET_VERSION,
+            failureSignature: String(currentFailure.failureSignature || ""),
+          };
+          await store.appendEvent(
+            "history.focused_for_local_failure_recovery",
+            focusedHistoryDetail
+          );
+          observers.event(
+            "history.focused_for_local_failure_recovery",
+            focusedHistoryDetail
+          );
+        } else {
+          state.messages.push({ role: "user", content: recoveryInstruction });
+        }
         const detail = {
           step,
           fromModel: localFailureRecovery.fromModel,
@@ -11975,6 +13806,12 @@ async function runAgentOnce(config) {
           contractViolationCount: localFailureRecovery.contractViolationCount || 0,
           failedTools: localFailureRecovery.failedTools || [],
           reason: localFailureRecovery.reason,
+          ...(focusedHistoryDetail
+            ? {
+                historyCharsBefore: focusedHistoryDetail.charsBefore,
+                historyCharsAfter: focusedHistoryDetail.charsAfter,
+              }
+            : {}),
         };
         await store.appendEvent("provider.local_failure_recovery", detail);
         observers.event("provider.local_failure_recovery", detail);
@@ -12364,6 +14201,29 @@ async function runAgentOnce(config) {
       let toolBatchValidation = rawToolCalls === undefined || rawToolCalls === null
         ? { ok: true, calls: [], acceptedToolCalls: [], deferredToolCalls: [] }
         : resolveDispatchableToolCallBatch(rawToolCalls, responseToolContract);
+      if (toolBatchValidation.ok) {
+        const recoveredRequiredPatchContextRead =
+          recoverRequiredPatchContextReadWithoutToolCall(
+            stepRuntimeConfig,
+            rawToolCalls,
+            responseToolContract,
+            toolBatchValidation
+          );
+        if (recoveredRequiredPatchContextRead) {
+          toolBatchValidation = recoveredRequiredPatchContextRead;
+        }
+      }
+      if (!toolBatchValidation.ok) {
+        const recoveredStalemateVerification = recoverStalemateDiscoveryAsExactVerification(
+          stepRuntimeConfig,
+          rawToolCalls,
+          responseToolContract,
+          toolBatchValidation
+        );
+        if (recoveredStalemateVerification) {
+          toolBatchValidation = recoveredStalemateVerification;
+        }
+      }
       if (!toolBatchValidation.ok) {
         const recoveredVerificationRerun = recoverUnavailableVerificationRerunAsCanonicalRead(
           stepRuntimeConfig,
@@ -12373,6 +14233,16 @@ async function runAgentOnce(config) {
           toolBatchValidation
         );
         if (recoveredVerificationRerun) toolBatchValidation = recoveredVerificationRerun;
+      }
+      if (!toolBatchValidation.ok) {
+        const deferredVerificationRerun = deferUnavailableVerificationRerunUntilMutation(
+          stepRuntimeConfig,
+          state,
+          rawToolCalls,
+          responseToolContract,
+          toolBatchValidation
+        );
+        if (deferredVerificationRerun) toolBatchValidation = deferredVerificationRerun;
       }
       if (!toolBatchValidation.ok) {
         const recoveredFocusedWrite = await recoverFocusedWholeFileWriteAsExactPatch(
@@ -12462,7 +14332,10 @@ async function runAgentOnce(config) {
 
       await recordToolContractRecovery({ config, state, store, observers, step });
 
-      if (toolBatchValidation.recoveredSingletonEnums) {
+      if (
+        toolBatchValidation.recoveredSingletonEnums ||
+        toolBatchValidation.recoveredReadRangeAlias
+      ) {
         const detail = {
           step,
           toolName: String(toolCalls[0]?.function?.name || ""),
@@ -12502,6 +14375,29 @@ async function runAgentOnce(config) {
         observers.event("tool.intent_repaired", detail);
       }
 
+      if (toolBatchValidation.recoveredStalemateVerification) {
+        const detail = {
+          step,
+          originalToolName: String(toolBatchValidation.originalToolName || ""),
+          translatedToolName: String(toolBatchValidation.translatedToolName || ""),
+          source: "stale-evidence-revalidation",
+        };
+        await store.appendEvent("tool.intent_repaired", detail);
+        observers.event("tool.intent_repaired", detail);
+      }
+
+      if (toolBatchValidation.recoveredRequiredPatchContextRead) {
+        const detail = {
+          step,
+          originalToolName: "",
+          translatedToolName: "read_file",
+          path: String(toolBatchValidation.translatedPath || ""),
+          source: "mandatory-patch-context-refresh",
+        };
+        await store.appendEvent("tool.intent_repaired", detail);
+        observers.event("tool.intent_repaired", detail);
+      }
+
       if (toolBatchValidation.recoveredFocusedTextRewrite) {
         const detail = {
           step,
@@ -12535,6 +14431,9 @@ async function runAgentOnce(config) {
         preserveAssistantMessage(
           toolBatchValidation.recoveredSequentially ||
           toolBatchValidation.recoveredSingletonEnums ||
+          toolBatchValidation.recoveredReadRangeAlias ||
+          toolBatchValidation.recoveredStalemateVerification ||
+          toolBatchValidation.recoveredRequiredPatchContextRead ||
           toolBatchValidation.recoveredUnavailableVerificationRerun ||
           toolBatchValidation.recoveredFocusedWholeFileWrite ||
           toolBatchValidation.recoveredFocusedTextRewrite
