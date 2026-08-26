@@ -22,6 +22,46 @@ assert.equal(productionIntent.kind, "tex-pdf");
 assert.deepEqual(productionIntent.requiredFormats, ["tex", "pdf"]);
 assert.equal(productionIntent.requirements.minimumFigureCount, 1);
 
+for (const prompt of [
+  "Create the report in LaTeX and give me the PDF.",
+  "Generate a QAOA paper using LaTeX and return a PDF.",
+  "Prepare the TeX manuscript and PDF.",
+  "Write the LaTeX and PDF files.",
+  "Produce both LaTeX and PDF versions.",
+  "Please send me the TeX source and compiled PDF.",
+  "I need the .tex and .pdf files.",
+  "Give me a LaTeX source and compiled PDF.",
+  "Output a TeX source plus compiled PDF.",
+  "请提供 LaTeX 源文件和编译后的 PDF。",
+  "我需要 LaTeX 源文件和编译后的 PDF。",
+  "制作 LaTeX 和 PDF 文件。",
+]) {
+  assert.equal(
+    classifyIntegrationDocumentArtifactIntent(prompt, []).required,
+    true,
+    `${prompt} must request the paired TeX/PDF deliverable`,
+  );
+}
+
+for (const prompt of [
+  "Write a tutorial about how LaTeX source is compiled to PDF.",
+  "Can you write a tutorial on using LaTeX to compile a PDF?",
+  "Prepare a comparison of LaTeX source and compiled PDF internals.",
+  "Generate prose explaining a LaTeX source and compiled PDF.",
+  "Create a LaTeX source and compiled PDF, but do not create files.",
+  "Create neither a LaTeX source nor compiled PDF; just explain them.",
+  "Write a LaTeX source-code example that mentions PDF.",
+  "Provide advice on creating a LaTeX source and compiled PDF.",
+  "Provide an explanation of LaTeX and PDF.",
+  "Write about LaTeX and PDF.",
+]) {
+  assert.equal(
+    classifyIntegrationDocumentArtifactIntent(prompt, []).required,
+    false,
+    `${prompt} describes the formats but must not create files`,
+  );
+}
+
 const priorConversation = [
   { role: "user", content: productionPrompt },
   { role: "assistant", content: "Created the requested TeX source and PDF." },
@@ -32,6 +72,25 @@ const revision = classifyIntegrationDocumentArtifactIntent("revise it and recomp
 assert.equal(revision.required, true);
 assert.equal(revision.requirements.minimumFigureCount, 1, "explicit revision retains the figure requirement");
 assert.equal(isIntegrationDocumentArtifactRevision("revise it and recompile", priorConversation), true);
+for (const prompt of [
+  "Update it",
+  "Change it",
+  "Make it better",
+  "Make it longer and recompile",
+  "Recompile",
+  "Add more detail",
+]) {
+  assert.equal(
+    classifyIntegrationDocumentArtifactIntent(prompt, priorConversation).required,
+    true,
+    `${prompt} must be a natural immediate document followup`,
+  );
+  assert.equal(
+    isIntegrationDocumentArtifactRevision(prompt, priorConversation),
+    true,
+    `${prompt} must retain prior-source revision semantics`,
+  );
+}
 for (const prompt of [
   "Create another new LaTeX report and compiled PDF about a different topic.",
   "Build a fresh LaTeX report and PDF about a different topic.",
@@ -77,6 +136,74 @@ for (const prompt of [
   );
 }
 
+for (const action of ["Revise", "Edit", "Fix", "Rewrite"]) {
+  const prompt =
+    `${action} this supplied self-contained LaTeX source and return both current.tex and current.pdf:\n` +
+    "```latex\n\\documentclass{article}\n\\begin{document}\nCURRENT_FENCED_SOURCE\n\\end{document}\n```";
+  assert.equal(classifyIntegrationDocumentArtifactIntent(prompt, []).required, true);
+  assert.equal(
+    isIntegrationDocumentArtifactRevision(prompt, []),
+    false,
+    `${action} with a complete fenced source must compile that current source without lineage`,
+  );
+}
+
+const interveningConversation = [
+  ...priorConversation,
+  { role: "user", content: "What is one plus one?" },
+  { role: "assistant", content: "Two." },
+];
+for (const prompt of ["Update it", "Change it", "Make it better", "Make it longer and recompile", "Recompile"]) {
+  const strictLineage = Object.freeze({
+    active: true,
+    allowImplicitReference: false,
+    minimumFigureCount: 1,
+  });
+  assert.equal(classifyIntegrationDocumentArtifactIntent(prompt, interveningConversation, strictLineage).required, false);
+  assert.equal(
+    isIntegrationDocumentArtifactRevision(prompt, interveningConversation, strictLineage),
+    false,
+    `${prompt} must not bind a bare pronoun across an intervening non-document answer`,
+  );
+}
+assert.equal(
+  isIntegrationDocumentArtifactRevision(
+    "Update the previous TeX document title and recompile the PDF.",
+    interveningConversation,
+    { active: true, allowImplicitReference: false, minimumFigureCount: 1 },
+  ),
+  true,
+  "an explicit document target may use older same-thread committed lineage",
+);
+
+const clippedLineageContext = Object.freeze({
+  active: true,
+  allowImplicitReference: true,
+  minimumFigureCount: 2,
+});
+const clippedConversation = Array.from({ length: 24 }, (_, index) => ({
+  role: index % 2 === 0 ? "user" : "assistant",
+  content: `Ordinary clipped message ${index}.`,
+}));
+assert.equal(
+  classifyIntegrationDocumentArtifactIntent("Update it and recompile", clippedConversation, clippedLineageContext)
+    .requirements.minimumFigureCount,
+  2,
+  "verified prior figure count must survive clipped public conversation",
+);
+assert.equal(
+  classifyIntegrationDocumentArtifactIntent("Remove all figures and recompile the PDF", clippedConversation, clippedLineageContext)
+    .requirements.minimumFigureCount,
+  0,
+  "the current user may explicitly remove the inherited figure requirement",
+);
+assert.equal(
+  classifyIntegrationDocumentArtifactIntent("Do not remove the figures; update it", clippedConversation, clippedLineageContext)
+    .requirements.minimumFigureCount,
+  2,
+  "a negated removal must preserve the inherited verified figure count",
+);
+
 const mutationFollowups = [
   ["add a section on approximation ratios", 1],
   ["include three references", 1],
@@ -107,6 +234,11 @@ for (const prompt of [
   "Replace x with y in the equation below.",
   "Can you explain why someone might say \"remove the figure\"?",
   "Add this to my shopping list.",
+  "Add it to my shopping list.",
+  "Remove it from my shopping list.",
+  "Replace it in the code sample below.",
+  "Make the code sample better.",
+  "Make the shopping list longer.",
   "Change this chat topic to gardening.",
   "Update me on the weather report.",
 ]) {

@@ -9,24 +9,34 @@ import {
 export const INTEGRATION_DOCUMENT_ARTIFACT_SCHEMA_VERSION = "aginti-integration-document-artifacts-v1";
 
 const DOCUMENT_ACTION =
-  /^(?:make|create|generate|write|rewrite|revise|update|edit|modify|correct|fix|regenerate|recompile|produce|prepare|compile|typeset|render|export|build|deliver|provide|save)\b/iu;
+  /^(?:make|create|generate|write|rewrite|revise|update|edit|modify|correct|fix|regenerate|recompile|produce|prepare|compile|typeset|render|export|build|deliver|provide|send|give|return|output|share|save)\b/iu;
 const DOCUMENT_FOLLOWUP_MUTATION_ACTION = /^(?:add|include|change|remove|replace)\b/iu;
 const DOCUMENT_STRONG_REVISION_ACTION =
   /^(?:rewrite|revise|edit|modify|correct|fix|compile|typeset|render|export)\b/iu;
 const DOCUMENT_MUTATION_TARGET =
-  /\b(?:latex|tex|pdf|source|title|heading|section|paragraph|wording|grammar|layout|formatting|fonts?|margins?|tables?|figures?|citations?|references?|bibliography|abstract|captions?|appendix|appendices)\b|\b(?:this|that|same|existing|previous|current|the|its)\s+(?:files?|documents?|reports?|papers?|manuscripts?|artifacts?|outputs?|deliverables?)\b|(?:源文件|源码|源碼|标题|標題|段落|排版|格式|字体|字體|页边距|頁邊距|表格|图片|圖片|引用|参考文献|參考文獻|摘要|附录|附錄)/iu;
+  /\b(?:latex|tex|pdf|source|title|heading|section|paragraph|wording|grammar|layout|formatting|fonts?|margins?|tables?|figures?|citations?|references?|bibliography|abstract|captions?|appendix|appendices|details?|content|length)\b|\b(?:better|longer|shorter|clearer|stronger|simpler|cleaner|more\s+detailed)\b|\b(?:this|that|same|existing|previous|current|the|its)\s+(?:files?|documents?|reports?|papers?|manuscripts?|artifacts?|outputs?|deliverables?)\b|(?:它|这个|這個|源文件|源码|源碼|标题|標題|段落|排版|格式|字体|字體|页边距|頁邊距|表格|图片|圖片|引用|参考文献|參考文獻|摘要|附录|附錄|细节|細節|内容|內容)/iu;
+const DOCUMENT_BARE_IT_REFERENCE = /\bit\b/iu;
+const DOCUMENT_EXPLICIT_MUTATION_TARGET =
+  /(?:\.tex\b|\.pdf\b|\b(?:latex|tex|pdf|source|title|heading|section|paragraph|wording|grammar|layout|formatting|fonts?|margins?|tables?|figures?|citations?|references?|bibliography|abstract|captions?|appendix|appendices)\b|\b(?:this|that|same|existing|previous|prior|current|the|its)\s+(?:files?|documents?|reports?|papers?|manuscripts?|artifacts?|outputs?|deliverables?)\b|(?:源文件|源码|源碼|文件|文档|文檔|报告|報告|论文|論文|标题|標題|段落|排版|格式|字体|字體|页边距|頁邊距|表格|图片|圖片|引用|参考文献|參考文獻|摘要|附录|附錄))/iu;
 const DOCUMENT_STRONG_REVISION_REFERENCE =
   /\bit\b|\b(?:this|that|same|existing|previous|current|the|its)\s+(?:latex|tex|pdf|source|files?|documents?|reports?|papers?|manuscripts?|artifacts?|outputs?|deliverables?|title|heading|section|paragraph|wording|grammar|layout|formatting|fonts?|margins?|tables?|figures?|citations?|references?|bibliography|abstract|captions?|appendix|appendices)\b|\b(?:latex|tex|pdf|source|documents?|reports?|papers?|manuscripts?|title|heading|section|paragraph|wording|grammar|layout|formatting|fonts?|margins?|tables?|figures?|citations?|references?|bibliography|abstract|captions?|appendix|appendices)\b|(?:它|这个|這個|同一|源文件|源码|源碼|文件|文档|文檔|报告|報告|论文|論文|标题|標題|段落|排版|格式|字体|字體|页边距|頁邊距|表格|图片|圖片|引用|参考文献|參考文獻|摘要|附录|附錄)/iu;
 const DOCUMENT_NEED_ACTION = /^(?:(?:i|we)\s+)?(?:need|want|require|would\s+like)\b/iu;
+const CHINESE_DOCUMENT_NEED_ACTION = /^(?:(?:我|我们|我們)\s*)?(?:需要|想要|要)(?:\s|$)/u;
 const DOCUMENT_NEED_DELIVERABLE =
-  /(?:\.tex\b|\.pdf\b|\b(?:source(?:\s+files?)?|compiled\s+pdf|files?|documents?|reports?|papers?|manuscripts?|artifacts?|outputs?|deliverables?|versions?|formats?)\b)/iu;
+  /(?:\.tex\b|\.pdf\b|\b(?:source(?:\s+files?)?|compiled\s+pdf|files?|documents?|reports?|papers?|manuscripts?|artifacts?|outputs?|deliverables?|versions?|formats?)\b|(?:源文件|源檔案|源檔|文件|文档|文檔|报告|報告|论文|論文|输出|輸出|格式|版本|编译后|編譯後))/iu;
 const DOCUMENT_PAIR_EXCLUSION =
   /\b(?:do\s+not|don't|dont|never|avoid|without|no\s+need\s+to|not\s+asked\s+to)\b[^.!?;\r\n]{0,160}\b(?:latex|tex|pdf)\b|\b(?:latex|tex|pdf)(?:\s+(?:source|file|document))?\s+only\b|\bonly\s+(?:the\s+)?(?:latex|tex|pdf)\b|(?:不要|不用|无需|無需|不需要|禁止|避免)[^。！？；\r\n]{0,100}(?:latex|tex|pdf)/iu;
+const DOCUMENT_CREATION_EXCLUSION =
+  /\b(?:do\s+not|don't|dont|never|avoid)\b[^.!?;\r\n]{0,160}\b(?:make|create|generate|write|compile|typeset|render|export|build|deliver|provide|send|give|return|output|share|save|download|files?|artifacts?|outputs?|deliverables?)\b|\bwithout\b[^.!?;\r\n]{0,100}\b(?:making|creating|generating|writing|compiling|rendering|exporting|saving|downloading|files?|artifacts?)\b|\bneither\b[^.!?;\r\n]{0,160}\b(?:latex|tex)\b[^.!?;\r\n]{0,160}\b(?:nor|or|and)\b[^.!?;\r\n]{0,100}\bpdf\b|\b(?:just|only)\s+(?:explain|describe|discuss|compare|review)\b|(?:不要|不用|无需|無需|不需要|禁止|避免)[^。！？；\r\n]{0,120}(?:创建|建立|生成|撰写|撰寫|编译|編譯|导出|導出|制作|製作|文件|文档|文檔|输出|輸出)/iu;
+const DOCUMENT_DISCUSSION_TARGET =
+  /^(?:make|create|generate|write|produce|prepare|provide|give|return|output|share|deliver)\s+(?:me\s+)?(?:an?\s+|the\s+)?(?:tutorial|explanation|advice|comparison|overview|discussion|review|article|essay|prose|example|guide)\b|^(?:make|create|generate|write|produce|prepare)\s+(?:something\s+)?(?:about|on)\b|^(?:make|create|generate|write|produce|prepare|provide)\b[^.!?;\r\n]{0,120}\b(?:latex|tex)\s+source[- ]code\s+example\b/iu;
 const DOCUMENT_FIGURE =
   /\b(?:figures?|plots?|charts?|diagrams?|illustrations?|graphs?|tikz|pgfplots)\b|(?:图|圖|插图|插圖|绘图|繪圖|图表|圖表|示意图|示意圖|曲线|曲線)/iu;
 const DOCUMENT_FIGURE_EXCLUSION =
-  /\b(?:do\s+not|don't|dont|never|avoid|without|remove|omit|exclude|no)\b[^.!?;\r\n]{0,100}\b(?:figures?|plots?|charts?|diagrams?|illustrations?|graphs?|tikz|pgfplots)\b|(?:不要|不用|无需|無需|不需要|删除|刪除|移除|省略|避免)[^。！？；\r\n]{0,80}(?:图|圖|插图|插圖|绘图|繪圖|图表|圖表|示意图|示意圖|曲线|曲線)/iu;
-const CHINESE_DOCUMENT_ACTION = /^(?:请|請|请你|請你|请帮我|請幫我|帮我|幫我)?(?:创建|建立|生成|撰写|撰寫|重写|重寫|修改|修订|修訂|更新|重新生成|重新编译|重新編譯|编译|編譯|导出|導出|准备|準備|制作|製作|交付|排版)/u;
+  /\b(?:(?:do\s+not|don't|dont|never)\s+(?:include|add|create|draw|show|use|keep|retain|have|want)\b[^.!?;\r\n]{0,80}|avoid\b[^.!?;\r\n]{0,80}|without\s+(?:any\s+)?|(?:remove|omit|exclude|delete)\b[^.!?;\r\n]{0,80}|(?:no|zero)\s+(?:self-contained\s+)?)(?:figures?|plots?|charts?|diagrams?|illustrations?|graphs?|tikz|pgfplots)\b|(?:(?:不要|不用|无需|無需|不需要)\s*(?!(?:删除|刪除|移除|省略))(?:包含|添加|使用|绘制|繪製|保留|要)?|删除|刪除|移除|省略|避免)[^。！？；\r\n]{0,60}(?:图|圖|插图|插圖|绘图|繪圖|图表|圖表|示意图|示意圖|曲线|曲線)/iu;
+const DOCUMENT_FIGURE_REMOVAL_NEGATION =
+  /\b(?:do\s+not|don't|dont|never|no\s+need\s+to|not\s+asked\s+to|avoid)\b[^.!?;\r\n]{0,80}\b(?:remove|omit|exclude|delete)\b[^.!?;\r\n]{0,80}\b(?:figures?|plots?|charts?|diagrams?|illustrations?|graphs?|tikz|pgfplots)\b|(?:不要|不用|无需|無需|不需要|避免)[^。！？；\r\n]{0,40}(?:删除|刪除|移除|省略)[^。！？；\r\n]{0,40}(?:图|圖|插图|插圖|绘图|繪圖|图表|圖表|示意图|示意圖|曲线|曲線)/giu;
+const CHINESE_DOCUMENT_ACTION = /^(?:请|請|请你|請你|请帮我|請幫我|帮我|幫我)?(?:创建|建立|生成|撰写|撰寫|重写|重寫|修改|修订|修訂|更新|重新生成|重新编译|重新編譯|编译|編譯|导出|導出|准备|準備|制作|製作|交付|提供|给我|給我|输出|輸出|返回|排版)/u;
 const DOCUMENT_NEW_INSTANCE =
   /^(?:make|create|generate|write|rewrite|produce|prepare|build|deliver|provide|save|regenerate|compile|recompile|typeset|render|export)\b[^.!?;\r\n]{0,120}\b(?:new|another|separate|fresh|second|different|independent|additional)\b[^.!?;\r\n]{0,120}\b(?:latex|tex|pdf|file|document|report|paper|manuscript)\b|^(?:make|create|generate|write|rewrite|produce|prepare|build|regenerate|compile|recompile|typeset|render|export)\b[^.!?;\r\n]{0,160}\bfrom\s+scratch\b|^(?:新建|另建|另外创建|另外建立|创建另一个|建立另一个|创建一份新的|建立一份新的|创建第二份|建立第二份)[^。！？；\r\n]{0,120}(?:latex|tex|pdf|文件|文档|文檔|报告|報告|论文|論文)/iu;
 const DOCUMENT_INITIAL_CREATION_ACTION =
@@ -66,14 +76,38 @@ function imperativeClause(value = "") {
   return text;
 }
 
+function hasSelfContainedFencedTeXSource(value = "") {
+  const fence = /```[ \t]*(?:latex|tex)[^\r\n]*\r?\n([\s\S]*?)```/giu;
+  let match;
+  while ((match = fence.exec(String(value || ""))) !== null) {
+    const source = match[1];
+    if (
+      /\\documentclass(?:\s*\[[^\]]*\])?\s*\{[^}]+\}/iu.test(source) &&
+      /\\begin\s*\{document\}/iu.test(source) &&
+      /\\end\s*\{document\}/iu.test(source)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function explicitlyExcludesFigures(value = "") {
+  const text = String(value || "")
+    .normalize("NFKC")
+    .replace(DOCUMENT_FIGURE_REMOVAL_NEGATION, " ");
+  return DOCUMENT_FIGURE_EXCLUSION.test(text);
+}
+
 function requestsDocumentCreation(value = "") {
   const clauses = String(value || "")
-    .split(/[.!?。！？;；\r\n]+/u)
+    .split(/(?:[!?。！？;；\r\n]+|\.(?=\s|$))/u)
     .map((item) => imperativeClause(item))
     .filter(Boolean);
   return clauses.some((clause) =>
     DOCUMENT_ACTION.test(clause) ||
     (DOCUMENT_NEED_ACTION.test(clause) && DOCUMENT_NEED_DELIVERABLE.test(clause)) ||
+    (CHINESE_DOCUMENT_NEED_ACTION.test(clause) && DOCUMENT_NEED_DELIVERABLE.test(clause)) ||
     CHINESE_DOCUMENT_ACTION.test(clause) ||
     /^use\s+(?:latex|tex)\b/iu.test(clause) ||
     /^convert\b[^.!?\r\n]{0,160}\b(?:latex|tex|\.tex)\b[^.!?\r\n]{0,100}\b(?:to|into)\s+(?:a\s+)?pdf\b/iu.test(clause)
@@ -83,8 +117,8 @@ function requestsDocumentCreation(value = "") {
 function requestsTeXAndPdf(value = "") {
   const text = String(value || "");
   const explicitExtensions =
-    /\.tex\b[^.!?\r\n]{0,240}\.pdf\b/iu.test(text) ||
-    /\.pdf\b[^.!?\r\n]{0,240}\.tex\b/iu.test(text);
+    /\.tex\b[\s\S]{0,240}\.pdf\b/iu.test(text) ||
+    /\.pdf\b[\s\S]{0,240}\.tex\b/iu.test(text);
   const topicComparison =
     /\b(?:about|compare|comparing|comparison|differences?\s+between|explain|explaining)\b[^.!?\r\n]{0,180}\b(?:latex|tex)\b[^.!?\r\n]{0,100}\bpdf\b/iu.test(text) ||
     /\b(?:about|compare|comparing|comparison|differences?\s+between|explain|explaining)\b[^.!?\r\n]{0,180}\bpdf\b[^.!?\r\n]{0,100}\b(?:latex|tex)\b/iu.test(text) ||
@@ -99,6 +133,9 @@ function requestsTeXAndPdf(value = "") {
     /\b(?:both\s+)?(?:latex|tex)(?:\s+(?:source|file|document|format))?\b[^.!?\r\n]{0,100}\b(?:and|plus|along\s+with|together\s+with|as\s+well\s+as|with)\b[^.!?\r\n]{0,100}\b(?:compiled\s+)?pdf\b/iu.test(text) ||
     /\bpdf\b[^.!?\r\n]{0,100}\b(?:and|plus|along\s+with|together\s+with|as\s+well\s+as)\b[^.!?\r\n]{0,100}\b(?:latex|tex)\s+(?:source|file|document|format)\b/iu.test(text);
   const coordinatedFormats = coordinatedMention && artifactFraming && !topicComparison;
+  const pairedDeliverableFormats =
+    /\b(?:both\s+)?(?:latex|tex)(?:\s+(?:source|file|document|format|manuscript))?\b[^.!?\r\n]{0,100}\b(?:and|plus|along\s+with|together\s+with|as\s+well\s+as|with)\b[^.!?\r\n]{0,100}\b(?:compiled\s+)?pdf\b[^.!?\r\n]{0,80}\b(?:files?|documents?|versions?|formats?|outputs?|deliverables?)\b/iu.test(text) ||
+    /\b(?:both\s+)?pdf\b[^.!?\r\n]{0,100}\b(?:and|plus|along\s+with|together\s+with|as\s+well\s+as|with)\b[^.!?\r\n]{0,100}\b(?:latex|tex)(?:\s+(?:source|file|document|format|manuscript))?\b[^.!?\r\n]{0,80}\b(?:files?|documents?|versions?|formats?|outputs?|deliverables?)\b/iu.test(text);
   const latexPdfProduction =
     /\b(?:compile|typeset|render|export|build|convert)\b[^.!?\r\n]{0,180}\b(?:latex|tex|\.tex)\b[^.!?\r\n]{0,120}\b(?:to|into|as)\b[^.!?\r\n]{0,60}\bpdf\b/iu.test(text) ||
     /\b(?:make|create|generate|produce|prepare|render|export)\b[^.!?\r\n]{0,160}\bpdf\b[^.!?\r\n]{0,100}\b(?:using|with|from)\b[^.!?\r\n]{0,60}\b(?:latex|tex)\b/iu.test(text) ||
@@ -112,10 +149,10 @@ function requestsTeXAndPdf(value = "") {
     /(?:latex|tex|\.tex)[^。！？\r\n]{0,100}(?:和|及|与|與|以及|连同|連同)[^。！？\r\n]{0,100}(?:pdf|\.pdf)/iu.test(text) ||
     /(?:pdf|\.pdf)[^。！？\r\n]{0,100}(?:和|及|与|與|以及|连同|連同)[^。！？\r\n]{0,100}(?:latex|tex|\.tex)/iu.test(text) ||
     /(?:使用|用)[^。！？\r\n]{0,40}(?:latex|tex)[^。！？\r\n]{0,100}(?:生成|编译|編譯|导出|導出|制作|製作)[^。！？\r\n]{0,60}(?:pdf|\.pdf)/iu.test(text);
-  return explicitExtensions || coordinatedFormats || latexPdfProduction || sequentialProduction || fencedSourceProduction || chineseFormats;
+  return explicitExtensions || coordinatedFormats || pairedDeliverableFormats || latexPdfProduction || sequentialProduction || fencedSourceProduction || chineseFormats;
 }
 
-function requestsDocumentFollowup(value = "") {
+function requestsDocumentFollowup(value = "", { allowImplicitReference = true } = {}) {
   const unquoted = quotedContextRemoved(value);
   if (DOCUMENT_PAIR_EXCLUSION.test(unquoted)) return false;
   const clauses = affirmativeDocumentText(unquoted)
@@ -123,62 +160,108 @@ function requestsDocumentFollowup(value = "") {
     .map((item) => imperativeClause(item))
     .filter(Boolean);
   return clauses.some((clause) => {
+    const explicitTarget = DOCUMENT_EXPLICIT_MUTATION_TARGET.test(clause);
     if (/^(?:recompile|regenerate)\b/iu.test(clause) || /^(?:重新生成|重新编译|重新編譯)/u.test(clause)) {
-      return true;
+      return explicitTarget || allowImplicitReference;
     }
     if (DOCUMENT_STRONG_REVISION_ACTION.test(clause)) {
-      return DOCUMENT_STRONG_REVISION_REFERENCE.test(clause);
+      return DOCUMENT_STRONG_REVISION_REFERENCE.test(clause) && (explicitTarget || allowImplicitReference);
     }
-    if (
-      DOCUMENT_FOLLOWUP_MUTATION_ACTION.test(clause) ||
-      /^(?:update|make)\b/iu.test(clause) ||
-      DOCUMENT_NEED_ACTION.test(clause)
-    ) {
-      return DOCUMENT_MUTATION_TARGET.test(clause);
+    if (DOCUMENT_FOLLOWUP_MUTATION_ACTION.test(clause)) {
+      const target = DOCUMENT_MUTATION_TARGET.test(clause) ||
+        (/^change\b/iu.test(clause) && DOCUMENT_BARE_IT_REFERENCE.test(clause));
+      return target && (explicitTarget || allowImplicitReference);
     }
-    return CHINESE_DOCUMENT_ACTION.test(clause) && DOCUMENT_STRONG_REVISION_REFERENCE.test(clause);
+    if (/^make\b/iu.test(clause)) {
+      const target = explicitTarget || DOCUMENT_BARE_IT_REFERENCE.test(clause);
+      return target && (explicitTarget || allowImplicitReference);
+    }
+    if (/^update\b/iu.test(clause) || DOCUMENT_NEED_ACTION.test(clause)) {
+      const target = DOCUMENT_MUTATION_TARGET.test(clause) || DOCUMENT_BARE_IT_REFERENCE.test(clause);
+      return target && (explicitTarget || allowImplicitReference);
+    }
+    return CHINESE_DOCUMENT_ACTION.test(clause) &&
+      DOCUMENT_STRONG_REVISION_REFERENCE.test(clause) &&
+      (explicitTarget || allowImplicitReference);
   });
 }
 
 function explicitDocumentArtifactIntent(prompt = "") {
   const unquoted = quotedContextRemoved(prompt);
-  if (DOCUMENT_PAIR_EXCLUSION.test(unquoted)) return false;
+  const current = imperativeClause(unquoted);
+  if (DOCUMENT_PAIR_EXCLUSION.test(unquoted) || DOCUMENT_CREATION_EXCLUSION.test(unquoted)
+      || DOCUMENT_DISCUSSION_TARGET.test(current)) return false;
   const affirmative = affirmativeDocumentText(unquoted);
   return requestsDocumentCreation(affirmative) && requestsTeXAndPdf(affirmative);
 }
 
-function activeDocumentConversation(conversation = []) {
-  if (!Array.isArray(conversation)) return false;
+function documentConversationState(conversation = []) {
+  if (!Array.isArray(conversation)) return Object.freeze({ active: false, immediate: false });
   let active = false;
+  let immediate = false;
   for (const message of conversation) {
     if (!message || message.role !== "user" || typeof message.content !== "string") continue;
     const text = quotedContextRemoved(message.content);
-    if (DOCUMENT_PAIR_EXCLUSION.test(text)) active = false;
-    else if (explicitDocumentArtifactIntent(message.content)) active = true;
+    if (DOCUMENT_PAIR_EXCLUSION.test(text)) {
+      active = false;
+      immediate = false;
+    } else if (explicitDocumentArtifactIntent(message.content)) {
+      active = true;
+      immediate = true;
+    } else if (active && requestsDocumentFollowup(message.content, { allowImplicitReference: immediate })) {
+      immediate = true;
+    } else {
+      immediate = false;
+    }
   }
-  return active;
+  return Object.freeze({ active, immediate });
 }
 
-function minimumFigureCount(prompt = "", conversation = []) {
-  const current = quotedContextRemoved(prompt);
-  if (DOCUMENT_FIGURE_EXCLUSION.test(current)) return 0;
-  if (DOCUMENT_FIGURE.test(affirmativeDocumentText(current))) return 1;
-  if (!Array.isArray(conversation)) return 0;
-  let required = false;
-  for (const message of conversation) {
-    if (!message || message.role !== "user" || typeof message.content !== "string") continue;
-    const text = quotedContextRemoved(message.content);
-    if (DOCUMENT_FIGURE_EXCLUSION.test(text)) required = false;
-    else if (DOCUMENT_FIGURE.test(affirmativeDocumentText(text))) required = true;
+function normalizeActiveDocumentContext(value) {
+  if (value === true) {
+    return Object.freeze({ active: true, allowImplicitReference: true, minimumFigureCount: 0, explicit: false });
   }
-  return required ? 1 : 0;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const minimum = Number.isSafeInteger(value.minimumFigureCount) &&
+      value.minimumFigureCount >= 0 && value.minimumFigureCount <= 32
+      ? value.minimumFigureCount
+      : 0;
+    return Object.freeze({
+      active: value.active === true,
+      allowImplicitReference: value.allowImplicitReference === true,
+      minimumFigureCount: minimum,
+      explicit: true,
+    });
+  }
+  return Object.freeze({ active: false, allowImplicitReference: false, minimumFigureCount: 0, explicit: false });
+}
+
+function minimumFigureCount(prompt = "", conversation = [], priorMinimumFigureCount = 0) {
+  const current = quotedContextRemoved(prompt);
+  if (explicitlyExcludesFigures(current)) return 0;
+  let required = false;
+  if (Array.isArray(conversation)) {
+    for (const message of conversation) {
+      if (!message || message.role !== "user" || typeof message.content !== "string") continue;
+      const text = quotedContextRemoved(message.content);
+      if (explicitlyExcludesFigures(text)) required = false;
+      else if (DOCUMENT_FIGURE.test(affirmativeDocumentText(text))) required = true;
+    }
+  }
+  if (DOCUMENT_FIGURE.test(affirmativeDocumentText(current))) required = true;
+  return Math.max(required ? 1 : 0, priorMinimumFigureCount);
 }
 
 export function classifyIntegrationDocumentArtifactIntent(prompt = "", conversation = [], activeDocument = false) {
-  const active = activeDocument === true || activeDocumentConversation(conversation);
+  const context = normalizeActiveDocumentContext(activeDocument);
+  const conversationState = documentConversationState(conversation);
+  const active = context.active || conversationState.active;
+  const allowImplicitReference = context.explicit
+    ? context.allowImplicitReference
+    : context.active || conversationState.immediate || !conversationState.active;
   const required =
     explicitDocumentArtifactIntent(prompt) ||
-    (active && requestsDocumentFollowup(prompt));
+    (active && requestsDocumentFollowup(prompt, { allowImplicitReference }));
   return Object.freeze({
     schemaVersion: INTEGRATION_DOCUMENT_ARTIFACT_SCHEMA_VERSION,
     required,
@@ -187,24 +270,32 @@ export function classifyIntegrationDocumentArtifactIntent(prompt = "", conversat
     requirements: Object.freeze({
       schemaVersion: INTEGRATION_DOCUMENT_COMPILE_REQUIREMENTS_SCHEMA_VERSION,
       profile: "self-contained-tex-v1",
-      minimumFigureCount: required ? minimumFigureCount(prompt, conversation) : 0,
+      minimumFigureCount: required
+        ? minimumFigureCount(prompt, conversation, context.minimumFigureCount)
+        : 0,
     }),
   });
 }
 
 export function isIntegrationDocumentArtifactRevision(prompt = "", conversation = [], activeDocument = false) {
   const current = imperativeClause(affirmativeDocumentText(quotedContextRemoved(prompt)));
+  if (hasSelfContainedFencedTeXSource(prompt) && explicitDocumentArtifactIntent(prompt)) return false;
+  const context = normalizeActiveDocumentContext(activeDocument);
+  const conversationState = documentConversationState(conversation);
+  const active = context.active || conversationState.active;
+  const allowImplicitReference = context.explicit
+    ? context.allowImplicitReference
+    : context.active || conversationState.immediate || !conversationState.active;
   const explicitInitialCreation =
     DOCUMENT_INITIAL_CREATION_ACTION.test(current) &&
     explicitDocumentArtifactIntent(prompt) &&
     !DOCUMENT_PRIOR_INSTANCE_REFERENCE.test(current);
   return (
-    requestsDocumentFollowup(prompt) &&
+    requestsDocumentFollowup(prompt, { allowImplicitReference }) &&
     !DOCUMENT_NEW_INSTANCE.test(current) &&
     !explicitInitialCreation &&
     (
-      activeDocument === true ||
-      activeDocumentConversation(conversation) ||
+      active ||
       DOCUMENT_EXPLICIT_REVISION_ACTION.test(current) ||
       DOCUMENT_PRIOR_INSTANCE_REFERENCE.test(current)
     )

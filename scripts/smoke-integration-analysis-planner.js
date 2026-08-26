@@ -391,6 +391,18 @@ async function groundsWithPrivateSearchBeforeModelSynthesis() {
     assert.equal(result.artifacts.length, 1);
     assert.equal(result.artifacts[0].kind, "sources");
     assert.deepEqual(order, ["artifact", "model", "final"]);
+
+    const exactUrlResult = await grounded.planner.run(
+      scope("run_00000000-0000-4000-8004-000000000001"),
+      {
+        prompt: "Open https://example.com and summarize it.",
+        search: { mode: "web", limit: 5 },
+      }
+    );
+    assert.equal(calls.length, 3);
+    assert.equal(calls[2].query, "Open https://example.com and summarize it.");
+    assert.match(exactUrlResult.text, /arbitrary web browsing and exact URL opening or fetching are unavailable/u);
+    assert.match(exactUrlResult.text, /grounded answer is supported/u);
   } finally {
     grounded.coordinator.close();
   }
@@ -1181,6 +1193,92 @@ async function directAnswerDoesNotExecute() {
   coordinator.close();
 }
 
+async function unsupportedMixedActionsDiscloseAndContinue() {
+  const cases = [
+    ["Install numpy, then explain a median in one sentence.", /package installation is unavailable/u],
+    ["Run a shell command, then explain a median in one sentence.", /shell and subprocess execution are unavailable/u],
+    ["Search the web, then explain a median in one sentence.", /bounded web search was not enabled/u],
+    ["Create a CSV file, then explain a median in one sentence.", /arbitrary file creation, upload, and download are unavailable/u],
+    ["Deploy this answer, then explain a median in one sentence.", /external actions such as deployment/u],
+    ["Explain a median, then install numpy.", /package installation is unavailable/u],
+    ["Create a PDF report, then explain a median.", /file route supports only verified paired TeX\/PDF artifacts/u],
+    ["Generate report.pdf, then explain a median.", /file route supports only verified paired TeX\/PDF artifacts/u],
+    ["Export this answer as PDF, then explain a median.", /file route supports only verified paired TeX\/PDF artifacts/u],
+    ["Produce TeX source only, then explain a median.", /file route supports only verified paired TeX\/PDF artifacts/u],
+    ["Compile this LaTeX into a PDF only, then explain a median.", /file route supports only verified paired TeX\/PDF artifacts/u],
+  ];
+  for (let index = 0; index < cases.length; index += 1) {
+    const [prompt, expectedLimit] = cases[index];
+    const bounded = fixture(async () => textResponse("A median is the middle ordered value."));
+    const result = await bounded.planner.run(
+      scope(`run_00000000-0000-4000-8001-${String(index + 1).padStart(12, "0")}`),
+      { prompt }
+    );
+    assert.match(result.text, expectedLimit, prompt);
+    assert.match(result.text, /A median is the middle ordered value/u, prompt);
+    assert.equal(
+      bounded.rpcCalls.some(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart),
+      false,
+      prompt
+    );
+    bounded.coordinator.close();
+  }
+
+  const explanatoryPrompts = [
+    "Explain how to install numpy without doing it.",
+    "Explain why the phrase “install numpy” is unsafe here.",
+    "Do not deploy anything; explain a median.",
+    "Add NumPy to the explanation.",
+    "Use the word shell in a sentence.",
+    "Find internet references in the supplied text.",
+    "Send the summary to me.",
+  ];
+  for (let index = 0; index < explanatoryPrompts.length; index += 1) {
+    const prompt = explanatoryPrompts[index];
+    const explanatory = fixture(async () => textResponse("This is explanatory text only."));
+    const result = await explanatory.planner.run(
+      scope(`run_00000000-0000-4000-8002-${String(index + 1).padStart(12, "0")}`),
+      { prompt }
+    );
+    assert.doesNotMatch(result.text, /Capability limit:/u, prompt);
+    explanatory.coordinator.close();
+  }
+}
+
+async function coordinatedExecutionClausesHonorLocalNegation() {
+  const cases = [
+    ["Run Python to calculate 2+2, but do not plot.", false],
+    ["Explain a median, then run Python to calculate it.", false],
+    ["Do not run supplied code, but show a plot of y=x.", true],
+  ];
+  for (let index = 0; index < cases.length; index += 1) {
+    const [prompt, needsPlot] = cases[index];
+    let modelCalls = 0;
+    const routed = fixture(async (_client, payload) => {
+      modelCalls += 1;
+      if (modelCalls === 1) {
+        assert.equal(payload.tool_choice, "required", prompt);
+        return toolResponse(needsPlot
+          ? "emit_plot('y=x', {'schemaVersion':'1','type':'line','labels':['0','1'],'series':[{'name':'y','data':[0,1]}]})"
+          : "print(2 + 2)");
+      }
+      assert.equal(payload.tool_choice, "auto", prompt);
+      return textResponse("The supported Python action completed.");
+    }, {
+      worker: fakeWorker((request, signal) => terminalResult(request, signal, needsPlot ? undefined : [])),
+    });
+    const result = await routed.planner.run(
+      scope(`run_00000000-0000-4000-8003-${String(index + 1).padStart(12, "0")}`),
+      { prompt }
+    );
+    assert.equal(result.kind, "analysis", prompt);
+    assert.equal(result.toolCalls, 1, prompt);
+    assert.equal(result.executionStatus, "succeeded", prompt);
+    assert.equal(result.artifacts.some(({ kind }) => kind === "plot"), needsPlot, prompt);
+    routed.coordinator.close();
+  }
+}
+
 async function texPdfIntentCannotFinishWithProseOnly() {
   const documentWorker = createDocumentWorkerFixture();
   const gated = fixture(async () =>
@@ -1244,6 +1342,24 @@ async function texPdfIntentCompilesAndSealsBothFiles() {
   assert(result.artifacts.every((artifact) => inspectIntegrationDocumentWorkerFileArtifact(artifact) === null));
   assert.doesNotMatch(JSON.stringify(result), /(?:privateBytes|contentBytes|blobRef|receiptId)/u);
   compiled.coordinator.close();
+}
+
+async function texPdfMixedExternalActionDisclosesAfterCommit() {
+  const source = "\\documentclass{article}\n\\begin{document}\nMixed request.\n\\end{document}\n";
+  const documentWorker = createDocumentWorkerFixture();
+  const mixed = fixture(async (_client, payload) => {
+    assert.match(payload.messages[0].content, /uploads, email, publishing, deployment/u);
+    return texToolResponse("mixed-request.tex", source);
+  }, { documentWorkerClient: documentWorker.client() });
+  const result = await mixed.planner.run(
+    scope("run_00000000-0000-4000-8003-000000000001"),
+    { prompt: "Create a LaTeX source and compiled PDF, and email and upload it." },
+    { onDocumentCommitIntent: () => true }
+  );
+  assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["file", "file"]);
+  assert.match(result.text, /external actions such as deployment/u);
+  assert.match(result.text, /TeX source and compiled PDF are ready below/u);
+  mixed.coordinator.close();
 }
 
 async function texPdfContextualFollowupRecompilesBothFiles() {
@@ -1331,8 +1447,13 @@ async function texPdfPrivateLineageSurvivesClippedConversation() {
   const documentWorker = createDocumentWorkerFixture();
   const priorSource = [
     "\\documentclass{article}",
+    "\\usepackage{tikz}",
     "\\begin{document}",
     "PRESERVE_CLIPPED_LINEAGE_SENTINEL_2a61c9",
+    "\\begin{figure}",
+    "\\begin{tikzpicture}\\draw (0,0) -- (1,1);\\end{tikzpicture}",
+    "\\caption{Verified prior figure}",
+    "\\end{figure}",
     "\\end{document}",
     "",
   ].join("\n");
@@ -1367,6 +1488,7 @@ async function texPdfPrivateLineageSurvivesClippedConversation() {
         filename: "report.tex",
         sourceBytes: Buffer.byteLength(priorSource, "utf8"),
         sourceSha256: crypto.createHash("sha256").update(priorSource).digest("hex"),
+        verifiedFigureCount: 1,
         source: priorSource,
       },
       onDocumentCommitIntent: () => true,
@@ -1375,6 +1497,11 @@ async function texPdfPrivateLineageSurvivesClippedConversation() {
   assert.equal(modelCalls, 1);
   assert.equal(result.kind, "analysis");
   const compileRequest = documentWorker.calls.find(({ pathname }) => pathname === "/artifact/v1/compile").request;
+  assert.equal(
+    compileRequest.requirements.minimumFigureCount,
+    1,
+    "private verified figure count must survive clipped public conversation",
+  );
   assert.match(compileRequest.source, /PRESERVE_CLIPPED_LINEAGE_SENTINEL_2a61c9/u);
   assert.match(compileRequest.source, /REQUESTED_CLIPPED_REVISION_PRESENT_52b91f/u);
   clipped.coordinator.close();
@@ -1803,6 +1930,10 @@ async function generalPlotRequestsRequireExecutionAndArtifact() {
     "Do not create a plot of e^x-x; explain the notation.",
     "Could e^x-x be plotted without running code?",
     "Plot is a noun in this sentence.",
+    "Explain why the phrase “and then run Python code” is dangerous.",
+    "Explain why someone might say \"and show a plot\" in a prompt.",
+    "Do not run Python code; explain what the command would mean.",
+    "Write a tutorial about how to run Python and show a plot.",
   ];
   for (let index = 0; index < nonImperativePrompts.length; index += 1) {
     const direct = fixture(async (_client, payload) => {
@@ -2123,8 +2254,11 @@ await deterministicExpressionPlotFailuresStayTruthful();
 await groundsWithPrivateSearchBeforeModelSynthesis();
 await executesAndSynthesizesPlot();
 await directAnswerDoesNotExecute();
+await unsupportedMixedActionsDiscloseAndContinue();
+await coordinatedExecutionClausesHonorLocalNegation();
 await texPdfIntentCannotFinishWithProseOnly();
 await texPdfIntentCompilesAndSealsBothFiles();
+await texPdfMixedExternalActionDisclosesAfterCommit();
 await texPdfContextualFollowupRecompilesBothFiles();
 await texPdfPrivateLineageSurvivesClippedConversation();
 await texPdfRevisionContextBudgetFailsBeforeInference();

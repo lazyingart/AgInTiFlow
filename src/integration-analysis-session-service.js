@@ -11,6 +11,7 @@ import {
   isIntegrationDocumentArtifactRevision,
 } from "./integration-document-artifacts.js";
 import {
+  INTEGRATION_DOCUMENT_COMPILE_REQUIREMENTS_SCHEMA_VERSION,
   INTEGRATION_DOCUMENT_WORKER_LIMITS,
   INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
   IntegrationDocumentWorkerError,
@@ -21,6 +22,7 @@ import {
   integrationDocumentWorkerDeletionManifestDigest,
   validateIntegrationDocumentWorkerRef,
 } from "./integration-document-worker-client.js";
+import { inspectIntegrationDocumentCompileRequirements } from "./integration-document-worker-requirements.js";
 import {
   INTEGRATION_ANALYSIS_MAX_TOOL_CALLS,
   INTEGRATION_ANALYSIS_PLANNER_ACTIVATION_SCHEMA_VERSION,
@@ -238,14 +240,20 @@ function publicFailureMessage(error, code = publicErrorCode(error)) {
   if (code === "ANALYSIS_DOCUMENT_SOURCE_REQUIRED") {
     return "No previously committed TeX source exists in this browser session and thread, so no replacement files were created.";
   }
+  if (code === "ANALYSIS_DOCUMENT_TARGET_REQUIRED") {
+    return "The immediately preceding completed answer was not the document. Name the prior TeX/PDF document explicitly before requesting another revision.";
+  }
   if (code === "ANALYSIS_DOCUMENT_SOURCE_GONE") {
     return "The previously committed TeX source was deleted or expired, so no replacement files were created.";
   }
   if (code === "ANALYSIS_DOCUMENT_SOURCE_INTEGRITY_FAILED") {
     return "The previously committed TeX source failed its length, digest, or UTF-8 integrity check, so no replacement files were created.";
   }
-  if (code === "ANALYSIS_DOCUMENT_SOURCE_UNAVAILABLE" || code === "ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE") {
+  if (code === "ANALYSIS_DOCUMENT_SOURCE_UNAVAILABLE") {
     return "The private workstation document source is temporarily unavailable, so no replacement files were created. Resume this run after the route recovers.";
+  }
+  if (code === "ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE") {
+    return "The private workstation document compiler is temporarily unavailable, so no TeX or PDF files were created. Resume this run after the route recovers.";
   }
   if (code === "ANALYSIS_EXECUTION_FAILED") {
     if (plannerMessage === "The requested Python execution timed out.") {
@@ -1058,6 +1066,14 @@ function previousRunAncestry(state, targetRun) {
     cursorId = run.lineagePreviousRunId;
   }
   return ancestry;
+}
+
+function immediatelyPrecedingCompletedRunId(state, targetRun) {
+  for (const runId of previousRunAncestry(state, targetRun)) {
+    const run = state.runs.find((candidate) => candidate.id === runId);
+    if (run?.status === "completed") return runId;
+  }
+  return null;
 }
 
 function latestCommittedDocumentSourceLineage(state, targetRun) {
@@ -2568,7 +2584,29 @@ function createService(options, { testOnly }) {
 
   function revisionLineageForRun(state, run, input) {
     const lineage = latestCommittedDocumentSourceLineage(state, run);
-    if (!isIntegrationDocumentArtifactRevision(input.prompt, input.conversation, lineage !== null)) return null;
+    const allowImplicitReference = lineage !== null &&
+      immediatelyPrecedingCompletedRunId(state, run) === lineage.sourceRunId;
+    const strictContext = lineage === null
+      ? false
+      : Object.freeze({
+          active: true,
+          allowImplicitReference,
+          minimumFigureCount: 0,
+        });
+    const revision = isIntegrationDocumentArtifactRevision(input.prompt, input.conversation, strictContext);
+    if (
+      lineage !== null &&
+      !allowImplicitReference &&
+      !revision &&
+      isIntegrationDocumentArtifactRevision(input.prompt, input.conversation, true)
+    ) {
+      fail(
+        "ANALYSIS_DOCUMENT_TARGET_REQUIRED",
+        "A bare document reference is ambiguous after an intervening completed non-document run.",
+        { status: 409 }
+      );
+    }
+    if (!revision) return null;
     if (!lineage) {
       fail(
         "ANALYSIS_DOCUMENT_SOURCE_REQUIRED",
@@ -2723,6 +2761,19 @@ function createService(options, { testOnly }) {
           status: 502,
         });
       }
+      let verifiedFigureCount;
+      try {
+        verifiedFigureCount = inspectIntegrationDocumentCompileRequirements(source, {
+          schemaVersion: INTEGRATION_DOCUMENT_COMPILE_REQUIREMENTS_SCHEMA_VERSION,
+          profile: "self-contained-tex-v1",
+          minimumFigureCount: 0,
+        }).verifiedFigureCount;
+      } catch (error) {
+        fail("ANALYSIS_DOCUMENT_SOURCE_INTEGRITY_FAILED", "The prior TeX source figure structure was invalid.", {
+          status: 502,
+          cause: error,
+        });
+      }
       complete = true;
       return Object.freeze({
         priorDocument: Object.freeze({
@@ -2732,6 +2783,7 @@ function createService(options, { testOnly }) {
           filename: lineage.filename,
           sourceBytes: lineage.sourceBytes,
           sourceSha256: lineage.sourceSha256,
+          verifiedFigureCount,
           source,
         }),
         dispose() {
@@ -3432,7 +3484,13 @@ function createService(options, { testOnly }) {
         classifyIntegrationDocumentArtifactIntent(
           input.prompt,
           input.conversation,
-          revisionLineage !== null
+          revisionMaterial === null
+            ? false
+            : Object.freeze({
+                active: true,
+                allowImplicitReference: true,
+                minimumFigureCount: revisionMaterial.priorDocument.verifiedFigureCount,
+              })
         ),
         privateDocumentEvidence
       );
