@@ -94,6 +94,22 @@ function expressionFromPrompt(value) {
     .replaceAll("−", "-");
 }
 
+export function permitsIntegrationExpressionPlotModelFallback(value) {
+  const match =
+    /^plot\s+(?!(?:is|means?|refers?|describes?|if|whether|would|could|might|may|should|can)\b)([\s\S]+)$/iu
+      .exec(imperativeActionText(value));
+  if (!match) return false;
+  const expression = match[1]
+    .trim()
+    .replace(/[?!]\s*$/u, "")
+    .trim()
+    .replace(/^y\s*=\s*/iu, "")
+    .trim();
+  return expression.length > 0 &&
+    Buffer.byteLength(expression, "utf8") <= MAX_EXPRESSION_BYTES &&
+    !CODE_SYNTAX_SIGNAL.test(expression);
+}
+
 function rawTokens(expression) {
   const tokens = [];
   let index = 0;

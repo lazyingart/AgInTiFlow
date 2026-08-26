@@ -10,6 +10,7 @@ import {
   INTEGRATION_EXPRESSION_PLOT_SCHEMA_VERSION,
   IntegrationExpressionPlotError,
   compileIntegrationExpressionPlotPrompt,
+  permitsIntegrationExpressionPlotModelFallback,
 } from "./integration-expression-plot.js";
 import {
   INTEGRATION_EXPLICIT_PYTHON_SCHEMA_VERSION,
@@ -120,6 +121,8 @@ const PLOT_ARTIFACT_ACTION =
   /(?:^plot\s+(?!(?:is|means?|refers?|describes?|if|whether|would|could|might|may|should|can)\b)\S|^visuali[sz]e\b|\b(?:make|create|generate|draw|show|render|produce|return|include)\s+(?:me\s+)?(?:(?:a|an|the)\s+)?(?:[a-z][a-z-]*\s+){0,3}(?:plot|chart|graph)\b|(?:画图|绘图|生成图表|显示图表))/iu;
 const NEGATED_PLOT_ARTIFACT_ACTION =
   /\b(?:do\s+not|don't|never|avoid|without)\b.{0,40}\b(?:plot|chart|graph|visuali[sz]e)\b/iu;
+const EXPRESSION_PLOT_MODEL_FALLBACK_PROMPT =
+  "The user explicitly requires a plot, but the fixed single-expression compiler could not represent this natural-language request. Interpret the request and its conversation context, then call the bounded analysis tool and emit a real plot artifact. Never claim a plot exists unless the tool succeeds and emits it.";
 
 const ANALYSIS_TOOL = Object.freeze({
   type: "function",
@@ -1465,9 +1468,21 @@ function createPlanner({
           executionStatus,
         });
       }
-      const expressionPlot = explicitPython.kind === "none" && explicitPlotArtifact
-        ? compileIntegrationExpressionPlotPrompt(input.prompt)
-        : null;
+      let expressionPlot = null;
+      if (explicitPython.kind === "none" && explicitPlotArtifact) {
+        try {
+          expressionPlot = compileIntegrationExpressionPlotPrompt(input.prompt);
+        } catch (error) {
+          if (!(error instanceof IntegrationExpressionPlotError) ||
+              !permitsIntegrationExpressionPlotModelFallback(input.prompt)) {
+            throw error;
+          }
+          messages.splice(messages.length - 1, 0, Object.freeze({
+            role: "system",
+            content: EXPRESSION_PLOT_MODEL_FALLBACK_PROMPT,
+          }));
+        }
+      }
       if (expressionPlot) {
         const execution = await executeOnce(Object.freeze({
           source: expressionPlot.source,
