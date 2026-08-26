@@ -11,6 +11,7 @@ import {
   INTEGRATION_EXPRESSION_PLOT_SCHEMA_VERSION,
   IntegrationExpressionPlotError,
   compileIntegrationExpressionPlotPrompt,
+  permitsIntegrationExpressionPlotModelFallback,
 } from "./integration-expression-plot.js";
 import {
   INTEGRATION_EXPLICIT_PYTHON_SCHEMA_VERSION,
@@ -157,6 +158,8 @@ const UNSUPPORTED_CAPABILITY_TEXT = Object.freeze({
   file: "Capability limit: arbitrary file creation, upload, and download are unavailable; the file route supports only verified paired TeX/PDF artifacts.",
   external: "Capability limit: external actions such as deployment, publishing, uploads, messaging, and email are unavailable.",
 });
+const EXPRESSION_PLOT_MODEL_FALLBACK_PROMPT =
+  "The user explicitly requires a plot, but the fixed single-expression compiler could not represent this natural-language request. Interpret the request and its conversation context, then call the bounded analysis tool and emit a real plot artifact. Never claim a plot exists unless the tool succeeds and emits it.";
 
 const ANALYSIS_TOOL = Object.freeze({
   type: "function",
@@ -1700,9 +1703,21 @@ function createPlanner({
           executionStatus,
         });
       }
-      const expressionPlot = explicitPython.kind === "none" && explicitPlotArtifact
-        ? compileIntegrationExpressionPlotPrompt(input.prompt)
-        : null;
+      let expressionPlot = null;
+      if (explicitPython.kind === "none" && explicitPlotArtifact) {
+        try {
+          expressionPlot = compileIntegrationExpressionPlotPrompt(input.prompt);
+        } catch (error) {
+          if (!(error instanceof IntegrationExpressionPlotError) ||
+              !permitsIntegrationExpressionPlotModelFallback(input.prompt)) {
+            throw error;
+          }
+          messages.splice(messages.length - 1, 0, Object.freeze({
+            role: "system",
+            content: EXPRESSION_PLOT_MODEL_FALLBACK_PROMPT,
+          }));
+        }
+      }
       if (expressionPlot) {
         const execution = await executeOnce(Object.freeze({
           source: expressionPlot.source,

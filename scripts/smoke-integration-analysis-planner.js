@@ -1081,6 +1081,64 @@ async function deterministicExpressionPlotFailuresStayTruthful() {
   injection.coordinator.close();
 }
 
+async function unsupportedSafeExpressionPlotFallsBackToBoundedModelExecution() {
+  const modelCalls = [];
+  let workerCalls = 0;
+  const fallback = fixture(async (_client, payload) => {
+    modelCalls.push(payload);
+    if (modelCalls.length === 1) {
+      assert.equal(payload.tool_choice, "required");
+      assert.match(payload.messages.at(-2).content, /fixed single-expression compiler/u);
+      return toolResponse([
+        "points = [{'x': 1, 'y': 1}, {'x': 2, 'y': 4}, {'x': 3, 'y': 9}]",
+        "emit_plot('Requested values', {'schemaVersion':'1','type':'scatter','series':[{'name':'values','points':points}]})",
+      ].join("\n"));
+    }
+    assert.equal(payload.tool_choice, "auto");
+    return textResponse("The requested values are plotted in the verified artifact.");
+  }, {
+    worker: fakeWorker((request, signal) => {
+      workerCalls += 1;
+      assert.match(request.source, /emit_plot\('Requested values'/u);
+      return terminalResult(request, signal);
+    }),
+  });
+  const result = await fallback.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000084"),
+    {
+      prompt: "Plot sample_x",
+      conversation: [{ role: "user", content: "Use the three values already supplied." }],
+    }
+  );
+  assert.equal(modelCalls.length, 2);
+  assert.equal(workerCalls, 1);
+  assert.equal(result.kind, "analysis");
+  assert.equal(result.toolCalls, 1);
+  assert.equal(result.executionStatus, "succeeded");
+  assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["plot"]);
+  assert.match(result.text, /verified artifact/u);
+  fallback.coordinator.close();
+
+  let unsafeModelCalls = 0;
+  const unsafe = fixture(async () => {
+    unsafeModelCalls += 1;
+    return textResponse("unsafe");
+  });
+  await assert.rejects(
+    unsafe.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000085"),
+      { prompt: "Plot x; __import__('os')" }
+    ),
+    (error) => error?.code === "ANALYSIS_EXPRESSION_PLOT_INVALID" && error?.status === 400
+  );
+  assert.equal(unsafeModelCalls, 0);
+  assert.equal(
+    unsafe.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    0
+  );
+  unsafe.coordinator.close();
+}
+
 async function executesAndSynthesizesPlot() {
   const modelCalls = [];
   const { planner, coordinator, rpcCalls } = fixture(async (_client, payload, config) => {
@@ -2251,6 +2309,7 @@ await explicitPythonPlotIntentIgnoresSourceText();
 await explicitPythonOutputIsLiteralAndBounded();
 await deterministicExpressionPlotExecutesWithoutModel();
 await deterministicExpressionPlotFailuresStayTruthful();
+await unsupportedSafeExpressionPlotFallsBackToBoundedModelExecution();
 await groundsWithPrivateSearchBeforeModelSynthesis();
 await executesAndSynthesizesPlot();
 await directAnswerDoesNotExecute();
