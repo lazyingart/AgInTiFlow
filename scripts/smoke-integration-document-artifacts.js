@@ -4,6 +4,7 @@ import { sanitizeIntegrationArtifact } from "../src/integration-artifacts.js";
 import {
   classifyIntegrationDocumentArtifactIntent,
   evaluateIntegrationDocumentArtifactCompletion,
+  isIntegrationDocumentArtifactRevision,
 } from "../src/integration-document-artifacts.js";
 import { createDocumentWorkerFixture, compileRequirements } from "./test-document-worker-fixture.js";
 
@@ -30,11 +31,57 @@ assert.equal(ordinary.required, false, "ordinary same-thread chat must not inher
 const revision = classifyIntegrationDocumentArtifactIntent("revise it and recompile", priorConversation);
 assert.equal(revision.required, true);
 assert.equal(revision.requirements.minimumFigureCount, 1, "explicit revision retains the figure requirement");
+assert.equal(isIntegrationDocumentArtifactRevision("revise it and recompile", priorConversation), true);
+for (const prompt of [
+  "Create another new LaTeX report and compiled PDF about a different topic.",
+  "Build a fresh LaTeX report and PDF about a different topic.",
+  "Produce a second LaTeX report and compiled PDF about a different topic.",
+  "Regenerate a new LaTeX report and compiled PDF about a different topic.",
+  "Rewrite a new LaTeX report and compiled PDF from scratch.",
+  "Recompile a separate LaTeX source and PDF about a different topic.",
+]) {
+  assert.equal(classifyIntegrationDocumentArtifactIntent(prompt, priorConversation).required, true);
+  assert.equal(
+    isIntegrationDocumentArtifactRevision(prompt, priorConversation, true),
+    false,
+    `${prompt} must retain initial-creation behavior`
+  );
+}
+assert.equal(
+  isIntegrationDocumentArtifactRevision(productionPrompt, [{ role: "user", content: productionPrompt }]),
+  false,
+  "an identical failed initial request must remain an initial creation"
+);
+assert.equal(
+  isIntegrationDocumentArtifactRevision("revise it and recompile", [
+    ...priorConversation,
+    { role: "user", content: "revise it and recompile" },
+  ]),
+  true,
+  "an identical failed revision retry must remain source-bound"
+);
+assert.equal(
+  isIntegrationDocumentArtifactRevision("revise it and recompile", [], true),
+  true,
+  "server-owned committed ancestry must not depend on clipped conversation"
+);
+for (const prompt of [
+  "Compile this LaTeX source to PDF and return both report.tex and report.pdf:\n```latex\n\\documentclass{article}\\begin{document}Current source\\end{document}\n```",
+  "Compile a new LaTeX report to PDF and return both new-report.tex and new-report.pdf.",
+]) {
+  assert.equal(classifyIntegrationDocumentArtifactIntent(prompt, []).required, true);
+  assert.equal(
+    isIntegrationDocumentArtifactRevision(prompt, []),
+    false,
+    `${prompt} must retain first-turn source/creation behavior`
+  );
+}
 
 const mutationFollowups = [
   ["add a section on approximation ratios", 1],
   ["include three references", 1],
   ["change the title to QAOA Overview", 1],
+  ["update the PDF and source wording", 1],
   ["remove the figure", 0],
   ["replace the figure with an objective curve", 1],
 ];
@@ -59,11 +106,26 @@ for (const prompt of [
   "Remove ambiguity from your explanation.",
   "Replace x with y in the equation below.",
   "Can you explain why someone might say \"remove the figure\"?",
+  "Add this to my shopping list.",
+  "Change this chat topic to gardening.",
+  "Update me on the weather report.",
 ]) {
   assert.equal(
     classifyIntegrationDocumentArtifactIntent(prompt, priorConversation).required,
     false,
     `${prompt} must remain an ordinary same-thread conversation`,
+  );
+}
+
+for (const prompt of [
+  "Add this to my shopping list.",
+  "Change this chat topic to gardening.",
+  "Update me on the weather report.",
+]) {
+  assert.equal(
+    isIntegrationDocumentArtifactRevision(prompt, priorConversation, true),
+    false,
+    `${prompt} must not fetch or compile the active document`
   );
 }
 

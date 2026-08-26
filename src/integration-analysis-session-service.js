@@ -2,13 +2,16 @@ import crypto from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { TextDecoder } from "node:util";
 
 import { sanitizeIntegrationArtifact } from "./integration-artifacts.js";
 import {
   classifyIntegrationDocumentArtifactIntent,
   evaluateIntegrationDocumentArtifactCompletion,
+  isIntegrationDocumentArtifactRevision,
 } from "./integration-document-artifacts.js";
 import {
+  INTEGRATION_DOCUMENT_WORKER_LIMITS,
   INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
   IntegrationDocumentWorkerError,
   assertIntegrationDocumentWorkerClient,
@@ -22,6 +25,8 @@ import {
   INTEGRATION_ANALYSIS_MAX_TOOL_CALLS,
   INTEGRATION_ANALYSIS_PLANNER_ACTIVATION_SCHEMA_VERSION,
   INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION,
+  INTEGRATION_DOCUMENT_REVISION_CONTEXT_BUDGET_MESSAGE,
+  INTEGRATION_DOCUMENT_REVISION_SOURCE_SCHEMA_VERSION,
   assertIntegrationAnalysisPlanner,
   assertIntegrationAnalysisPlannerActivation,
 } from "./integration-analysis-planner.js";
@@ -114,11 +119,15 @@ const SESSION_METADATA = new WeakMap();
 const MESSAGE_DIGEST_VERSION = "aginti-analysis-public-message-v1";
 const STATE_SCOPE_DIGEST_VERSION = "aginti-analysis-state-scope-v1";
 const MUTATION_RECEIPT_SCHEMA_VERSION = "aginti-analysis-mutation-receipt-v1";
-const DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION = "aginti-document-commit-intent-v1";
+const DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION = "aginti-document-commit-intent-v2";
+const LEGACY_DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION = "aginti-document-commit-intent-v1";
+const DOCUMENT_COMMIT_INTENT_MANIFEST_SCHEMA_VERSION = "aginti-document-commit-intent-manifest-v2";
+const DOCUMENT_REVISION_LINEAGE_SCHEMA_VERSION = "aginti-document-revision-lineage-v1";
 const DOCUMENT_DELETION_INTENT_SCHEMA_VERSION = "aginti-document-deletion-intent-v1";
 const PRIVATE_PATH_PATTERN =
   /(?:^|[\s("'`<>\[{=])(?:file:\/\/\/[^\s"'`<>)\]}]+|\/(?!\/)[^\s"'`<>)\]}]+|[A-Za-z]:[\\/][^\s"'`<>)\]}]+|\\\\[^\\/\s"'`<>)\]}]+\\[^\s"'`<>)\]}]+)/giu;
 const O_NOFOLLOW = Number(fsConstants.O_NOFOLLOW || 0);
+const FATAL_UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
 export class IntegrationAnalysisSessionError extends Error {
   constructor(code, message, { status = 500, cause } = {}) {
@@ -226,6 +235,18 @@ function publicFailureMessage(error, code = publicErrorCode(error)) {
   if (code === "ANALYSIS_DOCUMENT_ARTIFACT_REQUIRED") {
     return "The requested TeX source and structurally valid PDF were not both produced, so this run was not marked complete.";
   }
+  if (code === "ANALYSIS_DOCUMENT_SOURCE_REQUIRED") {
+    return "No previously committed TeX source exists in this browser session and thread, so no replacement files were created.";
+  }
+  if (code === "ANALYSIS_DOCUMENT_SOURCE_GONE") {
+    return "The previously committed TeX source was deleted or expired, so no replacement files were created.";
+  }
+  if (code === "ANALYSIS_DOCUMENT_SOURCE_INTEGRITY_FAILED") {
+    return "The previously committed TeX source failed its length, digest, or UTF-8 integrity check, so no replacement files were created.";
+  }
+  if (code === "ANALYSIS_DOCUMENT_SOURCE_UNAVAILABLE" || code === "ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE") {
+    return "The private workstation document source is temporarily unavailable, so no replacement files were created. Resume this run after the route recovers.";
+  }
   if (code === "ANALYSIS_EXECUTION_FAILED") {
     if (plannerMessage === "The requested Python execution timed out.") {
       return "Python execution timed out after 10 seconds. Reduce the work or split it into smaller steps, then resume.";
@@ -242,6 +263,9 @@ function publicFailureMessage(error, code = publicErrorCode(error)) {
     return "The agent could not form a valid bounded Python execution request. Make the run instruction explicit, then resume.";
   }
   if (code === "ANALYSIS_CONTEXT_BUDGET_EXCEEDED") {
+    if (plannerMessage === INTEGRATION_DOCUMENT_REVISION_CONTEXT_BUDGET_MESSAGE) {
+      return "The exact previously committed TeX source and requested revision do not fit the local analysis context, so no replacement files were created.";
+    }
     return "This request is too large for the local analysis context. Shorten it or split it into smaller steps, then resume.";
   }
   if (code === "GROUNDED_SEARCH_NO_USABLE_SOURCES") {
@@ -741,6 +765,7 @@ function validateRun(run, scope, threadIds) {
       "id",
       "threadId",
       "previousRunId",
+      "lineagePreviousRunId",
       "principalId",
       "browserSessionId",
       "browserSessionPolicy",
@@ -761,6 +786,7 @@ function validateRun(run, scope, threadIds) {
       "id",
       "threadId",
       "previousRunId",
+      "lineagePreviousRunId",
       "principalId",
       "browserSessionId",
       "browserSessionPolicy",
@@ -801,6 +827,7 @@ function validateRun(run, scope, threadIds) {
     validateIntegrationRunId(run.id);
     validateIntegrationThreadId(run.threadId);
     if (run.previousRunId !== null) validateIntegrationRunId(run.previousRunId);
+    if (run.lineagePreviousRunId !== null) validateIntegrationRunId(run.lineagePreviousRunId);
     sanitizePublicIntegrationRun(
       {
         id: run.id,
@@ -1017,6 +1044,99 @@ function validateMutationReceipt(receipt, scope) {
   }
 }
 
+function previousRunAncestry(state, targetRun) {
+  const runsById = new Map(state.runs.map((run) => [run.id, run]));
+  const seen = new Set([targetRun.id]);
+  const ancestry = [];
+  let cursorId = targetRun.lineagePreviousRunId;
+  while (cursorId !== null) {
+    if (seen.has(cursorId)) corrupt();
+    seen.add(cursorId);
+    const run = runsById.get(cursorId);
+    if (!run || run.threadId !== targetRun.threadId) corrupt();
+    ancestry.push(cursorId);
+    cursorId = run.lineagePreviousRunId;
+  }
+  return ancestry;
+}
+
+function latestCommittedDocumentSourceLineage(state, targetRun) {
+  for (const sourceRunId of previousRunAncestry(state, targetRun)) {
+    const sourceRun = state.runs.find((candidate) => candidate.id === sourceRunId);
+    if (!sourceRun || sourceRun.status !== "completed") continue;
+    const candidates = state.artifacts.filter((artifact) => {
+      if (artifact.kind !== "file" || artifact.runId !== sourceRunId || artifact.documentRole !== "source") {
+        return false;
+      }
+      const intent = state.documentCommitIntents.find((candidate) =>
+        candidate.runId === sourceRunId &&
+        candidate.receiptDigest === artifact.compileReceiptDigest &&
+        candidate.status === "committed" &&
+        candidate.eventsPublished === true &&
+        candidate.objects.some((object) =>
+          object.role === "source" &&
+          object.ref === artifact.workerRef &&
+          object.sha256 === artifact.spec.sha256 &&
+          (candidate.schemaVersion === LEGACY_DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION || (
+            object.filename === artifact.spec.filename &&
+            object.bytes === artifact.spec.bytes
+          ))
+        )
+      );
+      return Boolean(intent);
+    });
+    if (candidates.length > 1) corrupt();
+    if (candidates.length === 0) continue;
+    const source = candidates[0];
+    return Object.freeze({
+      schemaVersion: DOCUMENT_REVISION_LINEAGE_SCHEMA_VERSION,
+      sourceRunId,
+      workerRef: source.workerRef,
+      receiptDigest: source.compileReceiptDigest,
+      filename: source.spec.filename,
+      sourceBytes: source.spec.bytes,
+      sourceSha256: source.spec.sha256,
+    });
+  }
+  return null;
+}
+
+function validateDocumentRevisionLineage(lineage, state, targetIntent) {
+  if (lineage === null) return;
+  exactState(
+    lineage,
+    ["schemaVersion", "sourceRunId", "workerRef", "receiptDigest", "filename", "sourceBytes", "sourceSha256"],
+    ["schemaVersion", "sourceRunId", "workerRef", "receiptDigest", "filename", "sourceBytes", "sourceSha256"],
+    "document revision lineage"
+  );
+  try {
+    if (lineage.schemaVersion !== DOCUMENT_REVISION_LINEAGE_SCHEMA_VERSION) corrupt();
+    validateIntegrationRunId(lineage.sourceRunId);
+    validateIntegrationDocumentWorkerRef(lineage.workerRef);
+    stateDigest(lineage.receiptDigest, "document revision lineage receiptDigest");
+    stateDigest(lineage.sourceSha256, "document revision lineage sourceSha256");
+    integrationBoundedText(lineage.filename, "document revision lineage filename", 200, { minimum: 5 });
+    integrationBoundedInteger(lineage.sourceBytes, "document revision lineage sourceBytes", {
+      minimum: 1,
+      maximum: INTEGRATION_DOCUMENT_WORKER_LIMITS.maximumSourceBytes,
+    });
+  } catch (error) {
+    corrupt(error);
+  }
+  const targetRun = state.runs.find((candidate) => candidate.id === targetIntent.runId);
+  if (!targetRun || lineage.sourceRunId === targetRun.id) corrupt();
+  const expected = latestCommittedDocumentSourceLineage(state, targetRun);
+  if (!expected || canonicalJson(expected) !== canonicalJson(lineage)) corrupt();
+}
+
+function documentWorkerCommitObjects(objects) {
+  return Object.freeze(objects.map((object) => Object.freeze({
+    ref: object.ref,
+    role: object.role,
+    sha256: object.sha256,
+  })));
+}
+
 function validateDocumentCommitIntent(intent, scope, runsById, artifacts) {
   exactState(
     intent,
@@ -1033,6 +1153,7 @@ function validateDocumentCommitIntent(intent, scope, runsById, artifacts) {
       "workerAckDigest",
       "committedAt",
       "eventsPublished",
+      "revisionOf",
     ],
     [
       "schemaVersion",
@@ -1051,8 +1172,19 @@ function validateDocumentCommitIntent(intent, scope, runsById, artifacts) {
     "document commit intent"
   );
   if (
-    intent.schemaVersion !== DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION ||
+    !new Set([DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION, LEGACY_DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION]).has(
+      intent.schemaVersion
+    ) ||
     !new Set(["pending", "committed"]).has(intent.status)
+  ) {
+    corrupt();
+  }
+  if (
+    (intent.schemaVersion === DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION &&
+      !Object.prototype.hasOwnProperty.call(intent, "revisionOf")) ||
+    (intent.schemaVersion === LEGACY_DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION &&
+      Object.prototype.hasOwnProperty.call(intent, "revisionOf")) ||
+    (intent.revisionOf !== undefined && intent.revisionOf !== null && typeof intent.revisionOf !== "object")
   ) {
     corrupt();
   }
@@ -1072,14 +1204,35 @@ function validateDocumentCommitIntent(intent, scope, runsById, artifacts) {
   const expectedRoles = ["source", "pdf"];
   for (let index = 0; index < intent.objects.length; index += 1) {
     const object = intent.objects[index];
-    exactState(object, ["ref", "role", "sha256"], ["ref", "role", "sha256"], "document commit object");
+    const objectFields = intent.schemaVersion === DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION
+      ? ["ref", "role", "filename", "bytes", "sha256"]
+      : ["ref", "role", "sha256"];
+    exactState(object, objectFields, objectFields, "document commit object");
     try {
       validateIntegrationDocumentWorkerRef(object.ref);
       stateDigest(object.sha256, "document commit object sha256");
+      if (intent.schemaVersion === DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION) {
+        integrationBoundedText(object.filename, "document commit object filename", 240, { minimum: 5 });
+        integrationBoundedInteger(object.bytes, "document commit object bytes", {
+          minimum: 1,
+          maximum: object.role === "source"
+            ? INTEGRATION_DOCUMENT_WORKER_LIMITS.maximumSourceBytes
+            : INTEGRATION_DOCUMENT_WORKER_LIMITS.maximumPdfBytes,
+        });
+      }
     } catch (error) {
       corrupt(error);
     }
-    if (object.role !== expectedRoles[index]) corrupt();
+    if (
+      object.role !== expectedRoles[index] ||
+      (intent.schemaVersion === DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION && (
+        object.filename.includes("/") ||
+        object.filename.includes("\\") ||
+        !new RegExp(`\\.${object.role === "source" ? "tex" : "pdf"}$`, "iu").test(object.filename)
+      ))
+    ) {
+      corrupt();
+    }
     const artifact = artifacts.find((candidate) => candidate.workerRef === object.ref);
     if (
       !artifact ||
@@ -1087,13 +1240,19 @@ function validateDocumentCommitIntent(intent, scope, runsById, artifacts) {
       artifact.runId !== intent.runId ||
       artifact.documentRole !== object.role ||
       artifact.compileReceiptDigest !== intent.receiptDigest ||
-      artifact.spec.sha256 !== object.sha256
+      artifact.spec.sha256 !== object.sha256 ||
+      (intent.schemaVersion === DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION && (
+        artifact.spec.filename !== object.filename ||
+        artifact.spec.bytes !== object.bytes
+      ))
     ) {
       corrupt();
     }
   }
   const expectedManifestDigest = contractDigest({
-    schemaVersion: "aginti-document-worker-artifact-manifest-v1",
+    schemaVersion: intent.schemaVersion === DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION
+      ? DOCUMENT_COMMIT_INTENT_MANIFEST_SCHEMA_VERSION
+      : "aginti-document-worker-artifact-manifest-v1",
     objects: intent.objects,
   });
   if (intent.manifestDigest !== expectedManifestDigest) corrupt();
@@ -1324,8 +1483,32 @@ function validateState(state, expectedScope) {
         if (cursor === undefined) corrupt();
       }
     }
+    if (run.lineagePreviousRunId !== null) {
+      const previous = runsById.get(run.lineagePreviousRunId);
+      if (
+        !previous ||
+        previous.threadId !== run.threadId ||
+        !TERMINAL_RUN_STATUSES.has(previous.status) ||
+        previous.createdAt > run.createdAt
+      ) {
+        corrupt();
+      }
+      const seen = new Set([run.id]);
+      let cursor = previous;
+      while (cursor) {
+        if (seen.has(cursor.id)) corrupt();
+        seen.add(cursor.id);
+        cursor = cursor.lineagePreviousRunId === null ? null : runsById.get(cursor.lineagePreviousRunId);
+        if (cursor === undefined) corrupt();
+      }
+    }
   }
   for (const thread of state.threads) validateThread(thread, expectedScope, runsById);
+  const expectedLineage = inferRunLineage(state);
+  if (expectedLineage.size !== state.runs.length) corrupt();
+  for (const run of state.runs) {
+    if (run.lineagePreviousRunId !== expectedLineage.get(run.id)) corrupt();
+  }
   for (const run of state.runs) {
     const thread = state.threads.find((item) => item.id === run.threadId);
     const runMessages = thread?.messages.filter((message) => message.runId === run.id) || [];
@@ -1369,6 +1552,11 @@ function validateState(state, expectedScope) {
     if (commitReceipts.has(intent.receiptDigest)) corrupt();
     commitReceipts.add(intent.receiptDigest);
     validateDocumentCommitIntent(intent, expectedScope, runsById, state.artifacts);
+  }
+  for (const intent of state.documentCommitIntents) {
+    if (intent.schemaVersion === DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION) {
+      validateDocumentRevisionLineage(intent.revisionOf, state, intent);
+    }
   }
   for (const artifact of state.artifacts.filter(({ kind }) => kind === "file")) {
     if (!commitReceipts.has(artifact.compileReceiptDigest)) corrupt();
@@ -1560,6 +1748,41 @@ function envelopeForState(state) {
   };
 }
 
+function inferRunLineage(state) {
+  const runsById = new Map(state.runs.map((run) => [run?.id, run]));
+  const inferred = new Map();
+  for (const thread of state.threads) {
+    if (!Array.isArray(thread?.messages)) continue;
+    let latestRunId = null;
+    for (const message of thread.messages) {
+      if (message?.role !== "user" || inferred.has(message.runId)) continue;
+      const run = runsById.get(message.runId);
+      if (!run || run.threadId !== thread.id) continue;
+      inferred.set(run.id, run.previousRunId ?? latestRunId);
+      latestRunId = run.id;
+    }
+  }
+  return inferred;
+}
+
+function migrateMissingRunLineage(state) {
+  if (!Array.isArray(state?.runs) || !Array.isArray(state?.threads)) return state;
+  const missing = state.runs.some((run) =>
+    run && !Object.prototype.hasOwnProperty.call(run, "lineagePreviousRunId")
+  );
+  if (!missing) return state;
+  const inferred = inferRunLineage(state);
+  return {
+    ...state,
+    runs: state.runs.map((run) => ({
+      ...run,
+      ...(!Object.prototype.hasOwnProperty.call(run, "lineagePreviousRunId")
+        ? { lineagePreviousRunId: inferred.get(run.id) ?? null }
+        : {}),
+    })),
+  };
+}
+
 function parseStateEnvelope(text, expectedScope) {
   let envelope;
   try {
@@ -1600,16 +1823,16 @@ function parseStateEnvelope(text, expectedScope) {
       corrupt();
     }
     return validateState(
-      {
+      migrateMissingRunLineage({
         ...envelope.state,
         schemaVersion: INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION,
         documentCommitIntents: [],
         documentDeletionIntents: [],
-      },
+      }),
       expectedScope
     );
   }
-  return validateState(envelope.state, expectedScope);
+  return validateState(migrateMissingRunLineage(envelope.state), expectedScope);
 }
 
 function stateFilePaths(stateRoot, scope) {
@@ -2091,7 +2314,7 @@ function createService(options, { testOnly }) {
       try {
         const ack = await documentWorkerClient.commitArtifacts(
           scopeWithRun(scope, intent.threadId, intent.runId),
-          { receiptDigest: intent.receiptDigest, objects: intent.objects }
+          { receiptDigest: intent.receiptDigest, objects: documentWorkerCommitObjects(intent.objects) }
         );
         intent.status = "committed";
         intent.updatedAt = timestamp();
@@ -2313,7 +2536,19 @@ function createService(options, { testOnly }) {
     const inputIndex = thread.messages.findIndex((message) => message.id === run.inputMessageId);
     if (inputIndex < 0 || thread.messages[inputIndex].role !== "user") corrupt();
     const prompt = thread.messages[inputIndex].content;
-    const preceding = thread.messages.slice(0, inputIndex).slice(-INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumConversationMessages);
+    let excludedRetryRunId = null;
+    if (run.previousRunId !== null) {
+      const previous = findRun(state, run.previousRunId);
+      const previousInput = thread.messages.find((message) => message.id === previous.inputMessageId);
+      if (!previousInput || previousInput.role !== "user") corrupt();
+      if (new Set(["failed", "cancelled"]).has(previous.status) && previousInput.content === prompt) {
+        excludedRetryRunId = previous.id;
+      }
+    }
+    const preceding = thread.messages
+      .slice(0, inputIndex)
+      .filter((message) => message.runId !== excludedRetryRunId)
+      .slice(-INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumConversationMessages);
     const selected = [];
     let totalBytes = 0;
     for (let index = preceding.length - 1; index >= 0; index -= 1) {
@@ -2329,6 +2564,204 @@ function createService(options, { testOnly }) {
       conversation: Object.freeze(selected),
       ...(run.search === undefined ? {} : { search: validateIntegrationSearch(run.search) }),
     });
+  }
+
+  function revisionLineageForRun(state, run, input) {
+    const lineage = latestCommittedDocumentSourceLineage(state, run);
+    if (!isIntegrationDocumentArtifactRevision(input.prompt, input.conversation, lineage !== null)) return null;
+    if (!lineage) {
+      fail(
+        "ANALYSIS_DOCUMENT_SOURCE_REQUIRED",
+        "No committed TeX source exists in this run's server-owned prior-thread ancestry.",
+        { status: 409 }
+      );
+    }
+    return lineage;
+  }
+
+  function cleanupRevisionContent(content) {
+    try {
+      content?.cleanup?.();
+    } catch {
+      // Cleanup is best-effort and must never replace the typed source result.
+    }
+  }
+
+  async function fetchRevisionSource(scope, threadId, lineage, signal) {
+    if (!documentWorkerClient) {
+      fail("ANALYSIS_DOCUMENT_SOURCE_UNAVAILABLE", "The private workstation document source is unavailable.", {
+        status: 503,
+      });
+    }
+    if (
+      lineage.sourceBytes < 1 ||
+      lineage.sourceBytes > INTEGRATION_DOCUMENT_WORKER_LIMITS.maximumSourceBytes
+    ) {
+      fail("ANALYSIS_DOCUMENT_SOURCE_INTEGRITY_FAILED", "The prior TeX source length is invalid.", {
+        status: 502,
+      });
+    }
+    let content;
+    try {
+      content = await documentWorkerClient.content(
+        scopeWithRun(scope, threadId, lineage.sourceRunId),
+        {
+          ref: lineage.workerRef,
+          receiptDigest: lineage.receiptDigest,
+          filename: lineage.filename,
+          mime: "application/x-tex",
+          bytes: lineage.sourceBytes,
+          sha256: lineage.sourceSha256,
+          metadataOnly: false,
+        },
+        { signal }
+      );
+    } catch (error) {
+      if (error instanceof IntegrationDocumentWorkerError) {
+        if (error.code === "ANALYSIS_CANCELLED") throw error;
+        if (error.code === "ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE") {
+          fail("ANALYSIS_DOCUMENT_SOURCE_UNAVAILABLE", "The private workstation document source is unavailable.", {
+            status: 503,
+            cause: error,
+          });
+        }
+        fail("ANALYSIS_DOCUMENT_SOURCE_INTEGRITY_FAILED", "The prior TeX source response was invalid.", {
+          status: 502,
+          cause: error,
+        });
+      }
+      if (signal?.aborted) {
+        fail("ANALYSIS_CANCELLED", "Document revision source retrieval was cancelled.", {
+          status: 499,
+          cause: signal.reason || error,
+        });
+      }
+      fail("ANALYSIS_DOCUMENT_SOURCE_UNAVAILABLE", "The private workstation document source is unavailable.", {
+        status: 503,
+        cause: error,
+      });
+    }
+    if (content.status === 404 || content.status === 410) {
+      cleanupRevisionContent(content);
+      fail("ANALYSIS_DOCUMENT_SOURCE_GONE", "The prior committed TeX source no longer exists.", {
+        status: content.status,
+      });
+    }
+    if (
+      content.status !== 200 ||
+      content.metadataOnly !== false ||
+      content.start !== 0 ||
+      content.end !== lineage.sourceBytes - 1 ||
+      content.selectedBytes !== lineage.sourceBytes ||
+      content.totalBytes !== lineage.sourceBytes ||
+      content.sha256 !== lineage.sourceSha256 ||
+      content.filename !== lineage.filename ||
+      !content.body ||
+      typeof content.body.getReader !== "function" ||
+      typeof content.cleanup !== "function"
+    ) {
+      cleanupRevisionContent(content);
+      fail("ANALYSIS_DOCUMENT_SOURCE_INTEGRITY_FAILED", "The prior TeX source metadata was invalid.", {
+        status: 502,
+      });
+    }
+    let bytes = null;
+    let reader = null;
+    let offset = 0;
+    let complete = false;
+    try {
+      bytes = Buffer.alloc(lineage.sourceBytes);
+      const hash = crypto.createHash("sha256");
+      try {
+        reader = content.body.getReader();
+      } catch (error) {
+        fail("ANALYSIS_DOCUMENT_SOURCE_INTEGRITY_FAILED", "The prior TeX source stream was unavailable.", {
+          status: 502,
+          cause: error,
+        });
+      }
+      for (;;) {
+        if (signal?.aborted) throw signal.reason || new Error("document revision source cancelled");
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        if (!(chunk.value instanceof Uint8Array) || chunk.value.byteLength < 1) {
+          fail("ANALYSIS_DOCUMENT_SOURCE_INTEGRITY_FAILED", "The prior TeX source stream was invalid.", {
+            status: 502,
+          });
+        }
+        if (offset + chunk.value.byteLength > bytes.byteLength) {
+          fail("ANALYSIS_DOCUMENT_SOURCE_INTEGRITY_FAILED", "The prior TeX source exceeded its exact length.", {
+            status: 502,
+          });
+        }
+        const view = Buffer.from(chunk.value.buffer, chunk.value.byteOffset, chunk.value.byteLength);
+        hash.update(view);
+        view.copy(bytes, offset);
+        offset += view.byteLength;
+        try {
+          chunk.value.fill(0);
+        } catch {
+          // The response chunk is not owned by the session service.
+        }
+      }
+      if (offset !== bytes.byteLength || hash.digest("hex") !== lineage.sourceSha256) {
+        fail("ANALYSIS_DOCUMENT_SOURCE_INTEGRITY_FAILED", "The prior TeX source failed exact integrity validation.", {
+          status: 502,
+        });
+      }
+      let source;
+      try {
+        source = FATAL_UTF8_DECODER.decode(bytes);
+      } catch (error) {
+        fail("ANALYSIS_DOCUMENT_SOURCE_INTEGRITY_FAILED", "The prior TeX source was not valid UTF-8.", {
+          status: 502,
+          cause: error,
+        });
+      }
+      if (!source.isWellFormed() || Buffer.byteLength(source, "utf8") !== lineage.sourceBytes) {
+        fail("ANALYSIS_DOCUMENT_SOURCE_INTEGRITY_FAILED", "The prior TeX source failed UTF-8 validation.", {
+          status: 502,
+        });
+      }
+      complete = true;
+      return Object.freeze({
+        priorDocument: Object.freeze({
+          schemaVersion: INTEGRATION_DOCUMENT_REVISION_SOURCE_SCHEMA_VERSION,
+          sourceRunId: lineage.sourceRunId,
+          receiptDigest: lineage.receiptDigest,
+          filename: lineage.filename,
+          sourceBytes: lineage.sourceBytes,
+          sourceSha256: lineage.sourceSha256,
+          source,
+        }),
+        dispose() {
+          bytes.fill(0);
+        },
+      });
+    } catch (error) {
+      if (error instanceof IntegrationAnalysisSessionError) throw error;
+      if (signal?.aborted) {
+        fail("ANALYSIS_CANCELLED", "Document revision source retrieval was cancelled.", {
+          status: 499,
+          cause: signal.reason || error,
+        });
+      }
+      fail("ANALYSIS_DOCUMENT_SOURCE_UNAVAILABLE", "The private workstation document source stream failed.", {
+        status: 503,
+        cause: error,
+      });
+    } finally {
+      if (!complete) {
+        bytes?.fill(0);
+        if (reader) await reader.cancel(new Error("document revision source incomplete")).catch(() => {});
+      }
+      try {
+        reader?.releaseLock?.();
+      } catch {
+        // A disturbed stream must not replace the typed source outcome.
+      }
+      cleanupRevisionContent(content);
+    }
   }
 
   function planSteps(phase, failed = false) {
@@ -2542,7 +2975,7 @@ function createService(options, { testOnly }) {
     return sanitizeIntegrationArtifact({ ...source, id });
   }
 
-  async function recordArtifact(scope, threadId, runId, rawArtifact) {
+  async function recordArtifact(scope, threadId, runId, rawArtifact, revisionLineage = null) {
     const privateFile = inspectIntegrationDocumentWorkerFileArtifact(rawArtifact);
     const artifact = normalizeOwnedArtifact(rawArtifact, scope, threadId, runId);
     if (artifact.kind === "file") {
@@ -2605,6 +3038,17 @@ function createService(options, { testOnly }) {
           fail("ANALYSIS_ARTIFACT_CAPACITY_EXHAUSTED", "Run artifact capacity is exhausted.", { status: 409 });
         }
         const createdAt = timestamp();
+        const expectedRevisionLineage = latestCommittedDocumentSourceLineage(state, run);
+        if (
+          revisionLineage !== null &&
+          (expectedRevisionLineage === null || canonicalJson(revisionLineage) !== canonicalJson(expectedRevisionLineage))
+        ) {
+          fail(
+            "ANALYSIS_DOCUMENT_SOURCE_INVALID",
+            "Document revision lineage disagrees with the server-owned prior-run ancestry.",
+            { status: 500 }
+          );
+        }
         const records = pair.map(({ artifact: candidate, privateFile: metadata }) => ({
           ...candidate,
           workerRef: metadata.workerRef,
@@ -2621,6 +3065,8 @@ function createService(options, { testOnly }) {
         const objects = records.map((record) => Object.freeze({
           ref: record.workerRef,
           role: record.documentRole,
+          filename: record.spec.filename,
+          bytes: record.spec.bytes,
           sha256: record.spec.sha256,
         }));
         const receiptDigest = records[0].compileReceiptDigest;
@@ -2635,12 +3081,13 @@ function createService(options, { testOnly }) {
           updatedAt: createdAt,
           objects,
           manifestDigest: contractDigest({
-            schemaVersion: "aginti-document-worker-artifact-manifest-v1",
+            schemaVersion: DOCUMENT_COMMIT_INTENT_MANIFEST_SCHEMA_VERSION,
             objects,
           }),
           workerAckDigest: null,
           committedAt: null,
           eventsPublished: false,
+          revisionOf: revisionLineage,
         });
         return { changed: true, result: ownedArtifact(records[1]) };
       });
@@ -2735,6 +3182,8 @@ function createService(options, { testOnly }) {
       const expectedObjects = files.map(({ artifact, metadata }) => ({
         ref: metadata.workerRef,
         role: metadata.role,
+        filename: artifact.spec.filename,
+        bytes: artifact.spec.bytes,
         sha256: artifact.spec.sha256,
       }));
       if (
@@ -2912,31 +3361,47 @@ function createService(options, { testOnly }) {
     let finalCallbackDigest = "";
     let finalCallbackCount = 0;
     const privateDocumentEvidence = [];
+    let revisionMaterial = null;
     try {
-      const input = await mutate(scope, (state) => {
+      const prepared = await mutate(scope, (state) => {
         const run = findRun(state, runId);
         if (TERMINAL_RUN_STATUSES.has(run.status)) return { changed: false, result: null };
         const thread = findThread(state, threadId);
+        const input = inputForRun(state, run);
+        const revisionLineage = revisionLineageForRun(state, run, input);
         const startedAt = timestamp();
         run.status = "running";
         run.schedulingState = "running";
         run.startedAt = startedAt;
         appendEvent(run, "run.status", { status: "running" }, startedAt);
         touchThread(thread, startedAt, { status: "running", lastRunId: runId });
-        return { changed: true, result: inputForRun(state, run) };
+        return {
+          changed: true,
+          result: Object.freeze({ input, revisionLineage }),
+        };
       });
-      if (!input) return;
+      if (!prepared) return;
+      const { input, revisionLineage } = prepared;
       const active = activeRuns.get(runId);
       if (!active) fail("ANALYSIS_RUNNER_UNAVAILABLE", "Analysis run ownership was lost.", { status: 503 });
+      if (revisionLineage) {
+        revisionMaterial = await fetchRevisionSource(
+          scope,
+          threadId,
+          revisionLineage,
+          active.controller.signal
+        );
+      }
       const runnerResult = await analysisRunner.run(
         scopeWithRun(scope, threadId, runId),
         input,
         Object.freeze({
           signal: active.controller.signal,
+          ...(revisionMaterial === null ? {} : { priorDocument: revisionMaterial.priorDocument }),
           onProgress: async (progress) => recordProgress(scope, runId, progress),
           onArtifact: async (artifact) => {
             if (inspectIntegrationDocumentWorkerFileArtifact(artifact)) privateDocumentEvidence.push(artifact);
-            await recordArtifact(scope, threadId, runId, artifact);
+            await recordArtifact(scope, threadId, runId, artifact, revisionLineage);
           },
           onDocumentCommitIntent: async (fileArtifacts) =>
             authorizeDocumentCommit(scope, threadId, runId, fileArtifacts),
@@ -2964,7 +3429,11 @@ function createService(options, { testOnly }) {
         fail("ANALYSIS_EXECUTION_FAILED", "Analysis execution did not complete successfully.", { status: 502 });
       }
       const documentGate = await evaluateIntegrationDocumentArtifactCompletion(
-        classifyIntegrationDocumentArtifactIntent(input.prompt, input.conversation),
+        classifyIntegrationDocumentArtifactIntent(
+          input.prompt,
+          input.conversation,
+          revisionLineage !== null
+        ),
         privateDocumentEvidence
       );
       if (!documentGate.ok) {
@@ -2974,6 +3443,8 @@ function createService(options, { testOnly }) {
     } catch (error) {
       await failRun(scope, runId, error).catch(() => {});
     } finally {
+      revisionMaterial?.dispose();
+      revisionMaterial = null;
       pendingDocumentArtifacts.delete(runId);
     }
   }
@@ -3088,8 +3559,9 @@ function createService(options, { testOnly }) {
           ) {
             conflict("ANALYSIS_THREAD_FULL", "Thread message capacity is exhausted.");
           }
-          if (previousRunId !== null) {
-            const previous = findRun(state, previousRunId);
+          const lineagePreviousRunId = previousRunId ?? thread.lastRunId;
+          if (lineagePreviousRunId !== null) {
+            const previous = findRun(state, lineagePreviousRunId);
             if (previous.threadId !== threadId || !TERMINAL_RUN_STATUSES.has(previous.status)) {
               conflict("ANALYSIS_RUN_NOT_RESUMABLE", "Run cannot be resumed.");
             }
@@ -3123,6 +3595,7 @@ function createService(options, { testOnly }) {
             id: runId,
             threadId,
             previousRunId,
+            lineagePreviousRunId,
             principalId: scope.principalId,
             browserSessionId: scope.browserSessionId,
             browserSessionPolicy: "same-browser-session",

@@ -11,11 +11,15 @@ export const INTEGRATION_DOCUMENT_ARTIFACT_SCHEMA_VERSION = "aginti-integration-
 const DOCUMENT_ACTION =
   /^(?:make|create|generate|write|rewrite|revise|update|edit|modify|correct|fix|regenerate|recompile|produce|prepare|compile|typeset|render|export|build|deliver|provide|save)\b/iu;
 const DOCUMENT_FOLLOWUP_MUTATION_ACTION = /^(?:add|include|change|remove|replace)\b/iu;
+const DOCUMENT_STRONG_REVISION_ACTION =
+  /^(?:rewrite|revise|edit|modify|correct|fix|compile|typeset|render|export)\b/iu;
+const DOCUMENT_MUTATION_TARGET =
+  /\b(?:latex|tex|pdf|source|title|heading|section|paragraph|wording|grammar|layout|formatting|fonts?|margins?|tables?|figures?|citations?|references?|bibliography|abstract|captions?|appendix|appendices)\b|\b(?:this|that|same|existing|previous|current|the|its)\s+(?:files?|documents?|reports?|papers?|manuscripts?|artifacts?|outputs?|deliverables?)\b|(?:源文件|源码|源碼|标题|標題|段落|排版|格式|字体|字體|页边距|頁邊距|表格|图片|圖片|引用|参考文献|參考文獻|摘要|附录|附錄)/iu;
+const DOCUMENT_STRONG_REVISION_REFERENCE =
+  /\bit\b|\b(?:this|that|same|existing|previous|current|the|its)\s+(?:latex|tex|pdf|source|files?|documents?|reports?|papers?|manuscripts?|artifacts?|outputs?|deliverables?|title|heading|section|paragraph|wording|grammar|layout|formatting|fonts?|margins?|tables?|figures?|citations?|references?|bibliography|abstract|captions?|appendix|appendices)\b|\b(?:latex|tex|pdf|source|documents?|reports?|papers?|manuscripts?|title|heading|section|paragraph|wording|grammar|layout|formatting|fonts?|margins?|tables?|figures?|citations?|references?|bibliography|abstract|captions?|appendix|appendices)\b|(?:它|这个|這個|同一|源文件|源码|源碼|文件|文档|文檔|报告|報告|论文|論文|标题|標題|段落|排版|格式|字体|字體|页边距|頁邊距|表格|图片|圖片|引用|参考文献|參考文獻|摘要|附录|附錄)/iu;
 const DOCUMENT_NEED_ACTION = /^(?:(?:i|we)\s+)?(?:need|want|require|would\s+like)\b/iu;
 const DOCUMENT_NEED_DELIVERABLE =
   /(?:\.tex\b|\.pdf\b|\b(?:source(?:\s+files?)?|compiled\s+pdf|files?|documents?|reports?|papers?|manuscripts?|artifacts?|outputs?|deliverables?|versions?|formats?)\b)/iu;
-const DOCUMENT_FOLLOWUP_REFERENCE =
-  /\b(?:it|this|that|same|again|latex|tex|pdf|source|files?|documents?|reports?|papers?|manuscripts?|artifacts?|outputs?|deliverables?|title|heading|section|paragraph|wording|grammar|layout|formatting|fonts?|margins?|tables?|figures?|citations?|references?)\b|(?:它|这个|這個|同一|再次|重新|源文件|源码|源碼|文件|文档|文檔|报告|報告|论文|論文|标题|標題|段落|排版|格式|字体|字體|页边距|頁邊距|表格|图片|圖片|引用)/iu;
 const DOCUMENT_PAIR_EXCLUSION =
   /\b(?:do\s+not|don't|dont|never|avoid|without|no\s+need\s+to|not\s+asked\s+to)\b[^.!?;\r\n]{0,160}\b(?:latex|tex|pdf)\b|\b(?:latex|tex|pdf)(?:\s+(?:source|file|document))?\s+only\b|\bonly\s+(?:the\s+)?(?:latex|tex|pdf)\b|(?:不要|不用|无需|無需|不需要|禁止|避免)[^。！？；\r\n]{0,100}(?:latex|tex|pdf)/iu;
 const DOCUMENT_FIGURE =
@@ -23,6 +27,14 @@ const DOCUMENT_FIGURE =
 const DOCUMENT_FIGURE_EXCLUSION =
   /\b(?:do\s+not|don't|dont|never|avoid|without|remove|omit|exclude|no)\b[^.!?;\r\n]{0,100}\b(?:figures?|plots?|charts?|diagrams?|illustrations?|graphs?|tikz|pgfplots)\b|(?:不要|不用|无需|無需|不需要|删除|刪除|移除|省略|避免)[^。！？；\r\n]{0,80}(?:图|圖|插图|插圖|绘图|繪圖|图表|圖表|示意图|示意圖|曲线|曲線)/iu;
 const CHINESE_DOCUMENT_ACTION = /^(?:请|請|请你|請你|请帮我|請幫我|帮我|幫我)?(?:创建|建立|生成|撰写|撰寫|重写|重寫|修改|修订|修訂|更新|重新生成|重新编译|重新編譯|编译|編譯|导出|導出|准备|準備|制作|製作|交付|排版)/u;
+const DOCUMENT_NEW_INSTANCE =
+  /^(?:make|create|generate|write|rewrite|produce|prepare|build|deliver|provide|save|regenerate|compile|recompile|typeset|render|export)\b[^.!?;\r\n]{0,120}\b(?:new|another|separate|fresh|second|different|independent|additional)\b[^.!?;\r\n]{0,120}\b(?:latex|tex|pdf|file|document|report|paper|manuscript)\b|^(?:make|create|generate|write|rewrite|produce|prepare|build|regenerate|compile|recompile|typeset|render|export)\b[^.!?;\r\n]{0,160}\bfrom\s+scratch\b|^(?:新建|另建|另外创建|另外建立|创建另一个|建立另一个|创建一份新的|建立一份新的|创建第二份|建立第二份)[^。！？；\r\n]{0,120}(?:latex|tex|pdf|文件|文档|文檔|报告|報告|论文|論文)/iu;
+const DOCUMENT_INITIAL_CREATION_ACTION =
+  /^(?:make|create|generate|write|produce|prepare|build|deliver|provide|save|compile|typeset|render|export)\b|^(?:请|請|请你|請你|请帮我|請幫我|帮我|幫我)?(?:创建|建立|生成|撰写|撰寫|准备|準備|制作|製作|交付)/iu;
+const DOCUMENT_EXPLICIT_REVISION_ACTION =
+  /^(?:rewrite|revise|update|edit|modify|correct|fix|regenerate|recompile|add|include|change|remove|replace)\b|^(?:请|請|请你|請你|请帮我|請幫我|帮我|幫我)?(?:重写|重寫|修改|修订|修訂|更新|重新生成|重新编译|重新編譯|排版)/iu;
+const DOCUMENT_PRIOR_INSTANCE_REFERENCE =
+  /\b(?:same|existing|previous|prior|earlier|original|revised|updated|again)\b|(?:同一|现有|現有|之前|此前|原有|原来的|原來的|再次|重新)/iu;
 
 function quotedContextRemoved(value = "") {
   return String(value || "")
@@ -111,14 +123,20 @@ function requestsDocumentFollowup(value = "") {
     .map((item) => imperativeClause(item))
     .filter(Boolean);
   return clauses.some((clause) => {
-    const action =
-      DOCUMENT_ACTION.test(clause) ||
+    if (/^(?:recompile|regenerate)\b/iu.test(clause) || /^(?:重新生成|重新编译|重新編譯)/u.test(clause)) {
+      return true;
+    }
+    if (DOCUMENT_STRONG_REVISION_ACTION.test(clause)) {
+      return DOCUMENT_STRONG_REVISION_REFERENCE.test(clause);
+    }
+    if (
       DOCUMENT_FOLLOWUP_MUTATION_ACTION.test(clause) ||
-      DOCUMENT_NEED_ACTION.test(clause) ||
-      CHINESE_DOCUMENT_ACTION.test(clause);
-    const implicitRecompile = /^(?:recompile|regenerate|typeset|render|export)\b/iu.test(clause) ||
-      /^(?:重新生成|重新编译|重新編譯|编译|編譯|导出|導出)/u.test(clause);
-    return action && (implicitRecompile || DOCUMENT_FOLLOWUP_REFERENCE.test(clause));
+      /^(?:update|make)\b/iu.test(clause) ||
+      DOCUMENT_NEED_ACTION.test(clause)
+    ) {
+      return DOCUMENT_MUTATION_TARGET.test(clause);
+    }
+    return CHINESE_DOCUMENT_ACTION.test(clause) && DOCUMENT_STRONG_REVISION_REFERENCE.test(clause);
   });
 }
 
@@ -156,10 +174,11 @@ function minimumFigureCount(prompt = "", conversation = []) {
   return required ? 1 : 0;
 }
 
-export function classifyIntegrationDocumentArtifactIntent(prompt = "", conversation = []) {
+export function classifyIntegrationDocumentArtifactIntent(prompt = "", conversation = [], activeDocument = false) {
+  const active = activeDocument === true || activeDocumentConversation(conversation);
   const required =
     explicitDocumentArtifactIntent(prompt) ||
-    (activeDocumentConversation(conversation) && requestsDocumentFollowup(prompt));
+    (active && requestsDocumentFollowup(prompt));
   return Object.freeze({
     schemaVersion: INTEGRATION_DOCUMENT_ARTIFACT_SCHEMA_VERSION,
     required,
@@ -171,6 +190,25 @@ export function classifyIntegrationDocumentArtifactIntent(prompt = "", conversat
       minimumFigureCount: required ? minimumFigureCount(prompt, conversation) : 0,
     }),
   });
+}
+
+export function isIntegrationDocumentArtifactRevision(prompt = "", conversation = [], activeDocument = false) {
+  const current = imperativeClause(affirmativeDocumentText(quotedContextRemoved(prompt)));
+  const explicitInitialCreation =
+    DOCUMENT_INITIAL_CREATION_ACTION.test(current) &&
+    explicitDocumentArtifactIntent(prompt) &&
+    !DOCUMENT_PRIOR_INSTANCE_REFERENCE.test(current);
+  return (
+    requestsDocumentFollowup(prompt) &&
+    !DOCUMENT_NEW_INSTANCE.test(current) &&
+    !explicitInitialCreation &&
+    (
+      activeDocument === true ||
+      activeDocumentConversation(conversation) ||
+      DOCUMENT_EXPLICIT_REVISION_ACTION.test(current) ||
+      DOCUMENT_PRIOR_INSTANCE_REFERENCE.test(current)
+    )
+  );
 }
 
 function artifactFilename(value = {}) {

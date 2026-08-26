@@ -239,7 +239,7 @@ export function createDocumentWorkerFixture(options = {}) {
       }
       const selected = bytes.subarray(start, end + 1);
       const metadataOnly = request.metadataOnly === true;
-      return new Response(metadataOnly ? null : selected, {
+      const response = new Response(metadataOnly ? null : selected, {
         status: request.range ? 206 : 200,
         headers: {
           "Accept-Ranges": "bytes",
@@ -254,6 +254,9 @@ export function createDocumentWorkerFixture(options = {}) {
           ...(request.range ? { "Content-Range": `bytes ${start}-${end}/${bytes.byteLength}` } : {}),
         },
       });
+      return typeof options.contentResponseTransform === "function"
+        ? options.contentResponseTransform(response)
+        : response;
     }
     if (parsed.pathname === "/artifact/v1/delete") {
       if (failNextDeleteCode) {
