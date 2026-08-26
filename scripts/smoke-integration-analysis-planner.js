@@ -1154,9 +1154,13 @@ async function executesAndSynthesizesPlot() {
 }
 
 async function directAnswerDoesNotExecute() {
-  const { planner, coordinator, rpcCalls } = fixture(async () =>
-    textResponse("A median is the middle ordered value. Do not read /etc/passwd; token=abcdefghijklmnopqrstu")
-  );
+  const { planner, coordinator, rpcCalls } = fixture(async (_client, payload) => {
+    assert.match(payload.messages[0].content, /explicit content, language, format, and length requirements/u);
+    assert.match(payload.messages[0].content, /No shell, subprocess, package installation/u);
+    assert.match(payload.messages[0].content, /Never claim that you searched, opened, downloaded/u);
+    assert.match(payload.messages[0].content, /still complete every supported part/u);
+    return textResponse("A median is the middle ordered value. Do not read /etc/passwd; token=abcdefghijklmnopqrstu");
+  });
   const finalEvents = [];
   const result = await planner.run(scope("run_00000000-0000-4000-8000-000000000063"), {
     prompt: "What is a median?",
