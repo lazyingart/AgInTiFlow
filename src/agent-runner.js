@@ -3383,7 +3383,10 @@ function initialGoalContract(goal = "", at = new Date().toISOString()) {
 export function isBareTaskContinuationText(value = "") {
   const normalized = String(value || "").replace(/\s+/g, " ").trim();
   if (!normalized || normalized.length > 600) return false;
-  return /^(?:(?:please|kindly)\s+)?(?:continue|resume|finish|complete|keep\s+working)(?:\s+(?:and\s+)?(?:continue|finish|complete|working))?(?:\s+(?:the\s+)?(?:same|current|previous|existing|retained|saved|unfinished)\s+(?:task|work|run|session|job))?(?:\s+from\s+(?:the\s+)?(?:retained|saved|current|previous)\s+state)?[.!?]*$/i.test(normalized) ||
+  const explicitActiveTaskContinuation =
+    /^(?:(?:please|kindly)\s+)?(?:continue|resume|finish|complete|keep\s+working)\b(?=[^.!?。！？]{0,220}\b(?:same|current|previous|existing|retained|saved|unfinished|active)\b)(?=[^.!?。！？]{0,220}\b(?:task|work|run|session|job|repair|implementation|project|issue|fix)\b)(?![^.!?。！？]{0,220}\b(?:new|another|different|unrelated|separate)\b)[^.!?。！？]*[.!?。！？]*$/i.test(normalized);
+  return explicitActiveTaskContinuation ||
+    /^(?:(?:please|kindly)\s+)?(?:continue|resume|finish|complete|keep\s+working)(?:\s+(?:and\s+)?(?:continue|finish|complete|working))?(?:\s+(?:the\s+)?(?:same|current|previous|existing|retained|saved|unfinished)\s+(?:task|work|run|session|job))?(?:\s+from\s+(?:the\s+)?(?:retained|saved|current|previous)\s+state)?[.!?]*$/i.test(normalized) ||
     /^(?:请)?(?:继续|接着|恢复|完成)(?:之前|上次|当前|同一|这个)?(?:的)?(?:任务|工作|会话|进度)?(?:并完成)?[。！？.!?]*$/u.test(normalized) ||
     /^(?:このまま|前回から|保存した状態から)?(?:同じ|現在の|前の)?(?:タスク|作業|セッション)?(?:を)?(?:続けて|再開して|完了して)(?:ください)?[。！？.!?]*$/u.test(normalized);
 }

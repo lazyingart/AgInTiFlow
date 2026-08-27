@@ -5212,6 +5212,22 @@ try {
       leadingContinuationUpdate?.refreshExecutionContract,
     "a leading bare continuation clause followed by concrete details became a new task"
   );
+  const activeTaskContinuationState = structuredClone(concreteContinuationState);
+  const retainedActiveTaskVerification = activeTaskContinuationState.meta.projectVerification;
+  const activeTaskContinuationUpdate = applyContinuationContractTransition(
+    activeTaskContinuationState,
+    `Continue the exact active DevOps task from the current workspace. Diagnose the retained failures from exact evidence, rerun validation, and commit the coherent repair. ${"Preserve the existing task lineage while applying this correction. ".repeat(12)}`,
+    { at: "2026-08-24T09:59:30.000Z" }
+  );
+  assert(
+    activeTaskContinuationUpdate?.preserveTaskBoundary &&
+      activeTaskContinuationUpdate?.refreshExecutionContract,
+    "an explicit exact active-task continuation opened a new task boundary"
+  );
+  assert(
+    activeTaskContinuationState.meta.projectVerification === retainedActiveTaskVerification,
+    "an exact active-task continuation discarded durable verification evidence"
+  );
   const concreteGoalUpdate = applyContinuationContractTransition(
     concreteContinuationState,
     concreteContinuation,
