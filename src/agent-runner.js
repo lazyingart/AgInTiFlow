@@ -4777,8 +4777,8 @@ async function failedTestTracebackSourceDocuments(testRun = {}, config = {}) {
       ? path.resolve(reportedPath)
       : path.resolve(commandCwd, reportedPath);
     const line = Math.max(1, Number(match[2] || 1));
-    if (seen.has(`${absolutePath}:${line}`)) continue;
-    seen.add(`${absolutePath}:${line}`);
+    if (seen.has(absolutePath)) continue;
+    seen.add(absolutePath);
     const insideWorkspace =
       absolutePath === commandCwd || absolutePath.startsWith(`${commandCwd}${path.sep}`);
     const namedByCommand = command.includes(absolutePath);
@@ -4797,7 +4797,7 @@ async function failedTestTracebackSourceDocuments(testRun = {}, config = {}) {
     const raw = await fs.readFile(absolutePath, "utf8").catch(() => "");
     if (!raw) continue;
     documents.push({ absolutePath, line, raw });
-    if (documents.length >= 3) break;
+    if (documents.length >= 5) break;
   }
   return documents;
 }

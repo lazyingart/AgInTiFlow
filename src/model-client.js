@@ -134,6 +134,10 @@ function chatReasoningEffort(config = {}) {
 }
 
 function withChatReasoningEffort(payload = {}, config = {}) {
+  if (payload.thinking?.type === "disabled") {
+    const { reasoning_effort: _reasoningEffort, ...rest } = payload;
+    return rest;
+  }
   const reasoning = chatReasoningEffort(config);
   if (!reasoning) {
     const { reasoning_effort: _reasoningEffort, ...rest } = payload;
@@ -336,17 +340,35 @@ function assertLocalRequestWithinContext(payload = {}, config = {}, label = "age
 
 export { hasExplicitDeepResearchIntent } from "./research-routing.js";
 
-export function toolChoiceForProvider(config, messages = []) {
-  const requiresConcreteContinuation = messages.slice(-3).some(
+function requiresConcreteToolContinuation(messages = []) {
+  return messages.slice(-3).some(
     (message) =>
       message?.role === "user" &&
       /emit exactly one enabled tool call that performs the next concrete action/i.test(String(message.content || ""))
   );
-  // DeepSeek thinking models reject tool_choice="required" even though they
-  // accept the same native tool schema with auto selection. The continuation
-  // instruction remains explicit in the messages, so keep the supported
-  // provider mode instead of turning a recoverable truncation into HTTP 400.
-  if (requiresConcreteContinuation && normalizeProviderId(config.provider, "") !== "deepseek") {
+}
+
+function deepSeekActionOnlyRequest(config = {}, messages = []) {
+  return normalizeProviderId(config.provider, "") === "deepseek" &&
+    requiresConcreteToolContinuation(messages);
+}
+
+export function toolChoiceForProvider(config, messages = [], tools = []) {
+  const requiresConcreteContinuation = requiresConcreteToolContinuation(messages);
+  if (requiresConcreteContinuation) {
+    const actionable = (Array.isArray(tools) ? tools : [])
+      .filter((tool) => tool?.type === "function" && tool.function?.name !== "finish")
+      .map((tool) => String(tool.function?.name || ""))
+      .filter(Boolean);
+    if (
+      normalizeProviderId(config.provider, "") === "deepseek" &&
+      actionable.length === 1
+    ) {
+      return {
+        type: "function",
+        function: { name: actionable[0] },
+      };
+    }
     return "required";
   }
   if (config.provider !== "venice") return "auto";
@@ -2649,10 +2671,13 @@ export async function requestNextStep(client, config, messages) {
   const nativePayload = {
     model: config.model,
     temperature: 0,
-    tool_choice: toolChoiceForProvider(config, messages),
+    tool_choice: toolChoiceForProvider(config, messages, requestTools),
     parallel_tool_calls: false,
     messages: prepareMessages(config, messages),
     tools: requestTools,
+    ...(deepSeekActionOnlyRequest(config, messages)
+      ? { thinking: { type: "disabled" } }
+      : {}),
     ...(Number(config.maxOutputTokens || 0) > 0 ? { max_tokens: Number(config.maxOutputTokens) } : {}),
   };
   const textPayload = {

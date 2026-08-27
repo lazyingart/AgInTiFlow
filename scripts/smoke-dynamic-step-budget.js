@@ -705,6 +705,24 @@ try {
       tracebackPacket.content.includes("### tests/test_traceback_packet.py"),
     "exact same-workspace test files named by a traceback were omitted when discovery metadata was empty"
   );
+  const repeatedTracebackPacketState = structuredClone(tracebackPacketState);
+  repeatedTracebackPacketState.meta.projectVerification.testRuns[0].failureSignature =
+    "repeated-validator-traceback-file-recovery";
+  repeatedTracebackPacketState.meta.projectVerification.testRuns[0].failureSummary =
+    [
+      `File "${path.join(workspace, "duplicate-source.py")}", line 1, in first`,
+      `File "${path.join(workspace, "duplicate-source.py")}", line 2, in second`,
+      `File "${path.join(workspace, "duplicate-source.py")}", line 3, in third`,
+      `File "${path.join(workspace, "tests", "test_traceback_packet.py")}", line 4, in test_contract`,
+    ].join("\n");
+  const repeatedTracebackPacket = await buildFailedTestRecoveryPacket(
+    { commandCwd: workspace },
+    repeatedTracebackPacketState
+  );
+  assert(
+    repeatedTracebackPacket.paths.includes("tests/test_traceback_packet.py"),
+    "duplicate frames from one validator crowded the actual failing test out of recovery evidence"
+  );
   assert(
     (await failedTestRepairPatchBlock(
       duplicateRepairState,

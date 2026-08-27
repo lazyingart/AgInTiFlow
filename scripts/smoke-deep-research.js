@@ -175,12 +175,85 @@ async function main() {
     toolChoiceForProvider(
       { provider: "deepseek" },
       [{ role: "user", content: "Emit exactly one enabled tool call that performs the next concrete action." }]
-    ) === "auto",
-    "DeepSeek thinking mode received unsupported required tool selection during recovery"
+    ) === "required",
+    "DeepSeek action recovery did not require a tool call"
+  );
+  assert(
+    JSON.stringify(toolChoiceForProvider(
+      { provider: "deepseek" },
+      [{ role: "user", content: "Emit exactly one enabled tool call that performs the next concrete action." }],
+      [
+        { type: "function", function: { name: "apply_patch" } },
+        { type: "function", function: { name: "finish" } },
+      ]
+    )) === JSON.stringify({ type: "function", function: { name: "apply_patch" } }),
+    "DeepSeek action recovery did not force the only executable tool"
   );
   assert(
     JSON.stringify(providerStructuredOutputAttempts("deepseek")) === JSON.stringify(["json_object", "prompt"]),
     "DeepSeek structured extraction still probes an unsupported JSON Schema mode"
+  );
+  let deepSeekActionPayload = null;
+  await requestNextStep(
+    {
+      chat: {
+        completions: {
+          create: async (payload) => {
+            deepSeekActionPayload = payload;
+            return {
+              choices: [{
+                message: {
+                  role: "assistant",
+                  content: "",
+                  tool_calls: [{
+                    id: "deepseek-action-patch",
+                    type: "function",
+                    function: {
+                      name: "apply_patch",
+                      arguments: JSON.stringify({
+                        path: "service.py",
+                        search: "old",
+                        replace: "new",
+                        expectedReplacements: 1,
+                      }),
+                    },
+                  }],
+                },
+              }],
+            };
+          },
+        },
+      },
+    },
+    {
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      reasoning: "xhigh",
+      goal: "Repair service.py from exact retained source.",
+      taskProfile: "code",
+      allowFileTools: true,
+      allowShellTool: false,
+      allowWebSearch: false,
+      allowMcpTools: false,
+      allowWrapperTools: false,
+      allowAuxiliaryTools: false,
+      completionFreshMutationRequired: true,
+      completionFreshMutationNeedsSourceRead: false,
+      completionFreshMutationPaths: ["service.py"],
+    },
+    [{ role: "user", content: "Emit exactly one enabled tool call that performs the next concrete action." }]
+  );
+  assert(
+    deepSeekActionPayload?.thinking?.type === "disabled",
+    "DeepSeek reasoning-only recovery did not disable a second expensive thinking pass"
+  );
+  assert(
+    deepSeekActionPayload?.tool_choice?.function?.name === "apply_patch",
+    "DeepSeek reasoning-only recovery did not force its single executable tool"
+  );
+  assert(
+    !Object.hasOwn(deepSeekActionPayload || {}, "reasoning_effort"),
+    "DeepSeek action-only recovery sent a conflicting reasoning effort"
   );
 
   assert(!isPublicWebUrl("http://127.0.0.1/private"), "public URL guard accepted loopback");
