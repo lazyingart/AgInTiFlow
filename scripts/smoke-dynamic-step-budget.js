@@ -5306,8 +5306,19 @@ try {
       postMutationVerificationRuntime.testVerificationCommand === postMutationVerifier,
     "a material failed-test repair did not advance directly to its exact retained verifier"
   );
+  const generatedDeckValidatorPath = path.join(
+    tempRoot,
+    "acceptance",
+    "presentation_deck_contract.py"
+  );
+  await fs.mkdir(path.dirname(generatedDeckValidatorPath), { recursive: true });
+  await fs.writeFile(
+    generatedDeckValidatorPath,
+    "raise SystemExit('acceptance fixture')\n",
+    "utf8"
+  );
   const generatedDeckValidator =
-    "python3 /tmp/presentation_deck_contract.py --root .";
+    `python3 ${generatedDeckValidatorPath} --root .`;
   await fs.writeFile(
     path.join(workspace, "build_deck.py"),
     "print('build canonical deck')\n",
@@ -5543,6 +5554,41 @@ try {
     JSON.stringify(failedAfterProducerRuntime.testFailureRepairContextPaths) ===
       JSON.stringify(["build_deck.py"]),
     "failed-test recovery forced immutable evidence reads instead of grounding the canonical producer"
+  );
+  assert(
+    JSON.stringify(failedAfterProducerRuntime.testFailureDiagnosticReadPaths) ===
+      JSON.stringify([generatedDeckValidatorPath]) &&
+      failedAfterProducerRuntime.readOnlyRoots.includes(
+        path.dirname(generatedDeckValidatorPath)
+      ),
+    "an exact external validator from the retained failed command was not exposed through a narrow read-only root"
+  );
+  const consumedExternalValidatorState = structuredClone(failedAfterProducerState);
+  consumedExternalValidatorState.meta.toolLoop =
+    consumedExternalValidatorState.meta.toolLoop || { recent: [] };
+  consumedExternalValidatorState.meta.toolLoop.recent = [
+    ...(consumedExternalValidatorState.meta.toolLoop.recent || []),
+    {
+      toolName: "read_file",
+      path: generatedDeckValidatorPath,
+      ok: true,
+      blocked: false,
+      goalRevision: 13,
+      at: "2026-08-27T19:05:02.000Z",
+    },
+  ];
+  const consumedExternalValidatorRuntime = nextStepRuntimeConfig(
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: consumedExternalValidatorState.goal,
+    },
+    consumedExternalValidatorState
+  );
+  assert(
+    consumedExternalValidatorRuntime.testFailureDiagnosticReadPaths.length === 0,
+    "an exact external validator remained exposed after its bounded read completed"
   );
   const immutableOnlyRepairState = {
     goal: "Treat service_ctl.py as immutable read-only source evidence and finish from existing results.",

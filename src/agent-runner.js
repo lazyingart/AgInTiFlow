@@ -6683,6 +6683,51 @@ function failedTestCanonicalRepairPaths(state = {}) {
     .filter((item, index, items) => items.indexOf(item) === index);
 }
 
+export function failedTestExternalDiagnosticReadPaths(
+  config = {},
+  state = {},
+  testRun = null
+) {
+  const failure = testRun || currentFailedProjectTest(state)?.test;
+  const command = String(failure?.command || "").trim();
+  if (!command) return [];
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const candidates = [];
+  for (const token of tokenizeShellWords(command)) {
+    const rawPath = String(token || "").replace(/[;,]+$/g, "").trim();
+    if (!rawPath || !path.isAbsolute(rawPath)) continue;
+    let realPath = "";
+    try {
+      realPath = fsSync.realpathSync(rawPath);
+      const stat = fsSync.statSync(realPath);
+      if (!stat.isFile() || stat.size > 1_000_000) continue;
+    } catch {
+      continue;
+    }
+    const relative = path.relative(commandCwd, realPath);
+    if (!relative.startsWith("..") && !path.isAbsolute(relative)) continue;
+    const normalized = realPath.replace(/\\/g, "/");
+    if (
+      !PLAIN_TEXT_FILE_EXTENSIONS.has(path.extname(normalized).toLowerCase()) ||
+      /(?:secret|credential|password|private[-_]?key|access[-_]?token)/i.test(normalized) ||
+      !(
+        pathLooksLikeTestSource(normalized) ||
+        /(?:^|\/)(?:acceptance|verification)(?:\/|$)|(?:contract|validator)/i.test(
+          normalized
+        )
+      ) ||
+      candidates.includes(realPath)
+    ) {
+      continue;
+    }
+    candidates.push(realPath);
+    if (candidates.length >= 3) break;
+  }
+  return candidates;
+}
+
 function recoveryEvidenceDependencies(sourcePath = "", content = "") {
   const dependencies = [];
   const append = (candidate) => {
@@ -11452,6 +11497,39 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       .slice(0, 8);
     const toolLoop = state.meta?.toolLoop || {};
     const stagnationEpoch = Math.max(0, Number(toolLoop.stagnationEpoch || 0));
+    const externalDiagnosticPaths = failedTestExternalDiagnosticReadPaths(
+      runtimeConfig,
+      state,
+      retainedFailedTest
+    );
+    const consumedExternalDiagnosticPaths = new Set(
+      (Array.isArray(toolLoop.recent) ? toolLoop.recent : [])
+        .filter(
+          (entry) =>
+            entry?.ok === true &&
+            entry?.blocked !== true &&
+            String(entry?.toolName || "") === "read_file" &&
+            Number(entry?.goalRevision || 0) === groundingGoalRevision
+        )
+        .map((entry) => {
+          const rawPath = String(entry?.path || "").trim();
+          return rawPath ? path.resolve(commandCwd, rawPath) : "";
+        })
+        .filter(Boolean)
+    );
+    runtimeConfig.testFailureDiagnosticReadPaths = externalDiagnosticPaths.filter(
+      (candidate) => !consumedExternalDiagnosticPaths.has(candidate)
+    );
+    if (runtimeConfig.testFailureDiagnosticReadPaths.length) {
+      runtimeConfig.readOnlyRoots = [
+        ...(Array.isArray(runtimeConfig.readOnlyRoots)
+          ? runtimeConfig.readOnlyRoots
+          : []),
+        ...runtimeConfig.testFailureDiagnosticReadPaths.map((candidate) =>
+          path.dirname(candidate)
+        ),
+      ].filter((item, index, items) => items.indexOf(item) === index);
+    }
     const currentRecoveryPacket = Boolean(
       state.meta?.failedTestRecoveryPacket &&
         Number(state.meta.failedTestRecoveryPacket.packetVersion || 0) ===

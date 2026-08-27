@@ -733,6 +733,8 @@ function constrainReadFilePaths(tool, paths, phase) {
           ? "Exact canonical project file selected from current task evidence for the required fresh correction."
         : phase === "failed-test-evidence-refresh"
           ? "Exact unread workspace-relative path retained by the current failed-test evidence packet."
+          : phase === "failed-test-diagnostic-read"
+            ? "Exact read-only acceptance or validator source named by the retained failed verification command."
           : "Exact workspace-relative path discovered by inspect_project.",
   };
   return {
@@ -746,6 +748,8 @@ function constrainReadFilePaths(tool, paths, phase) {
             ? "Read one exact canonical project file before the required fresh source correction. Tests, Git actions, and finish remain unavailable until a material patch advances the project mutation revision."
           : phase === "failed-test-evidence-refresh"
             ? "Read one exact unread source or acceptance-test file from the current failed-test evidence packet. Each packet path is exposed at most once before mutation-only recovery resumes."
+            : phase === "failed-test-diagnostic-read"
+              ? "Read one exact existing external acceptance or validator file from the retained failed command. This path is read-only and no neighboring external files are exposed."
           : phase === "read-instructions"
           ? "Read one exact project instruction file discovered by inspect_project before repository mutation or validation commands are enabled."
           : phase === "read-tests"
@@ -2017,24 +2021,36 @@ export function selectProgressiveTools(
           .filter((item, index, items) => items.indexOf(item) === index)
           .slice(0, 1)
       : [];
-    const boundedRepairReadPaths = repairContextPaths.length
-      ? repairContextPaths
-      : optionalRepairRereadPaths;
+    const diagnosticReadPaths = Array.isArray(config.testFailureDiagnosticReadPaths)
+      ? config.testFailureDiagnosticReadPaths
+          .map((item) => String(item || "").replace(/\\/g, "/").trim())
+          .filter(Boolean)
+          .filter((item, index, items) => items.indexOf(item) === index)
+          .slice(0, 3)
+      : [];
+    const boundedRepairReadPaths = [
+      ...diagnosticReadPaths,
+      ...(repairContextPaths.length ? repairContextPaths : optionalRepairRereadPaths),
+    ]
+      .filter((item, index, items) => items.indexOf(item) === index)
+      .slice(0, 8);
     const constrainedRepairRead = boundedRepairReadPaths.length
       ? constrainReadFilePaths(
           available.get("read_file"),
           boundedRepairReadPaths,
-          repairContextPaths.length
-            ? "failed-test-evidence-refresh"
-            : "deepseek-failed-test-source-reread"
+          diagnosticReadPaths.length
+            ? "failed-test-diagnostic-read"
+            : repairContextPaths.length
+              ? "failed-test-evidence-refresh"
+              : "deepseek-failed-test-source-reread"
         )
       : available.get("read_file");
     const toolNames = config.testFailureRepairMutationRequired === true
       ? [
-          ...(config.testFailureRepairNeedsPatchContext === true
-            ? ["read_file", ...(repairContextPaths.length ? [] : ["search_files"])]
-            : optionalRepairRereadPaths.length
-              ? ["read_file"]
+          ...(boundedRepairReadPaths.length
+            ? ["read_file"]
+            : config.testFailureRepairNeedsPatchContext === true
+              ? ["read_file", "search_files"]
               : []),
           "apply_patch",
           ...(constrainedInstructionCreate ? ["write_file"] : []),

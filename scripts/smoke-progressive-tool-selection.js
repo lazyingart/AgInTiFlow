@@ -1804,6 +1804,28 @@ sameNames(
   "an unchanged failed-test rerun did not close discovery until a real mutation"
 );
 
+const externalValidatorPath = "/tmp/aginti-acceptance/deck_contract.py";
+const externalDiagnosticFailedTestRepairTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "deepseek",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    testFailureDiagnosticReadPaths: [externalValidatorPath],
+  },
+  goal: "Repair the canonical producer from the exact external acceptance contract.",
+  profile: "slides",
+});
+sameNames(
+  externalDiagnosticFailedTestRepairTools,
+  ["read_file", "apply_patch", "finish"],
+  "a retained external validator was not exposed as one bounded read during mutation-only recovery"
+);
+assertStrict.deepEqual(
+  externalDiagnosticFailedTestRepairTools[0].function.parameters.properties.path.enum,
+  [externalValidatorPath],
+  "the external validator read was not schema-constrained to its exact path"
+);
+
 const failedTestPatchContextTools = selectProgressiveTools(allTools, {
   config: {
     provider: "localllm",
