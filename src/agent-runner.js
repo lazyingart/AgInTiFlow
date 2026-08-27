@@ -6142,6 +6142,21 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         requiredCommandFailure: failedRequiredCommand,
         ...failedEvidence,
       };
+      const repositoryStateRepairMarker = state.meta?.repositoryStateRepair;
+      if (
+        repositoryStateRepairMarker &&
+        Number(repositoryStateRepairMarker.version || 0) === 1 &&
+        Number(repositoryStateRepairMarker.mutationRevision || 0) ===
+          verification.mutationRevision &&
+        projectTestCommandKey(repositoryStateRepairMarker.command || "") ===
+          projectTestCommandKey(command)
+      ) {
+        // A repository repair authorizes one exact verifier rerun. Consume the
+        // marker so a still-dirty worktree returns to repair instead of
+        // replaying the same verifier indefinitely.
+        delete state.meta.repositoryStateRepair;
+        toolResult.repositoryStateRepairConsumed = true;
+      }
       verification.testRuns = [...verification.testRuns, testRun].slice(-24);
       toolResult.projectTest = testRun;
       if (
@@ -6243,13 +6258,14 @@ export function failedTestRequiresCleanRepositoryState(testRun = {}) {
 }
 
 export function recordAlreadyCommittedRepositoryRepair(state = {}, toolResult = {}) {
-  if (
-    !isAlreadyCommittedCleanGitNoop(
-      toolResult.args || {},
-      toolResult,
-      state
-    )
-  ) {
+  const successfulCommit = inferSuccessfulGitActionsFromCommandResult(toolResult)
+    .includes("commit");
+  const cleanCommitNoop = isAlreadyCommittedCleanGitNoop(
+    toolResult.args || {},
+    toolResult,
+    state
+  );
+  if (!successfulCommit && !cleanCommitNoop) {
     return null;
   }
   const failed = currentFailedProjectTest(state);
@@ -6266,7 +6282,7 @@ export function recordAlreadyCommittedRepositoryRepair(state = {}, toolResult = 
     ),
     failureSignature: String(failed.test.failureSignature || ""),
     command: String(failed.test.command || ""),
-    source: "clean-commit-noop",
+    source: successfulCommit ? "successful-commit" : "clean-commit-noop",
     at: new Date().toISOString(),
   };
   state.meta.repositoryStateRepair = marker;

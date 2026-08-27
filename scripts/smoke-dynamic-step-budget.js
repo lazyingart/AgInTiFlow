@@ -60,6 +60,7 @@ import {
   completionExternalBlockerCanClose,
   pythonTopLevelDefinitionDuplicates,
   recordCanonicalGeneratedOutputProgress,
+  recordAlreadyCommittedRepositoryRepair,
   recordProjectVerificationOutcome,
   recordExactOutputProgress,
   recordStaticDiscoveryProgress,
@@ -6135,6 +6136,76 @@ try {
       { commandCwd: workspace }
     ) === null,
     "a clean-worktree verification gate could not rerun after a Git-state repair"
+  );
+  const successfulRepositoryRepairState = structuredClone(repositoryCleanGateFailure);
+  successfulRepositoryRepairState.goal = "Repair and verify the service lifecycle.";
+  successfulRepositoryRepairState.meta.goalContract = { revision: 4 };
+  successfulRepositoryRepairState.meta.activeExecutionContract = {
+    revision: 4,
+    materialMutationRevision: 6,
+  };
+  const successfulRepositoryCommit = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command:
+        "git add -- 'gateway_service.py' && git commit -m 'Repair service lifecycle'",
+    },
+    stdout:
+      "[main abcdef1] Repair service lifecycle\n 1 file changed, 1 insertion(+), 1 deletion(-)\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    successfulRepositoryRepairState,
+    successfulRepositoryCommit,
+    { commandCwd: workspace, taskProfile: "devops" }
+  );
+  const successfulRepositoryRepairMarker = recordAlreadyCommittedRepositoryRepair(
+    successfulRepositoryRepairState,
+    successfulRepositoryCommit
+  );
+  const postCommitRepositoryRuntime = nextStepRuntimeConfig(
+    { provider: "deepseek", taskProfile: "devops", commandCwd: workspace },
+    successfulRepositoryRepairState
+  );
+  assert(
+    successfulRepositoryRepairMarker?.source === "successful-commit" &&
+      postCommitRepositoryRuntime.testFailureRepositoryStateRepair !== true &&
+      postCommitRepositoryRuntime.testVerificationPending === true &&
+      postCommitRepositoryRuntime.testVerificationCommand === failedValidationCommand,
+    "a successful bounded repair commit did not advance directly to the exact failed verifier"
+  );
+  const repeatedDirtyRepositoryResult = {
+    toolName: "run_command",
+    ok: false,
+    exitCode: 1,
+    args: { command: failedValidationCommand },
+    stdout: "",
+    stderr:
+      "AssertionError: repository worktree is not clean after a new unrelated mutation",
+  };
+  recordProjectVerificationOutcome(
+    successfulRepositoryRepairState,
+    repeatedDirtyRepositoryResult,
+    {
+      provider: "deepseek",
+      taskProfile: "devops",
+      commandCwd: workspace,
+      testVerificationPending: true,
+      testVerificationCommand: failedValidationCommand,
+    }
+  );
+  const repeatedDirtyRepositoryRuntime = nextStepRuntimeConfig(
+    { provider: "deepseek", taskProfile: "devops", commandCwd: workspace },
+    successfulRepositoryRepairState
+  );
+  assert(
+    repeatedDirtyRepositoryResult.repositoryStateRepairConsumed === true &&
+      !successfulRepositoryRepairState.meta.repositoryStateRepair &&
+      repeatedDirtyRepositoryRuntime.testFailureRepositoryStateRepair === true &&
+      repeatedDirtyRepositoryRuntime.testVerificationPending !== true,
+    "a consumed repository-repair marker caused an unchanged clean-worktree verifier loop"
   );
   const oversizedRepositoryState = {
     ...repositoryCleanGateFailure,
