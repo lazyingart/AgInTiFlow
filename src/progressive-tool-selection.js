@@ -1646,6 +1646,51 @@ function constrainRepositoryStateCommit(tool, paths = []) {
   };
 }
 
+function constrainObservedRepositoryStateCommit(tool, paths = []) {
+  if (!tool || !Array.isArray(paths) || paths.length === 0) return null;
+  const candidates = [...new Set(paths.map((item) => String(item || "").trim()).filter(Boolean))]
+    .slice(0, 64);
+  if (!candidates.length) return null;
+  return {
+    ...tool,
+    function: {
+      ...tool.function,
+      name: "commit_project_changes",
+      description: [
+        "Commit only the task-owned subset of the exact currently dirty paths discovered by the bounded repository inspection.",
+        "Select every intended task source, generated output, relocation deletion, or manifest involved in this task, and exclude unrelated pre-existing work.",
+        "The runtime rejects paths outside this exact observation and stages only the selected paths before creating one local commit.",
+        `Observed candidates: ${candidates.join(", ")}.`,
+      ].join(" "),
+      parameters: {
+        type: "object",
+        properties: {
+          paths: {
+            type: "array",
+            minItems: 1,
+            maxItems: candidates.length,
+            uniqueItems: true,
+            items: {
+              type: "string",
+              enum: candidates,
+            },
+            description: "The complete task-owned subset of the exact observed dirty paths.",
+          },
+          message: {
+            type: "string",
+            minLength: 3,
+            maxLength: 120,
+            pattern: "^[^\\r\\n\\u0000]+$",
+            description: "A concise factual Git commit subject for the selected task-owned changes.",
+          },
+        },
+        required: ["paths", "message"],
+        additionalProperties: false,
+      },
+    },
+  };
+}
+
 function roundRobinToolNames(groups) {
   const names = [];
   const maxLength = Math.max(0, ...groups.map((group) => group.length));
@@ -2000,18 +2045,18 @@ export function selectProgressiveTools(
       if (commitProjectChanges) {
         return [commitProjectChanges, finish].filter(Boolean);
       }
-      const repositoryStateTool = runCommand
-        ? {
-            ...runCommand,
-            function: {
-              ...runCommand.function,
-              description: [
-                "Resolve the retained repository-state verification gate without changing task content merely to alter Git status.",
-                "Inspect status and diff, preserve intended task-owned changes, run appropriate checks, stage and commit only those changes, then rerun the exact retained verification command.",
-              ].join(" "),
-            },
-          }
-        : null;
+      const observedCommit = constrainObservedRepositoryStateCommit(
+        runCommand,
+        config.repositoryStateRepairObservedPaths
+      );
+      if (observedCommit) {
+        return [observedCommit, finish].filter(Boolean);
+      }
+      const repositoryStateTool = constrainRunCommand(
+        runCommand,
+        config.repositoryStateRepairInspectionCommand,
+        "Run this exact bounded Git status inspection once. The runtime records the current dirty paths and will offer a path-enumerated commit tool on the next turn; do not substitute a broader status/diff loop or alter project content."
+      );
       return [repositoryStateTool, finish].filter(Boolean);
     }
     const constrainedRepairPatch = annotateRequiredSymbolRepair(

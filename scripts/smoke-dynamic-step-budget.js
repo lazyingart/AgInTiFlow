@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import crypto from "node:crypto";
+import assertStrict from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -30,6 +31,7 @@ import {
   buildFailedTestRecoveryPacket,
   buildKnownConstrainedPhasePlan,
   buildTaskOwnedCommitCommand,
+  changedGitStatusPaths,
   bindPatchContextRepairArguments,
   canonicalizeVerifiedArtifactCompletion,
   completedDeepResearchReuse,
@@ -52,6 +54,7 @@ import {
   mergeDurableGitEvidence,
   nextStepRuntimeConfig,
   patchContextScopeMismatchAttemptCount,
+  parseGitPorcelainStatus,
   pythonMainGuardOrderDefects,
   projectAcceptanceFromMarkdown,
   projectTestVerificationFinishBlock,
@@ -62,6 +65,7 @@ import {
   recordCanonicalGeneratedOutputProgress,
   recordAlreadyCommittedRepositoryRepair,
   recordProjectVerificationOutcome,
+  repositoryStateInspectionCommand,
   recordExactOutputProgress,
   recordStaticDiscoveryProgress,
   resetGoalScopedRuntimeState,
@@ -6494,6 +6498,101 @@ try {
       failureSummary: "The generated prose says the repository worktree is not clean.",
     }),
     "plain task prose was mistaken for a repository-state gate without Git-status evidence"
+  );
+  assertStrict.deepEqual(
+    parseGitPorcelainStatus(
+      " M build_deck.py\n D dist/deck.pdf\n?? output/deck.pptx\n?? output/slide 1.png\n"
+    ),
+    [
+      { status: " M", path: "build_deck.py" },
+      { status: " D", path: "dist/deck.pdf" },
+      { status: "??", path: "output/deck.pptx" },
+      { status: "??", path: "output/slide 1.png" },
+    ],
+    "bounded porcelain parsing lost a deletion, untracked output, or path containing spaces"
+  );
+  assertStrict.deepEqual(
+    changedGitStatusPaths(
+      {
+        entries: [
+          { status: " M", path: "unrelated.md", fingerprint: "same" },
+          { status: " M", path: "build_deck.py", fingerprint: "before" },
+        ],
+      },
+      {
+        entries: [
+          { status: " M", path: "unrelated.md", fingerprint: "same" },
+          { status: " M", path: "build_deck.py", fingerprint: "after" },
+          { status: " D", path: "dist/deck.pdf", fingerprint: "missing" },
+          { status: "??", path: "output/deck.pptx", fingerprint: "file:1" },
+        ],
+      }
+    ),
+    ["build_deck.py", "dist/deck.pdf", "output/deck.pptx"],
+    "command-bound Git capture included untouched pre-existing dirt or lost generated relocation paths"
+  );
+  const producerMutationState = {
+    goal: "Rebuild the generated presentation.",
+    meta: {
+      goalContract: { revision: 3, taskGoal: "Rebuild the generated presentation." },
+      activeExecutionContract: { revision: 3 },
+    },
+  };
+  recordProjectVerificationOutcome(
+    producerMutationState,
+    {
+      toolName: "run_command",
+      ok: true,
+      exitCode: 0,
+      args: { command: "python3 build_deck.py" },
+      commandPolicy: {
+        category: "toolchain",
+        writesWorkspace: true,
+        mayMutateProject: false,
+      },
+      projectMutationPaths: [
+        "build_deck.py",
+        "dist/deck.pdf",
+        "output/deck.pptx",
+      ],
+      stdout: "wrote output/deck.pptx",
+      stderr: "",
+    },
+    { commandCwd: workspace, taskProfile: "slides" }
+  );
+  assertStrict.deepEqual(
+    producerMutationState.meta.projectVerification.mutationHistory.at(-1).paths,
+    ["build_deck.py", "dist/deck.pdf", "output/deck.pptx"],
+    "a producer command discarded the exact Git paths captured across its execution boundary"
+  );
+  const inspectedRepositoryState = structuredClone(repositoryCleanGateFailure);
+  inspectedRepositoryState.meta.goalContract = { revision: 4 };
+  const repositoryInspectionResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: repositoryStateInspectionCommand() },
+    stdout: " D dist/deck.pdf\n?? output/deck.pptx\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    inspectedRepositoryState,
+    repositoryInspectionResult,
+    {
+      commandCwd: workspace,
+      taskProfile: "slides",
+      testFailureRepositoryStateRepair: true,
+      testFailureSignature: "repository-state-gate",
+    }
+  );
+  const inspectedRepositoryRuntime = nextStepRuntimeConfig(
+    { provider: "deepseek", taskProfile: "slides", commandCwd: workspace },
+    inspectedRepositoryState
+  );
+  assertStrict.deepEqual(
+    inspectedRepositoryRuntime.repositoryStateRepairObservedPaths,
+    ["dist/deck.pdf", "output/deck.pptx"],
+    "a bounded dirty-worktree inspection did not persist exact path candidates for the next turn"
   );
   assert(
     unchangedFailedTestRerunBlock(

@@ -2237,6 +2237,11 @@ export function buildKnownConstrainedPhasePlan(
       Array.isArray(runtimeConfig.repositoryStateRepairCommitPaths) &&
       runtimeConfig.repositoryStateRepairCommitPaths.length > 0
   );
+  const repositoryObservedCommitReady = Boolean(
+    repositoryStateRepair &&
+      Array.isArray(runtimeConfig.repositoryStateRepairObservedPaths) &&
+      runtimeConfig.repositoryStateRepairObservedPaths.length > 0
+  );
   const plan = repositoryStateRepair
     ? repositoryCommitReady
       ? [
@@ -2244,9 +2249,16 @@ export function buildKnownConstrainedPhasePlan(
           `2. Run the exact retained verification command after that commit: ${command}`,
           "3. Finish only after that exact command passes at the current mutation revision.",
         ].join("\n")
+      : repositoryObservedCommitReady
+        ? [
+            "1. Use the offered commit_project_changes tool once and select the complete task-owned subset from the exact observed dirty paths.",
+            "2. Include intended generated-output relocations and deletions, but exclude unrelated pre-existing work.",
+            `3. Run the exact retained verification command after that commit: ${command}`,
+            "4. Finish only after that exact command passes at the current mutation revision.",
+          ].join("\n")
       : [
-          "1. Inspect the current repository status and diff using the smallest read-only Git command needed.",
-          "2. Preserve task-owned work, stage and commit only those changes, and do not alter source content merely to make the worktree clean.",
+          "1. Run the one exact bounded Git status inspection offered by the runtime.",
+          "2. On the next turn, select and commit only task-owned paths from the runtime-enumerated candidates.",
           `3. Run the exact retained verification command after the repository state is clean: ${command}`,
           "4. Finish only after that exact command passes at the current mutation revision.",
         ].join("\n")
@@ -2294,7 +2306,9 @@ export function buildKnownConstrainedPhasePlan(
   const recoveryInstruction = repositoryStateRepair
     ? repositoryCommitReady
       ? "The current failure is only a repository-state acceptance gate. The runtime already knows the task-owned changed paths, so call commit_project_changes with a concise factual subject. Do not inspect again or invent another source edit."
-      : "The current failure is a repository-state acceptance gate, not a content defect. Use only the offered Git-capable command tool to inspect and cleanly commit task-owned changes, then run the exact retained verifier. Do not invent another source edit."
+      : repositoryObservedCommitReady
+        ? "The bounded status inspection is complete. Select the complete task-owned subset from the exact offered paths and call commit_project_changes once. Do not include unrelated work, inspect again, or invent another source edit."
+        : "The current failure is a repository-state acceptance gate, not a content defect. Run only the exact offered status inspection once. The runtime will convert its result into a bounded path-selection commit phase; do not start a status/diff loop or invent another source edit."
     : freshSourceMutation
       ? runtimeConfig.completionFreshMutationNeedsSourceRead === true
         ? "Completion was rejected because a fresh canonical source correction is still missing. Read one exact offered project file now; command, test, Git, and finish actions remain intentionally unavailable until the source is grounded and materially patched."
@@ -6055,6 +6069,15 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
           generatedArtifactProducer
         )
     );
+    const commandMutationPaths = Array.isArray(toolResult.projectMutationPaths)
+      ? [
+          ...new Set(
+            toolResult.projectMutationPaths
+              .map(safeTaskOwnedCommitPath)
+              .filter(Boolean)
+          ),
+        ].slice(0, 64)
+      : [];
     let requiredBatch = currentRequiredCommandBatch(verification, requiredCommands);
     const activeExecutionContract = state.meta?.activeExecutionContract;
     const activeTurnCommands =
@@ -6074,6 +6097,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     let batchRequiredCommands = requiredBatch?.requiredCommands || requiredCommands;
     if (projectContentMutation) {
       delete state.meta.verifiedCompletionCandidate;
+      delete verification.repositoryStateInspection;
       if (
         requiredCommand &&
         batchRequiredCommands.includes(requiredCommand) &&
@@ -6108,7 +6132,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         revision: verification.mutationRevision,
         at: now,
         toolName,
-        paths: [],
+        paths: commandMutationPaths,
         commandCategory: String(commandPolicy.category || "general-shell"),
       }, config);
       if (
@@ -6125,7 +6149,60 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
             generatedArtifactProducer,
           ]),
         ].slice(0, 12);
+        if (commandMutationPaths.length) {
+          activeExecutionContract.materialMutationPaths = [
+            ...new Set([
+              ...(Array.isArray(activeExecutionContract.materialMutationPaths)
+                ? activeExecutionContract.materialMutationPaths
+                : []),
+              ...commandMutationPaths,
+            ]),
+          ].slice(0, 24);
+        }
       }
+    }
+    if (commandIncludesGitCommit(command)) {
+      delete verification.repositoryStateInspection;
+    }
+    if (
+      commandSucceeded &&
+      config.testFailureRepositoryStateRepair === true &&
+      projectCommandsEquivalent(
+        command,
+        REPOSITORY_STATE_INSPECTION_COMMAND,
+        config
+      )
+    ) {
+      const currentFailure = [...verification.testRuns]
+        .reverse()
+        .find(
+          (candidate) =>
+            candidate?.passed !== true &&
+            Number(candidate?.mutationRevision || 0) ===
+              verification.mutationRevision
+        );
+      const entries = (
+        Array.isArray(toolResult.repositoryStateStatusEntries)
+          ? toolResult.repositoryStateStatusEntries
+              .map((entry) => ({
+                status: String(entry?.status || ""),
+                path: safeTaskOwnedCommitPath(entry?.path),
+              }))
+              .filter((entry) => entry.path)
+          : parseGitPorcelainStatus(toolResult.stdout)
+      ).slice(0, 64);
+      verification.repositoryStateInspection = {
+        version: REPOSITORY_STATE_INSPECTION_VERSION,
+        mutationRevision: verification.mutationRevision,
+        failureSignature: String(
+          config.testFailureSignature || currentFailure?.failureSignature || ""
+        ),
+        command: REPOSITORY_STATE_INSPECTION_COMMAND,
+        entries,
+        at: now,
+      };
+      toolResult.repositoryStateInspection = verification.repositoryStateInspection;
+      toolResult.repositoryStateObservedPaths = entries.map((entry) => entry.path);
     }
     const run = {
       command,
@@ -6398,6 +6475,158 @@ function safeTaskOwnedCommitPath(value = "") {
   }
   if (/\.(?:key|pem|p12|pfx|crt|csr)$/iu.test(candidate)) return "";
   return candidate;
+}
+
+const REPOSITORY_STATE_INSPECTION_VERSION = 1;
+const REPOSITORY_STATE_INSPECTION_COMMAND =
+  "git status --porcelain=v1 --untracked-files=all";
+
+export function repositoryStateInspectionCommand() {
+  return REPOSITORY_STATE_INSPECTION_COMMAND;
+}
+
+function decodeGitPorcelainPath(value = "") {
+  const raw = String(value || "").trimEnd();
+  if (!raw.startsWith('"')) return raw;
+  // Git's quoted-path grammar overlaps JSON for ordinary escaped paths. Octal
+  // escapes are deliberately rejected instead of guessing a path that may be
+  // staged later.
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return "";
+  }
+}
+
+export function parseGitPorcelainStatus(output = "") {
+  const entries = [];
+  const seen = new Set();
+  for (const line of String(output || "").replace(/\r/g, "").split("\n")) {
+    if (line.length < 4 || line[2] !== " ") continue;
+    const status = line.slice(0, 2);
+    if (!/^[ MADRCUT?!]{2}$/u.test(status)) continue;
+    const candidate = safeTaskOwnedCommitPath(
+      decodeGitPorcelainPath(line.slice(3))
+    );
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+    entries.push({ status, path: candidate });
+    if (entries.length >= 256) break;
+  }
+  return entries;
+}
+
+async function gitStatusPathFingerprint(commandCwd = "", relativePath = "") {
+  const root = path.resolve(commandCwd || process.cwd());
+  const candidate = safeTaskOwnedCommitPath(relativePath);
+  if (!candidate) return "";
+  const absolutePath = path.resolve(root, candidate);
+  const relative = path.relative(root, absolutePath);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return "";
+  try {
+    const stat = await fs.lstat(absolutePath);
+    return [
+      stat.isFile() ? "file" : stat.isDirectory() ? "directory" : stat.isSymbolicLink() ? "symlink" : "other",
+      Number(stat.mode || 0),
+      Number(stat.size || 0),
+      Number(stat.mtimeMs || 0),
+      Number(stat.ctimeMs || 0),
+      Number(stat.ino || 0),
+    ].join(":");
+  } catch (error) {
+    return error?.code === "ENOENT" ? "missing" : "unavailable";
+  }
+}
+
+async function captureGitWorktreeSnapshot(config = {}) {
+  const commandCwd = path.resolve(config.commandCwd || process.cwd());
+  const stdout = await new Promise((resolve) => {
+    let text = "";
+    let settled = false;
+    let timer;
+    const finish = (value = null) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(value);
+    };
+    const child = spawn(
+      "git",
+      ["status", "--porcelain=v1", "--untracked-files=all"],
+      {
+        cwd: commandCwd,
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
+      }
+    );
+    timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(null);
+    }, 5000);
+    child.stdout?.on("data", (chunk) => {
+      text += String(chunk || "");
+      if (text.length > 1024 * 1024) {
+        child.kill("SIGKILL");
+        finish(null);
+      }
+    });
+    child.on("error", () => finish(null));
+    child.on("close", (code) => finish(code === 0 ? text : null));
+  });
+  if (typeof stdout !== "string") return null;
+  const parsed = parseGitPorcelainStatus(stdout);
+  if (parsed.length >= 256) return null;
+  const entries = await Promise.all(
+    parsed.map(async (entry) => ({
+      ...entry,
+      fingerprint: await gitStatusPathFingerprint(commandCwd, entry.path),
+    }))
+  );
+  return { version: 1, entries };
+}
+
+export function changedGitStatusPaths(before = null, after = null) {
+  if (!before || !after || !Array.isArray(before.entries) || !Array.isArray(after.entries)) {
+    return [];
+  }
+  const prior = new Map(
+    before.entries
+      .filter((entry) => safeTaskOwnedCommitPath(entry?.path))
+      .map((entry) => [String(entry.path), entry])
+  );
+  return [
+    ...new Set(
+      after.entries
+        .filter((entry) => {
+          const candidate = safeTaskOwnedCommitPath(entry?.path);
+          if (!candidate) return false;
+          const previous = prior.get(candidate);
+          return Boolean(
+            !previous ||
+              String(previous.status || "") !== String(entry.status || "") ||
+              String(previous.fingerprint || "") !== String(entry.fingerprint || "")
+          );
+        })
+        .map((entry) => safeTaskOwnedCommitPath(entry.path))
+        .filter(Boolean)
+    ),
+  ].slice(0, 64);
+}
+
+function currentRepositoryStateInspection(verification = {}, testRun = {}) {
+  const inspection = verification.repositoryStateInspection;
+  if (
+    !inspection ||
+    Number(inspection.version || 0) !== REPOSITORY_STATE_INSPECTION_VERSION ||
+    Number(inspection.mutationRevision || 0) !==
+      Math.max(0, Number(verification.mutationRevision || 0)) ||
+    String(inspection.failureSignature || "") !==
+      String(testRun?.failureSignature || "") ||
+    !Array.isArray(inspection.entries)
+  ) {
+    return null;
+  }
+  return inspection;
 }
 
 function taskOwnedMutationPathsSinceLatestCommit(verification = {}) {
@@ -7932,6 +8161,8 @@ function runCommandResultHasDurableProgress(toolResult = {}) {
   return Boolean(
     policyAllowsMutation ||
       policy.substantiveTest === true ||
+      (Array.isArray(toolResult.projectMutationPaths) &&
+        toolResult.projectMutationPaths.length > 0) ||
       (Array.isArray(toolResult.verifiedGeneratedOutputPaths) &&
         toolResult.verifiedGeneratedOutputPaths.length > 0)
   );
@@ -11944,6 +12175,29 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       runtimeConfig.testFailureRepairPatchTargets = [];
       runtimeConfig.repositoryStateRepairCommitPaths =
         taskOwnedMutationPathsSinceLatestCommit(verification);
+      const repositoryInspection = currentRepositoryStateInspection(
+        verification,
+        retainedFailedTest
+      );
+      const observedEntries = runtimeConfig.repositoryStateRepairCommitPaths.length
+        ? []
+        : (repositoryInspection?.entries || [])
+            .map((entry) => ({
+              status: String(entry?.status || ""),
+              path: safeTaskOwnedCommitPath(entry?.path),
+            }))
+            .filter((entry) => entry.path)
+            .slice(0, 64);
+      runtimeConfig.repositoryStateRepairObservedEntries = observedEntries;
+      runtimeConfig.repositoryStateRepairObservedPaths = observedEntries.map(
+        (entry) => entry.path
+      );
+      runtimeConfig.repositoryStateRepairInspectionCommand =
+        REPOSITORY_STATE_INSPECTION_COMMAND;
+      runtimeConfig.repositoryStateRepairInspectionRequired = Boolean(
+        runtimeConfig.repositoryStateRepairCommitPaths.length === 0 &&
+          !repositoryInspection
+      );
     } else if (retainedRepositoryStateRepair) {
       delete runtimeConfig.completionFreshMutationRequired;
       delete runtimeConfig.completionFreshMutationRevision;
@@ -14258,20 +14512,45 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       ? config.taskOwnedCommitPaths
       : []),
   ].map(safeTaskOwnedCommitPath).filter(Boolean);
+  const observedRepositoryCommitPaths = Array.isArray(
+    config.repositoryStateRepairObservedPaths
+  )
+    ? config.repositoryStateRepairObservedPaths
+        .map(safeTaskOwnedCommitPath)
+        .filter(Boolean)
+    : [];
+  const requestedObservedCommitPaths = Array.isArray(args.paths)
+    ? [...new Set(args.paths.map(safeTaskOwnedCommitPath).filter(Boolean))]
+    : [];
+  const observedCommitPathSet = new Set(observedRepositoryCommitPaths);
+  const selectedRepositoryCommitPaths = repositoryCommitPaths.length
+    ? repositoryCommitPaths
+    : requestedObservedCommitPaths.length > 0 &&
+        requestedObservedCommitPaths.length === args.paths?.length &&
+        requestedObservedCommitPaths.every((candidate) =>
+          observedCommitPathSet.has(candidate)
+        )
+      ? requestedObservedCommitPaths
+      : [];
   if (
     requestedToolName === "commit_project_changes" &&
-    repositoryCommitPaths.length > 0 &&
+    selectedRepositoryCommitPaths.length > 0 &&
     typeof args.message === "string" &&
     args.message.trim()
   ) {
-    const commitCommand = buildTaskOwnedCommitCommand(repositoryCommitPaths, args.message);
+    const commitCommand = buildTaskOwnedCommitCommand(
+      selectedRepositoryCommitPaths,
+      args.message
+    );
     if (commitCommand) {
       args = { command: commitCommand };
       toolName = "run_command";
       autoCorrection = {
         requestedToolName,
         toolName,
-        reason: "evidence-derived-task-owned-commit",
+        reason: repositoryCommitPaths.length
+          ? "evidence-derived-task-owned-commit"
+          : "observed-task-owned-commit-selection",
       };
     }
   }
@@ -15057,6 +15336,20 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         const policy = evaluateCommandPolicy(rawCommand, config);
         const observedCommand = normalizeProjectCommand(rawCommand);
         const observedInnerCommand = explicitExitProbeStatus(observedCommand).command;
+        const repositoryStateInspectionRequested = projectCommandsEquivalent(
+          observedCommand,
+          REPOSITORY_STATE_INSPECTION_COMMAND,
+          config
+        );
+        const generatedArtifactProducer = safeProjectProducerSegment(
+          observedCommand,
+          config
+        );
+        const captureMutationScope = Boolean(
+          policy.writesWorkspace ||
+            policy.mayMutateProject === true ||
+            generatedArtifactProducer
+        );
         const requiredCommands = effectiveRequiredProjectCommands(
           state,
           state.meta?.projectVerification || {},
@@ -15068,10 +15361,24 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         const exactOutputSnapshotsBefore = isRequiredCommand && policy.writesWorkspace
           ? await captureExactOutputSnapshots(state, config)
           : [];
+        const gitWorktreeBefore = captureMutationScope
+          ? await captureGitWorktreeSnapshot(config)
+          : null;
         if (config.useDockerSandbox) {
           await ensureDockerSandboxReady(config, observers);
         }
         const commandResult = await runShellCommand(rawCommand, config, policy);
+        const gitWorktreeAfter = captureMutationScope
+          ? await captureGitWorktreeSnapshot(config)
+          : null;
+        const repositoryStateInspectionSnapshot =
+          repositoryStateInspectionRequested && commandResult.ok !== false
+            ? await captureGitWorktreeSnapshot(config)
+            : null;
+        const projectMutationPaths = changedGitStatusPaths(
+          gitWorktreeBefore,
+          gitWorktreeAfter
+        );
         const generatedOutputPaths = commandResult.ok !== false
           ? await verifiedGeneratedOutputPaths(state, exactOutputSnapshotsBefore, config)
           : [];
@@ -15105,6 +15412,20 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           },
           ...(generatedOutputPaths.length
             ? { verifiedGeneratedOutputPaths: generatedOutputPaths }
+            : {}),
+          ...(projectMutationPaths.length
+            ? { projectMutationPaths }
+            : {}),
+          ...(repositoryStateInspectionSnapshot
+            ? {
+                repositoryStateStatusEntries:
+                  repositoryStateInspectionSnapshot.entries.map(
+                    ({ status, path: statusPath }) => ({
+                      status,
+                      path: statusPath,
+                    })
+                  ),
+              }
             : {}),
           ...commandResult,
           ...(permissionAdvice ? { permissionAdvice } : {}),

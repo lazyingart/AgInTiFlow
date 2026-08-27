@@ -2003,10 +2003,15 @@ sameNames(
   "repository-state repair exposed document mutation tools"
 );
 assert(
-  /stage and commit only those changes/i.test(
+  /exact bounded Git status inspection once/i.test(
     repositoryStateRepairTools.find((item) => item.function.name === "run_command")?.function.description || ""
   ),
-  "repository-state repair did not explain the bounded Git workflow"
+  "repository-state repair did not constrain the first recovery turn to one status inspection"
+);
+assertStrict.deepEqual(
+  repositoryStateRepairTools[0].function.parameters.properties.command.enum,
+  ["git status --porcelain=v1 --untracked-files=all"],
+  "repository-state repair exposed an open-ended shell instead of the exact status command"
 );
 const conciseRepositoryStateRepairRuntime = nextStepRuntimeConfig(
   { provider: "deepseek", taskProfile: "slides" },
@@ -2055,6 +2060,63 @@ sameNames(
   }),
   ["run_command", "finish"],
   "a concise clean-repository acceptance failure exposed content mutation tools"
+);
+const observedRepositoryState = {
+  meta: {
+    goalContract: { revision: 7 },
+    projectVerification: {
+      mutationRevision: 18,
+      repositoryStateInspection: {
+        version: 1,
+        mutationRevision: 18,
+        failureSignature: "observed-repository-state-gate",
+        command: "git status --porcelain=v1 --untracked-files=all",
+        entries: [
+          { status: " D", path: "dist/deck.pdf" },
+          { status: "??", path: "output/deck.pptx" },
+          { status: " M", path: "unrelated-notes.md" },
+        ],
+      },
+      testRuns: [{
+        command: "python acceptance.py --phase final",
+        mutationRevision: 18,
+        passed: false,
+        failureEvidenceVersion: 2,
+        failureSignature: "observed-repository-state-gate",
+        failureSummary: "acceptance failed: repository is not clean",
+      }],
+    },
+  },
+  messages: [],
+};
+const observedRepositoryRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", taskProfile: "slides" },
+  observedRepositoryState
+);
+assertStrict.deepEqual(
+  observedRepositoryRuntime.repositoryStateRepairObservedPaths,
+  ["dist/deck.pdf", "output/deck.pptx", "unrelated-notes.md"],
+  "the clean-state recovery phase lost exact paths from its bounded status observation"
+);
+const observedRepositoryTools = selectProgressiveTools(allTools, {
+  config: observedRepositoryRuntime,
+  goal: "Commit only the accepted presentation relocation.",
+  profile: "slides",
+});
+sameNames(
+  observedRepositoryTools,
+  ["commit_project_changes", "finish"],
+  "an observed clean-state recovery did not replace the shell with path-enumerated commit selection"
+);
+assertStrict.deepEqual(
+  observedRepositoryTools[0].function.parameters.required,
+  ["paths", "message"],
+  "the observed-path commit did not require explicit task-owned path selection"
+);
+assertStrict.deepEqual(
+  observedRepositoryTools[0].function.parameters.properties.paths.items.enum,
+  ["dist/deck.pdf", "output/deck.pptx", "unrelated-notes.md"],
+  "the observed-path commit broadened its candidate scope beyond the exact status result"
 );
 const taskOwnedRepositoryState = {
   meta: {
