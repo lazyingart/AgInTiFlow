@@ -1076,7 +1076,13 @@ try {
   }
   const reviewResult = await runChat("/review changed files only\n/exit\n");
   if (!reviewResult.stdout.includes("Review focus: changed files only") || !reviewResult.stdout.includes("Mock run complete")) {
-    throw new Error("interactive /review did not launch the bounded review workflow");
+    throw new Error(
+      [
+        "interactive /review did not launch the bounded review workflow",
+        `stdout tail:\n${reviewResult.stdout.slice(-6000)}`,
+        `stderr tail:\n${reviewResult.stderr.slice(-3000)}`,
+      ].join("\n")
+    );
   }
   const scsDefaultStatusResult = await runChat("/scs status\n");
   if (!scsDefaultStatusResult.stdout.includes("SCS mode: auto")) {
@@ -1353,5 +1359,7 @@ try {
     )
   );
 } finally {
-  await fs.rm(tempRoot, { recursive: true, force: true });
+  if (process.env.AGINTIFLOW_SMOKE_KEEP_TEMP !== "1") {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
 }

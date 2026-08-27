@@ -23,6 +23,9 @@ const READ_ONLY_PATTERNS = [
   /^cat(?:\s+[-\w./~*]+)+$/,
   /^head(?:\s+.+)?$/,
   /^tail(?:\s+.+)?$/,
+  // Plain xxd is a bounded stdin-to-stdout inspection filter. Keep reverse
+  // mode and path operands outside this allowlist because they can write.
+  /^xxd$/,
   /^sort(?:\s+[-\w./~*]+)*$/,
   /^wc(?:\s+.+)?$/,
   /^file(?:\s+[-\w./~*]+)+$/,
@@ -824,9 +827,7 @@ const GIT_WORKFLOW_PATTERNS = [
   /^git\s+init(?:\s+(?:\.|[-\w./]+))?$/,
   /^git\s+config(?:\s+--local)?\s+user\.(?:name|email)\s+(['"])[^'"\n]{1,160}\1$/,
   /^git\s+config(?:\s+--local)?\s+init\.defaultBranch\s+(?:main|master|trunk|develop)$/,
-  /^git\s+add(?:\s+[-\w./*]+)+$/,
-  /^git\s+add\s+-A$/,
-  /^git\s+commit\s+(?:(?:-a|--allow-empty)\s+)*-m\s+(['"])[^'"\n]{1,220}\1$/,
+  /^git\s+commit\s+(?:--allow-empty\s+)*-m\s+(['"])[^'"\n]{1,220}\1$/,
   /^git\s+branch\s+-M\s+[A-Za-z0-9][-\w./]*$/,
   /^git\s+branch\s+[A-Za-z0-9][-\w./]*$/,
   /^git\s+switch\s+(?:-c\s+)?[A-Za-z0-9][-\w./]*$/,
@@ -1389,7 +1390,25 @@ function classifyGitCommit(normalized) {
   let messageCount = 0;
   for (let index = 2; index < tokens.length; index += 1) {
     const token = String(tokens[index] || "");
-    if (["-a", "--allow-empty"].includes(token)) continue;
+    if (token === "--allow-empty") continue;
+    if (["-a", "--all"].includes(token)) {
+      return {
+        category: "blocked",
+        hardBlocked: true,
+        reason: "Git commit must not stage the whole tracked worktree; stage bounded task-owned paths first.",
+        permissionAdvice: {
+          category: "bounded-git-recovery",
+          autoRecover: true,
+          summary: "The Git command used whole-worktree staging, but this task can continue with bounded task-owned paths.",
+          instruction: "Continue automatically: inspect `git status --short`, stage only exact task-owned files, and commit those files. If a private runtime path is already tracked, use bounded `git rm --cached -- <exact-path>` so the local file remains private. Do not ask for stronger permissions.",
+          options: [
+            "Use the task-owned commit tool when it is offered.",
+            "Use `git add -- <exact-task-owned-paths>` followed by a bounded commit.",
+            "Use `git rm --cached -- <exact-private-paths>` only to remove accidentally tracked runtime files.",
+          ],
+        },
+      };
+    }
     if (!["-m", "--message"].includes(token)) return null;
     const message = String(tokens[index + 1] || "");
     if (!message || message.length > 1200 || /[\r\n]/.test(message)) return null;
@@ -1407,6 +1426,16 @@ function classifyGitCommit(normalized) {
   };
 }
 
+function isProtectedRuntimeGitPath(value = "") {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/^['"]|['"]$/g, "")
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/\/+$/, "");
+  return /(?:^|\/)\.(?:aginti|aginti-sessions|agintiflow)(?:\/|$)/i.test(normalized);
+}
+
 function classifyGitAdd(normalized) {
   if (!/^git\s+add\b/.test(normalized) || hasActiveShellExpansion(normalized)) {
     return null;
@@ -1418,6 +1447,24 @@ function classifyGitAdd(normalized) {
   if (tokens[index] === "--") index += 1;
   const paths = tokens.slice(index);
   if (!paths.length || paths.length > 32) return null;
+  if (paths.some(isProtectedRuntimeGitPath)) {
+    return {
+      category: "blocked",
+      hardBlocked: true,
+      reason: "Private AgInTi runtime and verification state must never be staged or committed.",
+      permissionAdvice: {
+        category: "private-runtime-git-recovery",
+        autoRecover: true,
+        summary: "Private runtime state cannot be staged, but repository cleanup can continue without user approval.",
+        instruction: "Do not stage the private path. If it is accidentally tracked, remove it from the index with bounded `git rm --cached -- <exact-path>` while preserving the local file and ignore rule. Stage only exact task-owned source/tests, then continue. Do not ask for stronger permissions.",
+        options: [
+          "Use `git rm --cached -- <exact-private-path>` for an accidentally tracked runtime file.",
+          "Stage exact task-owned source/test paths only.",
+          "Use the task-owned commit tool when offered.",
+        ],
+      },
+    };
+  }
   if (
     paths.some(
       (target) =>
@@ -1446,8 +1493,43 @@ function classifyGitWorkflow(normalized) {
   if (hasActiveShellExpansion(normalized)) return null;
   const add = classifyGitAdd(normalized);
   if (add) return add;
+  if (/^git\s+add\b/.test(normalized)) {
+    return {
+      category: "blocked",
+      hardBlocked: true,
+      reason: "Git add must stage only bounded literal task-owned paths; broad staging is not allowed.",
+      permissionAdvice: {
+        category: "bounded-git-recovery",
+        autoRecover: true,
+        summary: "Broad staging was rejected, but the task can continue by staging exact task-owned paths.",
+        instruction: "Continue automatically: inspect `git status --short`, stage only exact task-owned source/test paths with `git add -- <paths>`, and use bounded `git rm --cached -- <paths>` for accidentally tracked private runtime files. Do not ask for stronger permissions.",
+        options: [
+          "Use the task-owned commit tool when it is offered.",
+          "Stage exact task-owned files only.",
+          "Remove exact tracked private paths from the index without deleting local files.",
+        ],
+      },
+    };
+  }
   const commit = classifyGitCommit(normalized);
   if (commit) return commit;
+  if (/^git\s+commit\b/.test(normalized)) {
+    return {
+      category: "blocked",
+      hardBlocked: true,
+      reason: "Git commit must use bounded message arguments and must not stage the whole worktree.",
+      permissionAdvice: {
+        category: "bounded-git-recovery",
+        autoRecover: true,
+        summary: "The commit shape was rejected, but a bounded task-owned commit remains available.",
+        instruction: "Continue automatically with a bounded literal commit message after staging only exact task-owned paths. Do not ask for stronger permissions.",
+        options: [
+          "Use the task-owned commit tool when offered.",
+          "Use a literal `git commit -m <message>` after bounded staging.",
+        ],
+      },
+    };
+  }
   if (!matchAny(GIT_WORKFLOW_PATTERNS, normalized)) return null;
   const remote = /^git\s+(fetch|pull|push)\b/.test(normalized);
   const writesWorkspace = !/^git\s+fetch\b/.test(normalized);
@@ -2477,6 +2559,23 @@ function classifyPipelineSequence(normalized) {
       needsNetwork: classifications.some((classification) => classification.needsNetwork),
       writesWorkspace: false,
       reason: `Benign read/network shell pipeline: ${normalized}`,
+    };
+  }
+  const boundedToolchainPipelineCategories = new Set(["read-only", "test", "toolchain"]);
+  if (
+    classifications.some((classification) => classification.category === "toolchain") &&
+    classifications.every(
+      (classification, index) =>
+        boundedToolchainPipelineCategories.has(classification.category) &&
+        (index === 0 || classification.writesWorkspace !== true)
+    )
+  ) {
+    return {
+      category: "toolchain",
+      needsNetwork: false,
+      writesWorkspace: classifications[0].writesWorkspace === true,
+      mayMutateProject: classifications[0].mayMutateProject === true,
+      reason: `Bounded toolchain output pipeline with read-only filters: ${normalized}`,
     };
   }
   return {

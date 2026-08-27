@@ -208,6 +208,7 @@ const compactionState = {
       content: JSON.stringify({
         ok: true,
         toolName: "read_file",
+        goalRevision: 11,
         path: "reports/reliability.md",
         startLine: 1,
         lineLimit: 50,
@@ -253,6 +254,7 @@ const compactionState = {
       content: JSON.stringify({
         ok: true,
         toolName: "read_file",
+        goalRevision: 11,
         path: "/evidence/Musia/SKILL.md",
         bytes: 2048,
         sha256: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
@@ -307,6 +309,21 @@ assert.ok(runtimeText.includes("/evidence/Musia/SKILL.md"));
 assert.ok(runtimeText.includes("Create and review songs through the established Musia production workflow"));
 assert.ok(runtimeText.includes("# Musia Music Production"));
 assert.ok(runtimeText.includes("sha256=1234567890abcdef"));
+const retainedRevisionedReadIndex = runtimeMessages.findIndex((message) =>
+  Array.isArray(message.tool_calls) &&
+  message.tool_calls.some(
+    (call) =>
+      call?.function?.name === "read_file" &&
+      String(call?.function?.arguments || "").includes("reports/reliability.md") &&
+      String(call?.function?.arguments || "").includes('"startLine":1')
+  )
+);
+assert.ok(retainedRevisionedReadIndex >= 0, "native compaction lost the revisioned source read");
+assert.equal(
+  JSON.parse(runtimeMessages[retainedRevisionedReadIndex + 1].content).goalRevision,
+  11,
+  "runtime compaction dropped the source read's goal revision"
+);
 assert.ok(runtimeText.includes("content=complete"));
 assert.ok(runtimeText.includes("node bin/musia.js doctor --json"));
 assert.ok(runtimeText.includes("scripts/xyq_cdp_browser.py"));

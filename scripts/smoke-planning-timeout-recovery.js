@@ -14,7 +14,10 @@ import {
   runAgent,
 } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
-import { planningContinuityContext } from "../src/model-client.js";
+import {
+  isTransientProviderRequestError,
+  planningContinuityContext,
+} from "../src/model-client.js";
 import { SessionStore } from "../src/session-store.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -24,6 +27,20 @@ function timeout(label = "plan request") {
   error.name = "ModelTimeoutError";
   return error;
 }
+
+function transportInterrupted() {
+  const error = new TypeError("terminated");
+  error.cause = Object.assign(new Error("other side closed"), {
+    code: "UND_ERR_SOCKET",
+  });
+  return error;
+}
+
+assert.equal(isTransientProviderRequestError(transportInterrupted()), true);
+assert.equal(
+  isTransientProviderRequestError(Object.assign(new Error("validation failed"), { status: 400 })),
+  false
+);
 
 function assistant(content, toolCalls = []) {
   return {
@@ -120,6 +137,73 @@ assert.match(
   "the planner lost the prior exact verifier on a same-session follow-up"
 );
 
+const scopedRepairRoot = await fs.mkdtemp(
+  path.join(os.tmpdir(), "agintiflow-scoped-artifact-repair-")
+);
+try {
+  const scopedArtifactRoot = path.join(scopedRepairRoot, "output", "task-1");
+  const scopedSource = "output/task-1/reader-report.md";
+  await fs.mkdir(scopedArtifactRoot, { recursive: true });
+  await fs.writeFile(path.join(scopedRepairRoot, scopedSource), "# Rejected report\n", "utf8");
+  const refreshedAt = new Date(Date.now() - 1000).toISOString();
+  const groundedAt = new Date().toISOString();
+  const scopedGoal = [
+    `Revise the exact existing source ${scopedSource}, materially repair it, and rebuild its PDF.`,
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "task",
+      request: `Revise ${scopedSource}`,
+      artifact_root: scopedArtifactRoot,
+    })}`,
+  ].join("\n");
+  const scopedRuntime = nextStepRuntimeConfig(
+    { commandCwd: scopedRepairRoot, goal: scopedGoal },
+    {
+      goal: scopedGoal,
+      commandCwd: scopedRepairRoot,
+      meta: {
+        goalContract: {
+          revision: 1,
+          currentRequest: scopedGoal,
+          currentHash: "scoped-repair",
+        },
+        activeExecutionContract: {
+          revision: 1,
+          refreshedAt,
+          startedMutationRevision: 0,
+          requiresWorkspaceMutation: true,
+          requiresFileMutation: true,
+          requiresSourceGrounding: true,
+        },
+        projectVerification: {
+          mutationRevision: 0,
+          mutationHistory: [],
+          testRuns: [],
+          discoveredTests: [],
+        },
+        toolLoop: {
+          recent: [{
+            toolName: "read_file",
+            ok: true,
+            blocked: false,
+            path: scopedSource,
+            at: groundedAt,
+          }],
+        },
+      },
+    }
+  );
+  assert.equal(scopedRuntime.scopedArtifactTask, true);
+  assert.equal(
+    scopedRuntime.completionFreshMutationRequired,
+    true,
+    "a grounded task-scoped artifact repair was allowed to probe or verify before mutation"
+  );
+  assert.deepEqual(scopedRuntime.completionFreshMutationPaths, [scopedSource]);
+  assert.equal(scopedRuntime.completionFreshMutationNeedsSourceRead, false);
+} finally {
+  await fs.rm(scopedRepairRoot, { recursive: true, force: true });
+}
+
 const cleanVerifier = "python3 /tmp/aginti-smoke/clean_contract.py";
 const alreadyCommittedState = {
   meta: {
@@ -181,7 +265,12 @@ assert.notEqual(
   "new task reused clean-commit repair evidence from a prior task"
 );
 
-async function runScenario({ sessionId, doubleTimeout = false }) {
+async function runScenario({
+  sessionId,
+  doubleTimeout = false,
+  planningTransportInterrupt = false,
+  executionTransportInterrupt = false,
+}) {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-plan-timeout-"));
   const workspace = path.join(tempRoot, "workspace");
   const sessionsDir = path.join(tempRoot, "sessions");
@@ -190,6 +279,7 @@ async function runScenario({ sessionId, doubleTimeout = false }) {
 
   const requests = [];
   let planningCalls = 0;
+  let executionAttempts = 0;
   let executionCalls = 0;
   const client = {
     chat: {
@@ -199,8 +289,15 @@ async function runScenario({ sessionId, doubleTimeout = false }) {
           const planning = /You are planning/.test(payload.messages?.[0]?.content || "");
           if (planning) {
             planningCalls += 1;
+            if (planningTransportInterrupt && planningCalls === 1) {
+              throw transportInterrupted();
+            }
             if (planningCalls === 1 || doubleTimeout) throw timeout();
             return assistant("1. Create the requested file.\n2. Read it back.\n3. Finish with verified evidence.");
+          }
+          executionAttempts += 1;
+          if (executionTransportInterrupt && executionAttempts === 1) {
+            throw transportInterrupted();
           }
           executionCalls += 1;
           if (executionCalls === 1) {
@@ -540,6 +637,27 @@ assert(fallback.events.some((event) => event.type === "plan.timeout_fallback"));
 assert.match(fallback.state.plan, /retained workspace state/i);
 assert.equal(fallback.state.meta.planTimeoutRecovery.fallback, true);
 assert.equal(fallback.state.model, "localllm-deep");
+
+const transportPlan = await runScenario({
+  sessionId: "planning-transport-retry",
+  planningTransportInterrupt: true,
+});
+assert.equal(transportPlan.result.stopped, undefined);
+assert.equal(transportPlan.content, "same invocation recovered\n");
+assert(transportPlan.events.some((event) => event.type === "plan.transport_interrupted"));
+assert(transportPlan.events.some((event) => event.type === "plan.transport_recovered"));
+assert(!transportPlan.events.some((event) => event.type === "session.failed"));
+assert.equal(transportPlan.state.model, "localllm-fast");
+
+const transportStep = await runScenario({
+  sessionId: "agent-step-transport-retry",
+  executionTransportInterrupt: true,
+});
+assert.equal(transportStep.result.stopped, undefined);
+assert.equal(transportStep.content, "same invocation recovered\n");
+assert(transportStep.events.some((event) => event.type === "model.transport_interrupted"));
+assert(transportStep.events.some((event) => event.type === "model.transport_recovered"));
+assert(!transportStep.events.some((event) => event.type === "session.failed"));
 
 const constrained = await runKnownCommandScenario();
 assert.equal(constrained.result.stopped, undefined);

@@ -1,9 +1,11 @@
 #!/usr/bin/env node
+import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runAgent } from "../src/agent-runner.js";
+import { acquireSessionRunLock, runAgent } from "../src/agent-runner.js";
 import { RESEARCH_VERSION } from "../src/deep-research.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { classifyCommand, evaluateCommandPolicy } from "../src/command-policy.js";
@@ -15,17 +17,25 @@ import {
   shouldReviewToolResult,
 } from "../src/scs-controller.js";
 import {
+  ambiguousDeclarationTokenPatchBlock,
+  ambiguousPythonMainGuardPatchBlock,
   announceConvergenceOutputPhase,
+  applyConcreteContinuationStepBudgetBoundary,
   applyContinuationContractTransition,
   artifactValidationAcceptanceIsCurrent,
   artifactValidationFinishBlock,
   artifactValidationScopeBlock,
   buildConstrainedRecoveryRequest,
   buildFailedTestRecoveryPacket,
+  buildKnownConstrainedPhasePlan,
   buildTaskOwnedCommitCommand,
+  bindPatchContextRepairArguments,
   canonicalizeVerifiedArtifactCompletion,
   completedDeepResearchReuse,
+  completionTaskContract,
+  convergenceSuppressedToolNames,
   completionEvidenceNeedsCommand,
+  completionRepairMutationRequirement,
   compactFailedTestEvidence,
   enqueueFailedTestRepairInstruction,
   failedTestRequiresCleanRepositoryState,
@@ -35,12 +45,18 @@ import {
   failedTestLiteralOperands,
   failedTestMembershipPredicates,
   failedTestMockBehaviorContract,
+  groundedDeclarationPatchFromPartialFile,
   isCompletedContinuationNoop,
   isSubstantiveTestCommand,
   mergeDurableGitEvidence,
   nextStepRuntimeConfig,
+  patchContextScopeMismatchAttemptCount,
+  pythonMainGuardOrderDefects,
   projectAcceptanceFromMarkdown,
   projectTestVerificationFinishBlock,
+  prospectivePythonExactPatchSyntaxBlock,
+  preservesCurrentTaskBoundary,
+  completionExternalBlockerCanClose,
   pythonTopLevelDefinitionDuplicates,
   recordCanonicalGeneratedOutputProgress,
   recordProjectVerificationOutcome,
@@ -49,6 +65,7 @@ import {
   resetGoalScopedRuntimeState,
   resetSameTaskExecutionContract,
   resetStaticDiscoveryAfterContextLoss,
+  runtimeMessagesSinceLatestContinuationBoundary,
   shellDiagnosticHint,
   rememberCompletedDeepResearch,
   unchangedFailedTestRerunBlock,
@@ -59,6 +76,8 @@ import {
   reopenedArtifactRepairPending,
   shouldResetStaticDiscoveryPhase,
   trimCommandOutput,
+  testCommandCoversMutatedPath,
+  updateGoalContract,
   validateMutatedPythonSourceQuality,
 } from "../src/agent-runner.js";
 import {
@@ -73,6 +92,9 @@ import {
   parseNonMutatingExitStatusWrapper,
 } from "../src/scs-evidence.js";
 import {
+  repositoryGroundingState,
+} from "../src/progressive-tool-selection.js";
+import {
   createStepBudgetState,
   decideStepBudgetExtension,
   isStaticDiscoveryToolCall,
@@ -85,6 +107,56 @@ import { SessionStore } from "../src/session-store.js";
 import { recommendedMaxStepsForTask } from "../src/engineering-guidance.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+const supersededOutputState = {
+  goal: "Repair the service lifecycle.",
+  meta: {
+    goalContract: {
+      version: 3,
+      revision: 3,
+      status: "active",
+      taskGoal: "Repair the service lifecycle.",
+      activeGoal: "Repair the service lifecycle.",
+      history: [],
+      lifecycle: [],
+    },
+    projectVerification: {
+      requiredOutputs: ["verification_suite.py", "service_ctl.py"],
+    },
+    scs: {
+      taskContract: {
+        exactOutputPaths: [".aginti/verification/lifecycle/verification_suite.py", "service_ctl.py"],
+      },
+    },
+    artifactProgress: {
+      exactOutputPaths: ["verification_suite.py", "service_ctl.py"],
+    },
+  },
+};
+updateGoalContract(
+  supersededOutputState,
+  "Continue the same task. verification_suite.py does not exist and must not be rerun or created. Repair service_ctl.py.",
+  { preserveTaskBoundary: true }
+);
+assert(
+  !supersededOutputState.meta.projectVerification.requiredOutputs.includes("verification_suite.py"),
+  "a current explicit exclusion did not prune retained verification outputs"
+);
+assert(
+  !supersededOutputState.meta.scs.taskContract.exactOutputPaths.some((item) => item.includes("verification_suite.py")),
+  "a current explicit exclusion did not prune retained SCS outputs"
+);
+assert(
+  supersededOutputState.meta.artifactProgress === undefined,
+  "artifact progress was not invalidated after its output contract was pruned"
+);
+assert(
+  !completionTaskContract({ taskProfile: "devops" }, supersededOutputState).exactOutputPaths.some((item) =>
+    item.includes("verification_suite.py")
+  ),
+  "completion rebuilt a stale output that the current request explicitly forbids"
+);
+
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-dynamic-budget-"));
 process.env.AGINTIFLOW_HOME = path.join(tempRoot, ".agintiflow-home");
 const runtimeDir = path.join(tempRoot, "runtime");
@@ -104,6 +176,43 @@ function toolMessage(payload) {
 }
 
 try {
+  const runLockConfig = {
+    sessionsDir: path.join(tempRoot, "run-lock-sessions"),
+  };
+  const releaseFirstRunLock = await acquireSessionRunLock(
+    runLockConfig,
+    "same-session-run-lock"
+  );
+  let concurrentRunLockError = null;
+  try {
+    await acquireSessionRunLock(runLockConfig, "same-session-run-lock");
+  } catch (error) {
+    concurrentRunLockError = error;
+  }
+  assert(
+    concurrentRunLockError?.code === "SESSION_RUN_ACTIVE" &&
+      concurrentRunLockError?.ownerPid === process.pid,
+    "a concurrent resume was allowed to acquire the same durable session run lease"
+  );
+  await releaseFirstRunLock();
+  const releaseRecoveredRunLock = await acquireSessionRunLock(
+    runLockConfig,
+    "same-session-run-lock"
+  );
+  await releaseRecoveredRunLock();
+  assert(
+    !(await fs
+      .stat(
+        path.join(
+          runLockConfig.sessionsDir,
+          "same-session-run-lock",
+          ".agent-run.lock"
+        )
+      )
+      .then(() => true)
+      .catch(() => false)),
+    "the durable session run lease was not released after the owner finished"
+  );
   assert(
     pythonTopLevelDefinitionDuplicates(
       "def start():\n    return 1\n\ndef start():\n    return 2\n"
@@ -115,6 +224,1442 @@ try {
       "from typing import overload\n\n@overload\ndef parse(value: str) -> str: ...\n\n@overload\ndef parse(value: int) -> int: ...\n\ndef parse(value):\n    return value\n"
     ).length === 0,
     "legitimate Python overload declarations were treated as duplicate implementations"
+  );
+  const earlyMainGuardSource = [
+    "def main():",
+    "    return start_service()",
+    "",
+    "if __name__ == '__main__':",
+    "    raise SystemExit(main())",
+    "",
+    "def start_service():",
+    "    return 0",
+    "",
+  ].join("\n");
+  const earlyMainGuardDefects = pythonMainGuardOrderDefects(earlyMainGuardSource);
+  assert(
+    earlyMainGuardDefects.length === 1 &&
+      earlyMainGuardDefects[0].guardLine === 4 &&
+      earlyMainGuardDefects[0].calledLater[0]?.name === "start_service" &&
+      earlyMainGuardDefects[0].guardSearch.includes("raise SystemExit(main())") &&
+      earlyMainGuardDefects[0].repairSearch.includes("def start_service"),
+    "an executable Python main guard before a required declaration was not diagnosed"
+  );
+  await fs.writeFile(
+    path.join(workspace, "entrypoint-order.py"),
+    earlyMainGuardSource,
+    "utf8"
+  );
+  const entrypointOrderState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 0,
+        testRuns: [{
+          command: "python test_entrypoint_order.py",
+          mutationRevision: 0,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "python-entrypoint-order",
+          failureSummary: "NameError: start_service is not defined",
+        }],
+      },
+      failedTestDiagnostic: {
+        packetVersion: 13,
+        mutationRevision: 0,
+        failureSignature: "python-entrypoint-order",
+        focuses: [{
+          kind: "python-main-guard-order",
+          path: "entrypoint-order.py",
+          directSearch: earlyMainGuardDefects[0].repairSearch,
+          calledLater: earlyMainGuardDefects[0].calledLater,
+        }],
+      },
+    },
+  };
+  assert(
+    (await failedTestRepairPatchBlock(
+      entrypointOrderState,
+      "apply_patch",
+      {
+        path: "entrypoint-order.py",
+        search: earlyMainGuardDefects[0].repairSearch,
+        replace:
+          earlyMainGuardDefects[0].repairSearch +
+          "# The guard should eventually move below start_service.\n",
+      },
+      { commandCwd: workspace }
+    ))?.category === "failed-test-nonrepairing-patch",
+    "a comment-only patch was allowed to leave the Python entrypoint-order defect active"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      entrypointOrderState,
+      "apply_patch",
+      {
+        path: "entrypoint-order.py",
+        search: earlyMainGuardDefects[0].repairSearch,
+        replace: [
+          "def start_service():",
+          "    return 0",
+          "",
+          "if __name__ == '__main__':",
+          "    raise SystemExit(main())",
+          "",
+        ].join("\n"),
+      },
+      { commandCwd: workspace }
+    )) === null,
+    "a transaction that moved the Python main guard below the required declaration was blocked"
+  );
+  assert(
+    pythonMainGuardOrderDefects(
+      [
+        "def start_service():",
+        "    return 0",
+        "",
+        "def main():",
+        "    return start_service()",
+        "",
+        "if __name__ == '__main__':",
+        "    raise SystemExit(main())",
+        "",
+      ].join("\n")
+    ).length === 0,
+    "a final Python main guard was incorrectly treated as an execution-order defect"
+  );
+  const duplicateSource = [
+    "import os",
+    "",
+    "def status_service():",
+    "    return 'old'",
+    "",
+    "def status_service():",
+    "    return 'current'",
+    "",
+    "def main():",
+    "    return status_service()",
+    "",
+    "if __name__ == '__main__':",
+    "    raise SystemExit(main())",
+    "",
+  ].join("\n");
+  const canonicalDuplicateSource = [
+    "import os",
+    "",
+    "def status_service():",
+    "    return 'current'",
+    "",
+    "def main():",
+    "    return status_service()",
+    "",
+    "if __name__ == '__main__':",
+    "    raise SystemExit(main())",
+    "",
+  ].join("\n");
+  await fs.writeFile(path.join(workspace, "duplicate-source.py"), duplicateSource, "utf8");
+  const duplicateRepairState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 1,
+        lastMutation: { revision: 1, paths: ["duplicate-source.py"] },
+        discoveredTests: ["duplicate-source.py"],
+        testRuns: [{
+          command: "python test_duplicate_source.py",
+          mutationRevision: 1,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "python-duplicate-source",
+          failureSummary: "duplicate top-level production declarations remain",
+        }],
+      },
+    },
+  };
+  const duplicatePacket = await buildFailedTestRecoveryPacket(
+    { commandCwd: workspace },
+    duplicateRepairState
+  );
+  const duplicateFocus = duplicateRepairState.meta.failedTestDiagnostic.focuses.find(
+    (focus) => focus.kind === "python-duplicate-top-level-definition"
+  );
+  assert(
+    duplicatePacket.content.includes("Duplicate top-level Python declarations") &&
+      duplicateFocus?.directSearch === duplicateSource &&
+      duplicateFocus?.duplicateDeclarations?.[0]?.name === "status_service",
+    "duplicate production declarations were not promoted into a focused failed-test repair"
+  );
+  const baselineWorkspace = path.join(tempRoot, "baseline-recovery-workspace");
+  await fs.mkdir(baselineWorkspace, { recursive: true });
+  const trackedBaselineSource = [
+    "#!/usr/bin/env python3",
+    "from pathlib import Path",
+    "",
+    "PROJECT_ROOT = Path(__file__).resolve().parent",
+    "",
+    "def build_service_command(root: Path):",
+    "    return [str(root / 'service')]",
+    "",
+    "def launch_service(command):",
+    "    return command",
+    "",
+    "def wait_until_healthy(process):",
+    "    return bool(process)",
+    "",
+    "def start_service(root: Path):",
+    "    return wait_until_healthy(launch_service(build_service_command(root)))",
+    "",
+    "def main():",
+    "    return 0 if start_service(PROJECT_ROOT) else 1",
+    "",
+    "if __name__ == '__main__':",
+    "    raise SystemExit(main())",
+    "",
+  ].join("\n");
+  const truncatedTrackedSource = [
+    "def start_service(root: Path):",
+    "    return True",
+    "",
+    "if __name__ == '__main__':",
+    "    raise SystemExit(main())",
+    "",
+  ].join("\n");
+  await fs.writeFile(
+    path.join(baselineWorkspace, "baseline-recovery.py"),
+    trackedBaselineSource,
+    "utf8"
+  );
+  for (const args of [
+    ["init"],
+    ["config", "user.email", "smoke@example.invalid"],
+    ["config", "user.name", "AgInTi Smoke"],
+    ["config", "commit.gpgsign", "false"],
+    ["add", "baseline-recovery.py"],
+    ["commit", "-m", "baseline"],
+  ]) {
+    const result = spawnSync("git", args, {
+      cwd: baselineWorkspace,
+      encoding: "utf8",
+    });
+    assert(
+      result.status === 0,
+      `failed to prepare tracked baseline recovery fixture: git ${args.join(" ")} ${result.stderr || ""}`
+    );
+  }
+  await fs.writeFile(
+    path.join(baselineWorkspace, "baseline-recovery.py"),
+    truncatedTrackedSource,
+    "utf8"
+  );
+  const baselineRecoveryState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 3,
+        lastMutation: { revision: 3, paths: ["baseline-recovery.py"] },
+        discoveredTests: ["baseline-recovery.py"],
+        testRuns: [{
+          command: "python baseline-recovery.py",
+          mutationRevision: 3,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "python-tracked-source-regression",
+          failureSummary: "NameError: name 'Path' is not defined",
+        }],
+      },
+    },
+  };
+  const baselinePacket = await buildFailedTestRecoveryPacket(
+    { commandCwd: baselineWorkspace },
+    baselineRecoveryState
+  );
+  const baselineFocus = baselineRecoveryState.meta.failedTestDiagnostic.focuses.find(
+    (focus) => focus.kind === "python-git-baseline-recovery"
+  );
+  assert(
+    baselinePacket.content.includes("Version-controlled source regression") &&
+      baselinePacket.content.includes("Exact version-controlled baseline") &&
+      baselineFocus?.directSearch === truncatedTrackedSource &&
+      baselineFocus?.baselineSource === trackedBaselineSource &&
+      baselineFocus?.missingDeclarations?.some(
+        (item) => item.name === "build_service_command"
+      ) &&
+      baselineFocus?.missingDeclarations?.some((item) => item.name === "main"),
+    "a severely truncated task-mutated tracked Python source was not promoted to exact baseline recovery"
+  );
+  const baselineTracebackRecoveryState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 0,
+        discoveredTests: [],
+        testRuns: [{
+          command: "python -m unittest discover -s tests -v",
+          mutationRevision: 0,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "python-tracked-source-regression-after-state-loss",
+          failureSummary:
+            `File "${path.join(baselineWorkspace, "baseline-recovery.py")}", line 1, in <module>\n` +
+            "NameError: name 'Path' is not defined",
+        }],
+      },
+    },
+  };
+  await buildFailedTestRecoveryPacket(
+    { commandCwd: baselineWorkspace },
+    baselineTracebackRecoveryState
+  );
+  assert(
+    baselineTracebackRecoveryState.meta.failedTestDiagnostic.focuses.some(
+      (focus) =>
+        focus.kind === "python-git-baseline-recovery" &&
+        focus.path === "baseline-recovery.py"
+    ),
+    "an exact traceback-bound tracked source could not recover its baseline after durable mutation metadata was lost"
+  );
+  const baselineWithoutHelper = trackedBaselineSource.replace(
+    "def wait_until_healthy(process):\n    return bool(process)\n\n",
+    ""
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      baselineRecoveryState,
+      "apply_patch",
+      {
+        path: "baseline-recovery.py",
+        search: truncatedTrackedSource,
+        replace: baselineWithoutHelper,
+      },
+      { commandCwd: baselineWorkspace }
+    ))?.category === "failed-test-nonrepairing-patch",
+    "baseline reconstruction was allowed to omit a tracked helper declaration"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      baselineRecoveryState,
+      "apply_patch",
+      {
+        path: "baseline-recovery.py",
+        search: truncatedTrackedSource,
+        replace: trackedBaselineSource.slice(
+          trackedBaselineSource.indexOf("def build_service_command")
+        ),
+      },
+      { commandCwd: baselineWorkspace }
+    ))?.category === "failed-test-regression",
+    "baseline reconstruction was allowed to discard the tracked module preamble"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      baselineRecoveryState,
+      "apply_patch",
+      {
+        path: "baseline-recovery.py",
+        search: truncatedTrackedSource,
+        replace: trackedBaselineSource,
+      },
+      { commandCwd: baselineWorkspace }
+    )) === null,
+    "a complete coherent tracked baseline reconstruction was blocked"
+  );
+  const harnessTestsDir = path.join(baselineWorkspace, "tests");
+  await fs.mkdir(harnessTestsDir, { recursive: true });
+  await fs.writeFile(
+    path.join(baselineWorkspace, "service_ctl.py"),
+    "raise SystemExit(0)\n",
+    "utf8"
+  );
+  const brokenHarnessSource = [
+    "import subprocess",
+    "import sys",
+    "import unittest",
+    "from pathlib import Path",
+    "",
+    'SERVICE_CTL = "../service_ctl.py"',
+    "",
+    "class TestLifecycle(unittest.TestCase):",
+    "    def test_start(self):",
+    "        result = subprocess.run([sys.executable, SERVICE_CTL], capture_output=True)",
+    "        self.assertEqual(result.returncode, 0)",
+    "",
+  ].join("\n");
+  const repairedHarnessAssignment =
+    'SERVICE_CTL = (Path(__file__).resolve().parent / "../service_ctl.py").resolve()';
+  const harnessTestPath = path.join(harnessTestsDir, "test_service_lifecycle.py");
+  await fs.writeFile(harnessTestPath, brokenHarnessSource, "utf8");
+  const harnessRepairState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 4,
+        discoveredTests: ["tests/test_service_lifecycle.py"],
+        testRuns: [{
+          command: "python3 -m unittest discover -s tests -v",
+          mutationRevision: 4,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "agent-created-test-harness-path",
+          failureSummary:
+            "File \"./tests/test_service_lifecycle.py\", line 11, in test_start -> " +
+            "self.assertEqual(result.returncode, 0) Failure evidence: AssertionError: 2 != 0",
+        }],
+      },
+    },
+  };
+  const harnessPacket = await buildFailedTestRecoveryPacket(
+    { commandCwd: baselineWorkspace },
+    harnessRepairState
+  );
+  const harnessFocus = harnessRepairState.meta.failedTestDiagnostic.focuses.find(
+    (focus) => focus.kind === "python-agent-test-harness-path"
+  );
+  assert(
+    harnessPacket.content.includes("Agent-created test harness path") &&
+      harnessFocus?.path === "tests/test_service_lifecycle.py" &&
+      harnessFocus?.directSearch === 'SERVICE_CTL = "../service_ctl.py"' &&
+      harnessFocus?.directReplacement === repairedHarnessAssignment &&
+      harnessFocus?.expectedWorkspacePath === "service_ctl.py" &&
+      harnessFocus?.testNames?.join(",") === "test_start" &&
+      harnessFocus?.assertionCount === 1,
+    "a Git-new Python test with a verifier-cwd launch defect was not isolated to its exact assignment"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      harnessRepairState,
+      "apply_patch",
+      {
+        path: "tests/test_service_lifecycle.py",
+        search: 'SERVICE_CTL = "../service_ctl.py"',
+        replace: 'SERVICE_CTL = "service_ctl.py"',
+      },
+      { commandCwd: baselineWorkspace }
+    ))?.category === "failed-test-nonrepairing-patch",
+    "an arbitrary test-path edit bypassed the exact agent-created harness repair"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      harnessRepairState,
+      "apply_patch",
+      {
+        path: "tests/test_service_lifecycle.py",
+        search: 'SERVICE_CTL = "../service_ctl.py"',
+        replace: repairedHarnessAssignment,
+      },
+      { commandCwd: baselineWorkspace }
+    )) === null,
+    "the exact cwd-independent agent-created test harness repair was blocked"
+  );
+  for (const args of [
+    ["add", "service_ctl.py", "tests/test_service_lifecycle.py"],
+    ["commit", "-m", "tracked harness boundary"],
+  ]) {
+    const result = spawnSync("git", args, {
+      cwd: baselineWorkspace,
+      encoding: "utf8",
+    });
+    assert(
+      result.status === 0,
+      `failed to prepare tracked test-harness boundary: git ${args.join(" ")} ${result.stderr || ""}`
+    );
+  }
+  const trackedHarnessState = structuredClone(harnessRepairState);
+  trackedHarnessState.meta.projectVerification.testRuns[0].failureSignature =
+    "tracked-test-harness-path";
+  await buildFailedTestRecoveryPacket(
+    { commandCwd: baselineWorkspace },
+    trackedHarnessState
+  );
+  assert(
+    !trackedHarnessState.meta.failedTestDiagnostic.focuses.some(
+      (focus) => focus.kind === "python-agent-test-harness-path"
+    ),
+    "the agent-created test exception was incorrectly applied to a tracked authoritative test"
+  );
+  await fs.mkdir(path.join(workspace, "tests"), { recursive: true });
+  await fs.writeFile(
+    path.join(workspace, "tests", "test_traceback_packet.py"),
+    "from pathlib import Path\n\ndef test_contract():\n    assert Path('duplicate-source.py').exists()\n",
+    "utf8"
+  );
+  const tracebackPacketState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 1,
+        lastMutation: { revision: 1, paths: ["duplicate-source.py"] },
+        discoveredTests: [],
+        testRuns: [{
+          command: "python3 -m unittest discover -s tests -v",
+          mutationRevision: 1,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "traceback-file-recovery",
+          failureSummary:
+            `File "${path.join(workspace, "tests", "test_traceback_packet.py")}", line 4, in test_contract\n` +
+            `File "${path.join(workspace, "duplicate-source.py")}", line 1, in <module>`,
+        }],
+      },
+    },
+  };
+  const tracebackPacket = await buildFailedTestRecoveryPacket(
+    { commandCwd: workspace },
+    tracebackPacketState
+  );
+  assert(
+    tracebackPacket.paths.includes("tests/test_traceback_packet.py") &&
+      tracebackPacket.content.includes("### tests/test_traceback_packet.py"),
+    "exact same-workspace test files named by a traceback were omitted when discovery metadata was empty"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      duplicateRepairState,
+      "apply_patch",
+      {
+        path: "duplicate-source.py",
+        search: duplicateSource,
+        replace: duplicateSource,
+      },
+      { commandCwd: workspace }
+    ))?.category === "failed-test-nonrepairing-patch",
+    "a rewrite that retained duplicate top-level declarations was accepted"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      duplicateRepairState,
+      "apply_patch",
+      {
+        path: "duplicate-source.py",
+        search: duplicateSource,
+        replace: [
+          "def main():",
+          "    return status_service()",
+          "",
+          "if __name__ == '__main__':",
+          "    raise SystemExit(main())",
+          "",
+        ].join("\n"),
+      },
+      { commandCwd: workspace }
+    ))?.category === "failed-test-regression",
+    "duplicate cleanup was allowed to remove every implementation of a required declaration"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      duplicateRepairState,
+      "apply_patch",
+      {
+        path: "duplicate-source.py",
+        search: duplicateSource,
+        replace: [
+          "import os",
+          "",
+          "def status_service():",
+          "    return 'current'",
+          "",
+          "if __name__ == '__main__':",
+          "    raise SystemExit(main())",
+          "",
+        ].join("\n"),
+      },
+      { commandCwd: workspace }
+    ))?.category === "failed-test-regression",
+    "duplicate cleanup was allowed to discard a unique top-level declaration"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      duplicateRepairState,
+      "apply_patch",
+      {
+        path: "duplicate-source.py",
+        search: duplicateSource,
+        replace: canonicalDuplicateSource.replace(/^import os\n\n/, ""),
+      },
+      { commandCwd: workspace }
+    ))?.category === "failed-test-regression",
+    "duplicate cleanup was allowed to discard the module preamble"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      duplicateRepairState,
+      "apply_patch",
+      {
+        path: "duplicate-source.py",
+        search: duplicateSource,
+        replace: canonicalDuplicateSource,
+      },
+      { commandCwd: workspace }
+    )) === null,
+    "a coherent duplicate declaration consolidation was blocked"
+  );
+  const incrementalDeclarationPatch = groundedDeclarationPatchFromPartialFile(
+    [
+      "#!/usr/bin/env python3",
+      "import os",
+      "",
+      "def start_service():",
+      "    return 'old-start'",
+      "",
+      "def status_service():",
+      "    return 'old-status'",
+      "",
+    ].join("\n"),
+    [
+      "import sys",
+      "",
+      "def main():",
+      "    return 0",
+      "",
+      "def start_service():",
+      "    return 'new-start'",
+      "",
+      "def status_service():",
+      "    return 'new-status'",
+      "",
+      "def main():",
+      "    return 1",
+      "",
+    ].join("\n")
+  );
+  assert(
+    incrementalDeclarationPatch?.identity === "start_service" &&
+      incrementalDeclarationPatch.search.includes("old-start") &&
+      incrementalDeclarationPatch.replace.includes("new-start") &&
+      !incrementalDeclarationPatch.replace.includes("status_service") &&
+      !incrementalDeclarationPatch.replace.includes("def main"),
+    "an incomplete multi-declaration rewrite was not reduced to one unique grounded declaration"
+  );
+  const requiredInsertionSource = [
+    "#!/usr/bin/env python3",
+    "import os",
+    "import subprocess",
+    "",
+    "def build_service_command(host: str, port: int) -> list[str]:",
+    "    return ['sensor-gateway', '--host', host, '--port', str(port)]",
+    "",
+    "def start_service(host: str, port: int):",
+    "    return build_service_command(host, port)",
+    "",
+    "def main():",
+    "    return start_service('127.0.0.1', 8080)",
+    "",
+    "if __name__ == '__main__':",
+    "    raise SystemExit(main())",
+    "",
+    "def main():",
+    "    return 0",
+    "",
+  ].join("\n");
+  const requiredInsertionAnchor = [
+    "def start_service(host: str, port: int):",
+    "    return build_service_command(host, port)",
+    "",
+  ].join("\n");
+  const requiredInsertionHash = crypto
+    .createHash("sha256")
+    .update(requiredInsertionSource)
+    .digest("hex");
+  const requiredInsertionState = {
+    meta: {
+      goalContract: {
+        version: 3,
+        revision: 1,
+        status: "active",
+        taskGoal: "Repair the service lifecycle.",
+        activeGoal: "Repair the service lifecycle.",
+        history: [],
+        lifecycle: [],
+      },
+      projectVerification: {
+        mutationRevision: 2,
+        privateMutationRevision: 0,
+        testRuns: [
+          {
+            command: "python3 -m unittest discover -s tests -v",
+            mutationRevision: 2,
+            privateMutationRevision: 0,
+            passed: false,
+            failureSignature: "missing-launch-service",
+            failureSummary:
+              "AttributeError: module service_ctl has no attribute launch_service",
+          },
+        ],
+      },
+      requiredSymbolRepair: {
+        version: 1,
+        kind: "python-patch-object",
+        owner: "service_ctl",
+        symbol: "launch_service",
+        path: "service_ctl.py",
+        contracts: [
+          {
+            kind: "python-patch-object",
+            owner: "service_ctl",
+            symbol: "launch_service",
+            path: "service_ctl.py",
+          },
+          {
+            kind: "python-patch-object",
+            owner: "service_ctl",
+            symbol: "wait_until_healthy",
+            path: "service_ctl.py",
+          },
+        ],
+        confirmedAbsent: true,
+        goalRevision: 1,
+        mutationRevision: 2,
+        failureSignature: "missing-launch-service",
+      },
+      toolLoop: {
+        patchContextRepair: {
+          version: 1,
+          path: "service_ctl.py",
+          goalRevision: 1,
+          mutationRevision: 2,
+          privateMutationRevision: 0,
+          failureSignature: "missing-launch-service",
+          search: requiredInsertionAnchor,
+          searchHash: crypto
+            .createHash("sha256")
+            .update(requiredInsertionAnchor)
+            .digest("hex"),
+          sourceHash: requiredInsertionHash,
+          anchorKind: "declaration-identity",
+          anchorIdentity: "start_service",
+          completeSource: requiredInsertionSource,
+          completeSourceHash: requiredInsertionHash,
+          completeSourceBytes: Buffer.byteLength(requiredInsertionSource, "utf8"),
+        },
+      },
+    },
+  };
+  const requiredInsertionBinding = bindPatchContextRepairArguments(
+    requiredInsertionState,
+    {
+      path: "service_ctl.py",
+      search: requiredInsertionAnchor,
+      replace: [
+        "import pathlib",
+        "",
+        "def launch_service(host: str, port: int, stdout, stderr):",
+        "    command = build_service_command(host, port)",
+        "    return subprocess.Popen(command, stdout=stdout, stderr=stderr)",
+        "",
+        "def wait_until_healthy(host: str, port: int) -> bool:",
+        "    return True",
+        "",
+        "import pathlib",
+      ].join("\n"),
+    }
+  );
+  assert(
+    requiredInsertionBinding?.incrementalDeclarationRecovery?.mode ===
+      "insert-required-declaration" &&
+      requiredInsertionBinding.incrementalDeclarationRecovery.identity ===
+        "launch_service" &&
+      requiredInsertionBinding.args.replace.indexOf("def launch_service") <
+        requiredInsertionBinding.args.replace.indexOf("def main") &&
+      !requiredInsertionBinding.args.replace.includes("def wait_until_healthy") &&
+      !requiredInsertionBinding.args.replace.includes("import pathlib") &&
+      requiredInsertionBinding.scopeIssue === null,
+    "a required missing declaration was not safely inserted before the first Python entrypoint"
+  );
+  const unrelatedInsertionBinding = bindPatchContextRepairArguments(
+    requiredInsertionState,
+    {
+      path: "service_ctl.py",
+      search: requiredInsertionAnchor,
+      replace: [
+        "def evil_helper():",
+        "    return 'not acceptance grounded'",
+      ].join("\n"),
+    }
+  );
+  assert(
+    !unrelatedInsertionBinding?.incrementalDeclarationRecovery &&
+      Boolean(unrelatedInsertionBinding?.scopeIssue),
+    "an unrelated missing declaration escaped the active failed-test symbol contract"
+  );
+  const semanticScopeMismatchState = {
+    meta: {
+      goalContract: { revision: 4 },
+      projectVerification: { mutationRevision: 7 },
+      toolLoop: {
+        stagnationEpoch: 3,
+        recent: [
+          {
+            toolName: "apply_patch",
+            path: "service_ctl.py",
+            ok: false,
+            category: "patch-context-scope-mismatch",
+            signature: "patch:proposal-a",
+            stagnationEpoch: 3,
+            goalRevision: 4,
+            mutationRevision: 7,
+          },
+          {
+            toolName: "apply_patch",
+            path: "service_ctl.py",
+            ok: false,
+            category: "patch-context-scope-mismatch",
+            signature: "patch:proposal-b",
+            stagnationEpoch: 3,
+            goalRevision: 4,
+            mutationRevision: 7,
+          },
+        ],
+      },
+    },
+  };
+  assert(
+    patchContextScopeMismatchAttemptCount(
+      semanticScopeMismatchState,
+      "service_ctl.py"
+    ) === 3,
+    "slightly different whole-file proposals evaded the revision-scoped scope-mismatch cap"
+  );
+  assert(
+    patchContextScopeMismatchAttemptCount(
+      semanticScopeMismatchState,
+      "other.py"
+    ) === 1,
+    "scope-mismatch attempts leaked across source paths"
+  );
+  const correctiveGoal = [
+    "Continue the same task. The repository implementation is incomplete.",
+    "Re-read the repository requirements and current implementation before editing.",
+    "Repair the service lifecycle, add meaningful regression tests, update the operator documentation, run the test suite, and commit the task-owned work.",
+  ].join(" ");
+  assert(
+    preservesCurrentTaskBoundary(
+      {
+        goal: "Repair the service controller.",
+        meta: { goalContract: { taskGoal: "Repair the service controller." } },
+      },
+      "Continue the same service-controller repair from the current fixture state. Fix the CLI."
+    ),
+    "a natural same-repair continuation was misclassified as an unrelated task"
+  );
+  const scopedRuntimeMessages = runtimeMessagesSinceLatestContinuationBoundary([
+    { role: "user", content: "Repair the old task." },
+    toolMessage({ toolName: "run_command", ok: true, args: { command: "npm test" } }),
+    { role: "user", content: `Continue the current task from saved state: ${correctiveGoal}` },
+    toolMessage({ toolName: "read_file", ok: true, path: "service_ctl.py" }),
+  ]);
+  assert(
+    scopedRuntimeMessages.length === 2 &&
+      scopedRuntimeMessages[1].content.includes("service_ctl.py"),
+    "local context recovery retained stale pre-continuation tool loops"
+  );
+  await fs.writeFile(
+    path.join(workspace, "service_ctl.py"),
+    "import subprocess\n\ndef start_service(command):\n    return subprocess.Popen(command)\n",
+    "utf8"
+  );
+  const correctiveState = {
+    goal: correctiveGoal,
+    commandCwd: workspace,
+    meta: {
+      taskProfile: "devops",
+      goalContract: {
+        revision: 7,
+        activeGoalRevision: 7,
+        currentRequest: correctiveGoal,
+        currentPreview: correctiveGoal,
+        activeGoal: correctiveGoal,
+        taskGoal: "Repair the service lifecycle and commit the tested result.",
+        history: [{ revision: 7, refreshExecutionContract: true }],
+      },
+      activeExecutionContract: {
+        revision: 7,
+        startedMutationRevision: 16,
+        requiresWorkspaceMutation: true,
+        requiresFileMutation: true,
+        requiresSourceGrounding: true,
+        requiredProjectCommands: [],
+      },
+      projectVerification: {
+        mutationRevision: 16,
+        discoveredTests: ["tests/test_service_ctl.py"],
+        mutationHistory: [],
+        testRuns: [],
+      },
+      scs: { acceptanceCriteria: [] },
+    },
+  };
+  const correctiveContract = completionTaskContract(
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace },
+    correctiveState
+  );
+  assert(
+    correctiveContract.requiresFileMutation === true &&
+      correctiveContract.requiredFreshMutationRevision === 17,
+    "the current correction contract did not require one fresh project mutation"
+  );
+  const heuristicFalseContractState = structuredClone(correctiveState);
+  heuristicFalseContractState.meta.goalContract.history = [
+    { revision: 7, refreshExecutionContract: false },
+  ];
+  const heuristicFalseContract = completionTaskContract(
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace },
+    heuristicFalseContractState
+  );
+  assert(
+    heuristicFalseContract.requiresFileMutation === true &&
+      heuristicFalseContract.requiredFreshMutationRevision === 17,
+    "a goal-history heuristic suppressed the current explicit execution contract"
+  );
+  const correctiveRuntime = nextStepRuntimeConfig(
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace },
+    correctiveState
+  );
+  assert(
+    correctiveRuntime.repositoryGroundingRequired === true,
+    "a fresh source-changing correction did not require repository grounding before mutation"
+  );
+  assert(
+    correctiveRuntime.repositoryGroundingRequiresTests === true,
+    "a regression-test correction did not require reading an existing test before mutation"
+  );
+  const requiredCorrectionCommand = "python3 -m unittest discover -s tests -v";
+  const commandAfterMutationState = structuredClone(correctiveState);
+  commandAfterMutationState.meta.activeExecutionContract.requiredProjectCommands = [
+    requiredCorrectionCommand,
+  ];
+  commandAfterMutationState.meta.projectVerification.requiredCommands = [
+    requiredCorrectionCommand,
+  ];
+  commandAfterMutationState.meta.projectVerification.commandRuns = [];
+  const preMutationCommandRuntime = nextStepRuntimeConfig(
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace },
+    commandAfterMutationState
+  );
+  assert(
+    preMutationCommandRuntime.repositoryGroundingRequired === true &&
+      preMutationCommandRuntime.requiredProjectCommandPending !== true,
+    "a non-mutating required test preempted the current correction's fresh source mutation"
+  );
+  const cosmeticMutationState = structuredClone(correctiveState);
+  recordProjectVerificationOutcome(
+    cosmeticMutationState,
+    {
+      ok: true,
+      toolName: "apply_patch",
+      path: "service_ctl.py",
+      changes: [
+        {
+          path: "service_ctl.py",
+          beforeHash: "semantic-source-before",
+          afterHash: "cosmetic-source-after",
+          diff: [
+            "--- a/service_ctl.py",
+            "+++ b/service_ctl.py",
+            "@@ line 12 @@",
+            "-",
+            "+   ",
+          ].join("\n"),
+        },
+      ],
+    },
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace }
+  );
+  assert(
+    cosmeticMutationState.meta.projectVerification.mutationRevision === 17 &&
+      cosmeticMutationState.meta.activeExecutionContract.materialMutationRevision === undefined,
+    "a cosmetic patch did not invalidate ordinary evidence separately from material correction evidence"
+  );
+  const cosmeticMutationRuntime = nextStepRuntimeConfig(
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace },
+    cosmeticMutationState
+  );
+  assert(
+    cosmeticMutationRuntime.repositoryGroundingRequired === true &&
+      cosmeticMutationRuntime.completionFreshMutationRequired === true,
+    "a whitespace-only patch incorrectly satisfied the current correction's material mutation contract"
+  );
+  const materialMutationState = structuredClone(correctiveState);
+  recordProjectVerificationOutcome(
+    materialMutationState,
+    {
+      ok: true,
+      toolName: "apply_patch",
+      path: "service_ctl.py",
+      changes: [
+        {
+          path: "service_ctl.py",
+          beforeHash: "broken-source-before",
+          afterHash: "repaired-source-after",
+          diff: [
+            "--- a/service_ctl.py",
+            "+++ b/service_ctl.py",
+            "@@ line 42 @@",
+            "-        stdout=subprocess.PIPE,",
+            "+        stdout=log_handle,",
+          ].join("\n"),
+        },
+      ],
+    },
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace }
+  );
+  assert(
+    materialMutationState.meta.activeExecutionContract.materialMutationRevision === 17 &&
+      JSON.stringify(materialMutationState.meta.activeExecutionContract.materialMutationPaths) ===
+        JSON.stringify(["service_ctl.py"]),
+    "a material source repair did not bind semantic mutation evidence to the active execution contract"
+  );
+  assert(
+    nextStepRuntimeConfig(
+      { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace },
+      materialMutationState
+    ).repositoryGroundingRequired !== true,
+    "a material source repair did not close the current correction's grounding phase"
+  );
+  commandAfterMutationState.meta.projectVerification.mutationRevision = 17;
+  commandAfterMutationState.meta.activeExecutionContract.materialMutationRevision = 17;
+  const implementationOpenRuntime = nextStepRuntimeConfig(
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace },
+    commandAfterMutationState
+  );
+  assert(
+    implementationOpenRuntime.requiredProjectCommandPending !== true,
+    "a required final test preempted additional requested implementation after the first mutation"
+  );
+  commandAfterMutationState.meta.completionEvidenceRepair = {
+    key: "pending-final-verification",
+    at: "2026-08-26T10:03:00.000Z",
+  };
+  const requiredCommandRuntime = nextStepRuntimeConfig(
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace },
+    commandAfterMutationState
+  );
+  assert(
+    requiredCommandRuntime.requiredProjectCommandPending === true &&
+      requiredCommandRuntime.requiredProjectCommand === requiredCorrectionCommand,
+    "the required final test did not become pending after implementation requested completion"
+  );
+  const mutatingRequiredCommand = "python3 scripts/generate_fixture.py";
+  const mutatingCommandState = structuredClone(correctiveState);
+  mutatingCommandState.meta.activeExecutionContract.requiredProjectCommands = [
+    mutatingRequiredCommand,
+  ];
+  mutatingCommandState.meta.projectVerification.requiredCommands = [
+    mutatingRequiredCommand,
+  ];
+  mutatingCommandState.meta.projectVerification.commandRuns = [];
+  const mutatingCommandRuntime = nextStepRuntimeConfig(
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace },
+    mutatingCommandState
+  );
+  assert(
+    mutatingCommandRuntime.requiredProjectCommandPending === true &&
+      mutatingCommandRuntime.requiredProjectCommand === mutatingRequiredCommand,
+    "a required generator command was incorrectly deferred behind a separate mutation"
+  );
+  const postMutationCorrectiveState = structuredClone(correctiveState);
+  postMutationCorrectiveState.meta.projectVerification.mutationRevision = 17;
+  postMutationCorrectiveState.meta.activeExecutionContract.materialMutationRevision = 17;
+  const postMutationRuntime = nextStepRuntimeConfig(
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace },
+    postMutationCorrectiveState
+  );
+  assert(
+    postMutationRuntime.repositoryGroundingRequired !== true,
+    "repository grounding reopened after the current correction already mutated canonical source"
+  );
+  const completionMutationState = structuredClone(correctiveState);
+  completionMutationState.meta.completionEvidenceRepair = {
+    key: "missing-fresh-source",
+    attempts: 1,
+    at: "2026-08-26T10:00:00.000Z",
+    goalRevision: 7,
+    mutationRevision: 16,
+    requiresFreshFileMutation: true,
+    requiredFreshMutationRevision: 17,
+    missingEvidence: ["file", "command", "git"],
+  };
+  completionMutationState.meta.toolLoop = {
+    recent: [
+      {
+        toolName: "read_file",
+        path: "service_ctl.py",
+        ok: true,
+        at: "2026-08-26T09:59:00.000Z",
+      },
+      {
+        toolName: "read_file",
+        path: ".aginti/verification/lifecycle/smoke_test.py",
+        ok: true,
+        at: "2026-08-26T10:01:00.000Z",
+      },
+    ],
+  };
+  const completionMutationReadRuntime = nextStepRuntimeConfig(
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace },
+    completionMutationState
+  );
+  assert(
+    completionMutationReadRuntime.completionFreshMutationRequired === true &&
+      completionMutationReadRuntime.completionFreshMutationNeedsSourceRead === true &&
+      JSON.stringify(completionMutationReadRuntime.completionFreshMutationPaths) ===
+        JSON.stringify(["service_ctl.py"]),
+    "a rejected completion did not retain a private-evidence-safe exact canonical source read phase"
+  );
+  completionMutationState.meta.toolLoop.recent.push({
+    toolName: "read_file",
+    path: "service_ctl.py",
+    ok: true,
+    at: "2026-08-26T10:02:00.000Z",
+  });
+  const completionMutationPatchRuntime = nextStepRuntimeConfig(
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace },
+    completionMutationState
+  );
+  assert(
+    completionMutationPatchRuntime.completionFreshMutationRequired === true &&
+      completionMutationPatchRuntime.completionFreshMutationNeedsSourceRead === false,
+    "a fresh canonical source read did not advance completion repair to mutation-only mode"
+  );
+  const staleCompletionMarkerState = structuredClone(commandAfterMutationState);
+  staleCompletionMarkerState.meta.projectVerification.mutationRevision = 17;
+  staleCompletionMarkerState.meta.completionEvidenceRepair = {
+    key: "pre-source-quality-precedence-fix",
+    at: "2026-08-26T10:03:00.000Z",
+    mutationRevision: 17,
+    requiresFreshFileMutation: false,
+    requiredFreshMutationRevision: 17,
+    missingEvidence: ["command", "git"],
+  };
+  staleCompletionMarkerState.meta.sourceCodeQuality = {
+    checked: true,
+    ok: false,
+    paths: ["service_ctl.py"],
+    defects: [{ code: "python-syntax-error", path: "service_ctl.py" }],
+  };
+  staleCompletionMarkerState.meta.toolLoop = { recent: [] };
+  const staleCompletionMarkerRuntime = nextStepRuntimeConfig(
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace },
+    staleCompletionMarkerState
+  );
+  const staleCompletionMarkerPhase = buildKnownConstrainedPhasePlan(
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace },
+    staleCompletionMarkerState,
+    staleCompletionMarkerRuntime
+  );
+  assert(
+    staleCompletionMarkerRuntime.completionFreshMutationRequired === true &&
+      staleCompletionMarkerRuntime.completionFreshMutationRevision === 18 &&
+      staleCompletionMarkerRuntime.completionFreshMutationNeedsSourceRead === true &&
+      staleCompletionMarkerPhase?.mode === "fresh-source-mutation",
+    "a persisted pre-fix completion marker still allowed tests or Git to preempt current source-quality repair"
+  );
+  const explicitPathRecoveryState = {
+    goal:
+      "Repair service_ctl.py and do not create verification_suite.py. A report citation uses DOI 10.1016/j.c and is not a source path.",
+    meta: {
+      taskProfile: "devops",
+      goalContract: {
+        revision: 3,
+        currentRequest:
+          "Repair service_ctl.py so subprocess.Popen uses start_new_session=True. verification_suite.py is absent and must not be created. A report citation uses DOI 10.1016/j.c and is not a source path.",
+      },
+      activeExecutionContract: {
+        revision: 3,
+        startedMutationRevision: 0,
+        requiresFileMutation: true,
+      },
+      projectVerification: {
+        mutationRevision: 0,
+        mutationHistory: [],
+      },
+      completionEvidenceRepair: {
+        key: "missing-executable-source",
+        at: "2026-08-26T10:00:00.000Z",
+        requiresFreshFileMutation: true,
+        requiredFreshMutationRevision: 1,
+      },
+      toolLoop: { recent: [] },
+    },
+  };
+  assert(
+    (await fs.stat(path.join(workspace, "service_ctl.py"))).isFile(),
+    "fresh-mutation path smoke lost its canonical source fixture"
+  );
+  const explicitPathRecoveryRuntime = nextStepRuntimeConfig(
+    { goal: explicitPathRecoveryState.goal, taskProfile: "devops", commandCwd: workspace },
+    explicitPathRecoveryState
+  );
+  assert(
+    JSON.stringify(explicitPathRecoveryRuntime.completionFreshMutationPaths) ===
+      JSON.stringify(["service_ctl.py"]),
+    `fresh-mutation recovery did not derive the explicitly named canonical production source: ${JSON.stringify(
+      explicitPathRecoveryRuntime.completionFreshMutationPaths
+    )}`
+  );
+  assert(
+    explicitPathRecoveryRuntime.completionFreshMutationRequired === true &&
+      explicitPathRecoveryRuntime.completionFreshMutationNeedsSourceRead === true,
+    "a concrete source correction did not enter its deterministic read-before-mutate phase"
+  );
+  explicitPathRecoveryState.meta.activeExecutionContract.refreshedAt =
+    "2026-08-26T10:00:00.000Z";
+  explicitPathRecoveryState.meta.toolLoop.recent.push({
+    toolName: "read_file",
+    path: "service_ctl.py",
+    ok: true,
+    at: "2026-08-26T10:01:00.000Z",
+  });
+  const explicitPathPatchRuntime = nextStepRuntimeConfig(
+    { goal: explicitPathRecoveryState.goal, taskProfile: "devops", commandCwd: workspace },
+    explicitPathRecoveryState
+  );
+  assert(
+    explicitPathPatchRuntime.completionFreshMutationRequired === true &&
+      explicitPathPatchRuntime.completionFreshMutationNeedsSourceRead === false,
+    "a fresh current-turn source read did not advance directly to bounded mutation"
+  );
+  completionMutationState.meta.projectVerification.mutationRevision = 17;
+  completionMutationState.meta.activeExecutionContract.materialMutationRevision = 17;
+  assert(
+    nextStepRuntimeConfig(
+      { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace },
+      completionMutationState
+    ).completionFreshMutationRequired !== true,
+    "completion repair remained mutation-gated after the required project revision advanced"
+  );
+
+  const priorGroundingMessages = [
+    {
+      role: "assistant",
+      tool_calls: [
+        {
+          id: "old-inspect",
+          function: { name: "inspect_project", arguments: "{}" },
+        },
+      ],
+    },
+    toolMessage({
+      toolName: "inspect_project",
+      ok: true,
+      topLevel: [{ path: "README.md", type: "file" }],
+    }),
+    {
+      role: "user",
+      content: `Continue the current task from saved state: ${correctiveGoal}`,
+    },
+  ];
+  assert(
+    repositoryGroundingState(priorGroundingMessages).phase === "inspect",
+    "repository grounding reused discovery from before the current continuation boundary"
+  );
+  const naturalContinuationMessages = [
+    ...priorGroundingMessages.slice(0, -1),
+    {
+      role: "user",
+      content: correctiveGoal,
+    },
+  ];
+  assert(
+    repositoryGroundingState(naturalContinuationMessages).phase === "inspect",
+    "repository grounding reused discovery before a natural same-task correction boundary"
+  );
+  const compactedWithoutBoundary = [
+    {
+      role: "user",
+      content: "Continue from this compacted, valid transcript.",
+    },
+    {
+      role: "assistant",
+      tool_calls: [
+        {
+          id: "stale-compacted-inspect",
+          function: { name: "inspect_project", arguments: "{}" },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "stale-compacted-inspect",
+      content: JSON.stringify({
+        ok: true,
+        toolName: "inspect_project",
+        goalRevision: 6,
+        topLevel: [{ path: "README.md", type: "file" }],
+      }),
+    },
+  ];
+  assert(
+    repositoryGroundingState(compactedWithoutBoundary, {
+      minimumGoalRevision: 7,
+    }).phase === "inspect",
+    "repository grounding accepted stale compacted discovery from an older goal revision"
+  );
+  const groundedMessages = [...priorGroundingMessages];
+  const appendGroundingTool = (id, name, args, result) => {
+    groundedMessages.push({
+      role: "assistant",
+      tool_calls: [
+        {
+          id,
+          function: { name, arguments: JSON.stringify(args) },
+        },
+      ],
+    });
+    groundedMessages.push({ role: "tool", tool_call_id: id, content: JSON.stringify(result) });
+  };
+  appendGroundingTool("inspect-current", "inspect_project", {}, {
+    ok: true,
+    goalRevision: 7,
+    topLevel: [
+      { path: "README.md", type: "file" },
+      { path: "service_ctl.py", type: "file" },
+      { path: "gateway_service.py", type: "file" },
+      { path: "tests", type: "directory" },
+    ],
+    recommendedReads: ["README.md", "tests", "tests/test_service_ctl.py"],
+    manifestFiles: [{ path: "README.md" }],
+    testFiles: [{ path: "tests/test_service_ctl.py" }],
+    sourceDirs: [{ path: "tests", kind: "tests" }],
+  });
+  assert(
+    repositoryGroundingState(groundedMessages).phase === "read-instructions",
+    "repository grounding did not require current project instructions after inspection"
+  );
+  assert(
+    !repositoryGroundingState(groundedMessages).paths.includes("tests"),
+    "repository grounding exposed a known directory as a read_file candidate"
+  );
+  appendGroundingTool("read-readme", "read_file", { path: "README.md" }, {
+    ok: true,
+    goalRevision: 7,
+    path: "README.md",
+  });
+  assert(
+    repositoryGroundingState(groundedMessages).phase === "read-context",
+    "repository grounding did not require current implementation context"
+  );
+  appendGroundingTool("read-source", "read_file", { path: "service_ctl.py" }, {
+    ok: true,
+    goalRevision: 7,
+    path: "service_ctl.py",
+  });
+  assert(
+    repositoryGroundingState(groundedMessages).phase === "read-tests",
+    "repository grounding did not require an existing regression test"
+  );
+  appendGroundingTool("read-test", "read_file", { path: "tests/test_service_ctl.py" }, {
+    ok: true,
+    goalRevision: 7,
+    path: "tests/test_service_ctl.py",
+  });
+  assert(
+    repositoryGroundingState(groundedMessages).phase === "ready",
+    "repository grounding did not reopen mutation tools after all current evidence was read"
+  );
+  assert(
+    repositoryGroundingState(groundedMessages, {
+      minimumGoalRevision: 7,
+    }).phase === "ready",
+    "repository grounding rejected complete current-revision discovery evidence"
+  );
+  for (const category of ["file", "command", "test"]) {
+    const requirement = correctiveContract.requiredEvidence.find(
+      (item) => item.category === category
+    );
+    assert(
+      requirement?.minimumGoalRevision === 7 && requirement?.minimumMutationRevision === 17,
+      `a corrective ${category} requirement reused stale pre-correction evidence`
+    );
+  }
+  assert(
+    correctiveContract.requiredGitRevision === 7 &&
+      correctiveContract.requiredGitMutationRevision === 17,
+    "a corrective commit could be satisfied before the required source mutation"
+  );
+  const staleCorrectiveLedger = buildScsEvidenceLedger({
+    state: {
+      messages: [
+        toolMessage({
+          ok: true,
+          toolName: "apply_patch",
+          path: "service_ctl.py",
+          goalRevision: 6,
+          projectMutationRevision: 16,
+        }),
+        toolMessage({
+          ok: true,
+          toolName: "run_command",
+          args: { command: "python3 -m unittest discover -s tests -v" },
+          exitCode: 0,
+          goalRevision: 6,
+          projectMutationRevision: 16,
+          projectTest: {
+            passed: true,
+            command: "python3 -m unittest discover -s tests -v",
+            mutationRevision: 16,
+          },
+        }),
+        toolMessage({
+          ok: true,
+          toolName: "run_command",
+          args: { command: "git commit -am 'incomplete repair'" },
+          exitCode: 0,
+          stdout: "[main abc1234] incomplete repair",
+          goalRevision: 6,
+          projectMutationRevision: 16,
+        }),
+      ],
+    },
+  });
+  const staleCorrectiveEvaluation = evaluateScsEvidence(
+    correctiveContract,
+    staleCorrectiveLedger
+  );
+  assert(
+    !staleCorrectiveEvaluation.ok &&
+      ["file", "command", "test"].every((category) =>
+        staleCorrectiveEvaluation.missing.some((item) => item.category === category)
+      ) &&
+      staleCorrectiveEvaluation.missingGitActions.includes("commit"),
+    "a concrete correction accepted historical file, test, command, or commit evidence"
+  );
+  assert(
+    /missing fresh post-correction evidence/i.test(staleCorrectiveEvaluation.reason) &&
+      /file/.test(staleCorrectiveEvaluation.reason) &&
+      !/^Missing required git action/i.test(staleCorrectiveEvaluation.reason),
+    "completion diagnostics prioritized a downstream commit before the missing correction"
+  );
+  const freshCorrectiveLedger = buildScsEvidenceLedger({
+    state: {
+      messages: [
+        toolMessage({
+          ok: true,
+          toolName: "apply_patch",
+          path: "service_ctl.py",
+          goalRevision: 7,
+          projectMutationRevision: 17,
+        }),
+        toolMessage({
+          ok: true,
+          toolName: "run_command",
+          args: { command: "python3 -m unittest discover -s tests -v" },
+          exitCode: 0,
+          goalRevision: 7,
+          projectMutationRevision: 17,
+          projectTest: {
+            passed: true,
+            command: "python3 -m unittest discover -s tests -v",
+            mutationRevision: 17,
+          },
+        }),
+        toolMessage({
+          ok: true,
+          toolName: "run_command",
+          args: { command: "git commit -am 'complete lifecycle repair'" },
+          exitCode: 0,
+          stdout: "[main def5678] complete lifecycle repair",
+          goalRevision: 7,
+          projectMutationRevision: 17,
+        }),
+      ],
+    },
+  });
+  assert(
+    evaluateScsEvidence(correctiveContract, freshCorrectiveLedger).ok,
+    "fresh post-correction mutation, test, command, and commit evidence was rejected"
   );
   const pythonQualityWorkspace = path.join(tempRoot, "python-quality-workspace");
   await fs.mkdir(pythonQualityWorkspace, { recursive: true });
@@ -138,6 +1683,237 @@ try {
       duplicateSourceQuality.defects[0]?.name === "stop_service",
     "completion source-quality validation accepted a task-mutated duplicate Python definition"
   );
+  await fs.writeFile(
+    path.join(pythonQualityWorkspace, "broken_service_ctl.py"),
+    "def parse_arguments():\n    return parser.parse_args()(state_dir: Path) -> int:\n",
+    "utf8"
+  );
+  const syntaxSourceQuality = await validateMutatedPythonSourceQuality(
+    { commandCwd: pythonQualityWorkspace },
+    {
+      meta: {
+        projectVerification: {
+          mutationHistory: [{ revision: 2, paths: ["broken_service_ctl.py"] }],
+        },
+      },
+    }
+  );
+  assert(
+    syntaxSourceQuality.ok === false &&
+      syntaxSourceQuality.defects.some((item) => item.code === "python-syntax-error"),
+    "completion source-quality validation accepted syntactically invalid Python"
+  );
+  const syntaxRepairRequirement = completionRepairMutationRequirement({
+    contract: { requiresFileMutation: false, requiredFreshMutationRevision: 0 },
+    evaluation: { missing: [] },
+    sourceQuality: syntaxSourceQuality,
+    projectMutationRevision: 7,
+  });
+  assert(
+    syntaxRepairRequirement.requiresFreshFileMutation === true &&
+      syntaxRepairRequirement.sourceQualityRepairRequired === true &&
+      syntaxRepairRequirement.requiredFreshMutationRevision === 8,
+    "invalid task-mutated Python did not preempt tests and Git with a fresh source repair revision"
+  );
+  const evidenceOnlyRepairRequirement = completionRepairMutationRequirement({
+    contract: { requiresFileMutation: true, requiredFreshMutationRevision: 3 },
+    evaluation: { missing: [{ category: "file" }] },
+    sourceQuality: { checked: true, ok: true, paths: ["valid_service_ctl.py"] },
+    projectMutationRevision: 7,
+  });
+  assert(
+    evidenceOnlyRepairRequirement.requiresFreshFileMutation === true &&
+      evidenceOnlyRepairRequirement.sourceQualityRepairRequired === false &&
+      evidenceOnlyRepairRequirement.requiredFreshMutationRevision === 3,
+    "ordinary missing file evidence no longer retained its contract-bound mutation revision"
+  );
+  await fs.writeFile(
+    path.join(pythonQualityWorkspace, "valid_service_ctl.py"),
+    "from pathlib import Path\n\ndef start_service(state_dir: Path) -> int:\n    return 0\n",
+    "utf8"
+  );
+  const syntaxRegressionBlock = await prospectivePythonExactPatchSyntaxBlock(
+    "apply_patch",
+    {
+      path: "valid_service_ctl.py",
+      search: "def start_service",
+      replace: "def parse_arguments():\n    return object()",
+    },
+    { commandCwd: pythonQualityWorkspace }
+  );
+  assert(
+    syntaxRegressionBlock?.category === "python-syntax-regression",
+    "prospective syntax validation accepted a declaration-token patch that corrupts valid Python"
+  );
+  const declarationTokenBlock = await ambiguousDeclarationTokenPatchBlock(
+    "apply_patch",
+    {
+      path: "valid_service_ctl.py",
+      search: "def start_service",
+      replace: "def parse_arguments():\n    return object()",
+    },
+    { commandCwd: pythonQualityWorkspace }
+  );
+  assert(
+    declarationTokenBlock?.category === "ambiguous-declaration-token-patch",
+    "an incomplete declaration-token patch could remove its declaration identity"
+  );
+  const declarationTokenPreserved = await ambiguousDeclarationTokenPatchBlock(
+    "apply_patch",
+    {
+      path: "valid_service_ctl.py",
+      search: "def start_service",
+      replace: "import argparse\n\ndef start_service",
+    },
+    { commandCwd: pythonQualityWorkspace }
+  );
+  assert(
+    declarationTokenPreserved === null,
+    "a declaration-token patch that preserves its identity was rejected"
+  );
+  await fs.writeFile(
+    path.join(pythonQualityWorkspace, "partial_main_guard.py"),
+    [
+      "def main():",
+      "    return 0",
+      "",
+      "if __name__ == \"__main__\":",
+      "    result = main()",
+      "    raise SystemExit(result)",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  const partialMainGuardBlock = await ambiguousPythonMainGuardPatchBlock(
+    "apply_patch",
+    {
+      path: "partial_main_guard.py",
+      search: "if __name__ == \"__main__\":\n    result = main()",
+      replace: "def replacement_main():\n    return 0\n\nif __name__ == \"__main__\":\n    replacement_main()",
+    },
+    { commandCwd: pythonQualityWorkspace }
+  );
+  assert(
+    partialMainGuardBlock?.category === "ambiguous-python-main-guard-patch",
+    "an incomplete top-level Python main-guard replacement could orphan its remaining suite"
+  );
+  const completeMainGuardBlock = await ambiguousPythonMainGuardPatchBlock(
+    "apply_patch",
+    {
+      path: "partial_main_guard.py",
+      search: "if __name__ == \"__main__\":\n    result = main()\n    raise SystemExit(result)",
+      replace: "if __name__ == \"__main__\":\n    raise SystemExit(main())",
+    },
+    { commandCwd: pythonQualityWorkspace }
+  );
+  assert(
+    completeMainGuardBlock === null,
+    "a complete top-level Python main-guard replacement was rejected"
+  );
+  const innerMainGuardStatement = await ambiguousPythonMainGuardPatchBlock(
+    "apply_patch",
+    {
+      path: "partial_main_guard.py",
+      search: "    result = main()",
+      replace: "    result = int(main())",
+    },
+    { commandCwd: pythonQualityWorkspace }
+  );
+  assert(
+    innerMainGuardStatement === null,
+    "an exact inner statement patch inside a Python main guard was rejected"
+  );
+  const syntaxPreservingPatchBlock = await prospectivePythonExactPatchSyntaxBlock(
+    "apply_patch",
+    {
+      path: "valid_service_ctl.py",
+      search: "def start_service",
+      replace: "import argparse\n\ndef start_service",
+    },
+    { commandCwd: pythonQualityWorkspace }
+  );
+  assert(
+    syntaxPreservingPatchBlock === null,
+    "prospective syntax validation rejected a parseable exact Python patch"
+  );
+  const existingSyntaxRepairBlock = await prospectivePythonExactPatchSyntaxBlock(
+    "apply_patch",
+    {
+      path: "broken_service_ctl.py",
+      search: "return parser.parse_args()",
+      replace: "return parser.parse_args()",
+    },
+    { commandCwd: pythonQualityWorkspace }
+  );
+  assert(
+    existingSyntaxRepairBlock === null,
+    "prospective syntax validation deadlocked an already-invalid Python file"
+  );
+  assert(
+    testCommandCoversMutatedPath(
+      "python3 -m unittest discover -s tests -v",
+      "tests/test_service_launch.py"
+    ),
+    "unittest discovery scope did not cover a changed test under its start directory"
+  );
+  assert(
+    !testCommandCoversMutatedPath(
+      "python3 -m unittest discover -s tests -v",
+      "test_service_launch.py"
+    ),
+    "unittest discovery incorrectly covered a changed test outside its start directory"
+  );
+  await fs.writeFile(
+    path.join(pythonQualityWorkspace, "test_service_launch.py"),
+    "import unittest\n\nclass LaunchTest(unittest.TestCase):\n    def test_launch(self):\n        self.assertTrue(True)\n",
+    "utf8"
+  );
+  const uncoveredTestQuality = await validateMutatedPythonSourceQuality(
+    { commandCwd: pythonQualityWorkspace },
+    {
+      meta: {
+        projectVerification: {
+          mutationRevision: 2,
+          mutationHistory: [{ revision: 2, paths: ["test_service_launch.py"] }],
+          testRuns: [{
+            command: "python3 -m unittest discover -s tests -v",
+            mutationRevision: 2,
+            privateMutationRevision: 0,
+            passed: true,
+          }],
+        },
+      },
+    }
+  );
+  assert(
+    uncoveredTestQuality.ok === false &&
+      uncoveredTestQuality.defects[0]?.code === "mutated-test-not-covered-by-validation",
+    "completion accepted a changed regression test that the successful test command could not discover"
+  );
+  await fs.mkdir(path.join(pythonQualityWorkspace, "tests"), { recursive: true });
+  await fs.writeFile(
+    path.join(pythonQualityWorkspace, "tests", "test_service_launch.py"),
+    "import unittest\n\nclass LaunchTest(unittest.TestCase):\n    def test_launch(self):\n        self.assertTrue(True)\n",
+    "utf8"
+  );
+  const coveredTestQuality = await validateMutatedPythonSourceQuality(
+    { commandCwd: pythonQualityWorkspace },
+    {
+      meta: {
+        projectVerification: {
+          mutationRevision: 3,
+          mutationHistory: [{ revision: 3, paths: ["tests/test_service_launch.py"] }],
+          testRuns: [{
+            command: "python3 -m unittest discover -s tests -v",
+            mutationRevision: 3,
+            privateMutationRevision: 0,
+            passed: true,
+          }],
+        },
+      },
+    }
+  );
+  assert(coveredTestQuality.ok === true, coveredTestQuality.reason);
   assert(normalizeDynamicStepsMode("off") === "off", "dynamic mode off did not normalize");
   for (const command of [
     "npm run build",
@@ -780,6 +2556,23 @@ try {
       JSON.stringify(["npm run check", "npm test", "python scripts/verify.py --strict"]),
     "a fenced acceptance block did not preserve separate commands and explicit continuations"
   );
+  assert(
+    projectAcceptanceFromMarkdown(
+      requiredCommandMarkdown,
+      "agentic_tools/android_device_agent/README.md"
+    ).requiredCommands.length === 0,
+    "an arbitrary nested README gained task-wide acceptance authority"
+  );
+  assert(
+    JSON.stringify(
+      projectAcceptanceFromMarkdown(
+        requiredCommandMarkdown,
+        "docs/TASK.md",
+        { authoritativePaths: ["docs/TASK.md"] }
+      ).requiredCommands
+    ) === JSON.stringify(["npm run check", "npm test", "python scripts/verify.py --strict"]),
+    "an explicitly declared nested task instruction lost acceptance authority"
+  );
   const consoleTranscriptMarkdown = [
     "# Usage",
     "",
@@ -1131,6 +2924,53 @@ try {
     nodeZeroTestResult.projectTest?.zeroTests === true &&
       nodeZeroTestResult.projectTest?.passed === false,
     "a successful Node runner invocation with zero tests fabricated passing evidence"
+  );
+  const invalidPytestState = { meta: { goalContract: { revision: 1 } } };
+  const invalidPytestResult = {
+    toolName: "run_command",
+    ok: false,
+    exitCode: 4,
+    args: {
+      command: "python -m pytest .aginti/verification/lifecycle/missing_suite.py",
+    },
+    stdout: "collected 0 items\n\n============================ no tests ran in 0.00s ============================\n",
+    stderr:
+      "ERROR: file or directory not found: .aginti/verification/lifecycle/missing_suite.py\n",
+  };
+  recordProjectVerificationOutcome(invalidPytestState, invalidPytestResult, {
+    commandCwd: workspace,
+    taskProfile: "devops",
+  });
+  const invalidPytestRuntime = nextStepRuntimeConfig(
+    { goal: "Repair the service lifecycle.", commandCwd: workspace, taskProfile: "devops" },
+    invalidPytestState
+  );
+  assert(
+    !invalidPytestResult.projectTest &&
+      invalidPytestResult.projectTestDiscoveryFailure?.invalidInvocation === true &&
+      invalidPytestState.meta.projectVerification.testRuns.length === 0 &&
+      invalidPytestState.meta.projectVerification.invalidTestInvocations.length === 1 &&
+      invalidPytestRuntime.testFailureRepairActive !== true,
+    "a nonexistent pytest target became an authoritative source-failure repair gate"
+  );
+  invalidPytestState.meta.projectVerification.testRuns = [
+    {
+      command: invalidPytestResult.args.command,
+      mutationRevision: 0,
+      privateMutationRevision: 0,
+      passed: false,
+      failureSignature: "legacy-missing-pytest-target",
+      failureSummary:
+        "Failing tests: file or directory not found: .aginti/verification/lifecycle/missing_suite.py.",
+    },
+  ];
+  assert(
+    nextStepRuntimeConfig(
+      { goal: "Repair the service lifecycle.", commandCwd: workspace, taskProfile: "devops" },
+      invalidPytestState
+    ).testFailureRepairActive !== true &&
+      projectTestVerificationFinishBlock(invalidPytestState) === null,
+    "a persisted legacy missing-test-path run reopened source-failure repair after restart"
   );
   const nodeAllSkippedState = { meta: { goalContract: { revision: 1 } } };
   const nodeAllSkippedResult = {
@@ -2456,6 +4296,151 @@ try {
       evaluateScsEvidence(privateEvidenceContract, privateEvidenceLedger).ok,
     "ignored private verification evidence invalidated a successful canonical build"
   );
+  const privateVerifierCommand =
+    "python3 .aginti/verification/lifecycle/smoke_test.py";
+  const privateVerifierState = {
+    goal: "Repair the service lifecycle and prove it with the retained private smoke test.",
+    commandCwd: workspace,
+    meta: {
+      goalContract: { revision: 1 },
+      projectVerification: {
+        mutationRevision: 0,
+        privateMutationRevision: 0,
+        requiredCommands: [privateVerifierCommand],
+        commandRuns: [],
+        mutationHistory: [],
+        testRuns: [
+          {
+            command: privateVerifierCommand,
+            at: "2026-08-26T00:00:00.000Z",
+            ok: false,
+            passed: false,
+            mutationRevision: 0,
+            privateMutationRevision: 0,
+            failureEvidenceVersion: 2,
+            failureSignature: "private-verifier-import-root",
+          },
+        ],
+      },
+    },
+  };
+  assert(
+    unchangedFailedTestRerunBlock(
+      privateVerifierState,
+      "run_command",
+      { command: privateVerifierCommand },
+      { commandCwd: workspace }
+    )?.category === "unchanged-failed-test-rerun",
+    "an unchanged private verifier failure was not initially mutation-gated"
+  );
+  recordProjectVerificationOutcome(
+    privateVerifierState,
+    {
+      toolName: "apply_patch",
+      ok: true,
+      path: ".aginti/verification/lifecycle/smoke_test.py",
+      changes: [
+        {
+          path: ".aginti/verification/lifecycle/smoke_test.py",
+          beforeHash: "broken-private-verifier",
+          afterHash: "repaired-private-verifier",
+        },
+      ],
+    },
+    { commandCwd: workspace, taskProfile: "devops" }
+  );
+  const repairedVerifierRuntime = nextStepRuntimeConfig(
+    {
+      goal: privateVerifierState.goal,
+      commandCwd: workspace,
+      taskProfile: "devops",
+      provider: "localllm",
+    },
+    privateVerifierState
+  );
+  assert(
+    privateVerifierState.meta.projectVerification.mutationRevision === 0 &&
+      privateVerifierState.meta.projectVerification.privateMutationRevision === 1 &&
+      privateVerifierState.meta.projectVerification.mutationHistory.length === 0 &&
+      privateVerifierState.meta.projectVerification.privateMutationHistory.at(-1)?.paths?.includes(
+        ".aginti/verification/lifecycle/smoke_test.py"
+      ),
+    "a private verifier repair either became task-owned work or failed to advance verifier freshness"
+  );
+  assert(
+    unchangedFailedTestRerunBlock(
+      privateVerifierState,
+      "run_command",
+      { command: privateVerifierCommand },
+      { commandCwd: workspace }
+    ) === null &&
+      repairedVerifierRuntime.testVerificationPending === true &&
+      repairedVerifierRuntime.testVerificationCommand === privateVerifierCommand &&
+      projectTestVerificationFinishBlock(privateVerifierState)?.category ===
+        "project-test-verification-stale",
+    "repairing a private verifier did not permit and require one fresh exact rerun"
+  );
+  recordProjectVerificationOutcome(
+    privateVerifierState,
+    {
+      toolName: "run_command",
+      ok: true,
+      exitCode: 0,
+      args: { command: privateVerifierCommand },
+      stdout: "service lifecycle smoke passed\n",
+      stderr: "",
+    },
+    {
+      commandCwd: workspace,
+      taskProfile: "devops",
+      allowShellTool: true,
+      sandboxMode: "host",
+      testVerificationPending: true,
+      testVerificationCommand: privateVerifierCommand,
+    }
+  );
+  assert(
+    privateVerifierState.meta.projectVerification.testRuns.at(-1)?.passed === true &&
+      privateVerifierState.meta.projectVerification.testRuns.at(-1)
+        ?.privateMutationRevision === 1 &&
+      projectTestVerificationFinishBlock(privateVerifierState) === null,
+    "a passing rerun did not become current at the repaired private verifier revision"
+  );
+  recordProjectVerificationOutcome(
+    privateVerifierState,
+    {
+      toolName: "write_file",
+      ok: true,
+      path: ".aginti/verification/lifecycle/expectations.json",
+      changes: [
+        {
+          path: ".aginti/verification/lifecycle/expectations.json",
+          created: true,
+          beforeHash: "",
+          afterHash: "updated-private-expectations",
+        },
+      ],
+    },
+    { commandCwd: workspace, taskProfile: "devops" }
+  );
+  const secondVerifierRuntime = nextStepRuntimeConfig(
+    {
+      goal: privateVerifierState.goal,
+      commandCwd: workspace,
+      taskProfile: "devops",
+      provider: "localllm",
+    },
+    privateVerifierState
+  );
+  assert(
+    privateVerifierState.meta.projectVerification.mutationRevision === 0 &&
+      privateVerifierState.meta.projectVerification.privateMutationRevision === 2 &&
+      secondVerifierRuntime.testVerificationPending === true &&
+      secondVerifierRuntime.testVerificationCommand === privateVerifierCommand &&
+      secondVerifierRuntime.requiredProjectCommandPending === true &&
+      secondVerifierRuntime.requiredProjectCommand === privateVerifierCommand,
+    "a later private verifier mutation did not invalidate both test and validation-command evidence"
+  );
   const publicEvidenceMutation = {
     toolName: "run_command",
     ok: true,
@@ -3079,6 +5064,12 @@ try {
       artifactProgress: { complete: false, exactOutputPaths: ["handoff.md", "coverage.json"] },
       projectVerification: durableVerification,
       scs: { taskContract: { exactOutputPaths: ["handoff.md", "coverage.json"] } },
+      stepBudget: {
+        initialMaxSteps: 30,
+        currentMaxSteps: 81,
+        hardCap: 90,
+        extensionsUsed: 3,
+      },
     },
   };
   const retainedPlan = bareContinuationState.plan;
@@ -3094,6 +5085,10 @@ try {
   assert(bareContinuationState.plan === retainedPlan, "a bare resume discarded the approved active plan");
   assert(bareContinuationState.meta.scs === retainedScs, "a bare resume discarded the active SCS phase");
   assert(
+    bareContinuationState.meta.stepBudget.currentMaxSteps === 81,
+    "a bare resume discarded its approved expanded step budget"
+  );
+  assert(
     bareContinuationState.meta.goalContract.activeGoalRevision === 4,
     "a bare resume fabricated a new active-goal revision"
   );
@@ -3104,6 +5099,12 @@ try {
       goalContract: { revision: 8 },
       artifactProgress: {},
       scs: {},
+      stepBudget: {
+        initialMaxSteps: 30,
+        currentMaxSteps: 81,
+        hardCap: 90,
+        extensionsUsed: 3,
+      },
       projectVerification: durableVerification,
     },
   };
@@ -3115,6 +5116,97 @@ try {
   assert(
     isolatedRefreshState.meta.projectVerification === durableVerification,
     "same-task contract refresh removed durable verification evidence"
+  );
+  assert(
+    isolatedRemoved.includes("stepBudget") && !isolatedRefreshState.meta.stepBudget,
+    "a concrete same-task correction inherited an exhausted expanded step budget"
+  );
+  const newTaskBoundaryState = {
+    goal: "Repair the old service controller.",
+    meta: {
+      taskProfile: "devops",
+      goalContract: { revision: 4, taskGoal: "Repair the old service controller." },
+      activeExecutionContract: {
+        revision: 4,
+        startedMutationRevision: 7,
+        requiresFileMutation: true,
+      },
+      projectVerification: { mutationRevision: 7 },
+      toolLoop: {
+        staticCounts: { "file-read:service_ctl.py": 1 },
+        staticOrder: ["file-read:service_ctl.py"],
+        staticTotal: 1,
+        staticCallTotal: 1,
+      },
+    },
+  };
+  const newTaskUpdate = applyContinuationContractTransition(
+    newTaskBoundaryState,
+    "Create deployment-status.md as a standalone report for a new project.",
+    { at: "2026-08-26T10:04:00.000Z" }
+  );
+  assert(
+    newTaskUpdate?.preserveTaskBoundary === false &&
+      newTaskBoundaryState.meta.activeExecutionContract.revision === 5 &&
+      newTaskBoundaryState.meta.activeExecutionContract.requiresFileMutation === true &&
+      newTaskBoundaryState.meta.projectVerification === undefined &&
+      newTaskBoundaryState.meta.toolLoop.staticTotal === 0 &&
+      Object.keys(newTaskBoundaryState.meta.toolLoop.staticCounts).length === 0,
+    "a true new-task boundary retained the prior task's execution contract or verification"
+  );
+  const sourceGroundingRefreshState = {
+    goal: "Repair service_ctl.py and run its tests.",
+    meta: {
+      taskProfile: "devops",
+      goalContract: {
+        revision: 9,
+        currentRequest: "Repair service_ctl.py and run its tests.",
+      },
+      projectVerification: { mutationRevision: 4 },
+    },
+  };
+  resetSameTaskExecutionContract(sourceGroundingRefreshState, 9);
+  assert(
+    sourceGroundingRefreshState.meta.activeExecutionContract.requiresFileMutation === true &&
+      sourceGroundingRefreshState.meta.activeExecutionContract.requiresSourceGrounding === true,
+    "a concrete file correction did not require current source grounding"
+  );
+  const concreteBudgetConfig = { maxSteps: 81, resetStepBudget: false };
+  assert(
+    applyConcreteContinuationStepBudgetBoundary(
+      concreteBudgetConfig,
+      { refreshExecutionContract: true },
+      {
+        initialMaxSteps: 36,
+        currentMaxSteps: 81,
+        hardCap: 90,
+        extensionsUsed: 3,
+      }
+    ) === true &&
+      concreteBudgetConfig.resetStepBudget === true &&
+      concreteBudgetConfig.maxSteps === 36,
+    "a concrete correction did not restore the original pre-extension step budget"
+  );
+  const explicitConcreteBudgetConfig = { maxSteps: 18, resetStepBudget: true };
+  applyConcreteContinuationStepBudgetBoundary(
+    explicitConcreteBudgetConfig,
+    { refreshExecutionContract: true },
+    { initialMaxSteps: 36, currentMaxSteps: 81 }
+  );
+  assert(
+    explicitConcreteBudgetConfig.maxSteps === 18,
+    "a concrete correction overrode an explicit operator max-steps boundary"
+  );
+  const bareBudgetConfig = { maxSteps: 81, resetStepBudget: false };
+  assert(
+    applyConcreteContinuationStepBudgetBoundary(
+      bareBudgetConfig,
+      { refreshExecutionContract: false },
+      { initialMaxSteps: 36, currentMaxSteps: 81 }
+    ) === false &&
+      bareBudgetConfig.maxSteps === 81 &&
+      bareBudgetConfig.resetStepBudget === false,
+    "a bare resume reset its retained step budget"
   );
 
   const optionalVisualContract = deriveScsTaskContract({
@@ -3437,6 +5529,48 @@ try {
     ) === null,
     "a bounded continuation read was mistaken for an exact reread"
   );
+  const repeatedReadBlockState = {
+    meta: {
+      toolLoop: {
+        recent: [
+          {
+            toolName: "read_file",
+            signature: exactReadSignature,
+            ok: false,
+            blocked: true,
+            category: "repeated-read-only-call",
+          },
+        ],
+      },
+    },
+  };
+  assert(
+    JSON.stringify(convergenceSuppressedToolNames(repeatedReadBlockState)) ===
+      JSON.stringify(["read_file"]),
+    "an explicitly blocked duplicate read was not suppressed for the next model turn"
+  );
+  assert(
+    JSON.stringify(nextStepRuntimeConfig({}, repeatedReadBlockState).convergenceSuppressedToolNames) ===
+      JSON.stringify(["read_file"]),
+    "the next-step runtime did not carry the convergence suppression into tool selection"
+  );
+  assert(
+    convergenceSuppressedToolNames({
+      meta: {
+        toolLoop: {
+          recent: [
+            {
+              toolName: "apply_patch",
+              ok: false,
+              blocked: false,
+              category: "patch-search-not-found",
+            },
+          ],
+        },
+      },
+    }).length === 0,
+    "an ordinary recoverable tool failure was incorrectly suppressed"
+  );
   const repeatedProbeArgs = { command: "python -c \"print(100.0)\"" };
   const repeatedProbeSignature = staticToolCallSignature("run_command", repeatedProbeArgs, {
     commandCwd: workspace,
@@ -3653,6 +5787,36 @@ try {
     /only the required local commit is missing/i.test(artifactCommitRecoveryText) &&
       /do not inspect unstaged diffs/i.test(artifactCommitRecoveryText),
     "artifact Git completion did not suppress redundant rediscovery and preview guessing"
+  );
+  const taskOwnedCommitRecoveryRequest = buildConstrainedRecoveryRequest(
+    {
+      goal: "Commit only the verified task-owned service repair.",
+      messages: oversizedRepositoryState.messages,
+      meta: {},
+    },
+    { provider: "localllm", taskProfile: "devops" },
+    {},
+    11,
+    {
+      provider: "localllm",
+      taskProfile: "devops",
+      taskOwnedCommitPending: true,
+      taskOwnedPendingGitActions: ["commit"],
+      taskOwnedCommitPaths: ["service_ctl.py", "tests/test_service_ctl.py"],
+    }
+  );
+  const taskOwnedCommitRecoveryText = JSON.stringify(
+    taskOwnedCommitRecoveryRequest?.messages || []
+  );
+  assert(
+    taskOwnedCommitRecoveryRequest?.mode === "task-owned-git-completion" &&
+      taskOwnedCommitRecoveryRequest?.maxOutputTokens === 1536,
+    "verified non-artifact code work did not enter a bounded task-owned commit phase"
+  );
+  assert(
+    /fresh passing verification/i.test(taskOwnedCommitRecoveryText) &&
+      /do not reread, rewrite, or rerun completed work/i.test(taskOwnedCommitRecoveryText),
+    "task-owned Git completion did not suppress post-test implementation drift"
   );
   assert(
     buildTaskOwnedCommitCommand(["../outside.md"], "Unsafe path") === "" &&
@@ -3945,6 +6109,31 @@ try {
     projectTestVerificationFinishBlock(failedValidationState)?.category === "project-test-current-failure",
     "a current unresolved substantive test failure did not block completion"
   );
+  const verifiedExternalBlockerLedger = {
+    blockerCount: 1,
+    blockers: [
+      {
+        toolName: "browser",
+        category: "login-required",
+        reason: "Human login is required.",
+      },
+    ],
+  };
+  assert(
+    completionExternalBlockerCanClose({
+      candidateResult: "I cannot continue because login is required.",
+      evidenceLedger: verifiedExternalBlockerLedger,
+    }) === true,
+    "a genuine evidenced external blocker could not close an otherwise valid run"
+  );
+  assert(
+    completionExternalBlockerCanClose({
+      candidateResult: "I cannot continue because login is required.",
+      evidenceLedger: verifiedExternalBlockerLedger,
+      projectTestBlock: projectTestVerificationFinishBlock(failedValidationState),
+    }) === false,
+    "an external-blocker narrative overrode a current failed project test"
+  );
   const staleValidationState = {
     meta: {
       projectVerification: {
@@ -4069,8 +6258,8 @@ try {
     "a same-task refresh could not rebuild a missing failed-test evidence packet"
   );
   missingRecoveryPacketState.meta.failedTestRecoveryPacket = {
-    packetVersion: 8,
-    content: "Bounded failed-test evidence packet v8.",
+    packetVersion: 13,
+    content: "Bounded failed-test evidence packet v13.",
     mutationRevision: 6,
     failureSignature: "same-failure",
   };
@@ -4928,7 +7117,7 @@ try {
         ],
       },
       failedTestDiagnostic: {
-        packetVersion: 8,
+        packetVersion: 13,
         mutationRevision: 0,
         failureSignature: "partial-derived-order",
         focuses: [

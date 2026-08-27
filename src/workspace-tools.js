@@ -117,6 +117,17 @@ function matchingReadOnlyRoot(config, target) {
     .find((root) => isInside(root, target));
 }
 
+function configuredWorkspaceScopeRoots(config, root) {
+  const values = Array.isArray(config.workspacePathScopeRoots)
+    ? config.workspacePathScopeRoots
+    : [];
+  return values
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .map((item) => path.resolve(root, normalizeWorkspaceInputPath(item)))
+    .filter((item) => isInside(root, item));
+}
+
 function hashText(value) {
   return crypto.createHash("sha256").update(String(value)).digest("hex");
 }
@@ -261,6 +272,11 @@ export function resolveWorkspacePath(config, inputPath = ".", { allowReadOnlyRoo
   const rawPath = sanitizePathInput(inputPath);
   const workspacePath = normalizeWorkspaceInputPath(rawPath);
   const absolutePath = path.resolve(root, workspacePath);
+  const scopedRoots = configuredWorkspaceScopeRoots(config, root);
+
+  if (scopedRoots.length && !scopedRoots.some((scopeRoot) => isInside(scopeRoot, absolutePath))) {
+    throw new Error(`Path is outside the active task artifact scope: ${rawPath}`);
+  }
 
   if (!isInside(root, absolutePath)) {
     const readOnlyRoot = allowReadOnlyRoots ? matchingReadOnlyRoot(config, absolutePath) : "";

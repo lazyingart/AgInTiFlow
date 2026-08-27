@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  deterministicPlanTestIntegrityIssue,
   reconcileScsProgressDecision,
   reviewScsFinish,
   reviewScsProgress,
@@ -43,6 +44,113 @@ const pageSafeReportContract = deriveScsTaskContract({
   ].join("\n"),
   taskProfile: "auto",
 });
+
+const forbiddenOutputContract = deriveScsTaskContract({
+  goal: "Continue the task. verification_suite.py does not exist and must not be rerun or created. Preserve smoke_test.py and finish from current evidence.",
+  taskProfile: "devops",
+});
+
+const mixedRepairAndForbiddenOutputContract = deriveScsTaskContract({
+  goal: "Repair service_ctl.py and do not create verification_suite.py.",
+  taskProfile: "devops",
+});
+
+const coordinatedForbiddenOutputContract = deriveScsTaskContract({
+  goal: "Do not create scratch.py or temporary.py; repair service_ctl.py.",
+  taskProfile: "devops",
+});
+
+const readOnlyReviewContract = deriveScsTaskContract({
+  goal: [
+    "Review focus: changed files only.",
+    "Run a bounded code review. Default to read-only review; do not edit files unless the review focus explicitly asks for fixes.",
+    "Read changed source files and report findings.",
+  ].join("\n"),
+  taskProfile: "review",
+});
+
+const explicitReviewRepairContract = deriveScsTaskContract({
+  goal: [
+    "Review focus: inspect changed files and fix confirmed defects.",
+    "Default to read-only review; do not edit files unless the review focus explicitly asks for fixes.",
+  ].join("\n"),
+  taskProfile: "review",
+});
+
+const testWeakeningPlanIssue = deterministicPlanTestIntegrityIssue(
+  {
+    phaseGoal: "Repair the current service implementation from authoritative failures.",
+    plan: [
+      "Add lifecycle test stubs for ownership and status behavior.",
+      "If the CLI returns code 2, ensure the test explicitly checks for this exit code.",
+      "Fix only the failing test case or implementation, then rerun verification.",
+    ],
+    acceptanceCriteria: ["Lifecycle tests accept CLI exit code 2."],
+  },
+  "The fresh test result is authoritative. Repair service_ctl.py, preserve tests, and run the exact test command unchanged."
+);
+assert.equal(
+  testWeakeningPlanIssue?.decision,
+  "veto_plan",
+  "the deterministic SCS gate accepted a plan that weakened authoritative tests"
+);
+assert.match(testWeakeningPlanIssue.reason, /production implementation/i);
+assert.equal(
+  deterministicPlanTestIntegrityIssue(
+    {
+      phaseGoal: "Repair production source.",
+      plan: [
+        "Read the current production source and retained failure evidence.",
+        "Patch the bounded implementation functions without editing tests.",
+        "Run the exact authoritative test command unchanged.",
+      ],
+      acceptanceCriteria: ["The unchanged test suite passes."],
+    },
+    "Repair service_ctl.py and preserve tests."
+  ),
+  null,
+  "a production-only repair plan was incorrectly rejected as test weakening"
+);
+assert(
+  forbiddenOutputContract.excludedOutputPaths.includes("verification_suite.py"),
+  "an explicitly forbidden output path was not retained as an authoritative exclusion"
+);
+assert(
+  !forbiddenOutputContract.exactOutputPaths.includes("verification_suite.py"),
+  "a negated create/run clause incorrectly became an exact output requirement"
+);
+assert(
+  !forbiddenOutputContract.exactInputPaths.includes("verification_suite.py"),
+  "a forbidden absent path incorrectly became an exact input requirement"
+);
+assert(
+  !mixedRepairAndForbiddenOutputContract.excludedOutputPaths.includes("service_ctl.py"),
+  "a later forbidden output path incorrectly excluded the production source named earlier in the same sentence"
+);
+assert(
+  mixedRepairAndForbiddenOutputContract.excludedOutputPaths.includes("verification_suite.py"),
+  "the path directly governed by a do-not-create clause was not excluded"
+);
+assert.deepEqual(
+  coordinatedForbiddenOutputContract.excludedOutputPaths.sort(),
+  ["scratch.py", "temporary.py"],
+  "a coordinated list did not retain each path governed by one exclusion"
+);
+assert.equal(
+  readOnlyReviewContract.requiresWorkspaceMutation,
+  false,
+  "negative review guardrails were misclassified as a workspace mutation request"
+);
+assert.equal(
+  readOnlyReviewContract.requiresFileMutation,
+  false,
+  "negative review guardrails were misclassified as a file mutation request"
+);
+assert.equal(
+  explicitReviewRepairContract.requiresFileMutation,
+  true,
+  "an explicit review-and-fix focus lost its positive mutation request"
+);
 assert(
   pageSafeReportContract.requiredEvidence.some((item) => item.category === "file"),
   "a scoped existing-report edit did not require file evidence"
@@ -261,8 +369,50 @@ const recoverablePatchLedger = buildScsEvidenceLedger({
   },
 });
 assert.equal(recoverablePatchLedger.blockerCount, 0, "a recoverable patch context miss became a completion blocker");
+const supersededWorkspaceBlockerLedger = buildScsEvidenceLedger({
+  context: {
+    events: [
+      {
+        type: "tool.blocked",
+        data: {
+          toolName: "run_command",
+          category: "blocked",
+          reason: "mkdir target must be a safe workspace-relative directory: /tmp/test_service",
+          permissionAdvice: {
+            category: "blocked",
+            reason: "mkdir target must be a safe workspace-relative directory: /tmp/test_service",
+          },
+        },
+      },
+      {
+        type: "tool.blocked",
+        data: {
+          toolName: "run_command",
+          category: "blocked",
+          reason: "mkdir target must be a safe workspace-relative directory: /tmp/test_service",
+          permissionAdvice: {
+            category: "workspace-command-correction",
+            reason: "mkdir target must be a safe workspace-relative directory: /tmp/test_service",
+            autoRecover: true,
+          },
+        },
+      },
+    ],
+  },
+});
+assert.equal(
+  supersededWorkspaceBlockerLedger.blockerCount,
+  0,
+  "a newer recoverable workspace correction did not retire its stale generic blocker"
+);
 assert.equal(finishResultClaimsBlocker("No external services, logins, or approvals are required."), false);
 assert.equal(finishResultClaimsBlocker("The task is blocked and requires human login approval."), true);
+assert.equal(finishResultClaimsBlocker("I cannot continue because login is required."), true);
+assert.equal(
+  finishResultClaimsBlocker("Never signal processes it cannot identify as this exact gateway instance."),
+  false,
+  "an incidental safety-clause 'cannot' was misclassified as a current external blocker"
+);
 assert.equal(finishResultClaimsIncompleteWork("Completed and verified the requested report."), false);
 assert.equal(
   finishResultClaimsIncompleteWork("The task is paused. A corrected implementation will be written next."),
@@ -283,6 +433,75 @@ assert(
   outputFilenameContract.requiredTextTerms.includes("negative evidence"),
   "excluding output filenames also removed a real required text term"
 );
+
+const executableSourceContract = deriveScsTaskContract({
+  goal: "Independent acceptance fails because the canonical source does not use portable start_new_session=True. Repair the actual lifecycle implementation.",
+  taskProfile: "devops",
+});
+assert.deepEqual(
+  executableSourceContract.requiredExecutableTerms,
+  ["start_new_session=True"],
+  "an explicit executable implementation requirement was not inferred"
+);
+const forbiddenExecutableSourceContract = deriveScsTaskContract({
+  goal: "Do not use start_new_session=True; preserve the existing platform-specific behavior.",
+  taskProfile: "devops",
+});
+assert.deepEqual(
+  forbiddenExecutableSourceContract.requiredExecutableTerms,
+  [],
+  "a forbidden executable expression became a positive source requirement"
+);
+const executableRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aginti-executable-source-"));
+try {
+  const sourcePath = path.join(executableRoot, "service_ctl.py");
+  const sourceState = {
+    meta: {
+      projectVerification: {
+        mutationHistory: [{ revision: 1, paths: ["service_ctl.py"] }],
+      },
+    },
+  };
+  fs.writeFileSync(
+    sourcePath,
+    [
+      "import os",
+      "import subprocess",
+      "",
+      "def launch_service(command):",
+      "    # The portable implementation should use start_new_session=True.",
+      "    help_text = 'start_new_session=True'",
+      "    return subprocess.Popen(command, preexec_fn=os.setsid)",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  const commentOnly = evaluateScsSemanticContract(executableSourceContract, {
+    commandCwd: executableRoot,
+    state: sourceState,
+  });
+  assert.equal(commentOnly.ok, false, "a comment/help-string-only expression satisfied executable source semantics");
+  assert.deepEqual(commentOnly.missingExecutableTerms, ["start_new_session=True"]);
+  fs.writeFileSync(
+    sourcePath,
+    [
+      "import subprocess",
+      "",
+      "def launch_service(command):",
+      "    return subprocess.Popen(command, start_new_session=True)",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  const implemented = evaluateScsSemanticContract(executableSourceContract, {
+    commandCwd: executableRoot,
+    state: sourceState,
+  });
+  assert.equal(implemented.ok, true, implemented.reason);
+  assert.deepEqual(implemented.executableSourcePaths, ["service_ctl.py"]);
+} finally {
+  fs.rmSync(executableRoot, { recursive: true, force: true });
+}
 
 const wrappedManifestRepairContract = deriveScsTaskContract({
   goal: [

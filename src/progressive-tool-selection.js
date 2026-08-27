@@ -456,6 +456,14 @@ function toolIsDisabled(name, config) {
   return false;
 }
 
+function toolIsConvergenceSuppressed(name, config) {
+  if (name === "finish") return false;
+  const suppressed = Array.isArray(config.convergenceSuppressedToolNames)
+    ? config.convergenceSuppressedToolNames
+    : [];
+  return suppressed.some((item) => String(item || "").trim() === name);
+}
+
 function localCapability(config, profile) {
   const candidates = [
     profile && typeof profile === "object" ? profile : null,
@@ -538,7 +546,9 @@ function currentTaskMessages(messages) {
     const message = messages[index];
     if (
       message?.role === "user" &&
-      /^\s*(?:Continue with this new request:|Goal:)/i.test(textContent(message.content))
+      /^\s*(?:Continue with this new request:|Continue the current task from saved state:|Continue(?: and finish)? the same task\b|Resume(?: and finish)? (?:the )?(?:same|current) task\b|Goal:)/i.test(
+        textContent(message.content)
+      )
     ) {
       boundary = index;
     }
@@ -583,10 +593,37 @@ function parseJsonObject(value) {
   }
 }
 
-function completedToolRecords(messages) {
+function retainedToolRecord(message) {
+  if (message?.role !== "user") return null;
+  const content = String(message.content || "").trim();
+  if (!/^Retained runtime tool evidence\./i.test(content)) return null;
+  const match = content.match(
+    /^Retained runtime tool evidence\.[^\n]*\nTool:\s*([^\n]+)\nArguments:\s*([^\n]+)\nVerified result:\s*([\s\S]+)$/i
+  );
+  if (!match) return null;
+  const name = String(match[1] || "").trim();
+  const args = parseJsonObject(match[2]);
+  const result = parseJsonObject(match[3]);
+  if (!FUNCTION_NAME_PATTERN.test(name) || !result || typeof result !== "object") {
+    return null;
+  }
+  return { name, args, result };
+}
+
+function completedToolRecords(messages, { minimumGoalRevision = 0 } = {}) {
   const callsById = new Map();
   const records = [];
   for (const message of currentTaskMessages(messages)) {
+    const retained = retainedToolRecord(message);
+    if (retained) {
+      if (
+        minimumGoalRevision <= 0 ||
+        Number(retained.result.goalRevision || 0) >= minimumGoalRevision
+      ) {
+        records.push(retained);
+      }
+      continue;
+    }
     if (message?.role === "assistant" && Array.isArray(message.tool_calls)) {
       for (const call of message.tool_calls) {
         const id = String(call?.id || "").trim();
@@ -602,13 +639,23 @@ function completedToolRecords(messages) {
     if (message?.role !== "tool") continue;
     const call = callsById.get(String(message.tool_call_id || "").trim());
     if (!call) continue;
-    records.push({ ...call, result: parseJsonObject(message.content) });
+    const result = parseJsonObject(message.content);
+    if (
+      minimumGoalRevision > 0 &&
+      Number(result.goalRevision || 0) < minimumGoalRevision
+    ) {
+      continue;
+    }
+    records.push({ ...call, result });
   }
   return records;
 }
 
-function dataProjectDiscoveryState(messages) {
-  const records = completedToolRecords(messages);
+export function repositoryGroundingState(
+  messages,
+  { requireTests = true, minimumGoalRevision = 0 } = {}
+) {
+  const records = completedToolRecords(messages, { minimumGoalRevision });
   const inspection = [...records]
     .reverse()
     .find((record) => record.name === "inspect_project" && record.result?.ok !== false);
@@ -617,17 +664,28 @@ function dataProjectDiscoveryState(messages) {
   const topLevelFiles = Array.isArray(inspection.result?.topLevel)
     ? inspection.result.topLevel.filter((item) => item?.type === "file").map((item) => item?.path)
     : [];
+  const knownDirectories = new Set([
+    ...(Array.isArray(inspection.result?.topLevel)
+      ? inspection.result.topLevel
+          .filter((item) => item?.type === "directory")
+          .map((item) => item?.path)
+      : []),
+    ...(Array.isArray(inspection.result?.sourceDirs)
+      ? inspection.result.sourceDirs.map((item) => item?.path)
+      : []),
+  ].map((item) => String(item || "").trim()).filter(Boolean));
   const discoveredPaths = [
-    ...(Array.isArray(inspection.result?.recommendedReads) ? inspection.result.recommendedReads : []),
     ...(Array.isArray(inspection.result?.manifestFiles)
       ? inspection.result.manifestFiles.map((item) => item?.path)
       : []),
     ...(Array.isArray(inspection.result?.testFiles) ? inspection.result.testFiles.map((item) => item?.path) : []),
     ...(Array.isArray(inspection.result?.files) ? inspection.result.files.map((item) => item?.path) : []),
     ...topLevelFiles,
+    ...(Array.isArray(inspection.result?.recommendedReads) ? inspection.result.recommendedReads : []),
   ]
     .map((item) => String(item || "").trim())
     .filter(Boolean)
+    .filter((item) => !knownDirectories.has(item))
     .filter((item, index, items) => items.indexOf(item) === index);
   const readPaths = records
     .filter((record) => record.name === "read_file" && record.result?.ok !== false)
@@ -653,9 +711,13 @@ function dataProjectDiscoveryState(messages) {
     dataContextCandidates.length === 0 || readPaths.some((item) => dataContextCandidates.includes(item));
   if (!dataContextRead) return { phase: "read-context", paths: dataContextCandidates.slice(0, 24) };
   const testContextRead =
-    testCandidates.length === 0 || readPaths.some((item) => testCandidates.includes(item));
+    !requireTests || testCandidates.length === 0 || readPaths.some((item) => testCandidates.includes(item));
   if (!testContextRead) return { phase: "read-tests", paths: testCandidates.slice(0, 24) };
   return { phase: "ready", paths: [] };
+}
+
+function dataProjectDiscoveryState(messages) {
+  return repositoryGroundingState(messages, { requireTests: true });
 }
 
 function constrainReadFilePaths(tool, paths, phase) {
@@ -667,6 +729,8 @@ function constrainReadFilePaths(tool, paths, phase) {
     description:
       phase === "patch-context-refresh"
         ? "Exact workspace-relative path whose complete current source must be refreshed before another mutation."
+        : phase === "completion-fresh-mutation"
+          ? "Exact canonical project file selected from current task evidence for the required fresh correction."
         : phase === "failed-test-evidence-refresh"
           ? "Exact unread workspace-relative path retained by the current failed-test evidence packet."
           : "Exact workspace-relative path discovered by inspect_project.",
@@ -678,13 +742,15 @@ function constrainReadFilePaths(tool, paths, phase) {
       description:
         phase === "patch-context-refresh"
           ? "Read the exact current source file after repeated stale patch context. Mutation tools remain unavailable until this fresh read succeeds."
+          : phase === "completion-fresh-mutation"
+            ? "Read one exact canonical project file before the required fresh source correction. Tests, Git actions, and finish remain unavailable until a material patch advances the project mutation revision."
           : phase === "failed-test-evidence-refresh"
             ? "Read one exact unread source or acceptance-test file from the current failed-test evidence packet. Each packet path is exposed at most once before mutation-only recovery resumes."
           : phase === "read-instructions"
-          ? "Read one exact project instruction file discovered by inspect_project before data mutation or commands are enabled."
+          ? "Read one exact project instruction file discovered by inspect_project before repository mutation or validation commands are enabled."
           : phase === "read-tests"
-            ? "Read one exact existing test file discovered by inspect_project before data mutation or commands are enabled."
-            : "Read one exact existing analyzer or configuration file discovered by inspect_project before data mutation or commands are enabled.",
+            ? "Read one exact existing test file discovered by inspect_project before repository mutation or validation commands are enabled."
+            : "Read one exact existing implementation, analyzer, or configuration file discovered by inspect_project before mutation tools are enabled.",
       parameters: {
         ...tool.function.parameters,
         properties:
@@ -697,6 +763,152 @@ function constrainReadFilePaths(tool, paths, phase) {
         ...(phase === "patch-context-refresh"
           ? { required: ["path"], additionalProperties: false }
           : {}),
+      },
+    },
+  };
+}
+
+function escapeRegex(value = "") {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function constrainScopedArtifactPath(tool, artifactRoot = "", { rootOnly = false } = {}) {
+  if (!tool || !artifactRoot) return tool;
+  const properties = tool.function?.parameters?.properties || {};
+  if (!Object.hasOwn(properties, "path")) return tool;
+  const normalizedRoot = String(artifactRoot)
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/\/$/, "");
+  const pathSchema = properties.path || { type: "string" };
+  return {
+    ...tool,
+    function: {
+      ...tool.function,
+      description: [
+        String(tool.function?.description || "").trim(),
+        `This turn is bound to the exact task artifact root ${normalizedRoot}; do not inspect or mutate unrelated repository files.`,
+      ].filter(Boolean).join(" "),
+      parameters: {
+        ...tool.function.parameters,
+        properties: {
+          ...properties,
+          path: {
+            ...pathSchema,
+            ...(rootOnly
+              ? { enum: [normalizedRoot] }
+              : { pattern: `^${escapeRegex(normalizedRoot)}(?:/.*)?$` }),
+            description: rootOnly
+              ? "Exact task artifact directory."
+              : "A path inside the exact task artifact directory.",
+          },
+        },
+      },
+    },
+  };
+}
+
+function constrainCompletionFreshMutationPatch(tool, paths = []) {
+  if (!tool) return null;
+  const normalizedPaths = paths
+    .map((item) => String(item || "").replace(/\\/g, "/").replace(/^\.\//, "").trim())
+    .filter(Boolean)
+    .filter((item, index, items) => items.indexOf(item) === index)
+    .slice(0, 16);
+  const properties = tool.function?.parameters?.properties || {};
+  return {
+    ...tool,
+    function: {
+      ...tool.function,
+      description: [
+        "Apply one material correction to a currently grounded canonical project file after completion was rejected for missing fresh source evidence.",
+        normalizedPaths.length
+          ? `The path must be one of: ${normalizedPaths.join(", ")}.`
+          : "Use the exact canonical project path retained in the current source context.",
+        "Preserve unrelated current behavior. Do not edit private verification files, rerun tests, inspect Git, create sidecars, or call finish instead of making the required correction.",
+        "After one successful project mutation, the runtime will reopen validation and Git tools.",
+      ].join(" "),
+      parameters: {
+        ...tool.function.parameters,
+        properties: {
+          ...properties,
+          path: {
+            ...(properties.path || { type: "string" }),
+            ...(normalizedPaths.length ? { enum: normalizedPaths } : {}),
+            description: "Exact grounded canonical project path for this source correction.",
+          },
+        },
+        required: [
+          ...new Set([
+            ...(Array.isArray(tool.function.parameters?.required)
+              ? tool.function.parameters.required
+              : []),
+            "path",
+            ...(Object.hasOwn(properties, "search") ? ["search"] : []),
+            ...(Object.hasOwn(properties, "replace") ? ["replace"] : []),
+          ]),
+        ],
+        additionalProperties: false,
+      },
+    },
+  };
+}
+
+function constrainPatchContextRepair(tool, config = {}) {
+  const targetPath = String(config.patchContextRepairPath || "").trim();
+  const exactSearch = String(config.patchContextRepairSearch || "");
+  if (!tool || !targetPath || !exactSearch) return null;
+  const properties = tool.function?.parameters?.properties || {};
+  const location = [
+    Number(config.patchContextRepairLineStart || 0) > 0
+      ? `lines ${Number(config.patchContextRepairLineStart)}`
+      : "",
+    Number(config.patchContextRepairLineEnd || 0) > 0
+      ? `through ${Number(config.patchContextRepairLineEnd)}`
+      : "",
+  ].filter(Boolean).join(" ");
+  return {
+    ...tool,
+    function: {
+      ...tool.function,
+      description: [
+        "Repair one revision-bound exact current-source anchor after a stale patch search failed.",
+        `Target: ${targetPath}${location ? ` ${location}` : ""}.`,
+        config.patchContextRepairAnchorIdentity
+          ? `Current anchor: ${String(config.patchContextRepairAnchorIdentity)}.`
+          : "",
+        "When a current failed-test traceback selected this anchor, that traceback location is authoritative; do not reuse an older patch search or reconstruct a different region.",
+        "Return only the complete revised anchor as replace, beginning with the same declaration when this is a function or class. Do not include file headers, imports, or declarations outside the shown anchor. Preserve unrelated current behavior while making a real change that addresses the retained failure.",
+        "The runtime injects the revision-bound path and exact current search anchor. Optional path/search fields are compatibility hints only and cannot redirect the mutation.",
+        `Current exact anchor (read-only context; do not echo it as search):\n<current_source_anchor>\n${exactSearch}\n</current_source_anchor>`,
+        "The next useful action is an apply_patch call with a materially revised complete anchor in replace; validation commands remain unavailable until that mutation succeeds.",
+        "Do not return a unified patch, an identical or whitespace-only replacement, or a sidecar file.",
+      ].filter(Boolean).join(" "),
+      parameters: {
+        type: "object",
+        properties: {
+          path: {
+            ...(properties.path || { type: "string" }),
+            enum: [targetPath],
+            description: "Optional exact workspace-path hint. The runtime injects the revision-bound target.",
+          },
+          search: {
+            ...(properties.search || { type: "string" }),
+            description: "Optional compatibility hint. The runtime ignores this value and injects the exact refreshed source anchor.",
+          },
+          replace: {
+            ...(properties.replace || { type: "string" }),
+            minLength: 1,
+            description: "Complete revised anchor. Preserve unrelated source and materially address the retained failure.",
+          },
+          expectedReplacements: {
+            ...(properties.expectedReplacements || { type: "integer" }),
+            enum: [1],
+            description: "Optional compatibility hint. The runtime enforces one unique replacement.",
+          },
+        },
+        required: ["replace"],
+        additionalProperties: false,
       },
     },
   };
@@ -899,6 +1111,54 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
       anchorLiteral: String(target?.anchorLiteral || ""),
       negated: target?.negated === true,
       caseFolded: target?.caseFolded === true,
+      directReplacement: String(target?.directReplacement || ""),
+      expectedWorkspacePath: String(target?.expectedWorkspacePath || ""),
+      symbol: String(target?.symbol || ""),
+      testNames: (Array.isArray(target?.testNames) ? target.testNames : [])
+        .map(String)
+        .filter(Boolean)
+        .slice(0, 64),
+      assertionCount: Math.max(0, Number(target?.assertionCount || 0)),
+      calledLater: (Array.isArray(target?.calledLater) ? target.calledLater : [])
+        .map((item) => ({
+          name: String(item?.name || ""),
+          line: Math.max(0, Number(item?.line || 0)),
+        }))
+        .filter((item) => item.name)
+        .slice(0, 16),
+      duplicateDeclarations: (
+        Array.isArray(target?.duplicateDeclarations) ? target.duplicateDeclarations : []
+      )
+        .map((item) => ({
+          kind: String(item?.kind || "def"),
+          name: String(item?.name || ""),
+          count: Math.max(0, Number(item?.count || 0)),
+          lines: (Array.isArray(item?.lines) ? item.lines : [])
+            .map((line) => Math.max(0, Number(line || 0)))
+            .filter(Boolean)
+            .slice(0, 12),
+        }))
+        .filter((item) => item.name)
+        .slice(0, 16),
+      baselineDeclarations: (
+        Array.isArray(target?.baselineDeclarations) ? target.baselineDeclarations : []
+      )
+        .map((item) => ({
+          kind: String(item?.kind || "def"),
+          name: String(item?.name || ""),
+          count: Math.max(0, Number(item?.count || 0)),
+        }))
+        .filter((item) => item.name)
+        .slice(0, 24),
+      missingDeclarations: (
+        Array.isArray(target?.missingDeclarations) ? target.missingDeclarations : []
+      )
+        .map((item) => ({
+          kind: String(item?.kind || "def"),
+          name: String(item?.name || ""),
+        }))
+        .filter((item) => item.name)
+        .slice(0, 16),
     }))
     .filter((target) => target.path && target.search)
     .slice(0, 4);
@@ -909,10 +1169,62 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
   const relationGuidance = validTargets
     .filter(
       (target) =>
+        target.kind === "python-agent-test-harness-path" ||
+        target.kind === "python-main-guard-order" ||
+        target.kind === "python-duplicate-top-level-definition" ||
+        target.kind === "python-git-baseline-recovery" ||
         target.kind === "membership" ||
         (target.left && target.right && ["<", "<=", ">", ">="].includes(target.operator))
     )
     .map((target) => {
+      if (target.kind === "python-agent-test-harness-path") {
+        return (
+          "Agent-created Python test harness path rule: replace only the selected launch-path " +
+          `assignment for ${target.symbol || "the subprocess target"} with the exact __file__-relative ` +
+          `binding. It must resolve ${target.expectedWorkspacePath || "the existing workspace target"} ` +
+          `independently of verifier cwd while preserving all ${target.testNames.length} test methods and ` +
+          `${target.assertionCount} assertion lines byte-for-byte. Do not change expected values, skip tests, ` +
+          "or edit production behavior to compensate for a broken harness path."
+        );
+      }
+      if (target.kind === "python-main-guard-order") {
+        const calledLater = target.calledLater
+          .map((item) => `${item.name}${item.line ? ` (line ${item.line})` : ""}`)
+          .join(", ");
+        return (
+          "Python entrypoint rule: return the exact selected guard-to-EOF region with the one " +
+          `complete __main__ guard moved after ${calledLater || "all top-level declarations called by main"}. ` +
+          "Preserve every declaration and body exactly unless another tested repair requires a change. " +
+          "Adding a comment, retaining an early guard, or adding a second guard is insufficient."
+        );
+      }
+      if (target.kind === "python-duplicate-top-level-definition") {
+        const declarations = target.duplicateDeclarations
+          .map((item) =>
+            `${item.kind} ${item.name} (${item.count} copies` +
+            `${item.lines.length ? ` at lines ${item.lines.join(", ")}` : ""})`
+          )
+          .join(", ");
+        return (
+          "Python source coherence rule: return the complete selected source with exactly one " +
+          `top-level implementation of each duplicated declaration: ${declarations || "the listed duplicates"}. ` +
+          "Remove byte-equivalent superseded copies; when bodies differ, merge required tested behavior into one implementation. " +
+          "Preserve imports, constants, unique declarations, production call seams, and one final __main__ guard."
+        );
+      }
+      if (target.kind === "python-git-baseline-recovery") {
+        const missing = target.missingDeclarations
+          .map((item) => `${item.kind} ${item.name}`)
+          .join(", ");
+        return (
+          "Python version-controlled baseline recovery rule: rebuild the complete selected source " +
+          "from the exact baseline evidence retained in the failed-test packet. Preserve the exact " +
+          "baseline preamble, imports, constants, unique declarations, production call seams, and " +
+          `entrypoint; restore ${missing || "every missing baseline declaration"} exactly once. ` +
+          "Keep compatible intended task repairs, but do not blindly revert, continue from the truncated " +
+          "fragment, duplicate declarations, or discard baseline behavior."
+        );
+      }
       if (target.kind === "membership") {
         const haystack = target.caseFolded
           ? target.search.toLocaleLowerCase("en-US")
@@ -954,19 +1266,38 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
   const selectedLocations = [...new Set(
     validTargets.map((target) => `${target.path}${target.line ? ` line ${target.line}` : ""}`)
   )];
+  const hasPythonStructuralTarget = validTargets.some(
+    (target) =>
+      target.kind === "python-agent-test-harness-path" ||
+      target.kind === "python-main-guard-order" ||
+      target.kind === "python-duplicate-top-level-definition" ||
+      target.kind === "python-git-baseline-recovery"
+  );
+  const hasTestHarnessPathTarget = validTargets.some(
+    (target) => target.kind === "python-agent-test-harness-path"
+  );
   const replacementGuidance = [
-    "Write only concise natural project content for the replacement field.",
+    hasTestHarnessPathTarget
+      ? "Write only the exact cwd-independent Python launch-path assignment selected by the runtime."
+      : hasPythonStructuralTarget
+      ? "Write one complete executable source replacement for the selected region."
+      : "Write only concise natural project content for the replacement field.",
     ...cleanupGuidance,
     ...relationGuidance,
-    "Preserve the underlying task fact and provenance, but do not repeat the search text unchanged or copy these instructions into the artifact.",
+    hasPythonStructuralTarget
+      ? "Do not repeat the search text unchanged or copy these instructions into the source."
+      : "Preserve the underlying task fact and provenance, but do not repeat the search text unchanged or copy these instructions into the artifact.",
   ].join(" ");
   const separatorRepairCandidate =
     validTargets.length === 1 ? exactSeparatorRepairCandidate(validTargets[0]) : "";
+  const boundRepairCandidate =
+    validTargets.length === 1 ? String(validTargets[0].directReplacement || "") : "";
   const duplicateRemovalCandidate =
-    validTargets.length === 1 && !separatorRepairCandidate
+    validTargets.length === 1 && !boundRepairCandidate && !separatorRepairCandidate
       ? exactDuplicateDecisiveLineRemovalCandidate(validTargets[0])
       : "";
-  const exactReplacementCandidate = separatorRepairCandidate || duplicateRemovalCandidate;
+  const exactReplacementCandidate =
+    boundRepairCandidate || separatorRepairCandidate || duplicateRemovalCandidate;
   const prematureLiteral =
     validTargets.length === 1 && !exactReplacementCandidate
       ? prematureComparisonLiteral(validTargets[0])
@@ -979,17 +1310,26 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
     validTargets.length === 1 && !exactReplacementCandidate
       ? prematureComparisonRepairPattern(validTargets[0])
       : "";
-  const replacementOnlyRepair = Boolean(prematureRepairPattern);
+  const structuralReplacementOnly = Boolean(
+    hasPythonStructuralTarget && validTargets.length === 1
+  );
+  const replacementOnlyRepair = Boolean(
+    prematureRepairPattern || structuralReplacementOnly
+  );
   const replacementProperty = {
     ...(properties.replace || { type: "string" }),
     minLength: 1,
-    ...(replacementOnlyRepair ? { maxLength: 4000 } : {}),
+    ...(replacementOnlyRepair
+      ? { maxLength: structuralReplacementOnly ? 24000 : 4000 }
+      : {}),
     ...(exactReplacementCandidate ? { enum: [exactReplacementCandidate] } : {}),
     ...(prematureRepairPattern ? { pattern: prematureRepairPattern } : {}),
     description: exactReplacementCandidate
-      ? `${replacementGuidance} ${separatorRepairCandidate
-        ? "A single lossless separator normalization"
-        : "A single lossless duplicate-line removal"} satisfies this exact retained rule; use the only allowed replacement value.`
+      ? `${replacementGuidance} ${boundRepairCandidate
+        ? "The exact __file__-relative harness binding"
+        : separatorRepairCandidate
+          ? "A single lossless separator normalization"
+          : "A single lossless duplicate-line removal"} satisfies this exact retained rule; use the only allowed replacement value.`
       : prematureLiteral
         ? `The replacement must either omit the premature operand ${JSON.stringify(prematureLiteral)}${prematureOccurrence?.markedToken ? `, currently matched inside ${JSON.stringify(prematureOccurrence.markedToken)}` : ""}, or place the required counterpart before its first occurrence. Rewrite the containing word or sentence naturally so the retained first-match relation can advance. ${replacementGuidance}`
         : replacementGuidance,
@@ -1001,7 +1341,11 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
       ...(replacementOnlyRepair ? { name: "rewrite_text_excerpt" } : {}),
       description: [
         replacementOnlyRepair
-          ? "Rewrite one exact earlier text excerpt selected by retained failed-test evidence. The runtime owns its path and exact anchor; return only the complete revised excerpt, not the whole file."
+          ? hasTestHarnessPathTarget
+            ? "Rewrite one exact launch-path assignment selected from an agent-created Python test. The runtime owns its path and anchor and preserves the test contract."
+            : structuralReplacementOnly
+            ? "Rewrite one exact Python source region selected by retained failed-test evidence. The runtime owns its path and exact anchor; return the complete executable revised region."
+            : "Rewrite one exact earlier text excerpt selected by retained failed-test evidence. The runtime owns its path and exact anchor; return only the complete revised excerpt, not the whole file."
           : "Repair one exact earlier occurrence selected by retained failed-test evidence.",
         `Selected location${selectedLocations.length === 1 ? "" : "s"}: ${selectedLocations.join(", ")}.`,
         replacementOnlyRepair
@@ -1023,6 +1367,7 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
             }
           : {
               ...tool.function.parameters,
+              required: ["path", "search", "replace"],
               properties: {
                 ...properties,
                 path: {
@@ -1058,6 +1403,7 @@ function annotateRequiredSymbolRepair(tool, repair = null) {
   const owner = String(repair.owner || "canonical source").trim();
   const symbol = String(repair.symbol || "").trim();
   const properties = tool.function?.parameters?.properties || {};
+  const runtimeOwnsTarget = tool.function?.name === "rewrite_text_excerpt";
   const pathProperty = properties.path || { type: "string" };
   const contracts = (
     Array.isArray(repair.contracts) && repair.contracts.length
@@ -1127,7 +1473,7 @@ function annotateRequiredSymbolRepair(tool, repair = null) {
         ...tool.function.parameters,
         properties: {
           ...properties,
-          ...(path
+          ...(path && !runtimeOwnsTarget
             ? {
                 path: {
                   ...pathProperty,
@@ -1424,14 +1770,13 @@ export function selectProgressiveTools(
   { config = {}, goal = "", profile = "", messages = [] } = {}
 ) {
   const validated = validatedUniqueTools(tools);
-  const enabled = validated.filter(({ name }) => !toolIsDisabled(name, config));
-  const finish = enabled.find(({ name }) => name === "finish")?.tool;
+  const baselineEnabled = validated.filter(({ name }) => !toolIsDisabled(name, config));
+  const enabled = baselineEnabled.filter(
+    ({ name }) => !toolIsConvergenceSuppressed(name, config)
+  );
+  const finish = baselineEnabled.find(({ name }) => name === "finish")?.tool;
   if (!finish) {
     throw new TypeError("An enabled, valid finish function tool must exist in the input tool array");
-  }
-
-  if (config.verifiedCompletionPending === true) {
-    return [finish];
   }
 
   if (
@@ -1445,7 +1790,81 @@ export function selectProgressiveTools(
       [config.patchContextRefreshPath.trim()],
       "patch-context-refresh"
     );
-    return [readFile, finish].filter(Boolean);
+    return [readFile].filter(Boolean);
+  }
+
+  if (
+    config.patchContextRepairRequired === true &&
+    typeof config.patchContextRepairPath === "string" &&
+    config.patchContextRepairPath.trim() &&
+    typeof config.patchContextRepairSearch === "string" &&
+    config.patchContextRepairSearch
+  ) {
+    const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    const applyPatch = constrainPatchContextRepair(
+      available.get("apply_patch"),
+      config
+    );
+    const repairRead = Math.max(0, Number(config.patchContextRepairReadCount || 0)) < 1
+      ? constrainReadFilePaths(
+          available.get("read_file"),
+          [String(config.patchContextRepairPath)],
+          "patch-context-repair"
+        )
+      : null;
+    return [applyPatch, repairRead].filter(Boolean);
+  }
+
+  if (config.verifiedCompletionPending === true) {
+    return [finish];
+  }
+
+  if (
+    config.completionFreshMutationRequired === true &&
+    config.testFailureRepairActive !== true
+  ) {
+    const available = new Map(baselineEnabled.map(({ name, tool }) => [name, tool]));
+    const paths = Array.isArray(config.completionFreshMutationPaths)
+      ? config.completionFreshMutationPaths
+      : [];
+    if (config.completionFreshMutationNeedsSourceRead === true) {
+      const readFile = constrainReadFilePaths(
+        available.get("read_file"),
+        paths,
+        "completion-fresh-mutation"
+      );
+      return [readFile].filter(Boolean);
+    }
+    const applyPatch = constrainCompletionFreshMutationPatch(
+      available.get("apply_patch"),
+      paths
+    );
+    return [applyPatch].filter(Boolean);
+  }
+
+  if (
+    config.taskOwnedCommitPending === true &&
+    config.testFailureRepairActive !== true &&
+    config.testVerificationPending !== true
+  ) {
+    const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    const pendingGitActions = Array.isArray(config.taskOwnedPendingGitActions)
+      ? config.taskOwnedPendingGitActions.map((item) => String(item || "").toLowerCase())
+      : [];
+    const boundedCommitPaths = Array.isArray(config.taskOwnedCommitPaths)
+      ? config.taskOwnedCommitPaths
+      : [];
+    if (
+      pendingGitActions.includes("commit") &&
+      pendingGitActions.every((action) => ["add", "commit"].includes(action)) &&
+      boundedCommitPaths.length > 0
+    ) {
+      const commitProjectChanges = constrainRepositoryStateCommit(
+        available.get("run_command"),
+        boundedCommitPaths
+      );
+      if (commitProjectChanges) return [commitProjectChanges, finish].filter(Boolean);
+    }
   }
 
   if (
@@ -1583,6 +2002,58 @@ export function selectProgressiveTools(
       "Run the exact discovered test suite now. A canonical source changed after the last test, so no artifact work or further discovery is valid until this command passes or returns a concrete failure."
     );
     return [verificationCommand, finish].filter(Boolean);
+  }
+
+  if (config.scopedArtifactTask === true && config.scopedArtifactRoot) {
+    const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    return [
+      constrainScopedArtifactPath(
+        available.get("list_files"),
+        config.scopedArtifactRoot,
+        { rootOnly: true }
+      ),
+      constrainScopedArtifactPath(
+        available.get("read_file"),
+        config.scopedArtifactRoot
+      ),
+      constrainScopedArtifactPath(
+        available.get("search_files"),
+        config.scopedArtifactRoot,
+        { rootOnly: true }
+      ),
+      constrainScopedArtifactPath(
+        available.get("write_file"),
+        config.scopedArtifactRoot
+      ),
+      constrainScopedArtifactPath(
+        available.get("apply_patch"),
+        config.scopedArtifactRoot
+      ),
+      available.get("run_command"),
+      finish,
+    ].filter(Boolean);
+  }
+
+  if (config.repositoryGroundingRequired === true) {
+    const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    const discovery = repositoryGroundingState(messages, {
+      requireTests: config.repositoryGroundingRequiresTests !== false,
+      minimumGoalRevision: Math.max(
+        0,
+        Number(config.repositoryGroundingGoalRevision || 0)
+      ),
+    });
+    if (discovery.phase === "inspect") {
+      return [available.get("inspect_project"), finish].filter(Boolean);
+    }
+    if (discovery.phase !== "ready") {
+      const readFile = constrainReadFilePaths(
+        available.get("read_file"),
+        discovery.paths,
+        discovery.phase
+      );
+      return [readFile, finish].filter(Boolean);
+    }
   }
 
   if (

@@ -9,6 +9,7 @@ import { chromium } from "playwright";
 import {
   createClient,
   createPlan,
+  isTransientProviderRequestError,
   requestDirectResponse,
   requestNextStep,
   resolveModelTimeoutMs,
@@ -127,6 +128,8 @@ import {
   evaluateScsEvidence,
   evaluateScsSemanticContract,
   augmentScsTaskContractWithProjectVerification,
+  agintiEvidenceScopeLine,
+  filterExplicitlyExcludedOutputPaths,
   extractMarkdownCommandEvidence,
   extractMarkdownPathEvidence,
   finishResultClaimsBlocker,
@@ -140,6 +143,8 @@ import {
   gitActionsSatisfyContract,
   parseExplicitExitStatus,
   parseNonMutatingExitStatusWrapper,
+  scopedChatopsEvidenceGoal,
+  scopedArtifactRoot,
 } from "./scs-evidence.js";
 import {
   DEFAULT_SCS_MODE,
@@ -217,10 +222,15 @@ const STATIC_DISCOVERY_CONVERGENCE_LIMIT = 14;
 const CONSTRAINED_RECOVERY_CONTEXT_TARGET_TOKENS = 2048;
 const CONSTRAINED_RECOVERY_OUTPUT_TOKEN_CAP = 768;
 const CONSTRAINED_REPOSITORY_RECOVERY_OUTPUT_TOKEN_CAP = 1536;
+const CONSTRAINED_SOURCE_MUTATION_OUTPUT_TOKEN_CAP = 4096;
+const MALFORMED_TOOL_RESPONSE_RETRY_OUTPUT_TOKEN_CAP = 6144;
 const MAX_COMPLETION_EVIDENCE_REPAIR_ATTEMPTS = 4;
 const FAILED_TEST_EVIDENCE_VERSION = 2;
-const FAILED_TEST_RECOVERY_PACKET_VERSION = 8;
+const FAILED_TEST_RECOVERY_PACKET_VERSION = 13;
 const PATCH_CONTEXT_REFRESH_VERSION = 1;
+const PATCH_CONTEXT_REPAIR_VERSION = 1;
+const PATCH_CONTEXT_ANCHOR_MAX_BYTES = 12_000;
+const PATCH_CONTEXT_ANCHOR_MAX_LINES = 120;
 const REQUIRED_SYMBOL_REPAIR_VERSION = 1;
 const FAILED_TEST_CONTROL_PLANE_PATTERNS = [
   /evidence-derived\s+(?:repair\s+)?anchor/i,
@@ -330,11 +340,16 @@ function buildScsRuntimeContext(config = {}, state = {}, extra = {}) {
   });
   const verification = state.meta?.projectVerification || {};
   const mutationRevision = Number(verification.mutationRevision || 0);
+  const privateMutationRevision = Number(verification.privateMutationRevision || 0);
   const requiredCommands = effectiveRequiredProjectCommands(state, verification, config).slice(0, 16);
   const requiredCommandBatch = currentRequiredCommandBatch(verification, requiredCommands);
   const currentTest = [...(Array.isArray(verification.testRuns) ? verification.testRuns : [])]
     .reverse()
-    .find((run) => Number(run?.mutationRevision || 0) === mutationRevision);
+    .find(
+      (run) =>
+        !testRunRepresentsInvalidInvocation(run) &&
+        testRunMatchesVerificationRevision(run, verification)
+    );
   return {
     ...extra,
     taskProfile: config.taskProfile,
@@ -351,6 +366,7 @@ function buildScsRuntimeContext(config = {}, state = {}, extra = {}) {
     skillContext: formatSkillsForPrompt(selectedSkills, { maxChars: 4400 }),
     projectVerification: {
       mutationRevision,
+      privateMutationRevision,
       discoveredTests: Array.isArray(verification.discoveredTests)
         ? verification.discoveredTests.slice(0, 24)
         : [],
@@ -990,6 +1006,18 @@ function compactRetainedToolPayload(toolName, payload = {}, args = {}) {
     ok: payload.ok !== false,
     toolName,
   };
+  if (payload.goalRevision !== undefined && payload.goalRevision !== null) {
+    result.goalRevision = Math.max(0, Number(payload.goalRevision || 0));
+  }
+  if (
+    payload.projectMutationRevision !== undefined &&
+    payload.projectMutationRevision !== null
+  ) {
+    result.projectMutationRevision = Math.max(
+      0,
+      Number(payload.projectMutationRevision || 0)
+    );
+  }
   const sourcePath = String(payload.path || args.path || "").trim();
   if (sourcePath) result.path = sourcePath;
   if (payload.blocked) result.blocked = true;
@@ -1200,6 +1228,61 @@ function retainedToolStateTextMessages(messages = [], limit = 12, outputPaths = 
     });
   }
   return retained;
+}
+
+function latestCompleteReadFileEvidence(messages = [], maxChars = 16000) {
+  const callsById = new Map();
+  let latest = null;
+  const accept = (name, args = {}, payload = {}) => {
+    const sourcePath = String(payload.path || args.path || "").trim();
+    if (["apply_patch", "write_file"].includes(name)) {
+      if (latest && retainedPathMatchesAny(latest.path, [sourcePath])) latest = null;
+      return;
+    }
+    if (
+      name !== "read_file" ||
+      payload.ok === false ||
+      payload.blocked ||
+      payload.skipped ||
+      payload.contentTruncated === true ||
+      payload.contentTruncatedByLines === true ||
+      typeof payload.content !== "string" ||
+      !sourcePath ||
+      payload.content.length > maxChars
+    ) {
+      return;
+    }
+    latest = {
+      path: sourcePath,
+      content: payload.content,
+      sha256: String(payload.sha256 || "").trim(),
+      lineCount: Math.max(0, Number(payload.lineCount || 0)),
+    };
+  };
+
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const retained = parseRetainedToolEvidenceMessage(message);
+    if (retained) {
+      accept(retained.name, retained.args, retained.payload);
+      continue;
+    }
+    if (message?.role === "assistant" && Array.isArray(message.tool_calls)) {
+      for (const call of message.tool_calls) {
+        const id = String(call?.id || "").trim();
+        if (!id) continue;
+        callsById.set(id, {
+          name: String(call?.function?.name || "").trim(),
+          args: safeParseToolContent(call?.function?.arguments) || {},
+        });
+      }
+      continue;
+    }
+    if (message?.role !== "tool") continue;
+    const call = callsById.get(String(message.tool_call_id || "").trim());
+    const payload = safeParseToolContent(message.content);
+    if (call && payload) accept(call.name, call.args, payload);
+  }
+  return latest;
 }
 
 function retainedToolPairPriority(pair = [], order = 0, outputPaths = [], inputPaths = []) {
@@ -1416,7 +1499,10 @@ export function modelTimeoutRetryRoute(config = {}) {
   const switchedRetryCap = provider === "localllm" ? 300000 : 180000;
   const retryTimeoutMs = switchedModel
     ? Math.min(Math.max(Math.round(timeoutMs * 0.75), 60000), switchedRetryCap)
-    : Math.max(timeoutMs * 2, 180000);
+    : Math.min(
+        Math.max(Math.round(timeoutMs * 0.75), 60000),
+        provider === "localllm" ? 180000 : 120000
+      );
   return {
     provider,
     model,
@@ -1424,6 +1510,62 @@ export function modelTimeoutRetryRoute(config = {}) {
     switchedModel,
     timeoutMs,
     retryTimeoutMs,
+  };
+}
+
+export function modelTransportRetryRoute(config = {}) {
+  const provider = normalizeProviderId(config.provider, "");
+  const model = String(config.model || "").trim();
+  const timeoutMs = modelTimeoutMsForConfig(config);
+  const retryCap = provider === "localllm" ? 300000 : 180000;
+  return {
+    provider,
+    model,
+    previousModel: model,
+    switchedModel: false,
+    timeoutMs,
+    retryTimeoutMs: Math.min(Math.max(timeoutMs, 60000), retryCap),
+  };
+}
+
+export function modelTimeoutExhaustionRoute(config = {}, retryRoute = {}) {
+  const provider = normalizeProviderId(retryRoute.provider || config.provider, "");
+  const currentModel = String(retryRoute.model || config.model || "").trim();
+  if (
+    provider !== "localllm" ||
+    retryRoute.switchedModel === true ||
+    currentModel !== "localllm-fast"
+  ) {
+    return {
+      provider,
+      model: currentModel,
+      previousModel: currentModel,
+      switchedModel: false,
+      retryTimeoutMs: 0,
+    };
+  }
+
+  const available = Array.isArray(config.localAvailableModels)
+    ? config.localAvailableModels.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const candidates = [
+    sameProviderRoleModel(config, "main", provider),
+    sameProviderRoleModel(config, "spare", provider),
+    String(config.localCodeFallbackModel || "").trim(),
+    "localllm-deep",
+  ].filter((candidate, index, all) => (
+    candidate &&
+    candidate !== currentModel &&
+    all.indexOf(candidate) === index &&
+    (available.length === 0 || available.includes(candidate))
+  ));
+  const model = candidates[0] || currentModel;
+  return {
+    provider,
+    model,
+    previousModel: currentModel,
+    switchedModel: model !== currentModel,
+    retryTimeoutMs: model !== currentModel ? 240000 : 0,
   };
 }
 
@@ -1438,6 +1580,64 @@ export function applyModelTimeoutRetryRoute(config = {}, retryRoute = {}) {
     routeReason: `The prior ${String(retryRoute.previousModel || "model")} request timed out; continuing this run on the bounded in-provider recovery route ${model}.`,
     modelTimeoutRecoveryActive: true,
   };
+}
+
+export function adoptModelTimeoutRecoveryState(
+  state = {},
+  nextConfig = {},
+  retryRoute = {},
+  step = 0,
+  activatedAt = new Date().toISOString()
+) {
+  state.meta = state.meta || {};
+  const provider = normalizeProviderId(nextConfig.provider, "");
+  const model = String(nextConfig.model || "").trim();
+  const previousModel = String(retryRoute.previousModel || "").trim();
+  const goalRevision = Math.max(1, Number(state.meta.goalContract?.revision || 1));
+  const goalKey = String(
+    state.meta.goalContract?.currentHash || state.meta.goalContract?.activeHash || ""
+  ).trim();
+  state.meta.modelTimeoutRecovery = {
+    active: true,
+    provider,
+    model,
+    previousModel,
+    activatedAt,
+    step,
+    goalRevision,
+    ...(goalKey ? { goalKey } : {}),
+  };
+
+  const localRecovery = state.meta.localFailureRecovery;
+  if (
+    provider === "localllm" &&
+    model &&
+    localRecovery?.active === true
+  ) {
+    const supersededModel = String(localRecovery.model || previousModel).trim();
+    const attemptedModels = [
+      ...(Array.isArray(localRecovery.attemptedModels)
+        ? localRecovery.attemptedModels
+        : []),
+      supersededModel,
+      model,
+    ]
+      .map((candidate) => String(candidate || "").trim())
+      .filter((candidate, index, candidates) => candidate && candidates.indexOf(candidate) === index);
+    state.meta.localFailureRecovery = {
+      ...localRecovery,
+      active: true,
+      model,
+      fromModel: supersededModel || previousModel,
+      reason: `The prior local recovery route ${supersededModel || previousModel || "model"} timed out; continuing on the bounded in-provider route ${model}.`,
+      attemptedModels,
+      activatedAt,
+      timeoutSupersededModel: supersededModel || previousModel,
+      timeoutSupersededAt: activatedAt,
+      ...(goalKey ? { goalKey } : {}),
+    };
+  }
+  return state.meta.modelTimeoutRecovery;
 }
 
 function sameProviderRoleModel(config = {}, role = "", provider = "") {
@@ -1489,8 +1689,25 @@ export function buildPlanningTimeoutFallbackPlan(config = {}, state = {}) {
   ].join("\n");
 }
 
+export function runtimeMessagesSinceLatestContinuationBoundary(messages = []) {
+  const source = Array.isArray(messages) ? messages : [];
+  for (let index = source.length - 1; index >= 0; index -= 1) {
+    const message = source[index];
+    if (
+      message?.role === "user" &&
+      /^(?:Continue the current task from saved state:|Continue with this new request:)/i.test(
+        String(message.content || "")
+      )
+    ) {
+      return source.slice(index);
+    }
+  }
+  return source;
+}
+
 function buildCompactedRuntimeMessages(state, config, snapshot, step, options = {}) {
   const messages = Array.isArray(state?.messages) ? state.messages : [];
+  const currentTurnMessages = runtimeMessagesSinceLatestContinuationBoundary(messages);
   const systemMessages = messages
     .filter((message) => message?.role === "system")
     .slice(0, 3)
@@ -1502,7 +1719,7 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
     Array.isArray(state?.chat) && state.chat.length > 0 ? state.chat : messages,
     2
   );
-  const toolHistory = summarizeToolHistory(messages);
+  const toolHistory = summarizeToolHistory(currentTurnMessages);
   const retainedSourceEvidence = summarizeRetainedSourceEvidence(messages);
   const failedTestEvidence = retainedFailedTestEvidencePacket(state, messages);
   const verificationCheckpoint = compactVerificationCheckpoint(state);
@@ -1523,8 +1740,8 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
   const exactOutputPaths = exactOutputPathsForState(state);
   const exactInputPaths = exactInputPathsForState(state);
   const retainedToolMessages = deepSeekCompaction
-    ? retainedToolStateTextMessages(messages, 12, exactOutputPaths, exactInputPaths)
-    : retainedToolStateMessages(messages, 12, exactOutputPaths, exactInputPaths);
+    ? retainedToolStateTextMessages(currentTurnMessages, 12, exactOutputPaths, exactInputPaths)
+    : retainedToolStateMessages(currentTurnMessages, 12, exactOutputPaths, exactInputPaths);
   const snapshotSummary = {
     step,
     maxSteps: config.maxSteps,
@@ -1655,6 +1872,10 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
 }
 
 export function buildModelTimeoutRetryMessages(state, config, snapshot, step, error) {
+  const failureKind = recoverableModelRequestFailureKind(error);
+  const failureLabel = failureKind === "transport"
+    ? "transient provider transport interruption"
+    : "model timeout";
   if (state.meta?.artifactProgress?.complete) {
     const systemMessages = (state.messages || [])
       .filter((message) => message?.role === "system")
@@ -1670,8 +1891,8 @@ export function buildModelTimeoutRetryMessages(state, config, snapshot, step, er
       {
         role: "user",
         content: [
-          "The previous artifact-validation model turn timed out.",
-          `Timeout: ${error?.name || "ModelTimeoutError"} ${compactSingleLine(error?.message || "", 260)}`,
+          `The previous artifact-validation model turn was interrupted by a ${failureLabel}.`,
+          `Provider evidence: ${error?.name || "Error"} ${compactSingleLine(error?.message || "", 260)}`,
           "Continue from the embedded exact output and deterministic preflight above. Preserve supported content, repair only the listed defects, do not restart discovery, and do not call finish until every pending validation flag and defect count are clear.",
         ].join(" "),
       },
@@ -1685,9 +1906,239 @@ export function buildModelTimeoutRetryMessages(state, config, snapshot, step, er
     return messages;
   }
   return buildCompactedRuntimeMessages(state, config, snapshot, step, {
-    heading: "A previous agent-step model request timed out. Continue from this compacted, valid transcript.",
-    detail: `Timeout: ${error?.name || "ModelTimeoutError"} ${compactSingleLine(error?.message || "", 260)}`,
+    heading: `A previous agent-step request was interrupted by a ${failureLabel}. Continue from this compacted, valid transcript.`,
+    detail: `Provider evidence: ${error?.name || "Error"} ${compactSingleLine(error?.message || "", 260)}`,
   });
+}
+
+async function recoverInterruptedModelStep({
+  error,
+  client,
+  config,
+  state,
+  store,
+  observers,
+  snapshot,
+  step,
+  stepRuntimeConfig,
+  requestMessages,
+}) {
+  const failureKind = recoverableModelRequestFailureKind(error);
+  const retryKey = `step-${step}`;
+  const retriesField = failureKind === "transport"
+    ? "modelTransportRetries"
+    : "modelTimeoutRetries";
+  const retriedSteps = state.meta[retriesField] || {};
+  if (!failureKind || retriedSteps[retryKey]) throw error;
+
+  const retryRoute = failureKind === "transport"
+    ? modelTransportRetryRoute(config)
+    : modelTimeoutRetryRoute(config);
+  const { timeoutMs, retryTimeoutMs } = retryRoute;
+  const localRetry = retryRoute.provider === "localllm";
+  const retryContextTargetTokens = localRetry
+    ? Math.min(
+        Math.max(
+          2048,
+          Number(
+            stepRuntimeConfig.contextBudgetTargetTokens ||
+              state.meta?.contextBudget?.targetTokens ||
+              6144
+          ) || 6144
+        ),
+        6144
+      )
+    : Number(stepRuntimeConfig.contextBudgetTargetTokens || 0) || undefined;
+  const currentOutputTokens = Math.max(
+    0,
+    Number(stepRuntimeConfig.maxOutputTokens || 0)
+  );
+  const retryOutputTokens = localRetry
+    ? Math.min(Math.max(currentOutputTokens || 4096, 2048), 4096)
+    : currentOutputTokens || undefined;
+  const retryRuntimeConfig = {
+    ...stepRuntimeConfig,
+    ...(retryContextTargetTokens
+      ? { contextBudgetTargetTokens: retryContextTargetTokens }
+      : {}),
+    ...(retryOutputTokens ? { maxOutputTokens: retryOutputTokens } : {}),
+  };
+  const requestState = requestMessages === state.messages
+    ? state
+    : { ...state, messages: requestMessages };
+  const compactMessages = buildModelTimeoutRetryMessages(
+    requestState,
+    retryRuntimeConfig,
+    snapshot,
+    step,
+    error
+  );
+  const detail = {
+    step,
+    provider: config.provider,
+    model: config.model,
+    retryProvider: retryRoute.provider,
+    retryModel: retryRoute.model,
+    switchedModel: retryRoute.switchedModel,
+    timeoutMs,
+    retryTimeoutMs,
+    messageCharsBefore: countMessageChars(requestMessages),
+    messageCharsAfter: countMessageChars(compactMessages),
+    messageTokensAfter: estimateMessageTokens(compactMessages),
+    maxOutputTokens: retryOutputTokens || 0,
+    error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+  };
+  state.messages = compactMessages;
+  resetStaticDiscoveryAfterContextLoss(state, "model-timeout-retry", {
+    preserveStaticEvidence: true,
+  });
+  state.meta[retriesField] = {
+    ...retriedSteps,
+    [retryKey]: true,
+  };
+  if (failureKind === "transport") {
+    state.meta.lastModelTransportInterruption = detail;
+  } else {
+    state.meta.lastModelTimeout = detail;
+  }
+  const failureEvent = failureKind === "transport"
+    ? "model.transport_interrupted"
+    : "model.timeout";
+  await store.appendEvent(failureEvent, detail);
+  await store.appendEvent("history.compacted_for_model_retry", {
+    ...detail,
+    failureKind,
+  });
+  observers.event(failureEvent, detail);
+  observers.event("history.compacted_for_model_retry", {
+    ...detail,
+    failureKind,
+  });
+  emitConsole(
+    config,
+    failureKind === "transport"
+      ? `Provider transport was interrupted; compacted history and retrying the same grounded turn once with ${retryRoute.provider}/${retryRoute.model}.`
+      : `Model request timed out after ${timeoutMs}ms; compacted history and retrying once with ${retryRoute.provider}/${retryRoute.model} for ${retryTimeoutMs}ms.`,
+    { kind: "meta" }
+  );
+  await store.saveState(state);
+  let response;
+  let successfulRoute = retryRoute;
+  let successfulMessages = compactMessages;
+  try {
+    response = await requestNextStep(
+      client,
+      {
+        ...retryRuntimeConfig,
+        provider: retryRoute.provider,
+        model: retryRoute.model,
+        modelTimeoutMs: retryTimeoutMs,
+      },
+      compactMessages
+    );
+  } catch (retryError) {
+    const escalationRoute = modelTimeoutExhaustionRoute(config, retryRoute);
+    if (
+      !recoverableModelRequestFailureKind(retryError) ||
+      escalationRoute.switchedModel !== true
+    ) {
+      throw retryError;
+    }
+    const escalationMessages = [
+      ...compactMessages,
+      {
+        role: "user",
+        content: [
+          "The bounded fast-route retry also timed out before returning a tool call.",
+          `Continue the same exact grounded step on ${escalationRoute.model}; do not restart discovery, change task scope, repeat completed side effects, or discard the retained source/evidence.`,
+          "Return one complete next action that follows the currently offered tool contract.",
+        ].join(" "),
+      },
+    ];
+    const escalationDetail = {
+      step,
+      provider: retryRoute.provider,
+      model: retryRoute.model,
+      escalationProvider: escalationRoute.provider,
+      escalationModel: escalationRoute.model,
+      retryTimeoutMs,
+      escalationTimeoutMs: escalationRoute.retryTimeoutMs,
+      messageChars: countMessageChars(escalationMessages),
+      messageTokens: estimateMessageTokens(escalationMessages),
+      error: redactSensitiveText(
+        retryError instanceof Error ? retryError.message : String(retryError)
+      ),
+    };
+    state.meta.modelTimeoutEscalation = {
+      active: true,
+      ...escalationDetail,
+      startedAt: new Date().toISOString(),
+    };
+    state.messages = escalationMessages;
+    await store.appendEvent("model.timeout_retry_exhausted", escalationDetail);
+    await store.appendEvent("model.timeout_escalation_requested", escalationDetail);
+    observers.event("model.timeout_retry_exhausted", escalationDetail);
+    observers.event("model.timeout_escalation_requested", escalationDetail);
+    emitConsole(
+      config,
+      `The bounded ${retryRoute.model} retry also timed out; escalating the same grounded step once to ${escalationRoute.model} for ${escalationRoute.retryTimeoutMs}ms.`,
+      { kind: "meta" }
+    );
+    await store.saveState(state);
+    response = await requestNextStep(
+      client,
+      {
+        ...retryRuntimeConfig,
+        provider: escalationRoute.provider,
+        model: escalationRoute.model,
+        modelTimeoutMs: escalationRoute.retryTimeoutMs,
+      },
+      escalationMessages
+    );
+    successfulRoute = escalationRoute;
+    successfulMessages = escalationMessages;
+  }
+
+  const recoveredDetail = {
+    step,
+    provider: successfulRoute.provider,
+    model: successfulRoute.model,
+    failureKind,
+  };
+  await store.appendEvent(
+    failureKind === "transport" ? "model.transport_recovered" : "model.timeout_recovered",
+    recoveredDetail
+  );
+  observers.event(
+    failureKind === "transport" ? "model.transport_recovered" : "model.timeout_recovered",
+    recoveredDetail
+  );
+
+  let nextConfig = config;
+  if (successfulRoute.switchedModel) {
+    nextConfig = applyModelTimeoutRetryRoute(config, successfulRoute);
+    state.provider = nextConfig.provider;
+    state.model = nextConfig.model;
+    adoptModelTimeoutRecoveryState(state, nextConfig, successfulRoute, step);
+    state.meta.runtimeConfig = captureSessionRuntime(nextConfig, {
+      revision: state.meta.runtimeConfig?.revision || 1,
+    });
+    const adopted = {
+      step,
+      provider: nextConfig.provider,
+      model: nextConfig.model,
+      previousModel: successfulRoute.previousModel,
+      source: "model-timeout-retry",
+    };
+    await store.appendEvent("model.timeout_route_adopted", adopted);
+    observers.event("model.timeout_route_adopted", adopted);
+    await store.saveState(state);
+  }
+  return {
+    response,
+    config: nextConfig,
+    requestMessages: successfulMessages,
+  };
 }
 
 export function buildContextBudgetCompactionMessages(state, config, snapshot, step, decision = {}) {
@@ -1707,6 +2158,7 @@ export function buildKnownConstrainedPhasePlan(
   const repositoryStateRepair = runtimeConfig.testFailureRepositoryStateRepair === true;
   if (runtimeConfig.testFailureRepairActive === true && !repositoryStateRepair) return null;
 
+  const freshSourceMutation = runtimeConfig.completionFreshMutationRequired === true;
   const verificationPending = runtimeConfig.testVerificationPending === true;
   const requiredProjectCommandPending = runtimeConfig.requiredProjectCommandPending === true;
   const verifiedCompletion = runtimeConfig.verifiedCompletionPending === true;
@@ -1720,12 +2172,19 @@ export function buildKnownConstrainedPhasePlan(
       Array.isArray(runtimeConfig.artifactValidationCommitPaths) &&
       runtimeConfig.artifactValidationCommitPaths.length > 0
   );
+  const taskOwnedCommitPending = Boolean(
+    runtimeConfig.taskOwnedCommitPending === true &&
+      Array.isArray(runtimeConfig.taskOwnedCommitPaths) &&
+      runtimeConfig.taskOwnedCommitPaths.length > 0
+  );
   if (
     !repositoryStateRepair &&
+    !freshSourceMutation &&
     !verificationPending &&
     !requiredProjectCommandPending &&
     !verifiedCompletion &&
-    !artifactCommitPending
+    !artifactCommitPending &&
+    !taskOwnedCommitPending
   ) {
     return null;
   }
@@ -1739,17 +2198,27 @@ export function buildKnownConstrainedPhasePlan(
           ? runtimeConfig.testFailureCommand || ""
           : runtimeConfig.verifiedCompletionCommand || ""
   ).trim();
-  if (!verifiedCompletion && !artifactCommitPending && !command) return null;
+  if (
+    !verifiedCompletion &&
+    !artifactCommitPending &&
+    !taskOwnedCommitPending &&
+    !freshSourceMutation &&
+    !command
+  ) return null;
 
   const mode = repositoryStateRepair
     ? "repository-state-repair"
-    : requiredProjectCommandPending
+    : freshSourceMutation
+      ? "fresh-source-mutation"
+      : requiredProjectCommandPending
       ? "required-project-command"
       : verificationPending
         ? "exact-verification"
         : verifiedCompletion
           ? "verified-completion"
-          : "artifact-git-completion";
+          : artifactCommitPending
+            ? "artifact-git-completion"
+            : "task-owned-git-completion";
   const repositoryCommitReady = Boolean(
     repositoryStateRepair &&
       Array.isArray(runtimeConfig.repositoryStateRepairCommitPaths) &&
@@ -1768,7 +2237,19 @@ export function buildKnownConstrainedPhasePlan(
           `3. Run the exact retained verification command after the repository state is clean: ${command}`,
           "4. Finish only after that exact command passes at the current mutation revision.",
         ].join("\n")
-    : artifactCommitPending
+    : freshSourceMutation
+      ? runtimeConfig.completionFreshMutationNeedsSourceRead === true
+        ? [
+            "1. Read one exact current canonical project file offered by the runtime.",
+            "2. On the next turn, apply one bounded material correction to that grounded file.",
+            "3. Do not run tests, inspect Git, or call finish until the project mutation revision advances.",
+          ].join("\n")
+        : [
+            "1. Apply one bounded material correction to an exact grounded canonical project file now.",
+            "2. Preserve unrelated current behavior and do not edit private verification evidence.",
+            "3. After the mutation succeeds, rerun the retained validation and complete required Git actions.",
+          ].join("\n")
+      : artifactCommitPending || taskOwnedCommitPending
       ? [
           "1. Use the offered commit_project_changes tool once; its path scope comes from recorded task-owned mutations.",
           "2. Call finish from the existing passing tests and deterministic artifact acceptance.",
@@ -1795,8 +2276,14 @@ export function buildKnownConstrainedPhasePlan(
     ? repositoryCommitReady
       ? "The current failure is only a repository-state acceptance gate. The runtime already knows the task-owned changed paths, so call commit_project_changes with a concise factual subject. Do not inspect again or invent another source edit."
       : "The current failure is a repository-state acceptance gate, not a content defect. Use only the offered Git-capable command tool to inspect and cleanly commit task-owned changes, then run the exact retained verifier. Do not invent another source edit."
-    : artifactCommitPending
+    : freshSourceMutation
+      ? runtimeConfig.completionFreshMutationNeedsSourceRead === true
+        ? "Completion was rejected because a fresh canonical source correction is still missing. Read one exact offered project file now; command, test, Git, and finish actions remain intentionally unavailable until the source is grounded and materially patched."
+        : "Completion was rejected because a fresh canonical source correction is still missing. Use the offered path-bounded apply_patch tool now. Do not substitute another read-only inspection, test rerun, Git command, private verifier edit, or finish claim."
+      : artifactCommitPending
       ? "The exact artifact and current source changes already passed deterministic checks. Only the required local commit is missing. Call commit_project_changes with a concise factual subject, then finish; do not restart discovery or validation."
+      : taskOwnedCommitPending
+        ? "The task-owned source changes already have fresh passing verification. Only the explicitly requested local commit is missing. Call commit_project_changes with a concise factual subject, then finish; do not reread, rewrite, or rerun completed work."
       : requiredProjectCommandPending
         ? "A user-requested canonical project command is still missing. Run the exact offered command once now; do not replace it with a familiar test, staging command, or commit retry."
         : verificationPending
@@ -1823,9 +2310,14 @@ export function buildConstrainedRecoveryRequest(
   if (!phase) return null;
   const { mode, command, plan: effectivePlan, recoveryInstruction } = phase;
   const repositoryStateRepair = mode === "repository-state-repair";
+  const freshSourceMutation = mode === "fresh-source-mutation";
   const artifactCommitPending = mode === "artifact-git-completion";
+  const taskOwnedCommitPending = mode === "task-owned-git-completion";
   const requestedOutputCap = Number(runtimeConfig.maxOutputTokens || 0);
-  const phaseDefaultOutputCap = repositoryStateRepair || artifactCommitPending
+  const phaseDefaultOutputCap =
+    freshSourceMutation
+    ? CONSTRAINED_SOURCE_MUTATION_OUTPUT_TOKEN_CAP
+    : repositoryStateRepair || artifactCommitPending || taskOwnedCommitPending
     ? CONSTRAINED_REPOSITORY_RECOVERY_OUTPUT_TOKEN_CAP
     : CONSTRAINED_RECOVERY_OUTPUT_TOKEN_CAP;
   const configuredCap = Number(
@@ -1833,6 +2325,10 @@ export function buildConstrainedRecoveryRequest(
       ? runtimeConfig.repositoryStateRecoveryMaxOutputTokens ||
           runtimeConfig.constrainedRecoveryMaxOutputTokens ||
           phaseDefaultOutputCap
+      : freshSourceMutation
+        ? runtimeConfig.completionFreshMutationMaxOutputTokens ||
+            runtimeConfig.constrainedRecoveryMaxOutputTokens ||
+            phaseDefaultOutputCap
       : runtimeConfig.constrainedRecoveryMaxOutputTokens || phaseDefaultOutputCap
   );
   const defaultOutputCap = Number.isFinite(configuredCap) && configuredCap > 0
@@ -1841,17 +2337,20 @@ export function buildConstrainedRecoveryRequest(
   const outputCap = Number.isFinite(requestedOutputCap) && requestedOutputCap > 0
     ? Math.min(requestedOutputCap, defaultOutputCap)
     : defaultOutputCap;
+  const contextFloor = freshSourceMutation
+    ? 6144
+    : CONSTRAINED_RECOVERY_CONTEXT_TARGET_TOKENS;
   const contextTarget = Math.min(
     Math.max(
-      CONSTRAINED_RECOVERY_CONTEXT_TARGET_TOKENS,
+      contextFloor,
       Number(runtimeConfig.constrainedRecoveryContextTargetTokens || 0)
     ),
     Math.max(
-      CONSTRAINED_RECOVERY_CONTEXT_TARGET_TOKENS,
+      contextFloor,
       Math.floor(Number(runtimeConfig.contextWindowTokens || 32768) * 0.25)
     )
   );
-  const messages = buildCompactedRuntimeMessages(
+  let messages = buildCompactedRuntimeMessages(
     state,
     {
       ...runtimeConfig,
@@ -1866,6 +2365,30 @@ export function buildConstrainedRecoveryRequest(
       recoveryInstruction,
     }
   );
+  const exactCurrentSource = freshSourceMutation &&
+      runtimeConfig.completionFreshMutationNeedsSourceRead !== true
+    ? latestCompleteReadFileEvidence(
+        runtimeMessagesSinceLatestContinuationBoundary(state.messages || [])
+      )
+    : null;
+  if (exactCurrentSource) {
+    messages = [
+      ...messages,
+      {
+        role: "user",
+        content: [
+          "Authoritative exact current source for this mutation turn. This complete read supersedes older excerpts and rejected patch assumptions.",
+          `Path: ${exactCurrentSource.path}`,
+          exactCurrentSource.sha256 ? `SHA-256: ${exactCurrentSource.sha256}` : "",
+          exactCurrentSource.lineCount ? `Lines: ${exactCurrentSource.lineCount}` : "",
+          "--- CURRENT SOURCE START ---",
+          exactCurrentSource.content,
+          "--- CURRENT SOURCE END ---",
+          "Patch only from this exact source. Preserve unrelated declarations and keep the result structurally coherent.",
+        ].filter(Boolean).join("\n"),
+      },
+    ];
+  }
 
   return {
     mode,
@@ -1886,8 +2409,54 @@ function isModelTimeoutError(error) {
   return error?.name === "ModelTimeoutError" || /timed out after \d+ms/i.test(String(error?.message || ""));
 }
 
+function recoverableModelRequestFailureKind(error) {
+  if (isModelTimeoutError(error)) return "timeout";
+  if (isTransientProviderRequestError(error)) return "transport";
+  return "";
+}
+
 function isLocalContextBudgetError(error) {
   return error?.name === "LocalContextBudgetError" || error?.code === "LOCALLLM_CONTEXT_BUDGET_EXCEEDED";
+}
+
+export function isLocalMalformedToolResponseError(error, config = {}) {
+  const provider = normalizeProviderId(error?.agintiProvider || config.provider, "");
+  if (provider !== "localllm" || error?.agintiProviderRequest !== true) return false;
+  const message = [
+    error?.message,
+    error?.error?.message,
+    error?.cause?.message,
+    error?.response?.data?.error?.message,
+    error?.response?.data?.message,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return /invalid tool call arguments|unexpected end of json input|tool[_\s.-]?call[^\n]{0,100}(?:invalid|malformed|truncated|parse)/i.test(message);
+}
+
+export function buildMalformedToolResponseRetryMessages(
+  requestMessages = [],
+  stepRuntimeConfig = {},
+  step = 0,
+  error = null
+) {
+  const offeredTools = Array.isArray(stepRuntimeConfig.progressiveToolNames)
+    ? stepRuntimeConfig.progressiveToolNames.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const exactTool = offeredTools.length === 1 ? offeredTools[0] : "the single currently offered tool";
+  return [
+    ...(Array.isArray(requestMessages) ? requestMessages : []),
+    {
+      role: "user",
+      content: [
+        `The local provider truncated or malformed the previous tool-call arguments at step ${step}; no action was dispatched.`,
+        `Retry this same grounded step once with exactly one complete ${exactTool} call.`,
+        "Keep the JSON small and valid. If this is apply_patch, change only the smallest necessary source region and do not rewrite the whole file.",
+        "Preserve the exact path, source anchor, task intent, and current acceptance evidence already present above.",
+        `Provider evidence: ${compactSingleLine(error?.message || "malformed tool response", 240)}`,
+      ].join(" "),
+    },
+  ];
 }
 
 export function repairModelMessageHistory(state, config = {}) {
@@ -2153,7 +2722,7 @@ async function createInitialState(config, sessionId) {
   const retainedMessages = isRetainedWorkspaceProfile(config)
     ? buildRetainedWorkspaceRuntimeMessages({ config, projectInstructionContext, temporalContext })
     : null;
-  return {
+  const state = {
     sessionId,
     createdAt: now,
     updatedAt: now,
@@ -2167,6 +2736,7 @@ async function createInitialState(config, sessionId) {
     stepsCompleted: 0,
     meta: {
       lastUrl: "",
+      taskProfile: config.taskProfile || "auto",
       goalContract: initialGoalContract(config.goal, now),
       runtimeConfig: captureSessionRuntime(config),
       localAutoMaxPolicy: captureLocalAutoMaxPolicy(config),
@@ -2352,6 +2922,8 @@ async function createInitialState(config, sessionId) {
       },
     ],
   };
+  resetSameTaskExecutionContract(state, state.meta.goalContract.revision);
+  return state;
 }
 
 function surgicalContextMessage({ contextPack = "", mapPath = "", fingerprint = "", artifactPath = "" } = {}) {
@@ -2616,7 +3188,10 @@ async function maybeExtendStepBudget({ client, config, state, store, observers, 
             )
         );
         const testsCurrent = (verification.testRuns || []).some(
-          (run) => run.ok && Number(run.mutationRevision || 0) === revision
+          (run) =>
+            run.passed === true &&
+            !testRunRepresentsInvalidInvocation(run) &&
+            testRunMatchesVerificationRevision(run, verification)
         );
         const priorities = [];
         if (pendingCommands.length) priorities.push(`canonical commands: ${pendingCommands.join("; ")}`);
@@ -2827,7 +3402,7 @@ function isGenericTaskContinuationText(value = "") {
   if (hasLeadingTaskContinuationClause(normalized)) return true;
   if (normalized.length > 600) return false;
   const explicitSameTaskContinuation =
-    /(?:^|[.!?]\s+)(?:(?:please|kindly)\s+)?(?:continue|resume|keep\s+working|finish|complete)\b.{0,180}\b(?:same|current|previous|existing|retained|saved|unfinished)\b.{0,80}\b(?:task|work|run|session|job|state)\b/i.test(normalized);
+    /(?:^|[.!?]\s+)(?:(?:please|kindly)\s+)?(?:continue|resume|keep\s+working|finish|complete)\b.{0,180}\b(?:same|current|previous|existing|retained|saved|unfinished)\b.{0,80}\b(?:task|work|run|session|job|state|repair|implementation|project|issue|fix)\b/i.test(normalized);
   return explicitSameTaskContinuation || isBareTaskContinuationText(normalized);
 }
 
@@ -2844,6 +3419,7 @@ export function continuationAddsConcreteRequirement(value = "") {
     contract.requiredGitActions,
     contract.requiredProjectCommands,
     contract.requiredTextTerms,
+    contract.requiredExecutableTerms,
     contract.forbiddenTextTerms,
   ].some((items) => Array.isArray(items) && items.length > 0);
 }
@@ -2943,6 +3519,41 @@ export function updateGoalContract(
       { revision, status: "active", reason: entry.kind, at },
     ].slice(-GOAL_HISTORY_LIMIT),
   };
+  const excludedOutputPaths = deriveScsTaskContract({
+    goal: normalized,
+    taskProfile: state.meta?.taskProfile || "auto",
+  }).excludedOutputPaths || [];
+  if (excludedOutputPaths.length) {
+    const filterOutputs = (items = []) =>
+      filterExplicitlyExcludedOutputPaths(items, excludedOutputPaths);
+    if (state.meta.projectVerification && typeof state.meta.projectVerification === "object") {
+      state.meta.projectVerification.requiredOutputs = filterOutputs(
+        state.meta.projectVerification.requiredOutputs
+      );
+    }
+    if (state.meta.scs?.taskContract && typeof state.meta.scs.taskContract === "object") {
+      state.meta.scs.taskContract.exactOutputPaths = filterOutputs(
+        state.meta.scs.taskContract.exactOutputPaths
+      );
+      state.meta.scs.taskContract.exactInputPaths = filterOutputs(
+        state.meta.scs.taskContract.exactInputPaths
+      );
+      state.meta.scs.taskContract.excludedOutputPaths = [
+        ...new Set([
+          ...(Array.isArray(state.meta.scs.taskContract.excludedOutputPaths)
+            ? state.meta.scs.taskContract.excludedOutputPaths
+            : []),
+          ...excludedOutputPaths,
+        ]),
+      ];
+    }
+    if (state.meta.artifactProgress?.exactOutputPaths) {
+      const retained = filterOutputs(state.meta.artifactProgress.exactOutputPaths);
+      if (retained.length !== state.meta.artifactProgress.exactOutputPaths.length) {
+        delete state.meta.artifactProgress;
+      }
+    }
+  }
   return {
     revision,
     previousGoal,
@@ -3165,6 +3776,7 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
     "completionEvidenceRepair",
     "failedTestRecoveryPacket",
     "scs",
+    "stepBudget",
     "verifiedCompletionCandidate",
   ];
   const removed = [];
@@ -3176,15 +3788,30 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
   state.plan = "";
   const activeRevision = Math.max(0, Number(revision || state.meta?.goalContract?.revision || 0));
   const currentRequest = String(state.meta?.goalContract?.currentRequest || state.goal || "").trim();
+  const currentTurnContract = deriveScsTaskContract({
+    goal: currentRequest,
+    taskProfile: state.meta?.taskProfile || "auto",
+  });
   const currentTurnCommands = normalizedRequiredProjectCommands(
-    deriveScsTaskContract({
-      goal: currentRequest,
-      taskProfile: state.meta?.taskProfile || "auto",
-    }).requiredProjectCommands
+    currentTurnContract.requiredProjectCommands
+  );
+  const startedMutationRevision = Math.max(
+    0,
+    Number(state.meta?.projectVerification?.mutationRevision || 0)
   );
   state.meta.activeExecutionContract = {
     revision: activeRevision,
     refreshedAt: new Date().toISOString(),
+    startedMutationRevision,
+    requiresWorkspaceMutation: currentTurnContract.requiresWorkspaceMutation === true,
+    requiresFileMutation: currentTurnContract.requiresFileMutation === true,
+    requiresSourceGrounding: Boolean(
+      currentTurnContract.requiresSourceGrounding === true ||
+        (
+          currentTurnContract.requiresFileMutation === true &&
+          goalClearlyAllowsOverwrite(currentRequest)
+        )
+    ),
     requiredProjectCommands: currentTurnCommands,
   };
   const verification = state.meta.projectVerification;
@@ -3194,6 +3821,24 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
     });
   }
   return removed;
+}
+
+export function applyConcreteContinuationStepBudgetBoundary(
+  config = {},
+  goalUpdate = {},
+  priorStepBudget = {}
+) {
+  if (goalUpdate?.refreshExecutionContract !== true) return false;
+  const explicitMaxStepsOverride = config.resetStepBudget === true;
+  const priorInitialMaxSteps = Math.max(
+    0,
+    Number(priorStepBudget?.initialMaxSteps || 0)
+  );
+  config.resetStepBudget = true;
+  if (!explicitMaxStepsOverride && priorInitialMaxSteps > 0) {
+    config.maxSteps = priorInitialMaxSteps;
+  }
+  return true;
 }
 
 export function applyContinuationContractTransition(
@@ -3206,12 +3851,14 @@ export function applyContinuationContractTransition(
   if (!goalUpdate) return null;
   if (!preserveTaskBoundary) {
     resetGoalScopedRuntimeState(state);
+    resetSameTaskExecutionContract(state, goalUpdate.revision);
   } else if (goalUpdate.refreshExecutionContract) {
     resetSameTaskExecutionContract(state, goalUpdate.revision);
   }
-  if (preserveTaskBoundary) {
-    resetStaticDiscoveryAfterContextLoss(state, "same-task-continuation");
-  }
+  resetStaticDiscoveryAfterContextLoss(
+    state,
+    preserveTaskBoundary ? "same-task-continuation" : "new-task-continuation"
+  );
   state.goal = goalUpdate.activeGoal || goalUpdate.taskGoal || String(nextGoal || "").trim();
   state.plan = preserveTaskBoundary && !goalUpdate.refreshExecutionContract
     ? goalUpdate.previousPlan || state.plan || ""
@@ -3233,7 +3880,9 @@ async function applyContinuationPrompt(state, config, observers) {
   const skillContext = formatSkillsForPrompt(selectedSkills);
   const projectInstructions = await readProjectInstructions(config.baseDir || config.commandCwd || process.cwd());
   state.meta = state.meta || {};
+  const priorStepBudget = state.meta.stepBudget;
   const goalUpdate = applyContinuationContractTransition(state, config.goal);
+  applyConcreteContinuationStepBudgetBoundary(config, goalUpdate, priorStepBudget);
   const preserveTaskBoundary = Boolean(goalUpdate?.preserveTaskBoundary);
   state.meta.projectInstructions = {
     path: projectInstructions.path,
@@ -3709,7 +4358,7 @@ export function skippedAfterBlockedToolResult(toolCall, blockedResult) {
 function goalClearlyAllowsOverwrite(goal = "") {
   const text = String(goal || "").toLowerCase();
   return (
-    /\b(overwrite|replace|update|modify|edit|revise|rewrite|fix|patch|change|append|refresh|regenerate|remember|instruction|instructions|memory|preference|preferences|prefer)\b/i.test(text) ||
+    /\b(overwrite|replace|update|modify|edit|revise|rewrite|fix|repair|correct|patch|change|append|refresh|regenerate|remember|instruction|instructions|memory|preference|preferences|prefer)\b/i.test(text) ||
     /覆盖|覆寫|替换|替換|更新|修改|修复|修復|编辑|編輯|改写|改寫|追加|记住|記住|指令|说明|說明|偏好|上書き|置換|修正|編集/.test(text)
   );
 }
@@ -3849,6 +4498,26 @@ function commandReportsTestFailure(result = {}) {
     /^not ok\b/m.test(output) ||
     /\bTests?:\s+\d+\s+failed\b/i.test(output) ||
     /\b(?:test|tests|spec|specs)\s+failed\b/i.test(output)
+  );
+}
+
+function commandReportsInvalidTestInvocation(result = {}) {
+  const output = `${String(result.stdout || "")}\n${String(result.stderr || "")}`;
+  return (
+    /(?:^|\n)ERROR:\s+file or directory not found:/i.test(output) ||
+    /(?:^|\n)(?:pytest|py\.test):\s*error:\s*(?:unrecognized arguments?|argument\b|the following arguments are required)/i.test(output) ||
+    /(?:^|\n)usage:\s*(?:pytest|py\.test)\b[\s\S]{0,1200}(?:^|\n)(?:pytest|py\.test):\s*error:/im.test(output) ||
+    /(?:No module named pytest|pytest:\s*command not found|command not found:\s*pytest)/i.test(output)
+  );
+}
+
+function testRunRepresentsInvalidInvocation(testRun = {}) {
+  if (testRun?.invalidInvocation === true) return true;
+  const summary = `${String(testRun?.failureSummary || "")}\n${String(testRun?.stderr || "")}`;
+  return (
+    /(?:^|\b)file or directory not found:/i.test(summary) ||
+    /(?:pytest|py\.test):\s*error:\s*(?:unrecognized arguments?|argument\b|the following arguments are required)/i.test(summary) ||
+    /(?:No module named pytest|pytest:\s*command not found|command not found:\s*pytest)/i.test(summary)
   );
 }
 
@@ -4041,7 +4710,10 @@ async function failedTestTracebackSourceDocuments(testRun = {}, config = {}) {
   const seen = new Set();
   const documents = [];
   for (const match of summary.matchAll(/File\s+"([^"]+)",\s+line\s+(\d+)/g)) {
-    const absolutePath = path.resolve(String(match[1] || ""));
+    const reportedPath = String(match[1] || "");
+    const absolutePath = path.isAbsolute(reportedPath)
+      ? path.resolve(reportedPath)
+      : path.resolve(commandCwd, reportedPath);
     const line = Math.max(1, Number(match[2] || 1));
     if (seen.has(`${absolutePath}:${line}`)) continue;
     seen.add(`${absolutePath}:${line}`);
@@ -4657,9 +5329,37 @@ function markdownRequiredCommands(content = "") {
   return [...new Set(commands)].slice(0, 16);
 }
 
-export function projectAcceptanceFromMarkdown(content = "", sourcePath = "") {
+function normalizedProjectAcceptancePath(sourcePath = "", commandCwd = "") {
+  const raw = String(sourcePath || "").trim();
+  if (!raw) return "";
+  const workspace = String(commandCwd || "").trim();
+  if (path.isAbsolute(raw) && workspace) {
+    const relative = path.relative(path.resolve(workspace), path.resolve(raw));
+    if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) {
+      return relative.replace(/\\/g, "/").replace(/^\.\//, "");
+    }
+  }
+  return raw.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+export function projectAcceptanceFromMarkdown(content = "", sourcePath = "", options = {}) {
   const basename = path.basename(String(sourcePath || "")).toLowerCase();
   if (!/^(?:readme|task|agents?|aginti)(?:\.[^.]+)?$/.test(basename)) {
+    return { requiredOutputs: [], requiredCommands: [] };
+  }
+  const normalizedSource = normalizedProjectAcceptancePath(
+    sourcePath,
+    options.commandCwd
+  );
+  const authoritativePaths = new Set(
+    (Array.isArray(options.authoritativePaths) ? options.authoritativePaths : [])
+      .map((item) => normalizedProjectAcceptancePath(item, options.commandCwd))
+      .filter(Boolean)
+  );
+  if (
+    normalizedSource.includes("/") &&
+    !authoritativePaths.has(normalizedSource)
+  ) {
     return { requiredOutputs: [], requiredCommands: [] };
   }
   return {
@@ -4749,6 +5449,10 @@ function currentRequiredCommandBatch(verification = {}, requiredCommands = []) {
           .map((run) => ({
             command: normalizeProjectCommand(run?.command || ""),
             mutationRevision: Math.max(0, Number(run?.mutationRevision || 0)),
+            privateMutationRevision: Math.max(
+              0,
+              Number(run?.privateMutationRevision || 0)
+            ),
           }))
           .filter((run) => run.command)
       : [],
@@ -4818,7 +5522,12 @@ function appendProjectMutation(state = {}, verification = {}, mutation = {}, con
   return record;
 }
 
-function recordRequiredBatchRun(batch = {}, command = "", mutationRevision = 0) {
+function recordRequiredBatchRun(
+  batch = {},
+  command = "",
+  mutationRevision = 0,
+  privateMutationRevision = 0
+) {
   const normalized = normalizeProjectCommand(command);
   if (!normalized) return batch;
   const completedRuns = (Array.isArray(batch.completedRuns) ? batch.completedRuns : [])
@@ -4826,6 +5535,7 @@ function recordRequiredBatchRun(batch = {}, command = "", mutationRevision = 0) 
   completedRuns.push({
     command: normalized,
     mutationRevision: Math.max(0, Number(mutationRevision || 0)),
+    privateMutationRevision: Math.max(0, Number(privateMutationRevision || 0)),
   });
   batch.completedRuns = completedRuns;
   batch.completedCommands = completedRuns.map((run) => run.command);
@@ -4908,6 +5618,36 @@ function requiredCommandHasValidationIntent(command = "", classification = {}) {
   );
 }
 
+function verificationPrivateMutationRevision(verification = {}) {
+  return Math.max(0, Number(verification.privateMutationRevision || 0));
+}
+
+function currentTurnImplementationOpen(state = {}) {
+  const goalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+  const activeExecutionContract = state.meta?.activeExecutionContract;
+  return Boolean(
+    Number(activeExecutionContract?.revision || 0) === goalRevision &&
+      activeExecutionContract?.requiresFileMutation === true &&
+      !state.meta?.completionEvidenceRepair?.key
+  );
+}
+
+function testRunMatchesVerificationRevision(run = {}, verification = {}) {
+  return Boolean(
+    Number(run?.mutationRevision || 0) ===
+      Math.max(0, Number(verification.mutationRevision || 0)) &&
+      Number(run?.privateMutationRevision || 0) ===
+        verificationPrivateMutationRevision(verification)
+  );
+}
+
+function requiredCommandTracksPrivateVerification(command = "", config = {}) {
+  const normalized = normalizeProjectCommand(
+    normalizeCommandForPolicy(command, config)
+  );
+  return requiredCommandHasValidationIntent(normalized, classifyCommand(normalized));
+}
+
 function requiredCommandRunIsCurrent(
   verification = {},
   requiredCommand = "",
@@ -4933,17 +5673,30 @@ function requiredCommandRunIsCurrent(
   if (!required || !commandMatches) return false;
   const requiredCommands = verificationRequiredProjectCommands(verification);
   const batch = currentRequiredCommandBatch(verification, requiredCommands);
+  const tracksPrivateVerification = requiredCommandTracksPrivateVerification(
+    required,
+    config
+  );
+  const privateRevisionIsCurrent =
+    !tracksPrivateVerification ||
+    Number(run.privateMutationRevision || 0) ===
+      verificationPrivateMutationRevision(verification);
   if (batch?.id && batch.requiredCommands.includes(required)) {
     const accepted = batch.completedRuns.find((item) => item.command === required);
     return Boolean(
       accepted &&
         String(run.requiredCommandBatchId || "") === batch.id &&
-        Number(run.mutationRevision || 0) === Number(accepted.mutationRevision || 0)
+        Number(run.mutationRevision || 0) === Number(accepted.mutationRevision || 0) &&
+        privateRevisionIsCurrent &&
+        (!tracksPrivateVerification ||
+          Number(run.privateMutationRevision || 0) ===
+            Number(accepted.privateMutationRevision || 0))
     );
   }
   return (
     Number(run.mutationRevision || 0) ===
-    Math.max(0, Number(verification.mutationRevision || 0))
+      Math.max(0, Number(verification.mutationRevision || 0)) &&
+    privateRevisionIsCurrent
   );
 }
 
@@ -4962,7 +5715,11 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     commandRuns: Array.isArray(prior.commandRuns) ? prior.commandRuns : [],
     testRuns: Array.isArray(prior.testRuns) ? prior.testRuns : [],
     mutationHistory: Array.isArray(prior.mutationHistory) ? prior.mutationHistory : [],
+    privateMutationHistory: Array.isArray(prior.privateMutationHistory)
+      ? prior.privateMutationHistory
+      : [],
     mutationRevision: Math.max(0, Number(prior.mutationRevision || 0)),
+    privateMutationRevision: verificationPrivateMutationRevision(prior),
   };
   verification.contractRequiredCommands = contractRequiredProjectCommands(state, config);
   const toolName = String(toolResult.toolName || "");
@@ -4978,7 +5735,25 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
   }
 
   if (successful && toolName === "read_file" && typeof toolResult.content === "string") {
-    const acceptance = projectAcceptanceFromMarkdown(toolResult.content, toolResult.path || toolResult.args?.path || "");
+    const currentTaskContract = deriveScsTaskContract({
+      goal: completionContractGoal(config, state),
+      taskProfile: config.taskProfile || state.meta?.taskProfile || "auto",
+    });
+    const acceptance = projectAcceptanceFromMarkdown(
+      toolResult.content,
+      toolResult.path || toolResult.args?.path || "",
+      {
+        commandCwd: config.commandCwd || state.commandCwd || process.cwd(),
+        authoritativePaths: [
+          ...(Array.isArray(currentTaskContract.exactInputPaths)
+            ? currentTaskContract.exactInputPaths
+            : []),
+          ...(Array.isArray(currentTaskContract.exactOutputPaths)
+            ? currentTaskContract.exactOutputPaths
+            : []),
+        ],
+      }
+    );
     verification.requiredOutputs = [
       ...new Set([...verification.requiredOutputs, ...acceptance.requiredOutputs]),
     ].slice(0, 64);
@@ -4992,6 +5767,26 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
   }
 
   const projectMutationPaths = successfulProjectMutationPaths(toolResult);
+  const privateMutationPaths = successfulPrivateVerificationMutationPaths(toolResult);
+  const materialMutationPaths = materialProjectMutationPaths(toolResult);
+  if (["write_file", "apply_patch"].includes(toolName) && privateMutationPaths.length) {
+    delete state.meta.verifiedCompletionCandidate;
+    verification.privateMutationRevision += 1;
+    const privateMutation = {
+      revision: verification.privateMutationRevision,
+      projectMutationRevision: verification.mutationRevision,
+      at: now,
+      toolName,
+      paths: privateMutationPaths.slice(0, 24),
+    };
+    verification.lastPrivateMutation = privateMutation;
+    verification.privateMutationHistory = [
+      ...verification.privateMutationHistory,
+      privateMutation,
+    ].slice(-32);
+    toolResult.privateVerificationMutationRevision =
+      verification.privateMutationRevision;
+  }
   if (["write_file", "apply_patch"].includes(toolName) && projectMutationPaths.length) {
     delete state.meta.verifiedCompletionCandidate;
     verification.mutationRevision += 1;
@@ -5011,6 +5806,22 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
           }
         : {}),
     }, config);
+    const activeExecutionContract = state.meta?.activeExecutionContract;
+    if (
+      materialMutationPaths.length > 0 &&
+      Number(activeExecutionContract?.revision || 0) ===
+        Number(state.meta?.goalContract?.revision || 0)
+    ) {
+      activeExecutionContract.materialMutationRevision = verification.mutationRevision;
+      activeExecutionContract.materialMutationPaths = [
+        ...new Set([
+          ...(Array.isArray(activeExecutionContract.materialMutationPaths)
+            ? activeExecutionContract.materialMutationPaths
+            : []),
+          ...materialMutationPaths,
+        ]),
+      ].slice(0, 24);
+    }
     toolResult.projectMutationRevision = verification.mutationRevision;
   }
 
@@ -5117,6 +5928,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       at: now,
       ok: commandSucceeded,
       mutationRevision: verification.mutationRevision,
+      privateMutationRevision: verification.privateMutationRevision,
       ...(requiredBatch?.id ? { requiredCommandBatchId: requiredBatch.id } : {}),
       ...(requiredCommand ? { requiredProjectCommand: requiredCommand } : {}),
       ...(exitProbe.present ? { explicitExitStatus: exitProbe.status } : {}),
@@ -5133,7 +5945,8 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         recordRequiredBatchRun(
           requiredBatch,
           requiredCommand,
-          verification.mutationRevision
+          verification.mutationRevision,
+          verification.privateMutationRevision
         );
         requiredBatch.complete = requiredBatch.requiredCommands.every((candidate) =>
           requiredBatch.completedCommands.includes(candidate)
@@ -5150,7 +5963,20 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     if (run.requiredProjectCommand) {
       toolResult.requiredProjectCommand = run.requiredProjectCommand;
     }
-    if (isSubstantiveTestCommand(command, config)) {
+    const substantiveTestCommand = isSubstantiveTestCommand(command, config);
+    if (substantiveTestCommand && commandReportsInvalidTestInvocation(toolResult)) {
+      const invalidEvidence = compactFailedTestEvidence(toolResult, config);
+      const invalidInvocation = {
+        ...run,
+        invalidInvocation: true,
+        ...invalidEvidence,
+      };
+      verification.invalidTestInvocations = [
+        ...(verification.invalidTestInvocations || []),
+        invalidInvocation,
+      ].slice(-16);
+      toolResult.projectTestDiscoveryFailure = invalidInvocation;
+    } else if (substantiveTestCommand) {
       delete state.meta.verifiedCompletionCandidate;
       const zeroTests = commandReportsZeroTests(toolResult);
       const reportedFailure =
@@ -5191,6 +6017,8 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       }
       if (testRun.passed) {
         verification.lastPassingTestRevision = verification.mutationRevision;
+        verification.lastPassingTestPrivateRevision =
+          verification.privateMutationRevision;
         delete state.meta.failedTestRecoveryPacket;
         delete state.meta.failedTestDiagnostic;
         const recoveryCommand = String(
@@ -5207,6 +6035,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
           state.meta.verifiedCompletionCandidate = {
             version: 1,
             mutationRevision: verification.mutationRevision,
+            privateMutationRevision: verification.privateMutationRevision,
             goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
             command,
             commandKey: projectTestCommandKey(command),
@@ -5233,10 +6062,17 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
 function currentFailedProjectTest(state = {}) {
   const verification = state.meta?.projectVerification || {};
   const mutationRevision = Number(verification.mutationRevision || 0);
+  const privateMutationRevision = verificationPrivateMutationRevision(verification);
   const latest = [...(verification.testRuns || [])]
     .reverse()
-    .find((run) => Number(run.mutationRevision || 0) === mutationRevision);
-  return latest && latest.passed !== true ? { test: latest, mutationRevision, verification } : null;
+    .find(
+      (run) =>
+        !testRunRepresentsInvalidInvocation(run) &&
+        testRunMatchesVerificationRevision(run, verification)
+    );
+  return latest && latest.passed !== true
+    ? { test: latest, mutationRevision, privateMutationRevision, verification }
+    : null;
 }
 
 export function failedTestRequiresCleanRepositoryState(testRun = {}) {
@@ -5387,9 +6223,10 @@ export function buildTaskOwnedCommitCommand(
 export function projectTestVerificationFinishBlock(state = {}) {
   const verification = state.meta?.projectVerification || {};
   const mutationRevision = Math.max(0, Number(verification.mutationRevision || 0));
+  const privateMutationRevision = verificationPrivateMutationRevision(verification);
   const testRuns = (Array.isArray(verification.testRuns) ? verification.testRuns : [])
     .map((run, index) => ({ ...run, index, commandKey: projectTestCommandKey(run?.command || "") }))
-    .filter((run) => run.commandKey);
+    .filter((run) => run.commandKey && !testRunRepresentsInvalidInvocation(run));
   if (!testRuns.length) return null;
 
   const latestByCommand = new Map();
@@ -5400,26 +6237,56 @@ export function projectTestVerificationFinishBlock(state = {}) {
   const latestRecorded = testRuns.at(-1);
   const requiredRun = unresolvedFailure || latestRecorded;
   const runRevision = Math.max(0, Number(requiredRun?.mutationRevision || 0));
+  const runPrivateRevision = Math.max(
+    0,
+    Number(requiredRun?.privateMutationRevision || 0)
+  );
 
-  if (!unresolvedFailure && requiredRun?.passed === true && runRevision === mutationRevision) return null;
+  if (
+    !unresolvedFailure &&
+    requiredRun?.passed === true &&
+    testRunMatchesVerificationRevision(requiredRun, verification)
+  ) {
+    return null;
+  }
 
-  const failedAtCurrentRevision = Boolean(unresolvedFailure && runRevision === mutationRevision);
+  const failedAtCurrentRevision = Boolean(
+    unresolvedFailure && testRunMatchesVerificationRevision(unresolvedFailure, verification)
+  );
   return {
     category: failedAtCurrentRevision
       ? "project-test-current-failure"
       : "project-test-verification-stale",
     command: String(requiredRun?.command || ""),
     mutationRevision,
+    privateMutationRevision,
     testMutationRevision: runRevision,
+    testPrivateMutationRevision: runPrivateRevision,
     failureSignature: String(unresolvedFailure?.failureSignature || ""),
     failureSummary: String(unresolvedFailure?.failureSummary || ""),
     reason: failedAtCurrentRevision
-      ? `The latest unresolved substantive project test failed at mutation revision ${mutationRevision}.`
-      : `Substantive project-test evidence is stale after mutation revision ${mutationRevision}.`,
+      ? `The latest unresolved substantive project test failed at mutation revision ${mutationRevision} and verifier revision ${privateMutationRevision}.`
+      : `Substantive project-test evidence is stale after mutation revision ${mutationRevision} or verifier revision ${privateMutationRevision}.`,
     instruction: failedAtCurrentRevision
       ? "Repair the concrete failure with a real task-owned mutation, then rerun the same verification command and require a pass before finishing."
       : "Rerun the retained substantive verification command after the latest real mutation and require a pass before finishing.",
   };
+}
+
+export function completionExternalBlockerCanClose({
+  candidateResult = "",
+  evidenceLedger = {},
+  projectTestBlock = null,
+  sourceQuality = { ok: true },
+  documentQuality = null,
+} = {}) {
+  return Boolean(
+    !projectTestBlock &&
+      sourceQuality?.ok !== false &&
+      (!documentQuality || documentQuality.ok !== false) &&
+      finishResultClaimsBlocker(candidateResult) &&
+      hasScsBlockerEvidence(evidenceLedger)
+  );
 }
 
 export function enqueueFailedTestRepairInstruction(state = {}, toolResults = []) {
@@ -5548,6 +6415,175 @@ function recoveryEvidenceDependencies(sourcePath = "", content = "") {
   return dependencies.slice(0, 12);
 }
 
+async function readGitBaselineSource(config = {}, relativePath = "") {
+  const safePath = safeRecoveryEvidencePath(relativePath);
+  if (!safePath || safePath.includes("\0")) return "";
+  const commandCwd = path.resolve(config.commandCwd || process.cwd());
+  return await new Promise((resolve) => {
+    let stdout = "";
+    let settled = false;
+    let timer;
+    const finish = (value = "") => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(value);
+    };
+    const child = spawn("git", ["show", `HEAD:${safePath}`], {
+      cwd: commandCwd,
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    });
+    timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish("");
+    }, 5000);
+    child.stdout?.on("data", (chunk) => {
+      if (stdout.length > 128000) {
+        child.kill("SIGKILL");
+        finish("");
+        return;
+      }
+      stdout += String(chunk || "");
+    });
+    child.on("error", () => finish(""));
+    child.on("close", (code) => {
+      finish(code === 0 && stdout.length <= 128000 ? stdout : "");
+    });
+  });
+}
+
+async function gitPathIsNew(config = {}, relativePath = "") {
+  const safePath = safeRecoveryEvidencePath(relativePath);
+  if (!safePath || safePath.includes("\0")) return false;
+  const commandCwd = path.resolve(config.commandCwd || process.cwd());
+  return await new Promise((resolve) => {
+    let stdout = "";
+    let settled = false;
+    let timer;
+    const finish = (value = false) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(value);
+    };
+    const child = spawn(
+      "git",
+      ["status", "--porcelain=v1", "--untracked-files=all", "--", safePath],
+      {
+        cwd: commandCwd,
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
+      }
+    );
+    timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(false);
+    }, 5000);
+    child.stdout?.on("data", (chunk) => {
+      if (stdout.length > 8192) {
+        child.kill("SIGKILL");
+        finish(false);
+        return;
+      }
+      stdout += String(chunk || "");
+    });
+    child.on("error", () => finish(false));
+    child.on("close", (code) => {
+      if (code !== 0) return finish(false);
+      const status = stdout.replace(/\r/g, "").split("\n").find(Boolean)?.slice(0, 2) || "";
+      finish(status === "??" || status[0] === "A" || status[1] === "A");
+    });
+  });
+}
+
+function pythonTestIntegrityInventory(content = "") {
+  const normalized = String(content || "").replace(/\r/g, "");
+  const testNames = [...normalized.matchAll(/^\s+(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\s*\(/gm)]
+    .map((match) => match[1]);
+  const assertionLines = normalized
+    .split("\n")
+    .filter((line) =>
+      /\bself\.assert[A-Z][A-Za-z0-9_]*\s*\(/.test(line) ||
+      /^\s*assert(?:\s|\()/.test(line)
+    );
+  return { testNames, assertionLines };
+}
+
+async function pythonAgentCreatedTestHarnessPathDefects(
+  config = {},
+  relativePath = "",
+  content = ""
+) {
+  if (
+    !pathLooksLikeTestSource(relativePath) ||
+    path.posix.extname(relativePath).toLocaleLowerCase("en-US") !== ".py" ||
+    !/^\s*from\s+pathlib\s+import\s+[^\n]*\bPath\b/m.test(content) ||
+    !(await gitPathIsNew(config, relativePath))
+  ) {
+    return [];
+  }
+  const commandCwd = path.resolve(config.commandCwd || process.cwd());
+  let testTarget;
+  try {
+    testTarget = resolveWorkspacePath(config, relativePath);
+  } catch {
+    return [];
+  }
+  const variableUses = new Map();
+  for (const match of String(content || "").matchAll(
+    /subprocess\.(?:run|Popen|call|check_call|check_output)\s*\(([\s\S]{0,2000}?)\)/g
+  )) {
+    const call = String(match[1] || "");
+    if (/\bcwd\s*=/.test(call)) continue;
+    for (const symbol of call.matchAll(/\b([A-Z][A-Z0-9_]*)\b/g)) {
+      variableUses.set(symbol[1], (variableUses.get(symbol[1]) || 0) + 1);
+    }
+  }
+  const defects = [];
+  const assignmentPattern =
+    /^([A-Z][A-Z0-9_]*)[ \t]*=[ \t]*(["'])(\.\.?\/[^"'\\\r\n]+)\2[ \t]*(#.*)?$/gm;
+  for (const match of String(content || "").matchAll(assignmentPattern)) {
+    const symbol = String(match[1] || "");
+    const literal = String(match[3] || "");
+    if (!symbol || !literal || !variableUses.has(symbol)) continue;
+    const verifierTarget = path.resolve(commandCwd, literal);
+    const testRelativeTarget = path.resolve(path.dirname(testTarget.absolutePath), literal);
+    if (verifierTarget === testRelativeTarget) continue;
+    const workspaceRelativeTarget = path.relative(commandCwd, testRelativeTarget);
+    if (
+      !workspaceRelativeTarget ||
+      workspaceRelativeTarget.startsWith("..") ||
+      path.isAbsolute(workspaceRelativeTarget)
+    ) {
+      continue;
+    }
+    const [verifierStat, intendedStat] = await Promise.all([
+      fs.stat(verifierTarget).catch(() => null),
+      fs.stat(testRelativeTarget).catch(() => null),
+    ]);
+    if (verifierStat?.isFile() || !intendedStat?.isFile()) continue;
+    const directSearch = String(match[0] || "");
+    const suffix = String(match[4] || "");
+    const directReplacement =
+      `${symbol} = (Path(__file__).resolve().parent / ${JSON.stringify(literal)}).resolve()` +
+      (suffix ? ` ${suffix}` : "");
+    const line = String(content || "").slice(0, Number(match.index || 0)).split(/\r?\n/).length;
+    const integrity = pythonTestIntegrityInventory(content);
+    defects.push({
+      symbol,
+      literal,
+      line,
+      directSearch,
+      directReplacement,
+      expectedWorkspacePath: workspaceRelativeTarget.replace(/\\/g, "/"),
+      testNames: integrity.testNames,
+      assertionCount: integrity.assertionLines.length,
+    });
+  }
+  return defects.slice(0, 4);
+}
+
 export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
   const testRun = currentFailedProjectTest(state)?.test;
   if (!testRun) return { content: "", paths: [] };
@@ -5578,9 +6614,21 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
   const excerpts = [];
   const literalDiagnostics = [];
   const mockBehaviorDiagnostics = [];
+  const baselineRecoveryEvidence = [];
   const diagnosticFocuses = [];
   const literalOperands = failedTestLiteralOperands(testRun.failureSummary || "").slice(0, 6);
   const tracebackSourceDocuments = await failedTestTracebackSourceDocuments(testRun, config);
+  const commandCwd = path.resolve(config.commandCwd || process.cwd());
+  const tracebackEvidencePaths = new Set();
+  for (const document of [...tracebackSourceDocuments].reverse()) {
+    const relative = safeRecoveryEvidencePath(
+      path.relative(commandCwd, document.absolutePath).replace(/\\/g, "/")
+    );
+    if (relative) {
+      tracebackEvidencePaths.add(relative);
+      if (!queue.includes(relative)) queue.unshift(relative);
+    }
+  }
   const indexComparisons = [
     ...failedTestIndexComparisons(testRun.failureSummary || ""),
     ...tracebackSourceDocuments.flatMap((document) =>
@@ -5617,6 +6665,172 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
       mockBehaviorDiagnostics.length < 4
     ) {
       mockBehaviorDiagnostics.push(mockBehaviorDiagnostic);
+    }
+    const testHarnessPathDefects = await pythonAgentCreatedTestHarnessPathDefects(
+      config,
+      relativePath,
+      raw
+    );
+    if (testHarnessPathDefects.length) {
+      literalDiagnostics.push(
+        `### Agent-created test harness path in ${relativePath}\n` +
+          testHarnessPathDefects
+            .map((defect) =>
+              `line ${defect.line}: ${defect.symbol} resolves ${JSON.stringify(defect.literal)} ` +
+              "from the verifier working directory, where that file does not exist. The same " +
+              `relative path from this test resolves the existing workspace file ${defect.expectedWorkspacePath}. ` +
+              "Bind only this launch-path assignment to __file__; preserve every test and assertion."
+            )
+            .join("\n")
+      );
+      for (const defect of testHarnessPathDefects) {
+        if (diagnosticFocuses.length >= 8) break;
+        diagnosticFocuses.push({
+          kind: "python-agent-test-harness-path",
+          path: relativePath,
+          decisiveLine: defect.line,
+          directSearch: defect.directSearch,
+          directReplacement: defect.directReplacement,
+          expectedWorkspacePath: defect.expectedWorkspacePath,
+          symbol: defect.symbol,
+          testNames: defect.testNames,
+          assertionCount: defect.assertionCount,
+        });
+      }
+    }
+    const mainGuardOrderDefects = pathLooksLikeTestSource(relativePath)
+      ? []
+      : pythonMainGuardOrderDefects(raw);
+    if (mainGuardOrderDefects.length) {
+      literalDiagnostics.push(
+        `### Python entrypoint order in ${relativePath}\n` +
+          mainGuardOrderDefects
+            .slice(0, 3)
+            .map((defect) =>
+              `line ${defect.guardLine}: the top-level __main__ guard executes main() before ` +
+              `${defect.calledLater.map((item) => `${item.name} (line ${item.line})`).join(", ")} ` +
+              "are defined. Move the complete guard below the declarations it can call; editing those later functions in place cannot repair this execution-order failure."
+            )
+            .join("\n")
+      );
+      for (const defect of mainGuardOrderDefects) {
+        if (diagnosticFocuses.length >= 8) break;
+        diagnosticFocuses.push({
+          kind: "python-main-guard-order",
+          path: relativePath,
+          decisiveLine: defect.guardLine,
+          calledLater: defect.calledLater,
+          ...(mutationEvidencePaths.has(relativePath) &&
+          (defect.repairSearch || defect.guardSearch)
+            ? { directSearch: defect.repairSearch || defect.guardSearch }
+            : {}),
+        });
+      }
+    }
+    const duplicateTopLevelDefinitions = pathLooksLikeTestSource(relativePath)
+      ? []
+      : pythonTopLevelDefinitionDuplicates(raw);
+    if (duplicateTopLevelDefinitions.length) {
+      literalDiagnostics.push(
+        `### Duplicate top-level Python declarations in ${relativePath}\n` +
+          duplicateTopLevelDefinitions
+            .slice(0, 8)
+            .map((duplicate) =>
+              `${duplicate.kind} ${duplicate.name} is declared ${duplicate.count} times at lines ` +
+              `${duplicate.lines.join(", ")}. Keep one coherent implementation and remove only the superseded duplicates.`
+            )
+            .join("\n")
+      );
+      if (diagnosticFocuses.length < 8) {
+        const directSearch =
+          mutationEvidencePaths.has(relativePath) &&
+          Buffer.byteLength(raw, "utf8") <= PATCH_CONTEXT_ANCHOR_MAX_BYTES
+            ? raw
+            : "";
+        diagnosticFocuses.push({
+          kind: "python-duplicate-top-level-definition",
+          path: relativePath,
+          decisiveLine: Math.min(
+            ...duplicateTopLevelDefinitions.flatMap((duplicate) => duplicate.lines)
+          ),
+          duplicateDeclarations: duplicateTopLevelDefinitions
+            .slice(0, 8)
+            .map((duplicate) => ({
+              kind: duplicate.kind,
+              name: duplicate.name,
+              count: duplicate.count,
+              lines: duplicate.lines.slice(0, 12),
+            })),
+          ...(directSearch ? { directSearch } : {}),
+        });
+      }
+    }
+    if (
+      !pathLooksLikeTestSource(relativePath) &&
+      path.posix.extname(relativePath).toLocaleLowerCase("en-US") === ".py" &&
+      (
+        mutationEvidencePaths.has(relativePath) ||
+        tracebackEvidencePaths.has(relativePath)
+      )
+    ) {
+      const baselineSource = await readGitBaselineSource(config, relativePath);
+      const safeBaseline = baselineSource ? redactSensitiveText(baselineSource) : "";
+      const baselineDefinitions = pythonTopLevelDefinitionInventory(baselineSource);
+      const currentDefinitionKeys = new Set(
+        pythonTopLevelDefinitionInventory(raw).map((item) => `${item.kind}:${item.name}`)
+      );
+      const missingBaselineDeclarations = baselineDefinitions.filter(
+        (item) => !currentDefinitionKeys.has(`${item.kind}:${item.name}`)
+      );
+      const baselineBytes = Buffer.byteLength(baselineSource, "utf8");
+      const currentBytes = Buffer.byteLength(raw, "utf8");
+      const severeRegression = Boolean(
+        baselineSource &&
+        safeBaseline === baselineSource &&
+        baselineBytes <= PATCH_CONTEXT_ANCHOR_MAX_BYTES &&
+        currentBytes <= PATCH_CONTEXT_ANCHOR_MAX_BYTES &&
+        missingBaselineDeclarations.length >= 2 &&
+        (
+          currentBytes < Math.floor(baselineBytes * 0.72) ||
+          /\b(?:NameError|ImportError|ModuleNotFoundError|is not defined)\b/i.test(
+            String(testRun.failureSummary || "")
+          )
+        )
+      );
+      if (severeRegression) {
+        literalDiagnostics.push(
+          `### Version-controlled source regression in ${relativePath}\n` +
+            `The task-mutated source has ${currentBytes} bytes versus ${baselineBytes} bytes in HEAD and has lost: ` +
+            missingBaselineDeclarations
+              .slice(0, 12)
+              .map((item) => `${item.kind} ${item.name}`)
+              .join(", ") +
+            ". Rebuild one coherent current implementation from the exact baseline below, preserving intended task repairs instead of blindly reverting or continuing from the truncated file."
+        );
+        baselineRecoveryEvidence.push(
+          `### Exact version-controlled baseline for ${relativePath}\n${safeBaseline}`
+        );
+        if (diagnosticFocuses.length < 8) {
+          diagnosticFocuses.push({
+            kind: "python-git-baseline-recovery",
+            path: relativePath,
+            decisiveLine: 1,
+            directSearch: raw,
+            baselineSource,
+            baselineDeclarations: baselineDefinitions
+              .slice(0, 24)
+              .map((item) => ({
+                kind: item.kind,
+                name: item.name,
+                count: item.count,
+                lines: item.lines.slice(0, 12),
+              })),
+            missingDeclarations: missingBaselineDeclarations
+              .slice(0, 16)
+              .map((item) => ({ kind: item.kind, name: item.name })),
+          });
+        }
+      }
     }
     const remaining = maxChars - retainedChars;
     const safeRaw = redactSensitiveText(raw);
@@ -5858,6 +7072,7 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
       ...mockBehaviorDiagnostics,
       String(testRun.failureSummary || "").slice(0, 1800),
       ...literalDiagnostics,
+      ...baselineRecoveryEvidence,
       ...tracebackSourceEvidence,
       ...excerpts,
     ]
@@ -6373,7 +7588,7 @@ function sourceCodeLinesForTopology(content = "", language = "") {
   return output;
 }
 
-function sourceIndentWidth(line = "") {
+function patchSourceIndentWidth(line = "") {
   const prefix = String(line || "").match(/^\s*/)?.[0] || "";
   return prefix.replace(/\t/g, "    ").length;
 }
@@ -6887,6 +8102,378 @@ export async function failedTestRepairPatchBlock(state, toolName, args = {}, con
       };
     };
     const caseFolded = focus?.caseFolded === true;
+    if (focus?.kind === "python-agent-test-harness-path") {
+      const requiredReplacement = String(focus?.directReplacement || "");
+      if (!(await gitPathIsNew(config, targetRelativePath))) {
+        return {
+          reason:
+            "The focused Python test is no longer Git-new, so the runtime will not rewrite its harness path under the agent-created-test exception.",
+          category: "failed-test-authoritative-test-boundary",
+          mutationRevision: Number(currentFailure.mutationRevision || 0),
+          failureSignature: String(currentFailure.test.failureSignature || ""),
+          diagnosticHint:
+            "Rebuild failed-test evidence at the current repository revision and repair production code unless a newly created task-owned test is again proven.",
+        };
+      }
+      if (!requiredReplacement || replacement !== requiredReplacement) {
+        return {
+          reason:
+            "The proposed test-harness repair is not the exact evidence-derived __file__-relative launch-path binding.",
+          category: "failed-test-nonrepairing-patch",
+          mutationRevision: Number(currentFailure.mutationRevision || 0),
+          failureSignature: String(currentFailure.test.failureSignature || ""),
+          diagnosticHint:
+            "Use the only offered replacement value. Change no test expectation, assertion, method, fixture, or production source.",
+          permissionAdvice: {
+            category: "failed-test-nonrepairing-patch",
+            autoRecover: true,
+            summary: "The test-harness path proposal exceeded its exact bounded repair.",
+            instruction:
+              "Replace only the selected assignment with the offered __file__-relative binding.",
+            options: [
+              "Use the exact replacement enum exposed by rewrite_text_excerpt.",
+              "Preserve every test and assertion byte-for-byte.",
+              "Do not compensate for a harness launch error in production code.",
+            ],
+          },
+        };
+      }
+      const currentIntegrity = pythonTestIntegrityInventory(content);
+      const proposedIntegrity = pythonTestIntegrityInventory(proposedContent);
+      if (
+        JSON.stringify(proposedIntegrity.testNames) !==
+          JSON.stringify(currentIntegrity.testNames) ||
+        JSON.stringify(proposedIntegrity.assertionLines) !==
+          JSON.stringify(currentIntegrity.assertionLines)
+      ) {
+        return {
+          reason:
+            "The proposed harness-path transaction changes a test method or assertion while repairing launch resolution.",
+          category: "failed-test-regression",
+          mutationRevision: Number(currentFailure.mutationRevision || 0),
+          failureSignature: String(currentFailure.test.failureSignature || ""),
+          diagnosticHint:
+            "Keep every test method and assertion line byte-for-byte. Only the selected subprocess target assignment may change.",
+        };
+      }
+      let expectedTarget;
+      try {
+        expectedTarget = resolveWorkspacePath(config, focus?.expectedWorkspacePath || "");
+      } catch {
+        expectedTarget = null;
+      }
+      const expectedStat = expectedTarget
+        ? await fs.stat(expectedTarget.absolutePath).catch(() => null)
+        : null;
+      if (!expectedStat?.isFile()) {
+        return {
+          reason:
+            "The evidence-derived subprocess target no longer exists inside the workspace, so the test-harness rewrite was rejected.",
+          category: "failed-test-stale-diagnostic",
+          mutationRevision: Number(currentFailure.mutationRevision || 0),
+          failureSignature: String(currentFailure.test.failureSignature || ""),
+          diagnosticHint:
+            "Rebuild the failed-test evidence packet against the current workspace before another mutation.",
+        };
+      }
+      monotonicProgress = true;
+      continue;
+    }
+    if (focus?.kind === "python-main-guard-order") {
+      const currentDefects = pythonMainGuardOrderDefects(content);
+      const proposedDefects = pythonMainGuardOrderDefects(proposedContent);
+      if (!currentDefects.length) {
+        if (proposedDefects.length) return regressionBlock("Python entrypoint order");
+        continue;
+      }
+      if (!proposedDefects.length) {
+        monotonicProgress = true;
+        continue;
+      }
+      const currentDefect = currentDefects[0];
+      const calledLater = currentDefect.calledLater
+        .map((item) => `${item.name} (line ${item.line})`)
+        .join(", ");
+      return {
+        reason:
+          `The proposed replacement leaves the top-level Python __main__ guard before ${calledLater}, so it cannot repair the retained entrypoint-order failure.`,
+        category: "failed-test-nonrepairing-patch",
+        mutationRevision: Number(currentFailure.mutationRevision || 0),
+        failureSignature: String(currentFailure.test.failureSignature || ""),
+        diagnosticHint:
+          "Move the complete existing if __name__ == \"__main__\": main() guard below every top-level declaration called by main. Preserve those declarations and their bodies; adding a comment or a second guard is insufficient.",
+        permissionAdvice: {
+          category: "failed-test-nonrepairing-patch",
+          autoRecover: true,
+          summary: "The proposed source transaction leaves the Python entrypoint-order defect active.",
+          instruction:
+            "Replace the exact selected guard-to-EOF region with the same declarations followed by one complete __main__ guard at the end.",
+          options: [
+            "Move the existing guard after all top-level functions invoked by main.",
+            "Keep exactly one guard and preserve every intervening declaration.",
+            "Do not substitute a comment for the structural source move.",
+          ],
+        },
+      };
+    }
+    if (focus?.kind === "python-duplicate-top-level-definition") {
+      const currentDefinitions = new Map(
+        pythonTopLevelDefinitionInventory(content).map((item) => [
+          `${item.kind}:${item.name}`,
+          item,
+        ])
+      );
+      const proposedDefinitions = new Map(
+        pythonTopLevelDefinitionInventory(proposedContent).map((item) => [
+          `${item.kind}:${item.name}`,
+          item,
+        ])
+      );
+      const currentDuplicates = [...currentDefinitions.entries()].filter(
+        ([, item]) => item.count > 1
+      );
+      const introducedDuplicates = [...proposedDefinitions.entries()].filter(
+        ([key, item]) =>
+          item.count > Math.max(1, Number(currentDefinitions.get(key)?.count || 0))
+      );
+      if (introducedDuplicates.length) {
+        return regressionBlock("Python top-level declaration uniqueness");
+      }
+      const missingUniqueDeclarations = [...currentDefinitions.entries()].filter(
+        ([key, item]) =>
+          item.count === 1 && Number(proposedDefinitions.get(key)?.count || 0) !== 1
+      );
+      if (missingUniqueDeclarations.length) {
+        return {
+          reason:
+            "The proposed duplicate cleanup removes unique top-level declarations that are outside the duplicate set: " +
+            missingUniqueDeclarations
+              .map(([, item]) => `${item.kind} ${item.name}`)
+              .join(", ") +
+            ".",
+          category: "failed-test-regression",
+          mutationRevision: Number(currentFailure.mutationRevision || 0),
+          failureSignature: String(currentFailure.test.failureSignature || ""),
+          diagnosticHint:
+            "Preserve every unique declaration exactly once. Consolidate only names that already have multiple top-level implementations.",
+          permissionAdvice: {
+            category: "failed-test-regression",
+            autoRecover: true,
+            summary: "Duplicate cleanup discarded unrelated unique source structure.",
+            instruction:
+              "Return the complete selected source with every unique declaration preserved exactly once and each duplicate declaration consolidated to one implementation.",
+            options: [
+              "Copy unique declarations and their bodies unchanged.",
+              "Consolidate only the explicitly listed duplicate names.",
+              "Preserve the executable entrypoint and production helper seams.",
+            ],
+          },
+        };
+      }
+      const currentRecords = sourceLineRecords(content);
+      const firstDeclaration = currentRecords.find((record) =>
+        sourceIndentWidth(record.text) === 0 && sourceDeclarationIdentity(record.text)
+      );
+      const currentPreamble = firstDeclaration
+        ? content.slice(0, firstDeclaration.start)
+        : "";
+      if (currentPreamble.trim() && !proposedContent.startsWith(currentPreamble)) {
+        return {
+          reason:
+            "The proposed duplicate cleanup drops or rewrites the source preamble before the first declaration.",
+          category: "failed-test-regression",
+          mutationRevision: Number(currentFailure.mutationRevision || 0),
+          failureSignature: String(currentFailure.test.failureSignature || ""),
+          diagnosticHint:
+            "Preserve the exact import, constant, shebang, and module preamble. Duplicate cleanup begins at top-level declarations, not before them.",
+          permissionAdvice: {
+            category: "failed-test-regression",
+            autoRecover: true,
+            summary: "Duplicate cleanup removed required module setup.",
+            instruction:
+              "Keep the exact preamble byte-for-byte, then consolidate only duplicated declarations below it.",
+            options: [
+              "Preserve imports and module constants exactly.",
+              "Do not start the replacement at the first duplicated function body.",
+              "Return the complete selected source, including its preamble.",
+            ],
+          },
+        };
+      }
+      const mainGuardPattern = /^if\s+__name__\s*==\s*["']__main__["']\s*:/gm;
+      const currentMainGuardCount = [...content.matchAll(mainGuardPattern)].length;
+      const proposedMainGuardCount = [...proposedContent.matchAll(mainGuardPattern)].length;
+      if (proposedMainGuardCount !== currentMainGuardCount) {
+        return regressionBlock("Python executable entrypoint count");
+      }
+      const removedCompletely = currentDuplicates.filter(
+        ([key]) => Number(proposedDefinitions.get(key)?.count || 0) < 1
+      );
+      if (removedCompletely.length) {
+        return {
+          reason:
+            "The proposed source rewrite removes every implementation of a duplicated top-level declaration: " +
+            removedCompletely
+              .map(([, item]) => `${item.kind} ${item.name}`)
+              .join(", ") +
+            ".",
+          category: "failed-test-regression",
+          mutationRevision: Number(currentFailure.mutationRevision || 0),
+          failureSignature: String(currentFailure.test.failureSignature || ""),
+          diagnosticHint:
+            "Keep exactly one coherent implementation of each duplicated function or class. Remove only superseded copies.",
+          permissionAdvice: {
+            category: "failed-test-regression",
+            autoRecover: true,
+            summary: "Duplicate cleanup removed a required implementation entirely.",
+            instruction:
+              "Return the complete selected source with one implementation of every previously duplicated declaration and preserve all unique declarations.",
+            options: [
+              "Keep the implementation used by the production call path.",
+              "Merge non-overlapping required behavior into one declaration when duplicate bodies differ.",
+              "Preserve imports, constants, the final entrypoint guard, and unrelated functions.",
+            ],
+          },
+        };
+      }
+      const currentExcess = currentDuplicates.reduce(
+        (sum, [, item]) => sum + Math.max(0, item.count - 1),
+        0
+      );
+      const proposedExcess = [...proposedDefinitions.values()].reduce(
+        (sum, item) => sum + Math.max(0, item.count - 1),
+        0
+      );
+      if (proposedExcess < currentExcess) {
+        monotonicProgress = true;
+        continue;
+      }
+      return {
+        reason:
+          "The proposed source rewrite leaves the same number of duplicate top-level Python declarations, so it cannot repair the retained source-coherence defect.",
+        category: "failed-test-nonrepairing-patch",
+        mutationRevision: Number(currentFailure.mutationRevision || 0),
+        failureSignature: String(currentFailure.test.failureSignature || ""),
+        diagnosticHint:
+          "Return one coherent complete source with exactly one top-level implementation of each duplicated function or class. Do not rename, append, or retain superseded copies.",
+        permissionAdvice: {
+          category: "failed-test-nonrepairing-patch",
+          autoRecover: true,
+          summary: "The rewrite did not reduce duplicate production declarations.",
+          instruction:
+            "Consolidate each duplicated top-level declaration into one implementation while preserving all unique source structure.",
+          options: [
+            "Remove byte-equivalent duplicate declarations.",
+            "Merge required behavior when duplicate bodies differ.",
+            "Keep one final __main__ guard after all callable declarations.",
+          ],
+        },
+      };
+    }
+    if (focus?.kind === "python-git-baseline-recovery") {
+      const baselineSource = String(focus?.baselineSource || "");
+      if (!baselineSource) continue;
+      const baselineDefinitions = new Map(
+        pythonTopLevelDefinitionInventory(baselineSource).map((item) => [
+          `${item.kind}:${item.name}`,
+          item,
+        ])
+      );
+      const currentDefinitions = new Map(
+        pythonTopLevelDefinitionInventory(content).map((item) => [
+          `${item.kind}:${item.name}`,
+          item,
+        ])
+      );
+      const proposedDefinitions = new Map(
+        pythonTopLevelDefinitionInventory(proposedContent).map((item) => [
+          `${item.kind}:${item.name}`,
+          item,
+        ])
+      );
+      const proposedDuplicates = [...proposedDefinitions.values()].filter(
+        (item) => item.count > 1
+      );
+      if (proposedDuplicates.length) {
+        return regressionBlock("reconstructed Python top-level declaration uniqueness");
+      }
+      const missingBaselineDeclarations = [...baselineDefinitions.entries()].filter(
+        ([key]) => Number(proposedDefinitions.get(key)?.count || 0) !== 1
+      );
+      if (missingBaselineDeclarations.length) {
+        return {
+          reason:
+            "The proposed baseline reconstruction still omits tracked top-level declarations: " +
+            missingBaselineDeclarations
+              .map(([, item]) => `${item.kind} ${item.name}`)
+              .join(", ") +
+            ".",
+          category: "failed-test-nonrepairing-patch",
+          mutationRevision: Number(currentFailure.mutationRevision || 0),
+          failureSignature: String(currentFailure.test.failureSignature || ""),
+          diagnosticHint:
+            "Rebuild the complete selected source from the exact version-controlled baseline. Preserve every baseline import, constant, function, class, and entrypoint while retaining compatible task repairs.",
+          permissionAdvice: {
+            category: "failed-test-nonrepairing-patch",
+            autoRecover: true,
+            summary: "The reconstructed source is still structurally incomplete.",
+            instruction:
+              "Return one complete source containing every baseline top-level declaration exactly once, then retain the intended task behavior inside that coherent structure.",
+            options: [
+              "Start from the exact baseline evidence and reapply compatible task behavior.",
+              "Preserve every baseline declaration exactly once.",
+              "Do not continue from the truncated current file as if it were complete.",
+            ],
+          },
+        };
+      }
+      const baselinePreamble = pythonTopLevelPreamble(baselineSource);
+      if (baselinePreamble && !proposedContent.startsWith(baselinePreamble)) {
+        return {
+          reason:
+            "The proposed baseline reconstruction drops or rewrites the tracked module preamble before the first top-level declaration.",
+          category: "failed-test-regression",
+          mutationRevision: Number(currentFailure.mutationRevision || 0),
+          failureSignature: String(currentFailure.test.failureSignature || ""),
+          diagnosticHint:
+            "Preserve the exact version-controlled shebang, imports, constants, and module setup before rebuilding declarations.",
+          permissionAdvice: {
+            category: "failed-test-regression",
+            autoRecover: true,
+            summary: "The reconstruction removed required module setup.",
+            instruction:
+              "Begin the complete replacement with the exact baseline preamble, then include every baseline declaration exactly once.",
+            options: [
+              "Copy the exact baseline preamble byte-for-byte.",
+              "Keep imports and module constants before all declarations.",
+              "Apply task repairs inside the restored source structure.",
+            ],
+          },
+        };
+      }
+      const mainGuardPattern = /^if\s+__name__\s*==\s*["']__main__["']\s*:/gm;
+      const baselineMainGuardCount = [...baselineSource.matchAll(mainGuardPattern)].length;
+      const proposedMainGuardCount = [...proposedContent.matchAll(mainGuardPattern)].length;
+      if (proposedMainGuardCount < baselineMainGuardCount) {
+        return regressionBlock("version-controlled Python executable entrypoint");
+      }
+      const currentMissingCount = [...baselineDefinitions.keys()].filter(
+        (key) => Number(currentDefinitions.get(key)?.count || 0) !== 1
+      ).length;
+      if (currentMissingCount > 0 && missingBaselineDeclarations.length === 0) {
+        monotonicProgress = true;
+        continue;
+      }
+      return {
+        reason:
+          "The proposed replacement does not complete the retained version-controlled source reconstruction.",
+        category: "failed-test-nonrepairing-patch",
+        mutationRevision: Number(currentFailure.mutationRevision || 0),
+        failureSignature: String(currentFailure.test.failureSignature || ""),
+        diagnosticHint:
+          "Restore every declaration and the exact preamble from the retained baseline in one coherent transaction, then rerun the exact failed test.",
+      };
+    }
     if (focus?.kind === "control-plane-leak") {
       const currentLeaks = FAILED_TEST_CONTROL_PLANE_PATTERNS.filter((pattern) =>
         pattern.test(content)
@@ -7291,6 +8878,7 @@ export function regressiveInversePatchBlock(state, toolName, args = {}, config =
     .find(
       (run) =>
         run?.passed !== true &&
+        !testRunRepresentsInvalidInvocation(run) &&
         Number(run?.mutationRevision || 0) < Number(priorMutation.revision || 0) &&
         String(run?.failureSignature || "")
     );
@@ -8085,7 +9673,7 @@ function successfulMutationPaths(toolResult = {}) {
   return [...new Set([toolResult.path, ...changes.map((change) => change.path)].filter(Boolean))];
 }
 
-function successfulProjectMutationPaths(toolResult = {}) {
+function successfulWorkspaceMutationPaths(toolResult = {}) {
   if (!toolResult || toolResult.blocked || toolResult.skipped) return [];
   if (!["write_file", "apply_patch"].includes(String(toolResult.toolName || ""))) return [];
   const changes = [
@@ -8113,9 +9701,226 @@ function successfulProjectMutationPaths(toolResult = {}) {
       [
         toolResult.path,
         ...actualChanges.flatMap((change) => [change.path, change.fromPath]),
-      ].filter((candidate) => candidate && !isPrivateVerificationEvidencePath(candidate))
+      ].filter(Boolean)
     ),
   ];
+}
+
+function successfulProjectMutationPaths(toolResult = {}) {
+  return successfulWorkspaceMutationPaths(toolResult).filter(
+    (candidate) => !isPrivateVerificationEvidencePath(candidate)
+  );
+}
+
+function successfulPrivateVerificationMutationPaths(toolResult = {}) {
+  return successfulWorkspaceMutationPaths(toolResult).filter((candidate) =>
+    isPrivateVerificationEvidencePath(candidate)
+  );
+}
+
+function diffHasMaterialContentChange(diff = "") {
+  const removed = [];
+  const added = [];
+  for (const line of String(diff || "").split(/\r?\n/)) {
+    if (line.startsWith("---") || line.startsWith("+++")) continue;
+    if (line.startsWith("-")) removed.push(line.slice(1).replace(/\s+/g, ""));
+    if (line.startsWith("+")) added.push(line.slice(1).replace(/\s+/g, ""));
+  }
+  const compactRemoved = removed.filter(Boolean);
+  const compactAdded = added.filter(Boolean);
+  if (!removed.length && !added.length) return true;
+  return JSON.stringify(compactRemoved) !== JSON.stringify(compactAdded);
+}
+
+function materialProjectMutationPaths(toolResult = {}) {
+  if (!toolResult || toolResult.blocked || toolResult.skipped) {
+    return [];
+  }
+  if (!["write_file", "apply_patch"].includes(String(toolResult.toolName || ""))) {
+    return [];
+  }
+  const changes = [
+    ...(Array.isArray(toolResult.changes) ? toolResult.changes : []),
+    ...(toolResult.change ? [toolResult.change] : []),
+  ];
+  const paths = [];
+  for (const change of changes) {
+    if (!change || isPrivateVerificationEvidencePath(change.path)) continue;
+    if (
+      change.created === true ||
+      change.deleted === true ||
+      (change.fromPath && change.fromPath !== change.path) ||
+      diffHasMaterialContentChange(change.diff)
+    ) {
+      paths.push(change.path || toolResult.path);
+    }
+  }
+  return [...new Set(paths.filter(Boolean))];
+}
+
+function retainedReadFilePath(entry = {}) {
+  const direct = String(entry?.path || entry?.args?.path || "").trim();
+  if (direct) return direct;
+  const signature = String(entry?.signature || "");
+  if (!signature.startsWith("file-read:")) return "";
+  try {
+    const parsed = JSON.parse(signature.slice("file-read:".length));
+    return String(parsed?.path || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function completionFreshMutationPath(value = "", state = {}, config = {}) {
+  const raw = String(value || "")
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .replace(/\\/g, "/");
+  if (!raw || raw.includes("\0") || /^https?:\/\//i.test(raw)) return "";
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const absolutePath = path.resolve(commandCwd, raw);
+  const relativePath = path.relative(commandCwd, absolutePath);
+  if (
+    !relativePath ||
+    relativePath.startsWith("..") ||
+    path.isAbsolute(relativePath) ||
+    !PLAIN_TEXT_FILE_EXTENSIONS.has(path.extname(relativePath).toLowerCase())
+  ) {
+    return "";
+  }
+
+  const taskGoal = completionContractGoal(config, state);
+  const artifactRoot = scopedArtifactRoot(taskGoal);
+  if (!artifactRoot) return safeRecoveryEvidencePath(relativePath);
+  const absoluteArtifactRoot = path.resolve(artifactRoot);
+  const relativeToArtifactRoot = path.relative(absoluteArtifactRoot, absolutePath);
+  if (
+    !relativeToArtifactRoot ||
+    relativeToArtifactRoot.startsWith("..") ||
+    path.isAbsolute(relativeToArtifactRoot) ||
+    /(?:secret|credential|password|private[-_]?key|access[-_]?token)/i.test(relativePath)
+  ) {
+    return "";
+  }
+  try {
+    const stat = fsSync.lstatSync(absolutePath);
+    if (!stat.isFile() || stat.isSymbolicLink()) return "";
+    const realArtifactRoot = fsSync.realpathSync(absoluteArtifactRoot);
+    const realPath = fsSync.realpathSync(absolutePath);
+    const realRelative = path.relative(realArtifactRoot, realPath);
+    if (!realRelative || realRelative.startsWith("..") || path.isAbsolute(realRelative)) {
+      return "";
+    }
+  } catch {
+    return "";
+  }
+  return relativePath.replace(/\\/g, "/");
+}
+
+function completionFreshMutationCandidatePaths(state = {}, config = {}) {
+  const candidates = [];
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const append = (value) => {
+    const normalized = completionFreshMutationPath(value, state, config);
+    if (
+      !normalized ||
+      /^10\.\d{4,9}\//i.test(normalized) ||
+      isPrivateVerificationEvidencePath(normalized) ||
+      candidates.includes(normalized)
+    ) {
+      return;
+    }
+    try {
+      const absolutePath = path.resolve(commandCwd, normalized);
+      const relativePath = path.relative(commandCwd, absolutePath);
+      if (
+        !relativePath ||
+        relativePath.startsWith("..") ||
+        path.isAbsolute(relativePath) ||
+        !fsSync.statSync(absolutePath).isFile()
+      ) {
+        return;
+      }
+    } catch {
+      return;
+    }
+    candidates.push(normalized);
+  };
+  const verification = state.meta?.projectVerification || {};
+  for (const mutation of [...(verification.mutationHistory || [])].reverse()) {
+    for (const candidate of mutation?.paths || []) append(candidate);
+  }
+  for (const candidate of state.meta?.sourceCodeQuality?.paths || []) append(candidate);
+  for (const defect of state.meta?.sourceCodeQuality?.defects || []) append(defect?.path);
+  for (const entry of state.meta?.toolLoop?.recent || []) {
+    if (
+      entry?.toolName === "read_file" &&
+      entry?.ok !== false &&
+      entry?.blocked !== true
+    ) {
+      append(retainedReadFilePath(entry));
+    }
+  }
+  for (const candidate of exactOutputPathsForState(state)) append(candidate);
+  for (const candidate of exactInputPathsForState(state)) {
+    const raw = String(candidate || "").trim();
+    if (!raw) continue;
+    if (!path.isAbsolute(raw)) {
+      append(raw);
+      continue;
+    }
+    const localBasename = path.basename(raw);
+    const commandCwd = config.commandCwd || state.commandCwd || process.cwd();
+    if (localBasename && fsSync.existsSync(path.resolve(commandCwd, localBasename))) {
+      append(localBasename);
+    }
+  }
+
+  const contractGoal = completionContractGoal(config, state);
+  const goalText = String(
+    scopedChatopsEvidenceGoal(contractGoal, state.meta?.taskProfile || "auto") ||
+    state.meta?.goalContract?.currentRequest ||
+      state.meta?.goalContract?.activeGoal ||
+      state.goal ||
+      ""
+  );
+  const currentContract = deriveScsTaskContract({
+    goal: goalText,
+    taskProfile: state.meta?.taskProfile || "auto",
+  });
+  for (const candidate of currentContract.exactInputPaths || []) append(candidate);
+  for (const candidate of currentContract.exactOutputPaths || []) append(candidate);
+  const explicitPathPattern = /(?:^|[\s"'`()])((?:\.{0,2}\/)?(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:c|cc|cpp|cxx|h|hpp|java|go|rs|rb|php|py|pyi|sh|bash|js|mjs|cjs|jsx|ts|tsx|css|html|sql|toml|ini|cfg|conf|json|jsonl|ya?ml|xml|md|tex))/g;
+  for (const match of goalText.matchAll(explicitPathPattern)) append(match[1]);
+  if (/(?:^|[\s"'`(])\.gitignore(?:$|[\s"'`),.;])/m.test(goalText)) append(".gitignore");
+
+  const eligibleCandidates = filterExplicitlyExcludedOutputPaths(
+    candidates,
+    currentContract.excludedOutputPaths || []
+  );
+  const normalizedGoalText = goalText.toLocaleLowerCase("en-US");
+  const explicitlyNamed = eligibleCandidates.filter((candidate) => {
+    const normalized = candidate.toLocaleLowerCase("en-US");
+    const basename = path.posix.basename(normalized);
+    return normalizedGoalText.includes(normalized) ||
+      (basename.includes(".") && normalizedGoalText.includes(basename));
+  });
+  const selected = explicitlyNamed.length ? explicitlyNamed : eligibleCandidates;
+  if (Array.isArray(currentContract.requiredExecutableTerms) && currentContract.requiredExecutableTerms.length) {
+    const productionSource = selected.filter((candidate) => {
+      const normalized = candidate.toLocaleLowerCase("en-US");
+      const basename = path.posix.basename(normalized);
+      return /\.(?:c|cc|cpp|cxx|h|hpp|java|go|rs|rb|php|py|pyi|sh|bash|js|mjs|cjs|jsx|ts|tsx)$/.test(normalized) &&
+        !/(?:^|\/)(?:tests?|specs?|fixtures?)(?:\/|$)/.test(normalized) &&
+        !/^(?:test_|.*[._-](?:test|spec)\.)/.test(basename);
+    });
+    if (productionSource.length) return productionSource.slice(0, 16);
+  }
+  return selected.slice(0, 16);
 }
 
 function exactOutputPathsForState(state = {}) {
@@ -8128,11 +9933,19 @@ function exactOutputPathsForState(state = {}) {
   const verificationOutputPaths = Array.isArray(state.meta?.projectVerification?.requiredOutputs)
     ? state.meta.projectVerification.requiredOutputs.filter(Boolean)
     : [];
-  return [...new Set([
+  const exclusions = deriveScsTaskContract({
+    goal: String(
+      state.meta?.goalContract?.currentRequest ||
+        state.meta?.goalContract?.currentPreview ||
+        ""
+    ),
+    taskProfile: state.meta?.taskProfile || "auto",
+  }).excludedOutputPaths || [];
+  return filterExplicitlyExcludedOutputPaths([
     ...scsOutputPaths,
     ...progressOutputPaths,
     ...verificationOutputPaths,
-  ])].slice(0, 32);
+  ], exclusions).slice(0, 32);
 }
 
 function exactInputPathsForState(state = {}) {
@@ -8394,15 +10207,29 @@ export function completionContractGoal(config = {}, state = {}) {
     const text = String(candidate.value || "").trim();
     if (!text || isRuntimeCompactionRequest(text) || isRuntimeRecoveryRequest(text)) continue;
     if (!candidate.authoritative && isGenericTaskContinuationText(text) && !continuationAddsConcreteRequirement(text)) continue;
-    if (!retained.includes(text)) retained.push(text);
+    const scopeLine = agintiEvidenceScopeLine(text);
+    const withoutScopeLines = scopeLine
+      ? text
+          .split(/\r?\n/)
+          .filter((line) => !/^AGINTI_EVIDENCE_SCOPE_JSON:\s*/.test(line))
+          .join("\n")
+          .trim()
+      : text;
+    const scopeReserve = scopeLine ? scopeLine.length + 2 : 0;
+    const compacted = compactMultiline(
+      withoutScopeLines,
+      Math.max(500, 5000 - scopeReserve)
+    );
+    const preserved = [compacted, scopeLine].filter(Boolean).join("\n");
+    if (!retained.includes(preserved)) retained.push(preserved);
   }
   return retained
     .slice(0, 4)
-    .map((text, index) => `${index === 0 ? "Active task" : "Retained same-task context"}:\n${compactMultiline(text, 5000)}`)
+    .map((text, index) => `${index === 0 ? "Active task" : "Retained same-task context"}:\n${text}`)
     .join("\n\n");
 }
 
-function completionTaskContract(config = {}, state = {}) {
+export function completionTaskContract(config = {}, state = {}) {
   const taskProfile = config.taskProfile || state.meta?.taskProfile || "auto";
   let contract = augmentScsTaskContractWithProjectVerification(
     deriveScsTaskContract({
@@ -8424,12 +10251,95 @@ function completionTaskContract(config = {}, state = {}) {
   const refreshesExecutionContract = currentHistoryEntry
     ? currentHistoryEntry.refreshExecutionContract === true
     : true;
+  const activeExecutionContract =
+    Number(state.meta?.activeExecutionContract?.revision || 0) === currentGoalRevision
+      ? state.meta.activeExecutionContract || {}
+      : {};
+  const activeExecutionContractIsAuthoritative = Boolean(
+    activeExecutionContract.requiresWorkspaceMutation === true ||
+      activeExecutionContract.requiresFileMutation === true ||
+      activeExecutionContract.requiresSourceGrounding === true ||
+      (Array.isArray(activeExecutionContract.requiredProjectCommands) &&
+        activeExecutionContract.requiredProjectCommands.length > 0)
+  );
+  const currentContract = currentRequest
+    ? deriveScsTaskContract({ goal: currentRequest, taskProfile })
+    : null;
   if (
     currentRequest &&
-    refreshesExecutionContract &&
-    continuationAddsConcreteRequirement(currentRequest)
+    (refreshesExecutionContract || activeExecutionContractIsAuthoritative) &&
+    (
+      continuationAddsConcreteRequirement(currentRequest) ||
+      activeExecutionContractIsAuthoritative
+    )
   ) {
-    const currentContract = deriveScsTaskContract({ goal: currentRequest, taskProfile });
+    const startedMutationRevision = Math.max(
+      0,
+      Number(
+        activeExecutionContract.startedMutationRevision ??
+          state.meta?.projectVerification?.mutationRevision ??
+          0
+      )
+    );
+    const requiresFreshMutation = Boolean(
+      currentContract?.requiresFileMutation || activeExecutionContract.requiresFileMutation
+    );
+    const minimumMutationRevision = requiresFreshMutation
+      ? startedMutationRevision + 1
+      : 0;
+    const currentEvidenceCategories = new Set(
+      (Array.isArray(currentContract?.requiredEvidence)
+        ? currentContract.requiredEvidence
+        : [])
+        .map((item) => String(item?.category || ""))
+        .filter(Boolean)
+    );
+    const evidenceByCategory = new Map(
+      (Array.isArray(contract.requiredEvidence) ? contract.requiredEvidence : [])
+        .map((item) => [String(item?.category || ""), { ...item }])
+        .filter(([category]) => category)
+    );
+    for (const requirement of currentContract?.requiredEvidence || []) {
+      const category = String(requirement?.category || "");
+      if (!category) continue;
+      const prior = evidenceByCategory.get(category) || {};
+      evidenceByCategory.set(category, {
+        ...prior,
+        ...requirement,
+        minimumGoalRevision: Math.max(
+          Number(prior.minimumGoalRevision || 0),
+          currentGoalRevision
+        ),
+        minimumMutationRevision: requiresFreshMutation && ["file", "command", "test"].includes(category)
+          ? Math.max(Number(prior.minimumMutationRevision || 0), minimumMutationRevision)
+          : Number(prior.minimumMutationRevision || 0),
+      });
+    }
+    if (requiresFreshMutation && evidenceByCategory.has("test")) {
+      const prior = evidenceByCategory.get("test");
+      evidenceByCategory.set("test", {
+        ...prior,
+        minimumGoalRevision: Math.max(Number(prior.minimumGoalRevision || 0), currentGoalRevision),
+        minimumMutationRevision: Math.max(
+          Number(prior.minimumMutationRevision || 0),
+          minimumMutationRevision
+        ),
+      });
+    }
+    contract = {
+      ...contract,
+      requiredEvidence: [...evidenceByCategory.values()],
+      requiresWorkspaceMutation: Boolean(
+        contract.requiresWorkspaceMutation || currentContract?.requiresWorkspaceMutation
+      ),
+      requiresFileMutation: Boolean(
+        contract.requiresFileMutation || currentContract?.requiresFileMutation
+      ),
+      currentEvidenceCategories: [...currentEvidenceCategories],
+      currentEvidenceRevision: currentGoalRevision,
+      currentMutationBaseline: startedMutationRevision,
+      requiredFreshMutationRevision: minimumMutationRevision,
+    };
     if (currentContract.requiredGitActions.length) {
       contract = {
         ...contract,
@@ -8440,6 +10350,10 @@ function completionTaskContract(config = {}, state = {}) {
           ]),
         ],
         requiredGitRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+        requiredGitMutationRevision: Math.max(
+          Number(contract.requiredGitMutationRevision || 0),
+          minimumMutationRevision
+        ),
       };
     }
   }
@@ -8459,6 +10373,30 @@ function completionTaskContract(config = {}, state = {}) {
   return contract;
 }
 
+const CONVERGENCE_SUPPRESSIBLE_BLOCK_CATEGORIES = new Set([
+  "repeated-read-only-call",
+  "repeated-no-progress-call",
+  "unchanged-failed-test-rerun",
+]);
+
+export function convergenceSuppressedToolNames(state = {}) {
+  const recent = Array.isArray(state.meta?.toolLoop?.recent)
+    ? state.meta.toolLoop.recent
+    : [];
+  const latest = recent.at(-1);
+  if (
+    !latest ||
+    latest.ok !== false ||
+    latest.blocked !== true ||
+    !CONVERGENCE_SUPPRESSIBLE_BLOCK_CATEGORIES.has(String(latest.category || ""))
+  ) {
+    return [];
+  }
+  const toolName = String(latest.toolName || "").trim();
+  if (!toolName || toolName === "finish") return [];
+  return [toolName];
+}
+
 export function nextStepRuntimeConfig(config = {}, state = {}) {
   const staticOrder = Array.isArray(state.meta?.toolLoop?.staticOrder)
     ? state.meta.toolLoop.staticOrder
@@ -8472,10 +10410,97 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     ...applyLocalFailureRecovery(config, state),
     ...(retainedDataDiscoveryReady ? { dataProjectDiscoveryReady: true } : {}),
   };
+  const suppressedToolNames = convergenceSuppressedToolNames(state);
+  if (suppressedToolNames.length) {
+    runtimeConfig.convergenceSuppressedToolNames = suppressedToolNames;
+  }
+  const groundingGoalRevision = Math.max(
+    0,
+    Number(state.meta?.goalContract?.revision || 0)
+  );
+  const groundingExecutionContract =
+    Number(state.meta?.activeExecutionContract?.revision || 0) === groundingGoalRevision
+      ? state.meta.activeExecutionContract || {}
+      : {};
+  const groundingTaskContract = completionTaskContract(config, state);
+  const groundingMutationRevision = Math.max(
+    0,
+    Number(state.meta?.projectVerification?.mutationRevision || 0)
+  );
+  const groundingMutationBaseline = Math.max(
+    0,
+    Number(
+      groundingExecutionContract.startedMutationRevision ??
+        groundingMutationRevision
+    )
+  );
+  const groundingMaterialMutationRevision = Math.max(
+    0,
+    Number(groundingExecutionContract.materialMutationRevision || 0)
+  );
+  const groundingFreshMutationSatisfied =
+    groundingMaterialMutationRevision > groundingMutationBaseline;
+  const currentGroundingGoal = String(
+    state.meta?.goalContract?.currentRequest || config.goal || state.goal || ""
+  );
+  const scopedRoot = scopedArtifactRoot(completionContractGoal(config, state));
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const resolvedScopedRoot = scopedRoot ? path.resolve(scopedRoot) : "";
+  const scopedRootRelative = resolvedScopedRoot
+    ? path.relative(commandCwd, resolvedScopedRoot)
+    : "";
+  const scopedArtifactTask = Boolean(
+    resolvedScopedRoot &&
+      scopedRootRelative &&
+      !scopedRootRelative.startsWith("..") &&
+      !path.isAbsolute(scopedRootRelative)
+  );
+  if (scopedArtifactTask) {
+    runtimeConfig.scopedArtifactTask = true;
+    runtimeConfig.scopedArtifactRoot = scopedRootRelative.replace(/\\/g, "/");
+    runtimeConfig.workspacePathScopeRoots = [runtimeConfig.scopedArtifactRoot];
+  }
+  if (
+    (
+      groundingTaskContract.requiresSourceGrounding === true ||
+      groundingExecutionContract.requiresSourceGrounding === true
+    ) &&
+    groundingTaskContract.requiresFileMutation === true &&
+    !groundingFreshMutationSatisfied &&
+    !scopedArtifactTask
+  ) {
+    runtimeConfig.repositoryGroundingRequired = true;
+    runtimeConfig.repositoryGroundingGoalRevision = groundingGoalRevision;
+    runtimeConfig.repositoryGroundingRequiresTests = Boolean(
+      (Array.isArray(state.meta?.projectVerification?.discoveredTests) &&
+        state.meta.projectVerification.discoveredTests.length > 0) ||
+        /\b(?:test|tests|testing|regression|suite)\b|测试|測試|回归|回歸/.test(
+          currentGroundingGoal
+        )
+    );
+  }
   const patchContextRefresh = activePatchContextRefresh(state);
   if (patchContextRefresh) {
     runtimeConfig.patchContextRefreshRequired = true;
     runtimeConfig.patchContextRefreshPath = patchContextRefresh.path;
+  } else {
+    const patchContextRepair = activePatchContextRepair(state);
+    if (patchContextRepair) {
+      runtimeConfig.patchContextRepairRequired = true;
+      runtimeConfig.patchContextRepairPath = patchContextRepair.path;
+      runtimeConfig.patchContextRepairSearch = patchContextRepair.search;
+      runtimeConfig.patchContextRepairSearchHash = patchContextRepair.searchHash;
+      runtimeConfig.patchContextRepairAnchorKind = patchContextRepair.anchorKind;
+      runtimeConfig.patchContextRepairAnchorIdentity = patchContextRepair.anchorIdentity;
+      runtimeConfig.patchContextRepairLineStart = patchContextRepair.lineStart;
+      runtimeConfig.patchContextRepairLineEnd = patchContextRepair.lineEnd;
+      runtimeConfig.patchContextRepairReadCount = Math.max(
+        0,
+        Number(patchContextRepair.repairReadCount || 0)
+      );
+    }
   }
   const requiredSymbolRepair =
     activeRequiredSymbolRepair(state) || currentRequiredSymbolRepair(state);
@@ -8484,10 +10509,101 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   }
   const verification = state.meta?.projectVerification || {};
   const mutationRevision = Number(verification.mutationRevision || 0);
-  const testRuns = Array.isArray(verification.testRuns) ? verification.testRuns : [];
+  const privateMutationRevision = verificationPrivateMutationRevision(verification);
+  const implementationOpen = currentTurnImplementationOpen(state);
+  const completionRepair = state.meta?.completionEvidenceRepair || {};
+  const retainedSourceQuality = state.meta?.sourceCodeQuality || {};
+  const sourceQualityAssessmentRevision = Math.max(
+    -1,
+    Number(
+      retainedSourceQuality.mutationRevision ??
+        completionRepair.mutationRevision ??
+        -1
+    )
+  );
+  const retainedSourceQualityRepairRequired = Boolean(
+    retainedSourceQuality.checked === true &&
+      retainedSourceQuality.ok === false &&
+      (
+        (Array.isArray(retainedSourceQuality.paths) && retainedSourceQuality.paths.length > 0) ||
+        (Array.isArray(retainedSourceQuality.defects) && retainedSourceQuality.defects.length > 0)
+      ) &&
+      sourceQualityAssessmentRevision === mutationRevision
+  );
+  const completionFreshMutationRevision = Math.max(
+    0,
+    Number(
+      completionRepair.requiredFreshMutationRevision ||
+        groundingTaskContract.requiredFreshMutationRevision ||
+        0
+    ),
+    retainedSourceQualityRepairRequired ? mutationRevision + 1 : 0
+  );
+  const completionRepairRequiresFreshMutation = Boolean(
+    retainedSourceQualityRepairRequired ||
+    completionRepair.requiresFreshFileMutation === true ||
+      (
+        completionRepair.key &&
+        groundingTaskContract.requiresFileMutation === true &&
+        completionFreshMutationRevision > mutationRevision
+      )
+  );
+  const currentTurnRequiresFreshMutation = Boolean(
+    groundingExecutionContract.requiresFileMutation === true &&
+      groundingExecutionContract.requiresSourceGrounding === true &&
+      !groundingFreshMutationSatisfied
+  );
+  if (
+    (
+      completionRepairRequiresFreshMutation &&
+      completionFreshMutationRevision > mutationRevision
+    ) ||
+    currentTurnRequiresFreshMutation
+  ) {
+    const candidatePaths = completionFreshMutationCandidatePaths(state, config);
+    const mutationBoundaryTimes = [
+      currentTurnRequiresFreshMutation
+        ? Date.parse(String(groundingExecutionContract.refreshedAt || ""))
+        : Number.NaN,
+      completionRepairRequiresFreshMutation
+        ? Date.parse(String(completionRepair.at || ""))
+        : Number.NaN,
+    ].filter(Number.isFinite);
+    const repairAt = mutationBoundaryTimes.length
+      ? Math.max(...mutationBoundaryTimes)
+      : Number.NaN;
+    const groundedAfterRepair = (state.meta?.toolLoop?.recent || []).some((entry) => {
+      if (
+        entry?.toolName !== "read_file" ||
+        entry?.ok === false ||
+        entry?.blocked === true
+      ) {
+        return false;
+      }
+      const candidate = completionFreshMutationPath(
+        retainedReadFilePath(entry),
+        state,
+        config
+      );
+      if (!candidate || isPrivateVerificationEvidencePath(candidate)) return false;
+      if (candidatePaths.length > 0 && !candidatePaths.includes(candidate)) return false;
+      const entryAt = Date.parse(String(entry?.at || ""));
+      return !Number.isFinite(repairAt) || (Number.isFinite(entryAt) && entryAt > repairAt);
+    });
+    if (candidatePaths.length > 0 || !currentTurnRequiresFreshMutation) {
+      runtimeConfig.completionFreshMutationRequired = true;
+      runtimeConfig.completionFreshMutationRevision = currentTurnRequiresFreshMutation
+        ? groundingMutationBaseline + 1
+        : completionFreshMutationRevision;
+      runtimeConfig.completionFreshMutationPaths = candidatePaths;
+      runtimeConfig.completionFreshMutationNeedsSourceRead = !groundedAfterRepair;
+    }
+  }
+  const testRuns = (Array.isArray(verification.testRuns) ? verification.testRuns : [])
+    .filter((run) => !testRunRepresentsInvalidInvocation(run));
   const latestCurrentTest = [...testRuns]
     .reverse()
-    .find((run) => Number(run.mutationRevision || 0) === mutationRevision);
+    .find((run) => testRunMatchesVerificationRevision(run, verification));
   const latestRecordedTest = [...testRuns]
     .reverse()
     .find((run) => String(run?.command || "").trim());
@@ -8590,10 +10706,79 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
         String(entry?.failureSignature || "") ===
           String(retainedFailedTest.failureSignature || "")
     ).length;
-    if (diagnosticIsCurrent && irrelevantPatchAttempts >= 2) {
-      runtimeConfig.testFailureRepairPatchTargets = (
-        Array.isArray(diagnostic.focuses) ? diagnostic.focuses : []
-      )
+    const deterministicStructuralFocus = Boolean(
+      diagnosticIsCurrent &&
+        (Array.isArray(diagnostic.focuses) ? diagnostic.focuses : []).some(
+          (focus) =>
+            [
+              "python-agent-test-harness-path",
+              "python-main-guard-order",
+              "python-duplicate-top-level-definition",
+              "python-git-baseline-recovery",
+            ].includes(focus?.kind) &&
+            safeRecoveryEvidencePath(focus?.path) &&
+            String(focus?.directSearch || "")
+        )
+    );
+    const diagnosticFocuses = Array.isArray(diagnostic?.focuses)
+      ? diagnostic.focuses
+      : [];
+    const prioritizedRepairFocuses = deterministicStructuralFocus
+      ? diagnosticFocuses
+          .filter((focus) =>
+            [
+              "python-agent-test-harness-path",
+              "python-main-guard-order",
+              "python-duplicate-top-level-definition",
+              "python-git-baseline-recovery",
+            ].includes(focus?.kind) &&
+            safeRecoveryEvidencePath(focus?.path) &&
+            String(focus?.directSearch || "")
+          )
+          .sort(
+            (left, right) =>
+              ({
+                "python-agent-test-harness-path": 0,
+                "python-main-guard-order": 1,
+                "python-duplicate-top-level-definition": 2,
+                "python-git-baseline-recovery": 3,
+              }[left?.kind] ?? 4) -
+                ({
+                  "python-agent-test-harness-path": 0,
+                  "python-main-guard-order": 1,
+                  "python-duplicate-top-level-definition": 2,
+                  "python-git-baseline-recovery": 3,
+                }[right?.kind] ?? 4) ||
+              Math.max(0, Number(left?.decisiveLine || 0)) -
+              Math.max(0, Number(right?.decisiveLine || 0))
+          )
+          .slice(0, 1)
+      : diagnosticFocuses;
+    if (deterministicStructuralFocus) {
+      for (const key of [
+        "patchContextRefreshRequired",
+        "patchContextRefreshPath",
+        "patchContextRepairRequired",
+        "patchContextRepairPath",
+        "patchContextRepairSearch",
+        "patchContextRepairSearchHash",
+        "patchContextRepairAnchorKind",
+        "patchContextRepairAnchorIdentity",
+        "patchContextRepairLineStart",
+        "patchContextRepairLineEnd",
+        "patchContextRepairReadCount",
+        "testFailureStalemateRevalidation",
+        "testFailureStalemateCommand",
+        "testFailureTopologyRetryCount",
+      ]) {
+        delete runtimeConfig[key];
+      }
+    }
+    if (
+      diagnosticIsCurrent &&
+      (irrelevantPatchAttempts >= 2 || deterministicStructuralFocus)
+    ) {
+      runtimeConfig.testFailureRepairPatchTargets = prioritizedRepairFocuses
         .map((focus) => ({
           kind: String(focus?.kind || "index-comparison"),
           path: safeRecoveryEvidencePath(focus?.path),
@@ -8632,6 +10817,72 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
           anchorLiteral: String(focus?.anchorLiteral || ""),
           negated: focus?.negated === true,
           caseFolded: focus?.caseFolded === true,
+          ...(String(focus?.directReplacement || "")
+            ? { directReplacement: String(focus.directReplacement) }
+            : {}),
+          ...(String(focus?.expectedWorkspacePath || "")
+            ? { expectedWorkspacePath: String(focus.expectedWorkspacePath) }
+            : {}),
+          ...(String(focus?.symbol || "")
+            ? { symbol: String(focus.symbol) }
+            : {}),
+          ...(Array.isArray(focus?.testNames)
+            ? { testNames: focus.testNames.map(String).slice(0, 64) }
+            : {}),
+          ...(Number.isFinite(Number(focus?.assertionCount))
+            ? { assertionCount: Math.max(0, Number(focus.assertionCount || 0)) }
+            : {}),
+          ...(Array.isArray(focus?.calledLater) && focus.calledLater.length
+            ? {
+                calledLater: focus.calledLater
+                  .map((item) => ({
+                    name: String(item?.name || ""),
+                    line: Math.max(0, Number(item?.line || 0)),
+                  }))
+                  .filter((item) => item.name),
+              }
+            : {}),
+          ...(Array.isArray(focus?.duplicateDeclarations) &&
+          focus.duplicateDeclarations.length
+            ? {
+                duplicateDeclarations: focus.duplicateDeclarations
+                  .map((item) => ({
+                    kind: String(item?.kind || "def"),
+                    name: String(item?.name || ""),
+                    count: Math.max(0, Number(item?.count || 0)),
+                    lines: (Array.isArray(item?.lines) ? item.lines : [])
+                      .map((line) => Math.max(0, Number(line || 0)))
+                      .filter(Boolean)
+                      .slice(0, 12),
+                  }))
+                  .filter((item) => item.name),
+              }
+            : {}),
+          ...(Array.isArray(focus?.baselineDeclarations) &&
+          focus.baselineDeclarations.length
+            ? {
+                baselineDeclarations: focus.baselineDeclarations
+                  .map((item) => ({
+                    kind: String(item?.kind || "def"),
+                    name: String(item?.name || ""),
+                    count: Math.max(0, Number(item?.count || 0)),
+                  }))
+                  .filter((item) => item.name)
+                  .slice(0, 24),
+              }
+            : {}),
+          ...(Array.isArray(focus?.missingDeclarations) &&
+          focus.missingDeclarations.length
+            ? {
+                missingDeclarations: focus.missingDeclarations
+                  .map((item) => ({
+                    kind: String(item?.kind || "def"),
+                    name: String(item?.name || ""),
+                  }))
+                  .filter((item) => item.name)
+                  .slice(0, 16),
+              }
+            : {}),
         }))
         .filter((target) => target.path && target.search)
         .slice(0, 4);
@@ -8719,6 +10970,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     runtimeConfig.testFailureRepairContextPaths = unreadRecoveryPacketPaths;
     runtimeConfig.testFailureRepairNeedsPatchContext = Boolean(
       runtimeConfig.testFailureRepairMutationRequired &&
+        !deterministicStructuralFocus &&
         !(exactRecoveryPacketContextActive
           ? unreadRecoveryPacketPaths.length === 0
           : patchContextConsumed) &&
@@ -8751,9 +11003,10 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       runtimeConfig.testVerificationCommand = String(retainedFailedTest.command || "");
     }
   } else if (
+    !implementationOpen &&
     !latestCurrentTest &&
     latestRecordedTest &&
-    mutationRevision > Number(latestRecordedTest.mutationRevision || 0)
+    !testRunMatchesVerificationRevision(latestRecordedTest, verification)
   ) {
     const retainedTestCommand = String(latestRecordedTest?.command || "");
     if (retainedTestCommand) {
@@ -8770,6 +11023,36 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     runtimeConfig.requiredProjectCommand = pendingRequiredProjectCommands[0];
     runtimeConfig.pendingRequiredProjectCommands = pendingRequiredProjectCommands;
   }
+  if (!state.meta?.artifactProgress && !retainedFailedTest && !implementationOpen) {
+    const completionContract = completionTaskContract(config, state);
+    const completionEvaluation = evaluateScsEvidence(
+      completionContract,
+      buildScsEvidenceLedger({ state })
+    );
+    const pendingGitActions = Array.isArray(completionEvaluation.missingGitActions)
+      ? completionEvaluation.missingGitActions
+          .map((item) => String(item || "").toLowerCase())
+          .filter(Boolean)
+      : [];
+    const missingNonGitEvidence = Array.isArray(completionEvaluation.missing)
+      ? completionEvaluation.missing.filter(
+          (item) => String(item?.category || "") !== "git"
+        )
+      : [];
+    const taskOwnedCommitPaths =
+      pendingGitActions.includes("commit") &&
+      pendingGitActions.every((action) => ["add", "commit"].includes(action)) &&
+      missingNonGitEvidence.length === 0 &&
+      pendingRequiredProjectCommands.length === 0 &&
+      projectTestVerificationFinishBlock(state) === null
+        ? taskOwnedMutationPathsSinceLatestCommit(verification)
+        : [];
+    if (taskOwnedCommitPaths.length > 0) {
+      runtimeConfig.taskOwnedCommitPending = true;
+      runtimeConfig.taskOwnedCommitPaths = taskOwnedCommitPaths;
+      runtimeConfig.taskOwnedPendingGitActions = pendingGitActions;
+    }
+  }
   const completionCandidate = state.meta?.verifiedCompletionCandidate;
   const currentGoalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
   const completionCandidateEvidenceReady = completionCandidate
@@ -8782,6 +11065,8 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     completionCandidate &&
       Number(completionCandidate.version || 0) === 1 &&
       Number(completionCandidate.mutationRevision || 0) === mutationRevision &&
+      Number(completionCandidate.privateMutationRevision || 0) ===
+        privateMutationRevision &&
       Number(completionCandidate.goalRevision || 0) === currentGoalRevision &&
       latestCurrentTest?.passed === true &&
       String(completionCandidate.commandKey || "") ===
@@ -8790,7 +11075,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       completionCandidateEvidenceReady &&
       !state.meta?.artifactProgress
   );
-  if (completionCandidateCurrent) {
+  if (completionCandidateCurrent && !implementationOpen) {
     runtimeConfig.verifiedCompletionPending = true;
     runtimeConfig.verifiedCompletionCommand = String(completionCandidate.command || "");
     runtimeConfig.verifiedCompletionPassedAt = String(completionCandidate.passedAt || "");
@@ -9115,6 +11400,7 @@ async function refreshArtifactValidationPreflight(
     externalRepairPending ||
       (semantic.missingFiles || []).length ||
       (semantic.missingRequiredText || []).length ||
+      (semantic.missingExecutableTerms || []).length ||
       (semantic.presentForbiddenText || []).length ||
       unsupportedCommandClaims.length ||
       unsupportedPathClaims.length ||
@@ -9133,6 +11419,7 @@ async function refreshArtifactValidationPreflight(
     (externalRepairPending ? 1 : 0) +
     (semantic.missingFiles || []).length +
     (semantic.missingRequiredText || []).length +
+    (semantic.missingExecutableTerms || []).length +
     (semantic.presentForbiddenText || []).length +
     unsupportedCommandClaims.length +
     unsupportedPathClaims.length +
@@ -9195,6 +11482,8 @@ async function refreshArtifactValidationPreflight(
     preflight: {
       semanticOk: Boolean(semantic.ok),
       semanticReason: semantic.reason || "",
+      missingExecutableTerms: semantic.missingExecutableTerms || [],
+      executableSourcePaths: semantic.executableSourcePaths || [],
       unsupportedCommandClaims,
       unsupportedPathClaims,
       unsupportedOutputClaims,
@@ -9292,6 +11581,8 @@ async function refreshArtifactValidationPreflight(
     needsCommand,
     needsSourceRead,
     semanticReason: semantic.reason || "",
+    missingExecutableTerms: semantic.missingExecutableTerms || [],
+    executableSourcePaths: semantic.executableSourcePaths || [],
     unsupportedCommandClaims,
     unsupportedPathClaims,
     unsupportedOutputClaims,
@@ -9363,6 +11654,308 @@ function patchSearchTextWasNotFound(toolResult = {}) {
   );
 }
 
+function sourceLineRecords(content = "") {
+  const records = [];
+  const expression = /([^\r\n]*)(\r\n|\n|\r|$)/g;
+  let match;
+  while ((match = expression.exec(String(content || "")))) {
+    if (!match[0]) break;
+    records.push({
+      text: match[1],
+      start: match.index,
+      end: expression.lastIndex,
+    });
+    if (!match[2]) break;
+  }
+  return records;
+}
+
+function sourceIndentWidth(line = "") {
+  return String(line || "").match(/^[\t ]*/)?.[0].replace(/\t/g, "    ").length || 0;
+}
+
+function sourceDeclarationIdentity(line = "") {
+  const text = String(line || "").trim();
+  for (const expression of [
+    /^(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\b/,
+    /^class\s+([A-Za-z_][A-Za-z0-9_]*)\b/,
+    /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/,
+    /^(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/,
+    /^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/,
+  ]) {
+    const match = text.match(expression);
+    if (match) return match[1];
+  }
+  return "";
+}
+
+export function pythonMainGuardOrderDefects(content = "") {
+  const source = String(content || "");
+  if (!source.trim() || source.includes("\0")) return [];
+  const records = sourceLineRecords(source);
+  const topLevelDeclarations = records
+    .map((record, index) => ({
+      index,
+      identity: sourceIndentWidth(record.text) === 0
+        ? sourceDeclarationIdentity(record.text)
+        : "",
+    }))
+    .filter((item) => item.identity);
+  const defects = [];
+  for (let guardIndex = 0; guardIndex < records.length; guardIndex += 1) {
+    const guardLine = String(records[guardIndex]?.text || "");
+    if (
+      sourceIndentWidth(guardLine) !== 0 ||
+      !/^if\s+__name__\s*==\s*["']__main__["']\s*:\s*(?:#.*)?$/.test(
+        guardLine.trim()
+      )
+    ) {
+      continue;
+    }
+    let guardEndIndex = records.length;
+    for (let index = guardIndex + 1; index < records.length; index += 1) {
+      const text = String(records[index]?.text || "");
+      if (!text.trim()) continue;
+      if (sourceIndentWidth(text) <= 0) {
+        guardEndIndex = index;
+        break;
+      }
+    }
+    const guardStart = records[guardIndex]?.start ?? 0;
+    const guardEnd = guardEndIndex < records.length
+      ? records[guardEndIndex].start
+      : source.length;
+    const guardSearch = source.slice(guardStart, guardEnd);
+    const repairSearchCandidate = source.slice(guardStart);
+    const repairSearch =
+      Buffer.byteLength(repairSearchCandidate, "utf8") <= PATCH_CONTEXT_ANCHOR_MAX_BYTES &&
+      source.indexOf(repairSearchCandidate) === guardStart &&
+      source.indexOf(repairSearchCandidate, guardStart + repairSearchCandidate.length) < 0
+        ? repairSearchCandidate
+        : "";
+    if (!/\bmain\s*\(/.test(guardSearch)) continue;
+
+    const mainDeclaration = [...topLevelDeclarations]
+      .reverse()
+      .find((item) => item.identity === "main" && item.index < guardIndex);
+    if (!mainDeclaration) continue;
+    const mainEndIndex = declarationBlockEnd(records, mainDeclaration.index);
+    const mainStart = records[mainDeclaration.index]?.start ?? 0;
+    const mainEnd = mainEndIndex < records.length
+      ? records[mainEndIndex].start
+      : source.length;
+    const mainBlock = source.slice(mainStart, mainEnd);
+    const calledNames = new Set(
+      [...mainBlock.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)]
+        .map((match) => String(match[1] || ""))
+    );
+    const calledLater = topLevelDeclarations
+      .filter(
+        (item) =>
+          item.index > guardIndex &&
+          item.identity !== "main" &&
+          calledNames.has(item.identity)
+      )
+      .map((item) => ({
+        name: item.identity,
+        line: item.index + 1,
+      }));
+    if (!calledLater.length) continue;
+    const first = source.indexOf(guardSearch);
+    defects.push({
+      guardLine: guardIndex + 1,
+      mainLine: mainDeclaration.index + 1,
+      calledLater,
+      guardSearch:
+        guardSearch && first >= 0 && source.indexOf(guardSearch, first + guardSearch.length) < 0
+          ? guardSearch
+          : "",
+      repairSearch,
+    });
+  }
+  return defects;
+}
+
+function sourceAnchorCandidateScore(line = "") {
+  const text = String(line || "").trim();
+  if (text.length < 4 || /^(?:[{}()[\],;:]|else:|try:|finally:)$/.test(text)) return -1;
+  let score = Math.min(text.length, 120);
+  if (sourceDeclarationIdentity(text)) score += 500;
+  else if (/^(?:if\s+__name__|describe\s*\(|test\s*\(|it\s*\()/.test(text)) score += 240;
+  else if (/^[A-Za-z_$][A-Za-z0-9_$]*\s*[:=]/.test(text)) score += 100;
+  if (/^(?:#|\/\/|\*)/.test(text)) score -= 60;
+  return score;
+}
+
+function uniqueSourceLineIndex(records = [], candidate = "") {
+  const needle = String(candidate || "").trim();
+  if (!needle) return -1;
+  const matches = records
+    .map((record, index) => (String(record.text || "").trim() === needle ? index : -1))
+    .filter((index) => index >= 0);
+  return matches.length === 1 ? matches[0] : -1;
+}
+
+function declarationBlockEnd(records = [], startIndex = 0) {
+  const startText = String(records[startIndex]?.text || "");
+  const identity = sourceDeclarationIdentity(startText);
+  if (!identity) return Math.min(records.length, startIndex + 28);
+  const indentation = patchSourceIndentWidth(startText);
+  const pythonDeclaration = /^(?:async\s+)?def\s+|^class\s+/.test(startText.trim());
+  for (let index = startIndex + 1; index < records.length; index += 1) {
+    const text = String(records[index]?.text || "");
+    const trimmed = text.trim();
+    if (!trimmed || patchSourceIndentWidth(text) > indentation) continue;
+    if (
+      pythonDeclaration
+        ? /^(?:(?:async\s+)?def\s+|class\s+|@|if\s+__name__)/.test(trimmed)
+        : Boolean(sourceDeclarationIdentity(trimmed))
+    ) {
+      return index;
+    }
+  }
+  return Math.min(records.length, startIndex + PATCH_CONTEXT_ANCHOR_MAX_LINES);
+}
+
+function containingSourceDeclaration(records = [], anchorIndex = -1) {
+  if (anchorIndex < 0 || anchorIndex >= records.length) return null;
+  const anchorIndentation = patchSourceIndentWidth(records[anchorIndex]?.text || "");
+  for (let index = anchorIndex - 1; index >= 0; index -= 1) {
+    const text = String(records[index]?.text || "");
+    const identity = sourceDeclarationIdentity(text);
+    if (!identity || patchSourceIndentWidth(text) > anchorIndentation) continue;
+    const endIndex = declarationBlockEnd(records, index);
+    if (endIndex > anchorIndex) return { startIndex: index, endIndex, identity };
+  }
+  return null;
+}
+
+export function derivePatchContextAnchor(currentContent = "", failedSearchPreview = "") {
+  const content = String(currentContent || "");
+  if (!content.trim() || content.includes("\0")) return null;
+  const records = sourceLineRecords(content);
+  if (!records.length) return null;
+  const previewLines = String(failedSearchPreview || "")
+    .split(/\r\n|\n|\r/)
+    .map((line, order) => ({ line, order, score: sourceAnchorCandidateScore(line) }))
+    .filter((candidate) => candidate.score >= 0)
+    .sort((left, right) => right.score - left.score || left.order - right.order);
+
+  let anchorIndex = -1;
+  let anchorKind = "exact-line";
+  let anchorIdentity = "";
+  for (const candidate of previewLines) {
+    anchorIndex = uniqueSourceLineIndex(records, candidate.line);
+    if (anchorIndex >= 0) {
+      anchorIdentity = sourceDeclarationIdentity(records[anchorIndex].text);
+      break;
+    }
+  }
+  if (anchorIndex < 0) {
+    const requestedIdentities = previewLines
+      .map((candidate) => sourceDeclarationIdentity(candidate.line))
+      .filter(Boolean);
+    for (const identity of requestedIdentities) {
+      const matches = records
+        .map((record, index) => (sourceDeclarationIdentity(record.text) === identity ? index : -1))
+        .filter((index) => index >= 0);
+      if (matches.length === 1) {
+        anchorIndex = matches[0];
+        anchorIdentity = identity;
+        anchorKind = "declaration-identity";
+        break;
+      }
+    }
+  }
+
+  let search = "";
+  let lineStart = 1;
+  let lineEnd = records.length;
+  if (anchorIndex >= 0) {
+    const declaration = Boolean(sourceDeclarationIdentity(records[anchorIndex].text));
+    const containingDeclaration = declaration
+      ? null
+      : containingSourceDeclaration(records, anchorIndex);
+    const startIndex = declaration
+      ? anchorIndex
+      : containingDeclaration?.startIndex ?? Math.max(0, anchorIndex - 3);
+    let endIndex = declaration
+      ? declarationBlockEnd(records, anchorIndex)
+      : containingDeclaration?.endIndex ?? Math.min(records.length, anchorIndex + 25);
+    if (containingDeclaration) {
+      anchorKind = "containing-declaration";
+      anchorIdentity = containingDeclaration.identity;
+    }
+    endIndex = Math.min(endIndex, startIndex + PATCH_CONTEXT_ANCHOR_MAX_LINES);
+    while (endIndex > startIndex) {
+      const startOffset = records[startIndex].start;
+      const endOffset = endIndex < records.length ? records[endIndex].start : content.length;
+      const candidate = content.slice(startOffset, endOffset);
+      if (Buffer.byteLength(candidate, "utf8") <= PATCH_CONTEXT_ANCHOR_MAX_BYTES) {
+        search = candidate;
+        lineStart = startIndex + 1;
+        lineEnd = endIndex;
+        break;
+      }
+      endIndex -= 1;
+    }
+  }
+  if (
+    (!search || content.indexOf(search, content.indexOf(search) + search.length) >= 0) &&
+    Buffer.byteLength(content, "utf8") <= PATCH_CONTEXT_ANCHOR_MAX_BYTES
+  ) {
+    search = content;
+    lineStart = 1;
+    lineEnd = records.length;
+    anchorKind = "complete-file";
+    anchorIdentity = anchorIdentity || "complete-file";
+  }
+  if (!search) return null;
+  const first = content.indexOf(search);
+  if (first < 0 || content.indexOf(search, first + search.length) >= 0) return null;
+  return {
+    search,
+    searchHash: hashForLog(search),
+    sourceHash: hashForLog(content),
+    anchorKind,
+    anchorIdentity,
+    lineStart,
+    lineEnd,
+    byteLength: Buffer.byteLength(search, "utf8"),
+  };
+}
+
+function boundedPatchContextCompleteSource(currentContent = "") {
+  const source = String(currentContent || "");
+  const byteLength = Buffer.byteLength(source, "utf8");
+  if (
+    !source.trim() ||
+    source.includes("\0") ||
+    byteLength > PATCH_CONTEXT_ANCHOR_MAX_BYTES
+  ) {
+    return null;
+  }
+  return {
+    completeSource: source,
+    completeSourceHash: hashForLog(source),
+    completeSourceBytes: byteLength,
+  };
+}
+
+function validatedPatchContextCompleteSource(marker = {}) {
+  const retained = boundedPatchContextCompleteSource(marker.completeSource);
+  if (
+    !retained ||
+    String(marker.completeSourceHash || "") !== retained.completeSourceHash ||
+    Number(marker.completeSourceBytes || 0) !== retained.completeSourceBytes ||
+    (String(marker.sourceHash || "") &&
+      String(marker.sourceHash) !== retained.completeSourceHash)
+  ) {
+    return "";
+  }
+  return retained.completeSource;
+}
+
 export function activePatchContextRefresh(state = {}) {
   const marker = state.meta?.toolLoop?.patchContextRequired;
   if (
@@ -9377,6 +11970,14 @@ export function activePatchContextRefresh(state = {}) {
     Number(state.meta?.projectVerification?.mutationRevision || 0)
   );
   if (Number(marker.mutationRevision || 0) !== mutationRevision) return null;
+  const privateMutationRevision = verificationPrivateMutationRevision(
+    state.meta?.projectVerification || {}
+  );
+  if (
+    Number(marker.privateMutationRevision || 0) !== privateMutationRevision
+  ) {
+    return null;
+  }
   const markerGoalRevision = Math.max(0, Number(marker.goalRevision || 0));
   const currentGoalRevision = Math.max(
     0,
@@ -9393,6 +11994,346 @@ export function activePatchContextRefresh(state = {}) {
     ...marker,
     path: safeRecoveryEvidencePath(marker.path),
   };
+}
+
+export function activePatchContextRepair(state = {}) {
+  const marker = state.meta?.toolLoop?.patchContextRepair;
+  if (
+    !marker ||
+    Number(marker.version || 0) !== PATCH_CONTEXT_REPAIR_VERSION ||
+    !safeRecoveryEvidencePath(marker.path) ||
+    !String(marker.search || "") ||
+    !String(marker.searchHash || "")
+  ) {
+    return null;
+  }
+  const mutationRevision = Math.max(
+    0,
+    Number(state.meta?.projectVerification?.mutationRevision || 0)
+  );
+  if (Number(marker.mutationRevision || 0) !== mutationRevision) return null;
+  const privateMutationRevision = verificationPrivateMutationRevision(
+    state.meta?.projectVerification || {}
+  );
+  if (
+    Number(marker.privateMutationRevision || 0) !== privateMutationRevision
+  ) {
+    return null;
+  }
+  const markerGoalRevision = Math.max(0, Number(marker.goalRevision || 0));
+  const currentGoalRevision = Math.max(
+    0,
+    Number(state.meta?.goalContract?.revision || 0)
+  );
+  if (
+    markerGoalRevision > 0 &&
+    currentGoalRevision > 0 &&
+    !goalRevisionCoversActiveTask(state, markerGoalRevision)
+  ) {
+    return null;
+  }
+  const completeSource = validatedPatchContextCompleteSource(marker);
+  return {
+    ...marker,
+    path: safeRecoveryEvidencePath(marker.path),
+    completeSource,
+    completeSourceHash: completeSource ? String(marker.completeSourceHash || "") : "",
+    completeSourceBytes: completeSource
+      ? Math.max(0, Number(marker.completeSourceBytes || 0))
+      : 0,
+  };
+}
+
+function comparablePatchContextText(value = "") {
+  return String(value || "")
+    .replace(/\r\n?|\u2028|\u2029/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+$/g, ""))
+    .join("\n")
+    .trim();
+}
+
+function patchContextDeclarationCounts(content = "") {
+  const counts = new Map();
+  for (const record of sourceLineRecords(content)) {
+    const identity = sourceDeclarationIdentity(record.text);
+    if (!identity) continue;
+    counts.set(identity, Number(counts.get(identity) || 0) + 1);
+  }
+  return counts;
+}
+
+function hasTopLevelFilePreamble(content = "") {
+  const source = String(content || "").replace(/^\uFEFF/, "");
+  return (
+    source.startsWith("#!") ||
+    [
+      /^(?:from\s+__future__\s+import\b)/m,
+      /^(?:import\s+(?!\()|from\s+\S+\s+import\b)/m,
+      /^(?:package|namespace)\s+[A-Za-z_$]/m,
+    ].some((pattern) => pattern.test(source))
+  );
+}
+
+export function patchContextReplacementScopeIssue(marker = {}, replace = "") {
+  const search = String(marker.search || "");
+  const replacement = String(replace || "");
+  if (!search || !replacement) return null;
+
+  const anchorDeclarations = patchContextDeclarationCounts(search);
+  const replacementDeclarations = patchContextDeclarationCounts(replacement);
+  if (String(marker.anchorKind || "") === "complete-file") {
+    const sourceIdentities = [...anchorDeclarations.keys()];
+    const retainedDeclarations = sourceIdentities.filter((identity) =>
+      replacementDeclarations.has(identity)
+    );
+    const minimumRetainedDeclarations =
+      sourceIdentities.length >= 3
+        ? Math.max(2, Math.ceil(sourceIdentities.length * 0.5))
+        : 0;
+    const sourceBytes = Buffer.byteLength(search, "utf8");
+    const replacementBytes = Buffer.byteLength(replacement, "utf8");
+    const sourceHasPreamble = hasTopLevelFilePreamble(search);
+    const replacementHasPreamble = hasTopLevelFilePreamble(replacement);
+    const declarationCollapse =
+      minimumRetainedDeclarations > 0 &&
+      retainedDeclarations.length < minimumRetainedDeclarations;
+    const preambleDropped = sourceHasPreamble && !replacementHasPreamble;
+    const severeSizeCollapse =
+      sourceBytes >= 512 && replacementBytes < Math.ceil(sourceBytes * 0.25);
+    if (!declarationCollapse && !preambleDropped && !severeSizeCollapse) return null;
+
+    const details = [];
+    if (declarationCollapse) {
+      details.push(
+        `retained ${retainedDeclarations.length}/${sourceIdentities.length} declarations, ` +
+          `minimum ${minimumRetainedDeclarations}`
+      );
+    }
+    if (preambleDropped) details.push("dropped the source file preamble");
+    if (severeSizeCollapse) {
+      details.push(`shrunk from ${sourceBytes} to ${replacementBytes} bytes`);
+    }
+    return {
+      reason:
+        "The proposed complete-file replacement is structurally incomplete relative to the revision-bound source" +
+        `${details.length ? ` (${details.join("; ")})` : ""}. ` +
+        "Return one coherent complete revised file that preserves unrelated source structure.",
+      retainedDeclarations,
+      missingDeclarations: sourceIdentities.filter(
+        (identity) => !replacementDeclarations.has(identity)
+      ),
+      minimumRetainedDeclarations,
+      sourceDeclarationCount: sourceIdentities.length,
+      sourceBytes,
+      replacementBytes,
+      preambleDropped,
+      severeSizeCollapse,
+    };
+  }
+
+  const unexpectedDeclarations = [...replacementDeclarations.entries()]
+    .filter(
+      ([identity, count]) =>
+        !anchorDeclarations.has(identity) ||
+        count > Number(anchorDeclarations.get(identity) || 0)
+    )
+    .map(([identity]) => identity);
+  const anchorIdentity = String(marker.anchorIdentity || "");
+  const anchorIdentityCount = anchorIdentity
+    ? Number(replacementDeclarations.get(anchorIdentity) || 0)
+    : 0;
+  const filePreamblePatterns = [
+    /^\s*#!/m,
+    /^\s*from\s+__future__\s+import\b/m,
+    /^\s*(?:import\s+[^.(]|from\s+[^.].*\s+import\b)/m,
+    /^\s*(?:package|namespace)\s+[A-Za-z_$]/m,
+  ];
+  const unexpectedPreamble = filePreamblePatterns.some(
+    (pattern) => pattern.test(replacement) && !pattern.test(search)
+  );
+  if (
+    unexpectedDeclarations.length === 0 &&
+    !unexpectedPreamble &&
+    (!anchorIdentity || anchorIdentityCount === 1)
+  ) {
+    return null;
+  }
+
+  const details = [];
+  if (unexpectedDeclarations.length) {
+    details.push(`unrelated declarations: ${unexpectedDeclarations.slice(0, 8).join(", ")}`);
+  }
+  if (unexpectedPreamble) details.push("a file-level preamble outside the anchor");
+  if (anchorIdentity && anchorIdentityCount !== 1) {
+    details.push(`${anchorIdentity} declaration count ${anchorIdentityCount}, expected 1`);
+  }
+  return {
+    reason:
+      "The proposed replacement exceeds the revision-bound source anchor" +
+      `${details.length ? ` (${details.join("; ")})` : ""}. ` +
+      "Return only the complete revised anchor, not a reconstructed whole file or unrelated declarations.",
+    unexpectedDeclarations: unexpectedDeclarations.slice(0, 8),
+    unexpectedPreamble,
+    anchorIdentity,
+    anchorIdentityCount,
+  };
+}
+
+function revisionBoundRequestedPatchSubrange(marker = {}, requestedSearch = "") {
+  if (String(marker.anchorKind || "") !== "complete-file") return null;
+  const source = String(marker.search || "");
+  const candidate = String(requestedSearch || "");
+  if (
+    !source ||
+    !candidate.trim() ||
+    candidate === source ||
+    Buffer.byteLength(candidate, "utf8") < 24
+  ) {
+    return null;
+  }
+  const first = source.indexOf(candidate);
+  if (first < 0 || source.indexOf(candidate, first + candidate.length) >= 0) {
+    return null;
+  }
+  const records = sourceLineRecords(candidate);
+  const firstIdentity = records
+    .map((record) => sourceDeclarationIdentity(record.text))
+    .find(Boolean);
+  return {
+    ...marker,
+    search: candidate,
+    searchHash: hashForLog(candidate),
+    anchorKind: "requested-unique-subrange",
+    anchorIdentity: firstIdentity || "",
+    byteLength: Buffer.byteLength(candidate, "utf8"),
+  };
+}
+
+function failedTestTracebackLineAnchor(state = {}, targetPath = "") {
+  const summary = String(currentFailedProjectTest(state)?.test?.failureSummary || "");
+  const normalizedTarget = safeRecoveryEvidencePath(targetPath);
+  const targetBasename = path.posix.basename(String(normalizedTarget || "").replace(/\\/g, "/"));
+  if (!summary || !targetBasename) return "";
+  for (const match of summary.matchAll(/File\s+"([^"]+)",\s+line\s+\d+\s*->\s*([^|]+)/g)) {
+    const reportedPath = String(match[1] || "").replace(/\\/g, "/");
+    if (
+      path.posix.basename(reportedPath) !== targetBasename &&
+      !reportedPath.endsWith(`/${normalizedTarget}`)
+    ) {
+      continue;
+    }
+    const line = String(match[2] || "").trim();
+    if (line) return line.slice(0, 4000);
+  }
+  return "";
+}
+
+export function bindPatchContextRepairArguments(state = {}, requestedArgs = {}) {
+  const marker = activePatchContextRepair(state);
+  if (!marker || typeof requestedArgs?.replace !== "string") return null;
+  const requestedPath = safeRecoveryEvidencePath(requestedArgs.path);
+  if (requestedPath && requestedPath !== marker.path) return null;
+  const requestedSearch = String(requestedArgs.search || "");
+  const boundedSubrange = revisionBoundRequestedPatchSubrange(
+    marker,
+    requestedSearch
+  );
+  let boundMarker = boundedSubrange || marker;
+  let replace = String(requestedArgs.replace);
+  let scopeIssue = patchContextReplacementScopeIssue(boundMarker, replace);
+  let incrementalDeclarationRecovery = null;
+  const retainedCompleteSource = validatedPatchContextCompleteSource(boundMarker);
+  const requiredDeclarationIdentities = requiredDeclarationIdentitiesForPatch(
+    state,
+    boundMarker.path
+  );
+  const completeFileAnchor = String(boundMarker.anchorKind || "") === "complete-file";
+  if (
+    scopeIssue &&
+    (completeFileAnchor ||
+      (retainedCompleteSource && requiredDeclarationIdentities.length > 0))
+  ) {
+    incrementalDeclarationRecovery = groundedDeclarationPatchFromPartialFile(
+      completeFileAnchor
+        ? String(boundMarker.search || "")
+        : retainedCompleteSource,
+      replace,
+      {
+        allowExistingReplacement: completeFileAnchor,
+        allowedNewIdentities: requiredDeclarationIdentities,
+        targetPath: boundMarker.path,
+      }
+    );
+    if (incrementalDeclarationRecovery) {
+      boundMarker = {
+        ...boundMarker,
+        search: incrementalDeclarationRecovery.search,
+        searchHash: hashForLog(incrementalDeclarationRecovery.search),
+        anchorKind: "incremental-declaration-recovery",
+        anchorIdentity: incrementalDeclarationRecovery.identity,
+        byteLength: Buffer.byteLength(incrementalDeclarationRecovery.search, "utf8"),
+      };
+      replace = incrementalDeclarationRecovery.replace;
+      scopeIssue = incrementalDeclarationRecovery.mode === "insert-required-declaration"
+        ? null
+        : patchContextReplacementScopeIssue(boundMarker, replace);
+    }
+  }
+  if (boundedSubrange && state.meta?.toolLoop?.patchContextRepair) {
+    state.meta.toolLoop.patchContextRepair.lastBoundSearchHash =
+      boundedSubrange.searchHash;
+    state.meta.toolLoop.patchContextRepair.lastBoundAt = new Date().toISOString();
+  }
+  return {
+    marker: boundMarker,
+    args: {
+      path: boundMarker.path,
+      search: boundMarker.search,
+      replace,
+      expectedReplacements: 1,
+    },
+    requestedSearchHash: requestedSearch
+      ? hashForLog(requestedSearch)
+      : "",
+    boundedRequestedSubrange: Boolean(boundedSubrange),
+    incrementalDeclarationRecovery,
+    noOp:
+      comparablePatchContextText(replace) ===
+      comparablePatchContextText(boundMarker.search),
+    scopeIssue,
+  };
+}
+
+export function patchContextScopeMismatchAttemptCount(state = {}, targetPath = "") {
+  const normalizedPath = safeRecoveryEvidencePath(targetPath);
+  if (!normalizedPath) return 0;
+  const toolLoop = state.meta?.toolLoop || {};
+  const stagnationEpoch = Math.max(0, Number(toolLoop.stagnationEpoch || 0));
+  const goalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+  const mutationRevision = Math.max(
+    0,
+    Number(state.meta?.projectVerification?.mutationRevision || 0)
+  );
+  const prior = (Array.isArray(toolLoop.recent) ? toolLoop.recent : []).filter((entry) => {
+    if (
+      entry?.toolName !== "apply_patch" ||
+      entry?.ok !== false ||
+      entry?.category !== "patch-context-scope-mismatch" ||
+      safeRecoveryEvidencePath(entry?.path) !== normalizedPath ||
+      Number(entry?.stagnationEpoch || 0) !== stagnationEpoch
+    ) {
+      return false;
+    }
+    const entryGoalRevision = Object.hasOwn(entry, "goalRevision")
+      ? Math.max(0, Number(entry.goalRevision || 0))
+      : goalRevision;
+    const entryMutationRevision = Object.hasOwn(entry, "mutationRevision")
+      ? Math.max(0, Number(entry.mutationRevision || 0))
+      : mutationRevision;
+    return entryGoalRevision === goalRevision && entryMutationRevision === mutationRevision;
+  }).length;
+  return prior + 1;
 }
 
 export function patchContextRefreshDecision(state = {}, toolResult = {}) {
@@ -9427,8 +12368,13 @@ export function patchContextRefreshDecision(state = {}, toolResult = {}) {
       toolResult.category === "failed-test-required-symbol-topology" &&
       !topologyRefreshAlreadyConsumed
   );
+  const scopeMismatch = Boolean(
+    String(toolResult.toolName || "") === "apply_patch" &&
+      toolResult.ok === false &&
+      toolResult.category === "patch-context-scope-mismatch"
+  );
   const missingSearch = patchSearchTextWasNotFound(toolResult);
-  if (!missingSearch && !idempotencyBlock && !topologyBlock) return null;
+  if (!missingSearch && !idempotencyBlock && !topologyBlock && !scopeMismatch) return null;
   const targetPath = toolResultWorkspacePath(toolResult);
   if (!targetPath) return null;
   const toolLoop = state.meta?.toolLoop || {};
@@ -9455,12 +12401,18 @@ export function patchContextRefreshDecision(state = {}, toolResult = {}) {
   if (
     !idempotencyBlock &&
     !topologyBlock &&
+    !scopeMismatch &&
     stalePatchFailureCount < 1 &&
     !followedIdempotencyBlock
   ) {
     return null;
   }
   const currentFailure = currentFailedProjectTest(state)?.test;
+  const tracebackAnchor = currentFailure
+    ? failedTestTracebackLineAnchor(state, targetPath)
+    : "";
+  const failedSearchPreview = tracebackAnchor ||
+    (scopeMismatch ? "" : String(toolResult.args?.search || "").slice(0, 4000));
   return {
     version: PATCH_CONTEXT_REFRESH_VERSION,
     path: targetPath,
@@ -9469,6 +12421,9 @@ export function patchContextRefreshDecision(state = {}, toolResult = {}) {
       0,
       Number(state.meta?.projectVerification?.mutationRevision || 0)
     ),
+    privateMutationRevision: verificationPrivateMutationRevision(
+      state.meta?.projectVerification || {}
+    ),
     failureSignature: String(currentFailure?.failureSignature || ""),
     stalePatchFailureCount,
     followedIdempotencyBlock: followedIdempotencyBlock || idempotencyBlock,
@@ -9476,7 +12431,13 @@ export function patchContextRefreshDecision(state = {}, toolResult = {}) {
       ? "repeated-successful-mutation"
       : topologyBlock
         ? "required-symbol-topology"
+        : scopeMismatch
+          ? "patch-context-scope-mismatch"
         : "stale-patch-search",
+    failedSearchPreview,
+    failedSearchHash: String(toolResult.args?.searchHash || ""),
+    tracebackAnchorUsed: Boolean(tracebackAnchor),
+    completeFileFallback: scopeMismatch && !tracebackAnchor,
     at: new Date().toISOString(),
   };
 }
@@ -9496,12 +12457,120 @@ export function consumePatchContextRefreshRead(state = {}, toolResult = {}) {
     state.meta.toolLoop.lastTopologyRefresh = {
       goalRevision: Math.max(0, Number(marker.goalRevision || 0)),
       mutationRevision: Math.max(0, Number(marker.mutationRevision || 0)),
+      privateMutationRevision: Math.max(
+        0,
+        Number(marker.privateMutationRevision || 0)
+      ),
       failureSignature: String(marker.failureSignature || ""),
       at: new Date().toISOString(),
     };
   }
+  const content = String(toolResult.content || toolResult.result?.content || "");
+  const completeSource = boundedPatchContextCompleteSource(content);
+  const anchor = derivePatchContextAnchor(
+    content,
+    String(marker.failedSearchPreview || "")
+  );
+  if (anchor) {
+    state.meta.toolLoop.patchContextRepair = {
+      version: PATCH_CONTEXT_REPAIR_VERSION,
+      path: marker.path,
+      goalRevision: Math.max(0, Number(marker.goalRevision || 0)),
+      mutationRevision: Math.max(0, Number(marker.mutationRevision || 0)),
+      privateMutationRevision: Math.max(
+        0,
+        Number(marker.privateMutationRevision || 0)
+      ),
+      failureSignature: String(marker.failureSignature || ""),
+      triggerCategory: String(marker.triggerCategory || "stale-patch-search"),
+      refreshedAt: new Date().toISOString(),
+      ...(completeSource || {}),
+      ...anchor,
+    };
+  } else {
+    delete state.meta.toolLoop.patchContextRepair;
+  }
   delete state.meta.toolLoop.patchContextRequired;
-  return marker;
+  return {
+    ...marker,
+    repairAnchorCreated: Boolean(anchor),
+    repairAnchorKind: String(anchor?.anchorKind || ""),
+    repairAnchorIdentity: String(anchor?.anchorIdentity || ""),
+    repairAnchorHash: String(anchor?.searchHash || ""),
+    repairAnchorLineStart: Math.max(0, Number(anchor?.lineStart || 0)),
+    repairAnchorLineEnd: Math.max(0, Number(anchor?.lineEnd || 0)),
+  };
+}
+
+export function consumePatchContextRepairRead(state = {}, toolResult = {}) {
+  // A newer mandatory refresh supersedes any repair anchor left by an older
+  // turn. Let the refresh read replace that anchor instead of consuming both
+  // states from the same tool result.
+  if (activePatchContextRefresh(state)) return null;
+  const marker = activePatchContextRepair(state);
+  if (
+    !marker ||
+    Number(marker.repairReadCount || 0) >= 1 ||
+    String(toolResult.toolName || "") !== "read_file" ||
+    toolResult.ok === false ||
+    toolResult.blocked === true ||
+    toolResultWorkspacePath(toolResult) !== marker.path
+  ) {
+    return null;
+  }
+  const content = String(toolResult.content || toolResult.result?.content || "");
+  if (!content) return null;
+  const completeSource = boundedPatchContextCompleteSource(content);
+  const tracebackAnchor = failedTestTracebackLineAnchor(state, marker.path);
+  const anchor = derivePatchContextAnchor(content, tracebackAnchor || marker.search);
+  if (!anchor) return null;
+  state.meta.toolLoop.patchContextRepair = {
+    ...marker,
+    triggerCategory: tracebackAnchor
+      ? "patch-context-traceback-reread"
+      : String(marker.triggerCategory || "patch-context-reread"),
+    refreshedAt: new Date().toISOString(),
+    repairReadCount: Number(marker.repairReadCount || 0) + 1,
+    ...(completeSource || {}),
+    ...anchor,
+  };
+  return {
+    path: marker.path,
+    priorAnchorHash: marker.searchHash,
+    priorAnchorIdentity: String(marker.anchorIdentity || ""),
+    tracebackAnchorUsed: Boolean(tracebackAnchor),
+    repairReadCount: Number(marker.repairReadCount || 0) + 1,
+    repairAnchorKind: String(anchor.anchorKind || ""),
+    repairAnchorIdentity: String(anchor.anchorIdentity || ""),
+    repairAnchorHash: String(anchor.searchHash || ""),
+    repairAnchorLineStart: Math.max(0, Number(anchor.lineStart || 0)),
+    repairAnchorLineEnd: Math.max(0, Number(anchor.lineEnd || 0)),
+  };
+}
+
+export function consumePatchContextRepairMutation(state = {}, toolResult = {}) {
+  const marker = state.meta?.toolLoop?.patchContextRepair;
+  const appliedSearchHash = String(toolResult.args?.searchHash || "");
+  if (
+    !marker ||
+    String(toolResult.toolName || "") !== "apply_patch" ||
+    toolResult.ok === false ||
+    toolResult.blocked === true ||
+    toolResultWorkspacePath(toolResult) !== safeRecoveryEvidencePath(marker.path) ||
+    ![
+      String(marker.searchHash || ""),
+      String(marker.lastBoundSearchHash || ""),
+    ].filter(Boolean).includes(appliedSearchHash)
+  ) {
+    return null;
+  }
+  delete state.meta.toolLoop.patchContextRepair;
+  return {
+    ...marker,
+    appliedSearchHash,
+    boundedRequestedSubrange:
+      appliedSearchHash !== String(marker.searchHash || ""),
+  };
 }
 
 export function activeRequiredSymbolRepair(state = {}) {
@@ -9544,6 +12613,26 @@ export function activeRequiredSymbolRepair(state = {}) {
       }))
       .filter((item) => item.owner && item.symbol),
   };
+}
+
+function requiredDeclarationIdentitiesForPatch(state = {}, targetPath = "") {
+  const marker = activeRequiredSymbolRepair(state);
+  const normalizedPath = safeRecoveryEvidencePath(targetPath);
+  if (
+    !marker ||
+    !normalizedPath ||
+    (marker.path && marker.path !== normalizedPath)
+  ) {
+    return [];
+  }
+  const identities = [marker.symbol];
+  for (const contract of marker.contracts || []) {
+    if (contract.path && contract.path !== normalizedPath) continue;
+    identities.push(contract.symbol);
+  }
+  return [...new Set(identities)]
+    .map((identity) => String(identity || "").trim())
+    .filter((identity) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(identity));
 }
 
 function requiredSymbolRepairPath(state = {}, owner = "") {
@@ -9651,24 +12740,72 @@ export function requiredSymbolAbsenceDecision(state = {}, toolResult = {}) {
 
 async function applyToolLoopGuard(state, toolResult, store, observers, config = {}) {
   if (!toolResult || toolResult.done) return;
+  const consumedPatchRepair = consumePatchContextRepairMutation(state, toolResult);
+  if (consumedPatchRepair) {
+    await store.appendEvent("patch_context.repair_applied", {
+      path: consumedPatchRepair.path,
+      searchHash: consumedPatchRepair.searchHash,
+      sourceHash: consumedPatchRepair.sourceHash,
+      anchorKind: consumedPatchRepair.anchorKind,
+      anchorIdentity: consumedPatchRepair.anchorIdentity,
+      priorMutationRevision: consumedPatchRepair.mutationRevision,
+      currentMutationRevision: Math.max(
+        0,
+        Number(state.meta?.projectVerification?.mutationRevision || 0)
+      ),
+    });
+    observers.event("patch_context.repair_applied", {
+      path: consumedPatchRepair.path,
+      searchHash: consumedPatchRepair.searchHash,
+      anchorKind: consumedPatchRepair.anchorKind,
+      anchorIdentity: consumedPatchRepair.anchorIdentity,
+    });
+  }
+  const consumedPatchRepairRead = consumePatchContextRepairRead(state, toolResult);
+  if (consumedPatchRepairRead) {
+    const instruction = [
+      `The bounded repair source was re-read from ${consumedPatchRepairRead.path}.`,
+      consumedPatchRepairRead.tracebackAnchorUsed
+        ? "The mutation anchor now covers the exact current traceback line instead of the stale function boundary."
+        : "The mutation anchor was refreshed from the exact current file.",
+      "The next turn must repair only the newly shown anchor. Do not request another read, a validation command, or a reconstructed whole file before that mutation.",
+    ].join(" ");
+    state.messages.push({ role: "user", content: instruction });
+    await store.appendEvent("patch_context.reanchored", {
+      ...consumedPatchRepairRead,
+      instruction,
+    });
+    observers.event("patch_context.reanchored", consumedPatchRepairRead);
+  }
   const consumedPatchContext = consumePatchContextRefreshRead(state, toolResult);
   if (consumedPatchContext) {
     const instruction = [
       `Fresh current source was read from ${consumedPatchContext.path}.`,
-      "Use only this current content and the latest retained failure evidence for the next repair.",
-      "Do not retry a search string absent from this file; make a materially different bounded mutation or run the exact verification when no further source change is needed.",
+      consumedPatchContext.repairAnchorCreated
+        ? "The next mutation turn is bound to one unique exact current-source anchor from this read. Use the offered path and search values exactly and provide a materially different replacement that addresses the retained failure."
+        : "No unique bounded anchor could be derived, so use only this current content and the latest retained failure evidence for the next repair.",
+      "Do not reconstruct or retry a search string absent from this file, and do not create a sidecar replacement.",
     ].join(" ");
     state.messages.push({ role: "user", content: instruction });
     await store.appendEvent("patch_context.refreshed", {
       path: consumedPatchContext.path,
       mutationRevision: consumedPatchContext.mutationRevision,
       goalRevision: consumedPatchContext.goalRevision,
+      repairAnchorCreated: consumedPatchContext.repairAnchorCreated,
+      repairAnchorKind: consumedPatchContext.repairAnchorKind,
+      repairAnchorIdentity: consumedPatchContext.repairAnchorIdentity,
+      repairAnchorHash: consumedPatchContext.repairAnchorHash,
+      repairAnchorLineStart: consumedPatchContext.repairAnchorLineStart,
+      repairAnchorLineEnd: consumedPatchContext.repairAnchorLineEnd,
       instruction,
     });
     observers.event("patch_context.refreshed", {
       path: consumedPatchContext.path,
       mutationRevision: consumedPatchContext.mutationRevision,
       goalRevision: consumedPatchContext.goalRevision,
+      repairAnchorCreated: consumedPatchContext.repairAnchorCreated,
+      repairAnchorKind: consumedPatchContext.repairAnchorKind,
+      repairAnchorIdentity: consumedPatchContext.repairAnchorIdentity,
     });
   }
   const noChangePatchFailure =
@@ -9800,6 +12937,11 @@ async function applyToolLoopGuard(state, toolResult, store, observers, config = 
     noProgressProbe: Boolean(outcomeFingerprint),
     outcomeFingerprint,
     stagnationEpoch: Math.max(0, Number(state.meta.toolLoop.stagnationEpoch || 0)),
+    goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+    mutationRevision: Math.max(
+      0,
+      Number(state.meta?.projectVerification?.mutationRevision || 0)
+    ),
     error: toolResult.error || toolResult.reason || "",
     at: new Date().toISOString(),
   };
@@ -9808,6 +12950,7 @@ async function applyToolLoopGuard(state, toolResult, store, observers, config = 
 
   const activeRefresh = activePatchContextRefresh(state);
   if (requiredPatchContextRefresh && !activeRefresh) {
+    delete state.meta.toolLoop.patchContextRepair;
     state.meta.toolLoop.patchContextRequired = requiredPatchContextRefresh;
     const message = [
       `Patch context refresh required for ${requiredPatchContextRefresh.path}.`,
@@ -9860,6 +13003,14 @@ async function applyToolLoopGuard(state, toolResult, store, observers, config = 
   }
 
   if (toolResult.ok !== false) return;
+
+  if (
+    ["patch-context-scope-mismatch", "patch-context-scope-exhausted"].includes(
+      String(toolResult.category || "")
+    )
+  ) {
+    return;
+  }
 
   const failures = state.meta.toolLoop.recent.filter((item) => item.signature === signature && item.ok === false).length;
   if (failures < 2 || state.meta.toolLoop.warned.includes(signature)) return;
@@ -10146,6 +13297,9 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
     ...(Array.isArray(config.artifactValidationCommitPaths)
       ? config.artifactValidationCommitPaths
       : []),
+    ...(Array.isArray(config.taskOwnedCommitPaths)
+      ? config.taskOwnedCommitPaths
+      : []),
   ].map(safeTaskOwnedCommitPath).filter(Boolean);
   if (
     requestedToolName === "commit_project_changes" &&
@@ -10208,9 +13362,132 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       reason: "evidence-derived-focused-patch-arguments",
     };
   }
+  const patchContextBinding = requestedToolName === "apply_patch"
+    ? bindPatchContextRepairArguments(state, args)
+    : null;
+  if (patchContextBinding) {
+    args = patchContextBinding.args;
+    autoCorrection = {
+      requestedToolName,
+      toolName: "apply_patch",
+      reason: "revision-bound-patch-context",
+    };
+  }
   const safeArgs = isRetainedVisionWorkspaceProfile(config) && toolName === "read_image"
     ? args
     : sanitizeToolArgs(toolName, args);
+  if (patchContextBinding) {
+    const detail = {
+      path: patchContextBinding.marker.path,
+      anchorHash: patchContextBinding.marker.searchHash,
+      requestedSearchHash: patchContextBinding.requestedSearchHash,
+      anchorIdentity: String(patchContextBinding.marker.anchorIdentity || ""),
+      noOp: patchContextBinding.noOp,
+      scopeMismatch: Boolean(patchContextBinding.scopeIssue),
+      boundedRequestedSubrange:
+        patchContextBinding.boundedRequestedSubrange === true,
+      incrementalDeclarationRecovery:
+        Boolean(patchContextBinding.incrementalDeclarationRecovery),
+    };
+    await store.appendEvent("patch_context.anchor_injected", detail);
+    observers.event("patch_context.anchor_injected", detail);
+    if (patchContextBinding.incrementalDeclarationRecovery) {
+      const recoveryDetail = {
+        path: patchContextBinding.marker.path,
+        anchorIdentity: String(patchContextBinding.marker.anchorIdentity || ""),
+        anchorHash: patchContextBinding.marker.searchHash,
+        mode: String(
+          patchContextBinding.incrementalDeclarationRecovery.mode ||
+            "replace-declaration"
+        ),
+      };
+      await store.appendEvent(
+        "patch_context.incremental_declaration_recovered",
+        recoveryDetail
+      );
+      observers.event(
+        "patch_context.incremental_declaration_recovered",
+        recoveryDetail
+      );
+    }
+    if (patchContextBinding.scopeIssue) {
+      const scopeMismatchCount = patchContextScopeMismatchAttemptCount(
+        state,
+        patchContextBinding.marker.path
+      );
+      const scopeMismatchExhausted = scopeMismatchCount >= 3;
+      const result = {
+        ok: false,
+        blocked: false,
+        recoverable: !scopeMismatchExhausted,
+        stopRun: scopeMismatchExhausted,
+        reason: scopeMismatchExhausted
+          ? `Three revision-scoped replacement proposals exceeded the exact current-source anchor for ${patchContextBinding.marker.path}. This model route made no bounded mutation progress and must pause before another reread/retry cycle.`
+          : patchContextBinding.scopeIssue.reason,
+        error: "Patch replacement exceeded the revision-bound source anchor.",
+        category: scopeMismatchExhausted
+          ? "patch-context-scope-exhausted"
+          : "patch-context-scope-mismatch",
+        scopeMismatchCount,
+        diagnosticHint:
+          scopeMismatchExhausted
+            ? "Resume the durable task with a distinct stronger model or an explicitly bounded declaration patch; do not reread and propose another partial whole-file replacement."
+            : "Use the next exact current-source read and repair only the traceback-bound source region. Do not reconstruct the whole file inside a function anchor.",
+        toolName: "apply_patch",
+        args: safeArgs,
+      };
+      await store.appendEvent("patch_context.scope_rejected", {
+        path: patchContextBinding.marker.path,
+        anchorHash: patchContextBinding.marker.searchHash,
+        anchorIdentity: String(patchContextBinding.marker.anchorIdentity || ""),
+        unexpectedDeclarations:
+          patchContextBinding.scopeIssue.unexpectedDeclarations || [],
+        unexpectedPreamble:
+          patchContextBinding.scopeIssue.unexpectedPreamble === true,
+        scopeMismatchCount,
+      });
+      observers.event("patch_context.scope_rejected", {
+        path: patchContextBinding.marker.path,
+        anchorIdentity: String(patchContextBinding.marker.anchorIdentity || ""),
+        scopeMismatchCount,
+      });
+      if (scopeMismatchExhausted) {
+        const exhaustedDetail = {
+          path: patchContextBinding.marker.path,
+          scopeMismatchCount,
+          goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+          mutationRevision: Math.max(
+            0,
+            Number(state.meta?.projectVerification?.mutationRevision || 0)
+          ),
+          reason: result.reason,
+        };
+        await store.appendEvent("patch_context.scope_exhausted", exhaustedDetail);
+        observers.event("patch_context.scope_exhausted", exhaustedDetail);
+      }
+      await store.appendEvent("tool.failed", result);
+      observers.event("tool.failed", result);
+      return result;
+    }
+    if (patchContextBinding.noOp) {
+      const result = {
+        ok: false,
+        blocked: false,
+        recoverable: true,
+        stopRun: false,
+        reason:
+          "The proposed replacement is identical to the refreshed current-source anchor after normalizing line endings and trailing whitespace. Provide a materially revised complete anchor that addresses the retained failure.",
+        error:
+          "Patch replacement made no material change to the revision-bound current-source anchor.",
+        category: "patch-context-noop",
+        toolName: "apply_patch",
+        args: safeArgs,
+      };
+      await store.appendEvent("tool.failed", result);
+      observers.event("tool.failed", result);
+      return result;
+    }
+  }
   const guard = isRetainedVisionWorkspaceProfile(config) && toolName === "read_image"
     ? Object.freeze({ allowed: true, reason: "", category: "integration-retained-vision-reference" })
     : checkToolUse({
@@ -10366,6 +13643,66 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
     };
     await store.appendEvent("tool.blocked", result);
     observers.event("tool.blocked", result);
+    return result;
+  }
+
+  const declarationTokenPatchBlock = await ambiguousDeclarationTokenPatchBlock(
+    toolName,
+    args,
+    config
+  );
+  if (declarationTokenPatchBlock) {
+    const result = {
+      ok: false,
+      blocked: false,
+      recoverable: true,
+      stopRun: false,
+      toolName,
+      args: safeArgs,
+      ...declarationTokenPatchBlock,
+    };
+    await store.appendEvent("tool.failed", result);
+    observers.event("tool.failed", result);
+    return result;
+  }
+
+  const mainGuardPatchBlock = await ambiguousPythonMainGuardPatchBlock(
+    toolName,
+    args,
+    config
+  );
+  if (mainGuardPatchBlock) {
+    const result = {
+      ok: false,
+      blocked: false,
+      recoverable: true,
+      stopRun: false,
+      toolName,
+      args: safeArgs,
+      ...mainGuardPatchBlock,
+    };
+    await store.appendEvent("tool.failed", result);
+    observers.event("tool.failed", result);
+    return result;
+  }
+
+  const pythonPatchSyntaxBlock = await prospectivePythonExactPatchSyntaxBlock(
+    toolName,
+    args,
+    config
+  );
+  if (pythonPatchSyntaxBlock) {
+    const result = {
+      ok: false,
+      blocked: false,
+      recoverable: true,
+      stopRun: false,
+      toolName,
+      args: safeArgs,
+      ...pythonPatchSyntaxBlock,
+    };
+    await store.appendEvent("tool.failed", result);
+    observers.event("tool.failed", result);
     return result;
   }
 
@@ -11168,21 +14505,37 @@ function completionContractKey(config = {}) {
 function projectVerificationDeficits(state = {}, config = {}) {
   const verification = state.meta?.projectVerification || {};
   const revision = Number(verification.mutationRevision || 0);
-  const pendingCommands = effectiveRequiredProjectCommands(state, verification, config).filter(
-    (command) =>
-      !(verification.commandRuns || []).some((run) =>
-        requiredCommandRunIsCurrent(verification, command, run, config)
-      )
-  );
+  const implementationOpen = currentTurnImplementationOpen(state);
+  const pendingCommands = effectiveRequiredProjectCommands(state, verification, config)
+    .filter(
+      (command) =>
+        !(verification.commandRuns || []).some((run) =>
+          requiredCommandRunIsCurrent(verification, command, run, config)
+        )
+    )
+    .filter((command) => {
+      if (!implementationOpen) return true;
+      const policyCommand = normalizeProjectCommand(
+        normalizeCommandForPolicy(command, config)
+      );
+      return commandCanMutateProjectContent(
+        policyCommand,
+        classifyCommand(policyCommand)
+      );
+    });
   const discoveredTests = Array.isArray(verification.discoveredTests)
     ? verification.discoveredTests.filter(Boolean)
     : [];
   const currentTestRuns = (verification.testRuns || []).filter(
-    (run) => Number(run.mutationRevision || 0) === revision
+    (run) =>
+      !testRunRepresentsInvalidInvocation(run) &&
+      testRunMatchesVerificationRevision(run, verification)
   );
   const testsCurrent = currentTestRuns.at(-1)?.passed === true;
   const latestTestRun = currentTestRuns.at(-1) || null;
-  const latestRecordedTestRun = (verification.testRuns || []).at(-1) || null;
+  const latestRecordedTestRun = [...(verification.testRuns || [])]
+    .reverse()
+    .find((run) => !testRunRepresentsInvalidInvocation(run)) || null;
   const failedTestRun = latestTestRun && latestTestRun.passed !== true
     ? latestTestRun
     : !latestTestRun && latestRecordedTestRun?.passed !== true
@@ -11265,7 +14618,7 @@ function completionRepairProgressCount(events = []) {
   ).length;
 }
 
-export function pythonTopLevelDefinitionDuplicates(content = "") {
+function pythonTopLevelDefinitionInventory(content = "") {
   const lines = String(content || "").split(/\r?\n/);
   const definitions = new Map();
   for (let index = 0; index < lines.length; index += 1) {
@@ -11292,12 +14645,369 @@ export function pythonTopLevelDefinitionDuplicates(content = "") {
     prior.lines.push(index + 1);
     definitions.set(key, prior);
   }
-  return [...definitions.values()].filter((item) => item.count > 1);
+  return [...definitions.values()];
+}
+
+function pythonTopLevelPreamble(content = "") {
+  const records = sourceLineRecords(content);
+  const firstDeclaration = records.find(
+    (record) =>
+      sourceIndentWidth(record.text) === 0 &&
+      sourceDeclarationIdentity(record.text)
+  );
+  return firstDeclaration ? String(content || "").slice(0, firstDeclaration.start) : "";
+}
+
+export function pythonTopLevelDefinitionDuplicates(content = "") {
+  return pythonTopLevelDefinitionInventory(content).filter((item) => item.count > 1);
+}
+
+function pathLooksLikeTestSource(value = "") {
+  const normalized = String(value || "").replace(/\\/g, "/");
+  const basename = path.posix.basename(normalized);
+  return (
+    /(?:^|\/)(?:tests?|specs?|__tests__)(?:\/|$)/i.test(normalized) ||
+    /^(?:test_|spec_)/i.test(basename) ||
+    /\.(?:test|spec)\.[^.]+$/i.test(basename)
+  );
+}
+
+function shellGlobToRegExp(value = "*") {
+  const escaped = String(value || "*")
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
+  return new RegExp(`^${escaped}$`);
+}
+
+function pathIsWithinTestRoot(sourcePath = "", root = ".") {
+  const normalizedSource = path.posix.normalize(String(sourcePath || "").replace(/\\/g, "/"));
+  const normalizedRoot = path.posix.normalize(String(root || ".").replace(/\\/g, "/"));
+  if (normalizedRoot === ".") return !normalizedSource.startsWith("../");
+  return normalizedSource === normalizedRoot || normalizedSource.startsWith(`${normalizedRoot}/`);
+}
+
+async function runPythonSyntaxCheck({ absolutePath = "", source = null } = {}) {
+  return await new Promise((resolve) => {
+    let settled = false;
+    let stderr = "";
+    let timer;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(result);
+    };
+    const readsFromStdin = source !== null;
+    const child = spawn(
+      "python3",
+      [
+        "-c",
+        readsFromStdin
+          ? "import ast, sys; ast.parse(sys.stdin.read(), filename=sys.argv[1])"
+          : "import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'), filename=sys.argv[1])",
+        absolutePath,
+      ],
+      {
+        stdio: [readsFromStdin ? "pipe" : "ignore", "ignore", "pipe"],
+        windowsHide: true,
+      }
+    );
+    timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish({ checked: false, ok: true, reason: "Python syntax check timed out." });
+    }, 5000);
+    if (readsFromStdin) {
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(String(source));
+    }
+    child.stderr?.on("data", (chunk) => {
+      if (stderr.length < 12000) stderr += String(chunk || "");
+    });
+    child.on("error", (error) => {
+      if (error?.code === "ENOENT") {
+        finish({ checked: false, ok: true, reason: "python3 is unavailable." });
+        return;
+      }
+      finish({
+        checked: true,
+        ok: false,
+        reason: redactSensitiveText(String(error?.message || error)),
+      });
+    });
+    child.on("close", (code, signal) => {
+      if (settled) return;
+      const diagnostic = stderr
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(-4)
+        .join(" | ")
+        .slice(0, 1200);
+      finish({
+        checked: true,
+        ok: Number(code || 0) === 0 && !signal,
+        reason: diagnostic || (signal ? `python3 exited via ${signal}` : `python3 exited ${code}`),
+      });
+    });
+  });
+}
+
+async function pythonSyntaxCheck(absolutePath = "") {
+  return runPythonSyntaxCheck({ absolutePath });
+}
+
+export async function ambiguousDeclarationTokenPatchBlock(
+  toolName = "",
+  args = {},
+  config = {}
+) {
+  if (
+    toolName !== "apply_patch" ||
+    (typeof args.patch === "string" && args.patch.trim()) ||
+    typeof args.path !== "string" ||
+    typeof args.search !== "string" ||
+    !args.search ||
+    args.search.includes("\n") ||
+    typeof args.replace !== "string"
+  ) {
+    return null;
+  }
+
+  let target;
+  try {
+    target = resolveWorkspacePath(config, args.path);
+  } catch {
+    return null;
+  }
+  const extension = path.extname(String(target.relativePath || "")).toLowerCase();
+  const search = args.search.trim();
+  let identity = "";
+  let replacementPattern = null;
+  if (extension === ".py") {
+    const match = search.match(
+      /^(?:(?:async\s+)?def|class)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\([^:\n]*\))?$/
+    );
+    if (match && !search.endsWith(":")) {
+      identity = match[1];
+      const escapedIdentity = identity.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      replacementPattern = new RegExp(
+        `(?:^|\\n)\\s*(?:(?:async\\s+)?def|class)\\s+${escapedIdentity}\\b`
+      );
+    }
+  } else if ([".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"].includes(extension)) {
+    const match = search.match(
+      /^(?:export\s+)?(?:async\s+)?(?:function|class)\s+([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*\([^{}\n]*\))?$/
+    );
+    if (match && !search.includes("{")) {
+      identity = match[1];
+      const escapedIdentity = identity.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      replacementPattern = new RegExp(
+        `(?:^|\\n)\\s*(?:export\\s+)?(?:async\\s+)?(?:function|class)\\s+${escapedIdentity}\\b`
+      );
+    }
+  }
+  if (!identity || !replacementPattern) return null;
+
+  const beforeText = await fs.readFile(target.absolutePath, "utf8").catch(() => null);
+  if (beforeText === null) return null;
+  const first = beforeText.indexOf(args.search);
+  if (first < 0 || beforeText.indexOf(args.search, first + args.search.length) >= 0) return null;
+  const lineStart = beforeText.lastIndexOf("\n", first - 1) + 1;
+  const nextLineBreak = beforeText.indexOf("\n", first);
+  const lineEnd = nextLineBreak >= 0 ? nextLineBreak : beforeText.length;
+  if (sourceDeclarationIdentity(beforeText.slice(lineStart, lineEnd)) !== identity) return null;
+  if (replacementPattern.test(args.replace)) return null;
+
+  return {
+    reason:
+      `The exact patch targets only the incomplete declaration token for ${identity} in ${target.relativePath} ` +
+      "but removes that declaration identity. Read and replace the complete declaration line or bounded declaration block so suffix text cannot be orphaned.",
+    error: "Ambiguous declaration-token patch was rejected before mutation.",
+    category: "ambiguous-declaration-token-patch",
+    path: target.relativePath,
+    diagnosticHint:
+      "Include the complete current declaration header, including parameters and its colon or opening brace, in the exact search text.",
+  };
+}
+
+export async function ambiguousPythonMainGuardPatchBlock(
+  toolName = "",
+  args = {},
+  config = {}
+) {
+  if (
+    toolName !== "apply_patch" ||
+    (typeof args.patch === "string" && args.patch.trim()) ||
+    typeof args.path !== "string" ||
+    typeof args.search !== "string" ||
+    !args.search.includes("\n") ||
+    typeof args.replace !== "string"
+  ) {
+    return null;
+  }
+
+  let target;
+  try {
+    target = resolveWorkspacePath(config, args.path);
+  } catch {
+    return null;
+  }
+  if (!String(target.relativePath || "").toLowerCase().endsWith(".py")) return null;
+
+  const beforeText = await fs.readFile(target.absolutePath, "utf8").catch(() => null);
+  if (beforeText === null) return null;
+  const first = beforeText.indexOf(args.search);
+  if (first < 0 || beforeText.indexOf(args.search, first + args.search.length) >= 0) return null;
+  const lineStart = beforeText.lastIndexOf("\n", first - 1) + 1;
+  if (first !== lineStart) return null;
+
+  const records = sourceLineRecords(beforeText);
+  const guardIndex = records.findIndex((record) => record.start === lineStart);
+  if (guardIndex < 0) return null;
+  const guardLine = String(records[guardIndex]?.text || "");
+  if (
+    sourceIndentWidth(guardLine) !== 0 ||
+    !/^if\s+__name__\s*==\s*["']__main__["']\s*:\s*(?:#.*)?$/.test(guardLine.trim())
+  ) {
+    return null;
+  }
+
+  let lastSuiteContentEnd = -1;
+  for (let index = guardIndex + 1; index < records.length; index += 1) {
+    const line = String(records[index]?.text || "");
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    if (sourceIndentWidth(line) <= 0) break;
+    lastSuiteContentEnd = Number(records[index]?.start || 0) + line.length;
+  }
+  if (lastSuiteContentEnd < 0 || first + args.search.length >= lastSuiteContentEnd) return null;
+
+  return {
+    reason:
+      `The exact patch targets only a prefix of the top-level Python main guard in ${target.relativePath}. ` +
+      "Read and replace the complete current `if __name__ == \"__main__\":` suite, or patch only an exact inner statement, so the remaining suite cannot be orphaned.",
+    error: "Incomplete top-level Python main-guard patch was rejected before mutation.",
+    category: "ambiguous-python-main-guard-patch",
+    path: target.relativePath,
+    diagnosticHint:
+      "Include every current indented statement belonging to the main guard in the search text when replacing the guard itself.",
+  };
+}
+
+export async function prospectivePythonExactPatchSyntaxBlock(
+  toolName = "",
+  args = {},
+  config = {}
+) {
+  if (
+    toolName !== "apply_patch" ||
+    (typeof args.patch === "string" && args.patch.trim()) ||
+    typeof args.path !== "string" ||
+    typeof args.search !== "string" ||
+    !args.search ||
+    typeof args.replace !== "string"
+  ) {
+    return null;
+  }
+
+  let target;
+  try {
+    target = resolveWorkspacePath(config, args.path);
+  } catch {
+    return null;
+  }
+  if (!String(target.relativePath || "").toLowerCase().endsWith(".py")) return null;
+
+  const beforeText = await fs.readFile(target.absolutePath, "utf8").catch(() => null);
+  if (beforeText === null) return null;
+  const matches = beforeText.split(args.search).length - 1;
+  if (matches < 1 || matches > 20) return null;
+
+  const beforeSyntax = await pythonSyntaxCheck(target.absolutePath);
+  if (!beforeSyntax.checked || !beforeSyntax.ok) return null;
+
+  const afterText = beforeText.split(args.search).join(args.replace);
+  if (afterText === beforeText) return null;
+  const afterSyntax = await runPythonSyntaxCheck({
+    absolutePath: target.absolutePath,
+    source: afterText,
+  });
+  if (!afterSyntax.checked || afterSyntax.ok) return null;
+
+  return {
+    reason:
+      `The proposed exact patch would turn valid Python into syntactically invalid Python in ${target.relativePath}. ` +
+      "Read the complete current declaration or source region and submit one coherent replacement that remains parseable.",
+    error: "Exact Python patch failed prospective syntax validation.",
+    category: "python-syntax-regression",
+    path: target.relativePath,
+    diagnosticHint: afterSyntax.reason,
+  };
+}
+
+export function testCommandCoversMutatedPath(command = "", sourcePath = "") {
+  const normalizedCommand = normalizeProjectCommand(command);
+  const normalizedPath = path.posix.normalize(String(sourcePath || "").replace(/\\/g, "/"));
+  if (!normalizedCommand || !normalizedPath || !pathLooksLikeTestSource(normalizedPath)) return false;
+  const tokens = tokenizeShellWords(normalizedCommand).map((item) => String(item || ""));
+  if (
+    tokens.some((token) => {
+      const candidate = token.replace(/\\/g, "/").replace(/:\d+(?::\d+)?$/, "");
+      return candidate === normalizedPath || path.posix.basename(candidate) === path.posix.basename(normalizedPath);
+    })
+  ) {
+    return true;
+  }
+
+  const unittestIndex = tokens.findIndex((token) => token === "unittest");
+  const discoverIndex = tokens.findIndex((token, index) => index > unittestIndex && token === "discover");
+  if (unittestIndex >= 0 && discoverIndex > unittestIndex) {
+    let startDirectory = ".";
+    let pattern = "test*.py";
+    for (let index = discoverIndex + 1; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      if (["-s", "--start-directory"].includes(token) && tokens[index + 1]) {
+        startDirectory = tokens[index + 1];
+        index += 1;
+      } else if (token.startsWith("--start-directory=")) {
+        startDirectory = token.slice(token.indexOf("=") + 1);
+      } else if (["-p", "--pattern"].includes(token) && tokens[index + 1]) {
+        pattern = tokens[index + 1];
+        index += 1;
+      } else if (token.startsWith("--pattern=")) {
+        pattern = token.slice(token.indexOf("=") + 1);
+      }
+    }
+    return (
+      pathIsWithinTestRoot(normalizedPath, startDirectory) &&
+      shellGlobToRegExp(pattern).test(path.posix.basename(normalizedPath))
+    );
+  }
+
+  const pytestIndex = tokens.findIndex((token, index) =>
+    /^(?:pytest|py\.test)$/.test(path.posix.basename(token)) ||
+    (token === "pytest" && index > 0 && tokens[index - 1] === "-m")
+  );
+  if (pytestIndex >= 0) {
+    const explicitPaths = tokens
+      .slice(pytestIndex + 1)
+      .filter((token) => !token.startsWith("-") && /(?:^\.|\/|\.(?:py|js|ts)$)/i.test(token))
+      .map((token) => token.replace(/:\d+(?::\d+)?$/, ""));
+    return !explicitPaths.length || explicitPaths.some((candidate) => pathIsWithinTestRoot(normalizedPath, candidate));
+  }
+
+  if (/\b(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|check|verify|smoke)(?::[A-Za-z0-9_-]+)?\b/i.test(normalizedCommand)) {
+    return true;
+  }
+  if (/\bnode\s+--test\b/i.test(normalizedCommand)) return true;
+  return false;
 }
 
 export async function validateMutatedPythonSourceQuality(config = {}, state = {}) {
-  const history = Array.isArray(state.meta?.projectVerification?.mutationHistory)
-    ? state.meta.projectVerification.mutationHistory
+  const verification = state.meta?.projectVerification || {};
+  const history = Array.isArray(verification.mutationHistory)
+    ? verification.mutationHistory
     : [];
   const paths = [];
   for (const mutation of [...history].reverse()) {
@@ -11326,6 +15036,14 @@ export async function validateMutatedPythonSourceQuality(config = {}, state = {}
 
   const defects = [];
   const checkedPaths = [];
+  const latestPassingTest = [...(Array.isArray(verification.testRuns) ? verification.testRuns : [])]
+    .reverse()
+    .find(
+      (run) =>
+        run?.passed === true &&
+        Number(run?.mutationRevision || 0) === Math.max(0, Number(verification.mutationRevision || 0)) &&
+        Number(run?.privateMutationRevision || 0) === verificationPrivateMutationRevision(verification)
+    );
   for (const sourcePath of paths) {
     let target;
     try {
@@ -11336,6 +15054,24 @@ export async function validateMutatedPythonSourceQuality(config = {}, state = {}
     const content = await fs.readFile(target.absolutePath, "utf8").catch(() => null);
     if (content === null) continue;
     checkedPaths.push(sourcePath);
+    const syntax = await pythonSyntaxCheck(target.absolutePath);
+    if (syntax.checked && !syntax.ok) {
+      defects.push({
+        code: "python-syntax-error",
+        path: sourcePath,
+        message: syntax.reason,
+      });
+    }
+    if (
+      pathLooksLikeTestSource(sourcePath) &&
+      (!latestPassingTest || !testCommandCoversMutatedPath(latestPassingTest.command, sourcePath))
+    ) {
+      defects.push({
+        code: "mutated-test-not-covered-by-validation",
+        path: sourcePath,
+        command: String(latestPassingTest?.command || ""),
+      });
+    }
     for (const duplicate of pythonTopLevelDefinitionDuplicates(content)) {
       defects.push({
         code: "python-duplicate-top-level-definition",
@@ -11343,10 +15079,28 @@ export async function validateMutatedPythonSourceQuality(config = {}, state = {}
         ...duplicate,
       });
     }
+    if (!pathLooksLikeTestSource(sourcePath)) {
+      for (const entrypointDefect of pythonMainGuardOrderDefects(content)) {
+        defects.push({
+          code: "python-main-guard-before-required-definition",
+          path: sourcePath,
+          ...entrypointDefect,
+        });
+      }
+    }
   }
   const summary = defects
     .slice(0, 8)
-    .map((item) => `${item.path}: ${item.kind} ${item.name} at lines ${item.lines.join(", ")}`)
+    .map((item) =>
+      item.code === "python-syntax-error"
+        ? `${item.path}: ${item.message || "Python syntax validation failed"}`
+        : item.code === "mutated-test-not-covered-by-validation"
+        ? `${item.path}: the latest successful test command did not include this changed test (${item.command || "no current test command"})`
+        : item.code === "python-main-guard-before-required-definition"
+          ? `${item.path}: __main__ guard at line ${item.guardLine} executes before ` +
+            `${(item.calledLater || []).map((candidate) => `${candidate.name} at line ${candidate.line}`).join(", ")}`
+          : `${item.path}: ${item.kind} ${item.name} at lines ${item.lines.join(", ")}`
+    )
     .join("; ");
   return {
     ok: defects.length === 0,
@@ -11354,8 +15108,8 @@ export async function validateMutatedPythonSourceQuality(config = {}, state = {}
     paths: checkedPaths,
     defects,
     reason: defects.length
-      ? `Task-mutated Python source contains duplicate top-level definitions: ${summary}. Keep one authoritative production definition for each name, then rerun the project verifier.`
-      : "Task-mutated Python source has no duplicate top-level definitions.",
+      ? `Task-mutated Python source failed independent source/test quality checks: ${summary}. Keep one authoritative production definition, place regression tests inside the validated suite, and rerun the project verifier.`
+      : "Task-mutated Python source parses successfully, has no duplicate top-level definitions, and every changed test is covered by the current successful test command.",
   };
 }
 
@@ -11403,6 +15157,37 @@ async function evaluateCompletionEvidence({ config, state, store }) {
     evaluation,
     semantic,
     progressCount: completionRepairProgressCount(scoped.events),
+  };
+}
+
+export function completionRepairMutationRequirement({
+  contract = {},
+  evaluation = {},
+  sourceQuality = {},
+  projectMutationRevision = 0,
+} = {}) {
+  const sourceQualityRepairRequired = Boolean(
+    sourceQuality?.checked === true &&
+      sourceQuality?.ok === false &&
+      (
+        (Array.isArray(sourceQuality?.paths) && sourceQuality.paths.length > 0) ||
+        (Array.isArray(sourceQuality?.defects) && sourceQuality.defects.length > 0)
+      )
+  );
+  const missingFileEvidence = Boolean(
+    contract?.requiresFileMutation === true &&
+      (Array.isArray(evaluation?.missing) ? evaluation.missing : [])
+        .some((item) => item?.category === "file")
+  );
+  const revision = Math.max(0, Number(projectMutationRevision || 0));
+  return {
+    requiresFreshFileMutation: sourceQualityRepairRequired || missingFileEvidence,
+    requiredFreshMutationRevision: Math.max(
+      0,
+      Number(contract?.requiredFreshMutationRevision || 0),
+      sourceQualityRepairRequired ? revision + 1 : 0
+    ),
+    sourceQualityRepairRequired,
   };
 }
 
@@ -11523,7 +15308,14 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
   }
   const sourceQuality = await validateMutatedPythonSourceQuality(config, state);
   state.meta = state.meta || {};
-  state.meta.sourceCodeQuality = sourceQuality;
+  state.meta.sourceCodeQuality = {
+    ...sourceQuality,
+    mutationRevision: Math.max(
+      0,
+      Number(state.meta?.projectVerification?.mutationRevision || 0)
+    ),
+    goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+  };
   if (sourceQuality.checked) {
     const qualityEvent = {
       step,
@@ -11557,7 +15349,13 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
       },
     };
   }
-  const hasRealBlocker = finishResultClaimsBlocker(candidateResult) && hasScsBlockerEvidence(assessment.ledger);
+  const hasRealBlocker = completionExternalBlockerCanClose({
+    candidateResult,
+    evidenceLedger: assessment.ledger,
+    projectTestBlock,
+    sourceQuality,
+    documentQuality,
+  });
   if (assessment.ok && !claimsIncompleteWork) return { action: "accept", assessment };
   if (claimsIncompleteWork) {
     assessment = {
@@ -11581,6 +15379,12 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
   const semanticFailureReason = assessment.semantic.checked && !assessment.semantic.ok
     ? String(assessment.semantic.reason || "")
     : "";
+  const freshMutationRequirement = completionRepairMutationRequirement({
+    contract: assessment.contract,
+    evaluation: assessment.evaluation,
+    sourceQuality,
+    projectMutationRevision: verificationDeficits.revision,
+  });
   const baseDetail = {
     step,
     mode,
@@ -11589,7 +15393,14 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
       : projectTestBlock?.reason || semanticFailureReason || blocker?.reason || assessment.evaluation.reason || "Required execution evidence is missing.",
     requiredEvidence,
     presentEvidence,
-    missingEvidence: requiredEvidence.filter((category) => !presentEvidence.includes(category)),
+    missingEvidence: Array.isArray(assessment.evaluation.missing)
+      ? assessment.evaluation.missing
+          .map((item) => String(item?.category || ""))
+          .filter(Boolean)
+      : requiredEvidence.filter((category) => !presentEvidence.includes(category)),
+    requiresFreshFileMutation: freshMutationRequirement.requiresFreshFileMutation,
+    requiredFreshMutationRevision: freshMutationRequirement.requiredFreshMutationRevision,
+    sourceQualityRepairRequired: freshMutationRequirement.sourceQualityRepairRequired,
     missingToolCalls: assessment.evaluation.missingToolCalls || [],
     pendingProjectCommands: verificationDeficits.pendingCommands,
     pendingProjectTests: verificationDeficits.testsCurrent ? [] : verificationDeficits.discoveredTests,
@@ -11642,10 +15453,19 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
       step,
       progressCount,
       reason: detail.reason,
+      at: new Date().toISOString(),
+      goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+      mutationRevision: detail.projectMutationRevision,
+      requiresFreshFileMutation: detail.requiresFreshFileMutation,
+      requiredFreshMutationRevision: detail.requiredFreshMutationRevision,
+      missingEvidence: detail.missingEvidence,
     };
     const instruction = [
       "The proposed completion was rejected because the requested action is not supported by concrete runtime evidence.",
       `Reason: ${detail.reason}`,
+      detail.requiresFreshFileMutation
+        ? "Apply the requested canonical source/file correction first. Then run post-change tests or validation, and only after they pass perform the requested commit. A clean tree, read-only inspection, or empty commit is not a substitute for the missing correction."
+        : "",
       detail.requiredEvidence.length ? `Required evidence: ${detail.requiredEvidence.join(", ")}.` : "",
       detail.pendingProjectCommands.length
         ? `Run the pending canonical command(s) after the latest edit: ${detail.pendingProjectCommands.join("; ")}.`
@@ -12257,6 +16077,516 @@ export async function recoverFocusedWholeFileWriteAsExactPatch(
   return null;
 }
 
+function recentFullReadPathsForHash(state = {}, expectedHash = "") {
+  const normalizedHash = String(expectedHash || "").trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(normalizedHash)) return [];
+  const paths = [];
+  const messages = Array.isArray(state.messages) ? state.messages : [];
+  for (let index = messages.length - 1; index >= 0 && index >= messages.length - 160; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "tool") continue;
+    const result = safeParseToolContent(message.content) || {};
+    if (
+      result.ok !== true ||
+      String(result.toolName || "") !== "read_file" ||
+      result.contentTruncated === true ||
+      result.contentTruncatedByLines === true ||
+      String(result.sha256 || "").trim().toLowerCase() !== normalizedHash
+    ) {
+      continue;
+    }
+    const candidate = safeRecoveryEvidencePath(result.path);
+    if (candidate && !paths.includes(candidate)) paths.push(candidate);
+  }
+  return paths;
+}
+
+function completeGroundedDeclarationBlockEnd(records = [], startIndex = 0) {
+  const startText = String(records[startIndex]?.text || "");
+  const indentation = sourceIndentWidth(startText);
+  const pythonDeclaration = /^(?:async\s+)?def\s+|^class\s+/.test(startText.trim());
+  for (let index = startIndex + 1; index < records.length; index += 1) {
+    const text = String(records[index]?.text || "");
+    const trimmed = text.trim();
+    if (!trimmed || sourceIndentWidth(text) > indentation) continue;
+    if (
+      pythonDeclaration
+        ? /^(?:(?:async\s+)?def\s+|class\s+|@|if\s+__name__)/.test(trimmed)
+        : Boolean(sourceDeclarationIdentity(trimmed))
+    ) {
+      return index;
+    }
+  }
+  return records.length;
+}
+
+function completePythonDeclarationFromPartialSource(
+  source = "",
+  records = [],
+  declaration = {}
+) {
+  const declarationText = String(records[declaration.index]?.text || "");
+  if (
+    Number(declaration.indentation || 0) !== 0 ||
+    !/^(?:async\s+)?def\s+|^class\s+/.test(declarationText.trim())
+  ) {
+    return null;
+  }
+  let startIndex = declaration.index;
+  while (
+    startIndex > 0 &&
+    sourceIndentWidth(records[startIndex - 1]?.text || "") === 0 &&
+    /^\s*@/.test(String(records[startIndex - 1]?.text || ""))
+  ) {
+    startIndex -= 1;
+  }
+  let endIndex = records.length;
+  let indentedBodySeen = false;
+  for (let index = declaration.index + 1; index < records.length; index += 1) {
+    const text = String(records[index]?.text || "");
+    if (!text.trim()) continue;
+    if (sourceIndentWidth(text) <= declaration.indentation) {
+      endIndex = index;
+      break;
+    }
+    indentedBodySeen = true;
+  }
+  if (!indentedBodySeen) return null;
+  const startOffset = records[startIndex]?.start ?? 0;
+  const endOffset = endIndex < records.length
+    ? records[endIndex].start
+    : String(source || "").length;
+  const block = String(source || "").slice(startOffset, endOffset).trimEnd();
+  return block ? { block, startIndex, endIndex } : null;
+}
+
+function uniqueRequiredDeclarationInsertionBoundary(
+  source = "",
+  records = [],
+  insertionIndex = 0
+) {
+  const content = String(source || "");
+  if (!content || !records.length) return null;
+  const boundedIndex = Math.max(0, Math.min(records.length, insertionIndex));
+  const insertionOffset = boundedIndex < records.length
+    ? records[boundedIndex].start
+    : content.length;
+  const candidates = [];
+  if (boundedIndex < records.length) {
+    for (let after = 1; after <= 32; after += 1) {
+      candidates.push({ before: 0, after });
+    }
+  }
+  for (let before = 1; before <= 24; before += 1) {
+    for (let after = boundedIndex < records.length ? 1 : 0; after <= 16; after += 1) {
+      candidates.push({ before, after });
+    }
+  }
+  for (const candidate of candidates) {
+    const startIndex = Math.max(0, boundedIndex - candidate.before);
+    const endIndex = Math.min(records.length, boundedIndex + candidate.after);
+    if (endIndex <= startIndex) continue;
+    const startOffset = records[startIndex]?.start ?? 0;
+    const endOffset = endIndex < records.length
+      ? records[endIndex].start
+      : content.length;
+    const search = content.slice(startOffset, endOffset);
+    if (
+      !search.trim() ||
+      Buffer.byteLength(search, "utf8") > 6_000 ||
+      insertionOffset < startOffset ||
+      insertionOffset > endOffset
+    ) {
+      continue;
+    }
+    const first = content.indexOf(search);
+    if (first < 0 || content.indexOf(search, first + search.length) >= 0) continue;
+    return {
+      search,
+      insertionOffset: insertionOffset - startOffset,
+    };
+  }
+  return null;
+}
+
+function insertRequiredDeclarationAtBoundary(boundary = {}, declaration = "", source = "") {
+  const search = String(boundary.search || "");
+  const offset = Math.max(0, Math.min(search.length, Number(boundary.insertionOffset || 0)));
+  const before = search.slice(0, offset);
+  const after = search.slice(offset);
+  const lineEnding = String(source || "").includes("\r\n") ? "\r\n" : "\n";
+  const endsWithLineBreak = /(?:\r\n|\n|\r)$/.test(before);
+  const endsWithBlankLine = /(?:(?:\r\n|\n|\r)[\t ]*){2}$/.test(before);
+  const startsWithLineBreak = /^(?:\r\n|\n|\r)/.test(after);
+  const startsWithBlankLine = /^(?:(?:\r\n|\n|\r)[\t ]*){2}/.test(after);
+  const prefix = before
+    ? endsWithBlankLine
+      ? ""
+      : endsWithLineBreak
+        ? lineEnding
+        : `${lineEnding}${lineEnding}`
+    : "";
+  const suffix = after
+    ? startsWithBlankLine
+      ? ""
+      : startsWithLineBreak
+        ? lineEnding
+        : `${lineEnding}${lineEnding}`
+    : /(?:\r\n|\n|\r)$/.test(String(source || ""))
+      ? lineEnding
+      : "";
+  return `${before}${prefix}${String(declaration || "").trimEnd()}${suffix}${after}`;
+}
+
+function groundedSingleDeclarationReplacement(current = "", proposed = "") {
+  const replacement = String(proposed || "");
+  if (
+    !String(current || "").trim() ||
+    !replacement.trim() ||
+    current.includes("\0") ||
+    replacement.includes("\0") ||
+    Buffer.byteLength(replacement, "utf8") > 80_000
+  ) {
+    return null;
+  }
+
+  const replacementRecords = sourceLineRecords(replacement);
+  const declarations = replacementRecords
+    .map((record, index) => ({
+      index,
+      identity: sourceDeclarationIdentity(record.text),
+      indentation: sourceIndentWidth(record.text),
+    }))
+    .filter((item) => item.identity);
+  if (!declarations.length) return null;
+  const minimumIndentation = Math.min(...declarations.map((item) => item.indentation));
+  const outerDeclarations = declarations.filter(
+    (item) => item.indentation === minimumIndentation
+  );
+  if (outerDeclarations.length !== 1) return null;
+
+  const declaration = outerDeclarations[0];
+  const identity = declaration.identity;
+  const declarationStart = replacementRecords[declaration.index]?.start ?? 0;
+  const prefix = replacement.slice(0, declarationStart);
+  const prefixIsOnlyDecoration = prefix
+    .split(/\r\n|\n|\r/)
+    .every((line) => !line.trim() || /^\s*(?:@|#|\/\/)/.test(line));
+  if (!prefixIsOnlyDecoration) return null;
+
+  const replacementEndIndex = completeGroundedDeclarationBlockEnd(
+    replacementRecords,
+    declaration.index
+  );
+  const replacementEnd = replacementEndIndex < replacementRecords.length
+    ? replacementRecords[replacementEndIndex].start
+    : replacement.length;
+  const trailing = replacement.slice(replacementEnd).trim();
+  const pythonMainCompanion =
+    identity === "main" &&
+    /^if\s+__name__\s*==\s*["']__main__["']\s*:\s*[\s\S]*\bmain\s*\(/.test(trailing);
+  if (trailing && !pythonMainCompanion) return null;
+
+  const currentRecords = sourceLineRecords(current);
+  const matches = currentRecords
+    .map((record, index) =>
+      sourceDeclarationIdentity(record.text) === identity ? index : -1
+    )
+    .filter((index) => index >= 0);
+  if (matches.length > 1) return null;
+
+  if (matches.length === 1) {
+    if (trailing) return null;
+    let startIndex = matches[0];
+    const declarationIndentation = sourceIndentWidth(currentRecords[startIndex]?.text || "");
+    while (
+      startIndex > 0 &&
+      sourceIndentWidth(currentRecords[startIndex - 1]?.text || "") === declarationIndentation &&
+      /^\s*@/.test(String(currentRecords[startIndex - 1]?.text || ""))
+    ) {
+      startIndex -= 1;
+    }
+    const endIndex = completeGroundedDeclarationBlockEnd(currentRecords, matches[0]);
+    const startOffset = currentRecords[startIndex]?.start ?? 0;
+    const endOffset = endIndex < currentRecords.length
+      ? currentRecords[endIndex].start
+      : current.length;
+    const search = current.slice(startOffset, endOffset);
+    const replace = replacement;
+    if (!search || comparablePatchContextText(search) === comparablePatchContextText(replace)) {
+      return null;
+    }
+    const scopeIssue = patchContextReplacementScopeIssue(
+      {
+        search,
+        anchorKind: "declaration-identity",
+        anchorIdentity: identity,
+      },
+      replace
+    );
+    if (scopeIssue) return null;
+    return { identity, mode: "replace-declaration", search, replace };
+  }
+
+  const separator = current.endsWith("\n") || current.endsWith("\r") ? "\n" : "\n\n";
+  return {
+    identity,
+    mode: "append-declaration",
+    search: current,
+    replace: `${current}${separator}${replacement}`,
+  };
+}
+
+export function groundedDeclarationPatchFromPartialFile(
+  current = "",
+  proposed = "",
+  options = {}
+) {
+  const source = String(current || "");
+  const replacement = String(proposed || "");
+  if (
+    !source.trim() ||
+    !replacement.trim() ||
+    source.includes("\0") ||
+    replacement.includes("\0") ||
+    Buffer.byteLength(replacement, "utf8") > 220_000
+  ) {
+    return null;
+  }
+
+  const replacementRecords = sourceLineRecords(replacement);
+  const replacementDeclarations = replacementRecords
+    .map((record, index) => ({
+      index,
+      identity: sourceDeclarationIdentity(record.text),
+      indentation: sourceIndentWidth(record.text),
+    }))
+    .filter((item) => item.identity);
+  if (!replacementDeclarations.length) return null;
+  const outerIndentation = Math.min(
+    ...replacementDeclarations.map((item) => item.indentation)
+  );
+  const outerDeclarations = replacementDeclarations.filter(
+    (item) => item.indentation === outerIndentation
+  );
+  const replacementCounts = new Map();
+  for (const item of outerDeclarations) {
+    replacementCounts.set(
+      item.identity,
+      Number(replacementCounts.get(item.identity) || 0) + 1
+    );
+  }
+
+  const currentRecords = sourceLineRecords(source);
+  const currentMatches = new Map();
+  for (let index = 0; index < currentRecords.length; index += 1) {
+    const identity = sourceDeclarationIdentity(currentRecords[index]?.text || "");
+    if (!identity) continue;
+    const matches = currentMatches.get(identity) || [];
+    matches.push(index);
+    currentMatches.set(identity, matches);
+  }
+
+  if (options.allowExistingReplacement !== false) {
+    for (const declaration of outerDeclarations) {
+      if (Number(replacementCounts.get(declaration.identity) || 0) !== 1) continue;
+      const matches = currentMatches.get(declaration.identity) || [];
+      if (matches.length !== 1) continue;
+
+      let replacementStartIndex = declaration.index;
+      while (
+        replacementStartIndex > 0 &&
+        sourceIndentWidth(replacementRecords[replacementStartIndex - 1]?.text || "") ===
+          declaration.indentation &&
+        /^\s*@/.test(String(replacementRecords[replacementStartIndex - 1]?.text || ""))
+      ) {
+        replacementStartIndex -= 1;
+      }
+      const replacementEndIndex = completeGroundedDeclarationBlockEnd(
+        replacementRecords,
+        declaration.index
+      );
+      const replacementStart = replacementRecords[replacementStartIndex]?.start ?? 0;
+      const replacementEnd = replacementEndIndex < replacementRecords.length
+        ? replacementRecords[replacementEndIndex].start
+        : replacement.length;
+      const replace = replacement.slice(replacementStart, replacementEnd);
+
+      let currentStartIndex = matches[0];
+      const currentIndentation = sourceIndentWidth(
+        currentRecords[currentStartIndex]?.text || ""
+      );
+      while (
+        currentStartIndex > 0 &&
+        sourceIndentWidth(currentRecords[currentStartIndex - 1]?.text || "") ===
+          currentIndentation &&
+        /^\s*@/.test(String(currentRecords[currentStartIndex - 1]?.text || ""))
+      ) {
+        currentStartIndex -= 1;
+      }
+      const currentEndIndex = completeGroundedDeclarationBlockEnd(
+        currentRecords,
+        matches[0]
+      );
+      const currentStart = currentRecords[currentStartIndex]?.start ?? 0;
+      const currentEnd = currentEndIndex < currentRecords.length
+        ? currentRecords[currentEndIndex].start
+        : source.length;
+      const search = source.slice(currentStart, currentEnd);
+      if (
+        !search ||
+        !replace ||
+        comparablePatchContextText(search) === comparablePatchContextText(replace)
+      ) {
+        continue;
+      }
+      const declarationScopeIssue = patchContextReplacementScopeIssue(
+        {
+          search,
+          anchorKind: "declaration-identity",
+          anchorIdentity: declaration.identity,
+        },
+        replace
+      );
+      if (declarationScopeIssue) continue;
+      return {
+        identity: declaration.identity,
+        mode: "replace-declaration",
+        search,
+        replace,
+      };
+    }
+  }
+
+  const allowedNewIdentityOrder = [
+    ...new Set(
+      (Array.isArray(options.allowedNewIdentities) ? options.allowedNewIdentities : [])
+        .map((identity) => String(identity || "").trim())
+        .filter((identity) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(identity))
+    ),
+  ];
+  const allowedNewIdentities = new Set(allowedNewIdentityOrder);
+  if (
+    allowedNewIdentities.size === 0 ||
+    !/\.py$/i.test(String(options.targetPath || ""))
+  ) {
+    return null;
+  }
+  const missingRequiredDeclarations = outerDeclarations.filter(
+    (declaration) =>
+      declaration.indentation === 0 &&
+      allowedNewIdentities.has(declaration.identity) &&
+      Number(replacementCounts.get(declaration.identity) || 0) === 1 &&
+      !(currentMatches.get(declaration.identity) || []).length
+  );
+  const declaration = allowedNewIdentityOrder
+    .map((identity) =>
+      missingRequiredDeclarations.find((candidate) => candidate.identity === identity)
+    )
+    .find(Boolean);
+  if (!declaration) return null;
+  const extracted = completePythonDeclarationFromPartialSource(
+    replacement,
+    replacementRecords,
+    declaration
+  );
+  if (!extracted) return null;
+
+  let insertionIndex = currentRecords.findIndex((record) => {
+    const text = String(record?.text || "");
+    if (sourceIndentWidth(text) !== 0) return false;
+    return (
+      sourceDeclarationIdentity(text) === "main" ||
+      /^\s*if\s+__name__\s*==\s*["']__main__["']\s*:/.test(text)
+    );
+  });
+  if (insertionIndex < 0) insertionIndex = currentRecords.length;
+  const boundary = uniqueRequiredDeclarationInsertionBoundary(
+    source,
+    currentRecords,
+    insertionIndex
+  );
+  if (!boundary) return null;
+  return {
+    identity: declaration.identity,
+    mode: "insert-required-declaration",
+    search: boundary.search,
+    replace: insertRequiredDeclarationAtBoundary(
+      boundary,
+      extracted.block,
+      source
+    ),
+  };
+}
+
+export async function recoverGroundedPathlessPatchAsExactPatch(
+  config = {},
+  state = {},
+  reportedToolCalls = [],
+  contract = null,
+  validation = {}
+) {
+  const calls = Array.isArray(reportedToolCalls) ? reportedToolCalls : [];
+  if (
+    calls.length !== 1 ||
+    config.patchContextRefreshRequired === true ||
+    config.completionFreshMutationNeedsSourceRead === true
+  ) {
+    return null;
+  }
+  const originalCall = calls[0];
+  if (String(originalCall?.function?.name || "") !== "apply_patch") return null;
+  const args = safeParseToolContent(originalCall?.function?.arguments) || {};
+  if (
+    typeof args.replace !== "string" ||
+    Object.hasOwn(args, "patch") ||
+    (typeof args.path === "string" && args.path.trim()) ||
+    (typeof args.search === "string" && args.search.length > 0) ||
+    !/^[a-f0-9]{64}$/i.test(String(args.baseHash || ""))
+  ) {
+    return null;
+  }
+
+  const groundedPaths = recentFullReadPathsForHash(state, args.baseHash);
+  if (groundedPaths.length !== 1) return null;
+  const targetPath = groundedPaths[0];
+  let target;
+  try {
+    target = resolveWorkspacePath(config, targetPath);
+  } catch {
+    return null;
+  }
+  const current = await fs.readFile(target.absolutePath, "utf8").catch(() => "");
+  const currentHash = crypto.createHash("sha256").update(current, "utf8").digest("hex");
+  if (!current || currentHash !== String(args.baseHash).toLowerCase()) return null;
+
+  const bounded = groundedSingleDeclarationReplacement(current, args.replace);
+  if (!bounded) return null;
+  const recoveredCall = {
+    ...originalCall,
+    function: {
+      ...originalCall.function,
+      arguments: JSON.stringify({
+        path: targetPath,
+        search: bounded.search,
+        replace: bounded.replace,
+        expectedReplacements: 1,
+        baseHash: currentHash,
+      }),
+    },
+  };
+  const recovered = resolveDispatchableToolCallBatch([recoveredCall], contract);
+  if (!recovered.ok) return null;
+  return {
+    ...recovered,
+    recoveredGroundedPathlessPatch: true,
+    translatedPath: targetPath,
+    anchorIdentity: bounded.identity,
+    recoveryMode: bounded.mode,
+    originalCode: String(validation?.code || ""),
+  };
+}
+
 export function recoverUnavailableVerificationRerunAsCanonicalRead(
   config = {},
   state = {},
@@ -12404,6 +16734,137 @@ export function recoverStalemateDiscoveryAsExactVerification(
   };
 }
 
+function exactPendingCommandIntent(requestedCommand = "", canonicalCommand = "", config = {}) {
+  if (projectCommandsEquivalent(requestedCommand, canonicalCommand, config)) {
+    return { matched: true, removedLeadingCwd: false };
+  }
+
+  const requested = normalizeProjectCommand(requestedCommand);
+  const canonical = normalizeProjectCommand(canonicalCommand);
+  const sequence = parseTopLevelShellSequence(requested);
+  if (
+    !requested ||
+    !canonical ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator ||
+    sequence.commands.length !== 2 ||
+    sequence.separators.length !== 1 ||
+    sequence.separators[0] !== "&&"
+  ) {
+    return { matched: false, removedLeadingCwd: false };
+  }
+
+  const leadingTokens = tokenizeShellWords(sequence.commands[0]);
+  if (leadingTokens.length !== 2 || leadingTokens[0] !== "cd") {
+    return { matched: false, removedLeadingCwd: false };
+  }
+  const relativeTarget = String(normalizeWorkspaceInputPath(leadingTokens[1]) || "")
+    .replace(/\\/g, "/")
+    .trim();
+  const normalizedTarget = path.posix.normalize(relativeTarget);
+  if (
+    !relativeTarget ||
+    path.posix.isAbsolute(relativeTarget) ||
+    normalizedTarget === ".." ||
+    normalizedTarget.startsWith("../") ||
+    !/^[A-Za-z0-9._/ -]+$/.test(relativeTarget) ||
+    normalizeProjectCommand(sequence.commands[1]) !== canonical
+  ) {
+    return { matched: false, removedLeadingCwd: false };
+  }
+  return { matched: true, removedLeadingCwd: true };
+}
+
+export function recoverExactPendingCommandIntent(
+  config = {},
+  reportedToolCalls = [],
+  contract = null,
+  validation = {}
+) {
+  const calls = Array.isArray(reportedToolCalls) ? reportedToolCalls : [];
+  const errors = Array.isArray(validation?.errors) ? validation.errors : [];
+  if (
+    validation?.ok === true ||
+    calls.length !== 1 ||
+    errors.length === 0 ||
+    errors.some(
+      (error) =>
+        !new Set(["TOOL_ARGUMENTS_SCHEMA_INVALID", "ARGUMENT_ENUM_MISMATCH"]).has(
+          String(error?.code || "")
+        )
+    )
+  ) {
+    return null;
+  }
+  const enumErrors = errors.filter(
+    (error) => String(error?.code || "") === "ARGUMENT_ENUM_MISMATCH"
+  );
+  if (
+    enumErrors.length === 0 ||
+    enumErrors.some((error) => String(error?.path || "") !== "$.command")
+  ) {
+    return null;
+  }
+
+  const originalCall = calls[0];
+  if (String(originalCall?.function?.name || "") !== "run_command") return null;
+  const runDescriptors = (Array.isArray(contract?.tools) ? contract.tools : []).filter(
+    (descriptor) =>
+      descriptor?.type === "function" && descriptor.function?.name === "run_command"
+  );
+  if (runDescriptors.length !== 1) return null;
+  const allowedCommands =
+    runDescriptors[0].function?.parameters?.properties?.command?.enum;
+  if (!Array.isArray(allowedCommands) || allowedCommands.length !== 1) return null;
+  const canonicalCommand = String(allowedCommands[0] || "");
+
+  const authoritativePendingCommands = [
+    config.testVerificationPending === true
+      ? String(config.testVerificationCommand || "")
+      : "",
+    config.requiredProjectCommandPending === true
+      ? String(config.requiredProjectCommand || "")
+      : "",
+    config.testFailureStalemateRevalidation === true
+      ? String(config.testFailureStalemateCommand || "")
+      : "",
+  ].filter(Boolean);
+  if (
+    !canonicalCommand ||
+    !authoritativePendingCommands.some((pendingCommand) =>
+      projectCommandsEquivalent(pendingCommand, canonicalCommand, config)
+    )
+  ) {
+    return null;
+  }
+
+  const requestedArgs = safeParseToolArgs(originalCall);
+  const originalCommand = String(requestedArgs.command || "");
+  const intent = exactPendingCommandIntent(originalCommand, canonicalCommand, config);
+  if (!intent.matched) return null;
+
+  const recoveredCall = {
+    ...originalCall,
+    function: {
+      ...originalCall.function,
+      arguments: JSON.stringify({
+        ...requestedArgs,
+        command: canonicalCommand,
+      }),
+    },
+  };
+  const recovered = resolveDispatchableToolCallBatch([recoveredCall], contract);
+  if (!recovered.ok) return null;
+  return {
+    ...recovered,
+    recoveredExactPendingCommand: true,
+    originalCommand,
+    canonicalCommand,
+    removedLeadingCwd: intent.removedLeadingCwd,
+  };
+}
+
 export function recoverRequiredPatchContextReadWithoutToolCall(
   config = {},
   reportedToolCalls = [],
@@ -12411,29 +16872,59 @@ export function recoverRequiredPatchContextReadWithoutToolCall(
   validation = {}
 ) {
   const calls = Array.isArray(reportedToolCalls) ? reportedToolCalls : [];
+  const errors = Array.isArray(validation?.errors) ? validation.errors : [];
+  const refreshMode = config.patchContextRefreshRequired === true;
+  const repairMode =
+    config.patchContextRepairRequired === true &&
+    Math.max(0, Number(config.patchContextRepairReadCount || 0)) < 1;
+  const exactPath = safeRecoveryEvidencePath(
+    refreshMode
+      ? config.patchContextRefreshPath
+      : config.patchContextRepairPath
+  );
+  if (!exactPath) return null;
+  const requestedCall = calls.length === 1 ? calls[0] : null;
+  const requestedToolName = String(requestedCall?.function?.name || "");
+  const requestedArgs = safeParseToolArgs(requestedCall);
+  const requestedPath = safeRecoveryEvidencePath(requestedArgs.path);
+  const missingRefreshCall = validation?.ok === true && calls.length === 0 && refreshMode;
+  const unavailableContextCall =
+    validation?.ok !== true &&
+    calls.length === 1 &&
+    (refreshMode || repairMode) &&
+    errors.length > 0 &&
+    errors.every((error) => error?.code === "TOOL_NOT_OFFERED") &&
+    (requestedToolName !== "finish" || refreshMode);
+  const invalidExactReadCall =
+    validation?.ok !== true &&
+    calls.length === 1 &&
+    (refreshMode || repairMode) &&
+    requestedToolName === "read_file" &&
+    requestedPath === exactPath &&
+    errors.length > 0 &&
+    errors.every((error) =>
+      ["TOOL_ARGUMENTS_SCHEMA_INVALID", "ARGUMENT_ADDITIONAL_PROPERTY"].includes(
+        String(error?.code || "")
+      )
+    );
   if (
-    validation?.ok !== true ||
-    calls.length !== 0 ||
-    config.patchContextRefreshRequired !== true
+    !missingRefreshCall &&
+    !unavailableContextCall &&
+    !invalidExactReadCall
   ) {
     return null;
   }
-  const exactPath = safeRecoveryEvidencePath(config.patchContextRefreshPath);
-  if (!exactPath) return null;
 
   const descriptors = Array.isArray(contract?.tools) ? contract.tools : [];
   const actionable = descriptors.filter(
-    (descriptor) =>
-      descriptor?.type === "function" && descriptor.function?.name !== "finish"
+    (descriptor) => descriptor?.type === "function" && descriptor.function?.name !== "finish"
   );
-  if (
-    actionable.length !== 1 ||
-    actionable[0].function?.name !== "read_file"
-  ) {
-    return null;
-  }
+  const readDescriptor = actionable.find(
+    (descriptor) => descriptor.function?.name === "read_file"
+  );
+  if (!readDescriptor || (refreshMode && actionable.length !== 1)) return null;
   const allowedPaths =
-    actionable[0].function?.parameters?.properties?.path?.enum;
+    readDescriptor.function?.parameters?.properties?.path?.enum;
   if (
     !Array.isArray(allowedPaths) ||
     allowedPaths.length !== 1 ||
@@ -12455,9 +16946,84 @@ export function recoverRequiredPatchContextReadWithoutToolCall(
   return {
     ...recovered,
     recoveredRequiredPatchContextRead: true,
-    originalToolName: "",
+    originalToolName: unavailableContextCall || invalidExactReadCall
+      ? requestedToolName
+      : "",
     translatedToolName: "read_file",
     translatedPath: exactPath,
+    normalizedInvalidExactRead: invalidExactReadCall,
+    source: repairMode ? "bounded-repair-reread" : "mandatory-refresh-read",
+  };
+}
+
+export function recoverRequiredRepositoryGroundingToolCall(
+  config = {},
+  reportedToolCalls = [],
+  contract = null,
+  validation = {}
+) {
+  if (config.repositoryGroundingRequired !== true) return null;
+  const calls = Array.isArray(reportedToolCalls) ? reportedToolCalls : [];
+  const errors = Array.isArray(validation?.errors) ? validation.errors : [];
+  const missingCall = validation?.ok === true && calls.length === 0;
+  const unavailableCall =
+    validation?.ok !== true &&
+    calls.length === 1 &&
+    errors.length > 0 &&
+    errors.every((error) => error?.code === "TOOL_NOT_OFFERED") &&
+    String(calls[0]?.function?.name || "") !== "finish";
+  if (!missingCall && !unavailableCall) return null;
+
+  const descriptors = (Array.isArray(contract?.tools) ? contract.tools : []).filter(
+    (descriptor) =>
+      descriptor?.type === "function" &&
+      descriptor.function?.name !== "finish"
+  );
+  if (descriptors.length !== 1) return null;
+  const descriptor = descriptors[0];
+  const toolName = String(descriptor.function?.name || "");
+  const requestedToolName = missingCall
+    ? ""
+    : String(calls[0]?.function?.name || "");
+  if (
+    unavailableCall &&
+    new Set(["list_files", "read_file", "search_files", "write_file", "apply_patch"])
+      .has(requestedToolName) &&
+    requestedToolName !== toolName
+  ) {
+    return null;
+  }
+  let args = null;
+  if (toolName === "inspect_project") {
+    args = {};
+  } else if (toolName === "read_file") {
+    const allowedPaths = descriptor.function?.parameters?.properties?.path?.enum;
+    if (!Array.isArray(allowedPaths) || allowedPaths.length === 0) return null;
+    const path = safeRecoveryEvidencePath(allowedPaths[0]);
+    if (!path) return null;
+    args = { path };
+  } else {
+    return null;
+  }
+
+  const recoveredCall = {
+    id: `call_aginti_repository_grounding_${crypto.randomUUID()}`,
+    type: "function",
+    function: {
+      name: toolName,
+      arguments: JSON.stringify(args),
+    },
+  };
+  const recovered = resolveDispatchableToolCallBatch([recoveredCall], contract);
+  if (!recovered.ok) return null;
+  return {
+    ...recovered,
+    recoveredRequiredRepositoryGrounding: true,
+    originalToolName: missingCall
+      ? ""
+      : String(calls[0]?.function?.name || ""),
+    translatedToolName: toolName,
+    translatedPath: String(args.path || ""),
   };
 }
 
@@ -12768,6 +17334,42 @@ async function stopForArtifactValidationRepairExhaustion({ config, state, store,
   };
 }
 
+async function stopForPatchContextScopeExhaustion({ config, state, store, observers, sessionId, step, toolResult }) {
+  const result = [
+    "I paused this model route after three revision-scoped patch proposals exceeded the exact current-source anchor without a successful mutation.",
+    "The current source, authoritative tests, and retained failure evidence were preserved.",
+    "Resume the same durable task with a distinct stronger model or an explicitly bounded declaration repair instead of repeating source rereads.",
+  ].join(" ");
+  const detail = {
+    step,
+    category: toolResult.category || "patch-context-scope-exhausted",
+    path: toolResultWorkspacePath(toolResult),
+    scopeMismatchCount: Math.max(3, Number(toolResult.scopeMismatchCount || 0)),
+    reason: toolResult.reason || "",
+  };
+  state.stepsCompleted = step;
+  state.updatedAt = new Date().toISOString();
+  updateGoalStatus(state, "paused", "patch_context_scope_exhausted", state.updatedAt);
+  await store.appendEvent("session.stopped", {
+    reason: "patch_context_scope_exhausted",
+    step,
+    detail,
+  });
+  observers.event("session.stopped", {
+    reason: "patch_context_scope_exhausted",
+    sessionId,
+  });
+  await store.saveState(state);
+  emitConsole(config, result, { kind: "error", error: true });
+  return {
+    sessionId,
+    result,
+    stopped: true,
+    reason: "patch_context_scope_exhausted",
+    ...goalRunMetadata(state),
+  };
+}
+
 function localModelRole(config, role) {
   return normalizeProviderId(config?.[`${role}Provider`], "") === "localllm" ? config?.[`${role}Model`] || "" : "";
 }
@@ -13017,7 +17619,7 @@ async function activatePendingProviderHandoff({ config, state, store, observers,
   observers.event("provider.handoff_activated", { ...detail, sessionId });
 }
 
-async function runAgentOnce(config) {
+async function runAgentOnceUnlocked(config) {
   assertIntegrationRunAgentInvocation(config);
   const incomingConfig = config;
   const sessionId = config.resume || config.sessionId || `web-agent-${crypto.randomUUID()}`;
@@ -13436,7 +18038,8 @@ async function runAgentOnce(config) {
         try {
           plan = redactSensitiveText(await createPlan(client, config, state));
         } catch (error) {
-          if (!isModelTimeoutError(error)) {
+          const failureKind = recoverableModelRequestFailureKind(error);
+          if (!failureKind) {
             const detail = {
               provider: config.provider,
               model: config.model,
@@ -13449,8 +18052,11 @@ async function runAgentOnce(config) {
             throw error;
           }
 
-          const retryRoute = modelPlanningTimeoutRetryRoute(config);
-          const timeoutDetail = {
+          const retryRoute = failureKind === "transport"
+            ? modelTransportRetryRoute(config)
+            : modelPlanningTimeoutRetryRoute(config);
+          const recoveryDetail = {
+            failureKind,
             provider: config.provider,
             model: config.model,
             retryProvider: retryRoute.provider,
@@ -13461,18 +18067,26 @@ async function runAgentOnce(config) {
             retryTimeoutMs: retryRoute.retryTimeoutMs,
             error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
           };
-          state.meta.planTimeoutRecovery = {
+          state.meta.planRequestRecovery = {
             active: true,
-            ...timeoutDetail,
+            ...recoveryDetail,
             startedAt: new Date().toISOString(),
           };
-          await store.appendEvent("plan.timeout", timeoutDetail);
-          await store.appendEvent("plan.retry_requested", timeoutDetail);
-          observers.event("plan.timeout", timeoutDetail);
-          observers.event("plan.retry_requested", timeoutDetail);
+          if (failureKind === "timeout") {
+            state.meta.planTimeoutRecovery = { ...state.meta.planRequestRecovery };
+          }
+          const interruptionEvent = failureKind === "transport"
+            ? "plan.transport_interrupted"
+            : "plan.timeout";
+          await store.appendEvent(interruptionEvent, recoveryDetail);
+          await store.appendEvent("plan.retry_requested", recoveryDetail);
+          observers.event(interruptionEvent, recoveryDetail);
+          observers.event("plan.retry_requested", recoveryDetail);
           emitConsole(
             config,
-            `Plan request timed out after ${retryRoute.timeoutMs}ms; retrying once with ${retryRoute.provider}/${retryRoute.model} for ${retryRoute.retryTimeoutMs}ms.`,
+            failureKind === "transport"
+              ? `Plan transport was interrupted; retrying the same grounded plan request once with ${retryRoute.provider}/${retryRoute.model}.`
+              : `Plan request timed out after ${retryRoute.timeoutMs}ms; retrying once with ${retryRoute.provider}/${retryRoute.model} for ${retryRoute.retryTimeoutMs}ms.`,
             { kind: "meta" }
           );
           await store.saveState(state);
@@ -13486,15 +18100,19 @@ async function runAgentOnce(config) {
           try {
             plan = redactSensitiveText(await createPlan(client, retryConfig, state));
             const recovered = {
-              ...timeoutDetail,
+              ...recoveryDetail,
               outcome: "model-retry",
             };
-            await store.appendEvent("plan.timeout_recovered", recovered);
-            observers.event("plan.timeout_recovered", recovered);
+            const recoveredEvent = failureKind === "transport"
+              ? "plan.transport_recovered"
+              : "plan.timeout_recovered";
+            await store.appendEvent(recoveredEvent, recovered);
+            observers.event(recoveredEvent, recovered);
           } catch (retryError) {
-            if (!isModelTimeoutError(retryError)) {
+            const retryFailureKind = recoverableModelRequestFailureKind(retryError);
+            if (!retryFailureKind) {
               const detail = {
-                ...timeoutDetail,
+                ...recoveryDetail,
                 retryError: redactSensitiveText(
                   retryError instanceof Error ? retryError.message : String(retryError)
                 ),
@@ -13506,19 +18124,27 @@ async function runAgentOnce(config) {
             }
             plan = buildPlanningTimeoutFallbackPlan(config, state);
             const fallback = {
-              ...timeoutDetail,
+              ...recoveryDetail,
               outcome: "deterministic-launch-plan",
+              retryFailureKind,
               retryError: redactSensitiveText(
                 retryError instanceof Error ? retryError.message : String(retryError)
               ),
             };
-            state.meta.planTimeoutRecovery.fallback = true;
-            state.meta.planTimeoutRecovery.retryError = fallback.retryError;
-            await store.appendEvent("plan.timeout_fallback", fallback);
-            observers.event("plan.timeout_fallback", fallback);
+            state.meta.planRequestRecovery.fallback = true;
+            state.meta.planRequestRecovery.retryError = fallback.retryError;
+            if (failureKind === "timeout") {
+              state.meta.planTimeoutRecovery.fallback = true;
+              state.meta.planTimeoutRecovery.retryError = fallback.retryError;
+            }
+            const fallbackEvent = failureKind === "transport"
+              ? "plan.transport_fallback"
+              : "plan.timeout_fallback";
+            await store.appendEvent(fallbackEvent, fallback);
+            observers.event(fallbackEvent, fallback);
             emitConsole(
               config,
-              "The bounded plan retry also timed out; continuing this invocation with a deterministic launch plan.",
+              "The bounded plan retry was interrupted again; continuing this invocation with a deterministic launch plan.",
               { kind: "meta" }
             );
           }
@@ -13527,8 +18153,12 @@ async function runAgentOnce(config) {
             config = applyModelTimeoutRetryRoute(config, retryRoute);
             state.provider = config.provider;
             state.model = config.model;
-            state.meta.planTimeoutRecovery.adoptedModel = config.model;
-            state.meta.planTimeoutRecovery.activatedAt = new Date().toISOString();
+            state.meta.planRequestRecovery.adoptedModel = config.model;
+            state.meta.planRequestRecovery.activatedAt = new Date().toISOString();
+            if (failureKind === "timeout") {
+              state.meta.planTimeoutRecovery.adoptedModel = config.model;
+              state.meta.planTimeoutRecovery.activatedAt = state.meta.planRequestRecovery.activatedAt;
+            }
             state.meta.runtimeConfig = captureSessionRuntime(config, {
               revision: state.meta.runtimeConfig?.revision || 1,
             });
@@ -13982,8 +18612,95 @@ async function runAgentOnce(config) {
         response = await requestNextStep(client, stepRuntimeConfig, requestMessages);
       } catch (error) {
         const retryKey = `step-${step}`;
+        const malformedRetriedSteps = state.meta.localMalformedToolResponseRetries || {};
         const contextRetriedSteps = state.meta.localContextBudgetRetries || {};
-        if (isLocalContextBudgetError(error) && !contextRetriedSteps[retryKey]) {
+        if (isLocalMalformedToolResponseError(error, stepRuntimeConfig) && !malformedRetriedSteps[retryKey]) {
+          const retryMessages = buildMalformedToolResponseRetryMessages(
+            requestMessages,
+            stepRuntimeConfig,
+            step,
+            error
+          );
+          const currentOutputTokens = Number(stepRuntimeConfig.maxOutputTokens || 0);
+          const retryOutputTokens = Math.max(
+            currentOutputTokens,
+            Number(
+              stepRuntimeConfig.malformedToolResponseRetryMaxOutputTokens ||
+                MALFORMED_TOOL_RESPONSE_RETRY_OUTPUT_TOKEN_CAP
+            )
+          );
+          const detail = {
+            step,
+            provider: config.provider,
+            model: config.model,
+            messageCharsBefore: countMessageChars(requestMessages),
+            messageCharsAfter: countMessageChars(retryMessages),
+            messageTokensBefore: estimateMessageTokens(requestMessages),
+            messageTokensAfter: estimateMessageTokens(retryMessages),
+            maxOutputTokens: retryOutputTokens,
+            forcedTextToolProtocol: true,
+            error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+          };
+          state.meta.localMalformedToolResponseRetries = {
+            ...malformedRetriedSteps,
+            [retryKey]: true,
+          };
+          state.meta.lastLocalMalformedToolResponse = detail;
+          await store.appendEvent("model.malformed_tool_response", detail);
+          await store.appendEvent("history.narrowed_for_malformed_tool_retry", detail);
+          observers.event("model.malformed_tool_response", detail);
+          observers.event("history.narrowed_for_malformed_tool_retry", detail);
+          emitConsole(
+            config,
+            `Local provider returned malformed tool arguments at step ${step}; retrying the same grounded action once through the text-tool protocol.`,
+            { kind: "meta" }
+          );
+          await store.saveState(state);
+          try {
+            response = await requestNextStep(
+              client,
+              {
+                ...stepRuntimeConfig,
+                forceTextToolProtocol: true,
+                maxOutputTokens: retryOutputTokens,
+              },
+              retryMessages
+            );
+          } catch (retryError) {
+            if (isLocalMalformedToolResponseError(retryError, stepRuntimeConfig)) {
+              return await stopForRepeatedMalformedToolArguments({
+                config,
+                state,
+                store,
+                observers,
+                sessionId,
+                step,
+                toolResult: {
+                  toolName: "provider-tool-response",
+                  category: "provider-malformed-tool-response",
+                  reason: redactSensitiveText(
+                    retryError instanceof Error ? retryError.message : String(retryError)
+                  ),
+                },
+              });
+            }
+            const timeoutRecovery = await recoverInterruptedModelStep({
+              error: retryError,
+              client,
+              config,
+              state,
+              store,
+              observers,
+              snapshot,
+              step,
+              stepRuntimeConfig,
+              requestMessages: retryMessages,
+            });
+            response = timeoutRecovery.response;
+            config = timeoutRecovery.config;
+            requestMessages = timeoutRecovery.requestMessages;
+          }
+        } else if (isLocalContextBudgetError(error) && !contextRetriedSteps[retryKey]) {
           const requestState = requestMessages === state.messages
             ? state
             : { ...state, messages: requestMessages };
@@ -14030,92 +18747,41 @@ async function runAgentOnce(config) {
             { kind: "meta" }
           );
           await store.saveState(state);
-          response = await requestNextStep(client, stepRuntimeConfig, requestMessages);
+          try {
+            response = await requestNextStep(client, stepRuntimeConfig, requestMessages);
+          } catch (retryError) {
+            const timeoutRecovery = await recoverInterruptedModelStep({
+              error: retryError,
+              client,
+              config,
+              state,
+              store,
+              observers,
+              snapshot,
+              step,
+              stepRuntimeConfig,
+              requestMessages,
+            });
+            response = timeoutRecovery.response;
+            config = timeoutRecovery.config;
+            requestMessages = timeoutRecovery.requestMessages;
+          }
         } else {
-          const retriedSteps = state.meta.modelTimeoutRetries || {};
-          if (!isModelTimeoutError(error) || retriedSteps[retryKey]) throw error;
-
-          const retryRoute = modelTimeoutRetryRoute(config);
-          const { timeoutMs, retryTimeoutMs } = retryRoute;
-          const requestState = requestMessages === state.messages
-            ? state
-            : { ...state, messages: requestMessages };
-          const compactMessages = buildModelTimeoutRetryMessages(
-            requestState,
-            stepRuntimeConfig,
+          const timeoutRecovery = await recoverInterruptedModelStep({
+            error,
+            client,
+            config,
+            state,
+            store,
+            observers,
             snapshot,
             step,
-            error
-          );
-          const detail = {
-            step,
-            provider: config.provider,
-            model: config.model,
-            retryProvider: retryRoute.provider,
-            retryModel: retryRoute.model,
-            switchedModel: retryRoute.switchedModel,
-            timeoutMs,
-            retryTimeoutMs,
-            messageCharsBefore: countMessageChars(requestMessages),
-            messageCharsAfter: countMessageChars(compactMessages),
-            error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
-          };
-          state.messages = compactMessages;
-          requestMessages = compactMessages;
-          resetStaticDiscoveryAfterContextLoss(state, "model-timeout-retry", {
-            preserveStaticEvidence: true,
+            stepRuntimeConfig,
+            requestMessages,
           });
-          state.meta.modelTimeoutRetries = {
-            ...retriedSteps,
-            [retryKey]: true,
-          };
-          state.meta.lastModelTimeout = detail;
-          await store.appendEvent("model.timeout", detail);
-          await store.appendEvent("history.compacted_for_model_retry", detail);
-          observers.event("model.timeout", detail);
-          observers.event("history.compacted_for_model_retry", detail);
-          emitConsole(
-            config,
-            `Model request timed out after ${timeoutMs}ms; compacted history and retrying once with ${retryRoute.provider}/${retryRoute.model} for ${retryTimeoutMs}ms.`,
-            { kind: "meta" }
-          );
-          await store.saveState(state);
-          response = await requestNextStep(
-            client,
-            {
-              ...stepRuntimeConfig,
-              provider: retryRoute.provider,
-              model: retryRoute.model,
-              modelTimeoutMs: retryTimeoutMs,
-            },
-            state.messages
-          );
-          if (retryRoute.switchedModel) {
-            config = applyModelTimeoutRetryRoute(config, retryRoute);
-            state.provider = config.provider;
-            state.model = config.model;
-            state.meta.modelTimeoutRecovery = {
-              active: true,
-              provider: config.provider,
-              model: config.model,
-              previousModel: retryRoute.previousModel,
-              activatedAt: new Date().toISOString(),
-              step,
-            };
-            state.meta.runtimeConfig = captureSessionRuntime(config, {
-              revision: state.meta.runtimeConfig?.revision || 1,
-            });
-            const adopted = {
-              step,
-              provider: config.provider,
-              model: config.model,
-              previousModel: retryRoute.previousModel,
-              source: "model-timeout-retry",
-            };
-            await store.appendEvent("model.timeout_route_adopted", adopted);
-            observers.event("model.timeout_route_adopted", adopted);
-            await store.saveState(state);
-          }
+          response = timeoutRecovery.response;
+          config = timeoutRecovery.config;
+          requestMessages = timeoutRecovery.requestMessages;
         }
       }
       const rawAssistantMessage = response.choices[0]?.message;
@@ -14201,16 +18867,53 @@ async function runAgentOnce(config) {
       let toolBatchValidation = rawToolCalls === undefined || rawToolCalls === null
         ? { ok: true, calls: [], acceptedToolCalls: [], deferredToolCalls: [] }
         : resolveDispatchableToolCallBatch(rawToolCalls, responseToolContract);
-      if (toolBatchValidation.ok) {
-        const recoveredRequiredPatchContextRead =
-          recoverRequiredPatchContextReadWithoutToolCall(
+      const recoveredRequiredPatchContextRead =
+        recoverRequiredPatchContextReadWithoutToolCall(
+          stepRuntimeConfig,
+          rawToolCalls,
+          responseToolContract,
+          toolBatchValidation
+        );
+      if (recoveredRequiredPatchContextRead) {
+        toolBatchValidation = recoveredRequiredPatchContextRead;
+      }
+      if (!recoveredRequiredPatchContextRead) {
+        const recoveredGroundedPathlessPatch =
+          await recoverGroundedPathlessPatchAsExactPatch(
+            stepRuntimeConfig,
+            state,
+            rawToolCalls,
+            responseToolContract,
+            toolBatchValidation
+          );
+        if (recoveredGroundedPathlessPatch) {
+          toolBatchValidation = recoveredGroundedPathlessPatch;
+        }
+      }
+      if (!toolBatchValidation.ok) {
+        const recoveredExactPendingCommand = recoverExactPendingCommandIntent(
+          stepRuntimeConfig,
+          rawToolCalls,
+          responseToolContract,
+          toolBatchValidation
+        );
+        if (recoveredExactPendingCommand) {
+          toolBatchValidation = recoveredExactPendingCommand;
+        }
+      }
+      if (
+        (!toolBatchValidation.ok || reportedToolCalls.length === 0) &&
+        stepRuntimeConfig.repositoryGroundingRequired === true
+      ) {
+        const recoveredRequiredRepositoryGrounding =
+          recoverRequiredRepositoryGroundingToolCall(
             stepRuntimeConfig,
             rawToolCalls,
             responseToolContract,
             toolBatchValidation
           );
-        if (recoveredRequiredPatchContextRead) {
-          toolBatchValidation = recoveredRequiredPatchContextRead;
+        if (recoveredRequiredRepositoryGrounding) {
+          toolBatchValidation = recoveredRequiredRepositoryGrounding;
         }
       }
       if (!toolBatchValidation.ok) {
@@ -14334,7 +19037,8 @@ async function runAgentOnce(config) {
 
       if (
         toolBatchValidation.recoveredSingletonEnums ||
-        toolBatchValidation.recoveredReadRangeAlias
+        toolBatchValidation.recoveredReadRangeAlias ||
+        toolBatchValidation.recoveredBoundedCommitSubject
       ) {
         const detail = {
           step,
@@ -14363,6 +19067,20 @@ async function runAgentOnce(config) {
         observers.event("tool.mutation_intent_translated", detail);
       }
 
+      if (toolBatchValidation.recoveredGroundedPathlessPatch) {
+        const detail = {
+          step,
+          originalToolName: "apply_patch",
+          translatedToolName: "apply_patch",
+          path: String(toolBatchValidation.translatedPath || ""),
+          anchorIdentity: String(toolBatchValidation.anchorIdentity || ""),
+          recoveryMode: String(toolBatchValidation.recoveryMode || ""),
+          source: "revision-bound-full-read",
+        };
+        await store.appendEvent("tool.arguments_repaired", detail);
+        observers.event("tool.arguments_repaired", detail);
+      }
+
       if (toolBatchValidation.recoveredUnavailableVerificationRerun) {
         const detail = {
           step,
@@ -14386,6 +19104,18 @@ async function runAgentOnce(config) {
         observers.event("tool.intent_repaired", detail);
       }
 
+      if (toolBatchValidation.recoveredExactPendingCommand) {
+        const detail = {
+          step,
+          originalCommand: String(toolBatchValidation.originalCommand || ""),
+          canonicalCommand: String(toolBatchValidation.canonicalCommand || ""),
+          removedLeadingCwd: toolBatchValidation.removedLeadingCwd === true,
+          source: "authoritative-pending-command",
+        };
+        await store.appendEvent("tool.arguments_repaired", detail);
+        observers.event("tool.arguments_repaired", detail);
+      }
+
       if (toolBatchValidation.recoveredRequiredPatchContextRead) {
         const detail = {
           step,
@@ -14393,6 +19123,18 @@ async function runAgentOnce(config) {
           translatedToolName: "read_file",
           path: String(toolBatchValidation.translatedPath || ""),
           source: "mandatory-patch-context-refresh",
+        };
+        await store.appendEvent("tool.intent_repaired", detail);
+        observers.event("tool.intent_repaired", detail);
+      }
+
+      if (toolBatchValidation.recoveredRequiredRepositoryGrounding) {
+        const detail = {
+          step,
+          originalToolName: String(toolBatchValidation.originalToolName || ""),
+          translatedToolName: String(toolBatchValidation.translatedToolName || ""),
+          path: String(toolBatchValidation.translatedPath || ""),
+          source: "mandatory-repository-grounding",
         };
         await store.appendEvent("tool.intent_repaired", detail);
         observers.event("tool.intent_repaired", detail);
@@ -14432,10 +19174,14 @@ async function runAgentOnce(config) {
           toolBatchValidation.recoveredSequentially ||
           toolBatchValidation.recoveredSingletonEnums ||
           toolBatchValidation.recoveredReadRangeAlias ||
+          toolBatchValidation.recoveredBoundedCommitSubject ||
           toolBatchValidation.recoveredStalemateVerification ||
+          toolBatchValidation.recoveredExactPendingCommand ||
           toolBatchValidation.recoveredRequiredPatchContextRead ||
+          toolBatchValidation.recoveredRequiredRepositoryGrounding ||
           toolBatchValidation.recoveredUnavailableVerificationRerun ||
           toolBatchValidation.recoveredFocusedWholeFileWrite ||
+          toolBatchValidation.recoveredGroundedPathlessPatch ||
           toolBatchValidation.recoveredFocusedTextRewrite
             ? {
                 ...assistantMessage,
@@ -14853,6 +19599,21 @@ async function runAgentOnce(config) {
       for (const toolResult of postBatchToolResults) {
         await applyToolLoopGuard(state, toolResult, store, observers, toolBatchRuntimeConfig);
 
+        if (
+          toolResult.stopRun &&
+          toolResult.category === "patch-context-scope-exhausted"
+        ) {
+          return await stopForPatchContextScopeExhaustion({
+            config,
+            state,
+            store,
+            observers,
+            sessionId,
+            step,
+            toolResult,
+          });
+        }
+
         if (config.scsActive && shouldReviewToolResult(toolResult, state)) {
           const decision = await reviewScsToolResult(client, config, state, toolResult, {
             events: await store.loadEvents(),
@@ -15090,6 +19851,107 @@ async function runAgentOnce(config) {
     await store.releaseInboxClaims().catch(() => {});
     await closeBrowser(browserState, store);
     await flushHousekeeping();
+  }
+}
+
+function sessionRunOwnerIsAlive(pid) {
+  const ownerPid = Number(pid);
+  if (!Number.isInteger(ownerPid) || ownerPid <= 0) return false;
+  try {
+    process.kill(ownerPid, 0);
+    return true;
+  } catch (error) {
+    return error?.code !== "ESRCH";
+  }
+}
+
+export async function acquireSessionRunLock(config = {}, sessionId = "") {
+  if (!String(sessionId || "").trim() || isRetainedWorkspaceProfile(config)) {
+    return async () => {};
+  }
+  const sessionDir = path.resolve(config.sessionsDir, String(sessionId));
+  const lockPath = path.join(sessionDir, ".agent-run.lock");
+  const token = crypto.randomUUID();
+  await fs.mkdir(sessionDir, { recursive: true });
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    let handle;
+    try {
+      handle = await fs.open(lockPath, "wx", 0o600);
+      await handle.writeFile(
+        JSON.stringify({
+          version: 1,
+          sessionId: String(sessionId),
+          pid: process.pid,
+          token,
+          acquiredAt: new Date().toISOString(),
+        }),
+        "utf8"
+      );
+      await handle.sync();
+      await handle.close();
+      handle = null;
+      let released = false;
+      return async () => {
+        if (released) return;
+        released = true;
+        const owner = await fs
+          .readFile(lockPath, "utf8")
+          .then((raw) => JSON.parse(raw))
+          .catch(() => null);
+        if (owner?.token === token && Number(owner?.pid || 0) === process.pid) {
+          await fs.unlink(lockPath).catch((error) => {
+            if (error?.code !== "ENOENT") throw error;
+          });
+        }
+      };
+    } catch (error) {
+      await handle?.close().catch(() => {});
+      if (error?.code !== "EEXIST") throw error;
+      const owner = await fs
+        .readFile(lockPath, "utf8")
+        .then((raw) => JSON.parse(raw))
+        .catch(() => null);
+      if (sessionRunOwnerIsAlive(owner?.pid)) {
+        const activeError = new Error(
+          `Session ${sessionId} is already running in process ${owner.pid}. Queue an interruption or wait for that run instead of starting a concurrent resume.`
+        );
+        activeError.code = "SESSION_RUN_ACTIVE";
+        activeError.sessionId = String(sessionId);
+        activeError.ownerPid = Number(owner.pid);
+        throw activeError;
+      }
+      const stat = await fs.stat(lockPath).catch(() => null);
+      if (!owner && stat && Date.now() - stat.mtimeMs < 1000) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        continue;
+      }
+      const stalePath = `${lockPath}.stale.${process.pid}.${crypto.randomUUID()}`;
+      try {
+        await fs.rename(lockPath, stalePath);
+        await fs.unlink(stalePath).catch(() => {});
+      } catch (renameError) {
+        if (!["ENOENT", "EEXIST"].includes(renameError?.code)) throw renameError;
+      }
+    }
+  }
+  const lockError = new Error(
+    `Could not acquire the durable run lease for session ${sessionId}.`
+  );
+  lockError.code = "SESSION_RUN_LOCK_UNAVAILABLE";
+  throw lockError;
+}
+
+async function runAgentOnce(config) {
+  const sessionId = config.resume || config.sessionId || `web-agent-${crypto.randomUUID()}`;
+  const releaseRunLock = await acquireSessionRunLock(config, sessionId);
+  try {
+    const runConfig = config.resume || config.sessionId
+      ? config
+      : { ...config, sessionId };
+    return await runAgentOnceUnlocked(runConfig);
+  } finally {
+    await releaseRunLock();
   }
 }
 

@@ -386,6 +386,77 @@ function recoverReadFileRangeAlias(toolCalls, contract, validation) {
   };
 }
 
+function recoverBoundedCommitSubject(toolCalls, contract, validation) {
+  const calls = Array.isArray(toolCalls) ? toolCalls : [];
+  const errors = Array.isArray(validation?.errors) ? validation.errors : [];
+  if (calls.length !== 1 || !errors.length || contract?.[contractMarker] !== true) return null;
+  const call = calls[0];
+  if (
+    String(call?.function?.name || "") !== "commit_project_changes" ||
+    typeof call?.function?.arguments !== "string"
+  ) {
+    return null;
+  }
+  const specificErrors = errors.filter(
+    (error) => error?.code !== "TOOL_ARGUMENTS_SCHEMA_INVALID"
+  );
+  if (
+    specificErrors.length !== 1 ||
+    specificErrors[0]?.code !== "ARGUMENT_STRING_TOO_LONG" ||
+    specificErrors[0]?.path !== "$.message"
+  ) {
+    return null;
+  }
+
+  let args;
+  try {
+    args = JSON.parse(call.function.arguments);
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(args) || typeof args.message !== "string") return null;
+  const descriptor = contract.tools.find(
+    (candidate) =>
+      candidate?.type === "function" &&
+      candidate.function?.name === "commit_project_changes"
+  );
+  const messageSchema = descriptor?.function?.parameters?.properties?.message;
+  const maximum = Number(messageSchema?.maxLength || 0);
+  const minimum = Math.max(1, Number(messageSchema?.minLength || 1));
+  if (!Number.isInteger(maximum) || maximum < minimum) return null;
+
+  const normalized = args.message.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maximum || normalized.length < minimum) return null;
+  let bounded = normalized.slice(0, maximum).trimEnd();
+  const lastSpace = bounded.lastIndexOf(" ");
+  if (lastSpace >= Math.max(minimum, Math.floor(maximum * 0.7))) {
+    bounded = bounded.slice(0, lastSpace).trimEnd();
+  }
+  bounded = bounded.replace(/[,:;\-]+$/g, "").trimEnd();
+  if (bounded.length < minimum) return null;
+
+  const correctedCall = {
+    ...call,
+    function: {
+      ...call.function,
+      arguments: JSON.stringify({ ...args, message: bounded }),
+    },
+  };
+  const correctedValidation = validateToolCallBatch([correctedCall], contract, {
+    maxToolCalls: 1,
+  });
+  if (!correctedValidation.ok) return null;
+  return {
+    ...correctedValidation,
+    acceptedToolCalls: [correctedCall],
+    deferredToolCalls: [],
+    recoveredSequentially: false,
+    recoveredBoundedCommitSubject: true,
+    argumentCorrections: [{ property: "message", source: "bounded-commit-subject" }],
+    originalCode: validation.code,
+  };
+}
+
 export function validateToolCallBatch(toolCalls, contract, { maxToolCalls = 1 } = {}) {
   const errors = [];
   const addError = (code, callIndex, message) => {
@@ -472,6 +543,46 @@ export function validateToolCallBatch(toolCalls, contract, { maxToolCalls = 1 } 
       }
       continue;
     }
+
+    const properties = descriptor.function?.parameters?.properties;
+    const standardApplyPatchContract =
+      name === "apply_patch" &&
+      isPlainObject(properties) &&
+      ["patch", "path", "search", "replace"].every((property) =>
+        Object.hasOwn(properties, property)
+      );
+    if (standardApplyPatchContract) {
+      const hasPatchDocument =
+        typeof args.patch === "string" && args.patch.trim().length > 0;
+      const hasExactPatch =
+        typeof args.path === "string" &&
+        args.path.trim().length > 0 &&
+        typeof args.search === "string" &&
+        args.search.length > 0 &&
+        typeof args.replace === "string";
+      if (!hasPatchDocument && !hasExactPatch) {
+        addError(
+          "TOOL_ARGUMENTS_SCHEMA_INVALID",
+          index,
+          "apply_patch requires either a nonempty patch document or path/search/replace exact-patch arguments."
+        );
+        for (const property of ["path", "search", "replace"]) {
+          if (
+            errors.length < MAX_VALIDATION_ERRORS &&
+            (typeof args[property] !== "string" ||
+              (property !== "replace" && args[property].length === 0))
+          ) {
+            errors.push({
+              code: "ARGUMENT_REQUIRED_PROPERTY_MISSING",
+              callIndex: index,
+              path: `$.${property}`,
+              message: `is required for exact apply_patch mode when patch is absent`,
+            });
+          }
+        }
+        continue;
+      }
+    }
     parsedCalls.push({ id, name, args, descriptor });
   }
 
@@ -504,6 +615,9 @@ export function resolveDispatchableToolCallBatch(toolCalls, contract) {
 
   const readRangeRecovery = recoverReadFileRangeAlias(calls, contract, validation);
   if (readRangeRecovery) return readRangeRecovery;
+
+  const commitSubjectRecovery = recoverBoundedCommitSubject(calls, contract, validation);
+  if (commitSubjectRecovery) return commitSubjectRecovery;
 
   const singletonEnumRecovery = recoverSingletonEnumReadCall(calls, contract, validation);
   if (singletonEnumRecovery) return singletonEnumRecovery;

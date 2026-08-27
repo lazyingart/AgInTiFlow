@@ -164,6 +164,48 @@ function annotateProviderRequestError(error, config = {}, label = "model request
   return error;
 }
 
+const TRANSIENT_PROVIDER_REQUEST_CODES = new Set([
+  "ECONNABORTED",
+  "ECONNRESET",
+  "EPIPE",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "ENETRESET",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+export function isTransientProviderRequestError(error) {
+  if (!error) return false;
+  const status = Number(error?.status || error?.response?.status || 0);
+  if (status === 408 || status === 425 || status === 429 || status >= 500) return true;
+
+  const codes = [
+    error?.code,
+    error?.cause?.code,
+    error?.error?.code,
+    error?.response?.data?.error?.code,
+  ]
+    .map((value) => String(value || "").trim().toUpperCase())
+    .filter(Boolean);
+  if (codes.some((code) => TRANSIENT_PROVIDER_REQUEST_CODES.has(code))) return true;
+
+  const message = [
+    error?.message,
+    error?.cause?.message,
+    error?.error?.message,
+    error?.response?.data?.error?.message,
+    error?.response?.data?.message,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return /(?:^|\b)terminated(?:\b|$)|socket hang up|premature (?:stream )?close|other side closed|connection (?:was )?(?:reset|closed|terminated)|network (?:request )?(?:failed|error)|fetch failed|upstream connect error/i.test(
+    message
+  );
+}
+
 export async function createChatCompletion(client, payload, config, label = "model request") {
   const preparedPayload = withChatReasoningEffort(payload, config);
   const timeout = resolveModelTimeoutMs(config);
@@ -315,20 +357,24 @@ export function toolChoiceForProvider(config, messages = []) {
 }
 
 export function usesTextToolProtocol(config = {}) {
+  if (config.forceTextToolProtocol === true && providerCanRetryWithTextToolProtocol(config.provider)) {
+    return true;
+  }
   return providerPrefersTextToolProtocol(config);
 }
 
-function shouldRetryWithTextToolProtocol(error, config = {}) {
+export function shouldRetryWithTextToolProtocol(error, config = {}) {
   if (!providerCanRetryWithTextToolProtocol(config.provider)) return false;
   const message = [
     error?.message,
     error?.error?.message,
+    error?.cause?.message,
     error?.response?.data?.error?.message,
     error?.response?.data?.message,
   ]
     .filter(Boolean)
     .join(" ");
-  return /invalid request parameters|tool_choice|parallel_tool_calls|tools/i.test(message);
+  return /invalid request parameters|invalid tool call arguments|unexpected end of json input|tool[_\s.-]?call[^\n]{0,80}(?:invalid|malformed|truncated|parse)|tool_choice|parallel_tool_calls|tools/i.test(message);
 }
 
 function textToolProtocolPrompt(tools = []) {
@@ -916,6 +962,31 @@ function mockWorkspaceToolForGoal(goal = "") {
       mode: "create",
       content: `Created by AgInTiFlow mock mode.\nGoal: ${String(goal).slice(0, 160)}\n`,
     });
+  }
+  return null;
+}
+
+function mockPreparatoryWorkspaceTool(requestTools = []) {
+  const descriptors = new Map(
+    (Array.isArray(requestTools) ? requestTools : [])
+      .filter((descriptor) => descriptor?.type === "function")
+      .map((descriptor) => [String(descriptor.function?.name || ""), descriptor])
+      .filter(([name]) => name)
+  );
+  if (descriptors.has("inspect_project")) {
+    return mockToolCall("inspect_project", {
+      path: ".",
+      maxDepth: 6,
+      limit: 400,
+    });
+  }
+  const readFile = descriptors.get("read_file");
+  if (readFile) {
+    const choices = readFile.function?.parameters?.properties?.path?.enum;
+    const selectedPath = Array.isArray(choices) && choices.length
+      ? String(choices[0] || "")
+      : "";
+    if (selectedPath) return mockToolCall("read_file", { path: selectedPath });
   }
   return null;
 }
@@ -2387,6 +2458,14 @@ export async function requestNextStep(client, config, messages) {
 
   if (client.mock) {
     const response = (() => {
+    const offeredToolNames = new Set(
+      requestTools
+        .map((descriptor) => String(descriptor?.function?.name || ""))
+        .filter(Boolean)
+    );
+    const desiredWorkspaceTool = config.allowFileTools
+      ? mockWorkspaceToolForGoal(config.goal)
+      : null;
     const toolPayload = latestToolPayload(messages);
     if (toolPayload) {
       if (toolPayload.toolName === "agentlink_list_peers" && isMockAgentLinkGoal(config.goal)) {
@@ -2417,6 +2496,24 @@ export async function requestNextStep(client, config, messages) {
             }`,
           }),
         ]);
+      }
+      if (
+        desiredWorkspaceTool &&
+        toolPayload.toolName !== desiredWorkspaceTool.function.name
+      ) {
+        if (offeredToolNames.has(desiredWorkspaceTool.function.name)) {
+          return mockChatResponse(
+            "Mock mode completed repository grounding and will now exercise the requested workspace mutation.",
+            [desiredWorkspaceTool]
+          );
+        }
+        const preparatoryTool = mockPreparatoryWorkspaceTool(requestTools);
+        if (preparatoryTool && preparatoryTool.function.name !== toolPayload.toolName) {
+          return mockChatResponse(
+            "Mock mode will continue through the exact repository-grounding tool offered for this turn.",
+            [preparatoryTool]
+          );
+        }
       }
       const output = [
         toolPayload.stdout,
@@ -2517,9 +2614,18 @@ export async function requestNextStep(client, config, messages) {
     }
 
     if (config.allowFileTools) {
-      const workspaceTool = mockWorkspaceToolForGoal(config.goal);
+      const workspaceTool = desiredWorkspaceTool;
       if (workspaceTool) {
-        return mockChatResponse("Mock mode will exercise a guarded workspace file tool.", [workspaceTool]);
+        if (offeredToolNames.has(workspaceTool.function.name)) {
+          return mockChatResponse("Mock mode will exercise a guarded workspace file tool.", [workspaceTool]);
+        }
+        const preparatoryTool = mockPreparatoryWorkspaceTool(requestTools);
+        if (preparatoryTool) {
+          return mockChatResponse(
+            "Mock mode will first use the exact repository-grounding tool offered for this turn.",
+            [preparatoryTool]
+          );
+        }
       }
     }
 

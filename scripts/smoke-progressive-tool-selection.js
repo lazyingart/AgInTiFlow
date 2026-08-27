@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assertStrict from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,17 +11,23 @@ import {
   LOCAL_COMPACT_CODE_TOOL_NAMES,
   LOCAL_COMPACT_GENERAL_TOOL_NAMES,
   LOCAL_TOOL_HARD_CAP,
+  repositoryGroundingState,
   selectProgressiveTools,
 } from "../src/progressive-tool-selection.js";
 import { requestNextStep } from "../src/model-client.js";
 import {
+  buildConstrainedRecoveryRequest,
   buildModelTimeoutRetryMessages,
   completionContractGoal,
+  completionTaskContract,
   deferUnavailableVerificationRerunUntilMutation,
   integrationTextWorkspaceToolExecutionBlock,
   nextStepRuntimeConfig,
+  recoverExactPendingCommandIntent,
   recoverFocusedWholeFileWriteAsExactPatch,
+  recoverGroundedPathlessPatchAsExactPatch,
   recoverRequiredPatchContextReadWithoutToolCall,
+  recoverRequiredRepositoryGroundingToolCall,
   recoverStalemateDiscoveryAsExactVerification,
   recoverUnavailableVerificationRerunAsCanonicalRead,
   runAgent,
@@ -71,6 +78,370 @@ function names(tools) {
 function sameNames(actual, expected, message) {
   assert(JSON.stringify(names(actual)) === JSON.stringify(expected), `${message}: ${names(actual).join(", ")}`);
 }
+
+const convergingCodeSurface = [
+  tool("read_file"),
+  tool("apply_patch"),
+  tool("run_command"),
+  tool("finish"),
+];
+const convergingCodeTools = selectProgressiveTools(convergingCodeSurface, {
+  config: {
+    provider: "localllm",
+    taskProfile: "code",
+    convergenceSuppressedToolNames: ["read_file"],
+  },
+  goal: "Repair the service implementation from retained source evidence.",
+});
+assert(
+  !names(convergingCodeTools).includes("read_file"),
+  "a convergence-blocked read tool was immediately re-offered to the local model"
+);
+assert(
+  names(convergingCodeTools).includes("apply_patch") && names(convergingCodeTools).includes("finish"),
+  "convergence suppression removed the productive mutation or finish path"
+);
+
+const completionMutationSurface = [
+  tool("read_file"),
+  tool("apply_patch"),
+  tool("run_command"),
+  tool("inspect_project"),
+  tool("finish"),
+];
+const completionMutationReadTools = selectProgressiveTools(
+  completionMutationSurface,
+  {
+    config: {
+      completionFreshMutationRequired: true,
+      completionFreshMutationNeedsSourceRead: true,
+      completionFreshMutationPaths: ["service_ctl.py"],
+    },
+  }
+);
+sameNames(
+  completionMutationReadTools,
+  ["read_file"],
+  "fresh completion repair exposed an escape path beyond one exact source read"
+);
+assertStrict.deepEqual(
+  completionMutationReadTools[0].function.parameters.properties.path.enum,
+  ["service_ctl.py"],
+  "fresh completion repair did not bind its source read to the canonical path"
+);
+const completionMutationPatchTools = selectProgressiveTools(
+  completionMutationSurface,
+  {
+    config: {
+      completionFreshMutationRequired: true,
+      completionFreshMutationNeedsSourceRead: false,
+      completionFreshMutationPaths: ["service_ctl.py"],
+    },
+  }
+);
+sameNames(
+  completionMutationPatchTools,
+  ["apply_patch"],
+  "grounded completion repair reopened read-only, test, Git, or finish tools before mutation"
+);
+assertStrict.deepEqual(
+  completionMutationPatchTools[0].function.parameters.properties.path.enum,
+  ["service_ctl.py"],
+  "fresh completion repair did not bind its patch to the grounded canonical path"
+);
+assert(
+  completionMutationPatchTools[0].function.parameters.required.includes("path"),
+  "fresh completion repair did not require the grounded canonical path"
+);
+const mandatoryReadAfterSuppression = selectProgressiveTools(
+  completionMutationSurface,
+  {
+    config: {
+      completionFreshMutationRequired: true,
+      completionFreshMutationNeedsSourceRead: true,
+      completionFreshMutationPaths: ["service_ctl.py"],
+      convergenceSuppressedToolNames: ["read_file"],
+    },
+  }
+);
+sameNames(
+  mandatoryReadAfterSuppression,
+  ["read_file"],
+  "a generic convergence suppression hid a different exact mandatory source read"
+);
+
+const standardApplyPatchTool = {
+  type: "function",
+  function: {
+    name: "apply_patch",
+    description: "Apply a patch.",
+    parameters: {
+      type: "object",
+      properties: {
+        patch: { type: "string" },
+        path: { type: "string" },
+        search: { type: "string" },
+        replace: { type: "string" },
+        expectedReplacements: { type: "integer" },
+        baseHash: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+};
+const boundedCommitTool = {
+  type: "function",
+  function: {
+    name: "commit_project_changes",
+    description: "Commit task-owned changes.",
+    parameters: {
+      type: "object",
+      properties: {
+        message: {
+          type: "string",
+          minLength: 3,
+          maxLength: 120,
+          pattern: "^[^\\r\\n\\u0000]+$",
+        },
+      },
+      required: ["message"],
+      additionalProperties: false,
+    },
+  },
+};
+const longCommitSubject =
+  "Repair service controller lifecycle handling with portable subprocess sessions, complete CLI behavior, and focused regression coverage";
+const recoveredCommitSubject = resolveDispatchableToolCallBatch(
+  [contractCall("bounded-commit-subject", "commit_project_changes", {
+    message: longCommitSubject,
+  })],
+  createToolContract([boundedCommitTool])
+);
+assert(
+  recoveredCommitSubject.ok && recoveredCommitSubject.recoveredBoundedCommitSubject,
+  "a factual overlong commit subject was not bounded before dispatch"
+);
+const boundedCommitArgs = JSON.parse(
+  recoveredCommitSubject.acceptedToolCalls[0].function.arguments
+);
+assert(
+  boundedCommitArgs.message.length >= 3 && boundedCommitArgs.message.length <= 120,
+  "bounded commit-subject recovery violated the authenticated schema"
+);
+assert(
+  longCommitSubject.startsWith(boundedCommitArgs.message),
+  "bounded commit-subject recovery changed rather than shortened the factual subject"
+);
+const pathlessPatchRoot = await fs.mkdtemp(
+  path.join(os.tmpdir(), "agintiflow-grounded-pathless-patch-")
+);
+try {
+  const source = [
+    "#!/usr/bin/env python3",
+    "",
+    "def stop_service() -> int:",
+    "    return 0",
+    "",
+  ].join("\n");
+  const sourcePath = path.join(pathlessPatchRoot, "service_ctl.py");
+  await fs.writeFile(sourcePath, source, "utf8");
+  const sourceHash = crypto.createHash("sha256").update(source, "utf8").digest("hex");
+  const mainReplacement = [
+    "def main() -> None:",
+    "    raise SystemExit(stop_service())",
+    "",
+    "if __name__ == \"__main__\":",
+    "    main()",
+    "",
+  ].join("\n");
+  const pathlessCall = contractCall("grounded-pathless-patch", "apply_patch", {
+    replace: mainReplacement,
+    expectedReplacements: 1,
+    baseHash: sourceHash,
+  });
+  const pathlessContract = createToolContract([standardApplyPatchTool]);
+  const pathlessValidation = resolveDispatchableToolCallBatch(
+    [pathlessCall],
+    pathlessContract
+  );
+  assert(
+    !pathlessValidation.ok && pathlessValidation.code === "TOOL_ARGUMENTS_SCHEMA_INVALID",
+    "an incomplete apply_patch mode passed the authenticated tool contract"
+  );
+  const recoveredPathlessPatch = await recoverGroundedPathlessPatchAsExactPatch(
+    { commandCwd: pathlessPatchRoot },
+    {
+      messages: [{
+        role: "tool",
+        content: JSON.stringify({
+          ok: true,
+          toolName: "read_file",
+          path: "service_ctl.py",
+          sha256: sourceHash,
+          contentTruncated: false,
+          contentTruncatedByLines: false,
+        }),
+      }],
+      meta: {},
+    },
+    [pathlessCall],
+    pathlessContract,
+    pathlessValidation
+  );
+  assert(recoveredPathlessPatch?.ok, "a revision-bound pathless declaration patch was not repaired");
+  assertStrict.equal(
+    recoveredPathlessPatch.recoveryMode,
+    "append-declaration",
+    "a missing declaration was not recovered as a bounded append"
+  );
+  const recoveredArgs = JSON.parse(
+    recoveredPathlessPatch.acceptedToolCalls[0].function.arguments
+  );
+  assertStrict.equal(recoveredArgs.path, "service_ctl.py", "the repaired patch used the wrong file");
+  assertStrict.equal(recoveredArgs.search, source, "the repaired append lost its revision-bound source");
+  assert(
+    recoveredArgs.replace.endsWith(mainReplacement),
+    "the repaired append lost the provider-authored declaration"
+  );
+  assertStrict.equal(
+    await recoverGroundedPathlessPatchAsExactPatch(
+      { commandCwd: pathlessPatchRoot },
+      {
+        messages: [{
+          role: "tool",
+          content: JSON.stringify({
+            ok: true,
+            toolName: "read_file",
+            path: "service_ctl.py",
+            sha256: sourceHash,
+            contentTruncated: false,
+          }),
+        }],
+        meta: {},
+      },
+      [contractCall("reject-whole-file", "apply_patch", {
+        replace: `${source}\ndef main() -> None:\n    pass\n`,
+        baseHash: sourceHash,
+      })],
+      pathlessContract,
+      pathlessValidation
+    ),
+    null,
+    "a pathless whole-file rewrite was inferred from a grounded read"
+  );
+} finally {
+  await fs.rm(pathlessPatchRoot, { recursive: true, force: true });
+}
+const completionMutationRecoveryRequest = buildConstrainedRecoveryRequest(
+  {
+    goal: "Repair service_ctl.py and verify it.",
+    plan: "Repair the canonical source, then test it.",
+    messages: [{ role: "user", content: "Repair service_ctl.py and verify it." }],
+    meta: {
+      goalContract: {
+        revision: 2,
+        currentRequest: "Repair service_ctl.py and verify it.",
+        taskGoal: "Repair service_ctl.py and verify it.",
+      },
+      projectVerification: { mutationRevision: 4 },
+    },
+  },
+  {
+    provider: "localllm",
+    model: "localllm-deep",
+    goal: "Repair service_ctl.py and verify it.",
+    contextWindowTokens: 32768,
+  },
+  {},
+  3,
+  {
+    completionFreshMutationRequired: true,
+    completionFreshMutationNeedsSourceRead: false,
+    completionFreshMutationPaths: ["service_ctl.py"],
+  }
+);
+assertStrict.equal(
+  completionMutationRecoveryRequest?.mode,
+  "fresh-source-mutation",
+  "fresh completion repair did not receive a compact constrained model turn"
+);
+assertStrict.equal(
+  completionMutationRecoveryRequest?.maxOutputTokens,
+  4096,
+  "fresh completion repair did not reserve enough bounded output for a substantive source patch"
+);
+const exactRecoverySource = [
+  "from pathlib import Path",
+  "",
+  "def start_service(state_dir: Path) -> int:",
+  "    return 0",
+  "",
+  "RECOVERY_SOURCE_TAIL = 'current-complete-source'",
+].join("\n");
+const completionMutationWithSource = buildConstrainedRecoveryRequest(
+  {
+    goal: "Repair service_ctl.py and verify it.",
+    plan: "Repair the canonical source, then test it.",
+    messages: [
+      { role: "user", content: "Continue with this new request: Repair service_ctl.py and verify it." },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [contractCall("current-source", "read_file", {
+          path: "service_ctl.py",
+          lineLimit: 500,
+        })],
+      },
+      {
+        role: "tool",
+        tool_call_id: "current-source",
+        content: JSON.stringify({
+          ok: true,
+          toolName: "read_file",
+          path: "service_ctl.py",
+          content: exactRecoverySource,
+          sha256: "current-source-sha",
+          lineCount: 6,
+          contentTruncated: false,
+          contentTruncatedByLines: false,
+        }),
+      },
+    ],
+    meta: {
+      goalContract: {
+        revision: 2,
+        currentRequest: "Repair service_ctl.py and verify it.",
+        taskGoal: "Repair service_ctl.py and verify it.",
+      },
+      projectVerification: { mutationRevision: 4 },
+    },
+  },
+  {
+    provider: "localllm",
+    model: "localllm-fast",
+    goal: "Repair service_ctl.py and verify it.",
+    contextWindowTokens: 32768,
+  },
+  {},
+  4,
+  {
+    completionFreshMutationRequired: true,
+    completionFreshMutationNeedsSourceRead: false,
+    completionFreshMutationPaths: ["service_ctl.py"],
+  }
+);
+assert(
+  completionMutationWithSource?.messages.some((message) =>
+    String(message.content || "").includes("RECOVERY_SOURCE_TAIL = 'current-complete-source'")
+  ),
+  "fresh-source compaction discarded the complete current source immediately after reading it"
+);
+assert(
+  /path-bounded apply_patch tool now/i.test(
+    JSON.stringify(completionMutationRecoveryRequest?.messages || [])
+  ),
+  "fresh completion repair request did not instruct the model to mutate canonical source"
+);
 
 const mutationGatedToolRepair = toolContractRepairMessage({
   code: "TOOL_NOT_OFFERED",
@@ -356,6 +727,57 @@ assertStrict.deepEqual(
   { path: mandatoryRefreshPath },
   "mandatory patch-context recovery did not preserve the exact constrained path"
 );
+const recoveredPrematureRefreshFinish = recoverRequiredPatchContextReadWithoutToolCall(
+  {
+    patchContextRefreshRequired: true,
+    patchContextRefreshPath: mandatoryRefreshPath,
+  },
+  [contractCall("premature-refresh-finish", "finish", { result: "already fixed" })],
+  createToolContract([mandatoryRefreshReadDescriptor]),
+  { ok: false, errors: [{ code: "TOOL_NOT_OFFERED" }] }
+);
+assertStrict.equal(
+  recoveredPrematureRefreshFinish?.recoveredRequiredPatchContextRead,
+  true,
+  "a premature finish claim bypassed the mandatory exact patch-context read"
+);
+const mandatoryRefreshContract = createToolContract([
+  mandatoryRefreshReadDescriptor,
+  tool("finish"),
+]);
+const rangedMandatoryReadCall = contractCall(
+  "ranged-mandatory-read",
+  "read_file",
+  { path: mandatoryRefreshPath, startLine: 100, lineLimit: 60 }
+);
+const rangedMandatoryReadValidation = resolveDispatchableToolCallBatch(
+  [rangedMandatoryReadCall],
+  mandatoryRefreshContract
+);
+assertStrict.equal(
+  rangedMandatoryReadValidation.ok,
+  false,
+  "the regression fixture no longer reproduces strict exact-read range rejection"
+);
+const recoveredRangedMandatoryRead = recoverRequiredPatchContextReadWithoutToolCall(
+  {
+    patchContextRefreshRequired: true,
+    patchContextRefreshPath: mandatoryRefreshPath,
+  },
+  [rangedMandatoryReadCall],
+  mandatoryRefreshContract,
+  rangedMandatoryReadValidation
+);
+assertStrict.equal(
+  recoveredRangedMandatoryRead?.normalizedInvalidExactRead,
+  true,
+  "an exact mandatory reread with harmless range hints was not canonicalized"
+);
+assertStrict.deepEqual(
+  JSON.parse(recoveredRangedMandatoryRead.acceptedToolCalls[0].function.arguments),
+  { path: mandatoryRefreshPath },
+  "canonical mandatory reread retained provider-supplied range arguments"
+);
 assertStrict.equal(
   recoverRequiredPatchContextReadWithoutToolCall(
     {
@@ -368,6 +790,122 @@ assertStrict.equal(
   ),
   null,
   "an ordinary no-tool response was incorrectly converted into a source read"
+);
+const recoveredRepairReread = recoverRequiredPatchContextReadWithoutToolCall(
+  {
+    patchContextRepairRequired: true,
+    patchContextRepairPath: mandatoryRefreshPath,
+    patchContextRepairReadCount: 0,
+  },
+  [contractCall("premature-repair-command", "run_command", { command: "python3 smoke.py" })],
+  createToolContract([tool("apply_patch"), mandatoryRefreshReadDescriptor, tool("finish")]),
+  { ok: false, errors: [{ code: "TOOL_NOT_OFFERED" }] }
+);
+assertStrict.equal(
+  recoveredRepairReread?.recoveredRequiredPatchContextRead,
+  true,
+  "an unavailable command during bounded repair was not translated to the exact reread"
+);
+assertStrict.equal(
+  recoveredRepairReread?.originalToolName,
+  "run_command",
+  "bounded repair reread recovery lost the rejected intent evidence"
+);
+
+const recoveredMandatoryInspect = recoverRequiredRepositoryGroundingToolCall(
+  { repositoryGroundingRequired: true },
+  [contractCall("premature-smoke", "run_command", { command: "python3 smoke.py" })],
+  createToolContract([tool("inspect_project"), tool("finish")]),
+  { ok: false, errors: [{ code: "TOOL_NOT_OFFERED" }] }
+);
+
+const compactedGroundingMessages = [
+  {
+    role: "user",
+    content: [
+      "Retained runtime tool evidence. This operation already completed; use its result and do not repeat it solely because context was compacted.",
+      "Tool: inspect_project",
+      "Arguments: {}",
+      'Verified result: {"ok":true,"manifestFiles":[{"path":"AGENTS.md"}],"recommendedReads":["AGENTS.md"],"topLevel":[{"path":"AGENTS.md","type":"file"}]}',
+    ].join("\n"),
+  },
+];
+assertStrict.deepEqual(
+  repositoryGroundingState(compactedGroundingMessages),
+  { phase: "read-instructions", paths: ["AGENTS.md"] },
+  "compacted inspect_project evidence was discarded and repository grounding restarted",
+);
+const compactedGroundingReadyMessages = [
+  ...compactedGroundingMessages,
+  {
+    role: "user",
+    content: [
+      "Retained runtime tool evidence. This operation already completed; use its result and do not repeat it solely because context was compacted.",
+      "Tool: read_file",
+      'Arguments: {"path":"AGENTS.md"}',
+      'Verified result: {"ok":true,"path":"AGENTS.md","content":"instructions"}',
+    ].join("\n"),
+  },
+];
+assertStrict.deepEqual(
+  repositoryGroundingState(compactedGroundingReadyMessages),
+  { phase: "ready", paths: [] },
+  "compacted read_file evidence did not complete repository grounding",
+);
+assertStrict.equal(
+  recoveredMandatoryInspect?.recoveredRequiredRepositoryGrounding,
+  true,
+  "an unavailable command did not advance the mandatory repository inspection"
+);
+assertStrict.deepEqual(
+  JSON.parse(recoveredMandatoryInspect.acceptedToolCalls[0].function.arguments),
+  {},
+  "mandatory repository inspection recovery invented arguments"
+);
+const groundedReadDescriptor = {
+  ...canonicalReadDescriptor,
+  function: {
+    ...canonicalReadDescriptor.function,
+    parameters: {
+      ...canonicalReadDescriptor.function.parameters,
+      properties: {
+        path: { type: "string", enum: ["README.md", "service_ctl.py"] },
+      },
+    },
+  },
+};
+const recoveredMandatoryGroundingRead = recoverRequiredRepositoryGroundingToolCall(
+  { repositoryGroundingRequired: true },
+  [contractCall("premature-scratch", "run_command", { command: "mkdir -p /tmp/check" })],
+  createToolContract([groundedReadDescriptor, tool("finish")]),
+  { ok: false, errors: [{ code: "TOOL_NOT_OFFERED" }] }
+);
+assertStrict.deepEqual(
+  JSON.parse(
+    recoveredMandatoryGroundingRead.acceptedToolCalls[0].function.arguments
+  ),
+  { path: "README.md" },
+  "mandatory repository grounding did not select the first constrained evidence path"
+);
+assertStrict.equal(
+  recoverRequiredRepositoryGroundingToolCall(
+    { repositoryGroundingRequired: true },
+    [contractCall("scoped-list-intent", "list_files", { path: "output/task-1" })],
+    createToolContract([groundedReadDescriptor, tool("finish")]),
+    { ok: false, errors: [{ code: "TOOL_NOT_OFFERED" }] }
+  ),
+  null,
+  "a scope-bearing list_files request was redirected into an unrelated read_file"
+);
+assertStrict.equal(
+  recoverRequiredRepositoryGroundingToolCall(
+    { repositoryGroundingRequired: false },
+    [contractCall("ordinary-command", "run_command", { command: "python3 smoke.py" })],
+    createToolContract([groundedReadDescriptor, tool("finish")]),
+    { ok: false, errors: [{ code: "TOOL_NOT_OFFERED" }] }
+  ),
+  null,
+  "ordinary progressive selection rewrote an unavailable tool as repository grounding"
 );
 
 async function captureRequestTools(overrides = {}) {
@@ -837,6 +1375,27 @@ assertStrict.deepEqual(
   boundedArtifactCommitTools[0].function.parameters.required,
   ["message"],
   "artifact Git completion delegated path selection back to the model"
+);
+
+const boundedTaskOwnedCommitTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    taskOwnedCommitPending: true,
+    taskOwnedPendingGitActions: ["commit"],
+    taskOwnedCommitPaths: ["service_ctl.py", "tests/test_service_ctl.py"],
+  },
+  goal: "Commit only the verified task-owned service repair, then finish.",
+  profile: "devops",
+});
+sameNames(
+  boundedTaskOwnedCommitTools,
+  ["commit_project_changes", "finish"],
+  "verified non-artifact code work reopened broad tools instead of a bounded task-owned commit"
+);
+assertStrict.deepEqual(
+  boundedTaskOwnedCommitTools[0].function.parameters.required,
+  ["message"],
+  "task-owned Git completion delegated path selection back to the model"
 );
 
 const resumedArtifactRuntime = nextStepRuntimeConfig(
@@ -1401,13 +1960,13 @@ const retainedPacketRepairRuntime = nextStepRuntimeConfig(
         ],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 8,
+        packetVersion: 13,
         mutationRevision: 3,
         failureSignature: "retained-failure",
-        content: "Bounded failed-test evidence packet v8.",
+        content: "Bounded failed-test evidence packet v13.",
       },
       failedTestDiagnostic: {
-        packetVersion: 8,
+        packetVersion: 13,
         mutationRevision: 3,
         failureSignature: "retained-failure",
         at: "2026-08-24T02:00:00.000Z",
@@ -1454,21 +2013,21 @@ const packetPathReadState = {
       }],
     },
     failedTestRecoveryPacket: {
-      packetVersion: 8,
+      packetVersion: 13,
       mutationRevision: 7,
       failureSignature: "packet-path-failure",
-      content: "Bounded failed-test evidence packet v8.",
+      content: "Bounded failed-test evidence packet v13.",
       paths: ["tests/test_service_ctl.py", "service_ctl.py"],
       generatedAt: "2026-08-24T02:00:10.000Z",
     },
     failedTestFocusedRecovery: {
-      packetVersion: 8,
+      packetVersion: 13,
       mutationRevision: 7,
       failureSignature: "packet-path-failure",
       at: "2026-08-24T02:00:10.000Z",
     },
     failedTestDiagnostic: {
-      packetVersion: 8,
+      packetVersion: 13,
       mutationRevision: 7,
       failureSignature: "packet-path-failure",
       at: "2026-08-24T02:00:00.000Z",
@@ -1663,13 +2222,13 @@ const focusedPatchRepairRuntime = nextStepRuntimeConfig(
         ],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 8,
+        packetVersion: 13,
         mutationRevision: 5,
         failureSignature: "focused-failure",
-        content: "Bounded failed-test evidence packet v8.",
+        content: "Bounded failed-test evidence packet v13.",
       },
       failedTestDiagnostic: {
-        packetVersion: 8,
+        packetVersion: 13,
         mutationRevision: 5,
         failureSignature: "focused-failure",
         at: "2026-08-24T02:00:00.000Z",
@@ -1791,9 +2350,477 @@ assertStrict.ok(
   "focused failed-test repair should explain natural artifact content without a brittle phrase blacklist"
 );
 assertStrict.deepEqual(
+  focusedApplyPatch.function.parameters.required,
+  ["path", "search", "replace"],
+  "focused exact patch repair allowed the model to omit its runtime-selected anchor"
+);
+assertStrict.deepEqual(
   focusedApplyPatch.function.parameters.properties.search.enum,
   ["The earlier marker is incorrect."],
   "focused failed-test repair did not constrain the evidence-derived decisive line"
+);
+const pythonGuardRepairSearch = [
+  "if __name__ == '__main__':",
+  "    raise SystemExit(main())",
+  "",
+  "def start_service():",
+  "    return 0",
+  "",
+].join("\n");
+const pythonGuardRepairRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "qa" },
+  {
+    meta: {
+      projectVerification: {
+        mutationRevision: 8,
+        testRuns: [{
+          command: "python -m unittest discover -s tests -v",
+          mutationRevision: 8,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "python-main-guard-order",
+        }],
+      },
+      failedTestRecoveryPacket: {
+        packetVersion: 13,
+        mutationRevision: 8,
+        failureSignature: "python-main-guard-order",
+        content: "Bounded failed-test evidence packet v13.",
+      },
+      failedTestDiagnostic: {
+        packetVersion: 13,
+        mutationRevision: 8,
+        failureSignature: "python-main-guard-order",
+        at: "2026-08-26T18:00:00.000Z",
+        focuses: [{
+          kind: "python-main-guard-order",
+          path: "service_ctl.py",
+          decisiveLine: 90,
+          directSearch: pythonGuardRepairSearch,
+          calledLater: [
+            { name: "start_service", line: 94 },
+            { name: "stop_service", line: 140 },
+          ],
+        }, {
+          kind: "python-main-guard-order",
+          path: "service_ctl.py",
+          decisiveLine: 120,
+          directSearch: [
+            "if __name__ == '__main__':",
+            "    raise SystemExit(main())",
+            "",
+            "def stop_service():",
+            "    return 0",
+            "",
+          ].join("\n"),
+          calledLater: [{ name: "stop_service", line: 140 }],
+        }],
+      },
+      requiredSymbolRepair: {
+        version: 1,
+        owner: "service_ctl",
+        symbol: "launch_service",
+        path: "service_ctl.py",
+        mutationRevision: 8,
+        failureSignature: "python-main-guard-order",
+        topologyRetry: { count: 3 },
+      },
+      toolLoop: {
+        stagnationEpoch: 11,
+        recent: [],
+        patchContextRepair: {
+          version: 1,
+          path: "service_ctl.py",
+          search: "def start_service():\n    return 1\n",
+          searchHash: "stale-anchor-hash",
+          mutationRevision: 8,
+          privateMutationRevision: 0,
+        },
+      },
+    },
+    messages: [],
+  }
+);
+assertStrict.deepEqual(
+  pythonGuardRepairRuntime.testFailureRepairPatchTargets,
+  [{
+    kind: "python-main-guard-order",
+    path: "service_ctl.py",
+    search: pythonGuardRepairSearch,
+    line: 90,
+    left: "",
+    operator: "",
+    right: "",
+    literal: "",
+    anchorLiteral: "",
+    negated: false,
+    caseFolded: false,
+    calledLater: [
+      { name: "start_service", line: 94 },
+      { name: "stop_service", line: 140 },
+    ],
+  }],
+  "a deterministic Python entrypoint-order defect did not activate an immediate focused patch target"
+);
+assertStrict.equal(
+  pythonGuardRepairRuntime.patchContextRepairRequired,
+  undefined,
+  "a stale narrow patch-context marker outranked the current deterministic topology repair"
+);
+assertStrict.equal(
+  pythonGuardRepairRuntime.testFailureStalemateRevalidation,
+  undefined,
+  "a stale topology retry counter outranked the current deterministic topology repair"
+);
+const pythonGuardRepairTools = selectProgressiveTools(allTools, {
+  config: pythonGuardRepairRuntime,
+  goal: "Repair the retained Python entrypoint-order failure.",
+  profile: "qa",
+});
+sameNames(
+  pythonGuardRepairTools,
+  ["rewrite_text_excerpt", "finish"],
+  "Python entrypoint-order repair exposed unrelated tools"
+);
+const pythonGuardApplyPatch = pythonGuardRepairTools.find(
+  (tool) => tool.function.name === "rewrite_text_excerpt"
+);
+assertStrict.deepEqual(
+  Object.keys(pythonGuardApplyPatch.function.parameters.properties),
+  ["revisedText"],
+  "Python entrypoint-order repair exposed its large runtime-owned path or source anchor"
+);
+assertStrict.ok(
+  pythonGuardApplyPatch.function.parameters.properties.revisedText.description.includes(
+    "one complete __main__ guard moved after start_service (line 94), stop_service (line 140)"
+  ) &&
+    pythonGuardApplyPatch.function.parameters.properties.revisedText.description.includes(
+      "Adding a comment"
+    ) &&
+    pythonGuardApplyPatch.function.parameters.properties.revisedText.maxLength === 24000 &&
+    pythonGuardApplyPatch.function.parameters.required.join(",") === "revisedText",
+  "Python entrypoint-order repair omitted the structural move contract"
+);
+sameNames(
+  selectProgressiveTools(allTools, {
+    config: {
+      ...pythonGuardRepairRuntime,
+      completionFreshMutationRequired: true,
+      completionFreshMutationPaths: ["service_ctl.py"],
+    },
+    goal: "Repair the retained Python entrypoint-order failure.",
+    profile: "qa",
+  }),
+  ["rewrite_text_excerpt", "finish"],
+  "a generic completion-freshness gate outranked the authoritative current failed-test repair"
+);
+const duplicateSourceRepairSearch = [
+  "def status_service():",
+  "    return 'old'",
+  "",
+  "def status_service():",
+  "    return 'current'",
+  "",
+  "def main():",
+  "    return status_service()",
+  "",
+].join("\n");
+const duplicateSourceRepairRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "qa" },
+  {
+    meta: {
+      projectVerification: {
+        mutationRevision: 9,
+        testRuns: [{
+          command: "python -m unittest discover -s tests -v",
+          mutationRevision: 9,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "python-duplicate-source",
+        }],
+      },
+      failedTestRecoveryPacket: {
+        packetVersion: 13,
+        mutationRevision: 9,
+        failureSignature: "python-duplicate-source",
+        content: "Bounded failed-test evidence packet v13.",
+      },
+      failedTestDiagnostic: {
+        packetVersion: 13,
+        mutationRevision: 9,
+        failureSignature: "python-duplicate-source",
+        at: "2026-08-26T19:00:00.000Z",
+        focuses: [{
+          kind: "python-duplicate-top-level-definition",
+          path: "service_ctl.py",
+          decisiveLine: 1,
+          directSearch: duplicateSourceRepairSearch,
+          duplicateDeclarations: [{
+            kind: "def",
+            name: "status_service",
+            count: 2,
+            lines: [1, 4],
+          }],
+        }],
+      },
+      toolLoop: {
+        stagnationEpoch: 12,
+        recent: [],
+        patchContextRepair: {
+          version: 1,
+          path: "service_ctl.py",
+          search: "def status_service():\n    return 'old'\n",
+          searchHash: "stale-duplicate-anchor",
+          mutationRevision: 9,
+          privateMutationRevision: 0,
+        },
+      },
+    },
+    messages: [],
+  }
+);
+assertStrict.deepEqual(
+  duplicateSourceRepairRuntime.testFailureRepairPatchTargets,
+  [{
+    kind: "python-duplicate-top-level-definition",
+    path: "service_ctl.py",
+    search: duplicateSourceRepairSearch,
+    line: 1,
+    left: "",
+    operator: "",
+    right: "",
+    literal: "",
+    anchorLiteral: "",
+    negated: false,
+    caseFolded: false,
+    duplicateDeclarations: [{
+      kind: "def",
+      name: "status_service",
+      count: 2,
+      lines: [1, 4],
+    }],
+  }],
+  "duplicate production declarations did not activate a focused full-source repair"
+);
+assertStrict.equal(
+  duplicateSourceRepairRuntime.patchContextRepairRequired,
+  undefined,
+  "a stale narrow patch-context marker outranked deterministic duplicate cleanup"
+);
+const duplicateSourceRepairTools = selectProgressiveTools(allTools, {
+  config: duplicateSourceRepairRuntime,
+  goal: "Consolidate duplicate production declarations without weakening tests.",
+  profile: "qa",
+});
+sameNames(
+  duplicateSourceRepairTools,
+  ["rewrite_text_excerpt", "finish"],
+  "duplicate source cleanup exposed unrelated tools"
+);
+const duplicateSourceRewrite = duplicateSourceRepairTools.find(
+  (tool) => tool.function.name === "rewrite_text_excerpt"
+);
+assertStrict.ok(
+  duplicateSourceRewrite.function.parameters.properties.revisedText.description.includes(
+    "exactly one top-level implementation"
+  ) &&
+    duplicateSourceRewrite.function.parameters.properties.revisedText.description.includes(
+      "def status_service (2 copies at lines 1, 4)"
+    ) &&
+    duplicateSourceRewrite.function.parameters.properties.revisedText.maxLength === 24000,
+  "duplicate source cleanup omitted its structural consolidation contract"
+);
+const baselineRecoverySearch = [
+  "def start_service(root: Path):",
+  "    return True",
+  "",
+  "if __name__ == '__main__':",
+  "    raise SystemExit(main())",
+  "",
+].join("\n");
+const baselineRecoveryRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "qa" },
+  {
+    meta: {
+      projectVerification: {
+        mutationRevision: 10,
+        testRuns: [{
+          command: "python -m unittest discover -s tests -v",
+          mutationRevision: 10,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "python-baseline-recovery",
+        }],
+      },
+      failedTestRecoveryPacket: {
+        packetVersion: 13,
+        mutationRevision: 10,
+        failureSignature: "python-baseline-recovery",
+        content: "Bounded failed-test evidence packet v13.",
+      },
+      failedTestDiagnostic: {
+        packetVersion: 13,
+        mutationRevision: 10,
+        failureSignature: "python-baseline-recovery",
+        at: "2026-08-26T19:30:00.000Z",
+        focuses: [{
+          kind: "python-git-baseline-recovery",
+          path: "service_ctl.py",
+          decisiveLine: 1,
+          directSearch: baselineRecoverySearch,
+          baselineDeclarations: [
+            { kind: "def", name: "build_service_command", count: 1 },
+            { kind: "def", name: "launch_service", count: 1 },
+            { kind: "def", name: "start_service", count: 1 },
+            { kind: "def", name: "main", count: 1 },
+          ],
+          missingDeclarations: [
+            { kind: "def", name: "build_service_command" },
+            { kind: "def", name: "launch_service" },
+            { kind: "def", name: "main" },
+          ],
+        }],
+      },
+      toolLoop: {
+        stagnationEpoch: 13,
+        recent: [],
+        patchContextRepair: {
+          version: 1,
+          path: "service_ctl.py",
+          search: "def start_service(root: Path):\n",
+          searchHash: "stale-truncated-anchor",
+          mutationRevision: 10,
+          privateMutationRevision: 0,
+        },
+      },
+    },
+    messages: [],
+  }
+);
+assertStrict.equal(
+  baselineRecoveryRuntime.testFailureRepairPatchTargets?.[0]?.kind,
+  "python-git-baseline-recovery",
+  "a severe tracked-source regression did not activate focused baseline reconstruction"
+);
+assertStrict.deepEqual(
+  baselineRecoveryRuntime.testFailureRepairPatchTargets?.[0]?.missingDeclarations,
+  [
+    { kind: "def", name: "build_service_command" },
+    { kind: "def", name: "launch_service" },
+    { kind: "def", name: "main" },
+  ],
+  "baseline reconstruction lost its exact missing-declaration contract"
+);
+assertStrict.equal(
+  baselineRecoveryRuntime.patchContextRepairRequired,
+  undefined,
+  "a stale narrow patch-context marker outranked exact baseline reconstruction"
+);
+const baselineRecoveryTools = selectProgressiveTools(allTools, {
+  config: baselineRecoveryRuntime,
+  goal: "Recover the complete tracked source and retain intended task repairs.",
+  profile: "qa",
+});
+sameNames(
+  baselineRecoveryTools,
+  ["rewrite_text_excerpt", "finish"],
+  "tracked baseline reconstruction exposed unrelated tools"
+);
+const baselineRecoveryRewrite = baselineRecoveryTools.find(
+  (tool) => tool.function.name === "rewrite_text_excerpt"
+);
+assertStrict.ok(
+  baselineRecoveryRewrite.function.parameters.properties.revisedText.description.includes(
+    "version-controlled baseline recovery"
+  ) &&
+    baselineRecoveryRewrite.function.parameters.properties.revisedText.description.includes(
+      "def build_service_command"
+    ) &&
+    baselineRecoveryRewrite.function.parameters.properties.revisedText.description.includes(
+      "do not blindly revert"
+    ) &&
+    baselineRecoveryRewrite.function.parameters.properties.revisedText.maxLength === 24000,
+  "tracked baseline reconstruction omitted its complete-source repair contract"
+);
+const harnessPathSearch = 'SERVICE_CTL = "../service_ctl.py"';
+const harnessPathReplacement =
+  'SERVICE_CTL = (Path(__file__).resolve().parent / "../service_ctl.py").resolve()';
+const harnessPathRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "qa" },
+  {
+    meta: {
+      projectVerification: {
+        mutationRevision: 11,
+        testRuns: [{
+          command: "python -m unittest discover -s tests -v",
+          mutationRevision: 11,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "agent-created-test-harness-path",
+        }],
+      },
+      failedTestRecoveryPacket: {
+        packetVersion: 13,
+        mutationRevision: 11,
+        failureSignature: "agent-created-test-harness-path",
+        content: "Bounded failed-test evidence packet v13.",
+      },
+      failedTestDiagnostic: {
+        packetVersion: 13,
+        mutationRevision: 11,
+        failureSignature: "agent-created-test-harness-path",
+        at: "2026-08-26T20:30:00.000Z",
+        focuses: [{
+          kind: "python-agent-test-harness-path",
+          path: "tests/test_service_lifecycle.py",
+          decisiveLine: 6,
+          directSearch: harnessPathSearch,
+          directReplacement: harnessPathReplacement,
+          expectedWorkspacePath: "service_ctl.py",
+          symbol: "SERVICE_CTL",
+          testNames: ["test_start", "test_stop"],
+          assertionCount: 4,
+        }],
+      },
+      toolLoop: { stagnationEpoch: 14, recent: [] },
+    },
+    messages: [],
+  }
+);
+assertStrict.equal(
+  harnessPathRuntime.testFailureRepairPatchTargets?.[0]?.kind,
+  "python-agent-test-harness-path",
+  "an agent-created test harness path defect did not activate its bounded repair"
+);
+assertStrict.equal(
+  harnessPathRuntime.testFailureRepairPatchTargets?.[0]?.directReplacement,
+  harnessPathReplacement,
+  "the exact cwd-independent test harness binding was not retained"
+);
+const harnessPathTools = selectProgressiveTools(allTools, {
+  config: harnessPathRuntime,
+  goal: "Repair the retained lifecycle verification without weakening its tests.",
+  profile: "qa",
+});
+sameNames(
+  harnessPathTools,
+  ["rewrite_text_excerpt", "finish"],
+  "agent-created test harness path recovery exposed unrelated tools"
+);
+const harnessPathRewrite = harnessPathTools.find(
+  (tool) => tool.function.name === "rewrite_text_excerpt"
+);
+assertStrict.deepEqual(
+  harnessPathRewrite.function.parameters.properties.revisedText.enum,
+  [harnessPathReplacement],
+  "the test harness repair did not constrain the local model to the one safe binding"
+);
+assertStrict.ok(
+  harnessPathRewrite.function.parameters.properties.revisedText.description.includes(
+    "preserving all 2 test methods and 4 assertion lines"
+  ) &&
+    harnessPathRewrite.function.description.includes("agent-created Python test"),
+  "the test harness repair omitted its assertion-preservation boundary"
 );
 const separatorRepairTools = selectProgressiveTools(allTools, {
   config: {
@@ -1984,7 +3011,7 @@ const exactStalePatchRefreshTools = selectProgressiveTools(allTools, {
 });
 sameNames(
   exactStalePatchRefreshTools,
-  ["read_file", "finish"],
+  ["read_file"],
   "stale patch recovery exposed mutation tools before an exact current-source read"
 );
 assertStrict.deepEqual(
@@ -2001,6 +3028,95 @@ assertStrict.deepEqual(
   exactStalePatchRefreshTools[0].function.parameters.required,
   ["path"],
   "stale patch recovery did not require the one complete exact source path"
+);
+const exactCurrentRepairAnchor = [
+  "def start_service(state_dir: Path, host: str, port: int) -> int:",
+  "    state_dir.mkdir(parents=True, exist_ok=True)",
+  "    pid_file = state_dir / \"gateway.pid\"",
+  "    prior_pid = read_pid(pid_file)",
+  "    return 0",
+  "",
+].join("\n");
+const exactStalePatchRepairTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    patchContextRepairRequired: true,
+    patchContextRepairPath: "service_ctl.py",
+    patchContextRepairSearch: exactCurrentRepairAnchor,
+    patchContextRepairSearchHash: "anchor-hash",
+    patchContextRepairAnchorIdentity: "start_service",
+    patchContextRepairLineStart: 50,
+    patchContextRepairLineEnd: 55,
+  },
+  goal: "Repair the service lifecycle from current source.",
+  profile: "qa",
+});
+sameNames(
+  exactStalePatchRepairTools,
+  ["apply_patch", "read_file"],
+  "fresh stale-patch recovery did not keep one exact read alongside the bounded mutation"
+);
+assertStrict.deepEqual(
+  exactStalePatchRepairTools[0].function.parameters.properties.path.enum,
+  ["service_ctl.py"],
+  "fresh stale-patch recovery did not bind the exact affected path"
+);
+assertStrict.deepEqual(
+  exactStalePatchRepairTools[0].function.parameters.properties.search.enum,
+  undefined,
+  "fresh stale-patch recovery still required the provider to serialize the exact current-source anchor"
+);
+assertStrict.deepEqual(
+  exactStalePatchRepairTools[0].function.parameters.properties.expectedReplacements.enum,
+  [1],
+  "fresh stale-patch recovery did not require one transactional replacement"
+);
+assertStrict.deepEqual(
+  exactStalePatchRepairTools[0].function.parameters.required,
+  ["replace"],
+  "fresh stale-patch recovery did not reduce the provider contract to the authored replacement"
+);
+assertStrict.deepEqual(
+  exactStalePatchRepairTools[1].function.parameters.properties.path.enum,
+  ["service_ctl.py"],
+  "fresh stale-patch recovery exposed a reread outside the exact affected path"
+);
+const exactStalePatchAfterReadTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    patchContextRepairRequired: true,
+    patchContextRepairPath: "service_ctl.py",
+    patchContextRepairSearch: exactCurrentRepairAnchor,
+    patchContextRepairSearchHash: "anchor-hash",
+    patchContextRepairAnchorIdentity: "start_service",
+    patchContextRepairReadCount: 1,
+  },
+  goal: "Repair the service lifecycle from current source.",
+  profile: "qa",
+});
+sameNames(
+  exactStalePatchAfterReadTools,
+  ["apply_patch"],
+  "bounded patch recovery allowed a second exact source reread"
+);
+assertStrict.match(
+  exactStalePatchRepairTools[0].function.description,
+  /state_dir\.mkdir\(parents=True, exist_ok=True\)/,
+  "fresh stale-patch recovery did not expose the exact current anchor as read-only provider context"
+);
+assertStrict.match(
+  exactStalePatchRepairTools[0].function.description,
+  /Do not include file headers, imports, or declarations outside the shown anchor/,
+  "fresh stale-patch recovery did not communicate its structural replacement boundary"
+);
+assertStrict.equal(
+  exactStalePatchRepairTools[0].function.parameters.properties.patch,
+  undefined,
+  "fresh stale-patch recovery still exposed a unified-patch escape hatch"
 );
 const missingSymbolRepairTools = selectProgressiveTools(allTools, {
   config: {
@@ -2165,6 +3281,87 @@ assertStrict.deepEqual(
   pendingTestTools[0].function.parameters.properties.command.enum,
   ["python -m unittest discover -s tests -v"],
   "post-mutation verification did not constrain the exact retained test command"
+);
+const exactPendingVerifierDescriptor = pendingTestTools[0];
+const exactPendingVerifierCommand =
+  exactPendingVerifierDescriptor.function.parameters.properties.command.enum[0];
+const exactPendingVerifierContract = createToolContract([
+  exactPendingVerifierDescriptor,
+  tool("finish"),
+]);
+const wrongCwdVerifierCall = contractCall(
+  "wrong-cwd-verifier",
+  "run_command",
+  {
+    command:
+      `cd .aginti/verification/smoke_test && ${exactPendingVerifierCommand}`,
+  }
+);
+const wrongCwdVerifierValidation = resolveDispatchableToolCallBatch(
+  [wrongCwdVerifierCall],
+  exactPendingVerifierContract
+);
+assertStrict.equal(
+  wrongCwdVerifierValidation.ok,
+  false,
+  "the verifier recovery fixture no longer reproduces a command enum mismatch"
+);
+const recoveredExactPendingVerifier = recoverExactPendingCommandIntent(
+  {
+    testVerificationPending: true,
+    testVerificationCommand: exactPendingVerifierCommand,
+  },
+  [wrongCwdVerifierCall],
+  exactPendingVerifierContract,
+  wrongCwdVerifierValidation
+);
+assertStrict.equal(
+  recoveredExactPendingVerifier?.recoveredExactPendingCommand,
+  true,
+  "an exact pending verifier wrapped in one safe wrong cwd was not canonicalized"
+);
+assertStrict.equal(
+  recoveredExactPendingVerifier?.removedLeadingCwd,
+  true,
+  "wrong-cwd verifier recovery did not record the removed directory wrapper"
+);
+assertStrict.deepEqual(
+  JSON.parse(
+    recoveredExactPendingVerifier.acceptedToolCalls[0].function.arguments
+  ),
+  { command: exactPendingVerifierCommand },
+  "wrong-cwd verifier recovery did not dispatch the authoritative exact command"
+);
+const unrelatedPendingCommandCall = contractCall(
+  "unrelated-pending-command",
+  "run_command",
+  { command: "python3 service_ctl.py start" }
+);
+assertStrict.equal(
+  recoverExactPendingCommandIntent(
+    {
+      testVerificationPending: true,
+      testVerificationCommand: exactPendingVerifierCommand,
+    },
+    [unrelatedPendingCommandCall],
+    exactPendingVerifierContract,
+    resolveDispatchableToolCallBatch(
+      [unrelatedPendingCommandCall],
+      exactPendingVerifierContract
+    )
+  ),
+  null,
+  "an unrelated command was incorrectly rewritten as the pending verifier"
+);
+assertStrict.equal(
+  recoverExactPendingCommandIntent(
+    {},
+    [wrongCwdVerifierCall],
+    exactPendingVerifierContract,
+    wrongCwdVerifierValidation
+  ),
+  null,
+  "a singleton run-command enum was repaired without authoritative pending state"
 );
 
 const researchTools = selectProgressiveTools(allTools, {
@@ -2382,6 +3579,159 @@ assert(names(scopedExistingReportEditTools).includes("write_file"), "scoped exis
 assert(
   !(names(scopedExistingReportEditTools).length === 2 && names(scopedExistingReportEditTools)[0] === "deep_research"),
   "scoped existing-report edit was incorrectly forced into deep_research"
+);
+
+const scopedArtifactGroundingTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "deepseek",
+    progressiveTools: true,
+    repositoryGroundingRequired: true,
+    scopedArtifactTask: true,
+    scopedArtifactRoot: "output/wechat_worker/task",
+  },
+  goal: scopedExistingReportEditPrompt,
+  profile: "auto",
+  messages: [{ role: "user", content: scopedExistingReportEditPrompt }],
+});
+assert(
+  names(scopedArtifactGroundingTools).includes("list_files") &&
+    names(scopedArtifactGroundingTools).includes("read_file") &&
+    names(scopedArtifactGroundingTools).includes("apply_patch"),
+  "task-scoped artifact repair was reduced to generic repository grounding"
+);
+assert(
+  !names(scopedArtifactGroundingTools).includes("inspect_project"),
+  "task-scoped artifact repair exposed unrelated repository inspection"
+);
+const scopedRuntimePrompt = `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+  mode: "task",
+  request:
+    "Revise the exact existing report at output/wechat_worker/task/report.md and overwrite it after reading the current task evidence.",
+  artifact_root: "/workspace/output/wechat_worker/task",
+})}`;
+const scopedRuntime = nextStepRuntimeConfig(
+  {
+    provider: "deepseek",
+    goal: scopedRuntimePrompt,
+    commandCwd: "/workspace",
+  },
+  {
+    goal: scopedRuntimePrompt,
+    commandCwd: "/workspace",
+    meta: {
+      goalContract: { revision: 1, currentRequest: scopedRuntimePrompt },
+      activeExecutionContract: {
+        revision: 1,
+        startedMutationRevision: 0,
+        requiresFileMutation: true,
+        requiresSourceGrounding: true,
+      },
+      projectVerification: { mutationRevision: 0 },
+    },
+  }
+);
+assertStrict.equal(scopedRuntime.scopedArtifactTask, true);
+assertStrict.deepEqual(scopedRuntime.workspacePathScopeRoots, ["output/wechat_worker/task"]);
+assertStrict.equal(
+  scopedRuntime.repositoryGroundingRequired,
+  undefined,
+  "an explicit task artifact root still activated generic repository grounding"
+);
+
+const longScopedTaskRoot = path.join(repoRoot, "output/wechat_worker/long-scoped-task");
+const longScopedScopeLine = `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+  mode: "task",
+  request:
+    "Repair the exact task-local report source, rebuild its PDF, and return only the verified replacement artifact.",
+  artifact_root: longScopedTaskRoot,
+})}`;
+const longScopedRuntimePrompt = [
+  longScopedScopeLine,
+  "The report cites DOI 10.1016/j.c and other literature identifiers; these are evidence, not workspace paths.",
+  `Retained same-chat history: ${"bounded historical context ".repeat(420)}`,
+].join("\n");
+const longScopedState = {
+  goal: longScopedRuntimePrompt,
+  commandCwd: repoRoot,
+  meta: {
+    goalContract: {
+      revision: 2,
+      activeGoal: longScopedRuntimePrompt,
+      currentRequest: longScopedRuntimePrompt,
+    },
+    activeExecutionContract: {
+      revision: 2,
+      refreshedAt: "2026-08-27T01:30:29.713Z",
+      startedMutationRevision: 0,
+      requiresFileMutation: true,
+      requiresSourceGrounding: true,
+    },
+    projectVerification: { mutationRevision: 0, mutationHistory: [] },
+    completionEvidenceRepair: {
+      key: "missing-reader-facing-artifact",
+      at: "2026-08-27T01:30:29.713Z",
+      requiresFreshFileMutation: true,
+      requiredFreshMutationRevision: 1,
+    },
+    toolLoop: { recent: [] },
+  },
+};
+const longScopedRuntime = nextStepRuntimeConfig(
+  {
+    provider: "deepseek",
+    goal: longScopedRuntimePrompt,
+    commandCwd: repoRoot,
+  },
+  longScopedState
+);
+assertStrict.equal(
+  longScopedRuntime.scopedArtifactTask,
+  true,
+  "long-context compaction discarded the host-owned artifact scope"
+);
+assertStrict.deepEqual(
+  longScopedRuntime.workspacePathScopeRoots,
+  ["output/wechat_worker/long-scoped-task"],
+  "long-context artifact repair escaped its exact task root"
+);
+assertStrict.equal(
+  longScopedRuntime.completionFreshMutationRequired,
+  undefined,
+  "a scoped report repair was hijacked by generic source-mutation recovery"
+);
+assertStrict.equal(
+  longScopedRuntime.completionFreshMutationPaths,
+  undefined,
+  "a DOI in long report context was inferred as a source filename"
+);
+const longScopedContract = completionTaskContract(
+  {
+    provider: "deepseek",
+    goal: longScopedRuntimePrompt,
+    commandCwd: repoRoot,
+  },
+  longScopedState
+);
+assertStrict.equal(
+  longScopedContract.requiredFreshMutationRevision,
+  1,
+  "an authoritative scoped repair contract accepted only pre-existing artifact evidence"
+);
+assertStrict.equal(
+  longScopedContract.requiredEvidence.find((item) => item.category === "file")
+    ?.minimumMutationRevision,
+  1,
+  "scoped report repair did not require fresh file-mutation evidence"
+);
+assert(
+  completionContractGoal(
+    { goal: longScopedRuntimePrompt, commandCwd: repoRoot },
+    {
+      goal: longScopedRuntimePrompt,
+      meta: { goalContract: { activeGoal: longScopedRuntimePrompt } },
+    }
+  ).includes(longScopedScopeLine),
+  "completion-contract compaction did not preserve the valid evidence-scope JSON line"
 );
 
 const scopedDeepResearchPrompt = `Generic workspace policy.
@@ -3610,6 +4960,7 @@ async function runToolContractCase({
       projectSessionsDir,
     });
     const events = await store.loadEvents();
+    const savedState = await store.loadState();
     const contractFailures = events.filter((event) => event.type === "tool.failed" && event.data?.category === "tool-contract-violation");
     assert(clientFactoryCalls === 1, `${id} did not complete readiness and construct exactly one deterministic client`);
     if (expectSuccess) {
@@ -3622,7 +4973,7 @@ async function runToolContractCase({
         const exists = await fs.access(path.join(workspace, target)).then(() => true).catch(() => false);
         assert(exists, `${id} did not preserve expected workspace file ${target}`);
       }
-      return { result, requests, events, contractFailures, clientFactoryCalls };
+      return { result, requests, events, state: savedState, contractFailures, clientFactoryCalls };
     }
     if (expectSequentialRecovery) {
       assert(result.stopped !== true, `${id} stopped instead of completing the recovered sequential batch`);
@@ -3639,7 +4990,7 @@ async function runToolContractCase({
         const exists = await fs.access(path.join(workspace, target)).then(() => true).catch(() => false);
         assert(!exists, `${id} dispatched deferred artifact ${target}`);
       }
-      return { result, requests, events, contractFailures, clientFactoryCalls };
+      return { result, requests, events, state: savedState, contractFailures, clientFactoryCalls };
     }
     assert(
       result.stopped === true && result.reason === "tool_contract_violation",
@@ -3656,7 +5007,7 @@ async function runToolContractCase({
       const exists = await fs.access(path.join(workspace, target)).then(() => true).catch(() => false);
       assert(!exists, `${id} created forbidden artifact ${target}`);
     }
-    return { result, requests, events, contractFailures, clientFactoryCalls };
+    return { result, requests, events, state: savedState, contractFailures, clientFactoryCalls };
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
@@ -3723,6 +5074,29 @@ const multiCall = await runToolContractCase({
 assert(
   multiCall.events.some((event) => event.type === "tool.completed" && event.data?.toolName === "write_file"),
   "recoverable multi-call batch did not dispatch its first valid call"
+);
+assertStrict.equal(
+  multiCall.state?.meta?.activeExecutionContract?.revision,
+  multiCall.state?.meta?.goalContract?.revision,
+  "a fresh session did not initialize the active execution contract"
+);
+assertStrict.equal(
+  multiCall.state?.meta?.activeExecutionContract?.startedMutationRevision,
+  0,
+  "a fresh session did not preserve its pre-task mutation baseline"
+);
+assertStrict.equal(
+  multiCall.state?.meta?.activeExecutionContract?.requiresFileMutation,
+  true,
+  "a fresh artifact task did not record its file-mutation requirement"
+);
+assertStrict.equal(
+  completionTaskContract(
+    { taskProfile: "code", goal: multiCall.state?.goal || "" },
+    multiCall.state
+  ).requiredFreshMutationRevision,
+  1,
+  "a fresh artifact task accepted a pre-existing file as current-turn completion evidence"
 );
 
 const duplicateId = await runToolContractCase({

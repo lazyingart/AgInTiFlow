@@ -85,6 +85,71 @@ export function isRecoverableDynamicEvidenceWrite(toolName = "", args = {}, guar
   return dynamicWorkspaceEvidenceTarget.test(command);
 }
 
+export function recoverableMixedToolchainAudit(toolName = "", args = {}, guard = {}) {
+  if (toolName !== "run_command" || guard?.category !== "general-shell") return null;
+  const command = String(args.command || args.text || "").trim();
+  const auditStart = command.search(
+    /\s+&&\s+(?:python3?|node|ruby)\s+-\s*<<\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?/i
+  );
+  if (auditStart <= 0) return null;
+
+  const buildCommand = command.slice(0, auditStart).trim();
+  const safePath = String.raw`[A-Za-z0-9._/-]+`;
+  const safeBuild = new RegExp(
+    String.raw`^(?:cd\s+['"]?(${safePath})['"]?\s*&&\s*)?(?:python3?|python)\s+['"]?(${safePath}\.py)['"]?(?:\s+2>&1)?$`,
+    "i"
+  );
+  const match = buildCommand.match(safeBuild);
+  if (!match) return null;
+  const paths = [match[1], match[2]].filter(Boolean);
+  if (
+    paths.some(
+      (value) =>
+        value.startsWith("/") ||
+        value.split("/").includes("..") ||
+        /[*?\[\]{}$`]/.test(value)
+    )
+  ) {
+    return null;
+  }
+  return { buildCommand };
+}
+
+export function recoverableInlineReadOnlyArtifactAudit(toolName = "", args = {}, guard = {}) {
+  if (toolName !== "run_command" || guard?.category !== "general-shell") return null;
+  const command = String(args.command || args.text || "").trim();
+  const cdMatch = command.match(
+    /^cd\s+(['"]?)([A-Za-z0-9._/-]+)\1\s*&&\s*([\s\S]+)$/i
+  );
+  const relativeCwd = cdMatch?.[2] || "";
+  if (
+    relativeCwd &&
+    (relativeCwd.startsWith("/") ||
+      relativeCwd.split("/").includes("..") ||
+      /[*?\[\]{}$`]/.test(relativeCwd))
+  ) {
+    return null;
+  }
+  const auditCommand = String(cdMatch?.[3] || command).trim();
+  if (!/^(?:python3?|python)\s+-c\s+(?:"[\s\S]*"|'[\s\S]*')(?:\s+2>&1)?$/i.test(auditCommand)) {
+    return null;
+  }
+  if (
+    !/(?:\bopen\s*\(|\.read(?:_bytes|_text)?\s*\(|\.stat\s*\(|hashlib\b|PdfReader\b|fitz\.open\s*\()/i.test(
+      auditCommand
+    )
+  ) {
+    return null;
+  }
+  const writeCapable = [
+    /\bopen\s*\([^)]*,\s*['"][^'"]*[wax+][^'"]*['"]/i,
+    /\.(?:write|write_bytes|write_text|touch|mkdir|unlink|rename|replace|rmdir|chmod|chown)\s*\(/i,
+    /\b(?:subprocess|os\.system|shutil|socket|requests|urllib|http\.client|eval|exec|__import__)\b/i,
+  ];
+  if (writeCapable.some((pattern) => pattern.test(auditCommand))) return null;
+  return { relativeCwd };
+}
+
 function goalRequestsDeletion(config = {}, state = {}) {
   const goal = String(config.goal || state.goal || state.meta?.goalContract?.current || "");
   const deletionIntent = /\b(?:delete|remove|clean\s+up|cleanup|purge|erase|discard|drop)\b|删除|刪除|移除|清理|清除|删掉|刪掉|削除|消去/i;
@@ -386,6 +451,47 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
   }
 
   if (category === "permission-change" || category === "general-shell") {
+    const mixedToolchainAudit = recoverableMixedToolchainAudit(
+      toolName,
+      args,
+      { category, reason }
+    );
+    if (mixedToolchainAudit) {
+      return {
+        ...base,
+        autoRecover: true,
+        summary:
+          "A safe project-local build was bundled with a broad inline audit. The combined command stayed blocked, but the build itself does not need stronger permission.",
+        instruction:
+          "Continue automatically by running only the supplied recoveryCommand as one toolchain call. Then inspect the artifact with built-in file tools or separate bounded read-only commands. Do not use a heredoc, shell-generated audit program, or request destructive permission.",
+        options: [
+          "Run the project-local builder by itself.",
+          "Use read_file/list_files and separate checksum or document-metadata commands for evidence.",
+          "Leave final reader-quality enforcement to the caller's deterministic artifact gate when one exists.",
+        ],
+        recoveryCommand: mixedToolchainAudit.buildCommand,
+      };
+    }
+    const inlineReadOnlyAudit = recoverableInlineReadOnlyArtifactAudit(
+      toolName,
+      args,
+      { category, reason }
+    );
+    if (inlineReadOnlyAudit) {
+      return {
+        ...base,
+        autoRecover: true,
+        summary:
+          "A read-only artifact audit was expressed as an inline interpreter program. It remained blocked because arbitrary inline code is broad, but the task does not need stronger permission.",
+        instruction:
+          "Do not retry the inline program and do not request destructive permission. Continue from the retained build evidence, inspect the exact artifact with built-in file tools or bounded read-only metadata commands, and accept the caller's deterministic artifact gate when it is available.",
+        options: [
+          "Use read_file, list_files, or read_image for the exact artifact.",
+          "Use an allowlisted bounded metadata command such as file, pdfinfo, sha256sum, or a short header read.",
+          "Return the already-built artifact when the caller owns the final quality gate.",
+        ],
+      };
+    }
     return {
       ...base,
       summary:
@@ -431,9 +537,10 @@ export function buildPermissionAdvice({ toolName = "", args = {}, guard = {}, co
   const guardReason = String(reason || guard.reason || "");
   if (
     toolName === "run_command" &&
-    /^cd target must be a safe workspace-relative directory:/i.test(guardReason)
+    /^(?:cd|mkdir) target must be a safe workspace-relative directory:/i.test(guardReason)
   ) {
     const command = compactLine(args.command || args.text || "");
+    const blockedCommand = /^mkdir target/i.test(guardReason) ? "mkdir" : "cd";
     return {
       category: "workspace-command-correction",
       reason: compactLine(guardReason),
@@ -441,12 +548,16 @@ export function buildPermissionAdvice({ toolName = "", args = {}, guard = {}, co
       blockedOperation: command ? `${toolName}: ${command}` : toolName,
       autoRecover: true,
       summary:
-        "The command added an unnecessary or out-of-scope cd prefix. The configured project is already the command working directory, so this is a recoverable command-shape error rather than a permission request.",
+        blockedCommand === "mkdir"
+          ? "The command selected an outside-workspace scratch directory. This is a recoverable command-shape error, not a request for stronger permissions."
+          : "The command added an unnecessary or out-of-scope cd prefix. The configured project is already the command working directory, so this is a recoverable command-shape error rather than a permission request.",
       instruction:
-        "Continue automatically from the configured project root. Remove the cd prefix, correct any paths that were relative to the wrong directory, and retry only the intended workspace-bounded command. Do not ask for stronger permissions or package-install access.",
+        blockedCommand === "mkdir"
+          ? "Continue automatically with an ignored workspace-relative scratch directory such as .aginti/verification/<purpose>. Run the intended check from that subdirectory when an unrelated working directory is required. Do not ask for stronger permissions."
+          : "Continue automatically from the configured project root. Remove the cd prefix, correct any paths that were relative to the wrong directory, and retry only the intended workspace-bounded command. Do not ask for stronger permissions.",
       options: [
         "Run the intended command directly from the configured project root.",
-        "Use a safe workspace-relative subdirectory only when the command genuinely belongs there.",
+        "Use an ignored workspace-relative scratch subdirectory when the check requires another working directory.",
         "Keep external absolute paths read-only and keep all mutations inside the configured project.",
       ],
     };
