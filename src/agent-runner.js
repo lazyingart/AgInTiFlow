@@ -11050,6 +11050,17 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   const latestRecordedTest = [...testRuns]
     .reverse()
     .find((run) => String(run?.command || "").trim());
+  const retainedRepairPacket = state.meta?.failedTestRecoveryPacket;
+  const repairedRetainedFailure = Boolean(
+    latestRecordedTest?.passed !== true &&
+      retainedRepairPacket &&
+      Number(retainedRepairPacket.packetVersion || 0) ===
+        FAILED_TEST_RECOVERY_PACKET_VERSION &&
+      String(retainedRepairPacket.failureSignature || "") ===
+        String(latestRecordedTest.failureSignature || "") &&
+      Number(state.meta?.activeExecutionContract?.materialMutationRevision || 0) >
+        Number(latestRecordedTest.mutationRevision || 0)
+  );
   const retainedFailedTest =
     latestCurrentTest && latestCurrentTest.passed !== true ? latestCurrentTest : null;
   if (retainedFailedTest) {
@@ -11507,7 +11518,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       runtimeConfig.testVerificationCommand = String(retainedFailedTest.command || "");
     }
   } else if (
-    !implementationOpen &&
+    (!implementationOpen || repairedRetainedFailure) &&
     !latestCurrentTest &&
     latestRecordedTest &&
     !testRunMatchesVerificationRevision(latestRecordedTest, verification)

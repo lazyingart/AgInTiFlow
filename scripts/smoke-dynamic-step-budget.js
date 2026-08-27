@@ -5228,6 +5228,53 @@ try {
     activeTaskContinuationState.meta.projectVerification === retainedActiveTaskVerification,
     "an exact active-task continuation discarded durable verification evidence"
   );
+  const postMutationVerifier = "python3 -m unittest discover -s tests -v";
+  const postMutationVerificationState = {
+    goal: "Repair and verify the current service controller.",
+    meta: {
+      goalContract: {
+        revision: 12,
+        currentRequest: "Repair and verify the current service controller.",
+      },
+      activeExecutionContract: {
+        revision: 12,
+        startedMutationRevision: 7,
+        materialMutationRevision: 8,
+        requiresFileMutation: true,
+        requiresSourceGrounding: true,
+      },
+      projectVerification: {
+        mutationRevision: 8,
+        testRuns: [{
+          command: postMutationVerifier,
+          mutationRevision: 7,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "pre-repair-failure",
+        }],
+      },
+      failedTestRecoveryPacket: {
+        packetVersion: 15,
+        mutationRevision: 7,
+        failureSignature: "pre-repair-failure",
+        content: "Bounded failed-test evidence packet v15.",
+      },
+    },
+  };
+  const postMutationVerificationRuntime = nextStepRuntimeConfig(
+    {
+      provider: "deepseek",
+      taskProfile: "devops",
+      commandCwd: workspace,
+      goal: postMutationVerificationState.goal,
+    },
+    postMutationVerificationState
+  );
+  assert(
+    postMutationVerificationRuntime.testVerificationPending === true &&
+      postMutationVerificationRuntime.testVerificationCommand === postMutationVerifier,
+    "a material failed-test repair did not advance directly to its exact retained verifier"
+  );
   const concreteGoalUpdate = applyContinuationContractTransition(
     concreteContinuationState,
     concreteContinuation,
