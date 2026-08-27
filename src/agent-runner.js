@@ -84,6 +84,7 @@ import {
   buildPermissionAdvice,
   goalRevisionCoversActiveTask,
   isAlreadyCommittedCleanGitNoop,
+  isCleanGitStatusAfterCurrentCommit,
 } from "./permission-advice.js";
 import { formatBehaviorContractForPrompt } from "./behavior-contract.js";
 import { browserStateReconciliationGuidance } from "./browser-automation-guidance.js";
@@ -6265,7 +6266,12 @@ export function recordAlreadyCommittedRepositoryRepair(state = {}, toolResult = 
     toolResult,
     state
   );
-  if (!successfulCommit && !cleanCommitNoop) {
+  const cleanStatusAfterCommit = isCleanGitStatusAfterCurrentCommit(
+    toolResult.args || {},
+    toolResult,
+    state
+  );
+  if (!successfulCommit && !cleanCommitNoop && !cleanStatusAfterCommit) {
     return null;
   }
   const failed = currentFailedProjectTest(state);
@@ -6282,7 +6288,11 @@ export function recordAlreadyCommittedRepositoryRepair(state = {}, toolResult = 
     ),
     failureSignature: String(failed.test.failureSignature || ""),
     command: String(failed.test.command || ""),
-    source: successfulCommit ? "successful-commit" : "clean-commit-noop",
+    source: successfulCommit
+      ? "successful-commit"
+      : cleanCommitNoop
+        ? "clean-commit-noop"
+        : "clean-status-after-commit",
     at: new Date().toISOString(),
   };
   state.meta.repositoryStateRepair = marker;

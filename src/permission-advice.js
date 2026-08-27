@@ -615,16 +615,7 @@ export function goalRevisionCoversActiveTask(state = {}, evidenceRevision = 0) {
   return candidateRevision >= activeTaskStartRevision;
 }
 
-export function isAlreadyCommittedCleanGitNoop(args = {}, result = {}, state = {}) {
-  const command = String(args.command || args.text || "");
-  const output = `${result.stdout || ""}\n${result.stderr || ""}`;
-  if (
-    !/(?:^|[;&|]\s*)git(?:\s+-C\s+(?:"[^"]*"|'[^']*'|\S+))?\s+commit\b/i.test(command) ||
-    !/nothing to commit/i.test(output) ||
-    !/working tree clean/i.test(output)
-  ) {
-    return false;
-  }
+function hasCurrentDurableCommitEvidence(state = {}) {
   const mutationRevision = Math.max(
     0,
     Number(state.meta?.projectVerification?.mutationRevision || 0)
@@ -635,6 +626,37 @@ export function isAlreadyCommittedCleanGitNoop(args = {}, result = {}, state = {
       goalRevisionCoversActiveTask(state, item?.goalRevision) &&
       Number(item?.mutationRevision || 0) >= mutationRevision
   );
+}
+
+export function isCleanGitStatusAfterCurrentCommit(args = {}, result = {}, state = {}) {
+  const command = String(args.command || args.text || "").trim();
+  const cleanStatusCommand =
+    /^git(?:\s+-C\s+(?:"[^"]*"|'[^']*'|\S+))?\s+status\s+(?:--short|--porcelain(?:=[^\s]+)?)(?:\s+--untracked-files=(?:all|normal))?$/i.test(
+      command
+    );
+  if (
+    !cleanStatusCommand ||
+    result.ok === false ||
+    Number(result.exitCode ?? 0) !== 0 ||
+    String(result.stdout || "").trim() ||
+    String(result.stderr || "").trim()
+  ) {
+    return false;
+  }
+  return hasCurrentDurableCommitEvidence(state);
+}
+
+export function isAlreadyCommittedCleanGitNoop(args = {}, result = {}, state = {}) {
+  const command = String(args.command || args.text || "");
+  const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+  if (
+    !/(?:^|[;&|]\s*)git(?:\s+-C\s+(?:"[^"]*"|'[^']*'|\S+))?\s+commit\b/i.test(command) ||
+    !/nothing to commit/i.test(output) ||
+    !/working tree clean/i.test(output)
+  ) {
+    return false;
+  }
+  return hasCurrentDurableCommitEvidence(state);
 }
 
 export function buildFailedCommandAdvice({ args = {}, commandPolicy = {}, commandResult = {}, config = {}, state = {} } = {}) {

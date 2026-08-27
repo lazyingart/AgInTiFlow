@@ -6176,6 +6176,41 @@ try {
       postCommitRepositoryRuntime.testVerificationCommand === failedValidationCommand,
     "a successful bounded repair commit did not advance directly to the exact failed verifier"
   );
+  const cleanStatusRepositoryRepairState = structuredClone(repositoryCleanGateFailure);
+  cleanStatusRepositoryRepairState.goal = "Resume the committed service repair.";
+  cleanStatusRepositoryRepairState.meta.goalContract = { revision: 5 };
+  cleanStatusRepositoryRepairState.meta.durableGitEvidence = [{
+    action: "commit",
+    goalRevision: 5,
+    mutationRevision: 6,
+  }];
+  const cleanStatusAfterCommit = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: "git status --short" },
+    stdout: "",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    cleanStatusRepositoryRepairState,
+    cleanStatusAfterCommit,
+    { commandCwd: workspace, taskProfile: "devops" }
+  );
+  const cleanStatusRepositoryRepairMarker = recordAlreadyCommittedRepositoryRepair(
+    cleanStatusRepositoryRepairState,
+    cleanStatusAfterCommit
+  );
+  const cleanStatusRepositoryRuntime = nextStepRuntimeConfig(
+    { provider: "deepseek", taskProfile: "devops", commandCwd: workspace },
+    cleanStatusRepositoryRepairState
+  );
+  assert(
+    cleanStatusRepositoryRepairMarker?.source === "clean-status-after-commit" &&
+      cleanStatusRepositoryRuntime.testVerificationPending === true &&
+      cleanStatusRepositoryRuntime.testVerificationCommand === failedValidationCommand,
+    "current commit plus an exact clean Git status did not recover an interrupted repository repair"
+  );
   const repeatedDirtyRepositoryResult = {
     toolName: "run_command",
     ok: false,
