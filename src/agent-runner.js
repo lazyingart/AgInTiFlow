@@ -6320,7 +6320,13 @@ export function recordAlreadyCommittedRepositoryRepair(state = {}, toolResult = 
 function projectTestCommandKey(command = "") {
   const normalized = normalizeProjectCommand(command);
   const exitProbe = parseNonMutatingExitStatusWrapper(normalized);
-  return normalizeProjectCommand(exitProbe?.command || normalized);
+  const invocation = normalizeProjectCommand(exitProbe?.command || normalized)
+    // These wrappers alter bytecode/output handling, not the tests selected or
+    // executed. Treating them as distinct suites can leave an old failure
+    // unresolved after the same verifier passes without the wrapper.
+    .replace(/^PYTHONDONTWRITEBYTECODE=(?:0|1|true|false)\s+/i, "")
+    .replace(/\s+(?:2>&1|1>&2)\s*$/u, "");
+  return normalizeProjectCommand(invocation);
 }
 
 function commandIncludesGitCommit(command = "") {
@@ -15603,13 +15609,13 @@ export async function validateMutatedPythonSourceQuality(config = {}, state = {}
 
   const defects = [];
   const checkedPaths = [];
-  const latestPassingTest = [...(Array.isArray(verification.testRuns) ? verification.testRuns : [])]
+  const currentPassingTests = [...(Array.isArray(verification.testRuns) ? verification.testRuns : [])]
     .reverse()
-    .find(
+    .filter(
       (run) =>
         run?.passed === true &&
-        Number(run?.mutationRevision || 0) === Math.max(0, Number(verification.mutationRevision || 0)) &&
-        Number(run?.privateMutationRevision || 0) === verificationPrivateMutationRevision(verification)
+        !testRunRepresentsInvalidInvocation(run) &&
+        testRunMatchesVerificationRevision(run, verification)
     );
   for (const sourcePath of paths) {
     let target;
@@ -15629,14 +15635,14 @@ export async function validateMutatedPythonSourceQuality(config = {}, state = {}
         message: syntax.reason,
       });
     }
-    if (
-      pathLooksLikeTestSource(sourcePath) &&
-      (!latestPassingTest || !testCommandCoversMutatedPath(latestPassingTest.command, sourcePath))
-    ) {
+    const coveringTest = pathLooksLikeTestSource(sourcePath)
+      ? currentPassingTests.find((run) => testCommandCoversMutatedPath(run.command, sourcePath))
+      : null;
+    if (pathLooksLikeTestSource(sourcePath) && !coveringTest) {
       defects.push({
         code: "mutated-test-not-covered-by-validation",
         path: sourcePath,
-        command: String(latestPassingTest?.command || ""),
+        command: String(currentPassingTests[0]?.command || ""),
       });
     }
     for (const duplicate of pythonTopLevelDefinitionDuplicates(content)) {
@@ -15662,7 +15668,7 @@ export async function validateMutatedPythonSourceQuality(config = {}, state = {}
       item.code === "python-syntax-error"
         ? `${item.path}: ${item.message || "Python syntax validation failed"}`
         : item.code === "mutated-test-not-covered-by-validation"
-        ? `${item.path}: the latest successful test command did not include this changed test (${item.command || "no current test command"})`
+        ? `${item.path}: no current successful test command included this changed test (${item.command || "no current test command"})`
         : item.code === "python-main-guard-before-required-definition"
           ? `${item.path}: __main__ guard at line ${item.guardLine} executes before ` +
             `${(item.calledLater || []).map((candidate) => `${candidate.name} at line ${candidate.line}`).join(", ")}`

@@ -2096,6 +2096,36 @@ try {
     }
   );
   assert(coveredTestQuality.ok === true, coveredTestQuality.reason);
+  const coveredBeforeAcceptanceQuality = await validateMutatedPythonSourceQuality(
+    { commandCwd: pythonQualityWorkspace },
+    {
+      meta: {
+        projectVerification: {
+          mutationRevision: 3,
+          privateMutationRevision: 0,
+          mutationHistory: [{ revision: 3, paths: ["tests/test_service_launch.py"] }],
+          testRuns: [
+            {
+              command: "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v",
+              mutationRevision: 3,
+              privateMutationRevision: 0,
+              passed: true,
+            },
+            {
+              command: "python3 /tmp/project_acceptance.py",
+              mutationRevision: 3,
+              privateMutationRevision: 0,
+              passed: true,
+            },
+          ],
+        },
+      },
+    }
+  );
+  assert(
+    coveredBeforeAcceptanceQuality.ok === true,
+    "a later passing acceptance verifier erased current unit-suite coverage for a changed test"
+  );
   assert(normalizeDynamicStepsMode("off") === "off", "dynamic mode off did not normalize");
   for (const command of [
     "npm run build",
@@ -6717,6 +6747,32 @@ try {
   assert(
     projectTestVerificationFinishBlock(repairedValidationState) === null,
     "a passing rerun at the current real mutation revision did not reopen completion"
+  );
+  const presentationWrappedValidationState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 7,
+        privateMutationRevision: 0,
+        testRuns: [
+          {
+            command: "python3 -m unittest discover -s tests -v 2>&1",
+            mutationRevision: 2,
+            privateMutationRevision: 0,
+            passed: false,
+          },
+          {
+            command: "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v",
+            mutationRevision: 7,
+            privateMutationRevision: 0,
+            passed: true,
+          },
+        ],
+      },
+    },
+  };
+  assert(
+    projectTestVerificationFinishBlock(presentationWrappedValidationState) === null,
+    "presentation-only test wrappers left a superseded failure unresolved"
   );
   const tracebackEvidence = compactFailedTestEvidence(
     {
