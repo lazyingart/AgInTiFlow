@@ -4085,6 +4085,7 @@ async function applyContinuationPrompt(state, config, observers) {
       packetVersion: FAILED_TEST_RECOVERY_PACKET_VERSION,
       content: retainedTestEvidence.content,
       paths: retainedTestEvidence.paths,
+      repairPaths: retainedTestEvidence.repairPaths,
       mutationRevision: Number(currentFailure?.mutationRevision || 0),
       failureSignature: String(currentFailure?.failureSignature || ""),
       command: String(currentFailure?.command || ""),
@@ -6624,6 +6625,64 @@ function safeRecoveryEvidencePath(value = "") {
   return PLAIN_TEXT_FILE_EXTENSIONS.has(path.extname(candidate).toLowerCase()) ? candidate : "";
 }
 
+function failedTestMutationRepairPaths(
+  config = {},
+  state = {},
+  testRun = {},
+  excludedPaths = []
+) {
+  const verification = state.meta?.projectVerification || {};
+  const history = Array.isArray(verification.mutationHistory)
+    ? verification.mutationHistory
+    : verification.lastMutation
+      ? [verification.lastMutation]
+      : [];
+  const maximumRevision = Math.max(
+    0,
+    Number(testRun?.mutationRevision ?? verification.mutationRevision ?? 0)
+  );
+  const taskGoal = String(
+    state.meta?.goalContract?.taskGoal || state.goal || config.goal || ""
+  ).trim();
+  const activeTaskHash = taskGoal ? hashForLog(taskGoal) : "";
+  const repairPaths = [];
+  for (const mutation of [...history].reverse()) {
+    if (
+      Number(mutation?.revision || 0) > maximumRevision ||
+      !["apply_patch", "write_file"].includes(String(mutation?.toolName || "")) ||
+      (activeTaskHash && mutation?.taskHash && mutation.taskHash !== activeTaskHash)
+    ) {
+      continue;
+    }
+    for (const candidate of Array.isArray(mutation?.paths) ? mutation.paths : []) {
+      const safePath = safeRecoveryEvidencePath(candidate);
+      if (
+        !safePath ||
+        pathLooksLikeTestSource(safePath) ||
+        isPrivateVerificationEvidencePath(safePath) ||
+        filterExplicitlyExcludedOutputPaths([safePath], excludedPaths).length === 0 ||
+        repairPaths.includes(safePath)
+      ) {
+        continue;
+      }
+      repairPaths.push(safePath);
+      if (repairPaths.length >= 6) return repairPaths;
+    }
+  }
+  return repairPaths;
+}
+
+function failedTestCanonicalRepairPaths(state = {}) {
+  const packet = state.meta?.failedTestRecoveryPacket || {};
+  const preferred = Array.isArray(packet.repairPaths) && packet.repairPaths.length
+    ? packet.repairPaths
+    : packet.paths;
+  return (Array.isArray(preferred) ? preferred : [])
+    .map(safeRecoveryEvidencePath)
+    .filter(Boolean)
+    .filter((item, index, items) => items.indexOf(item) === index);
+}
+
 function recoveryEvidenceDependencies(sourcePath = "", content = "") {
   const dependencies = [];
   const append = (candidate) => {
@@ -6984,8 +7043,17 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
   ]
     .map(safeRecoveryEvidencePath)
     .filter(Boolean);
+  const mutationRepairPaths = failedTestMutationRepairPaths(
+    config,
+    state,
+    testRun,
+    taskContract.excludedOutputPaths || []
+  );
   const mutationEvidencePaths = new Set(
-    (Array.isArray(verification.lastMutation?.paths) ? verification.lastMutation.paths : [])
+    [
+      ...mutationRepairPaths,
+      ...(Array.isArray(verification.lastMutation?.paths) ? verification.lastMutation.paths : []),
+    ]
       .map(safeRecoveryEvidencePath)
       .filter(Boolean)
   );
@@ -7476,8 +7544,33 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
     at: new Date().toISOString(),
     focuses: diagnosticFocuses,
   };
+  const evidencePaths = [...seen].filter((item) =>
+    excerpts.some((excerpt) => excerpt.startsWith(`### ${item}\n`))
+  );
+  const diagnosticRepairPaths = diagnosticFocuses
+    .map((focus) => safeRecoveryEvidencePath(focus?.path))
+    .filter(Boolean);
+  const preferredRepairPaths = [
+    ...diagnosticRepairPaths,
+    ...mutationRepairPaths,
+  ]
+    .filter((item, index, items) => items.indexOf(item) === index)
+    .filter((item) => evidencePaths.includes(item));
+  const fallbackRepairPaths = evidencePaths
+    .filter((item) => !pathLooksLikeTestSource(item))
+    .filter(
+      (item) =>
+        filterExplicitlyExcludedOutputPaths(
+          [item],
+          taskContract.excludedOutputPaths || []
+        ).length > 0
+    );
   return {
-    paths: [...seen].filter((item) => excerpts.some((excerpt) => excerpt.startsWith(`### ${item}\n`))),
+    paths: evidencePaths,
+    repairPaths: (preferredRepairPaths.length
+      ? preferredRepairPaths
+      : fallbackRepairPaths
+    ).slice(0, 6),
     content: [
       `Bounded failed-test evidence packet v${FAILED_TEST_RECOVERY_PACKET_VERSION}. These are exact current workspace excerpts selected from the discovered test and its local dependencies. Use them to calculate the producing transformation; do not restart broad discovery.`,
       testRun.command ? `Verification command: ${testRun.command}` : "",
@@ -11676,9 +11769,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
         );
       });
     const recoveryPacketPaths = currentRecoveryPacket
-      ? (Array.isArray(state.meta?.failedTestRecoveryPacket?.paths)
-          ? state.meta.failedTestRecoveryPacket.paths
-          : [])
+      ? failedTestCanonicalRepairPaths(state)
           .map(safeRecoveryEvidencePath)
           .filter(Boolean)
           .filter((item, index, items) => items.indexOf(item) === index)
@@ -13420,9 +13511,7 @@ function requiredDeclarationIdentitiesForPatch(state = {}, targetPath = "") {
 }
 
 function requiredSymbolRepairPath(state = {}, owner = "") {
-  const sourcePaths = (state.meta?.failedTestRecoveryPacket?.paths || [])
-    .map((item) => safeRecoveryEvidencePath(item))
-    .filter(Boolean)
+  const sourcePaths = failedTestCanonicalRepairPaths(state)
     .filter((item) => !/(?:^|\/)tests?(?:\/|$)/i.test(item));
   const ownerBasename = String(owner || "")
     .split(".")
@@ -16542,7 +16631,7 @@ async function recordToolContractViolation({
   const completedRequestedPaths = requestedCalls
     .map((call) => call.path)
     .filter((item) => item && completedArtifacts.has(item));
-  const repairPaths = (state.meta?.failedTestRecoveryPacket?.paths || [])
+  const repairPaths = failedTestCanonicalRepairPaths(state)
     .map((item) => String(item || "").replace(/\\/g, "/"))
     .filter((item) => item && !/(?:^|\/)tests?(?:\/|$)/i.test(item))
     .slice(0, 6);
@@ -17423,9 +17512,7 @@ export function recoverUnavailableVerificationRerunAsCanonicalRead(
     ...(Array.isArray(config.testFailureRepairPatchTargets)
       ? config.testFailureRepairPatchTargets.map((target) => target?.path)
       : []),
-    ...(Array.isArray(state.meta?.failedTestRecoveryPacket?.paths)
-      ? state.meta.failedTestRecoveryPacket.paths
-      : []),
+    ...failedTestCanonicalRepairPaths(state),
   ]
     .map(safeRecoveryEvidencePath)
     .filter(Boolean)
@@ -19210,6 +19297,7 @@ async function runAgentOnceUnlocked(config) {
               packetVersion: FAILED_TEST_RECOVERY_PACKET_VERSION,
               content: recoveryEvidence.content,
               paths: recoveryEvidence.paths,
+              repairPaths: recoveryEvidence.repairPaths,
               mutationRevision: Number(currentFailure.mutationRevision || 0),
               failureSignature: String(currentFailure.failureSignature || ""),
               command: String(currentFailure.command || ""),
@@ -20488,6 +20576,7 @@ async function runAgentOnceUnlocked(config) {
             packetVersion: FAILED_TEST_RECOVERY_PACKET_VERSION,
             content: recoveryEvidence.content,
             paths: recoveryEvidence.paths,
+            repairPaths: recoveryEvidence.repairPaths,
             mutationRevision: Number(currentFailure.mutationRevision || 0),
             failureSignature: String(currentFailure.failureSignature || ""),
             command: String(currentFailure.command || ""),

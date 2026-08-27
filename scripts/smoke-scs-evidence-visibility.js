@@ -70,6 +70,24 @@ const wrappedImmutableSourceContract = deriveScsTaskContract({
   taskProfile: "slides",
 });
 
+const actionWrappedImmutableSourceContract = deriveScsTaskContract({
+  goal: [
+    "Continue the exact task. Do not",
+    "modify source_brief.md, measurements.csv, prompt.txt, or TASK.md.",
+    "Repair build_deck.py and rebuild output/deck.pptx.",
+  ].join("\n"),
+  taskProfile: "slides",
+});
+
+const pathWrappedImmutableSourceContract = deriveScsTaskContract({
+  goal: [
+    "Continue the exact task. Do not modify",
+    "source_brief.md, measurements.csv, prompt.txt, or TASK.md.",
+    "Repair build_deck.py and rebuild output/deck.pptx.",
+  ].join("\n"),
+  taskProfile: "slides",
+});
+
 const recoveryInstructionContract = deriveScsTaskContract({
   goal: [
     "Use the retained source and these two failures: the tests invoke ../service_ctl.py, while `python3 service_ctl.py start --state-dir .runtime` fails. Preserve the lifecycle assertions rather than replacing them, repair service_ctl.py, and remove the accidental untracked resume-after-git-baseline-recovery-dev-prompt.txt.",
@@ -173,6 +191,16 @@ assert(
   ),
   "an immutable source path leaked into exact output requirements"
 );
+for (const contract of [
+  actionWrappedImmutableSourceContract,
+  pathWrappedImmutableSourceContract,
+]) {
+  assert.deepEqual(
+    contract.excludedOutputPaths.sort(),
+    ["TASK.md", "measurements.csv", "prompt.txt", "source_brief.md"].sort(),
+    "a negative action or its governed path list lost protection across a line wrap"
+  );
+}
 assert(
   recoveryInstructionContract.excludedOutputPaths.includes("resume-after-git-baseline-recovery-dev-prompt.txt") &&
     !recoveryInstructionContract.exactOutputPaths.includes("resume-after-git-baseline-recovery-dev-prompt.txt"),

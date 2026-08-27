@@ -542,12 +542,26 @@ export function filterExplicitlyExcludedOutputPaths(paths = [], exclusions = [])
 }
 
 export function inferExplicitlyExcludedOutputPaths(goal = "") {
+  const extensionPattern = "md|txt|json|jsonl|ndjson|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
   // Preserve coordinated path lists that wrap after a comma. Prompt and task
   // files commonly format "do not modify a, b,\nc, or d" across lines; splitting
   // that text first drops the governing negative action from the continuation.
-  const source = String(goal || "").replace(/([,，、])\s*\r?\n\s*/gu, "$1 ");
+  const negativePrefix = "(?:do\\s+not|don't|dont|must\\s+not|should\\s+not|never)";
+  const negativeAction = "(?:run|rerun|re-run|execut(?:e|ed|ing)|creat(?:e|ed|ing)|recreat(?:e|ed|ing)|writ(?:e|ten|ing)|generat(?:e|ed|ing)|sav(?:e|ed|ing)|output|touch|modif(?:y|ied|ying)|edit(?:ed|ing)?|stage|commit)";
+  const wrappedNegativeAction = new RegExp(
+    `(\\b${negativePrefix}\\b)\\s*\\r?\\n\\s*(?=${negativeAction}\\b)`,
+    "giu"
+  );
+  const wrappedNegativePath = new RegExp(
+    `(\\b${negativePrefix}\\b[^.!?。！？;；\\n]{0,180}\\b${negativeAction}\\b)\\s*\\r?\\n\\s*` +
+      `(?=\\S{1,260}\\.(?:${extensionPattern})\\b)`,
+    "giu"
+  );
+  const source = String(goal || "")
+    .replace(/([,，、])\s*\r?\n\s*/gu, "$1 ")
+    .replace(wrappedNegativeAction, "$1 ")
+    .replace(wrappedNegativePath, "$1 ");
   if (!source.trim()) return [];
-  const extensionPattern = "md|txt|json|jsonl|ndjson|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
   const pathPattern = new RegExp(
     '((?:~|\\.{1,2}|/|[A-Za-z0-9_\\-\\u4e00-\\u9fff])[\\w./~\\-\\u4e00-\\u9fff]{0,260}\\.(?:' +
       extensionPattern +

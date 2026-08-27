@@ -5485,6 +5485,65 @@ try {
       runtime: postProducerRuntime,
     })}`
   );
+  const failedAfterProducerState = structuredClone(staleGeneratedDeckState);
+  failedAfterProducerState.meta.goalContract.taskGoal = failedAfterProducerState.goal;
+  failedAfterProducerState.meta.projectVerification.mutationHistory.splice(1, 0, {
+    revision: 8,
+    toolName: "apply_patch",
+    paths: ["TASK.md"],
+  });
+  failedAfterProducerState.meta.projectVerification.testRuns.push({
+    command: generatedDeckValidator,
+    at: "2026-08-27T19:05:00.000Z",
+    mutationRevision: 10,
+    privateMutationRevision: 0,
+    passed: false,
+    failureEvidenceVersion: 2,
+    failureSignature: "fresh-generated-deck-visible-text",
+    failureSummary: "acceptance failed: deck omits source-grounded phrase: single reader",
+  });
+  await fs.writeFile(
+    path.join(workspace, "TASK.md"),
+    "Treat source_brief.md, measurements.csv, prompt.txt, and TASK.md as immutable.\n",
+    "utf8"
+  );
+  const failedAfterProducerPacket = await buildFailedTestRecoveryPacket(
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: failedAfterProducerState.goal,
+    },
+    failedAfterProducerState
+  );
+  assert(
+    JSON.stringify(failedAfterProducerPacket.repairPaths) ===
+      JSON.stringify(["build_deck.py"]),
+    "a fresh generated-artifact failure dropped its latest mutable producer or retained an explicitly immutable input"
+  );
+  failedAfterProducerState.meta.failedTestRecoveryPacket = {
+    packetVersion: 15,
+    content: failedAfterProducerPacket.content,
+    paths: failedAfterProducerPacket.paths,
+    repairPaths: failedAfterProducerPacket.repairPaths,
+    mutationRevision: 10,
+    failureSignature: "fresh-generated-deck-visible-text",
+    generatedAt: "2026-08-27T19:05:01.000Z",
+  };
+  const failedAfterProducerRuntime = nextStepRuntimeConfig(
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: failedAfterProducerState.goal,
+    },
+    failedAfterProducerState
+  );
+  assert(
+    JSON.stringify(failedAfterProducerRuntime.testFailureRepairContextPaths) ===
+      JSON.stringify(["build_deck.py"]),
+    "failed-test recovery forced immutable evidence reads instead of grounding the canonical producer"
+  );
   const immutableOnlyRepairState = {
     goal: "Treat service_ctl.py as immutable read-only source evidence and finish from existing results.",
     meta: {
