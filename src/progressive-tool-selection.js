@@ -1119,6 +1119,25 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
         .filter(Boolean)
         .slice(0, 64),
       assertionCount: Math.max(0, Number(target?.assertionCount || 0)),
+      assertionMethods: (Array.isArray(target?.assertionMethods) ? target.assertionMethods : [])
+        .map(String)
+        .filter(Boolean)
+        .slice(0, 128),
+      ports: (Array.isArray(target?.ports) ? target.ports : [])
+        .map((port) => Number(port))
+        .filter((port) => Number.isInteger(port) && port >= 1024 && port <= 65535)
+        .slice(0, 8),
+      portOccurrences: Math.max(0, Number(target?.portOccurrences || 0)),
+      listenerEvidence: (
+        Array.isArray(target?.listenerEvidence) ? target.listenerEvidence : []
+      )
+        .map((item) => ({
+          port: Number(item?.port || 0),
+          processName: String(item?.processName || "unknown"),
+          ownership: String(item?.ownership || ""),
+        }))
+        .filter((item) => item.port >= 1024 && item.port <= 65535)
+        .slice(0, 8),
       calledLater: (Array.isArray(target?.calledLater) ? target.calledLater : [])
         .map((item) => ({
           name: String(item?.name || ""),
@@ -1170,6 +1189,7 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
     .filter(
       (target) =>
         target.kind === "python-agent-test-harness-path" ||
+        target.kind === "python-agent-test-foreign-port-collision" ||
         target.kind === "python-main-guard-order" ||
         target.kind === "python-duplicate-top-level-definition" ||
         target.kind === "python-git-baseline-recovery" ||
@@ -1185,6 +1205,22 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
           `independently of verifier cwd while preserving all ${target.testNames.length} test methods and ` +
           `${target.assertionCount} assertion lines byte-for-byte. Do not change expected values, skip tests, ` +
           "or edit production behavior to compensate for a broken harness path."
+        );
+      }
+      if (target.kind === "python-agent-test-foreign-port-collision") {
+        const listeners = target.listenerEvidence
+          .map((item) => `${item.processName} on ${item.port}`)
+          .join(", ");
+        return (
+          "Agent-created Python test port-isolation rule: the literal loopback port" +
+          `${target.ports.length === 1 ? "" : "s"} ${target.ports.join(", ")} ` +
+          `(${target.portOccurrences} uses) are already owned by ${listeners || "a listener"} ` +
+          "outside this task workspace. Rewrite this complete Git-new test to allocate an ephemeral " +
+          "loopback port with socket.bind(('127.0.0.1', 0)) and use the assigned port consistently. " +
+          `Preserve all ${target.testNames.length} test methods, ${target.assertionCount} assertions, ` +
+          `and their assertion-method order (${target.assertionMethods.join(", ") || "unchanged"}). ` +
+          "Port-specific expected log text may become dynamic. Do not skip tests, weaken outcomes, " +
+          "signal the foreign listener, edit production behavior, or alter an established/private verifier."
         );
       }
       if (target.kind === "python-main-guard-order") {
@@ -1269,6 +1305,7 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
   const hasPythonStructuralTarget = validTargets.some(
     (target) =>
       target.kind === "python-agent-test-harness-path" ||
+      target.kind === "python-agent-test-foreign-port-collision" ||
       target.kind === "python-main-guard-order" ||
       target.kind === "python-duplicate-top-level-definition" ||
       target.kind === "python-git-baseline-recovery"
@@ -1276,9 +1313,14 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
   const hasTestHarnessPathTarget = validTargets.some(
     (target) => target.kind === "python-agent-test-harness-path"
   );
+  const hasTestPortCollisionTarget = validTargets.some(
+    (target) => target.kind === "python-agent-test-foreign-port-collision"
+  );
   const replacementGuidance = [
     hasTestHarnessPathTarget
       ? "Write only the exact cwd-independent Python launch-path assignment selected by the runtime."
+      : hasTestPortCollisionTarget
+      ? "Return one complete test file that replaces the foreign literal port with an OS-assigned loopback fixture while preserving test strength."
       : hasPythonStructuralTarget
       ? "Write one complete executable source replacement for the selected region."
       : "Write only concise natural project content for the replacement field.",
@@ -1343,6 +1385,8 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
         replacementOnlyRepair
           ? hasTestHarnessPathTarget
             ? "Rewrite one exact launch-path assignment selected from an agent-created Python test. The runtime owns its path and anchor and preserves the test contract."
+            : hasTestPortCollisionTarget
+            ? "Rewrite one complete Git-new Python test selected from deterministic foreign-port evidence. The runtime owns its path and exact anchor and enforces test-integrity and foreign-process boundaries."
             : structuralReplacementOnly
             ? "Rewrite one exact Python source region selected by retained failed-test evidence. The runtime owns its path and exact anchor; return the complete executable revised region."
             : "Rewrite one exact earlier text excerpt selected by retained failed-test evidence. The runtime owns its path and exact anchor; return only the complete revised excerpt, not the whole file."

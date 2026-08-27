@@ -226,7 +226,7 @@ const CONSTRAINED_SOURCE_MUTATION_OUTPUT_TOKEN_CAP = 8192;
 const MALFORMED_TOOL_RESPONSE_RETRY_OUTPUT_TOKEN_CAP = 6144;
 const MAX_COMPLETION_EVIDENCE_REPAIR_ATTEMPTS = 4;
 const FAILED_TEST_EVIDENCE_VERSION = 2;
-const FAILED_TEST_RECOVERY_PACKET_VERSION = 13;
+const FAILED_TEST_RECOVERY_PACKET_VERSION = 14;
 const PATCH_CONTEXT_REFRESH_VERSION = 1;
 const PATCH_CONTEXT_REPAIR_VERSION = 1;
 const PATCH_CONTEXT_ANCHOR_MAX_BYTES = 12_000;
@@ -6653,7 +6653,153 @@ function pythonTestIntegrityInventory(content = "") {
       /\bself\.assert[A-Z][A-Za-z0-9_]*\s*\(/.test(line) ||
       /^\s*assert(?:\s|\()/.test(line)
     );
-  return { testNames, assertionLines };
+  const assertionMethods = assertionLines.map((line) =>
+    line.match(/\bself\.(assert[A-Z][A-Za-z0-9_]*)\s*\(/)?.[1] || "assert"
+  );
+  return { testNames, assertionLines, assertionMethods };
+}
+
+function pythonSubprocessPortLiterals(content = "") {
+  const raw = String(content || "");
+  const ports = new Map();
+  for (const match of raw.matchAll(/(["'])--port\1\s*,\s*(["'])(\d{4,5})\2/g)) {
+    const port = Number(match[3]);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) continue;
+    const item = ports.get(port) || { port, count: 0, lines: [] };
+    item.count += 1;
+    item.lines.push(raw.slice(0, Number(match.index || 0)).split(/\r?\n/).length);
+    ports.set(port, item);
+  }
+  return [...ports.values()].map((item) => ({
+    ...item,
+    lines: [...new Set(item.lines)].slice(0, 16),
+  }));
+}
+
+function pythonDynamicLoopbackPortAllocatorPresent(content = "") {
+  const raw = String(content || "");
+  return (
+    /\bsocket\.(?:socket|create_connection)\b/.test(raw) &&
+    /\.bind\s*\(\s*\(\s*["'](?:127\.0\.0\.1|localhost|)["']\s*,\s*0\s*\)\s*\)/.test(raw)
+  );
+}
+
+async function loopbackPortAcceptsConnections(port, timeoutMs = 350) {
+  return await new Promise((resolve) => {
+    let settled = false;
+    const socket = net.createConnection({ host: "127.0.0.1", port });
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+  });
+}
+
+async function loopbackListenerOwnership(config = {}, port = 0) {
+  if (!(await loopbackPortAcceptsConnections(port))) return null;
+  if (process.platform !== "linux") {
+    return { port, occupied: true, workspaceOwned: null, processName: "unknown" };
+  }
+
+  const ssOutput = await new Promise((resolve) => {
+    let output = "";
+    let settled = false;
+    let timer;
+    const finish = (value = "") => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(value);
+    };
+    const child = spawn("ss", ["-H", "-ltnp", `sport = :${port}`], {
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    });
+    timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish("");
+    }, 1500);
+    child.stdout?.on("data", (chunk) => {
+      if (output.length < 8192) output += String(chunk || "");
+    });
+    child.on("error", () => finish(""));
+    child.on("close", (code) => finish(code === 0 ? output : ""));
+  });
+  const pid = Number(ssOutput.match(/\bpid=(\d+)\b/)?.[1] || 0);
+  const processName = String(ssOutput.match(/users:\(\(\"([^\"]+)/)?.[1] || "unknown");
+  if (!pid) {
+    return { port, occupied: true, workspaceOwned: null, processName };
+  }
+
+  const commandCwd = path.resolve(config.commandCwd || process.cwd());
+  const processCwd = await fs.readlink(`/proc/${pid}/cwd`).catch(() => "");
+  const commandLine = await fs.readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "");
+  const resolvedProcessCwd = processCwd ? path.resolve(processCwd) : "";
+  const workspaceOwned = Boolean(
+    (resolvedProcessCwd &&
+      (resolvedProcessCwd === commandCwd || resolvedProcessCwd.startsWith(`${commandCwd}${path.sep}`))) ||
+    commandLine.split("\0").some((argument) => {
+      if (!argument || !path.isAbsolute(argument)) return false;
+      const resolved = path.resolve(argument);
+      return resolved === commandCwd || resolved.startsWith(`${commandCwd}${path.sep}`);
+    })
+  );
+  return { port, occupied: true, workspaceOwned, processName };
+}
+
+async function pythonAgentCreatedTestPortCollisionDefects(
+  config = {},
+  relativePath = "",
+  content = ""
+) {
+  if (
+    !pathLooksLikeTestSource(relativePath) ||
+    path.posix.extname(relativePath).toLocaleLowerCase("en-US") !== ".py" ||
+    !(await gitPathIsNew(config, relativePath))
+  ) {
+    return [];
+  }
+  const literalPorts = pythonSubprocessPortLiterals(content).filter((item) => item.count >= 2);
+  if (!literalPorts.length) return [];
+  const listeners = await Promise.all(
+    literalPorts.map((item) => loopbackListenerOwnership(config, item.port))
+  );
+  const foreign = listeners.filter(
+    (listener) => listener?.occupied === true && listener.workspaceOwned === false
+  );
+  if (!foreign.length) return [];
+  const safeContent = redactSensitiveText(content);
+  if (
+    safeContent !== content ||
+    Buffer.byteLength(content, "utf8") > PATCH_CONTEXT_ANCHOR_MAX_BYTES
+  ) {
+    return [];
+  }
+  const foreignPorts = new Set(foreign.map((listener) => listener.port));
+  const relevantPorts = literalPorts.filter((item) => foreignPorts.has(item.port));
+  const integrity = pythonTestIntegrityInventory(content);
+  return [{
+    kind: "python-agent-test-foreign-port-collision",
+    path: relativePath,
+    decisiveLine: Math.min(...relevantPorts.flatMap((item) => item.lines)),
+    directSearch: content,
+    ports: relevantPorts.map((item) => item.port),
+    portOccurrences: relevantPorts.reduce((sum, item) => sum + item.count, 0),
+    listenerEvidence: foreign.map((listener) => ({
+      port: listener.port,
+      processName: listener.processName,
+      ownership: "outside-task-workspace",
+    })),
+    testNames: integrity.testNames,
+    assertionCount: integrity.assertionLines.length,
+    assertionMethods: integrity.assertionMethods,
+  }];
 }
 
 async function pythonAgentCreatedTestHarnessPathDefects(
@@ -6842,6 +6988,32 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
           testNames: defect.testNames,
           assertionCount: defect.assertionCount,
         });
+      }
+    }
+    const testPortCollisionDefects = await pythonAgentCreatedTestPortCollisionDefects(
+      config,
+      relativePath,
+      raw
+    );
+    if (testPortCollisionDefects.length) {
+      literalDiagnostics.push(
+        `### Foreign listener collision in agent-created test ${relativePath}\n` +
+          testPortCollisionDefects
+            .map((defect) =>
+              `hard-coded loopback port${defect.ports.length === 1 ? "" : "s"} ` +
+              `${defect.ports.join(", ")} appear ${defect.portOccurrences} times and are already ` +
+              `owned by ${defect.listenerEvidence
+                .map((item) => `${item.processName} on ${item.port}`)
+                .join(", ")} outside the task workspace. Do not stop or signal those foreign ` +
+              "processes and do not distort production behavior around the collision. Isolate this " +
+              "task-owned test with an ephemeral loopback port allocated by the OS while preserving " +
+              "every test method and assertion intent."
+            )
+            .join("\n")
+      );
+      for (const defect of testPortCollisionDefects) {
+        if (diagnosticFocuses.length >= 8) break;
+        diagnosticFocuses.push(defect);
       }
     }
     const mainGuardOrderDefects = pathLooksLikeTestSource(relativePath)
@@ -8333,6 +8505,113 @@ export async function failedTestRepairPatchBlock(state, toolName, args = {}, con
           failureSignature: String(currentFailure.test.failureSignature || ""),
           diagnosticHint:
             "Rebuild the failed-test evidence packet against the current workspace before another mutation.",
+        };
+      }
+      monotonicProgress = true;
+      continue;
+    }
+    if (focus?.kind === "python-agent-test-foreign-port-collision") {
+      if (!(await gitPathIsNew(config, targetRelativePath))) {
+        return {
+          reason:
+            "The focused Python test is no longer Git-new, so the runtime will not rewrite its port fixtures under the agent-created-test exception.",
+          category: "failed-test-authoritative-test-boundary",
+          mutationRevision: Number(currentFailure.mutationRevision || 0),
+          failureSignature: String(currentFailure.test.failureSignature || ""),
+          diagnosticHint:
+            "Rebuild evidence at the current repository revision. Never alter an established or private verifier to accommodate an environment collision.",
+        };
+      }
+      if (String(focus?.directSearch || "") !== content || args.search !== content) {
+        return {
+          reason:
+            "The agent-created port-isolation repair is not anchored to the exact current test file.",
+          category: "failed-test-stale-diagnostic",
+          mutationRevision: Number(currentFailure.mutationRevision || 0),
+          failureSignature: String(currentFailure.test.failureSignature || ""),
+          diagnosticHint:
+            "Rebuild the bounded failed-test packet before rewriting the task-owned test.",
+        };
+      }
+      const currentIntegrity = pythonTestIntegrityInventory(content);
+      const proposedIntegrity = pythonTestIntegrityInventory(proposedContent);
+      if (
+        JSON.stringify(proposedIntegrity.testNames) !==
+          JSON.stringify(currentIntegrity.testNames) ||
+        JSON.stringify(proposedIntegrity.assertionMethods) !==
+          JSON.stringify(currentIntegrity.assertionMethods) ||
+        proposedIntegrity.assertionLines.length !== currentIntegrity.assertionLines.length
+      ) {
+        return {
+          reason:
+            "The proposed port-isolation rewrite removes, renames, or weakens a test method or assertion.",
+          category: "failed-test-regression",
+          mutationRevision: Number(currentFailure.mutationRevision || 0),
+          failureSignature: String(currentFailure.test.failureSignature || ""),
+          diagnosticHint:
+            "Preserve every test name and assertion method in the same order. Change only fixture setup, port arguments, and port-specific expected text needed for OS-assigned loopback ports.",
+        };
+      }
+      const skipPattern = /\b(?:unittest\.)?skip(?:If|Unless)?\s*\(|\bpytest\.skip\s*\(/g;
+      const currentSkipCount = [...content.matchAll(skipPattern)].length;
+      const proposedSkipCount = [...proposedContent.matchAll(skipPattern)].length;
+      if (proposedSkipCount > currentSkipCount) {
+        return {
+          reason:
+            "The proposed port-isolation rewrite introduces skipped tests instead of isolating their environment.",
+          category: "failed-test-regression",
+          mutationRevision: Number(currentFailure.mutationRevision || 0),
+          failureSignature: String(currentFailure.test.failureSignature || ""),
+          diagnosticHint:
+            "Allocate an ephemeral loopback port and keep all tests active.",
+        };
+      }
+      const foreignTerminationPattern = /\b(?:os\.kill|process\.kill|pkill|killall|taskkill)\b/g;
+      if (
+        [...proposedContent.matchAll(foreignTerminationPattern)].length >
+        [...content.matchAll(foreignTerminationPattern)].length
+      ) {
+        return {
+          reason:
+            "The proposed test rewrite adds process termination while the occupied listener is owned outside the task workspace.",
+          category: "failed-test-foreign-process-boundary",
+          mutationRevision: Number(currentFailure.mutationRevision || 0),
+          failureSignature: String(currentFailure.test.failureSignature || ""),
+          diagnosticHint:
+            "Do not signal or stop the foreign listener. Isolate the task-owned test with an OS-assigned loopback port.",
+        };
+      }
+      const collisionPorts = new Set(
+        (Array.isArray(focus?.ports) ? focus.ports : [])
+          .map((port) => Number(port))
+          .filter((port) => Number.isInteger(port))
+      );
+      const remainingCollisions = pythonSubprocessPortLiterals(proposedContent).filter(
+        (item) => collisionPorts.has(item.port)
+      );
+      if (remainingCollisions.length || !pythonDynamicLoopbackPortAllocatorPresent(proposedContent)) {
+        return {
+          reason:
+            "The proposed test rewrite still relies on the occupied literal port or does not allocate an ephemeral loopback port through the OS.",
+          category: "failed-test-nonrepairing-patch",
+          mutationRevision: Number(currentFailure.mutationRevision || 0),
+          failureSignature: String(currentFailure.test.failureSignature || ""),
+          diagnosticHint:
+            "Bind a temporary socket to 127.0.0.1:0, retain the assigned port for the test, release the reservation immediately before launch, and use that port consistently in command arguments and expected log text.",
+        };
+      }
+      const syntax = await runPythonSyntaxCheck({
+        absolutePath: target.absolutePath,
+        source: proposedContent,
+      });
+      if (syntax.checked && !syntax.ok) {
+        return {
+          reason: `The proposed port-isolation rewrite is not valid Python: ${syntax.reason}`,
+          category: "failed-test-regression",
+          mutationRevision: Number(currentFailure.mutationRevision || 0),
+          failureSignature: String(currentFailure.test.failureSignature || ""),
+          diagnosticHint:
+            "Return one syntactically valid complete test file with the same test methods and assertion methods.",
         };
       }
       monotonicProgress = true;
@@ -10871,6 +11150,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
           (focus) =>
             [
               "python-agent-test-harness-path",
+              "python-agent-test-foreign-port-collision",
               "python-main-guard-order",
               "python-duplicate-top-level-definition",
               "python-git-baseline-recovery",
@@ -10887,6 +11167,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
           .filter((focus) =>
             [
               "python-agent-test-harness-path",
+              "python-agent-test-foreign-port-collision",
               "python-main-guard-order",
               "python-duplicate-top-level-definition",
               "python-git-baseline-recovery",
@@ -10898,15 +11179,17 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
             (left, right) =>
               ({
                 "python-agent-test-harness-path": 0,
-                "python-main-guard-order": 1,
-                "python-duplicate-top-level-definition": 2,
-                "python-git-baseline-recovery": 3,
+                "python-agent-test-foreign-port-collision": 1,
+                "python-main-guard-order": 2,
+                "python-duplicate-top-level-definition": 3,
+                "python-git-baseline-recovery": 4,
               }[left?.kind] ?? 4) -
                 ({
                   "python-agent-test-harness-path": 0,
-                  "python-main-guard-order": 1,
-                  "python-duplicate-top-level-definition": 2,
-                  "python-git-baseline-recovery": 3,
+                  "python-agent-test-foreign-port-collision": 1,
+                  "python-main-guard-order": 2,
+                  "python-duplicate-top-level-definition": 3,
+                  "python-git-baseline-recovery": 4,
                 }[right?.kind] ?? 4) ||
               Math.max(0, Number(left?.decisiveLine || 0)) -
               Math.max(0, Number(right?.decisiveLine || 0))
@@ -10990,6 +11273,32 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
             : {}),
           ...(Number.isFinite(Number(focus?.assertionCount))
             ? { assertionCount: Math.max(0, Number(focus.assertionCount || 0)) }
+            : {}),
+          ...(Array.isArray(focus?.assertionMethods)
+            ? { assertionMethods: focus.assertionMethods.map(String).slice(0, 128) }
+            : {}),
+          ...(Array.isArray(focus?.ports)
+            ? {
+                ports: focus.ports
+                  .map((port) => Number(port))
+                  .filter((port) => Number.isInteger(port) && port >= 1024 && port <= 65535)
+                  .slice(0, 8),
+              }
+            : {}),
+          ...(Number.isFinite(Number(focus?.portOccurrences))
+            ? { portOccurrences: Math.max(0, Number(focus.portOccurrences || 0)) }
+            : {}),
+          ...(Array.isArray(focus?.listenerEvidence)
+            ? {
+                listenerEvidence: focus.listenerEvidence
+                  .map((item) => ({
+                    port: Number(item?.port || 0),
+                    processName: String(item?.processName || "unknown").slice(0, 80),
+                    ownership: String(item?.ownership || "").slice(0, 80),
+                  }))
+                  .filter((item) => item.port >= 1024 && item.port <= 65535)
+                  .slice(0, 8),
+              }
             : {}),
           ...(Array.isArray(focus?.calledLater) && focus.calledLater.length
             ? {

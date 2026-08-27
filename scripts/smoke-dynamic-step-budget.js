@@ -2,6 +2,7 @@
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -264,7 +265,7 @@ try {
         }],
       },
       failedTestDiagnostic: {
-        packetVersion: 13,
+        packetVersion: 14,
         mutationRevision: 0,
         failureSignature: "python-entrypoint-order",
         focuses: [{
@@ -645,6 +646,120 @@ try {
     )) === null,
     "the exact cwd-independent agent-created test harness repair was blocked"
   );
+  const foreignListener = net.createServer((socket) => socket.end());
+  await new Promise((resolve, reject) => {
+    foreignListener.once("error", reject);
+    foreignListener.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const collisionPort = Number(foreignListener.address()?.port || 0);
+    assert(collisionPort >= 1024, "failed to allocate the foreign-listener smoke port");
+    const portCollisionSource = [
+      "import subprocess",
+      "import sys",
+      "import unittest",
+      "from pathlib import Path",
+      "",
+      'SERVICE_CTL = (Path(__file__).resolve().parent / "../service_ctl.py").resolve()',
+      "",
+      "class TestLifecycle(unittest.TestCase):",
+      "    def test_start(self):",
+      `        first = subprocess.run([sys.executable, SERVICE_CTL, "start", "--port", "${collisionPort}"], capture_output=True)`,
+      `        second = subprocess.run([sys.executable, SERVICE_CTL, "status", "--port", "${collisionPort}"], capture_output=True)`,
+      "        self.assertEqual(first.returncode, 0)",
+      "        self.assertEqual(second.returncode, 0)",
+      "",
+    ].join("\n");
+    await fs.writeFile(harnessTestPath, portCollisionSource, "utf8");
+    const portCollisionState = {
+      meta: {
+        projectVerification: {
+          mutationRevision: 5,
+          discoveredTests: ["tests/test_service_lifecycle.py"],
+          testRuns: [{
+            command: "python3 -m unittest discover -s tests -v",
+            mutationRevision: 5,
+            passed: false,
+            failureEvidenceVersion: 2,
+            failureSignature: "agent-created-test-foreign-port-collision",
+            failureSummary:
+              "test_start AssertionError: 1 != 0 while starting the task service",
+          }],
+        },
+      },
+    };
+    const portCollisionPacket = await buildFailedTestRecoveryPacket(
+      { commandCwd: baselineWorkspace },
+      portCollisionState
+    );
+    const portCollisionFocus = portCollisionState.meta.failedTestDiagnostic.focuses.find(
+      (focus) => focus.kind === "python-agent-test-foreign-port-collision"
+    );
+    assert(
+      portCollisionPacket.content.includes("Foreign listener collision") &&
+        portCollisionFocus?.path === "tests/test_service_lifecycle.py" &&
+        portCollisionFocus?.ports?.[0] === collisionPort &&
+        portCollisionFocus?.portOccurrences === 2 &&
+        portCollisionFocus?.listenerEvidence?.[0]?.ownership === "outside-task-workspace" &&
+        portCollisionFocus?.testNames?.join(",") === "test_start" &&
+        portCollisionFocus?.assertionCount === 2,
+      "a foreign hard-coded port in a Git-new test was not isolated with ownership evidence"
+    );
+    const dynamicPortSource = [
+      "import socket",
+      "import subprocess",
+      "import sys",
+      "import unittest",
+      "from pathlib import Path",
+      "",
+      'SERVICE_CTL = (Path(__file__).resolve().parent / "../service_ctl.py").resolve()',
+      "",
+      "def free_port():",
+      "    with socket.socket() as probe:",
+      '        probe.bind(("127.0.0.1", 0))',
+      "        return probe.getsockname()[1]",
+      "",
+      "class TestLifecycle(unittest.TestCase):",
+      "    def test_start(self):",
+      "        port = free_port()",
+      "        first = subprocess.run([sys.executable, SERVICE_CTL, \"start\", \"--port\", str(port)], capture_output=True)",
+      "        second = subprocess.run([sys.executable, SERVICE_CTL, \"status\", \"--port\", str(port)], capture_output=True)",
+      "        self.assertEqual(first.returncode, 0)",
+      "        self.assertEqual(second.returncode, 0)",
+      "",
+    ].join("\n");
+    assert(
+      (await failedTestRepairPatchBlock(
+        portCollisionState,
+        "apply_patch",
+        {
+          path: "tests/test_service_lifecycle.py",
+          search: portCollisionSource,
+          replace: dynamicPortSource.replace(
+            "        self.assertEqual(second.returncode, 0)",
+            "        self.assertTrue(True)"
+          ),
+        },
+        { commandCwd: baselineWorkspace }
+      ))?.category === "failed-test-regression",
+      "foreign-port isolation was allowed to change the assertion-method contract"
+    );
+    assert(
+      (await failedTestRepairPatchBlock(
+        portCollisionState,
+        "apply_patch",
+        {
+          path: "tests/test_service_lifecycle.py",
+          search: portCollisionSource,
+          replace: dynamicPortSource,
+        },
+        { commandCwd: baselineWorkspace }
+      )) === null,
+      "a complete dynamic-port rewrite of the Git-new test was blocked"
+    );
+  } finally {
+    await new Promise((resolve) => foreignListener.close(resolve));
+  }
   for (const args of [
     ["add", "service_ctl.py", "tests/test_service_lifecycle.py"],
     ["commit", "-m", "tracked harness boundary"],
@@ -667,9 +782,11 @@ try {
   );
   assert(
     !trackedHarnessState.meta.failedTestDiagnostic.focuses.some(
-      (focus) => focus.kind === "python-agent-test-harness-path"
+      (focus) =>
+        focus.kind === "python-agent-test-harness-path" ||
+        focus.kind === "python-agent-test-foreign-port-collision"
     ),
-    "the agent-created test exception was incorrectly applied to a tracked authoritative test"
+    "an agent-created test exception was incorrectly applied to a tracked authoritative test"
   );
   await fs.mkdir(path.join(workspace, "tests"), { recursive: true });
   await fs.writeFile(
@@ -6495,8 +6612,8 @@ try {
     "a same-task refresh could not rebuild a missing failed-test evidence packet"
   );
   missingRecoveryPacketState.meta.failedTestRecoveryPacket = {
-    packetVersion: 13,
-    content: "Bounded failed-test evidence packet v13.",
+    packetVersion: 14,
+    content: "Bounded failed-test evidence packet v14.",
     mutationRevision: 6,
     failureSignature: "same-failure",
   };
@@ -7354,7 +7471,7 @@ try {
         ],
       },
       failedTestDiagnostic: {
-        packetVersion: 13,
+        packetVersion: 14,
         mutationRevision: 0,
         failureSignature: "partial-derived-order",
         focuses: [

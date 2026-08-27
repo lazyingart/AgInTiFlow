@@ -2007,13 +2007,13 @@ const retainedPacketRepairRuntime = nextStepRuntimeConfig(
         ],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 13,
+        packetVersion: 14,
         mutationRevision: 3,
         failureSignature: "retained-failure",
-        content: "Bounded failed-test evidence packet v13.",
+        content: "Bounded failed-test evidence packet v14.",
       },
       failedTestDiagnostic: {
-        packetVersion: 13,
+        packetVersion: 14,
         mutationRevision: 3,
         failureSignature: "retained-failure",
         at: "2026-08-24T02:00:00.000Z",
@@ -2060,21 +2060,21 @@ const packetPathReadState = {
       }],
     },
     failedTestRecoveryPacket: {
-      packetVersion: 13,
+      packetVersion: 14,
       mutationRevision: 7,
       failureSignature: "packet-path-failure",
-      content: "Bounded failed-test evidence packet v13.",
+      content: "Bounded failed-test evidence packet v14.",
       paths: ["tests/test_service_ctl.py", "service_ctl.py"],
       generatedAt: "2026-08-24T02:00:10.000Z",
     },
     failedTestFocusedRecovery: {
-      packetVersion: 13,
+      packetVersion: 14,
       mutationRevision: 7,
       failureSignature: "packet-path-failure",
       at: "2026-08-24T02:00:10.000Z",
     },
     failedTestDiagnostic: {
-      packetVersion: 13,
+      packetVersion: 14,
       mutationRevision: 7,
       failureSignature: "packet-path-failure",
       at: "2026-08-24T02:00:00.000Z",
@@ -2354,13 +2354,13 @@ const focusedPatchRepairRuntime = nextStepRuntimeConfig(
         ],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 13,
+        packetVersion: 14,
         mutationRevision: 5,
         failureSignature: "focused-failure",
-        content: "Bounded failed-test evidence packet v13.",
+        content: "Bounded failed-test evidence packet v14.",
       },
       failedTestDiagnostic: {
-        packetVersion: 13,
+        packetVersion: 14,
         mutationRevision: 5,
         failureSignature: "focused-failure",
         at: "2026-08-24T02:00:00.000Z",
@@ -2514,13 +2514,13 @@ const pythonGuardRepairRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 13,
+        packetVersion: 14,
         mutationRevision: 8,
         failureSignature: "python-main-guard-order",
-        content: "Bounded failed-test evidence packet v13.",
+        content: "Bounded failed-test evidence packet v14.",
       },
       failedTestDiagnostic: {
-        packetVersion: 13,
+        packetVersion: 14,
         mutationRevision: 8,
         failureSignature: "python-main-guard-order",
         at: "2026-08-26T18:00:00.000Z",
@@ -2672,13 +2672,13 @@ const duplicateSourceRepairRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 13,
+        packetVersion: 14,
         mutationRevision: 9,
         failureSignature: "python-duplicate-source",
-        content: "Bounded failed-test evidence packet v13.",
+        content: "Bounded failed-test evidence packet v14.",
       },
       failedTestDiagnostic: {
-        packetVersion: 13,
+        packetVersion: 14,
         mutationRevision: 9,
         failureSignature: "python-duplicate-source",
         at: "2026-08-26T19:00:00.000Z",
@@ -2785,13 +2785,13 @@ const baselineRecoveryRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 13,
+        packetVersion: 14,
         mutationRevision: 10,
         failureSignature: "python-baseline-recovery",
-        content: "Bounded failed-test evidence packet v13.",
+        content: "Bounded failed-test evidence packet v14.",
       },
       failedTestDiagnostic: {
-        packetVersion: 13,
+        packetVersion: 14,
         mutationRevision: 10,
         failureSignature: "python-baseline-recovery",
         at: "2026-08-26T19:30:00.000Z",
@@ -2892,13 +2892,13 @@ const harnessPathRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 13,
+        packetVersion: 14,
         mutationRevision: 11,
         failureSignature: "agent-created-test-harness-path",
-        content: "Bounded failed-test evidence packet v13.",
+        content: "Bounded failed-test evidence packet v14.",
       },
       failedTestDiagnostic: {
-        packetVersion: 13,
+        packetVersion: 14,
         mutationRevision: 11,
         failureSignature: "agent-created-test-harness-path",
         at: "2026-08-26T20:30:00.000Z",
@@ -2953,6 +2953,103 @@ assertStrict.ok(
   ) &&
     harnessPathRewrite.function.description.includes("agent-created Python test"),
   "the test harness repair omitted its assertion-preservation boundary"
+);
+const portCollisionSearch = [
+  "import socket",
+  "import unittest",
+  "",
+  "class TestLifecycle(unittest.TestCase):",
+  "    def test_start(self):",
+  "        result = run_service('--port', '8765')",
+  "        self.assertEqual(result.returncode, 0)",
+  "",
+].join("\n");
+const portCollisionRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", taskProfile: "qa" },
+  {
+    meta: {
+      projectVerification: {
+        mutationRevision: 12,
+        testRuns: [{
+          command: "python -m unittest discover -s tests -v",
+          mutationRevision: 12,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "agent-created-test-port-collision",
+        }],
+      },
+      failedTestRecoveryPacket: {
+        packetVersion: 14,
+        mutationRevision: 12,
+        failureSignature: "agent-created-test-port-collision",
+        content: "Bounded failed-test evidence packet v14.",
+      },
+      failedTestDiagnostic: {
+        packetVersion: 14,
+        mutationRevision: 12,
+        failureSignature: "agent-created-test-port-collision",
+        at: "2026-08-27T09:00:00.000Z",
+        focuses: [{
+          kind: "python-agent-test-foreign-port-collision",
+          path: "tests/test_service_lifecycle.py",
+          decisiveLine: 6,
+          directSearch: portCollisionSearch,
+          ports: [8765],
+          portOccurrences: 4,
+          listenerEvidence: [{
+            port: 8765,
+            processName: "python3",
+            ownership: "outside-task-workspace",
+          }],
+          testNames: ["test_start", "test_restart"],
+          assertionCount: 5,
+          assertionMethods: [
+            "assertEqual",
+            "assertTrue",
+            "assertEqual",
+            "assertNotEqual",
+            "assertTrue",
+          ],
+        }],
+      },
+      toolLoop: { stagnationEpoch: 15, recent: [] },
+    },
+    messages: [],
+  }
+);
+assertStrict.equal(
+  portCollisionRuntime.testFailureRepairPatchTargets?.[0]?.kind,
+  "python-agent-test-foreign-port-collision",
+  "a foreign listener collision in a Git-new test did not activate bounded test isolation"
+);
+assertStrict.deepEqual(
+  portCollisionRuntime.testFailureRepairPatchTargets?.[0]?.ports,
+  [8765],
+  "the focused test repair lost the exact occupied port evidence"
+);
+const portCollisionTools = selectProgressiveTools(allTools, {
+  config: portCollisionRuntime,
+  goal: "Keep a foreign service alive while isolating the task-owned lifecycle test.",
+  profile: "qa",
+});
+sameNames(
+  portCollisionTools,
+  ["rewrite_text_excerpt", "finish"],
+  "foreign-port test isolation exposed unrelated tools"
+);
+const portCollisionRewrite = portCollisionTools.find(
+  (tool) => tool.function.name === "rewrite_text_excerpt"
+);
+assertStrict.ok(
+  portCollisionRewrite.function.parameters.properties.revisedText.description.includes(
+    "socket.bind(('127.0.0.1', 0))"
+  ) &&
+    portCollisionRewrite.function.parameters.properties.revisedText.description.includes(
+      "Do not skip tests"
+    ) &&
+    portCollisionRewrite.function.description.includes("foreign-port evidence") &&
+    portCollisionRewrite.function.parameters.properties.revisedText.maxLength === 24000,
+  "foreign-port test isolation omitted its dynamic-port or integrity contract"
 );
 const separatorRepairTools = selectProgressiveTools(allTools, {
   config: {
