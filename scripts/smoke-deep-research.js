@@ -190,6 +190,28 @@ async function main() {
     "DeepSeek action recovery did not force the only executable tool"
   );
   assert(
+    JSON.stringify(toolChoiceForProvider(
+      { provider: "deepseek", completionFreshMutationRequired: true },
+      [{ role: "user", content: "Repair the retained source from the exact failure evidence." }],
+      [
+        { type: "function", function: { name: "apply_patch" } },
+        { type: "function", function: { name: "finish" } },
+      ]
+    )) === JSON.stringify({ type: "function", function: { name: "apply_patch" } }),
+    "DeepSeek constrained recovery relied on a prompt phrase instead of the offered tool contract"
+  );
+  assert(
+    toolChoiceForProvider(
+      { provider: "deepseek" },
+      [{ role: "user", content: "Explain what this source does." }],
+      [
+        { type: "function", function: { name: "read_file" } },
+        { type: "function", function: { name: "finish" } },
+      ]
+    ) === "auto",
+    "DeepSeek ordinary chat forced a tool merely because few tools were enabled"
+  );
+  assert(
     JSON.stringify(providerStructuredOutputAttempts("deepseek")) === JSON.stringify(["json_object", "prompt"]),
     "DeepSeek structured extraction still probes an unsupported JSON Schema mode"
   );
@@ -241,7 +263,7 @@ async function main() {
       completionFreshMutationNeedsSourceRead: false,
       completionFreshMutationPaths: ["service.py"],
     },
-    [{ role: "user", content: "Emit exactly one enabled tool call that performs the next concrete action." }]
+    [{ role: "user", content: "Repair the retained source from the exact failure evidence." }]
   );
   assert(
     deepSeekActionPayload?.thinking?.type === "disabled",

@@ -348,27 +348,50 @@ function requiresConcreteToolContinuation(messages = []) {
   );
 }
 
-function deepSeekActionOnlyRequest(config = {}, messages = []) {
-  return normalizeProviderId(config.provider, "") === "deepseek" &&
+function singleExecutableToolName(tools = []) {
+  const names = (Array.isArray(tools) ? tools : [])
+    .filter((tool) => tool?.type === "function")
+    .map((tool) => String(tool.function?.name || ""))
+    .filter(Boolean);
+  const actionable = [...new Set(names.filter((name) => name !== "finish"))];
+  if (actionable.length !== 1) return "";
+  return names.every((name) => name === "finish" || name === actionable[0])
+    ? actionable[0]
+    : "";
+}
+
+function deepSeekActionOnlyTool(config = {}, messages = [], tools = []) {
+  if (normalizeProviderId(config.provider, "") !== "deepseek") return "";
+  const constrainedRecovery = config.completionFreshMutationRequired === true ||
     requiresConcreteToolContinuation(messages);
+  if (!constrainedRecovery) return "";
+  const constrainedTool = singleExecutableToolName(tools);
+  if (constrainedTool) return constrainedTool;
+  const actionable = (Array.isArray(tools) ? tools : [])
+    .filter((tool) => tool?.type === "function" && tool.function?.name !== "finish")
+    .map((tool) => String(tool.function?.name || ""))
+    .filter(Boolean);
+  return actionable.length === 1 ? actionable[0] : "";
+}
+
+function deepSeekActionOnlyRequest(config = {}, messages = [], tools = []) {
+  return normalizeProviderId(config.provider, "") === "deepseek" &&
+    Boolean(
+      requiresConcreteToolContinuation(messages) ||
+      (config.completionFreshMutationRequired === true && singleExecutableToolName(tools))
+    );
 }
 
 export function toolChoiceForProvider(config, messages = [], tools = []) {
   const requiresConcreteContinuation = requiresConcreteToolContinuation(messages);
+  const deepSeekActionTool = deepSeekActionOnlyTool(config, messages, tools);
+  if (deepSeekActionTool) {
+    return {
+      type: "function",
+      function: { name: deepSeekActionTool },
+    };
+  }
   if (requiresConcreteContinuation) {
-    const actionable = (Array.isArray(tools) ? tools : [])
-      .filter((tool) => tool?.type === "function" && tool.function?.name !== "finish")
-      .map((tool) => String(tool.function?.name || ""))
-      .filter(Boolean);
-    if (
-      normalizeProviderId(config.provider, "") === "deepseek" &&
-      actionable.length === 1
-    ) {
-      return {
-        type: "function",
-        function: { name: actionable[0] },
-      };
-    }
     return "required";
   }
   if (config.provider !== "venice") return "auto";
@@ -2675,7 +2698,7 @@ export async function requestNextStep(client, config, messages) {
     parallel_tool_calls: false,
     messages: prepareMessages(config, messages),
     tools: requestTools,
-    ...(deepSeekActionOnlyRequest(config, messages)
+    ...(deepSeekActionOnlyRequest(config, messages, requestTools)
       ? { thinking: { type: "disabled" } }
       : {}),
     ...(Number(config.maxOutputTokens || 0) > 0 ? { max_tokens: Number(config.maxOutputTokens) } : {}),
