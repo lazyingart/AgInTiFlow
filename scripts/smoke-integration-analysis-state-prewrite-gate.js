@@ -200,6 +200,46 @@ async function stateVersions(root) {
   ));
 }
 
+function expectedCurrentStorageState(scopeCount, sourceV2ScopeCount, sourceV3ScopeCount) {
+  if (scopeCount === 0) return "empty";
+  if (sourceV2ScopeCount === scopeCount) return "all-v2";
+  if (sourceV3ScopeCount === scopeCount) return "all-v3";
+  return "mixed";
+}
+
+function assertGateMatrix(gate, expected = {}) {
+  for (const field of [
+    "scopeCount",
+    "sourceV2ScopeCount",
+    "sourceV3ScopeCount",
+    "migrationTemporaryCount",
+  ]) {
+    assert.equal(Number.isSafeInteger(gate[field]) && gate[field] >= 0, true, `${field} is invalid`);
+  }
+  assert.equal(gate.sourceV2ScopeCount + gate.sourceV3ScopeCount, gate.scopeCount);
+  assert.equal(gate.migrationTemporaryCount <= gate.scopeCount, true);
+  assert.equal(
+    gate.currentStorageState,
+    expectedCurrentStorageState(
+      gate.scopeCount,
+      gate.sourceV2ScopeCount,
+      gate.sourceV3ScopeCount
+    )
+  );
+  for (const [field, value] of Object.entries(expected)) assert.equal(gate[field], value, field);
+}
+
+function withoutCurrentStateMetadata(gate) {
+  const {
+    currentStorageState: _currentStorageState,
+    migrationTemporaryCount: _migrationTemporaryCount,
+    sourceV2ScopeCount: _sourceV2ScopeCount,
+    sourceV3ScopeCount: _sourceV3ScopeCount,
+    ...stable
+  } = gate;
+  return stable;
+}
+
 function assertContentBlindGate(gate, root = "") {
   assert.deepEqual(Object.keys(gate), [
     "schemaVersion",
@@ -207,6 +247,10 @@ function assertContentBlindGate(gate, root = "") {
     "direction",
     "targetStorageVersion",
     "scopeCount",
+    "sourceV2ScopeCount",
+    "sourceV3ScopeCount",
+    "migrationTemporaryCount",
+    "currentStorageState",
     "targetAggregateDigest",
     "migrationContractDigest",
   ]);
@@ -214,6 +258,7 @@ function assertContentBlindGate(gate, root = "") {
   assert.equal(gate.event, "migration-prewrite-gate");
   assert.equal(gate.direction, "forward-only");
   assert.equal(gate.targetStorageVersion, INTEGRATION_ANALYSIS_STATE_STORAGE_V3);
+  assertGateMatrix(gate);
   assert.match(gate.targetAggregateDigest, /^[a-f0-9]{64}$/u);
   assert.equal(gate.migrationContractDigest, contractDigest(INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT));
   const serialized = JSON.stringify(gate);
@@ -235,6 +280,13 @@ async function lockHeldAndNoMutationBeforeApproval(root) {
     async beforeMutation(gate) {
       gateCount += 1;
       assertContentBlindGate(gate, root);
+      assertGateMatrix(gate, {
+        scopeCount: 2,
+        sourceV2ScopeCount: 2,
+        sourceV3ScopeCount: 0,
+        migrationTemporaryCount: 1,
+        currentStorageState: "all-v2",
+      });
       assert.equal((await fs.lstat(path.join(root, OWNER_LOCK_NAME))).isDirectory(), true);
       const owner = JSON.parse(
         await fs.readFile(path.join(root, OWNER_LOCK_NAME, "owner.json"), "utf8")
@@ -285,18 +337,44 @@ async function targetDigestStableAcrossResumeStates(root) {
   await convertSelectedToV2(mixed, [0, 2]);
   const allV3Before = await durableSnapshot(allV3);
 
+  const expectedMatrices = [
+    {
+      scopeCount: 3,
+      sourceV2ScopeCount: 3,
+      sourceV3ScopeCount: 0,
+      migrationTemporaryCount: 0,
+      currentStorageState: "all-v2",
+    },
+    {
+      scopeCount: 3,
+      sourceV2ScopeCount: 2,
+      sourceV3ScopeCount: 1,
+      migrationTemporaryCount: 0,
+      currentStorageState: "mixed",
+    },
+    {
+      scopeCount: 3,
+      sourceV2ScopeCount: 0,
+      sourceV3ScopeCount: 3,
+      migrationTemporaryCount: 0,
+      currentStorageState: "all-v3",
+    },
+  ];
   const gates = [];
   const results = [];
-  for (const candidate of [allV2, mixed, allV3]) {
+  for (const [index, candidate] of [allV2, mixed, allV3].entries()) {
     results.push(await migrateTestOnlyIntegrationAnalysisStateRoot(candidate, {
       beforeMutation(gate) {
         assertContentBlindGate(gate, candidate);
+        assertGateMatrix(gate, expectedMatrices[index]);
         gates.push(gate);
       },
     }));
   }
-  assert.deepEqual(gates[0], gates[1]);
-  assert.deepEqual(gates[1], gates[2]);
+  assert.deepEqual(withoutCurrentStateMetadata(gates[0]), withoutCurrentStateMetadata(gates[1]));
+  assert.deepEqual(withoutCurrentStateMetadata(gates[1]), withoutCurrentStateMetadata(gates[2]));
+  assert.equal(gates[0].targetAggregateDigest, gates[1].targetAggregateDigest);
+  assert.equal(gates[1].targetAggregateDigest, gates[2].targetAggregateDigest);
   assert.equal(results[0].convertedScopeCount, 3);
   assert.equal(results[1].convertedScopeCount, 2);
   assert.equal(results[2].convertedScopeCount, 0);
@@ -306,6 +384,32 @@ async function targetDigestStableAcrossResumeStates(root) {
   assert.deepEqual(await durableSnapshot(allV3), allV3Before);
   assert.deepEqual(await durableContents(allV2), await durableContents(allV3));
   assert.deepEqual(await durableContents(mixed), await durableContents(allV3));
+}
+
+async function emptyRootHasExplicitStorageState(root) {
+  await fs.mkdir(path.join(root, "scopes"), { recursive: true, mode: 0o700 });
+  await fs.chmod(root, 0o700);
+  await fs.chmod(path.join(root, "scopes"), 0o700);
+  let observedGate;
+  const result = await migrateTestOnlyIntegrationAnalysisStateRoot(root, {
+    beforeMutation(gate) {
+      observedGate = gate;
+      assertContentBlindGate(gate, root);
+      assertGateMatrix(gate, {
+        scopeCount: 0,
+        sourceV2ScopeCount: 0,
+        sourceV3ScopeCount: 0,
+        migrationTemporaryCount: 0,
+        currentStorageState: "empty",
+      });
+    },
+  });
+  assert.equal(observedGate.currentStorageState, "empty");
+  assert.equal(result.scopeCount, 0);
+  assert.equal(result.convertedScopeCount, 0);
+  assert.equal(result.unchangedScopeCount, 0);
+  assert.equal(result.outputAggregateDigest, observedGate.targetAggregateDigest);
+  assert.deepEqual(await durableSnapshot(root), {});
 }
 
 async function crashResumeKeepsTargetDigest(root) {
@@ -328,13 +432,30 @@ async function crashResumeKeepsTargetDigest(root) {
     INTEGRATION_ANALYSIS_STATE_STORAGE_V2,
     INTEGRATION_ANALYSIS_STATE_STORAGE_V3,
   ].sort());
+  assertGateMatrix(firstGate, {
+    scopeCount: 3,
+    sourceV2ScopeCount: 3,
+    sourceV3ScopeCount: 0,
+    migrationTemporaryCount: 0,
+    currentStorageState: "all-v2",
+  });
   let resumedGate;
   const resumed = await migrateTestOnlyIntegrationAnalysisStateRoot(root, {
     beforeMutation(gate) {
       resumedGate = gate;
     },
   });
-  assert.deepEqual(resumedGate, firstGate);
+  assertGateMatrix(resumedGate, {
+    scopeCount: 3,
+    sourceV2ScopeCount: 2,
+    sourceV3ScopeCount: 1,
+    migrationTemporaryCount: 0,
+    currentStorageState: "mixed",
+  });
+  assert.deepEqual(
+    withoutCurrentStateMetadata(resumedGate),
+    withoutCurrentStateMetadata(firstGate)
+  );
   assert.equal(resumed.outputAggregateDigest, firstGate.targetAggregateDigest);
   assert.equal(resumed.convertedScopeCount, 2);
 }
@@ -392,10 +513,28 @@ async function startGatedCli(root, timeoutMs = 100) {
 }
 
 function assertPublicGate(gate, root) {
+  assert.deepEqual(Object.keys(gate), [
+    "schemaVersion",
+    "event",
+    "nonce",
+    "timeoutMs",
+    "direction",
+    "targetStorageVersion",
+    "scopeCount",
+    "sourceV2ScopeCount",
+    "sourceV3ScopeCount",
+    "migrationTemporaryCount",
+    "currentStorageState",
+    "targetAggregateDigest",
+    "migrationContractDigest",
+    "ackSchemaVersion",
+    "requiredAck",
+  ]);
   assert.equal(gate.schemaVersion, INTEGRATION_ANALYSIS_STATE_MIGRATION_PREWRITE_GATE_SCHEMA_VERSION);
   assert.equal(gate.event, "migration-prewrite-gate");
   assert.equal(gate.nonce, NONCE);
   assert.equal(gate.targetStorageVersion, INTEGRATION_ANALYSIS_STATE_STORAGE_V3);
+  assertGateMatrix(gate);
   assert.equal(gate.ackSchemaVersion, INTEGRATION_ANALYSIS_STATE_MIGRATION_PREWRITE_ACK_SCHEMA_VERSION);
   assert.match(gate.targetAggregateDigest, /^[a-f0-9]{64}$/u);
   assert.equal(
@@ -437,6 +576,13 @@ async function cliAckAndFailureProtocol(root) {
     const before = await durableSnapshot(candidate);
     const running = await startGatedCli(candidate, testCase.timeoutMs || 100);
     assertPublicGate(running.gate, candidate);
+    assertGateMatrix(running.gate, {
+      scopeCount: 2,
+      sourceV2ScopeCount: 2,
+      sourceV3ScopeCount: 0,
+      migrationTemporaryCount: 1,
+      currentStorageState: "all-v2",
+    });
     if (testCase.timeoutMs === undefined) {
       if (referenceGate === undefined) referenceGate = running.gate;
       else assert.deepEqual(running.gate, referenceGate);
@@ -466,6 +612,13 @@ async function cliAckAndFailureProtocol(root) {
   const before = await durableSnapshot(approved);
   const running = await startGatedCli(approved, 100);
   assertPublicGate(running.gate, approved);
+  assertGateMatrix(running.gate, {
+    scopeCount: 2,
+    sourceV2ScopeCount: 2,
+    sourceV3ScopeCount: 0,
+    migrationTemporaryCount: 1,
+    currentStorageState: "all-v2",
+  });
   assert.deepEqual(running.gate, referenceGate);
   assert.deepEqual(await durableSnapshot(approved), before);
   running.input.end(`${running.gate.requiredAck}\n`);
@@ -528,70 +681,193 @@ async function cliParsingAndLegacyBehavior() {
   assert.equal(output, `${JSON.stringify(legacyResult)}\n`);
 }
 
+async function strictTargetPlanMatrixValidation() {
+  const valid = {
+    schemaVersion: INTEGRATION_ANALYSIS_STATE_MIGRATION_PREWRITE_GATE_SCHEMA_VERSION,
+    event: "migration-prewrite-gate",
+    direction: "forward-only",
+    targetStorageVersion: INTEGRATION_ANALYSIS_STATE_STORAGE_V3,
+    scopeCount: 2,
+    sourceV2ScopeCount: 2,
+    sourceV3ScopeCount: 0,
+    migrationTemporaryCount: 1,
+    currentStorageState: "all-v2",
+    targetAggregateDigest: "1".repeat(64),
+    migrationContractDigest: contractDigest(INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT),
+  };
+  const invalidPlans = [
+    { ...valid, sourceV2ScopeCount: 1 },
+    { ...valid, currentStorageState: "mixed" },
+    { ...valid, migrationTemporaryCount: 3 },
+    {
+      ...valid,
+      scopeCount: 0,
+      sourceV2ScopeCount: 0,
+      sourceV3ScopeCount: 0,
+      migrationTemporaryCount: 0,
+      currentStorageState: "all-v3",
+    },
+    { ...valid, currentStorageState: SENSITIVE_MARKER },
+    { ...valid, sourceV3ScopeCount: -1 },
+    { ...valid, sourceV2ScopeCount: 1.5, sourceV3ScopeCount: 0 },
+    { ...valid, unsupportedMatrixField: true },
+  ];
+  for (const targetPlan of invalidPlans) {
+    const stdin = new PassThrough();
+    let output = "";
+    let rejected;
+    await assert.rejects(
+      migrationCliMain(gatedArguments(CANONICAL_ROOT, 100), {
+        migrate: async (_stateRoot, options) => {
+          await options.beforeMutation(targetPlan);
+          throw new Error("invalid target plan unexpectedly passed validation");
+        },
+        stdin,
+        stdout: { write(value) { output += value; } },
+      }),
+      (error) => {
+        rejected = error;
+        return error?.code === "ANALYSIS_STATE_MIGRATION_GATE_PROTOCOL";
+      }
+    );
+    stdin.end();
+    assert.equal(output, "");
+    const safe = safeIntegrationAnalysisStateMigrationCliError(rejected);
+    assert.equal(safe.includes(SENSITIVE_MARKER), false);
+    assert.equal(safe.includes(CANONICAL_ROOT), false);
+  }
+}
+
 async function productionBinHandshake() {
   const runtimeParent = path.join("/run", "user", String(process.getuid?.() ?? ""));
   const parentStat = await fs.stat(runtimeParent);
   assert.equal(parentStat.isDirectory(), true);
-  const root = await fs.mkdtemp(path.join(runtimeParent, "aginti-prewrite-production-smoke-"));
-  await fs.chmod(root, 0o700);
+  const container = await fs.mkdtemp(path.join(runtimeParent, "aginti-prewrite-production-smoke-"));
+  await fs.chmod(container, 0o700);
   try {
-    await createNativeFixture(root, 2);
-    await convertSelectedToV2(root, [0, 1]);
-    const before = await durableSnapshot(root);
-    const child = spawn(process.execPath, [MIGRATION_BIN, ...gatedArguments(root, 2_000)], {
-      cwd: REPOSITORY_ROOT,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    const exited = once(child, "exit");
-    let stdout = "";
-    let stderr = "";
-    let resolveGate;
-    let rejectGate;
-    const gateReady = new Promise((resolve, reject) => {
-      resolveGate = resolve;
-      rejectGate = reject;
-    });
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString("utf8");
-      const newline = stdout.indexOf("\n");
-      if (newline >= 0 && resolveGate) {
-        try {
-          resolveGate(JSON.parse(stdout.slice(0, newline)));
-        } catch (error) {
-          rejectGate(error);
+    const source = path.join(container, "source-v3");
+    const allV2 = path.join(container, "all-v2");
+    const mixed = path.join(container, "mixed");
+    const allV3 = path.join(container, "all-v3");
+    const empty = path.join(container, "empty");
+    await createNativeFixture(source, 2);
+    await cloneRoot(source, allV2);
+    await cloneRoot(source, mixed);
+    await cloneRoot(source, allV3);
+    await convertSelectedToV2(allV2, [0, 1]);
+    await convertSelectedToV2(mixed, [0]);
+    const allV2FirstFile = (await stateFiles(allV2))[0];
+    const allV2Temporary = path.join(path.dirname(allV2FirstFile), MIGRATION_TEMPORARY_FILE_NAME);
+    await fs.writeFile(allV2Temporary, "production CLI crash temporary", { mode: 0o600 });
+    await fs.chmod(allV2Temporary, 0o600);
+    await fs.mkdir(path.join(empty, "scopes"), { recursive: true, mode: 0o700 });
+    await fs.chmod(empty, 0o700);
+    await fs.chmod(path.join(empty, "scopes"), 0o700);
+
+    async function runCandidate(root, expectedMatrix, convertedScopeCount, unchangedDurable) {
+      const before = await durableSnapshot(root);
+      const child = spawn(process.execPath, [MIGRATION_BIN, ...gatedArguments(root, 2_000)], {
+        cwd: REPOSITORY_ROOT,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      const exited = once(child, "exit");
+      let completed = false;
+      let stdout = "";
+      let stderr = "";
+      let resolveGate;
+      let rejectGate;
+      const gateReady = new Promise((resolve, reject) => {
+        resolveGate = resolve;
+        rejectGate = reject;
+      });
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk.toString("utf8");
+        const newline = stdout.indexOf("\n");
+        if (newline >= 0 && resolveGate) {
+          try {
+            resolveGate(JSON.parse(stdout.slice(0, newline)));
+          } catch (error) {
+            rejectGate(error);
+          }
+          resolveGate = null;
+          rejectGate = null;
         }
-        resolveGate = null;
-        rejectGate = null;
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString("utf8");
+      });
+      child.once("error", (error) => rejectGate?.(error));
+      try {
+        const gate = await withDeadline(
+          gateReady,
+          () => `production CLI gate timed out: ${stderr}`
+        );
+        assertPublicGate(gate, root);
+        assertGateMatrix(gate, expectedMatrix);
+        assert.equal((await fs.lstat(path.join(root, OWNER_LOCK_NAME))).isDirectory(), true);
+        const owner = JSON.parse(
+          await fs.readFile(path.join(root, OWNER_LOCK_NAME, "owner.json"), "utf8")
+        );
+        assert.equal(owner.pid, child.pid);
+        assert.deepEqual(await durableSnapshot(root), before);
+        child.stdin.end(`${gate.requiredAck}\n`);
+        const [exitCode, signal] = await exited;
+        assert.equal(exitCode, 0, stderr);
+        assert.equal(signal, null);
+        const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+        assert.equal(lines.length, 2);
+        assert.deepEqual(lines[0], gate);
+        assert.equal(lines[1].completed, true);
+        assert.equal(lines[1].convertedScopeCount, convertedScopeCount);
+        assert.equal(lines[1].outputAggregateDigest, gate.targetAggregateDigest);
+        assert.equal(stderr, "");
+        assert.equal(stdout.includes(root), false);
+        assert.doesNotMatch(stdout, new RegExp(SENSITIVE_MARKER, "u"));
+        if (unchangedDurable) assert.deepEqual(await durableSnapshot(root), before);
+        completed = true;
+        return Object.freeze({ gate, result: lines[1] });
+      } finally {
+        if (!completed && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        if (!completed) await exited.catch(() => {});
       }
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.once("error", (error) => rejectGate?.(error));
-    const gate = await withDeadline(
-      gateReady,
-      () => `production CLI gate timed out: ${stderr}`
-    );
-    assertPublicGate(gate, root);
-    assert.equal((await fs.lstat(path.join(root, OWNER_LOCK_NAME))).isDirectory(), true);
-    const owner = JSON.parse(await fs.readFile(path.join(root, OWNER_LOCK_NAME, "owner.json"), "utf8"));
-    assert.equal(owner.pid, child.pid);
-    assert.deepEqual(await durableSnapshot(root), before);
-    child.stdin.end(`${gate.requiredAck}\n`);
-    const [exitCode, signal] = await exited;
-    assert.equal(exitCode, 0, stderr);
-    assert.equal(signal, null);
-    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
-    assert.equal(lines.length, 2);
-    assert.deepEqual(lines[0], gate);
-    assert.equal(lines[1].completed, true);
-    assert.equal(lines[1].convertedScopeCount, 2);
-    assert.equal(lines[1].outputAggregateDigest, gate.targetAggregateDigest);
-    assert.equal(stderr, "");
-    assert.equal(stdout.includes(root), false);
-    assert.doesNotMatch(stdout, new RegExp(SENSITIVE_MARKER, "u"));
+    }
+
+    const runs = [];
+    runs.push(await runCandidate(allV2, {
+      scopeCount: 2,
+      sourceV2ScopeCount: 2,
+      sourceV3ScopeCount: 0,
+      migrationTemporaryCount: 1,
+      currentStorageState: "all-v2",
+    }, 2, false));
+    runs.push(await runCandidate(mixed, {
+      scopeCount: 2,
+      sourceV2ScopeCount: 1,
+      sourceV3ScopeCount: 1,
+      migrationTemporaryCount: 0,
+      currentStorageState: "mixed",
+    }, 1, false));
+    runs.push(await runCandidate(allV3, {
+      scopeCount: 2,
+      sourceV2ScopeCount: 0,
+      sourceV3ScopeCount: 2,
+      migrationTemporaryCount: 0,
+      currentStorageState: "all-v3",
+    }, 0, true));
+    const emptyRun = await runCandidate(empty, {
+      scopeCount: 0,
+      sourceV2ScopeCount: 0,
+      sourceV3ScopeCount: 0,
+      migrationTemporaryCount: 0,
+      currentStorageState: "empty",
+    }, 0, true);
+    assert.deepEqual(withoutCurrentStateMetadata(runs[0].gate), withoutCurrentStateMetadata(runs[1].gate));
+    assert.deepEqual(withoutCurrentStateMetadata(runs[1].gate), withoutCurrentStateMetadata(runs[2].gate));
+    assert.equal(runs[0].gate.targetAggregateDigest, runs[1].gate.targetAggregateDigest);
+    assert.equal(runs[1].gate.targetAggregateDigest, runs[2].gate.targetAggregateDigest);
+    assert.notEqual(emptyRun.gate.targetAggregateDigest, runs[0].gate.targetAggregateDigest);
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(container, { recursive: true, force: true });
   }
 }
 
@@ -602,9 +878,11 @@ async function main() {
     await lockHeldAndNoMutationBeforeApproval(path.join(temporaryRoot, "lock-and-boundary"));
     await gateOnlyAfterWholeRootPreflight(path.join(temporaryRoot, "whole-root-preflight"));
     await targetDigestStableAcrossResumeStates(path.join(temporaryRoot, "target-stability"));
+    await emptyRootHasExplicitStorageState(path.join(temporaryRoot, "empty-state"));
     await crashResumeKeepsTargetDigest(path.join(temporaryRoot, "crash-resume"));
     await cliAckAndFailureProtocol(path.join(temporaryRoot, "cli-protocol"));
     await cliParsingAndLegacyBehavior();
+    await strictTargetPlanMatrixValidation();
     await productionBinHandshake();
     console.log("integration analysis state prewrite gate smoke passed");
   } finally {

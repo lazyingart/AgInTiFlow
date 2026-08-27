@@ -109,14 +109,35 @@ export function parseIntegrationAnalysisStateMigrationCliArguments(argv = []) {
 
 function validatedTargetPlan(value) {
   const expectedKeys = [
+    "currentStorageState",
     "direction",
     "event",
     "migrationContractDigest",
+    "migrationTemporaryCount",
     "schemaVersion",
     "scopeCount",
+    "sourceV2ScopeCount",
+    "sourceV3ScopeCount",
     "targetAggregateDigest",
     "targetStorageVersion",
   ];
+  const scopeCount = value?.scopeCount;
+  const sourceV2ScopeCount = value?.sourceV2ScopeCount;
+  const sourceV3ScopeCount = value?.sourceV3ScopeCount;
+  const migrationTemporaryCount = value?.migrationTemporaryCount;
+  const countsValid = [scopeCount, sourceV2ScopeCount, sourceV3ScopeCount, migrationTemporaryCount]
+    .every((count) => Number.isSafeInteger(count) && count >= 0);
+  const expectedStorageState = !countsValid || sourceV2ScopeCount + sourceV3ScopeCount !== scopeCount
+    ? null
+    : scopeCount === 0
+      ? "empty"
+      : sourceV2ScopeCount === scopeCount
+        ? "all-v2"
+        : sourceV3ScopeCount === scopeCount
+          ? "all-v3"
+          : sourceV2ScopeCount > 0 && sourceV3ScopeCount > 0
+            ? "mixed"
+            : null;
   if (
     !value ||
     typeof value !== "object" ||
@@ -127,8 +148,9 @@ function validatedTargetPlan(value) {
     value.event !== "migration-prewrite-gate" ||
     value.direction !== "forward-only" ||
     value.targetStorageVersion !== INTEGRATION_ANALYSIS_STATE_STORAGE_V3 ||
-    !Number.isSafeInteger(value.scopeCount) ||
-    value.scopeCount < 0 ||
+    !countsValid ||
+    migrationTemporaryCount > scopeCount ||
+    value.currentStorageState !== expectedStorageState ||
     !DIGEST_PATTERN.test(String(value.targetAggregateDigest || "")) ||
     value.migrationContractDigest !== contractDigest(INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT)
   ) {
@@ -160,6 +182,10 @@ function publicPrewriteGate(targetPlanValue, { nonce, timeoutMs }) {
     direction: "forward-only",
     targetStorageVersion: INTEGRATION_ANALYSIS_STATE_STORAGE_V3,
     scopeCount: targetPlan.scopeCount,
+    sourceV2ScopeCount: targetPlan.sourceV2ScopeCount,
+    sourceV3ScopeCount: targetPlan.sourceV3ScopeCount,
+    migrationTemporaryCount: targetPlan.migrationTemporaryCount,
+    currentStorageState: targetPlan.currentStorageState,
     targetAggregateDigest: targetPlan.targetAggregateDigest,
     migrationContractDigest: targetPlan.migrationContractDigest,
     ackSchemaVersion: INTEGRATION_ANALYSIS_STATE_MIGRATION_PREWRITE_ACK_SCHEMA_VERSION,

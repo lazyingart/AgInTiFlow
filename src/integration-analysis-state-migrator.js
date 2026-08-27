@@ -405,12 +405,28 @@ function migrationResult(plan, finalEntries) {
 }
 
 function migrationPrewriteGate(plan) {
+  const sourceV2ScopeCount = plan.filter(
+    (entry) => entry.sourceStorageVersion === INTEGRATION_ANALYSIS_STATE_STORAGE_V2
+  ).length;
+  const sourceV3ScopeCount = plan.length - sourceV2ScopeCount;
+  const migrationTemporaryCount = plan.filter((entry) => entry.temporaryPresent).length;
+  const currentStorageState = plan.length === 0
+    ? "empty"
+    : sourceV2ScopeCount === plan.length
+      ? "all-v2"
+      : sourceV3ScopeCount === plan.length
+        ? "all-v3"
+        : "mixed";
   return Object.freeze({
     schemaVersion: INTEGRATION_ANALYSIS_STATE_MIGRATION_PREWRITE_GATE_SCHEMA_VERSION,
     event: "migration-prewrite-gate",
     direction: "forward-only",
     targetStorageVersion: INTEGRATION_ANALYSIS_STATE_STORAGE_V3,
     scopeCount: plan.length,
+    sourceV2ScopeCount,
+    sourceV3ScopeCount,
+    migrationTemporaryCount,
+    currentStorageState,
     targetAggregateDigest: aggregateDigest(plan, "outputDigest"),
     migrationContractDigest: contractDigest(INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT),
   });
