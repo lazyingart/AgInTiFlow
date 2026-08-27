@@ -20,6 +20,7 @@ const READ_ONLY_PATTERNS = [
   /^find(?:\s+[./~\w-]+)*(?:\s+-maxdepth\s+\d+)?(?:\s+-type\s+[fd])?$/,
   /^rg(?:\s+.+)?$/,
   /^grep(?:\s+.+)?$/,
+  /^pgrep(?:\s+.+)?$/,
   /^cat(?:\s+[-\w./~*]+)+$/,
   /^head(?:\s+.+)?$/,
   /^tail(?:\s+.+)?$/,
@@ -1688,6 +1689,7 @@ function classifySimpleCommand(normalized) {
       needsNetwork: false,
       writesWorkspace: false,
       gitOnly: /^git\s+/.test(commandForPatternMatching),
+      noMatchExitIsSuccess: /^pgrep\b/.test(commandForPatternMatching),
     };
   }
   const packageScript = packageManagerScriptName(validationTokens);

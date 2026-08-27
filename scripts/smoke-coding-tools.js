@@ -8,6 +8,7 @@ import {
   genericArtifactFilenameBlock,
   modelTimeoutExhaustionRoute,
   modelTimeoutRetryRoute,
+  normalizeNoMatchQueryResult,
   applyModelTimeoutRetryRoute,
   recoverFocusedTextRewriteWithWritingSpecialist,
   repairModelMessageHistory,
@@ -956,6 +957,33 @@ try {
   );
   assert(readonlyVersionPipelinePolicy.allowed, "read-only version probe pipelines should not require package-install-policy=allow");
   assert(readonlyVersionPipelinePolicy.category === "read-only", "read-only version probe pipelines should be classified as read-only");
+  const pgrepNoMatchPolicy = evaluateCommandPolicy(
+    "pgrep -af gateway_service",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(
+    pgrepNoMatchPolicy.allowed &&
+      pgrepNoMatchPolicy.category === "read-only" &&
+      pgrepNoMatchPolicy.noMatchExitIsSuccess === true,
+    "pgrep should be a read-only query whose no-match exit is meaningful evidence"
+  );
+  const pgrepNoMatchResult = normalizeNoMatchQueryResult(
+    { ok: false, exitCode: 1, stdout: "", stderr: "" },
+    pgrepNoMatchPolicy
+  );
+  assert(
+    pgrepNoMatchResult.ok === true &&
+      pgrepNoMatchResult.noMatch === true &&
+      pgrepNoMatchResult.semanticOutcome === "no-match",
+    "pgrep exit 1 with no diagnostics should normalize to successful no-match evidence"
+  );
+  assert(
+    normalizeNoMatchQueryResult(
+      { ok: false, exitCode: 2, stdout: "", stderr: "invalid option" },
+      pgrepNoMatchPolicy
+    ).ok === false,
+    "an actual pgrep error was incorrectly normalized as no-match evidence"
+  );
   const readonlyDiffSlicePolicy = evaluateCommandPolicy(
     "git diff -- src/agent-runner.js | sed -n '1,240p'",
     dockerWorkspaceNoInstallsPolicy

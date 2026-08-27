@@ -4296,6 +4296,23 @@ export function shellDiagnosticHint(command = "", result = {}) {
   return "";
 }
 
+export function normalizeNoMatchQueryResult(result = {}, policy = {}) {
+  if (
+    policy?.noMatchExitIsSuccess !== true ||
+    Number(result?.exitCode) !== 1 ||
+    String(result?.stdout || "").trim() ||
+    String(result?.stderr || "").trim()
+  ) {
+    return result;
+  }
+  return {
+    ...result,
+    ok: true,
+    noMatch: true,
+    semanticOutcome: "no-match",
+  };
+}
+
 function hashForLog(value) {
   return crypto.createHash("sha256").update(String(value ?? "")).digest("hex");
 }
@@ -13591,23 +13608,26 @@ async function runShellCommand(command, config, policy = evaluateCommandPolicy(c
     const result = config.useDockerSandbox
       ? await runDockerSandboxCommand(command, config, policy, { signal: config.abortSignal })
       : await runHostShellCommand(command, config);
-    const diagnosticHint = shellDiagnosticHint(command, result);
+    const normalizedResult = normalizeNoMatchQueryResult(result, policy);
+    const diagnosticHint = shellDiagnosticHint(command, normalizedResult);
 
     return {
-      ok: result.ok !== false,
-      exitCode: Number.isInteger(result.exitCode) ? result.exitCode : 0,
-      stdout: trimCommandOutput(result.stdout, 8000),
-      stderr: trimCommandOutput(result.stderr, 4000),
+      ok: normalizedResult.ok !== false,
+      exitCode: Number.isInteger(normalizedResult.exitCode) ? normalizedResult.exitCode : 0,
+      stdout: trimCommandOutput(normalizedResult.stdout, 8000),
+      stderr: trimCommandOutput(normalizedResult.stderr, 4000),
+      ...(normalizedResult.noMatch === true ? { noMatch: true, semanticOutcome: "no-match" } : {}),
       ...(diagnosticHint ? { diagnosticHint } : {}),
     };
   } catch (error) {
     if (isAbortError(error, config)) throw error;
-    const failedResult = {
+    const rawFailedResult = {
       ok: false,
       exitCode: Number.isInteger(error?.code) ? error.code : 1,
       stdout: trimCommandOutput(error?.stdout || "", 8000),
       stderr: trimCommandOutput(error?.stderr || error?.message || "", 4000),
     };
+    const failedResult = normalizeNoMatchQueryResult(rawFailedResult, policy);
     const diagnosticHint = shellDiagnosticHint(command, failedResult);
     return diagnosticHint ? { ...failedResult, diagnosticHint } : failedResult;
   }
@@ -14687,6 +14707,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
             mayMutateProject: Boolean(policy.mayMutateProject),
             substantiveTest: Boolean(policy.substantiveTest),
             gitOnly: Boolean(policy.gitOnly),
+            noMatchExitIsSuccess: Boolean(policy.noMatchExitIsSuccess),
             normalizedCommand: normalizeCommandForPolicy(String(args.command), config),
           },
           ...(generatedOutputPaths.length

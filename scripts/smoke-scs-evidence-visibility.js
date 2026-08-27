@@ -185,6 +185,11 @@ assert.deepEqual(
   "a verifier command following a negated create clause became an exact output path"
 );
 assert.deepEqual(
+  readOnlyVerificationContinuationContract.exactInputPaths,
+  [],
+  "a quoted verifier command became an exact input path"
+);
+assert.deepEqual(
   readOnlyVerificationContinuationContract.requiredProjectCommands,
   [
     "git status --short",

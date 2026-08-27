@@ -649,6 +649,7 @@ function inferExactInputPaths(goal = "") {
     }
     quotedPathPattern.lastIndex = 0;
     for (const match of line.matchAll(quotedPathPattern)) {
+      if (looksLikeShellCommandLiteral(match[1])) continue;
       pushPath(match[1]);
     }
     const unquotedLine = line.replace(quotedPathPattern, (match) => " ".repeat(match.length));
