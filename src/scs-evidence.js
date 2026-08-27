@@ -542,7 +542,10 @@ export function filterExplicitlyExcludedOutputPaths(paths = [], exclusions = [])
 }
 
 export function inferExplicitlyExcludedOutputPaths(goal = "") {
-  const source = String(goal || "");
+  // Preserve coordinated path lists that wrap after a comma. Prompt and task
+  // files commonly format "do not modify a, b,\nc, or d" across lines; splitting
+  // that text first drops the governing negative action from the continuation.
+  const source = String(goal || "").replace(/([,，、])\s*\r?\n\s*/gu, "$1 ");
   if (!source.trim()) return [];
   const extensionPattern = "md|txt|json|jsonl|ndjson|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
   const pathPattern = new RegExp(
@@ -573,6 +576,11 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
   for (const clause of source.split(/[;；\n]|(?<=[.!?。！？])\s+/u)) {
     pathPattern.lastIndex = 0;
     const matches = [...clause.matchAll(pathPattern)];
+    const immutablePathClause = Boolean(
+      /\b(?:treat|consider|regard)\b[^!?。！？;；\n]{0,260}\b(?:as\s+)?(?:immutable|read[ -]?only)\b/i.test(
+        clause
+      )
+    );
     let previousExcluded = false;
     for (let matchIndex = 0; matchIndex < matches.length; matchIndex += 1) {
       const match = matches[matchIndex];
@@ -595,6 +603,7 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
           )
       );
       const directExclusion = Boolean(
+        immutablePathClause ||
         negativeActionBefore.test(before) ||
         negativeActionAfter.test(after) ||
         keepAbsent.test(`${before}${after}`) ||

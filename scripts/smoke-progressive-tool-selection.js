@@ -1747,6 +1747,28 @@ sameNames(
   "failed-test repair did not receive the bounded diagnose-patch-retest tool surface"
 );
 
+const generatedArtifactProducerTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    generatedArtifactProducerPending: true,
+    generatedArtifactProducerCommand: "python3 build_deck.py",
+  },
+  goal: "Rebuild the generated presentation before rerunning its validator.",
+  profile: "slides",
+});
+sameNames(
+  generatedArtifactProducerTools,
+  ["run_command", "finish"],
+  "a stale generated artifact did not expose only its retained producer command"
+);
+assertStrict.deepEqual(
+  generatedArtifactProducerTools[0].function.parameters.properties.command.enum,
+  ["python3 build_deck.py"],
+  "the generated-artifact producer command was not schema-constrained"
+);
+
 const mutationOnlyFailedTestRepairTools = selectProgressiveTools(allTools, {
   config: {
     provider: "localllm",

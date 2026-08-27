@@ -1937,6 +1937,16 @@ export function selectProgressiveTools(
     return artifactValidationToolNames(config).map((name) => available.get(name)).filter(Boolean);
   }
 
+  if (config.generatedArtifactProducerPending === true) {
+    const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    const producerCommand = constrainRunCommand(
+      available.get("run_command"),
+      config.generatedArtifactProducerCommand,
+      "Run this exact previously successful local producer command once. Canonical source changed after its last run, so generated artifacts must be rebuilt before the retained validator can provide fresh evidence. Do not substitute another command or rerun the stale validator first."
+    );
+    return [producerCommand, finish].filter(Boolean);
+  }
+
   if (config.testFailureRepairActive === true) {
     const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
     if (

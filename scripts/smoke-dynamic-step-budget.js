@@ -5306,6 +5306,153 @@ try {
       postMutationVerificationRuntime.testVerificationCommand === postMutationVerifier,
     "a material failed-test repair did not advance directly to its exact retained verifier"
   );
+  const generatedDeckValidator =
+    "python3 /tmp/presentation_deck_contract.py --root .";
+  const staleGeneratedDeckState = {
+    goal: [
+      "Rebuild the canonical presentation output after repairing build_deck.py.",
+      "Do not modify source_brief.md, measurements.csv,",
+      "prompt.txt, or TASK.md.",
+      `Run ${generatedDeckValidator} only after the generated deck is fresh.`,
+    ].join("\n"),
+    meta: {
+      taskProfile: "slides",
+      goalContract: {
+        revision: 13,
+        currentRequest: "Rebuild the canonical presentation output from build_deck.py.",
+      },
+      activeExecutionContract: {
+        revision: 13,
+        startedMutationRevision: 8,
+        materialMutationRevision: 9,
+        requiresFileMutation: true,
+        requiresSourceGrounding: true,
+      },
+      projectVerification: {
+        mutationRevision: 9,
+        mutationHistory: [
+          { revision: 8, toolName: "run_command", paths: [] },
+          { revision: 9, toolName: "apply_patch", paths: ["build_deck.py"] },
+        ],
+        commandRuns: [{
+          command:
+            'rm -rf dist && echo "removed dist" && python3 build_deck.py && ls -la output',
+          at: "2026-08-27T18:18:14.726Z",
+          ok: true,
+          mutationRevision: 8,
+          privateMutationRevision: 0,
+        }],
+        testRuns: [{
+          command: generatedDeckValidator,
+          at: "2026-08-27T18:24:28.347Z",
+          mutationRevision: 9,
+          privateMutationRevision: 0,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "stale-generated-deck",
+          failureSummary: "acceptance failed: deck omits source-grounded phrase: single reader",
+        }],
+      },
+    },
+  };
+  const staleGeneratedDeckRuntime = nextStepRuntimeConfig(
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: staleGeneratedDeckState.goal,
+    },
+    staleGeneratedDeckState
+  );
+  const staleGeneratedDeckPhase = buildKnownConstrainedPhasePlan(
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: staleGeneratedDeckState.goal,
+    },
+    staleGeneratedDeckState,
+    staleGeneratedDeckRuntime
+  );
+  assert(
+    staleGeneratedDeckRuntime.generatedArtifactProducerPending === true &&
+      staleGeneratedDeckRuntime.generatedArtifactProducerCommand === "python3 build_deck.py" &&
+      staleGeneratedDeckPhase?.mode === "generated-artifact-producer" &&
+      staleGeneratedDeckPhase?.command === "python3 build_deck.py",
+    `a stale generated artifact did not recover its exact safe producer before validation: ${JSON.stringify(
+      staleGeneratedDeckRuntime
+    )}`
+  );
+  recordProjectVerificationOutcome(
+    staleGeneratedDeckState,
+    {
+      toolName: "run_command",
+      ok: true,
+      exitCode: 0,
+      args: { command: "python3 build_deck.py" },
+      stdout: "Wrote output/deck.pptx\n",
+      stderr: "",
+    },
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: staleGeneratedDeckState.goal,
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
+  const postProducerRuntime = nextStepRuntimeConfig(
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: staleGeneratedDeckState.goal,
+    },
+    staleGeneratedDeckState
+  );
+  assert(
+    staleGeneratedDeckState.meta.projectVerification.mutationRevision === 10 &&
+      postProducerRuntime.generatedArtifactProducerPending !== true &&
+      postProducerRuntime.testVerificationPending === true &&
+      postProducerRuntime.testVerificationCommand === generatedDeckValidator,
+    `a successful producer replay did not advance exactly once to fresh validation: ${JSON.stringify({
+      verification: staleGeneratedDeckState.meta.projectVerification,
+      activeExecutionContract: staleGeneratedDeckState.meta.activeExecutionContract,
+      runtime: postProducerRuntime,
+    })}`
+  );
+  const immutableOnlyRepairState = {
+    goal: "Treat service_ctl.py as immutable read-only source evidence and finish from existing results.",
+    meta: {
+      taskProfile: "devops",
+      projectVerification: {
+        mutationRevision: 0,
+        mutationHistory: [],
+        commandRuns: [],
+        testRuns: [],
+      },
+      completionEvidenceRepair: {
+        key: "protected-source-only",
+        at: "2026-08-27T19:00:00.000Z",
+        requiresFreshFileMutation: true,
+        requiredFreshMutationRevision: 1,
+      },
+      toolLoop: { recent: [] },
+    },
+  };
+  assert(
+    nextStepRuntimeConfig(
+      {
+        provider: "deepseek",
+        taskProfile: "devops",
+        commandCwd: workspace,
+        goal: immutableOnlyRepairState.goal,
+      },
+      immutableOnlyRepairState
+    ).completionFreshMutationRequired !== true,
+    "completion recovery forced a mutation when every concrete candidate was immutable"
+  );
   const concreteGoalUpdate = applyContinuationContractTransition(
     concreteContinuationState,
     concreteContinuation,

@@ -2157,7 +2157,13 @@ export function buildKnownConstrainedPhasePlan(
   runtimeConfig = nextStepRuntimeConfig(config, state)
 ) {
   const repositoryStateRepair = runtimeConfig.testFailureRepositoryStateRepair === true;
-  if (runtimeConfig.testFailureRepairActive === true && !repositoryStateRepair) return null;
+  const generatedArtifactProducer =
+    runtimeConfig.generatedArtifactProducerPending === true;
+  if (
+    runtimeConfig.testFailureRepairActive === true &&
+    !repositoryStateRepair &&
+    !generatedArtifactProducer
+  ) return null;
 
   const freshSourceMutation = runtimeConfig.completionFreshMutationRequired === true;
   const verificationPending = runtimeConfig.testVerificationPending === true;
@@ -2181,6 +2187,7 @@ export function buildKnownConstrainedPhasePlan(
   if (
     !repositoryStateRepair &&
     !freshSourceMutation &&
+    !generatedArtifactProducer &&
     !verificationPending &&
     !requiredProjectCommandPending &&
     !verifiedCompletion &&
@@ -2191,19 +2198,22 @@ export function buildKnownConstrainedPhasePlan(
   }
 
   const command = String(
-    requiredProjectCommandPending
-      ? runtimeConfig.requiredProjectCommand || ""
-      : verificationPending
-        ? runtimeConfig.testVerificationCommand || ""
-        : repositoryStateRepair
-          ? runtimeConfig.testFailureCommand || ""
-          : runtimeConfig.verifiedCompletionCommand || ""
+    generatedArtifactProducer
+      ? runtimeConfig.generatedArtifactProducerCommand || ""
+      : requiredProjectCommandPending
+        ? runtimeConfig.requiredProjectCommand || ""
+        : verificationPending
+          ? runtimeConfig.testVerificationCommand || ""
+          : repositoryStateRepair
+            ? runtimeConfig.testFailureCommand || ""
+            : runtimeConfig.verifiedCompletionCommand || ""
   ).trim();
   if (
     !verifiedCompletion &&
     !artifactCommitPending &&
     !taskOwnedCommitPending &&
     !freshSourceMutation &&
+    !generatedArtifactProducer &&
     !command
   ) return null;
 
@@ -2211,6 +2221,8 @@ export function buildKnownConstrainedPhasePlan(
     ? "repository-state-repair"
     : freshSourceMutation
       ? "fresh-source-mutation"
+      : generatedArtifactProducer
+        ? "generated-artifact-producer"
       : requiredProjectCommandPending
       ? "required-project-command"
       : verificationPending
@@ -2250,6 +2262,12 @@ export function buildKnownConstrainedPhasePlan(
             "2. Preserve unrelated current behavior and do not edit private verification evidence.",
             "3. After the mutation succeeds, rerun the retained validation and complete required Git actions.",
           ].join("\n")
+      : generatedArtifactProducer
+        ? [
+            `1. Run the exact retained local producer command now: ${command}`,
+            "2. Rebuild generated artifacts from the latest canonical source mutation; do not rerun the stale validator first or substitute another command.",
+            "3. After the producer succeeds, run the exact retained validator and repair only from any fresh concrete failure.",
+          ].join("\n")
       : artifactCommitPending || taskOwnedCommitPending
       ? [
           "1. Use the offered commit_project_changes tool once; its path scope comes from recorded task-owned mutations.",
@@ -2281,6 +2299,8 @@ export function buildKnownConstrainedPhasePlan(
       ? runtimeConfig.completionFreshMutationNeedsSourceRead === true
         ? "Completion was rejected because a fresh canonical source correction is still missing. Read one exact offered project file now; command, test, Git, and finish actions remain intentionally unavailable until the source is grounded and materially patched."
         : "Completion was rejected because a fresh canonical source correction is still missing. Use the offered path-bounded apply_patch tool now. Do not substitute another read-only inspection, test rerun, Git command, private verifier edit, or finish claim."
+      : generatedArtifactProducer
+        ? "A canonical producer source changed after the last successful build. Run only the exact retained local producer command now so validation observes fresh artifacts; do not rerun the stale validator or invent another source edit."
       : artifactCommitPending
       ? "The exact artifact and current source changes already passed deterministic checks. Only the required local commit is missing. Call commit_project_changes with a concise factual subject, then finish; do not restart discovery or validation."
       : taskOwnedCommitPending
@@ -6030,6 +6050,9 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         toolResult.blocked !== true &&
         commandCanMutateProjectContent(mutationCommand, commandPolicy)
     );
+    const generatedArtifactProducer = projectContentMutation
+      ? safeProjectProducerSegment(command, config)
+      : "";
     let requiredBatch = currentRequiredCommandBatch(verification, requiredCommands);
     const activeExecutionContract = state.meta?.activeExecutionContract;
     const activeTurnCommands =
@@ -6086,6 +6109,21 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         paths: [],
         commandCategory: String(commandPolicy.category || "general-shell"),
       }, config);
+      if (
+        generatedArtifactProducer &&
+        Number(activeExecutionContract?.revision || 0) ===
+          Number(state.meta?.goalContract?.revision || 0)
+      ) {
+        activeExecutionContract.materialMutationRevision = verification.mutationRevision;
+        activeExecutionContract.materialMutationCommands = [
+          ...new Set([
+            ...(Array.isArray(activeExecutionContract.materialMutationCommands)
+              ? activeExecutionContract.materialMutationCommands
+              : []),
+            generatedArtifactProducer,
+          ]),
+        ].slice(0, 12);
+      }
     }
     const run = {
       command,
@@ -6096,6 +6134,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       ...(requiredBatch?.id ? { requiredCommandBatchId: requiredBatch.id } : {}),
       ...(requiredCommand ? { requiredProjectCommand: requiredCommand } : {}),
       ...(exitProbe.present ? { explicitExitStatus: exitProbe.status } : {}),
+      ...(generatedArtifactProducer ? { generatedArtifactProducer } : {}),
     };
     if (requiredCommand && commandSucceeded) {
       if (!requiredBatch && requiredMutatingCommands.length === 0) {
@@ -10415,6 +10454,139 @@ function completionFreshMutationCandidatePaths(state = {}, config = {}) {
   return selected.slice(0, 16);
 }
 
+function commandSegmentHasProducerIntent(command = "") {
+  const normalized = normalizeProjectCommand(command);
+  const tokens = tokenizeShellWords(normalized);
+  if (!tokens.length) return false;
+  let index = 0;
+  while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(String(tokens[index] || ""))) {
+    index += 1;
+  }
+  const executable = path.posix.basename(
+    String(tokens[index] || "").replace(/\\/g, "/")
+  ).toLocaleLowerCase("en-US");
+  const args = tokens.slice(index + 1);
+  const rejectedProducerName =
+    /(?:^|[_-])(?:acceptance|audit|check|lint|smoke|spec|test|validat(?:e|or|ion)?|verif(?:y|ier|ication)?)(?:[_-]|$)/i;
+  const producerName =
+    /(?:^|[_-])(?:build|bundle|compile|deck|export|generat(?:e|or)|package|presentation|regen(?:erate)?|render|report|slides?)(?:[_-]|$)/i;
+
+  if (["python", "python3", "node", "ruby", "bash", "sh"].some((name) =>
+    executable === name || executable.startsWith(`${name}.`)
+  )) {
+    const scriptIndex = args[0] === "-m" ? 1 : 0;
+    const scriptName = path.posix.basename(
+      String(args[scriptIndex] || "").replace(/\\/g, "/")
+    ).replace(/\.[A-Za-z0-9]{1,8}$/u, "");
+    return Boolean(
+      scriptName &&
+        producerName.test(scriptName) &&
+        !rejectedProducerName.test(scriptName)
+    );
+  }
+
+  if (["npm", "pnpm", "yarn", "bun"].includes(executable)) {
+    const script = String(
+      args[0] === "run" ? args[1] : args[0]
+    ).toLocaleLowerCase("en-US");
+    return Boolean(
+      script && producerName.test(script) && !rejectedProducerName.test(script)
+    );
+  }
+  if (["make", "ninja", "latexmk", "pdflatex", "xelatex", "lualatex", "openscad"].includes(executable)) {
+    return true;
+  }
+  if (executable === "pandoc") return args.some((arg) => ["-o", "--output"].includes(arg));
+  if (executable === "typst") return args[0] === "compile";
+  if (executable === "cmake") return args.includes("--build");
+  if (executable === "meson") return ["compile", "install"].includes(args[0]);
+  if (["cargo", "go", "dotnet"].includes(executable)) return args[0] === "build";
+  return Boolean(
+    executable &&
+      producerName.test(executable.replace(/\.[A-Za-z0-9]{1,8}$/u, "")) &&
+      !rejectedProducerName.test(executable)
+  );
+}
+
+function safeProjectProducerSegment(command = "", config = {}) {
+  const normalized = normalizeProjectCommand(
+    normalizeCommandForPolicy(command, config)
+  );
+  const unwrapped = parseNonMutatingExitStatusWrapper(normalized)?.command || normalized;
+  const sequence = parseTopLevelShellSequence(unwrapped);
+  if (
+    !sequence.commands.length ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator
+  ) {
+    return "";
+  }
+  for (const rawSegment of sequence.commands) {
+    const segment = normalizeProjectCommand(rawSegment);
+    if (!segment || !commandSegmentHasProducerIntent(segment)) continue;
+    const policy = classifyCommand(segment);
+    if (
+      policy.hardBlocked === true ||
+      policy.needsNetwork === true ||
+      ["blocked", "destructive", "external-write", "git-remote", "git-workflow", "package-install"].includes(
+        String(policy.category || "")
+      ) ||
+      isSubstantiveTestCommand(segment, config) ||
+      !commandCanMutateProjectContent(segment, policy)
+    ) {
+      continue;
+    }
+    return segment;
+  }
+  return "";
+}
+
+function pendingGeneratedArtifactProducerCommand(
+  state = {},
+  config = {},
+  verification = {},
+  currentFailedTest = null
+) {
+  if (!currentFailedTest || currentFailedTest.passed === true) return "";
+  if (failedTestRequiresCleanRepositoryState(currentFailedTest)) return "";
+  const context = [
+    completionContractGoal(config, state),
+    state.meta?.taskProfile || config.taskProfile || "",
+    currentFailedTest.failureSummary || "",
+  ].join("\n");
+  if (
+    !/(?:\b(?:artifact|build|bundle|compile|deck|export|generat(?:e|ed|or)|output|package|presentation|rebuild|regenerate|render|report|slides?)\b|\.(?:pdf|pptx|docx|html|svg|png|jpe?g|webp|mp4|mov)\b)/i.test(
+      context
+    )
+  ) {
+    return "";
+  }
+  const mutationRevision = Math.max(0, Number(verification.mutationRevision || 0));
+  const latestSourceMutation = [...(verification.mutationHistory || [])]
+    .reverse()
+    .find(
+      (mutation) =>
+        Number(mutation?.revision || 0) === mutationRevision &&
+        ["apply_patch", "write_file"].includes(String(mutation?.toolName || "")) &&
+        (Array.isArray(mutation?.paths) ? mutation.paths : []).some(
+          (item) => !isPrivateVerificationEvidencePath(item)
+        )
+    );
+  if (!latestSourceMutation) return "";
+  for (const run of [...(verification.commandRuns || [])].reverse()) {
+    if (
+      run?.ok !== true ||
+      Number(run?.mutationRevision || 0) >= mutationRevision
+    ) {
+      continue;
+    }
+    const producer = safeProjectProducerSegment(run?.command || "", config);
+    if (producer) return producer;
+  }
+  return "";
+}
+
 function exactOutputPathsForState(state = {}) {
   const scsOutputPaths = Array.isArray(state.meta?.scs?.taskContract?.exactOutputPaths)
     ? state.meta.scs.taskContract.exactOutputPaths.filter(Boolean)
@@ -11082,7 +11254,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       const entryAt = Date.parse(String(entry?.at || ""));
       return !Number.isFinite(repairAt) || (Number.isFinite(entryAt) && entryAt > repairAt);
     });
-    if (candidatePaths.length > 0 || !currentTurnRequiresFreshMutation) {
+    if (candidatePaths.length > 0) {
       runtimeConfig.completionFreshMutationRequired = true;
       runtimeConfig.completionFreshMutationRevision = currentTurnRequiresFreshMutation
         ? groundingMutationBaseline + 1
@@ -11099,6 +11271,15 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   const latestRecordedTest = [...testRuns]
     .reverse()
     .find((run) => String(run?.command || "").trim());
+  const freshGeneratedArtifactProducer = [...(verification.commandRuns || [])]
+    .reverse()
+    .some(
+      (run) =>
+        run?.ok === true &&
+        String(run?.generatedArtifactProducer || "").trim() &&
+        Number(run?.mutationRevision || 0) === mutationRevision &&
+        Number(run?.privateMutationRevision || 0) === privateMutationRevision
+    );
   const retainedRepairPacket = state.meta?.failedTestRecoveryPacket;
   const repairedRetainedFailure = Boolean(
     latestRecordedTest?.passed !== true &&
@@ -11112,6 +11293,16 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   );
   const retainedFailedTest =
     latestCurrentTest && latestCurrentTest.passed !== true ? latestCurrentTest : null;
+  const pendingArtifactProducerCommand = pendingGeneratedArtifactProducerCommand(
+    state,
+    config,
+    verification,
+    retainedFailedTest
+  );
+  if (pendingArtifactProducerCommand) {
+    runtimeConfig.generatedArtifactProducerPending = true;
+    runtimeConfig.generatedArtifactProducerCommand = pendingArtifactProducerCommand;
+  }
   if (retainedFailedTest) {
     const repositoryStateRepairMarker = state.meta?.repositoryStateRepair;
     const retainedRepositoryStateRepair = Boolean(
@@ -11572,7 +11763,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       runtimeConfig.testVerificationCommand = String(retainedFailedTest.command || "");
     }
   } else if (
-    (!implementationOpen || repairedRetainedFailure) &&
+    (!implementationOpen || repairedRetainedFailure || freshGeneratedArtifactProducer) &&
     !latestCurrentTest &&
     latestRecordedTest &&
     !testRunMatchesVerificationRevision(latestRecordedTest, verification)
