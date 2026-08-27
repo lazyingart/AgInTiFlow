@@ -7841,6 +7841,23 @@ function noProgressOutcomeFingerprint(toolResult = {}) {
 
 export function repeatedNoProgressToolBlock(state, toolName, args = {}, config = {}) {
   if (toolName !== "run_command" || expectedRepeatedObservationCommand(args.command)) return null;
+  const requestedCommand = projectTestCommandKey(
+    normalizeLeadingWorkspaceCd(args.command, config)
+  );
+  const pendingProducerCommand = projectTestCommandKey(
+    normalizeLeadingWorkspaceCd(config.generatedArtifactProducerCommand, config)
+  );
+  if (
+    config.generatedArtifactProducerPending === true &&
+    requestedCommand &&
+    requestedCommand === pendingProducerCommand
+  ) {
+    // A persisted session can contain no-progress history from a runtime that
+    // did not yet credit generated-artifact rebuilds as mutations. The current
+    // exact producer contract is authoritative and gets one executable route;
+    // unrelated repeated probes remain guarded below.
+    return null;
+  }
   const toolLoop = state.meta?.toolLoop || {};
   const signature = staticToolCallSignature(toolName, args || {}, {
     commandCwd: config.commandCwd,

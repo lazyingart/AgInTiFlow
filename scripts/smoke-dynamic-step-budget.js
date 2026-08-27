@@ -6265,6 +6265,22 @@ try {
     })?.category === "repeated-no-progress-call",
     "a third identical unchanged shell probe was not blocked"
   );
+  assert(
+    repeatedNoProgressToolBlock(repeatedProbeState, "run_command", repeatedProbeArgs, {
+      commandCwd: workspace,
+      generatedArtifactProducerPending: true,
+      generatedArtifactProducerCommand: repeatedProbeArgs.command,
+    }) === null,
+    "the exact authoritative generated-artifact producer remained blocked by stale no-progress history"
+  );
+  assert(
+    repeatedNoProgressToolBlock(repeatedProbeState, "run_command", repeatedProbeArgs, {
+      commandCwd: workspace,
+      generatedArtifactProducerPending: true,
+      generatedArtifactProducerCommand: "python3 build_deck.py",
+    })?.category === "repeated-no-progress-call",
+    "a mismatched generated-artifact producer disabled the ordinary no-progress guard"
+  );
   const repeatedFailureState = {
     meta: {
       toolLoop: {

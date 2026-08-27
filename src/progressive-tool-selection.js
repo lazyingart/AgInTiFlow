@@ -1938,7 +1938,10 @@ export function selectProgressiveTools(
   }
 
   if (config.generatedArtifactProducerPending === true) {
-    const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    // An authoritative producer phase supersedes a stale convergence marker.
+    // Keep explicit capability disables effective by selecting from the real
+    // enabled baseline rather than from the convergence-pruned surface.
+    const available = new Map(baselineEnabled.map(({ name, tool }) => [name, tool]));
     const producerCommand = constrainRunCommand(
       available.get("run_command"),
       config.generatedArtifactProducerCommand,
@@ -1954,8 +1957,11 @@ export function selectProgressiveTools(
       typeof config.testFailureStalemateCommand === "string" &&
       config.testFailureStalemateCommand.trim()
     ) {
+      const mandatoryAvailable = new Map(
+        baselineEnabled.map(({ name, tool }) => [name, tool])
+      );
       const verificationCommand = constrainRunCommand(
-        available.get("run_command"),
+        mandatoryAvailable.get("run_command"),
         config.testFailureStalemateCommand,
         "Run this exact retained failing verifier once to refresh stale evidence after repeated semantic repair rejections. This is a bounded stalemate escape hatch, not permission to rerun arbitrary commands or loop unchanged tests."
       );
@@ -2053,7 +2059,7 @@ export function selectProgressiveTools(
   }
 
   if (config.requiredProjectCommandPending === true) {
-    const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    const available = new Map(baselineEnabled.map(({ name, tool }) => [name, tool]));
     const requiredCommand = constrainRunCommand(
       available.get("run_command"),
       config.requiredProjectCommand,
@@ -2063,7 +2069,7 @@ export function selectProgressiveTools(
   }
 
   if (config.testVerificationPending === true) {
-    const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    const available = new Map(baselineEnabled.map(({ name, tool }) => [name, tool]));
     const verificationCommand = constrainRunCommand(
       available.get("run_command"),
       config.testVerificationCommand,

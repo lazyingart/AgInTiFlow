@@ -1685,7 +1685,10 @@ assert(
   "a pending exact verifier did not activate the constrained project-command phase"
 );
 const exactVerifierTools = selectProgressiveTools(allTools, {
-  config: exactVerifierRuntime,
+  config: {
+    ...exactVerifierRuntime,
+    convergenceSuppressedToolNames: ["run_command"],
+  },
   goal: `Run ${exactVerifier}.`,
   profile: "security",
 });
@@ -1754,6 +1757,7 @@ const generatedArtifactProducerTools = selectProgressiveTools(allTools, {
     testFailureRepairMutationRequired: true,
     generatedArtifactProducerPending: true,
     generatedArtifactProducerCommand: "python3 build_deck.py",
+    convergenceSuppressedToolNames: ["run_command"],
   },
   goal: "Rebuild the generated presentation before rerunning its validator.",
   profile: "slides",
@@ -1767,6 +1771,22 @@ assertStrict.deepEqual(
   generatedArtifactProducerTools[0].function.parameters.properties.command.enum,
   ["python3 build_deck.py"],
   "the generated-artifact producer command was not schema-constrained"
+);
+const disabledGeneratedArtifactProducerTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    allowShellTool: false,
+    generatedArtifactProducerPending: true,
+    generatedArtifactProducerCommand: "python3 build_deck.py",
+    convergenceSuppressedToolNames: ["run_command"],
+  },
+  goal: "Rebuild the generated presentation.",
+  profile: "slides",
+});
+sameNames(
+  disabledGeneratedArtifactProducerTools,
+  ["finish"],
+  "an authoritative producer phase bypassed an explicit shell capability disable"
 );
 
 const mutationOnlyFailedTestRepairTools = selectProgressiveTools(allTools, {
@@ -3523,6 +3543,7 @@ const pendingTestTools = selectProgressiveTools(allTools, {
     provider: "localllm",
     testVerificationPending: true,
     testVerificationCommand: "python -m unittest discover -s tests -v",
+    convergenceSuppressedToolNames: ["run_command"],
   },
   goal: "Verify the canonical mutation.",
   profile: "data",
