@@ -3769,6 +3769,67 @@ export function resetGoalScopedRuntimeState(state = {}) {
   return removed;
 }
 
+function refreshPersistedProjectAcceptance(state = {}) {
+  const verification = state.meta?.projectVerification;
+  if (!verification || typeof verification !== "object") return false;
+  const priorBySource =
+    verification.acceptanceBySource &&
+    typeof verification.acceptanceBySource === "object" &&
+    !Array.isArray(verification.acceptanceBySource)
+      ? verification.acceptanceBySource
+      : {};
+  const sources = [
+    ...Object.keys(priorBySource),
+    String(verification.acceptanceSource || "").trim(),
+  ].filter(Boolean);
+  if (!sources.length) return false;
+
+  const commandCwd = path.resolve(state.commandCwd || process.cwd());
+  const refreshed = {};
+  let inspected = 0;
+  for (const source of [...new Set(sources)].slice(-16)) {
+    const sourceKey = normalizedProjectAcceptancePath(source, commandCwd);
+    if (!sourceKey || !projectAcceptanceSourceIsAuthoritative(sourceKey, {
+      commandCwd,
+      authoritativePaths: [sourceKey],
+    })) {
+      continue;
+    }
+    const absolutePath = path.resolve(commandCwd, sourceKey);
+    if (absolutePath !== commandCwd && !absolutePath.startsWith(`${commandCwd}${path.sep}`)) continue;
+    inspected += 1;
+    if (!fsSync.existsSync(absolutePath)) continue;
+    try {
+      const acceptance = projectAcceptanceFromMarkdown(
+        fsSync.readFileSync(absolutePath, "utf8"),
+        sourceKey,
+        { commandCwd, authoritativePaths: [sourceKey] }
+      );
+      refreshed[sourceKey] = {
+        requiredOutputs: acceptance.requiredOutputs,
+        requiredCommands: acceptance.requiredCommands,
+        readAt: new Date().toISOString(),
+      };
+    } catch {
+      inspected -= 1;
+    }
+  }
+  if (!inspected) return false;
+  verification.acceptanceBySource = refreshed;
+  verification.requiredOutputs = [
+    ...new Set(
+      Object.values(refreshed).flatMap((item) => item.requiredOutputs || [])
+    ),
+  ].slice(0, 64);
+  verification.requiredCommands = [
+    ...new Set(
+      Object.values(refreshed).flatMap((item) => item.requiredCommands || [])
+    ),
+  ].slice(0, 24);
+  verification.acceptanceRefreshedAt = new Date().toISOString();
+  return true;
+}
+
 export function resetSameTaskExecutionContract(state = {}, revision = 0) {
   state.meta = state.meta || {};
   const keys = [
@@ -3786,6 +3847,7 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
     removed.push(key);
   }
   state.plan = "";
+  refreshPersistedProjectAcceptance(state);
   const activeRevision = Math.max(0, Number(revision || state.meta?.goalContract?.revision || 0));
   const currentRequest = String(state.meta?.goalContract?.currentRequest || state.goal || "").trim();
   const currentTurnContract = deriveScsTaskContract({
@@ -5381,11 +5443,9 @@ function normalizedProjectAcceptancePath(sourcePath = "", commandCwd = "") {
   return raw.replace(/\\/g, "/").replace(/^\.\//, "");
 }
 
-export function projectAcceptanceFromMarkdown(content = "", sourcePath = "", options = {}) {
+function projectAcceptanceSourceIsAuthoritative(sourcePath = "", options = {}) {
   const basename = path.basename(String(sourcePath || "")).toLowerCase();
-  if (!/^(?:readme|task|agents?|aginti)(?:\.[^.]+)?$/.test(basename)) {
-    return { requiredOutputs: [], requiredCommands: [] };
-  }
+  if (!/^(?:readme|task|agents?|aginti)(?:\.[^.]+)?$/.test(basename)) return false;
   const normalizedSource = normalizedProjectAcceptancePath(
     sourcePath,
     options.commandCwd
@@ -5395,10 +5455,11 @@ export function projectAcceptanceFromMarkdown(content = "", sourcePath = "", opt
       .map((item) => normalizedProjectAcceptancePath(item, options.commandCwd))
       .filter(Boolean)
   );
-  if (
-    normalizedSource.includes("/") &&
-    !authoritativePaths.has(normalizedSource)
-  ) {
+  return !normalizedSource.includes("/") || authoritativePaths.has(normalizedSource);
+}
+
+export function projectAcceptanceFromMarkdown(content = "", sourcePath = "", options = {}) {
+  if (!projectAcceptanceSourceIsAuthoritative(sourcePath, options)) {
     return { requiredOutputs: [], requiredCommands: [] };
   }
   return {
@@ -5778,29 +5839,72 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       goal: completionContractGoal(config, state),
       taskProfile: config.taskProfile || state.meta?.taskProfile || "auto",
     });
+    const sourcePath = String(toolResult.path || toolResult.args?.path || "");
+    const acceptanceOptions = {
+      commandCwd: config.commandCwd || state.commandCwd || process.cwd(),
+      authoritativePaths: [
+        ...(Array.isArray(currentTaskContract.exactInputPaths)
+          ? currentTaskContract.exactInputPaths
+          : []),
+        ...(Array.isArray(currentTaskContract.exactOutputPaths)
+          ? currentTaskContract.exactOutputPaths
+          : []),
+      ],
+    };
     const acceptance = projectAcceptanceFromMarkdown(
       toolResult.content,
-      toolResult.path || toolResult.args?.path || "",
-      {
-        commandCwd: config.commandCwd || state.commandCwd || process.cwd(),
-        authoritativePaths: [
-          ...(Array.isArray(currentTaskContract.exactInputPaths)
-            ? currentTaskContract.exactInputPaths
-            : []),
-          ...(Array.isArray(currentTaskContract.exactOutputPaths)
-            ? currentTaskContract.exactOutputPaths
-            : []),
-        ],
-      }
+      sourcePath,
+      acceptanceOptions
     );
-    verification.requiredOutputs = [
-      ...new Set([...verification.requiredOutputs, ...acceptance.requiredOutputs]),
-    ].slice(0, 64);
-    verification.requiredCommands = [
-      ...new Set([...verification.requiredCommands, ...acceptance.requiredCommands]),
-    ].slice(0, 24);
-    if (acceptance.requiredOutputs.length || acceptance.requiredCommands.length) {
-      verification.acceptanceSource = String(toolResult.path || toolResult.args?.path || "");
+    if (projectAcceptanceSourceIsAuthoritative(sourcePath, acceptanceOptions)) {
+      const sourceKey = normalizedProjectAcceptancePath(
+        sourcePath,
+        acceptanceOptions.commandCwd
+      );
+      const acceptanceBySource =
+        verification.acceptanceBySource &&
+        typeof verification.acceptanceBySource === "object" &&
+        !Array.isArray(verification.acceptanceBySource)
+          ? { ...verification.acceptanceBySource }
+          : {};
+      const legacySourceKey = normalizedProjectAcceptancePath(
+        verification.acceptanceSource || "",
+        acceptanceOptions.commandCwd
+      );
+      if (
+        !Object.keys(acceptanceBySource).length &&
+        legacySourceKey &&
+        legacySourceKey !== sourceKey
+      ) {
+        acceptanceBySource[legacySourceKey] = {
+          requiredOutputs: [...verification.requiredOutputs],
+          requiredCommands: [...verification.requiredCommands],
+          readAt: verification.acceptanceReadAt || "",
+        };
+      }
+      acceptanceBySource[sourceKey] = {
+        requiredOutputs: acceptance.requiredOutputs,
+        requiredCommands: acceptance.requiredCommands,
+        readAt: now,
+      };
+      verification.acceptanceBySource = Object.fromEntries(
+        Object.entries(acceptanceBySource).slice(-16)
+      );
+      verification.requiredOutputs = [
+        ...new Set(
+          Object.values(verification.acceptanceBySource).flatMap((item) =>
+            Array.isArray(item?.requiredOutputs) ? item.requiredOutputs : []
+          )
+        ),
+      ].slice(0, 64);
+      verification.requiredCommands = [
+        ...new Set(
+          Object.values(verification.acceptanceBySource).flatMap((item) =>
+            Array.isArray(item?.requiredCommands) ? item.requiredCommands : []
+          )
+        ),
+      ].slice(0, 24);
+      verification.acceptanceSource = sourcePath;
       verification.acceptanceReadAt = now;
     }
   }

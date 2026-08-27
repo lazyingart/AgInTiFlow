@@ -2650,6 +2650,82 @@ try {
       JSON.stringify(["python3 -m unittest discover -s tests -v"]),
     "ordinary operator examples became mandatory acceptance commands"
   );
+  const refreshedAcceptanceState = {
+    commandCwd: workspace,
+    meta: {
+      projectVerification: {
+        requiredOutputs: ["stale-output.txt"],
+        requiredCommands: [
+          "python3 service_ctl.py start --state-dir .runtime",
+          "python3 service_ctl.py status --state-dir .runtime",
+        ],
+        acceptanceSource: "README.md",
+      },
+    },
+  };
+  recordProjectVerificationOutcome(
+    refreshedAcceptanceState,
+    {
+      ok: true,
+      toolName: "read_file",
+      path: "README.md",
+      content: operatorGuideMarkdown,
+    },
+    { commandCwd: workspace, taskProfile: "devops" }
+  );
+  assert(
+    JSON.stringify(refreshedAcceptanceState.meta.projectVerification.requiredCommands) ===
+      JSON.stringify(["python3 -m unittest discover -s tests -v"]) &&
+      refreshedAcceptanceState.meta.projectVerification.requiredOutputs.length === 0,
+    "rereading one authoritative source retained its stale acceptance requirements"
+  );
+  const resumedAcceptanceWorkspace = path.join(workspace, "resumed-acceptance");
+  await fs.mkdir(resumedAcceptanceWorkspace, { recursive: true });
+  await fs.writeFile(
+    path.join(resumedAcceptanceWorkspace, "README.md"),
+    operatorGuideMarkdown,
+    "utf8"
+  );
+  const resumedAcceptanceState = {
+    commandCwd: resumedAcceptanceWorkspace,
+    goal: "Repair the service and run its tests.",
+    meta: {
+      goalContract: { revision: 4, currentRequest: "Repair the service and run its tests." },
+      projectVerification: {
+        requiredCommands: [
+          "python3 service_ctl.py start --state-dir .runtime",
+          "python3 service_ctl.py status --state-dir .runtime",
+        ],
+        acceptanceSource: "README.md",
+      },
+    },
+  };
+  resetSameTaskExecutionContract(resumedAcceptanceState, 4);
+  assert(
+    JSON.stringify(resumedAcceptanceState.meta.projectVerification.requiredCommands) ===
+      JSON.stringify(["python3 -m unittest discover -s tests -v"]),
+    "same-task resume retained stale requirements from an older README parser"
+  );
+  recordProjectVerificationOutcome(
+    refreshedAcceptanceState,
+    {
+      ok: true,
+      toolName: "read_file",
+      path: "TASK.md",
+      content: requiredCommandMarkdown,
+    },
+    { commandCwd: workspace, taskProfile: "devops" }
+  );
+  assert(
+    JSON.stringify(refreshedAcceptanceState.meta.projectVerification.requiredCommands) ===
+      JSON.stringify([
+        "python3 -m unittest discover -s tests -v",
+        "npm run check",
+        "npm test",
+        "python scripts/verify.py --strict",
+      ]),
+    "source-scoped acceptance refresh discarded a distinct authoritative source"
+  );
   const operatorContinuedCommandMarkdown = [
     "# Task",
     "",
