@@ -132,6 +132,34 @@ const LEGACY_DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION = "aginti-document-commit-int
 const DOCUMENT_COMMIT_INTENT_MANIFEST_SCHEMA_VERSION = "aginti-document-commit-intent-manifest-v2";
 const DOCUMENT_REVISION_LINEAGE_SCHEMA_VERSION = "aginti-document-revision-lineage-v1";
 const DOCUMENT_DELETION_INTENT_SCHEMA_VERSION = "aginti-document-deletion-intent-v1";
+const LEGACY_V2_STATE_KEYS = Object.freeze([
+  "schemaVersion",
+  "scope",
+  "revision",
+  "threads",
+  "runs",
+  "artifacts",
+  "mutationReceipts",
+]);
+const LEGACY_V2_RUN_KEYS = Object.freeze([
+  "id",
+  "threadId",
+  "previousRunId",
+  "principalId",
+  "browserSessionId",
+  "browserSessionPolicy",
+  "status",
+  "schedulingState",
+  "createdAt",
+  "startedAt",
+  "completedAt",
+  "cancelRequestedAt",
+  "output",
+  "error",
+  "authority",
+  "inputMessageId",
+  "events",
+]);
 const PRIVATE_PATH_PATTERN =
   /(?:^|[\s("'`<>\[{=])(?:file:\/\/\/[^\s"'`<>)\]}]+|\/(?!\/)[^\s"'`<>)\]}]+|[A-Za-z]:[\\/][^\s"'`<>)\]}]+|\\\\[^\\/\s"'`<>)\]}]+\\[^\s"'`<>)\]}]+)/giu;
 const O_NOFOLLOW = Number(fsConstants.O_NOFOLLOW || 0);
@@ -1759,6 +1787,63 @@ async function syncDirectory(directory) {
   }
 }
 
+export async function atomicReplacePrivateIntegrationAnalysisStateFile(
+  target,
+  serializedState,
+  { temporaryPath } = {}
+) {
+  if (
+    typeof target !== "string" ||
+    !path.isAbsolute(target) ||
+    path.normalize(target) !== target ||
+    path.basename(target) !== "state.json" ||
+    typeof temporaryPath !== "string" ||
+    !path.isAbsolute(temporaryPath) ||
+    path.normalize(temporaryPath) !== temporaryPath ||
+    path.dirname(temporaryPath) !== path.dirname(target) ||
+    temporaryPath === target ||
+    typeof serializedState !== "string" ||
+    !serializedState.endsWith("\n") ||
+    byteLength(serializedState) > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumStateBytes
+  ) {
+    fail("ANALYSIS_STATE_WRITE_INVALID", "Durable analysis state write parameters are invalid.", { status: 500 });
+  }
+  const existing = await lstatOrNull(target);
+  if (existing && (!existing.isFile() || existing.isSymbolicLink() || existing.nlink !== 1)) corrupt();
+  let handle;
+  try {
+    handle = await fs.open(
+      temporaryPath,
+      openFlags(fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL),
+      0o600
+    );
+    await handle.writeFile(serializedState, "utf8");
+    await handle.sync();
+    await handle.chmod(0o600);
+    await handle.close();
+    handle = null;
+    const temporaryHandle = await fs.open(temporaryPath, openFlags(fsConstants.O_RDONLY));
+    try {
+      await verifyRegularPrivateFile(temporaryHandle, temporaryPath);
+    } finally {
+      await temporaryHandle.close();
+    }
+    await fs.rename(temporaryPath, target);
+    const finalHandle = await fs.open(target, openFlags(fsConstants.O_RDONLY));
+    try {
+      await verifyRegularPrivateFile(finalHandle, target);
+    } finally {
+      await finalHandle.close();
+    }
+    await syncDirectory(path.dirname(target));
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    await fs.unlink(temporaryPath).catch(() => {});
+    if (error instanceof IntegrationAnalysisSessionError) throw error;
+    unavailable(error);
+  }
+}
+
 function assertR67CompatibleState(state) {
   if (
     state.schemaVersion !== INTEGRATION_ANALYSIS_STATE_STORAGE_V3 ||
@@ -1802,6 +1887,24 @@ function envelopeForState(state, statePersistenceMode) {
     ...unsigned,
     digest: contractDigest(unsigned),
   };
+}
+
+function serializeStateEnvelope(state, expectedScope, statePersistenceMode) {
+  validateState(state, expectedScope);
+  if (statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2) {
+    assertR67CompatibleState(state);
+  }
+  const envelope = envelopeForState(state, statePersistenceMode);
+  let serializedState;
+  try {
+    serializedState = `${canonicalJson(envelope)}\n`;
+  } catch (error) {
+    corrupt(error);
+  }
+  if (byteLength(serializedState) > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumStateBytes) {
+    fail("ANALYSIS_STATE_FULL", "Durable analysis state capacity is exhausted.", { status: 409 });
+  }
+  return serializedState;
 }
 
 function inferRunLineage(state) {
@@ -1902,6 +2005,77 @@ function parseStateEnvelope(text, expectedScope, statePersistenceMode) {
       : migrated;
   }
   return validateState(migrateMissingRunLineage(envelope.state), expectedScope);
+}
+
+function assertCanonicalMigrationSourceShape(envelope) {
+  if (envelope.schemaVersion === LEGACY_INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION) {
+    exactState(
+      envelope.state,
+      LEGACY_V2_STATE_KEYS,
+      LEGACY_V2_STATE_KEYS,
+      "legacy v2 analysis state"
+    );
+    if (
+      envelope.state.schemaVersion !== LEGACY_INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION ||
+      !Array.isArray(envelope.state.runs)
+    ) {
+      corrupt();
+    }
+    for (const run of envelope.state.runs) {
+      exactState(run, LEGACY_V2_RUN_KEYS, LEGACY_V2_RUN_KEYS, "legacy v2 analysis run");
+    }
+    return;
+  }
+  if (envelope.schemaVersion === INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION) {
+    if (
+      envelope.state?.schemaVersion !== INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION ||
+      !Array.isArray(envelope.state?.runs) ||
+      envelope.state.runs.some(
+        (run) => !run || !Object.prototype.hasOwnProperty.call(run, "lineagePreviousRunId")
+      )
+    ) {
+      corrupt();
+    }
+    return;
+  }
+  corrupt();
+}
+
+export function parseIntegrationAnalysisStateMigrationSource(text, expectedScope) {
+  let envelope;
+  try {
+    envelope = JSON.parse(text);
+  } catch (error) {
+    corrupt(error);
+  }
+  exactState(
+    envelope,
+    ["schemaVersion", "state", "digest"],
+    ["schemaVersion", "state", "digest"],
+    "analysis state migration envelope"
+  );
+  assertCanonicalMigrationSourceShape(envelope);
+  const state = parseStateEnvelope(
+    text,
+    expectedScope,
+    INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3
+  );
+  return Object.freeze({
+    sourceStorageVersion: envelope.schemaVersion,
+    state,
+  });
+}
+
+export function serializeIntegrationAnalysisStateForPersistence(
+  state,
+  expectedScope,
+  statePersistenceMode
+) {
+  return serializeStateEnvelope(state, expectedScope, statePersistenceMode);
+}
+
+export function integrationAnalysisStateScopeDigest(scope) {
+  return scopeDigest(scope);
 }
 
 function stateFilePaths(stateRoot, scope) {
@@ -2218,61 +2392,17 @@ function createService(options, { testOnly }) {
   }
 
   async function writeState(scope, state) {
-    validateState(state, scope);
-    if (statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2) {
-      assertR67CompatibleState(state);
-    }
+    const serializedState = serializeStateEnvelope(state, scope, statePersistenceMode);
     const locations = stateFilePaths(stateRoot, scope);
     await ensureRoot();
     await ensurePrivateDirectory(locations.scopeDirectory, stateRoot, { testOnly });
-    const existing = await lstatOrNull(locations.stateFile);
-    if (existing && (!existing.isFile() || existing.isSymbolicLink() || existing.nlink !== 1)) corrupt();
-    const envelope = envelopeForState(state, statePersistenceMode);
-    let serializedState;
-    try {
-      serializedState = `${canonicalJson(envelope)}\n`;
-    } catch (error) {
-      corrupt(error);
-    }
-    if (byteLength(serializedState) > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumStateBytes) {
-      fail("ANALYSIS_STATE_FULL", "Durable analysis state capacity is exhausted.", { status: 409 });
-    }
     const temporary = path.join(
       locations.scopeDirectory,
       `.state.${process.pid}.${crypto.randomBytes(12).toString("hex")}.tmp`
     );
-    let handle;
-    try {
-      handle = await fs.open(
-        temporary,
-        openFlags(fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL),
-        0o600
-      );
-      await handle.writeFile(serializedState, "utf8");
-      await handle.sync();
-      await handle.chmod(0o600);
-      await handle.close();
-      handle = null;
-      const temporaryHandle = await fs.open(temporary, openFlags(fsConstants.O_RDONLY));
-      try {
-        await verifyRegularPrivateFile(temporaryHandle, temporary);
-      } finally {
-        await temporaryHandle.close();
-      }
-      await fs.rename(temporary, locations.stateFile);
-      const finalHandle = await fs.open(locations.stateFile, openFlags(fsConstants.O_RDONLY));
-      try {
-        await verifyRegularPrivateFile(finalHandle, locations.stateFile);
-      } finally {
-        await finalHandle.close();
-      }
-      await syncDirectory(locations.scopeDirectory);
-    } catch (error) {
-      await handle?.close().catch(() => {});
-      await fs.unlink(temporary).catch(() => {});
-      if (error instanceof IntegrationAnalysisSessionError) throw error;
-      unavailable(error);
-    }
+    await atomicReplacePrivateIntegrationAnalysisStateFile(locations.stateFile, serializedState, {
+      temporaryPath: temporary,
+    });
   }
 
   function closeOpenTools(run, createdAt, summary, eventType = "tool.failed") {
