@@ -159,6 +159,12 @@ try {
   assert(defaultMaxStepsForProfile("pipeline") >= 44, "pipeline profile step budget is too low for repair/verify/resume loops");
   assert(!/misleading failing test/i.test(qaProfile.prompt), "QA profile still encourages misleading test fixtures");
   assert(/do not stage fake bugs/i.test(qaProfile.prompt), "QA profile does not discourage fake staged failures");
+  const slidesProfile = listTaskProfiles().find((profile) => profile.id === "slides");
+  assert(slidesProfile, "slides profile is missing");
+  assert(/source-grounded editable slide source/i.test(slidesProfile.prompt), "slides profile does not require grounded editable source");
+  assert(/render every slide/i.test(slidesProfile.prompt), "slides profile does not require full rendered inspection");
+  assert(/wrapped-title decoration overlap/i.test(slidesProfile.prompt), "slides profile does not guard wrapped-title collisions");
+  assert(/fresh git status --short/i.test(slidesProfile.prompt), "slides profile does not require fresh repository evidence");
   assert(
     capabilities.trustedDockerPolicy.some((check) => check.command.startsWith("apt-get install") && check.allowed),
     "trusted Docker policy did not allow apt-get install"

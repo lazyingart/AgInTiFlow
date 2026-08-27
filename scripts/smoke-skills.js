@@ -115,6 +115,11 @@ assert(selectedIds("write SQL migrations for sqlite schema").includes("database"
 assert(selectedIds("debug Docker deployment logs and port config").includes("devops-deployment"), "devops prompt did not select devops-deployment");
 assert(selectedIds("review auth security and secrets handling").includes("security-review"), "security prompt did not select security-review");
 assert(selectedIds("make a PowerPoint pitch deck").includes("presentation-slides"), "slides prompt did not select presentation-slides");
+const presentationSkill = skills.find((skill) => skill.id === "presentation-slides");
+assert(presentationSkill?.body.includes("Render every slide"), "presentation skill does not require every slide to be rendered");
+assert(presentationSkill?.body.includes("wrapped titles"), "presentation skill does not require wrapped-title inspection");
+assert(presentationSkill?.body.includes("git status --short"), "presentation skill does not require final repository evidence");
+assert(presentationSkill?.body.includes("Do not call the deck complete"), "presentation skill still permits build-only completion");
 assert(selectedIds("edit a markdown screenplay final draft").includes("writing-editing"), "writing prompt did not select writing-editing");
 assert(selectedIds("create a lesson with exercises and quiz").includes("education-tutorial"), "education prompt did not select education-tutorial");
 assert(selectedIds("review this PR architecture without editing").includes("code-review"), "review prompt did not select code-review");

@@ -122,7 +122,7 @@ export const TASK_PROFILES = {
     id: "slides",
     label: "Slides and presentations",
     prompt:
-      "Bias toward presentation, pitch deck, poster, lecture, and slide-style communication. Clarify audience and purpose from available context, create a durable outline and slide files or markdown deck, keep each slide visually focused, include speaker notes when useful, and export/preview when local tools support it.",
+      "Bias toward presentation, pitch deck, poster, lecture, and slide-style communication. Infer audience and purpose from available context, create a durable outline and source-grounded editable slide source, keep each slide visually focused, and include useful speaker notes. Preserve editable text, charts, tables, and shapes instead of flattening complete slides into images. Produce the requested deck/export formats and a reproducible build path when practical. Render every slide to a preview and inspect the actual pixels for clipping, collisions, wrapped-title decoration overlap, unreadable text, and inconsistent framing; rebuild after repairs. Verify source claims and calculations, artifact existence and package readability, slide/page counts across PPTX/PDF/previews, and any exact acceptance command supplied by the user. In a Git repository, when the task asks for a commit, commit intentional source and deliverables, narrowly ignore only transient build/perception evidence, and run a fresh git status --short before claiming completion.",
     tools: ["files", "shell", "canvas", "web_search"],
   },
   education: {
