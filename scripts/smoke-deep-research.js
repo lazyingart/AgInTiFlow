@@ -221,6 +221,23 @@ async function main() {
         provider: "deepseek",
         testFailureRepairActive: true,
         testFailureRepairMutationRequired: true,
+        testFailureRepairOptionalRereadPaths: ["service.py"],
+      },
+      [{ role: "user", content: "Apply the coherent repair from retained evidence." }],
+      [
+        { type: "function", function: { name: "read_file" } },
+        { type: "function", function: { name: "apply_patch" } },
+        { type: "function", function: { name: "finish" } },
+      ]
+    )) === JSON.stringify({ type: "function", function: { name: "apply_patch" } }),
+    "DeepSeek bounded reread fallback displaced the required repair mutation"
+  );
+  assert(
+    JSON.stringify(toolChoiceForProvider(
+      {
+        provider: "deepseek",
+        testFailureRepairActive: true,
+        testFailureRepairMutationRequired: true,
         testFailureRepairNeedsPatchContext: true,
       },
       [{ role: "user", content: "Continue from the retained failing test evidence." }],

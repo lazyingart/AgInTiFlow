@@ -2116,6 +2116,91 @@ sameNames(
   ["apply_patch", "finish"],
   "fully consumed packet evidence did not close discovery before mutation"
 );
+const allPacketPathsReadDeepSeekRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", taskProfile: "qa" },
+  {
+    ...packetPathReadState,
+    meta: {
+      ...packetPathReadState.meta,
+      toolLoop: {
+        stagnationEpoch: 10,
+        recent: [
+          ...packetPathReadState.meta.toolLoop.recent,
+          {
+            toolName: "read_file",
+            path: "tests/test_service_ctl.py",
+            ok: true,
+            blocked: false,
+            at: "2026-08-24T02:00:12.000Z",
+          },
+        ],
+      },
+    },
+  }
+);
+assertStrict.deepEqual(
+  allPacketPathsReadDeepSeekRuntime.testFailureRepairOptionalRereadPaths,
+  ["service_ctl.py"],
+  "DeepSeek repair did not retain one bounded canonical-source reread fallback"
+);
+const allPacketPathsReadDeepSeekTools = selectProgressiveTools(allTools, {
+  config: allPacketPathsReadDeepSeekRuntime,
+  goal: "Apply the coherent source repair after bounded evidence reads.",
+  profile: "qa",
+});
+sameNames(
+  allPacketPathsReadDeepSeekTools,
+  ["read_file", "apply_patch", "finish"],
+  "DeepSeek mutation repair did not tolerate one exact source reread"
+);
+assertStrict.deepEqual(
+  allPacketPathsReadDeepSeekTools[0].function.parameters.properties.path.enum,
+  ["service_ctl.py"],
+  "DeepSeek repair reread fallback was not constrained to the canonical source"
+);
+const exhaustedDeepSeekRereadRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", taskProfile: "qa" },
+  {
+    ...packetPathReadState,
+    meta: {
+      ...packetPathReadState.meta,
+      toolLoop: {
+        stagnationEpoch: 10,
+        recent: [
+          ...packetPathReadState.meta.toolLoop.recent,
+          {
+            toolName: "read_file",
+            path: "tests/test_service_ctl.py",
+            ok: true,
+            blocked: false,
+            at: "2026-08-24T02:00:12.000Z",
+          },
+          {
+            toolName: "read_file",
+            path: "service_ctl.py",
+            ok: true,
+            blocked: false,
+            at: "2026-08-24T02:00:13.000Z",
+          },
+        ],
+      },
+    },
+  }
+);
+assertStrict.deepEqual(
+  exhaustedDeepSeekRereadRuntime.testFailureRepairOptionalRereadPaths,
+  [],
+  "DeepSeek repair kept reopening an already repeated canonical source read"
+);
+sameNames(
+  selectProgressiveTools(allTools, {
+    config: exhaustedDeepSeekRereadRuntime,
+    goal: "Apply the coherent source repair after the bounded reread.",
+    profile: "qa",
+  }),
+  ["apply_patch", "finish"],
+  "DeepSeek repair did not close its one-shot reread fallback"
+);
 const topologyStalemateState = {
   ...packetPathReadState,
   meta: {

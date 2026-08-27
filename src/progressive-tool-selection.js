@@ -1950,18 +1950,32 @@ export function selectProgressiveTools(
           .filter((item, index, items) => items.indexOf(item) === index)
           .slice(0, 8)
       : [];
-    const constrainedRepairRead = repairContextPaths.length
+    const optionalRepairRereadPaths = Array.isArray(config.testFailureRepairOptionalRereadPaths)
+      ? config.testFailureRepairOptionalRereadPaths
+          .map((item) => String(item || "").replace(/\\/g, "/").replace(/^\.\//, "").trim())
+          .filter(Boolean)
+          .filter((item, index, items) => items.indexOf(item) === index)
+          .slice(0, 1)
+      : [];
+    const boundedRepairReadPaths = repairContextPaths.length
+      ? repairContextPaths
+      : optionalRepairRereadPaths;
+    const constrainedRepairRead = boundedRepairReadPaths.length
       ? constrainReadFilePaths(
           available.get("read_file"),
-          repairContextPaths,
-          "failed-test-evidence-refresh"
+          boundedRepairReadPaths,
+          repairContextPaths.length
+            ? "failed-test-evidence-refresh"
+            : "deepseek-failed-test-source-reread"
         )
       : available.get("read_file");
     const toolNames = config.testFailureRepairMutationRequired === true
       ? [
           ...(config.testFailureRepairNeedsPatchContext === true
             ? ["read_file", ...(repairContextPaths.length ? [] : ["search_files"])]
-            : []),
+            : optionalRepairRereadPaths.length
+              ? ["read_file"]
+              : []),
           "apply_patch",
           ...(constrainedInstructionCreate ? ["write_file"] : []),
           "finish",

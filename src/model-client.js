@@ -397,6 +397,13 @@ function deepSeekActionOnlyTool(config = {}, messages = [], tools = []) {
   if (deepSeekConstrainedReadRequired(config) && offeredNames.has("read_file")) {
     return "read_file";
   }
+  if (
+    config.testFailureRepairActive === true &&
+    config.testFailureRepairMutationRequired === true &&
+    offeredNames.has("apply_patch")
+  ) {
+    return "apply_patch";
+  }
   const constrainedTool = singleExecutableToolName(tools);
   if (constrainedTool) return constrainedTool;
   const actionable = (Array.isArray(tools) ? tools : [])

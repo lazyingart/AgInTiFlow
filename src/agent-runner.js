@@ -11108,10 +11108,41 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     const unreadRecoveryPacketPaths = recoveryPacketPaths.filter(
       (item) => !consumedRecoveryPacketPaths.has(item)
     );
+    const recoveryPacketReadCounts = new Map();
+    if (Number.isFinite(recoveryPacketContextAt)) {
+      for (const entry of Array.isArray(toolLoop.recent) ? toolLoop.recent : []) {
+        const entryAt = Date.parse(String(entry?.at || ""));
+        const entryPath = safeRecoveryEvidencePath(entry?.path);
+        if (
+          !Number.isFinite(entryAt) ||
+          entryAt <= recoveryPacketContextAt ||
+          entry?.ok !== true ||
+          entry?.blocked === true ||
+          String(entry?.toolName || "") !== "read_file" ||
+          !entryPath
+        ) {
+          continue;
+        }
+        recoveryPacketReadCounts.set(
+          entryPath,
+          Math.max(0, Number(recoveryPacketReadCounts.get(entryPath) || 0)) + 1
+        );
+      }
+    }
+    const optionalDeepSeekRepairRereadPaths =
+      normalizeProviderId(runtimeConfig.provider, "") === "deepseek" &&
+      runtimeConfig.testFailureRepairMutationRequired === true &&
+      unreadRecoveryPacketPaths.length === 0
+        ? recoveryPacketPaths
+            .filter((item) => !/(?:^|\/)tests?(?:\/|$)/i.test(item))
+            .filter((item) => Math.max(0, Number(recoveryPacketReadCounts.get(item) || 0)) < 2)
+            .slice(0, 1)
+        : [];
     const exactRecoveryPacketContextActive = Boolean(
       recoveryPacketPaths.length && Number.isFinite(recoveryPacketContextAt)
     );
     runtimeConfig.testFailureRepairContextPaths = unreadRecoveryPacketPaths;
+    runtimeConfig.testFailureRepairOptionalRereadPaths = optionalDeepSeekRepairRereadPaths;
     runtimeConfig.testFailureRepairNeedsPatchContext = Boolean(
       runtimeConfig.testFailureRepairMutationRequired &&
         !deterministicStructuralFocus &&
