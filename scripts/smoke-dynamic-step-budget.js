@@ -2618,6 +2618,38 @@ try {
       JSON.stringify(["npm test"]),
     "console output lines were mistaken for required shell commands"
   );
+  const operatorGuideMarkdown = [
+    "# Service",
+    "",
+    "The controller must provide start, status, restart, and stop.",
+    "",
+    "## Operator Guidance",
+    "",
+    "### Start the service",
+    "",
+    "```bash",
+    "python3 service_ctl.py start --state-dir .runtime",
+    "```",
+    "",
+    "### Check service status",
+    "",
+    "```bash",
+    "python3 service_ctl.py status --state-dir .runtime",
+    "```",
+    "",
+    "## Running Tests",
+    "",
+    "Run the visible regression suite with:",
+    "",
+    "```bash",
+    "python3 -m unittest discover -s tests -v",
+    "```",
+  ].join("\n");
+  assert(
+    JSON.stringify(projectAcceptanceFromMarkdown(operatorGuideMarkdown, "README.md").requiredCommands) ===
+      JSON.stringify(["python3 -m unittest discover -s tests -v"]),
+    "ordinary operator examples became mandatory acceptance commands"
+  );
   const operatorContinuedCommandMarkdown = [
     "# Task",
     "",

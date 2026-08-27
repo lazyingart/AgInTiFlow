@@ -5281,20 +5281,59 @@ function canonicalRequiredFenceCommand(value = "") {
   );
 }
 
+function markdownFenceRequiresCommandExecution(content = "", fenceIndex = 0) {
+  const lines = String(content || "")
+    .slice(0, Math.max(0, Number(fenceIndex || 0)))
+    .split(/\r?\n/);
+  while (lines.length && !lines.at(-1).trim()) lines.pop();
+  if (!lines.length) return false;
+
+  const nearest = String(lines.at(-1) || "").trim();
+  const heading = nearest.match(/^#{1,6}\s+(.+?)\s*#*$/);
+  if (heading) {
+    return /\b(?:acceptance|tests?|validation|verification)\b|(?:验收|驗收|测试|測試|验证|驗證)|(?:受入|テスト|検証)/iu.test(
+      heading[1]
+    );
+  }
+
+  const paragraph = [];
+  while (lines.length && paragraph.length < 5) {
+    const line = String(lines.pop() || "").trim();
+    if (!line || /^#{1,6}\s+/.test(line) || /^```/.test(line)) break;
+    paragraph.unshift(line);
+  }
+  const cue = paragraph.join(" ").trim();
+  if (!cue) return false;
+
+  const execution = /\b(?:commands?|execute|invoke|launch|regenerate|run|tests?|validate|validation|verify|verification)\b/iu.test(
+    cue
+  );
+  const obligation = /\b(?:before\s+completion|must|required|shall|should)\b/iu.test(cue);
+  const directImperative = /^(?:please\s+)?(?:execute|invoke|launch|regenerate|run|validate|verify)\b/iu.test(cue);
+  const validationLead = /^(?:to\s+(?:check|test|validate|verify)\b|(?:required|mandatory)\s+(?:checks?|commands?|tests?|validation|verification)\b)/iu.test(
+    cue
+  );
+  const cjkExecution = /(?:运行|運行|执行|執行|验证|驗證|检查|檢查|测试|測試|验收|驗收|実行|検証|確認|テスト)/u.test(cue);
+  const cjkObligation = /(?:必须|必須|需要|应当|應當|完成前|完了前)/u.test(cue);
+  const cjkDirectImperative = /^(?:请|請)?(?:运行|運行|执行|執行|验证|驗證|检查|檢查|测试|測試|验收|驗收|実行|検証|確認|テスト)/u.test(
+    cue
+  );
+  return (
+    (execution && obligation) ||
+    directImperative ||
+    validationLead ||
+    (cjkExecution && cjkObligation) ||
+    cjkDirectImperative
+  );
+}
+
 function markdownRequiredCommands(content = "") {
   const text = String(content || "");
   const commands = [];
   for (const match of text.matchAll(/```([A-Za-z0-9_-]*)[ \t]*\n([\s\S]*?)```/gi)) {
     const language = String(match[1] || "").toLowerCase();
     if (language && !["bash", "sh", "shell", "console"].includes(language)) continue;
-    const before = text.slice(Math.max(0, Number(match.index || 0) - 420), Number(match.index || 0));
-    if (
-      !/(?:run|running|execute|command|verify|validation|regenerate)[^\n.]{0,180}(?:must|required|should|use|run|regenerate)|(?:必须|需要|应当|运行|执行|验证)[^。\n]{0,180}(?:命令|生成|输出|交付)/i.test(
-        before
-      )
-    ) {
-      continue;
-    }
+    if (!markdownFenceRequiresCommandExecution(text, match.index)) continue;
     const body = String(match[2] || "");
     const fenceCommandStart = commands.length;
     const context = [];

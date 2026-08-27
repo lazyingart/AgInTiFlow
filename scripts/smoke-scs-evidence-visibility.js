@@ -60,6 +60,14 @@ const coordinatedForbiddenOutputContract = deriveScsTaskContract({
   taskProfile: "devops",
 });
 
+const recoveryInstructionContract = deriveScsTaskContract({
+  goal: [
+    "Use the retained source and these two failures: the tests invoke ../service_ctl.py, while `python3 service_ctl.py start --state-dir .runtime` fails. Preserve the lifecycle assertions rather than replacing them, repair service_ctl.py, and remove the accidental untracked resume-after-git-baseline-recovery-dev-prompt.txt.",
+    "Then run `python3 -m unittest discover -s tests -v`, followed by `PYTHONDONTWRITEBYTECODE=1 python3 /tmp/devops_sensor_gateway_contract.py`. Do not use LocalLLM or change provider.",
+  ].join("\n"),
+  taskProfile: "devops",
+});
+
 const readOnlyReviewContract = deriveScsTaskContract({
   goal: [
     "Review focus: changed files only.",
@@ -135,6 +143,33 @@ assert.deepEqual(
   coordinatedForbiddenOutputContract.excludedOutputPaths.sort(),
   ["scratch.py", "temporary.py"],
   "a coordinated list did not retain each path governed by one exclusion"
+);
+assert(
+  recoveryInstructionContract.excludedOutputPaths.includes("resume-after-git-baseline-recovery-dev-prompt.txt") &&
+    !recoveryInstructionContract.exactOutputPaths.includes("resume-after-git-baseline-recovery-dev-prompt.txt"),
+  "an explicit deletion target became a required output"
+);
+assert.deepEqual(
+  recoveryInstructionContract.requiredTextTerms,
+  [],
+  "verification commands became required document prose"
+);
+assert.deepEqual(
+  recoveryInstructionContract.requiredExecutableTerms,
+  [],
+  "an environment assignment inside a verification command became required production source"
+);
+assert(
+  !recoveryInstructionContract.exactInputPaths.some((item) => item.includes("PYTHONDONTWRITEBYTECODE")),
+  "a quoted verification command became an input path"
+);
+assert.deepEqual(
+  recoveryInstructionContract.requiredProjectCommands,
+  [
+    "python3 -m unittest discover -s tests -v",
+    "PYTHONDONTWRITEBYTECODE=1 python3 /tmp/devops_sensor_gateway_contract.py",
+  ],
+  "a verification command introduced by 'followed by' was not retained"
 );
 assert.equal(
   readOnlyReviewContract.requiresWorkspaceMutation,

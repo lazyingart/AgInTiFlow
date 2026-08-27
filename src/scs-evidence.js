@@ -326,6 +326,56 @@ function quotedTerms(text = "") {
   return terms;
 }
 
+function looksLikeShellCommandLiteral(value = "") {
+  const text = String(value || "").trim();
+  if (!text || /[\r\n]/.test(text)) return false;
+  const command = text.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)+/, "");
+  const tokens = tokenizeShellWords(command);
+  if (!tokens.length) return false;
+  const executable = path.basename(String(tokens[0] || "")).toLowerCase();
+  return new Set([
+    "aginti",
+    "bash",
+    "bun",
+    "cargo",
+    "cmake",
+    "curl",
+    "dotnet",
+    "ffmpeg",
+    "git",
+    "gh",
+    "go",
+    "java",
+    "javac",
+    "latexmk",
+    "make",
+    "node",
+    "npm",
+    "npx",
+    "perl",
+    "php",
+    "pnpm",
+    "pytest",
+    "python",
+    "python3",
+    "ruby",
+    "sh",
+    "wget",
+    "xelatex",
+    "yarn",
+    "zsh",
+  ]).has(executable);
+}
+
+function indexFallsInsideInlineCommand(source = "", index = 0) {
+  for (const match of String(source || "").matchAll(/`([^`\r\n]+)`/g)) {
+    const start = Number(match.index || 0);
+    const end = start + String(match[0] || "").length;
+    if (index >= start && index < end && looksLikeShellCommandLiteral(match[1])) return true;
+  }
+  return false;
+}
+
 function splitInlineTerms(text = "") {
   return String(text || "")
     .split(/[、,，;；]/)
@@ -515,6 +565,10 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
     /(?:不要|不得|禁止|无需|不需要)[^。！？；\n]{0,140}(?:运行|执行|重跑|创建|建立|写入|生成|保存|输出|修改|编辑|提交|暂存)/u;
   const cjkNegativeActionAfter =
     /^(?:(?:不得|禁止|不要)(?:被)?(?:运行|执行|重跑|创建|建立|写入|生成|保存|输出|修改|编辑|提交|暂存)|(?:を)?(?:作成|生成|実行|再実行|保存|編集|変更|コミット)[^。！？；\n]{0,40}(?:しない|しなくてよい|してはいけない))/u;
+  const directRemovalBefore =
+    /\b(?:remove|delete|unlink|discard)\s+(?:(?:the|an?|this|that)\s+)?(?:(?:accidental|stale|temporary|untracked|generated|obsolete|old|private|empty)\s+)*(?:file\s+)?$/i;
+  const cjkDirectRemovalBefore =
+    /(?:删除|刪除|移除|清除)(?:(?:这个|這個|该|該|意外的|暂存的|暫存的|临时的|臨時的|未跟踪的|未追蹤的|旧的|舊的|私有的)\s*)*(?:文件)?\s*$/u;
   const excluded = [];
   for (const clause of source.split(/[;；\n]|(?<=[.!?。！？])\s+/u)) {
     pathPattern.lastIndex = 0;
@@ -545,7 +599,9 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
         negativeActionAfter.test(after) ||
         keepAbsent.test(`${before}${after}`) ||
         cjkNegativeActionBefore.test(before) ||
-        cjkNegativeActionAfter.test(after)
+        cjkNegativeActionAfter.test(after) ||
+        directRemovalBefore.test(before) ||
+        cjkDirectRemovalBefore.test(before)
       );
       previousExcluded = directExclusion || coordinatedWithExcludedPrevious;
       if (previousExcluded) {
@@ -655,7 +711,13 @@ function inferRequiredTextTerms(goal = "") {
   }
   // A quoted filename in "save as `report.md`" is an output location, not
   // required prose inside that report. Path existence is validated separately.
-  return uniqueLimited(terms.filter((term) => !outputPathTerms.has(String(term).trim())), 24);
+  return uniqueLimited(
+    terms.filter((term) => {
+      const cleaned = String(term).trim();
+      return !outputPathTerms.has(cleaned) && !looksLikeShellCommandLiteral(cleaned);
+    }),
+    24
+  );
 }
 
 const EXECUTABLE_SOURCE_EXTENSIONS = new Set([
@@ -701,6 +763,7 @@ export function inferRequiredExecutableTerms(goal = "") {
   for (const match of source.matchAll(assignmentPattern)) {
     const index = Number(match.index || 0);
     if (executableRequirementIsNegated(source, index)) continue;
+    if (indexFallsInsideInlineCommand(source, index)) continue;
     const window = source.slice(Math.max(0, index - 180), Math.min(source.length, index + match[0].length + 220));
     const implementationRequirement =
       /\b(?:actual|canonical|executable|implementation|source|code|call|argument|keyword|parameter|repair|fix|correct|replace|add|set|pass|use|must|required)\b/iu.test(window) ||
@@ -1316,9 +1379,9 @@ function prefixRequestsInlineCommandExecution(prefix = "") {
   while (preamble.test(clause)) clause = clause.replace(preamble, "").trim();
   clause = clause.replace(/(?:[:：]|--?)\s*$/, "").trim();
   return (
-    /^(?:run|rerun|re-run|execute|invoke|launch|verify|validate|check|confirm)(?:\s+(?:(?:the|this|that)\s+)?(?:following\s+)?command(?:\s+named)?)?\s*$/i.test(
+    /^(?:followed\s+by|run|rerun|re-run|execute|invoke|launch|verify|validate|check|confirm)(?:\s+(?:(?:the|this|that)\s+)?(?:following\s+)?command(?:\s+named)?)?\s*$/i.test(
       clause
-    ) || /^(?:运行|運行|执行|執行|调用|調用|验证|驗證|检查|檢查|确认|確認)\s*$/.test(clause)
+    ) || /^(?:随后运行|隨後運行|接着运行|接著運行|运行|運行|执行|執行|调用|調用|验证|驗證|检查|檢查|确认|確認)\s*$/.test(clause)
   );
 }
 
@@ -1408,6 +1471,7 @@ function inferExplicitRequestedCommands(goal = "") {
 
 export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceCriteria = [] } = {}) {
   const evidenceGoal = scopedChatopsEvidenceGoal(goal, taskProfile);
+  const positiveEvidenceGoal = stripForbiddenLanguage(evidenceGoal);
   const artifactRoot = scopedArtifactRoot(goal);
   const requirementCategories = inferRequirementCategories(evidenceGoal, taskProfile, acceptanceCriteria);
   const requiredToolCalls = inferRequiredToolCalls(evidenceGoal);
@@ -1431,7 +1495,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     excludedOutputPaths
   );
   const exactInputPaths = filterExplicitlyExcludedOutputPaths(
-    inferExactInputPaths(evidenceGoal),
+    inferExactInputPaths(positiveEvidenceGoal),
     excludedOutputPaths
   ).filter((item) => !inferredOutputPaths.includes(item) && !exactOutputPaths.includes(item));
   const declaredSourceRoots = inferDeclaredSourceRoots(evidenceGoal);
@@ -1455,8 +1519,8 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     requiresWorkspaceMutation: goalRequestsWorkspaceMutation(evidenceGoal, taskProfile),
     requiresFileMutation: goalRequestsFileMutation(evidenceGoal, taskProfile),
     requiresSourceGrounding: requiresSourceGrounding(evidenceGoal),
-    requiredTextTerms: inferRequiredTextTerms(evidenceGoal),
-    requiredExecutableTerms: inferRequiredExecutableTerms(evidenceGoal),
+    requiredTextTerms: inferRequiredTextTerms(positiveEvidenceGoal),
+    requiredExecutableTerms: inferRequiredExecutableTerms(positiveEvidenceGoal),
     forbiddenTextTerms: inferForbiddenTextTerms(evidenceGoal),
     successCriteria: unique(acceptanceCriteria).slice(0, 10),
   };
