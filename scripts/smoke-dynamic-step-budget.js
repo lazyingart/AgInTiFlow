@@ -4805,6 +4805,47 @@ try {
       !evaluateScsEvidence(failedBoundCommandContract, failedBoundCommandLedger).ok,
     "a failed status-wrapped command used its required-command binding to fabricate acceptance"
   );
+  const failedRuntimeCommand = "python3 service_ctl.py start --state-dir .runtime";
+  const failedRuntimeCommandState = {
+    meta: {
+      goalContract: { revision: 1 },
+      projectVerification: { requiredCommands: [failedRuntimeCommand] },
+    },
+  };
+  const failedRuntimeCommandResult = {
+    toolName: "run_command",
+    ok: false,
+    exitCode: 1,
+    args: { command: failedRuntimeCommand },
+    stdout: "",
+    stderr: "TypeError: launch_service() got an unexpected keyword argument 'stdout'",
+  };
+  recordProjectVerificationOutcome(
+    failedRuntimeCommandState,
+    failedRuntimeCommandResult,
+    { commandCwd: workspace, taskProfile: "devops" }
+  );
+  assert(
+    failedRuntimeCommandResult.requiredProjectCommand === failedRuntimeCommand &&
+      failedRuntimeCommandResult.projectTest?.passed === false &&
+      failedRuntimeCommandResult.projectTest?.requiredCommandFailure === true &&
+      failedRuntimeCommandResult.projectTest?.failureSummary.includes("TypeError"),
+    "a failed non-test required command did not become bounded repair evidence"
+  );
+  const failedRuntimeCommandRecovery = nextStepRuntimeConfig(
+    { provider: "deepseek", taskProfile: "devops", commandCwd: workspace },
+    failedRuntimeCommandState
+  );
+  assert(
+    failedRuntimeCommandRecovery.testFailureRepairActive === true &&
+      failedRuntimeCommandRecovery.requiredProjectCommandPending !== true &&
+      buildKnownConstrainedPhasePlan(
+        { provider: "deepseek", taskProfile: "devops", commandCwd: workspace },
+        failedRuntimeCommandState,
+        failedRuntimeCommandRecovery
+      ) === null,
+    "a failed non-test required command stayed trapped in exact-command constrained recovery"
+  );
   const preservedTailOutput = trimCommandOutput(
     `${"long test output\n".repeat(1000)}EXIT=0\n`,
     800
@@ -5607,6 +5648,24 @@ try {
       commandCwd: workspace,
     })?.category === "repeated-no-progress-call",
     "a third identical unchanged shell probe was not blocked"
+  );
+  const repeatedFailureState = {
+    meta: {
+      toolLoop: {
+        stagnationEpoch: 4,
+        recent: repeatedProbeState.meta.toolLoop.recent.map((entry) => ({
+          ...entry,
+          ok: false,
+          outcomeFingerprint: "same-failure",
+        })),
+      },
+    },
+  };
+  assert(
+    repeatedNoProgressToolBlock(repeatedFailureState, "run_command", repeatedProbeArgs, {
+      commandCwd: workspace,
+    })?.category === "repeated-no-progress-call",
+    "a third identical failed shell command was not blocked"
   );
   assert(
     repeatedNoProgressToolBlock(

@@ -5964,6 +5964,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       toolResult.requiredProjectCommand = run.requiredProjectCommand;
     }
     const substantiveTestCommand = isSubstantiveTestCommand(command, config);
+    const failedRequiredCommand = Boolean(requiredCommand && !commandSucceeded);
     if (substantiveTestCommand && commandReportsInvalidTestInvocation(toolResult)) {
       const invalidEvidence = compactFailedTestEvidence(toolResult, config);
       const invalidInvocation = {
@@ -5976,10 +5977,11 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         invalidInvocation,
       ].slice(-16);
       toolResult.projectTestDiscoveryFailure = invalidInvocation;
-    } else if (substantiveTestCommand) {
+    } else if (substantiveTestCommand || failedRequiredCommand) {
       delete state.meta.verifiedCompletionCandidate;
-      const zeroTests = commandReportsZeroTests(toolResult);
+      const zeroTests = substantiveTestCommand && commandReportsZeroTests(toolResult);
       const reportedFailure =
+        !commandSucceeded ||
         commandReportsTestFailure(toolResult) ||
         (exitProbe.present && exitProbe.status !== 0);
       const qualityWarnings = actionableTestWarnings(toolResult);
@@ -5991,6 +5993,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         reportedFailure,
         qualityWarnings,
         passed,
+        requiredCommandFailure: failedRequiredCommand,
         ...failedEvidence,
       };
       verification.testRuns = [...verification.testRuns, testRun].slice(-24);
@@ -7399,7 +7402,6 @@ function successfulToolStateProgress(toolResult = {}) {
 function noProgressOutcomeFingerprint(toolResult = {}) {
   if (
     toolResult?.toolName !== "run_command" ||
-    toolResult?.ok === false ||
     toolResult?.blocked ||
     successfulToolStateProgress(toolResult) ||
     expectedRepeatedObservationCommand(toolResult?.args?.command)
@@ -7424,7 +7426,6 @@ export function repeatedNoProgressToolBlock(state, toolName, args = {}, config =
     (entry) =>
       entry?.signature === signature &&
       entry?.toolName === "run_command" &&
-      entry?.ok === true &&
       entry?.blocked !== true &&
       entry?.noProgressProbe === true &&
       Number(entry?.stagnationEpoch || 0) === stagnationEpoch &&
@@ -7435,7 +7436,7 @@ export function repeatedNoProgressToolBlock(state, toolName, args = {}, config =
   if (new Set(recentFingerprints).size !== 1) return null;
   return {
     reason:
-      "The same read-only command already returned the same result twice without an intervening file, artifact, browser, or task-state change.",
+      "The same command already returned the same result twice without an intervening file, artifact, browser, or task-state change.",
     category: "repeated-no-progress-call",
     permissionAdvice: {
       category: "repeated-no-progress-call",
