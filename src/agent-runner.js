@@ -7457,10 +7457,25 @@ export function toolResultForModel(result) {
 export function repeatedStaticToolBlock(state, toolName, args = {}, config = {}) {
   if (!isStaticDiscoveryToolCall(toolName, args)) return null;
   const requiredPatchRefresh = activePatchContextRefresh(state);
+  const boundedFailedTestReadPaths = [
+    ...(Array.isArray(config.testFailureRepairContextPaths)
+      ? config.testFailureRepairContextPaths
+      : []),
+    ...(Array.isArray(config.testFailureRepairOptionalRereadPaths)
+      ? config.testFailureRepairOptionalRereadPaths
+      : []),
+  ]
+    .map(safeRecoveryEvidencePath)
+    .filter(Boolean);
   if (
     toolName === "read_file" &&
-    requiredPatchRefresh &&
-    safeRecoveryEvidencePath(args?.path) === requiredPatchRefresh.path
+    (
+      (
+        requiredPatchRefresh &&
+        safeRecoveryEvidencePath(args?.path) === requiredPatchRefresh.path
+      ) ||
+      boundedFailedTestReadPaths.includes(safeRecoveryEvidencePath(args?.path))
+    )
   ) {
     return null;
   }
@@ -17052,10 +17067,19 @@ export function recoverRequiredPatchContextReadWithoutToolCall(
   const repairMode =
     config.patchContextRepairRequired === true &&
     Math.max(0, Number(config.patchContextRepairReadCount || 0)) < 1;
+  const failedTestReadMode = Boolean(
+    config.testFailureRepairActive === true &&
+    config.testFailureRepairMutationRequired === true &&
+    config.testFailureRepairNeedsPatchContext === true &&
+    Array.isArray(config.testFailureRepairContextPaths) &&
+    config.testFailureRepairContextPaths.length > 0
+  );
   const exactPath = safeRecoveryEvidencePath(
     refreshMode
       ? config.patchContextRefreshPath
-      : config.patchContextRepairPath
+      : repairMode
+        ? config.patchContextRepairPath
+        : config.testFailureRepairContextPaths?.[0]
   );
   if (!exactPath) return null;
   const requestedCall = calls.length === 1 ? calls[0] : null;
@@ -17082,10 +17106,22 @@ export function recoverRequiredPatchContextReadWithoutToolCall(
         String(error?.code || "")
       )
     );
+  const invalidFailedTestReadCalls = Boolean(
+    validation?.ok !== true &&
+    failedTestReadMode &&
+    calls.length > 0 &&
+    calls.every((call) => String(call?.function?.name || "") === "read_file") &&
+    errors.length > 0 &&
+    errors.every((error) =>
+      ["TOOL_ARGUMENTS_SCHEMA_INVALID", "ARGUMENT_ENUM_MISMATCH"]
+        .includes(String(error?.code || ""))
+    )
+  );
   if (
     !missingRefreshCall &&
     !unavailableContextCall &&
-    !invalidExactReadCall
+    !invalidExactReadCall &&
+    !invalidFailedTestReadCalls
   ) {
     return null;
   }
@@ -17102,8 +17138,8 @@ export function recoverRequiredPatchContextReadWithoutToolCall(
     readDescriptor.function?.parameters?.properties?.path?.enum;
   if (
     !Array.isArray(allowedPaths) ||
-    allowedPaths.length !== 1 ||
-    safeRecoveryEvidencePath(allowedPaths[0]) !== exactPath
+    (!failedTestReadMode && allowedPaths.length !== 1) ||
+    !allowedPaths.map(safeRecoveryEvidencePath).includes(exactPath)
   ) {
     return null;
   }
@@ -17121,13 +17157,17 @@ export function recoverRequiredPatchContextReadWithoutToolCall(
   return {
     ...recovered,
     recoveredRequiredPatchContextRead: true,
-    originalToolName: unavailableContextCall || invalidExactReadCall
+    originalToolName: unavailableContextCall || invalidExactReadCall || invalidFailedTestReadCalls
       ? requestedToolName
       : "",
     translatedToolName: "read_file",
     translatedPath: exactPath,
     normalizedInvalidExactRead: invalidExactReadCall,
-    source: repairMode ? "bounded-repair-reread" : "mandatory-refresh-read",
+    source: failedTestReadMode
+      ? "failed-test-context-read"
+      : repairMode
+        ? "bounded-repair-reread"
+        : "mandatory-refresh-read",
   };
 }
 

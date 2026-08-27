@@ -811,6 +811,53 @@ assertStrict.equal(
   "run_command",
   "bounded repair reread recovery lost the rejected intent evidence"
 );
+const failedTestContextPaths = ["service_ctl.py", "tests/test_service_lifecycle.py"];
+const failedTestContextReadDescriptor = {
+  ...canonicalReadDescriptor,
+  function: {
+    ...canonicalReadDescriptor.function,
+    parameters: {
+      ...canonicalReadDescriptor.function.parameters,
+      properties: {
+        path: { type: "string", enum: failedTestContextPaths },
+      },
+    },
+  },
+};
+const failedTestContextContract = createToolContract([
+  failedTestContextReadDescriptor,
+  tool("apply_patch"),
+  tool("finish"),
+]);
+const invalidFailedTestContextCalls = [
+  contractCall("unbounded-source-read", "read_file", { path: "gateway_service.py" }),
+  contractCall("unbounded-test-read", "read_file", { path: "tests/test_service_ctl.py" }),
+];
+const invalidFailedTestContextValidation = resolveDispatchableToolCallBatch(
+  invalidFailedTestContextCalls,
+  failedTestContextContract
+);
+const recoveredFailedTestContextRead = recoverRequiredPatchContextReadWithoutToolCall(
+  {
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    testFailureRepairNeedsPatchContext: true,
+    testFailureRepairContextPaths: failedTestContextPaths,
+  },
+  invalidFailedTestContextCalls,
+  failedTestContextContract,
+  invalidFailedTestContextValidation
+);
+assertStrict.equal(
+  recoveredFailedTestContextRead?.recoveredRequiredPatchContextRead,
+  true,
+  "invalid failed-test discovery paths were not translated to bounded retained evidence"
+);
+assertStrict.deepEqual(
+  JSON.parse(recoveredFailedTestContextRead.acceptedToolCalls[0].function.arguments),
+  { path: "service_ctl.py" },
+  "failed-test context recovery did not choose the first authoritative unread path"
+);
 
 const recoveredMandatoryInspect = recoverRequiredRepositoryGroundingToolCall(
   { repositoryGroundingRequired: true },

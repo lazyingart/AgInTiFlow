@@ -5718,6 +5718,29 @@ try {
   );
   assert(
     repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: {
+              [staticToolCallSignature("read_file", { path: "service_ctl.py" }, {
+                commandCwd: workspace,
+              })]: 1,
+            },
+            staticTotal: 1,
+          },
+        },
+      },
+      "read_file",
+      { path: "service_ctl.py" },
+      {
+        commandCwd: workspace,
+        testFailureRepairContextPaths: ["service_ctl.py"],
+      }
+    ) === null,
+    "the repeated-read guard blocked an exact bounded failed-test context refresh"
+  );
+  assert(
+    repeatedStaticToolBlock(
       { meta: { toolLoop: { staticCounts: { [exactReadSignature]: 1 }, staticTotal: 1 } } },
       "read_file",
       { path: "/reference/A.md", startLine: 200, lineLimit: 80 },
