@@ -615,7 +615,7 @@ export function goalRevisionCoversActiveTask(state = {}, evidenceRevision = 0) {
   return candidateRevision >= activeTaskStartRevision;
 }
 
-function hasCurrentDurableCommitEvidence(state = {}) {
+function hasDurableCommitEvidence(state = {}, { requireCurrentMutation = true } = {}) {
   const mutationRevision = Math.max(
     0,
     Number(state.meta?.projectVerification?.mutationRevision || 0)
@@ -624,7 +624,10 @@ function hasCurrentDurableCommitEvidence(state = {}) {
     (item) =>
       String(item?.action || "").toLowerCase() === "commit" &&
       goalRevisionCoversActiveTask(state, item?.goalRevision) &&
-      Number(item?.mutationRevision || 0) >= mutationRevision
+      (
+        !requireCurrentMutation ||
+        Number(item?.mutationRevision || 0) >= mutationRevision
+      )
   );
 }
 
@@ -643,7 +646,11 @@ export function isCleanGitStatusAfterCurrentCommit(args = {}, result = {}, state
   ) {
     return false;
   }
-  return hasCurrentDurableCommitEvidence(state);
+  // An exact clean status proves that the current files match HEAD. Permit a
+  // same-task commit from an earlier mutation revision so interrupted work
+  // that was externally restored to HEAD can return to its verifier. The
+  // verifier, not this marker, still decides task completion.
+  return hasDurableCommitEvidence(state, { requireCurrentMutation: false });
 }
 
 export function isAlreadyCommittedCleanGitNoop(args = {}, result = {}, state = {}) {
@@ -656,7 +663,7 @@ export function isAlreadyCommittedCleanGitNoop(args = {}, result = {}, state = {
   ) {
     return false;
   }
-  return hasCurrentDurableCommitEvidence(state);
+  return hasDurableCommitEvidence(state);
 }
 
 export function buildFailedCommandAdvice({ args = {}, commandPolicy = {}, commandResult = {}, config = {}, state = {} } = {}) {

@@ -11535,6 +11535,11 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       runtimeConfig.repositoryStateRepairCommitPaths =
         taskOwnedMutationPathsSinceLatestCommit(verification);
     } else if (retainedRepositoryStateRepair) {
+      delete runtimeConfig.completionFreshMutationRequired;
+      delete runtimeConfig.completionFreshMutationRevision;
+      delete runtimeConfig.completionFreshMutationPaths;
+      delete runtimeConfig.completionFreshMutationNeedsSourceRead;
+      delete runtimeConfig.repositoryGroundingRequired;
       runtimeConfig.testFailureRepairActive = false;
       runtimeConfig.testFailureRepairMutationRequired = false;
       runtimeConfig.testFailureRepairNeedsPatchContext = false;

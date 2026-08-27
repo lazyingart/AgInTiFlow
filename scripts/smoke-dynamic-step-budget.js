@@ -6179,10 +6179,17 @@ try {
   const cleanStatusRepositoryRepairState = structuredClone(repositoryCleanGateFailure);
   cleanStatusRepositoryRepairState.goal = "Resume the committed service repair.";
   cleanStatusRepositoryRepairState.meta.goalContract = { revision: 5 };
+  cleanStatusRepositoryRepairState.meta.activeExecutionContract = {
+    revision: 5,
+    startedMutationRevision: 6,
+    materialMutationRevision: 6,
+    requiresFileMutation: true,
+    requiresSourceGrounding: true,
+  };
   cleanStatusRepositoryRepairState.meta.durableGitEvidence = [{
     action: "commit",
     goalRevision: 5,
-    mutationRevision: 6,
+    mutationRevision: 5,
   }];
   const cleanStatusAfterCommit = {
     toolName: "run_command",
@@ -6207,8 +6214,14 @@ try {
   );
   assert(
     cleanStatusRepositoryRepairMarker?.source === "clean-status-after-commit" &&
+      cleanStatusRepositoryRuntime.completionFreshMutationRequired !== true &&
       cleanStatusRepositoryRuntime.testVerificationPending === true &&
-      cleanStatusRepositoryRuntime.testVerificationCommand === failedValidationCommand,
+      cleanStatusRepositoryRuntime.testVerificationCommand === failedValidationCommand &&
+      buildKnownConstrainedPhasePlan(
+        { provider: "deepseek", taskProfile: "devops", commandCwd: workspace },
+        cleanStatusRepositoryRepairState,
+        cleanStatusRepositoryRuntime
+      )?.mode === "exact-verification",
     "current commit plus an exact clean Git status did not recover an interrupted repository repair"
   );
   const repeatedDirtyRepositoryResult = {
