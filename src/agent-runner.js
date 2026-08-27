@@ -6306,6 +6306,9 @@ export function failedTestRequiresCleanRepositoryState(testRun = {}) {
   const directCleanStateAssertion =
     /(?:assertionerror|assert(?:ion)?(?:\s+failed)?)[^.!;]{0,200}(?:(?:project|repository)\s+)?(?:work\s*tree|worktree|repository)[^.!;]{0,80}(?:is\s+not\s+clean|must\s+be\s+clean|expected\s+(?:to\s+be\s+)?clean)\b/i.test(summary);
   if (directCleanStateAssertion) return true;
+  const authoritativeCleanStateFailure =
+    /(?:^|\b)(?:acceptance|validation|verification|contract|test|check)\s+failed\s*:[^.!;]{0,200}(?:(?:project|repository)\s+)?(?:work\s*tree|worktree|repository)[^.!;]{0,80}(?:is\s+not\s+clean|must\s+be\s+clean|expected\s+(?:to\s+be\s+)?clean)\b/i.test(summary);
+  if (authoritativeCleanStateFailure) return true;
   const invokesShortStatus =
     /git[a-z_]*\s*\([^)]*["']status["'][^)]*(?:["']--short["']|["']--porcelain(?:=[^"']+)?["'])[^)]*\)/i.test(summary) ||
     /\bgit\s+status\s+(?:--short|--porcelain(?:=\S+)?)\b/i.test(summary);

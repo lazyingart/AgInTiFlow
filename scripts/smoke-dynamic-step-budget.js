@@ -6484,6 +6484,12 @@ try {
     "a direct clean-worktree assertion was not classified when the traceback omitted the Git helper call"
   );
   assert(
+    failedTestRequiresCleanRepositoryState({
+      failureSummary: "acceptance failed: repository is not clean",
+    }),
+    "a concise authoritative acceptance failure did not activate repository-state repair"
+  );
+  assert(
     !failedTestRequiresCleanRepositoryState({
       failureSummary: "The generated prose says the repository worktree is not clean.",
     }),

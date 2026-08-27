@@ -2008,6 +2008,54 @@ assert(
   ),
   "repository-state repair did not explain the bounded Git workflow"
 );
+const conciseRepositoryStateRepairRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", taskProfile: "slides" },
+  {
+    meta: {
+      projectVerification: {
+        mutationRevision: 18,
+        testRuns: [{
+          command: "python acceptance.py --root .",
+          mutationRevision: 18,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "concise-repository-state-gate",
+          failureSummary: "acceptance failed: repository is not clean",
+        }],
+      },
+      failedTestRecoveryPacket: {
+        packetVersion: 15,
+        mutationRevision: 18,
+        failureSignature: "concise-repository-state-gate",
+        content: "Retained canonical source evidence from the prior content failure.",
+      },
+      toolLoop: {
+        stagnationEpoch: 4,
+        recent: [],
+      },
+    },
+    messages: [],
+  }
+);
+assertStrict.equal(
+  conciseRepositoryStateRepairRuntime.testFailureRepositoryStateRepair,
+  true,
+  "a concise acceptance failure remained in canonical-source repair mode"
+);
+assertStrict.equal(
+  conciseRepositoryStateRepairRuntime.testFailureRepairMutationRequired,
+  false,
+  "stale retained source evidence overrode a clean-repository repair gate"
+);
+sameNames(
+  selectProgressiveTools(allTools, {
+    config: conciseRepositoryStateRepairRuntime,
+    goal: "Commit the accepted presentation and leave the repository clean.",
+    profile: "slides",
+  }),
+  ["run_command", "finish"],
+  "a concise clean-repository acceptance failure exposed content mutation tools"
+);
 const taskOwnedRepositoryState = {
   meta: {
     goalContract: { revision: 6 },
