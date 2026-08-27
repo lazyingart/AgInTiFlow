@@ -165,6 +165,37 @@ const fixtureBinRoot = path.join(fixtureVersionRoot, "bin");
 const fixtureNode = path.join(fixtureBinRoot, "node");
 const fixtureReleaseId = "0".repeat(64);
 const fixtureReleaseRoot = path.join(fixtureApplicationRoot, "releases", fixtureReleaseId);
+const bubblewrapProbe = spawnSync("/usr/bin/bwrap", [
+  "--unshare-all",
+  "--unshare-user",
+  "--uid", "0",
+  "--gid", "0",
+  "--die-with-parent",
+  "--new-session",
+  "--clearenv",
+  "--cap-drop", "ALL",
+  "--ro-bind", "/usr", "/usr",
+  "--ro-bind", "/lib", "/lib",
+  "--ro-bind", "/lib64", "/lib64",
+  "--ro-bind", "/bin", "/bin",
+  "--proc", "/proc",
+  "--dev", "/dev",
+  "/usr/bin/true",
+], {
+  encoding: "utf8",
+  env: Object.freeze({ PATH: "/usr/bin:/bin" }),
+});
+const githubHostedNamespaceRestriction =
+  process.env.AGINTIFLOW_GITHUB_HOSTED_BWRAP_NAMESPACE_RESTRICTION === "allow-sigkill"
+  && bubblewrapProbe.status === null
+  && bubblewrapProbe.signal === "SIGKILL"
+  && bubblewrapProbe.stderr === "";
+if (!githubHostedNamespaceRestriction) {
+  assert.equal(bubblewrapProbe.status, 0, bubblewrapProbe.stderr);
+  assert.equal(bubblewrapProbe.signal, null);
+  assert.equal(bubblewrapProbe.stdout, "");
+  assert.equal(bubblewrapProbe.stderr, "");
+}
 try {
   await fs.mkdir(fixtureReleaseRoot, { recursive: true, mode: 0o755 });
   await fs.mkdir(fixtureBinRoot, { recursive: true, mode: 0o755 });
@@ -176,39 +207,43 @@ try {
     fixtureVersionRoot,
     fixtureBinRoot,
   ]) await fs.chmod(directory, 0o555);
-  const fixtureProof = spawnSync("/usr/bin/bwrap", [
-    "--unshare-all",
-    "--unshare-user",
-    "--uid", "0",
-    "--gid", "0",
-    "--die-with-parent",
-    "--new-session",
-    "--clearenv",
-    "--cap-drop", "ALL",
-    "--ro-bind", "/usr", "/usr",
-    "--ro-bind", "/lib", "/lib",
-    "--ro-bind", "/lib64", "/lib64",
-    "--ro-bind", "/bin", "/bin",
-    "--proc", "/proc",
-    "--dev", "/dev",
-    "--tmpfs", "/tmp",
-    "--dir", "/opt",
-    "--ro-bind", fixtureApplicationRoot, "/opt/agintiflow-document-worker",
-    "--ro-bind", repositoryRoot, `/opt/agintiflow-document-worker/releases/${fixtureReleaseId}`,
-    "--setenv", "PATH", "/usr/bin:/bin",
-    "--setenv", "HOME", "/tmp",
-    runtimePath,
-    "--input-type=module",
-    "-e",
-    `import { verifyIntegrationDocumentWorkerNodeRuntime } from "file:///opt/agintiflow-document-worker/releases/${fixtureReleaseId}/src/integration-document-worker-runtime.js"; await verifyIntegrationDocumentWorkerNodeRuntime(); process.stdout.write("sealed runtime tree passed\\n");`,
-  ], {
-    encoding: "utf8",
-    env: Object.freeze({ PATH: "/usr/bin:/bin" }),
-  });
-  assert.equal(fixtureProof.status, 0, fixtureProof.stderr);
-  assert.equal(fixtureProof.signal, null);
-  assert.equal(fixtureProof.stdout, "sealed runtime tree passed\n");
-  assert.equal(fixtureProof.stderr, "");
+  if (githubHostedNamespaceRestriction) {
+    process.stdout.write("sealed runtime tree proof skipped: GitHub-hosted runner killed the bubblewrap namespace probe\n");
+  } else {
+    const fixtureProof = spawnSync("/usr/bin/bwrap", [
+      "--unshare-all",
+      "--unshare-user",
+      "--uid", "0",
+      "--gid", "0",
+      "--die-with-parent",
+      "--new-session",
+      "--clearenv",
+      "--cap-drop", "ALL",
+      "--ro-bind", "/usr", "/usr",
+      "--ro-bind", "/lib", "/lib",
+      "--ro-bind", "/lib64", "/lib64",
+      "--ro-bind", "/bin", "/bin",
+      "--proc", "/proc",
+      "--dev", "/dev",
+      "--tmpfs", "/tmp",
+      "--dir", "/opt",
+      "--ro-bind", fixtureApplicationRoot, "/opt/agintiflow-document-worker",
+      "--ro-bind", repositoryRoot, `/opt/agintiflow-document-worker/releases/${fixtureReleaseId}`,
+      "--setenv", "PATH", "/usr/bin:/bin",
+      "--setenv", "HOME", "/tmp",
+      runtimePath,
+      "--input-type=module",
+      "-e",
+      `import { verifyIntegrationDocumentWorkerNodeRuntime } from "file:///opt/agintiflow-document-worker/releases/${fixtureReleaseId}/src/integration-document-worker-runtime.js"; await verifyIntegrationDocumentWorkerNodeRuntime(); process.stdout.write("sealed runtime tree passed\\n");`,
+    ], {
+      encoding: "utf8",
+      env: Object.freeze({ PATH: "/usr/bin:/bin" }),
+    });
+    assert.equal(fixtureProof.status, 0, fixtureProof.stderr);
+    assert.equal(fixtureProof.signal, null);
+    assert.equal(fixtureProof.stdout, "sealed runtime tree passed\n");
+    assert.equal(fixtureProof.stderr, "");
+  }
 } finally {
   for (const directory of [
     fixtureApplicationRoot,
