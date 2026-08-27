@@ -1,3 +1,4 @@
+import path from "node:path";
 import {
   hasLocalResearchWorkspaceIntent,
   shouldStartWithDeepResearch,
@@ -770,6 +771,25 @@ function constrainReadFilePaths(tool, paths, phase) {
       },
     },
   };
+}
+
+function exactWorkspacePathAliases(paths = [], commandCwd = "") {
+  const workspaceRoot = String(commandCwd || "").trim()
+    ? path.resolve(String(commandCwd))
+    : "";
+  const aliases = [];
+  for (const item of paths) {
+    const normalized = String(item || "").replace(/\\/g, "/").trim();
+    if (!normalized) continue;
+    aliases.push(normalized);
+    if (!workspaceRoot || path.isAbsolute(normalized)) continue;
+    const absolute = path.resolve(workspaceRoot, normalized);
+    const relative = path.relative(workspaceRoot, absolute);
+    if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+      aliases.push(absolute.replace(/\\/g, "/"));
+    }
+  }
+  return aliases.filter((item, index, items) => items.indexOf(item) === index);
 }
 
 function escapeRegex(value = "") {
@@ -2028,11 +2048,13 @@ export function selectProgressiveTools(
           .filter((item, index, items) => items.indexOf(item) === index)
           .slice(0, 3)
       : [];
-    const boundedRepairReadPaths = [
-      ...diagnosticReadPaths,
-      ...(repairContextPaths.length ? repairContextPaths : optionalRepairRereadPaths),
-    ]
-      .filter((item, index, items) => items.indexOf(item) === index)
+    const boundedRepairReadPaths = exactWorkspacePathAliases(
+      [
+        ...diagnosticReadPaths,
+        ...(repairContextPaths.length ? repairContextPaths : optionalRepairRereadPaths),
+      ],
+      config.commandCwd
+    )
       .slice(0, 8);
     const constrainedRepairRead = boundedRepairReadPaths.length
       ? constrainReadFilePaths(

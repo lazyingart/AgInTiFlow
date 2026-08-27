@@ -9789,6 +9789,20 @@ try {
     !shouldReviewToolResult(malformedReadOnlyCheck, { meta: {} }),
     "SCS should let the normal agent loop repair simple shell quoting mistakes"
   );
+  const prospectivePatchSyntaxCorrection = {
+    toolName: "apply_patch",
+    ok: false,
+    blocked: false,
+    recoverable: true,
+    stopRun: false,
+    category: "python-syntax-regression",
+    error: "Exact Python patch failed prospective syntax validation.",
+    diagnosticHint: "SyntaxError: unterminated string literal",
+  };
+  assert(
+    !shouldReviewToolResult(prospectivePatchSyntaxCorrection, { meta: {} }),
+    "SCS replanned instead of letting the agent correct a deterministic prospective patch rejection"
+  );
   const boundedSearchRecovery = {
     toolName: "run_command",
     ok: false,

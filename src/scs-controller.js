@@ -1156,10 +1156,28 @@ export function shouldRequestScsReplan(decision = {}) {
   return ["rethink_plan", "reject_phase", "finish_rejected"].includes(String(decision?.decision || ""));
 }
 
+export function isRecoverablePatchCorrectionResult(toolResult = {}) {
+  if (
+    String(toolResult?.toolName || "") !== "apply_patch" ||
+    toolResult?.ok !== false ||
+    toolResult?.recoverable !== true ||
+    toolResult?.blocked === true ||
+    toolResult?.stopRun === true
+  ) {
+    return false;
+  }
+  return new Set([
+    "ambiguous-declaration-token-patch",
+    "ambiguous-python-main-guard-patch",
+    "python-syntax-regression",
+  ]).has(String(toolResult?.category || ""));
+}
+
 export function shouldReviewToolResult(toolResult, state = {}) {
   if (!toolResult || toolResult.done) return false;
   if (toolResult.permissionAdvice?.autoRecover) return false;
   if (isRecoverableShellToolResult(toolResult)) return false;
+  if (isRecoverablePatchCorrectionResult(toolResult)) return false;
   if (toolResult.ok === false || toolResult.blocked || toolResult.error || toolResult.reason) return true;
   if (isSuspiciousBroadBrowserToolResult(toolResult)) return true;
   // A later successful call is progress, even when another call using the same

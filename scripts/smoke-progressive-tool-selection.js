@@ -1826,6 +1826,28 @@ assertStrict.deepEqual(
   "the external validator read was not schema-constrained to its exact path"
 );
 
+const canonicalRepairPathAliasTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "deepseek",
+    commandCwd: "/tmp/aginti-canonical-repair",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    testFailureRepairOptionalRereadPaths: ["build_deck.py"],
+  },
+  goal: "Correct the canonical producer after a prospective patch rejection.",
+  profile: "slides",
+});
+sameNames(
+  canonicalRepairPathAliasTools,
+  ["read_file", "apply_patch", "finish"],
+  "a canonical repair reread did not preserve its bounded tool surface"
+);
+assertStrict.deepEqual(
+  canonicalRepairPathAliasTools[0].function.parameters.properties.path.enum,
+  ["build_deck.py", "/tmp/aginti-canonical-repair/build_deck.py"],
+  "the exact in-workspace absolute alias was not accepted for the canonical repair path"
+);
+
 const failedTestPatchContextTools = selectProgressiveTools(allTools, {
   config: {
     provider: "localllm",
