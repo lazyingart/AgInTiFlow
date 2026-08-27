@@ -200,6 +200,23 @@ async function main() {
     )) === JSON.stringify({ type: "function", function: { name: "apply_patch" } }),
     "DeepSeek constrained recovery relied on a prompt phrase instead of the offered tool contract"
   );
+  for (const [runtimeFlag, label] of [
+    ["generatedArtifactProducerPending", "generated artifact producer"],
+    ["requiredProjectCommandPending", "required project command"],
+    ["testVerificationPending", "retained verifier"],
+  ]) {
+    assert(
+      JSON.stringify(toolChoiceForProvider(
+        { provider: "deepseek", [runtimeFlag]: true },
+        [{ role: "user", content: "Continue the exact retained command phase." }],
+        [
+          { type: "function", function: { name: "run_command" } },
+          { type: "function", function: { name: "finish" } },
+        ]
+      )) === JSON.stringify({ type: "function", function: { name: "run_command" } }),
+      `DeepSeek ${label} phase allowed finish before its mandatory command`
+    );
+  }
   assert(
     JSON.stringify(toolChoiceForProvider(
       {

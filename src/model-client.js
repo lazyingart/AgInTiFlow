@@ -365,6 +365,10 @@ function deepSeekConstrainedActionRequired(config = {}, messages = []) {
     config.completionFreshMutationRequired === true ||
     config.patchContextRefreshRequired === true ||
     config.patchContextRepairRequired === true ||
+    config.generatedArtifactProducerPending === true ||
+    config.requiredProjectCommandPending === true ||
+    config.testVerificationPending === true ||
+    config.testFailureStalemateRevalidation === true ||
     (
       config.testFailureRepairActive === true &&
       config.testFailureRepairMutationRequired === true
