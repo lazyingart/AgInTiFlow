@@ -11303,6 +11303,12 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   if (pendingArtifactProducerCommand) {
     runtimeConfig.generatedArtifactProducerPending = true;
     runtimeConfig.generatedArtifactProducerCommand = pendingArtifactProducerCommand;
+    if (!retainedSourceQualityRepairRequired) {
+      delete runtimeConfig.completionFreshMutationRequired;
+      delete runtimeConfig.completionFreshMutationRevision;
+      delete runtimeConfig.completionFreshMutationPaths;
+      delete runtimeConfig.completionFreshMutationNeedsSourceRead;
+    }
   }
   if (retainedFailedTest) {
     const repositoryStateRepairMarker = state.meta?.repositoryStateRepair;

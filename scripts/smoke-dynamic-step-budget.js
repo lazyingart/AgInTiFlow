@@ -5308,6 +5308,11 @@ try {
   );
   const generatedDeckValidator =
     "python3 /tmp/presentation_deck_contract.py --root .";
+  await fs.writeFile(
+    path.join(workspace, "build_deck.py"),
+    "print('build canonical deck')\n",
+    "utf8"
+  );
   const staleGeneratedDeckState = {
     goal: [
       "Rebuild the canonical presentation output after repairing build_deck.py.",
@@ -5353,6 +5358,20 @@ try {
           failureSummary: "acceptance failed: deck omits source-grounded phrase: single reader",
         }],
       },
+      completionEvidenceRepair: {
+        key: "stale-generated-deck-repair",
+        at: "2026-08-27T19:00:00.000Z",
+        mutationRevision: 9,
+        requiresFreshFileMutation: true,
+        requiredFreshMutationRevision: 10,
+      },
+      sourceCodeQuality: {
+        checked: true,
+        ok: true,
+        paths: ["build_deck.py"],
+        defects: [],
+        mutationRevision: 9,
+      },
     },
   };
   const staleGeneratedDeckRuntime = nextStepRuntimeConfig(
@@ -5377,11 +5396,49 @@ try {
   assert(
     staleGeneratedDeckRuntime.generatedArtifactProducerPending === true &&
       staleGeneratedDeckRuntime.generatedArtifactProducerCommand === "python3 build_deck.py" &&
+      staleGeneratedDeckRuntime.completionFreshMutationRequired !== true &&
       staleGeneratedDeckPhase?.mode === "generated-artifact-producer" &&
       staleGeneratedDeckPhase?.command === "python3 build_deck.py",
     `a stale generated artifact did not recover its exact safe producer before validation: ${JSON.stringify(
       staleGeneratedDeckRuntime
     )}`
+  );
+  const staleGeneratedDeckSourceDefectState = JSON.parse(
+    JSON.stringify(staleGeneratedDeckState)
+  );
+  staleGeneratedDeckSourceDefectState.meta.sourceCodeQuality = {
+    checked: true,
+    ok: false,
+    paths: ["build_deck.py"],
+    defects: ["build_deck.py still contains a concrete source defect"],
+    mutationRevision: 9,
+  };
+  const staleGeneratedDeckSourceDefectRuntime = nextStepRuntimeConfig(
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: staleGeneratedDeckSourceDefectState.goal,
+    },
+    staleGeneratedDeckSourceDefectState
+  );
+  const staleGeneratedDeckSourceDefectPhase = buildKnownConstrainedPhasePlan(
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: staleGeneratedDeckSourceDefectState.goal,
+    },
+    staleGeneratedDeckSourceDefectState,
+    staleGeneratedDeckSourceDefectRuntime
+  );
+  assert(
+    staleGeneratedDeckSourceDefectRuntime.completionFreshMutationRequired === true &&
+      staleGeneratedDeckSourceDefectPhase?.mode !== "generated-artifact-producer",
+    `a retained source-quality defect was incorrectly bypassed by a stale artifact producer: ${JSON.stringify({
+      runtime: staleGeneratedDeckSourceDefectRuntime,
+      phase: staleGeneratedDeckSourceDefectPhase,
+    })}`
   );
   recordProjectVerificationOutcome(
     staleGeneratedDeckState,
