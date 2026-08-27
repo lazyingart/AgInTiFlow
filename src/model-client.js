@@ -363,15 +363,40 @@ function singleExecutableToolName(tools = []) {
 function deepSeekConstrainedActionRequired(config = {}, messages = []) {
   return requiresConcreteToolContinuation(messages) ||
     config.completionFreshMutationRequired === true ||
+    config.patchContextRefreshRequired === true ||
+    config.patchContextRepairRequired === true ||
     (
       config.testFailureRepairActive === true &&
       config.testFailureRepairMutationRequired === true
     );
 }
 
+function deepSeekConstrainedReadRequired(config = {}) {
+  return config.completionFreshMutationNeedsSourceRead === true ||
+    config.patchContextRefreshRequired === true ||
+    (
+      config.patchContextRepairRequired === true &&
+      Math.max(0, Number(config.patchContextRepairReadCount || 0)) < 1
+    ) ||
+    (
+      config.testFailureRepairActive === true &&
+      config.testFailureRepairMutationRequired === true &&
+      config.testFailureRepairNeedsPatchContext === true
+    );
+}
+
 function deepSeekActionOnlyTool(config = {}, messages = [], tools = []) {
   if (normalizeProviderId(config.provider, "") !== "deepseek") return "";
   if (!deepSeekConstrainedActionRequired(config, messages)) return "";
+  const offeredNames = new Set(
+    (Array.isArray(tools) ? tools : [])
+      .filter((tool) => tool?.type === "function")
+      .map((tool) => String(tool.function?.name || ""))
+      .filter(Boolean)
+  );
+  if (deepSeekConstrainedReadRequired(config) && offeredNames.has("read_file")) {
+    return "read_file";
+  }
   const constrainedTool = singleExecutableToolName(tools);
   if (constrainedTool) return constrainedTool;
   const actionable = (Array.isArray(tools) ? tools : [])
@@ -385,7 +410,7 @@ function deepSeekActionOnlyRequest(config = {}, messages = [], tools = []) {
   return normalizeProviderId(config.provider, "") === "deepseek" &&
     Boolean(
       requiresConcreteToolContinuation(messages) ||
-      (deepSeekConstrainedActionRequired(config, messages) && singleExecutableToolName(tools))
+      deepSeekActionOnlyTool(config, messages, tools)
     );
 }
 

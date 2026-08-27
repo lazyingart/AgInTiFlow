@@ -216,6 +216,23 @@ async function main() {
     "DeepSeek failed-test repair did not force its sole bounded mutation tool"
   );
   assert(
+    JSON.stringify(toolChoiceForProvider(
+      {
+        provider: "deepseek",
+        testFailureRepairActive: true,
+        testFailureRepairMutationRequired: true,
+        testFailureRepairNeedsPatchContext: true,
+      },
+      [{ role: "user", content: "Continue from the retained failing test evidence." }],
+      [
+        { type: "function", function: { name: "read_file" } },
+        { type: "function", function: { name: "apply_patch" } },
+        { type: "function", function: { name: "finish" } },
+      ]
+    )) === JSON.stringify({ type: "function", function: { name: "read_file" } }),
+    "DeepSeek failed-test repair did not force its bounded context refresh first"
+  );
+  assert(
     toolChoiceForProvider(
       { provider: "deepseek" },
       [{ role: "user", content: "Explain what this source does." }],
@@ -291,6 +308,61 @@ async function main() {
   assert(
     !Object.hasOwn(deepSeekActionPayload || {}, "reasoning_effort"),
     "DeepSeek action-only recovery sent a conflicting reasoning effort"
+  );
+  let deepSeekRepairReadPayload = null;
+  await requestNextStep(
+    {
+      chat: {
+        completions: {
+          create: async (payload) => {
+            deepSeekRepairReadPayload = payload;
+            return {
+              choices: [{
+                message: {
+                  role: "assistant",
+                  content: "",
+                  tool_calls: [{
+                    id: "deepseek-repair-read",
+                    type: "function",
+                    function: {
+                      name: "read_file",
+                      arguments: JSON.stringify({ path: "service.py" }),
+                    },
+                  }],
+                },
+              }],
+            };
+          },
+        },
+      },
+    },
+    {
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      reasoning: "xhigh",
+      goal: "Repair service.py from the exact failed test evidence.",
+      taskProfile: "code",
+      allowFileTools: true,
+      allowShellTool: false,
+      allowWebSearch: false,
+      allowMcpTools: false,
+      allowWrapperTools: false,
+      allowAuxiliaryTools: false,
+      testFailureRepairActive: true,
+      testFailureRepairMutationRequired: true,
+      testFailureRepairNeedsPatchContext: true,
+      testFailureRepairPatchTargets: ["service.py"],
+      testFailureRepairContextPaths: ["service.py"],
+    },
+    [{ role: "user", content: "Continue from the retained failing test evidence." }]
+  );
+  assert(
+    deepSeekRepairReadPayload?.tool_choice?.function?.name === "read_file",
+    "DeepSeek failed-test repair request did not force the bounded context read"
+  );
+  assert(
+    deepSeekRepairReadPayload?.thinking?.type === "disabled",
+    "DeepSeek failed-test context refresh spent another unbounded reasoning pass"
   );
 
   assert(!isPublicWebUrl("http://127.0.0.1/private"), "public URL guard accepted loopback");
