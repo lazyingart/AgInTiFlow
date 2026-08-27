@@ -23,6 +23,8 @@ import { contractDigest } from "./integration-policy.js";
 
 export const INTEGRATION_ANALYSIS_STATE_MIGRATION_SCHEMA_VERSION =
   "aginti-integration-analysis-state-migration-v1";
+export const INTEGRATION_ANALYSIS_STATE_MIGRATION_PREWRITE_GATE_SCHEMA_VERSION =
+  "aginti-integration-analysis-state-migration-prewrite-gate-v1";
 export const INTEGRATION_ANALYSIS_STATE_MIGRATION_STALE_LOCK_MS = 60_000;
 export const INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT = Object.freeze({
   schemaVersion: INTEGRATION_ANALYSIS_STATE_MIGRATION_SCHEMA_VERSION,
@@ -49,7 +51,8 @@ const O_NOFOLLOW = Number(fsConstants.O_NOFOLLOW || 0);
 const SCOPE_DIRECTORY_PATTERN = /^[a-f0-9]{64}$/u;
 const FATAL_UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
-const TEST_MIGRATION_OPTION_KEYS = new Set(["afterScopeCommitted", "staleLockMs"]);
+const PRODUCTION_MIGRATION_OPTION_KEYS = new Set(["beforeMutation"]);
+const TEST_MIGRATION_OPTION_KEYS = new Set(["afterScopeCommitted", "beforeMutation", "staleLockMs"]);
 
 export class IntegrationAnalysisStateMigrationError extends Error {
   constructor(code, message, { cause } = {}) {
@@ -401,6 +404,18 @@ function migrationResult(plan, finalEntries) {
   });
 }
 
+function migrationPrewriteGate(plan) {
+  return Object.freeze({
+    schemaVersion: INTEGRATION_ANALYSIS_STATE_MIGRATION_PREWRITE_GATE_SCHEMA_VERSION,
+    event: "migration-prewrite-gate",
+    direction: "forward-only",
+    targetStorageVersion: INTEGRATION_ANALYSIS_STATE_STORAGE_V3,
+    scopeCount: plan.length,
+    targetAggregateDigest: aggregateDigest(plan, "outputDigest"),
+    migrationContractDigest: contractDigest(INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT),
+  });
+}
+
 async function migrateLocked(stateRoot, hooks) {
   const scopes = await discoverScopes(stateRoot);
   const plan = [];
@@ -408,6 +423,10 @@ async function migrateLocked(stateRoot, hooks) {
     const source = inspectMigrationSource(await readPrivateStateFile(scope.stateFile), scope.scopeDigest);
     const { output: _output, ...metadata } = source;
     plan.push(Object.freeze({ ...scope, ...metadata }));
+  }
+
+  if (typeof hooks.beforeMutation === "function") {
+    await hooks.beforeMutation(migrationPrewriteGate(plan));
   }
 
   for (const entry of plan) {
@@ -483,19 +502,41 @@ async function migrateStateRoot(stateRootValue, { testOnly, hooks, staleLockMs }
   }
 }
 
-export async function migrateIntegrationAnalysisStateRoot(stateRoot) {
+function assertMigrationOptions(options, allowedKeys, label) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError(`${label} must be a plain object`);
+  }
+  const prototype = Object.getPrototypeOf(options);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError(`${label} must be a plain object`);
+  }
+  for (const key of Reflect.ownKeys(options)) {
+    const descriptor = Object.getOwnPropertyDescriptor(options, key);
+    if (
+      typeof key !== "string" ||
+      !allowedKeys.has(key) ||
+      !descriptor?.enumerable ||
+      !("value" in descriptor)
+    ) {
+      throw new TypeError(`${label} contains an unsupported field`);
+    }
+  }
+  if (options.beforeMutation !== undefined && typeof options.beforeMutation !== "function") {
+    throw new TypeError("beforeMutation must be a function");
+  }
+}
+
+export async function migrateIntegrationAnalysisStateRoot(stateRoot, options = {}) {
+  assertMigrationOptions(options, PRODUCTION_MIGRATION_OPTION_KEYS, "migration options");
   return migrateStateRoot(stateRoot, {
     testOnly: false,
-    hooks: Object.freeze({}),
+    hooks: Object.freeze({ beforeMutation: options.beforeMutation }),
     staleLockMs: INTEGRATION_ANALYSIS_STATE_MIGRATION_STALE_LOCK_MS,
   });
 }
 
 export async function migrateTestOnlyIntegrationAnalysisStateRoot(stateRoot, options = {}) {
-  const keys = Object.keys(options);
-  if (keys.some((key) => !TEST_MIGRATION_OPTION_KEYS.has(key))) {
-    throw new TypeError("test migration options contain an unsupported field");
-  }
+  assertMigrationOptions(options, TEST_MIGRATION_OPTION_KEYS, "test migration options");
   if (options.afterScopeCommitted !== undefined && typeof options.afterScopeCommitted !== "function") {
     throw new TypeError("afterScopeCommitted must be a function");
   }
@@ -505,7 +546,10 @@ export async function migrateTestOnlyIntegrationAnalysisStateRoot(stateRoot, opt
   }
   return migrateStateRoot(stateRoot, {
     testOnly: true,
-    hooks: Object.freeze({ afterScopeCommitted: options.afterScopeCommitted }),
+    hooks: Object.freeze({
+      afterScopeCommitted: options.afterScopeCommitted,
+      beforeMutation: options.beforeMutation,
+    }),
     staleLockMs,
   });
 }

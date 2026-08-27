@@ -21,3 +21,25 @@ Each v2 record receives empty document-intent arrays and run lineage inferred by
 Conversion is resumable without a rollback journal: completed scopes are valid v3, untouched scopes remain valid v2, and a rerun accepts that mixed state and continues forward. Scope directories are processed by explicit lowercase-hex code-unit order, independent of host locale. A second run over an all-v3 root does not rewrite files.
 
 Successful output contains only counts, fixed contract fields, and aggregate SHA-256-derived digests. It never prints root paths, scope identifiers, principals, browser sessions, thread/run identifiers, prompts, messages, artifacts, or document content.
+
+## Lock-held prewrite handshake
+
+An operator that must complete an external durable cutover step between validation and the first state mutation can enable the prewrite gate:
+
+```sh
+aginti-integration-analysis-state migrate \
+  --offline \
+  --state-root /absolute/owner-only/analysis-state \
+  --prewrite-gate-nonce "$cutover_nonce" \
+  --prewrite-gate-timeout-ms 120000
+```
+
+Both gate flags are required together. The nonce must be exactly 64 lowercase hexadecimal characters. The timeout must be an integer from 1 through 600000 milliseconds. Generate a fresh unpredictable nonce in the controller for each attempt; do not reuse a nonce across independent cutovers.
+
+The command takes `.analysis-session-owner.lock`, validates the complete root, computes every canonical v3 target, and writes one JSON gate record to stdout. It continues holding that same lock while it waits on stdin. The gate record is deterministic for a given nonce, timeout, and target plan and contains only fixed protocol fields, the scope count, the migration-contract digest, and `targetAggregateDigest`. The target aggregate is computed from each scope's canonical v3 output, so it is identical for equivalent all-v2, partially migrated, and all-v3 roots.
+
+The controller must first durably complete and verify its external cutover step. It then writes the gate record's `requiredAck` value followed by exactly one LF byte to the migrator's stdin. The acknowledgement is bound to the nonce, target aggregate, and migration contract. Do not reconstruct or normalize it when the exact emitted value can be relayed.
+
+Until that exact acknowledgement is received, the migrator does not remove a crash-left migration temporary file and does not create, replace, or rewrite any state or migration-temporary file. EOF, a mismatched acknowledgement, input failure, or timeout fails closed, releases the ownership lock, and leaves the preflight state untouched. After acknowledgement, the normal resumable migration runs under the continuously held lock. A second JSON line is written only after final verification and is the ordinary migration result.
+
+The gate is a synchronization boundary, not remote authentication: stdout reveals the required acknowledgement by design. The controller is responsible for withholding it until its separately authenticated durable action is complete. Keep the analysis service stopped for the whole command, including the acknowledgement wait.
