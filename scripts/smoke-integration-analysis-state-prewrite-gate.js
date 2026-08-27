@@ -15,6 +15,7 @@ import {
 import {
   INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT,
   INTEGRATION_ANALYSIS_STATE_MIGRATION_PREWRITE_GATE_SCHEMA_VERSION,
+  migrateIntegrationAnalysisStateRoot,
   migrateTestOnlyIntegrationAnalysisStateRoot,
 } from "../src/integration-analysis-state-migrator.js";
 import {
@@ -50,6 +51,10 @@ async function withDeadline(promise, message, timeoutMs = 2_000) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function delay(timeoutMs) {
+  await new Promise((resolve) => setTimeout(resolve, timeoutMs));
 }
 
 function context(index) {
@@ -569,7 +574,21 @@ async function cliAckAndFailureProtocol(root) {
       code: "ANALYSIS_STATE_MIGRATION_GATE_REJECTED",
       reply: (input) => input.end(`${SENSITIVE_MARKER}\n`),
     },
+    {
+      name: "trailing-chunk",
+      code: "ANALYSIS_STATE_MIGRATION_GATE_REJECTED",
+      reply(input, gate) {
+        input.write(`${gate.requiredAck}\n`);
+        input.end("x");
+      },
+    },
     { name: "timeout", code: "ANALYSIS_STATE_MIGRATION_GATE_TIMEOUT", timeoutMs: 20 },
+    {
+      name: "ack-without-eof-timeout",
+      code: "ANALYSIS_STATE_MIGRATION_GATE_TIMEOUT",
+      timeoutMs: 30,
+      reply: (input, gate) => input.write(`${gate.requiredAck}\n`),
+    },
   ]) {
     const candidate = path.join(root, testCase.name);
     await cloneRoot(base, candidate);
@@ -589,7 +608,7 @@ async function cliAckAndFailureProtocol(root) {
     }
     assert.equal((await fs.lstat(path.join(candidate, OWNER_LOCK_NAME))).isDirectory(), true);
     assert.deepEqual(await durableSnapshot(candidate), before);
-    testCase.reply?.(running.input);
+    testCase.reply?.(running.input, running.gate);
     let rejected;
     await assert.rejects(
       running.completion,
@@ -610,7 +629,7 @@ async function cliAckAndFailureProtocol(root) {
   const approved = path.join(root, "approved");
   await cloneRoot(base, approved);
   const before = await durableSnapshot(approved);
-  const running = await startGatedCli(approved, 100);
+  const running = await startGatedCli(approved, 500);
   assertPublicGate(running.gate, approved);
   assertGateMatrix(running.gate, {
     scopeCount: 2,
@@ -619,9 +638,26 @@ async function cliAckAndFailureProtocol(root) {
     migrationTemporaryCount: 1,
     currentStorageState: "all-v2",
   });
-  assert.deepEqual(running.gate, referenceGate);
+  assert.equal(running.gate.requiredAck, referenceGate.requiredAck);
   assert.deepEqual(await durableSnapshot(approved), before);
-  running.input.end(`${running.gate.requiredAck}\n`);
+  const acknowledgement = `${running.gate.requiredAck}\n`;
+  const splitPoints = [1, 7, 19, 43, 89, 151, acknowledgement.length];
+  let offset = 0;
+  for (const splitPoint of splitPoints) {
+    const end = Math.min(splitPoint, acknowledgement.length);
+    if (end > offset) running.input.write(acknowledgement.slice(offset, end));
+    offset = end;
+  }
+  let completionSettled = false;
+  running.completion.then(
+    () => { completionSettled = true; },
+    () => { completionSettled = true; }
+  );
+  await delay(15);
+  assert.equal(completionSettled, false);
+  assert.equal((await fs.lstat(path.join(approved, OWNER_LOCK_NAME))).isDirectory(), true);
+  assert.deepEqual(await durableSnapshot(approved), before);
+  running.input.end();
   const result = await running.completion;
   assert.equal(result.convertedScopeCount, 2);
   assert.equal(result.outputAggregateDigest, running.gate.targetAggregateDigest);
@@ -681,8 +717,8 @@ async function cliParsingAndLegacyBehavior() {
   assert.equal(output, `${JSON.stringify(legacyResult)}\n`);
 }
 
-async function strictTargetPlanMatrixValidation() {
-  const valid = {
+function validTargetPlan() {
+  return {
     schemaVersion: INTEGRATION_ANALYSIS_STATE_MIGRATION_PREWRITE_GATE_SCHEMA_VERSION,
     event: "migration-prewrite-gate",
     direction: "forward-only",
@@ -695,6 +731,218 @@ async function strictTargetPlanMatrixValidation() {
     targetAggregateDigest: "1".repeat(64),
     migrationContractDigest: contractDigest(INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT),
   };
+}
+
+async function withObjectPrototypeProperty(key, descriptor, operation) {
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, key);
+  Object.defineProperty(Object.prototype, key, {
+    configurable: true,
+    enumerable: true,
+    ...descriptor,
+  });
+  try {
+    return await operation();
+  } finally {
+    if (previous) Object.defineProperty(Object.prototype, key, previous);
+    else delete Object.prototype[key];
+  }
+}
+
+async function strictOptionSnapshots(root) {
+  const inheritedRoot = path.join(root, "inherited-before-mutation");
+  await createNativeFixture(inheritedRoot, 1);
+  await convertSelectedToV2(inheritedRoot, [0]);
+  let inheritedBeforeMutationCalls = 0;
+  await withObjectPrototypeProperty("beforeMutation", {
+    writable: true,
+    value() {
+      inheritedBeforeMutationCalls += 1;
+      throw new Error("inherited beforeMutation executed");
+    },
+  }, async () => {
+    const result = await migrateTestOnlyIntegrationAnalysisStateRoot(inheritedRoot, {});
+    assert.equal(result.convertedScopeCount, 1);
+  });
+  assert.equal(inheritedBeforeMutationCalls, 0);
+
+  let migrationGetterCalls = 0;
+  const accessorOptions = {};
+  Object.defineProperty(accessorOptions, "beforeMutation", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      migrationGetterCalls += 1;
+      return () => {};
+    },
+  });
+  await assert.rejects(
+    migrateIntegrationAnalysisStateRoot("/tmp/rejected-before-state-root", accessorOptions),
+    TypeError
+  );
+  assert.equal(migrationGetterCalls, 0);
+  const hiddenMigrationOptions = {};
+  Object.defineProperty(hiddenMigrationOptions, "beforeMutation", {
+    configurable: true,
+    enumerable: false,
+    value() {},
+    writable: true,
+  });
+  await assert.rejects(
+    migrateIntegrationAnalysisStateRoot("/tmp/rejected-before-state-root", hiddenMigrationOptions),
+    TypeError
+  );
+
+  let migrationProxyTrapCalls = 0;
+  const proxyOptions = new Proxy({}, {
+    get() { migrationProxyTrapCalls += 1; },
+    getOwnPropertyDescriptor() { migrationProxyTrapCalls += 1; },
+    getPrototypeOf() { migrationProxyTrapCalls += 1; },
+    ownKeys() { migrationProxyTrapCalls += 1; },
+  });
+  await assert.rejects(
+    migrateIntegrationAnalysisStateRoot("/tmp/rejected-before-state-root", proxyOptions),
+    TypeError
+  );
+  assert.equal(migrationProxyTrapCalls, 0);
+
+  let inheritedMigrateReads = 0;
+  await withObjectPrototypeProperty("migrate", {
+    get() {
+      inheritedMigrateReads += 1;
+      return async () => ({ inherited: true });
+    },
+  }, async () => {
+    await assert.rejects(
+      migrationCliMain(
+        ["migrate", "--offline", "--state-root", "/tmp/rejected-production-root"],
+        { stdout: { write() { return true; } } }
+      ),
+      (error) => error?.code === "ANALYSIS_STATE_MIGRATION_INVALID"
+    );
+  });
+  assert.equal(inheritedMigrateReads, 0);
+
+  let inheritedStdoutReads = 0;
+  let processOutput = "";
+  const originalProcessStdoutWrite = process.stdout.write;
+  process.stdout.write = function captureProcessStdout(value) {
+    processOutput += String(value);
+    return true;
+  };
+  try {
+    await withObjectPrototypeProperty("stdout", {
+      get() {
+        inheritedStdoutReads += 1;
+        return { write() { throw new Error("inherited stdout executed"); } };
+      },
+    }, async () => {
+      await migrationCliMain(
+        ["migrate", "--offline", "--state-root", CANONICAL_ROOT],
+        { migrate: async () => ({ ownMigration: true }) }
+      );
+    });
+  } finally {
+    process.stdout.write = originalProcessStdoutWrite;
+  }
+  assert.equal(inheritedStdoutReads, 0);
+  assert.equal(processOutput, `${JSON.stringify({ ownMigration: true })}\n`);
+
+  const processStdin = process.stdin;
+  let inheritedStdinReads = 0;
+  await withObjectPrototypeProperty("stdin", {
+    get() {
+      inheritedStdinReads += 1;
+      return new PassThrough();
+    },
+  }, async () => {
+    let output = "";
+    await assert.rejects(
+      migrationCliMain(gatedArguments(CANONICAL_ROOT, 10), {
+        migrate: async (_stateRoot, options) => {
+          await options.beforeMutation(validTargetPlan());
+          return { unexpectedlyCompleted: true };
+        },
+        stdout: { write(value) { output += String(value); } },
+      }),
+      (error) => [
+        "ANALYSIS_STATE_MIGRATION_GATE_EOF",
+        "ANALYSIS_STATE_MIGRATION_GATE_TIMEOUT",
+      ].includes(error?.code)
+    );
+    assert.equal(output.trim().split("\n").length, 1);
+  });
+  assert.equal(inheritedStdinReads, 0);
+  assert.equal(process.stdin, processStdin);
+
+  let cliGetterCalls = 0;
+  const cliAccessorOptions = {};
+  Object.defineProperty(cliAccessorOptions, "migrate", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      cliGetterCalls += 1;
+      return async () => ({});
+    },
+  });
+  await assert.rejects(
+    migrationCliMain(
+      ["migrate", "--offline", "--state-root", CANONICAL_ROOT],
+      cliAccessorOptions
+    ),
+    (error) => error?.code === "ANALYSIS_STATE_MIGRATION_CLI_INVALID"
+  );
+  assert.equal(cliGetterCalls, 0);
+  const hiddenCliOptions = {};
+  Object.defineProperty(hiddenCliOptions, "migrate", {
+    configurable: true,
+    enumerable: false,
+    value: async () => ({}),
+    writable: true,
+  });
+  await assert.rejects(
+    migrationCliMain(
+      ["migrate", "--offline", "--state-root", CANONICAL_ROOT],
+      hiddenCliOptions
+    ),
+    (error) => error?.code === "ANALYSIS_STATE_MIGRATION_CLI_INVALID"
+  );
+
+  let cliProxyTrapCalls = 0;
+  const cliProxyOptions = new Proxy({}, {
+    get() { cliProxyTrapCalls += 1; },
+    getOwnPropertyDescriptor() { cliProxyTrapCalls += 1; },
+    getPrototypeOf() { cliProxyTrapCalls += 1; },
+    ownKeys() { cliProxyTrapCalls += 1; },
+  });
+  await assert.rejects(
+    migrationCliMain(
+      ["migrate", "--offline", "--state-root", CANONICAL_ROOT],
+      cliProxyOptions
+    ),
+    (error) => error?.code === "ANALYSIS_STATE_MIGRATION_CLI_INVALID"
+  );
+  assert.equal(cliProxyTrapCalls, 0);
+}
+
+async function strictTargetPlanMatrixValidation() {
+  const valid = validTargetPlan();
+  const hiddenField = { ...valid };
+  Object.defineProperty(hiddenField, "scopeCount", {
+    configurable: true,
+    enumerable: false,
+    value: 2,
+    writable: true,
+  });
+  const symbolField = { ...valid, [Symbol("unsupported")]: true };
+  let inheritedTargetRead = 0;
+  const inheritedField = { ...valid };
+  delete inheritedField.scopeCount;
+  Object.setPrototypeOf(inheritedField, {
+    get scopeCount() {
+      inheritedTargetRead += 1;
+      return 2;
+    },
+  });
   const invalidPlans = [
     { ...valid, sourceV2ScopeCount: 1 },
     { ...valid, currentStorageState: "mixed" },
@@ -711,8 +959,11 @@ async function strictTargetPlanMatrixValidation() {
     { ...valid, sourceV3ScopeCount: -1 },
     { ...valid, sourceV2ScopeCount: 1.5, sourceV3ScopeCount: 0 },
     { ...valid, unsupportedMatrixField: true },
+    hiddenField,
+    symbolField,
+    inheritedField,
   ];
-  for (const targetPlan of invalidPlans) {
+  async function assertRejectedTargetPlan(targetPlan) {
     const stdin = new PassThrough();
     let output = "";
     let rejected;
@@ -736,6 +987,31 @@ async function strictTargetPlanMatrixValidation() {
     assert.equal(safe.includes(SENSITIVE_MARKER), false);
     assert.equal(safe.includes(CANONICAL_ROOT), false);
   }
+  for (const targetPlan of invalidPlans) await assertRejectedTargetPlan(targetPlan);
+  assert.equal(inheritedTargetRead, 0);
+
+  let changingGetterCalls = 0;
+  const changingAccessorPlan = { ...valid };
+  Object.defineProperty(changingAccessorPlan, "scopeCount", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      changingGetterCalls += 1;
+      return changingGetterCalls === 1 ? 2 : 3;
+    },
+  });
+  await assertRejectedTargetPlan(changingAccessorPlan);
+  assert.equal(changingGetterCalls, 0);
+
+  let targetProxyTrapCalls = 0;
+  const targetProxy = new Proxy({ ...valid }, {
+    get() { targetProxyTrapCalls += 1; },
+    getOwnPropertyDescriptor() { targetProxyTrapCalls += 1; },
+    getPrototypeOf() { targetProxyTrapCalls += 1; },
+    ownKeys() { targetProxyTrapCalls += 1; },
+  });
+  await assertRejectedTargetPlan(targetProxy);
+  assert.equal(targetProxyTrapCalls, 0);
 }
 
 async function productionBinHandshake() {
@@ -882,6 +1158,7 @@ async function main() {
     await crashResumeKeepsTargetDigest(path.join(temporaryRoot, "crash-resume"));
     await cliAckAndFailureProtocol(path.join(temporaryRoot, "cli-protocol"));
     await cliParsingAndLegacyBehavior();
+    await strictOptionSnapshots(path.join(temporaryRoot, "strict-options"));
     await strictTargetPlanMatrixValidation();
     await productionBinHandshake();
     console.log("integration analysis state prewrite gate smoke passed");

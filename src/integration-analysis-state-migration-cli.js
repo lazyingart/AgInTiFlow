@@ -1,4 +1,5 @@
 import path from "node:path";
+import { types as utilTypes } from "node:util";
 
 import {
   INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT,
@@ -23,14 +24,20 @@ function cliFail(message) {
   throw new IntegrationAnalysisStateMigrationError("ANALYSIS_STATE_MIGRATION_CLI_INVALID", message);
 }
 
-function assertPlainOptions(options) {
-  if (!options || typeof options !== "object" || Array.isArray(options)) {
+function snapshotCliOptions(options) {
+  if (
+    !options ||
+    typeof options !== "object" ||
+    Array.isArray(options) ||
+    utilTypes.isProxy(options)
+  ) {
     cliFail("Migration CLI options must be a plain object.");
   }
   const prototype = Object.getPrototypeOf(options);
   if (prototype !== Object.prototype && prototype !== null) {
     cliFail("Migration CLI options must be a plain object.");
   }
+  const snapshot = Object.create(null);
   for (const key of Reflect.ownKeys(options)) {
     const descriptor = Object.getOwnPropertyDescriptor(options, key);
     if (
@@ -41,7 +48,9 @@ function assertPlainOptions(options) {
     ) {
       cliFail("Migration CLI options contain an unsupported field.");
     }
+    snapshot[key] = descriptor.value;
   }
+  return Object.freeze(snapshot);
 }
 
 export function parseIntegrationAnalysisStateMigrationCliArguments(argv = []) {
@@ -108,7 +117,7 @@ export function parseIntegrationAnalysisStateMigrationCliArguments(argv = []) {
 }
 
 function validatedTargetPlan(value) {
-  const expectedKeys = [
+  const expectedKeys = Object.freeze([
     "currentStorageState",
     "direction",
     "event",
@@ -120,11 +129,41 @@ function validatedTargetPlan(value) {
     "sourceV3ScopeCount",
     "targetAggregateDigest",
     "targetStorageVersion",
-  ];
-  const scopeCount = value?.scopeCount;
-  const sourceV2ScopeCount = value?.sourceV2ScopeCount;
-  const sourceV3ScopeCount = value?.sourceV3ScopeCount;
-  const migrationTemporaryCount = value?.migrationTemporaryCount;
+  ]);
+  const fail = () => {
+    throw new IntegrationAnalysisStateMigrationError(
+      "ANALYSIS_STATE_MIGRATION_GATE_PROTOCOL",
+      "The migration prewrite target plan is invalid."
+    );
+  };
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    utilTypes.isProxy(value)
+  ) {
+    fail();
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) fail();
+  const ownKeys = Reflect.ownKeys(value);
+  if (
+    ownKeys.length !== expectedKeys.length ||
+    ownKeys.some((key) => typeof key !== "string" || !expectedKeys.includes(key))
+  ) {
+    fail();
+  }
+  const targetPlan = Object.create(null);
+  for (const key of ownKeys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !("value" in descriptor)) fail();
+    targetPlan[key] = descriptor.value;
+  }
+  Object.freeze(targetPlan);
+  const scopeCount = targetPlan.scopeCount;
+  const sourceV2ScopeCount = targetPlan.sourceV2ScopeCount;
+  const sourceV3ScopeCount = targetPlan.sourceV3ScopeCount;
+  const migrationTemporaryCount = targetPlan.migrationTemporaryCount;
   const countsValid = [scopeCount, sourceV2ScopeCount, sourceV3ScopeCount, migrationTemporaryCount]
     .every((count) => Number.isSafeInteger(count) && count >= 0);
   const expectedStorageState = !countsValid || sourceV2ScopeCount + sourceV3ScopeCount !== scopeCount
@@ -139,27 +178,20 @@ function validatedTargetPlan(value) {
             ? "mixed"
             : null;
   if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    Object.keys(value).sort().some((key, index) => key !== expectedKeys[index]) ||
-    Object.keys(value).length !== expectedKeys.length ||
-    value.schemaVersion !== INTEGRATION_ANALYSIS_STATE_MIGRATION_PREWRITE_GATE_SCHEMA_VERSION ||
-    value.event !== "migration-prewrite-gate" ||
-    value.direction !== "forward-only" ||
-    value.targetStorageVersion !== INTEGRATION_ANALYSIS_STATE_STORAGE_V3 ||
+    targetPlan.schemaVersion !== INTEGRATION_ANALYSIS_STATE_MIGRATION_PREWRITE_GATE_SCHEMA_VERSION ||
+    targetPlan.event !== "migration-prewrite-gate" ||
+    targetPlan.direction !== "forward-only" ||
+    targetPlan.targetStorageVersion !== INTEGRATION_ANALYSIS_STATE_STORAGE_V3 ||
     !countsValid ||
     migrationTemporaryCount > scopeCount ||
-    value.currentStorageState !== expectedStorageState ||
-    !DIGEST_PATTERN.test(String(value.targetAggregateDigest || "")) ||
-    value.migrationContractDigest !== contractDigest(INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT)
+    targetPlan.currentStorageState !== expectedStorageState ||
+    typeof targetPlan.targetAggregateDigest !== "string" ||
+    !DIGEST_PATTERN.test(targetPlan.targetAggregateDigest) ||
+    targetPlan.migrationContractDigest !== contractDigest(INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT)
   ) {
-    throw new IntegrationAnalysisStateMigrationError(
-      "ANALYSIS_STATE_MIGRATION_GATE_PROTOCOL",
-      "The migration prewrite target plan is invalid."
-    );
+    fail();
   }
-  return value;
+  return targetPlan;
 }
 
 function requiredPrewriteAck(nonce, targetPlan) {
@@ -247,12 +279,17 @@ function waitForExactPrewriteAck(stdin, requiredAck, timeoutMs) {
         rejectWith("ANALYSIS_STATE_MIGRATION_GATE_REJECTED", "The migration prewrite acknowledgement was rejected.");
         return;
       }
-      if (received.length === expected.length) finish();
     };
-    const onEnd = () => rejectWith(
-      "ANALYSIS_STATE_MIGRATION_GATE_EOF",
-      "Migration input ended before the exact prewrite acknowledgement."
-    );
+    const onEnd = () => {
+      if (received.length === expected.length && received.equals(expected)) {
+        finish();
+        return;
+      }
+      rejectWith(
+        "ANALYSIS_STATE_MIGRATION_GATE_EOF",
+        "Migration input ended before the exact prewrite acknowledgement."
+      );
+    };
     const onError = (error) => rejectWith(
       "ANALYSIS_STATE_MIGRATION_GATE_UNAVAILABLE",
       "Migration input failed before the exact prewrite acknowledgement.",
@@ -274,18 +311,20 @@ function waitForExactPrewriteAck(stdin, requiredAck, timeoutMs) {
 }
 
 export async function main(argv = process.argv.slice(2), options = {}) {
-  assertPlainOptions(options);
+  const cliOptions = snapshotCliOptions(options);
   const parsed = parseIntegrationAnalysisStateMigrationCliArguments(argv);
-  const migrate = options.migrate || migrateIntegrationAnalysisStateRoot;
+  const migrate = cliOptions.migrate === undefined
+    ? migrateIntegrationAnalysisStateRoot
+    : cliOptions.migrate;
   if (typeof migrate !== "function") cliFail("Migration implementation is invalid.");
-  const stdout = options.stdout || process.stdout;
+  const stdout = cliOptions.stdout === undefined ? process.stdout : cliOptions.stdout;
   if (!stdout || typeof stdout.write !== "function") cliFail("Migration output stream is invalid.");
   if (!parsed.prewriteGate) {
     const result = await migrate(parsed.stateRoot);
     stdout.write(`${JSON.stringify(result)}\n`);
     return result;
   }
-  const stdin = options.stdin || process.stdin;
+  const stdin = cliOptions.stdin === undefined ? process.stdin : cliOptions.stdin;
   let gateCompleted = false;
   let gateObserved = false;
   const result = await migrate(parsed.stateRoot, {

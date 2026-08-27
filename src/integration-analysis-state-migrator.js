@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { TextDecoder } from "node:util";
+import { TextDecoder, types as utilTypes } from "node:util";
 
 import { withDirectoryLock } from "./integration-durable-common.js";
 import { validateAgintiBrowserSession, validateAgintiPrincipalId } from "./integration-auth.js";
@@ -518,14 +518,20 @@ async function migrateStateRoot(stateRootValue, { testOnly, hooks, staleLockMs }
   }
 }
 
-function assertMigrationOptions(options, allowedKeys, label) {
-  if (!options || typeof options !== "object" || Array.isArray(options)) {
+function snapshotMigrationOptions(options, allowedKeys, label) {
+  if (
+    !options ||
+    typeof options !== "object" ||
+    Array.isArray(options) ||
+    utilTypes.isProxy(options)
+  ) {
     throw new TypeError(`${label} must be a plain object`);
   }
   const prototype = Object.getPrototypeOf(options);
   if (prototype !== Object.prototype && prototype !== null) {
     throw new TypeError(`${label} must be a plain object`);
   }
+  const snapshot = Object.create(null);
   for (const key of Reflect.ownKeys(options)) {
     const descriptor = Object.getOwnPropertyDescriptor(options, key);
     if (
@@ -536,35 +542,49 @@ function assertMigrationOptions(options, allowedKeys, label) {
     ) {
       throw new TypeError(`${label} contains an unsupported field`);
     }
+    snapshot[key] = descriptor.value;
   }
-  if (options.beforeMutation !== undefined && typeof options.beforeMutation !== "function") {
+  Object.freeze(snapshot);
+  if (snapshot.beforeMutation !== undefined && typeof snapshot.beforeMutation !== "function") {
     throw new TypeError("beforeMutation must be a function");
   }
+  return snapshot;
 }
 
 export async function migrateIntegrationAnalysisStateRoot(stateRoot, options = {}) {
-  assertMigrationOptions(options, PRODUCTION_MIGRATION_OPTION_KEYS, "migration options");
+  const migrationOptions = snapshotMigrationOptions(
+    options,
+    PRODUCTION_MIGRATION_OPTION_KEYS,
+    "migration options"
+  );
   return migrateStateRoot(stateRoot, {
     testOnly: false,
-    hooks: Object.freeze({ beforeMutation: options.beforeMutation }),
+    hooks: Object.freeze({ beforeMutation: migrationOptions.beforeMutation }),
     staleLockMs: INTEGRATION_ANALYSIS_STATE_MIGRATION_STALE_LOCK_MS,
   });
 }
 
 export async function migrateTestOnlyIntegrationAnalysisStateRoot(stateRoot, options = {}) {
-  assertMigrationOptions(options, TEST_MIGRATION_OPTION_KEYS, "test migration options");
-  if (options.afterScopeCommitted !== undefined && typeof options.afterScopeCommitted !== "function") {
+  const migrationOptions = snapshotMigrationOptions(
+    options,
+    TEST_MIGRATION_OPTION_KEYS,
+    "test migration options"
+  );
+  if (
+    migrationOptions.afterScopeCommitted !== undefined &&
+    typeof migrationOptions.afterScopeCommitted !== "function"
+  ) {
     throw new TypeError("afterScopeCommitted must be a function");
   }
-  const staleLockMs = options.staleLockMs ?? INTEGRATION_ANALYSIS_STATE_MIGRATION_STALE_LOCK_MS;
+  const staleLockMs = migrationOptions.staleLockMs ?? INTEGRATION_ANALYSIS_STATE_MIGRATION_STALE_LOCK_MS;
   if (!Number.isSafeInteger(staleLockMs) || staleLockMs < 1 || staleLockMs > 60_000) {
     throw new TypeError("staleLockMs must be an integer from 1 through 60000");
   }
   return migrateStateRoot(stateRoot, {
     testOnly: true,
     hooks: Object.freeze({
-      afterScopeCommitted: options.afterScopeCommitted,
-      beforeMutation: options.beforeMutation,
+      afterScopeCommitted: migrationOptions.afterScopeCommitted,
+      beforeMutation: migrationOptions.beforeMutation,
     }),
     staleLockMs,
   });
