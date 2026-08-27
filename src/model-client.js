@@ -360,11 +360,18 @@ function singleExecutableToolName(tools = []) {
     : "";
 }
 
+function deepSeekConstrainedActionRequired(config = {}, messages = []) {
+  return requiresConcreteToolContinuation(messages) ||
+    config.completionFreshMutationRequired === true ||
+    (
+      config.testFailureRepairActive === true &&
+      config.testFailureRepairMutationRequired === true
+    );
+}
+
 function deepSeekActionOnlyTool(config = {}, messages = [], tools = []) {
   if (normalizeProviderId(config.provider, "") !== "deepseek") return "";
-  const constrainedRecovery = config.completionFreshMutationRequired === true ||
-    requiresConcreteToolContinuation(messages);
-  if (!constrainedRecovery) return "";
+  if (!deepSeekConstrainedActionRequired(config, messages)) return "";
   const constrainedTool = singleExecutableToolName(tools);
   if (constrainedTool) return constrainedTool;
   const actionable = (Array.isArray(tools) ? tools : [])
@@ -378,7 +385,7 @@ function deepSeekActionOnlyRequest(config = {}, messages = [], tools = []) {
   return normalizeProviderId(config.provider, "") === "deepseek" &&
     Boolean(
       requiresConcreteToolContinuation(messages) ||
-      (config.completionFreshMutationRequired === true && singleExecutableToolName(tools))
+      (deepSeekConstrainedActionRequired(config, messages) && singleExecutableToolName(tools))
     );
 }
 

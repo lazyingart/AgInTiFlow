@@ -201,6 +201,21 @@ async function main() {
     "DeepSeek constrained recovery relied on a prompt phrase instead of the offered tool contract"
   );
   assert(
+    JSON.stringify(toolChoiceForProvider(
+      {
+        provider: "deepseek",
+        testFailureRepairActive: true,
+        testFailureRepairMutationRequired: true,
+      },
+      [{ role: "user", content: "Continue from the retained failing test evidence." }],
+      [
+        { type: "function", function: { name: "apply_patch" } },
+        { type: "function", function: { name: "finish" } },
+      ]
+    )) === JSON.stringify({ type: "function", function: { name: "apply_patch" } }),
+    "DeepSeek failed-test repair did not force its sole bounded mutation tool"
+  );
+  assert(
     toolChoiceForProvider(
       { provider: "deepseek" },
       [{ role: "user", content: "Explain what this source does." }],
