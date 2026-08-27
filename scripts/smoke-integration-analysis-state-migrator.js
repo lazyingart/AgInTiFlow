@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION } from "../src/integration-analysis-planner.js";
 import { createTestOnlyIntegrationAnalysisSessionService } from "../src/integration-analysis-session-service.js";
 import {
   INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT,
+  INTEGRATION_ANALYSIS_STATE_MIGRATION_STALE_LOCK_MS,
   migrateTestOnlyIntegrationAnalysisStateRoot,
 } from "../src/integration-analysis-state-migrator.js";
 import {
@@ -23,6 +27,59 @@ import { canonicalJson, contractDigest } from "../src/integration-policy.js";
 
 const SENSITIVE_MARKER = "STATE_CONTENT_MUST_NEVER_APPEAR_IN_MIGRATION_OUTPUT_91f27a";
 const MIGRATION_TEMPORARY_FILE_NAME = ".state.json.aginti-v2-v3-migration.tmp";
+const OWNER_LOCK_NAME = ".analysis-session-owner.lock";
+const CRASH_CHILD_READY = "migration-lock-held-after-first-commit";
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function waitForCondition(task, label, timeoutMs = 2_000) {
+  const started = Date.now();
+  for (;;) {
+    if (await task()) return;
+    if (Date.now() - started > timeoutMs) throw new Error(`Timed out waiting for ${label}.`);
+    await delay(5);
+  }
+}
+
+function waitForChildOutput(child, expected, timeoutMs = 5_000) {
+  return new Promise((resolve, reject) => {
+    let output = "";
+    let errorOutput = "";
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.stdout.off("data", onData);
+      child.stderr.off("data", onErrorData);
+      child.off("exit", onExit);
+      child.off("error", onError);
+    };
+    const finish = (task) => {
+      cleanup();
+      task();
+    };
+    const onData = (chunk) => {
+      output += chunk.toString("utf8");
+      if (output.includes(expected)) finish(resolve);
+    };
+    const onErrorData = (chunk) => {
+      errorOutput += chunk.toString("utf8");
+    };
+    const onExit = (code, signal) => finish(() => reject(
+      new Error(`Crash-test child exited before readiness (${code ?? signal}): ${errorOutput}`)
+    ));
+    const onError = (error) => finish(() => reject(error));
+    const timer = setTimeout(
+      () => finish(() => reject(new Error(`Timed out waiting for crash-test child: ${errorOutput}`))),
+      timeoutMs
+    );
+    child.stdout.on("data", onData);
+    child.stderr.on("data", onErrorData);
+    child.once("exit", onExit);
+    child.once("error", onError);
+  });
+}
 
 function context(index) {
   return Object.freeze({
@@ -271,6 +328,65 @@ async function interruptionAndResume(root) {
   assertContentBlind(resumed, { scopeCount: 3, convertedScopeCount: 2, unchangedScopeCount: 1 });
 }
 
+async function crashLockHolderChild(root) {
+  await migrateTestOnlyIntegrationAnalysisStateRoot(root, {
+    staleLockMs: 10,
+    async afterScopeCommitted({ committedCount }) {
+      if (committedCount !== 1) return;
+      process.stdout.write(`${CRASH_CHILD_READY}\n`);
+      await new Promise(() => {
+        setInterval(() => {}, 1_000);
+      });
+    },
+  });
+}
+
+async function sigkillCrashAndBoundedResume(root) {
+  await createNativeFixture(root, 3);
+  await convertAllToV2(root);
+  const child = spawn(process.execPath, [SCRIPT_PATH, "--crash-lock-holder", root], {
+    cwd: path.dirname(SCRIPT_PATH),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let ready = false;
+  try {
+    await waitForChildOutput(child, CRASH_CHILD_READY);
+    ready = true;
+  } finally {
+    if (!ready) child.kill("SIGKILL");
+  }
+  assert.equal(child.kill("SIGKILL"), true);
+  const [exitCode, signal] = await once(child, "exit");
+  assert.equal(exitCode, null);
+  assert.equal(signal, "SIGKILL");
+
+  const ownerLock = path.join(root, OWNER_LOCK_NAME);
+  const owner = JSON.parse(await fs.readFile(path.join(ownerLock, "owner.json"), "utf8"));
+  assert.equal(owner.pid, child.pid);
+  assert.equal(owner.schemaVersion, "aginti-directory-lock-v1");
+  assert.match(owner.token, /^[a-f0-9]{32}$/u);
+  assert.equal(owner.processIdentity.schemaVersion, "aginti-process-identity-v1");
+
+  const versions = [];
+  for (const file of await stateFiles(root)) {
+    versions.push(JSON.parse(await fs.readFile(file, "utf8")).schemaVersion);
+  }
+  assert.deepEqual(versions.sort(), [
+    INTEGRATION_ANALYSIS_STATE_STORAGE_V2,
+    INTEGRATION_ANALYSIS_STATE_STORAGE_V2,
+    INTEGRATION_ANALYSIS_STATE_STORAGE_V3,
+  ].sort());
+
+  await expectRejected(
+    migrateTestOnlyIntegrationAnalysisStateRoot(root, { staleLockMs: 60_000 }),
+    ["ANALYSIS_STATE_MIGRATION_BUSY"]
+  );
+  await delay(25);
+  const resumed = await migrateTestOnlyIntegrationAnalysisStateRoot(root, { staleLockMs: 10 });
+  assertContentBlind(resumed, { scopeCount: 3, convertedScopeCount: 2, unchangedScopeCount: 1 });
+  await assert.rejects(fs.lstat(ownerLock), { code: "ENOENT" });
+}
+
 async function staleTemporaryRecovery(root) {
   await createNativeFixture(root, 1);
   await convertAllToV2(root);
@@ -290,8 +406,9 @@ async function ownershipExclusion(root) {
   });
   try {
     await service.createThread({ title: SENSITIVE_MARKER }, context(9));
+    await delay(10);
     await expectRejected(
-      migrateTestOnlyIntegrationAnalysisStateRoot(root),
+      migrateTestOnlyIntegrationAnalysisStateRoot(root, { staleLockMs: 1 }),
       ["ANALYSIS_STATE_MIGRATION_BUSY"]
     );
   } finally {
@@ -299,15 +416,110 @@ async function ownershipExclusion(root) {
   }
 }
 
+async function invalidDeadOwnerIsNeverReclaimed(root) {
+  await createNativeFixture(root, 1);
+  await convertAllToV2(root);
+  const before = await snapshotBytes(root);
+  const ownerLock = path.join(root, OWNER_LOCK_NAME);
+  await fs.mkdir(ownerLock, { mode: 0o700 });
+  await fs.writeFile(path.join(ownerLock, "owner.json"), `${JSON.stringify({
+    schemaVersion: "invalid-lock-owner",
+    pid: 999_999_999,
+    token: "a".repeat(32),
+    processIdentity: {
+      schemaVersion: "aginti-process-identity-v1",
+      bootId: "b".repeat(32),
+      startTimeTicks: "1",
+    },
+    acquiredAt: "2000-01-01T00:00:00.000Z",
+  })}\n`, { mode: 0o600 });
+  await fs.chmod(path.join(ownerLock, "owner.json"), 0o600);
+  await expectRejected(
+    migrateTestOnlyIntegrationAnalysisStateRoot(root, { staleLockMs: 1 }),
+    ["ANALYSIS_STATE_MIGRATION_BUSY"]
+  );
+  await assertSnapshot(root, before);
+  assert.equal((await fs.lstat(ownerLock)).isDirectory(), true);
+}
+
 async function deterministicBytes(sourceRoot, firstRoot, secondRoot) {
   await createNativeFixture(sourceRoot, 2);
   const expected = await convertAllToV2(sourceRoot);
   await cloneRoot(sourceRoot, firstRoot);
   await cloneRoot(sourceRoot, secondRoot);
-  await migrateTestOnlyIntegrationAnalysisStateRoot(firstRoot);
-  await migrateTestOnlyIntegrationAnalysisStateRoot(secondRoot);
+  const firstResult = await migrateTestOnlyIntegrationAnalysisStateRoot(firstRoot);
+  const originalLocaleCompare = String.prototype.localeCompare;
+  let secondResult;
+  try {
+    String.prototype.localeCompare = function reversedLocaleCompare(value) {
+      return originalLocaleCompare.call(String(value), String(this));
+    };
+    secondResult = await migrateTestOnlyIntegrationAnalysisStateRoot(secondRoot);
+  } finally {
+    String.prototype.localeCompare = originalLocaleCompare;
+  }
   assert.deepEqual(await snapshotBytes(firstRoot), await snapshotBytes(secondRoot));
   assert.deepEqual(await snapshotBytes(firstRoot), expected);
+  assert.equal(firstResult.inputAggregateDigest, secondResult.inputAggregateDigest);
+  assert.equal(firstResult.outputAggregateDigest, secondResult.outputAggregateDigest);
+}
+
+function holdingRunner() {
+  return Object.freeze({
+    async run(_scope, _input, options) {
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(Object.assign(
+          new Error("held run aborted"),
+          { code: "ANALYSIS_CANCELLED", publicCode: "ANALYSIS_CANCELLED" }
+        )), { once: true });
+      });
+    },
+  });
+}
+
+async function nonterminalRunRefusesWholePreflight(root) {
+  await createNativeFixture(root, 3);
+  await convertAllToV2(root);
+  const files = await stateFiles(root);
+  const file = files.at(-1);
+  const persisted = JSON.parse(await fs.readFile(file, "utf8"));
+  const scope = Object.freeze({
+    principalId: persisted.state.scope.principalId,
+    browserSessionId: persisted.state.scope.browserSessionId,
+  });
+  const threadId = persisted.state.threads[0].id;
+  const service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: holdingRunner(),
+    stateRoot: root,
+  });
+  let runningBytes;
+  try {
+    const started = await service.startRun(
+      { threadId, input: { text: `hold ${SENSITIVE_MARKER}` } },
+      scope
+    );
+    await waitForCondition(async () =>
+      (await service.getRunStatus({ runId: started.run.id }, scope)).run.status === "running",
+    "persisted running analysis state");
+    runningBytes = await fs.readFile(file, "utf8");
+  } finally {
+    await service.close({ mode: "abort" });
+  }
+  const runningV2 = v2EnvelopeFromV3(JSON.parse(runningBytes));
+  await fs.writeFile(file, `${canonicalJson(runningV2)}\n`, { mode: 0o600 });
+  await fs.chmod(file, 0o600);
+  const staleTemporary = path.join(path.dirname(files[0]), MIGRATION_TEMPORARY_FILE_NAME);
+  const staleBytes = Buffer.from("stale temporary must survive rejected whole-root preflight", "utf8");
+  await fs.writeFile(staleTemporary, staleBytes, { mode: 0o600 });
+  await fs.chmod(staleTemporary, 0o600);
+  const before = await snapshotBytes(root);
+  await expectRejected(
+    migrateTestOnlyIntegrationAnalysisStateRoot(root),
+    ["ANALYSIS_STATE_MIGRATION_NONTERMINAL"]
+  );
+  await assertSnapshot(root, before);
+  assert.deepEqual(await fs.readFile(staleTemporary), staleBytes);
+  assert.equal((await fs.readdir(path.dirname(staleTemporary))).includes(MIGRATION_TEMPORARY_FILE_NAME), true);
 }
 
 async function corruptionCases(pristineRoot, casesRoot) {
@@ -460,6 +672,17 @@ async function corruptionCases(pristineRoot, casesRoot) {
 }
 
 async function cliContract() {
+  assert.equal(
+    INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT.scopeOrdering,
+    "lowercase-hex-code-unit-ascending-v1"
+  );
+  assert.equal(INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT.requiresAllRunsTerminal, true);
+  assert.equal(INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT.liveOwnerRecovery, false);
+  assert.equal(
+    INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT.deadOwnerRecoveryAfterMs,
+    INTEGRATION_ANALYSIS_STATE_MIGRATION_STALE_LOCK_MS
+  );
+  assert.equal(INTEGRATION_ANALYSIS_STATE_MIGRATION_STALE_LOCK_MS, 60_000);
   assert.deepEqual(
     parseIntegrationAnalysisStateMigrationCliArguments([
       "migrate",
@@ -514,8 +737,11 @@ async function main() {
   try {
     await allScopeMixedAndIdempotent(path.join(temporaryRoot, "mixed"));
     await interruptionAndResume(path.join(temporaryRoot, "interruption"));
+    await sigkillCrashAndBoundedResume(path.join(temporaryRoot, "sigkill-resume"));
     await staleTemporaryRecovery(path.join(temporaryRoot, "stale-temporary"));
     await ownershipExclusion(path.join(temporaryRoot, "ownership-exclusion"));
+    await invalidDeadOwnerIsNeverReclaimed(path.join(temporaryRoot, "invalid-dead-owner"));
+    await nonterminalRunRefusesWholePreflight(path.join(temporaryRoot, "nonterminal-refusal"));
     await deterministicBytes(
       path.join(temporaryRoot, "deterministic-source"),
       path.join(temporaryRoot, "deterministic-first"),
@@ -532,4 +758,8 @@ async function main() {
   }
 }
 
-await main();
+if (process.argv[2] === "--crash-lock-holder") {
+  await crashLockHolderChild(process.argv[3]);
+} else {
+  await main();
+}

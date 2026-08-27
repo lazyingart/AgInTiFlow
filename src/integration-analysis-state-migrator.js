@@ -23,6 +23,7 @@ import { contractDigest } from "./integration-policy.js";
 
 export const INTEGRATION_ANALYSIS_STATE_MIGRATION_SCHEMA_VERSION =
   "aginti-integration-analysis-state-migration-v1";
+export const INTEGRATION_ANALYSIS_STATE_MIGRATION_STALE_LOCK_MS = 60_000;
 export const INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT = Object.freeze({
   schemaVersion: INTEGRATION_ANALYSIS_STATE_MIGRATION_SCHEMA_VERSION,
   sourceStorageVersion: INTEGRATION_ANALYSIS_STATE_STORAGE_V2,
@@ -32,6 +33,10 @@ export const INTEGRATION_ANALYSIS_STATE_MIGRATION_CONTRACT = Object.freeze({
   offlineOnly: true,
   networkAccess: "denied",
   contentOutput: "counts-and-aggregate-digests-only",
+  scopeOrdering: "lowercase-hex-code-unit-ascending-v1",
+  requiresAllRunsTerminal: true,
+  deadOwnerRecoveryAfterMs: INTEGRATION_ANALYSIS_STATE_MIGRATION_STALE_LOCK_MS,
+  liveOwnerRecovery: false,
   atomicScopeReplace: true,
   resumable: true,
 });
@@ -43,6 +48,8 @@ const MIGRATION_TEMPORARY_FILE_NAME = ".state.json.aginti-v2-v3-migration.tmp";
 const O_NOFOLLOW = Number(fsConstants.O_NOFOLLOW || 0);
 const SCOPE_DIRECTORY_PATTERN = /^[a-f0-9]{64}$/u;
 const FATAL_UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const TEST_MIGRATION_OPTION_KEYS = new Set(["afterScopeCommitted", "staleLockMs"]);
 
 export class IntegrationAnalysisStateMigrationError extends Error {
   constructor(code, message, { cause } = {}) {
@@ -229,6 +236,33 @@ async function removeStaleMigrationTemporary(scopeDirectory) {
   }
 }
 
+async function inspectOptionalMigrationTemporary(scopeDirectory) {
+  const temporaryPath = path.join(scopeDirectory, MIGRATION_TEMPORARY_FILE_NAME);
+  let named;
+  try {
+    named = await fs.lstat(temporaryPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    migrationFail("ANALYSIS_STATE_MIGRATION_UNAVAILABLE", "Migration preflight cannot inspect its temporary file.", error);
+  }
+  assertPrivateFileStat(named);
+  let handle;
+  try {
+    handle = await fs.open(temporaryPath, fsConstants.O_RDONLY | O_NOFOLLOW);
+    const opened = await handle.stat();
+    assertPrivateFileStat(opened);
+    if (opened.dev !== named.dev || opened.ino !== named.ino) {
+      migrationFail("ANALYSIS_STATE_MIGRATION_UNSAFE", "A migration temporary file changed during preflight.");
+    }
+    return true;
+  } catch (error) {
+    if (error instanceof IntegrationAnalysisStateMigrationError) throw error;
+    migrationFail("ANALYSIS_STATE_MIGRATION_UNAVAILABLE", "Migration preflight cannot inspect its temporary file safely.", error);
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
 async function exactDirectoryEntries(target, expectedNames) {
   let entries;
   try {
@@ -258,6 +292,12 @@ function aggregateDigest(entries, field) {
   });
 }
 
+function compareScopeDirectoryEntries(left, right) {
+  if (left.name < right.name) return -1;
+  if (left.name > right.name) return 1;
+  return 0;
+}
+
 function expectedScopeFromText(text) {
   let value;
   try {
@@ -280,6 +320,12 @@ function inspectMigrationSource(text, scopeDirectoryName) {
   const parsed = parseIntegrationAnalysisStateMigrationSource(text, expectedScope);
   if (integrationAnalysisStateScopeDigest(expectedScope) !== scopeDirectoryName) {
     migrationFail("ANALYSIS_STATE_MIGRATION_CORRUPT", "An analysis state file is bound to the wrong scope directory.");
+  }
+  if (parsed.state.runs.some((run) => !TERMINAL_RUN_STATUSES.has(run.status))) {
+    migrationFail(
+      "ANALYSIS_STATE_MIGRATION_NONTERMINAL",
+      "Analysis state contains a nonterminal run and cannot cross the storage floor."
+    );
   }
   const output = serializeIntegrationAnalysisStateForPersistence(
     parsed.state,
@@ -313,7 +359,7 @@ async function discoverScopes(stateRoot) {
   if (entries.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumScopes) {
     migrationFail("ANALYSIS_STATE_MIGRATION_CORRUPT", "The analysis state root exceeds its scope limit.");
   }
-  entries.sort((left, right) => left.name.localeCompare(right.name));
+  entries.sort(compareScopeDirectoryEntries);
   const scopes = [];
   for (const entry of entries) {
     if (!SCOPE_DIRECTORY_PATTERN.test(entry.name) || !entry.isDirectory() || entry.isSymbolicLink()) {
@@ -321,13 +367,17 @@ async function discoverScopes(stateRoot) {
     }
     const scopeDirectory = path.join(scopesDirectory, entry.name);
     await assertPrivateDirectory(scopeDirectory);
-    await removeStaleMigrationTemporary(scopeDirectory);
-    await exactDirectoryEntries(scopeDirectory, [STATE_FILE_NAME]);
+    const temporaryPresent = await inspectOptionalMigrationTemporary(scopeDirectory);
+    await exactDirectoryEntries(
+      scopeDirectory,
+      temporaryPresent ? [STATE_FILE_NAME, MIGRATION_TEMPORARY_FILE_NAME] : [STATE_FILE_NAME]
+    );
     scopes.push(Object.freeze({
       scopeDigest: entry.name,
       scopeDirectory,
       stateFile: path.join(scopeDirectory, STATE_FILE_NAME),
       temporaryFile: path.join(scopeDirectory, MIGRATION_TEMPORARY_FILE_NAME),
+      temporaryPresent,
     }));
   }
   return Object.freeze(scopes);
@@ -358,6 +408,10 @@ async function migrateLocked(stateRoot, hooks) {
     const source = inspectMigrationSource(await readPrivateStateFile(scope.stateFile), scope.scopeDigest);
     const { output: _output, ...metadata } = source;
     plan.push(Object.freeze({ ...scope, ...metadata }));
+  }
+
+  for (const entry of plan) {
+    if (entry.temporaryPresent) await removeStaleMigrationTemporary(entry.scopeDirectory);
   }
 
   let committedCount = 0;
@@ -399,7 +453,7 @@ async function migrateLocked(stateRoot, hooks) {
   return migrationResult(plan, finalEntries);
 }
 
-async function migrateStateRoot(stateRootValue, { testOnly, hooks }) {
+async function migrateStateRoot(stateRootValue, { testOnly, hooks, staleLockMs }) {
   const stateRoot = normalizedStateRoot(stateRootValue, { testOnly });
   await assertExistingDirectoryTree(stateRoot, { testOnly });
   const lockPath = path.join(stateRoot, OWNER_LOCK_NAME);
@@ -407,7 +461,11 @@ async function migrateStateRoot(stateRootValue, { testOnly, hooks }) {
     const result = await withDirectoryLock(
       lockPath,
       () => migrateLocked(stateRoot, hooks),
-      { waitMs: 0, staleMs: Number.MAX_SAFE_INTEGER }
+      {
+        waitMs: 0,
+        staleMs: staleLockMs,
+        requireValidatedOwnerForRecovery: true,
+      }
     );
     await syncDirectory(stateRoot);
     return result;
@@ -426,19 +484,28 @@ async function migrateStateRoot(stateRootValue, { testOnly, hooks }) {
 }
 
 export async function migrateIntegrationAnalysisStateRoot(stateRoot) {
-  return migrateStateRoot(stateRoot, { testOnly: false, hooks: Object.freeze({}) });
+  return migrateStateRoot(stateRoot, {
+    testOnly: false,
+    hooks: Object.freeze({}),
+    staleLockMs: INTEGRATION_ANALYSIS_STATE_MIGRATION_STALE_LOCK_MS,
+  });
 }
 
 export async function migrateTestOnlyIntegrationAnalysisStateRoot(stateRoot, options = {}) {
   const keys = Object.keys(options);
-  if (keys.some((key) => key !== "afterScopeCommitted")) {
+  if (keys.some((key) => !TEST_MIGRATION_OPTION_KEYS.has(key))) {
     throw new TypeError("test migration options contain an unsupported field");
   }
   if (options.afterScopeCommitted !== undefined && typeof options.afterScopeCommitted !== "function") {
     throw new TypeError("afterScopeCommitted must be a function");
   }
+  const staleLockMs = options.staleLockMs ?? INTEGRATION_ANALYSIS_STATE_MIGRATION_STALE_LOCK_MS;
+  if (!Number.isSafeInteger(staleLockMs) || staleLockMs < 1 || staleLockMs > 60_000) {
+    throw new TypeError("staleLockMs must be an integer from 1 through 60000");
+  }
   return migrateStateRoot(stateRoot, {
     testOnly: true,
     hooks: Object.freeze({ afterScopeCommitted: options.afterScopeCommitted }),
+    staleLockMs,
   });
 }

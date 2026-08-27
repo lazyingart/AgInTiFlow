@@ -302,6 +302,34 @@ function lockOwnerToken(owner) {
   return typeof owner?.token === "string" && /^[a-f0-9]{32,128}$/u.test(owner.token) ? owner.token : "";
 }
 
+function validatedLockRecoveryOwnerToken(owner) {
+  if (!owner || typeof owner !== "object" || Array.isArray(owner)) return "";
+  const keys = Object.keys(owner).sort();
+  if (
+    keys.length !== 5 ||
+    keys[0] !== "acquiredAt" ||
+    keys[1] !== "pid" ||
+    keys[2] !== "processIdentity" ||
+    keys[3] !== "schemaVersion" ||
+    keys[4] !== "token" ||
+    owner.schemaVersion !== "aginti-directory-lock-v1" ||
+    !Number.isSafeInteger(owner.pid) ||
+    owner.pid < 1 ||
+    !normalizeProcessIdentity(owner.processIdentity, { optional: true })
+  ) {
+    return "";
+  }
+  const acquiredMs = Date.parse(owner.acquiredAt);
+  if (!Number.isFinite(acquiredMs) || new Date(acquiredMs).toISOString() !== owner.acquiredAt) return "";
+  return lockOwnerToken(owner);
+}
+
+function lockRecoveryOwnerToken(owner, requireValidatedOwnerForRecovery) {
+  return requireValidatedOwnerForRecovery
+    ? validatedLockRecoveryOwnerToken(owner)
+    : lockOwnerToken(owner);
+}
+
 async function lockDirectoryIdentity(lockDir) {
   const stat = await fs.lstat(lockDir).catch((error) => {
     if (error?.code === "ENOENT") return null;
@@ -329,10 +357,17 @@ function lockIdentityFromStat(stat) {
   });
 }
 
-async function lockIsBreakable(lockDir, staleMs, nowMs, testHooks = {}) {
+async function lockIsBreakable(
+  lockDir,
+  staleMs,
+  nowMs,
+  testHooks = {},
+  { requireValidatedOwnerForRecovery = false } = {}
+) {
   const link = await lockDirectoryIdentity(lockDir);
   if (!link) return true;
   const owner = await readLockOwner(lockDir);
+  if (!lockRecoveryOwnerToken(owner, requireValidatedOwnerForRecovery)) return false;
   const acquiredMs = owner?.acquiredAt ? Date.parse(owner.acquiredAt) : Number(link.ctimeMs || 0);
   const expired = Number.isFinite(acquiredMs) && nowMs - acquiredMs > staleMs;
   if (!expired) return false;
@@ -379,17 +414,32 @@ async function releaseDirectoryLock(lockDir, token) {
   await fs.rm(lockDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 10 }).catch(() => {});
 }
 
-async function breakStaleDirectoryLock(lockDir, staleMs, nowMs, testHooks = {}) {
+async function breakStaleDirectoryLock(
+  lockDir,
+  staleMs,
+  nowMs,
+  testHooks = {},
+  { requireValidatedOwnerForRecovery = false } = {}
+) {
   const before = await lockDirectoryIdentity(lockDir);
   if (!before) return true;
   const owner = await readLockOwner(lockDir);
-  const token = lockOwnerToken(owner);
+  const token = lockRecoveryOwnerToken(owner, requireValidatedOwnerForRecovery);
   const acquiredMs = owner?.acquiredAt ? Date.parse(owner.acquiredAt) : Number(before.ctimeMs || 0);
   if (!token) {
+    if (requireValidatedOwnerForRecovery) return false;
     if (Number.isFinite(acquiredMs) && nowMs - acquiredMs <= staleMs) return false;
     return breakOwnerlessStaleDirectoryLock(lockDir, before, staleMs, nowMs);
   }
-  if (!(await lockIsBreakable(lockDir, staleMs, nowMs, testHooks))) return false;
+  if (!(
+    await lockIsBreakable(
+      lockDir,
+      staleMs,
+      nowMs,
+      testHooks,
+      { requireValidatedOwnerForRecovery }
+    )
+  )) return false;
 
   const quarantine = `${lockDir}.stale-${process.pid}-${randomHex(8)}`;
   try {
@@ -402,7 +452,10 @@ async function breakStaleDirectoryLock(lockDir, staleMs, nowMs, testHooks = {}) 
 
   const quarantined = await lockDirectoryIdentity(quarantine);
   const quarantinedOwner = await readLockOwner(quarantine);
-  if (!sameLockIdentity(before, quarantined) || lockOwnerToken(quarantinedOwner) !== token) {
+  if (
+    !sameLockIdentity(before, quarantined) ||
+    lockRecoveryOwnerToken(quarantinedOwner, requireValidatedOwnerForRecovery) !== token
+  ) {
     await fs.rename(quarantine, lockDir).catch(() => {});
     authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Integration authority stale lock changed during recovery.");
   }
@@ -452,6 +505,7 @@ export async function withDirectoryLock(lockDir, operation, options = {}) {
   const waitMs = Number(options.waitMs ?? 5000);
   const staleMs = Number(options.staleMs ?? 60_000);
   const testHooks = options.testHooks && typeof options.testHooks === "object" ? options.testHooks : {};
+  const requireValidatedOwnerForRecovery = options.requireValidatedOwnerForRecovery === true;
   const started = Date.now();
   for (;;) {
     const token = randomHex(16);
@@ -507,7 +561,13 @@ export async function withDirectoryLock(lockDir, operation, options = {}) {
         await releaseDirectoryLock(lockDir, token);
       }
     }
-    if (await breakStaleDirectoryLock(lockDir, staleMs, Date.now(), testHooks)) {
+    if (await breakStaleDirectoryLock(
+      lockDir,
+      staleMs,
+      Date.now(),
+      testHooks,
+      { requireValidatedOwnerForRecovery }
+    )) {
       continue;
     }
     if (Date.now() - started > waitMs) {
