@@ -6045,14 +6045,15 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     // verification regardless of its final exit status. Test identity and
     // mutation capability are independent: a generator or snapshot-updating
     // test still advances the revision, then records its evidence there.
+    const generatedArtifactProducer = safeProjectProducerSegment(command, config);
     const projectContentMutation = Boolean(
       command &&
         toolResult.blocked !== true &&
-        commandCanMutateProjectContent(mutationCommand, commandPolicy)
+        (
+          commandCanMutateProjectContent(mutationCommand, commandPolicy) ||
+          generatedArtifactProducer
+        )
     );
-    const generatedArtifactProducer = projectContentMutation
-      ? safeProjectProducerSegment(command, config)
-      : "";
     let requiredBatch = currentRequiredCommandBatch(verification, requiredCommands);
     const activeExecutionContract = state.meta?.activeExecutionContract;
     const activeTurnCommands =
@@ -14901,7 +14902,9 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
             packageInstallPolicy: policy.packageInstallPolicy,
             needsNetwork: Boolean(policy.needsNetwork),
             writesWorkspace: Boolean(policy.writesWorkspace),
-            mayMutateProject: Boolean(policy.mayMutateProject),
+            ...(typeof policy.mayMutateProject === "boolean"
+              ? { mayMutateProject: policy.mayMutateProject }
+              : {}),
             substantiveTest: Boolean(policy.substantiveTest),
             gitOnly: Boolean(policy.gitOnly),
             noMatchExitIsSuccess: Boolean(policy.noMatchExitIsSuccess),

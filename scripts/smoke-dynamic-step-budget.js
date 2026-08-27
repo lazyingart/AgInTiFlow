@@ -5392,6 +5392,12 @@ try {
       args: { command: "python3 build_deck.py" },
       stdout: "Wrote output/deck.pptx\n",
       stderr: "",
+      commandPolicy: {
+        category: "toolchain",
+        writesWorkspace: true,
+        mayMutateProject: false,
+        substantiveTest: false,
+      },
     },
     {
       provider: "deepseek",
