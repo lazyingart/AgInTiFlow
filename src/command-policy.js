@@ -751,7 +751,14 @@ function classifyBackgroundShell(normalized = "") {
 const SAFE_WORKSPACE_WRITE_PATTERNS = [/^mkdir\s+-p\s+[-\w./]+$/];
 const SAFE_CHMOD_MODE_PATTERN = /^[-+=,rwxugoXst0-7]+$/;
 const SAFE_WORKSPACE_TARGET_LIMIT = 64;
-const SAFE_ENV_ASSIGNMENT_NAMES = new Set(["ANDROID_HOME", "ANDROID_SDK_ROOT", "JAVA_HOME", "GRADLE_USER_HOME", "PATH"]);
+const SAFE_ENV_ASSIGNMENT_NAMES = new Set([
+  "ANDROID_HOME",
+  "ANDROID_SDK_ROOT",
+  "GRADLE_USER_HOME",
+  "JAVA_HOME",
+  "PATH",
+  "PYTHONDONTWRITEBYTECODE",
+]);
 const SAFE_ENV_VALUE_PATTERN = /^[-\w./:@+,%]+$/;
 
 const NETWORK_FETCH_PATTERNS = [

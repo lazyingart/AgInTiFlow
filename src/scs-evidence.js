@@ -1379,9 +1379,33 @@ function prefixRequestsInlineCommandExecution(prefix = "") {
   while (preamble.test(clause)) clause = clause.replace(preamble, "").trim();
   clause = clause.replace(/(?:[:：]|--?)\s*$/, "").trim();
   return (
-    /^(?:followed\s+by|run|rerun|re-run|execute|invoke|launch|verify|validate|check|confirm)(?:\s+(?:(?:the|this|that)\s+)?(?:following\s+)?command(?:\s+named)?)?\s*$/i.test(
+    /^(?:followed\s+by|run|rerun|re-run|execute|invoke|launch|verify|validate|check|confirm)(?:\s+(?:exactly|again|once))?(?:\s+(?:(?:the|this|that)\s+)?(?:exact|required|following\s+)?command(?:\s+named)?)?\s*$/i.test(
       clause
     ) || /^(?:随后运行|隨後運行|接着运行|接著運行|运行|運行|执行|執行|调用|調用|验证|驗證|检查|檢查|确认|確認)\s*$/.test(clause)
+  );
+}
+
+function sentenceContinuesRequestedCommandList(source = "", sentenceStart = -1, commandIndex = -1) {
+  const prefix = String(source || "").slice(sentenceStart + 1, commandIndex).trim();
+  if (!/^(?:these|those|the\s+following)\s+(?:commands?\s+)?(?:include|are)\b/i.test(prefix)) {
+    return false;
+  }
+
+  const preceding = String(source || "").slice(0, Math.max(0, sentenceStart)).trimEnd();
+  const previousStart = Math.max(
+    preceding.lastIndexOf("\n"),
+    preceding.lastIndexOf("."),
+    preceding.lastIndexOf("!"),
+    preceding.lastIndexOf("?"),
+    preceding.lastIndexOf("。"),
+    preceding.lastIndexOf("！"),
+    preceding.lastIndexOf("？")
+  );
+  const previousSentence = preceding.slice(previousStart + 1).trim();
+  return (
+    /\b(?:run|rerun|re-run|execute|invoke|launch|verify|validate|check|confirm|follow)\b/i.test(previousSentence) &&
+    /\b(?:exact|required|following|verification|validation|test|check)\b/i.test(previousSentence) &&
+    /\bcommands?\b/i.test(previousSentence)
   );
 }
 
@@ -1439,7 +1463,12 @@ function inferExplicitRequestedCommands(goal = "") {
       source.lastIndexOf("？", index - 1)
     );
     const prefix = source.slice(sentenceStart + 1, index).trimEnd();
-    if (!prefixRequestsInlineCommandExecution(prefix)) continue;
+    if (
+      !prefixRequestsInlineCommandExecution(prefix) &&
+      !sentenceContinuesRequestedCommandList(source, sentenceStart, index)
+    ) {
+      continue;
+    }
 
     const command = normalizeProjectCommand(match[1]);
     if (
@@ -1487,7 +1516,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
   }));
   const excludedOutputPaths = inferExplicitlyExcludedOutputPaths(evidenceGoal);
   const inferredOutputPaths = filterExplicitlyExcludedOutputPaths(
-    inferExactOutputPaths(evidenceGoal),
+    inferExactOutputPaths(positiveEvidenceGoal),
     excludedOutputPaths
   );
   const exactOutputPaths = filterExplicitlyExcludedOutputPaths(
@@ -1515,7 +1544,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     requiresPerSourceChecks: requiresPerSourceChecks(evidenceGoal),
     requiredToolCalls,
     requiredGitActions,
-    requiredProjectCommands: inferExplicitRequestedCommands(evidenceGoal),
+    requiredProjectCommands: inferExplicitRequestedCommands(positiveEvidenceGoal),
     requiresWorkspaceMutation: goalRequestsWorkspaceMutation(evidenceGoal, taskProfile),
     requiresFileMutation: goalRequestsFileMutation(evidenceGoal, taskProfile),
     requiresSourceGrounding: requiresSourceGrounding(evidenceGoal),

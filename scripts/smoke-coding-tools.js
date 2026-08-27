@@ -1000,6 +1000,16 @@ try {
   );
   assert(pythonUnittestPolicy.allowed, "stdlib python unittest should be allowed without package installs");
   assert(pythonUnittestPolicy.category === "test", "stdlib python unittest should be classified as test");
+  const pythonNoBytecodeAcceptancePolicy = evaluateCommandPolicy(
+    "PYTHONDONTWRITEBYTECODE=1 python3 /tmp/devops_sensor_gateway_contract.py",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(
+    pythonNoBytecodeAcceptancePolicy.allowed &&
+      pythonNoBytecodeAcceptancePolicy.category === "test" &&
+      pythonNoBytecodeAcceptancePolicy.substantiveTest === true,
+    "a no-bytecode Python acceptance command should retain substantive test classification"
+  );
   const pythonDemoPolicy = evaluateCommandPolicy("python3 demo.py 2>&1", dockerWorkspaceNoInstallsPolicy);
   assert(pythonDemoPolicy.allowed, "workspace-local python demo script should be allowed without package installs");
   assert(pythonDemoPolicy.category === "toolchain", "workspace-local python demo script should be classified as toolchain");

@@ -68,6 +68,14 @@ const recoveryInstructionContract = deriveScsTaskContract({
   taskProfile: "devops",
 });
 
+const readOnlyVerificationContinuationContract = deriveScsTaskContract({
+  goal: [
+    "Continue the exact active DevOps task from its clean committed state. Do not mutate source, tests, or documentation and do not create another commit.",
+    "Run exactly `git status --short` once, then follow the runtime's exact required verification commands serially. These include `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v` and `PYTHONDONTWRITEBYTECODE=1 python3 /tmp/devops_sensor_gateway_contract.py`.",
+  ].join("\n"),
+  taskProfile: "devops",
+});
+
 const readOnlyReviewContract = deriveScsTaskContract({
   goal: [
     "Review focus: changed files only.",
@@ -170,6 +178,20 @@ assert.deepEqual(
     "PYTHONDONTWRITEBYTECODE=1 python3 /tmp/devops_sensor_gateway_contract.py",
   ],
   "a verification command introduced by 'followed by' was not retained"
+);
+assert.deepEqual(
+  readOnlyVerificationContinuationContract.exactOutputPaths,
+  [],
+  "a verifier command following a negated create clause became an exact output path"
+);
+assert.deepEqual(
+  readOnlyVerificationContinuationContract.requiredProjectCommands,
+  [
+    "git status --short",
+    "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v",
+    "PYTHONDONTWRITEBYTECODE=1 python3 /tmp/devops_sensor_gateway_contract.py",
+  ],
+  "an exact read-only continuation lost one or more required verification commands"
 );
 assert.equal(
   readOnlyReviewContract.requiresWorkspaceMutation,
