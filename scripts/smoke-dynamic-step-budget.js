@@ -1313,6 +1313,35 @@ try {
       completionMutationPatchRuntime.completionFreshMutationNeedsSourceRead === false,
     "a fresh canonical source read did not advance completion repair to mutation-only mode"
   );
+  const hostedSourceMutationRequest = buildConstrainedRecoveryRequest(
+    completionMutationState,
+    { goal: correctiveGoal, provider: "deepseek", taskProfile: "devops", commandCwd: workspace },
+    {},
+    8,
+    completionMutationPatchRuntime
+  );
+  assert(
+    hostedSourceMutationRequest?.mode === "fresh-source-mutation" &&
+      hostedSourceMutationRequest?.maxOutputTokens === 8192,
+    "hosted reasoning models did not retain enough constrained output budget to emit the source mutation"
+  );
+  const boundedLocalSourceMutationRequest = buildConstrainedRecoveryRequest(
+    completionMutationState,
+    {
+      goal: correctiveGoal,
+      provider: "localllm",
+      taskProfile: "devops",
+      commandCwd: workspace,
+      maxOutputTokens: 4096,
+    },
+    {},
+    8,
+    { ...completionMutationPatchRuntime, provider: "localllm", maxOutputTokens: 4096 }
+  );
+  assert(
+    boundedLocalSourceMutationRequest?.maxOutputTokens === 4096,
+    "a smaller explicit local output budget was not preserved for constrained mutation"
+  );
   const staleCompletionMarkerState = structuredClone(commandAfterMutationState);
   staleCompletionMarkerState.meta.projectVerification.mutationRevision = 17;
   staleCompletionMarkerState.meta.completionEvidenceRepair = {

@@ -367,7 +367,7 @@ assertStrict.equal(
 );
 assertStrict.equal(
   completionMutationRecoveryRequest?.maxOutputTokens,
-  4096,
+  8192,
   "fresh completion repair did not reserve enough bounded output for a substantive source patch"
 );
 const exactRecoverySource = [
