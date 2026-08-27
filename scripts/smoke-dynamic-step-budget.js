@@ -265,7 +265,7 @@ try {
         }],
       },
       failedTestDiagnostic: {
-        packetVersion: 14,
+        packetVersion: 15,
         mutationRevision: 0,
         failureSignature: "python-entrypoint-order",
         focuses: [{
@@ -654,6 +654,22 @@ try {
   try {
     const collisionPort = Number(foreignListener.address()?.port || 0);
     assert(collisionPort >= 1024, "failed to allocate the foreign-listener smoke port");
+    await fs.writeFile(
+      path.join(baselineWorkspace, "service_ctl.py"),
+      [
+        "from pathlib import Path",
+        "",
+        'GATEWAY = Path(__file__).resolve().parent / "gateway_service.py"',
+        "raise SystemExit(0)",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(baselineWorkspace, "gateway_service.py"),
+      "print('sensor gateway fixture')\n",
+      "utf8"
+    );
     const portCollisionSource = [
       "import subprocess",
       "import sys",
@@ -697,13 +713,14 @@ try {
     );
     assert(
       portCollisionPacket.content.includes("Foreign listener collision") &&
+        portCollisionPacket.paths.includes("gateway_service.py") &&
         portCollisionFocus?.path === "tests/test_service_lifecycle.py" &&
         portCollisionFocus?.ports?.[0] === collisionPort &&
         portCollisionFocus?.portOccurrences === 2 &&
         portCollisionFocus?.listenerEvidence?.[0]?.ownership === "outside-task-workspace" &&
         portCollisionFocus?.testNames?.join(",") === "test_start" &&
         portCollisionFocus?.assertionCount === 2,
-      "a foreign hard-coded port in a Git-new test was not isolated with ownership evidence"
+      "a foreign hard-coded port or its exact executable dependency was not retained for repair"
     );
     const dynamicPortSource = [
       "import socket",
@@ -6612,8 +6629,8 @@ try {
     "a same-task refresh could not rebuild a missing failed-test evidence packet"
   );
   missingRecoveryPacketState.meta.failedTestRecoveryPacket = {
-    packetVersion: 14,
-    content: "Bounded failed-test evidence packet v14.",
+    packetVersion: 15,
+    content: "Bounded failed-test evidence packet v15.",
     mutationRevision: 6,
     failureSignature: "same-failure",
   };
@@ -7471,7 +7488,7 @@ try {
         ],
       },
       failedTestDiagnostic: {
-        packetVersion: 14,
+        packetVersion: 15,
         mutationRevision: 0,
         failureSignature: "partial-derived-order",
         focuses: [

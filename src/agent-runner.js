@@ -226,7 +226,7 @@ const CONSTRAINED_SOURCE_MUTATION_OUTPUT_TOKEN_CAP = 8192;
 const MALFORMED_TOOL_RESPONSE_RETRY_OUTPUT_TOKEN_CAP = 6144;
 const MAX_COMPLETION_EVIDENCE_REPAIR_ATTEMPTS = 4;
 const FAILED_TEST_EVIDENCE_VERSION = 2;
-const FAILED_TEST_RECOVERY_PACKET_VERSION = 14;
+const FAILED_TEST_RECOVERY_PACKET_VERSION = 15;
 const PATCH_CONTEXT_REFRESH_VERSION = 1;
 const PATCH_CONTEXT_REPAIR_VERSION = 1;
 const PATCH_CONTEXT_ANCHOR_MAX_BYTES = 12_000;
@@ -6553,7 +6553,9 @@ function recoveryEvidenceDependencies(sourcePath = "", content = "") {
       for (const extension of [".js", ".mjs", ".ts", ".tsx", ".json"]) append(`${resolved}${extension}`);
     }
   }
-  for (const match of String(content || "").matchAll(/["']([A-Za-z0-9_./-]+\.(?:cfg|conf|csv|ini|json|toml|tsv|txt|ya?ml))["']/gi)) {
+  for (const match of String(content || "").matchAll(
+    /["']([A-Za-z0-9_./-]+\.(?:bash|c|cc|cfg|cjs|conf|cpp|csv|go|h|hpp|ini|java|js|json|mjs|py|rs|sh|toml|ts|tsx|tsv|txt|ya?ml))["']/gi
+  )) {
     const raw = match[1];
     append(path.posix.normalize(path.posix.join(sourceDir === "." ? "" : sourceDir, raw)));
     append(path.posix.normalize(raw));
