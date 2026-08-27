@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.257-integration.3",
+  "version": "0.20.257-integration.4",
   "type": "module",
   "description": "AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-aware intelligence, software automation, and industrial workflows.",
   "license": "Apache-2.0",
@@ -101,6 +101,7 @@
     "scripts/smoke-integration-document-worker-store.js",
     "scripts/smoke-integration-document-worker-service.js",
     "scripts/smoke-integration-document-worker-server.js",
+    "scripts/github-hosted-release-environment.js",
     "scripts/smoke-integration-document-worker-systemd-boundary.js",
     "scripts/smoke-integration-document-worker-real-compile.js",
     "scripts/smoke-integration-document-worker-cross-boundary.js",

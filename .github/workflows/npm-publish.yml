@@ -43,7 +43,9 @@ jobs:
           AGINTIFLOW_GITHUB_RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
           npm test
-          npm pack --dry-run
+          pack_manifest="${RUNNER_TEMP}/agintiflow-pack-manifest.json"
+          npm pack --dry-run --json > "${pack_manifest}"
+          node -e 'const fs=require("node:fs"); const manifest=JSON.parse(fs.readFileSync(process.argv[1], "utf8"))[0]; if (!manifest.files.some(({path}) => path === "scripts/github-hosted-release-environment.js")) throw new Error("release environment helper is missing from the npm package");' "${pack_manifest}"
 
       - name: Select npm dist-tag
         shell: bash

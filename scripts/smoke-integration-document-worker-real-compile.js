@@ -16,6 +16,14 @@ import {
   inspectIntegrationTexCompilerRuntime,
   validateIntegrationTexCompileReceipt,
 } from "../src/integration-tex-compiler.js";
+import { isPinnedGithubHostedReleaseEnvironment } from "./github-hosted-release-environment.js";
+
+if (isPinnedGithubHostedReleaseEnvironment()) {
+  process.stdout.write(
+    "integration document worker real compile skipped: pinned GitHub-hosted Linux release runner lacks the trusted bubblewrap namespace\n"
+  );
+  process.exit(0);
+}
 
 async function snapshotTree(root) {
   const snapshot = [];

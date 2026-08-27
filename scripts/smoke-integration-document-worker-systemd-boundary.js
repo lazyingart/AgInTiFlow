@@ -19,9 +19,39 @@ import {
   assertIntegrationDocumentWorkerRuntimeActivation,
   verifyIntegrationDocumentWorkerNodeRuntime,
 } from "../src/integration-document-worker-runtime.js";
+import { isPinnedGithubHostedReleaseEnvironment } from "./github-hosted-release-environment.js";
 
 const repositoryRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const exampleRoot = path.join(repositoryRoot, "examples", "document-worker");
+const pinnedReleaseEnvironment = Object.freeze({
+  AGINTIFLOW_GITHUB_HOSTED_BWRAP_NAMESPACE_RESTRICTION: "allow-sigkill",
+  AGINTIFLOW_GITHUB_RUNNER_ENVIRONMENT: "github-hosted",
+  GITHUB_ACTIONS: "true",
+  GITHUB_EVENT_NAME: "push",
+  GITHUB_REPOSITORY: "lazyingart/AgInTiFlow",
+  GITHUB_REF_TYPE: "tag",
+  GITHUB_REF_NAME: "v0.20.257-integration.4",
+  GITHUB_REF: "refs/tags/v0.20.257-integration.4",
+  GITHUB_WORKFLOW: "Publish npm package",
+  GITHUB_WORKFLOW_REF:
+    "lazyingart/AgInTiFlow/.github/workflows/npm-publish.yml@refs/tags/v0.20.257-integration.4",
+  RUNNER_OS: "Linux",
+});
+assert.equal(isPinnedGithubHostedReleaseEnvironment(pinnedReleaseEnvironment), true);
+for (const key of Object.keys(pinnedReleaseEnvironment)) {
+  assert.equal(
+    isPinnedGithubHostedReleaseEnvironment({ ...pinnedReleaseEnvironment, [key]: "" }),
+    false,
+    `release-only exemption must remain bound to ${key}`
+  );
+}
+assert.equal(
+  isPinnedGithubHostedReleaseEnvironment({
+    ...pinnedReleaseEnvironment,
+    GITHUB_WORKFLOW_REF: `${pinnedReleaseEnvironment.GITHUB_WORKFLOW_REF}/extra`,
+  }),
+  false
+);
 const unit = await fs.readFile(path.join(exampleRoot, "aginti-document-worker.service"), "utf8");
 const configText = await fs.readFile(path.join(exampleRoot, "document-worker.json"), "utf8");
 const runtimeManifest = JSON.parse(await fs.readFile(path.join(exampleRoot, "runtime-manifest.json"), "utf8"));
@@ -165,16 +195,7 @@ const fixtureBinRoot = path.join(fixtureVersionRoot, "bin");
 const fixtureNode = path.join(fixtureBinRoot, "node");
 const fixtureReleaseId = "0".repeat(64);
 const fixtureReleaseRoot = path.join(fixtureApplicationRoot, "releases", fixtureReleaseId);
-const githubHostedNamespaceRestriction =
-  process.env.AGINTIFLOW_GITHUB_HOSTED_BWRAP_NAMESPACE_RESTRICTION === "allow-sigkill" &&
-  process.env.AGINTIFLOW_GITHUB_RUNNER_ENVIRONMENT === "github-hosted" &&
-  process.env.GITHUB_ACTIONS === "true" &&
-  process.env.GITHUB_REPOSITORY === "lazyingart/AgInTiFlow" &&
-  process.env.GITHUB_REF_TYPE === "tag" &&
-  process.env.RUNNER_OS === "Linux" &&
-  /^lazyingart\/AgInTiFlow\/\.github\/workflows\/npm-publish\.yml@refs\/tags\/v/u.test(
-    String(process.env.GITHUB_WORKFLOW_REF || "")
-  );
+const githubHostedNamespaceRestriction = isPinnedGithubHostedReleaseEnvironment();
 if (!githubHostedNamespaceRestriction) {
   const bubblewrapProbe = spawnSync("/usr/bin/bwrap", [
     "--unshare-all",
