@@ -31,6 +31,11 @@ import {
   assertIntegrationAnalysisSessionService,
   createTestOnlyIntegrationAnalysisSessionService,
 } from "../src/integration-analysis-session-service.js";
+import {
+  INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES,
+  INTEGRATION_ANALYSIS_STATE_STORAGE_V2,
+  INTEGRATION_ANALYSIS_STATE_STORAGE_V3,
+} from "../src/integration-analysis-state-persistence.js";
 import { sanitizeIntegrationArtifact } from "../src/integration-artifacts.js";
 import { INTEGRATION_RPC_PATHS, canonicalJson, contractDigest } from "../src/integration-policy.js";
 import { validatePublicIntegrationEvent } from "../src/integration-events.js";
@@ -639,6 +644,247 @@ async function stateFile(root) {
   return path.join(root, "scopes", scopeEntries[0], "state.json");
 }
 
+function exactKeys(value, expected, label) {
+  assert.deepEqual(Object.keys(value).sort(), [...expected].sort(), `${label} keys changed`);
+}
+
+async function assertR67CompatibleStateFile(root) {
+  const text = await fs.readFile(await stateFile(root), "utf8");
+  const envelope = JSON.parse(text);
+  exactKeys(envelope, ["schemaVersion", "state", "digest"], "v2 envelope");
+  assert.equal(envelope.schemaVersion, INTEGRATION_ANALYSIS_STATE_STORAGE_V2);
+  assert.equal(envelope.state.schemaVersion, INTEGRATION_ANALYSIS_STATE_STORAGE_V2);
+  assert.equal(envelope.digest, contractDigest({ schemaVersion: envelope.schemaVersion, state: envelope.state }));
+  assert.equal(text, `${canonicalJson(envelope)}\n`);
+  exactKeys(
+    envelope.state,
+    ["schemaVersion", "scope", "revision", "threads", "runs", "artifacts", "mutationReceipts"],
+    "v2 state"
+  );
+  for (const run of envelope.state.runs) {
+    exactKeys(
+      run,
+      [
+        "id", "threadId", "previousRunId", "principalId", "browserSessionId", "browserSessionPolicy",
+        "status", "schedulingState", "createdAt", "startedAt", "completedAt", "cancelRequestedAt",
+        "output", "error", "authority", "inputMessageId", "events",
+      ],
+      "v2 run"
+    );
+    assert.equal(Object.prototype.hasOwnProperty.call(run, "lineagePreviousRunId"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(run, "search"), false);
+  }
+  for (const artifact of envelope.state.artifacts) {
+    exactKeys(
+      artifact,
+      [
+        "id", "title", "kind", "spec", "principalId", "browserSessionId", "browserSessionPolicy",
+        "threadId", "runId", "createdAt",
+      ],
+      "v2 artifact"
+    );
+    assert.ok(new Set(["plot", "table", "markdown"]).has(artifact.kind));
+  }
+  assert.equal(Object.prototype.hasOwnProperty.call(envelope.state, "documentCommitIntents"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(envelope.state, "documentDeletionIntents"), false);
+  return Object.freeze({ text, envelope });
+}
+
+function compatibilityArtifact(kind, runId) {
+  const id = `art_${contractDigest({ kind, runId })}`;
+  if (kind === "plot") {
+    return sanitizeIntegrationArtifact({
+      id,
+      title: "Compatibility plot",
+      kind,
+      spec: {
+        schemaVersion: "1",
+        type: "line",
+        xLabel: "x",
+        yLabel: "y",
+        labels: ["0", "1"],
+        series: [{ name: "value", data: [0, 1] }],
+      },
+    });
+  }
+  if (kind === "table") {
+    return sanitizeIntegrationArtifact({
+      id,
+      title: "Compatibility table",
+      kind,
+      spec: {
+        schemaVersion: "1",
+        columns: [{ key: "name", label: "Name" }, { key: "value", label: "Value" }],
+        rows: [{ name: "one", value: 1 }],
+      },
+    });
+  }
+  return sanitizeIntegrationArtifact({
+    id,
+    title: "Compatibility markdown",
+    kind: "markdown",
+    spec: { schemaVersion: "1", markdown: "Compatibility **markdown** artifact." },
+  });
+}
+
+function createR67CompatibilityRunner() {
+  const calls = [];
+  const runner = {
+    calls,
+    async run(scope, input, options) {
+      calls.push(Object.freeze({
+        runId: scope.runId,
+        prompt: input.prompt,
+        conversation: Object.freeze(input.conversation.map((message) => Object.freeze({ ...message }))),
+      }));
+      if (input.prompt === "hold cancellation") {
+        return new Promise((_resolve, reject) => {
+          const abort = () => reject(runnerError("ANALYSIS_CANCELLED", "cancelled"));
+          options.signal?.addEventListener("abort", abort, { once: true });
+        });
+      }
+      const kind = new Set(["plot", "table", "markdown"]).has(input.prompt) ? input.prompt : null;
+      await options.onProgress?.(Object.freeze({ phase: "planning", toolCallsCompleted: 0 }));
+      let artifact = null;
+      if (kind) {
+        await options.onProgress?.(Object.freeze({
+          phase: "executing",
+          toolCallsCompleted: 0,
+          toolName: "execute_python_analysis",
+          toolCallNumber: 1,
+          executionState: "running",
+        }));
+        artifact = compatibilityArtifact(kind, scope.runId);
+        await options.onArtifact?.(artifact);
+        await options.onProgress?.(Object.freeze({
+          phase: "executing",
+          toolCallsCompleted: 0,
+          toolName: "execute_python_analysis",
+          toolCallNumber: 1,
+          executionState: "succeeded",
+        }));
+      }
+      const result = plannerResult({
+        text: kind ? `${kind} compatibility result` : `direct compatibility result ${calls.length}`,
+        artifacts: artifact ? [artifact] : [],
+        toolCalls: artifact ? 1 : 0,
+      });
+      await options.onFinal?.(result);
+      return result;
+    },
+  };
+  return runner;
+}
+
+async function r67StatePersistenceCompatibilityRoundTrip(temporaryRoot) {
+  const root = path.join(temporaryRoot, "r67-compatible-v2-state");
+  const mode = INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2;
+  const runner = createR67CompatibilityRunner();
+  assert.throws(
+    () => createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: runner,
+      stateRoot: path.join(temporaryRoot, "r67-search-refusal"),
+      statePersistenceMode: mode,
+      searchEnabled: true,
+    }),
+    (error) => error?.code === "ANALYSIS_CONFIGURATION_INVALID"
+  );
+  assert.throws(
+    () => createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: runner,
+      stateRoot: path.join(temporaryRoot, "r67-document-refusal"),
+      statePersistenceMode: mode,
+      documentWorkerEnabled: true,
+    }),
+    (error) => error?.code === "ANALYSIS_CONFIGURATION_INVALID"
+  );
+
+  let service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: runner,
+    stateRoot: root,
+    statePersistenceMode: mode,
+  });
+  let native = null;
+  let refused = null;
+  try {
+    const capabilities = await service.getIntegrationCapabilities();
+    assert.equal(capabilities.analysisSessionAuthority.statePersistenceMode, mode);
+    assert.equal(capabilities.analysisSessionAuthority.stateStorageVersion, INTEGRATION_ANALYSIS_STATE_STORAGE_V2);
+    assert.equal(capabilities.analysisSessionAuthority.r67RollbackCompatible, true);
+
+    const created = await service.createThread({ title: "R67-compatible chat" }, context());
+    const threadId = created.thread.id;
+    await service.updateThread({ threadId, title: "R67-compatible chat updated" }, context());
+    await assertR67CompatibleStateFile(root);
+
+    const completedRunIds = [];
+    for (const prompt of ["plot", "ordinary follow-up", "table", "markdown"]) {
+      const started = await service.startRun({ threadId, input: { text: prompt } }, context());
+      completedRunIds.push(started.run.id);
+      await service.waitForIdle();
+      assert.equal((await service.getRunStatus({ runId: started.run.id }, context())).run.status, "completed");
+      await assertR67CompatibleStateFile(root);
+    }
+    const resumed = await service.resumeRun({
+      runId: completedRunIds.at(-1),
+      input: { text: "explicit resume" },
+    }, context());
+    await service.waitForIdle();
+    assert.equal((await service.getRunStatus({ runId: resumed.run.id }, context())).run.status, "completed");
+    await assertR67CompatibleStateFile(root);
+
+    const cancelThread = await service.createThread({ title: "R67-compatible cancellation" }, context());
+    const held = await service.startRun({
+      threadId: cancelThread.thread.id,
+      input: { text: "hold cancellation" },
+    }, context());
+    await waitFor(() => runner.calls.some(({ runId }) => runId === held.run.id), "compatibility cancellation start");
+    await service.cancelRun({ runId: held.run.id }, context());
+    await service.waitForIdle();
+    assert.equal((await service.getRunStatus({ runId: held.run.id }, context())).run.status, "cancelled");
+    await service.deleteThread({ threadId: cancelThread.thread.id }, context());
+    await assertR67CompatibleStateFile(root);
+
+    const expectedMessages = (await service.getThread({ threadId }, context())).thread.messages;
+    await service.close({ mode: "wait" });
+    service = createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: runner,
+      stateRoot: root,
+      statePersistenceMode: mode,
+    });
+    assert.deepEqual((await service.getThread({ threadId }, context())).thread.messages, expectedMessages);
+    await service.updateThread({ threadId, title: "R67 reopened and mutated" }, context());
+    await assertR67CompatibleStateFile(root);
+    await service.close({ mode: "wait" });
+    service = null;
+
+    native = createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: runner,
+      stateRoot: root,
+      statePersistenceMode: INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3,
+    });
+    await native.updateThread({ threadId, title: "Native v3 floor" }, context());
+    await native.close({ mode: "wait" });
+    native = null;
+    const v3Bytes = await fs.readFile(await stateFile(root), "utf8");
+    const v3Envelope = JSON.parse(v3Bytes);
+    assert.equal(v3Envelope.schemaVersion, INTEGRATION_ANALYSIS_STATE_STORAGE_V3);
+    assert.equal(v3Envelope.state.schemaVersion, INTEGRATION_ANALYSIS_STATE_STORAGE_V3);
+
+    refused = createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: runner,
+      stateRoot: root,
+      statePersistenceMode: mode,
+    });
+    await expectCode(refused.getThread({ threadId }, context()), "ANALYSIS_STATE_PERSISTENCE_INCOMPATIBLE");
+    assert.equal(await fs.readFile(await stateFile(root), "utf8"), v3Bytes, "v2 refusal changed native-v3 bytes");
+  } finally {
+    await service?.close({ mode: "abort" }).catch(() => {});
+    await native?.close({ mode: "abort" }).catch(() => {});
+    await refused?.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
 async function explicitPythonDurabilityRoundTrip(temporaryRoot) {
   const root = path.join(temporaryRoot, "explicit-python-state");
   const fixture = createExplicitPythonRunnerFixture();
@@ -879,6 +1125,7 @@ async function main() {
     await explicitPythonDurabilityRoundTrip(temporaryRoot);
     await plotThenProseContinuationRoundTrip(temporaryRoot);
     await groundedSearchDurabilityRoundTrip(temporaryRoot);
+    await r67StatePersistenceCompatibilityRoundTrip(temporaryRoot);
     await concurrentNoFileDeleteStartRoundTrip(temporaryRoot, fakeRunner);
     const service = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: fakeRunner, stateRoot: root });
     assertIntegrationAnalysisSessionService(service, { allowTestOnly: true });

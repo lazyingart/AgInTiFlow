@@ -40,6 +40,7 @@ jobs:
           # GitHub-hosted Ubuntu runners SIGKILL nested bubblewrap namespaces.
           # The smoke test still runs the real sealed-runtime proof everywhere else.
           AGINTIFLOW_GITHUB_HOSTED_BWRAP_NAMESPACE_RESTRICTION: allow-sigkill
+          AGINTIFLOW_GITHUB_RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
           npm test
           npm pack --dry-run

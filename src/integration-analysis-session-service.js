@@ -64,11 +64,17 @@ import {
   createPublicIntegrationEvent,
   validatePublicIntegrationEvent,
 } from "./integration-events.js";
+import {
+  INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES,
+  INTEGRATION_ANALYSIS_STATE_STORAGE_V2,
+  INTEGRATION_ANALYSIS_STATE_STORAGE_V3,
+  integrationAnalysisStateStorageVersion,
+} from "./integration-analysis-state-persistence.js";
 import { redactSensitiveText } from "./redaction.js";
 
 export const INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION = "aginti-integration-analysis-session-v1";
-export const INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION = "aginti-integration-analysis-state-v3";
-const LEGACY_INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION = "aginti-integration-analysis-state-v2";
+export const INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION = INTEGRATION_ANALYSIS_STATE_STORAGE_V3;
+const LEGACY_INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION = INTEGRATION_ANALYSIS_STATE_STORAGE_V2;
 export const DEFAULT_INTEGRATION_ANALYSIS_STATE_ROOT = "/var/lib/agintiflow-integration/analysis";
 
 export const INTEGRATION_ANALYSIS_SESSION_LIMITS = Object.freeze({
@@ -1753,10 +1759,44 @@ async function syncDirectory(directory) {
   }
 }
 
-function envelopeForState(state) {
+function assertR67CompatibleState(state) {
+  if (
+    state.schemaVersion !== INTEGRATION_ANALYSIS_STATE_STORAGE_V3 ||
+    state.documentCommitIntents.length !== 0 ||
+    state.documentDeletionIntents.length !== 0 ||
+    state.runs.some((run) => run.search !== undefined) ||
+    state.artifacts.some((artifact) => !new Set(["plot", "table", "markdown"]).has(artifact.kind))
+  ) {
+    fail(
+      "ANALYSIS_STATE_PERSISTENCE_INCOMPATIBLE",
+      "r67-compatible-v2 persistence cannot store Search or document state.",
+      { status: 503 }
+    );
+  }
+  return state;
+}
+
+function r67CompatibleStateForPersistence(state) {
+  assertR67CompatibleState(state);
+  return {
+    schemaVersion: INTEGRATION_ANALYSIS_STATE_STORAGE_V2,
+    scope: state.scope,
+    revision: state.revision,
+    threads: state.threads,
+    runs: state.runs.map(({ lineagePreviousRunId: _lineagePreviousRunId, ...run }) => run),
+    artifacts: state.artifacts,
+    mutationReceipts: state.mutationReceipts,
+  };
+}
+
+function envelopeForState(state, statePersistenceMode) {
+  const persistedState =
+    statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2
+      ? r67CompatibleStateForPersistence(state)
+      : state;
   const unsigned = {
-    schemaVersion: INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION,
-    state,
+    schemaVersion: integrationAnalysisStateStorageVersion(statePersistenceMode),
+    state: persistedState,
   };
   return {
     ...unsigned,
@@ -1799,7 +1839,7 @@ function migrateMissingRunLineage(state) {
   };
 }
 
-function parseStateEnvelope(text, expectedScope) {
+function parseStateEnvelope(text, expectedScope, statePersistenceMode) {
   let envelope;
   try {
     envelope = JSON.parse(text);
@@ -1817,6 +1857,16 @@ function parseStateEnvelope(text, expectedScope) {
     envelope.schemaVersion !== LEGACY_INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION
   ) {
     corrupt();
+  }
+  if (
+    statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2 &&
+    envelope.schemaVersion !== LEGACY_INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION
+  ) {
+    fail(
+      "ANALYSIS_STATE_PERSISTENCE_INCOMPATIBLE",
+      "r67-compatible-v2 persistence refuses a state root that crossed the native-v3 floor.",
+      { status: 503 }
+    );
   }
   stateDigest(envelope.digest, "analysis state envelope digest");
   const unsigned = { schemaVersion: envelope.schemaVersion, state: envelope.state };
@@ -1838,7 +1888,7 @@ function parseStateEnvelope(text, expectedScope) {
       // Never migrate those records into the workstation-worker authority.
       corrupt();
     }
-    return validateState(
+    const migrated = validateState(
       migrateMissingRunLineage({
         ...envelope.state,
         schemaVersion: INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION,
@@ -1847,6 +1897,9 @@ function parseStateEnvelope(text, expectedScope) {
       }),
       expectedScope
     );
+    return statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2
+      ? assertR67CompatibleState(migrated)
+      : migrated;
   }
   return validateState(migrateMissingRunLineage(envelope.state), expectedScope);
 }
@@ -1936,6 +1989,17 @@ function createService(options, { testOnly }) {
   const analysisRunner = options.analysisRunner;
   const plannerActivation = options.plannerActivation || null;
   const documentWorkerClient = options.documentWorkerClient;
+  const statePersistenceMode =
+    options.statePersistenceMode ??
+    (testOnly ? INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3 : null);
+  if (statePersistenceMode === null) {
+    fail("ANALYSIS_CONFIGURATION_INVALID", "A fixed state persistence mode is required.", { status: 500 });
+  }
+  try {
+    integrationAnalysisStateStorageVersion(statePersistenceMode);
+  } catch (error) {
+    fail("ANALYSIS_CONFIGURATION_INVALID", "State persistence mode is invalid.", { status: 500, cause: error });
+  }
   if (!analysisRunner || typeof analysisRunner.run !== "function") {
     fail("ANALYSIS_CONFIGURATION_INVALID", "A trusted analysis runner is required.", { status: 500 });
   }
@@ -1991,6 +2055,16 @@ function createService(options, { testOnly }) {
     : plannerActivation?.documentWorker?.ready === true && plannerActivation?.documentWorker?.creationEnabled === true;
   if (testOnly && options.documentWorkerEnabled !== undefined && typeof options.documentWorkerEnabled !== "boolean") {
     fail("ANALYSIS_CONFIGURATION_INVALID", "Test document worker capability flag is invalid.", { status: 500 });
+  }
+  if (
+    statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2 &&
+    (searchEnabled || documentCreationEnabled || documentWorkerClient !== undefined)
+  ) {
+    fail(
+      "ANALYSIS_CONFIGURATION_INVALID",
+      "r67-compatible-v2 persistence forbids Search and document worker activation.",
+      { status: 500 }
+    );
   }
   if (documentCreationEnabled && documentWorkerClient === undefined) {
     fail("ANALYSIS_CONFIGURATION_INVALID", "Enabled document creation requires its worker client.", { status: 500 });
@@ -2134,7 +2208,7 @@ function createService(options, { testOnly }) {
       await verifyRegularPrivateFile(handle, locations.stateFile);
       const text = await handle.readFile("utf8");
       if (byteLength(text) > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumStateBytes) corrupt();
-      return parseStateEnvelope(text, scope);
+      return parseStateEnvelope(text, scope, statePersistenceMode);
     } catch (error) {
       if (error instanceof IntegrationAnalysisSessionError) throw error;
       unavailable(error);
@@ -2145,12 +2219,15 @@ function createService(options, { testOnly }) {
 
   async function writeState(scope, state) {
     validateState(state, scope);
+    if (statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2) {
+      assertR67CompatibleState(state);
+    }
     const locations = stateFilePaths(stateRoot, scope);
     await ensureRoot();
     await ensurePrivateDirectory(locations.scopeDirectory, stateRoot, { testOnly });
     const existing = await lstatOrNull(locations.stateFile);
     if (existing && (!existing.isFile() || existing.isSymbolicLink() || existing.nlink !== 1)) corrupt();
-    const envelope = envelopeForState(state);
+    const envelope = envelopeForState(state, statePersistenceMode);
     let serializedState;
     try {
       serializedState = `${canonicalJson(envelope)}\n`;
@@ -3836,6 +3913,10 @@ function createService(options, { testOnly }) {
       activationReadinessProbedAtStartup: !testOnly,
       activationReadinessReprobedPerRpc: false,
       stateRootDigest: contractDigest({ stateRoot }),
+      statePersistenceMode,
+      stateStorageVersion: integrationAnalysisStateStorageVersion(statePersistenceMode),
+      r67RollbackCompatible:
+        statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2,
       oneFixedStateRoot: true,
       principalBound: true,
       browserSessionBound: true,
@@ -4572,8 +4653,8 @@ export function assertIntegrationAnalysisSessionService(value, { allowTestOnly =
 export function createIntegrationAnalysisSessionService(value = {}) {
   const options = exact(
     value,
-    ["analysisRunner", "plannerActivation", "stateRoot", "documentWorkerClient"],
-    ["analysisRunner", "plannerActivation"],
+    ["analysisRunner", "plannerActivation", "stateRoot", "statePersistenceMode", "documentWorkerClient"],
+    ["analysisRunner", "plannerActivation", "statePersistenceMode"],
     "analysis session service configuration"
   );
   return createService(options, { testOnly: false });
@@ -4582,7 +4663,7 @@ export function createIntegrationAnalysisSessionService(value = {}) {
 export function createTestOnlyIntegrationAnalysisSessionService(value = {}) {
   const options = exact(
     value,
-    ["analysisRunner", "stateRoot", "now", "activationProof", "searchEnabled", "documentWorkerClient", "documentWorkerEnabled"],
+    ["analysisRunner", "stateRoot", "statePersistenceMode", "now", "activationProof", "searchEnabled", "documentWorkerClient", "documentWorkerEnabled"],
     ["analysisRunner", "stateRoot"],
     "test analysis session service configuration"
   );

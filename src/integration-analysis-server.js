@@ -244,6 +244,7 @@ export function createIntegrationAnalysisApp(options = {}) {
   assertIntegrationAnalysisActivationStorage(options.activation, {
     stateRoot: config.stateRoot,
     idempotencyRoot: config.idempotencyRoot,
+    statePersistenceMode: config.statePersistence.mode,
   });
   const client = normalizeTrustedProxyClient(options.trustedPrincipalProxyClient, config);
   const router = createActivatedIntegrationAnalysisRouter({
@@ -471,6 +472,7 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
     sessionService = createIntegrationAnalysisSessionService({
       analysisRunner: planner,
       stateRoot: config.stateRoot,
+      statePersistenceMode: config.statePersistence.mode,
       plannerActivation,
       ...(documentWorkerClient === undefined ? {} : { documentWorkerClient }),
     });
@@ -502,6 +504,7 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
       policy,
       stateRoot: config.stateRoot,
       idempotencyRoot: config.idempotencyRoot,
+      statePersistenceMode: config.statePersistence.mode,
     });
     server = createIntegrationAnalysisServer({
       config,

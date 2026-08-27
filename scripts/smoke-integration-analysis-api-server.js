@@ -51,6 +51,10 @@ import {
   INTEGRATION_DOCUMENT_WORKER_ENDPOINT,
   INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS,
 } from "../src/integration-document-worker-client.js";
+import {
+  INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES,
+  INTEGRATION_ANALYSIS_STATE_STORAGE_V3,
+} from "../src/integration-analysis-state-persistence.js";
 import { IntegrationServiceConfigError } from "../src/integration-config.js";
 import { parseIntegrationAnalysisCliArguments } from "../src/integration-analysis-cli.js";
 import { INTEGRATION_RPC_PATH_LIST, INTEGRATION_RPC_PATHS, buildFixedIntegrationPolicy, contractDigest } from "../src/integration-policy.js";
@@ -70,6 +74,7 @@ function validConfig(overrides = {}) {
     listen: { host: INTEGRATION_ANALYSIS_LISTEN_HOST, port: INTEGRATION_ANALYSIS_LISTEN_PORT },
     stateRoot: DEFAULT_INTEGRATION_ANALYSIS_SERVICE_STATE_ROOT,
     idempotencyRoot: DEFAULT_INTEGRATION_ANALYSIS_IDEMPOTENCY_ROOT,
+    statePersistence: { mode: INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3 },
     localModel: {
       baseURL: INTEGRATION_ANALYSIS_LOCALLLM_BASE_URL,
       model: INTEGRATION_ANALYSIS_LOCALLLM_MODEL,
@@ -137,6 +142,9 @@ function sessionAuthority(activationProof, recoveryProof) {
     activationProofPinnedAtStartup: true,
     activationReadinessReprobedPerRpc: false,
     stateRootDigest: contractDigest("state-root"),
+    statePersistenceMode: INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3,
+    stateStorageVersion: INTEGRATION_ANALYSIS_STATE_STORAGE_V3,
+    r67RollbackCompatible: false,
     oneFixedStateRoot: true,
     principalBound: true,
     browserSessionBound: true,
@@ -295,6 +303,7 @@ async function rpc(pathname, body, headers) {
 
 const checkedConfig = validateIntegrationAnalysisServiceConfig(validConfig());
 assert.equal(checkedConfig.capability.enabled, true);
+assert.equal(checkedConfig.statePersistence.mode, INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3);
 assert.equal(checkedConfig.trustedPrincipalProxy.clientId, "aginti-bff");
 assert.deepEqual(integrationAnalysisListenOptions(checkedConfig), {
   host: "127.0.0.1",
@@ -302,6 +311,22 @@ assert.deepEqual(integrationAnalysisListenOptions(checkedConfig), {
   exclusive: true,
 });
 assert.equal(INTEGRATION_ANALYSIS_SERVER_ENABLED, true);
+assert.throws(
+  () => validateIntegrationAnalysisServiceConfig({ ...validConfig(), schemaVersion: "aginti-integration-analysis-service-config-v1" }),
+  (error) => error.code === "ANALYSIS_CONFIG_LOCKED"
+);
+const { statePersistence: _missingStatePersistence, ...missingStatePersistence } = validConfig();
+assert.throws(
+  () => validateIntegrationAnalysisServiceConfig(missingStatePersistence),
+  (error) => error.code === "ANALYSIS_CONFIG_INVALID"
+);
+const r67CompatibleConfig = validateIntegrationAnalysisServiceConfig(validConfig({
+  statePersistence: { mode: INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2 },
+}));
+assert.equal(
+  publicIntegrationAnalysisServiceConfig(r67CompatibleConfig).statePersistence.mode,
+  INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2
+);
 assert.throws(
   () => validateIntegrationAnalysisServiceConfig(validConfig({ listen: { host: "127.0.0.1", port: 18109 } })),
   (error) => error.code === "ANALYSIS_CONFIG_LOCKED"
@@ -357,6 +382,18 @@ const enabledSearchConfig = validateIntegrationAnalysisServiceConfig(validConfig
     maximumSources: 20,
   },
 }));
+assert.throws(
+  () => validateIntegrationAnalysisServiceConfig(validConfig({
+    statePersistence: { mode: INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2 },
+    groundedSearch: {
+      enabled: true,
+      endpoint: INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
+      timeoutMs: INTEGRATION_GROUNDED_SEARCH_TIMEOUT_MS,
+      maximumSources: 20,
+    },
+  })),
+  (error) => error.code === "ANALYSIS_CONFIG_INVALID"
+);
 assert.equal(
   publicIntegrationAnalysisServiceConfig(enabledSearchConfig).groundedSearchCredentialName,
   INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_NAME
@@ -387,6 +424,17 @@ const enabledDocumentWorkerConfig = validateIntegrationAnalysisServiceConfig(val
     timeoutMs: INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS,
   },
 }));
+assert.throws(
+  () => validateIntegrationAnalysisServiceConfig(validConfig({
+    statePersistence: { mode: INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2 },
+    documentWorker: {
+      enabled: true,
+      endpoint: INTEGRATION_DOCUMENT_WORKER_ENDPOINT,
+      timeoutMs: INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS,
+    },
+  })),
+  (error) => error.code === "ANALYSIS_CONFIG_INVALID"
+);
 assert.deepEqual(enabledDocumentWorkerConfig.documentWorker, {
   enabled: true,
   endpoint: "http://127.0.0.1:18120",
@@ -646,6 +694,7 @@ await assert.rejects(
       policy,
       stateRoot: checkedConfig.stateRoot,
       idempotencyRoot: checkedConfig.idempotencyRoot,
+      statePersistenceMode: checkedConfig.statePersistence.mode,
     }),
   (error) => error.code === "AGENT_UNAVAILABLE" && /dependency identity/iu.test(error.message),
   "production activation must reject structurally convincing but unbranded dependencies"

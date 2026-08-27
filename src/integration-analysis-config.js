@@ -22,10 +22,11 @@ import {
   INTEGRATION_DOCUMENT_WORKER_ENDPOINT,
   INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS,
 } from "./integration-document-worker-client.js";
+import { INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES } from "./integration-analysis-state-persistence.js";
 import { INTEGRATION_RPC_PATH_LIST, INTEGRATION_RPC_PATHS } from "./integration-policy.js";
 
 export const INTEGRATION_ANALYSIS_SERVICE_CONFIG_SCHEMA_VERSION =
-  "aginti-integration-analysis-service-config-v1";
+  "aginti-integration-analysis-service-config-v2";
 export const DEFAULT_INTEGRATION_ANALYSIS_CONFIG_PATH = "/etc/agintiflow/integration-analysis.json";
 export const DEFAULT_INTEGRATION_ANALYSIS_SERVICE_STATE_ROOT = "/var/lib/agintiflow-integration/analysis";
 export const INTEGRATION_ANALYSIS_LISTEN_HOST = "127.0.0.1";
@@ -55,6 +56,7 @@ const CONFIG_KEYS = Object.freeze([
   "listen",
   "stateRoot",
   "idempotencyRoot",
+  "statePersistence",
   "localModel",
   "groundedSearch",
   "documentWorker",
@@ -72,6 +74,7 @@ const MODEL_KEYS = Object.freeze([
   "maxOutputTokens",
   "modelTimeoutMs",
 ]);
+const STATE_PERSISTENCE_KEYS = Object.freeze(["mode"]);
 const SEARCH_KEYS = Object.freeze(["enabled", "endpoint", "timeoutMs", "maximumSources"]);
 const DOCUMENT_WORKER_KEYS = Object.freeze(["enabled", "endpoint", "timeoutMs"]);
 const TRUSTED_PROXY_KEYS = Object.freeze(["clientId", "label", "scopes"]);
@@ -157,6 +160,15 @@ export function validateIntegrationAnalysisServiceConfig(value) {
   fixed(listen.port, INTEGRATION_ANALYSIS_LISTEN_PORT, "listen.port");
   fixed(config.stateRoot, DEFAULT_INTEGRATION_ANALYSIS_SERVICE_STATE_ROOT, "stateRoot");
   fixed(config.idempotencyRoot, DEFAULT_INTEGRATION_ANALYSIS_IDEMPOTENCY_ROOT, "idempotencyRoot");
+  const statePersistence = exactObject(
+    config.statePersistence,
+    STATE_PERSISTENCE_KEYS,
+    STATE_PERSISTENCE_KEYS,
+    "statePersistence"
+  );
+  if (!Object.values(INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES).includes(statePersistence.mode)) {
+    fail("ANALYSIS_CONFIG_INVALID", "statePersistence.mode is invalid.");
+  }
 
   const localModel = exactObject(config.localModel, MODEL_KEYS, MODEL_KEYS, "localModel");
   fixed(localModel.baseURL, INTEGRATION_ANALYSIS_LOCALLLM_BASE_URL, "localModel.baseURL");
@@ -222,6 +234,16 @@ export function validateIntegrationAnalysisServiceConfig(value) {
     }
   }
 
+  if (
+    statePersistence.mode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2 &&
+    (groundedSearch?.enabled === true || documentWorker?.enabled === true)
+  ) {
+    fail(
+      "ANALYSIS_CONFIG_INVALID",
+      "r67-compatible-v2 state persistence forbids grounded Search and document worker activation."
+    );
+  }
+
   const proxy = exactObject(
     config.trustedPrincipalProxy,
     TRUSTED_PROXY_KEYS,
@@ -242,6 +264,7 @@ export function validateIntegrationAnalysisServiceConfig(value) {
     listen: Object.freeze({ host: INTEGRATION_ANALYSIS_LISTEN_HOST, port: INTEGRATION_ANALYSIS_LISTEN_PORT }),
     stateRoot: DEFAULT_INTEGRATION_ANALYSIS_SERVICE_STATE_ROOT,
     idempotencyRoot: DEFAULT_INTEGRATION_ANALYSIS_IDEMPOTENCY_ROOT,
+    statePersistence: Object.freeze({ mode: statePersistence.mode }),
     localModel: Object.freeze({
       baseURL: INTEGRATION_ANALYSIS_LOCALLLM_BASE_URL,
       model: INTEGRATION_ANALYSIS_LOCALLLM_MODEL,
@@ -522,6 +545,7 @@ export function publicIntegrationAnalysisServiceConfig(configInput) {
     listen: config.listen,
     stateRoot: config.stateRoot,
     idempotencyRoot: config.idempotencyRoot,
+    statePersistence: config.statePersistence,
     localModel: config.localModel,
     ...(config.groundedSearch === undefined ? {} : { groundedSearch: config.groundedSearch }),
     ...(config.documentWorker === undefined ? {} : { documentWorker: config.documentWorker }),

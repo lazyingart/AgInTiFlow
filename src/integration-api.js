@@ -52,6 +52,11 @@ import {
   writeIntegrationEventStream,
 } from "./integration-events.js";
 import { assertIntegrationAnalysisSessionService } from "./integration-analysis-session-service.js";
+import {
+  INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES,
+  INTEGRATION_ANALYSIS_STATE_STORAGE_V2,
+  INTEGRATION_ANALYSIS_STATE_STORAGE_V3,
+} from "./integration-analysis-state-persistence.js";
 import { assertFileIntegrationIdempotencyStore } from "./integration-idempotency-store.js";
 import { redactSensitiveText } from "./redaction.js";
 
@@ -78,7 +83,7 @@ const INTEGRATION_IDEMPOTENCY_RESPONSE_ENVELOPE = "aginti-agent-rpc-v1";
 export const INTEGRATION_IDEMPOTENCY_MAX_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const INTEGRATION_PUBLIC_JSON_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
 export const INTEGRATION_ANALYSIS_ROUTER_ACTIVATION_SCHEMA_VERSION =
-  "aginti-integration-analysis-router-activation-v1";
+  "aginti-integration-analysis-router-activation-v2";
 export const INTEGRATION_ANALYSIS_MUTATION_RECOVERY_SCHEMA_VERSION =
   "aginti-analysis-mutation-recovery-v1";
 const INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION = "aginti-integration-analysis-session-v1";
@@ -828,6 +833,9 @@ function assertAnalysisSessionAuthority(value, startupProof, mutationRecoveryAut
     "activationReadinessProbedAtStartup",
     "activationReadinessReprobedPerRpc",
     "stateRootDigest",
+    "statePersistenceMode",
+    "stateStorageVersion",
+    "r67RollbackCompatible",
     "oneFixedStateRoot",
     "principalBound",
     "browserSessionBound",
@@ -881,6 +889,14 @@ function assertAnalysisSessionAuthority(value, startupProof, mutationRecoveryAut
   ];
   const keys = searchExpected ? [...baseKeys, ...searchKeys] : baseKeys;
   const proof = exactDataObject(value, keys, keys, "analysis session authority", { frozen: true });
+  const r67CompatiblePersistence =
+    proof.statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2 &&
+    proof.stateStorageVersion === INTEGRATION_ANALYSIS_STATE_STORAGE_V2 &&
+    proof.r67RollbackCompatible === true;
+  const nativeV3Persistence =
+    proof.statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3 &&
+    proof.stateStorageVersion === INTEGRATION_ANALYSIS_STATE_STORAGE_V3 &&
+    proof.r67RollbackCompatible === false;
   if (
     proof.schemaVersion !== INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION ||
     proof.owner !== "aginti" ||
@@ -897,6 +913,8 @@ function assertAnalysisSessionAuthority(value, startupProof, mutationRecoveryAut
     proof.activationProofMatchesBoundCoordinator !== true ||
     proof.activationReadinessProbedAtStartup !== true ||
     proof.activationReadinessReprobedPerRpc !== false ||
+    (!r67CompatiblePersistence && !nativeV3Persistence) ||
+    (searchExpected && r67CompatiblePersistence) ||
     proof.oneFixedStateRoot !== true ||
     proof.principalBound !== true ||
     proof.browserSessionBound !== true ||
@@ -989,14 +1007,15 @@ function fixedStorageRootDigest(value, field, label) {
 export function assertIntegrationAnalysisActivationStorage(activation, value = {}) {
   const roots = exactDataObject(
     value,
-    ["stateRoot", "idempotencyRoot"],
-    ["stateRoot", "idempotencyRoot"],
+    ["stateRoot", "idempotencyRoot", "statePersistenceMode"],
+    ["stateRoot", "idempotencyRoot", "statePersistenceMode"],
     "analysis activation storage roots"
   );
   const metadata = analysisActivationMetadata(activation);
   if (
     metadata.proof.storageRootsBound !== true ||
     metadata.proof.stateRootDigest !== fixedStorageRootDigest(roots.stateRoot, "stateRoot", "analysis state root") ||
+    metadata.proof.statePersistenceMode !== roots.statePersistenceMode ||
     metadata.proof.idempotencyRootDigest !==
       fixedStorageRootDigest(roots.idempotencyRoot, "rootDir", "analysis idempotency root")
   ) {
@@ -1010,8 +1029,8 @@ export function assertIntegrationAnalysisActivationStorage(activation, value = {
 export async function createIntegrationAnalysisRouterActivation(options = {}) {
   exactDataObject(
     options,
-    ["sessionService", "idempotencyStore", "startupProof", "policy", "stateRoot", "idempotencyRoot"],
-    ["sessionService", "idempotencyStore", "startupProof", "stateRoot", "idempotencyRoot"],
+    ["sessionService", "idempotencyStore", "startupProof", "policy", "stateRoot", "idempotencyRoot", "statePersistenceMode"],
+    ["sessionService", "idempotencyStore", "startupProof", "stateRoot", "idempotencyRoot", "statePersistenceMode"],
     "analysis router activation options"
   );
   const policy = options.policy || buildFixedIntegrationPolicy();
@@ -1079,6 +1098,7 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
   );
   if (
     sessionAuthority.stateRootDigest !== stateRootDigest ||
+    sessionAuthority.statePersistenceMode !== options.statePersistenceMode ||
     idempotencyStore.rootDirDigest !== idempotencyRootDigest
   ) {
     throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis dependency storage binding is unavailable.", {
@@ -1105,6 +1125,9 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
     storageRootsBound: true,
     stateRootDigest,
     idempotencyRootDigest,
+    statePersistenceMode: sessionAuthority.statePersistenceMode,
+    stateStorageVersion: sessionAuthority.stateStorageVersion,
+    r67RollbackCompatible: sessionAuthority.r67RollbackCompatible,
   });
   const proof = Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
   const activation = Object.freeze({

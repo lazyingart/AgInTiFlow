@@ -165,32 +165,37 @@ const fixtureBinRoot = path.join(fixtureVersionRoot, "bin");
 const fixtureNode = path.join(fixtureBinRoot, "node");
 const fixtureReleaseId = "0".repeat(64);
 const fixtureReleaseRoot = path.join(fixtureApplicationRoot, "releases", fixtureReleaseId);
-const bubblewrapProbe = spawnSync("/usr/bin/bwrap", [
-  "--unshare-all",
-  "--unshare-user",
-  "--uid", "0",
-  "--gid", "0",
-  "--die-with-parent",
-  "--new-session",
-  "--clearenv",
-  "--cap-drop", "ALL",
-  "--ro-bind", "/usr", "/usr",
-  "--ro-bind", "/lib", "/lib",
-  "--ro-bind", "/lib64", "/lib64",
-  "--ro-bind", "/bin", "/bin",
-  "--proc", "/proc",
-  "--dev", "/dev",
-  "/usr/bin/true",
-], {
-  encoding: "utf8",
-  env: Object.freeze({ PATH: "/usr/bin:/bin" }),
-});
 const githubHostedNamespaceRestriction =
-  process.env.AGINTIFLOW_GITHUB_HOSTED_BWRAP_NAMESPACE_RESTRICTION === "allow-sigkill"
-  && bubblewrapProbe.status === null
-  && bubblewrapProbe.signal === "SIGKILL"
-  && bubblewrapProbe.stderr === "";
+  process.env.AGINTIFLOW_GITHUB_HOSTED_BWRAP_NAMESPACE_RESTRICTION === "allow-sigkill" &&
+  process.env.AGINTIFLOW_GITHUB_RUNNER_ENVIRONMENT === "github-hosted" &&
+  process.env.GITHUB_ACTIONS === "true" &&
+  process.env.GITHUB_REPOSITORY === "lazyingart/AgInTiFlow" &&
+  process.env.GITHUB_REF_TYPE === "tag" &&
+  process.env.RUNNER_OS === "Linux" &&
+  /^lazyingart\/AgInTiFlow\/\.github\/workflows\/npm-publish\.yml@refs\/tags\/v/u.test(
+    String(process.env.GITHUB_WORKFLOW_REF || "")
+  );
 if (!githubHostedNamespaceRestriction) {
+  const bubblewrapProbe = spawnSync("/usr/bin/bwrap", [
+    "--unshare-all",
+    "--unshare-user",
+    "--uid", "0",
+    "--gid", "0",
+    "--die-with-parent",
+    "--new-session",
+    "--clearenv",
+    "--cap-drop", "ALL",
+    "--ro-bind", "/usr", "/usr",
+    "--ro-bind", "/lib", "/lib",
+    "--ro-bind", "/lib64", "/lib64",
+    "--ro-bind", "/bin", "/bin",
+    "--proc", "/proc",
+    "--dev", "/dev",
+    "/usr/bin/true",
+  ], {
+    encoding: "utf8",
+    env: Object.freeze({ PATH: "/usr/bin:/bin" }),
+  });
   assert.equal(bubblewrapProbe.status, 0, bubblewrapProbe.stderr);
   assert.equal(bubblewrapProbe.signal, null);
   assert.equal(bubblewrapProbe.stdout, "");
@@ -208,7 +213,7 @@ try {
     fixtureBinRoot,
   ]) await fs.chmod(directory, 0o555);
   if (githubHostedNamespaceRestriction) {
-    process.stdout.write("sealed runtime tree proof skipped: GitHub-hosted runner killed the bubblewrap namespace probe\n");
+    process.stdout.write("sealed runtime tree proof skipped: pinned GitHub-hosted Linux release runner forbids nested bubblewrap\n");
   } else {
     const fixtureProof = spawnSync("/usr/bin/bwrap", [
       "--unshare-all",
