@@ -17,6 +17,7 @@ import { contractDigest, validateIntegrationRunId, validateIntegrationThreadId }
 export const INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION = "aginti-integration-analysis-coordinator-v1";
 export const INTEGRATION_ANALYSIS_TOOL_NAME = "execute_python_analysis";
 export const INTEGRATION_ANALYSIS_MAX_POLL_MS = 250;
+export const INTEGRATION_ANALYSIS_MAX_INVOCATION_ORDINAL = 1_000;
 
 const COORDINATOR_BRAND = new WeakSet();
 const TERMINAL_STATES = new Set([
@@ -116,7 +117,19 @@ function sourceDigest(source) {
   return crypto.createHash("sha256").update(source, "utf8").digest("hex");
 }
 
-function executionRequest(scope, input) {
+function invocationOrdinal(value) {
+  const ordinal = value ?? 1;
+  if (
+    !Number.isSafeInteger(ordinal) ||
+    ordinal < 1 ||
+    ordinal > INTEGRATION_ANALYSIS_MAX_INVOCATION_ORDINAL
+  ) {
+    fail("EXECUTION_REQUEST_INVALID", "Python analysis invocation ordinal is invalid.", { status: 400 });
+  }
+  return ordinal;
+}
+
+function executionRequest(scope, input, ordinal) {
   const sourceSha256 = sourceDigest(input.source);
   const identityDigest = contractDigest({
     schemaVersion: INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION,
@@ -125,6 +138,7 @@ function executionRequest(scope, input) {
     browserSessionPolicy: scope.browserSessionPolicy,
     threadId: scope.threadId,
     runId: scope.runId,
+    invocationOrdinal: ordinal,
     sourceSha256,
     stdinDigest: contractDigest(input.stdin),
     timeoutMs: input.timeoutMs,
@@ -251,6 +265,8 @@ function createCoordinator(client, { requireSystemdCredential, pollMs = 100 } = 
     callerSelectableEndpoint: false,
     callerSelectableCredential: false,
     idempotentRunScopedJobs: true,
+    distinctRunScopedInvocationOrdinals: true,
+    maximumInvocationOrdinal: INTEGRATION_ANALYSIS_MAX_INVOCATION_ORDINAL,
     validatedArtifacts: Object.freeze(["plot", "table", "markdown"]),
   });
   const attestation = Object.freeze({ ...proofUnsigned, digest: contractDigest(proofUnsigned) });
@@ -276,6 +292,7 @@ function createCoordinator(client, { requireSystemdCredential, pollMs = 100 } = 
   async function execute(scopeInput, inputValue, options = {}) {
     const scope = scopeFor(scopeInput);
     const input = analysisInput(inputValue);
+    const ordinal = invocationOrdinal(options.invocationOrdinal);
     const signal = options.signal;
     if (signal !== undefined && !(signal instanceof AbortSignal)) throw new TypeError("signal must be an AbortSignal");
     if (options.onProgress !== undefined && typeof options.onProgress !== "function") {
@@ -285,7 +302,7 @@ function createCoordinator(client, { requireSystemdCredential, pollMs = 100 } = 
       throw new TypeError("onArtifact must be a function");
     }
     if (signal?.aborted) throw abortError(signal.reason);
-    const request = executionRequest(scope, input);
+    const request = executionRequest(scope, input, ordinal);
     const reference = Object.freeze({ jobId: request.jobId, attempt: request.attempt });
     let started = false;
     let terminal = false;
