@@ -1,42 +1,16 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { registerHooks } from "node:module";
 import os from "node:os";
 import path from "node:path";
 
-const integrationApiUrl = new URL("../src/integration-api.js", import.meta.url).href;
-const testExport = "__testAssertAnalysisSessionAuthority";
-const hooks = registerHooks({
-  load(url, context, nextLoad) {
-    const loaded = nextLoad(url, context);
-    if (url !== integrationApiUrl) return loaded;
-    if (loaded.format !== "module" || loaded.source === null || loaded.source === undefined) {
-      throw new Error("integration API source was unavailable to the contract smoke");
-    }
-    const source = typeof loaded.source === "string"
-      ? loaded.source
-      : Buffer.from(loaded.source).toString("utf8");
-    return {
-      ...loaded,
-      source: `${source}\nexport { assertAnalysisSessionAuthority as ${testExport} };\n`,
-    };
-  },
-});
-
-let api;
-try {
-  api = await import(integrationApiUrl);
-} finally {
-  hooks.deregister();
-}
-
-const [{ createTestOnlyIntegrationAnalysisSessionService }, contract, policy] = await Promise.all([
+const [api, { createTestOnlyIntegrationAnalysisSessionService }, contract, policy] = await Promise.all([
+  import("../src/integration-api.js"),
   import("../src/integration-analysis-session-service.js"),
   import("../src/integration-analysis-session-contract.js"),
   import("../src/integration-policy.js"),
 ]);
 
-const assertAnalysisSessionAuthority = api[testExport];
+const { assertIntegrationAnalysisSessionAuthority } = api;
 const {
   INTEGRATION_ANALYSIS_PRIOR_ARTIFACT_AUTHORITY_KEYS,
   INTEGRATION_ANALYSIS_PRIOR_ARTIFACT_AUTHORITY_POLICY,
@@ -109,7 +83,7 @@ function assertUnavailable(callback, label) {
   );
 }
 
-assert.equal(typeof assertAnalysisSessionAuthority, "function");
+assert.equal(typeof assertIntegrationAnalysisSessionAuthority, "function");
 assert.deepEqual(INTEGRATION_ANALYSIS_PRIOR_ARTIFACT_AUTHORITY_KEYS, POLICY_KEYS);
 assert.deepEqual(INTEGRATION_ANALYSIS_PRIOR_ARTIFACT_AUTHORITY_POLICY, {
   priorArtifactContextSameThreadOnly: true,
@@ -142,7 +116,7 @@ try {
 
   const accepted = productionAuthority(producerAuthority, activationProof);
   assert.strictEqual(
-    assertAnalysisSessionAuthority(
+    assertIntegrationAnalysisSessionAuthority(
       accepted,
       activationProof,
       capabilities.mutationRecoveryAuthority
@@ -153,7 +127,7 @@ try {
 
   for (const key of POLICY_KEYS) {
     assertUnavailable(
-      () => assertAnalysisSessionAuthority(
+      () => assertIntegrationAnalysisSessionAuthority(
         changedProof(accepted, (unsigned) => { delete unsigned[key]; }),
         activationProof,
         capabilities.mutationRecoveryAuthority
@@ -161,7 +135,7 @@ try {
       `the actual API consumer accepted an authority missing ${key}`
     );
     assertUnavailable(
-      () => assertAnalysisSessionAuthority(
+      () => assertIntegrationAnalysisSessionAuthority(
         changedProof(accepted, (unsigned) => {
           unsigned[key] = !INTEGRATION_ANALYSIS_PRIOR_ARTIFACT_AUTHORITY_POLICY[key];
         }),
@@ -173,7 +147,7 @@ try {
   }
 
   assertUnavailable(
-    () => assertAnalysisSessionAuthority(
+    () => assertIntegrationAnalysisSessionAuthority(
       changedProof(accepted, (unsigned) => {
         unsigned.unexpectedPriorArtifactAuthority = true;
       }),

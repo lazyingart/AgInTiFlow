@@ -815,7 +815,12 @@ function assertAnalysisMutationRecoveryAuthority(value) {
   return assertCanonicalProofDigest(proof, "analysis mutation recovery authority");
 }
 
-function assertAnalysisSessionAuthority(value, startupProof, mutationRecoveryAuthority, { searchExpected = false } = {}) {
+export function assertIntegrationAnalysisSessionAuthority(
+  value,
+  startupProof,
+  mutationRecoveryAuthority,
+  { searchExpected = false } = {}
+) {
   const baseKeys = [
     "schemaVersion",
     "owner",
@@ -1090,7 +1095,7 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
   const mutationRecoveryAuthority = assertAnalysisMutationRecoveryAuthority(
     serviceCapabilities.mutationRecoveryAuthority
   );
-  const sessionAuthority = assertAnalysisSessionAuthority(
+  const sessionAuthority = assertIntegrationAnalysisSessionAuthority(
     serviceCapabilities.analysisSessionAuthority,
     startupProof,
     mutationRecoveryAuthority,
