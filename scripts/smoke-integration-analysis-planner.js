@@ -48,6 +48,7 @@ import {
   createTestOnlyIntegrationGroundedSearchClient,
 } from "../src/integration-grounded-search.js";
 import { canonicalJson, contractDigest } from "../src/integration-policy.js";
+import { estimateMessageTokens } from "../src/context-budget-controller.js";
 import {
   INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
   inspectIntegrationDocumentWorkerCommittedFileArtifact,
@@ -182,6 +183,59 @@ function tableResultArtifact(request, index = 0) {
   return sanitizeIntegrationArtifact({ id: artifactId(request, artifact, index), ...artifact });
 }
 
+function fibonacciPlotResultArtifact(request, index = 0) {
+  const artifact = Object.freeze({
+    title: "First 37 Fibonacci numbers modulo 997",
+    kind: "plot",
+    spec: Object.freeze({
+      schemaVersion: "1",
+      type: "line",
+      labels: Object.freeze(FIBONACCI_MOD_997_VALUES.map((_value, offset) => String(offset))),
+      series: Object.freeze([
+        Object.freeze({ name: "value", data: FIBONACCI_MOD_997_VALUES }),
+      ]),
+    }),
+  });
+  return sanitizeIntegrationArtifact({ id: artifactId(request, artifact, index), ...artifact });
+}
+
+function fibonacciTableResultArtifact(request, index = 0) {
+  const artifact = Object.freeze({
+    title: "First 37 Fibonacci numbers modulo 997",
+    kind: "table",
+    spec: Object.freeze({
+      schemaVersion: "1",
+      columns: Object.freeze([
+        Object.freeze({ key: "index", label: "Index" }),
+        Object.freeze({ key: "value", label: "Value" }),
+      ]),
+      rows: Object.freeze(
+        FIBONACCI_MOD_997_VALUES.map((value, offset) => Object.freeze({ index: offset, value }))
+      ),
+    }),
+  });
+  return sanitizeIntegrationArtifact({ id: artifactId(request, artifact, index), ...artifact });
+}
+
+function wideTableResultArtifact(request, index = 0) {
+  const columns = Object.freeze(Array.from({ length: 12 }, (_value, column) => Object.freeze({
+    key: `column${column}`,
+    label: "L".repeat(120),
+  })));
+  const artifact = Object.freeze({
+    title: `Wide bounded table ${index + 1}`,
+    kind: "table",
+    spec: Object.freeze({
+      schemaVersion: "1",
+      columns,
+      rows: Object.freeze([
+        Object.freeze(Object.fromEntries(columns.map(({ key }, column) => [key, index * 100 + column]))),
+      ]),
+    }),
+  });
+  return sanitizeIntegrationArtifact({ id: artifactId(request, artifact, index), ...artifact });
+}
+
 function markdownResultArtifact(request, index = 0) {
   const artifact = Object.freeze({
     title: "Square-number summary",
@@ -248,7 +302,10 @@ function fibonacciMarkdownArtifact(request, index = 0) {
     kind: "markdown",
     spec: Object.freeze({
       schemaVersion: "1",
-      markdown: "## Fibonacci modulo 997\n\nThe supplied table contains 37 indexed values from 0 through 36.",
+      markdown:
+        "## Fibonacci modulo 997\n\n" +
+        "The supplied table contains 37 indexed values from 0 through 36. " +
+        "Its minimum is 0, its maximum is 987, and its sum modulo 997 is 783.",
     }),
   });
   return sanitizeIntegrationArtifact({ id: artifactId(request, artifact, index), ...artifact });
@@ -284,7 +341,7 @@ function exactConversationBytes(totalBytes, { multibyte = false } = {}) {
   return messages;
 }
 
-function terminalResult(request, signal, successfulArtifacts) {
+function terminalResult(request, signal, successfulArtifacts, streams = {}) {
   const status = signal?.aborted ? "cancelled" : "succeeded";
   const artifacts = status === "succeeded"
     ? Object.freeze(successfulArtifacts ?? [resultArtifact(request)])
@@ -296,8 +353,12 @@ function terminalResult(request, signal, successfulArtifacts) {
     sourceSha256: request.sourceSha256,
     status,
     exitCode: status === "succeeded" ? 0 : null,
-    stdout: status === "succeeded" ? "answer=9\ntoken=abcdefghijklmnopqrstu\n" : "",
-    stderr: status === "succeeded" ? "diagnostic at /home/private/runtime/file.py\n" : "",
+    stdout: status === "succeeded"
+      ? String(streams.stdout ?? "answer=9\ntoken=abcdefghijklmnopqrstu\n")
+      : "",
+    stderr: status === "succeeded"
+      ? String(streams.stderr ?? "diagnostic at /home/private/runtime/file.py\n")
+      : "",
     outputTruncated: false,
     durationMs: 12,
     artifacts,
@@ -1429,6 +1490,7 @@ async function executesAndSynthesizesPlot() {
       assert.match(payload.messages[0].content, /columns:\[\{key:'number',label:'Number'\}/u);
       assert.match(payload.messages[0].content, /do not use headers or positional row arrays/u);
       assert.match(payload.messages[0].content, /emit_markdown\(title, markdownText\)/u);
+      assert.match(payload.messages[0].content, /Every numeric literal in a post-tool answer must be supported/u);
       return toolResponse([
         "values = [1, 4, 9]",
         "emit_plot('Square-number trend', {'schemaVersion':'1','type':'line','labels':['1','2','3'],'series':[{'name':'n squared','data':values}]})",
@@ -1444,6 +1506,9 @@ async function executesAndSynthesizesPlot() {
     assert.equal(feedback.artifacts[0].pointCount, 3);
     assert.equal(Object.hasOwn(feedback.artifacts[0], "spec"), false);
     assert.equal(Object.hasOwn(feedback.artifacts[0], "id"), false);
+    assert.equal(feedback.artifactEvidenceComplete, true);
+    assert.deepEqual(feedback.artifactEvidence[0].spec.series[0].data, [1, 4, 9]);
+    assert.equal(Object.hasOwn(feedback.artifactEvidence[0], "id"), false);
     assert.match(feedback.stdout, /\[REDACTED\]/u);
     assert.match(feedback.stderr, /\[REDACTED_PATH\]/u);
     assert.doesNotMatch(payload.messages.at(-1).content, /abcdefghijklmnopqrstu|\/home\/private/u);
@@ -1496,6 +1561,17 @@ async function executesAndSynthesizesPlot() {
   assert.equal(planner.attestation.priorArtifactsCountAsCurrentEvidence, false);
   assert.equal(planner.attestation.contextualTurnsRequireCurrentExecutionAuthority, true);
   assert.equal(planner.attestation.maximumToolCalls, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS);
+  assert.equal(planner.attestation.boundedCurrentRunArtifactEvidence, true);
+  assert.equal(planner.attestation.maximumCurrentRunArtifactEvidenceBytes, 6 * 1024);
+  assert.equal(planner.attestation.boundedModelToolFeedback, true);
+  assert.equal(planner.attestation.maximumModelToolFeedbackBytes, 8 * 1024);
+  assert.equal(planner.attestation.maximumModelToolFeedbackTokens, 2 * 1024);
+  assert.equal(planner.attestation.modelToolFeedbackFitsRemainingContext, true);
+  assert.equal(planner.attestation.synthesisPayloadCheckedAfterToolFeedback, true);
+  assert.equal(planner.attestation.numericFinalGroundingGate, true);
+  assert.equal(planner.attestation.numericGroundingUsesVisibleFeedbackOnly, true);
+  assert.equal(planner.attestation.maximumFinalGroundingRetries, 1);
+  assert.equal(planner.attestation.deterministicGroundingFallback, true);
   assert.equal(planner.attestation.deterministicExpressionPlots, true);
   assert.equal(
     planner.attestation.expressionPlotCompilerSchemaVersion,
@@ -2230,6 +2306,13 @@ async function conversationalFollowupUsesOnlyCurrentTurnExecutionAuthority() {
     assert.equal(Object.hasOwn(payload, "tools"), false);
     assert.equal(Object.hasOwn(payload, "tool_choice"), false);
     return textResponse("At x=0, the curve has value -1.");
+  }, {
+    worker: fakeWorker((request, signal) => terminalResult(
+      request,
+      signal,
+      [],
+      { stdout: "value=-1\n", stderr: "" }
+    )),
   });
   const explicitResult = await explicit.planner.run(
     scope("run_00000000-0000-4000-8000-000000000085"),
@@ -2271,14 +2354,23 @@ async function priorFibonacciTableCanDriveMarkdownWithoutRecomputation() {
       );
       return toolResponse(
         "emit_markdown('Existing Fibonacci table summary', " +
-        "'The supplied table has 37 rows. It starts 0, 1, 1, 2, 3 and its final indexed value is 277.')"
+        "'The supplied table has 37 rows. Its minimum is 0, its maximum is 987, and its sum modulo 997 is 783.')"
       );
+    }
+    if (step === 2) {
+      assert.equal(Object.hasOwn(payload, "tools"), false);
+      assert.equal(Object.hasOwn(payload, "tool_choice"), false);
+      const feedback = JSON.parse(payload.messages.at(-1).content);
+      assert.deepEqual(feedback.artifacts.map(({ kind }) => kind), ["markdown"]);
+      assert.equal(feedback.artifactEvidenceComplete, true);
+      assert.match(feedback.artifactEvidence[0].spec.markdown, /sum modulo 997 is 783/u);
+      return textResponse("The Markdown artifact says the checksum is 277.");
     }
     assert.equal(Object.hasOwn(payload, "tools"), false);
     assert.equal(Object.hasOwn(payload, "tool_choice"), false);
-    const feedback = JSON.parse(payload.messages.at(-1).content);
-    assert.deepEqual(feedback.artifacts.map(({ kind }) => kind), ["markdown"]);
-    return textResponse("The Markdown summary was created from the supplied prior table without recomputation.");
+    assert.equal(payload.messages.at(-1).role, "system");
+    assert.match(payload.messages.at(-1).content, /not supported by authoritative current-run evidence \(277\)/u);
+    return textResponse("MIN=0 MAX=987 CHECKSUM=783");
   }, {
     worker: fakeWorker((request, signal) => {
       workerSource = request.source;
@@ -2296,9 +2388,12 @@ async function priorFibonacciTableCanDriveMarkdownWithoutRecomputation() {
       priorArtifacts: [table],
     }
   );
-  assert.equal(step, 2);
+  assert.equal(step, 3);
   assert.equal(result.toolCalls, 1);
   assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["markdown"]);
+  assert.match(result.artifacts[0].spec.markdown, /sum modulo 997 is 783/u);
+  assert.match(result.text, /MIN=0 MAX=987 CHECKSUM=783/u);
+  assert.doesNotMatch(result.text, /checksum is 277/u);
   assert.match(workerSource, /^emit_markdown\(/u);
   assert.doesNotMatch(workerSource, /\b(?:for|while|range)\b|%|\+\s*[A-Za-z_]/u);
   assert.equal(
@@ -2625,27 +2720,46 @@ async function tableAndCombinedArtifactObligationsAreProven() {
       assert.equal(payload.tool_choice, "required");
       return toolResponse([
         "values = [0, 1]",
-        "emit_plot('Fibonacci', {'schemaVersion':'1','type':'line','labels':['0','1'],'series':[{'name':'value','data':values}]})",
-        "emit_table('Fibonacci', {'schemaVersion':'1','columns':[{'key':'index','label':'Index'},{'key':'value','label':'Value'}],'rows':[{'index':0,'value':0},{'index':1,'value':1}]})",
+        "for _ in range(2, 37): values.append((values[-1] + values[-2]) % 997)",
+        "emit_plot('Fibonacci', {'schemaVersion':'1','type':'line','labels':[str(i) for i in range(37)],'series':[{'name':'value','data':values}]})",
+        "emit_table('Fibonacci', {'schemaVersion':'1','columns':[{'key':'index','label':'Index'},{'key':'value','label':'Value'}],'rows':[{'index':i,'value':value} for i, value in enumerate(values)]})",
       ].join("\n"));
+    }
+    if (acceptanceStep === 2) {
+      assert.equal(Object.hasOwn(payload, "tools"), false);
+      assert.equal(Object.hasOwn(payload, "tool_choice"), false);
+      const feedback = JSON.parse(payload.messages.at(-1).content);
+      assert.equal(feedback.artifactEvidenceComplete, true);
+      const tableEvidence = feedback.artifactEvidence.find(({ kind }) => kind === "table");
+      assert.deepEqual(tableEvidence.spec.rows.slice(-5).map(({ value }) => value), [861, 183, 47, 230, 277]);
+      return textResponse("The final five values are 508, 876, 384, 260, and 644.");
     }
     assert.equal(Object.hasOwn(payload, "tools"), false);
     assert.equal(Object.hasOwn(payload, "tool_choice"), false);
-    return textResponse("The verified Fibonacci plot and table are ready.");
+    assert.equal(payload.messages.at(-1).role, "system");
+    assert.match(payload.messages.at(-1).content, /508, 876, 384, 260, 644/u);
+    return textResponse("FINAL_FIVE=861,183,47,230,277");
   }, {
+    localModelConfig: Object.freeze({ ...LOCAL_MODEL, contextWindowTokens: 8_192 }),
     worker: fakeWorker((request, signal) => terminalResult(
       request,
       signal,
-      [resultArtifact(request), tableResultArtifact(request, 1)]
+      [fibonacciPlotResultArtifact(request), fibonacciTableResultArtifact(request, 1)]
     )),
   });
   const acceptanceResult = await acceptance.planner.run(
     scope("run_00000000-0000-4000-8000-000000000127"),
     { prompt: liveAcceptancePrompt }
   );
-  assert.equal(acceptanceStep, 2);
+  assert.equal(acceptanceStep, 3);
   assert.equal(acceptanceResult.toolCalls, 1);
   assert.deepEqual(acceptanceResult.artifacts.map(({ kind }) => kind), ["plot", "table"]);
+  assert.deepEqual(
+    acceptanceResult.artifacts[1].spec.rows.slice(-5).map(({ value }) => value),
+    [861, 183, 47, 230, 277]
+  );
+  assert.match(acceptanceResult.text, /FINAL_FIVE=861,183,47,230,277/u);
+  assert.doesNotMatch(acceptanceResult.text, /508|876|384|260|644/u);
   acceptance.coordinator.close();
 
   for (const [index, emittedKinds, missingPattern] of [
@@ -3357,6 +3471,222 @@ async function correctsUnavailableImportsAndBrandsActivation() {
   repeated.coordinator.close();
 }
 
+async function repeatedUngroundedSynthesisUsesTruthfulFallback() {
+  let modelStep = 0;
+  const fallback = fixture(async (_client, payload) => {
+    modelStep += 1;
+    if (modelStep === 1) {
+      assert.equal(payload.tool_choice, "required");
+      return toolResponse([
+        "values = [1, 4, 9]",
+        "print('answer=9')",
+        "emit_plot('Squares', {'schemaVersion':'1','type':'line','labels':['1','2','3'],'series':[{'name':'square','data':values}]})",
+      ].join("\n"));
+    }
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    if (modelStep === 2) return textResponse("The verified answer is 1001.");
+    assert.equal(payload.messages.at(-1).role, "system");
+    assert.match(payload.messages.at(-1).content, /\(1001\)/u);
+    return textResponse("The corrected verified answer is 1002.");
+  });
+  const result = await fallback.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000152"),
+    { prompt: "Run Python to calculate the squares and show a plot." }
+  );
+  assert.equal(modelStep, 3);
+  assert.match(result.text, /Python execution completed successfully/u);
+  assert.match(result.text, /answer=9/u);
+  assert.doesNotMatch(result.text, /1001|1002/u);
+  assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["plot"]);
+  fallback.coordinator.close();
+}
+
+async function modelToolFeedbackIsHardBoundedAtMinimumContext() {
+  let modelStep = 0;
+  const bounded = fixture(async (_client, payload) => {
+    modelStep += 1;
+    if (modelStep === 1) return toolResponse("emit_table('bounded', {'schemaVersion':'1','columns':[{'key':'value','label':'Value'}],'rows':[{'value':1}]})");
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    const toolMessage = payload.messages.at(-1);
+    const feedbackBytes = Buffer.byteLength(toolMessage.content, "utf8");
+    const feedback = JSON.parse(toolMessage.content);
+    assert(feedbackBytes <= 8 * 1024, `tool feedback was ${feedbackBytes} bytes`);
+    assert.equal(feedback.artifactEvidenceComplete, false);
+    assert.equal(feedback.modelFeedbackTruncated, true);
+    assert.equal(feedback.artifacts.length, 8);
+    assert(feedback.artifacts.every(({ kind, columnCount, rowCount }) =>
+      kind === "table" && columnCount === 12 && rowCount === 1));
+    assert(Buffer.byteLength(JSON.stringify(feedback.artifactEvidence), "utf8") <= 6 * 1024);
+    assert(feedback.artifactEvidence.every(({ contentOmitted }) => contentOmitted === true));
+    assert(feedback.stdout.length > 1_024, "artifact-light stream budget was not allocated dynamically");
+    return textResponse("The verified tables are ready.");
+  }, {
+    localModelConfig: Object.freeze({ ...LOCAL_MODEL, contextWindowTokens: 8_192 }),
+    worker: fakeWorker((request, signal) => terminalResult(
+      request,
+      signal,
+      Array.from({ length: 8 }, (_value, index) => wideTableResultArtifact(request, index)),
+      { stdout: "s".repeat(16_000), stderr: "e".repeat(16_000) }
+    )),
+  });
+  const result = await bounded.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000153"),
+    { prompt: "Run Python and create a table." }
+  );
+  assert.equal(modelStep, 2);
+  assert.equal(result.artifacts.length, 8);
+  bounded.coordinator.close();
+}
+
+async function nonAsciiToolFeedbackFitsMinimumContext() {
+  let modelStep = 0;
+  const bounded = fixture(async (_client, payload) => {
+    modelStep += 1;
+    if (modelStep === 1) {
+      assert.equal(payload.tool_choice, "required");
+      return toolResponse(
+        "emit_plot('tiny', {'schemaVersion':'1','type':'line','labels':['0'],'series':[{'name':'value','data':[1]}]})"
+      );
+    }
+    assert.equal(modelStep, 2);
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    const toolMessage = payload.messages.at(-1);
+    const feedback = JSON.parse(toolMessage.content);
+    assert.equal(feedback.artifactEvidenceComplete, true);
+    assert.equal(feedback.modelFeedbackTruncated, true);
+    assert(feedback.stdout.length < 16_000);
+    assert(
+      estimateMessageTokens([toolMessage]) <= 2 * 1024,
+      "non-ASCII model tool feedback exceeded its token cap"
+    );
+    return textResponse("The verified plot is ready.");
+  }, {
+    localModelConfig: Object.freeze({
+      ...LOCAL_MODEL,
+      contextWindowTokens: 8_192,
+      maxOutputTokens: 1_024,
+    }),
+    worker: fakeWorker((request, signal) => terminalResult(
+      request,
+      signal,
+      [resultArtifact(request)],
+      { stdout: "é".repeat(16_000), stderr: "" }
+    )),
+  });
+  const result = await bounded.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000163"),
+    { prompt: "Run Python and show a plot." }
+  );
+  assert.equal(modelStep, 2);
+  assert.equal(result.text, "The verified plot is ready.");
+  assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["plot"]);
+  bounded.coordinator.close();
+}
+
+async function adversarialNumericDraftsCannotBypassGrounding() {
+  const cases = [
+    { draft: "The answer is 1e999.", correction: /1e999/u },
+    { draft: "The answer is 1.e3.", correction: /1000/u },
+    { draft: "The answer is -1.e3.", correction: /-1000/u },
+    { draft: "The answer is +1001.", correction: /1001/u },
+    { draft: "The answer is 1_001.", correction: /1001/u },
+    { draft: "The answer is 1001ms.", correction: /1001/u },
+    { draft: "The answer is １００１.", correction: /1001/u },
+    { draft: "The answer is 1,234.", correction: /1234/u, stdout: "left=1 right=234\n" },
+    { draft: "The answer is 1\u202f234.", correction: /1234/u, stdout: "left=1 right=234\n" },
+    { draft: "The answer is 1'234.", correction: /1234/u, stdout: "left=1 right=234\n" },
+    { draft: "The answer is １＇００１.", correction: /1001/u, stdout: "trusted=1\n" },
+    { draft: "The answer is １\u200b＇\u034f００１.", correction: /1001/u, stdout: "trusted=1\n" },
+    { draft: "The answer is ١\u200b\u202f٢٣٤.", correction: /1234/u, stdout: "left=1 right=234\n" },
+    { draft: "The answer is 1\u200b001.", correction: /1001/u },
+    { draft: "The answer is 1\u034f001.", correction: /1001/u },
+    { draft: "The answer is 0x3e9.", correction: /1001/u },
+    { draft: "The answer is 1001st.", correction: /1001/u },
+    { draft: "The answer is ١٠٠١.", correction: /1001/u },
+    {
+      draft: "The answer is 9007199254740993.",
+      correction: /9007199254740993/u,
+      stdout: "trusted=9007199254740992\n",
+    },
+  ];
+  for (const [index, testCase] of cases.entries()) {
+    let modelStep = 0;
+    const guarded = fixture(async (_client, payload) => {
+      modelStep += 1;
+      if (modelStep === 1) return toolResponse("print('bounded')\nemit_plot('Squares', {'schemaVersion':'1','type':'line','labels':['1','2','3'],'series':[{'name':'value','data':[1,4,9]}]})");
+      if (modelStep === 2) return textResponse(testCase.draft);
+      assert.equal(payload.messages.at(-1).role, "system");
+      assert.match(payload.messages.at(-1).content, testCase.correction);
+      return textResponse("The verified artifact is ready.");
+    }, {
+      worker: fakeWorker((request, signal) => terminalResult(
+        request,
+        signal,
+        [resultArtifact(request)],
+        { stdout: testCase.stdout || "trusted=9\n", stderr: "" }
+      )),
+    });
+    const result = await guarded.planner.run(
+      scope(`run_00000000-0000-4000-8000-${String(154 + index).padStart(12, "0")}`),
+      { prompt: "Run Python and show a plot." }
+    );
+    assert.equal(modelStep, 3, testCase.draft);
+    assert.equal(result.text, "The verified artifact is ready.");
+    guarded.coordinator.close();
+  }
+}
+
+async function longRejectedDraftIsNotRetainedForMinimumContextRetry() {
+  let modelStep = 0;
+  const compacted = fixture(async (_client, payload) => {
+    modelStep += 1;
+    if (modelStep === 1) return toolResponse("print('bounded')\nemit_plot('Squares', {'schemaVersion':'1','type':'line','labels':['1','2','3'],'series':[{'name':'value','data':[1,4,9]}]})");
+    if (modelStep === 2) return textResponse(`${"x".repeat(15_000)} 1001`);
+    assert.equal(payload.messages.at(-1).role, "system");
+    assert.doesNotMatch(JSON.stringify(payload.messages), /x{1000}/u);
+    return textResponse("The verified artifact is ready.");
+  }, {
+    localModelConfig: Object.freeze({ ...LOCAL_MODEL, contextWindowTokens: 8_192 }),
+  });
+  const result = await compacted.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000162"),
+    { prompt: "Run Python and show a plot." }
+  );
+  assert.equal(modelStep, 3);
+  assert.equal(result.text, "The verified artifact is ready.");
+  compacted.coordinator.close();
+}
+
+async function successfulExecutionFallsBackWhenEvenMinimalFeedbackCannotFit() {
+  let modelStep = 0;
+  const bounded = fixture(async (_client, payload) => {
+    modelStep += 1;
+    assert.equal(modelStep, 1);
+    assert.equal(payload.tool_choice, "required");
+    return toolResponse(
+      "print('answer=9')\n" +
+      "emit_plot('tiny', {'schemaVersion':'1','type':'line','labels':['0'],'series':[{'name':'value','data':[9]}]})\n#" +
+      "x".repeat(30_000)
+    );
+  }, {
+    localModelConfig: Object.freeze({
+      ...LOCAL_MODEL,
+      contextWindowTokens: 8_192,
+      maxOutputTokens: 1_024,
+    }),
+  });
+  const result = await bounded.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000166"),
+    { prompt: "Run Python and show a plot." }
+  );
+  assert.equal(modelStep, 1);
+  assert.equal(result.toolCalls, 1);
+  assert.match(result.text, /Python execution completed successfully/u);
+  assert.match(result.text, /answer=9/u);
+  assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["plot"]);
+  bounded.coordinator.close();
+}
+
 expressionPlotCompilerIsStrict();
 explicitPythonCompilerIsStrict();
 await deterministicExplicitPythonExecutesWithoutModel();
@@ -3396,5 +3726,11 @@ await rejectsFalseCompletionAfterFailedOrArtifactlessExecution();
 await rejectsOverridesAndMalformedTools();
 await enforcesToolLoopAndCancellation();
 await correctsUnavailableImportsAndBrandsActivation();
+await repeatedUngroundedSynthesisUsesTruthfulFallback();
+await modelToolFeedbackIsHardBoundedAtMinimumContext();
+await nonAsciiToolFeedbackFitsMinimumContext();
+await adversarialNumericDraftsCannotBypassGrounding();
+await longRejectedDraftIsNotRetainedForMinimumContextRetry();
+await successfulExecutionFallsBackWhenEvenMinimalFeedbackCannotFit();
 
 console.log("integration analysis planner smoke passed");
