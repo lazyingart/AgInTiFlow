@@ -75,8 +75,12 @@ import {
   integrationAnalysisStateStorageVersion,
 } from "./integration-analysis-state-persistence.js";
 import { redactSensitiveText } from "./redaction.js";
+import {
+  INTEGRATION_ANALYSIS_PRIOR_ARTIFACT_AUTHORITY_POLICY,
+  INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION,
+} from "./integration-analysis-session-contract.js";
 
-export const INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION = "aginti-integration-analysis-session-v1";
+export { INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION } from "./integration-analysis-session-contract.js";
 export const INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION = INTEGRATION_ANALYSIS_STATE_STORAGE_V3;
 const LEGACY_INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION = INTEGRATION_ANALYSIS_STATE_STORAGE_V2;
 export const DEFAULT_INTEGRATION_ANALYSIS_STATE_ROOT = "/var/lib/agintiflow-integration/analysis";
@@ -4137,10 +4141,7 @@ function createService(options, { testOnly }) {
       maximumConcurrentPlannerRuns: INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumConcurrentPlannerRuns,
       maximumQueuedPlannerRuns: INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumQueuedPlannerRuns,
       maximumQueuedPlannerRunsPerScope: INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumQueuedPlannerRunsPerScope,
-      priorArtifactContextSameThreadOnly: true,
-      priorArtifactContextImmediatelyPrecedingCompletedRunOnly: true,
-      priorArtifactsAuthorizeExecution: false,
-      priorArtifactsCountAsCurrentEvidence: false,
+      ...INTEGRATION_ANALYSIS_PRIOR_ARTIFACT_AUTHORITY_POLICY,
       queuedRunsPersisted: true,
       boundedDrain: true,
       durablePublicReplay: true,

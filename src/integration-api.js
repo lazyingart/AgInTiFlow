@@ -53,6 +53,11 @@ import {
 } from "./integration-events.js";
 import { assertIntegrationAnalysisSessionService } from "./integration-analysis-session-service.js";
 import {
+  INTEGRATION_ANALYSIS_PRIOR_ARTIFACT_AUTHORITY_KEYS,
+  INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION,
+  integrationAnalysisPriorArtifactAuthorityMatches,
+} from "./integration-analysis-session-contract.js";
+import {
   INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES,
   INTEGRATION_ANALYSIS_STATE_STORAGE_V2,
   INTEGRATION_ANALYSIS_STATE_STORAGE_V3,
@@ -86,7 +91,6 @@ export const INTEGRATION_ANALYSIS_ROUTER_ACTIVATION_SCHEMA_VERSION =
   "aginti-integration-analysis-router-activation-v2";
 export const INTEGRATION_ANALYSIS_MUTATION_RECOVERY_SCHEMA_VERSION =
   "aginti-analysis-mutation-recovery-v1";
-const INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION = "aginti-integration-analysis-session-v1";
 const INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION = "aginti-integration-analysis-coordinator-v1";
 const ANALYSIS_ROUTER_ACTIVATIONS = new WeakMap();
 const ABSOLUTE_PATH_PATTERN =
@@ -856,6 +860,7 @@ function assertAnalysisSessionAuthority(value, startupProof, mutationRecoveryAut
     "maximumConcurrentPlannerRuns",
     "maximumQueuedPlannerRuns",
     "maximumQueuedPlannerRunsPerScope",
+    ...INTEGRATION_ANALYSIS_PRIOR_ARTIFACT_AUTHORITY_KEYS,
     "queuedRunsPersisted",
     "boundedDrain",
     "durablePublicReplay",
@@ -935,6 +940,7 @@ function assertAnalysisSessionAuthority(value, startupProof, mutationRecoveryAut
     proof.maximumConcurrentPlannerRuns !== 2 ||
     proof.maximumQueuedPlannerRuns !== 16 ||
     proof.maximumQueuedPlannerRunsPerScope !== 4 ||
+    !integrationAnalysisPriorArtifactAuthorityMatches(proof) ||
     proof.queuedRunsPersisted !== true ||
     proof.boundedDrain !== true ||
     proof.durablePublicReplay !== true ||
