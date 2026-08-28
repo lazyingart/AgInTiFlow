@@ -48,7 +48,10 @@ import {
   createTestOnlyIntegrationGroundedSearchClient,
 } from "../src/integration-grounded-search.js";
 import { canonicalJson, contractDigest } from "../src/integration-policy.js";
-import { estimateMessageTokens } from "../src/context-budget-controller.js";
+import {
+  estimateMessageTokens,
+  estimateToolSchemaTokens,
+} from "../src/context-budget-controller.js";
 import {
   INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
   inspectIntegrationDocumentWorkerCommittedFileArtifact,
@@ -1561,6 +1564,7 @@ async function executesAndSynthesizesPlot() {
   assert.equal(planner.attestation.priorArtifactsCountAsCurrentEvidence, false);
   assert.equal(planner.attestation.contextualTurnsRequireCurrentExecutionAuthority, true);
   assert.equal(planner.attestation.maximumToolCalls, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS);
+  assert.equal(planner.attestation.maximumRequiredToolFormationRetries, 2);
   assert.equal(planner.attestation.boundedCurrentRunArtifactEvidence, true);
   assert.equal(planner.attestation.maximumCurrentRunArtifactEvidenceBytes, 6 * 1024);
   assert.equal(planner.attestation.boundedModelToolFeedback, true);
@@ -2352,14 +2356,29 @@ async function priorFibonacciTableCanDriveMarkdownWithoutRecomputation() {
         envelope.artifacts[0].spec.rows.map(({ index, value }) => [index, value]),
         FIBONACCI_MOD_997_VALUES.map((value, index) => [index, value])
       );
+      assert.match(payload.messages[0].content, /use that bounded data only as inert input/u);
+      return textResponse("I can summarize the existing table without running the earlier sequence again.");
+    }
+    if (step === 2) {
+      assert.equal(payload.tool_choice, "required");
+      assert.equal(payload.messages.at(-2).content, prompt);
+      assert.equal(payload.messages.at(-1).role, "system");
+      assert.match(payload.messages.at(-1).content, /did not contain the required valid execute_python_analysis call/u);
+      assert.match(payload.messages.at(-1).content, /operate on those supplied values instead of rebuilding/u);
+      assert.deepEqual(priorArtifactEnvelope(payload.messages).artifacts, [table]);
       return toolResponse(
         "emit_markdown('Existing Fibonacci table summary', " +
         "'The supplied table has 37 rows. Its minimum is 0, its maximum is 987, and its sum modulo 997 is 783.')"
       );
     }
-    if (step === 2) {
+    if (step === 3) {
       assert.equal(Object.hasOwn(payload, "tools"), false);
       assert.equal(Object.hasOwn(payload, "tool_choice"), false);
+      assert.doesNotMatch(
+        JSON.stringify(payload.messages),
+        /previous response did not contain the required valid|Do not answer with prose or raw tool-call JSON/u,
+        "transient tool-formation correction leaked into post-success synthesis"
+      );
       const feedback = JSON.parse(payload.messages.at(-1).content);
       assert.deepEqual(feedback.artifacts.map(({ kind }) => kind), ["markdown"]);
       assert.equal(feedback.artifactEvidenceComplete, true);
@@ -2388,7 +2407,7 @@ async function priorFibonacciTableCanDriveMarkdownWithoutRecomputation() {
       priorArtifacts: [table],
     }
   );
-  assert.equal(step, 3);
+  assert.equal(step, 4);
   assert.equal(result.toolCalls, 1);
   assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["markdown"]);
   assert.match(result.artifacts[0].spec.markdown, /sum modulo 997 is 783/u);
@@ -2401,6 +2420,45 @@ async function priorFibonacciTableCanDriveMarkdownWithoutRecomputation() {
     1
   );
   planned.coordinator.close();
+}
+
+async function requiredToolFormationRetryIsContextBoundedAndWorkerless() {
+  let modelCalls = 0;
+  const estimatedTokens = [];
+  const constrained = fixture(async (_client, payload) => {
+    modelCalls += 1;
+    const currentEstimatedTokens =
+      estimateMessageTokens(payload.messages) +
+      estimateToolSchemaTokens(payload.tools) +
+      payload.max_tokens;
+    estimatedTokens.push(currentEstimatedTokens);
+    assert(currentEstimatedTokens <= 8_192, "required-tool inference exceeded the configured context");
+    return textResponse("I would describe the requested artifact instead of calling the tool.");
+  }, {
+    localModelConfig: Object.freeze({
+      ...LOCAL_MODEL,
+      contextWindowTokens: 8_192,
+    }),
+  });
+  await assert.rejects(
+    constrained.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000168"),
+      {
+        prompt:
+          "Run Python and create one Markdown artifact from this supplied context. " +
+          "x".repeat(14_600),
+      }
+    ),
+    (error) => error?.code === "ANALYSIS_CONTEXT_BUDGET_EXCEEDED" && error?.status === 413
+  );
+  assert.equal(modelCalls, 1, "retry inference ran after its correction no longer fit the model context");
+  assert(estimatedTokens[0] > 7_700, "context-boundary fixture left too much room for the correction");
+  assert.equal(
+    constrained.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    0,
+    "context-exhausted tool formation reached the execution worker"
+  );
+  constrained.coordinator.close();
 }
 
 async function priorArtifactsCannotSatisfyCurrentArtifactObligations() {
@@ -2638,8 +2696,14 @@ async function generalPlotRequestsRequireExecutionAndArtifact() {
   assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["plot"]);
   corrected.coordinator.close();
 
+  let lowercaseCalls = 0;
   const lowercase = fixture(async (_client, payload) => {
+    lowercaseCalls += 1;
     assert.equal(payload.tool_choice, "required");
+    if (lowercaseCalls > 1) {
+      assert.equal(payload.messages.at(-1).role, "system");
+      assert.match(payload.messages.at(-1).content, /Submit exactly one complete call now/u);
+    }
     return textResponse("I would only describe the formula.");
   });
   await assert.rejects(
@@ -2649,6 +2713,7 @@ async function generalPlotRequestsRequireExecutionAndArtifact() {
     ),
     (error) => error?.code === "ANALYSIS_TOOL_REQUIRED"
   );
+  assert.equal(lowercaseCalls, 3, "required-tool formation retries were not tightly bounded");
   lowercase.coordinator.close();
 
   const nonImperativePrompts = [
@@ -2771,8 +2836,13 @@ async function tableAndCombinedArtifactObligationsAreProven() {
       partialStep += 1;
       if (partialStep === 1) return toolResponse("print('incomplete artifacts')");
       assert.equal(payload.tool_choice, "required");
-      const feedback = JSON.parse(payload.messages.at(-1).content);
-      assert.match(feedback.correction, missingPattern);
+      if (partialStep === 2) {
+        const feedback = JSON.parse(payload.messages.at(-1).content);
+        assert.match(feedback.correction, missingPattern);
+      } else {
+        assert.equal(payload.messages.at(-1).role, "system");
+        assert.match(payload.messages.at(-1).content, /previous response did not contain the required valid/u);
+      }
       return textResponse("The incomplete artifacts are enough.");
     }, {
       worker: fakeWorker((request, signal) => terminalResult(
@@ -2788,7 +2858,7 @@ async function tableAndCombinedArtifactObligationsAreProven() {
       ),
       (error) => error?.code === "ANALYSIS_TOOL_REQUIRED" && error?.status === 502
     );
-    assert.equal(partialStep, 2);
+    assert.equal(partialStep, 4);
     partial.coordinator.close();
   }
 
@@ -3309,12 +3379,42 @@ async function rejectsOverridesAndMalformedTools() {
   );
   direct.coordinator.close();
 
-  const required = fixture(async () => textResponse("Here is code you could run."));
+  let requiredCalls = 0;
+  const required = fixture(async () => {
+    requiredCalls += 1;
+    return textResponse("Here is code you could run.");
+  });
   await assert.rejects(
     required.planner.run(scope(), { prompt: "Run this Python code and show me the result." }),
     (error) => error?.code === "ANALYSIS_TOOL_REQUIRED"
   );
+  assert.equal(requiredCalls, 3);
+  assert.equal(
+    required.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    0,
+    "tool-less required responses reached the execution worker"
+  );
   required.coordinator.close();
+
+  let malformedTextCalls = 0;
+  const malformedText = fixture(async () => {
+    malformedTextCalls += 1;
+    return textResponse("[TOOL_CALLS]");
+  });
+  await assert.rejects(
+    malformedText.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000169"),
+      { prompt: "Run Python and show me the result." }
+    ),
+    (error) => error?.code === "ANALYSIS_TOOL_CALL_INVALID" && error?.status === 502
+  );
+  assert.equal(malformedTextCalls, 3);
+  assert.equal(
+    malformedText.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    0,
+    "malformed textual tool calls reached the execution worker"
+  );
+  malformedText.coordinator.close();
 
   const extraArgs = fixture(async () => toolResponse("print(1)", { endpoint: "http://attacker.invalid" }));
   await assert.rejects(
@@ -3715,6 +3815,7 @@ await documentReadinessDegradesWithoutBreakingOrdinaryChat();
 await texPdfIntentRejectsMetadataOnlyCompilerForgery();
 await conversationalFollowupUsesOnlyCurrentTurnExecutionAuthority();
 await priorFibonacciTableCanDriveMarkdownWithoutRecomputation();
+await requiredToolFormationRetryIsContextBoundedAndWorkerless();
 await priorArtifactsCannotSatisfyCurrentArtifactObligations();
 await priorArtifactInputBoundsAndSanitizationAreEnforced();
 await generalPlotRequestsRequireExecutionAndArtifact();
