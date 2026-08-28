@@ -871,6 +871,46 @@ try {
     "a session-generated helper circularly grounded a path claim"
   );
 
+  fs.writeFileSync(
+    reportPath,
+    "Verified generated helper: `notes/generated-evidence.md`.\n",
+    "utf8"
+  );
+  const generatedHelperPathIsDirectlyObserved = evaluateScsSemanticContract(contract, {
+    commandCwd: groundingRoot,
+    events: [
+      {
+        type: "tool.completed",
+        data: {
+          ok: true,
+          toolName: "write_file",
+          path: "notes/generated-evidence.md",
+          change: { path: "notes/generated-evidence.md" },
+        },
+      },
+      {
+        type: "file.changed",
+        data: { path: "notes/generated-evidence.md", commandCwd: groundingRoot },
+      },
+      {
+        type: "tool.completed",
+        data: {
+          ok: true,
+          toolName: "read_file",
+          path: "notes/generated-evidence.md",
+          content: helperContent,
+          commandEvidence: extractMarkdownCommandEvidence(helperContent, "notes/generated-evidence.md"),
+          pathEvidence: extractMarkdownPathEvidence(helperContent, "notes/generated-evidence.md"),
+        },
+      },
+    ],
+  });
+  assert.equal(
+    generatedHelperPathIsDirectlyObserved.ok,
+    true,
+    "a successful direct read did not ground the generated file's own path"
+  );
+
   const shellSourceContent = [
     "Verified interface:",
     "```bash",

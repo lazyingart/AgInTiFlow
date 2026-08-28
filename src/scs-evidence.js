@@ -2592,11 +2592,11 @@ function sourceEvidencePaths({ events = [], state = {}, contract = {}, commandCw
     commandCwd,
   });
   const paths = new Map();
-  const addPath = (value = "", source = "") => {
+  const addPath = (value = "", source = "", { allowExcludedDirect = false } = {}) => {
     const cleaned = cleanPathToken(value);
     if (!cleaned) return;
     const keys = pathComparisonKeys(cleaned, commandCwd);
-    if (keys.some((key) => excluded.has(key))) return;
+    if (!allowExcludedDirect && keys.some((key) => excluded.has(key))) return;
     const canonical = keys[keys.length - 1] || cleaned;
     if (!paths.has(canonical)) paths.set(canonical, { path: cleaned, source: String(source || "") });
     for (const key of keys) {
@@ -2641,8 +2641,12 @@ function sourceEvidencePaths({ events = [], state = {}, contract = {}, commandCw
     const payloadPath = payload.path || payload.args?.path || "";
     const payloadPathKeys = pathComparisonKeys(payloadPath, commandCwd);
     const sourceIsExcluded = payloadPathKeys.some((key) => excluded.has(key));
-    if (toolName === "read_file" && sourceIsExcluded) return;
-    if (["read_file", "list_files", "search_files", "inspect_project"].includes(toolName)) {
+    if (toolName === "read_file") {
+      // Reading a generated or previously mutated file proves that exact path
+      // exists. Its contents still cannot ground additional claims.
+      addPath(payloadPath, `${toolName} result`, { allowExcludedDirect: true });
+      if (sourceIsExcluded) return;
+    } else if (["list_files", "search_files", "inspect_project"].includes(toolName)) {
       addPath(payloadPath, `${toolName} result`);
     }
     if (toolName === "read_file") {
