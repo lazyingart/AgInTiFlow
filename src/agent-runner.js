@@ -38,6 +38,7 @@ import { normalizeWrapperName, runAgentWrapper, wrapperStatusText } from "./tool
 import {
   classifyCommand,
   evaluateCommandPolicy,
+  externalValidatorCommandContract,
   normalizeCommandForPolicy,
 } from "./command-policy.js";
 import {
@@ -59,6 +60,7 @@ import {
 import { normalizeCanvasPayload, persistCanvasPayloadFile } from "./artifact-tunnel.js";
 import { getTaskProfile } from "./task-profiles.js";
 import { validateWordDocumentArtifacts } from "./document-artifact-quality.js";
+import { validateSpreadsheetArtifacts } from "./spreadsheet-artifact-quality.js";
 import { generateImage, listAuxiliarySkills } from "./auxiliary-tools.js";
 import {
   engineeringGuidanceForTask,
@@ -6756,11 +6758,13 @@ export function completionExternalBlockerCanClose({
   projectTestBlock = null,
   sourceQuality = { ok: true },
   documentQuality = null,
+  spreadsheetQuality = null,
 } = {}) {
   return Boolean(
     !projectTestBlock &&
       sourceQuality?.ok !== false &&
       (!documentQuality || documentQuality.ok !== false) &&
+      (!spreadsheetQuality || spreadsheetQuality.ok !== false) &&
       finishResultClaimsBlocker(candidateResult) &&
       hasScsBlockerEvidence(evidenceLedger)
   );
@@ -11613,6 +11617,25 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     runtimeConfig.testFailureRequiredSymbolRepair = requiredSymbolRepair;
   }
   const verification = state.meta?.projectVerification || {};
+  const externalValidatorContracts = effectiveRequiredProjectCommands(
+    state,
+    verification,
+    config
+  )
+    .map((command) =>
+      externalValidatorCommandContract(command, {
+        commandCwd: config.commandCwd || state.commandCwd || process.cwd(),
+      })
+    )
+    .filter(Boolean);
+  if (externalValidatorContracts.length) {
+    runtimeConfig.opaqueExternalValidatorPaths = [
+      ...new Set(externalValidatorContracts.map((item) => item.path)),
+    ];
+    runtimeConfig.opaqueExternalValidatorCommands = [
+      ...new Set(externalValidatorContracts.map((item) => item.command)),
+    ];
+  }
   const mutationRevision = Number(verification.mutationRevision || 0);
   const privateMutationRevision = verificationPrivateMutationRevision(verification);
   const implementationOpen = currentTurnImplementationOpen(state);
@@ -16544,6 +16567,8 @@ export function completionRepairMutationRequirement({
   contract = {},
   evaluation = {},
   sourceQuality = {},
+  documentQuality = null,
+  spreadsheetQuality = null,
   projectMutationRevision = 0,
 } = {}) {
   const sourceQualityRepairRequired = Boolean(
@@ -16559,15 +16584,28 @@ export function completionRepairMutationRequirement({
       (Array.isArray(evaluation?.missing) ? evaluation.missing : [])
         .some((item) => item?.category === "file")
   );
+  const artifactQualityRepairRequired = [documentQuality, spreadsheetQuality]
+    .some((quality) => Boolean(
+      quality?.checked === true &&
+      quality?.ok === false &&
+      Array.isArray(quality?.defects) &&
+      quality.defects.length > 0
+    ));
   const revision = Math.max(0, Number(projectMutationRevision || 0));
   return {
-    requiresFreshFileMutation: sourceQualityRepairRequired || missingFileEvidence,
+    requiresFreshFileMutation:
+      sourceQualityRepairRequired ||
+      missingFileEvidence ||
+      artifactQualityRepairRequired,
     requiredFreshMutationRevision: Math.max(
       0,
       Number(contract?.requiredFreshMutationRevision || 0),
-      sourceQualityRepairRequired ? revision + 1 : 0
+      sourceQualityRepairRequired || artifactQualityRepairRequired
+        ? revision + 1
+        : 0
     ),
     sourceQualityRepairRequired,
+    artifactQualityRepairRequired,
   };
 }
 
@@ -16686,6 +16724,68 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
       };
     }
   }
+  let spreadsheetQuality = null;
+  try {
+    spreadsheetQuality = await validateSpreadsheetArtifacts({
+      commandCwd: config.commandCwd || state.commandCwd || process.cwd(),
+      candidateResult,
+      goal: completionContractGoal(config, state),
+      exactOutputPaths: [
+        ...(assessment.contract?.exactOutputPaths || []),
+        ...exactOutputPathsForState(state),
+      ],
+    });
+  } catch (error) {
+    spreadsheetQuality = {
+      ok: false,
+      checked: true,
+      artifacts: [],
+      defects: [{
+        code: "spreadsheet-quality-check-failed",
+        message: String(error?.message || error),
+      }],
+      reason: `Independent spreadsheet-quality validation failed: ${String(error?.message || error)}`,
+    };
+  }
+  if (spreadsheetQuality.checked) {
+    state.meta = state.meta || {};
+    state.meta.spreadsheetArtifactQuality = spreadsheetQuality;
+    const qualityEvent = {
+      step,
+      mode,
+      ok: spreadsheetQuality.ok,
+      reason: spreadsheetQuality.reason,
+      artifacts: spreadsheetQuality.artifacts || [],
+      defects: spreadsheetQuality.defects || [],
+    };
+    await store.appendEvent("spreadsheet.quality_assessed", qualityEvent);
+    observers.event("spreadsheet.quality_assessed", qualityEvent);
+    if (!spreadsheetQuality.ok) {
+      const priorSemanticReason = assessment.semantic?.checked && !assessment.semantic?.ok
+        ? String(assessment.semantic.reason || "")
+        : "";
+      const qualityReason = String(
+        spreadsheetQuality.reason ||
+          "The spreadsheet artifact failed independent structure checks."
+      );
+      assessment = {
+        ...assessment,
+        ok: false,
+        spreadsheetQuality,
+        evaluation: {
+          ...assessment.evaluation,
+          ok: false,
+          reason: qualityReason,
+        },
+        semantic: {
+          ...assessment.semantic,
+          checked: true,
+          ok: false,
+          reason: [priorSemanticReason, qualityReason].filter(Boolean).join(" "),
+        },
+      };
+    }
+  }
   const sourceQuality = await validateMutatedPythonSourceQuality(config, state);
   state.meta = state.meta || {};
   state.meta.sourceCodeQuality = {
@@ -16735,6 +16835,7 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     projectTestBlock,
     sourceQuality,
     documentQuality,
+    spreadsheetQuality,
   });
   if (assessment.ok && !claimsIncompleteWork) return { action: "accept", assessment };
   if (claimsIncompleteWork) {
@@ -16763,6 +16864,8 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     contract: assessment.contract,
     evaluation: assessment.evaluation,
     sourceQuality,
+    documentQuality,
+    spreadsheetQuality,
     projectMutationRevision: verificationDeficits.revision,
   });
   const baseDetail = {
@@ -16781,6 +16884,8 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     requiresFreshFileMutation: freshMutationRequirement.requiresFreshFileMutation,
     requiredFreshMutationRevision: freshMutationRequirement.requiredFreshMutationRevision,
     sourceQualityRepairRequired: freshMutationRequirement.sourceQualityRepairRequired,
+    artifactQualityRepairRequired:
+      freshMutationRequirement.artifactQualityRepairRequired,
     missingToolCalls: assessment.evaluation.missingToolCalls || [],
     pendingProjectCommands: verificationDeficits.pendingCommands,
     pendingProjectTests: verificationDeficits.testsCurrent ? [] : verificationDeficits.discoveredTests,
@@ -16799,6 +16904,13 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
           ok: Boolean(documentQuality.ok),
           reason: documentQuality.reason || "",
           defects: documentQuality.defects || [],
+        }
+      : null,
+    spreadsheetQuality: spreadsheetQuality?.checked
+      ? {
+          ok: Boolean(spreadsheetQuality.ok),
+          reason: spreadsheetQuality.reason || "",
+          defects: spreadsheetQuality.defects || [],
         }
       : null,
     sourceQuality: sourceQuality.checked

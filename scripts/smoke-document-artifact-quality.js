@@ -8,6 +8,43 @@ import {
   evaluatePdfTextBounds,
   extractSupersededLiterals,
 } from "../src/document-artifact-quality.js";
+import { evaluateSpreadsheetStructure } from "../src/spreadsheet-artifact-quality.js";
+
+const workbookWithPlaceholder = evaluateSpreadsheetStructure({
+  sheets: [
+    { name: "Sheet", state: "visible", cellCount: 0, formulaCount: 0 },
+    { name: "Raw Inventory", state: "visible", cellCount: 30, formulaCount: 0 },
+    { name: "Reorder Plan", state: "visible", cellCount: 20, formulaCount: 8 },
+  ],
+  chartCount: 1,
+  externalLinkCount: 0,
+  hasMacros: false,
+});
+assert.equal(workbookWithPlaceholder.ok, false, "an empty default workbook sheet was accepted");
+assert.equal(workbookWithPlaceholder.defects[0]?.code, "unused-default-worksheet");
+
+const emptyWorkbook = evaluateSpreadsheetStructure({
+  sheets: [{ name: "Sheet", state: "visible", cellCount: 0, formulaCount: 0 }],
+  chartCount: 0,
+  externalLinkCount: 0,
+  hasMacros: false,
+});
+assert.equal(emptyWorkbook.ok, false, "a completely empty workbook was accepted");
+assert.equal(emptyWorkbook.defects[0]?.code, "workbook-has-no-content");
+
+const purposefulWorkbook = evaluateSpreadsheetStructure({
+  sheets: [
+    { name: "Raw Inventory", state: "visible", cellCount: 30, formulaCount: 0 },
+    { name: "Reorder Plan", state: "visible", cellCount: 20, formulaCount: 8 },
+    { name: "Dashboard", state: "visible", cellCount: 12, formulaCount: 3 },
+  ],
+  chartCount: 1,
+  externalLinkCount: 0,
+  hasMacros: false,
+});
+assert.equal(purposefulWorkbook.ok, true, "a workbook with only purposeful sheets was rejected");
+assert.equal(purposefulWorkbook.formulaCount, 11);
+assert.equal(purposefulWorkbook.chartCount, 1);
 
 const source = [
   "Initial plan: the demonstration date was September 12.",

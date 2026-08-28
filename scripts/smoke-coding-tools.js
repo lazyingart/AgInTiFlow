@@ -25,7 +25,11 @@ import { createToolContract, resolveDispatchableToolCallBatch } from "../src/too
 import { formatBehaviorContractForPrompt } from "../src/behavior-contract.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { readCodebaseMap } from "../src/codebase-map.js";
-import { classifyCommand, evaluateCommandPolicy } from "../src/command-policy.js";
+import {
+  classifyCommand,
+  evaluateCommandPolicy,
+  externalValidatorCommandContract,
+} from "../src/command-policy.js";
 import { checkToolUse } from "../src/guardrails.js";
 import { shouldReviewToolResult } from "../src/scs-controller.js";
 import {
@@ -96,6 +100,52 @@ async function runMock(goal, sessionId, { resume = false } = {}) {
 }
 
 try {
+  const externalValidatorPath = path.join(
+    tempRoot,
+    "private-acceptance",
+    "spreadsheet_contract.py"
+  );
+  const externalValidatorCommand = `python3 ${externalValidatorPath}`;
+  assert(
+    externalValidatorCommandContract(externalValidatorCommand, {
+      commandCwd: workspace,
+    })?.path === externalValidatorPath,
+    "an exact external validator command did not produce an opaque contract"
+  );
+  assert(
+    externalValidatorCommandContract("python3 tests/local_contract.py", {
+      commandCwd: workspace,
+    }) === null,
+    "an in-workspace project test was incorrectly treated as an opaque external validator"
+  );
+  const opaqueValidatorPolicy = {
+    commandCwd: workspace,
+    allowShellTool: true,
+    sandboxMode: "host",
+    packageInstallPolicy: "block",
+    opaqueExternalValidatorPaths: [externalValidatorPath],
+    opaqueExternalValidatorCommands: [externalValidatorCommand],
+  };
+  assert(
+    evaluateCommandPolicy(externalValidatorCommand, opaqueValidatorPolicy).allowed === true,
+    "the exact declared external validator execution was blocked"
+  );
+  for (const inspectionCommand of [
+    `cat ${externalValidatorPath}`,
+    `sed -n '1,160p' ${externalValidatorPath}`,
+    `cat ${path.relative(workspace, externalValidatorPath)}`,
+    `V=${externalValidatorPath}; grep -n expected "$V"`,
+    `echo validator; cat ${externalValidatorPath}; git status --short`,
+  ]) {
+    const decision = evaluateCommandPolicy(inspectionCommand, opaqueValidatorPolicy);
+    assert(
+      decision.allowed === false &&
+        decision.category === "opaque-external-validator-inspection" &&
+        decision.recoverable === true,
+      `external validator source inspection escaped the opaque contract: ${inspectionCommand}`
+    );
+  }
+
   const genericArtifactBlock = await genericArtifactFilenameBlock(
     "write_file",
     { path: "report.md", content: "summary" },

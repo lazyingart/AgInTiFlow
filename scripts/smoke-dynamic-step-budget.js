@@ -5539,6 +5539,43 @@ try {
   );
   const generatedDeckValidator =
     `python3 ${generatedDeckValidatorPath} --root .`;
+  const opaqueExternalValidatorState = {
+    goal: [
+      "Create the requested workbook from the local inputs.",
+      `Run exactly: \`${generatedDeckValidator}\``,
+      "Do not edit that external validator.",
+    ].join("\n"),
+    meta: {
+      taskProfile: "data",
+      goalContract: {
+        revision: 1,
+        currentRequest: "Create the requested workbook and run the exact validator.",
+      },
+      projectVerification: {
+        mutationRevision: 0,
+        mutationHistory: [],
+        commandRuns: [],
+        testRuns: [],
+      },
+      toolLoop: { recent: [] },
+    },
+  };
+  const opaqueExternalValidatorRuntime = nextStepRuntimeConfig(
+    {
+      provider: "deepseek",
+      taskProfile: "data",
+      commandCwd: workspace,
+      goal: opaqueExternalValidatorState.goal,
+    },
+    opaqueExternalValidatorState
+  );
+  assert(
+    JSON.stringify(opaqueExternalValidatorRuntime.opaqueExternalValidatorPaths) ===
+      JSON.stringify([generatedDeckValidatorPath]) &&
+      JSON.stringify(opaqueExternalValidatorRuntime.opaqueExternalValidatorCommands) ===
+        JSON.stringify([generatedDeckValidator]),
+    "an exact external validator was not retained as an opaque execute-only contract before its first run"
+  );
   await fs.writeFile(
     path.join(workspace, "build_deck.py"),
     "print('build canonical deck')\n",

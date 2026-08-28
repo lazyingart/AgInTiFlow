@@ -732,6 +732,115 @@ function structuredValidationCommand(command = "") {
   return null;
 }
 
+const EXTERNAL_VALIDATOR_BASENAME_PATTERN =
+  /(?:^|[._-])(?:acceptance|audit|check|contract|spec|test|validat(?:e|ion)?|validator|verif(?:y|ication))(?:[._-]|$)/i;
+
+function commandScriptOperand(tokens = []) {
+  const executable = path.basename(String(tokens[0] || "")).toLowerCase();
+  if (/^python(?:3(?:\.\d+)*)?$/.test(executable)) {
+    let index = 1;
+    while (index < tokens.length && String(tokens[index] || "").startsWith("-")) {
+      const option = String(tokens[index] || "");
+      if (/^-(?:B|E|I|O|OO|P|q|s|S|u|v|x)$/.test(option)) {
+        index += 1;
+        continue;
+      }
+      if (/^-(?:W|X)$/.test(option) && tokens[index + 1]) {
+        index += 2;
+        continue;
+      }
+      if (/^-(?:W|X).+/.test(option)) {
+        index += 1;
+        continue;
+      }
+      return "";
+    }
+    return String(tokens[index] || "");
+  }
+  if (["bash", "sh", "node"].includes(executable)) {
+    return String(tokens[1] || "");
+  }
+  return "";
+}
+
+export function externalValidatorCommandContract(command = "", config = {}) {
+  const normalized = String(command || "").trim();
+  const sequence = parseTopLevelShellSequence(normalized);
+  if (
+    !normalized ||
+    sequence.commands.length !== 1 ||
+    sequence.separators.length > 0 ||
+    sequence.trailingSeparator ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    hasActiveShellExpansion(normalized)
+  ) {
+    return null;
+  }
+  const tokens = tokenizeShellWords(normalized);
+  const operand = commandScriptOperand(tokens);
+  if (!operand || !/\.(?:c?js|mjs|py|sh)$/i.test(operand)) return null;
+  const basename = path.basename(operand, path.extname(operand));
+  if (!EXTERNAL_VALIDATOR_BASENAME_PATTERN.test(basename)) return null;
+
+  const commandCwd = path.resolve(config.commandCwd || process.cwd());
+  const absolutePath = path.resolve(commandCwd, operand);
+  const relativePath = path.relative(commandCwd, absolutePath);
+  if (
+    !relativePath ||
+    (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))
+  ) {
+    return null;
+  }
+  return {
+    command: normalized,
+    path: absolutePath,
+  };
+}
+
+function commandReferencesOpaqueValidator(command = "", config = {}) {
+  const paths = (Array.isArray(config.opaqueExternalValidatorPaths)
+    ? config.opaqueExternalValidatorPaths
+    : [])
+    .map((item) => path.resolve(String(item || "")))
+    .filter(Boolean);
+  if (!paths.length) return "";
+  const normalized = String(command || "");
+  const commandCwd = path.resolve(config.commandCwd || process.cwd());
+  return paths.find((candidate) => {
+    if (normalized.includes(candidate)) return true;
+    const relative = path.relative(commandCwd, candidate);
+    return Boolean(relative && normalized.includes(relative));
+  }) || "";
+}
+
+function exactOpaqueValidatorExecution(command = "", config = {}) {
+  const requestedTokens = tokenizeShellWords(String(command || "").trim());
+  if (!requestedTokens.length) return false;
+  return (Array.isArray(config.opaqueExternalValidatorCommands)
+    ? config.opaqueExternalValidatorCommands
+    : []).some((candidate) => {
+      const candidateTokens = tokenizeShellWords(String(candidate || "").trim());
+      return candidateTokens.length > 0 &&
+        JSON.stringify(candidateTokens) === JSON.stringify(requestedTokens);
+    });
+}
+
+function opaqueExternalValidatorInspectionBlock(command = "", config = {}) {
+  const referencedPath = commandReferencesOpaqueValidator(command, config);
+  if (!referencedPath || exactOpaqueValidatorExecution(command, config)) return null;
+  return {
+    allowed: false,
+    category: "opaque-external-validator-inspection",
+    recoverable: true,
+    needsApproval: false,
+    writesWorkspace: false,
+    mayMutateProject: false,
+    reason:
+      "The exact external acceptance script is opaque verification evidence. Run its declared command unchanged before inspecting implementation details. If that run fails and its diagnostics are insufficient, the runtime will expose one bounded read-only source view.",
+  };
+}
+
 function classifyBackgroundShell(normalized = "") {
   const sequence = parseTopLevelShellSequence(normalized);
   if (!sequence.separators.includes("&") && sequence.trailingSeparator !== "&") return null;
@@ -2694,6 +2803,19 @@ export function classifyCommand(command) {
 
 export function evaluateCommandPolicy(command, config = {}) {
   const normalizedForPolicy = normalizeCommandForPolicy(command, config);
+  const opaqueValidatorBlock = opaqueExternalValidatorInspectionBlock(
+    normalizedForPolicy,
+    config
+  );
+  if (opaqueValidatorBlock) {
+    return {
+      ...opaqueValidatorBlock,
+      sandboxMode: normalizeSandboxMode(config.sandboxMode),
+      packageInstallPolicy: normalizePackageInstallPolicy(
+        config.packageInstallPolicy
+      ),
+    };
+  }
   const classification = classifyBackgroundShell(normalizedForPolicy) ||
     classifyReadOnlyRootCd(normalizedForPolicy, config) ||
     classifyReadOnlyRootSequence(normalizedForPolicy, config) ||

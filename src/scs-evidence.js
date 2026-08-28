@@ -1616,7 +1616,8 @@ function inferBareRequestedVerifierCommands(goal = "") {
 
 function inferExplicitRequestedCommands(goal = "") {
   const source = stripForbiddenLanguage(goal);
-  const commands = inferBareRequestedVerifierCommands(source);
+  const inferredBareCommands = inferBareRequestedVerifierCommands(source);
+  const explicitCommands = [];
   const inlineCode = /(?<!`)`([^`\r\n]+)`(?!`)/g;
   for (const match of source.matchAll(inlineCode)) {
     const index = Number(match.index || 0);
@@ -1660,9 +1661,18 @@ function inferExplicitRequestedCommands(goal = "") {
       const tokens = tokenizeShellWords(segment);
       return Boolean(tokens.length && !String(tokens[0] || "").startsWith("-"));
     });
-    if (executableSegments) commands.push(command);
+    if (executableSegments) explicitCommands.push(command);
   }
-  return unique(commands).slice(0, 8);
+  const explicitTokenSets = explicitCommands.map((command) => tokenizeShellWords(command));
+  const nonShadowedBareCommands = inferredBareCommands.filter((command) => {
+    const bareTokens = tokenizeShellWords(command);
+    return !explicitTokenSets.some(
+      (tokens) =>
+        tokens.length > bareTokens.length &&
+        bareTokens.every((token, index) => tokens[index] === token)
+    );
+  });
+  return unique([...nonShadowedBareCommands, ...explicitCommands]).slice(0, 8);
 }
 
 export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceCriteria = [] } = {}) {
