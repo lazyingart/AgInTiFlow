@@ -182,6 +182,94 @@ function toolMessage(payload) {
 }
 
 try {
+  const readOnlyVerificationGoal = [
+    "Continue this exact saved task in the same workspace. Do not start over and do",
+    "not modify source_brief.md, measurements.csv, prompt.txt, or TASK.md.",
+    "The prior run completed the task-owned repository repair. Run exactly `git status --short`.",
+    "Do not rebuild, rewrite, recommit, or restore obsolete outputs when the worktree is clean.",
+  ].join("\n");
+  const readOnlyVerificationState = {
+    goal: readOnlyVerificationGoal,
+    messages: [
+      toolMessage({
+        toolName: "run_command",
+        ok: true,
+        exitCode: 0,
+        args: { command: "git commit -m 'Complete retained repair'" },
+        stdout: "[main abcdef1] Complete retained repair\n 1 file changed, 1 insertion(+)",
+        goalRevision: 13,
+        projectMutationRevision: 19,
+      }),
+      toolMessage({
+        toolName: "run_command",
+        ok: true,
+        exitCode: 0,
+        args: { command: "git status --short" },
+        stdout: "",
+        goalRevision: 15,
+        projectMutationRevision: 23,
+      }),
+    ],
+    meta: {
+      goalContract: {
+        version: 3,
+        revision: 15,
+        activeGoalRevision: 15,
+        taskGoal: "Create the editable deck, commit the focused repair, and verify it.",
+        activeGoal: readOnlyVerificationGoal,
+        currentRequest: readOnlyVerificationGoal,
+        currentPreview: readOnlyVerificationGoal,
+        history: [{ revision: 15, refreshExecutionContract: true }],
+      },
+      activeExecutionContract: {
+        revision: 15,
+        startedMutationRevision: 22,
+        requiresWorkspaceMutation: false,
+        requiresFileMutation: false,
+        requiresSourceGrounding: false,
+        requiredProjectCommands: ["git status --short"],
+      },
+      projectVerification: {
+        mutationRevision: 23,
+        requiredCommands: ["git status --short"],
+      },
+      durableGitActions: ["commit", "status"],
+      durableGitEvidence: [
+        { action: "commit", goalRevision: 13, mutationRevision: 19 },
+        { action: "status", goalRevision: 15, mutationRevision: 23 },
+      ],
+    },
+  };
+  const readOnlyVerificationContract = completionTaskContract(
+    { taskProfile: "slides" },
+    readOnlyVerificationState
+  );
+  assert(
+    readOnlyVerificationContract.requiresWorkspaceMutation === false &&
+      readOnlyVerificationContract.requiresFileMutation === false &&
+      readOnlyVerificationContract.requiresSourceGrounding === false,
+    "a verification-only continuation inherited stale mutation requirements from retained task context"
+  );
+  assert(
+    readOnlyVerificationContract.requiredGitActions.includes("commit") &&
+      Number(readOnlyVerificationContract.requiredGitRevision || 0) === 0 &&
+      Number(readOnlyVerificationContract.requiredGitMutationRevision || 0) === 0,
+    "a verification-only continuation demanded a new commit instead of accepting retained same-task Git evidence"
+  );
+  const readOnlyGitEvaluation = evaluateScsEvidence(
+    {
+      ...readOnlyVerificationContract,
+      requiresExternalEvidence: false,
+      requiredEvidence: [],
+      requiredProjectCommands: [],
+    },
+    buildScsEvidenceLedger({ state: readOnlyVerificationState })
+  );
+  assert(
+    readOnlyGitEvaluation.missingGitActions.length === 0,
+    "a prior verified same-task commit did not satisfy a read-only completion continuation"
+  );
+
   const runLockConfig = {
     sessionsDir: path.join(tempRoot, "run-lock-sessions"),
   };

@@ -11319,6 +11319,19 @@ export function completionTaskContract(config = {}, state = {}) {
   const currentContract = currentRequest
     ? deriveScsTaskContract({ goal: currentRequest, taskProfile })
     : null;
+  const authoritativeReadOnlyContinuation = Boolean(
+    currentRequest &&
+      refreshesExecutionContract &&
+      activeExecutionContractIsAuthoritative &&
+      activeExecutionContract.requiresWorkspaceMutation !== true &&
+      activeExecutionContract.requiresFileMutation !== true &&
+      activeExecutionContract.requiresSourceGrounding !== true &&
+      currentContract?.requiresWorkspaceMutation !== true &&
+      currentContract?.requiresFileMutation !== true &&
+      currentContract?.requiresSourceGrounding !== true &&
+      !(Array.isArray(currentContract?.requiredGitActions) &&
+        currentContract.requiredGitActions.length > 0)
+  );
   if (
     currentRequest &&
     (refreshesExecutionContract || activeExecutionContractIsAuthoritative) &&
@@ -11383,12 +11396,15 @@ export function completionTaskContract(config = {}, state = {}) {
     contract = {
       ...contract,
       requiredEvidence: [...evidenceByCategory.values()],
-      requiresWorkspaceMutation: Boolean(
-        contract.requiresWorkspaceMutation || currentContract?.requiresWorkspaceMutation
-      ),
-      requiresFileMutation: Boolean(
-        contract.requiresFileMutation || currentContract?.requiresFileMutation
-      ),
+      requiresWorkspaceMutation: authoritativeReadOnlyContinuation
+        ? false
+        : Boolean(contract.requiresWorkspaceMutation || currentContract?.requiresWorkspaceMutation),
+      requiresFileMutation: authoritativeReadOnlyContinuation
+        ? false
+        : Boolean(contract.requiresFileMutation || currentContract?.requiresFileMutation),
+      requiresSourceGrounding: authoritativeReadOnlyContinuation
+        ? false
+        : Boolean(contract.requiresSourceGrounding || currentContract?.requiresSourceGrounding),
       currentEvidenceCategories: [...currentEvidenceCategories],
       currentEvidenceRevision: currentGoalRevision,
       currentMutationBaseline: startedMutationRevision,
@@ -11414,14 +11430,22 @@ export function completionTaskContract(config = {}, state = {}) {
   if (Array.isArray(contract.requiredGitActions) && contract.requiredGitActions.length) {
     contract = {
       ...contract,
-      requiredGitRevision: Math.max(
-        Number(contract.requiredGitRevision || 0),
-        Number(goalContract.activeGoalRevision || goalContract.revision || 0)
-      ),
-      requiredGitMutationRevision: Math.max(
-        Number(contract.requiredGitMutationRevision || 0),
-        Number(contract.projectMutationRevision || state.meta?.projectVerification?.mutationRevision || 0)
-      ),
+      requiredGitRevision: authoritativeReadOnlyContinuation
+        ? Number(contract.requiredGitRevision || 0)
+        : Math.max(
+            Number(contract.requiredGitRevision || 0),
+            Number(goalContract.activeGoalRevision || goalContract.revision || 0)
+          ),
+      requiredGitMutationRevision: authoritativeReadOnlyContinuation
+        ? Number(contract.requiredGitMutationRevision || 0)
+        : Math.max(
+            Number(contract.requiredGitMutationRevision || 0),
+            Number(
+              contract.projectMutationRevision ||
+                state.meta?.projectVerification?.mutationRevision ||
+                0
+            )
+          ),
     };
   }
   return contract;
