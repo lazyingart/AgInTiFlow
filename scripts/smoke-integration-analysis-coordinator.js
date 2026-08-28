@@ -18,6 +18,7 @@ import {
   validateExecutionWorkerSystemdCredentialMetadata,
 } from "../src/execution-worker-client.js";
 import {
+  INTEGRATION_ANALYSIS_MAX_INVOCATION_ORDINAL,
   INTEGRATION_ANALYSIS_TOOL_NAME,
   createTestOnlyIntegrationAnalysisCoordinator,
 } from "../src/integration-analysis-coordinator.js";
@@ -226,6 +227,11 @@ async function successfulExecution() {
   const manager = createExecutionJobManager({ worker: fakeWorker() });
   const client = createTestOnlyExecutionWorkerClient(rpcForManager(manager, null, calls));
   const coordinator = createTestOnlyIntegrationAnalysisCoordinator(client, { pollMs: 25 });
+  assert.equal(coordinator.attestation.distinctRunScopedInvocationOrdinals, true);
+  assert.equal(
+    coordinator.attestation.maximumInvocationOrdinal,
+    INTEGRATION_ANALYSIS_MAX_INVOCATION_ORDINAL
+  );
   const readiness = await coordinator.readiness();
   assert.equal(readiness.ready, true);
   assert.equal(readiness.publicActivationReady, true);
@@ -280,6 +286,32 @@ async function successfulExecution() {
   const starts = calls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart);
   assert.equal(starts.length, 2);
   assert.deepEqual(starts[1].body, starts[0].body);
+  const secondInvocation = await coordinator.execute(scope(), request, { invocationOrdinal: 2 });
+  assert.equal(secondInvocation.ok, true);
+  const distinctStarts = calls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart);
+  assert.equal(distinctStarts.length, 3);
+  assert.equal(distinctStarts[2].body.source, distinctStarts[0].body.source);
+  assert.equal(distinctStarts[2].body.attempt, 1);
+  assert.notEqual(distinctStarts[2].body.jobId, distinctStarts[0].body.jobId);
+  assert.notDeepEqual(
+    secondInvocation.artifacts.map(({ id }) => id),
+    result.artifacts.map(({ id }) => id)
+  );
+  const secondReplay = await coordinator.execute(scope(), request, { invocationOrdinal: 2 });
+  assert.deepEqual(secondReplay, secondInvocation);
+  const replayStarts = calls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart);
+  assert.equal(replayStarts.length, 4);
+  assert.deepEqual(replayStarts[3].body, replayStarts[2].body);
+  await assert.rejects(
+    coordinator.execute(scope(), request, { invocationOrdinal: 0 }),
+    (error) => error?.code === "EXECUTION_REQUEST_INVALID" && error?.status === 400
+  );
+  await assert.rejects(
+    coordinator.execute(scope(), request, {
+      invocationOrdinal: INTEGRATION_ANALYSIS_MAX_INVOCATION_ORDINAL + 1,
+    }),
+    (error) => error?.code === "EXECUTION_REQUEST_INVALID" && error?.status === 400
+  );
   coordinator.close();
 }
 

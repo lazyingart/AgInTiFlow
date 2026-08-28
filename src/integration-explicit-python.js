@@ -18,6 +18,14 @@ const NEGATED_PLOT =
   /(?:\b(?:not|no|without)\s+(?:a\s+|any\s+)?(?:plot|chart|graph)\b|(?:不|不要|无需|無需|不用)(?:画图|畫圖|绘图|繪圖|生成图表|生成圖表))/iu;
 const REQUESTED_PLOT =
   /(?:\b(?:plot|chart|graph|visuali[sz]e)\b|\b(?:show|make|create|generate|draw|render|produce|return|include|display)\b.{0,72}\b(?:plot|chart|graph)\b|(?:画图|畫圖|绘图|繪圖|生成图表|生成圖表|显示图表|顯示圖表))/iu;
+const NEGATED_TABLE =
+  /(?:\b(?:not|no|without)\s+(?:a\s+|any\s+)?table\b|(?:不|不要|无需|無需|不用)(?:生成表格|显示表格|顯示表格))/iu;
+const REQUESTED_TABLE =
+  /(?:\b(?:show|make|create|generate|render|produce|return|include|display|output|emit)\b.{0,72}\btable\b|(?:生成表格|显示表格|顯示表格))/iu;
+const NEGATED_MARKDOWN =
+  /(?:\b(?:not|no|without)\s+(?:a\s+|any\s+)?markdown(?:\s+(?:artifact|output|card))?\b|(?:不|不要|无需|無需|不用)(?:生成|显示|顯示)(?:markdown|Markdown))/iu;
+const REQUESTED_MARKDOWN =
+  /(?:\b(?:show|make|create|generate|render|produce|return|include|display|output|emit)\b.{0,72}\bmarkdown(?:\s+(?:artifact|output|card))?\b|(?:生成|显示|顯示)(?:markdown|Markdown)(?:制品|产物|卡片)?)/iu;
 const ENGLISH_BROAD_EXECUTION = /^(?:run|execute)\b/iu;
 const CHINESE_BROAD_EXECUTION = /^(?:运行|運行|执行|執行)/iu;
 const ENGLISH_CODE_NOUN = "(?:python(?:\\s+(?:code|script|program|snippet|block))?|code|script|program|snippet|block)";
@@ -38,25 +46,27 @@ const ENGLISH_SUFFIX_TARGET = [
   "(?:this|that|it)",
 ].join("|");
 const ENGLISH_RESULT_OBJECT =
-  "(?:result|results|output|stdout|stderr|messages|plot|chart|graph|artifact|artifacts|data|value|values|it)";
+  "(?:result|results|output|stdout|stderr|messages|plot|chart|graph|table|markdown(?:\\s+(?:artifact|output|card))?|artifact|artifacts|data|value|values|it)";
 const ENGLISH_RESULT_REQUEST =
   "(?:show|display|return|give|print|output|produce|create|generate|draw|render|include|plot|chart|graph|visuali[sz]e)" +
-  "\\s+(?:me\\s+)?(?:both\\s+)?(?:(?:the|a|an|its|my|their)\\s+)?" +
-  `${ENGLISH_RESULT_OBJECT}(?:\\s+and\\s+(?:(?:the|a|an|its|my|their)\\s+)?${ENGLISH_RESULT_OBJECT})?`;
+  "\\s+(?:me\\s+)?(?:both\\s+)?(?:(?:the|a|an|one|its|my|their)\\s+)?" +
+  `${ENGLISH_RESULT_OBJECT}(?:\\s+and\\s+(?:(?:the|a|an|one|its|my|their)\\s+)?${ENGLISH_RESULT_OBJECT})?`;
 const ENGLISH_FIRST_PERSON_PLOT_REQUEST =
   "i\\s+(?:need|want|would\\s+like)\\s+(?:a\\s+|the\\s+)?(?:plot|chart|graph)";
-const ENGLISH_NO_PLOT = "(?:[ \\t]*,?[ \\t]*(?:but[ \\t]+)?(?:not|no|without)[ \\t]+(?:a[ \\t]+|any[ \\t]+)?(?:plot|chart|graph))?";
+const ENGLISH_NO_ARTIFACT = "(?:[ \\t]*,?[ \\t]*(?:but[ \\t]+)?(?:not|no|without)[ \\t]+(?:a[ \\t]+|any[ \\t]+)?(?:plot|chart|graph|table|markdown(?:[ \\t]+(?:artifact|output|card))?))?";
+const ENGLISH_EXECUTION_MULTIPLICITY =
+  "(?:[ \\t]+(?:twice|(?:[1-9]|one|two|three|four|five|six|seven|eight|nine)[ \\t]+times?)(?:[ \\t]+in[ \\t]+separate[ \\t]+calls?)?)?";
 const ENGLISH_REQUIRED_RESULT_SUFFIX =
-  `(?:[ \\t]*(?:[,;][ \\t]*)?(?:(?:and(?:[ \\t]+then)?|then|to)[ \\t]+)?${ENGLISH_RESULT_REQUEST}${ENGLISH_NO_PLOT}` +
+  `(?:[ \\t]*(?:[,;][ \\t]*)?(?:(?:and(?:[ \\t]+then)?|then|to)[ \\t]+)?${ENGLISH_RESULT_REQUEST}${ENGLISH_NO_ARTIFACT}` +
   `|[ \\t]*[;,][ \\t]*${ENGLISH_FIRST_PERSON_PLOT_REQUEST})`;
 const ENGLISH_RESULT_SUFFIX = `(?:${ENGLISH_REQUIRED_RESULT_SUFFIX})?`;
 const ENGLISH_END = "[ \\t]*(?:,[ \\t]*)?(?:please[ \\t]*)?(?:[.!?]|:)?[ \\t]*";
 const ENGLISH_PREFIX_DIRECTIVE = new RegExp(
-  `^(?:(?:run|execute)\\s+(?:${ENGLISH_PREFIX_TARGET})${ENGLISH_RESULT_SUFFIX}|(?:run|execute)${ENGLISH_REQUIRED_RESULT_SUFFIX}|(?:run|execute)[ \\t]*:)${ENGLISH_END}$`,
+  `^(?:(?:run|execute)\\s+(?:${ENGLISH_PREFIX_TARGET})${ENGLISH_EXECUTION_MULTIPLICITY}${ENGLISH_RESULT_SUFFIX}|(?:run|execute)${ENGLISH_REQUIRED_RESULT_SUFFIX}|(?:run|execute)[ \\t]*:)${ENGLISH_END}$`,
   "iu"
 );
 const ENGLISH_SUFFIX_DIRECTIVE = new RegExp(
-  `^(?:(?:run|execute)\\s+(?:${ENGLISH_SUFFIX_TARGET})${ENGLISH_RESULT_SUFFIX}|(?:run|execute)${ENGLISH_REQUIRED_RESULT_SUFFIX}|(?:run|execute)[ \\t]*:)${ENGLISH_END}$`,
+  `^(?:(?:run|execute)\\s+(?:${ENGLISH_SUFFIX_TARGET})${ENGLISH_EXECUTION_MULTIPLICITY}${ENGLISH_RESULT_SUFFIX}|(?:run|execute)${ENGLISH_REQUIRED_RESULT_SUFFIX}|(?:run|execute)[ \\t]*:)${ENGLISH_END}$`,
   "iu"
 );
 const CHINESE_PREFIX_TARGET =
@@ -64,7 +74,7 @@ const CHINESE_PREFIX_TARGET =
 const CHINESE_SUFFIX_TARGET =
   "(?:(?:上述|上面)(?:的)?(?:python)?(?:代码|代碼|程式碼|脚本|腳本|程序|程式)?|(?:这段|這段|这个|這個|该|該)(?:的)?(?:python)?(?:代码|代碼|程式碼|脚本|腳本|程序|程式)|(?:python)?(?:代码|代碼|程式碼|脚本|腳本|程序|程式))";
 const CHINESE_RESULT_SUFFIX =
-  "(?:[ \\t]*[，,;；]?[ \\t]*(?:(?:并|並|然后|然後|并且|並且)[ \\t]*)?(?:显示|顯示|返回|给出|給出|输出|輸出|生成|绘制|繪製)[ \\t]*(?:结果|結果|输出|輸出|图表|圖表|图像|圖像|绘图|繪圖)(?:[ \\t]*[，,]?[ \\t]*(?:但|但是)?(?:不|不要|无需|無需|不用)(?:画图|畫圖|绘图|繪圖|生成图表|生成圖表))?)?";
+  "(?:[ \\t]*[，,;；]?[ \\t]*(?:(?:并|並|然后|然後|并且|並且)[ \\t]*)?(?:显示|顯示|返回|给出|給出|输出|輸出|生成|绘制|繪製)[ \\t]*(?:结果|結果|输出|輸出|图表|圖表|图像|圖像|绘图|繪圖|表格)(?:[ \\t]*[，,]?[ \\t]*(?:但|但是)?(?:不|不要|无需|無需|不用)(?:画图|畫圖|绘图|繪圖|生成图表|生成圖表|生成表格|显示表格|顯示表格))?)?";
 const CHINESE_END = "[ \\t]*(?:[。.!！?？]|[:：])?[ \\t]*";
 const CHINESE_PREFIX_DIRECTIVE = new RegExp(
   `^(?:(?:运行|運行|执行|執行)(?:一下)?${CHINESE_PREFIX_TARGET}${CHINESE_RESULT_SUFFIX}|(?:运行|運行|执行|執行)(?:一下)?[ \\t]*[:：])${CHINESE_END}$`,
@@ -153,6 +163,14 @@ function plotRequested(outside) {
   return REQUESTED_PLOT.test(outside) && !NEGATED_PLOT.test(outside);
 }
 
+function tableRequested(outside) {
+  return REQUESTED_TABLE.test(outside) && !NEGATED_TABLE.test(outside);
+}
+
+function markdownRequested(outside) {
+  return REQUESTED_MARKDOWN.test(outside) && !NEGATED_MARKDOWN.test(outside);
+}
+
 export function classifyIntegrationExplicitPythonPrompt(value) {
   if (typeof value !== "string") return NONE;
   if (!value.isWellFormed()) {
@@ -210,6 +228,8 @@ export function classifyIntegrationExplicitPythonPrompt(value) {
     }),
     requirements: Object.freeze({
       plotArtifact: plotRequested(outside),
+      tableArtifact: tableRequested(outside),
+      markdownArtifact: markdownRequested(outside),
     }),
   });
 }
@@ -221,5 +241,7 @@ export function compileIntegrationExplicitPythonPrompt(value) {
     schemaVersion: classification.schemaVersion,
     ...classification.execution,
     requiresPlotArtifact: classification.requirements.plotArtifact,
+    requiresTableArtifact: classification.requirements.tableArtifact,
+    requiresMarkdownArtifact: classification.requirements.markdownArtifact,
   });
 }

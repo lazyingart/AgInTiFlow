@@ -124,18 +124,18 @@ function capability() {
   });
 }
 
-function artifactId(request, artifact) {
+function artifactId(request, artifact, index = 0) {
   return `art_${contractDigest({
     jobId: request.jobId,
     attempt: request.attempt,
-    index: 0,
+    index,
     kind: artifact.kind,
     title: artifact.title,
     spec: artifact.spec,
   }).slice(0, 64)}`;
 }
 
-function resultArtifact(request) {
+function resultArtifact(request, index = 0) {
   const artifact = Object.freeze({
     title: "Square-number trend",
     kind: "plot",
@@ -150,7 +150,39 @@ function resultArtifact(request) {
       ]),
     }),
   });
-  return sanitizeIntegrationArtifact({ id: artifactId(request, artifact), ...artifact });
+  return sanitizeIntegrationArtifact({ id: artifactId(request, artifact, index), ...artifact });
+}
+
+function tableResultArtifact(request, index = 0) {
+  const artifact = Object.freeze({
+    title: "Square-number table",
+    kind: "table",
+    spec: Object.freeze({
+      schemaVersion: "1",
+      columns: Object.freeze([
+        Object.freeze({ key: "number", label: "Number" }),
+        Object.freeze({ key: "square", label: "Square" }),
+      ]),
+      rows: Object.freeze([
+        Object.freeze({ number: 1, square: 1 }),
+        Object.freeze({ number: 2, square: 4 }),
+        Object.freeze({ number: 3, square: 9 }),
+      ]),
+    }),
+  });
+  return sanitizeIntegrationArtifact({ id: artifactId(request, artifact, index), ...artifact });
+}
+
+function markdownResultArtifact(request, index = 0) {
+  const artifact = Object.freeze({
+    title: "Square-number summary",
+    kind: "markdown",
+    spec: Object.freeze({
+      schemaVersion: "1",
+      markdown: "## Squares\n\nThe first three squares are 1, 4, and 9.",
+    }),
+  });
+  return sanitizeIntegrationArtifact({ id: artifactId(request, artifact, index), ...artifact });
 }
 
 function terminalResult(request, signal, successfulArtifacts) {
@@ -518,6 +550,8 @@ function explicitPythonCompilerIsStrict() {
   for (const prompt of [
     "Kindly run this Python code\n```python\nprint(1)\n```",
     "Run this corrected Python code and show the plot.\n```python\nprint(1)\n```",
+    "Run this code twice.\n```python\nprint(1)\n```",
+    "Run this code two times in separate calls and show the result.\n```python\nprint(1)\n```",
     "Execute the revised Python script and return the output.\n```python\nprint(1)\n```",
     "Run the following updated code and display its graph.\n```python\nprint(1)\n```",
     "```python\nprint(1)\n```\nRun the updated code above and show the result.",
@@ -591,6 +625,32 @@ function explicitPythonCompilerIsStrict() {
     const classified = classifyIntegrationExplicitPythonPrompt(prompt);
     assert.equal(classified.kind, "execute", prompt);
     assert.equal(classified.requirements.plotArtifact, requiresPlotArtifact, prompt);
+  }
+  for (const [prompt, requiresTableArtifact] of [
+    ["Run this code and show a table\n```python\nprint(1)\n```", true],
+    ["Run this code and show output, not a table\n```python\nprint(1)\n```", false],
+  ]) {
+    const classified = classifyIntegrationExplicitPythonPrompt(prompt);
+    assert.equal(classified.kind, "execute", prompt);
+    assert.equal(classified.requirements.tableArtifact, requiresTableArtifact, prompt);
+    assert.equal(
+      compileIntegrationExplicitPythonPrompt(prompt).requiresTableArtifact,
+      requiresTableArtifact,
+      prompt
+    );
+  }
+  for (const [prompt, requiresMarkdownArtifact] of [
+    ["Run this code and create one Markdown artifact\n```python\nprint(1)\n```", true],
+    ["Run this code and show output without Markdown\n```python\nprint(1)\n```", false],
+  ]) {
+    const classified = classifyIntegrationExplicitPythonPrompt(prompt);
+    assert.equal(classified.kind, "execute", prompt);
+    assert.equal(classified.requirements.markdownArtifact, requiresMarkdownArtifact, prompt);
+    assert.equal(
+      compileIntegrationExplicitPythonPrompt(prompt).requiresMarkdownArtifact,
+      requiresMarkdownArtifact,
+      prompt
+    );
   }
   assert.equal(
     classifyIntegrationExplicitPythonPrompt("Explain this code:\n```python\nprint(1)\n```").kind,
@@ -699,6 +759,46 @@ async function deterministicExplicitPythonExecutesWithoutModel() {
   assert.equal(deterministic.planner.attestation.explicitPythonUsesAgentExecution, true);
   assert.equal(deterministic.planner.attestation.explicitPythonUsesModel, false);
   deterministic.coordinator.close();
+}
+
+async function deterministicExplicitPythonRepeatsExactSourceTruthfully() {
+  const source = [
+    "values = [1, 4, 9]",
+    "emit_table('Squares', {'schemaVersion':'1','columns':[{'key':'value','label':'Value'}],'rows':[{'value':value} for value in values]})",
+  ].join("\n");
+  const workerRequests = [];
+  const repeated = fixture(async () => {
+    throw new Error("LocalLLM must not be called for repeated explicit fenced Python");
+  }, {
+    worker: fakeWorker((request, signal) => {
+      workerRequests.push(request);
+      return terminalResult(
+        request,
+        signal,
+        workerRequests.length === 1 ? [tableResultArtifact(request)] : []
+      );
+    }),
+  });
+  const result = await repeated.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000124"),
+    {
+      prompt: `Run this code twice in separate calls and show a table.\n\n\`\`\`python\n${source}\n\`\`\``,
+    }
+  );
+  assert.equal(result.toolCalls, 2);
+  assert.equal(result.executionStatus, "succeeded");
+  assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["table"]);
+  assert.equal(workerRequests.length, 2);
+  assert.equal(workerRequests[0].source, source);
+  assert.equal(workerRequests[1].source, source);
+  assert.equal(workerRequests[0].attempt, 1);
+  assert.equal(workerRequests[1].attempt, 1);
+  assert.notEqual(workerRequests[0].jobId, workerRequests[1].jobId);
+  assert.equal(
+    repeated.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    2
+  );
+  repeated.coordinator.close();
 }
 
 async function deterministicExplicitPythonFailuresStayTruthful() {
@@ -929,6 +1029,84 @@ async function explicitPythonPlotIntentIgnoresSourceText() {
     (error) => error?.code === "ANALYSIS_PLOT_ARTIFACT_REQUIRED" && error?.status === 502
   );
   chartless.coordinator.close();
+}
+
+async function explicitPythonTableIntentIsProvenOutsideSourceText() {
+  const sourceOnlyTableWords = fixture(async () => {
+    throw new Error("model must not run");
+  }, { worker: fakeWorker((request, signal) => terminalResult(request, signal, [])) });
+  const noTableRequired = await sourceOnlyTableWords.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000109"),
+    { prompt: "Run this code and show the result:\n```python\nprint('show a table')\n```" }
+  );
+  assert.equal(noTableRequired.toolCalls, 1);
+  assert.deepEqual(noTableRequired.artifacts, []);
+  sourceOnlyTableWords.coordinator.close();
+
+  const missingTable = fixture(async () => {
+    throw new Error("model must not run");
+  }, { worker: fakeWorker((request, signal) => terminalResult(request, signal, [])) });
+  await assert.rejects(
+    missingTable.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000110"),
+      { prompt: "Run this code and show a table:\n```python\nprint(1)\n```" }
+    ),
+    (error) => error?.code === "ANALYSIS_TABLE_ARTIFACT_REQUIRED" && error?.status === 502
+  );
+  missingTable.coordinator.close();
+
+  const verifiedTable = fixture(async () => {
+    throw new Error("model must not run");
+  }, {
+    worker: fakeWorker((request, signal) =>
+      terminalResult(request, signal, [tableResultArtifact(request)])),
+  });
+  const tableResult = await verifiedTable.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000111"),
+    {
+      prompt: [
+        "Run this code and show a table:",
+        "```python",
+        "emit_table('One', {'schemaVersion':'1','columns':[{'key':'value','label':'Value'}],'rows':[{'value':1}]})",
+        "```",
+      ].join("\n"),
+    }
+  );
+  assert.equal(tableResult.toolCalls, 1);
+  assert.deepEqual(tableResult.artifacts.map(({ kind }) => kind), ["table"]);
+  verifiedTable.coordinator.close();
+
+  const missingMarkdown = fixture(async () => {
+    throw new Error("model must not run");
+  }, { worker: fakeWorker((request, signal) => terminalResult(request, signal, [])) });
+  await assert.rejects(
+    missingMarkdown.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000117"),
+      { prompt: "Run this code and create one Markdown artifact:\n```python\nprint(1)\n```" }
+    ),
+    (error) => error?.code === "ANALYSIS_MARKDOWN_ARTIFACT_REQUIRED" && error?.status === 502
+  );
+  missingMarkdown.coordinator.close();
+
+  const verifiedMarkdown = fixture(async () => {
+    throw new Error("model must not run");
+  }, {
+    worker: fakeWorker((request, signal) =>
+      terminalResult(request, signal, [markdownResultArtifact(request)])),
+  });
+  const markdownResult = await verifiedMarkdown.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000118"),
+    {
+      prompt: [
+        "Run this code and create one Markdown artifact:",
+        "```python",
+        "emit_markdown('One', 'Value: 1')",
+        "```",
+      ].join("\n"),
+    }
+  );
+  assert.deepEqual(markdownResult.artifacts.map(({ kind }) => kind), ["markdown"]);
+  verifiedMarkdown.coordinator.close();
 }
 
 async function explicitPythonOutputIsLiteralAndBounded() {
@@ -1994,11 +2172,24 @@ async function generalPlotRequestsRequireExecutionAndArtifact() {
     "Explain why the phrase “and then run Python code” is dangerous.",
     "Explain why someone might say \"and show a plot\" in a prompt.",
     "Do not run Python code; explain what the command would mean.",
+    "Do not run Python twice; explain what repetition would mean.",
+    "Without running code, explain the calculation.",
+    "No need to run code twice; describe the expected result.",
     "Write a tutorial about how to run Python and show a plot.",
+    "The prior response contained one line-plot artifact.",
+    "One table artifact appeared in the earlier result.",
   ];
   for (let index = 0; index < nonImperativePrompts.length; index += 1) {
+    const executionNegated = /^(?:do not run|without running|no need to run)/iu.test(
+      nonImperativePrompts[index]
+    );
     const direct = fixture(async (_client, payload) => {
-      assert.equal(payload.tool_choice, "auto");
+      if (executionNegated) {
+        assert.equal(Object.hasOwn(payload, "tools"), false);
+        assert.equal(Object.hasOwn(payload, "tool_choice"), false);
+      } else {
+        assert.equal(payload.tool_choice, "auto");
+      }
       return textResponse("This is an explanation, not an execution request.");
     });
     const directResult = await direct.planner.run(
@@ -2009,6 +2200,451 @@ async function generalPlotRequestsRequireExecutionAndArtifact() {
     assert.equal(directResult.toolCalls, 0);
     direct.coordinator.close();
   }
+
+  const disobedientNegation = fixture(async (_client, payload) => {
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    return toolResponse("print('must not execute')");
+  });
+  await assert.rejects(
+    disobedientNegation.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000125"),
+      { prompt: "No need to run Python twice; explain the expected output." }
+    ),
+    (error) => error?.code === "ANALYSIS_TOOL_FORBIDDEN" && error?.status === 502
+  );
+  assert.equal(
+    disobedientNegation.rpcCalls.filter(
+      ({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart
+    ).length,
+    0
+  );
+  disobedientNegation.coordinator.close();
+}
+
+async function tableAndCombinedArtifactObligationsAreProven() {
+  const liveAcceptancePrompt =
+    "Use the general Python execution and artifact tools to compute the first 37 Fibonacci numbers modulo 997. " +
+    "Create one line-plot artifact and one table artifact containing index and value.";
+  let acceptanceStep = 0;
+  const acceptance = fixture(async (_client, payload) => {
+    acceptanceStep += 1;
+    if (acceptanceStep === 1) {
+      assert.equal(payload.tool_choice, "required");
+      return toolResponse([
+        "values = [0, 1]",
+        "emit_plot('Fibonacci', {'schemaVersion':'1','type':'line','labels':['0','1'],'series':[{'name':'value','data':values}]})",
+        "emit_table('Fibonacci', {'schemaVersion':'1','columns':[{'key':'index','label':'Index'},{'key':'value','label':'Value'}],'rows':[{'index':0,'value':0},{'index':1,'value':1}]})",
+      ].join("\n"));
+    }
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    assert.equal(Object.hasOwn(payload, "tool_choice"), false);
+    return textResponse("The verified Fibonacci plot and table are ready.");
+  }, {
+    worker: fakeWorker((request, signal) => terminalResult(
+      request,
+      signal,
+      [resultArtifact(request), tableResultArtifact(request, 1)]
+    )),
+  });
+  const acceptanceResult = await acceptance.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000127"),
+    { prompt: liveAcceptancePrompt }
+  );
+  assert.equal(acceptanceStep, 2);
+  assert.equal(acceptanceResult.toolCalls, 1);
+  assert.deepEqual(acceptanceResult.artifacts.map(({ kind }) => kind), ["plot", "table"]);
+  acceptance.coordinator.close();
+
+  for (const [index, emittedKinds, missingPattern] of [
+    [0, [], /explicitly requested a plot/u],
+    [1, ["plot"], /explicitly requested a table/u],
+  ]) {
+    let partialStep = 0;
+    const partial = fixture(async (_client, payload) => {
+      partialStep += 1;
+      if (partialStep === 1) return toolResponse("print('incomplete artifacts')");
+      assert.equal(payload.tool_choice, "required");
+      const feedback = JSON.parse(payload.messages.at(-1).content);
+      assert.match(feedback.correction, missingPattern);
+      return textResponse("The incomplete artifacts are enough.");
+    }, {
+      worker: fakeWorker((request, signal) => terminalResult(
+        request,
+        signal,
+        emittedKinds.includes("plot") ? [resultArtifact(request)] : []
+      )),
+    });
+    await assert.rejects(
+      partial.planner.run(
+        scope(`run_00000000-0000-4000-8000-${String(128 + index).padStart(12, "0")}`),
+        { prompt: liveAcceptancePrompt }
+      ),
+      (error) => error?.code === "ANALYSIS_TOOL_REQUIRED" && error?.status === 502
+    );
+    assert.equal(partialStep, 2);
+    partial.coordinator.close();
+  }
+
+  let tableStep = 0;
+  const table = fixture(async (_client, payload) => {
+    tableStep += 1;
+    if (tableStep === 1) {
+      assert.equal(payload.tool_choice, "required");
+      assert.match(payload.messages[0].content, /explicit table request/u);
+      return toolResponse([
+        "rows = [{'number': 1, 'square': 1}, {'number': 2, 'square': 4}]",
+        "emit_table('Squares', {'schemaVersion':'1','columns':[{'key':'number','label':'Number'},{'key':'square','label':'Square'}],'rows':rows})",
+      ].join("\n"));
+    }
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    const feedback = JSON.parse(payload.messages.at(-1).content);
+    assert.equal(feedback.ok, true);
+    assert.equal(feedback.artifacts[0].kind, "table");
+    assert.equal(feedback.artifacts[0].rowCount, 3);
+    return textResponse("The verified square-number table is ready.");
+  }, {
+    worker: fakeWorker((request, signal) =>
+      terminalResult(request, signal, [tableResultArtifact(request)])),
+  });
+  const tableResult = await table.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000102"),
+    { prompt: "Create and show a table of square numbers." }
+  );
+  assert.equal(tableStep, 2);
+  assert.equal(tableResult.toolCalls, 1);
+  assert.equal(tableResult.executionStatus, "succeeded");
+  assert.deepEqual(tableResult.artifacts.map(({ kind }) => kind), ["table"]);
+  table.coordinator.close();
+
+  let correctionStep = 0;
+  let correctionExecution = 0;
+  const corrected = fixture(async (_client, payload) => {
+    correctionStep += 1;
+    if (correctionStep === 1) {
+      assert.equal(payload.tool_choice, "required");
+      return toolResponse("print('number,square\\n1,1\\n2,4')");
+    }
+    if (correctionStep === 2) {
+      assert.equal(payload.tool_choice, "required");
+      const feedback = JSON.parse(payload.messages.at(-1).content);
+      assert.equal(feedback.ok, true);
+      assert.deepEqual(feedback.artifacts, []);
+      assert.match(feedback.correction, /explicitly requested a table/u);
+      return toolResponse(
+        "emit_table('Squares', {'schemaVersion':'1','columns':[{'key':'number','label':'Number'}],'rows':[{'number':1}]})"
+      );
+    }
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    return textResponse("The corrected execution produced the requested table.");
+  }, {
+    worker: fakeWorker((request, signal) => {
+      correctionExecution += 1;
+      return terminalResult(
+        request,
+        signal,
+        correctionExecution === 1 ? [] : [tableResultArtifact(request)]
+      );
+    }),
+  });
+  const correctedResult = await corrected.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000103"),
+    { prompt: "Run Python and show a table of the result." }
+  );
+  assert.equal(correctionStep, 3);
+  assert.equal(correctionExecution, 2);
+  assert.equal(correctedResult.toolCalls, 2);
+  assert.deepEqual(correctedResult.artifacts.map(({ kind }) => kind), ["table"]);
+  corrected.coordinator.close();
+
+  let combinedStep = 0;
+  const combined = fixture(async (_client, payload) => {
+    combinedStep += 1;
+    if (combinedStep === 1) {
+      assert.equal(payload.tool_choice, "required");
+      return toolResponse([
+        "values = [1, 4, 9]",
+        "emit_plot('Squares', {'schemaVersion':'1','type':'line','labels':['1','2','3'],'series':[{'name':'square','data':values}]})",
+        "emit_table('Squares', {'schemaVersion':'1','columns':[{'key':'square','label':'Square'}],'rows':[{'square':1},{'square':4},{'square':9}]})",
+      ].join("\n"));
+    }
+    assert.equal(
+      Object.hasOwn(payload, "tools"),
+      false,
+      JSON.stringify({ toolChoice: payload.tool_choice, feedback: payload.messages.at(-1).content })
+    );
+    const kinds = JSON.parse(payload.messages.at(-1).content).artifacts.map(({ kind }) => kind);
+    assert.deepEqual(kinds, ["plot", "table"]);
+    return textResponse("The plot and table were produced together.");
+  }, {
+    worker: fakeWorker((request, signal) =>
+      terminalResult(request, signal, [resultArtifact(request), tableResultArtifact(request, 1)])),
+  });
+  const combinedResult = await combined.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000104"),
+    { prompt: "Run Python to calculate squares and show a plot and table." }
+  );
+  assert.equal(combinedStep, 2);
+  assert.equal(combinedResult.toolCalls, 1);
+  assert.deepEqual(combinedResult.artifacts.map(({ kind }) => kind), ["plot", "table"]);
+  combined.coordinator.close();
+
+  let markdownStep = 0;
+  const markdown = fixture(async (_client, payload) => {
+    markdownStep += 1;
+    if (markdownStep === 1) {
+      assert.equal(payload.tool_choice, "required");
+      return toolResponse("emit_markdown('Squares', 'The values are 1, 4, and 9.')");
+    }
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    const feedback = JSON.parse(payload.messages.at(-1).content);
+    assert.equal(feedback.artifacts[0].kind, "markdown");
+    return textResponse("The verified Markdown artifact is ready.");
+  }, {
+    worker: fakeWorker((request, signal) =>
+      terminalResult(request, signal, [markdownResultArtifact(request)])),
+  });
+  const markdownResult = await markdown.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000115"),
+    {
+      prompt:
+        "Without recomputing the sequence, create one Markdown artifact summarizing the existing result.",
+    }
+  );
+  assert.equal(markdownStep, 2);
+  assert.equal(markdownResult.toolCalls, 1);
+  assert.deepEqual(markdownResult.artifacts.map(({ kind }) => kind), ["markdown"]);
+  markdown.coordinator.close();
+
+  let markdownCorrectionStep = 0;
+  let markdownExecution = 0;
+  const correctedMarkdown = fixture(async (_client, payload) => {
+    markdownCorrectionStep += 1;
+    if (markdownCorrectionStep === 1) return toolResponse("print('Squares: 1, 4, 9')");
+    if (markdownCorrectionStep === 2) {
+      assert.equal(payload.tool_choice, "required");
+      const feedback = JSON.parse(payload.messages.at(-1).content);
+      assert.match(feedback.correction, /explicitly requested a Markdown artifact/u);
+      return toolResponse("emit_markdown('Squares', 'Squares: 1, 4, 9')");
+    }
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    return textResponse("The corrected Markdown artifact is ready.");
+  }, {
+    worker: fakeWorker((request, signal) => {
+      markdownExecution += 1;
+      return terminalResult(
+        request,
+        signal,
+        markdownExecution === 1 ? [] : [markdownResultArtifact(request)]
+      );
+    }),
+  });
+  const correctedMarkdownResult = await correctedMarkdown.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000116"),
+    { prompt: "Run Python and create one Markdown artifact with the result." }
+  );
+  assert.equal(markdownCorrectionStep, 3);
+  assert.equal(correctedMarkdownResult.toolCalls, 2);
+  assert.deepEqual(correctedMarkdownResult.artifacts.map(({ kind }) => kind), ["markdown"]);
+  correctedMarkdown.coordinator.close();
+
+  const locallyNegated = fixture(async (_client, payload) => {
+    if (payload.messages.at(-1).role === "user") return toolResponse("print(2 + 2)");
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    return textResponse("The calculation completed without a table.");
+  }, { worker: fakeWorker((request, signal) => terminalResult(request, signal, [])) });
+  const locallyNegatedResult = await locallyNegated.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000105"),
+    { prompt: "Run Python to calculate 2+2, but do not show a table." }
+  );
+  assert.equal(locallyNegatedResult.toolCalls, 1);
+  assert.deepEqual(locallyNegatedResult.artifacts, []);
+  locallyNegated.coordinator.close();
+
+  for (const [index, prompt, artifactKind] of [
+    [0, "Run Python and show output, not a plot.", null],
+    [1, "Run Python and show a plot, not a table.", "plot"],
+    [2, "Run Python and show a table, but do not plot.", "table"],
+    [3, "Run Python without plotting and show a table.", "table"],
+  ]) {
+    let step = 0;
+    const local = fixture(async (_client, payload) => {
+      step += 1;
+      if (step === 1) return toolResponse("print('local negation')");
+      assert.equal(Object.hasOwn(payload, "tools"), false, prompt);
+      return textResponse("The locally scoped request completed.");
+    }, {
+      worker: fakeWorker((request, signal) => terminalResult(
+        request,
+        signal,
+        artifactKind === "plot"
+          ? [resultArtifact(request)]
+          : artifactKind === "table"
+            ? [tableResultArtifact(request)]
+            : []
+      )),
+    });
+    const result = await local.planner.run(
+      scope(`run_00000000-0000-4000-8000-${String(119 + index).padStart(12, "0")}`),
+      { prompt }
+    );
+    assert.deepEqual(result.artifacts.map(({ kind }) => kind), artifactKind ? [artifactKind] : [], prompt);
+    local.coordinator.close();
+  }
+}
+
+async function explicitMultipleExecutionObligationsAreProven() {
+  const prompts = [
+    "Run Python for the first calculation, then run Python for the second calculation.",
+    "Run Python twice in separate calls to compare two calculations.",
+  ];
+  for (const [index, prompt] of prompts.entries()) {
+    let modelStep = 0;
+    const multiple = fixture(async (_client, payload) => {
+      modelStep += 1;
+      if (modelStep === 1) {
+        assert.equal(payload.tool_choice, "required", prompt);
+        return toolResponse("print('first calculation')");
+      }
+      if (modelStep === 2) {
+        assert.equal(payload.tool_choice, "required", prompt);
+        const feedback = JSON.parse(payload.messages.at(-1).content);
+        assert.match(feedback.correction, /1 additional successful bounded Python execution/u);
+        return toolResponse("print('second calculation')");
+      }
+      assert.equal(Object.hasOwn(payload, "tools"), false, prompt);
+      assert.equal(Object.hasOwn(payload, "tool_choice"), false, prompt);
+      return textResponse("Both requested calculations completed.");
+    }, { worker: fakeWorker((request, signal) => terminalResult(request, signal, [])) });
+    const result = await multiple.planner.run(
+      scope(`run_00000000-0000-4000-8000-${String(106 + index).padStart(12, "0")}`),
+      { prompt }
+    );
+    assert.equal(modelStep, 3, prompt);
+    assert.equal(result.toolCalls, 2, prompt);
+    assert.equal(result.executionStatus, "succeeded", prompt);
+    assert.equal(
+      multiple.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+      2,
+      prompt
+    );
+    multiple.coordinator.close();
+  }
+
+  let identicalStep = 0;
+  const identicalSource = "print('same exact source')";
+  const identicalRequests = [];
+  const identical = fixture(async (_client, payload) => {
+    identicalStep += 1;
+    if (identicalStep <= 2) {
+      assert.equal(payload.tool_choice, "required");
+      return toolResponse(identicalSource);
+    }
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    return textResponse("The exact source completed in both requested executions.");
+  }, {
+    worker: fakeWorker((request, signal) => {
+      identicalRequests.push(request);
+      return terminalResult(request, signal, []);
+    }),
+  });
+  const identicalResult = await identical.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000126"),
+    { prompt: "Run the exact same Python source twice in separate calls." }
+  );
+  assert.equal(identicalStep, 3);
+  assert.equal(identicalResult.toolCalls, 2);
+  assert.equal(identicalRequests.length, 2);
+  assert.equal(identicalRequests[0].source, identicalSource);
+  assert.equal(identicalRequests[1].source, identicalSource);
+  assert.notEqual(identicalRequests[0].jobId, identicalRequests[1].jobId);
+  identical.coordinator.close();
+
+  let recoveredStep = 0;
+  const recovered = fixture(async (_client, payload) => {
+    recoveredStep += 1;
+    if (recoveredStep === 1) return toolResponse("import numpy\nprint(numpy.arange(2))");
+    if (recoveredStep === 2) {
+      const feedback = JSON.parse(payload.messages.at(-1).content);
+      assert.equal(payload.tool_choice, "required");
+      assert.equal(feedback.ok, false);
+      assert.match(feedback.correction, /2 additional successful bounded Python executions/u);
+      return toolResponse("print('first successful calculation')");
+    }
+    if (recoveredStep === 3) {
+      const feedback = JSON.parse(payload.messages.at(-1).content);
+      assert.equal(payload.tool_choice, "required");
+      assert.equal(feedback.ok, true);
+      assert.match(feedback.correction, /1 additional successful bounded Python execution/u);
+      return toolResponse("print('second successful calculation')");
+    }
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    return textResponse("Both calculations succeeded after the bounded correction.");
+  }, { worker: fakeWorker((request, signal) => terminalResult(request, signal, [])) });
+  const recoveredResult = await recovered.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000112"),
+    { prompt: "Run Python twice in separate calls and compare the successful results." }
+  );
+  assert.equal(recoveredStep, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS + 1);
+  assert.equal(recoveredResult.toolCalls, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS);
+  assert.equal(recoveredResult.executionStatus, "succeeded");
+  assert.equal(
+    recovered.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    2
+  );
+  recovered.coordinator.close();
+
+  let impossibleModelCalls = 0;
+  const impossible = fixture(async () => {
+    impossibleModelCalls += 1;
+    return toolResponse("print('must not run')");
+  });
+  await assert.rejects(
+    impossible.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000113"),
+      { prompt: "Run Python four times in separate calls." }
+    ),
+    (error) => error?.code === "ANALYSIS_TOOL_LIMIT" && error?.status === 400
+  );
+  assert.equal(impossibleModelCalls, 0);
+  assert.equal(
+    impossible.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    0
+  );
+  impossible.coordinator.close();
+}
+
+async function cancellationDuringPostSuccessSynthesisIsSanitized() {
+  let modelStep = 0;
+  let synthesisStarted;
+  const started = new Promise((resolve) => { synthesisStarted = resolve; });
+  const cancelled = fixture(async (_client, payload, config) => {
+    modelStep += 1;
+    if (modelStep === 1) return toolResponse("print(2 + 2)");
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    synthesisStarted();
+    return new Promise((_resolve, reject) => {
+      const abort = () => reject(config.abortSignal.reason || new Error("aborted"));
+      config.abortSignal.addEventListener("abort", abort, { once: true });
+    });
+  }, { worker: fakeWorker((request, signal) => terminalResult(request, signal, [])) });
+  const controller = new AbortController();
+  const pending = cancelled.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000108"),
+    { prompt: "Run Python to calculate 2+2." },
+    { signal: controller.signal }
+  );
+  await started;
+  controller.abort(new Error("private cancellation detail at /home/private"));
+  await assert.rejects(
+    pending,
+    (error) => error?.code === "ANALYSIS_CANCELLED" && !error.message.includes("/home/private")
+  );
+  assert.equal(modelStep, 2);
+  assert.equal(
+    cancelled.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    1
+  );
+  cancelled.coordinator.close();
 }
 
 async function recoversPlotOnThirdExecutionAttempt() {
@@ -2119,6 +2755,30 @@ async function rejectsFalseCompletionAfterFailedOrArtifactlessExecution() {
     INTEGRATION_ANALYSIS_MAX_TOOL_CALLS
   );
   artifactless.coordinator.close();
+
+  let tablelessStep = 0;
+  const tableless = fixture(async (_client, payload) => {
+    tablelessStep += 1;
+    if (tablelessStep <= INTEGRATION_ANALYSIS_MAX_TOOL_CALLS) {
+      assert.equal(payload.tool_choice, "required");
+      return toolResponse(`print('tableless attempt ${tablelessStep}')`);
+    }
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    return textResponse("The table is ready.");
+  }, { worker: fakeWorker((request, signal) => terminalResult(request, signal, [])) });
+  await assert.rejects(
+    tableless.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000114"),
+      { prompt: "Run Python and show a table of the values." }
+    ),
+    (error) => error?.code === "ANALYSIS_TABLE_ARTIFACT_REQUIRED" && error?.status === 502
+  );
+  assert.equal(tablelessStep, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS + 1);
+  assert.equal(
+    tableless.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    INTEGRATION_ANALYSIS_MAX_TOOL_CALLS
+  );
+  tableless.coordinator.close();
 }
 
 async function rejectsOverridesAndMalformedTools() {
@@ -2195,7 +2855,7 @@ async function enforcesToolLoopAndCancellation() {
   });
   await assert.rejects(
     loop.planner.run(scope("run_00000000-0000-4000-8000-000000000064"), {
-      prompt: "Run Python twice to compare two calculations.",
+      prompt: "Run Python once to calculate a value.",
     }),
     (error) => error?.code === "ANALYSIS_TOOL_LIMIT"
   );
@@ -2307,8 +2967,10 @@ async function correctsUnavailableImportsAndBrandsActivation() {
 expressionPlotCompilerIsStrict();
 explicitPythonCompilerIsStrict();
 await deterministicExplicitPythonExecutesWithoutModel();
+await deterministicExplicitPythonRepeatsExactSourceTruthfully();
 await deterministicExplicitPythonFailuresStayTruthful();
 await explicitPythonPlotIntentIgnoresSourceText();
+await explicitPythonTableIntentIsProvenOutsideSourceText();
 await explicitPythonOutputIsLiteralAndBounded();
 await deterministicExpressionPlotExecutesWithoutModel();
 await deterministicExpressionPlotFailuresStayTruthful();
@@ -2330,6 +2992,9 @@ await documentReadinessDegradesWithoutBreakingOrdinaryChat();
 await texPdfIntentRejectsMetadataOnlyCompilerForgery();
 await conversationalFollowupUsesOnlyCurrentTurnExecutionAuthority();
 await generalPlotRequestsRequireExecutionAndArtifact();
+await tableAndCombinedArtifactObligationsAreProven();
+await explicitMultipleExecutionObligationsAreProven();
+await cancellationDuringPostSuccessSynthesisIsSanitized();
 await recoversPlotOnThirdExecutionAttempt();
 await rejectsFalseCompletionAfterFailedOrArtifactlessExecution();
 await rejectsOverridesAndMalformedTools();
