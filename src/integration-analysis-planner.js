@@ -1758,8 +1758,13 @@ function createPlanner({
         const requireTool =
           explicitExecution &&
           (toolCalls === 0 || (toolCalls < INTEGRATION_ANALYSIS_MAX_TOOL_CALLS && !executionSatisfied));
+        // Once the current request's execution and artifact requirements are
+        // satisfied, the remaining model turn is synthesis-only. Keeping the
+        // tool advertised lets a redundant or malformed follow-up execution
+        // overwrite a proven success with a later failure.
         const disableTools =
-          fencedNonExecution || directConversationAnswer || toolCalls >= INTEGRATION_ANALYSIS_MAX_TOOL_CALLS;
+          fencedNonExecution || directConversationAnswer || executionSatisfied
+          || toolCalls >= INTEGRATION_ANALYSIS_MAX_TOOL_CALLS;
         const payload = completionPayload(messages, modelConfig, { requireTool, disableTools });
         assertWithinModelContext(payload, modelConfig);
         const response = await complete(modelClient, payload, config, `bounded analysis model step ${modelStep + 1}`);

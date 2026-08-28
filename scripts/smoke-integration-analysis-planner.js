@@ -1094,7 +1094,8 @@ async function unsupportedSafeExpressionPlotFallsBackToBoundedModelExecution() {
         "emit_plot('Requested values', {'schemaVersion':'1','type':'scatter','series':[{'name':'values','points':points}]})",
       ].join("\n"));
     }
-    assert.equal(payload.tool_choice, "auto");
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    assert.equal(Object.hasOwn(payload, "tool_choice"), false);
     return textResponse("The requested values are plotted in the verified artifact.");
   }, {
     worker: fakeWorker((request, signal) => {
@@ -1320,7 +1321,8 @@ async function coordinatedExecutionClausesHonorLocalNegation() {
           ? "emit_plot('y=x', {'schemaVersion':'1','type':'line','labels':['0','1'],'series':[{'name':'y','data':[0,1]}]})"
           : "print(2 + 2)");
       }
-      assert.equal(payload.tool_choice, "auto", prompt);
+      assert.equal(Object.hasOwn(payload, "tools"), false, prompt);
+      assert.equal(Object.hasOwn(payload, "tool_choice"), false, prompt);
       return textResponse("The supported Python action completed.");
     }, {
       worker: fakeWorker((request, signal) => terminalResult(request, signal, needsPlot ? undefined : [])),
@@ -1901,12 +1903,13 @@ async function conversationalFollowupUsesOnlyCurrentTurnExecutionAuthority() {
   let explicitModelCalls = 0;
   const explicit = fixture(async (_client, payload) => {
     explicitModelCalls += 1;
-    assert.equal(Object.hasOwn(payload, "tools"), true);
     if (explicitModelCalls === 1) {
+      assert.equal(Object.hasOwn(payload, "tools"), true);
       assert.equal(payload.tool_choice, "required");
       return toolResponse("value = 0 - 1\nprint(value)");
     }
-    assert.equal(payload.tool_choice, "auto");
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    assert.equal(Object.hasOwn(payload, "tool_choice"), false);
     return textResponse("At x=0, the curve has value -1.");
   });
   const explicitResult = await explicit.planner.run(
@@ -1954,8 +1957,8 @@ async function generalPlotRequestsRequireExecutionAndArtifact() {
         "emit_plot('e^x - x^e', {'schemaVersion':'1','type':'line','labels':labels,'series':[{'name':'value','data':values}]})",
       ].join("\n"));
     }
-    assert.equal(payload.tool_choice, "auto");
-    assert.equal(Object.hasOwn(payload, "tools"), true);
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    assert.equal(Object.hasOwn(payload, "tool_choice"), false);
     return textResponse("The corrected execution produced the requested plot.");
   }, { worker });
   const result = await corrected.planner.run(
@@ -2196,10 +2199,10 @@ async function enforcesToolLoopAndCancellation() {
     }),
     (error) => error?.code === "ANALYSIS_TOOL_LIMIT"
   );
-  assert.equal(step, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS + 1);
+  assert.equal(step, 2);
   assert.equal(
     loop.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
-    INTEGRATION_ANALYSIS_MAX_TOOL_CALLS
+    1
   );
   loop.coordinator.close();
 
