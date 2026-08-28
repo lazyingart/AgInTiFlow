@@ -412,6 +412,13 @@ function forbiddenTails(text = "") {
   return tails;
 }
 
+function normalizeWrappedNegativePrefixes(goal = "") {
+  return String(goal || "").replace(
+    /\b(do|must|should)\s*\r?\n\s*not\b/giu,
+    "$1 not"
+  );
+}
+
 function inferExactOutputPaths(goal = "") {
   const paths = [];
   const lines = String(goal || "").split(/\n/);
@@ -557,7 +564,7 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
       `(?=\\S{1,260}\\.(?:${extensionPattern})\\b)`,
     "giu"
   );
-  const source = String(goal || "")
+  const source = normalizeWrappedNegativePrefixes(goal)
     .replace(/([,，、])\s*\r?\n\s*/gu, "$1 ")
     .replace(wrappedNegativeAction, "$1 ")
     .replace(wrappedNegativePath, "$1 ");
@@ -1065,7 +1072,7 @@ function codeProfileRequiresCommand(goal = "") {
 }
 
 function goalRequestsWorkspaceMutation(goal = "", taskProfile = "") {
-  const text = normalizedText(stripForbiddenLanguage(goal));
+  const text = normalizedText(stripCompletedWorkNarration(stripForbiddenLanguage(goal)));
   if (String(taskProfile || "").trim().toLowerCase() === "review") {
     return /\b(?:append|copy|create|delete|edit|fix|implement|modify|move|patch|refactor|remove|rename|repair|replace|rewrite|save|update|write)\b/.test(
       text
@@ -1080,7 +1087,7 @@ function goalRequestsWorkspaceMutation(goal = "", taskProfile = "") {
 }
 
 function goalRequestsFileMutation(goal = "", taskProfile = "") {
-  const text = normalizedText(stripForbiddenLanguage(goal));
+  const text = normalizedText(stripCompletedWorkNarration(stripForbiddenLanguage(goal)));
   if (!goalRequestsWorkspaceMutation(text, taskProfile)) return false;
   return (
     /\b(?:code|codebase|document(?:ation)?|files?|notes?|path|readme|repo(?:sitory)?|script|source|workspace)\b/.test(
@@ -1301,11 +1308,33 @@ function inferRequiredToolCalls(goal = "") {
 }
 
 function stripForbiddenLanguage(goal = "") {
-  return String(goal || "")
-    .replace(/\b(do not|don't|dont|never|no need to)\s+([^.\n;]+)/gi, "")
+  return normalizeWrappedNegativePrefixes(goal)
+    .replace(/\b(do not|don't|dont|must not|should not|never|no need to)\s+([^.\n;]+)/gi, "")
     .replace(/\bwithout\s+([^.,\n;]+)/gi, "")
     .replace(/不要([^。\n；]+)/g, "")
     .replace(/禁止([^。\n；]+)/g, "");
+}
+
+function stripCompletedWorkNarration(goal = "") {
+  const completedAction =
+    "(?:completed?|finished|performed|applied|committed|repaired|fixed|rebuilt|rewrote|generated|created|updated|modified|patched|moved|relocated)";
+  const priorActor =
+    "(?:(?:the\\s+)?(?:prior|previous|earlier|last)\\s+(?:run|turn|attempt|session|agent|worker)|(?:it|this|that)\\s+(?:was|has\\s+been))";
+  return String(goal || "")
+    .replace(
+      new RegExp(
+        `\\b${priorActor}\\b[^.!?;；。！？\\n]{0,300}\\b${completedAction}\\b[^.!?;；。！？\\n]*`,
+        "gi"
+      ),
+      ""
+    )
+    .replace(
+      new RegExp(
+        `\\b(?:already|previously|earlier)\\b[^.!?;；。！？\\n]{0,180}\\b${completedAction}\\b[^.!?;；。！？\\n]*`,
+        "gi"
+      ),
+      ""
+    );
 }
 
 function parseAgintiEvidenceScopeMatch(goal = "") {

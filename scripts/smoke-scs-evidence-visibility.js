@@ -88,6 +88,18 @@ const pathWrappedImmutableSourceContract = deriveScsTaskContract({
   taskProfile: "slides",
 });
 
+const wrappedNegativeVerificationOnlyContract = deriveScsTaskContract({
+  goal: [
+    "Continue the exact active presentation task from its clean committed state.",
+    "The prior run completed the task-owned repository repair.",
+    "Do not start over and do",
+    "not modify source_brief.md, measurements.csv, prompt.txt, or TASK.md.",
+    "Do not rebuild, rewrite, recommit, or otherwise mutate the repository.",
+    "Read build_deck.py and TASK.md, run the exact validator, and finish from the retained evidence.",
+  ].join("\n"),
+  taskProfile: "slides",
+});
+
 const recoveryInstructionContract = deriveScsTaskContract({
   goal: [
     "Use the retained source and these two failures: the tests invoke ../service_ctl.py, while `python3 service_ctl.py start --state-dir .runtime` fails. Preserve the lifecycle assertions rather than replacing them, repair service_ctl.py, and remove the accidental untracked resume-after-git-baseline-recovery-dev-prompt.txt.",
@@ -201,6 +213,26 @@ for (const contract of [
     "a negative action or its governed path list lost protection across a line wrap"
   );
 }
+assert.deepEqual(
+  wrappedNegativeVerificationOnlyContract.excludedOutputPaths.sort(),
+  ["TASK.md", "measurements.csv", "prompt.txt", "source_brief.md"].sort(),
+  "a line-wrapped 'do not' prefix lost its immutable source exclusions"
+);
+assert.deepEqual(
+  wrappedNegativeVerificationOnlyContract.exactOutputPaths,
+  [],
+  "a verification-only continuation inferred exact outputs from a wrapped negative clause"
+);
+assert.equal(
+  wrappedNegativeVerificationOnlyContract.requiresWorkspaceMutation,
+  false,
+  "a verification-only continuation with a wrapped negative prefix required workspace mutation"
+);
+assert.equal(
+  wrappedNegativeVerificationOnlyContract.requiresFileMutation,
+  false,
+  "a verification-only continuation with a wrapped negative prefix required file mutation"
+);
 assert(
   recoveryInstructionContract.excludedOutputPaths.includes("resume-after-git-baseline-recovery-dev-prompt.txt") &&
     !recoveryInstructionContract.exactOutputPaths.includes("resume-after-git-baseline-recovery-dev-prompt.txt"),
