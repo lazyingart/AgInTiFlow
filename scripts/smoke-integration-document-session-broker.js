@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION } from "../src/integration-analysis-planner.js";
 import { createTestOnlyIntegrationAnalysisSessionService } from "../src/integration-analysis-session-service.js";
+import { sanitizeIntegrationArtifact } from "../src/integration-artifacts.js";
 import { classifyIntegrationDocumentArtifactIntent } from "../src/integration-document-artifacts.js";
 import { canonicalJson, contractDigest } from "../src/integration-policy.js";
 import { compileRequirements, createDocumentWorkerFixture } from "./test-document-worker-fixture.js";
@@ -137,6 +138,7 @@ function createDocumentRunner(fixture, client, controls = {}) {
         scope: Object.freeze({ ...scope }),
         prompt: input.prompt,
         conversation: Object.freeze(input.conversation.map((message) => Object.freeze({ ...message }))),
+        priorArtifacts: Object.freeze(input.priorArtifacts.map((artifact) => sanitizeIntegrationArtifact(artifact))),
       }));
       const intent = classifyIntegrationDocumentArtifactIntent(input.prompt, input.conversation);
       if (!intent.required) {
@@ -252,6 +254,14 @@ async function committedContinuationRoundTrip(temporaryRoot) {
     assert.equal(pendingEvents.some(({ type }) => type === "artifact.created"), false);
     assert.equal(pendingEvents.some(({ type }) => type === "run.completed"), false);
     assert.deepEqual((await service.listArtifacts({ runId: started.run.id }, context())).artifacts, []);
+    assert.deepEqual(runner.calls[0].priorArtifacts, []);
+    await assert.rejects(
+      service.startRun(
+        { threadId: thread.thread.id, input: { text: "Pending files must not become follow-up context." } },
+        context()
+      ),
+      (error) => error?.code === "ANALYSIS_THREAD_BUSY"
+    );
     const pending = await persistedState(stateRoot);
     assert.equal(pending.envelope.state.documentCommitIntents.length, 1);
     assert.equal(pending.envelope.state.documentCommitIntents[0].status, "pending");
@@ -276,6 +286,9 @@ async function committedContinuationRoundTrip(temporaryRoot) {
     const files = (await service.listArtifacts({ runId: started.run.id }, context())).artifacts;
     assert.deepEqual(files.map(({ kind }) => kind), ["file", "file"]);
     assert.deepEqual(files.map(({ spec }) => spec.mime), ["application/x-tex", "application/pdf"]);
+    const expectedPriorFiles = files.map(({ id, title, kind, spec }) =>
+      sanitizeIntegrationArtifact({ id, title, kind, spec })
+    );
     const compileCallsAfterFirst = fixture.calls.filter(({ pathname }) => pathname === "/artifact/v1/compile");
     assert.equal(compileCallsAfterFirst.length, 1);
     assert.equal(compileCallsAfterFirst[0].request.requirements.minimumFigureCount, 1);
@@ -286,6 +299,11 @@ async function committedContinuationRoundTrip(temporaryRoot) {
     );
     await service.waitForIdle();
     assert.equal((await service.getRunStatus({ runId: normal.run.id }, context())).run.status, "completed");
+    assert.deepEqual(
+      runner.calls.find(({ scope }) => scope.runId === normal.run.id)?.priorArtifacts,
+      expectedPriorFiles,
+      "only the fully committed document pair should reach the immediate follow-up"
+    );
     assert.equal(
       fixture.calls.filter(({ pathname }) => pathname === "/artifact/v1/compile").length,
       1,
@@ -298,6 +316,11 @@ async function committedContinuationRoundTrip(temporaryRoot) {
     );
     await service.waitForIdle();
     assert.equal((await service.getRunStatus({ runId: revised.run.id }, context())).run.status, "completed");
+    assert.deepEqual(
+      runner.calls.find(({ scope }) => scope.runId === revised.run.id)?.priorArtifacts,
+      [],
+      "an artifactless completed follow-up must prevent older committed files from bleeding forward"
+    );
     const compileCalls = fixture.calls.filter(({ pathname }) => pathname === "/artifact/v1/compile");
     assert.equal(compileCalls.length, 2);
     assert.equal(compileCalls[1].request.requirements.minimumFigureCount, 1);
@@ -306,6 +329,65 @@ async function committedContinuationRoundTrip(temporaryRoot) {
     controls.releaseProduction.resolve();
     fixture.setAvailable(true);
     await service.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
+async function mismatchedCommittedObjectLinkageIsRejected(temporaryRoot) {
+  const stateRoot = path.join(temporaryRoot, "mismatched-committed-object-linkage");
+  const fixture = createDocumentWorkerFixture();
+  const client = fixture.client();
+  const runner = createDocumentRunner(fixture, client);
+  let service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: runner,
+    stateRoot,
+    documentWorkerClient: client,
+    documentWorkerEnabled: true,
+  });
+  let rejected = null;
+  try {
+    const thread = await service.createThread({ title: "Committed object linkage" }, context());
+    const started = await service.startRun(
+      { threadId: thread.thread.id, input: { text: PRODUCTION_PROMPT } },
+      context()
+    );
+    await service.waitForIdle();
+    assert.equal((await service.getRunStatus({ runId: started.run.id }, context())).run.status, "completed");
+    await service.close({ mode: "wait" });
+    service = null;
+
+    const stored = await persistedState(stateRoot);
+    const intent = stored.envelope.state.documentCommitIntents[0];
+    assert.equal(intent.status, "committed");
+    assert.equal(intent.eventsPublished, true);
+    assert.equal(intent.objects.length, 2);
+    intent.objects[0].ref = intent.objects[1].ref;
+    intent.manifestDigest = contractDigest({
+      schemaVersion: "aginti-document-commit-intent-manifest-v2",
+      objects: intent.objects,
+    });
+    const unsigned = {
+      schemaVersion: stored.envelope.schemaVersion,
+      state: stored.envelope.state,
+    };
+    stored.envelope.digest = contractDigest(unsigned);
+    const scopeEntries = await fs.readdir(path.join(stateRoot, "scopes"));
+    assert.equal(scopeEntries.length, 1);
+    const statePath = path.join(stateRoot, "scopes", scopeEntries[0], "state.json");
+    await fs.writeFile(statePath, `${canonicalJson(stored.envelope)}\n`, { mode: 0o600 });
+
+    rejected = createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: runner,
+      stateRoot,
+      documentWorkerClient: client,
+      documentWorkerEnabled: true,
+    });
+    await assert.rejects(
+      rejected.getThread({ threadId: thread.thread.id }, context()),
+      (error) => error?.code === "ANALYSIS_STATE_CORRUPT"
+    );
+  } finally {
+    await service?.close({ mode: "abort" }).catch(() => {});
+    await rejected?.close({ mode: "abort" }).catch(() => {});
   }
 }
 
@@ -966,6 +1048,7 @@ async function main() {
   const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-document-session-broker-"));
   try {
     await committedContinuationRoundTrip(temporaryRoot);
+    await mismatchedCommittedObjectLinkageIsRejected(temporaryRoot);
     await cancellationBeforePairedCaptureRoundTrip(temporaryRoot);
     await cancellationAfterPairedCaptureDeletesWorkerGroup(temporaryRoot);
     await cancellationAfterPairedCaptureReplaysDeletionAfterRestart(temporaryRoot);

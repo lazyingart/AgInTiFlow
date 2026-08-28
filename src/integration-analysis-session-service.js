@@ -24,6 +24,9 @@ import {
 } from "./integration-document-worker-client.js";
 import { inspectIntegrationDocumentCompileRequirements } from "./integration-document-worker-requirements.js";
 import {
+  INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACT_JSON_BYTES,
+  INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACTS,
+  INTEGRATION_ANALYSIS_MAX_PRIOR_CONTEXT_BYTES,
   INTEGRATION_ANALYSIS_MAX_TOOL_CALLS,
   INTEGRATION_ANALYSIS_PLANNER_ACTIVATION_SCHEMA_VERSION,
   INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION,
@@ -31,6 +34,7 @@ import {
   INTEGRATION_DOCUMENT_REVISION_SOURCE_SCHEMA_VERSION,
   assertIntegrationAnalysisPlanner,
   assertIntegrationAnalysisPlannerActivation,
+  integrationAnalysisPriorArtifactMessageBytes,
 } from "./integration-analysis-planner.js";
 import { INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION } from "./integration-analysis-coordinator.js";
 import {
@@ -94,6 +98,9 @@ export const INTEGRATION_ANALYSIS_SESSION_LIMITS = Object.freeze({
   maximumConversationMessages: 24,
   maximumConversationMessageBytes: 8 * 1024,
   maximumConversationBytes: 48 * 1024,
+  maximumPriorArtifacts: INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACTS,
+  maximumPriorArtifactJsonBytes: INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACT_JSON_BYTES,
+  maximumPriorContextBytes: INTEGRATION_ANALYSIS_MAX_PRIOR_CONTEXT_BYTES,
   maximumConcurrentPlannerRuns: 2,
   maximumQueuedPlannerRuns: 16,
   maximumQueuedPlannerRunsPerScope: 4,
@@ -1108,6 +1115,60 @@ function immediatelyPrecedingCompletedRunId(state, targetRun) {
     if (run?.status === "completed") return runId;
   }
   return null;
+}
+
+function committedPublicArtifactForPriorContext(state, artifact) {
+  if (artifact.kind !== "file") return true;
+  return state.documentCommitIntents.some((intent) =>
+    intent.threadId === artifact.threadId &&
+    intent.runId === artifact.runId &&
+    intent.receiptDigest === artifact.compileReceiptDigest &&
+    intent.status === "committed" &&
+    intent.eventsPublished === true &&
+    intent.objects.some((object) =>
+      object.ref === artifact.workerRef &&
+      object.role === artifact.documentRole &&
+      object.sha256 === artifact.spec.sha256 &&
+      (intent.schemaVersion === LEGACY_DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION || (
+        object.filename === artifact.spec.filename &&
+        object.bytes === artifact.spec.bytes
+      ))
+    )
+  );
+}
+
+function priorArtifactsForRun(state, targetRun) {
+  const priorRunId = immediatelyPrecedingCompletedRunId(state, targetRun);
+  if (priorRunId === null) return Object.freeze({ artifacts: Object.freeze([]), messageBytes: 0 });
+  const candidates = state.artifacts.filter((artifact) =>
+    artifact.threadId === targetRun.threadId &&
+    artifact.runId === priorRunId &&
+    committedPublicArtifactForPriorContext(state, artifact)
+  );
+  const newestFirst = [];
+  let jsonBytes = 2;
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    if (newestFirst.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumPriorArtifacts) break;
+    const candidate = candidates[index];
+    const artifact = sanitizeIntegrationArtifact({
+      id: candidate.id,
+      title: candidate.title,
+      kind: candidate.kind,
+      spec: candidate.spec,
+    });
+    const artifactBytes = byteLength(canonicalJson(artifact));
+    const nextBytes = jsonBytes + artifactBytes + (newestFirst.length === 0 ? 0 : 1);
+    if (nextBytes > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumPriorArtifactJsonBytes) continue;
+    newestFirst.push(artifact);
+    jsonBytes = nextBytes;
+  }
+  const artifacts = Object.freeze(newestFirst.reverse());
+  const artifactJsonBytes = artifacts.length === 0 ? 0 : byteLength(canonicalJson(artifacts));
+  if (artifactJsonBytes > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumPriorArtifactJsonBytes) corrupt();
+  return Object.freeze({
+    artifacts,
+    messageBytes: integrationAnalysisPriorArtifactMessageBytes(artifacts),
+  });
 }
 
 function latestCommittedDocumentSourceLineage(state, targetRun) {
@@ -2772,19 +2833,28 @@ function createService(options, { testOnly }) {
       .slice(0, inputIndex)
       .filter((message) => message.runId !== excludedRetryRunId)
       .slice(-INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumConversationMessages);
+    const priorArtifactContext = priorArtifactsForRun(state, run);
+    const maximumConversationBytes = Math.min(
+      INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumConversationBytes,
+      Math.max(
+        0,
+        INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumPriorContextBytes - priorArtifactContext.messageBytes
+      )
+    );
     const selected = [];
     let totalBytes = 0;
     for (let index = preceding.length - 1; index >= 0; index -= 1) {
       const message = preceding[index];
       const content = clipUtf8(message.content, INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumConversationMessageBytes);
       const bytes = byteLength(content);
-      if (totalBytes + bytes > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumConversationBytes) continue;
+      if (totalBytes + bytes > maximumConversationBytes) continue;
       selected.unshift(Object.freeze({ role: message.role, content }));
       totalBytes += bytes;
     }
     return Object.freeze({
       prompt,
       conversation: Object.freeze(selected),
+      priorArtifacts: priorArtifactContext.artifacts,
       ...(run.search === undefined ? {} : { search: validateIntegrationSearch(run.search) }),
     });
   }
@@ -4067,6 +4137,10 @@ function createService(options, { testOnly }) {
       maximumConcurrentPlannerRuns: INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumConcurrentPlannerRuns,
       maximumQueuedPlannerRuns: INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumQueuedPlannerRuns,
       maximumQueuedPlannerRunsPerScope: INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumQueuedPlannerRunsPerScope,
+      priorArtifactContextSameThreadOnly: true,
+      priorArtifactContextImmediatelyPrecedingCompletedRunOnly: true,
+      priorArtifactsAuthorizeExecution: false,
+      priorArtifactsCountAsCurrentEvidence: false,
       queuedRunsPersisted: true,
       boundedDrain: true,
       durablePublicReplay: true,
