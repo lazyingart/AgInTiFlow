@@ -293,8 +293,9 @@ function delegatedValidationPlanClassification(tokens = []) {
   const args = tokens.slice(1).map((token) => String(token || ""));
   const executablePath = validationExecutablePathMetadata(tokens[0]);
   const basenameCommand = [executable, ...args].join(" ");
+  const structuredValidation = structuredValidationCommand(basenameCommand);
   const validationLike = Boolean(
-    structuredValidationCommand(basenameCommand) || matchAny(TEST_PATTERNS, basenameCommand)
+    structuredValidation || matchAny(TEST_PATTERNS, basenameCommand)
   );
   if (executablePath.outsideWorkspace && validationLike) {
     return {
@@ -302,6 +303,12 @@ function delegatedValidationPlanClassification(tokens = []) {
       needsNetwork: true,
       writesWorkspace: true,
       mayMutateProject: true,
+      // Requiring trusted-shell authorization for an external executable does
+      // not prove that its bounded validation invocation mutates the project.
+      // Preserve that semantic distinction for post-command evidence tracking.
+      semanticMayMutateProject:
+        structuredValidation?.mayMutateProject ??
+        validationCommandMayMutateProject(basenameCommand),
       substantiveTest: false,
       reason:
         "The validation executable is outside the current workspace and requires trusted shell policy.",

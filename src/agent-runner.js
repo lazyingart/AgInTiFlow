@@ -10110,6 +10110,12 @@ function commandCanMutateProjectContent(command = "", commandPolicy = {}) {
   const category = String(commandPolicy.category || "");
   const requiresGitMutationInspection =
     ["git-workflow", "git-remote"].includes(category);
+  if (
+    commandPolicy.semanticMayMutateProject === false &&
+    !requiresGitMutationInspection
+  ) {
+    return false;
+  }
   if (requiresGitMutationInspection && commandPolicy.gitOnly === true) {
     return inferGitActionsFromCommand(command, { requireFailurePropagation: false }).some((action) =>
       WORKTREE_CHANGING_GIT_ACTIONS.has(action)

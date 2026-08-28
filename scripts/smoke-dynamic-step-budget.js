@@ -2782,6 +2782,16 @@ try {
       acceptanceClassification.substantiveTest === true,
     "a structurally named Python acceptance validator was treated as an arbitrary mutating script"
   );
+  const externalAcceptanceValidator =
+    "/opt/conda/bin/python /tmp/supervision/acceptance/webapp_booking_contract.py";
+  const externalAcceptanceClassification = classifyCommand(externalAcceptanceValidator);
+  assert(
+    externalAcceptanceClassification.category === "general-shell" &&
+      externalAcceptanceClassification.writesWorkspace === true &&
+      externalAcceptanceClassification.mayMutateProject === true &&
+      externalAcceptanceClassification.semanticMayMutateProject === false,
+    "trusted-shell authorization for an external Python validator was conflated with project mutation"
+  );
   assert(
     classifyCommand(`${acceptanceValidator} --output report.json`).writesWorkspace === true,
     "a Python acceptance validator with an explicit output destination was treated as read-only"
@@ -3678,6 +3688,32 @@ try {
     readOnlyValidatorState.meta.projectVerification?.mutationRevision === 0 &&
       readOnlyValidatorResult.projectMutationRevision === 0,
     "a semantically read-only validator fabricated project mutation progress"
+  );
+  const externalReadOnlyValidatorState = { meta: { goalContract: { revision: 1 } } };
+  const externalReadOnlyValidatorCommand =
+    "cd . && /opt/conda/bin/python /tmp/supervision/acceptance/webapp_booking_contract.py && git status --short";
+  const externalReadOnlyValidatorResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: externalReadOnlyValidatorCommand },
+    stdout: "webapp booking contract: PASS\n",
+    stderr: "",
+    commandPolicy: classifyCommand(externalReadOnlyValidatorCommand),
+  };
+  recordProjectVerificationOutcome(
+    externalReadOnlyValidatorState,
+    externalReadOnlyValidatorResult,
+    {
+      commandCwd: workspace,
+      taskProfile: "app",
+      sandboxMode: "host",
+    }
+  );
+  assert(
+    externalReadOnlyValidatorState.meta.projectVerification?.mutationRevision === 0 &&
+      externalReadOnlyValidatorResult.projectMutationRevision === 0,
+    "an absolute-interpreter acceptance validator forced a post-validation commit"
   );
   const shellMutationState = { meta: { goalContract: { revision: 1 } } };
   const shellMutationResult = {
