@@ -68,12 +68,23 @@ async function waitForHealth() {
 async function waitForRun(sessionId, terminalStatuses = ["finished", "failed"]) {
   const acceptedStatuses = new Set(terminalStatuses);
   const deadline = Date.now() + 20000;
+  let lastRun = null;
   while (Date.now() < deadline) {
     const run = await fetchJson(`/api/runs/${encodeURIComponent(sessionId)}`);
+    lastRun = run;
     if (acceptedStatuses.has(run.status)) return run;
     await delay(400);
   }
-  throw new Error(`run ${sessionId} did not finish in time`);
+  throw new Error(
+    `run ${sessionId} did not finish in time; ` +
+      `lastRun=${JSON.stringify(lastRun ? {
+        status: lastRun.status,
+        error: lastRun.error,
+        endedAt: lastRun.endedAt,
+        logs: Array.isArray(lastRun.logs) ? lastRun.logs.slice(-12) : [],
+      } : null)} ` +
+      `stdout=${stdout.slice(-1000)} stderr=${stderr.slice(-1000)}`
+  );
 }
 
 try {

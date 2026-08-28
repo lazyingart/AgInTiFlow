@@ -12,12 +12,80 @@ import {
 import {
   buildScsEvidenceLedger,
   deriveScsTaskContract,
+  evaluateRequestedArtifactRequirements,
   evaluateScsSemanticContract,
   extractMarkdownCommandEvidence,
   extractMarkdownPathEvidence,
   finishResultClaimsBlocker,
   finishResultClaimsIncompleteWork,
 } from "../src/scs-evidence.js";
+
+const educationArtifactGoal =
+  "Create an editable lesson deck, a separate practice sheet and answer key, printable materials, a helpful preview, and a reproducible build entrypoint.";
+const educationArtifactContract = deriveScsTaskContract({
+  goal: educationArtifactGoal,
+  taskProfile: "education",
+});
+assert.deepEqual(
+  educationArtifactContract.requiredArtifactKinds.map((item) => item.id).sort(),
+  [
+    "answer-material",
+    "editable-presentation",
+    "practice-material",
+    "printable-document",
+    "reproducible-build-entrypoint",
+    "visual-preview",
+  ],
+  "multi-artifact education request did not retain each semantic deliverable"
+);
+assert.deepEqual(
+  deriveScsTaskContract({
+    goal: "Create a canvas artifact preview for this smoke test.",
+    taskProfile: "auto",
+  }).requiredArtifactKinds,
+  [],
+  "a generic frontend canvas preview was incorrectly converted into a required image-file artifact"
+);
+const educationWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "aginti-education-artifacts-"));
+const educationState = {
+  meta: {
+    goalContract: {
+      lifecycle: [{ at: new Date(Date.now() - 2000).toISOString() }],
+    },
+    projectVerification: { mutationHistory: [] },
+  },
+};
+fs.mkdirSync(path.join(educationWorkspace, "workshop"), { recursive: true });
+fs.writeFileSync(path.join(educationWorkspace, "workshop", "lesson-deck.md"), "# Lesson deck\n");
+const incompleteEducationArtifacts = evaluateRequestedArtifactRequirements(
+  educationArtifactContract,
+  { commandCwd: educationWorkspace, state: educationState }
+);
+assert.equal(incompleteEducationArtifacts.ok, false);
+assert.ok(
+  incompleteEducationArtifacts.missing.some((item) => item.id === "editable-presentation"),
+  "Markdown-only deck incorrectly satisfied the editable presentation contract"
+);
+for (const [name, content] of [
+  ["lesson-deck.pptx", "pptx"],
+  ["practice-sheet.md", "practice"],
+  ["answer-key.md", "answers"],
+  ["practice-sheet.pdf", "pdf"],
+  ["lesson-preview.png", "png"],
+  ["build_materials.py", "print('build')\n"],
+]) {
+  fs.writeFileSync(path.join(educationWorkspace, "workshop", name), content);
+}
+const completeEducationArtifacts = evaluateRequestedArtifactRequirements(
+  educationArtifactContract,
+  { commandCwd: educationWorkspace, state: educationState }
+);
+assert.equal(
+  completeEducationArtifacts.ok,
+  true,
+  `complete semantic artifact set was rejected: ${completeEducationArtifacts.reason}`
+);
+fs.rmSync(educationWorkspace, { recursive: true, force: true });
 
 function fakeStudentClient(json) {
   return {

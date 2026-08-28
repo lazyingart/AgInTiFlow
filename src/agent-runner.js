@@ -128,6 +128,7 @@ import {
   deterministicFinishBlocker,
   evaluateScsEvidence,
   evaluateScsSemanticContract,
+  evaluateRequestedArtifactRequirements,
   augmentScsTaskContractWithProjectVerification,
   agintiEvidenceScopeLine,
   filterExplicitlyExcludedOutputPaths,
@@ -1754,6 +1755,11 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
     title: snapshot?.title || "",
     url: snapshot?.url || "",
     plan: effectivePlan,
+    missingRequestedArtifactRequirements: Array.isArray(
+      config.missingRequestedArtifactRequirements
+    )
+      ? config.missingRequestedArtifactRequirements
+      : [],
   };
   const compactedContent = [
     options.heading || "Continue from this compacted, valid transcript.",
@@ -11507,6 +11513,21 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       ? state.meta.activeExecutionContract || {}
       : {};
   const groundingTaskContract = completionTaskContract(config, state);
+  const requestedArtifactEvaluation = evaluateRequestedArtifactRequirements(
+    groundingTaskContract,
+    {
+      commandCwd: config.commandCwd || state.commandCwd || process.cwd(),
+      state,
+    }
+  );
+  if (!requestedArtifactEvaluation.ok) {
+    runtimeConfig.requestedArtifactRequirementsPending = true;
+    runtimeConfig.missingRequestedArtifactRequirements =
+      requestedArtifactEvaluation.missing.map((item) => ({
+        id: String(item?.id || ""),
+        description: String(item?.description || item?.id || ""),
+      }));
+  }
   const groundingMutationRevision = Math.max(
     0,
     Number(state.meta?.projectVerification?.mutationRevision || 0)
@@ -12263,7 +12284,12 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     runtimeConfig.requiredProjectCommand = pendingRequiredProjectCommands[0];
     runtimeConfig.pendingRequiredProjectCommands = pendingRequiredProjectCommands;
   }
-  if (!state.meta?.artifactProgress && !retainedFailedTest && !implementationOpen) {
+  if (
+    !state.meta?.artifactProgress &&
+    !retainedFailedTest &&
+    !implementationOpen &&
+    requestedArtifactEvaluation.ok
+  ) {
     const completionContract = completionTaskContract(config, state);
     const completionEvaluation = evaluateScsEvidence(
       completionContract,
@@ -13293,6 +13319,25 @@ function comparablePatchContextText(value = "") {
     .trim();
 }
 
+function preservePatchContextBoundaryWhitespace(marker = {}, replacement = "") {
+  const value = String(replacement || "");
+  if (String(marker.anchorKind || "") === "complete-file") {
+    return { replacement: value, preserved: false };
+  }
+  const search = String(marker.search || "");
+  const trailingBoundary = search.match(/(?:(?:\r\n|\n|\r)[\t ]*)+$/)?.[0] || "";
+  if (!trailingBoundary) return { replacement: value, preserved: false };
+  const withoutTrailingBoundary = value.replace(
+    /(?:(?:\r\n|\n|\r)[\t ]*)+$/,
+    ""
+  );
+  const normalized = `${withoutTrailingBoundary}${trailingBoundary}`;
+  return {
+    replacement: normalized,
+    preserved: normalized !== value,
+  };
+}
+
 function patchContextDeclarationCounts(content = "") {
   const counts = new Map();
   for (const record of sourceLineRecords(content)) {
@@ -13520,6 +13565,11 @@ export function bindPatchContextRepairArguments(state = {}, requestedArgs = {}) 
         : patchContextReplacementScopeIssue(boundMarker, replace);
     }
   }
+  const boundaryWhitespace = preservePatchContextBoundaryWhitespace(
+    boundMarker,
+    replace
+  );
+  replace = boundaryWhitespace.replacement;
   if (boundedSubrange && state.meta?.toolLoop?.patchContextRepair) {
     state.meta.toolLoop.patchContextRepair.lastBoundSearchHash =
       boundedSubrange.searchHash;
@@ -13538,6 +13588,7 @@ export function bindPatchContextRepairArguments(state = {}, requestedArgs = {}) 
       : "",
     boundedRequestedSubrange: Boolean(boundedSubrange),
     incrementalDeclarationRecovery,
+    boundaryWhitespacePreserved: boundaryWhitespace.preserved,
     noOp:
       comparablePatchContextText(replace) ===
       comparablePatchContextText(boundMarker.search),
@@ -13613,8 +13664,21 @@ export function patchContextRefreshDecision(state = {}, toolResult = {}) {
       toolResult.ok === false &&
       toolResult.category === "patch-context-scope-mismatch"
   );
+  const pythonSyntaxRegression = Boolean(
+    String(toolResult.toolName || "") === "apply_patch" &&
+      toolResult.ok === false &&
+      toolResult.category === "python-syntax-regression"
+  );
   const missingSearch = patchSearchTextWasNotFound(toolResult);
-  if (!missingSearch && !idempotencyBlock && !topologyBlock && !scopeMismatch) return null;
+  if (
+    !missingSearch &&
+    !idempotencyBlock &&
+    !topologyBlock &&
+    !scopeMismatch &&
+    !pythonSyntaxRegression
+  ) {
+    return null;
+  }
   const targetPath = toolResultWorkspacePath(toolResult);
   if (!targetPath) return null;
   const toolLoop = state.meta?.toolLoop || {};
@@ -13642,6 +13706,7 @@ export function patchContextRefreshDecision(state = {}, toolResult = {}) {
     !idempotencyBlock &&
     !topologyBlock &&
     !scopeMismatch &&
+    !pythonSyntaxRegression &&
     stalePatchFailureCount < 1 &&
     !followedIdempotencyBlock
   ) {
@@ -13673,6 +13738,8 @@ export function patchContextRefreshDecision(state = {}, toolResult = {}) {
         ? "required-symbol-topology"
         : scopeMismatch
           ? "patch-context-scope-mismatch"
+          : pythonSyntaxRegression
+            ? "python-syntax-regression"
         : "stale-patch-search",
     failedSearchPreview,
     failedSearchHash: String(toolResult.args?.searchHash || ""),
@@ -14654,6 +14721,8 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         patchContextBinding.boundedRequestedSubrange === true,
       incrementalDeclarationRecovery:
         Boolean(patchContextBinding.incrementalDeclarationRecovery),
+      boundaryWhitespacePreserved:
+        patchContextBinding.boundaryWhitespacePreserved === true,
     };
     await store.appendEvent("patch_context.anchor_injected", detail);
     observers.event("patch_context.anchor_injected", detail);

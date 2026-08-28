@@ -508,6 +508,11 @@ function formatHardContractForPrompt(contract = {}) {
   const requiredExecutableTerms = normalizeStringList(contract.requiredExecutableTerms, []);
   const forbiddenTextTerms = normalizeStringList(contract.forbiddenTextTerms, []);
   const forbiddenActions = normalizeStringList(contract.forbiddenActions, []);
+  const requiredArtifactKinds = (Array.isArray(contract.requiredArtifactKinds)
+    ? contract.requiredArtifactKinds
+    : [])
+    .map((item) => compact(item?.description || item?.id || "", 160))
+    .filter(Boolean);
   if (exactOutputPaths.length) lines.push(`Exact output path(s): ${exactOutputPaths.join(", ")}`);
   if (exactInputPaths.length) lines.push(`Exact input/reference path(s) to use: ${exactInputPaths.join(", ")}`);
   if (requiredTextTerms.length) lines.push(`Required text term(s) in the output: ${requiredTextTerms.join(", ")}`);
@@ -516,6 +521,9 @@ function formatHardContractForPrompt(contract = {}) {
   }
   if (forbiddenTextTerms.length) lines.push(`Forbidden text term(s) in the output: ${forbiddenTextTerms.join(", ")}`);
   if (forbiddenActions.length) lines.push(`Forbidden action(s): ${forbiddenActions.join("; ")}`);
+  if (requiredArtifactKinds.length) {
+    lines.push(`Required artifact deliverable(s): ${requiredArtifactKinds.join(", ")}`);
+  }
   return lines.length
     ? [
         "Inferred hard task contract. Preserve these literally; do not replace them with weaker or contradictory criteria:",
@@ -531,8 +539,19 @@ function deterministicPlanContractIssue(committee = {}, contract = {}) {
   const missingRequiredTerms = normalizeStringList(contract.requiredTextTerms, []).filter((item) => !planText.includes(item));
   const missingExecutableTerms = normalizeStringList(contract.requiredExecutableTerms, []).filter((item) => !planText.includes(item));
   const forbiddenTermsInPlan = normalizeStringList(contract.forbiddenTextTerms, []).filter((item) => planText.includes(item));
+  const missingArtifactKinds = (Array.isArray(contract.requiredArtifactKinds)
+    ? contract.requiredArtifactKinds
+    : []).filter((item) => {
+      const id = String(item?.id || "").replace(/^format:/, "");
+      const description = String(item?.description || "");
+      const terms = [id, description]
+        .flatMap((value) => value.toLocaleLowerCase("en-US").split(/[^a-z0-9.]+/))
+        .filter((value) => value.length >= 3);
+      const normalizedPlan = planText.toLocaleLowerCase("en-US");
+      return terms.length > 0 && !terms.some((term) => normalizedPlan.includes(term));
+    });
   const actionContradiction = deterministicPlanActionContradiction(planText, contract);
-  if (missingPath.length || missingInputPath.length || missingRequiredTerms.length || missingExecutableTerms.length || forbiddenTermsInPlan.length || actionContradiction) {
+  if (missingPath.length || missingInputPath.length || missingRequiredTerms.length || missingExecutableTerms.length || forbiddenTermsInPlan.length || missingArtifactKinds.length || actionContradiction) {
     return {
       decision: "veto_plan",
       confidence: 0.94,
@@ -542,6 +561,11 @@ function deterministicPlanContractIssue(committee = {}, contract = {}) {
         missingRequiredTerms.length ? `Plan omitted required text term(s): ${missingRequiredTerms.join(", ")}` : "",
         missingExecutableTerms.length ? `Plan omitted required executable source expression(s): ${missingExecutableTerms.join(", ")}` : "",
         forbiddenTermsInPlan.length ? `Plan includes forbidden text term(s): ${forbiddenTermsInPlan.join(", ")}` : "",
+        missingArtifactKinds.length
+          ? `Plan omitted requested artifact deliverable(s): ${missingArtifactKinds
+              .map((item) => item.description || item.id)
+              .join(", ")}`
+          : "",
         actionContradiction || "",
       ].filter(Boolean),
       reason:

@@ -53,6 +53,7 @@ import {
   isSubstantiveTestCommand,
   mergeDurableGitEvidence,
   nextStepRuntimeConfig,
+  patchContextRefreshDecision,
   patchContextScopeMismatchAttemptCount,
   parseGitPorcelainStatus,
   pythonMainGuardOrderDefects,
@@ -1215,6 +1216,100 @@ try {
     !unrelatedInsertionBinding?.incrementalDeclarationRecovery &&
       Boolean(unrelatedInsertionBinding?.scopeIssue),
     "an unrelated missing declaration escaped the active failed-test symbol contract"
+  );
+  const declarationBoundarySource = [
+    "def build_preview():",
+    "    path = 'preview.png'",
+    "    return path",
+    "",
+    "def main():",
+    "    return build_preview()",
+    "",
+  ].join("\n");
+  const declarationBoundaryOffset = declarationBoundarySource.indexOf("def main():");
+  const declarationBoundaryAnchor = declarationBoundarySource.slice(
+    0,
+    declarationBoundaryOffset
+  );
+  const declarationBoundaryState = {
+    meta: {
+      goalContract: { revision: 1 },
+      projectVerification: { mutationRevision: 1, privateMutationRevision: 0 },
+      toolLoop: {
+        patchContextRepair: {
+          version: 1,
+          path: "preview_builder.py",
+          goalRevision: 1,
+          mutationRevision: 1,
+          privateMutationRevision: 0,
+          search: declarationBoundaryAnchor,
+          searchHash: crypto
+            .createHash("sha256")
+            .update(declarationBoundaryAnchor)
+            .digest("hex"),
+          sourceHash: crypto
+            .createHash("sha256")
+            .update(declarationBoundarySource)
+            .digest("hex"),
+          anchorKind: "declaration-identity",
+          anchorIdentity: "build_preview",
+        },
+      },
+    },
+  };
+  const declarationBoundaryBinding = bindPatchContextRepairArguments(
+    declarationBoundaryState,
+    {
+      replace: [
+        "def build_preview():",
+        "    path = 'preview-fixed.png'",
+        "    return path",
+      ].join("\n"),
+    }
+  );
+  assert(
+    declarationBoundaryBinding?.boundaryWhitespacePreserved === true &&
+      declarationBoundaryBinding.args.replace.endsWith("\n") &&
+      /return path\n+def main\(\):/.test(
+        `${declarationBoundaryBinding.args.replace}${declarationBoundarySource.slice(declarationBoundaryOffset)}`
+      ),
+    "revision-bound declaration replacement did not preserve its Python declaration boundary"
+  );
+  await fs.writeFile(
+    path.join(workspace, "preview_builder.py"),
+    declarationBoundarySource,
+    "utf8"
+  );
+  assert(
+    (await prospectivePythonExactPatchSyntaxBlock(
+      "apply_patch",
+      declarationBoundaryBinding.args,
+      { commandCwd: workspace }
+    )) === null,
+    "the boundary-preserved declaration replacement still produced invalid Python"
+  );
+  const syntaxRefreshDecision = patchContextRefreshDecision(
+    {
+      meta: {
+        goalContract: { revision: 1 },
+        projectVerification: { mutationRevision: 1, privateMutationRevision: 0 },
+        toolLoop: { stagnationEpoch: 0, recent: [] },
+      },
+    },
+    {
+      toolName: "apply_patch",
+      ok: false,
+      category: "python-syntax-regression",
+      args: {
+        path: "preview_builder.py",
+        search: declarationBoundaryAnchor,
+      },
+    }
+  );
+  assert(
+    syntaxRefreshDecision?.triggerCategory === "python-syntax-regression" &&
+      syntaxRefreshDecision.path === "preview_builder.py",
+    "a prospective Python syntax regression did not force a fresh exact-source read"
   );
   const semanticScopeMismatchState = {
     meta: {
@@ -10363,6 +10458,60 @@ try {
   assert(resumedBudget?.currentMaxSteps === 2, "runAgent inherited an older expanded budget over explicit resumed max-steps");
   assert(resumedBudget?.extensionsUsed === 0, "runAgent retained stale extension usage after an explicit resumed max-steps patch");
   assert(resumedBudget?.resetFromExplicitOverride === true, "runAgent did not record the explicit budget reset boundary");
+
+  const educationWorkspace = path.join(tempRoot, "education-artifact-contract");
+  await fs.mkdir(path.join(educationWorkspace, "workshop"), { recursive: true });
+  await fs.writeFile(path.join(educationWorkspace, "workshop", "lesson-deck.md"), "# Lesson\n");
+  const educationGoal =
+    "Create an editable lesson deck, a separate practice sheet and answer key, printable materials, a helpful preview, and a reproducible build entrypoint. Verify and commit the work.";
+  const educationState = {
+    goal: educationGoal,
+    commandCwd: educationWorkspace,
+    plan: "Create every requested artifact, verify them, and commit the complete set.",
+    messages: [
+      {
+        role: "tool",
+        content: JSON.stringify({
+          ok: true,
+          toolName: "write_file",
+          path: "workshop/lesson-deck.md",
+          goalRevision: 1,
+          projectMutationRevision: 1,
+        }),
+      },
+    ],
+    meta: {
+      taskProfile: "education",
+      goalContract: {
+        revision: 1,
+        currentRequest: educationGoal,
+        taskGoal: educationGoal,
+        activeGoalRevision: 1,
+        lifecycle: [{ at: new Date(Date.now() - 2000).toISOString() }],
+      },
+      projectVerification: {
+        mutationRevision: 1,
+        mutationHistory: [
+          {
+            revision: 1,
+            at: new Date().toISOString(),
+            toolName: "write_file",
+            paths: ["workshop/lesson-deck.md"],
+            goalRevision: 1,
+          },
+        ],
+      },
+    },
+  };
+  const incompleteEducationRuntime = nextStepRuntimeConfig(
+    { goal: educationGoal, taskProfile: "education", commandCwd: educationWorkspace },
+    educationState
+  );
+  assert(
+    incompleteEducationRuntime.requestedArtifactRequirementsPending === true &&
+      incompleteEducationRuntime.taskOwnedCommitPending !== true,
+    "a partial multi-artifact task entered task-owned Git completion before its deliverables existed"
+  );
 
   await fs.rm(tempRoot, { recursive: true, force: true });
   console.log("smoke-dynamic-step-budget ok");

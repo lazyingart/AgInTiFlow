@@ -521,6 +521,120 @@ function inferExactOutputPaths(goal = "") {
   return uniqueLimited(filterShadowedBasenames(paths), 16);
 }
 
+const REQUESTED_ARTIFACT_FORMATS = [
+  { extension: ".pptx", pattern: /\b(?:pptx|powerpoint)\b/i, description: "editable PowerPoint deck" },
+  { extension: ".odp", pattern: /\b(?:odp|open(?:office|document) presentation)\b/i, description: "editable ODP deck" },
+  { extension: ".pdf", pattern: /\bpdf\b/i, description: "PDF document" },
+  { extension: ".docx", pattern: /\b(?:docx|word document)\b/i, description: "editable Word document" },
+  { extension: ".xlsx", pattern: /\b(?:xlsx|excel workbook)\b/i, description: "editable spreadsheet" },
+  { extension: ".png", pattern: /\bpng\b/i, description: "PNG image" },
+  { extension: ".svg", pattern: /\bsvg\b/i, description: "editable SVG image" },
+];
+
+function artifactRequestHasOutputIntent(goal = "", taskProfile = "") {
+  const source = stripForbiddenLanguage(String(goal || ""));
+  return Boolean(
+    goalRequestsFileMutation(source, taskProfile) ||
+      /\b(?:create|deliver|export|generate|leave|make|output|prepare|produce|save|write)\b/i.test(
+        source
+      ) ||
+      /\b(?:i|we)\s+(?:also\s+)?(?:need|want|would like)\b[^.\n;]{0,100}\b(?:answer|artifact|deck|document|handout|material|pdf|presentation|preview|report|sheet|slides?|workbook|worksheet)\b/i.test(
+        source
+      ) ||
+      /\b(?:give|provide|return|send)\b[^.\n;]{0,80}\b(?:answer|artifact|deck|document|handout|material|pdf|presentation|preview|report|sheet|slides?|workbook|worksheet)\b/i.test(
+        source
+      ) ||
+      /(?:创建|生成|输出|导出|保存|提供|需要|交付)/u.test(source)
+  );
+}
+
+export function inferRequestedArtifactRequirements(goal = "", taskProfile = "") {
+  const source = stripForbiddenLanguage(String(goal || ""));
+  if (!artifactRequestHasOutputIntent(source, taskProfile)) return [];
+
+  const requirements = [];
+  const add = (requirement) => {
+    if (!requirement?.id || requirements.some((item) => item.id === requirement.id)) return;
+    requirements.push(requirement);
+  };
+
+  for (const format of REQUESTED_ARTIFACT_FORMATS) {
+    if (!format.pattern.test(source)) continue;
+    add({
+      id: `format:${format.extension}`,
+      kind: "format",
+      extension: format.extension,
+      description: format.description,
+    });
+  }
+
+  const deckRequested = /\b(?:deck|presentation|slides?|slide deck|lecture deck)\b/i.test(source);
+  const editableRequested = /\b(?:editable|edit-friendly|native(?:ly)? editable)\b/i.test(source);
+  if (deckRequested && editableRequested) {
+    add({
+      id: "editable-presentation",
+      kind: "editable-presentation",
+      extensions: [".pptx", ".odp", ".key"],
+      description: "editable presentation deck",
+    });
+  }
+
+  if (
+    /\bprintable\b/i.test(source) &&
+    /\b(?:answer|deck|document|handout|material|practice|sheet|slides?|worksheet)\b/i.test(source)
+  ) {
+    add({
+      id: "printable-document",
+      kind: "printable-document",
+      extensions: [".pdf"],
+      description: "printable PDF material",
+    });
+  }
+
+  if (
+    /\b(?:helpful|high[- ]resolution|useful|visual)\s+preview\b|\b(?:image|png|rendered|screenshot)\s+preview\b|\bpreview\s+(?:image|png|render|screenshot)\b/i.test(
+      source
+    )
+  ) {
+    add({
+      id: "visual-preview",
+      kind: "visual-preview",
+      extensions: [".png", ".jpg", ".jpeg", ".webp"],
+      description: "visual preview image",
+    });
+  }
+
+  if (/\b(?:practice sheet|worksheet|exercise sheet|learner handout)\b/i.test(source)) {
+    add({
+      id: "practice-material",
+      kind: "practice-material",
+      description: "separate practice or worksheet material",
+    });
+  }
+
+  if (/\b(?:answer key|answers?|worked solutions?|solutions? sheet)\b/i.test(source)) {
+    add({
+      id: "answer-material",
+      kind: "answer-material",
+      description: "separate answer or solution material",
+    });
+  }
+
+  if (
+    /\b(?:reproducible|repeatable)\b[^.\n;]{0,80}\b(?:build|generation|export|render)\b|\b(?:build|generation|export|render)\s+(?:entrypoint|script|command)\b/i.test(
+      source
+    )
+  ) {
+    add({
+      id: "reproducible-build-entrypoint",
+      kind: "reproducible-build-entrypoint",
+      description: "reproducible build or export entrypoint",
+    });
+  }
+
+  return requirements.slice(0, 16);
+}
+
 function normalizedContractPath(value = "") {
   return String(value || "")
     .trim()
@@ -1581,6 +1695,10 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     excludedOutputPaths
   ).filter((item) => !inferredOutputPaths.includes(item) && !exactOutputPaths.includes(item));
   const declaredSourceRoots = inferDeclaredSourceRoots(evidenceGoal);
+  const requiredArtifactKinds = inferRequestedArtifactRequirements(
+    positiveEvidenceGoal,
+    taskProfile
+  );
   return {
     version: 1,
     outcome: compact(evidenceGoal || "Complete the requested task.", 500),
@@ -1589,6 +1707,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     requiredEvidence,
     forbiddenActions: inferForbiddenActions(evidenceGoal),
     exactOutputPaths,
+    requiredArtifactKinds,
     excludedOutputPaths,
     artifactRoot,
     exactInputPaths,
@@ -1815,6 +1934,190 @@ function resolveContractPath(commandCwd = process.cwd(), rawPath = "") {
   if (text.startsWith("/workspace/")) return path.resolve(commandCwd || process.cwd(), text.slice("/workspace/".length));
   if (path.isAbsolute(text)) return text;
   return path.resolve(commandCwd || process.cwd(), text);
+}
+
+const ARTIFACT_SCAN_IGNORED_DIRECTORIES = new Set([
+  ".aginti",
+  ".aginti-sessions",
+  ".git",
+  ".hg",
+  ".svn",
+  "__pycache__",
+  "node_modules",
+  "vendor",
+]);
+
+function taskArtifactFreshnessBoundary(state = {}) {
+  const lifecycle = Array.isArray(state.meta?.goalContract?.lifecycle)
+    ? state.meta.goalContract.lifecycle
+    : [];
+  const lifecycleTimes = lifecycle
+    .map((item) => Date.parse(String(item?.at || "")))
+    .filter(Number.isFinite);
+  if (lifecycleTimes.length) return Math.min(...lifecycleTimes) - 2000;
+  const mutationTimes = (Array.isArray(state.meta?.projectVerification?.mutationHistory)
+    ? state.meta.projectVerification.mutationHistory
+    : [])
+    .map((item) => Date.parse(String(item?.at || "")))
+    .filter(Number.isFinite);
+  return mutationTimes.length ? Math.min(...mutationTimes) - 2000 : 0;
+}
+
+function taskArtifactMutationPaths(state = {}) {
+  const paths = new Set();
+  for (const mutation of Array.isArray(state.meta?.projectVerification?.mutationHistory)
+    ? state.meta.projectVerification.mutationHistory
+    : []) {
+    for (const candidate of Array.isArray(mutation?.paths) ? mutation.paths : []) {
+      const normalized = normalizedContractPath(candidate);
+      if (normalized) paths.add(normalized.toLocaleLowerCase("en-US"));
+    }
+  }
+  return paths;
+}
+
+function collectRequestedArtifactCandidates(commandCwd = process.cwd(), state = {}) {
+  const root = path.resolve(commandCwd || process.cwd());
+  const freshnessBoundary = taskArtifactFreshnessBoundary(state);
+  const mutationPaths = taskArtifactMutationPaths(state);
+  const candidates = [];
+  const queue = [{ absolutePath: root, depth: 0 }];
+  let visited = 0;
+  while (queue.length && candidates.length < 3000 && visited < 6000) {
+    const current = queue.shift();
+    visited += 1;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current.absolutePath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const absolutePath = path.join(current.absolutePath, entry.name);
+      if (entry.isDirectory()) {
+        if (
+          current.depth < 7 &&
+          !ARTIFACT_SCAN_IGNORED_DIRECTORIES.has(entry.name) &&
+          !entry.name.startsWith(".cache")
+        ) {
+          queue.push({ absolutePath, depth: current.depth + 1 });
+        }
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      let stat;
+      try {
+        stat = fs.statSync(absolutePath);
+      } catch {
+        continue;
+      }
+      if (!stat.size) continue;
+      const relativePath = path.relative(root, absolutePath).replace(/\\/g, "/");
+      const normalized = normalizedContractPath(relativePath).toLocaleLowerCase("en-US");
+      const fresh = Boolean(
+        mutationPaths.has(normalized) ||
+          freshnessBoundary === 0 ||
+          Number(stat.mtimeMs || 0) >= freshnessBoundary
+      );
+      candidates.push({
+        path: relativePath,
+        extension: path.extname(entry.name).toLocaleLowerCase("en-US"),
+        basename: entry.name.toLocaleLowerCase("en-US"),
+        bytes: stat.size,
+        mtimeMs: Number(stat.mtimeMs || 0),
+        fresh,
+      });
+    }
+  }
+  return candidates;
+}
+
+function requestedArtifactRequirementMatches(requirement = {}, candidate = {}) {
+  const extension = String(candidate.extension || "").toLocaleLowerCase("en-US");
+  const basename = String(candidate.basename || "").toLocaleLowerCase("en-US");
+  if (requirement.kind === "format") {
+    return extension === String(requirement.extension || "").toLocaleLowerCase("en-US");
+  }
+  if (["editable-presentation", "printable-document", "visual-preview"].includes(requirement.kind)) {
+    const extensions = new Set(
+      (Array.isArray(requirement.extensions) ? requirement.extensions : [])
+        .map((item) => String(item || "").toLocaleLowerCase("en-US"))
+    );
+    if (!extensions.has(extension)) return false;
+    if (requirement.kind === "visual-preview") {
+      return /(?:preview|contact[-_ ]?sheet|overview|thumbnail|render)/i.test(basename);
+    }
+    return true;
+  }
+  if (requirement.kind === "practice-material") {
+    return /(?:practice|worksheet|exercise|handout|activity)/i.test(basename) &&
+      /\.(?:docx|html?|md|odt|pdf|tex|txt)$/i.test(extension);
+  }
+  if (requirement.kind === "answer-material") {
+    return /(?:answer|solution|worked[-_ ]?answers?)/i.test(basename) &&
+      /\.(?:docx|html?|md|odt|pdf|tex|txt)$/i.test(extension);
+  }
+  if (requirement.kind === "reproducible-build-entrypoint") {
+    return (
+      /^(?:makefile|justfile)$/i.test(basename) ||
+      /(?:^|[-_])(?:build|compile|export|generate|render)(?:[-_.]|$)/i.test(basename)
+    ) && /(?:^makefile$|^justfile$|\.(?:cjs|js|mjs|py|sh|ts)$)/i.test(basename);
+  }
+  return false;
+}
+
+export function evaluateRequestedArtifactRequirements(
+  contract = {},
+  { commandCwd = process.cwd(), state = {} } = {}
+) {
+  const requirements = Array.isArray(contract.requiredArtifactKinds)
+    ? contract.requiredArtifactKinds
+    : [];
+  if (!requirements.length) {
+    return {
+      ok: true,
+      checked: false,
+      requirements: [],
+      satisfied: [],
+      missing: [],
+      candidates: [],
+      reason: "No semantic artifact-set contract was inferred.",
+    };
+  }
+  const candidates = collectRequestedArtifactCandidates(commandCwd, state);
+  const requireFresh = contract.requiresFileMutation === true;
+  const usableCandidates = requireFresh
+    ? candidates.filter((candidate) => candidate.fresh)
+    : candidates;
+  const satisfied = [];
+  const missing = [];
+  for (const requirement of requirements) {
+    const matches = usableCandidates.filter((candidate) =>
+      requestedArtifactRequirementMatches(requirement, candidate)
+    );
+    if (matches.length) {
+      satisfied.push({
+        ...requirement,
+        paths: matches.map((candidate) => candidate.path).slice(0, 12),
+      });
+    } else {
+      missing.push(requirement);
+    }
+  }
+  return {
+    ok: missing.length === 0,
+    checked: true,
+    requirements,
+    satisfied,
+    missing,
+    candidates: usableCandidates.slice(0, 120),
+    reason: missing.length
+      ? `Missing requested artifact deliverables: ${missing
+          .map((item) => item.description || item.id)
+          .join(", ")}.`
+      : "Every requested artifact format and role has a fresh workspace deliverable.",
+  };
 }
 
 const PROJECT_SOURCE_PATH_PATTERN =
@@ -2993,11 +3296,16 @@ export function evaluateScsSemanticContract(
   const forbiddenTextTerms = Array.isArray(contract.forbiddenTextTerms) ? contract.forbiddenTextTerms : [];
   const projectTestVerification = evaluateProjectTestVerification(events);
   const executable = evaluateRequiredExecutableTerms(contract, { commandCwd, events, state });
+  const requestedArtifacts = evaluateRequestedArtifactRequirements(contract, {
+    commandCwd,
+    state,
+  });
   if (
     !exactOutputPaths.length &&
     !requiredTextTerms.length &&
     !requiredExecutableTerms.length &&
-    !forbiddenTextTerms.length
+    !forbiddenTextTerms.length &&
+    !requestedArtifacts.checked
   ) {
     return projectTestVerification.checked
       ? {
@@ -3009,18 +3317,23 @@ export function evaluateScsSemanticContract(
       : { ok: true, checked: false, projectTestVerification, reason: "No semantic file contract was inferred." };
   }
   if (!exactOutputPaths.length) {
-    const ok = executable.ok && projectTestVerification.ok;
+    const ok = executable.ok && projectTestVerification.ok && requestedArtifacts.ok;
     return {
       ok,
-      checked: executable.checked || projectTestVerification.checked,
-      reason: !executable.ok
+      checked: executable.checked || projectTestVerification.checked || requestedArtifacts.checked,
+      reason: !requestedArtifacts.ok
+        ? requestedArtifacts.reason
+        : !executable.ok
         ? executable.reason
         : !projectTestVerification.ok
           ? projectTestVerification.reason
-          : "Semantic text terms were inferred, but no exact output path was inferred for deterministic file inspection.",
+          : requestedArtifacts.checked
+            ? requestedArtifacts.reason
+            : "Semantic text terms were inferred, but no exact output path was inferred for deterministic file inspection.",
       requiredTextTerms,
       requiredExecutableTerms,
       forbiddenTextTerms,
+      requestedArtifacts,
       missingExecutableTerms: executable.missingExecutableTerms,
       executableSourcePaths: executable.executableSourcePaths,
       executable,
@@ -3048,7 +3361,8 @@ export function evaluateScsSemanticContract(
     presentForbiddenText.length === 0 &&
     executable.ok &&
     sourceGrounding.ok &&
-    projectTestVerification.ok;
+    projectTestVerification.ok &&
+    requestedArtifacts.ok;
   return {
     ok,
     checked: true,
@@ -3056,6 +3370,7 @@ export function evaluateScsSemanticContract(
     requiredTextTerms,
     requiredExecutableTerms,
     forbiddenTextTerms,
+    requestedArtifacts,
     missingFiles,
     missingRequiredText,
     missingExecutableTerms: executable.missingExecutableTerms,
@@ -3085,6 +3400,7 @@ export function evaluateScsSemanticContract(
           presentForbiddenText.length ? `Forbidden text terms present: ${presentForbiddenText.join(", ")}` : "",
           !sourceGrounding.ok ? sourceGrounding.reason : "",
           !projectTestVerification.ok ? projectTestVerification.reason : "",
+          !requestedArtifacts.ok ? requestedArtifacts.reason : "",
         ]
           .filter(Boolean)
           .join("; "),
@@ -3619,6 +3935,7 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
       })),
       forbiddenActions: contract.forbiddenActions || [],
       exactOutputPaths: contract.exactOutputPaths || [],
+      requiredArtifactKinds: contract.requiredArtifactKinds || [],
       exactInputPaths: contract.exactInputPaths || [],
       requiredToolCalls: contract.requiredToolCalls || [],
       requiredGitActions: contract.requiredGitActions || [],
