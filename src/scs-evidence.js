@@ -3359,7 +3359,20 @@ export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
     .slice(-80)
     .map((item) => revalidateArtifactEvidence(item, state, context));
   const verifiedItems = items.filter((item) => item?.verified !== false);
-  const categories = unique(verifiedItems.map((item) => item.category));
+  const durableGitEvidence = (
+    Array.isArray(state.meta?.durableGitEvidence) ? state.meta.durableGitEvidence : []
+  )
+    .map((item) => ({
+      action: String(item?.action || "").toLowerCase(),
+      goalRevision: Math.max(0, Number(item?.goalRevision || 0)),
+      mutationRevision: Math.max(0, Number(item?.mutationRevision || 0)),
+    }))
+    .filter((item) => item.action)
+    .slice(-80);
+  const categories = unique([
+    ...verifiedItems.map((item) => item.category),
+    ...(durableGitEvidence.length ? ["git"] : []),
+  ]);
   const toolNames = unique(verifiedItems.map((item) => item.toolName).filter(Boolean));
   const blockerEvents = events
     .filter((event) => ["tool.blocked", "tool.failed"].includes(String(event?.type || "")))
@@ -3392,6 +3405,7 @@ export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
     toolNames,
     blockerCount: blockers.length,
     blockers,
+    durableGitEvidence,
     items: items.map((item, index) => ({
       id: `e${String(index + 1).padStart(3, "0")}`,
       ...item,
@@ -3410,8 +3424,26 @@ export function evaluateScsEvidence(contract = {}, ledger = {}) {
     0,
     Number(contract.requiredGitMutationRevision || 0)
   );
+  const durableGitEvidence = (
+    Array.isArray(ledger.durableGitEvidence) ? ledger.durableGitEvidence : []
+  ).filter(
+    (item) =>
+      item?.action &&
+      (requiredGitRevision === 0 || Number(item?.goalRevision || 0) >= requiredGitRevision) &&
+      (requiredGitMutationRevision === 0 ||
+        Number(item?.mutationRevision || 0) >= requiredGitMutationRevision)
+  );
+  const observedGitEvidence = durableGitEvidence.length
+    ? durableGitEvidence.map((item) => ({
+        category: "git",
+        verified: true,
+        gitAction: item.action,
+        goalRevision: item.goalRevision,
+        mutationRevision: item.mutationRevision,
+      }))
+    : ledgerItems;
   const observedGitActionSequence =
-    ledgerItems
+    observedGitEvidence
       .filter(
         (item) =>
           item?.category === "git" &&

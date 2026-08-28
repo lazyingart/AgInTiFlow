@@ -195,15 +195,6 @@ try {
         toolName: "run_command",
         ok: true,
         exitCode: 0,
-        args: { command: "git commit -m 'Complete retained repair'" },
-        stdout: "[main abcdef1] Complete retained repair\n 1 file changed, 1 insertion(+)",
-        goalRevision: 13,
-        projectMutationRevision: 19,
-      }),
-      toolMessage({
-        toolName: "run_command",
-        ok: true,
-        exitCode: 0,
         args: { command: "git status --short" },
         stdout: "",
         goalRevision: 15,
@@ -264,6 +255,12 @@ try {
       requiredProjectCommands: [],
     },
     buildScsEvidenceLedger({ state: readOnlyVerificationState })
+  );
+  assert(
+    readOnlyVerificationState.messages.every(
+      (message) => !String(message.content || "").includes("git commit")
+    ),
+    "read-only compaction regression accidentally retained the historical commit message"
   );
   assert(
     readOnlyGitEvaluation.missingGitActions.length === 0,
