@@ -1185,7 +1185,6 @@ export function isRecoverablePatchCorrectionResult(toolResult = {}) {
     String(toolResult?.toolName || "") !== "apply_patch" ||
     toolResult?.ok !== false ||
     toolResult?.recoverable !== true ||
-    toolResult?.blocked === true ||
     toolResult?.stopRun === true
   ) {
     return false;
@@ -1193,6 +1192,7 @@ export function isRecoverablePatchCorrectionResult(toolResult = {}) {
   return new Set([
     "ambiguous-declaration-token-patch",
     "ambiguous-python-main-guard-patch",
+    "failed-test-nonrepairing-patch",
     "python-syntax-regression",
   ]).has(String(toolResult?.category || ""));
 }

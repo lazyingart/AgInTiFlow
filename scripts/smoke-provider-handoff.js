@@ -15,8 +15,27 @@ import { SessionStore } from "../src/session-store.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-function assistant(content) {
-  return { choices: [{ message: { role: "assistant", content } }] };
+function assistant(content, toolCalls = []) {
+  return {
+    choices: [{
+      message: {
+        role: "assistant",
+        content,
+        ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+      },
+    }],
+  };
+}
+
+function toolCall(id, name, args) {
+  return {
+    id,
+    type: "function",
+    function: {
+      name,
+      arguments: JSON.stringify(args),
+    },
+  };
 }
 
 assert.deepEqual(
@@ -26,6 +45,20 @@ assert.deepEqual(
 assert.equal(
   classifyProviderHandoffError(Object.assign(new Error("invalid request"), { status: 400 })).eligible,
   false
+);
+assert.deepEqual(
+  classifyProviderHandoffError(Object.assign(
+    new Error("agent step request timed out after 1000ms"),
+    { name: "ModelTimeoutError" }
+  )),
+  { eligible: true, code: "provider_timeout", status: 0 }
+);
+assert.deepEqual(
+  classifyProviderHandoffError(Object.assign(
+    new Error("hosted model violated the tool contract twice"),
+    { code: "TOOL_CONTRACT_VIOLATION" }
+  )),
+  { eligible: true, code: "provider_tool_contract", status: 0 }
 );
 assert.equal(
   resolveProviderHandoff(Object.assign(new Error("payment required"), { status: 402 }), {
@@ -44,6 +77,18 @@ assert.equal(
   }),
   null,
   "an unmarked tool/runtime network error changed the reasoning provider"
+);
+assert.equal(
+  resolveProviderHandoff(Object.assign(
+    new Error("agent step request timed out after 1000ms"),
+    { name: "ModelTimeoutError", agintiProviderRequest: true }
+  ), {
+    provider: "deepseek",
+    model: "deepseek-v4-pro",
+    routingMode: "manual",
+  }),
+  null,
+  "manual provider selection must remain exact after a timeout"
 );
 
 async function runScenario({ routingMode, sessionId }) {
@@ -177,5 +222,356 @@ assert(manual.error);
 assert.equal(manual.factoryConfigs.length, 1);
 assert.equal(manual.events.filter((event) => event.type === "provider.handoff_requested").length, 0);
 assert.equal(manual.events.filter((event) => event.type === "session.failed").length, 1);
+
+async function runTimeoutHandoffScenario() {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-timeout-handoff-"));
+  const workspace = path.join(tempRoot, "workspace");
+  const sessionsDir = path.join(tempRoot, "sessions");
+  const projectSessionsDir = path.join(workspace, ".aginti-sessions");
+  const sessionId = "smart-timeout-provider-handoff";
+  await fs.mkdir(workspace, { recursive: true });
+
+  const requests = [];
+  let localCall = 0;
+  const clientFactory = async (config) => ({
+    chat: {
+      completions: {
+        create: async (payload) => {
+          requests.push({ provider: config.provider, model: payload.model });
+          if (config.provider === "deepseek") {
+            const error = new Error("agent step request timed out after 1000ms");
+            error.name = "ModelTimeoutError";
+            throw error;
+          }
+          if (!Array.isArray(payload.tools) || payload.tools.length === 0) {
+            return assistant([
+              "1. Create timeout-handoff.txt with the exact requested content.",
+              "2. Read the file back to verify it.",
+              "3. Finish with the verified result.",
+            ].join("\n"));
+          }
+          localCall += 1;
+          if (localCall === 1) {
+            return assistant("", [toolCall("write-local", "write_file", {
+              path: "timeout-handoff.txt",
+              mode: "create",
+              content: "continued on LocalLLM after exhausted DeepSeek timeout\n",
+            })]);
+          }
+          if (localCall === 2) {
+            return assistant("", [toolCall("read-local", "read_file", {
+              path: "timeout-handoff.txt",
+              startLine: 1,
+              lineLimit: 20,
+            })]);
+          }
+          return assistant("", [toolCall("finish-local", "finish", {
+            result: "Created and verified timeout-handoff.txt after same-session provider handoff.",
+          })]);
+        },
+      },
+    },
+  });
+  clientFactory.agintiDeterministicTest = true;
+
+  const config = resolveRuntimeConfig(
+    {
+      goal: "Create timeout-handoff.txt, verify its exact content, and finish.",
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      routeProvider: "deepseek",
+      routeModel: "deepseek-v4-flash",
+      mainProvider: "deepseek",
+      mainModel: "deepseek-v4-pro",
+      spareProvider: "deepseek",
+      spareModel: "deepseek-v4-pro",
+      routingMode: "smart",
+      taskProfile: "code",
+      commandCwd: workspace,
+      allowShellTool: false,
+      allowFileTools: true,
+      allowWrapperTools: false,
+      allowAuxiliaryTools: false,
+      allowWebSearch: false,
+      allowMcpTools: false,
+      allowParallelScouts: false,
+      enableScs: "off",
+      dynamicSteps: "off",
+      maxSteps: 6,
+    },
+    {
+      baseDir: workspace,
+      packageDir: repoRoot,
+      sessionId,
+      clientFactory,
+      providerReadinessMode: "deterministic-test",
+      sandboxMode: "host",
+      useDockerSandbox: false,
+    }
+  );
+  Object.assign(config, {
+    apiKey: "deterministic-hosted-test",
+    clientFactory,
+    providerReadinessMode: "deterministic-test",
+    sessionsDir,
+    projectSessionsDir,
+    useDockerSandbox: false,
+    sandboxMode: "host",
+    packageInstallPolicy: "block",
+    allowShellTool: false,
+    allowFileTools: true,
+    allowWrapperTools: false,
+    allowAuxiliaryTools: false,
+    allowWebSearch: false,
+    allowMcpTools: false,
+    allowParallelScouts: false,
+    enableScs: "off",
+    scsActive: false,
+    executionPolicy: {
+      tier: "focused",
+      requiresPlan: false,
+      reason: "Deterministic timeout-handoff smoke.",
+    },
+    dynamicSteps: "off",
+    maxSteps: 6,
+    modelTimeoutMs: 1_000,
+  });
+
+  try {
+    const result = await runAgent(config);
+    const store = new SessionStore(sessionsDir, sessionId, {
+      projectRoot: workspace,
+      commandCwd: workspace,
+      projectSessionsDir,
+    });
+    return {
+      result,
+      state: await store.loadState(),
+      events: await store.loadEvents(),
+      requests,
+      content: await fs.readFile(path.join(workspace, "timeout-handoff.txt"), "utf8"),
+    };
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+const timeoutHandoff = await runTimeoutHandoffScenario();
+assert.equal(timeoutHandoff.result.stopped, undefined);
+assert.deepEqual(
+  timeoutHandoff.requests.map((item) => item.provider),
+  ["deepseek", "deepseek", "localllm", "localllm", "localllm", "localllm"],
+  "exhausted DeepSeek timeout did not continue the exact session on LocalLLM"
+);
+assert.equal(timeoutHandoff.state.provider, "localllm");
+assert.equal(timeoutHandoff.state.model, "localllm-deep");
+assert.equal(timeoutHandoff.state.meta.providerHandoff.status, "active");
+assert.equal(timeoutHandoff.events.filter((event) => event.type === "model.timeout").length, 1);
+assert.equal(timeoutHandoff.events.filter((event) => event.type === "provider.handoff_requested").length, 1);
+assert.equal(timeoutHandoff.events.filter((event) => event.type === "provider.handoff_activated").length, 1);
+assert.equal(timeoutHandoff.events.filter((event) => event.type === "session.failed").length, 0);
+assert.equal(
+  timeoutHandoff.content,
+  "continued on LocalLLM after exhausted DeepSeek timeout\n"
+);
+
+async function runToolContractHandoffScenario() {
+  const tempRoot = await fs.mkdtemp(
+    path.join(os.tmpdir(), "agintiflow-tool-contract-handoff-")
+  );
+  const workspace = path.join(tempRoot, "workspace");
+  const sessionsDir = path.join(tempRoot, "sessions");
+  const projectSessionsDir = path.join(workspace, ".aginti-sessions");
+  const sessionId = "smart-tool-contract-provider-handoff";
+  await fs.mkdir(workspace, { recursive: true });
+
+  const requests = [];
+  let localCall = 0;
+  const clientFactory = async (config) => ({
+    chat: {
+      completions: {
+        create: async (payload) => {
+          requests.push({
+            provider: config.provider,
+            model: payload.model,
+            tools: (payload.tools || []).map((item) => item.function?.name),
+          });
+          if (config.provider === "deepseek") {
+            return assistant("", [
+              toolCall(`invalid-hosted-${requests.length}`, "write_file", {
+                path: "must-not-dispatch.txt",
+                mode: "create",
+                content: "invalid\n",
+                dryRun: false,
+              }),
+            ]);
+          }
+          if (!Array.isArray(payload.tools) || payload.tools.length === 0) {
+            return assistant([
+              "1. Create tool-contract-handoff.txt with the exact requested content.",
+              "2. Read the file back to verify it.",
+              "3. Finish with the verified result.",
+            ].join("\n"));
+          }
+          localCall += 1;
+          if (localCall === 1) {
+            return assistant("", [
+              toolCall("write-local-contract", "write_file", {
+                path: "tool-contract-handoff.txt",
+                mode: "create",
+                content: "continued after hosted tool-contract handoff\n",
+              }),
+            ]);
+          }
+          if (localCall === 2) {
+            return assistant("", [
+              toolCall("read-local-contract", "read_file", {
+                path: "tool-contract-handoff.txt",
+                startLine: 1,
+                lineLimit: 20,
+              }),
+            ]);
+          }
+          return assistant("", [
+            toolCall("finish-local-contract", "finish", {
+              result:
+                "Created and verified tool-contract-handoff.txt after same-session provider recovery.",
+            }),
+          ]);
+        },
+      },
+    },
+  });
+  clientFactory.agintiDeterministicTest = true;
+
+  const config = resolveRuntimeConfig(
+    {
+      goal: "Create tool-contract-handoff.txt, verify its exact content, and finish.",
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      routeProvider: "deepseek",
+      routeModel: "deepseek-v4-flash",
+      mainProvider: "deepseek",
+      mainModel: "deepseek-v4-pro",
+      spareProvider: "deepseek",
+      spareModel: "deepseek-v4-pro",
+      routingMode: "smart",
+      taskProfile: "code",
+      commandCwd: workspace,
+      allowShellTool: false,
+      allowFileTools: true,
+      allowWrapperTools: false,
+      allowAuxiliaryTools: false,
+      allowWebSearch: false,
+      allowMcpTools: false,
+      allowParallelScouts: false,
+      enableScs: "off",
+      dynamicSteps: "off",
+      maxSteps: 6,
+    },
+    {
+      baseDir: workspace,
+      packageDir: repoRoot,
+      sessionId,
+      clientFactory,
+      providerReadinessMode: "deterministic-test",
+      sandboxMode: "host",
+      useDockerSandbox: false,
+    }
+  );
+  Object.assign(config, {
+    apiKey: "deterministic-hosted-test",
+    clientFactory,
+    providerReadinessMode: "deterministic-test",
+    sessionsDir,
+    projectSessionsDir,
+    useDockerSandbox: false,
+    sandboxMode: "host",
+    packageInstallPolicy: "block",
+    allowShellTool: false,
+    allowFileTools: true,
+    allowWrapperTools: false,
+    allowAuxiliaryTools: false,
+    allowWebSearch: false,
+    allowMcpTools: false,
+    allowParallelScouts: false,
+    enableScs: "off",
+    scsActive: false,
+    executionPolicy: {
+      tier: "focused",
+      requiresPlan: false,
+      reason: "Deterministic tool-contract handoff smoke.",
+    },
+    dynamicSteps: "off",
+    maxSteps: 6,
+    modelTimeoutMs: 1_000,
+  });
+
+  try {
+    const result = await runAgent(config);
+    const store = new SessionStore(sessionsDir, sessionId, {
+      projectRoot: workspace,
+      commandCwd: workspace,
+      projectSessionsDir,
+    });
+    return {
+      result,
+      state: await store.loadState(),
+      events: await store.loadEvents(),
+      requests,
+      content: await fs.readFile(
+        path.join(workspace, "tool-contract-handoff.txt"),
+        "utf8"
+      ).catch(() => ""),
+    };
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+const toolContractHandoff = await runToolContractHandoffScenario();
+assert.equal(
+  toolContractHandoff.result.stopped,
+  undefined,
+  JSON.stringify({
+    result: toolContractHandoff.result,
+    requests: toolContractHandoff.requests,
+    failures: toolContractHandoff.events
+      .filter((event) => event.type === "tool.failed")
+      .map((event) => event.data),
+  })
+);
+assert.deepEqual(
+  toolContractHandoff.requests.map((item) => item.provider),
+  ["deepseek", "deepseek", "localllm", "localllm", "localllm", "localllm"],
+  "repeated hosted tool-contract violations did not continue the exact session on LocalLLM"
+);
+assert.equal(toolContractHandoff.state.provider, "localllm");
+assert.equal(toolContractHandoff.state.model, "localllm-deep");
+assert.equal(toolContractHandoff.state.meta.providerHandoff.status, "active");
+assert.equal(
+  toolContractHandoff.state.meta.providerHandoff.failureCode,
+  "provider_tool_contract"
+);
+assert.equal(
+  toolContractHandoff.events.filter(
+    (event) =>
+      event.type === "tool.failed" &&
+      event.data?.category === "tool-contract-violation"
+  ).length,
+  2
+);
+assert.equal(
+  toolContractHandoff.events.filter(
+    (event) =>
+      event.type === "session.stopped" &&
+      event.data?.reason === "tool_contract_violation"
+  ).length,
+  0
+);
+assert.equal(
+  toolContractHandoff.content,
+  "continued after hosted tool-contract handoff\n"
+);
 
 console.log("provider handoff smoke test passed");

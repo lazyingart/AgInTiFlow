@@ -1617,7 +1617,7 @@ export function scoreTaskComplexity(goal = "", taskProfile = "auto") {
   const text = String(goal).toLowerCase();
   let score = text.length > 600 ? 2 : text.length > 240 ? 1 : 0;
   const profile = String(taskProfile || "").toLowerCase();
-  if (["large-codebase", "engineering", "codebase", "code", "qa", "database", "devops", "security"].includes(profile)) score += 3;
+  if (["large-codebase", "engineering", "codebase", "code", "qa", "database", "devops", "security", "cad"].includes(profile)) score += 3;
   if (["app", "data", "paper", "research", "latex", "github", "maintenance", "supervision", "writing", "book", "novel"].includes(profile)) {
     score += 2;
   }

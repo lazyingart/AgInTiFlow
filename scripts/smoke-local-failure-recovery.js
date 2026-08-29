@@ -539,12 +539,12 @@ const focusedRecoveryState = {
       }],
     },
     failedTestRecoveryPacket: {
-      packetVersion: 15,
+      packetVersion: 16,
       mutationRevision: 4,
       failureSignature: "missing-service-seams",
       paths: ["tests/test_service_ctl.py", "service_ctl.py"],
       content: [
-        "Bounded failed-test evidence packet v15.",
+        "Bounded failed-test evidence packet v16.",
         'with mock.patch.object(service_ctl, "launch_service") as launch:',
         'with mock.patch.object(service_ctl, "wait_until_healthy", return_value=True):',
         "### service_ctl.py",
@@ -588,7 +588,7 @@ assert.match(
   focusedRecoveryText,
   /Required acceptance seams: service_ctl\.launch_service, service_ctl\.wait_until_healthy/
 );
-assert.match(focusedRecoveryText, /Bounded failed-test evidence packet v15/);
+assert.match(focusedRecoveryText, /Bounded failed-test evidence packet v16/);
 assert.match(focusedRecoveryText, /requires one coherent source mutation before verification/i);
 
 const durablePatchArgs = {
@@ -1068,6 +1068,31 @@ assert.equal(
   exactPatchRepair?.anchorIdentity,
   "start_service",
   "the exact source refresh did not leave a revision-bound mutation anchor"
+);
+const driftedRepairAnchorState = structuredClone(stalePatchRefreshState);
+driftedRepairAnchorState.meta.failedTestDiagnostic = {
+  mutationRevision:
+    driftedRepairAnchorState.meta.projectVerification.mutationRevision,
+  failureSignature:
+    driftedRepairAnchorState.meta.toolLoop.patchContextRepair.failureSignature,
+  focuses: [
+    {
+      path: "service_ctl.py",
+      directSearch: exactPatchRepair.search,
+    },
+  ],
+};
+driftedRepairAnchorState.meta.toolLoop.patchContextRepair.search = [
+  "def unrelated_status_probe() -> int:",
+  "    return 0",
+  "",
+].join("\n");
+driftedRepairAnchorState.meta.toolLoop.patchContextRepair.searchHash =
+  "drifted-anchor-hash";
+assert.equal(
+  activePatchContextRepair(driftedRepairAnchorState),
+  null,
+  "a repair reread escaped the current failed-test producer focus"
 );
 assert.equal(
   nextStepRuntimeConfig(baseConfig, stalePatchRefreshState).patchContextRepairSearchHash,

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import {
   hasLocalResearchWorkspaceIntent,
@@ -276,6 +277,7 @@ const CODE_PROFILES = new Set([
   "php",
   "ruby",
   "c-cpp",
+  "cad",
   "r-stan",
   "aaps",
   "github",
@@ -611,10 +613,18 @@ function retainedToolRecord(message) {
   return { name, args, result };
 }
 
-function completedToolRecords(messages, { minimumGoalRevision = 0 } = {}) {
+function completedToolRecords(
+  messages,
+  { minimumGoalRevision = 0, currentTaskOnly = true } = {}
+) {
   const callsById = new Map();
   const records = [];
-  for (const message of currentTaskMessages(messages)) {
+  const sourceMessages = currentTaskOnly
+    ? currentTaskMessages(messages)
+    : Array.isArray(messages)
+      ? messages
+      : [];
+  for (const message of sourceMessages) {
     const retained = retainedToolRecord(message);
     if (retained) {
       if (
@@ -650,6 +660,191 @@ function completedToolRecords(messages, { minimumGoalRevision = 0 } = {}) {
     records.push({ ...call, result });
   }
   return records;
+}
+
+const REFERENCED_TEXT_FILE_EXTENSION_PATTERN =
+  /\.(?:bash|bat|bib|c|cc|cfg|cjs|conf|cpp|csv|css|env\.example|gql|gradle|graphql|h|hpp|html|ini|java|jl|js|json|jsonl|jsx|kt|kts|md|mjs|php|properties|proto|ps1|py|r|rst|rs|sh|sql|svg|tex|toml|ts|tsx|txt|xml|yaml|yml|zsh)$/i;
+const REFERENCED_TEXT_FILE_BASENAME_PATTERN =
+  /^(?:Dockerfile|Gemfile|Makefile|Procfile|Rakefile)$/i;
+const FORBIDDEN_REFERENCED_PATH_SEGMENT_PATTERN =
+  /(?:^|\/)(?:\.aginti|\.git|\.private|node_modules)(?:\/|$)/i;
+
+function normalizeReferencedWorkspacePath(value, commandCwd = "") {
+  const raw = String(value || "").replace(/\\/g, "/").trim();
+  if (!raw || raw.endsWith("/") || /[\0*?<>|]/.test(raw)) return "";
+
+  const workspaceRoot = String(commandCwd || "").trim()
+    ? path.resolve(String(commandCwd))
+    : "";
+  let candidate = raw;
+  if (path.isAbsolute(candidate)) {
+    if (!workspaceRoot) return "";
+    const relative = path.relative(workspaceRoot, path.resolve(candidate));
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return "";
+    candidate = relative.replace(/\\/g, "/");
+  } else {
+    candidate = path.posix.normalize(candidate.replace(/^\.\//, ""));
+    if (!candidate || candidate === "." || candidate === ".." || candidate.startsWith("../")) {
+      return "";
+    }
+  }
+
+  if (FORBIDDEN_REFERENCED_PATH_SEGMENT_PATTERN.test(candidate)) return "";
+  const basename = path.posix.basename(candidate);
+  if (
+    !REFERENCED_TEXT_FILE_EXTENSION_PATTERN.test(basename) &&
+    !REFERENCED_TEXT_FILE_BASENAME_PATTERN.test(basename)
+  ) {
+    return "";
+  }
+  return candidate;
+}
+
+/**
+ * Return bounded workspace-local text inputs named by an already-read
+ * canonical source. This lets a repair inspect a CSV/config/source dependency
+ * without reopening broad discovery or accepting an arbitrary provider path.
+ */
+export function referencedWorkspaceReadPaths(
+  messages,
+  sourcePaths = [],
+  { commandCwd = "", limit = 4 } = {}
+) {
+  const records = completedToolRecords(messages);
+  const normalizedSources = new Set(
+    sourcePaths
+      .map((item) => normalizeReferencedWorkspacePath(item, commandCwd))
+      .filter(Boolean)
+  );
+  if (!normalizedSources.size) return [];
+
+  const sourceRecords = records.filter((record) => {
+    if (record.name !== "read_file" || record.result?.ok === false) return false;
+    const readPath = normalizeReferencedWorkspacePath(
+      record.result?.path || record.args?.path,
+      commandCwd
+    );
+    return normalizedSources.has(readPath);
+  });
+  if (!sourceRecords.length) return [];
+
+  const sourceGoalRevision = Math.max(
+    0,
+    ...sourceRecords.map((record) => Number(record.result?.goalRevision || 0))
+  );
+  const alreadyRead = new Set(
+    records
+      .filter(
+        (record) =>
+          record.name === "read_file" &&
+          record.result?.ok !== false &&
+          Number(record.result?.goalRevision || 0) >= sourceGoalRevision
+      )
+      .map((record) =>
+        normalizeReferencedWorkspacePath(
+          record.result?.path || record.args?.path,
+          commandCwd
+        )
+      )
+      .filter(Boolean)
+  );
+
+  const referenced = [];
+  for (const record of sourceRecords) {
+    const sourcePath = normalizeReferencedWorkspacePath(
+      record.result?.path || record.args?.path,
+      commandCwd
+    );
+    for (const evidence of Array.isArray(record.result?.pathEvidence)
+      ? record.result.pathEvidence
+      : []) {
+      const evidenceSource = normalizeReferencedWorkspacePath(
+        evidence?.source || sourcePath,
+        commandCwd
+      );
+      if (evidenceSource && evidenceSource !== sourcePath) continue;
+      const candidate = normalizeReferencedWorkspacePath(evidence?.path, commandCwd);
+      if (
+        !candidate ||
+        normalizedSources.has(candidate) ||
+        alreadyRead.has(candidate) ||
+        referenced.includes(candidate)
+      ) {
+        continue;
+      }
+      referenced.push(candidate);
+      if (referenced.length >= Math.max(1, Number(limit || 4))) return referenced;
+    }
+  }
+  return referenced;
+}
+
+export function unreadProjectInstructionReadPaths(
+  messages,
+  { commandCwd = "", limit = 4 } = {}
+) {
+  const records = completedToolRecords(messages, { currentTaskOnly: false });
+  const inspection = [...records]
+    .reverse()
+    .find((record) => record.name === "inspect_project" && record.result?.ok !== false);
+  const result = inspection?.result || {};
+  const valuePath = (value) =>
+    normalizeReferencedWorkspacePath(
+      typeof value === "string" ? value : value?.path,
+      commandCwd
+    );
+  let rootInstructionPaths = [];
+  if (String(commandCwd || "").trim()) {
+    try {
+      rootInstructionPaths = fs
+        .readdirSync(path.resolve(String(commandCwd)), { withFileTypes: true })
+        .filter((entry) => entry.isFile() && PROJECT_INSTRUCTION_PATH_PATTERN.test(entry.name))
+        .map((entry) => entry.name);
+    } catch {
+      rootInstructionPaths = [];
+    }
+  }
+  const discovered = [
+    ...rootInstructionPaths,
+    ...(Array.isArray(result.recommendedReads) ? result.recommendedReads : []),
+    ...(Array.isArray(result.manifestFiles) ? result.manifestFiles : []),
+    ...(Array.isArray(result.files) ? result.files : []),
+    ...(Array.isArray(result.topLevel)
+      ? result.topLevel.filter((item) => item?.type !== "directory")
+      : []),
+  ]
+    .map(valuePath)
+    .filter(Boolean)
+    .filter((candidate) => PROJECT_INSTRUCTION_PATH_PATTERN.test(candidate));
+
+  const readPaths = new Set();
+  for (const record of records) {
+    const sourcePath = normalizeReferencedWorkspacePath(
+      record.result?.path || record.args?.path,
+      commandCwd
+    );
+    if (!sourcePath) continue;
+    if (record.name === "read_file" && record.result?.ok !== false) {
+      readPaths.add(sourcePath);
+    } else if (
+      ["apply_patch", "write_file"].includes(record.name) &&
+      record.result?.ok !== false
+    ) {
+      readPaths.delete(sourcePath);
+    }
+  }
+
+  const rank = (candidate) => {
+    const basename = path.posix.basename(candidate);
+    if (/^(?:AGENTS?|AGINTI)\.md$/i.test(basename)) return 0;
+    if (/^README(?:\.[^/]+)?$/i.test(basename)) return 1;
+    return 2;
+  };
+  return discovered
+    .filter((candidate, index, items) => items.indexOf(candidate) === index)
+    .filter((candidate) => !readPaths.has(candidate))
+    .sort((left, right) => rank(left) - rank(right))
+    .slice(0, Math.max(1, Number(limit) || 4));
 }
 
 export function repositoryGroundingState(
@@ -734,8 +929,12 @@ function constrainReadFilePaths(tool, paths, phase) {
           ? "Exact canonical project file selected from current task evidence for the required fresh correction."
         : phase === "failed-test-evidence-refresh"
           ? "Exact unread workspace-relative path retained by the current failed-test evidence packet."
+          : phase === "failed-test-source-reference-read"
+            ? "Exact canonical source or bounded workspace-local text dependency named by that source."
           : phase === "failed-test-diagnostic-read"
             ? "Exact read-only acceptance or validator source named by the retained failed verification command."
+          : phase === "failed-test-workspace-diagnostic-read"
+            ? "Exact generated workspace diagnostic produced by the current failed verification cycle."
           : "Exact workspace-relative path discovered by inspect_project.",
   };
   return {
@@ -749,8 +948,12 @@ function constrainReadFilePaths(tool, paths, phase) {
             ? "Read one exact canonical project file before the required fresh source correction. Tests, Git actions, and finish remain unavailable until a material patch advances the project mutation revision."
           : phase === "failed-test-evidence-refresh"
             ? "Read one exact unread source or acceptance-test file from the current failed-test evidence packet. Each packet path is exposed at most once before mutation-only recovery resumes."
+            : phase === "failed-test-source-reference-read"
+              ? "Read one exact canonical source or one bounded workspace-local text dependency that the already-read canonical source explicitly named. Arbitrary paths and broad discovery remain unavailable."
             : phase === "failed-test-diagnostic-read"
               ? "Read one exact existing external acceptance or validator file from the retained failed command. This path is read-only and no neighboring external files are exposed."
+            : phase === "failed-test-workspace-diagnostic-read"
+              ? "Read one exact generated workspace diagnostic from the current failed verification cycle. External validator source remains unavailable."
           : phase === "read-instructions"
           ? "Read one exact project instruction file discovered by inspect_project before repository mutation or validation commands are enabled."
           : phase === "read-tests"
@@ -1212,6 +1415,7 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
   const relationGuidance = validTargets
     .filter(
       (target) =>
+        target.kind === "failed-test-traceback-line" ||
         target.kind === "python-agent-test-harness-path" ||
         target.kind === "python-agent-test-foreign-port-collision" ||
         target.kind === "python-main-guard-order" ||
@@ -1221,6 +1425,14 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
         (target.left && target.right && ["<", "<=", ">", ">="].includes(target.operator))
     )
     .map((target) => {
+      if (target.kind === "failed-test-traceback-line") {
+        return (
+          "Traceback repair rule: replace the exact deepest same-file traceback line selected " +
+          "by the runtime. Return the smallest coherent source edit that fixes that operation; " +
+          "a short indented guard or branch is allowed. Preserve surrounding behavior and do not " +
+          "rewrite the whole file."
+        );
+      }
       if (target.kind === "python-agent-test-harness-path") {
         return (
           "Agent-created Python test harness path rule: replace only the selected launch-path " +
@@ -1326,8 +1538,12 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
   const selectedLocations = [...new Set(
     validTargets.map((target) => `${target.path}${target.line ? ` line ${target.line}` : ""}`)
   )];
+  const hasTracebackLineTarget = validTargets.some(
+    (target) => target.kind === "failed-test-traceback-line"
+  );
   const hasPythonStructuralTarget = validTargets.some(
     (target) =>
+      target.kind === "failed-test-traceback-line" ||
       target.kind === "python-agent-test-harness-path" ||
       target.kind === "python-agent-test-foreign-port-collision" ||
       target.kind === "python-main-guard-order" ||
@@ -1341,7 +1557,9 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
     (target) => target.kind === "python-agent-test-foreign-port-collision"
   );
   const replacementGuidance = [
-    hasTestHarnessPathTarget
+    hasTracebackLineTarget
+      ? "Return only the replacement for the exact deepest traceback line, or the smallest indented block needed to repair it."
+      : hasTestHarnessPathTarget
       ? "Write only the exact cwd-independent Python launch-path assignment selected by the runtime."
       : hasTestPortCollisionTarget
       ? "Return one complete test file that replaces the foreign literal port with an OS-assigned loopback fixture while preserving test strength."
@@ -1386,7 +1604,7 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
     ...(properties.replace || { type: "string" }),
     minLength: 1,
     ...(replacementOnlyRepair
-      ? { maxLength: structuralReplacementOnly ? 24000 : 4000 }
+      ? { maxLength: hasTracebackLineTarget ? 6000 : structuralReplacementOnly ? 24000 : 4000 }
       : {}),
     ...(exactReplacementCandidate ? { enum: [exactReplacementCandidate] } : {}),
     ...(prematureRepairPattern ? { pattern: prematureRepairPattern } : {}),
@@ -1407,7 +1625,9 @@ function constrainFailedTestApplyPatch(tool, targets = []) {
       ...(replacementOnlyRepair ? { name: "rewrite_text_excerpt" } : {}),
       description: [
         replacementOnlyRepair
-          ? hasTestHarnessPathTarget
+          ? hasTracebackLineTarget
+            ? "Rewrite the exact actionable same-file traceback line selected by current failed-test evidence. The runtime owns its path and exact anchor and accepts a small coherent replacement block."
+            : hasTestHarnessPathTarget
             ? "Rewrite one exact launch-path assignment selected from an agent-created Python test. The runtime owns its path and anchor and preserves the test contract."
             : hasTestPortCollisionTarget
             ? "Rewrite one complete Git-new Python test selected from deterministic foreign-port evidence. The runtime owns its path and exact anchor and enforces test-integrity and foreign-process boundaries."
@@ -1918,7 +2138,8 @@ export function selectProgressiveTools(
       available.get("apply_patch"),
       config
     );
-    const repairRead = Math.max(0, Number(config.patchContextRepairReadCount || 0)) < 1
+    const repairRead = config.patchContextRepairRereadAllowed === true &&
+      Math.max(0, Number(config.patchContextRepairReadCount || 0)) < 1
       ? constrainReadFilePaths(
           available.get("read_file"),
           [String(config.patchContextRepairPath)],
@@ -2086,17 +2307,69 @@ export function selectProgressiveTools(
           .filter((item, index, items) => items.indexOf(item) === index)
           .slice(0, 1)
       : [];
-    const diagnosticReadPaths = Array.isArray(config.testFailureDiagnosticReadPaths)
-      ? config.testFailureDiagnosticReadPaths
-          .map((item) => String(item || "").replace(/\\/g, "/").trim())
+    const canonicalRepairReadPaths = Array.isArray(config.testFailureCanonicalRepairPaths)
+      ? config.testFailureCanonicalRepairPaths
+          .map((item) => String(item || "").replace(/\\/g, "/").replace(/^\.\//, "").trim())
           .filter(Boolean)
           .filter((item, index, items) => items.indexOf(item) === index)
-          .slice(0, 3)
+          .slice(0, 6)
+      : [];
+    const normalizeDiagnosticReadPaths = (items = []) =>
+      (Array.isArray(items) ? items : [])
+        .map((item) => String(item || "").replace(/\\/g, "/").trim())
+        .filter(Boolean)
+        .filter((item, index, values) => values.indexOf(item) === index);
+    const combinedDiagnosticReadPaths = normalizeDiagnosticReadPaths(
+      config.testFailureDiagnosticReadPaths
+    );
+    const workspaceDiagnosticReadPaths = normalizeDiagnosticReadPaths(
+      config.testFailureWorkspaceDiagnosticReadPaths
+    );
+    const configuredExternalDiagnosticReadPaths = normalizeDiagnosticReadPaths(
+      config.testFailureExternalDiagnosticReadPaths
+    );
+    const externalDiagnosticReadPaths =
+      config.testFailureForbidExternalDiagnosticRead === true
+        ? []
+        : configuredExternalDiagnosticReadPaths.length
+          ? configuredExternalDiagnosticReadPaths
+          : combinedDiagnosticReadPaths.filter(
+              (item) => !workspaceDiagnosticReadPaths.includes(item)
+            );
+    const diagnosticReadPaths = [
+      ...workspaceDiagnosticReadPaths,
+      ...externalDiagnosticReadPaths,
+    ]
+      .filter((item, index, items) => items.indexOf(item) === index)
+      .slice(0, 3);
+    const primaryRepairReadPaths = [
+      ...diagnosticReadPaths,
+      ...(repairContextPaths.length ? repairContextPaths : optionalRepairRereadPaths),
+      ...canonicalRepairReadPaths,
+    ];
+    const auxiliaryRepairReadsOpen = Boolean(
+      primaryRepairReadPaths.length > 0 ||
+      config.testFailureRepairNeedsPatchContext === true
+    );
+    const sourceReferencedReadPaths = auxiliaryRepairReadsOpen
+      ? diagnosticReadPaths.length
+        ? []
+        : referencedWorkspaceReadPaths(messages, primaryRepairReadPaths, {
+            commandCwd: config.commandCwd,
+            limit: 4,
+          })
+      : [];
+    const projectInstructionReadPaths = auxiliaryRepairReadsOpen
+      ? unreadProjectInstructionReadPaths(messages, {
+          commandCwd: config.commandCwd,
+          limit: 3,
+        })
       : [];
     const boundedRepairReadPaths = exactWorkspacePathAliases(
       [
-        ...diagnosticReadPaths,
-        ...(repairContextPaths.length ? repairContextPaths : optionalRepairRereadPaths),
+        ...primaryRepairReadPaths,
+        ...projectInstructionReadPaths,
+        ...sourceReferencedReadPaths,
       ],
       config.commandCwd
     )
@@ -2105,8 +2378,12 @@ export function selectProgressiveTools(
       ? constrainReadFilePaths(
           available.get("read_file"),
           boundedRepairReadPaths,
-          diagnosticReadPaths.length
-            ? "failed-test-diagnostic-read"
+          workspaceDiagnosticReadPaths.length
+            ? "failed-test-workspace-diagnostic-read"
+            : diagnosticReadPaths.length
+              ? "failed-test-diagnostic-read"
+            : sourceReferencedReadPaths.length || projectInstructionReadPaths.length
+              ? "failed-test-source-reference-read"
             : repairContextPaths.length
               ? "failed-test-evidence-refresh"
               : "deepseek-failed-test-source-reread"

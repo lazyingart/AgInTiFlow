@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   buildModelTimeoutRetryMessages,
@@ -11,6 +12,7 @@ import {
   normalizeNoMatchQueryResult,
   applyModelTimeoutRetryRoute,
   recoverFocusedTextRewriteWithWritingSpecialist,
+  reconcileRuntimeRepositoryState,
   repairModelMessageHistory,
   shouldResetStaticDiscoveryPhase,
   runAgent,
@@ -99,7 +101,78 @@ async function runMock(goal, sessionId, { resume = false } = {}) {
   };
 }
 
+async function verifyRunAgentRuntimeGitHygiene() {
+  const gitWorkspace = path.join(tempRoot, "runtime-git-workspace");
+  await fs.mkdir(gitWorkspace, { recursive: true });
+  const initialized = spawnSync("git", ["init"], {
+    cwd: gitWorkspace,
+    encoding: "utf8",
+  });
+  assert(initialized.status === 0, `runtime Git hygiene setup failed: ${initialized.stderr || initialized.stdout}`);
+  const config = resolveRuntimeConfig(
+    {
+      provider: "mock",
+      routingMode: "manual",
+      model: "mock-agent",
+      goal: "hello",
+      commandCwd: gitWorkspace,
+      maxSteps: 2,
+    },
+    {
+      baseDir: runtimeDir,
+      packageDir: repoRoot,
+      provider: "mock",
+      routingMode: "manual",
+      model: "mock-agent",
+      commandCwd: gitWorkspace,
+      allowShellTool: false,
+      allowFileTools: true,
+      sandboxMode: "host",
+      packageInstallPolicy: "block",
+      sessionId: "coding-runtime-git-hygiene",
+    }
+  );
+  await runAgent(config);
+  const localExclude = await fs.readFile(path.join(gitWorkspace, ".git", "info", "exclude"), "utf8");
+  assert(
+    localExclude.includes(".aginti/codebase-map.json") &&
+      localExclude.includes(".aginti/verification/"),
+    "runAgent did not protect runtime cache paths in its resolved commandCwd"
+  );
+  const gitignore = await fs.readFile(path.join(gitWorkspace, ".gitignore"), "utf8").catch(() => "");
+  assert(gitignore === "", "runAgent runtime setup edited the tracked .gitignore");
+  const staleRepositoryState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 4,
+        privateMutationRevision: 0,
+        testRuns: [{
+          command: "python3 acceptance.py",
+          mutationRevision: 4,
+          privateMutationRevision: 0,
+          passed: false,
+          failureSignature: "dirty-worktree",
+          failureSummary: "FAIL: Git worktree is not clean: ?? .aginti/",
+        }],
+      },
+      testFailureRepair: { key: "4:dirty-worktree" },
+    },
+  };
+  const reconciled = await reconcileRuntimeRepositoryState(
+    staleRepositoryState,
+    { commandCwd: gitWorkspace },
+    { changed: false }
+  );
+  assert(
+    reconciled?.clean === true &&
+      staleRepositoryState.meta.projectVerification.privateMutationRevision === 1 &&
+      !staleRepositoryState.meta.testFailureRepair,
+    "a retained cleanliness failure was not invalidated after the live worktree became clean"
+  );
+}
+
 try {
+  await verifyRunAgentRuntimeGitHygiene();
   const externalValidatorPath = path.join(
     tempRoot,
     "private-acceptance",
@@ -145,6 +218,38 @@ try {
       `external validator source inspection escaped the opaque contract: ${inspectionCommand}`
     );
   }
+  const combinedValidatorCommand =
+    `python3 build_artifact.py; ${externalValidatorCommand}`;
+  const combinedValidatorDecision = evaluateCommandPolicy(
+    combinedValidatorCommand,
+    opaqueValidatorPolicy
+  );
+  assert(
+    combinedValidatorDecision.allowed === false &&
+      combinedValidatorDecision.category === "opaque-external-validator-inspection" &&
+      combinedValidatorDecision.recoverable === true,
+    "a combined producer and external validator command escaped the opaque validator contract"
+  );
+  const combinedValidatorAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: { command: combinedValidatorCommand },
+    guard: combinedValidatorDecision,
+    config: opaqueValidatorPolicy,
+    state: { sessionId: "opaque-validator-command-shape-smoke" },
+  });
+  assert(
+    combinedValidatorAdvice.autoRecover === true &&
+      !combinedValidatorAdvice.suggestedCommand &&
+      /separately|standalone/i.test(combinedValidatorAdvice.instruction) &&
+      /exact declared external validator command unchanged/i.test(
+        combinedValidatorAdvice.instruction
+      ) &&
+      !shouldPauseForPermissionAdvice({
+        blocked: true,
+        permissionAdvice: combinedValidatorAdvice,
+      }),
+    "a recoverable external-validator command-shape error became a permission pause"
+  );
 
   const genericArtifactBlock = await genericArtifactFilenameBlock(
     "write_file",
@@ -598,6 +703,16 @@ try {
   );
   assert(guidance.includes("Surgical editing contract:"), "engineering guidance did not include surgical editing contract");
   assert(guidance.includes("Evidence-card template:"), "engineering guidance did not include evidence-card template");
+  const cadGuidance = engineeringGuidanceForTask(
+    "Build a centered parametric CAD cradle and export STEP, STL, 3MF, and a render for 3D printing.",
+    "auto"
+  );
+  assert(cadGuidance.includes("CAD/fabrication:"), "auto guidance did not recognize a CAD fabrication task");
+  assert(cadGuidance.includes("one canonical validation section"), "auto CAD guidance permits ambiguous validation aliases");
+  assert(
+    recommendedMaxStepsForTask({ goal: "Build a CAD holder with STEP STL and 3MF validation.", taskProfile: "auto" }) >= 44,
+    "auto CAD task did not receive a complete build/render/validation budget"
+  );
   assert(
     shouldUseSurgicalContextForTask({
       goal: "fix this large repository bug by tracing callers",
@@ -2076,6 +2191,10 @@ try {
   assert(largeModelRead.contentTruncated, "large model-facing read was not bounded");
   assert(largeModelRead.content.length <= 12100, "large model-facing read exceeded the context cap");
   assert(largeModelRead.nextStartLine > 1, "large model-facing read omitted its continuation line");
+  assert(
+    largeModelRead.continuationHint.includes(`startLine=${largeModelRead.nextStartLine}`),
+    "large model-facing read described a continuation argument that the read_file schema does not accept"
+  );
   const largeModelList = toolResultForModel({
     ok: true,
     toolName: "list_files",
@@ -2991,6 +3110,7 @@ try {
         workspace,
         checks: [
           "deepseek_history_repair",
+          "run_agent_runtime_git_hygiene",
           "interleaved_tool_history_repair",
           "blocked_tool_batch_short_circuit",
           "deepseek_pro_patch_route",

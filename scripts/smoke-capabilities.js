@@ -147,7 +147,7 @@ try {
     capabilities.tools?.taskProfiles?.some((profile) => profile.id === "pipeline"),
     "capabilities did not report pipeline task profile"
   );
-  for (const profileId of ["docs", "data", "qa", "database", "devops", "security", "slides", "education", "java", "ios", "go", "rust", "dotnet", "php", "ruby"]) {
+  for (const profileId of ["docs", "data", "qa", "database", "devops", "security", "slides", "education", "java", "ios", "go", "rust", "dotnet", "php", "ruby", "cad"]) {
     assert(
       capabilities.tools?.taskProfiles?.some((profile) => profile.id === profileId),
       `capabilities did not report ${profileId} task profile`
@@ -157,6 +157,16 @@ try {
   assert(qaProfile, "QA profile is missing");
   assert(defaultMaxStepsForProfile("qa") >= 40, "QA profile step budget is too low for verification and cleanup");
   assert(defaultMaxStepsForProfile("pipeline") >= 44, "pipeline profile step budget is too low for repair/verify/resume loops");
+  const cadProfile = listTaskProfiles().find((profile) => profile.id === "cad");
+  assert(cadProfile, "CAD profile is missing");
+  assert(defaultMaxStepsForProfile("cad") >= 44, "CAD profile step budget is too low for build/render/validation repair loops");
+  assert(/one canonical machine-readable validation section/i.test(cadProfile.prompt), "CAD profile permits ambiguous validation aliases");
+  assert(/top-level `validation` object/i.test(cadProfile.prompt), "CAD profile does not establish one stable validation schema");
+  assert(/`solid_count`[\s\S]*`bbox_mm`[\s\S]*`watertight`[\s\S]*`object_count`/i.test(cadProfile.prompt), "CAD profile omits conventional format-native evidence field names");
+  assert(/enrich its missing direct evidence fields instead of renaming/i.test(cadProfile.prompt), "CAD profile permits same-failure schema oscillation");
+  assert(/STEP\/B-rep evidence needs solid count/i.test(cadProfile.prompt), "CAD profile does not require format-native STEP evidence");
+  assert(/STL evidence needs watertightness/i.test(cadProfile.prompt), "CAD profile does not require format-native STL evidence");
+  assert(/3MF evidence needs package validity/i.test(cadProfile.prompt), "CAD profile does not require format-native 3MF evidence");
   assert(!/misleading failing test/i.test(qaProfile.prompt), "QA profile still encourages misleading test fixtures");
   assert(/do not stage fake bugs/i.test(qaProfile.prompt), "QA profile does not discourage fake staged failures");
   const slidesProfile = listTaskProfiles().find((profile) => profile.id === "slides");

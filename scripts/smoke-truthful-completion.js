@@ -4,7 +4,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runAgent } from "../src/agent-runner.js";
+import {
+  continuationExecutionContractDirective,
+  removeSupersededCompletionRepairInstructions,
+  runAgent,
+} from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { SessionStore } from "../src/session-store.js";
 import { finishResultClaimsIncompleteWork } from "../src/scs-evidence.js";
@@ -62,6 +66,50 @@ assert.equal(
   false,
   "a no-further-action completion statement was mistaken for future work"
 );
+
+const staleCompletionRepair =
+  "The proposed completion was rejected because the requested action is not supported by concrete runtime evidence. Reason: Missing required git action(s): commit.";
+const repairCleanup = removeSupersededCompletionRepairInstructions([
+  { role: "assistant", content: "The project validator passed." },
+  { role: "user", content: staleCompletionRepair },
+  { role: "user", content: "A genuine later user message." },
+]);
+assert.equal(repairCleanup.removed, 1);
+assert.deepEqual(
+  repairCleanup.messages.map((message) => message.content),
+  ["The project validator passed.", "A genuine later user message."],
+  "continuation cleanup removed genuine conversation instead of only turn-scoped runtime repair text"
+);
+const conditionalCommitDirective = continuationExecutionContractDirective(
+  {
+    goal: "Continue the task.",
+    meta: {
+      taskProfile: "cad",
+      goalContract: {
+        revision: 9,
+        activeGoal: "Finish the task and commit task-owned changes if any remain.",
+      },
+    },
+  },
+  { taskProfile: "cad" },
+  { supersededCompletionRepair: true }
+);
+assert.match(conditionalCommitDirective, /required Git actions = none/i);
+assert.match(conditionalCommitDirective, /Do not manufacture a file edit, empty\/no-op commit/i);
+const mandatoryCommitDirective = continuationExecutionContractDirective(
+  {
+    meta: {
+      taskProfile: "code",
+      goalContract: {
+        revision: 10,
+        activeGoal: "Commit the tested changes and push the branch.",
+      },
+    },
+  },
+  { taskProfile: "code" },
+  { supersededCompletionRepair: true }
+);
+assert.match(mandatoryCommitDirective, /required Git actions = commit, push/i);
 
 function assistant(content, toolCalls = []) {
   return {
@@ -340,6 +388,44 @@ try {
   assert.equal(proseOnlyAction.events.filter((event) => event.type === "completion.evidence_rejected").length, 2);
   assert(!proseOnlyAction.events.some((event) => event.type === "session.finished"));
 
+  const resumedAfterSupersededRepair = await runCase({
+    id: "prose-only-action",
+    goal: "Continue the current task from saved state. Do not repeat completed work.",
+    taskProfile: "shell",
+    allowShellTool: true,
+    resume: true,
+    responses: [
+      assistant("I will run the command and verify it next."),
+      assistant("", [toolCall("run-pwd-after-repair", "run_command", { command: "pwd" })]),
+      assistant("", [toolCall("finish-pwd-after-repair", "finish", {
+        result: "Verified the current working directory with pwd.",
+      })]),
+    ],
+  });
+  const resumedRepairPrompt = resumedAfterSupersededRepair.calls[0]?.messages || [];
+  assert(
+    resumedRepairPrompt.some(
+      (message) =>
+        message.role === "user" &&
+        /Authoritative execution contract for goal revision/i.test(String(message.content || "")) &&
+        /required Git actions = none/i.test(String(message.content || ""))
+    ),
+    "a resumed turn did not receive the authoritative replacement for its superseded repair contract"
+  );
+  assert(
+    !resumedRepairPrompt.some(
+      (message) => String(message.content || "").startsWith(staleCompletionRepair.split(" Reason:")[0])
+    ),
+    "the prior turn's generated completion-repair instruction leaked into the resumed model request"
+  );
+  assert.equal(
+    resumedAfterSupersededRepair.calls.length,
+    3,
+    "a prose preamble incorrectly ended the resumed action before tool execution"
+  );
+  assert.equal(resumedAfterSupersededRepair.result.stopped, undefined);
+  assert.match(resumedAfterSupersededRepair.result.result, /working directory/i);
+
   const permissionPause = await runCase({
     id: "permission-pause",
     goal: "Run the checked-in project test script and report its verified result.",
@@ -403,22 +489,6 @@ try {
     ),
     "reasoning-only continuation instruction was not retained in the next request"
   );
-
-  const resumedAfterRejectedCompletion = await runCase({
-    id: "prose-only-action",
-    goal: "Please continue and finish the same task from the retained state.",
-    taskProfile: "shell",
-    allowShellTool: true,
-    resume: true,
-    responses: [
-      assistant("I will run the command and verify it next."),
-      assistant("", [toolCall("resume-run", "run_command", { command: "pwd" })]),
-      assistant("", [toolCall("resume-finish", "finish", { result: "Ran pwd and verified the working directory." })]),
-    ],
-  });
-  assert.equal(resumedAfterRejectedCompletion.calls.length, 3);
-  assert.equal(resumedAfterRejectedCompletion.result.stopped, undefined);
-  assert.match(resumedAfterRejectedCompletion.result.result, /verified the working directory/i);
 
   const falseFinish = await runCase({
     id: "false-finish-tool",

@@ -35,7 +35,14 @@ function providerErrorText(error) {
 export function classifyProviderHandoffError(error) {
   const status = Number(error?.status || error?.response?.status || 0);
   const code = String(error?.code || "").trim().toUpperCase();
+  const name = String(error?.name || "").trim();
   const text = providerErrorText(error);
+
+  if (
+    ["TOOL_CONTRACT_VIOLATION", "MALFORMED_TOOL_ARGUMENTS"].includes(code)
+  ) {
+    return { eligible: true, code: "provider_tool_contract", status };
+  }
 
   if (
     status === 402 ||
@@ -53,6 +60,13 @@ export function classifyProviderHandoffError(error) {
   }
   if (status === 429 || /rate[_ -]?limit|too many requests/.test(text)) {
     return { eligible: true, code: "provider_rate_limited", status };
+  }
+  if (
+    name === "ModelTimeoutError" ||
+    code === "MODEL_TIMEOUT" ||
+    /(?:agent step|model) request timed out after \d+ms/.test(text)
+  ) {
+    return { eligible: true, code: "provider_timeout", status };
   }
   if (
     status === 404 &&

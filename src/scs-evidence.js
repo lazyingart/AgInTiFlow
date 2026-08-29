@@ -166,13 +166,44 @@ function requestedGitActionAtHead(value = "", { continuation = false } = {}) {
   return null;
 }
 
+function gitActionIsConditionalOnPendingChanges(segment = "", previousSegment = "", request = {}) {
+  const candidate = String(request?.candidate || segment || "").trim();
+  const context = `${String(previousSegment || "").trim()}, ${candidate}`;
+  const changeSubject = "(?:changes?|edits?|modifications?|fix(?:es)?|files?|work)";
+  const pendingState =
+    "(?:remain(?:s|ing)?|exist(?:s)?|are\\s+(?:left|pending|uncommitted|staged|modified)|were\\s+made|have\\s+been\\s+made)";
+  const explicitExistenceCondition = new RegExp(
+    `\\b(?:only\\s+)?(?:if|when)\\s+(?:there\\s+(?:is|are)\\s+)?(?:any\\s+)?${changeSubject}(?:\\s+${pendingState})?\\b`,
+    "i"
+  );
+  const anaphoricRemainderCondition =
+    /\b(?:only\s+)?(?:if|when)\s+(?:any|some|one|ones|they|them|those)\s+(?:of\s+(?:them|those)\s+)?(?:remain(?:s|ing)?|are\s+(?:left|pending|uncommitted|staged|modified))\b/i;
+  const dirtyWorktreeCondition =
+    /\b(?:only\s+)?(?:if|when)\s+(?:the\s+)?(?:worktree|working\s+tree|repository|repo)\s+is\s+(?:dirty|not\s+clean)\b/i;
+  const chinesePendingCondition =
+    /(?:如果|若|如)(?:仍然|仍|还|還)?(?:有|存在)(?:任何)?(?:更改|改动|改動|变更|變更|修改|待提交内容|待提交內容)/u;
+  if (
+    explicitExistenceCondition.test(context) ||
+    dirtyWorktreeCondition.test(context) ||
+    chinesePendingCondition.test(context)
+  ) {
+    return true;
+  }
+  return anaphoricRemainderCondition.test(context) && new RegExp(`\\b${changeSubject}\\b`, "i").test(candidate);
+}
+
 function gitActionsRequestedBySentence(sentence = "") {
   const segments = gitActionRequestSegments(sentence);
   const requested = [];
   let actionSequenceActive = false;
-  for (const segment of segments) {
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
     const request = requestedGitActionAtHead(segment, { continuation: actionSequenceActive });
     if (!request) continue;
+    // A no-op-safe instruction such as "commit task-owned changes if any
+    // remain" scopes what to do when a dirty tree exists; it does not require
+    // manufacturing a fresh commit after an already-complete clean run.
+    if (gitActionIsConditionalOnPendingChanges(segment, segments[index - 1], request)) continue;
     requested.push(request.action);
     actionSequenceActive = true;
   }
@@ -1424,7 +1455,7 @@ function inferRequiredToolCalls(goal = "") {
 function stripForbiddenLanguage(goal = "") {
   return normalizeWrappedNegativePrefixes(goal)
     .replace(/\b(do not|don't|dont|must not|should not|never|no need to)\s+([^.\n;]+)/gi, "")
-    .replace(/\bwithout\s+([^.,\n;]+)/gi, "")
+    .replace(/\bwithout\s+([^.,:\uFF1A\n;]+)/gi, "")
     .replace(/不要([^。\n；]+)/g, "")
     .replace(/禁止([^。\n；]+)/g, "");
 }
@@ -1545,8 +1576,14 @@ function prefixRequestsInlineCommandExecution(prefix = "") {
   const preamble = /^(?:(?:please|kindly|now)\s+|(?:can|could|would|will)\s+you\s+|i\s+(?:want|need|would\s+like)\s+you\s+to\s+|you\s+(?:must|should|need\s+to|have\s+to)\s+|(?:help|assist)\s+me(?:\s+to)?\s+|(?:请你|請你|麻烦|麻煩|帮我|幫我|需要|必须|必須|请|請)\s*)/i;
   while (preamble.test(clause)) clause = clause.replace(preamble, "").trim();
   clause = clause.replace(/(?:[:：]|--?)\s*$/, "").trim();
+  clause = clause
+    .replace(
+      /\b(commands?)\s+(?:without|while|before|after)\b[\s\S]*$/i,
+      "$1"
+    )
+    .trim();
   return (
-    /^(?:followed\s+by|run|rerun|re-run|execute|invoke|launch|verify|validate|check|confirm)(?:\s+(?:exactly|again|once))?(?:\s+(?:(?:the|this|that)\s+)?(?:exact|required|following\s+)?command(?:\s+named)?)?\s*$/i.test(
+    /^(?:followed\s+by|run|rerun|re-run|execute|invoke|launch|verify|validate|check|confirm)(?:\s+(?:exactly|again|once))?(?:\s+(?:(?:the|this|that)\s+)?(?:(?:exact|required|following|declared|requested|specified|validator|validation|verification|acceptance|test|project)\s+)*commands?(?:\s+named)?)?\s*$/i.test(
       clause
     ) || /^(?:随后运行|隨後運行|接着运行|接著運行|运行|運行|执行|執行|调用|調用|验证|驗證|检查|檢查|确认|確認)\s*$/.test(clause)
   );
@@ -1576,6 +1613,34 @@ function sentenceContinuesRequestedCommandList(source = "", sentenceStart = -1, 
   );
 }
 
+function precedingLineRequestsInlineCommandExecution(source = "", commandIndex = -1) {
+  const lines = String(source || "")
+    .slice(0, Math.max(0, Number(commandIndex || 0)))
+    .split(/\r?\n/);
+  while (lines.length && !String(lines.at(-1) || "").trim()) lines.pop();
+  const precedingLine = String(lines.at(-1) || "").trim();
+  if (precedingLine && prefixRequestsInlineCommandExecution(precedingLine)) {
+    return true;
+  }
+
+  const blockLines = [];
+  while (lines.length && blockLines.length < 4) {
+    const line = String(lines.pop() || "").trim();
+    if (!line) break;
+    blockLines.unshift(line);
+  }
+  const precedingBlock = blockLines.join(" ").trim();
+  return Boolean(
+    precedingBlock &&
+      /(?:^|[.!?;:,。！？；：，])\s*(?:(?:then|next)\s+)?(?:please\s+|kindly\s+|now\s+)?(?:run|rerun|re-run|execute|invoke|launch|verify|validate|check|confirm)\b/i.test(
+        precedingBlock
+      ) &&
+      /\b(?:exact|required|following|declared|requested|specified|validator|validation|verification|acceptance|test|project|command)\b/i.test(
+        precedingBlock
+      )
+  );
+}
+
 function canonicalBareVerifierCommand(rawPath = "") {
   const candidate = String(rawPath || "").trim();
   if (
@@ -1602,11 +1667,21 @@ function inferBareRequestedVerifierCommands(goal = "") {
   const sentencePattern = /(?:^|[!?。！？\n]|\.(?=\s))\s*(?:please\s+|kindly\s+|now\s+)?(?:run|execute|invoke|launch)\b([^!?。！？\n]{0,1200})/gi;
   const pathPattern = /(?:^|[\s,:，：])((?:(?:~|\.{1,2})?\/|[A-Za-z0-9_-]+\/)[A-Za-z0-9_./~-]*\.(?:py|sh|cjs|mjs|js))(?=$|[.\s,;，；])/gi;
   for (const sentence of source.matchAll(sentencePattern)) {
+    const sentenceSource = String(sentence[0] || "");
+    const sentenceBody = String(sentence[1] || "");
+    const sentenceBodyOffset = Math.max(0, sentenceSource.indexOf(sentenceBody));
     const clause = String(sentence[1] || "").split(
       /[,;，；]\s*(?=(?:then\s+)?(?:commit|stage|push|publish|deploy|save|write|edit|patch|create|remove|delete|verify\s+(?:a|the)\s+(?:clean|final)|提交|暂存|推送|发布|保存|写入|编辑|修改|创建|删除|验证工作区)\b)/i,
       1
     )[0];
     for (const match of clause.matchAll(pathPattern)) {
+      const pathOffset = String(match[0] || "").indexOf(String(match[1] || ""));
+      const absolutePathIndex =
+        Number(sentence.index || 0) +
+        sentenceBodyOffset +
+        Number(match.index || 0) +
+        Math.max(0, pathOffset);
+      if (indexFallsInsideInlineCommand(source, absolutePathIndex)) continue;
       const command = canonicalBareVerifierCommand(match[1]);
       if (command) commands.push(normalizeProjectCommand(command));
     }
@@ -1633,7 +1708,8 @@ function inferExplicitRequestedCommands(goal = "") {
     const prefix = source.slice(sentenceStart + 1, index).trimEnd();
     if (
       !prefixRequestsInlineCommandExecution(prefix) &&
-      !sentenceContinuesRequestedCommandList(source, sentenceStart, index)
+      !sentenceContinuesRequestedCommandList(source, sentenceStart, index) &&
+      !precedingLineRequestsInlineCommandExecution(source, index)
     ) {
       continue;
     }
@@ -1642,6 +1718,7 @@ function inferExplicitRequestedCommands(goal = "") {
     if (
       !command ||
       command.length > 1000 ||
+      /(?:^|\s)(?:\.{3}|…)(?:\s|$)/u.test(command) ||
       /[<>](?:PATH|FILE|COMMAND|VALUE)[<>]?/i.test(command) ||
       hasActiveShellExpansion(command)
     ) {

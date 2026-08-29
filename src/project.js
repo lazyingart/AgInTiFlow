@@ -155,9 +155,12 @@ export async function ensureProjectSessionStorage(projectRoot = process.cwd()) {
   const paths = projectPaths(projectRoot);
   await fsp.mkdir(paths.sessionsDir, { recursive: true });
   await fsp.mkdir(paths.globalSessionsDir, { recursive: true });
-  await ensureLine(paths.gitignorePath, [
+  await ensureRuntimeGitExcludes(paths.root, [
     ".aginti-sessions/",
     ".sessions/",
+    ".aginti/codebase-map.json",
+    ".aginti/long-jobs/",
+    ".aginti/verification/",
   ]).catch(() => {});
 
   const legacyEntries = await fsp.readdir(paths.legacySessionsDir, { withFileTypes: true }).catch(() => []);
@@ -342,6 +345,43 @@ async function ensureLine(filePath, lines) {
   const prefix = current && !current.endsWith("\n") ? "\n" : "";
   await fsp.writeFile(filePath, `${current}${prefix}${missing.join("\n")}\n`, "utf8");
   return { changed: true, path: filePath, added: missing };
+}
+
+export async function ensureRuntimeGitExcludes(
+  projectRoot = process.cwd(),
+  lines = [
+    ".aginti-sessions/",
+    ".sessions/",
+    ".aginti/codebase-map.json",
+    ".aginti/long-jobs/",
+    ".aginti/verification/",
+  ]
+) {
+  const root = resolveProjectRoot(projectRoot);
+  let stdout = "";
+  try {
+    ({ stdout } = await execFileAsync(
+      "git",
+      ["-C", root, "rev-parse", "--git-path", "info/exclude"],
+      { timeout: 5000, maxBuffer: 64 * 1024 }
+    ));
+  } catch (error) {
+    return {
+      ok: false,
+      changed: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const reportedPath = String(stdout || "").trim();
+  if (!reportedPath) {
+    return { ok: false, changed: false, reason: "Git did not report an exclude path." };
+  }
+  const excludePath = path.isAbsolute(reportedPath)
+    ? path.normalize(reportedPath)
+    : path.resolve(root, reportedPath);
+  await fsp.mkdir(path.dirname(excludePath), { recursive: true });
+  const result = await ensureLine(excludePath, lines);
+  return { ok: true, excludePath, ...result };
 }
 
 export async function initProject(projectRoot = process.cwd(), { template = "disciplined" } = {}) {

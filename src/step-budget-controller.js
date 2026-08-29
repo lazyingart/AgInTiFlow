@@ -244,6 +244,107 @@ export function summarizeRepeatedStaticDiscovery(recentToolResults = [], context
   };
 }
 
+export function summarizeStagnantValidationLoop(events = [], options = {}) {
+  const minimumMutationPhases = clamp(
+    positiveInteger(options.minimumMutationPhases, 3),
+    2,
+    8
+  );
+  const source = Array.isArray(events) ? events : [];
+  const latestGoalBoundary = source.findLastIndex(
+    (event) => String(event?.type || event?.event || "") === "goal.updated"
+  );
+  const scoped = latestGoalBoundary >= 0 ? source.slice(latestGoalBoundary) : source;
+  let mutationPhase = 0;
+  let latestFailure = null;
+  const failuresByKey = new Map();
+
+  for (const event of scoped) {
+    const type = String(event?.type || event?.event || "");
+    const data = event?.data || event?.payload || {};
+    if (type === "file.changed") {
+      mutationPhase += 1;
+      continue;
+    }
+    if (type !== "tool.completed") continue;
+    const test = data?.projectTest;
+    const command = String(test?.command || data?.requiredProjectCommand || "").trim();
+    if (!command) continue;
+    if (test?.passed === true) {
+      for (const key of [...failuresByKey.keys()]) {
+        if (key.startsWith(`${command}\n`)) failuresByKey.delete(key);
+      }
+      latestFailure = null;
+      continue;
+    }
+    const failureSignature = String(test?.failureSignature || "").trim();
+    if (!failureSignature) continue;
+    const key = `${command}\n${failureSignature}`;
+    const attempt = {
+      command,
+      failureSignature,
+      mutationPhase,
+      at: String(event?.at || event?.timestamp || ""),
+    };
+    const attempts = failuresByKey.get(key) || [];
+    attempts.push(attempt);
+    failuresByKey.set(key, attempts);
+    latestFailure = { key, ...attempt };
+  }
+
+  if (!latestFailure || latestFailure.mutationPhase !== mutationPhase) {
+    return {
+      detected: false,
+      mutationPhase,
+      attempts: 0,
+      mutationPhases: 0,
+    };
+  }
+  const attempts = failuresByKey.get(latestFailure.key) || [];
+  const mutationPhases = new Set(attempts.map((attempt) => attempt.mutationPhase));
+  return {
+    detected: mutationPhases.size >= minimumMutationPhases,
+    command: latestFailure.command,
+    failureSignature: latestFailure.failureSignature,
+    attempts: attempts.length,
+    mutationPhases: mutationPhases.size,
+    mutationPhase,
+    lastFailureAt: latestFailure.at,
+  };
+}
+
+function currentFailedTestRecoveryPacket(state = {}, stagnantValidation = {}) {
+  const packet = state.meta?.failedTestRecoveryPacket;
+  const verification = state.meta?.projectVerification || {};
+  const lastFailure = verification.lastFailedTest ||
+    (Array.isArray(verification.testRuns)
+      ? [...verification.testRuns].reverse().find((test) => test?.passed === false)
+      : null);
+  if (!packet || !lastFailure || !String(packet.content || "").trim()) return null;
+  if (
+    String(packet.failureSignature || "") !==
+      String(stagnantValidation.failureSignature || lastFailure.failureSignature || "") ||
+    String(lastFailure.failureSignature || "") !==
+      String(stagnantValidation.failureSignature || "") ||
+    String(packet.command || "").trim() !== String(lastFailure.command || "").trim() ||
+    String(lastFailure.command || "").trim() !==
+      String(stagnantValidation.command || "").trim() ||
+    Number(packet.mutationRevision || 0) !== Number(lastFailure.mutationRevision || 0)
+  ) {
+    return null;
+  }
+  const packetAt = Date.parse(String(packet.generatedAt || ""));
+  const failureAt = Date.parse(String(lastFailure.at || ""));
+  if (
+    Number.isFinite(packetAt) &&
+    Number.isFinite(failureAt) &&
+    packetAt < failureAt
+  ) {
+    return null;
+  }
+  return packet;
+}
+
 function hasConcreteProgress(recentToolResults = [], events = []) {
   const recentMeaningfulEvents = events
     .filter((event) =>
@@ -389,6 +490,26 @@ export function decideStepBudgetExtension({ config = {}, state = {}, budget = {}
     });
   }
 
+  const stagnantValidation = summarizeStagnantValidationLoop(events);
+  const boundedDiagnosticRecovery = Boolean(
+    stagnantValidation.detected &&
+      budget.extensionsUsed === 0 &&
+      currentFailedTestRecoveryPacket(state, stagnantValidation)
+  );
+  if (stagnantValidation.detected) {
+    if (!boundedDiagnosticRecovery) {
+      return decisionPayload("deny_extension", {
+        ...base,
+        reason:
+          "The same validation failure persisted across multiple file-mutation phases. More steps would extend a non-converging repair loop rather than advance the acceptance evidence.",
+        evidence: [
+          `${stagnantValidation.mutationPhases} mutation phases retained failure ${stagnantValidation.failureSignature}`,
+          `command=${compact(stagnantValidation.command, 180)}`,
+        ],
+      });
+    }
+  }
+
   if (!hasConcreteProgress(recentToolResults, events)) {
     return decisionPayload("deny_extension", {
       ...base,
@@ -408,11 +529,21 @@ export function decideStepBudgetExtension({ config = {}, state = {}, budget = {}
   return decisionPayload("extend_steps", {
     ...base,
     extraSteps,
-    reason: "Recent verified tool progress exists and a bounded continuation can still finish or verify the task.",
-    evidence: recentToolResults
-      .filter((result) => result.ok !== false && !result.blocked)
-      .slice(-4)
-      .map((result) => `${result.toolName || "tool"}${result.path ? ` path=${result.path}` : ""}${result.summary ? ` summary=${compact(result.summary, 120)}` : ""}`),
+    reason: boundedDiagnosticRecovery
+      ? "A fresh failure-scoped recovery packet exists after the repeated validator result. Grant one bounded diagnostic continuation; later unchanged failures remain subject to the non-convergence guard."
+      : "Recent verified tool progress exists and a bounded continuation can still finish or verify the task.",
+    evidence: [
+      ...(boundedDiagnosticRecovery
+        ? [
+            `fresh recovery packet for failure ${stagnantValidation.failureSignature}`,
+            `${stagnantValidation.mutationPhases} prior mutation phases are bounded to this first extension`,
+          ]
+        : []),
+      ...recentToolResults
+        .filter((result) => result.ok !== false && !result.blocked)
+        .slice(-4)
+        .map((result) => `${result.toolName || "tool"}${result.path ? ` path=${result.path}` : ""}${result.summary ? ` summary=${compact(result.summary, 120)}` : ""}`),
+    ].slice(0, 8),
   });
 }
 

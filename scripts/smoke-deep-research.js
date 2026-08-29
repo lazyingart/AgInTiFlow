@@ -343,6 +343,101 @@ async function main() {
     !Object.hasOwn(deepSeekActionPayload || {}, "reasoning_effort"),
     "DeepSeek action-only recovery sent a conflicting reasoning effort"
   );
+  let deepSeekRepairRethinkPayload = null;
+  await requestNextStep(
+    {
+      chat: {
+        completions: {
+          create: async (payload) => {
+            deepSeekRepairRethinkPayload = payload;
+            return {
+              choices: [{
+                message: {
+                  role: "assistant",
+                  reasoning_content: "The unchanged proposal must be revised from the retained failure evidence.",
+                  content: "",
+                  tool_calls: [{
+                    id: "deepseek-rethink-patch",
+                    type: "function",
+                    function: {
+                      name: "apply_patch",
+                      arguments: JSON.stringify({
+                        path: "service.py",
+                        search: "old",
+                        replace: "new",
+                        expectedReplacements: 1,
+                      }),
+                    },
+                  }],
+                },
+              }],
+            };
+          },
+        },
+      },
+    },
+    {
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      reasoning: "xhigh",
+      goal: "Repair service.py from exact retained source.",
+      taskProfile: "code",
+      allowFileTools: true,
+      allowShellTool: false,
+      allowWebSearch: false,
+      allowMcpTools: false,
+      allowWrapperTools: false,
+      allowAuxiliaryTools: false,
+      completionFreshMutationRequired: true,
+      completionFreshMutationNeedsSourceRead: false,
+      completionFreshMutationPaths: ["service.py"],
+    },
+    [
+      { role: "user", content: "Repair the retained source from the exact failure evidence." },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{
+          id: "deepseek-rejected-patch",
+          type: "function",
+          function: {
+            name: "apply_patch",
+            arguments: JSON.stringify({
+              path: "service.py",
+              search: "old",
+              replace: "old",
+              expectedReplacements: 1,
+            }),
+          },
+        }],
+      },
+      {
+        role: "tool",
+        tool_call_id: "deepseek-rejected-patch",
+        content: JSON.stringify({
+          ok: false,
+          blocked: true,
+          recoverable: true,
+          toolName: "apply_patch",
+          category: "failed-test-nonrepairing-patch",
+          reason: "The replacement leaves the current actionable line unchanged.",
+        }),
+      },
+      { role: "user", content: "Continue from the exact tool result." },
+    ]
+  );
+  assert(
+    deepSeekRepairRethinkPayload?.thinking?.type === "enabled",
+    "DeepSeek did not restore thinking after a deterministic non-repairing patch rejection"
+  );
+  assert(
+    !Object.hasOwn(deepSeekRepairRethinkPayload || {}, "tool_choice"),
+    "DeepSeek repair rethink sent tool_choice even though V4 thinking tool calls reject it"
+  );
+  assert(
+    deepSeekRepairRethinkPayload?.tools?.some((tool) => tool?.function?.name === "apply_patch"),
+    "DeepSeek repair rethink dropped the constrained mutation tool"
+  );
   let deepSeekRepairReadPayload = null;
   await requestNextStep(
     {

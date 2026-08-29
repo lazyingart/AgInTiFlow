@@ -339,6 +339,53 @@ assert.ok(!runtimeText.includes("OLD-COMPACTION-MUST-NOT-RECUR"));
 assert.match(runtimeText, /Do not reread a listed source solely because compaction occurred/);
 assert.match(runtimeText, /never restart a full-file read loop after compaction/);
 
+const latestSemanticCorrection = [
+  "Continue the current task from the preserved state.",
+  "LATEST-CORRECTION-AUTHORITY replaces the stale interpretation with a detailed current behavior contract that deliberately contains no exact file path or shell command.",
+  "Preserve verified progress, reconcile the remaining implementation against this correction, avoid repeating rejected states, and verify the current result before finishing.",
+].join(" ");
+const staleGoalCompactionState = {
+  goal: "STALE-ACTIVE-GOAL continue the older interpretation.",
+  plan: "Use current evidence and finish the retained task.",
+  messages: [
+    { role: "system", content: "Preserve the latest substantive same-task correction." },
+    { role: "user", content: `Continue the current task from saved state: ${latestSemanticCorrection}` },
+  ],
+  meta: {
+    taskProfile: "auto",
+    goalContract: {
+      version: 3,
+      revision: 9,
+      activeGoalRevision: 8,
+      taskGoal: "Complete the retained task.",
+      activeGoal: "STALE-ACTIVE-GOAL continue the older interpretation.",
+      currentRequest: latestSemanticCorrection,
+      history: [{ revision: 9, refreshExecutionContract: false }],
+    },
+  },
+};
+const staleGoalCompactionMessages = buildContextBudgetCompactionMessages(
+  staleGoalCompactionState,
+  config,
+  { title: "", url: "" },
+  17,
+  { reason: "recover the latest semantic correction from an older saved session" }
+);
+const staleGoalCompactionText = staleGoalCompactionMessages
+  .map((message) => message.content || "")
+  .join("\n");
+const authoritativeGoalSection = staleGoalCompactionText
+  .split("Authoritative current goal:")[1]
+  ?.split("Current plan:")[0] || "";
+assert.ok(
+  authoritativeGoalSection.includes("LATEST-CORRECTION-AUTHORITY"),
+  "compaction kept an older active goal above a substantive latest correction"
+);
+assert.ok(
+  !authoritativeGoalSection.includes("STALE-ACTIVE-GOAL"),
+  "compaction still labeled the stale active goal as authoritative"
+);
+
 const deepSeekRuntimeMessages = buildContextBudgetCompactionMessages(
   compactionState,
   { ...config, provider: "deepseek", model: "deepseek-chat" },
@@ -726,6 +773,87 @@ assert.ok(thriceCompactedText.includes("EVIDENCE-CHUNK-TWO"));
 assert.ok(
   estimateMessageTokens(thriceCompacted) <= 12288,
   "cumulative DeepSeek compaction exceeded the bounded retry target"
+);
+
+const instructionReadPair = [
+  {
+    role: "assistant",
+    content: "",
+    reasoning_content: "Read the exact project instructions before editing.",
+    tool_calls: [
+      {
+        id: "read-project-instructions",
+        type: "function",
+        function: { name: "read_file", arguments: '{"path":"AGENTS.md"}' },
+      },
+    ],
+  },
+  {
+    role: "tool",
+    tool_call_id: "read-project-instructions",
+    content: JSON.stringify({
+      ok: true,
+      toolName: "read_file",
+      path: "AGENTS.md",
+      sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      content: "PROJECT-INSTRUCTION-MARKER preserve inputs and never inspect the external validator source.",
+    }),
+  },
+];
+const instructionCompactionState = {
+  ...compactionState,
+  messages: [
+    { role: "system", content: "system" },
+    { role: "user", content: "Repair the canonical CAD producer." },
+    ...instructionReadPair,
+    { role: "user", content: "Continue the current task from saved state: repair after validation." },
+    ...Array.from({ length: 18 }, (_, index) => noisyFullReadPair(index + 1, 7)).flat(),
+  ],
+};
+const instructionCompacted = buildContextBudgetCompactionMessages(
+  instructionCompactionState,
+  { ...config, provider: "deepseek", model: "deepseek-chat" },
+  { title: "", url: "" },
+  22,
+  { reason: "preserve project instructions across a continuation boundary" }
+);
+const instructionCompactedText = instructionCompacted
+  .map((message) => message.content || "")
+  .join("\n");
+assert.ok(
+  instructionCompactedText.includes("PROJECT-INSTRUCTION-MARKER"),
+  "compaction lost a project instruction read that preceded the latest continuation boundary"
+);
+const instructionCompactedAgain = buildContextBudgetCompactionMessages(
+  {
+    ...instructionCompactionState,
+    messages: [
+      ...instructionCompacted,
+      { role: "user", content: "Continue the current task from saved state: apply the bounded repair." },
+      ...Array.from({ length: 18 }, (_, index) => noisyFullReadPair(index + 1, 8)).flat(),
+    ],
+  },
+  { ...config, provider: "deepseek", model: "deepseek-chat" },
+  { title: "", url: "" },
+  26,
+  { reason: "preserve project instructions through repeated compaction" }
+);
+const instructionCompactedAgainText = instructionCompactedAgain
+  .map((message) => message.content || "")
+  .join("\n");
+assert.ok(
+  instructionCompactedAgainText.includes("PROJECT-INSTRUCTION-MARKER"),
+  "repeated compaction dropped durable project instruction evidence"
+);
+assert.equal(
+  instructionCompactedAgain.filter(
+    (message) =>
+      message.role === "user" &&
+      /Tool:\s*read_file/.test(message.content || "") &&
+      /Arguments:\s*\{\"path\":\"AGENTS\.md\"\}/.test(message.content || "")
+  ).length,
+  1,
+  "repeated compaction duplicated the durable AGENTS.md tool record"
 );
 
 console.log("context budget recovery smoke passed");

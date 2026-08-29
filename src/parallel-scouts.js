@@ -86,6 +86,7 @@ function shouldUseComplexScouts(config, state) {
       "dotnet",
       "php",
       "ruby",
+      "cad",
     ].includes(profile) ||
     /\b(large|complex|complicated|debug|bug|failing|system|install|setup|codebase|repo|multi[- ]file|architecture|refactor|migration)\b/i.test(
       goal

@@ -40,7 +40,9 @@ import {
   completionEvidenceNeedsCommand,
   completionRepairMutationRequirement,
   compactFailedTestEvidence,
+  continuationAddsConcreteRequirement,
   enqueueFailedTestRepairInstruction,
+  failedTestWorkspaceDiagnosticReadPaths,
   failedTestRequiresCleanRepositoryState,
   failedTestRepairPatchBlock,
   failedTestAliasedIndexComparisons,
@@ -72,11 +74,13 @@ import {
   resetGoalScopedRuntimeState,
   resetSameTaskExecutionContract,
   resetStaticDiscoveryAfterContextLoss,
+  toolResultWorkspacePath,
   runtimeMessagesSinceLatestContinuationBoundary,
   shellDiagnosticHint,
   rememberCompletedDeepResearch,
   unchangedFailedTestRerunBlock,
   repeatedNoProgressToolBlock,
+  redundantCadValidationAliasPatchBlock,
   regressiveInversePatchBlock,
   repeatedSuccessfulMutationBlock,
   repeatedStaticToolBlock,
@@ -108,6 +112,7 @@ import {
   staticToolCallSignature,
   normalizeDynamicStepsMode,
   shouldEvaluateResumeBoundary,
+  summarizeStagnantValidationLoop,
   summarizeRepeatedStaticDiscovery,
 } from "../src/step-budget-controller.js";
 import { SessionStore } from "../src/session-store.js";
@@ -356,7 +361,7 @@ try {
         }],
       },
       failedTestDiagnostic: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 0,
         failureSignature: "python-entrypoint-order",
         focuses: [{
@@ -948,6 +953,168 @@ try {
     repeatedTracebackPacket.paths.includes("tests/test_traceback_packet.py"),
     "duplicate frames from one validator crowded the actual failing test out of recovery evidence"
   );
+  const nestedTracebackSource = [
+    "def write_manifest(items):",
+    "    lines = []",
+    "    for name, path in items:",
+    '        lines.append(f"| {name} | {path.stat().st_size} |")',
+    "    return lines",
+    "",
+    "def main():",
+    "    return write_manifest([])",
+    "",
+    "main()",
+    "",
+  ].join("\n");
+  await fs.writeFile(
+    path.join(workspace, "traceback-source.py"),
+    nestedTracebackSource,
+    "utf8"
+  );
+  const nestedTracebackState = {
+    meta: {
+      taskProfile: "cad",
+      projectVerification: {
+        taskProfile: "cad",
+        mutationRevision: 7,
+        lastMutation: { revision: 7, paths: ["traceback-source.py"] },
+        discoveredTests: [],
+        testRuns: [{
+          command: "python3 validate.py --root .",
+          mutationRevision: 7,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "nested-manifest-traceback",
+          failureSummary: [
+            'Failing tests: isolated manifest rebuild failed.',
+            'File "./traceback-source.py", line 10, in <module> -> main()',
+            'File "./traceback-source.py", line 8, in main -> return write_manifest([])',
+            'File "./traceback-source.py", line 4, in write_manifest -> lines.append(f"| {name} | {path.stat().st_size} |")',
+          ].join(" | "),
+          failingTests: ["isolated manifest rebuild failed"],
+        }],
+      },
+    },
+  };
+  const nestedTracebackPacket = await buildFailedTestRecoveryPacket(
+    { commandCwd: workspace, taskProfile: "cad" },
+    nestedTracebackState
+  );
+  const nestedTracebackFocus =
+    nestedTracebackState.meta.failedTestDiagnostic.focuses[0];
+  assert(
+    nestedTracebackFocus?.kind === "failed-test-traceback-line" &&
+      nestedTracebackFocus.path === "traceback-source.py" &&
+      nestedTracebackFocus.decisiveLine === 4 &&
+      nestedTracebackFocus.directSearch ===
+        '        lines.append(f"| {name} | {path.stat().st_size} |")',
+    `nested same-file traceback did not bind the deepest current source line: ${JSON.stringify(nestedTracebackFocus)}`
+  );
+  assert(
+    !nestedTracebackState.meta.failedTestDiagnostic.focuses.some(
+      (focus) => focus.kind === "generated-artifact-semantic-producer"
+    ) &&
+      nestedTracebackPacket.content.includes(
+        "Current actionable traceback line in traceback-source.py (line 4)"
+      ) &&
+      nestedTracebackPacket.content.includes(
+        "Exact current source context around traceback-source.py:4"
+      ) &&
+      nestedTracebackPacket.content.includes(
+        '4:         lines.append(f"| {name} | {path.stat().st_size} |")'
+      ),
+    "the exact actionable traceback line or its bounded current-source context was omitted"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      nestedTracebackState,
+      "apply_patch",
+      {
+        path: "traceback-source.py",
+        search: nestedTracebackFocus.directSearch,
+        replace: [
+          "        if path.exists():",
+          '            lines.append(f"| {name} | {path.stat().st_size} |")',
+        ].join("\n"),
+      },
+      { commandCwd: workspace, taskProfile: "cad" }
+    )) === null,
+    "a syntactically valid repair at the deepest current traceback line was blocked"
+  );
+  assert(
+    (await failedTestRepairPatchBlock(
+      nestedTracebackState,
+      "apply_patch",
+      {
+        path: "traceback-source.py",
+        search: nestedTracebackFocus.directSearch,
+        replace: nestedTracebackFocus.directSearch,
+      },
+      { commandCwd: workspace, taskProfile: "cad" }
+    ))?.category === "failed-test-nonrepairing-patch",
+    "an unchanged traceback-line repair was accepted as progress"
+  );
+  const nestedHelperTracebackSource = [
+    "def sha256_file(path):",
+    '    with path.open("rb") as fh:',
+    "        return fh.read()",
+    "",
+    "def write_manifest(items):",
+    "    lines = []",
+    "    for name, path in items:",
+    '        lines.append(f"| {name} | {path.stat().st_size} | {sha256_file(path)} |")',
+    "    return lines",
+    "",
+    "def main():",
+    "    return write_manifest([])",
+    "",
+    "main()",
+    "",
+  ].join("\n");
+  await fs.writeFile(
+    path.join(workspace, "traceback-helper-source.py"),
+    nestedHelperTracebackSource,
+    "utf8"
+  );
+  const nestedHelperTracebackState = {
+    meta: {
+      taskProfile: "cad",
+      projectVerification: {
+        taskProfile: "cad",
+        mutationRevision: 8,
+        lastMutation: { revision: 8, paths: ["traceback-helper-source.py"] },
+        discoveredTests: [],
+        testRuns: [{
+          command: "python3 validate.py --root .",
+          mutationRevision: 8,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "nested-helper-manifest-traceback",
+          failureSummary: [
+            "Failing tests: isolated manifest rebuild failed.",
+            'File "./traceback-helper-source.py", line 14, in <module> -> main()',
+            'File "./traceback-helper-source.py", line 12, in main -> return write_manifest([])',
+            'File "./traceback-helper-source.py", line 8, in write_manifest -> lines.append(f"| {name} | {path.stat().st_size} | {sha256_file(path)} |")',
+            'File "./traceback-helper-source.py", line 2, in sha256_file -> with path.open("rb") as fh:',
+          ].join(" | "),
+          failingTests: ["isolated manifest rebuild failed"],
+        }],
+      },
+    },
+  };
+  await buildFailedTestRecoveryPacket(
+    { commandCwd: workspace, taskProfile: "cad" },
+    nestedHelperTracebackState
+  );
+  const nestedHelperTracebackFocus =
+    nestedHelperTracebackState.meta.failedTestDiagnostic.focuses[0];
+  assert(
+    nestedHelperTracebackFocus?.kind === "failed-test-traceback-line" &&
+      nestedHelperTracebackFocus.path === "traceback-helper-source.py" &&
+      nestedHelperTracebackFocus.decisiveLine === 8 &&
+      nestedHelperTracebackFocus.directSearch.includes("sha256_file(path)"),
+    `a one-call helper frame displaced its richer actionable caller: ${JSON.stringify(nestedHelperTracebackFocus)}`
+  );
   assert(
     (await failedTestRepairPatchBlock(
       duplicateRepairState,
@@ -1288,6 +1455,40 @@ try {
     )) === null,
     "the boundary-preserved declaration replacement still produced invalid Python"
   );
+  const incrementalAnchorSearch = [
+    "    path = 'preview.png'",
+    "    return path",
+  ].join("\n");
+  const incrementalAnchorBinding = bindPatchContextRepairArguments(
+    declarationBoundaryState,
+    {
+      path: "preview_builder.py",
+      search: incrementalAnchorSearch,
+      replace: [
+        "    path = 'preview-fixed.png'",
+        "    path.write_text('ready')",
+        "    return path",
+      ].join("\n"),
+    }
+  );
+  assert(
+    incrementalAnchorBinding?.incrementalDeclarationRecovery?.mode ===
+      "replace-anchor-subrange" &&
+      incrementalAnchorBinding.args.search === declarationBoundaryAnchor &&
+      incrementalAnchorBinding.args.replace.startsWith("def build_preview():") &&
+      incrementalAnchorBinding.args.replace.includes("path.write_text('ready')") &&
+      !incrementalAnchorBinding.args.replace.includes("path = 'preview.png'") &&
+      incrementalAnchorBinding.scopeIssue === null,
+    "an exact partial edit inside a revision-bound declaration was not expanded into one complete declaration replacement"
+  );
+  assert(
+    (await prospectivePythonExactPatchSyntaxBlock(
+      "apply_patch",
+      incrementalAnchorBinding.args,
+      { commandCwd: workspace }
+    )) === null,
+    "the expanded incremental declaration replacement produced invalid Python"
+  );
   const syntaxRefreshDecision = patchContextRefreshDecision(
     {
       meta: {
@@ -1310,6 +1511,30 @@ try {
     syntaxRefreshDecision?.triggerCategory === "python-syntax-regression" &&
       syntaxRefreshDecision.path === "preview_builder.py",
     "a prospective Python syntax regression did not force a fresh exact-source read"
+  );
+  const noChangeRefreshDecision = patchContextRefreshDecision(
+    {
+      meta: {
+        goalContract: { revision: 1 },
+        projectVerification: { mutationRevision: 1, privateMutationRevision: 0 },
+        toolLoop: { stagnationEpoch: 0, recent: [] },
+      },
+    },
+    {
+      toolName: "apply_patch",
+      ok: false,
+      error: "Patch made no changes to build.py.",
+      args: {
+        path: "build.py",
+        search: "def write_manifest(",
+      },
+    }
+  );
+  assert(
+    noChangeRefreshDecision?.triggerCategory === "no-change-patch" &&
+      noChangeRefreshDecision.path === "build.py" &&
+      noChangeRefreshDecision.failedSearchPreview === "def write_manifest(",
+    "a semantically empty patch did not force a focused exact-source refresh"
   );
   const semanticScopeMismatchState = {
     meta: {
@@ -5386,6 +5611,134 @@ try {
       ) === null,
     "a failed non-test required command stayed trapped in exact-command constrained recovery"
   );
+  const staleValidatorCommand =
+    'python3 missing_local_validator.py --root . 2>&1; echo "EXIT=$?"';
+  const authoritativeValidatorCommand =
+    "/opt/cad/bin/python /workspace/acceptance/cad_contract.py --root .";
+  const authoritativeValidatorGoal =
+    `Continue the same repair and run this exact declared validator command: \`${authoritativeValidatorCommand}\`.`;
+  const authoritativeValidatorState = {
+    goal: authoritativeValidatorGoal,
+    meta: {
+      taskProfile: "cad",
+      goalContract: {
+        revision: 9,
+        currentRequest: authoritativeValidatorGoal,
+        activeGoal: authoritativeValidatorGoal,
+        taskGoal: "Repair and validate the CAD artifact.",
+        history: [{ revision: 9, refreshExecutionContract: true }],
+      },
+      activeExecutionContract: {
+        revision: 9,
+        startedMutationRevision: 4,
+        materialMutationRevision: 5,
+        requiresWorkspaceMutation: true,
+        requiresFileMutation: true,
+        requiresSourceGrounding: true,
+        requiredProjectCommands: [authoritativeValidatorCommand],
+      },
+      completionEvidenceRepair: {
+        key: "current-turn-final-validation",
+        at: "2026-08-28T07:00:00.000Z",
+      },
+      projectVerification: {
+        mutationRevision: 5,
+        privateMutationRevision: 0,
+        requiredCommands: [],
+        contractRequiredCommands: [],
+        requiredCommandBatch: {
+          id: "required-command-batch-9",
+          key: JSON.stringify([authoritativeValidatorCommand]),
+          requiredCommands: [authoritativeValidatorCommand],
+          completedCommands: [],
+          completedRuns: [],
+          goalRevision: 9,
+          startedMutationRevision: 5,
+          lastMutationRevision: 5,
+          complete: false,
+        },
+        commandRuns: [],
+        testRuns: [{
+          command: staleValidatorCommand,
+          at: "2026-08-28T06:59:00.000Z",
+          ok: false,
+          passed: false,
+          mutationRevision: 5,
+          privateMutationRevision: 0,
+          failureSignature: "stale-missing-validator",
+          failureSummary: "python3: cannot open missing_local_validator.py",
+        }],
+      },
+    },
+  };
+  const authoritativeValidatorRuntime = nextStepRuntimeConfig(
+    { provider: "deepseek", taskProfile: "cad", commandCwd: workspace },
+    authoritativeValidatorState
+  );
+  assert(
+    authoritativeValidatorRuntime.testFailureRepairActive !== true &&
+      authoritativeValidatorRuntime.requiredProjectCommandPending === true &&
+      authoritativeValidatorRuntime.requiredProjectCommand === authoritativeValidatorCommand &&
+      authoritativeValidatorRuntime.supersededTestFailureCommand === staleValidatorCommand,
+    "a stale non-required validator failure suppressed the current turn's exact authoritative command"
+  );
+  const priorRevisionValidatorState = structuredClone(authoritativeValidatorState);
+  delete priorRevisionValidatorState.meta.completionEvidenceRepair;
+  priorRevisionValidatorState.meta.projectVerification.mutationRevision = 6;
+  priorRevisionValidatorState.meta.activeExecutionContract.materialMutationRevision = 6;
+  const priorRevisionValidatorRuntime = nextStepRuntimeConfig(
+    { provider: "deepseek", taskProfile: "cad", commandCwd: workspace },
+    priorRevisionValidatorState
+  );
+  assert(
+    priorRevisionValidatorRuntime.testFailureRepairActive !== true &&
+      priorRevisionValidatorRuntime.testVerificationPending !== true &&
+      priorRevisionValidatorRuntime.testVerificationCommand !== staleValidatorCommand &&
+      priorRevisionValidatorRuntime.supersededTestFailureCommand === staleValidatorCommand,
+    "a prior-revision non-required validator failure was reintroduced after the current turn mutated the source"
+  );
+  priorRevisionValidatorState.meta.completionEvidenceRepair = {
+    key: "prior-revision-final-validation",
+    at: "2026-08-28T07:01:00.000Z",
+  };
+  const priorRevisionCompletionRuntime = nextStepRuntimeConfig(
+    { provider: "deepseek", taskProfile: "cad", commandCwd: workspace },
+    priorRevisionValidatorState
+  );
+  assert(
+    priorRevisionCompletionRuntime.testFailureRepairActive !== true &&
+      priorRevisionCompletionRuntime.testVerificationPending !== true &&
+      priorRevisionCompletionRuntime.requiredProjectCommandPending === true &&
+      priorRevisionCompletionRuntime.requiredProjectCommand === authoritativeValidatorCommand,
+    "completion repair did not select the current exact validator after superseding a prior-revision failure"
+  );
+  const stillRequiredPriorFailureState = structuredClone(priorRevisionValidatorState);
+  stillRequiredPriorFailureState.meta.activeExecutionContract.requiredProjectCommands = [
+    staleValidatorCommand,
+  ];
+  stillRequiredPriorFailureState.meta.projectVerification.contractRequiredCommands = [
+    staleValidatorCommand,
+  ];
+  stillRequiredPriorFailureState.meta.projectVerification.requiredCommandBatch = {
+    id: "required-command-batch-10",
+    key: JSON.stringify([staleValidatorCommand]),
+    requiredCommands: [staleValidatorCommand],
+    completedCommands: [],
+    completedRuns: [],
+    goalRevision: 9,
+    startedMutationRevision: 6,
+    lastMutationRevision: 6,
+    complete: false,
+  };
+  const stillRequiredPriorFailureRuntime = nextStepRuntimeConfig(
+    { provider: "deepseek", taskProfile: "cad", commandCwd: workspace },
+    stillRequiredPriorFailureState
+  );
+  assert(
+    stillRequiredPriorFailureRuntime.testVerificationPending === true &&
+      stillRequiredPriorFailureRuntime.testVerificationCommand === staleValidatorCommand,
+    "a prior-revision failure was discarded even though the current turn still requires the same command"
+  );
   const preservedTailOutput = trimCommandOutput(
     `${"long test output\n".repeat(1000)}EXIT=0\n`,
     800
@@ -5505,10 +5858,10 @@ try {
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 7,
         failureSignature: "pre-repair-failure",
-        content: "Bounded failed-test evidence packet v15.",
+        content: "Bounded failed-test evidence packet v16.",
       },
     },
   };
@@ -5576,9 +5929,35 @@ try {
         JSON.stringify([generatedDeckValidator]),
     "an exact external validator was not retained as an opaque execute-only contract before its first run"
   );
+  await fs.mkdir(path.join(workspace, "inputs"), { recursive: true });
+  await fs.writeFile(
+    path.join(workspace, "inputs", "measurements.csv"),
+    "item,measurement_mm\nseat_diameter,40.2\n",
+    "utf8"
+  );
   await fs.writeFile(
     path.join(workspace, "build_deck.py"),
-    "print('build canonical deck')\n",
+    [
+      "from pathlib import Path",
+      "import argparse",
+      "import csv",
+      "import datetime",
+      "import hashlib",
+      "import io",
+      "import json",
+      "import os",
+      "import tempfile",
+      "import zipfile",
+      "ROOT = Path(__file__).resolve().parent",
+      "INPUT_CSV = ROOT / 'inputs' / 'measurements.csv'",
+      "",
+      "def write_manifest():",
+      "    payload = {'artifacts': []}",
+      "    return payload",
+      "",
+      "print('build canonical deck')",
+      "",
+    ].join("\n"),
     "utf8"
   );
   const staleGeneratedDeckState = {
@@ -5670,6 +6049,104 @@ try {
     `a stale generated artifact did not recover its exact safe producer before validation: ${JSON.stringify(
       staleGeneratedDeckRuntime
     )}`
+  );
+  const repairedSourceBeforeProducerState = structuredClone(staleGeneratedDeckState);
+  repairedSourceBeforeProducerState.meta.projectVerification.mutationRevision = 10;
+  repairedSourceBeforeProducerState.meta.projectVerification.mutationHistory.push({
+    revision: 10,
+    toolName: "apply_patch",
+    paths: ["build_deck.py"],
+  });
+  repairedSourceBeforeProducerState.meta.activeExecutionContract.materialMutationRevision = 10;
+  repairedSourceBeforeProducerState.meta.sourceCodeQuality.mutationRevision = 10;
+  const repairedSourceBeforeProducerRuntime = nextStepRuntimeConfig(
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: repairedSourceBeforeProducerState.goal,
+    },
+    repairedSourceBeforeProducerState
+  );
+  const repairedSourceBeforeProducerPhase = buildKnownConstrainedPhasePlan(
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: repairedSourceBeforeProducerState.goal,
+    },
+    repairedSourceBeforeProducerState,
+    repairedSourceBeforeProducerRuntime
+  );
+  assert(
+    repairedSourceBeforeProducerRuntime.generatedArtifactProducerPending === true &&
+      repairedSourceBeforeProducerRuntime.generatedArtifactProducerCommand ===
+        "python3 build_deck.py" &&
+      repairedSourceBeforeProducerPhase?.mode === "generated-artifact-producer" &&
+      repairedSourceBeforeProducerPhase?.command === "python3 build_deck.py",
+    `a source repair exposed the stale validator before rebuilding generated artifacts: ${JSON.stringify({
+      runtime: repairedSourceBeforeProducerRuntime,
+      phase: repairedSourceBeforeProducerPhase,
+    })}`
+  );
+  assert(
+    isSubstantiveTestCommand(generatedDeckValidator, {
+      commandCwd: workspace,
+      testVerificationPending: true,
+      testVerificationCommand: generatedDeckValidator,
+    }),
+    "an exact retained external validator was not treated as authoritative verification"
+  );
+  const exactValidatorFailureState = structuredClone(repairedSourceBeforeProducerState);
+  recordProjectVerificationOutcome(
+    exactValidatorFailureState,
+    {
+      toolName: "run_command",
+      ok: false,
+      exitCode: 1,
+      args: { command: generatedDeckValidator },
+      stdout: "FAIL: manifest parameters omit holder_width_mm\n",
+      stderr: "",
+      commandPolicy: {
+        category: "general-shell",
+        writesWorkspace: true,
+        mayMutateProject: true,
+        substantiveTest: false,
+      },
+    },
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: exactValidatorFailureState.goal,
+      testVerificationPending: true,
+      testVerificationCommand: generatedDeckValidator,
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
+  const exactValidatorRecordedTest =
+    exactValidatorFailureState.meta.projectVerification.testRuns.at(-1);
+  const exactValidatorRepairRuntime = nextStepRuntimeConfig(
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: exactValidatorFailureState.goal,
+    },
+    exactValidatorFailureState
+  );
+  assert(
+    exactValidatorFailureState.meta.projectVerification.mutationRevision === 10 &&
+      exactValidatorRecordedTest?.command === generatedDeckValidator &&
+      exactValidatorRecordedTest?.passed === false &&
+      exactValidatorRecordedTest?.mutationRevision === 10 &&
+      exactValidatorRepairRuntime.testFailureRepairActive === true &&
+      exactValidatorRepairRuntime.testVerificationPending !== true,
+    `an exact external validator failure was not retained as current repair evidence: ${JSON.stringify({
+      verification: exactValidatorFailureState.meta.projectVerification,
+      runtime: exactValidatorRepairRuntime,
+    })}`
   );
   const staleGeneratedDeckSourceDefectState = JSON.parse(
     JSON.stringify(staleGeneratedDeckState)
@@ -5790,7 +6267,7 @@ try {
     "a fresh generated-artifact failure dropped its latest mutable producer or retained an explicitly immutable input"
   );
   failedAfterProducerState.meta.failedTestRecoveryPacket = {
-    packetVersion: 15,
+    packetVersion: 16,
     content: failedAfterProducerPacket.content,
     paths: failedAfterProducerPacket.paths,
     repairPaths: failedAfterProducerPacket.repairPaths,
@@ -5809,8 +6286,8 @@ try {
   );
   assert(
     JSON.stringify(failedAfterProducerRuntime.testFailureRepairContextPaths) ===
-      JSON.stringify(["build_deck.py"]),
-    "failed-test recovery forced immutable evidence reads instead of grounding the canonical producer"
+      JSON.stringify(["build_deck.py", "inputs/measurements.csv"]),
+    "failed-test recovery did not preserve the canonical producer and its exact read-only input as separate context evidence"
   );
   assert(
     JSON.stringify(failedAfterProducerRuntime.testFailureDiagnosticReadPaths) ===
@@ -5846,6 +6323,641 @@ try {
   assert(
     consumedExternalValidatorRuntime.testFailureDiagnosticReadPaths.length === 0,
     "an exact external validator remained exposed after its bounded read completed"
+  );
+  await fs.mkdir(path.join(workspace, "artifacts"), { recursive: true });
+  await fs.writeFile(
+    path.join(workspace, "artifacts", "manifest.json"),
+    JSON.stringify(
+      {
+        schema: "generated-artifacts/v1",
+        artifacts: [
+          {
+            name: "fixture.step",
+            path: "artifacts/fixture.step",
+            bytes: 120,
+            sha256: "abc123",
+          },
+          {
+            name: "PRINT_THIS_fixture.stl",
+            path: "artifacts/PRINT_THIS_fixture.stl",
+            bytes: 240,
+            sha256: "def456",
+          },
+          {
+            name: "PRINT_THIS_fixture.3mf",
+            path: "artifacts/PRINT_THIS_fixture.3mf",
+            bytes: 360,
+            sha256: "789abc",
+          },
+        ],
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+  const generatedManifestFailureState = structuredClone(failedAfterProducerState);
+  generatedManifestFailureState.goal = [
+    generatedManifestFailureState.goal,
+    "Do not inspect the external acceptance-validator source.",
+  ].join("\n");
+  generatedManifestFailureState.meta.goalContract.taskGoal =
+    generatedManifestFailureState.goal;
+  generatedManifestFailureState.meta.projectVerification.requiredOutputs = [
+    ...(generatedManifestFailureState.meta.projectVerification.requiredOutputs || []),
+    "artifacts/manifest.json",
+  ];
+  const generatedManifestFailure =
+    generatedManifestFailureState.meta.projectVerification.testRuns.at(-1);
+  generatedManifestFailure.failureSignature = "generated-manifest-validation-evidence";
+  generatedManifestFailure.failureSummary =
+    "Failing tests: manifest lacks STEP/STL/3MF validation evidence.";
+  generatedManifestFailure.failingTests = [
+    "manifest lacks STEP/STL/3MF validation evidence",
+  ];
+  generatedManifestFailureState.meta.failedTestRecoveryPacket = {
+    packetVersion: 16,
+    content: "Current source packet for the generated manifest failure.",
+    paths: ["build_deck.py"],
+    repairPaths: ["build_deck.py"],
+    mutationRevision: generatedManifestFailure.mutationRevision,
+    failureSignature: generatedManifestFailure.failureSignature,
+    command: generatedManifestFailure.command,
+    generatedAt: "2026-08-27T19:05:01.000Z",
+  };
+  const generatedManifestGoalRevision = Math.max(
+    0,
+    Number(generatedManifestFailureState.meta.goalContract?.revision || 0)
+  );
+  assertStrict.deepEqual(
+    failedTestWorkspaceDiagnosticReadPaths(
+      {
+        provider: "deepseek",
+        taskProfile: "slides",
+        commandCwd: workspace,
+        goal: generatedManifestFailureState.goal,
+      },
+      generatedManifestFailureState,
+      generatedManifestFailure
+    ),
+    ["artifacts/manifest.json"],
+    "a named generated manifest failure did not expose the exact required text artifact"
+  );
+  const generatedManifestSemanticPacket = await buildFailedTestRecoveryPacket(
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: generatedManifestFailureState.goal,
+    },
+    generatedManifestFailureState
+  );
+  assertStrict.match(
+    generatedManifestSemanticPacket.content,
+    /Generated-artifact semantic gap in artifacts\/manifest\.json/i,
+    "the failed-test packet did not convert the generated manifest into bounded semantic evidence"
+  );
+  assertStrict.match(
+    generatedManifestSemanticPacket.content,
+    /artifact-record keys: bytes, name, path, sha256/i,
+    "the generated diagnostic did not report the manifest structure it actually observed"
+  );
+  assertStrict.match(
+    generatedManifestSemanticPacket.content,
+    /No generated key records validation, verification, checks, evidence/i,
+    "the generated diagnostic did not state the observed validation-evidence gap"
+  );
+  assertStrict.match(
+    generatedManifestSemanticPacket.content,
+    /canonical producer build_deck\.py/i,
+    "the semantic gap was not routed back to the discovered canonical producer"
+  );
+  assert(
+    generatedManifestSemanticPacket.paths.includes("inputs/measurements.csv") &&
+      generatedManifestSemanticPacket.content.includes("seat_diameter,40.2"),
+    "a Python pathlib input dependency was not retained in the failed-test packet"
+  );
+  assertStrict.match(
+    generatedManifestSemanticPacket.content,
+    /Focused canonical producer declaration in build_deck\.py \(write_manifest,[\s\S]*def write_manifest\(\):[\s\S]*return payload/,
+    "the failed-test packet did not retain the complete declaration that produces the named manifest"
+  );
+  assert(
+    generatedManifestFailureState.meta.failedTestDiagnostic.focuses.some(
+      (focus) =>
+        focus.kind === "generated-artifact-semantic-producer" &&
+        focus.path === "build_deck.py" &&
+        focus.directSearch.includes("def write_manifest():") &&
+        focus.directSearch.includes("return payload")
+    ),
+    "the semantic producer declaration was not preserved as an exact patch anchor"
+  );
+
+  const compactProducerOriginal = await fs.readFile(
+    path.join(workspace, "build_deck.py"),
+    "utf8"
+  );
+  try {
+    const longProducerLines = Array.from(
+      { length: 132 },
+      (_, index) =>
+        `    stage_${index + 1} = "preserve unrelated generated-artifact production context ${index + 1}"`
+    );
+    await fs.writeFile(
+      path.join(workspace, "build_deck.py"),
+      [
+        "from pathlib import Path",
+        "import json",
+        "",
+        "def write_manifest():",
+        ...longProducerLines,
+        "    validation = {",
+        '        "step": {"status": "checked"},',
+        '        "stl": {"status": "checked"},',
+        '        "3mf": {"status": "checked"},',
+        "    }",
+        "    artifacts = []",
+        "    json_payload = {",
+        '        "schema": "generated-artifacts/v1",',
+        '        "validation": validation,',
+        '        "artifacts": artifacts,',
+        "    }",
+        "    Path('artifacts/manifest.json').write_text(",
+        "        json.dumps(json_payload, indent=2), encoding='utf8'",
+        "    )",
+        "    return json_payload",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+    const longProducerState = structuredClone(generatedManifestFailureState);
+    delete longProducerState.meta.failedTestRecoveryPacket;
+    delete longProducerState.meta.failedTestDiagnostic;
+    longProducerState.meta.toolLoop = { recent: [] };
+    await buildFailedTestRecoveryPacket(
+      {
+        provider: "deepseek",
+        taskProfile: "slides",
+        commandCwd: workspace,
+        goal: longProducerState.goal,
+      },
+      longProducerState
+    );
+    const compactFocus = longProducerState.meta.failedTestDiagnostic.focuses.find(
+      (focus) =>
+        focus.kind === "generated-artifact-semantic-producer" &&
+        focus.path === "build_deck.py"
+    );
+    assert(
+      compactFocus?.directSearch.includes("json_payload = {") &&
+        compactFocus.directSearch.includes('"validation": validation') &&
+        !compactFocus.directSearch.includes("def write_manifest") &&
+        Buffer.byteLength(compactFocus.directSearch, "utf8") < 3_200,
+      `a long semantic producer was not narrowed to its compact machine-readable manifest block: ${JSON.stringify(compactFocus)}`
+    );
+  } finally {
+    await fs.writeFile(
+      path.join(workspace, "build_deck.py"),
+      compactProducerOriginal,
+      "utf8"
+    );
+  }
+
+  const redundantEvidenceProducerOriginal = await fs.readFile(
+    path.join(workspace, "build_deck.py"),
+    "utf8"
+  );
+  try {
+    await fs.writeFile(
+      path.join(workspace, "build_deck.py"),
+      [
+        "from pathlib import Path",
+        "import json",
+        "",
+        "def write_manifest():",
+        "    validation = {",
+        '        "STEP": {"check": "readable", "passed": True},',
+        '        "STL": {"check": "readable", "passed": True},',
+        '        "3MF": {"check": "readable", "passed": True},',
+        "    }",
+        "    artifacts = []",
+        "    json_payload = {",
+        '        "validation": validation,',
+        '        "validation_evidence": [',
+        '            {"artifact": "STEP", "check": "readable", "passed": True},',
+        '            {"artifact": "STL", "check": "readable", "passed": True},',
+        '            {"artifact": "3MF", "check": "readable", "passed": True},',
+        "        ],",
+        '        "artifacts": artifacts,',
+        '        "validation_results": [',
+        '            {"artifact": "STEP", "check": "readable", "passed": True},',
+        '            {"artifact": "STL", "check": "readable", "passed": True},',
+        '            {"artifact": "3MF", "check": "readable", "passed": True},',
+        "        ],",
+        "    }",
+        "    Path('artifacts/manifest.json').write_text(",
+        "        json.dumps(json_payload, indent=2), encoding='utf8'",
+        "    )",
+        "    return json_payload",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+    const evidenceReshapeState = structuredClone(generatedManifestFailureState);
+    delete evidenceReshapeState.meta.failedTestRecoveryPacket;
+    delete evidenceReshapeState.meta.failedTestDiagnostic;
+    evidenceReshapeState.meta.toolLoop = { recent: [] };
+    await buildFailedTestRecoveryPacket(
+      {
+        provider: "deepseek",
+        taskProfile: "slides",
+        commandCwd: workspace,
+        goal: evidenceReshapeState.goal,
+      },
+      evidenceReshapeState
+    );
+    const evidenceReshapeFocus =
+      evidenceReshapeState.meta.failedTestDiagnostic.focuses.find(
+        (focus) =>
+          focus.kind === "generated-artifact-semantic-producer" &&
+          focus.path === "build_deck.py"
+      );
+    assert(
+      evidenceReshapeFocus?.directSearch.includes('"validation_results": ['),
+      "the semantic producer focus did not retain the redundant evidence shape"
+    );
+    const canonicalEvidenceReplacement = evidenceReshapeFocus.directSearch.replace(
+      /        "validation_evidence": \[[\s\S]*?        \],\n        "artifacts": artifacts,\n        "validation_results": \[[\s\S]*?        \],/,
+      [
+        '        "artifacts": artifacts,',
+        '        "validation_evidence": {',
+        '            "STEP": validation["STEP"],',
+        '            "STL": validation["STL"],',
+        '            "3MF": validation["3MF"],',
+        "        },",
+      ].join("\n")
+    );
+    assertStrict.notStrictEqual(
+      canonicalEvidenceReplacement,
+      evidenceReshapeFocus.directSearch,
+      "the regression fixture did not create a canonical evidence reshape"
+    );
+    const semanticTermPattern =
+      /\b(?:validat(?:e|ed|es|ing|ion)?|checks?|evidence|pass(?:ed|es)?|results?)\b/gi;
+    assert(
+      [...canonicalEvidenceReplacement.matchAll(semanticTermPattern)].length <
+        [...evidenceReshapeFocus.directSearch.matchAll(semanticTermPattern)].length,
+      "the regression fixture did not reduce redundant semantic evidence terms"
+    );
+    const evidenceReshapeBlock = await failedTestRepairPatchBlock(
+      evidenceReshapeState,
+      "apply_patch",
+      {
+        path: "build_deck.py",
+        search: evidenceReshapeFocus.directSearch,
+        replace: canonicalEvidenceReplacement,
+      },
+      { commandCwd: workspace }
+    );
+    assertStrict.equal(
+      evidenceReshapeBlock,
+      null,
+      "a material canonical STEP/STL/3MF evidence reshape was blocked because it reduced redundant keyword counts"
+    );
+  } finally {
+    await fs.writeFile(
+      path.join(workspace, "build_deck.py"),
+      redundantEvidenceProducerOriginal,
+      "utf8"
+    );
+  }
+
+  const generatedManifestOriginal = await fs.readFile(
+    path.join(workspace, "artifacts", "manifest.json"),
+    "utf8"
+  );
+  try {
+    const rejectedValidationShape = JSON.parse(generatedManifestOriginal);
+    rejectedValidationShape.validation = {
+      step: { status: "checked", bytes: 120 },
+      stl: { status: "checked", bytes: 240 },
+      "3mf": { status: "checked", bytes: 360 },
+    };
+    await fs.writeFile(
+      path.join(workspace, "artifacts", "manifest.json"),
+      JSON.stringify(rejectedValidationShape, null, 2),
+      "utf8"
+    );
+    const rejectedShapeState = structuredClone(generatedManifestFailureState);
+    delete rejectedShapeState.meta.failedTestRecoveryPacket;
+    delete rejectedShapeState.meta.failedTestDiagnostic;
+    rejectedShapeState.meta.toolLoop = { recent: [] };
+    const rejectedShapePacket = await buildFailedTestRecoveryPacket(
+      {
+        provider: "deepseek",
+        taskProfile: "slides",
+        commandCwd: workspace,
+        goal: rejectedShapeState.goal,
+      },
+      rejectedShapeState
+    );
+    assertStrict.match(
+      rejectedShapePacket.content,
+      /Generated-artifact evidence shape still rejected/i,
+      "an existing but rejected validation shape suppressed the generated-artifact diagnostic"
+    );
+    assertStrict.match(
+      rejectedShapePacket.content,
+      /Observed validation-related keys:[^\n]*validation/i,
+      "the rejected-shape diagnostic did not report the validation key it observed"
+    );
+    assertStrict.match(
+      rejectedShapePacket.content,
+      /Do not add another synonymous top-level list/i,
+      "the rejected-shape diagnostic encouraged another already-rejected top-level alias"
+    );
+    assertStrict.doesNotMatch(
+      rejectedShapePacket.content,
+      /validation_evidence|required[_ -]?schema|verifier[_ -]?schema/i,
+      "the rejected-shape diagnostic leaked or invented a hidden verifier-specific field"
+    );
+  } finally {
+    await fs.writeFile(
+      path.join(workspace, "artifacts", "manifest.json"),
+      generatedManifestOriginal,
+      "utf8"
+    );
+  }
+
+  const unrelatedSemanticPatchBlock = await failedTestRepairPatchBlock(
+    generatedManifestFailureState,
+    "apply_patch",
+    {
+      path: "build_deck.py",
+      search: "    payload = {'artifacts': []}",
+      replace: "    payload = {'artifacts': [], 'mode': 'strict'}",
+    },
+    { commandCwd: workspace }
+  );
+  assertStrict.equal(
+    unrelatedSemanticPatchBlock?.category,
+    "failed-test-semantic-drift",
+    "an unrelated producer parameter edit was allowed despite a retained generated-evidence gap"
+  );
+  const noChangeSemanticPatchBlock = await failedTestRepairPatchBlock(
+    generatedManifestFailureState,
+    "apply_patch",
+    {
+      path: "build_deck.py",
+      search: "    payload = {'artifacts': []}",
+      replace: "    payload = {'artifacts': []}",
+    },
+    { commandCwd: workspace }
+  );
+  assertStrict.equal(
+    noChangeSemanticPatchBlock,
+    null,
+    "the semantic drift guard masked an exact no-change patch before executor recovery"
+  );
+  const semanticEvidencePatchBlock = await failedTestRepairPatchBlock(
+    generatedManifestFailureState,
+    "apply_patch",
+    {
+      path: "build_deck.py",
+      search: "    payload = {'artifacts': []}",
+      replace:
+        "    payload = {'artifacts': [], 'validation': {'status': 'checked'}}",
+    },
+    { commandCwd: workspace }
+  );
+  assertStrict.equal(
+    semanticEvidencePatchBlock,
+    null,
+    "a producer edit that introduces generated validation evidence was incorrectly blocked"
+  );
+  const explicitOutcomePatchBlock = await failedTestRepairPatchBlock(
+    generatedManifestFailureState,
+    "apply_patch",
+    {
+      path: "build_deck.py",
+      search: "    payload = {'artifacts': []}",
+      replace:
+        "    payload = {'artifacts': [], 'passed': True, 'outcome': 'pass', 'measurements': {}}",
+    },
+    { commandCwd: workspace }
+  );
+  assertStrict.equal(
+    explicitOutcomePatchBlock,
+    null,
+    "explicit pass/outcome/measurement evidence was mistaken for semantic drift"
+  );
+  generatedManifestFailureState.meta.failedTestRecoveryPacket = {
+    packetVersion: 16,
+    content: generatedManifestSemanticPacket.content,
+    paths: generatedManifestSemanticPacket.paths,
+    repairPaths: generatedManifestSemanticPacket.repairPaths,
+    mutationRevision: generatedManifestFailure.mutationRevision,
+    failureSignature: generatedManifestFailure.failureSignature,
+    command: generatedManifestFailure.command,
+    generatedAt: "2026-08-27T19:05:03.000Z",
+  };
+  const generatedManifestFocusedRuntime = nextStepRuntimeConfig(
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: generatedManifestFailureState.goal,
+    },
+    generatedManifestFailureState
+  );
+  assert(
+    generatedManifestFocusedRuntime.testFailureRepairPatchTargets?.[0]?.kind ===
+      "generated-artifact-semantic-producer" &&
+      generatedManifestFocusedRuntime.testFailureRepairPatchTargets[0].search.includes(
+        "def write_manifest():"
+      ) &&
+      JSON.stringify(generatedManifestFocusedRuntime.testFailureCanonicalRepairPaths) ===
+        JSON.stringify(["build_deck.py"]),
+    "a generated semantic gap was not promoted to the exact canonical producer repair target"
+  );
+  assertStrict.match(
+    generatedManifestSemanticPacket.content,
+    /do not keep changing unrelated design parameters or aliases/i,
+    "the semantic gap did not suppress unrelated parameter-alias churn"
+  );
+  assertStrict.doesNotMatch(
+    generatedManifestSemanticPacket.content,
+    /required[_ -]?schema|validation_records|must equal true/i,
+    "the generated diagnostic invented a hidden verifier-specific implementation contract"
+  );
+  const unrelatedManifestFailureState = structuredClone(
+    generatedManifestFailureState
+  );
+  const unrelatedManifestFailure =
+    unrelatedManifestFailureState.meta.projectVerification.testRuns.at(-1);
+  unrelatedManifestFailure.failureSignature = "unrelated-manifest-title";
+  unrelatedManifestFailure.failureSummary =
+    "Failing tests: generated title is not viewer-facing.";
+  unrelatedManifestFailure.failingTests = [
+    "generated title is not viewer-facing",
+  ];
+  const unrelatedManifestPacket = await buildFailedTestRecoveryPacket(
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: unrelatedManifestFailureState.goal,
+    },
+    unrelatedManifestFailureState
+  );
+  assertStrict.doesNotMatch(
+    unrelatedManifestPacket.content,
+    /Generated-artifact semantic gap/i,
+    "an unrelated failed test received a fabricated manifest-validation diagnostic"
+  );
+  assertStrict.equal(
+    toolResultWorkspacePath({
+      toolName: "read_file",
+      args: { path: "artifacts/manifest.json" },
+      path: "artifacts/manifest.json",
+    }),
+    "artifacts/manifest.json",
+    "the tool-loop evidence recorder discarded a safe generated diagnostic path"
+  );
+  assertStrict.equal(
+    toolResultWorkspacePath({
+      toolName: "read_file",
+      args: { path: "artifacts/tube_cradle.step" },
+      path: "artifacts/tube_cradle.step",
+    }),
+    "",
+    "the diagnostic path recorder broadened consumption tracking to binary artifacts"
+  );
+  const generatedManifestRuntime = nextStepRuntimeConfig(
+    {
+      provider: "deepseek",
+      taskProfile: "slides",
+      commandCwd: workspace,
+      goal: generatedManifestFailureState.goal,
+    },
+    generatedManifestFailureState
+  );
+  assert(
+    generatedManifestRuntime.testFailureForbidExternalDiagnosticRead === true &&
+      generatedManifestRuntime.testFailureExternalDiagnosticReadPaths.length === 0 &&
+      JSON.stringify(generatedManifestRuntime.testFailureWorkspaceDiagnosticReadPaths) ===
+        JSON.stringify(["artifacts/manifest.json"]) &&
+      generatedManifestRuntime.testFailureDiagnosticReadPaths.includes(
+        "artifacts/manifest.json"
+      ),
+    "forbidding external validator source also hid exact in-workspace generated diagnostic evidence"
+  );
+  const generatedManifestReadBeforeFailureState = structuredClone(
+    generatedManifestFailureState
+  );
+  generatedManifestReadBeforeFailureState.meta.toolLoop = {
+    recent: [
+      {
+        toolName: "read_file",
+        path: "artifacts/manifest.json",
+        ok: true,
+        blocked: false,
+        mutationRevision: generatedManifestFailure.mutationRevision,
+        at: "2026-08-27T19:04:59.000Z",
+      },
+    ],
+  };
+  assert(
+    nextStepRuntimeConfig(
+      {
+        provider: "deepseek",
+        taskProfile: "slides",
+        commandCwd: workspace,
+        goal: generatedManifestReadBeforeFailureState.goal,
+      },
+      generatedManifestReadBeforeFailureState
+    ).testFailureWorkspaceDiagnosticReadPaths.includes("artifacts/manifest.json"),
+    "a stale pre-failure generated artifact read suppressed fresh diagnostic evidence"
+  );
+  const generatedManifestReadAfterFailureState = structuredClone(
+    generatedManifestFailureState
+  );
+  generatedManifestReadAfterFailureState.meta.toolLoop = {
+    recent: [
+      {
+        toolName: "read_file",
+        path: "artifacts/manifest.json",
+        ok: true,
+        blocked: false,
+        goalRevision: generatedManifestGoalRevision,
+        mutationRevision: generatedManifestFailure.mutationRevision,
+        at: "2026-08-27T19:05:02.000Z",
+      },
+    ],
+  };
+  assert(
+    !nextStepRuntimeConfig(
+      {
+        provider: "deepseek",
+        taskProfile: "slides",
+        commandCwd: workspace,
+        goal: generatedManifestReadAfterFailureState.goal,
+      },
+      generatedManifestReadAfterFailureState
+    ).testFailureWorkspaceDiagnosticReadPaths.includes("artifacts/manifest.json"),
+    "a current generated artifact diagnostic read remained exposed after consumption"
+  );
+  const generatedManifestPriorGoalReadState = structuredClone(
+    generatedManifestReadAfterFailureState
+  );
+  generatedManifestPriorGoalReadState.meta.toolLoop.recent[0].goalRevision =
+    Math.max(0, generatedManifestGoalRevision - 1);
+  generatedManifestPriorGoalReadState.meta.goalContract.revision =
+    generatedManifestGoalRevision;
+  assert(
+    nextStepRuntimeConfig(
+      {
+        provider: "deepseek",
+        taskProfile: "slides",
+        commandCwd: workspace,
+        goal: generatedManifestPriorGoalReadState.goal,
+      },
+      generatedManifestPriorGoalReadState
+    ).testFailureWorkspaceDiagnosticReadPaths.includes("artifacts/manifest.json"),
+    "a prior-goal generated artifact read suppressed a bounded current-goal reread"
+  );
+  const generatedManifestLegacyBlankPathState = structuredClone(
+    generatedManifestFailureState
+  );
+  generatedManifestLegacyBlankPathState.meta.toolLoop = {
+    recent: [
+      {
+        signature: `file-read:${JSON.stringify({
+          lineLimit: 0,
+          path: path.join(workspace, "artifacts", "manifest.json"),
+          startLine: 1,
+        })}`,
+        toolName: "read_file",
+        path: "",
+        ok: true,
+        blocked: false,
+        goalRevision: generatedManifestGoalRevision,
+        mutationRevision: generatedManifestFailure.mutationRevision,
+        at: "2026-08-27T19:05:02.000Z",
+      },
+    ],
+  };
+  assert(
+    !nextStepRuntimeConfig(
+      {
+        provider: "deepseek",
+        taskProfile: "slides",
+        commandCwd: workspace,
+        goal: generatedManifestLegacyBlankPathState.goal,
+      },
+      generatedManifestLegacyBlankPathState
+    ).testFailureWorkspaceDiagnosticReadPaths.includes("artifacts/manifest.json"),
+    "a legacy blank-path tool-loop entry did not consume its signed generated diagnostic read"
   );
   const immutableOnlyRepairState = {
     goal: "Treat service_ctl.py as immutable read-only source evidence and finish from existing results.",
@@ -6661,6 +7773,44 @@ try {
     })?.category === "repeated-no-progress-call",
     "a third identical failed shell command was not blocked"
   );
+  const newlyAuthoritativeVerificationState = structuredClone(repeatedFailureState);
+  newlyAuthoritativeVerificationState.meta.projectVerification = {
+    mutationRevision: 6,
+    privateMutationRevision: 0,
+    testRuns: [],
+  };
+  assert(
+    repeatedNoProgressToolBlock(
+      newlyAuthoritativeVerificationState,
+      "run_command",
+      repeatedProbeArgs,
+      {
+        commandCwd: workspace,
+        testVerificationPending: true,
+        testVerificationCommand: repeatedProbeArgs.command,
+      }
+    ) === null,
+    "a newly authoritative exact verifier remained blocked by stale generic-command history"
+  );
+  newlyAuthoritativeVerificationState.meta.projectVerification.testRuns.push({
+    command: repeatedProbeArgs.command,
+    mutationRevision: 6,
+    privateMutationRevision: 0,
+    passed: false,
+  });
+  assert(
+    repeatedNoProgressToolBlock(
+      newlyAuthoritativeVerificationState,
+      "run_command",
+      repeatedProbeArgs,
+      {
+        commandCwd: workspace,
+        testVerificationPending: true,
+        testVerificationCommand: repeatedProbeArgs.command,
+      }
+    )?.category === "repeated-no-progress-call",
+    "a current recorded verifier result bypassed the ordinary no-progress guard"
+  );
   assert(
     repeatedNoProgressToolBlock(
       {
@@ -6745,6 +7895,19 @@ try {
       failureSummary: "acceptance failed: repository is not clean",
     }),
     "a concise authoritative acceptance failure did not activate repository-state repair"
+  );
+  assert(
+    failedTestRequiresCleanRepositoryState({
+      failureSummary:
+        "FAIL: Git worktree is not clean: M .gitignore M README.md ?? .aginti/ ?? build_cad.py",
+    }),
+    "an explicit validator FAIL line did not activate repository-state repair"
+  );
+  assert(
+    failedTestRequiresCleanRepositoryState({
+      failureSummary: "Failing tests: Git worktree is not clean: M .gitignore.",
+    }),
+    "an aggregated failing-tests clean-worktree summary did not activate repository-state repair"
   );
   assert(
     !failedTestRequiresCleanRepositoryState({
@@ -7556,8 +8719,8 @@ try {
     "a same-task refresh could not rebuild a missing failed-test evidence packet"
   );
   missingRecoveryPacketState.meta.failedTestRecoveryPacket = {
-    packetVersion: 15,
-    content: "Bounded failed-test evidence packet v15.",
+    packetVersion: 16,
+    content: "Bounded failed-test evidence packet v16.",
     mutationRevision: 6,
     failureSignature: "same-failure",
   };
@@ -8415,7 +9578,7 @@ try {
         ],
       },
       failedTestDiagnostic: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 0,
         failureSignature: "partial-derived-order",
         focuses: [
@@ -8496,6 +9659,221 @@ try {
       { commandCwd: workspace }
     )?.category === "failed-test-regressive-inverse-patch",
     "an exact inverse that restored a known earlier failure was not blocked"
+  );
+  const sameFailureInverseState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 7,
+        mutationHistory: [
+          {
+            revision: 6,
+            toolName: "apply_patch",
+            paths: ["manifest.py"],
+            patch: {
+              path: "manifest.py",
+              searchHash: "canonical-validation-hash",
+              replaceHash: "validation-alias-hash",
+            },
+          },
+        ],
+        testRuns: [
+          {
+            mutationRevision: 5,
+            passed: false,
+            failureSignature: "validation-shape-failure",
+          },
+          {
+            mutationRevision: 7,
+            passed: false,
+            failureSignature: "validation-shape-failure",
+          },
+        ],
+      },
+    },
+  };
+  const sameFailureInverseBlock = regressiveInversePatchBlock(
+    sameFailureInverseState,
+    "apply_patch",
+    {
+      path: "manifest.py",
+      search: "validation alias",
+      replace: "canonical validation",
+      searchHash: "validation-alias-hash",
+      replaceHash: "canonical-validation-hash",
+    },
+    { commandCwd: workspace }
+  );
+  assert(
+    sameFailureInverseBlock?.category === "failed-test-regressive-inverse-patch" &&
+      /same assertion/i.test(sameFailureInverseBlock.reason || ""),
+    "an exact inverse was allowed to oscillate between two states rejected by the same assertion"
+  );
+  const cadManifestFailureState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 9,
+        testRuns: [
+          {
+            mutationRevision: 9,
+            passed: false,
+            failureSignature: "cad-manifest-evidence",
+            failureSummary:
+              "Failing tests: manifest lacks STEP/STL/3MF validation evidence.",
+            failingTests: [
+              "manifest lacks STEP/STL/3MF validation evidence",
+            ],
+          },
+        ],
+      },
+    },
+  };
+  const redundantCadAliasBlock = redundantCadValidationAliasPatchBlock(
+    cadManifestFailureState,
+    "apply_patch",
+    {
+      path: "build_cad.py",
+      search: [
+        '        "validation": validation,',
+        '        "artifacts": artifacts,',
+      ].join("\n"),
+      replace: [
+        '        "validation": validation,',
+        '        "validation_evidence": validation,',
+        '        "artifacts": artifacts,',
+      ].join("\n"),
+    },
+    { taskProfile: "cad" }
+  );
+  assert(
+    redundantCadAliasBlock?.category === "cad-validation-schema-alias" &&
+      /solid_count[\s\S]*bbox_mm/i.test(
+        redundantCadAliasBlock.diagnosticHint || ""
+      ),
+    "a CAD manifest repair was allowed to duplicate the canonical validation schema"
+  );
+  const runtimeCadAliasBlock = redundantCadValidationAliasPatchBlock(
+    {
+      meta: {
+        projectVerification: {
+          ...cadManifestFailureState.meta.projectVerification,
+          taskProfile: "cad",
+        },
+      },
+    },
+    "apply_patch",
+    {
+      path: "build_cad.py",
+      search: [
+        "    json_payload = {",
+        `        "description": "${"x".repeat(300)}",`,
+        '        "validation": validation,',
+        "    }",
+      ].join("\n"),
+      replace: [
+        "    json_payload = {",
+        `        "description": "${"x".repeat(300)}",`,
+        '        "validation": validation,',
+        '        "validation_evidence": validation,',
+        "    }",
+      ].join("\n"),
+    },
+    {}
+  );
+  assert(
+    runtimeCadAliasBlock?.category === "cad-validation-schema-alias",
+    "the CAD alias guard relied on a logging-safe/truncated patch or explicit config profile"
+  );
+  const canonicalValidationText = [
+    "    json_payload = {",
+    '        "validation": validation,',
+    "    }",
+  ].join("\n");
+  const aliasedValidationText = [
+    "    json_payload = {",
+    '        "validation": validation,',
+    '        "validation_evidence": validation,',
+    "    }",
+  ].join("\n");
+  const cadAliasCleanupState = {
+    meta: {
+      projectVerification: {
+        taskProfile: "cad",
+        mutationRevision: 11,
+        mutationHistory: [
+          {
+            revision: 10,
+            toolName: "apply_patch",
+            patch: {
+              path: "build_cad.py",
+              searchHash: "canonical-hash",
+              replaceHash: "aliased-hash",
+            },
+          },
+        ],
+        testRuns: [
+          {
+            mutationRevision: 9,
+            passed: false,
+            failureSignature: "cad-manifest-evidence",
+            failureSummary:
+              "Failing tests: manifest lacks STEP/STL/3MF validation evidence.",
+            failingTests: [
+              "manifest lacks STEP/STL/3MF validation evidence",
+            ],
+          },
+          {
+            mutationRevision: 11,
+            passed: false,
+            failureSignature: "cad-manifest-evidence",
+            failureSummary:
+              "Failing tests: manifest lacks STEP/STL/3MF validation evidence.",
+            failingTests: [
+              "manifest lacks STEP/STL/3MF validation evidence",
+            ],
+          },
+        ],
+      },
+    },
+  };
+  assertStrict.equal(
+    regressiveInversePatchBlock(
+      cadAliasCleanupState,
+      "apply_patch",
+      {
+        path: "build_cad.py",
+        search: aliasedValidationText,
+        replace: canonicalValidationText,
+        searchHash: "aliased-hash",
+        replaceHash: "canonical-hash",
+      },
+      {}
+    ),
+    null,
+    "the inverse-patch guard blocked removal of a forbidden CAD validation alias"
+  );
+  assertStrict.equal(
+    redundantCadValidationAliasPatchBlock(
+      cadManifestFailureState,
+      "apply_patch",
+      {
+        path: "build_cad.py",
+        search: [
+          '        "validation_evidence": validation,',
+          '        "artifacts": artifacts,',
+        ].join("\n"),
+        replace: [
+          '        "validation": {',
+          '            "STEP": {"solid_count": 1, "bbox_mm": bounds},',
+          '            "STL": {"watertight": True},',
+          '            "3MF": {"object_count": 1, "build_item_count": 1},',
+          "        },",
+          '        "artifacts": artifacts,',
+        ].join("\n"),
+      },
+      { taskProfile: "cad" }
+    ),
+    null,
+    "a material alias-to-canonical CAD evidence repair was blocked"
   );
   const repeatedPatchArgs = {
     path: "analysis.py",
@@ -9080,6 +10458,44 @@ try {
     )?.category === "artifact-validation-complete",
     "an accepted exact output remained writable through a unified patch"
   );
+  assert(
+    artifactValidationScopeBlock(
+      artifactState,
+      "apply_patch",
+      {
+        path: "MEDIA_ROUTINE_READINESS.md",
+        search: "old",
+        replace: "new validation evidence",
+      },
+      {
+        commandCwd: workspace,
+        artifactValidationPhase: true,
+        testFailureRepairActive: true,
+        testFailureRepairMutationRequired: true,
+        testFailureRepairPatchTargets: [{ path: "MEDIA_ROUTINE_READINESS.md" }],
+      }
+    ) === null,
+    "a current exact failed-test repair could not reopen its accepted output source"
+  );
+  assert(
+    artifactValidationScopeBlock(
+      artifactState,
+      "apply_patch",
+      {
+        path: "MEDIA_ROUTINE_READINESS.md",
+        search: "old",
+        replace: "unrelated",
+      },
+      {
+        commandCwd: workspace,
+        artifactValidationPhase: true,
+        testFailureRepairActive: true,
+        testFailureRepairMutationRequired: true,
+        testFailureRepairPatchTargets: [{ path: "different_source.py" }],
+      }
+    )?.category === "artifact-validation-complete",
+    "a mismatched failed-test repair target reopened an accepted exact output"
+  );
   for (const patch of [
     '*** Begin Patch\n*** Update File: "MEDIA_ROUTINE_READINESS.md"\n@@\n-old\n+new\n*** End Patch',
     '*** Begin Patch\n*** Add File: "MEDIA_ROUTINE_READINESS.md"\n+new\n*** End Patch',
@@ -9129,6 +10545,74 @@ try {
       }
     )?.category === "artifact-validation-shell-mutation",
     "a shell mutation bypassed current artifact acceptance"
+  );
+  assert(
+    artifactValidationScopeBlock(
+      artifactState,
+      "run_command",
+      { command: "python3 build_deck.py" },
+      {
+        commandCwd: workspace,
+        artifactValidationPhase: true,
+        generatedArtifactProducerPending: true,
+        generatedArtifactProducerCommand: "python3 build_deck.py",
+        allowShellTool: true,
+        allowDestructive: true,
+        sandboxMode: "host",
+      }
+    ) === null,
+    "artifact validation blocked the exact pending generated-artifact producer"
+  );
+  assert(
+    artifactValidationScopeBlock(
+      artifactState,
+      "run_command",
+      { command: "python3 unrelated_generator.py" },
+      {
+        commandCwd: workspace,
+        artifactValidationPhase: true,
+        generatedArtifactProducerPending: true,
+        generatedArtifactProducerCommand: "python3 build_deck.py",
+        allowShellTool: true,
+        allowDestructive: true,
+        sandboxMode: "host",
+      }
+    )?.category === "artifact-validation-shell-mutation",
+    "an unrelated generator borrowed permission from the pending artifact producer"
+  );
+  const retainedValidatorCommand =
+    "/opt/cad/bin/python /workspace/acceptance/cad_contract.py --root .";
+  assert(
+    artifactValidationScopeBlock(
+      artifactState,
+      "run_command",
+      { command: retainedValidatorCommand },
+      {
+        commandCwd: workspace,
+        artifactValidationPhase: true,
+        testVerificationPending: true,
+        testVerificationCommand: retainedValidatorCommand,
+        allowShellTool: true,
+        sandboxMode: "host",
+      }
+    ) === null,
+    "artifact validation blocked the exact runtime-selected retained validator"
+  );
+  assert(
+    artifactValidationScopeBlock(
+      artifactState,
+      "run_command",
+      { command: "/opt/cad/bin/python /workspace/acceptance/other_contract.py --root ." },
+      {
+        commandCwd: workspace,
+        artifactValidationPhase: true,
+        testVerificationPending: true,
+        testVerificationCommand: retainedValidatorCommand,
+        allowShellTool: true,
+        sandboxMode: "host",
+      }
+    )?.category === "artifact-validation-shell-mutation",
+    "an unrelated external command borrowed permission from the retained validator"
   );
   artifactState.meta.artifactProgress.needsCommand = true;
   artifactState.meta.artifactProgress.preflight.missingProjectCommands = ["npm test"];
@@ -9289,6 +10773,9 @@ try {
     "Execute the following command - `npm test`.",
     "Run `./check.sh`.",
     "Execute `scripts/verify.py`.",
+    "Run this exact declared validator command without reading or editing its source: `/opt/cad/bin/python /workspace/acceptance/cad_contract.py --root .`.",
+    "Run this exact declared validator command without reading or editing its source:\n\n`/opt/cad/bin/python /workspace/acceptance/cad_contract.py --root .`.",
+    "After the producer succeeds, run this exact declared validator command unchanged\nas a separate standalone tool call, without reading or editing its source:\n\n`/opt/cad/bin/python /workspace/acceptance/cad_contract.py --root .`.",
   ]) {
     const requestedCommand = goal.match(/`([^`]+)`/)?.[1] || "";
     assert(
@@ -9297,10 +10784,109 @@ try {
       `normal punctuation hid an explicitly requested inline command: ${goal}`
     );
   }
+  const multilineValidatorContinuation = `Continue this exact CAD task from the preserved session and current workspace.
+Do not restart or redesign it. The fresh external-gate diagnostic after the
+successful rebuild is:
+
+\`FAIL: manifest parameters omit seat_diameter_mm\`
+
+Repair only the source-of-truth manifest generation needed by this diagnostic.
+Run the existing documented producer command as one standalone tool call after
+each source repair. Then run this exact declared validator command unchanged as
+a separate standalone tool call, without reading or editing its source:
+
+\`/opt/cad/bin/python /workspace/acceptance/cad_contract.py --root .\`
+
+Do not prefix, suffix, wrap, redirect, pipe, or combine that validator command.`;
+  const semanticContinuation = [
+    "Continue the current task from its preserved state.",
+    "The latest correction changes the acceptance meaning substantially even though it deliberately names no file, command, literal token, or output path.",
+    "Keep the valid work already completed, replace the stale interpretation with this clarified behavior, reconcile every affected decision against the current evidence, and verify the resulting behavior before finishing.",
+  ].join(" ");
+  assert(
+    continuationAddsConcreteRequirement(semanticContinuation),
+    "a long substantive continuation without parser-recognized literals was treated as a bare resume"
+  );
+  const semanticContinuationState = {
+    goal: "Use the earlier interpretation.",
+    plan: "Continue using the earlier interpretation.",
+    meta: {
+      taskProfile: "auto",
+      goalContract: {
+        version: 3,
+        revision: 3,
+        status: "paused",
+        currentRequest: "Use the earlier interpretation.",
+        taskGoal: "Complete the retained task.",
+        activeGoal: "Use the earlier interpretation.",
+        activeGoalRevision: 3,
+        history: [],
+        lifecycle: [],
+      },
+    },
+  };
+  const semanticContinuationUpdate = applyContinuationContractTransition(
+    semanticContinuationState,
+    semanticContinuation,
+    { at: "2026-08-29T02:35:43.215Z" }
+  );
+  assert(
+    semanticContinuationUpdate?.refreshExecutionContract === true &&
+      semanticContinuationState.goal === semanticContinuation &&
+      semanticContinuationState.meta.goalContract.activeGoal === semanticContinuation,
+    "a substantive same-task correction left the stale active goal authoritative"
+  );
+  const multilineValidatorContract = deriveScsTaskContract({
+    goal: multilineValidatorContinuation,
+    taskProfile: "cad",
+  });
+  assert(
+    JSON.stringify(multilineValidatorContract.requiredProjectCommands) ===
+      JSON.stringify([authoritativeValidatorCommand]),
+    "multiline continuation selected a diagnostic or dropped the later exact validator command"
+  );
+  const multilineContinuationState = {
+    goal: "Repair and validate the current CAD artifact.",
+    plan: "Inspect, repair, rebuild, validate, and commit.",
+    meta: {
+      taskProfile: "cad",
+      goalContract: {
+        version: 3,
+        revision: 8,
+        status: "paused",
+        currentRequest: "Repair and validate the current CAD artifact.",
+        taskGoal: "Repair and validate the current CAD artifact.",
+        activeGoal: "Repair and validate the current CAD artifact.",
+        activeGoalRevision: 8,
+        history: [],
+        lifecycle: [],
+      },
+      projectVerification: {
+        mutationRevision: 42,
+        requiredOutputs: [],
+        requiredCommands: [],
+        acceptanceBySource: {},
+      },
+    },
+  };
+  const multilineContinuationUpdate = applyContinuationContractTransition(
+    multilineContinuationState,
+    multilineValidatorContinuation,
+    { at: "2026-08-28T08:28:42.959Z" }
+  );
+  assert(
+    multilineContinuationUpdate?.refreshExecutionContract === true &&
+      multilineContinuationState.meta.activeExecutionContract.revision === 9 &&
+      JSON.stringify(
+        multilineContinuationState.meta.activeExecutionContract.requiredProjectCommands
+      ) === JSON.stringify([authoritativeValidatorCommand]),
+    "same-task contract refresh dropped the multiline exact validator command"
+  );
   for (const goal of [
     "Document how to run `npm test`.",
     "Explain the `python demo.py` command.",
     "Do not run `python mutate.py`.",
+    "Check likely validation commands from manifests. Bound shell checks with `timeout 30s ...` when available.",
   ]) {
     assert(
       deriveScsTaskContract({ goal, taskProfile: "writing" }).requiredProjectCommands.length === 0,
@@ -9898,6 +11484,32 @@ try {
       `descriptive Git prose fabricated an execution obligation: ${goal}`
     );
   }
+  for (const goal of [
+    "Continue the current task, commit only complete task-owned changes if any remain, and stop after terminal evidence.",
+    "Commit if changes remain.",
+    "Only commit if there are changes.",
+    "If changes remain, commit them.",
+    "Commit the task-owned changes if any are left.",
+    "Commit only when the worktree is dirty.",
+    "如果仍有改动才提交代码。",
+  ]) {
+    const conditionalGitContract = deriveScsTaskContract({ goal, taskProfile: "code" });
+    assert(
+      !conditionalGitContract.requiredGitActions.includes("commit"),
+      `a no-op-safe conditional instruction fabricated a mandatory commit: ${goal}`
+    );
+  }
+  for (const goal of [
+    "Commit the changes.",
+    "Commit only the complete task-owned changes.",
+    "If tests pass, commit the changes.",
+  ]) {
+    const mandatoryGitContract = deriveScsTaskContract({ goal, taskProfile: "code" });
+    assert(
+      mandatoryGitContract.requiredGitActions.includes("commit"),
+      `an explicit commit instruction was incorrectly treated as optional: ${goal}`
+    );
+  }
   const restoreArtifactState = {
     commandCwd: workspace,
     goal: restoreGoal,
@@ -10161,6 +11773,30 @@ try {
     !shouldReviewToolResult(prospectivePatchSyntaxCorrection, { meta: {} }),
     "SCS replanned instead of letting the agent correct a deterministic prospective patch rejection"
   );
+  const nonRepairingFailedTestPatch = {
+    toolName: "apply_patch",
+    ok: false,
+    blocked: true,
+    recoverable: true,
+    stopRun: false,
+    category: "failed-test-nonrepairing-patch",
+    reason: "The replacement leaves the current actionable traceback line unchanged.",
+    diagnosticHint: "Return a materially revised source line.",
+  };
+  assert(
+    !shouldReviewToolResult(nonRepairingFailedTestPatch, { meta: {} }),
+    "SCS replanned instead of returning a deterministic non-repairing patch rejection to the agent"
+  );
+  assert(
+    shouldReviewToolResult(
+      {
+        ...nonRepairingFailedTestPatch,
+        category: "unclassified-workspace-blocker",
+      },
+      { meta: {} }
+    ),
+    "SCS skipped an unclassified blocked patch result"
+  );
   const boundedSearchRecovery = {
     toolName: "run_command",
     ok: false,
@@ -10351,6 +11987,130 @@ try {
   assert(
     repairDecision.approved && repairDecision.extraSteps > 0,
     `budget gate denied an active repair after concrete file progress: ${repairDecision.reason}`
+  );
+
+  const stagnantValidatorCommand = "python /workspace/acceptance.py --root .";
+  const stagnantValidatorEvents = [
+    { type: "goal.updated", data: { revision: 4 } },
+    ...[1, 2, 3].flatMap((mutationRevision) => [
+      { type: "file.changed", data: { path: "build.py", mutationRevision } },
+      {
+        type: "tool.completed",
+        data: {
+          toolName: "run_command",
+          projectTest: {
+            command: stagnantValidatorCommand,
+            passed: false,
+            failureSignature: "unchanged-validator-diagnostic",
+            mutationRevision,
+          },
+        },
+      },
+    ]),
+  ];
+  const stagnantValidation = summarizeStagnantValidationLoop(stagnantValidatorEvents);
+  assert(
+    stagnantValidation.detected && stagnantValidation.mutationPhases === 3,
+    "unchanged validator failures across source revisions were not recognized as stagnation"
+  );
+  const stagnantValidationDecision = decideStepBudgetExtension({
+    config: { scsActive: true, commandCwd: "/tmp/workspace" },
+    budget: createStepBudgetState(
+      { provider: "localllm", maxSteps: 12, dynamicSteps: "on", dynamicStepExtensionLimit: 2, scsActive: true },
+      { meta: {}, stepsCompleted: 0 }
+    ),
+    step: 11,
+    state: {
+      messages: [
+        toolMessage({ toolName: "apply_patch", ok: true, path: "build.py" }),
+      ],
+    },
+    events: stagnantValidatorEvents,
+  });
+  assert(
+    !stagnantValidationDecision.approved &&
+      /same validation failure|non-converging repair loop/i.test(stagnantValidationDecision.reason),
+    "step budget extended an unchanged validator failure across repeated source mutations"
+  );
+  const freshRecoveryPacketState = {
+    messages: [
+      toolMessage({ toolName: "apply_patch", ok: true, path: "build.py" }),
+    ],
+    meta: {
+      projectVerification: {
+        lastFailedTest: {
+          command: stagnantValidatorCommand,
+          passed: false,
+          failureSignature: "unchanged-validator-diagnostic",
+          failureSummary: "Failing tests: generated manifest lacks validation evidence.",
+          mutationRevision: 3,
+          at: "2026-08-28T10:24:36.660Z",
+        },
+      },
+      failedTestRecoveryPacket: {
+        packetVersion: 16,
+        content: "Fresh exact failure-scoped source and artifact evidence.",
+        command: stagnantValidatorCommand,
+        failureSignature: "unchanged-validator-diagnostic",
+        mutationRevision: 3,
+        generatedAt: "2026-08-28T10:24:36.680Z",
+      },
+    },
+  };
+  const freshRecoveryBudget = createStepBudgetState(
+    {
+      provider: "localllm",
+      maxSteps: 12,
+      dynamicSteps: "on",
+      dynamicStepExtensionLimit: 2,
+      scsActive: true,
+    },
+    freshRecoveryPacketState
+  );
+  const freshRecoveryDecision = decideStepBudgetExtension({
+    config: { scsActive: true, commandCwd: "/tmp/workspace" },
+    budget: freshRecoveryBudget,
+    step: 11,
+    state: freshRecoveryPacketState,
+    events: stagnantValidatorEvents,
+  });
+  assert(
+    freshRecoveryDecision.approved &&
+      /fresh failure-scoped recovery packet|bounded diagnostic continuation/i.test(
+        freshRecoveryDecision.reason
+      ),
+    `the first fresh diagnostic packet could not cross the step boundary: ${freshRecoveryDecision.reason}`
+  );
+  const repeatedRecoveryDecision = decideStepBudgetExtension({
+    config: { scsActive: true, commandCwd: "/tmp/workspace" },
+    budget: { ...freshRecoveryBudget, extensionsUsed: 1 },
+    step: 19,
+    state: freshRecoveryPacketState,
+    events: stagnantValidatorEvents,
+  });
+  assert(
+    !repeatedRecoveryDecision.approved &&
+      /same validation failure|non-converging repair loop/i.test(
+        repeatedRecoveryDecision.reason
+      ),
+    "the fresh-packet exception allowed a second extension for the same stagnant failure"
+  );
+  const advancingValidatorEvents = stagnantValidatorEvents.map((event, index) => {
+    if (event.type !== "tool.completed") return event;
+    return {
+      ...event,
+      data: {
+        ...event.data,
+        projectTest: {
+          ...event.data.projectTest,
+          failureSignature: `advancing-diagnostic-${index}`,
+        },
+      },
+    };
+  });
+  assert(
+    !summarizeStagnantValidationLoop(advancingValidatorEvents).detected,
+    "advancing validator diagnostics were mistaken for an unchanged repair loop"
   );
 
   const repeatedDiscoveryMessages = [

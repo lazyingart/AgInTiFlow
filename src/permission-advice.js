@@ -238,6 +238,22 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
       "Stop and present this blocker to the user instead of repeatedly trying variants. Continue only after the user approves a safer mode, changes the workspace, or gives a replacement instruction.",
   };
 
+  if (category === "opaque-external-validator-inspection") {
+    return {
+      ...base,
+      autoRecover: true,
+      summary:
+        "The exact external validator was combined with another command or treated as inspectable source. This is a recoverable command-shape error, not a permission blocker.",
+      instruction:
+        "Continue automatically. Run any producer, build, or repair command separately first. Then run the exact declared external validator command unchanged in its own tool call. Do not inspect, wrap, prefix, suffix, pipe, redirect, or combine the validator, and do not ask for stronger permissions.",
+      options: [
+        "Run the required producer or build as one standalone command.",
+        "Run the exact declared external validator unchanged as the next standalone command.",
+        "Use only the validator's returned diagnostics as repair evidence.",
+      ],
+    };
+  }
+
   if (category === "workspace-path") {
     if (READ_ONLY_FILE_TOOLS.has(toolName)) {
       return {

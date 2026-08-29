@@ -76,6 +76,13 @@ export const TASK_PROFILES = {
       "Bias toward clear product/engineering design while remaining able to implement or test when asked. Produce concise design documents with goals, constraints, options, tradeoffs, implementation steps, verification criteria, and decision records.",
     tools: ["files", "canvas"],
   },
+  cad: {
+    id: "cad",
+    label: "Parametric CAD and 3D printing",
+    prompt:
+      "Bias toward reproducible parametric CAD, mechanical fixtures, and print-ready artifact production while remaining able to research dimensions, write build notes, or use project tools. Read project instructions, measured inputs, and reference geometry before modeling. Keep one maintainable parametric source of truth, explicit coordinate and centering conventions, and separate clean editable geometry from sacrificial print aids or arranged print layouts. Rebuild derived artifacts from source instead of hand-editing exports. Validate each requested format with format-native evidence in one canonical machine-readable validation section. Prefer a conventional top-level `validation` object whose records use direct literal field names such as `solid_count`, `bbox_mm`, `volume_mm3`, `watertight`, `component_count`, `min_z_mm`, `zip_valid`, `object_count`, and `build_item_count`; keep the actual 3MF identity visible in that section. STEP/B-rep evidence needs solid count, bounding box or extents, and volume; STL evidence needs watertightness, connected components, bounds, minimum Z, and volume; 3MF evidence needs package validity plus object and build-item counts; render evidence needs dimensions plus nonblank visual inspection. Do not create redundant alias sections in response to a validation failure. If the exact same validator message survives a manifest-shape edit, preserve one canonical section and enrich its missing direct evidence fields instead of renaming the section or toggling aliases. Render and inspect the actual final assembly and direct-print layout, preserve tolerances and thread boundaries, run exact project validators unchanged, inspect git status, and finish only after the reproducible source and requested artifacts agree.",
+    tools: ["inspect_project", "files", "shell", "sandbox", "canvas"],
+  },
   docs: {
     id: "docs",
     label: "Documentation",
@@ -306,6 +313,12 @@ const PROFILE_ALIASES = {
   engineer: "large-codebase",
   application: "app",
   apps: "app",
+  cad: "cad",
+  mechanical: "cad",
+  openscad: "cad",
+  cadquery: "cad",
+  "3d-printing": "cad",
+  "3d-print": "cad",
   mobile: "android",
   apk: "android",
   gradle: "android",
@@ -453,6 +466,7 @@ export function defaultMaxStepsForProfile(value = "auto") {
   if (profile === "large-codebase") return 36;
   if (profile === "qa") return 40;
   if (profile === "app") return 40;
+  if (profile === "cad") return 44;
   if (profile === "android") return 60;
   if (profile === "latex") return 30;
   if (profile === "supervision") return 40;

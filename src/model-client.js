@@ -419,10 +419,19 @@ function deepSeekActionOnlyTool(config = {}, messages = [], tools = []) {
 
 function deepSeekActionOnlyRequest(config = {}, messages = [], tools = []) {
   return normalizeProviderId(config.provider, "") === "deepseek" &&
+    !deepSeekRepairRethinkRequired(messages) &&
     Boolean(
       requiresConcreteToolContinuation(messages) ||
       deepSeekActionOnlyTool(config, messages, tools)
     );
+}
+
+function deepSeekRepairRethinkRequired(messages = []) {
+  const payload = latestToolPayload(messages);
+  return String(payload?.toolName || "") === "apply_patch" &&
+    payload?.ok === false &&
+    payload?.recoverable === true &&
+    String(payload?.category || "") === "failed-test-nonrepairing-patch";
 }
 
 export function toolChoiceForProvider(config, messages = [], tools = []) {
@@ -2734,16 +2743,21 @@ export async function requestNextStep(client, config, messages) {
     });
   }
   const textToolProtocol = usesTextToolProtocol(config);
+  const deepSeekRepairRethink = deepSeekRepairRethinkRequired(messages);
   const nativePayload = {
     model: config.model,
     temperature: 0,
-    tool_choice: toolChoiceForProvider(config, messages, requestTools),
+    ...(deepSeekRepairRethink
+      ? {}
+      : { tool_choice: toolChoiceForProvider(config, messages, requestTools) }),
     parallel_tool_calls: false,
     messages: prepareMessages(config, messages),
     tools: requestTools,
-    ...(deepSeekActionOnlyRequest(config, messages, requestTools)
-      ? { thinking: { type: "disabled" } }
-      : {}),
+    ...(deepSeekRepairRethink
+      ? { thinking: { type: "enabled" } }
+      : deepSeekActionOnlyRequest(config, messages, requestTools)
+        ? { thinking: { type: "disabled" } }
+        : {}),
     ...(Number(config.maxOutputTokens || 0) > 0 ? { max_tokens: Number(config.maxOutputTokens) } : {}),
   };
   const textPayload = {

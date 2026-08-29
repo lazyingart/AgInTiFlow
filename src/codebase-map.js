@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { projectPaths } from "./project.js";
+import { ensureRuntimeGitExcludes, projectPaths } from "./project.js";
 import { redactSensitiveText } from "./redaction.js";
 import { executeWorkspaceTool } from "./workspace-tools.js";
 
@@ -140,6 +140,7 @@ export async function refreshCodebaseMap(config, options = {}) {
     inspection,
   };
 
+  await ensureRuntimeGitExcludes(projectRoot, [".aginti/codebase-map.json"]).catch(() => {});
   await fs.mkdir(paths.controlDir, { recursive: true });
   await fs.writeFile(paths.codebaseMapPath, `${JSON.stringify(map, null, 2)}\n`, "utf8");
   return {

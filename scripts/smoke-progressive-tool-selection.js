@@ -13,6 +13,7 @@ import {
   LOCAL_TOOL_HARD_CAP,
   repositoryGroundingState,
   selectProgressiveTools,
+  unreadProjectInstructionReadPaths,
 } from "../src/progressive-tool-selection.js";
 import { requestNextStep } from "../src/model-client.js";
 import {
@@ -23,7 +24,10 @@ import {
   deferUnavailableVerificationRerunUntilMutation,
   integrationTextWorkspaceToolExecutionBlock,
   nextStepRuntimeConfig,
+  recoverFocusedPatchAlreadyAppliedAsExactNoop,
   recoverExactPendingCommandIntent,
+  recoverFocusedPatchUniqueSubrangeAsExactPatch,
+  recoverFocusedPatchTrailingWhitespaceAsExactPatch,
   recoverFocusedWholeFileWriteAsExactPatch,
   recoverGroundedPathlessPatchAsExactPatch,
   recoverRequiredPatchContextReadWithoutToolCall,
@@ -31,6 +35,7 @@ import {
   recoverStalemateDiscoveryAsExactVerification,
   recoverUnavailableVerificationRerunAsCanonicalRead,
   runAgent,
+  taskForbidsExternalValidatorSourceRead,
   toolContractRepairMessage,
 } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
@@ -796,6 +801,7 @@ const recoveredRepairReread = recoverRequiredPatchContextReadWithoutToolCall(
     patchContextRepairRequired: true,
     patchContextRepairPath: mandatoryRefreshPath,
     patchContextRepairReadCount: 0,
+    patchContextRepairRereadAllowed: true,
   },
   [contractCall("premature-repair-command", "run_command", { command: "python3 smoke.py" })],
   createToolContract([tool("apply_patch"), mandatoryRefreshReadDescriptor, tool("finish")]),
@@ -857,6 +863,139 @@ assertStrict.deepEqual(
   JSON.parse(recoveredFailedTestContextRead.acceptedToolCalls[0].function.arguments),
   { path: "service_ctl.py" },
   "failed-test context recovery did not choose the first authoritative unread path"
+);
+const generatedDiagnosticPath = "artifacts/manifest.json";
+const generatedDiagnosticReadDescriptor = {
+  ...canonicalReadDescriptor,
+  function: {
+    ...canonicalReadDescriptor.function,
+    parameters: {
+      ...canonicalReadDescriptor.function.parameters,
+      properties: {
+        path: { type: "string", enum: [generatedDiagnosticPath] },
+      },
+    },
+  },
+};
+const generatedDiagnosticContract = createToolContract([
+  generatedDiagnosticReadDescriptor,
+  tool("apply_patch"),
+  tool("finish"),
+]);
+const staleSourceReadCall = contractCall(
+  "stale-source-instead-of-generated-diagnostic",
+  "read_file",
+  { path: "build_cad.py", startLine: 1, lineLimit: 120 }
+);
+const staleInputReadCall = contractCall(
+  "stale-input-instead-of-generated-diagnostic",
+  "read_file",
+  { path: "inputs/tube_measurements.csv" }
+);
+const staleSourceReadValidation = resolveDispatchableToolCallBatch(
+  [staleSourceReadCall, staleInputReadCall],
+  generatedDiagnosticContract
+);
+const recoveredGeneratedDiagnosticRead =
+  recoverRequiredPatchContextReadWithoutToolCall(
+    {
+      testFailureRepairActive: true,
+      testFailureRepairMutationRequired: true,
+      testFailureWorkspaceDiagnosticReadPaths: [generatedDiagnosticPath],
+    },
+    [staleSourceReadCall, staleInputReadCall],
+    generatedDiagnosticContract,
+    staleSourceReadValidation
+  );
+assertStrict.equal(
+  recoveredGeneratedDiagnosticRead?.recoveredRequiredPatchContextRead,
+  true,
+  "a stale canonical-source reread was not translated to exact generated diagnostic evidence"
+);
+assertStrict.deepEqual(
+  JSON.parse(
+    recoveredGeneratedDiagnosticRead.acceptedToolCalls[0].function.arguments
+  ),
+  { path: generatedDiagnosticPath },
+  "generated diagnostic recovery broadened or changed the exact allowed artifact path"
+);
+assertStrict.equal(
+  recoveredGeneratedDiagnosticRead.source,
+  "failed-test-generated-diagnostic-read",
+  "generated diagnostic intent recovery lost its auditable source label"
+);
+const generatedDiagnosticWithCanonicalProducerTools = selectProgressiveTools(
+  [canonicalReadDescriptor, tool("apply_patch"), tool("finish")],
+  {
+    config: {
+      testFailureRepairActive: true,
+      testFailureRepairMutationRequired: true,
+      testFailureWorkspaceDiagnosticReadPaths: [generatedDiagnosticPath],
+      testFailureCanonicalRepairPaths: ["build_cad.py"],
+      commandCwd: "/tmp/aginti-generated-diagnostic-fixture",
+    },
+  }
+);
+const generatedDiagnosticWithCanonicalProducerRead =
+  generatedDiagnosticWithCanonicalProducerTools.find(
+    (descriptor) => descriptor.function.name === "read_file"
+  );
+const generatedDiagnosticWithCanonicalProducerPaths =
+  generatedDiagnosticWithCanonicalProducerRead?.function?.parameters?.properties?.path?.enum || [];
+assert(
+  generatedDiagnosticWithCanonicalProducerPaths.includes(generatedDiagnosticPath) &&
+    generatedDiagnosticWithCanonicalProducerPaths.includes("build_cad.py") &&
+    generatedDiagnosticWithCanonicalProducerPaths.includes(
+      "/tmp/aginti-generated-diagnostic-fixture/build_cad.py"
+    ),
+  "failed-test diagnostic mode did not retain relative and absolute aliases for the canonical producer"
+);
+const mixedRefreshAndDiagnosticContract = createToolContract([
+  {
+    ...canonicalReadDescriptor,
+    function: {
+      ...canonicalReadDescriptor.function,
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", enum: ["build_cad.py"] },
+        },
+        required: ["path"],
+        additionalProperties: false,
+      },
+    },
+  },
+]);
+const rangedMandatoryRefreshCall = contractCall(
+  "ranged-mandatory-refresh-with-diagnostic-pending",
+  "read_file",
+  { path: "build_cad.py", startLine: 270, lineLimit: 40 }
+);
+const rangedMandatoryRefreshValidation = resolveDispatchableToolCallBatch(
+  [rangedMandatoryRefreshCall],
+  mixedRefreshAndDiagnosticContract
+);
+const recoveredMixedMandatoryRefresh = recoverRequiredPatchContextReadWithoutToolCall(
+  {
+    patchContextRefreshRequired: true,
+    patchContextRefreshPath: "build_cad.py",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    testFailureWorkspaceDiagnosticReadPaths: [generatedDiagnosticPath],
+  },
+  [rangedMandatoryRefreshCall],
+  mixedRefreshAndDiagnosticContract,
+  rangedMandatoryRefreshValidation
+);
+assertStrict.deepEqual(
+  JSON.parse(recoveredMixedMandatoryRefresh.acceptedToolCalls[0].function.arguments),
+  { path: "build_cad.py" },
+  "a pending generated diagnostic displaced the mandatory exact source refresh"
+);
+assertStrict.equal(
+  recoveredMixedMandatoryRefresh.source,
+  "mandatory-refresh-read",
+  "mixed-state source refresh lost its mandatory recovery label"
 );
 
 const recoveredMandatoryInspect = recoverRequiredRepositoryGroundingToolCall(
@@ -1825,6 +1964,73 @@ assertStrict.deepEqual(
   [externalValidatorPath],
   "the external validator read was not schema-constrained to its exact path"
 );
+assertStrict.equal(
+  taskForbidsExternalValidatorSourceRead(
+    { goal: "Repair the producer. Do not inspect the external acceptance-validator source." },
+    {}
+  ),
+  true,
+  "an explicit prohibition on reading external validator source was ignored"
+);
+assertStrict.equal(
+  taskForbidsExternalValidatorSourceRead(
+    { goal: "Do not inspect the validator before its first failed run; then use bounded diagnostics." },
+    {}
+  ),
+  false,
+  "a conditional first-run opacity rule was mistaken for a permanent read prohibition"
+);
+const forbiddenExternalDiagnosticTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "deepseek",
+    commandCwd: "/tmp/aginti-canonical-repair",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    testFailureForbidExternalDiagnosticRead: true,
+    testFailureDiagnosticReadPaths: [externalValidatorPath],
+    testFailureRepairOptionalRereadPaths: ["build_deck.py"],
+  },
+  goal: "Repair the producer without inspecting the external validator source.",
+  profile: "slides",
+});
+assertStrict.deepEqual(
+  forbiddenExternalDiagnosticTools[0].function.parameters.properties.path.enum,
+  ["build_deck.py", "/tmp/aginti-canonical-repair/build_deck.py"],
+  "an explicitly forbidden validator read displaced the canonical source repair path"
+);
+const workspaceDiagnosticWithForbiddenExternalTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "deepseek",
+    commandCwd: "/tmp/aginti-canonical-repair",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    testFailureForbidExternalDiagnosticRead: true,
+    testFailureDiagnosticReadPaths: [
+      externalValidatorPath,
+      "artifacts/manifest.json",
+    ],
+    testFailureExternalDiagnosticReadPaths: [externalValidatorPath],
+    testFailureWorkspaceDiagnosticReadPaths: ["artifacts/manifest.json"],
+    testFailureRepairOptionalRereadPaths: ["build_deck.py"],
+  },
+  goal: "Inspect generated evidence without reading the external validator source.",
+  profile: "slides",
+});
+sameNames(
+  workspaceDiagnosticWithForbiddenExternalTools,
+  ["read_file", "apply_patch", "finish"],
+  "forbidding external validator source also removed the workspace diagnostic read"
+);
+assertStrict.deepEqual(
+  workspaceDiagnosticWithForbiddenExternalTools[0].function.parameters.properties.path.enum,
+  [
+    "artifacts/manifest.json",
+    "/tmp/aginti-canonical-repair/artifacts/manifest.json",
+    "build_deck.py",
+    "/tmp/aginti-canonical-repair/build_deck.py",
+  ],
+  "workspace diagnostics were not retained ahead of bounded source rereads"
+);
 
 const canonicalRepairPathAliasTools = selectProgressiveTools(allTools, {
   config: {
@@ -2029,7 +2235,7 @@ const conciseRepositoryStateRepairRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 18,
         failureSignature: "concise-repository-state-gate",
         content: "Retained canonical source evidence from the prior content failure.",
@@ -2060,6 +2266,51 @@ sameNames(
   }),
   ["run_command", "finish"],
   "a concise clean-repository acceptance failure exposed content mutation tools"
+);
+const explicitFailRepositoryStateRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", taskProfile: "cad" },
+  {
+    meta: {
+      projectVerification: {
+        mutationRevision: 19,
+        testRuns: [{
+          command: "python acceptance.py --root .",
+          mutationRevision: 19,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "explicit-fail-repository-state-gate",
+          failureSummary:
+            "Failing tests: Git worktree is not clean: M .gitignore M README.md ?? .aginti/ ?? build_cad.py",
+        }],
+      },
+      failedTestRecoveryPacket: {
+        packetVersion: 16,
+        mutationRevision: 19,
+        failureSignature: "explicit-fail-repository-state-gate",
+        content: "Stale canonical-source evidence from the preceding repair.",
+      },
+    },
+    messages: [],
+  }
+);
+assertStrict.equal(
+  explicitFailRepositoryStateRuntime.testFailureRepositoryStateRepair,
+  true,
+  "an explicit validator FAIL line remained in canonical-source repair mode"
+);
+assertStrict.equal(
+  explicitFailRepositoryStateRuntime.testFailureRepairMutationRequired,
+  false,
+  "an explicit validator FAIL line retained the source-mutation gate"
+);
+sameNames(
+  selectProgressiveTools(allTools, {
+    config: explicitFailRepositoryStateRuntime,
+    goal: "Commit the verified CAD task and leave the repository clean.",
+    profile: "cad",
+  }),
+  ["run_command", "finish"],
+  "an explicit validator FAIL line hid the bounded Git recovery command"
 );
 const observedRepositoryState = {
   meta: {
@@ -2203,13 +2454,13 @@ const retainedPacketRepairRuntime = nextStepRuntimeConfig(
         ],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 3,
         failureSignature: "retained-failure",
-        content: "Bounded failed-test evidence packet v15.",
+        content: "Bounded failed-test evidence packet v16.",
       },
       failedTestDiagnostic: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 3,
         failureSignature: "retained-failure",
         at: "2026-08-24T02:00:00.000Z",
@@ -2256,21 +2507,21 @@ const packetPathReadState = {
       }],
     },
     failedTestRecoveryPacket: {
-      packetVersion: 15,
+      packetVersion: 16,
       mutationRevision: 7,
       failureSignature: "packet-path-failure",
-      content: "Bounded failed-test evidence packet v15.",
+      content: "Bounded failed-test evidence packet v16.",
       paths: ["tests/test_service_ctl.py", "service_ctl.py"],
       generatedAt: "2026-08-24T02:00:10.000Z",
     },
     failedTestFocusedRecovery: {
-      packetVersion: 15,
+      packetVersion: 16,
       mutationRevision: 7,
       failureSignature: "packet-path-failure",
       at: "2026-08-24T02:00:10.000Z",
     },
     failedTestDiagnostic: {
-      packetVersion: 15,
+      packetVersion: 16,
       mutationRevision: 7,
       failureSignature: "packet-path-failure",
       at: "2026-08-24T02:00:00.000Z",
@@ -2401,7 +2652,346 @@ assertStrict.deepEqual(
   ["service_ctl.py"],
   "DeepSeek repair reread fallback was not constrained to the canonical source"
 );
-const exhaustedDeepSeekRereadRuntime = nextStepRuntimeConfig(
+const regeneratedSameFailurePacketRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", taskProfile: "qa" },
+  {
+    ...packetPathReadState,
+    meta: {
+      ...packetPathReadState.meta,
+      failedTestRecoveryPacket: {
+        ...packetPathReadState.meta.failedTestRecoveryPacket,
+        generatedAt: "2026-08-24T03:00:00.000Z",
+      },
+      failedTestFocusedRecovery: {
+        ...packetPathReadState.meta.failedTestFocusedRecovery,
+        at: "2026-08-24T03:00:00.000Z",
+      },
+      toolLoop: {
+        stagnationEpoch: 10,
+        recent: [
+          {
+            toolName: "read_file",
+            path: "tests/test_service_ctl.py",
+            ok: true,
+            blocked: false,
+            at: "2026-08-24T02:00:11.000Z",
+          },
+          ...Array.from({ length: 4 }, (_, index) => ({
+            toolName: "read_file",
+            path: "service_ctl.py",
+            ok: true,
+            blocked: false,
+            at: `2026-08-24T02:00:${12 + index}.000Z`,
+          })),
+        ],
+      },
+    },
+  }
+);
+assertStrict.deepEqual(
+  regeneratedSameFailurePacketRuntime.testFailureRepairContextPaths,
+  [],
+  "regenerating an unchanged failure packet forgot source reads retained after the failure"
+);
+assertStrict.deepEqual(
+  regeneratedSameFailurePacketRuntime.testFailureRepairOptionalRereadPaths,
+  [],
+  "regenerating an unchanged failure packet replenished DeepSeek's bounded reread budget"
+);
+sameNames(
+  selectProgressiveTools(allTools, {
+    config: regeneratedSameFailurePacketRuntime,
+    goal: "Apply the retained source repair after a resume boundary.",
+    profile: "qa",
+  }),
+  ["apply_patch", "finish"],
+  "an unchanged resumed failure reopened discovery after its reread budget was exhausted"
+);
+const documentationFirstRepairPacketState = {
+  ...packetPathReadState,
+  meta: {
+    ...packetPathReadState.meta,
+    failedTestRecoveryPacket: {
+      ...packetPathReadState.meta.failedTestRecoveryPacket,
+      paths: ["README.md", "build_cad.py"],
+      repairPaths: ["README.md", "build_cad.py"],
+    },
+    toolLoop: {
+      stagnationEpoch: 10,
+      recent: [
+        {
+          toolName: "read_file",
+          path: "README.md",
+          ok: true,
+          blocked: false,
+          at: "2026-08-24T02:00:11.000Z",
+        },
+        {
+          toolName: "read_file",
+          path: "build_cad.py",
+          ok: true,
+          blocked: false,
+          at: "2026-08-24T02:00:12.000Z",
+        },
+      ],
+    },
+  },
+};
+const documentationFirstRepairRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", taskProfile: "code" },
+  documentationFirstRepairPacketState
+);
+assertStrict.deepEqual(
+  documentationFirstRepairRuntime.testFailureRepairOptionalRereadPaths,
+  ["build_cad.py"],
+  "DeepSeek repair preferred documentation over the canonical producing source"
+);
+const exhaustedProducerRereadRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", taskProfile: "code" },
+  {
+    ...documentationFirstRepairPacketState,
+    meta: {
+      ...documentationFirstRepairPacketState.meta,
+      toolLoop: {
+        stagnationEpoch: 10,
+        recent: [
+          {
+            toolName: "read_file",
+            path: "README.md",
+            ok: true,
+            blocked: false,
+            at: "2026-08-24T02:00:11.000Z",
+          },
+          ...Array.from({ length: 4 }, (_, index) => ({
+            toolName: "read_file",
+            path: "build_cad.py",
+            ok: true,
+            blocked: false,
+            at: `2026-08-24T02:00:${12 + index}.000Z`,
+          })),
+        ],
+      },
+    },
+  }
+);
+assertStrict.deepEqual(
+  exhaustedProducerRereadRuntime.testFailureRepairOptionalRereadPaths,
+  [],
+  "exhausting the primary producer reread fell through to lower-priority documentation"
+);
+const documentationFirstRepairTools = selectProgressiveTools(allTools, {
+  config: documentationFirstRepairRuntime,
+  goal: "Repair the manifest generator after reading its bounded evidence packet.",
+  profile: "code",
+});
+assertStrict.deepEqual(
+  documentationFirstRepairTools[0].function.parameters.properties.path.enum,
+  ["build_cad.py"],
+  "the source-prioritized reread was not constrained to the canonical producer"
+);
+const sourceReferencedDependencyMessages = [
+  {
+    role: "assistant",
+    tool_calls: [
+      {
+        id: "read-canonical-cad-source",
+        function: { name: "read_file", arguments: '{"path":"build_cad.py"}' },
+      },
+    ],
+  },
+  {
+    role: "tool",
+    tool_call_id: "read-canonical-cad-source",
+    content: JSON.stringify({
+      ok: true,
+      toolName: "read_file",
+      path: "build_cad.py",
+      goalRevision: 11,
+      pathEvidence: [
+        { path: "inputs/tube_measurements.csv", source: "build_cad.py" },
+        { path: "artifacts/", source: "build_cad.py" },
+        { path: "/tmp/external_validator.py", source: "build_cad.py" },
+        { path: "../outside.txt", source: "build_cad.py" },
+        { path: ".private/token.json", source: "build_cad.py" },
+      ],
+    }),
+  },
+];
+const compactedInstructionDiscoveryMessages = [
+  {
+    role: "user",
+    content: [
+      "Retained runtime tool evidence. This operation already completed; use its result and do not repeat it solely because context was compacted.",
+      "Tool: inspect_project",
+      "Arguments: {}",
+      'Verified result: {"ok":true,"recommendedReads":["README.md","AGENTS.md"],"manifestFiles":[{"path":"AGENTS.md"}],"topLevel":[{"path":"README.md","type":"file"},{"path":"AGENTS.md","type":"file"}]}',
+    ].join("\n"),
+  },
+  {
+    role: "user",
+    content: [
+      "Retained runtime tool evidence. This operation already completed; use its result and do not repeat it solely because context was compacted.",
+      "Tool: read_file",
+      'Arguments: {"path":"README.md"}',
+      'Verified result: {"ok":true,"path":"README.md","content":"project overview"}',
+    ].join("\n"),
+  },
+  {
+    role: "user",
+    content: "Continue the current task from saved state: repair the CAD producer.",
+  },
+];
+assertStrict.deepEqual(
+  unreadProjectInstructionReadPaths(compactedInstructionDiscoveryMessages, {
+    commandCwd: "/tmp/aginti-source-reference",
+  }),
+  ["AGENTS.md"],
+  "a continuation boundary hid an exact unread project instruction discovered before compaction"
+);
+const instructionOnlyWorkspace = await fs.mkdtemp(
+  path.join(os.tmpdir(), "aginti-instruction-without-inspection-")
+);
+try {
+  await fs.writeFile(
+    path.join(instructionOnlyWorkspace, "AGENTS.md"),
+    "# Project instructions\nPreserve the canonical generator.\n",
+    "utf8"
+  );
+  assertStrict.deepEqual(
+    unreadProjectInstructionReadPaths(sourceReferencedDependencyMessages, {
+      commandCwd: instructionOnlyWorkspace,
+    }),
+    ["AGENTS.md"],
+    "an existing root AGENTS.md disappeared when inspect_project evidence was compacted away"
+  );
+  const instructionOnlyRepairTools = selectProgressiveTools(allTools, {
+    config: {
+      provider: "deepseek",
+      taskProfile: "code",
+      commandCwd: instructionOnlyWorkspace,
+      testFailureRepairActive: true,
+      testFailureRepairMutationRequired: true,
+      testFailureRepairOptionalRereadPaths: ["build_cad.py"],
+      testFailureRepairPatchTargets: ["build_cad.py"],
+    },
+    goal: "Repair the canonical CAD producer while honoring project instructions.",
+    profile: "code",
+    messages: sourceReferencedDependencyMessages,
+  });
+  assert(
+    instructionOnlyRepairTools[0].function.parameters.properties.path.enum.includes("AGENTS.md"),
+    "failed-test recovery rejected a valid root AGENTS.md read after compaction"
+  );
+  sameNames(
+    selectProgressiveTools(allTools, {
+      config: {
+        provider: "deepseek",
+        taskProfile: "code",
+        commandCwd: instructionOnlyWorkspace,
+        testFailureRepairActive: true,
+        testFailureRepairMutationRequired: true,
+        testFailureRepairNeedsPatchContext: false,
+        testFailureRepairOptionalRereadPaths: [],
+      },
+      goal: "Apply the retained canonical producer correction now.",
+      profile: "code",
+      messages: sourceReferencedDependencyMessages,
+    }),
+    ["apply_patch", "finish"],
+    "consumed canonical repair evidence reopened auxiliary instruction discovery instead of requiring mutation"
+  );
+} finally {
+  await fs.rm(instructionOnlyWorkspace, { recursive: true, force: true });
+}
+const sourceReferencedDependencyTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "deepseek",
+    taskProfile: "code",
+    commandCwd: "/tmp/aginti-source-reference",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    testFailureRepairOptionalRereadPaths: ["build_cad.py"],
+    testFailureRepairPatchTargets: ["build_cad.py"],
+  },
+  goal: "Repair the canonical CAD producer from its declared input data.",
+  profile: "code",
+  messages: [
+    ...compactedInstructionDiscoveryMessages,
+    ...sourceReferencedDependencyMessages,
+  ],
+});
+assertStrict.deepEqual(
+  sourceReferencedDependencyTools[0].function.parameters.properties.path.enum,
+  [
+    "build_cad.py",
+    "/tmp/aginti-source-reference/build_cad.py",
+    "AGENTS.md",
+    "/tmp/aginti-source-reference/AGENTS.md",
+    "inputs/tube_measurements.csv",
+    "/tmp/aginti-source-reference/inputs/tube_measurements.csv",
+  ],
+  "failed-test recovery did not expose both the exact project instruction and source dependency"
+);
+assert(
+  !sourceReferencedDependencyTools[0].function.parameters.properties.path.enum.some(
+    (item) => /external_validator|outside|\.private|artifacts\/$/.test(item)
+  ),
+  "source-reference recovery exposed an external, protected, traversing, or directory path"
+);
+const sourceDependencyAlreadyReadTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "deepseek",
+    taskProfile: "code",
+    commandCwd: "/tmp/aginti-source-reference",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    testFailureRepairOptionalRereadPaths: ["build_cad.py"],
+    testFailureRepairPatchTargets: ["build_cad.py"],
+  },
+  goal: "Repair the canonical CAD producer after inspecting its declared input once.",
+  profile: "code",
+  messages: [
+    ...compactedInstructionDiscoveryMessages,
+    {
+      role: "user",
+      content: [
+        "Retained runtime tool evidence. This operation already completed; use its result and do not repeat it solely because context was compacted.",
+        "Tool: read_file",
+        'Arguments: {"path":"AGENTS.md"}',
+        'Verified result: {"ok":true,"path":"AGENTS.md","content":"current instructions"}',
+      ].join("\n"),
+    },
+    ...sourceReferencedDependencyMessages,
+    {
+      role: "assistant",
+      tool_calls: [
+        {
+          id: "read-canonical-cad-input",
+          function: {
+            name: "read_file",
+            arguments: '{"path":"inputs/tube_measurements.csv"}',
+          },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "read-canonical-cad-input",
+      content: JSON.stringify({
+        ok: true,
+        toolName: "read_file",
+        path: "inputs/tube_measurements.csv",
+        goalRevision: 11,
+      }),
+    },
+  ],
+});
+assertStrict.deepEqual(
+  sourceDependencyAlreadyReadTools[0].function.parameters.properties.path.enum,
+  ["build_cad.py", "/tmp/aginti-source-reference/build_cad.py"],
+  "already-read instruction or source dependency remained available for a repetitive read loop"
+);
+const continuedDeepSeekRereadRuntime = nextStepRuntimeConfig(
   { provider: "deepseek", taskProfile: "qa" },
   {
     ...packetPathReadState,
@@ -2431,18 +3021,63 @@ const exhaustedDeepSeekRereadRuntime = nextStepRuntimeConfig(
   }
 );
 assertStrict.deepEqual(
+  continuedDeepSeekRereadRuntime.testFailureRepairOptionalRereadPaths,
+  ["service_ctl.py"],
+  "DeepSeek repair dropped a canonical source before bounded continuation ranges were exhausted"
+);
+sameNames(
+  selectProgressiveTools(allTools, {
+    config: continuedDeepSeekRereadRuntime,
+    goal: "Inspect the next bounded source range before the coherent repair.",
+    profile: "qa",
+  }),
+  ["read_file", "apply_patch", "finish"],
+  "DeepSeek repair did not preserve the bounded continuation-read route"
+);
+const exhaustedDeepSeekRereadRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", taskProfile: "qa" },
+  {
+    ...packetPathReadState,
+    meta: {
+      ...packetPathReadState.meta,
+      toolLoop: {
+        stagnationEpoch: 10,
+        recent: [
+          ...packetPathReadState.meta.toolLoop.recent,
+          {
+            toolName: "read_file",
+            path: "tests/test_service_ctl.py",
+            ok: true,
+            blocked: false,
+            at: "2026-08-24T02:00:12.000Z",
+          },
+          ...[13, 14, 15].map((second, index) => ({
+            toolName: "read_file",
+            path: "service_ctl.py",
+            ok: true,
+            blocked: false,
+            at: `2026-08-24T02:00:${second}.000Z`,
+            startLine: 101 + index * 100,
+            lineLimit: 100,
+          })),
+        ],
+      },
+    },
+  }
+);
+assertStrict.deepEqual(
   exhaustedDeepSeekRereadRuntime.testFailureRepairOptionalRereadPaths,
   [],
-  "DeepSeek repair kept reopening an already repeated canonical source read"
+  "DeepSeek repair kept reopening a canonical source after four bounded reads"
 );
 sameNames(
   selectProgressiveTools(allTools, {
     config: exhaustedDeepSeekRereadRuntime,
-    goal: "Apply the coherent source repair after the bounded reread.",
+    goal: "Apply the coherent source repair after bounded source coverage.",
     profile: "qa",
   }),
   ["apply_patch", "finish"],
-  "DeepSeek repair did not close its one-shot reread fallback"
+  "DeepSeek repair did not close source discovery after the bounded read limit"
 );
 const topologyStalemateState = {
   ...packetPathReadState,
@@ -2550,13 +3185,13 @@ const focusedPatchRepairRuntime = nextStepRuntimeConfig(
         ],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 5,
         failureSignature: "focused-failure",
-        content: "Bounded failed-test evidence packet v15.",
+        content: "Bounded failed-test evidence packet v16.",
       },
       failedTestDiagnostic: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 5,
         failureSignature: "focused-failure",
         at: "2026-08-24T02:00:00.000Z",
@@ -2687,6 +3322,131 @@ assertStrict.deepEqual(
   ["The earlier marker is incorrect."],
   "focused failed-test repair did not constrain the evidence-derived decisive line"
 );
+const tracebackRepairLine =
+  '        lines.append(f"| {name} | {path.stat().st_size} |")';
+const tracebackRepairRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", taskProfile: "cad", commandCwd: repoRoot },
+  {
+    meta: {
+      taskProfile: "cad",
+      projectVerification: {
+        taskProfile: "cad",
+        mutationRevision: 9,
+        requiredOutputs: ["package.json"],
+        testRuns: [{
+          command: "python3 validate.py --root .",
+          mutationRevision: 9,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "deepest-traceback-line",
+          failureSummary: "package manifest rebuild failed at the deepest traceback line",
+          at: "2026-08-29T03:59:59.000Z",
+        }],
+      },
+      failedTestRecoveryPacket: {
+        packetVersion: 16,
+        mutationRevision: 9,
+        failureSignature: "deepest-traceback-line",
+        content: "Bounded failed-test evidence packet v16.",
+        paths: ["README.md", "build_cad.py", "inputs/tube_measurements.csv"],
+        generatedAt: "2026-08-29T04:00:00.000Z",
+      },
+      failedTestDiagnostic: {
+        packetVersion: 16,
+        mutationRevision: 9,
+        failureSignature: "deepest-traceback-line",
+        at: "2026-08-29T04:00:00.000Z",
+        focuses: [{
+          kind: "failed-test-traceback-line",
+          path: "build_cad.py",
+          decisiveLine: 398,
+          directSearch: tracebackRepairLine,
+        }, {
+          kind: "generated-artifact-semantic-producer",
+          path: "build_cad.py",
+          decisiveLine: 412,
+          directSearch: "    json_payload = {\n        'artifacts': [],\n    }",
+        }],
+      },
+      toolLoop: { stagnationEpoch: 12, recent: [] },
+    },
+    messages: [],
+  }
+);
+assertStrict.deepEqual(
+  tracebackRepairRuntime.testFailureRepairPatchTargets,
+  [{
+    kind: "failed-test-traceback-line",
+    path: "build_cad.py",
+    search: tracebackRepairLine,
+    line: 398,
+    left: "",
+    operator: "",
+    right: "",
+    literal: "",
+    anchorLiteral: "",
+    negated: false,
+    caseFolded: false,
+  }],
+  "the deepest current traceback line did not outrank a broad semantic producer focus"
+);
+assertStrict.deepEqual(
+  {
+    canonical: tracebackRepairRuntime.testFailureCanonicalRepairPaths,
+    context: tracebackRepairRuntime.testFailureRepairContextPaths,
+    diagnostic: tracebackRepairRuntime.testFailureDiagnosticReadPaths,
+    externalDiagnostic: tracebackRepairRuntime.testFailureExternalDiagnosticReadPaths,
+    optional: tracebackRepairRuntime.testFailureRepairOptionalRereadPaths,
+    workspaceDiagnostic: tracebackRepairRuntime.testFailureWorkspaceDiagnosticReadPaths,
+  },
+  {
+    canonical: [],
+    context: [],
+    diagnostic: [],
+    externalDiagnostic: [],
+    optional: [],
+    workspaceDiagnostic: [],
+  },
+  "an authoritative traceback repair retained contradictory ancillary read paths"
+);
+const tracebackRepairTools = selectProgressiveTools(allTools, {
+  config: tracebackRepairRuntime,
+  goal: "Repair the current isolated CAD rebuild failure.",
+  profile: "cad",
+});
+sameNames(
+  tracebackRepairTools,
+  ["rewrite_text_excerpt", "finish"],
+  "the exact traceback repair exposed a schema-fragile apply_patch surface"
+);
+const tracebackRewrite = tracebackRepairTools.find(
+  (tool) => tool.function.name === "rewrite_text_excerpt"
+);
+assertStrict.deepEqual(
+  Object.keys(tracebackRewrite.function.parameters.properties),
+  ["revisedText"],
+  "the traceback repair still required DeepSeek to reproduce runtime-owned path/search arguments"
+);
+assertStrict.equal(
+  tracebackRewrite.function.parameters.properties.revisedText.maxLength,
+  6000,
+  "the traceback replacement was not bounded to a small coherent source edit"
+);
+const tracebackContract = createToolContract([tracebackRewrite]);
+const tracebackProposal = contractCall(
+  "deepseek-traceback-block",
+  "rewrite_text_excerpt",
+  {
+    revisedText: [
+      "        if path.exists():",
+      '            lines.append(f"| {name} | {path.stat().st_size} |")',
+    ].join("\n"),
+  }
+);
+assert(
+  resolveDispatchableToolCallBatch([tracebackProposal], tracebackContract).ok,
+  "a small DeepSeek traceback repair block was rejected before runtime anchor binding"
+);
 const pythonGuardRepairSearch = [
   "if __name__ == '__main__':",
   "    raise SystemExit(main())",
@@ -2710,13 +3470,13 @@ const pythonGuardRepairRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 8,
         failureSignature: "python-main-guard-order",
-        content: "Bounded failed-test evidence packet v15.",
+        content: "Bounded failed-test evidence packet v16.",
       },
       failedTestDiagnostic: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 8,
         failureSignature: "python-main-guard-order",
         at: "2026-08-26T18:00:00.000Z",
@@ -2868,13 +3628,13 @@ const duplicateSourceRepairRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 9,
         failureSignature: "python-duplicate-source",
-        content: "Bounded failed-test evidence packet v15.",
+        content: "Bounded failed-test evidence packet v16.",
       },
       failedTestDiagnostic: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 9,
         failureSignature: "python-duplicate-source",
         at: "2026-08-26T19:00:00.000Z",
@@ -2981,13 +3741,13 @@ const baselineRecoveryRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 10,
         failureSignature: "python-baseline-recovery",
-        content: "Bounded failed-test evidence packet v15.",
+        content: "Bounded failed-test evidence packet v16.",
       },
       failedTestDiagnostic: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 10,
         failureSignature: "python-baseline-recovery",
         at: "2026-08-26T19:30:00.000Z",
@@ -3088,13 +3848,13 @@ const harnessPathRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 11,
         failureSignature: "agent-created-test-harness-path",
-        content: "Bounded failed-test evidence packet v15.",
+        content: "Bounded failed-test evidence packet v16.",
       },
       failedTestDiagnostic: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 11,
         failureSignature: "agent-created-test-harness-path",
         at: "2026-08-26T20:30:00.000Z",
@@ -3175,13 +3935,13 @@ const portCollisionRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 12,
         failureSignature: "agent-created-test-port-collision",
-        content: "Bounded failed-test evidence packet v15.",
+        content: "Bounded failed-test evidence packet v16.",
       },
       failedTestDiagnostic: {
-        packetVersion: 15,
+        packetVersion: 16,
         mutationRevision: 12,
         failureSignature: "agent-created-test-port-collision",
         at: "2026-08-27T09:00:00.000Z",
@@ -3480,8 +4240,8 @@ const exactStalePatchRepairTools = selectProgressiveTools(allTools, {
 });
 sameNames(
   exactStalePatchRepairTools,
-  ["apply_patch", "read_file"],
-  "fresh stale-patch recovery did not keep one exact read alongside the bounded mutation"
+  ["apply_patch"],
+  "fresh stale-patch recovery reopened source reading after the runtime had already supplied an exact current anchor"
 );
 assertStrict.deepEqual(
   exactStalePatchRepairTools[0].function.parameters.properties.path.enum,
@@ -3503,10 +4263,30 @@ assertStrict.deepEqual(
   ["replace"],
   "fresh stale-patch recovery did not reduce the provider contract to the authored replacement"
 );
+const explicitRepairRereadTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    patchContextRepairRequired: true,
+    patchContextRepairPath: "service_ctl.py",
+    patchContextRepairSearch: exactCurrentRepairAnchor,
+    patchContextRepairSearchHash: "anchor-hash",
+    patchContextRepairAnchorIdentity: "start_service",
+    patchContextRepairRereadAllowed: true,
+  },
+  goal: "Refresh a specifically invalidated repair anchor once.",
+  profile: "qa",
+});
+sameNames(
+  explicitRepairRereadTools,
+  ["apply_patch", "read_file"],
+  "an explicit exceptional repair reread was not retained"
+);
 assertStrict.deepEqual(
-  exactStalePatchRepairTools[1].function.parameters.properties.path.enum,
+  explicitRepairRereadTools[1].function.parameters.properties.path.enum,
   ["service_ctl.py"],
-  "fresh stale-patch recovery exposed a reread outside the exact affected path"
+  "an explicit exceptional repair reread escaped the exact affected path"
 );
 const exactStalePatchAfterReadTools = selectProgressiveTools(allTools, {
   config: {
@@ -4927,6 +5707,417 @@ try {
   );
 } finally {
   await fs.rm(focusedTranslationRoot, { recursive: true, force: true });
+}
+
+const focusedTrailingWhitespaceRoot = await fs.mkdtemp(
+  path.join(os.tmpdir(), "agintiflow-focused-patch-whitespace-")
+);
+try {
+  const canonicalSearch = [
+    "def write_manifest():",
+    "    payload = {'artifacts': []}",
+    "",
+    "",
+  ].join("\n");
+  const requestedSearch = canonicalSearch.trimEnd();
+  const source = `${canonicalSearch}def main():\n    return 0\n`;
+  await fs.writeFile(
+    path.join(focusedTrailingWhitespaceRoot, "build_cad.py"),
+    source,
+    "utf8"
+  );
+  const descriptor = {
+    type: "function",
+    function: {
+      name: "apply_patch",
+      description: "Repair one exact semantic producer.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", enum: ["build_cad.py"] },
+          search: { type: "string", enum: [canonicalSearch] },
+          replace: { type: "string", minLength: 1 },
+          expectedReplacements: { type: "integer", enum: [1] },
+        },
+        required: ["path", "search", "replace"],
+        additionalProperties: false,
+      },
+    },
+  };
+  const contract = createToolContract([descriptor]);
+  const call = contractCall("focused-trailing-whitespace", "apply_patch", {
+    path: "build_cad.py",
+    search: requestedSearch,
+    replace: [
+      "def write_manifest():",
+      "    payload = {'artifacts': [], 'validation': {'step': 'checked'}}",
+    ].join("\n"),
+    expectedReplacements: 1,
+  });
+  const rejected = resolveDispatchableToolCallBatch([call], contract);
+  assert(!rejected.ok, "trailing-whitespace search mismatch unexpectedly passed directly");
+  const recovered = await recoverFocusedPatchTrailingWhitespaceAsExactPatch(
+    { commandCwd: focusedTrailingWhitespaceRoot },
+    {
+      meta: {
+        failedTestDiagnostic: {
+          focuses: [{
+            kind: "generated-artifact-semantic-producer",
+            path: "build_cad.py",
+            directSearch: canonicalSearch,
+          }],
+        },
+      },
+    },
+    [call],
+    contract,
+    rejected
+  );
+  assert(recovered?.ok, "focused patch trailing line breaks were not normalized");
+  assert(
+    recovered.recoveredFocusedPatchTrailingWhitespace,
+    "focused patch normalization was not marked"
+  );
+  const recoveredArgs = JSON.parse(recovered.acceptedToolCalls[0].function.arguments);
+  assertStrict.equal(
+    recoveredArgs.search,
+    canonicalSearch,
+    "focused patch normalization did not inject the revision-bound anchor"
+  );
+  assertStrict.equal(
+    recoveredArgs.replace.endsWith("\n\n"),
+    true,
+    "focused patch normalization did not preserve the anchor boundary"
+  );
+  assertStrict.equal(
+    await fs.readFile(path.join(focusedTrailingWhitespaceRoot, "build_cad.py"), "utf8"),
+    source,
+    "focused patch normalization mutated the workspace before normal dispatch"
+  );
+
+  const noChangeCall = contractCall("focused-no-change-whitespace", "apply_patch", {
+    path: "build_cad.py",
+    search: requestedSearch,
+    replace: requestedSearch,
+    expectedReplacements: 1,
+  });
+  const recoveredNoChange = await recoverFocusedPatchTrailingWhitespaceAsExactPatch(
+    { commandCwd: focusedTrailingWhitespaceRoot },
+    {
+      meta: {
+        failedTestDiagnostic: {
+          focuses: [{
+            kind: "generated-artifact-semantic-producer",
+            path: "build_cad.py",
+            directSearch: canonicalSearch,
+          }],
+        },
+      },
+    },
+    [noChangeCall],
+    contract,
+    resolveDispatchableToolCallBatch([noChangeCall], contract)
+  );
+  assert(
+    recoveredNoChange?.ok,
+    "focused no-change patch was not normalized for deterministic executor feedback"
+  );
+  assertStrict.equal(
+    JSON.parse(recoveredNoChange.acceptedToolCalls[0].function.arguments).replace,
+    canonicalSearch,
+    "focused no-change normalization did not preserve the exact anchor"
+  );
+
+  const driftingSearchCall = contractCall("focused-non-whitespace-drift", "apply_patch", {
+    path: "build_cad.py",
+    search: requestedSearch.replace("artifacts", "outputs"),
+    replace: "def write_manifest():\n    return {}",
+    expectedReplacements: 1,
+  });
+  assertStrict.equal(
+    await recoverFocusedPatchTrailingWhitespaceAsExactPatch(
+      { commandCwd: focusedTrailingWhitespaceRoot },
+      {
+        meta: {
+          failedTestDiagnostic: {
+            focuses: [{
+              kind: "generated-artifact-semantic-producer",
+              path: "build_cad.py",
+              directSearch: canonicalSearch,
+            }],
+          },
+        },
+      },
+      [driftingSearchCall],
+      contract,
+      resolveDispatchableToolCallBatch([driftingSearchCall], contract)
+    ),
+    null,
+    "non-whitespace focused search drift was normalized"
+  );
+} finally {
+  await fs.rm(focusedTrailingWhitespaceRoot, { recursive: true, force: true });
+}
+
+const focusedUniqueSubrangeRoot = await fs.mkdtemp(
+  path.join(os.tmpdir(), "agintiflow-focused-patch-subrange-")
+);
+try {
+  const canonicalSearch = [
+    "    json_payload = {",
+    '        "title": "tube cradle",',
+    '        "validation": validation,',
+    '        "artifacts": artifacts,',
+    "    }",
+    "",
+  ].join("\n");
+  const requestedSearch = [
+    '        "validation": validation,',
+    '        "artifacts": artifacts,',
+  ].join("\n");
+  const requestedReplace = [
+    '        "validation": validation,',
+    '        "validation_evidence": list(validation.values()),',
+    '        "artifacts": artifacts,',
+  ].join("\n");
+  const source = [
+    "def write_manifest():",
+    canonicalSearch.trimEnd(),
+    "    return json_payload",
+    "",
+  ].join("\n");
+  await fs.writeFile(
+    path.join(focusedUniqueSubrangeRoot, "build_cad.py"),
+    source,
+    "utf8"
+  );
+  const descriptor = {
+    type: "function",
+    function: {
+      name: "apply_patch",
+      description: "Repair one exact semantic producer.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", enum: ["build_cad.py"] },
+          search: { type: "string", enum: [canonicalSearch] },
+          replace: { type: "string", minLength: 1 },
+          expectedReplacements: { type: "integer", enum: [1] },
+        },
+        required: ["path", "search", "replace"],
+        additionalProperties: false,
+      },
+    },
+  };
+  const contract = createToolContract([descriptor]);
+  const state = {
+    meta: {
+      failedTestDiagnostic: {
+        focuses: [{
+          kind: "generated-artifact-semantic-producer",
+          path: "build_cad.py",
+          directSearch: canonicalSearch,
+        }],
+      },
+    },
+  };
+  const call = contractCall("focused-unique-subrange", "apply_patch", {
+    path: "build_cad.py",
+    search: requestedSearch,
+    replace: requestedReplace,
+    expectedReplacements: 1,
+  });
+  const rejected = resolveDispatchableToolCallBatch([call], contract);
+  assert(!rejected.ok, "unique inner-block search unexpectedly passed directly");
+  const recovered = await recoverFocusedPatchUniqueSubrangeAsExactPatch(
+    { commandCwd: focusedUniqueSubrangeRoot },
+    state,
+    [call],
+    contract,
+    rejected
+  );
+  assert(recovered?.ok, "unique focused inner-block patch was not recovered");
+  assert(
+    recovered.recoveredFocusedPatchUniqueSubrange,
+    "unique focused inner-block recovery was not marked"
+  );
+  const recoveredArgs = JSON.parse(recovered.acceptedToolCalls[0].function.arguments);
+  assertStrict.equal(
+    recoveredArgs.search,
+    canonicalSearch,
+    "unique focused inner-block recovery did not inject the exact allowed anchor"
+  );
+  assertStrict.equal(
+    recoveredArgs.replace,
+    canonicalSearch.replace(requestedSearch, requestedReplace),
+    "unique focused inner-block recovery did not splice the requested mutation losslessly"
+  );
+  assertStrict.equal(
+    await fs.readFile(path.join(focusedUniqueSubrangeRoot, "build_cad.py"), "utf8"),
+    source,
+    "unique focused inner-block recovery mutated the workspace before dispatch"
+  );
+
+  const outsideFocusCall = contractCall("focused-subrange-outside", "apply_patch", {
+    path: "build_cad.py",
+    search: "def write_manifest():\n    json_payload",
+    replace: "def write_manifest():\n    rejected_payload",
+    expectedReplacements: 1,
+  });
+  assertStrict.equal(
+    await recoverFocusedPatchUniqueSubrangeAsExactPatch(
+      { commandCwd: focusedUniqueSubrangeRoot },
+      state,
+      [outsideFocusCall],
+      contract,
+      resolveDispatchableToolCallBatch([outsideFocusCall], contract)
+    ),
+    null,
+    "a requested search outside the exact failed-test focus was recovered"
+  );
+
+  const scopeExpansionCall = contractCall("focused-subrange-scope-expansion", "apply_patch", {
+    path: "build_cad.py",
+    search: requestedSearch,
+    replace: `${requestedReplace}\n\ndef unrelated_rebuild():\n    return {}`,
+    expectedReplacements: 1,
+  });
+  assertStrict.equal(
+    await recoverFocusedPatchUniqueSubrangeAsExactPatch(
+      { commandCwd: focusedUniqueSubrangeRoot },
+      state,
+      [scopeExpansionCall],
+      contract,
+      resolveDispatchableToolCallBatch([scopeExpansionCall], contract)
+    ),
+    null,
+    "a focused inner-block patch that injected an unrelated declaration was recovered"
+  );
+} finally {
+  await fs.rm(focusedUniqueSubrangeRoot, { recursive: true, force: true });
+}
+
+const focusedAlreadyAppliedRoot = await fs.mkdtemp(
+  path.join(os.tmpdir(), "agintiflow-focused-patch-already-applied-")
+);
+try {
+  const staleSearch = [
+    "    json_payload = {",
+    '        "validation": validation,',
+    '        "artifacts": artifacts,',
+    "    }",
+    "",
+  ].join("\n");
+  const currentSearch = [
+    "    json_payload = {",
+    '        "validation": validation,',
+    '        "artifacts": artifacts,',
+    '        "validation_results": list(validation.values()),',
+    "    }",
+    "",
+  ].join("\n");
+  const source = [
+    "def write_manifest():",
+    currentSearch.trimEnd(),
+    "    return json_payload",
+    "",
+  ].join("\n");
+  await fs.writeFile(
+    path.join(focusedAlreadyAppliedRoot, "build_cad.py"),
+    source,
+    "utf8"
+  );
+  const descriptor = {
+    type: "function",
+    function: {
+      name: "apply_patch",
+      description: "Repair one exact semantic producer.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", enum: ["build_cad.py"] },
+          search: { type: "string", enum: [currentSearch] },
+          replace: { type: "string", minLength: 1 },
+          expectedReplacements: { type: "integer", enum: [1] },
+        },
+        required: ["path", "search", "replace"],
+        additionalProperties: false,
+      },
+    },
+  };
+  const contract = createToolContract([descriptor]);
+  const state = {
+    meta: {
+      failedTestDiagnostic: {
+        focuses: [{
+          kind: "generated-artifact-semantic-producer",
+          path: "build_cad.py",
+          directSearch: currentSearch,
+        }],
+      },
+    },
+  };
+  const call = contractCall("focused-stale-already-applied", "apply_patch", {
+    path: "build_cad.py",
+    search: staleSearch,
+    replace: currentSearch,
+    expectedReplacements: 1,
+  });
+  const rejected = resolveDispatchableToolCallBatch([call], contract);
+  assert(!rejected.ok, "stale already-applied search unexpectedly passed directly");
+  const recovered = await recoverFocusedPatchAlreadyAppliedAsExactNoop(
+    { commandCwd: focusedAlreadyAppliedRoot },
+    state,
+    [call],
+    contract,
+    rejected
+  );
+  assert(
+    recovered?.ok && recovered.recoveredFocusedPatchAlreadyApplied,
+    "stale patch whose replacement was already current was not recovered"
+  );
+  const recoveredArgs = JSON.parse(
+    recovered.acceptedToolCalls[0].function.arguments
+  );
+  assertStrict.equal(
+    recoveredArgs.search,
+    currentSearch,
+    "already-applied recovery did not bind the exact current anchor"
+  );
+  assertStrict.equal(
+    recoveredArgs.replace,
+    currentSearch,
+    "already-applied recovery did not produce a deterministic no-op"
+  );
+  assertStrict.equal(
+    await fs.readFile(path.join(focusedAlreadyAppliedRoot, "build_cad.py"), "utf8"),
+    source,
+    "already-applied recovery mutated the workspace before dispatch"
+  );
+
+  const changedReplacementCall = contractCall(
+    "focused-stale-not-already-applied",
+    "apply_patch",
+    {
+      path: "build_cad.py",
+      search: staleSearch,
+      replace: currentSearch.replace("validation_results", "different_results"),
+      expectedReplacements: 1,
+    }
+  );
+  assertStrict.equal(
+    await recoverFocusedPatchAlreadyAppliedAsExactNoop(
+      { commandCwd: focusedAlreadyAppliedRoot },
+      state,
+      [changedReplacementCall],
+      contract,
+      resolveDispatchableToolCallBatch([changedReplacementCall], contract)
+    ),
+    null,
+    "a materially different stale patch was mislabeled as already applied"
+  );
+} finally {
+  await fs.rm(focusedAlreadyAppliedRoot, { recursive: true, force: true });
 }
 
 const strictWriteDescriptor = {
