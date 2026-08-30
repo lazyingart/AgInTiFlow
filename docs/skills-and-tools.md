@@ -79,6 +79,14 @@ tools:
 
 Selected skills are injected into the plan and execution prompts. The LLM still decides what to do; skills only provide domain playbooks and guardrails.
 
+Automatic selection requires substantive relevance. Exact IDs, focused short
+requests, specific triggers, and several matching description terms score
+strongly. Generic words such as `data`, `search`, `project`, or `commit` are
+discounted when they occur incidentally inside a longer request, and automatic
+mode omits weak matches instead of filling the skill budget. Explicit profiles
+and direct topic wording remain authoritative. This keeps unrelated guidance
+out of the context without hard-coding task-specific exclusions.
+
 ## Adding A Skill
 
 For a reusable project workflow, create `.aginti/skills/<id>/SKILL.md` with valid YAML frontmatter and a short Markdown body. These skills are loaded from the current project, shown as `source=project-local`, and are preferred for task-specific knowledge that should not become core runtime policy.
