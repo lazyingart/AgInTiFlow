@@ -14588,11 +14588,34 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       Date.parse(String(state.meta?.failedTestRecoveryPacket?.generatedAt || "")),
       Date.parse(String(state.meta?.failedTestFocusedRecovery?.at || "")),
     ].filter(Number.isFinite);
-    const recoveryPacketContextAt = Number.isFinite(failureAt)
+    const retainedRecoveryPacketContextAt = Number.isFinite(failureAt)
       ? failureAt
       : recoveryPacketContextMarkers.length
         ? Math.max(...recoveryPacketContextMarkers)
         : Number.NaN;
+    const latestContextRecovery = state.meta?.toolLoop?.lastContextRecovery;
+    const latestContextRecoveryAt = Date.parse(
+      String(latestContextRecovery?.at || "")
+    );
+    const postContextLossRepairContext = Boolean(
+      Number.isFinite(latestContextRecoveryAt) &&
+        (!Number.isFinite(retainedRecoveryPacketContextAt) ||
+          latestContextRecoveryAt > retainedRecoveryPacketContextAt) &&
+        [
+          "proactive-context-compaction",
+          "local-context-budget-retry",
+          "model-timeout-retry",
+          "same-task-continuation",
+        ].includes(String(latestContextRecovery?.reason || ""))
+    );
+    const recoveryPacketContextAt = postContextLossRepairContext
+      ? latestContextRecoveryAt
+      : retainedRecoveryPacketContextAt;
+    const activeRecoveryPacketPaths = postContextLossRepairContext
+      ? recoveryPacketRepairPaths
+          .filter((item) => !failedTestPathIsTestEvidence(item))
+          .slice(0, 6)
+      : recoveryPacketPaths;
     const consumedRecoveryPacketPaths = new Set(
       Number.isFinite(recoveryPacketContextAt)
         ? (Array.isArray(toolLoop.recent) ? toolLoop.recent : [])
@@ -14610,7 +14633,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
             .filter(Boolean)
         : []
     );
-    const unreadRecoveryPacketPaths = recoveryPacketPaths.filter(
+    const unreadRecoveryPacketPaths = activeRecoveryPacketPaths.filter(
       (item) => !consumedRecoveryPacketPaths.has(item)
     );
     const recoveryPacketReadCounts = new Map();
@@ -14635,7 +14658,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       }
     }
     const exactRecoveryPacketContextActive = Boolean(
-      recoveryPacketPaths.length && Number.isFinite(recoveryPacketContextAt)
+      activeRecoveryPacketPaths.length && Number.isFinite(recoveryPacketContextAt)
     );
     const recoveryPacketHasProductionContext = [
       ...recoveryPacketPaths,

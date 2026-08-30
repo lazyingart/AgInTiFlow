@@ -2818,6 +2818,113 @@ assertStrict.deepEqual(
   ["service_ctl.py"],
   "DeepSeek repair reread fallback was not constrained to the canonical source"
 );
+const postCompactionRepairRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", taskProfile: "qa" },
+  {
+    ...packetPathReadState,
+    meta: {
+      ...packetPathReadState.meta,
+      failedTestRecoveryPacket: {
+        ...packetPathReadState.meta.failedTestRecoveryPacket,
+        paths: ["tests/test_service_ctl.py", "legacy_fixture.py", "service_ctl.py"],
+        repairPaths: ["legacy_fixture.py", "service_ctl.py"],
+      },
+      toolLoop: {
+        stagnationEpoch: 10,
+        lastContextRecovery: {
+          reason: "proactive-context-compaction",
+          at: "2026-08-24T02:00:13.000Z",
+          preservedStaticEvidence: true,
+        },
+        recent: [
+          ...packetPathReadState.meta.toolLoop.recent,
+          {
+            toolName: "read_file",
+            path: "tests/test_service_ctl.py",
+            ok: true,
+            blocked: false,
+            at: "2026-08-24T02:00:12.000Z",
+          },
+          {
+            toolName: "read_file",
+            path: "legacy_fixture.py",
+            ok: true,
+            blocked: false,
+            at: "2026-08-24T02:00:12.500Z",
+          },
+        ],
+      },
+    },
+  }
+);
+assertStrict.deepEqual(
+  postCompactionRepairRuntime.testFailureRepairContextPaths,
+  ["legacy_fixture.py", "service_ctl.py"],
+  "context compaction did not reopen the exact production source lost from model context"
+);
+assertStrict.equal(
+  postCompactionRepairRuntime.testFailureRepairNeedsPatchContext,
+  true,
+  "context compaction did not restore one bounded source-context turn before mutation"
+);
+const postCompactionRepairTools = selectProgressiveTools(allTools, {
+  config: postCompactionRepairRuntime,
+  goal: "Continue the failed-test repair after proactive context compaction.",
+  profile: "qa",
+});
+sameNames(
+  postCompactionRepairTools,
+  ["read_file", "apply_patch", "finish"],
+  "post-compaction repair reopened broad discovery or verification tools"
+);
+assertStrict.deepEqual(
+  postCompactionRepairTools[0].function.parameters.properties.path.enum,
+  ["legacy_fixture.py", "service_ctl.py"],
+  "post-compaction repair did not constrain rereads to all canonical production sources"
+);
+const sameTaskContinuationRepairRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", taskProfile: "qa" },
+  {
+    ...packetPathReadState,
+    meta: {
+      ...packetPathReadState.meta,
+      failedTestRecoveryPacket: {
+        ...packetPathReadState.meta.failedTestRecoveryPacket,
+        paths: ["tests/test_service_ctl.py", "legacy_fixture.py", "service_ctl.py"],
+        repairPaths: ["legacy_fixture.py", "service_ctl.py"],
+      },
+      toolLoop: {
+        stagnationEpoch: 11,
+        lastContextRecovery: {
+          reason: "same-task-continuation",
+          at: "2026-08-24T02:01:00.000Z",
+        },
+        recent: [
+          ...packetPathReadState.meta.toolLoop.recent,
+          {
+            toolName: "read_file",
+            path: "tests/test_service_ctl.py",
+            ok: true,
+            blocked: false,
+            at: "2026-08-24T02:00:12.000Z",
+          },
+          {
+            toolName: "read_file",
+            path: "legacy_fixture.py",
+            ok: true,
+            blocked: false,
+            at: "2026-08-24T02:00:12.500Z",
+          },
+        ],
+      },
+    },
+  }
+);
+assertStrict.deepEqual(
+  sameTaskContinuationRepairRuntime.testFailureRepairContextPaths,
+  ["legacy_fixture.py", "service_ctl.py"],
+  "same-task continuation did not reopen all retained canonical production sources"
+);
 const testOnlyPacketState = {
   meta: {
     projectVerification: {

@@ -408,3 +408,26 @@ The same real session was replayed against the patched source at goal revision
 The target stayed at commit `2b35928` with no mutation. Focused planning,
 truthful-completion, and dynamic-budget regressions pass, as does the complete
 AgInTiFlow npm suite. The fix is released in AgInTiFlow `0.20.251`.
+
+### Exact source recovery after context loss
+
+`database-migration-049` repeated an imperfect SQLite repair task against a
+fresh broken workspace. Automatic routing selected only `qa-testing` and
+`database`, but the first run read the canonical source immediately before
+proactive context compaction. The compacted model correctly requested that
+source again; the retained failed-test read budget exposed a different file,
+so two safe but schema-invalid reads stopped the session without dispatch.
+
+AgInTiFlow now treats proactive compaction, local context-window recovery,
+model-timeout compaction, and same-task continuation as bounded context-loss
+boundaries. A current failed-test packet may reopen only its evidence-derived
+production repair paths after such a boundary. Tests, broad discovery,
+arbitrary commands, and unrelated writes remain closed. Once the exact source
+is read in the new context, the ordinary mutation and verification gates apply.
+
+The original session resumed against the patched runtime, repaired the
+transactional schema migration, preserved IDs and tags on URL updates, made
+punctuation search literal, added regression coverage, passed four unit tests,
+and committed a clean tree at `b956470`. The independent migration-safety
+contract also passed. The complete npm suite passes, and the runtime fix is
+released in AgInTiFlow `0.20.291`.
