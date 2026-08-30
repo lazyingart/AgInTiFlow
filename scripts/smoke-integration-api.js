@@ -585,6 +585,8 @@ async function chunkedPost(baseUrl, requestPath, body) {
 
 async function startBodyBoundaryApp() {
   const middlewares = createTestOnlyIntegrationAnalysisBodyMiddlewares();
+  let potentiallyLargeRequestsStarted = 0;
+  let attachmentBusyResponsesFinished = 0;
   let largeHandlersInFlight = 0;
   let maximumLargeHandlersInFlight = 0;
   let resolveLargeHandler;
@@ -592,7 +594,7 @@ async function startBodyBoundaryApp() {
   let releaseLargeHandlers;
   const largeHandlersReleased = new Promise((resolve) => { releaseLargeHandlers = resolve; });
   const app = express();
-  app.use("/agent/v1", (req, _res, next) => {
+  app.use("/agent/v1", (req, res, next) => {
     const imageRoute = new Set([AGENT_RPC_PATHS.runsStart, AGENT_RPC_PATHS.runsResume])
       .has(String(req.originalUrl || ""));
     const rawLength = req.headers["content-length"];
@@ -600,6 +602,11 @@ async function startBodyBoundaryApp() {
     const declaredLength = Number(lengthText);
     const declaredOrdinary = /^[0-9]+$/u.test(lengthText) &&
       Number.isSafeInteger(declaredLength) && declaredLength <= 128 * 1024;
+    const potentiallyLarge = imageRoute && !declaredOrdinary;
+    if (potentiallyLarge) potentiallyLargeRequestsStarted += 1;
+    res.once("finish", () => {
+      if (potentiallyLarge && res.statusCode === 429) attachmentBusyResponsesFinished += 1;
+    });
     Object.defineProperty(req, "integrationBodyByteLimit", {
       configurable: false,
       enumerable: false,
@@ -642,6 +649,8 @@ async function startBodyBoundaryApp() {
   return Object.freeze({
     url: `http://127.0.0.1:${address.port}`,
     requestsInFlight: middlewares.requestsInFlight,
+    potentiallyLargeRequestsStarted: () => potentiallyLargeRequestsStarted,
+    attachmentBusyResponsesFinished: () => attachmentBusyResponsesFinished,
     waitForLargeHandler: () => largeHandler,
     maximumLargeHandlersInFlight: () => maximumLargeHandlersInFlight,
     releaseLargeHandlers,
@@ -689,6 +698,11 @@ function startMaximumBodyClient(baseUrl, pathname, maximumBodyBytes) {
     const prefix = Buffer.from('{"hold":true,"padding":"');
     const suffix = Buffer.from('"}');
     const paddingBytes = maximumBodyBytes - prefix.length - suffix.length;
+    let clientsStarted = 0;
+    let resolveBothClientsStarted;
+    const bothClientsStarted = new Promise((resolve) => { resolveBothClientsStarted = resolve; });
+    let releaseBodies;
+    const bodiesReleased = new Promise((resolve) => { releaseBodies = resolve; });
     async function send(fill) {
       const url = new URL(baseUrl);
       let request;
@@ -714,6 +728,9 @@ function startMaximumBodyClient(baseUrl, pathname, maximumBodyBytes) {
         });
       });
       request.write(prefix);
+      clientsStarted += 1;
+      if (clientsStarted === 2) resolveBothClientsStarted();
+      await bodiesReleased;
       const block = Buffer.alloc(64 * 1024, fill);
       let remaining = paddingBytes;
       while (remaining > 0 && responseStatus === null) {
@@ -729,29 +746,69 @@ function startMaximumBodyClient(baseUrl, pathname, maximumBodyBytes) {
       if (responseStatus === null) request.end(suffix);
       return response;
     }
-    const statuses = await Promise.all([send("a"), send("b")]);
+    const statusesPromise = Promise.all([send("a"), send("b")]);
+    await bothClientsStarted;
+    process.stderr.write("READY\\n");
+    await new Promise((resolve) => process.stdin.once("data", resolve));
+    releaseBodies();
+    const statuses = await statusesPromise;
     process.stdout.write(JSON.stringify(statuses));
   `;
   const child = spawn(
     process.execPath,
     ["--input-type=module", "-e", source, baseUrl, pathname, String(maximumBodyBytes)],
-    { stdio: ["ignore", "pipe", "pipe"] }
+    { stdio: ["pipe", "pipe", "pipe"] }
   );
   let stdout = "";
   let stderr = "";
+  let readySettled = false;
+  let resolveReady;
+  let rejectReady;
+  const ready = new Promise((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   child.stdout.on("data", (chunk) => { stdout += chunk; });
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
-  return new Promise((resolve, reject) => {
-    child.once("error", reject);
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+    if (!readySettled && stderr.includes("READY\n")) {
+      readySettled = true;
+      resolveReady();
+    }
+  });
+  const result = new Promise((resolve, reject) => {
+    child.once("error", (error) => {
+      if (!readySettled) {
+        readySettled = true;
+        rejectReady(error);
+      }
+      reject(error);
+    });
     child.once("exit", (code, signal) => {
       if (code !== 0) {
-        reject(new Error(`Maximum body client failed (${code ?? signal}): ${stderr}`));
+        const error = new Error(`Maximum body client failed (${code ?? signal}): ${stderr}`);
+        if (!readySettled) {
+          readySettled = true;
+          rejectReady(error);
+        }
+        reject(error);
         return;
       }
       resolve(JSON.parse(stdout));
     });
+  });
+  return Object.freeze({
+    ready,
+    result,
+    releaseBodies: () => {
+      if (child.stdin && !child.stdin.destroyed) child.stdin.end("release\n");
+    },
+    terminate: () => {
+      if (child.stdin && !child.stdin.destroyed) child.stdin.end("release\n");
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    },
   });
 }
 
@@ -822,23 +879,33 @@ async function attachmentBodyAdmissionRoundTrip() {
   }
 
   const maximumApp = await startBodyBoundaryApp();
+  let maximumBodyClient = null;
   try {
     const maximumBodyBytes = 24 * 1024 * 1024;
-    const maximumBodyClient = startMaximumBodyClient(
+    maximumBodyClient = startMaximumBodyClient(
       maximumApp.url,
       AGENT_RPC_PATHS.runsStart,
       maximumBodyBytes
     );
+    await maximumBodyClient.ready;
+    await waitForBodyBoundary(
+      () => maximumApp.attachmentBusyResponsesFinished() === 1,
+      "one maximum body to receive an attachment admission rejection"
+    );
+    assert.equal(maximumApp.potentiallyLargeRequestsStarted(), 2);
+    maximumBodyClient.releaseBodies();
     await maximumApp.waitForLargeHandler();
     assert.equal(maximumApp.maximumLargeHandlersInFlight(), 1);
     const maximumResidentBytes = process.memoryUsage.rss();
     maximumApp.releaseLargeHandlers();
-    assert.deepEqual((await maximumBodyClient).sort((left, right) => left - right), [204, 429]);
+    assert.deepEqual((await maximumBodyClient.result).sort((left, right) => left - right), [204, 429]);
     assert.ok(
       maximumResidentBytes < 768 * 1024 * 1024,
       `single admitted maximum Agent body exceeded the 768MiB service RSS budget: ${Math.ceil(maximumResidentBytes / 1024)}KiB`
     );
   } finally {
+    maximumBodyClient?.terminate();
+    maximumBodyClient?.result.catch(() => {});
     await maximumApp.close();
   }
 }
