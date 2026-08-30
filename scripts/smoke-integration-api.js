@@ -5,25 +5,34 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { Writable } from "node:stream";
 import express from "express";
 import {
   INTEGRATION_IDEMPOTENCY_CONTRACT_VERSION,
   INTEGRATION_IDEMPOTENCY_MAX_WINDOW_MS,
+  INTEGRATION_ANALYSIS_MAX_CONCURRENT_ATTACHMENT_REQUESTS,
   assertIntegrationTransactionalIdempotencyStore,
   assertPublicIntegrationResponse,
   createIntegrationRouter,
+  createTestOnlyIntegrationAnalysisBodyMiddlewares,
   sanitizePublicIntegrationRun,
   sanitizePublicIntegrationThread,
   writeIntegrationArtifactContentResponse,
 } from "../src/integration-api.js";
 import {
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BYTES_LIMIT,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_COUNT_LIMIT,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_MEDIA_TYPES,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_REQUEST_TIMEOUT_MS,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_TOTAL_BYTES_LIMIT,
   INTEGRATION_RPC_PATHS,
   assertFixedIntegrationPolicy,
   buildFixedIntegrationPolicy,
   buildFixedIntegrationRuntimeOverrides,
   canonicalJson,
   contractDigest,
+  integrationCapabilitiesResponse,
   sanitizeIntegrationRequest,
 } from "../src/integration-policy.js";
 import {
@@ -54,6 +63,21 @@ const AT = "2026-08-20T08:00:00.000Z";
 const ZERO_DIGEST = "0".repeat(64);
 const CONTEXT_DIGEST = "b".repeat(64);
 const SNAPSHOT_HASH = "c".repeat(64);
+const ATTACHMENT_DATA =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const ATTACHMENT_INPUT = Object.freeze({
+  attachmentId: "iphone-canonical-image-0001",
+  mediaType: "image/png",
+  data: ATTACHMENT_DATA,
+});
+const ATTACHMENT_DESCRIPTOR = Object.freeze({
+  attachmentId: ATTACHMENT_INPUT.attachmentId,
+  mediaType: ATTACHMENT_INPUT.mediaType,
+  byteLength: Buffer.from(ATTACHMENT_DATA, "base64").length,
+  width: 1,
+  height: 1,
+  sha256: crypto.createHash("sha256").update(Buffer.from(ATTACHMENT_DATA, "base64")).digest("hex"),
+});
 
 function uuidId(prefix) {
   return `${prefix}_${crypto.randomUUID()}`;
@@ -526,13 +550,297 @@ async function rawPost(baseUrl, requestPath, body = "{}", headers = {}) {
           text += chunk;
         });
         response.on("end", () => {
-          resolve({ status: response.statusCode, json: JSON.parse(text) });
+          resolve({ status: response.statusCode, json: text ? JSON.parse(text) : null });
         });
       }
     );
     request.on("error", reject);
     request.end(body);
   });
+}
+
+async function chunkedPost(baseUrl, requestPath, body) {
+  const url = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: requestPath,
+      method: "POST",
+      headers: authHeaders({ "transfer-encoding": "chunked" }),
+    }, (response) => {
+      let text = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { text += chunk; });
+      response.on("end", () => resolve({ status: response.statusCode, json: JSON.parse(text) }));
+    });
+    request.on("error", reject);
+    const bytes = Buffer.from(body);
+    for (let offset = 0; offset < bytes.length; offset += 16 * 1024) {
+      request.write(bytes.subarray(offset, offset + 16 * 1024));
+    }
+    request.end();
+  });
+}
+
+async function startBodyBoundaryApp() {
+  const middlewares = createTestOnlyIntegrationAnalysisBodyMiddlewares();
+  let largeHandlersInFlight = 0;
+  let maximumLargeHandlersInFlight = 0;
+  let resolveLargeHandler;
+  const largeHandler = new Promise((resolve) => { resolveLargeHandler = resolve; });
+  let releaseLargeHandlers;
+  const largeHandlersReleased = new Promise((resolve) => { releaseLargeHandlers = resolve; });
+  const app = express();
+  app.use("/agent/v1", (req, _res, next) => {
+    const imageRoute = new Set([AGENT_RPC_PATHS.runsStart, AGENT_RPC_PATHS.runsResume])
+      .has(String(req.originalUrl || ""));
+    const rawLength = req.headers["content-length"];
+    const lengthText = Array.isArray(rawLength) ? "" : String(rawLength ?? "").trim();
+    const declaredLength = Number(lengthText);
+    const declaredOrdinary = /^[0-9]+$/u.test(lengthText) &&
+      Number.isSafeInteger(declaredLength) && declaredLength <= 128 * 1024;
+    Object.defineProperty(req, "integrationBodyByteLimit", {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: imageRoute && !declaredOrdinary ? 24 * 1024 * 1024 : 128 * 1024,
+    });
+    next();
+  });
+  app.use("/agent/v1", middlewares.beforeBody);
+  app.use("/agent/v1", middlewares.parse);
+  app.use("/agent/v1", middlewares.afterBody);
+  for (const pathname of [
+    AGENT_RPC_PATHS.runsStart,
+    AGENT_RPC_PATHS.runsResume,
+    AGENT_RPC_PATHS.capabilities,
+  ]) {
+    app.post(pathname, async (req, res) => {
+      if (req.body?.hold === true) {
+        largeHandlersInFlight += 1;
+        maximumLargeHandlersInFlight = Math.max(maximumLargeHandlersInFlight, largeHandlersInFlight);
+        resolveLargeHandler();
+        await largeHandlersReleased;
+        largeHandlersInFlight -= 1;
+      }
+      res.status(204).end();
+    });
+  }
+  app.use((error, _req, res, _next) => {
+    const tooLarge = error?.type === "entity.too.large";
+    res.status(tooLarge ? 413 : 400).json({
+      error: { code: tooLarge ? "REQUEST_TOO_LARGE" : "INVALID_JSON" },
+    });
+  });
+  const server = http.createServer(app);
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  return Object.freeze({
+    url: `http://127.0.0.1:${address.port}`,
+    requestsInFlight: middlewares.requestsInFlight,
+    waitForLargeHandler: () => largeHandler,
+    maximumLargeHandlersInFlight: () => maximumLargeHandlersInFlight,
+    releaseLargeHandlers,
+    close: () => new Promise((resolve) => {
+      releaseLargeHandlers();
+      server.closeAllConnections?.();
+      server.close(() => resolve());
+    }),
+  });
+}
+
+function openHeldChunkedPost(baseUrl, pathname) {
+  const url = new URL(baseUrl);
+  let request;
+  const response = new Promise((resolve, reject) => {
+    request = http.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: pathname,
+      method: "POST",
+      headers: { "content-type": "application/json" },
+    }, (incoming) => {
+      incoming.resume();
+      incoming.once("end", () => resolve(incoming.statusCode));
+    });
+    request.once("error", reject);
+    request.write('{"input":{"attachments":[');
+  });
+  return Object.freeze({ request, response });
+}
+
+async function waitForBodyBoundary(predicate, label) {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${label}.`);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+function startMaximumBodyClient(baseUrl, pathname, maximumBodyBytes) {
+  const source = `
+    import http from "node:http";
+    const [baseUrl, pathname, maximumBodyBytesText] = process.argv.slice(1);
+    const maximumBodyBytes = Number(maximumBodyBytesText);
+    const prefix = Buffer.from('{"hold":true,"padding":"');
+    const suffix = Buffer.from('"}');
+    const paddingBytes = maximumBodyBytes - prefix.length - suffix.length;
+    async function send(fill) {
+      const url = new URL(baseUrl);
+      let request;
+      let responseStartedResolve;
+      const responseStarted = new Promise((resolve) => { responseStartedResolve = resolve; });
+      let responseStatus = null;
+      const response = new Promise((resolve, reject) => {
+        request = http.request({
+          hostname: url.hostname,
+          port: url.port,
+          path: pathname,
+          method: "POST",
+          headers: { "content-type": "application/json", "content-length": maximumBodyBytes },
+        }, (incoming) => {
+          responseStatus = incoming.statusCode;
+          responseStartedResolve();
+          incoming.resume();
+          incoming.once("end", () => resolve(incoming.statusCode));
+        });
+        request.once("error", (error) => {
+          responseStartedResolve();
+          if (responseStatus === null) reject(error);
+        });
+      });
+      request.write(prefix);
+      const block = Buffer.alloc(64 * 1024, fill);
+      let remaining = paddingBytes;
+      while (remaining > 0 && responseStatus === null) {
+        const size = Math.min(block.length, remaining);
+        remaining -= size;
+        if (!request.write(block.subarray(0, size))) {
+          await Promise.race([
+            new Promise((resolve) => request.once("drain", resolve)),
+            responseStarted,
+          ]);
+        }
+      }
+      if (responseStatus === null) request.end(suffix);
+      return response;
+    }
+    const statuses = await Promise.all([send("a"), send("b")]);
+    process.stdout.write(JSON.stringify(statuses));
+  `;
+  const child = spawn(
+    process.execPath,
+    ["--input-type=module", "-e", source, baseUrl, pathname, String(maximumBodyBytes)],
+    { stdio: ["ignore", "pipe", "pipe"] }
+  );
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code !== 0) {
+        reject(new Error(`Maximum body client failed (${code ?? signal}): ${stderr}`));
+        return;
+      }
+      resolve(JSON.parse(stdout));
+    });
+  });
+}
+
+async function attachmentBodyAdmissionRoundTrip() {
+  assert.equal(INTEGRATION_ANALYSIS_MAX_CONCURRENT_ATTACHMENT_REQUESTS, 1);
+  const receiveApp = await startBodyBoundaryApp();
+  const held = [openHeldChunkedPost(receiveApp.url, AGENT_RPC_PATHS.runsStart)];
+  try {
+    await waitForBodyBoundary(
+      () => receiveApp.requestsInFlight() === 1,
+      "one bounded attachment body admission"
+    );
+    const smallStart = await rawPost(receiveApp.url, AGENT_RPC_PATHS.runsStart, "{}");
+    const smallResume = await rawPost(receiveApp.url, AGENT_RPC_PATHS.runsResume, "{}");
+    assert.equal(smallStart.status, 204, "small declared text start bypasses a slow image receive slot");
+    assert.equal(smallResume.status, 204, "small declared text resume bypasses a slow image receive slot");
+    const rejectedLarge = openHeldChunkedPost(receiveApp.url, AGENT_RPC_PATHS.runsResume);
+    assert.equal(await rejectedLarge.response, 429);
+    rejectedLarge.request.destroy();
+    assert.equal(
+      receiveApp.requestsInFlight(),
+      1,
+      "a second potentially-large body never consumes the occupied receive slot"
+    );
+
+    const ordinaryOversize = await chunkedPost(
+      receiveApp.url,
+      AGENT_RPC_PATHS.capabilities,
+      `"${"a".repeat(128 * 1024)}"`
+    );
+    assert.equal(ordinaryOversize.status, 413);
+    assert.equal(ordinaryOversize.json.error.code, "REQUEST_TOO_LARGE");
+
+    held[0].response.catch(() => {});
+    held[0].request.destroy();
+    await waitForBodyBoundary(() => receiveApp.requestsInFlight() === 0, "attachment slot release on abort");
+  } finally {
+    for (const item of held) {
+      item.response.catch(() => {});
+      item.request.destroy();
+    }
+    await receiveApp.close();
+  }
+
+  const parsedImageApp = await startBodyBoundaryApp();
+  try {
+    const heldImage = rawPost(
+      parsedImageApp.url,
+      AGENT_RPC_PATHS.runsResume,
+      JSON.stringify({ hold: true, reuseAttachments: true })
+    );
+    await parsedImageApp.waitForLargeHandler();
+    assert.equal(parsedImageApp.requestsInFlight(), 1, "parsed image retry retains the image mutation slot");
+    assert.equal((await rawPost(parsedImageApp.url, AGENT_RPC_PATHS.runsStart, "{}")).status, 204);
+    assert.equal((await rawPost(parsedImageApp.url, AGENT_RPC_PATHS.runsResume, "{}")).status, 204);
+    const rejectedImage = await rawPost(
+      parsedImageApp.url,
+      AGENT_RPC_PATHS.runsResume,
+      JSON.stringify({ reuseAttachments: true })
+    );
+    assert.equal(rejectedImage.status, 429);
+    assert.equal(rejectedImage.json.error.code, "ANALYSIS_ATTACHMENT_ADMISSION_BUSY");
+    parsedImageApp.releaseLargeHandlers();
+    assert.equal((await heldImage).status, 204);
+    await waitForBodyBoundary(() => parsedImageApp.requestsInFlight() === 0, "parsed image slot release");
+  } finally {
+    await parsedImageApp.close();
+  }
+
+  const maximumApp = await startBodyBoundaryApp();
+  try {
+    const maximumBodyBytes = 24 * 1024 * 1024;
+    const maximumBodyClient = startMaximumBodyClient(
+      maximumApp.url,
+      AGENT_RPC_PATHS.runsStart,
+      maximumBodyBytes
+    );
+    await maximumApp.waitForLargeHandler();
+    assert.equal(maximumApp.maximumLargeHandlersInFlight(), 1);
+    const maximumResidentBytes = process.memoryUsage.rss();
+    maximumApp.releaseLargeHandlers();
+    assert.deepEqual((await maximumBodyClient).sort((left, right) => left - right), [204, 429]);
+    assert.ok(
+      maximumResidentBytes < 768 * 1024 * 1024,
+      `single admitted maximum Agent body exceeded the 768MiB service RSS budget: ${Math.ceil(maximumResidentBytes / 1024)}KiB`
+    );
+  } finally {
+    await maximumApp.close();
+  }
 }
 
 function idempotencyKey(seed) {
@@ -639,6 +947,81 @@ assert.throws(() => sanitizeIntegrationRequest(AGENT_RPC_PATHS.threadsUpdate, { 
 assert.deepEqual(
   sanitizeIntegrationRequest(AGENT_RPC_PATHS.runsStart, { threadId, input: { text: "Plot this" } }),
   validateRpcBody(AGENT_RPC_PATHS.runsStart, { threadId, input: { text: "Plot this" } })
+);
+const imageStartRequest = Object.freeze({
+  threadId,
+  input: Object.freeze({
+    text: "Inspect the retained image.",
+    attachments: Object.freeze([ATTACHMENT_INPUT]),
+  }),
+});
+assert.deepEqual(sanitizeIntegrationRequest(AGENT_RPC_PATHS.runsStart, imageStartRequest), imageStartRequest);
+assert.deepEqual(
+  sanitizeIntegrationRequest(AGENT_RPC_PATHS.runsResume, {
+    runId,
+    input: { text: "Use the replacement image.", attachments: [ATTACHMENT_INPUT] },
+  }).input.attachments,
+  [ATTACHMENT_INPUT]
+);
+assert.deepEqual(
+  sanitizeIntegrationRequest(AGENT_RPC_PATHS.runsResume, {
+    runId,
+    reuseAttachments: true,
+  }),
+  { runId, reuseAttachments: true }
+);
+assert.throws(
+  () => sanitizeIntegrationRequest(AGENT_RPC_PATHS.runsResume, {
+    runId,
+    reuseAttachments: false,
+  }),
+  /exactly true/u
+);
+assert.throws(
+  () => sanitizeIntegrationRequest(AGENT_RPC_PATHS.runsResume, {
+    runId,
+    reuseAttachments: true,
+    input: { text: "Do not mix marker and corrected input." },
+  }),
+  /only valid without input/u
+);
+assert.throws(
+  () => sanitizeIntegrationRequest(AGENT_RPC_PATHS.runsStart, {
+    threadId,
+    input: { text: "Reject a duplicate.", attachments: [ATTACHMENT_INPUT, ATTACHMENT_INPUT] },
+  }),
+  /duplicated/u
+);
+assert.throws(
+  () => sanitizeIntegrationRequest(AGENT_RPC_PATHS.runsStart, {
+    threadId,
+    input: {
+      text: "Reject too many.",
+      attachments: Array.from({ length: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_COUNT_LIMIT + 1 }, (_, index) => ({
+        ...ATTACHMENT_INPUT,
+        attachmentId: `iphone-canonical-image-${String(index).padStart(4, "0")}`,
+      })),
+    },
+  }),
+  /1-4/u
+);
+assert.throws(
+  () => sanitizeIntegrationRequest(AGENT_RPC_PATHS.runsStart, {
+    threadId,
+    input: { text: "Reject non-canonical base64.", attachments: [{ ...ATTACHMENT_INPUT, data: "AAAA\n" }] },
+  }),
+  /canonical base64/u
+);
+const nonCanonicalTailBits = `${Buffer.alloc(16).toString("base64").slice(0, -4)}AB==`;
+assert.throws(
+  () => sanitizeIntegrationRequest(AGENT_RPC_PATHS.runsStart, {
+    threadId,
+    input: {
+      text: "Reject non-zero base64 tail bits without decoding.",
+      attachments: [{ ...ATTACHMENT_INPUT, data: nonCanonicalTailBits }],
+    },
+  }),
+  /canonical base64/u
 );
 assert.deepEqual(sanitizeIntegrationRequest(AGENT_RPC_PATHS.runsEvents, { runId, afterSeq: 0, afterHash: ZERO_DIGEST }), {
   runId,
@@ -878,6 +1261,95 @@ const checkedSanitizedHashEvent = validatePublicAgentEvent(sanitizedHashEvent);
 assert.equal(checkedSanitizedHashEvent.payload.publicLabel, "Inspect");
 assert.equal(checkedSanitizedHashEvent.payload.publicSummary, "Ready");
 assert.throws(() => validatePublicAgentEvent({ ...outputEvent, createdAt: "2026-08-20T08:00:00Z" }), /canonical/u);
+const imageCapabilities = validateAgentRpcResponse(
+  AGENT_RPC_PATHS.capabilities,
+  integrationCapabilitiesResponse({ enabled: true, cancel: true, resume: true, attachments: true })
+);
+assert.deepEqual(imageCapabilities.attachments, {
+  enabled: true,
+  transport: "inline-base64",
+  acceptedMediaTypes: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_MEDIA_TYPES,
+  maximumCount: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_COUNT_LIMIT,
+  maximumBytesEach: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BYTES_LIMIT,
+  maximumBytesTotal: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_TOTAL_BYTES_LIMIT,
+  requestTimeoutMs: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_REQUEST_TIMEOUT_MS,
+  model: "localllm-vision",
+  persistence: "retained-reference-v1",
+});
+const ordinaryCapabilities = validateAgentRpcResponse(
+  AGENT_RPC_PATHS.capabilities,
+  integrationCapabilitiesResponse({ enabled: true, cancel: true, resume: true })
+);
+assert.deepEqual(ordinaryCapabilities.attachments, { enabled: false });
+assert.equal(
+  Object.prototype.hasOwnProperty.call(ordinaryCapabilities.attachments, "requestTimeoutMs"),
+  false,
+  "the extended deadline must remain image-capability-only"
+);
+assert.throws(
+  () => validateAgentRpcResponse(AGENT_RPC_PATHS.capabilities, {
+    ...integrationCapabilitiesResponse({ enabled: true, cancel: true, resume: true, attachments: true }),
+    attachments: {
+      ...integrationCapabilitiesResponse({ enabled: true, attachments: true }).attachments,
+      maximumCount: 5,
+    },
+  }),
+  /attachment capabilities/u
+);
+const publicImageThread = sanitizePublicIntegrationThread(publicThread({
+  activeImageContext: true,
+  messages: [{
+    id: `msg_${"1".repeat(32)}`,
+    role: "user",
+    content: "Inspect the retained image.",
+    runId,
+    createdAt: AT,
+    digest: "2".repeat(64),
+    attachments: [ATTACHMENT_DESCRIPTOR],
+  }],
+}), {
+  principalId: PRINCIPAL,
+  browserSessionId: BROWSER_SESSION,
+});
+assert.deepEqual(publicImageThread.messages[0].attachments, [ATTACHMENT_DESCRIPTOR]);
+assert.equal(publicImageThread.activeImageContext, true);
+assert.equal(Object.prototype.hasOwnProperty.call(publicImageThread.messages[0].attachments[0], "data"), false);
+assert.equal(Object.prototype.hasOwnProperty.call(sanitizePublicIntegrationThread(publicThread(), {
+  principalId: PRINCIPAL,
+  browserSessionId: BROWSER_SESSION,
+}), "activeImageContext"), false);
+assert.equal(Object.prototype.hasOwnProperty.call(sanitizePublicIntegrationThread(publicThread({
+  activeImageContext: false,
+}), {
+  principalId: PRINCIPAL,
+  browserSessionId: BROWSER_SESSION,
+}), "activeImageContext"), false, "false image context is represented only by field absence");
+assert.throws(
+  () => sanitizePublicIntegrationThread(publicThread({ activeImageContext: "yes" }), {
+    principalId: PRINCIPAL,
+    browserSessionId: BROWSER_SESSION,
+  }),
+  /must be a boolean/u
+);
+assert.throws(
+  () => sanitizePublicIntegrationThread(publicThread({ lastRunId: null, activeImageContext: true }), {
+    principalId: PRINCIPAL,
+    browserSessionId: BROWSER_SESSION,
+  }),
+  /requires lastRunId/u
+);
+assert.throws(
+  () => sanitizePublicIntegrationThread(publicThread({
+    messages: [{
+      ...publicImageThread.messages[0],
+      role: "assistant",
+    }],
+  }), {
+    principalId: PRINCIPAL,
+    browserSessionId: BROWSER_SESSION,
+  }),
+  /attachments is invalid/u
+);
 assert.throws(
   () =>
     validateAgentRpcResponse(AGENT_RPC_PATHS.capabilities, {
@@ -1139,6 +1611,7 @@ for (const relativeFile of additiveSourceFiles.filter((file) => file.startsWith(
 
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-integration-smoke-"));
 try {
+  await attachmentBodyAdmissionRoundTrip();
   const tokenPath = path.join(tempDir, "token");
   await fs.writeFile(tokenPath, `${TOKEN}\n`, { mode: 0o600 });
   await fs.chmod(tokenPath, 0o600);

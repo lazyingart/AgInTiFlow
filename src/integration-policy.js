@@ -34,6 +34,21 @@ export const INTEGRATION_ARTIFACT_KINDS = Object.freeze(["plot", "table", "markd
 export const INTEGRATION_SEARCH_ARTIFACT_KIND = "sources";
 export const INTEGRATION_SEARCH_MODES = Object.freeze(["web", "papers", "both"]);
 export const INTEGRATION_MAXIMUM_SEARCH_SOURCES = 20;
+export const INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_MEDIA_TYPES = Object.freeze([
+  "image/png",
+  "image/jpeg",
+]);
+export const INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_COUNT_LIMIT = 4;
+export const INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BYTES_LIMIT = 4 * 1024 * 1024;
+export const INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_TOTAL_BYTES_LIMIT = 16 * 1024 * 1024;
+export const INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_BYTES_LIMIT = 24 * 1024 * 1024;
+export const INTEGRATION_ANALYSIS_ORDINARY_BODY_RECEIVE_TIMEOUT_MS = 125_000;
+export const INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_RECEIVE_TIMEOUT_MS = 245_000;
+// AgentWeb's authenticated BFF admits a bounded 240 s mobile upload, a bounded
+// 30 s capability/scope proof, and a separate bounded 240 s downstream
+// staging/ACK. The extra 5 s lets it serialize the terminal response without
+// making ordinary Agent RPCs slower.
+export const INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_REQUEST_TIMEOUT_MS = 515_000;
 export const INTEGRATION_RUN_STATUSES = Object.freeze(["starting", "running", "completed", "failed", "cancelled"]);
 export const INTEGRATION_THREAD_STATUSES = Object.freeze(["idle", "running", "deleting"]);
 export const REQUIRED_INTEGRATION_ISOLATION_ASSERTIONS = Object.freeze([
@@ -96,6 +111,7 @@ const ObjectKeys = Object.keys;
 const ObjectPrototypeHasOwn = Object.prototype.hasOwnProperty;
 const ReflectOwnKeys = Reflect.ownKeys;
 const ARRAY_INDEX_PATTERN = /^(?:0|[1-9][0-9]*)$/u;
+const INTEGRATION_ATTACHMENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/u;
 
 export const AGENT_PUBLIC_CAPABILITY_TEMPLATE = Object.freeze({
   schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
@@ -303,14 +319,118 @@ function validateTitle(value, { optional = false } = {}) {
   return title;
 }
 
+function integrationDenseArray(value, label, { minimum, maximum }) {
+  if (!ArrayIsArray(value) || value.length < minimum || value.length > maximum) {
+    integrationInvalid(`${label} must contain ${minimum}-${maximum} items`);
+  }
+  const keys = ReflectOwnKeys(value);
+  if (
+    keys.length !== value.length + 1 ||
+    keys.some((key) => key !== "length" && (typeof key !== "string" || !ARRAY_INDEX_PATTERN.test(key)))
+  ) {
+    integrationInvalid(`${label} must be a dense JSON array`);
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = ObjectGetOwnPropertyDescriptor(value, String(index));
+    if (!descriptor?.enumerable || !ObjectPrototypeHasOwn.call(descriptor, "value")) {
+      integrationInvalid(`${label} must contain only data items`);
+    }
+  }
+  return value;
+}
+
+function canonicalBase64ByteLength(value, label) {
+  if (
+    typeof value !== "string" ||
+    value.length < 4 ||
+    value.length > Math.ceil(INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BYTES_LIMIT / 3) * 4 ||
+    value.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]+={0,2}$/u.test(value)
+  ) {
+    integrationInvalid(`${label} must be bounded canonical base64`);
+  }
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  const byteLength = (value.length / 4) * 3 - padding;
+  const terminal = value.charCodeAt(value.length - padding - 1);
+  const terminalSextet = terminal >= 65 && terminal <= 90
+    ? terminal - 65
+    : terminal >= 97 && terminal <= 122
+      ? terminal - 71
+      : terminal >= 48 && terminal <= 57
+        ? terminal + 4
+        : terminal === 43
+          ? 62
+          : terminal === 47
+            ? 63
+            : -1;
+  if (
+    !Number.isSafeInteger(byteLength) || byteLength < 16 ||
+    byteLength > INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BYTES_LIMIT ||
+    terminalSextet < 0 ||
+    (padding === 2 && (terminalSextet & 0x0f) !== 0) ||
+    (padding === 1 && (terminalSextet & 0x03) !== 0)
+  ) {
+    integrationInvalid(`${label} must be bounded canonical base64`);
+  }
+  return byteLength;
+}
+
+export function validateIntegrationImageAttachments(value) {
+  integrationDenseArray(value, "input.attachments", {
+    minimum: 1,
+    maximum: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_COUNT_LIMIT,
+  });
+  const identifiers = new Set();
+  let totalBytes = 0;
+  const attachments = value.map((candidate, index) => {
+    const attachment = integrationExactKeys(
+      candidate,
+      ["attachmentId", "mediaType", "data"],
+      `input.attachments[${index}]`,
+      ["attachmentId", "mediaType", "data"]
+    );
+    if (
+      typeof attachment.attachmentId !== "string" ||
+      !INTEGRATION_ATTACHMENT_ID_PATTERN.test(attachment.attachmentId) ||
+      identifiers.has(attachment.attachmentId)
+    ) {
+      integrationInvalid(`input.attachments[${index}].attachmentId is invalid or duplicated`);
+    }
+    if (!INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_MEDIA_TYPES.includes(attachment.mediaType)) {
+      integrationInvalid(`input.attachments[${index}].mediaType is unsupported`);
+    }
+    const byteLength = canonicalBase64ByteLength(
+      attachment.data,
+      `input.attachments[${index}].data`
+    );
+    identifiers.add(attachment.attachmentId);
+    totalBytes += byteLength;
+    if (totalBytes > INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_TOTAL_BYTES_LIMIT) {
+      integrationInvalid("input.attachments exceed the aggregate decoded byte limit");
+    }
+    return Object.freeze({
+      attachmentId: attachment.attachmentId,
+      mediaType: attachment.mediaType,
+      data: attachment.data,
+    });
+  });
+  return Object.freeze(attachments);
+}
+
 function validateInput(value, { optional = false } = {}) {
   if (optional && value === undefined) return undefined;
-  const input = integrationExactKeys(value, ["text", "search"], "input", ["text"]);
+  const input = integrationExactKeys(value, ["text", "search", "attachments"], "input", ["text"]);
   const text = integrationBoundedText(input.text, "input.text", 32_000, { minimum: 1 }).trim();
   if (!text) integrationInvalid("input.text must contain a non-whitespace character");
+  if (Buffer.byteLength(text, "utf8") > 32 * 1024) {
+    integrationInvalid("input.text exceeds the UTF-8 byte limit");
+  }
   return Object.freeze({
     text,
     ...(input.search === undefined ? {} : { search: validateIntegrationSearch(input.search) }),
+    ...(input.attachments === undefined
+      ? {}
+      : { attachments: validateIntegrationImageAttachments(input.attachments) }),
   });
 }
 
@@ -383,11 +503,23 @@ export function sanitizeIntegrationRequest(pathname, value = {}) {
       });
     }
     case INTEGRATION_RPC_PATHS.runsResume: {
-      const object = integrationExactKeys(body, ["runId", "input"], "request", ["runId"]);
+      const object = integrationExactKeys(
+        body,
+        ["runId", "input", "reuseAttachments"],
+        "request",
+        ["runId"]
+      );
+      if (object.reuseAttachments !== undefined && object.reuseAttachments !== true) {
+        integrationInvalid("reuseAttachments must be exactly true when present");
+      }
+      if (object.input !== undefined && object.reuseAttachments !== undefined) {
+        integrationInvalid("reuseAttachments is only valid without input");
+      }
       const nextInput = validateInput(object.input, { optional: true });
       return Object.freeze({
         runId: validateIntegrationRunId(object.runId),
         ...(nextInput === undefined ? {} : { input: nextInput }),
+        ...(object.reuseAttachments === true ? { reuseAttachments: true } : {}),
       });
     }
     case INTEGRATION_RPC_PATHS.artifactsList: {
@@ -730,9 +862,17 @@ export function validateIntegrationIsolationAttestation(value) {
   });
 }
 
-export function integrationCapabilitiesResponse({ enabled = false, cancel = false, resume = false, search = false, files = false } = {}) {
+export function integrationCapabilitiesResponse({
+  enabled = false,
+  cancel = false,
+  resume = false,
+  search = false,
+  files = false,
+  attachments = false,
+} = {}) {
   const searchEnabled = Boolean(enabled && search);
   const fileEnabled = Boolean(enabled && files);
+  const attachmentsEnabled = Boolean(enabled && attachments);
   const artifactKinds = [
     ...INTEGRATION_ARTIFACT_KINDS.filter((kind) => kind !== "file"),
     ...(searchEnabled ? [INTEGRATION_SEARCH_ARTIFACT_KIND] : []),
@@ -748,7 +888,19 @@ export function integrationCapabilitiesResponse({ enabled = false, cancel = fals
       resume: Boolean(enabled && resume),
       retry: false,
     }),
-    attachments: Object.freeze({ enabled: false }),
+    attachments: attachmentsEnabled
+      ? Object.freeze({
+          enabled: true,
+          transport: "inline-base64",
+          acceptedMediaTypes: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_MEDIA_TYPES,
+          maximumCount: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_COUNT_LIMIT,
+          maximumBytesEach: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BYTES_LIMIT,
+          maximumBytesTotal: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_TOTAL_BYTES_LIMIT,
+          requestTimeoutMs: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_REQUEST_TIMEOUT_MS,
+          model: "localllm-vision",
+          persistence: "retained-reference-v1",
+        })
+      : Object.freeze({ enabled: false }),
     ...(searchEnabled
       ? {
           search: Object.freeze({

@@ -12,6 +12,7 @@ import {
 import { createSystemdIntegrationAnalysisCoordinator } from "./integration-analysis-coordinator.js";
 import { createIntegrationAnalysisPlanner } from "./integration-analysis-planner.js";
 import { createIntegrationAnalysisSessionService } from "./integration-analysis-session-service.js";
+import { createIntegrationAnalysisVisionClient } from "./integration-analysis-vision.js";
 import {
   INTEGRATION_ANALYSIS_LISTEN_HOST,
   INTEGRATION_ANALYSIS_LISTEN_PORT,
@@ -21,7 +22,11 @@ import {
 import { IntegrationServiceConfigError } from "./integration-config.js";
 import { createFileIntegrationIdempotencyStore } from "./integration-idempotency-store.js";
 import { createIntegrationDocumentWorkerClient } from "./integration-document-worker-client.js";
-import { buildFixedIntegrationPolicy } from "./integration-policy.js";
+import { INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES } from "./integration-analysis-state-persistence.js";
+import {
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_RECEIVE_TIMEOUT_MS,
+  buildFixedIntegrationPolicy,
+} from "./integration-policy.js";
 import {
   createExactIntegrationRouteBoundary,
   createPostOnlyIntegrationBoundary,
@@ -31,6 +36,17 @@ export const INTEGRATION_ANALYSIS_SERVER_SCHEMA_VERSION = "aginti-integration-an
 export const INTEGRATION_ANALYSIS_SERVER_ENABLED = true;
 export const DEFAULT_INTEGRATION_ANALYSIS_START_TIMEOUT_MS = 5_000;
 export const DEFAULT_INTEGRATION_ANALYSIS_CLOSE_TIMEOUT_MS = 5_000;
+
+export function integrationAnalysisVisionEligibleForStatePersistenceMode(mode, enabled = false) {
+  if (!Object.values(INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES).includes(mode)) {
+    throw new TypeError("analysis state persistence mode is invalid");
+  }
+  if (typeof enabled !== "boolean") throw new TypeError("analysis vision gate is invalid");
+  if (enabled && mode !== INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3) {
+    throw new TypeError("analysis vision requires native-v3 state persistence");
+  }
+  return enabled && mode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3;
+}
 
 const IDEMPOTENCY_RECOVERY_AUTHORITY = Object.freeze({
   owner: "aginti",
@@ -91,8 +107,11 @@ function normalizeTrustedProxyClient(value, config) {
   return client;
 }
 
-function configureHttpServer(server) {
-  server.requestTimeout = 125_000;
+export function configureIntegrationAnalysisHttpServer(server) {
+  if (!server || typeof server !== "object") {
+    throw new TypeError("analysis HTTP server is invalid");
+  }
+  server.requestTimeout = INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_RECEIVE_TIMEOUT_MS;
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 5_000;
   server.maxHeadersCount = 64;
@@ -278,7 +297,7 @@ export function createIntegrationAnalysisServer(options = {}) {
   const config = validateIntegrationAnalysisServiceConfig(options.config);
   const app = createIntegrationAnalysisApp(options);
   const server = http.createServer(app);
-  configureHttpServer(server);
+  configureIntegrationAnalysisHttpServer(server);
   let lifecycle = "created";
   let startPromise = null;
   let closePromise = null;
@@ -469,12 +488,36 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
     });
     const plannerActivation = await planner.activate();
     const startupProof = plannerActivation.readinessProof;
+    const visionEligible = integrationAnalysisVisionEligibleForStatePersistenceMode(
+      config.statePersistence.mode,
+      config.vision?.enabled === true
+    );
+    const visionClientCandidate = visionEligible
+      ? createIntegrationAnalysisVisionClient({
+          baseURL: config.localModel.baseURL,
+          apiKey: options.localModelApiKey,
+          modelTimeoutMs: config.localModel.modelTimeoutMs,
+        })
+      : undefined;
+    let visionActivation;
+    if (visionClientCandidate !== undefined) {
+      try {
+        visionActivation = await visionClientCandidate.activate();
+      } catch {
+        // Image input is additive. Keep ordinary Agent available and advertise
+        // attachments=false unless the downloaded local vision alias is proven.
+        visionActivation = undefined;
+      }
+    }
     sessionService = createIntegrationAnalysisSessionService({
       analysisRunner: planner,
       stateRoot: config.stateRoot,
       statePersistenceMode: config.statePersistence.mode,
       plannerActivation,
       ...(documentWorkerClient === undefined ? {} : { documentWorkerClient }),
+      ...(visionActivation === undefined
+        ? {}
+        : { visionClient: visionClientCandidate, visionActivation }),
     });
     if (typeof sessionService.recoverMutation !== "function") {
       fail(

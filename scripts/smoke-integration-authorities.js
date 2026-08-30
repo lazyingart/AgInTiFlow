@@ -1016,6 +1016,99 @@ async function smokeIdempotency(root) {
   assert.equal(failedRecord.state, "failed");
   assert.equal(JSON.stringify(failedRecord).includes("/home/private"), false);
 
+  const visionGateRoot = path.join(root, "idempotency-vision-gate-failure");
+  const visionGateContext = mutationContext(
+    INTEGRATION_RPC_PATHS.runsStart,
+    { threadId, input: { text: "Inspect this image" } },
+    "phase3-vision-gate-failure"
+  );
+  let visionGateHandlers = 0;
+  const visionGateStore = createFileIntegrationIdempotencyStore({
+    rootDir: visionGateRoot,
+    pendingLeaseMs: 1000,
+  });
+  await assert.rejects(
+    () =>
+      visionGateStore.runMutation(visionGateContext, async () => {
+        visionGateHandlers += 1;
+        const error = new Error("The downloaded local vision model is not enabled for new Agent image mutations.");
+        error.code = "ANALYSIS_VISION_NOT_READY";
+        error.publicCode = "ANALYSIS_VISION_NOT_READY";
+        error.status = 409;
+        throw error;
+      }),
+    (error) => error?.code === "ANALYSIS_VISION_NOT_READY" && error?.status === 409,
+    "a new gate-off image key becomes a durable typed failure"
+  );
+  assert.equal(visionGateHandlers, 1);
+  assert.equal((await visionGateStore.inspectRecord(visionGateContext)).state, "failed");
+  const gateOnRestart = createFileIntegrationIdempotencyStore({
+    rootDir: visionGateRoot,
+    pendingLeaseMs: 1000,
+  });
+  await assert.rejects(
+    () =>
+      gateOnRestart.runMutation(visionGateContext, async () => {
+        visionGateHandlers += 1;
+        return threadResponse("must not dispatch after gate-on");
+      }),
+    (error) => error?.code === "ANALYSIS_VISION_NOT_READY" && error?.status === 409,
+    "the exact failed image key remains failed after the vision gate is enabled"
+  );
+  assert.equal(visionGateHandlers, 1);
+
+  const waitExhaustionRoot = path.join(root, "idempotency-live-pending-wait-exhaustion");
+  const waitExhaustionContext = mutationContext(
+    INTEGRATION_RPC_PATHS.runsStart,
+    { threadId, input: { text: "Slow retained image staging" } },
+    "phase3-live-pending-wait"
+  );
+  const waitExhaustionA = createFileIntegrationIdempotencyStore({
+    rootDir: waitExhaustionRoot,
+    pendingLeaseMs: 1000,
+    lockWaitMs: 40,
+  });
+  const waitExhaustionB = createFileIntegrationIdempotencyStore({
+    rootDir: waitExhaustionRoot,
+    pendingLeaseMs: 1000,
+    lockWaitMs: 40,
+  });
+  let releaseHeldMutation;
+  const heldMutationGate = new Promise((resolve) => {
+    releaseHeldMutation = resolve;
+  });
+  let heldMutationEntered = false;
+  let heldMutationCalls = 0;
+  const heldResponse = threadResponse("Held original completed");
+  const heldMutation = waitExhaustionA.runMutation(waitExhaustionContext, async () => {
+    heldMutationCalls += 1;
+    heldMutationEntered = true;
+    await heldMutationGate;
+    return heldResponse;
+  });
+  await waitFor(() => heldMutationEntered, "held idempotent mutation did not enter");
+  await assert.rejects(
+    () =>
+      waitExhaustionB.runMutation(waitExhaustionContext, async () => {
+        heldMutationCalls += 1;
+        return threadResponse("must not race the held original");
+      }),
+    (error) => error?.code === "IDEMPOTENCY_PENDING" && error?.status === 503,
+    "a live same-key wait exhaustion is retryable service unavailability, not a conflict"
+  );
+  assert.equal(heldMutationCalls, 1);
+  releaseHeldMutation();
+  assert.deepEqual(await heldMutation, heldResponse);
+  assert.deepEqual(
+    await waitExhaustionB.runMutation(waitExhaustionContext, async () => {
+      heldMutationCalls += 1;
+      return threadResponse("must replay the exact completed response");
+    }),
+    heldResponse,
+    "a retry after the held original completes resolves the exact durable response"
+  );
+  assert.equal(heldMutationCalls, 1);
+
   const pendingRoot = path.join(root, "idempotency-pending");
   const pendingStore = createFileIntegrationIdempotencyStore({ rootDir: pendingRoot, pendingLeaseMs: 1000 });
   const pendingContext = mutationContext(INTEGRATION_RPC_PATHS.threadsCreate, {}, "phase3-pending-key-xxxxxxxxx");
@@ -1364,6 +1457,18 @@ async function smokeIdempotency(root) {
   });
   assert.equal(crashRecovered.thread.title, "Recovered after-dispatch-before-result");
   assert.equal(afterDispatchCrashRecoveryCalls, 1);
+  assert.equal(afterDispatchCrashSemanticCalls, 0);
+  const recoveredExternalRecord = await recoveryStore.inspectRecord(afterDispatchCrashContext);
+  assert.equal(recoveredExternalRecord.state, "completed");
+  assert.equal(recoveredExternalRecord.result.kind, "public-rpc-response");
+  assert.deepEqual(
+    await recoveryStore.runMutation(afterDispatchCrashContext, async () => {
+      afterDispatchCrashSemanticCalls += 1;
+      return threadResponse("must not redispatch after recovery");
+    }),
+    crashRecovered,
+    "after-dispatch session recovery finalizes and replays the external idempotency record"
+  );
   assert.equal(afterDispatchCrashSemanticCalls, 0);
 
   const absentReceiptRoot = path.join(root, "idempotency-after-dispatch-absent-receipt-race");

@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { deflateSync } from "node:zlib";
 
 import {
   EXECUTION_WORKER_API_SCHEMA_VERSION,
@@ -35,7 +36,15 @@ import {
   INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION,
   assertIntegrationAnalysisSessionService,
   createTestOnlyIntegrationAnalysisSessionService,
+  integrationAnalysisStateScopeDigest,
 } from "../src/integration-analysis-session-service.js";
+import {
+  INTEGRATION_ANALYSIS_VISION_EVIDENCE_SCHEMA_VERSION,
+  INTEGRATION_ANALYSIS_VISION_MAX_PNG_WORK_BYTES,
+  assertIntegrationAnalysisVisionAttachmentSetWork,
+  createTestOnlyIntegrationAnalysisVisionClient,
+  inspectIntegrationAnalysisImageBytes,
+} from "../src/integration-analysis-vision.js";
 import {
   INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES,
   INTEGRATION_ANALYSIS_STATE_STORAGE_V2,
@@ -82,6 +91,44 @@ const EXPLICIT_LOCAL_MODEL = Object.freeze({
 
 function context(principalId = PRINCIPAL_ID, browserSessionId = BROWSER_SESSION_ID) {
   return Object.freeze({ principalId, browserSessionId });
+}
+
+function testPngCrc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ ((crc & 1) === 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function testPngChunk(type, data) {
+  const typeBytes = Buffer.from(type, "ascii");
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  typeBytes.copy(chunk, 4);
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(testPngCrc32(chunk.subarray(4, 8 + data.length)), 8 + data.length);
+  return chunk;
+}
+
+function testRgbaPng(width, height, compressed, { bitDepth = 8, interlace = 0 } = {}) {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = bitDepth;
+  header[9] = 6;
+  header[10] = 0;
+  header[11] = 0;
+  header[12] = interlace;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    testPngChunk("IHDR", header),
+    ...(compressed === null ? [] : [testPngChunk("IDAT", compressed)]),
+    testPngChunk("IEND", Buffer.alloc(0)),
+  ]);
 }
 
 function mutationContext(pathname, payload, idempotencyKey, principalId = PRINCIPAL_ID, browserSessionId = BROWSER_SESSION_ID) {
@@ -922,6 +969,14 @@ async function waitFor(predicate, label, timeoutMs = 2_000) {
   }
 }
 
+async function waitForAsync(predicate, label, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${label}.`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 async function expectCode(promise, code) {
   await assert.rejects(promise, (error) => {
     assert.equal(error?.code || error?.publicCode, code);
@@ -991,6 +1046,20 @@ function exactKeys(value, expected, label) {
   assert.deepEqual(Object.keys(value).sort(), [...expected].sort(), `${label} keys changed`);
 }
 
+function assertNoActiveImageContext(value, label) {
+  const pending = [value];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === null || typeof current !== "object") continue;
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(current, "activeImageContext"),
+      false,
+      `${label} exposed an activeImageContext field`
+    );
+    for (const child of Object.values(current)) pending.push(child);
+  }
+}
+
 async function assertR67CompatibleStateFile(root) {
   const text = await fs.readFile(await stateFile(root), "utf8");
   const envelope = JSON.parse(text);
@@ -1004,6 +1073,23 @@ async function assertR67CompatibleStateFile(root) {
     ["schemaVersion", "scope", "revision", "threads", "runs", "artifacts", "mutationReceipts"],
     "v2 state"
   );
+  for (const thread of envelope.state.threads) {
+    exactKeys(
+      thread,
+      [
+        "id", "principalId", "browserSessionId", "browserSessionPolicy", "title", "status",
+        "revision", "createdAt", "updatedAt", "lastRunId", "authority", "replay", "messages",
+      ],
+      "c949 v2 thread fixture"
+    );
+    for (const message of thread.messages) {
+      exactKeys(
+        message,
+        ["id", "role", "content", "runId", "createdAt", "digest"],
+        "c949 v2 message fixture"
+      );
+    }
+  }
   for (const run of envelope.state.runs) {
     exactKeys(
       run,
@@ -1028,8 +1114,20 @@ async function assertR67CompatibleStateFile(root) {
     );
     assert.ok(new Set(["plot", "table", "markdown"]).has(artifact.kind));
   }
+  for (const receipt of envelope.state.mutationReceipts) {
+    exactKeys(
+      receipt,
+      [
+        "schemaVersion", "id", "pathname", "requestHash", "idempotencyKeyDigest", "createdAt",
+        "expiresAt", "response", "digest",
+      ],
+      "c949 v2 mutation receipt fixture"
+    );
+    assertNoActiveImageContext(receipt.response, "c949 v2 durable receipt response");
+  }
   assert.equal(Object.prototype.hasOwnProperty.call(envelope.state, "documentCommitIntents"), false);
   assert.equal(Object.prototype.hasOwnProperty.call(envelope.state, "documentDeletionIntents"), false);
+  assertNoActiveImageContext(envelope, "c949-compatible v2 envelope");
   return Object.freeze({ text, envelope });
 }
 
@@ -1156,37 +1254,133 @@ async function r67StatePersistenceCompatibilityRoundTrip(temporaryRoot) {
     assert.equal(capabilities.analysisSessionAuthority.stateStorageVersion, INTEGRATION_ANALYSIS_STATE_STORAGE_V2);
     assert.equal(capabilities.analysisSessionAuthority.r67RollbackCompatible, true);
 
-    const created = await service.createThread({ title: "R67-compatible chat" }, context());
+    const createPayload = Object.freeze({ title: "R67-compatible chat" });
+    const createContext = mutationContext(
+      INTEGRATION_RPC_PATHS.threadsCreate,
+      createPayload,
+      "r67-create-thread-0001"
+    );
+    const created = await service.createThread(createPayload, createContext);
+    assertNoActiveImageContext(created, "r67 create response");
+    assertNoActiveImageContext(
+      await service.recoverMutation(recoveryRequestFor(createContext)),
+      "r67 recovered create receipt"
+    );
     const threadId = created.thread.id;
-    await service.updateThread({ threadId, title: "R67-compatible chat updated" }, context());
+    assertNoActiveImageContext(
+      await service.getThread({ threadId }, context()),
+      "r67 get response"
+    );
+    assertNoActiveImageContext(
+      await service.listThreads({}, context()),
+      "r67 list response"
+    );
+    const updatePayload = Object.freeze({ threadId, title: "R67-compatible chat updated" });
+    const updateContext = mutationContext(
+      INTEGRATION_RPC_PATHS.threadsUpdate,
+      updatePayload,
+      "r67-update-thread-0001"
+    );
+    const updated = await service.updateThread(updatePayload, updateContext);
+    assertNoActiveImageContext(updated, "r67 update response");
+    assertNoActiveImageContext(
+      await service.recoverMutation(recoveryRequestFor(updateContext)),
+      "r67 recovered update receipt"
+    );
     await assertR67CompatibleStateFile(root);
 
     const completedRunIds = [];
-    for (const prompt of ["plot", "ordinary follow-up", "table", "markdown"]) {
-      const started = await service.startRun({ threadId, input: { text: prompt } }, context());
+    for (const [index, prompt] of ["plot", "ordinary follow-up", "table", "markdown"].entries()) {
+      const startPayload = Object.freeze({ threadId, input: Object.freeze({ text: prompt }) });
+      const startContext = mutationContext(
+        INTEGRATION_RPC_PATHS.runsStart,
+        startPayload,
+        `r67-start-run-000${index + 1}`
+      );
+      const started = await service.startRun(startPayload, startContext);
+      assertNoActiveImageContext(started, `r67 start response ${index + 1}`);
+      assertNoActiveImageContext(
+        await service.recoverMutation(recoveryRequestFor(startContext)),
+        `r67 recovered start receipt ${index + 1}`
+      );
       completedRunIds.push(started.run.id);
       await service.waitForIdle();
       assert.equal((await service.getRunStatus({ runId: started.run.id }, context())).run.status, "completed");
       await assertR67CompatibleStateFile(root);
     }
-    const resumed = await service.resumeRun({
+    const resumePayload = Object.freeze({
       runId: completedRunIds.at(-1),
-      input: { text: "explicit resume" },
-    }, context());
+      input: Object.freeze({ text: "explicit resume" }),
+    });
+    const resumeContext = mutationContext(
+      INTEGRATION_RPC_PATHS.runsResume,
+      resumePayload,
+      "r67-resume-run-0001"
+    );
+    const resumed = await service.resumeRun(resumePayload, resumeContext);
+    assertNoActiveImageContext(resumed, "r67 resume response");
+    assertNoActiveImageContext(
+      await service.recoverMutation(recoveryRequestFor(resumeContext)),
+      "r67 recovered resume receipt"
+    );
     await service.waitForIdle();
     assert.equal((await service.getRunStatus({ runId: resumed.run.id }, context())).run.status, "completed");
     await assertR67CompatibleStateFile(root);
 
-    const cancelThread = await service.createThread({ title: "R67-compatible cancellation" }, context());
-    const held = await service.startRun({
+    const cancelCreatePayload = Object.freeze({ title: "R67-compatible cancellation" });
+    const cancelCreateContext = mutationContext(
+      INTEGRATION_RPC_PATHS.threadsCreate,
+      cancelCreatePayload,
+      "r67-create-cancel-thread-0001"
+    );
+    const cancelThread = await service.createThread(cancelCreatePayload, cancelCreateContext);
+    assertNoActiveImageContext(cancelThread, "r67 second create response");
+    assertNoActiveImageContext(
+      await service.recoverMutation(recoveryRequestFor(cancelCreateContext)),
+      "r67 recovered second create receipt"
+    );
+    const heldPayload = Object.freeze({
       threadId: cancelThread.thread.id,
-      input: { text: "hold cancellation" },
-    }, context());
+      input: Object.freeze({ text: "hold cancellation" }),
+    });
+    const heldContext = mutationContext(
+      INTEGRATION_RPC_PATHS.runsStart,
+      heldPayload,
+      "r67-start-cancel-run-0001"
+    );
+    const held = await service.startRun(heldPayload, heldContext);
+    assertNoActiveImageContext(held, "r67 cancellable start response");
+    assertNoActiveImageContext(
+      await service.recoverMutation(recoveryRequestFor(heldContext)),
+      "r67 recovered cancellable start receipt"
+    );
     await waitFor(() => runner.calls.some(({ runId }) => runId === held.run.id), "compatibility cancellation start");
-    await service.cancelRun({ runId: held.run.id }, context());
+    const cancelPayload = Object.freeze({ runId: held.run.id });
+    const cancelContext = mutationContext(
+      INTEGRATION_RPC_PATHS.runsCancel,
+      cancelPayload,
+      "r67-cancel-run-0001"
+    );
+    const cancelled = await service.cancelRun(cancelPayload, cancelContext);
+    assertNoActiveImageContext(cancelled, "r67 cancel response");
+    assertNoActiveImageContext(
+      await service.recoverMutation(recoveryRequestFor(cancelContext)),
+      "r67 recovered cancel receipt"
+    );
     await service.waitForIdle();
     assert.equal((await service.getRunStatus({ runId: held.run.id }, context())).run.status, "cancelled");
-    await service.deleteThread({ threadId: cancelThread.thread.id }, context());
+    const deletePayload = Object.freeze({ threadId: cancelThread.thread.id });
+    const deleteContext = mutationContext(
+      INTEGRATION_RPC_PATHS.threadsDelete,
+      deletePayload,
+      "r67-delete-thread-0001"
+    );
+    const deleted = await service.deleteThread(deletePayload, deleteContext);
+    assertNoActiveImageContext(deleted, "r67 delete response");
+    assertNoActiveImageContext(
+      await service.recoverMutation(recoveryRequestFor(deleteContext)),
+      "r67 recovered delete receipt"
+    );
     await assertR67CompatibleStateFile(root);
 
     const expectedMessages = (await service.getThread({ threadId }, context())).thread.messages;
@@ -1196,8 +1390,22 @@ async function r67StatePersistenceCompatibilityRoundTrip(temporaryRoot) {
       stateRoot: root,
       statePersistenceMode: mode,
     });
-    assert.deepEqual((await service.getThread({ threadId }, context())).thread.messages, expectedMessages);
-    await service.updateThread({ threadId, title: "R67 reopened and mutated" }, context());
+    const reopened = await service.getThread({ threadId }, context());
+    assertNoActiveImageContext(reopened, "r67 reopened get response");
+    assert.deepEqual(reopened.thread.messages, expectedMessages);
+    assertNoActiveImageContext(await service.listThreads({}, context()), "r67 reopened list response");
+    const reopenedUpdatePayload = Object.freeze({ threadId, title: "R67 reopened and mutated" });
+    const reopenedUpdateContext = mutationContext(
+      INTEGRATION_RPC_PATHS.threadsUpdate,
+      reopenedUpdatePayload,
+      "r67-reopened-update-0001"
+    );
+    const reopenedUpdated = await service.updateThread(reopenedUpdatePayload, reopenedUpdateContext);
+    assertNoActiveImageContext(reopenedUpdated, "r67 reopened update response");
+    assertNoActiveImageContext(
+      await service.recoverMutation(recoveryRequestFor(reopenedUpdateContext)),
+      "r67 recovered reopened update receipt"
+    );
     await assertR67CompatibleStateFile(root);
     await service.close({ mode: "wait" });
     service = null;
@@ -1466,6 +1674,1394 @@ async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
   } finally {
     await disabled.close({ mode: "abort" }).catch(() => {});
   }
+
+}
+
+async function globalAttachmentStorageRoundTrip(
+  temporaryRoot,
+  { analysisRunner, visionClient, visionActivation, attachment, attachmentBufferLifecycle }
+) {
+  const roomyStatfs = async (target, options) => {
+    assert.equal(path.basename(target), "attachments", "free-space probes bind the exact blob filesystem");
+    assert.deepEqual(options, { bigint: true });
+    return Object.freeze({ bsize: 4096n, bavail: 262_144n });
+  };
+  const globalRoot = path.join(temporaryRoot, "global-attachment-capacity-state");
+  const service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner,
+    stateRoot: globalRoot,
+    visionClient,
+    visionActivation,
+    attachmentBufferLifecycle,
+    attachmentStoragePolicy: {
+      maximumRetainedBlobsGlobal: 1,
+      maximumRetainedBytesGlobal: 4 * 1024 * 1024,
+      minimumFreeBytesAfterWrite: 0,
+    },
+    attachmentStatfs: roomyStatfs,
+  });
+  try {
+    const scopes = [
+      context(PRINCIPAL_ID, BROWSER_SESSION_ID),
+      context(OTHER_PRINCIPAL_ID, OTHER_BROWSER_SESSION_ID),
+    ];
+    const threads = await Promise.all(scopes.map((scope, index) =>
+      service.createThread({ title: `Global capacity scope ${index + 1}` }, scope)
+    ));
+    const results = await Promise.allSettled(threads.map((created, index) =>
+      service.startRun({
+        threadId: created.thread.id,
+        input: {
+          text: `Persist the cross-scope image ${index + 1}.`,
+          attachments: [{ ...attachment, attachmentId: `global-capacity-image-000${index + 1}` }],
+        },
+      }, scopes[index])
+    ));
+    assert.equal(results.filter(({ status }) => status === "fulfilled").length, 1);
+    const rejected = results.find(({ status }) => status === "rejected");
+    assert.equal(rejected.reason?.code, "ANALYSIS_ATTACHMENT_GLOBAL_CAPACITY_EXHAUSTED");
+    await service.waitForIdle();
+
+    const scopesDirectory = path.join(globalRoot, "scopes");
+    const scopeNames = await fs.readdir(scopesDirectory);
+    const attachmentDirectories = scopeNames.map((name) => path.join(scopesDirectory, name, "attachments"));
+    const existingEntries = [];
+    for (const directory of attachmentDirectories) {
+      const names = await fs.readdir(directory).catch((error) => {
+        if (error?.code === "ENOENT") return [];
+        throw error;
+      });
+      existingEntries.push(...names.map((name) => Object.freeze({ directory, name })));
+    }
+    assert.equal(existingEntries.filter(({ name }) => name.endsWith(".bin")).length, 1);
+    assert.equal(existingEntries.filter(({ name }) => name.endsWith(".tmp")).length, 0);
+
+    const populated = existingEntries.find(({ name }) => name.endsWith(".bin"));
+    const staleTemporary = path.join(
+      populated.directory,
+      `.aimg_${"f".repeat(64)}.${process.pid}.${"a".repeat(24)}.tmp`
+    );
+    await fs.writeFile(staleTemporary, Buffer.alloc(64, 1), { mode: 0o600 });
+    const thirdScope = context("principal-analysis-0003", "d".repeat(64));
+    const third = await service.createThread({ title: "Global stale-temp cleanup" }, thirdScope);
+    await expectCode(service.startRun({
+      threadId: third.thread.id,
+      input: {
+        text: "Trigger the exact global scan.",
+        attachments: [{ ...attachment, attachmentId: "global-capacity-image-0003" }],
+      },
+    }, thirdScope), "ANALYSIS_ATTACHMENT_GLOBAL_CAPACITY_EXHAUSTED");
+    await assert.rejects(fs.lstat(staleTemporary), (error) => error?.code === "ENOENT");
+  } finally {
+    await service.close({ mode: "abort" }).catch(() => {});
+  }
+
+  const distinctBytes = testRgbaPng(
+    1,
+    1,
+    deflateSync(Buffer.from([0, 17, 34, 51, 255]), { level: 9 })
+  );
+  inspectIntegrationAnalysisImageBytes(distinctBytes, "image/png");
+  const byteAttachments = Object.freeze([
+    Object.freeze({
+      ...attachment,
+      attachmentId: "global-byte-capacity-image-0001",
+    }),
+    Object.freeze({
+      attachmentId: "global-byte-capacity-image-0002",
+      mediaType: "image/png",
+      data: distinctBytes.toString("base64"),
+    }),
+  ]);
+  const byteLengths = byteAttachments.map(({ data }) => Buffer.from(data, "base64").length);
+  const byteLimit = Math.max(...byteLengths);
+  assert.ok(byteLengths[0] + byteLengths[1] > byteLimit);
+  const byteRoot = path.join(temporaryRoot, "global-attachment-byte-capacity-state");
+  const bytePolicy = Object.freeze({
+    maximumRetainedBlobsGlobal: 16,
+    maximumRetainedBytesGlobal: byteLimit,
+    minimumFreeBytesAfterWrite: 0,
+  });
+  const byteOptions = Object.freeze({
+    analysisRunner,
+    stateRoot: byteRoot,
+    visionClient,
+    visionActivation,
+    attachmentBufferLifecycle,
+    attachmentStoragePolicy: bytePolicy,
+    attachmentStatfs: roomyStatfs,
+  });
+  const byteScopes = Object.freeze([
+    context("principal-global-byte-0001", "e".repeat(64)),
+    context("principal-global-byte-0002", "f".repeat(64)),
+  ]);
+  let byteService = createTestOnlyIntegrationAnalysisSessionService(byteOptions);
+  let byteRestarted = null;
+  try {
+    const byteThreads = await Promise.all(byteScopes.map((scope, index) =>
+      byteService.createThread({ title: `Global byte capacity ${index + 1}` }, scope)
+    ));
+    const firstByteRun = await byteService.startRun({
+      threadId: byteThreads[0].thread.id,
+      input: { text: "Own the first globally bounded image.", attachments: [byteAttachments[0]] },
+    }, byteScopes[0]);
+    await byteService.waitForIdle();
+    assert.equal(
+      (await byteService.getRunStatus({ runId: firstByteRun.run.id }, byteScopes[0])).run.status,
+      "completed"
+    );
+    const secondStatePath = path.join(
+      byteRoot,
+      "scopes",
+      integrationAnalysisStateScopeDigest(byteScopes[1]),
+      "state.json"
+    );
+    const secondBefore = await fs.readFile(secondStatePath);
+    await expectCode(byteService.startRun({
+      threadId: byteThreads[1].thread.id,
+      input: { text: "Cross the exact global byte cap.", attachments: [byteAttachments[1]] },
+    }, byteScopes[1]), "ANALYSIS_ATTACHMENT_GLOBAL_CAPACITY_EXHAUSTED");
+    assert.deepEqual(
+      await fs.readFile(secondStatePath),
+      secondBefore,
+      "global byte-cap rejection leaves the other scope state byte-identical"
+    );
+    assert.equal(
+      (await byteService.getThread({ threadId: byteThreads[1].thread.id }, byteScopes[1])).thread.messages.length,
+      0
+    );
+
+    await byteService.deleteThread({ threadId: byteThreads[0].thread.id }, byteScopes[0]);
+    const firstAttachmentsDirectory = path.join(
+      byteRoot,
+      "scopes",
+      integrationAnalysisStateScopeDigest(byteScopes[0]),
+      "attachments"
+    );
+    assert.deepEqual(await fs.readdir(firstAttachmentsDirectory), []);
+    await byteService.close({ mode: "wait" });
+    byteService = null;
+
+    byteRestarted = createTestOnlyIntegrationAnalysisSessionService(byteOptions);
+    const reclaimed = await byteRestarted.startRun({
+      threadId: byteThreads[1].thread.id,
+      input: {
+        text: "Use the byte capacity reclaimed by deletion and restart.",
+        attachments: [byteAttachments[1]],
+      },
+    }, byteScopes[1]);
+    await byteRestarted.waitForIdle();
+    assert.equal(
+      (await byteRestarted.getRunStatus({ runId: reclaimed.run.id }, byteScopes[1])).run.status,
+      "completed",
+      "deletion plus restart reclaims exact global retained-image bytes"
+    );
+    const secondAttachmentsDirectory = path.join(
+      byteRoot,
+      "scopes",
+      integrationAnalysisStateScopeDigest(byteScopes[1]),
+      "attachments"
+    );
+    const secondBlobNames = (await fs.readdir(secondAttachmentsDirectory)).filter((name) => name.endsWith(".bin"));
+    assert.equal(secondBlobNames.length, 1);
+    assert.equal((await fs.stat(path.join(secondAttachmentsDirectory, secondBlobNames[0]))).size, byteLengths[1]);
+  } finally {
+    await byteService?.close({ mode: "abort" }).catch(() => {});
+    await byteRestarted?.close({ mode: "abort" }).catch(() => {});
+    distinctBytes.fill(0);
+  }
+
+  const reserveRoot = path.join(temporaryRoot, "attachment-reserve-prewrite-state");
+  const reserve = 8 * 1024 * 1024;
+  const blockSize = 4096;
+  const stateHeadroom = 4 * 1024 * 1024;
+  const attachmentBytes = Buffer.from(attachment.data, "base64").length;
+  const allocationBytes = Math.ceil(attachmentBytes / blockSize) * blockSize;
+  const reserveService = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner,
+    stateRoot: reserveRoot,
+    visionClient,
+    visionActivation,
+    attachmentBufferLifecycle,
+    attachmentStoragePolicy: {
+      maximumRetainedBlobsGlobal: 16,
+      maximumRetainedBytesGlobal: 64 * 1024 * 1024,
+      minimumFreeBytesAfterWrite: reserve,
+    },
+    attachmentStatfs: async (target) => {
+      assert.equal(path.basename(target), "attachments");
+      return Object.freeze({
+        bsize: BigInt(blockSize),
+        bavail: BigInt((reserve + stateHeadroom + allocationBytes - blockSize) / blockSize),
+      });
+    },
+  });
+  try {
+    const created = await reserveService.createThread({ title: "Reserve prewrite rejection" }, context());
+    const before = await fs.readFile(await stateFile(reserveRoot));
+    await expectCode(reserveService.startRun({
+      threadId: created.thread.id,
+      input: { text: "Preserve the disk reserve.", attachments: [attachment] },
+    }, context()), "ANALYSIS_ATTACHMENT_STORAGE_RESERVE");
+    assert.deepEqual(await fs.readFile(await stateFile(reserveRoot)), before);
+    const directory = path.join(path.dirname(await stateFile(reserveRoot)), "attachments");
+    assert.deepEqual(await fs.readdir(directory), []);
+  } finally {
+    await reserveService.close({ mode: "abort" }).catch(() => {});
+  }
+
+  const rollbackRoot = path.join(temporaryRoot, "attachment-reserve-postwrite-state");
+  let statfsCalls = 0;
+  const rollbackService = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner,
+    stateRoot: rollbackRoot,
+    visionClient,
+    visionActivation,
+    attachmentBufferLifecycle,
+    attachmentStoragePolicy: {
+      maximumRetainedBlobsGlobal: 16,
+      maximumRetainedBytesGlobal: 64 * 1024 * 1024,
+      minimumFreeBytesAfterWrite: reserve,
+    },
+    attachmentStatfs: async (target) => {
+      assert.equal(path.basename(target), "attachments");
+      statfsCalls += 1;
+      const available = statfsCalls === 1
+        ? reserve + stateHeadroom + allocationBytes + 1024 * 1024
+        : reserve + stateHeadroom - blockSize;
+      return Object.freeze({
+        bsize: BigInt(blockSize),
+        bavail: BigInt(available / blockSize),
+      });
+    },
+  });
+  try {
+    const created = await rollbackService.createThread({ title: "Reserve rollback" }, context());
+    const before = await fs.readFile(await stateFile(rollbackRoot));
+    await expectCode(rollbackService.startRun({
+      threadId: created.thread.id,
+      input: { text: "Roll back if the reserve changes.", attachments: [attachment] },
+    }, context()), "ANALYSIS_ATTACHMENT_STORAGE_RESERVE");
+    assert.equal(statfsCalls, 2);
+    assert.deepEqual(await fs.readFile(await stateFile(rollbackRoot)), before);
+    const directory = path.join(path.dirname(await stateFile(rollbackRoot)), "attachments");
+    assert.deepEqual(await fs.readdir(directory), []);
+  } finally {
+    await rollbackService.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
+function testBarrier() {
+  let enteredResolve;
+  let releaseResolve;
+  const entered = new Promise((resolve) => { enteredResolve = resolve; });
+  const release = new Promise((resolve) => { releaseResolve = resolve; });
+  let released = false;
+  return Object.freeze({
+    entered,
+    enter: enteredResolve,
+    release,
+    open() {
+      if (released) return;
+      released = true;
+      releaseResolve();
+    },
+  });
+}
+
+async function maximumWebPngSetRoundTrip(temporaryRoot, rgba4096) {
+  const root = path.join(temporaryRoot, "maximum-web-png-set-state");
+  const lifecycleRecords = new Map();
+  const normalizedBuffers = [];
+  let visionCalls = 0;
+  function attachmentBufferLifecycle(event) {
+    if (event.event === "owned") {
+      assert.equal(lifecycleRecords.has(event.bytes), false);
+      lifecycleRecords.set(event.bytes, false);
+      return;
+    }
+    assert.equal(lifecycleRecords.get(event.bytes), false);
+    assert.ok(event.bytes.every((byte) => byte === 0));
+    lifecycleRecords.set(event.bytes, true);
+  }
+  const visionClient = createTestOnlyIntegrationAnalysisVisionClient({
+    async describe(_scope, input) {
+      visionCalls += 1;
+      assert.equal(input.attachments.length, 4);
+      assert.deepEqual(
+        input.attachments.map(({ width, height }) => [width, height]),
+        Array.from({ length: 4 }, () => [4096, 4096])
+      );
+      normalizedBuffers.push(...input.attachments.map(({ bytes }) => bytes));
+      assert.ok(
+        process.memoryUsage.rss() < 768 * 1024 * 1024,
+        "four sequentially validated maximum Web PNGs exceeded the 768MiB service RSS budget"
+      );
+      return Object.freeze({
+        summary: "Four maximum Web PNGs were inspected sequentially.",
+        visibleText: Object.freeze([]),
+        observations: Object.freeze(["Images 1 through 4 are present."]),
+        issues: Object.freeze([]),
+        answer: "All four images are available to the Agent planner.",
+        uncertainty: Object.freeze([]),
+      });
+    },
+  });
+  const visionActivation = await visionClient.activate();
+  const analysisRunner = Object.freeze({
+    async run(_scope, input, options) {
+      assert.equal(input.visionEvidence?.attachmentCount, 4);
+      const result = plannerResult({ text: "All four maximum Web PNGs were accepted.", toolCalls: 0 });
+      await options.onFinal?.(result);
+      return result;
+    },
+  });
+  const service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner,
+    stateRoot: root,
+    visionClient,
+    visionActivation,
+    attachmentBufferLifecycle,
+  });
+  try {
+    const created = await service.createThread({ title: "Four maximum Web PNGs" }, context());
+    const data = rgba4096.toString("base64");
+    const accepted = await service.startRun({
+      threadId: created.thread.id,
+      input: {
+        text: "Inspect all four maximum-size canonical Web PNGs.",
+        attachments: Array.from({ length: 4 }, (_, index) => Object.freeze({
+          attachmentId: `maximum-web-png-image-${String(index + 1).padStart(4, "0")}`,
+          mediaType: "image/png",
+          data,
+        })),
+      },
+    }, context());
+    await service.waitForIdle();
+    assert.equal((await service.getRunStatus({ runId: accepted.run.id }, context())).run.status, "completed");
+    assert.equal(visionCalls, 1);
+    const publicThread = (await service.getThread({ threadId: created.thread.id }, context())).thread;
+    assert.equal(publicThread.messages[0].attachments.length, 4);
+    const attachmentsDirectory = path.join(path.dirname(await stateFile(root)), "attachments");
+    assert.equal((await fs.readdir(attachmentsDirectory)).filter((name) => name.endsWith(".bin")).length, 4);
+    await service.deleteThread({ threadId: created.thread.id }, context());
+    assert.deepEqual(await fs.readdir(attachmentsDirectory), []);
+    assert.ok(lifecycleRecords.size > 0);
+    assert.ok([...lifecycleRecords.values()].every(Boolean));
+    assert.ok(normalizedBuffers.every((bytes) => bytes.every((byte) => byte === 0)));
+  } finally {
+    await service.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
+async function visionSchedulingRoundTrip(temporaryRoot, attachment) {
+  const root = path.join(temporaryRoot, "vision-single-flight-state");
+  const barriers = Array.from({ length: 3 }, () => testBarrier());
+  const visionCalls = [];
+  const runnerCalls = [];
+  const normalizedBuffers = [];
+  const lifecycleRecords = new Map();
+  let activeVision = 0;
+  let maximumActiveVision = 0;
+  function attachmentBufferLifecycle(event) {
+    assert.ok(Buffer.isBuffer(event.bytes));
+    if (event.event === "owned") {
+      assert.equal(lifecycleRecords.has(event.bytes), false);
+      lifecycleRecords.set(event.bytes, Object.freeze({ origin: event.origin, wiped: false }));
+      return;
+    }
+    const record = lifecycleRecords.get(event.bytes);
+    assert.ok(record, `vision scheduler wiped an unowned buffer from ${event.origin}`);
+    assert.equal(record.wiped, false, `vision scheduler wiped ${record.origin} twice`);
+    assert.ok(event.bytes.every((byte) => byte === 0));
+    lifecycleRecords.set(event.bytes, Object.freeze({ ...record, wiped: true }));
+  }
+  const visionClient = createTestOnlyIntegrationAnalysisVisionClient({
+    async describe(scope, input) {
+      const callIndex = visionCalls.length;
+      const barrier = barriers[callIndex];
+      assert.ok(barrier, "a cancelled or queued image run reached the vision client");
+      activeVision += 1;
+      maximumActiveVision = Math.max(maximumActiveVision, activeVision);
+      normalizedBuffers.push(...input.attachments.map(({ bytes }) => bytes));
+      visionCalls.push(Object.freeze({ runId: scope.runId, attachmentCount: input.attachments.length }));
+      barrier.enter();
+      try {
+        await barrier.release;
+        return Object.freeze({
+          summary: "The bounded image was inspected.",
+          visibleText: Object.freeze([]),
+          observations: Object.freeze(["One retained image was inspected."]),
+          issues: Object.freeze([]),
+          answer: "The retained image is available to the Agent planner.",
+          uncertainty: Object.freeze([]),
+        });
+      } finally {
+        activeVision -= 1;
+      }
+    },
+  });
+  const visionActivation = await visionClient.activate();
+  const analysisRunner = Object.freeze({
+    async run(scope, input, options) {
+      assert.equal(input.visionEvidence?.attachmentCount, 1);
+      runnerCalls.push(scope.runId);
+      const result = plannerResult({ text: "The retained image was inspected.", toolCalls: 0 });
+      await options.onFinal?.(result);
+      return result;
+    },
+  });
+  const service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner,
+    stateRoot: root,
+    visionClient,
+    visionActivation,
+    attachmentBufferLifecycle,
+  });
+  const scopes = Object.freeze(Array.from({ length: 5 }, (_, index) =>
+    context(`principal-vision-schedule-${String(index + 1).padStart(4, "0")}`, String(index + 1).repeat(64))
+  ));
+  try {
+    const threads = await Promise.all(scopes.map((scope, index) =>
+      service.createThread({ title: `Vision schedule ${index + 1}` }, scope)
+    ));
+    const startImage = (index) => service.startRun({
+      threadId: threads[index].thread.id,
+      input: {
+        text: `Inspect the independently scheduled image ${index + 1}.`,
+        attachments: [{ ...attachment, attachmentId: `vision-scheduling-image-${String(index + 1).padStart(4, "0")}` }],
+      },
+    }, scopes[index]);
+
+    const first = await startImage(0);
+    await barriers[0].entered;
+    const second = await startImage(1);
+    await waitForAsync(
+      async () => (await service.getRunStatus({ runId: second.run.id }, scopes[1])).run.status === "running",
+      "second image run waiting behind the vision single-flight gate"
+    );
+    assert.deepEqual(visionCalls.map(({ runId }) => runId), [first.run.id]);
+    assert.equal(maximumActiveVision, 1);
+    barriers[0].open();
+    await barriers[1].entered;
+    assert.deepEqual(visionCalls.map(({ runId }) => runId), [first.run.id, second.run.id]);
+    assert.equal(activeVision, 1);
+    assert.equal(maximumActiveVision, 1, "two image runs never overlap inside the vision client");
+    barriers[1].open();
+    await service.waitForIdle();
+
+    const blocker = await startImage(2);
+    await barriers[2].entered;
+    const waitingVision = await startImage(3);
+    await waitForAsync(
+      async () => (await service.getRunStatus({ runId: waitingVision.run.id }, scopes[3])).run.status === "running",
+      "cancelled image run waiting behind the vision gate"
+    );
+    const plannerQueued = await startImage(4);
+    const plannerQueuedState = JSON.parse(await fs.readFile(path.join(
+      root,
+      "scopes",
+      integrationAnalysisStateScopeDigest(scopes[4]),
+      "state.json"
+    ), "utf8"));
+    assert.equal(
+      plannerQueuedState.state.runs.find(({ id }) => id === plannerQueued.run.id).schedulingState,
+      "queued"
+    );
+    const retainedReadsBeforeCancellation = [...lifecycleRecords.values()].filter(
+      ({ origin }) => origin === "retained-read"
+    ).length;
+    assert.equal(retainedReadsBeforeCancellation, 3);
+
+    await service.cancelRun({ runId: waitingVision.run.id }, scopes[3]);
+    await service.cancelRun({ runId: plannerQueued.run.id }, scopes[4]);
+    barriers[2].open();
+    await service.waitForIdle();
+    assert.equal(
+      (await service.getRunStatus({ runId: blocker.run.id }, scopes[2])).run.status,
+      "completed"
+    );
+    assert.equal(
+      (await service.getRunStatus({ runId: waitingVision.run.id }, scopes[3])).run.status,
+      "cancelled"
+    );
+    assert.equal(
+      (await service.getRunStatus({ runId: plannerQueued.run.id }, scopes[4])).run.status,
+      "cancelled"
+    );
+    assert.equal(visionCalls.length, 3, "cancelled waiting and planner-queued runs never call vision");
+    assert.equal(runnerCalls.length, 3, "cancelled image runs never reach the Agent planner");
+    assert.equal(
+      [...lifecycleRecords.values()].filter(({ origin }) => origin === "retained-read").length,
+      retainedReadsBeforeCancellation,
+      "cancelled waiting and planner-queued image runs never read retained bytes"
+    );
+    assert.equal(maximumActiveVision, 1);
+    assert.equal(activeVision, 0);
+    for (const [bytes, record] of lifecycleRecords) {
+      assert.equal(record.wiped, true, `${record.origin} buffer was not wiped`);
+      assert.ok(bytes.every((byte) => byte === 0));
+    }
+    assert.ok(normalizedBuffers.length > 0);
+    assert.ok(normalizedBuffers.every((bytes) => bytes.every((byte) => byte === 0)));
+  } finally {
+    for (const barrier of barriers) barrier.open();
+    await service.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
+async function retainedMultiImageRoundTrip(temporaryRoot) {
+  const root = path.join(temporaryRoot, "retained-multi-image-state");
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64"
+  );
+  const jpeg = Buffer.from(
+    "/9j/4AAQSkZJRgABAQAAAAAAAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AVN//2Q==",
+    "base64"
+  );
+  const rgbaDecoded = Buffer.alloc(4096 * (4096 * 4 + 1));
+  let rgbaCompressed;
+  try {
+    rgbaCompressed = deflateSync(rgbaDecoded, { level: 9 });
+  } finally {
+    rgbaDecoded.fill(0);
+  }
+  const rgba4096 = testRgbaPng(4096, 4096, rgbaCompressed);
+  assert.ok(rgba4096.length <= 4 * 1024 * 1024);
+  const rgba4096Facts = inspectIntegrationAnalysisImageBytes(rgba4096, "image/png");
+  assert.equal(
+    rgba4096Facts.decodedBytes,
+    64 * 1024 * 1024 + 4096,
+    "a canonical non-interlaced 4096-square RGBA PNG includes one bounded filter byte per row"
+  );
+  const invalidSecondMaximumPng = testRgbaPng(4096, 4096, Buffer.from([1, 2, 3, 4]));
+  assert.throws(
+    () => inspectIntegrationAnalysisImageBytes(invalidSecondMaximumPng, "image/png", {
+      maximumPngWorkBytes:
+        INTEGRATION_ANALYSIS_VISION_MAX_PNG_WORK_BYTES - rgba4096Facts.pngWorkBytes,
+    }),
+    /does not decode safely/u,
+    "a structurally corrupt later maximum PNG is still decoded and rejected within its sequential work slot"
+  );
+  const fourMaximumWebPngWork = assertIntegrationAnalysisVisionAttachmentSetWork(
+      Array.from({ length: 4 }, () => ({ mediaType: "image/png", width: 4096, height: 4096 }))
+    ).pngWorkBytes;
+  assert.equal(fourMaximumWebPngWork, rgba4096Facts.pngWorkBytes * 4);
+  assert.ok(
+    fourMaximumWebPngWork <= INTEGRATION_ANALYSIS_VISION_MAX_PNG_WORK_BYTES,
+    "all four Web-admitted 4096-square RGBA screenshots fit the sequential PNG work contract"
+  );
+  assert.equal(
+    assertIntegrationAnalysisVisionAttachmentSetWork([
+      { mediaType: "image/png", width: 4096, height: 4096 },
+      { mediaType: "image/png", width: 4096, height: 4096 },
+    ]).pngWorkBytes,
+    rgba4096Facts.pngWorkBytes * 2
+  );
+  const rgbaOverPixelPayload = testRgbaPng(4097, 4096, rgbaCompressed);
+  assert.throws(
+    () => inspectIntegrationAnalysisImageBytes(rgbaOverPixelPayload, "image/png"),
+    /decoded size exceed/u
+  );
+  const rgba16Bit = testRgbaPng(4096, 4096, rgbaCompressed, { bitDepth: 16 });
+  assert.throws(() => inspectIntegrationAnalysisImageBytes(rgba16Bit, "image/png"), /unsupported/u);
+  const interlaced = testRgbaPng(4096, 4096, rgbaCompressed, { interlace: 1 });
+  assert.throws(() => inspectIntegrationAnalysisImageBytes(interlaced, "image/png"), /unsupported/u);
+  const missingImageData = testRgbaPng(1, 1, null);
+  assert.throws(
+    () => inspectIntegrationAnalysisImageBytes(missingImageData, "image/png"),
+    /incomplete/u
+  );
+  const corruptPngCrc = Buffer.from(png);
+  corruptPngCrc[corruptPngCrc.length - 5] ^= 0x01;
+  assert.throws(() => inspectIntegrationAnalysisImageBytes(corruptPngCrc, "image/png"), /CRC/u);
+  const corruptDeflate = testRgbaPng(1, 1, Buffer.from([1, 2, 3, 4]));
+  assert.throws(
+    () => inspectIntegrationAnalysisImageBytes(corruptDeflate, "image/png"),
+    /does not decode safely/u
+  );
+
+  const jpeg4096 = Buffer.from(jpeg);
+  const jpegSof = jpeg4096.indexOf(Buffer.from([0xff, 0xc0]));
+  assert.notEqual(jpegSof, -1);
+  jpeg4096.writeUInt16BE(4096, jpegSof + 5);
+  jpeg4096.writeUInt16BE(4096, jpegSof + 7);
+  assert.throws(
+    () => inspectIntegrationAnalysisImageBytes(jpeg4096, "image/jpeg"),
+    /entropy-coded scan/u,
+    "JPEG dimension spoofing is rejected by its bounded entropy floor"
+  );
+  const jpegOverPixelPayload = Buffer.from(jpeg4096);
+  jpegOverPixelPayload.writeUInt16BE(4097, jpegSof + 7);
+  assert.throws(
+    () => inspectIntegrationAnalysisImageBytes(jpegOverPixelPayload, "image/jpeg"),
+    /decoded size exceed/u
+  );
+  const corruptJpegScan = Buffer.from(jpeg);
+  const jpegSos = corruptJpegScan.indexOf(Buffer.from([0xff, 0xda]));
+  const jpegScanStart = jpegSos + 2 + corruptJpegScan.readUInt16BE(jpegSos + 2);
+  corruptJpegScan[jpegScanStart] = 0xff;
+  assert.throws(
+    () => inspectIntegrationAnalysisImageBytes(corruptJpegScan, "image/jpeg"),
+    /corrupt marker/u
+  );
+  assert.throws(
+    () => inspectIntegrationAnalysisImageBytes(jpeg.subarray(0, -2), "image/jpeg"),
+    /boundary markers/u
+  );
+  rgbaCompressed.fill(0);
+  const transport = Object.freeze([
+    Object.freeze({
+      attachmentId: "iphone-camera-image-0001",
+      mediaType: "image/jpeg",
+      data: jpeg.toString("base64"),
+    }),
+    Object.freeze({
+      attachmentId: "canvas-export-image-0002",
+      mediaType: "image/png",
+      data: png.toString("base64"),
+    }),
+  ]);
+  const replacementTransport = Object.freeze([
+    Object.freeze({
+      attachmentId: "replacement-canvas-image-0003",
+      mediaType: "image/png",
+      data: png.toString("base64"),
+    }),
+  ]);
+  const attachmentBufferRecords = new Map();
+  let attachmentRetryBarrier = null;
+  function attachmentBufferLifecycle(event) {
+    assert.ok(Buffer.isBuffer(event.bytes));
+    if (event.event === "owned") {
+      assert.equal(attachmentBufferRecords.has(event.bytes), false, "each private image buffer has one owner");
+      attachmentBufferRecords.set(event.bytes, { origin: event.origin, wiped: false });
+      return;
+    }
+    assert.equal(event.event, "wiped");
+    const record = attachmentBufferRecords.get(event.bytes);
+    assert.ok(record, `wiped buffer from ${event.origin} was previously owned`);
+    assert.equal(record.wiped, false, `buffer from ${record.origin} was wiped exactly once`);
+    assert.ok(event.bytes.every((byte) => byte === 0), `buffer from ${record.origin} was zeroed`);
+    record.wiped = true;
+  }
+  function assertAllAttachmentBuffersWiped(label) {
+    assert.ok(attachmentBufferRecords.size > 0, `${label}: private image buffers were observed`);
+    for (const [bytes, record] of attachmentBufferRecords) {
+      assert.equal(record.wiped, true, `${label}: ${record.origin} was wiped`);
+      assert.ok(bytes.every((byte) => byte === 0), `${label}: ${record.origin} remains zeroed`);
+    }
+  }
+  async function beforeAttachmentRetryCreate() {
+    const barrier = attachmentRetryBarrier;
+    if (barrier === null) return;
+    barrier.entered();
+    await barrier.release;
+  }
+  const visionCalls = [];
+  const visionCloneBuffers = [];
+  function assertVisionCloneBuffersWiped(label) {
+    assert.ok(visionCloneBuffers.length > 0, `${label}: normalized vision buffers were observed`);
+    for (const bytes of visionCloneBuffers) {
+      assert.ok(bytes.every((byte) => byte === 0), `${label}: normalized vision buffer was wiped`);
+    }
+  }
+  const runnerCalls = [];
+  const visionClient = createTestOnlyIntegrationAnalysisVisionClient({
+    async describe(scope, input) {
+      visionCloneBuffers.push(...input.attachments.map((attachment) => attachment.bytes));
+      visionCalls.push(Object.freeze({
+        scope: Object.freeze({ ...scope }),
+        prompt: input.prompt,
+        attachments: Object.freeze(input.attachments.map((attachment) => Object.freeze({
+          attachmentId: attachment.attachmentId,
+          mediaType: attachment.mediaType,
+          byteLength: attachment.byteLength,
+          width: attachment.width,
+          height: attachment.height,
+          sha256: attachment.sha256,
+          referenceId: attachment.referenceId,
+          bytesSha256: crypto.createHash("sha256").update(attachment.bytes).digest("hex"),
+        }))),
+      }));
+      return Object.freeze({
+        summary: "Image 1 is a JPEG and Image 2 is a PNG.",
+        visibleText: Object.freeze(["Image 1: typed label", "Image 2: plot label"]),
+        observations: Object.freeze(["Both retained images were inspected in order."]),
+        issues: Object.freeze([]),
+        answer: "Use both images as visible evidence for the typed request.",
+        uncertainty: Object.freeze([]),
+      });
+    },
+  });
+  const visionActivation = await visionClient.activate();
+  const analysisRunner = Object.freeze({
+    async run(scope, input, options) {
+      runnerCalls.push(Object.freeze({
+        scope: Object.freeze({ ...scope }),
+        input,
+      }));
+      const result = plannerResult({ text: "Both retained images were inspected.", toolCalls: 0 });
+      await options.onFinal?.(result);
+      return result;
+    },
+  });
+  const serviceOptions = Object.freeze({
+    analysisRunner,
+    stateRoot: root,
+    visionClient,
+    visionActivation,
+    attachmentBufferLifecycle,
+    beforeAttachmentRetryCreate,
+  });
+  let service = createTestOnlyIntegrationAnalysisSessionService(serviceOptions);
+  let restarted;
+  try {
+    const capabilities = await service.getIntegrationCapabilities();
+    assert.equal(capabilities.attachments, true);
+    assert.equal(capabilities.analysisSessionAuthority.attachmentsReady, true);
+    assert.equal(
+      capabilities.analysisSessionAuthority.attachmentAuthorityDigest,
+      capabilities.attachmentAuthority.digest
+    );
+    assert.deepEqual(capabilities.attachmentAuthority.acceptedMediaTypes, ["image/png", "image/jpeg"]);
+    assert.equal(capabilities.attachmentAuthority.maximumCount, 4);
+    assert.equal(capabilities.attachmentAuthority.maximumBytesEach, 4 * 1024 * 1024);
+    assert.equal(capabilities.attachmentAuthority.maximumBytesTotal, 16 * 1024 * 1024);
+    assert.equal(capabilities.attachmentAuthority.maximumRetainedBlobsGlobal, 2048);
+    assert.equal(capabilities.attachmentAuthority.maximumRetainedBytesGlobal, 512 * 1024 * 1024);
+    assert.equal(capabilities.attachmentAuthority.minimumFreeBytesAfterWrite, 512 * 1024 * 1024);
+    assert.equal(capabilities.attachmentAuthority.requestTimeoutMs, 515_000);
+    assert.equal(capabilities.attachmentAuthority.maximumConcurrentVisionRuns, 1);
+    assert.equal(capabilities.attachmentAuthority.globalCapacitySerialized, true);
+    assert.equal(capabilities.attachmentAuthority.filesystemFreeSpaceCheckedBeforeAndAfterWrite, true);
+    assert.equal(capabilities.attachmentAuthority.model, "localllm-vision");
+
+    const created = await service.createThread({ title: "Retained multi-image Agent" }, context());
+    const firstPayload = Object.freeze({
+      threadId: created.thread.id,
+      input: Object.freeze({
+        text: "Compare both images, then explain the visible labels.",
+        attachments: transport,
+      }),
+    });
+    const firstContext = mutationContext(
+      INTEGRATION_RPC_PATHS.runsStart,
+      firstPayload,
+      "retained-image-start-idempotency-0001"
+    );
+    const first = await service.startRun(firstPayload, firstContext);
+    await service.waitForIdle();
+    assert.equal(visionCalls.length, 1);
+    assert.equal(runnerCalls.length, 1);
+    assert.deepEqual(visionCalls[0].attachments.map(({ mediaType }) => mediaType), ["image/jpeg", "image/png"]);
+    assert.deepEqual(
+      visionCalls[0].attachments.map(({ sha256, bytesSha256 }) => [sha256, bytesSha256]),
+      visionCalls[0].attachments.map(({ sha256 }) => [sha256, sha256])
+    );
+    assert.equal(runnerCalls[0].input.visionEvidence.schemaVersion, INTEGRATION_ANALYSIS_VISION_EVIDENCE_SCHEMA_VERSION);
+    assert.equal(runnerCalls[0].input.visionEvidence.attachmentCount, 2);
+    assert.equal(Object.prototype.hasOwnProperty.call(runnerCalls[0].input, "retainedAttachments"), false);
+    assert.equal(
+      (await service.recoverMutation(recoveryRequestFor(firstContext))).run.id,
+      first.run.id,
+      "the exact image start receipt is recoverable without redispatch"
+    );
+    assertAllAttachmentBuffersWiped("successful image start");
+    assertVisionCloneBuffersWiped("successful image start");
+    await expectCode(
+      service.startRun(firstPayload, firstContext),
+      "ANALYSIS_MUTATION_ALREADY_COMMITTED"
+    );
+    assertAllAttachmentBuffersWiped("committed image idempotency path");
+    await expectCode(service.startRun({
+      threadId: created.thread.id,
+      input: {
+        text: "Reject a corrupt later maximum-decompression PNG before persistence.",
+        attachments: [
+          {
+            attachmentId: "maximum-png-work-image-0001",
+            mediaType: "image/png",
+            data: rgba4096.toString("base64"),
+          },
+          {
+            attachmentId: "maximum-png-work-image-0002",
+            mediaType: "image/png",
+            data: invalidSecondMaximumPng.toString("base64"),
+          },
+        ],
+      },
+    }, context()), "ANALYSIS_ATTACHMENT_INVALID");
+    assertAllAttachmentBuffersWiped("later PNG structural rejection");
+
+    const publicThread = (await service.getThread({ threadId: created.thread.id }, context())).thread;
+    const firstUser = publicThread.messages[0];
+    assert.equal(firstUser.role, "user");
+    assert.deepEqual(firstUser.attachments, visionCalls[0].attachments.map((attachment) => Object.freeze({
+      attachmentId: attachment.attachmentId,
+      mediaType: attachment.mediaType,
+      byteLength: attachment.byteLength,
+      width: attachment.width,
+      height: attachment.height,
+      sha256: attachment.sha256,
+    })));
+    assert.equal(publicThread.messages[1].role, "assistant");
+    assert.equal(Object.prototype.hasOwnProperty.call(publicThread.messages[1], "attachments"), false);
+    const publicJson = JSON.stringify(publicThread);
+    assert.doesNotMatch(publicJson, /aimg_|referenceId|"data"/u);
+    assert.doesNotMatch(publicJson, new RegExp(transport[0].data.slice(0, 48), "u"));
+    assert.equal(firstUser.digest, contractDigest({
+      schemaVersion: "aginti-analysis-public-message-v1",
+      previousDigest: ZERO_DIGEST,
+      threadId: created.thread.id,
+      id: firstUser.id,
+      role: firstUser.role,
+      content: firstUser.content,
+      runId: firstUser.runId,
+      createdAt: firstUser.createdAt,
+      attachments: firstUser.attachments,
+    }));
+
+    const firstStatePath = await stateFile(root);
+    const attachmentsDirectory = path.join(path.dirname(firstStatePath), "attachments");
+    const firstBlobNames = (await fs.readdir(attachmentsDirectory)).sort();
+    assert.equal(firstBlobNames.length, 2);
+    for (const name of firstBlobNames) {
+      assert.match(name, /^aimg_[a-f0-9]{64}\.bin$/u);
+      assert.equal((await fs.stat(path.join(attachmentsDirectory, name))).mode & 0o777, 0o600);
+    }
+    const firstEnvelope = JSON.parse(await fs.readFile(firstStatePath, "utf8"));
+    const firstPrivateUser = firstEnvelope.state.threads[0].messages[0];
+    assert.equal(firstPrivateUser.attachments.length, 2);
+    assert.match(firstPrivateUser.attachments[0].referenceId, /^aimg_[a-f0-9]{64}$/u);
+    assert.equal(Object.prototype.hasOwnProperty.call(firstPrivateUser.attachments[0], "data"), false);
+    assert.doesNotMatch(JSON.stringify(firstEnvelope), new RegExp(transport[0].data.slice(0, 48), "u"));
+
+    await service.close({ mode: "wait" });
+    service = null;
+    restarted = createTestOnlyIntegrationAnalysisSessionService(serviceOptions);
+    const replayed = (await restarted.getThread({ threadId: created.thread.id }, context())).thread;
+    assert.deepEqual(replayed.messages[0].attachments, firstUser.attachments);
+    assert.equal(replayed.activeImageContext, true);
+    assert.equal(visionCalls.length, 1, "read-only replay must not invoke local vision");
+
+    const bufferCountBeforeMissingMarker = attachmentBufferRecords.size;
+    await expectCode(
+      restarted.resumeRun({ runId: first.run.id }, context()),
+      "ANALYSIS_ATTACHMENT_REUSE_MARKER_REQUIRED"
+    );
+    assert.equal(
+      attachmentBufferRecords.size,
+      bufferCountBeforeMissingMarker,
+      "a missing retry marker is rejected before retained bytes are read"
+    );
+    await expectCode(
+      restarted.resumeRun({ runId: first.run.id, reuseAttachments: false }, context()),
+      "INVALID_REQUEST"
+    );
+    await expectCode(
+      restarted.resumeRun({
+        runId: first.run.id,
+        reuseAttachments: true,
+        input: { text: "Marker and corrected input must not mix." },
+      }, context()),
+      "INVALID_REQUEST"
+    );
+    const retryPayload = Object.freeze({ runId: first.run.id, reuseAttachments: true });
+    const retryContext = mutationContext(
+      INTEGRATION_RPC_PATHS.runsResume,
+      retryPayload,
+      "retained-image-retry-idempotency-0002"
+    );
+    const second = await restarted.resumeRun(retryPayload, retryContext);
+    await restarted.waitForIdle();
+    assert.equal(visionCalls.length, 2);
+    assert.equal(runnerCalls.length, 2);
+    assert.deepEqual(
+      visionCalls[1].attachments.map(({ referenceId }) => referenceId),
+      visionCalls[0].attachments.map(({ referenceId }) => referenceId),
+      "retry reuses the exact durable image source without duplicating blobs"
+    );
+    const afterRetry = (await restarted.getThread({ threadId: created.thread.id }, context())).thread;
+    assert.equal(Object.prototype.hasOwnProperty.call(afterRetry.messages[2], "attachments"), false);
+    assert.equal(afterRetry.activeImageContext, true);
+    assert.equal((await fs.readdir(attachmentsDirectory)).filter((name) => name.endsWith(".bin")).length, 2);
+    assert.equal(
+      (await restarted.recoverMutation(recoveryRequestFor(retryContext))).run.id,
+      second.run.id,
+      "the marker participates in exact durable retry recovery"
+    );
+    assertAllAttachmentBuffersWiped("exact image retry");
+
+    const inherited = await restarted.resumeRun({
+      runId: second.run.id,
+      input: { text: "Read the same images again and focus on the plot label." },
+    }, context());
+    await restarted.waitForIdle();
+    assert.equal(visionCalls.length, 3);
+    assert.equal(visionCalls[2].prompt, "Read the same images again and focus on the plot label.");
+    assert.deepEqual(
+      visionCalls[2].attachments.map(({ sha256 }) => sha256),
+      visionCalls[0].attachments.map(({ sha256 }) => sha256),
+      "a text-only same-thread follow-up inherits the latest retained image set"
+    );
+    assert.deepEqual(
+      visionCalls[2].attachments.map(({ referenceId }) => referenceId),
+      visionCalls[1].attachments.map(({ referenceId }) => referenceId),
+      "text continuation reuses the private durable source without restaging"
+    );
+    const afterInherited = (await restarted.getThread({ threadId: created.thread.id }, context())).thread;
+    const inheritedPublicMessage = afterInherited.messages.find(
+      (message) => message.runId === inherited.run.id && message.role === "user"
+    );
+    assert.equal(Object.prototype.hasOwnProperty.call(inheritedPublicMessage, "attachments"), false);
+    assert.equal(afterInherited.activeImageContext, true);
+    assert.equal((await fs.readdir(attachmentsDirectory)).filter((name) => name.endsWith(".bin")).length, 2);
+
+    const replacement = await restarted.resumeRun({
+      runId: inherited.run.id,
+      input: {
+        text: "Replace the earlier context with only this newer image.",
+        attachments: replacementTransport,
+      },
+    }, context());
+    await restarted.waitForIdle();
+    assert.equal(visionCalls.length, 4);
+    assert.deepEqual(
+      visionCalls[3].attachments.map(({ attachmentId }) => attachmentId),
+      ["replacement-canvas-image-0003"],
+      "fresh images replace inherited image context"
+    );
+
+    const replacementFollowup = await restarted.resumeRun({
+      runId: replacement.run.id,
+      input: { text: "What exact detail is visible in that newer image?" },
+    }, context());
+    await restarted.waitForIdle();
+    assert.equal(visionCalls.length, 5);
+    assert.deepEqual(
+      visionCalls[4].attachments.map(({ attachmentId }) => attachmentId),
+      ["replacement-canvas-image-0003"],
+      "the newest image-bearing turn deterministically replaces older images for continuation"
+    );
+    assert.ok(visionCalls[4].attachments.length <= 4);
+    assert.ok(
+      visionCalls[4].attachments.reduce((total, attachment) => total + attachment.byteLength, 0) <=
+        16 * 1024 * 1024,
+      "inherited image context remains within the exact aggregate bound"
+    );
+    const afterReplacementFollowup = (
+      await restarted.getThread({ threadId: created.thread.id }, context())
+    ).thread;
+    const replacementFollowupMessage = afterReplacementFollowup.messages.find(
+      (message) => message.runId === replacementFollowup.run.id && message.role === "user"
+    );
+    assert.equal(Object.prototype.hasOwnProperty.call(replacementFollowupMessage, "attachments"), false);
+    assert.equal(afterReplacementFollowup.activeImageContext, true);
+    assert.equal(
+      (await fs.readdir(attachmentsDirectory)).filter((name) => name.endsWith(".bin")).length,
+      3,
+      "fresh image messages alone own blobs; text continuation does not consume capacity"
+    );
+    await expectCode(
+      restarted.resumeRun({ runId: first.run.id, reuseAttachments: true }, context()),
+      "ANALYSIS_RUN_NOT_RESUMABLE"
+    );
+
+    const finalRetryPayload = Object.freeze({
+      runId: replacementFollowup.run.id,
+      reuseAttachments: true,
+    });
+    const finalRetry = await restarted.resumeRun(finalRetryPayload, context());
+    await restarted.waitForIdle();
+    assert.equal(visionCalls.length, 6);
+    assert.deepEqual(
+      visionCalls[5].attachments.map(({ attachmentId }) => attachmentId),
+      ["replacement-canvas-image-0003"],
+      "empty retry reuses the exact current image set"
+    );
+    assert.equal(
+      (await fs.readdir(attachmentsDirectory)).filter((name) => name.endsWith(".bin")).length,
+      3,
+      "image retry does not duplicate retained blobs"
+    );
+    assertAllAttachmentBuffersWiped("inheritance, replacement, and retry");
+    assertVisionCloneBuffersWiped("inheritance, replacement, and retry");
+
+    const sameScopeTextCreatePayload = Object.freeze({ title: "Thread-local image isolation" });
+    const sameScopeTextCreateContext = mutationContext(
+      INTEGRATION_RPC_PATHS.threadsCreate,
+      sameScopeTextCreatePayload,
+      "native-text-create-0001"
+    );
+    const sameScopeTextThread = await restarted.createThread(
+      sameScopeTextCreatePayload,
+      sameScopeTextCreateContext
+    );
+    assertNoActiveImageContext(sameScopeTextThread, "native text-only create response");
+    assertNoActiveImageContext(
+      await restarted.recoverMutation(recoveryRequestFor(sameScopeTextCreateContext)),
+      "native text-only recovered create receipt"
+    );
+    const sameScopeTextStartPayload = Object.freeze({
+      threadId: sameScopeTextThread.thread.id,
+      input: Object.freeze({ text: "Answer without inspecting any image from another thread." }),
+    });
+    const sameScopeTextStartContext = mutationContext(
+      INTEGRATION_RPC_PATHS.runsStart,
+      sameScopeTextStartPayload,
+      "native-text-start-0001"
+    );
+    const sameScopeTextRun = await restarted.startRun(
+      sameScopeTextStartPayload,
+      sameScopeTextStartContext
+    );
+    assertNoActiveImageContext(sameScopeTextRun, "native text-only start response");
+    assertNoActiveImageContext(
+      await restarted.recoverMutation(recoveryRequestFor(sameScopeTextStartContext)),
+      "native text-only recovered start receipt"
+    );
+    await restarted.waitForIdle();
+    assert.equal(visionCalls.length, 6, "images never leak into another thread in the same scope");
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(runnerCalls.at(-1).input, "visionEvidence"),
+      false
+    );
+    const sameScopePublicThread = (
+      await restarted.getThread({ threadId: sameScopeTextThread.thread.id }, context())
+    ).thread;
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(sameScopePublicThread, "activeImageContext"),
+      false
+    );
+    const threadSummaries = (await restarted.listThreads({}, context())).threads;
+    assert.equal(
+      threadSummaries.find((thread) => thread.id === created.thread.id).activeImageContext,
+      true,
+      "thread list summaries derive the latest run's private image-context proof"
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(
+        threadSummaries.find((thread) => thread.id === sameScopeTextThread.thread.id),
+        "activeImageContext"
+      ),
+      false
+    );
+    await expectCode(
+      restarted.resumeRun({ runId: sameScopeTextRun.run.id, reuseAttachments: true }, context()),
+      "ANALYSIS_ATTACHMENT_REUSE_INVALID"
+    );
+    await expectCode(
+      restarted.getThread({ threadId: created.thread.id }, context(OTHER_PRINCIPAL_ID)),
+      "NOT_FOUND"
+    );
+    const otherScopeThread = await restarted.createThread(
+      { title: "Principal-local image isolation" },
+      context(OTHER_PRINCIPAL_ID, OTHER_BROWSER_SESSION_ID)
+    );
+    await restarted.startRun({
+      threadId: otherScopeThread.thread.id,
+      input: { text: "Answer without images from another account." },
+    }, context(OTHER_PRINCIPAL_ID, OTHER_BROWSER_SESSION_ID));
+    await restarted.waitForIdle();
+    assert.equal(visionCalls.length, 6, "images never leak across principal or browser-session scope");
+
+    let retryEntered;
+    let releaseRetry;
+    const retryEnteredPromise = new Promise((resolve) => {
+      retryEntered = resolve;
+    });
+    const retryReleasePromise = new Promise((resolve) => {
+      releaseRetry = resolve;
+    });
+    attachmentRetryBarrier = Object.freeze({ entered: retryEntered, release: retryReleasePromise });
+    const staleRetryCheck = expectCode(
+      restarted.resumeRun({ runId: finalRetry.run.id, reuseAttachments: true }, context()),
+      "ANALYSIS_RUN_NOT_RESUMABLE"
+    );
+    await retryEnteredPromise;
+    const newerHead = await restarted.resumeRun({
+      runId: finalRetry.run.id,
+      input: { text: "Install a newer head while an older empty retry is paused." },
+    }, context());
+    await restarted.waitForIdle();
+    releaseRetry();
+    attachmentRetryBarrier = null;
+    await staleRetryCheck;
+    assert.equal(visionCalls.length, 7, "only the newer head executes vision across the retry race");
+    assert.equal(
+      (await fs.readdir(attachmentsDirectory)).filter((name) => name.endsWith(".bin")).length,
+      3,
+      "the atomic head retry fence neither reads nor duplicates stale image storage"
+    );
+
+    const orphan = path.join(attachmentsDirectory, `aimg_${"e".repeat(64)}.bin`);
+    const orphanTemp = path.join(
+      attachmentsDirectory,
+      `.aimg_${"f".repeat(64)}.${process.pid}.${"d".repeat(24)}.tmp`
+    );
+    await fs.writeFile(orphan, png, { mode: 0o600 });
+    await fs.chmod(orphan, 0o600);
+    await fs.writeFile(orphanTemp, jpeg, { mode: 0o600 });
+    await fs.chmod(orphanTemp, 0o600);
+    await restarted.getThread({ threadId: created.thread.id }, context());
+    await assert.rejects(fs.stat(orphan), (error) => error?.code === "ENOENT");
+    await assert.rejects(fs.stat(orphanTemp), (error) => error?.code === "ENOENT");
+
+    const afterRetryEnvelope = JSON.parse(await fs.readFile(firstStatePath, "utf8"));
+    const retryPrivateUser = afterRetryEnvelope.state.threads[0].messages.find(
+      (message) => message.runId === replacement.run.id && message.role === "user"
+    );
+    const corruptTarget = path.join(
+      attachmentsDirectory,
+      `${retryPrivateUser.attachments[0].referenceId}.bin`
+    );
+    const corruptBytes = await fs.readFile(corruptTarget);
+    corruptBytes[corruptBytes.length - 3] ^= 0x01;
+    await fs.writeFile(corruptTarget, corruptBytes);
+    const corruptRetry = await restarted.resumeRun(
+      { runId: newerHead.run.id, reuseAttachments: true },
+      context()
+    );
+    await restarted.waitForIdle();
+    const corruptRetryStatus = (
+      await restarted.getRunStatus({ runId: corruptRetry.run.id }, context())
+    ).run;
+    assert.equal(corruptRetryStatus.status, "failed");
+    assert.equal(visionCalls.length, 7, "corrupt retained bytes must fail before vision inference");
+    assertAllAttachmentBuffersWiped("corrupt retained read");
+    assertVisionCloneBuffersWiped("corrupt retained read");
+
+    await restarted.deleteThread({ threadId: created.thread.id }, context());
+    assert.deepEqual(await fs.readdir(attachmentsDirectory), []);
+  } finally {
+    await service?.close({ mode: "abort" }).catch(() => {});
+    await restarted?.close({ mode: "abort" }).catch(() => {});
+  }
+
+  const disabled = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner,
+    stateRoot: path.join(temporaryRoot, "retained-multi-image-disabled-state"),
+    attachmentBufferLifecycle,
+  });
+  try {
+    const created = await disabled.createThread({ title: "Images disabled" }, context());
+    await expectCode(disabled.startRun({
+      threadId: created.thread.id,
+      input: {
+        text: "Reject invalid decoded image bytes.",
+        attachments: [{
+          attachmentId: "invalid-image-bytes-0004",
+          mediaType: "image/png",
+          data: Buffer.alloc(16, 1).toString("base64"),
+        }],
+      },
+    }, context()), "ANALYSIS_ATTACHMENT_INVALID");
+    await expectCode(disabled.startRun({
+      threadId: created.thread.id,
+      input: { text: "Inspect this image.", attachments: transport.slice(0, 1) },
+    }, context()), "ANALYSIS_VISION_NOT_READY");
+    await expectCode(disabled.startRun({
+      threadId: created.thread.id,
+      input: {
+        text: "Reject an over-count image set.",
+        attachments: Array.from({ length: 5 }, (_, index) => ({
+          ...transport[1],
+          attachmentId: `bounded-image-count-${String(index).padStart(4, "0")}`,
+        })),
+      },
+    }, context()), "ANALYSIS_ATTACHMENT_INVALID");
+    assertAllAttachmentBuffersWiped("invalid and disabled image paths");
+  } finally {
+    await disabled.close({ mode: "abort" }).catch(() => {});
+  }
+
+  const jpegFacts = inspectIntegrationAnalysisImageBytes(jpeg, "image/jpeg");
+  const visionRequestAttachment = (bytes) => Object.freeze({
+    attachmentId: "vision-clone-wipe-0005",
+    mediaType: "image/jpeg",
+    byteLength: jpegFacts.byteLength,
+    width: jpegFacts.width,
+    height: jpegFacts.height,
+    sha256: jpegFacts.sha256,
+    referenceId: `aimg_${"a".repeat(64)}`,
+    bytes,
+  });
+  const visionScope = Object.freeze({
+    principalId: PRINCIPAL_ID,
+    browserSessionId: BROWSER_SESSION_ID,
+    threadId: "thr_12345678-1234-4123-8123-123456789abc",
+    runId: "run_12345678-1234-4123-8123-123456789abc",
+  });
+  let errorClone = null;
+  const errorVisionClient = createTestOnlyIntegrationAnalysisVisionClient({
+    async describe(_scope, input) {
+      errorClone = input.attachments[0].bytes;
+      throw new Error("test-only vision callback failure");
+    },
+  });
+  await errorVisionClient.activate();
+  const errorOriginal = Buffer.from(jpeg);
+  await assert.rejects(
+    errorVisionClient.describe(visionScope, {
+      prompt: "Exercise error cleanup.",
+      attachments: [visionRequestAttachment(errorOriginal)],
+    }),
+    /test-only vision callback failure/u
+  );
+  assert.ok(errorClone.every((byte) => byte === 0), "vision clone is wiped on callback failure");
+  assert.equal(crypto.createHash("sha256").update(errorOriginal).digest("hex"), jpegFacts.sha256);
+
+  let cancellationEntered;
+  const cancellationEnteredPromise = new Promise((resolve) => {
+    cancellationEntered = resolve;
+  });
+  let cancelledClone = null;
+  const cancelledVisionClient = createTestOnlyIntegrationAnalysisVisionClient({
+    async describe(_scope, input, options) {
+      cancelledClone = input.attachments[0].bytes;
+      cancellationEntered();
+      await new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+      });
+      throw new Error("test-only cancellation did not abort");
+    },
+  });
+  await cancelledVisionClient.activate();
+  const cancellationOriginal = Buffer.from(jpeg);
+  const controller = new AbortController();
+  const cancelledDescription = cancelledVisionClient.describe(
+    visionScope,
+    {
+      prompt: "Exercise cancellation cleanup.",
+      attachments: [visionRequestAttachment(cancellationOriginal)],
+    },
+    { signal: controller.signal }
+  );
+  await cancellationEnteredPromise;
+  controller.abort(new Error("test-only cancellation"));
+  await assert.rejects(cancelledDescription, /test-only cancellation/u);
+  assert.ok(cancelledClone.every((byte) => byte === 0), "vision clone is wiped on cancellation");
+  assert.equal(crypto.createHash("sha256").update(cancellationOriginal).digest("hex"), jpegFacts.sha256);
+
+  const gateRoot = path.join(temporaryRoot, "native-v3-vision-gate-off-state");
+  let gateEnabledService = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner,
+    stateRoot: gateRoot,
+    visionClient,
+    visionActivation,
+    attachmentBufferLifecycle,
+  });
+  let gateOffService = null;
+  try {
+    const created = await gateEnabledService.createThread(
+      { title: "Native image state with rollout gate" },
+      context()
+    );
+    const imagePayload = Object.freeze({
+      threadId: created.thread.id,
+      input: Object.freeze({
+        text: "Persist one image before disabling the rollout gate.",
+        attachments: replacementTransport,
+      }),
+    });
+    const imageContext = mutationContext(
+      INTEGRATION_RPC_PATHS.runsStart,
+      imagePayload,
+      "native-image-response-lost-0001"
+    );
+    const imageRun = await gateEnabledService.startRun(imagePayload, imageContext);
+    await gateEnabledService.waitForIdle();
+    const acceptedImageReceipt = await gateEnabledService.recoverMutation(
+      recoveryRequestFor(imageContext)
+    );
+    assert.equal(acceptedImageReceipt.run.id, imageRun.run.id);
+    await gateEnabledService.close({ mode: "wait" });
+    gateEnabledService = null;
+
+    const gateStatePath = await stateFile(gateRoot);
+    const gateAttachmentsDirectory = path.join(path.dirname(gateStatePath), "attachments");
+    const blobSnapshot = async () => {
+      const entries = (await fs.readdir(gateAttachmentsDirectory)).filter((name) => name.endsWith(".bin")).sort();
+      return Object.freeze(await Promise.all(entries.map(async (name) => Object.freeze({
+        name,
+        sha256: crypto.createHash("sha256").update(
+          await fs.readFile(path.join(gateAttachmentsDirectory, name))
+        ).digest("hex"),
+      }))));
+    };
+    const stateBefore = await fs.readFile(gateStatePath);
+    const blobsBefore = await blobSnapshot();
+    assert.equal(blobsBefore.length, 1);
+
+    gateOffService = createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner,
+      stateRoot: gateRoot,
+      attachmentBufferLifecycle,
+    });
+    const gateOffCapabilities = await gateOffService.getIntegrationCapabilities();
+    assert.equal(Object.prototype.hasOwnProperty.call(gateOffCapabilities, "attachments"), false);
+    const opened = (await gateOffService.getThread({ threadId: created.thread.id }, context())).thread;
+    assert.equal(opened.activeImageContext, true);
+    assert.deepEqual(opened.messages[0].attachments.map(({ attachmentId }) => attachmentId), [
+      "replacement-canvas-image-0003",
+    ]);
+    assert.equal((await gateOffService.listThreads({}, context())).threads[0].activeImageContext, true);
+    assert.deepEqual(
+      await gateOffService.recoverMutation(recoveryRequestFor(imageContext)),
+      acceptedImageReceipt,
+      "an accepted image response lost before delivery remains exactly replayable with the vision gate off"
+    );
+    const differentImageContext = mutationContext(
+      INTEGRATION_RPC_PATHS.runsStart,
+      imagePayload,
+      "native-image-response-lost-0002"
+    );
+    await expectCode(
+      gateOffService.startRun(imagePayload, differentImageContext),
+      "ANALYSIS_VISION_NOT_READY"
+    );
+    await expectCode(
+      gateOffService.resumeRun({ runId: imageRun.run.id }, context()),
+      "ANALYSIS_ATTACHMENT_REUSE_MARKER_REQUIRED"
+    );
+    await expectCode(
+      gateOffService.resumeRun({ runId: imageRun.run.id, reuseAttachments: true }, context()),
+      "ANALYSIS_VISION_NOT_READY"
+    );
+    await expectCode(gateOffService.resumeRun({
+      runId: imageRun.run.id,
+      input: { text: "Correct this image run while the gate is disabled." },
+    }, context()), "ANALYSIS_VISION_NOT_READY");
+    await expectCode(gateOffService.resumeRun({
+      runId: imageRun.run.id,
+      input: { text: "Try replacement bytes while disabled.", attachments: transport.slice(0, 1) },
+    }, context()), "ANALYSIS_VISION_NOT_READY");
+    await expectCode(gateOffService.startRun({
+      threadId: created.thread.id,
+      input: { text: "Try a new text run that would inherit the image." },
+    }, context()), "ANALYSIS_VISION_NOT_READY");
+    assert.deepEqual(await fs.readFile(gateStatePath), stateBefore);
+    assert.deepEqual(await blobSnapshot(), blobsBefore);
+    assertAllAttachmentBuffersWiped("native gate-off rejection paths");
+
+    await gateOffService.deleteThread({ threadId: created.thread.id }, context());
+    assert.deepEqual(await fs.readdir(gateAttachmentsDirectory), []);
+  } finally {
+    await gateEnabledService?.close({ mode: "abort" }).catch(() => {});
+    await gateOffService?.close({ mode: "abort" }).catch(() => {});
+  }
+  await globalAttachmentStorageRoundTrip(temporaryRoot, {
+    analysisRunner,
+    visionClient,
+    visionActivation,
+    attachment: replacementTransport[0],
+    attachmentBufferLifecycle,
+  });
+  assertAllAttachmentBuffersWiped("global byte quota, reserve, and restart paths");
+  await maximumWebPngSetRoundTrip(temporaryRoot, rgba4096);
+  await visionSchedulingRoundTrip(temporaryRoot, replacementTransport[0]);
 }
 
 async function main() {
@@ -1477,6 +3073,7 @@ async function main() {
     await plotThenProseContinuationRoundTrip(temporaryRoot);
     await boundedPriorArtifactContextRoundTrip(temporaryRoot);
     await groundedSearchDurabilityRoundTrip(temporaryRoot);
+    await retainedMultiImageRoundTrip(temporaryRoot);
     await r67StatePersistenceCompatibilityRoundTrip(temporaryRoot);
     await concurrentNoFileDeleteStartRoundTrip(temporaryRoot, fakeRunner);
     const service = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: fakeRunner, stateRoot: root });

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
@@ -38,9 +39,11 @@ import {
 } from "../src/integration-analysis-config.js";
 import {
   INTEGRATION_ANALYSIS_SERVER_ENABLED,
+  configureIntegrationAnalysisHttpServer,
   createIntegrationAnalysisServer,
   createTestOnlyIntegrationAnalysisServerLifecycle,
   integrationAnalysisListenOptions,
+  integrationAnalysisVisionEligibleForStatePersistenceMode,
   composeProductionIntegrationAnalysisServer,
 } from "../src/integration-analysis-server.js";
 import {
@@ -56,8 +59,20 @@ import {
   INTEGRATION_ANALYSIS_STATE_STORAGE_V3,
 } from "../src/integration-analysis-state-persistence.js";
 import { IntegrationServiceConfigError } from "../src/integration-config.js";
-import { parseIntegrationAnalysisCliArguments } from "../src/integration-analysis-cli.js";
-import { INTEGRATION_RPC_PATH_LIST, INTEGRATION_RPC_PATHS, buildFixedIntegrationPolicy, contractDigest } from "../src/integration-policy.js";
+import {
+  integrationAnalysisCliSummary,
+  parseIntegrationAnalysisCliArguments,
+} from "../src/integration-analysis-cli.js";
+import {
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_BYTES_LIMIT,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_RECEIVE_TIMEOUT_MS,
+  INTEGRATION_ANALYSIS_ORDINARY_BODY_RECEIVE_TIMEOUT_MS,
+  INTEGRATION_RPC_PATH_LIST,
+  INTEGRATION_RPC_PATHS,
+  buildFixedIntegrationPolicy,
+  contractDigest,
+} from "../src/integration-policy.js";
+import { integrationAnalysisBodyReceiveTimeoutMs } from "../src/integration-api.js";
 
 const TOKEN = "A".repeat(48);
 const PRINCIPAL = "principal-analysis-0001";
@@ -301,16 +316,200 @@ async function rpc(pathname, body, headers) {
   return Object.freeze({ status: response.status, body: await response.json() });
 }
 
+async function streamedImageBodyReachesConfiguredServer() {
+  let received = 0;
+  const server = http.createServer((request, response) => {
+    request.on("data", (chunk) => {
+      received += chunk.length;
+    });
+    request.on("end", () => {
+      response.writeHead(204);
+      response.end();
+    });
+  });
+  configureIntegrationAnalysisHttpServer(server);
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolve);
+  });
+  const address = server.address();
+  const block = Buffer.alloc(1024 * 1024, 0x61);
+  try {
+    const status = await new Promise((resolve, reject) => {
+      const request = http.request({
+        host: "127.0.0.1",
+        port: address.port,
+        method: "POST",
+        path: "/bounded-image-body",
+        headers: {
+          "content-type": "application/octet-stream",
+          "content-length": String(INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_BYTES_LIMIT),
+        },
+      }, (response) => {
+        response.resume();
+        response.once("end", () => resolve(response.statusCode));
+      });
+      request.once("error", reject);
+      let remaining = INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_BYTES_LIMIT;
+      const writeNext = () => {
+        if (remaining === 0) {
+          request.end();
+          return;
+        }
+        const size = Math.min(block.length, remaining);
+        remaining -= size;
+        if (request.write(block.subarray(0, size))) setImmediate(writeNext);
+        else request.once("drain", writeNext);
+      };
+      writeNext();
+    });
+    assert.equal(status, 204);
+    assert.equal(received, INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_BYTES_LIMIT);
+    assert.equal(server.requestTimeout, INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_RECEIVE_TIMEOUT_MS);
+  } finally {
+    block.fill(0);
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
 const checkedConfig = validateIntegrationAnalysisServiceConfig(validConfig());
 assert.equal(checkedConfig.capability.enabled, true);
 assert.equal(checkedConfig.statePersistence.mode, INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3);
 assert.equal(checkedConfig.trustedPrincipalProxy.clientId, "aginti-bff");
+assert.equal(Object.prototype.hasOwnProperty.call(checkedConfig, "vision"), false);
+assert.deepEqual(
+  integrationAnalysisCliSummary(checkedConfig, "checked-analysis-ready-to-probe").vision,
+  { enabled: false },
+  "an absent pre-migration gate is reported as disabled without changing the accepted config shape"
+);
+assert.equal(
+  integrationAnalysisVisionEligibleForStatePersistenceMode(
+    INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3
+  ),
+  false,
+  "the absent vision gate fails closed even after native-v3 migration"
+);
+assert.equal(
+  integrationAnalysisVisionEligibleForStatePersistenceMode(
+    INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3,
+    true
+  ),
+  true
+);
+assert.equal(
+  integrationAnalysisVisionEligibleForStatePersistenceMode(
+    INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2,
+    false
+  ),
+  false
+);
+assert.throws(
+  () => integrationAnalysisVisionEligibleForStatePersistenceMode(
+    INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2,
+    true
+  ),
+  /requires native-v3/u
+);
 assert.deepEqual(integrationAnalysisListenOptions(checkedConfig), {
   host: "127.0.0.1",
   port: 18009,
   exclusive: true,
 });
 assert.equal(INTEGRATION_ANALYSIS_SERVER_ENABLED, true);
+assert.equal(
+  INTEGRATION_ANALYSIS_ROUTER_ACTIVATION_SCHEMA_VERSION,
+  "aginti-integration-analysis-router-activation-v3"
+);
+const configuredHttpServer = http.createServer();
+configureIntegrationAnalysisHttpServer(configuredHttpServer);
+assert.equal(configuredHttpServer.requestTimeout, 245_000);
+assert.equal(
+  configuredHttpServer.requestTimeout,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_RECEIVE_TIMEOUT_MS
+);
+assert.ok(configuredHttpServer.requestTimeout > 240_000);
+assert.equal(
+  integrationAnalysisBodyReceiveTimeoutMs(INTEGRATION_RPC_PATHS.runsStart, { attachmentsEnabled: true }),
+  245_000
+);
+assert.equal(
+  integrationAnalysisBodyReceiveTimeoutMs(INTEGRATION_RPC_PATHS.runsResume, { attachmentsEnabled: true }),
+  245_000
+);
+assert.equal(
+  integrationAnalysisBodyReceiveTimeoutMs(INTEGRATION_RPC_PATHS.runsStart, {
+    attachmentsEnabled: true,
+    declaredBodyBytes: 128 * 1024,
+  }),
+  INTEGRATION_ANALYSIS_ORDINARY_BODY_RECEIVE_TIMEOUT_MS,
+  "an explicitly small Agent start body keeps the ordinary 125s receive deadline"
+);
+assert.equal(
+  integrationAnalysisBodyReceiveTimeoutMs(INTEGRATION_RPC_PATHS.runsResume, {
+    attachmentsEnabled: true,
+    declaredBodyBytes: 128 * 1024 + 1,
+  }),
+  245_000,
+  "a potentially large Agent resume body receives the bounded 245s image deadline"
+);
+assert.equal(
+  integrationAnalysisBodyReceiveTimeoutMs(INTEGRATION_RPC_PATHS.runsStart),
+  INTEGRATION_ANALYSIS_ORDINARY_BODY_RECEIVE_TIMEOUT_MS
+);
+assert.equal(
+  integrationAnalysisBodyReceiveTimeoutMs(INTEGRATION_RPC_PATHS.threadsCreate, { attachmentsEnabled: true }),
+  INTEGRATION_ANALYSIS_ORDINARY_BODY_RECEIVE_TIMEOUT_MS,
+  "ordinary Agent routes keep their shorter receive bound when image input is enabled"
+);
+assert.equal(configuredHttpServer.headersTimeout, 10_000);
+assert.equal(configuredHttpServer.keepAliveTimeout, 5_000);
+await streamedImageBodyReachesConfiguredServer();
+const serverSource = await fs.readFile(new URL("../src/integration-analysis-server.js", import.meta.url), "utf8");
+const apiSource = await fs.readFile(new URL("../src/integration-api.js", import.meta.url), "utf8");
+assert.match(
+  serverSource,
+  /const server = http\.createServer\(app\);[\s\S]{0,256}configureIntegrationAnalysisHttpServer\(server\);/u,
+  "the production server applies the 245s outer receive bound to the exact HTTP server"
+);
+assert.match(
+  apiSource,
+  /const bodyReceiveTimeoutMs = integrationAnalysisBodyReceiveTimeoutMs[\s\S]{0,256}declaredBodyBytes: declaredContentLength\(req\)[\s\S]{0,128}armBodyReceiveDeadline\(req, bodyReceiveTimeoutMs\);/u,
+  "large image receives and explicitly small ordinary bodies retain separate explicit bounds"
+);
+assert.match(
+  apiSource,
+  /const attachmentTransportAware =[\s\S]{0,192}statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES\.nativeV3[\s\S]{0,192}stateStorageVersion === INTEGRATION_ANALYSIS_STATE_STORAGE_V3/u,
+  "native-v3 activation binds attachment transport parsing independently of the vision gate"
+);
+assert.match(
+  apiSource,
+  /const attachmentTransportAware = activationMetadata\?\.proof\?\.attachmentTransportAware === true;[\s\S]{0,1024}createAttachmentAdmissionMiddlewares\([\s\S]{0,128}attachmentTransportAware/u,
+  "gate-off native-v3 keeps the bounded image parser and receive admission lane"
+);
+const gateOffPreflightIndex = apiSource.indexOf("const gateOffAttachmentMutation =");
+const idempotencyMutationIndex = apiSource.indexOf(
+  "transactionalIdempotencyStore.runMutation(",
+  gateOffPreflightIndex
+);
+const visionGateRejectIndex = apiSource.indexOf('"ANALYSIS_VISION_NOT_READY"', idempotencyMutationIndex);
+const sessionMutationIndex = apiSource.indexOf(
+  "await callSessionService(sessionService, pathname, payload, context)",
+  visionGateRejectIndex
+);
+assert.ok(gateOffPreflightIndex > 0);
+assert.ok(
+  idempotencyMutationIndex > gateOffPreflightIndex,
+  "all gate-off image mutations must enter the durable idempotency authority"
+);
+assert.ok(
+  visionGateRejectIndex > idempotencyMutationIndex && sessionMutationIndex > visionGateRejectIndex,
+  "only a new idempotency dispatch rejects gate-off image work, before the session mutation"
+);
+assert.equal(
+  apiSource.indexOf("await sessionService.recoverMutation({", gateOffPreflightIndex),
+  -1,
+  "the router must not bypass external completed, failed, or pending idempotency authority"
+);
 assert.throws(
   () => validateIntegrationAnalysisServiceConfig({ ...validConfig(), schemaVersion: "aginti-integration-analysis-service-config-v1" }),
   (error) => error.code === "ANALYSIS_CONFIG_LOCKED"
@@ -326,6 +525,37 @@ const r67CompatibleConfig = validateIntegrationAnalysisServiceConfig(validConfig
 assert.equal(
   publicIntegrationAnalysisServiceConfig(r67CompatibleConfig).statePersistence.mode,
   INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2
+);
+assert.equal(Object.prototype.hasOwnProperty.call(r67CompatibleConfig, "vision"), false);
+assert.deepEqual(
+  validateIntegrationAnalysisServiceConfig(validConfig({
+    statePersistence: { mode: INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2 },
+    vision: { enabled: false },
+  })).vision,
+  { enabled: false }
+);
+const nativeVisionDisabledConfig = validateIntegrationAnalysisServiceConfig(validConfig({
+  vision: { enabled: false },
+}));
+assert.deepEqual(
+  integrationAnalysisCliSummary(nativeVisionDisabledConfig, "checked-analysis-ready-to-probe").vision,
+  { enabled: false }
+);
+assert.throws(
+  () => validateIntegrationAnalysisServiceConfig(validConfig({
+    statePersistence: { mode: INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2 },
+    vision: { enabled: true },
+  })),
+  (error) => error.code === "ANALYSIS_CONFIG_INVALID" && /native-v3/u.test(error.message)
+);
+const nativeVisionConfig = validateIntegrationAnalysisServiceConfig(validConfig({
+  vision: { enabled: true },
+}));
+assert.deepEqual(nativeVisionConfig.vision, { enabled: true });
+assert.deepEqual(publicIntegrationAnalysisServiceConfig(nativeVisionConfig).vision, { enabled: true });
+assert.deepEqual(
+  integrationAnalysisCliSummary(nativeVisionConfig, "checked-analysis-ready-to-probe").vision,
+  { enabled: true }
 );
 assert.throws(
   () => validateIntegrationAnalysisServiceConfig(validConfig({ listen: { host: "127.0.0.1", port: 18109 } })),

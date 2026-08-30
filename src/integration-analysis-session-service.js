@@ -50,6 +50,11 @@ import { validateAgintiBrowserSession, validateAgintiPrincipalId } from "./integ
 import { withDirectoryLock } from "./integration-durable-common.js";
 import {
   AGENT_WORKER_SCHEMA_VERSION,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BYTES_LIMIT,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_COUNT_LIMIT,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_MEDIA_TYPES,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_REQUEST_TIMEOUT_MS,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_TOTAL_BYTES_LIMIT,
   INTEGRATION_RPC_PATHS,
   canonicalJson,
   contractDigest,
@@ -59,10 +64,21 @@ import {
   integrationRpcPathIsMutation,
   validateIntegrationSearch,
   validateIntegrationIdempotencyKey,
+  validateIntegrationImageAttachments,
   validateIntegrationArtifactId,
   validateIntegrationRunId,
   validateIntegrationThreadId,
 } from "./integration-policy.js";
+import {
+  INTEGRATION_ANALYSIS_ATTACHMENT_REFERENCE_PREFIX,
+  INTEGRATION_ANALYSIS_VISION_ACTIVATION_SCHEMA_VERSION,
+  INTEGRATION_ANALYSIS_VISION_MODEL,
+  INTEGRATION_ANALYSIS_VISION_MAX_PNG_WORK_BYTES,
+  assertIntegrationAnalysisVisionAttachmentSetWork,
+  assertIntegrationAnalysisVisionActivation,
+  assertIntegrationAnalysisVisionClient,
+  inspectIntegrationAnalysisImageBytes,
+} from "./integration-analysis-vision.js";
 import {
   PUBLIC_INTEGRATION_EVENT_LEDGER_VERSION,
   createPublicIntegrationEvent,
@@ -102,6 +118,14 @@ export const INTEGRATION_ANALYSIS_SESSION_LIMITS = Object.freeze({
   maximumConversationMessages: 24,
   maximumConversationMessageBytes: 8 * 1024,
   maximumConversationBytes: 48 * 1024,
+  maximumAttachmentsPerMessage: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_COUNT_LIMIT,
+  maximumAttachmentBytesEach: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BYTES_LIMIT,
+  maximumAttachmentBytesPerMessage: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_TOTAL_BYTES_LIMIT,
+  maximumRetainedAttachmentBlobsPerScope: 512,
+  maximumRetainedAttachmentBytesPerScope: 256 * 1024 * 1024,
+  maximumRetainedAttachmentBlobsGlobal: 2048,
+  maximumRetainedAttachmentBytesGlobal: 512 * 1024 * 1024,
+  minimumFreeBytesAfterAttachmentWrite: 512 * 1024 * 1024,
   maximumPriorArtifacts: INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACTS,
   maximumPriorArtifactJsonBytes: INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACT_JSON_BYTES,
   maximumPriorContextBytes: INTEGRATION_ANALYSIS_MAX_PRIOR_CONTEXT_BYTES,
@@ -136,8 +160,15 @@ const RUN_SCHEDULING_STATES = new Set(["starting", "queued", "running", "termina
 const SESSION_BRAND = new WeakSet();
 const SESSION_METADATA = new WeakMap();
 const MESSAGE_DIGEST_VERSION = "aginti-analysis-public-message-v1";
+const ATTACHMENT_REFERENCE_ID_DOMAIN = "aginti-analysis-attachment-reference-v1";
+const ATTACHMENT_BLOB_DIRECTORY = "attachments";
+const ATTACHMENT_BLOB_FILE_PATTERN = /^aimg_[a-f0-9]{64}\.bin$/u;
+const ATTACHMENT_BLOB_TEMP_PATTERN = /^\.aimg_[a-f0-9]{64}\.[1-9][0-9]{0,11}\.[a-f0-9]{24}\.tmp$/u;
+const ATTACHMENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/u;
 const STATE_SCOPE_DIGEST_VERSION = "aginti-analysis-state-scope-v1";
 const MUTATION_RECEIPT_SCHEMA_VERSION = "aginti-analysis-mutation-receipt-v1";
+export const INTEGRATION_ANALYSIS_ATTACHMENT_AUTHORITY_SCHEMA_VERSION =
+  "aginti-analysis-attachment-authority-v1";
 const DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION = "aginti-document-commit-intent-v2";
 const LEGACY_DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION = "aginti-document-commit-intent-v1";
 const DOCUMENT_COMMIT_INTENT_MANIFEST_SCHEMA_VERSION = "aginti-document-commit-intent-manifest-v2";
@@ -215,6 +246,41 @@ function conflict(code, message) {
 
 function exact(value, allowed, required, label) {
   return integrationExactKeys(value, allowed, label, required);
+}
+
+function attachmentStoragePolicy(value, { testOnly }) {
+  const fixed = Object.freeze({
+    maximumRetainedBlobsGlobal:
+      INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumRetainedAttachmentBlobsGlobal,
+    maximumRetainedBytesGlobal:
+      INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumRetainedAttachmentBytesGlobal,
+    minimumFreeBytesAfterWrite:
+      INTEGRATION_ANALYSIS_SESSION_LIMITS.minimumFreeBytesAfterAttachmentWrite,
+  });
+  if (value === undefined) return fixed;
+  if (!testOnly) {
+    fail("ANALYSIS_CONFIGURATION_INVALID", "Attachment storage policy is fixed in production.", {
+      status: 500,
+    });
+  }
+  const candidate = exact(
+    value,
+    ["maximumRetainedBlobsGlobal", "maximumRetainedBytesGlobal", "minimumFreeBytesAfterWrite"],
+    ["maximumRetainedBlobsGlobal", "maximumRetainedBytesGlobal", "minimumFreeBytesAfterWrite"],
+    "test attachment storage policy"
+  );
+  for (const [key, minimum, maximum] of [
+    ["maximumRetainedBlobsGlobal", 1, fixed.maximumRetainedBlobsGlobal],
+    ["maximumRetainedBytesGlobal", 16, fixed.maximumRetainedBytesGlobal],
+    ["minimumFreeBytesAfterWrite", 0, fixed.minimumFreeBytesAfterWrite],
+  ]) {
+    if (!Number.isSafeInteger(candidate[key]) || candidate[key] < minimum || candidate[key] > maximum) {
+      fail("ANALYSIS_CONFIGURATION_INVALID", `Test attachment storage policy ${key} is invalid.`, {
+        status: 500,
+      });
+    }
+  }
+  return Object.freeze({ ...candidate });
 }
 
 function exactState(value, allowed, required, label) {
@@ -541,6 +607,54 @@ function mutationRecoveryAuthority() {
   return Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
 }
 
+function attachmentAuthority(visionActivation, stateRoot) {
+  if (visionActivation === undefined) return null;
+  const unsigned = Object.freeze({
+    schemaVersion: INTEGRATION_ANALYSIS_ATTACHMENT_AUTHORITY_SCHEMA_VERSION,
+    owner: "aginti",
+    ready: true,
+    transport: "inline-base64",
+    acceptedMediaTypes: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_MEDIA_TYPES,
+    maximumCount: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_COUNT_LIMIT,
+    maximumBytesEach: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BYTES_LIMIT,
+    maximumBytesTotal: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_TOTAL_BYTES_LIMIT,
+    maximumRetainedBlobsGlobal:
+      INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumRetainedAttachmentBlobsGlobal,
+    maximumRetainedBytesGlobal:
+      INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumRetainedAttachmentBytesGlobal,
+    minimumFreeBytesAfterWrite:
+      INTEGRATION_ANALYSIS_SESSION_LIMITS.minimumFreeBytesAfterAttachmentWrite,
+    requestTimeoutMs: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_REQUEST_TIMEOUT_MS,
+    maximumConcurrentVisionRuns: 1,
+    model: INTEGRATION_ANALYSIS_VISION_MODEL,
+    persistence: "retained-reference-v1",
+    stateRootDigest: contractDigest({ stateRoot }),
+    visionActivationSchemaVersion: INTEGRATION_ANALYSIS_VISION_ACTIVATION_SCHEMA_VERSION,
+    visionActivationDigest: visionActivation.digest,
+    requestHashBound: true,
+    idempotencyReplayBound: true,
+    principalBound: true,
+    browserSessionBound: true,
+    threadBound: true,
+    runBound: true,
+    orderedReferences: true,
+    privateBinaryBlobs: true,
+    publicDescriptorsContainBytes: false,
+    publicDescriptorsContainPaths: false,
+    atomicBlobFsyncRename: true,
+    directoryFsync: true,
+    exactBlobIntegrityRevalidatedBeforeInference: true,
+    exclusiveServiceLifetimeLock: true,
+    crossProcessSafe: true,
+    globalCapacitySerialized: true,
+    filesystemFreeSpaceCheckedBeforeAndAfterWrite: true,
+    orphanCleanupUnderExclusiveLock: true,
+    deletionReclaimsUnreferencedBlobs: true,
+    hostedFallback: false,
+  });
+  return Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
+}
+
 function initialState(scope) {
   return {
     schemaVersion: INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION,
@@ -571,6 +685,187 @@ function newMessageId() {
   return `msg_${crypto.randomUUID().replaceAll("-", "")}`;
 }
 
+function attachmentReferenceId(scope, threadId, runId, attachment) {
+  return `${INTEGRATION_ANALYSIS_ATTACHMENT_REFERENCE_PREFIX}${contractDigest({
+    domain: ATTACHMENT_REFERENCE_ID_DOMAIN,
+    principalId: scope.principalId,
+    browserSessionId: scope.browserSessionId,
+    threadId: validateIntegrationThreadId(threadId),
+    runId: validateIntegrationRunId(runId),
+    attachmentId: attachment.attachmentId,
+    mediaType: attachment.mediaType,
+    byteLength: attachment.byteLength,
+    width: attachment.width,
+    height: attachment.height,
+    sha256: attachment.sha256,
+  })}`;
+}
+
+function publicAttachmentDescriptor(attachment) {
+  return Object.freeze({
+    attachmentId: attachment.attachmentId,
+    mediaType: attachment.mediaType,
+    byteLength: attachment.byteLength,
+    width: attachment.width,
+    height: attachment.height,
+    sha256: attachment.sha256,
+  });
+}
+
+function publicMessageRecord(message) {
+  return Object.freeze({
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    runId: message.runId,
+    createdAt: message.createdAt,
+    digest: message.digest,
+    ...(message.attachments === undefined
+      ? {}
+      : { attachments: Object.freeze(message.attachments.map(publicAttachmentDescriptor)) }),
+  });
+}
+
+function observeAttachmentBuffer(lifecycle, event, origin, bytes) {
+  if (lifecycle === undefined) return;
+  lifecycle(Object.freeze({ event, origin, bytes }));
+}
+
+function ownAttachmentBuffer(bytes, lifecycle, origin) {
+  observeAttachmentBuffer(lifecycle, "owned", origin, bytes);
+  return bytes;
+}
+
+function wipeAttachmentBuffer(bytes, lifecycle, origin) {
+  if (!Buffer.isBuffer(bytes)) return;
+  bytes.fill(0);
+  observeAttachmentBuffer(lifecycle, "wiped", origin, bytes);
+}
+
+function wipeStagedAttachmentBuffers(attachments, lifecycle, origin) {
+  for (const attachment of attachments || []) {
+    wipeAttachmentBuffer(attachment?.bytes, lifecycle, origin);
+  }
+}
+
+function decodeInlineAttachments(value, scope, threadId, runId, lifecycle) {
+  if (value === undefined) return Object.freeze([]);
+  let transport;
+  try {
+    transport = validateIntegrationImageAttachments(value);
+  } catch (error) {
+    fail("ANALYSIS_ATTACHMENT_INVALID", "Agent image attachments are invalid.", { status: 400, cause: error });
+  }
+  const attachments = [];
+  let remainingPngWorkBytes = INTEGRATION_ANALYSIS_VISION_MAX_PNG_WORK_BYTES;
+  try {
+    for (const attachment of transport) {
+      const bytes = ownAttachmentBuffer(
+        Buffer.from(attachment.data, "base64"),
+        lifecycle,
+        "inline-decoded"
+      );
+      let facts;
+      try {
+        facts = inspectIntegrationAnalysisImageBytes(bytes, attachment.mediaType, {
+          maximumPngWorkBytes: remainingPngWorkBytes,
+        });
+        remainingPngWorkBytes -= facts.pngWorkBytes || 0;
+      } catch (error) {
+        wipeAttachmentBuffer(bytes, lifecycle, "inline-decode-error");
+        fail("ANALYSIS_ATTACHMENT_INVALID", "Agent image attachment bytes are invalid.", {
+          status: Number(error?.statusCode || error?.status) || 400,
+          cause: error,
+        });
+      }
+      const descriptor = Object.freeze({
+        attachmentId: attachment.attachmentId,
+        mediaType: attachment.mediaType,
+        byteLength: facts.byteLength,
+        width: facts.width,
+        height: facts.height,
+        sha256: facts.sha256,
+        referenceId: "",
+      });
+      attachments.push(Object.freeze({
+        descriptor: Object.freeze({
+          ...descriptor,
+          referenceId: attachmentReferenceId(scope, threadId, runId, descriptor),
+        }),
+        bytes,
+      }));
+    }
+    try {
+      assertIntegrationAnalysisVisionAttachmentSetWork(
+        attachments.map(({ descriptor }) => descriptor)
+      );
+    } catch (error) {
+      fail("ANALYSIS_ATTACHMENT_INVALID", "Agent image set exceeds its decode-work bound.", {
+        status: 400,
+        cause: error,
+      });
+    }
+    return Object.freeze(attachments);
+  } catch (error) {
+    wipeStagedAttachmentBuffers(attachments, lifecycle, "inline-decode-rollback");
+    throw error;
+  }
+}
+
+function validateStateAttachmentDescriptor(attachment, scope, threadId, runId, label) {
+  exactState(
+    attachment,
+    ["attachmentId", "mediaType", "byteLength", "width", "height", "sha256", "referenceId"],
+    ["attachmentId", "mediaType", "byteLength", "width", "height", "sha256", "referenceId"],
+    label
+  );
+  if (
+    typeof attachment.attachmentId !== "string" || !ATTACHMENT_ID_PATTERN.test(attachment.attachmentId) ||
+    !INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_MEDIA_TYPES.includes(attachment.mediaType) ||
+    !Number.isSafeInteger(attachment.byteLength) || attachment.byteLength < 16 ||
+    attachment.byteLength > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumAttachmentBytesEach ||
+    !Number.isSafeInteger(attachment.width) || attachment.width < 1 || attachment.width > 8192 ||
+    !Number.isSafeInteger(attachment.height) || attachment.height < 1 || attachment.height > 8192 ||
+    attachment.width * attachment.height > 20_000_000 ||
+    typeof attachment.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(attachment.sha256) ||
+    typeof attachment.referenceId !== "string" || !/^aimg_[a-f0-9]{64}$/u.test(attachment.referenceId) ||
+    attachment.referenceId !== attachmentReferenceId(scope, threadId, runId, attachment)
+  ) {
+    corrupt();
+  }
+  return attachment;
+}
+
+function validateStateAttachments(value, scope, threadId, runId, role, label) {
+  if (value === undefined) return;
+  if (
+    role !== "user" || !Array.isArray(value) || value.length < 1 ||
+    value.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumAttachmentsPerMessage
+  ) {
+    corrupt();
+  }
+  const identifiers = new Set();
+  let totalBytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const attachment = validateStateAttachmentDescriptor(
+      value[index],
+      scope,
+      threadId,
+      runId,
+      `${label}[${index}]`
+    );
+    if (identifiers.has(attachment.attachmentId)) corrupt();
+    identifiers.add(attachment.attachmentId);
+    totalBytes += attachment.byteLength;
+  }
+  if (totalBytes > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumAttachmentBytesPerMessage) corrupt();
+  try {
+    assertIntegrationAnalysisVisionAttachmentSetWork(value);
+  } catch (error) {
+    corrupt(error);
+  }
+}
+
 function messageDigest(threadId, message, previousDigest) {
   return contractDigest({
     schemaVersion: MESSAGE_DIGEST_VERSION,
@@ -581,10 +876,13 @@ function messageDigest(threadId, message, previousDigest) {
     content: message.content,
     runId: message.runId,
     createdAt: message.createdAt,
+    ...(message.attachments === undefined
+      ? {}
+      : { attachments: message.attachments.map(publicAttachmentDescriptor) }),
   });
 }
 
-function appendMessage(thread, { role, content, runId, createdAt }) {
+function appendMessage(thread, { role, content, runId, createdAt, attachments }) {
   if (thread.messages.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumMessagesPerThread) {
     conflict("ANALYSIS_THREAD_FULL", "Thread message capacity is exhausted.");
   }
@@ -595,6 +893,9 @@ function appendMessage(thread, { role, content, runId, createdAt }) {
     content: publicText(content, "public message content"),
     runId: validateIntegrationRunId(runId),
     createdAt: canonicalTimestamp(createdAt, "public message createdAt"),
+    ...(attachments === undefined || attachments.length === 0
+      ? {}
+      : { attachments: attachments.map((attachment) => ({ ...attachment })) }),
     digest: "",
   };
   message.digest = messageDigest(thread.id, message, previousDigest);
@@ -641,7 +942,36 @@ function runCursor(run) {
   });
 }
 
-function ownedThread(thread, { includeMessages = true } = {}) {
+function attachmentSourceMessageForInput(thread, inputIndex) {
+  if (
+    !Number.isSafeInteger(inputIndex) || inputIndex < 0 || inputIndex >= thread.messages.length ||
+    thread.messages[inputIndex].role !== "user"
+  ) {
+    corrupt();
+  }
+  if ((thread.messages[inputIndex].attachments?.length || 0) > 0) {
+    return thread.messages[inputIndex];
+  }
+  return thread.messages
+    .slice(0, inputIndex)
+    .reverse()
+    .find((message) => message.role === "user" && (message.attachments?.length || 0) > 0) || null;
+}
+
+function threadActiveImageContext(thread) {
+  if (thread.lastRunId === null) return false;
+  const inputIndex = thread.messages.findIndex(
+    (message) => message.role === "user" && message.runId === thread.lastRunId
+  );
+  if (inputIndex < 0) corrupt();
+  return attachmentSourceMessageForInput(thread, inputIndex) !== null;
+}
+
+function ownedThread(
+  thread,
+  { includeMessages = true, includeActiveImageContext = true } = {}
+) {
+  const activeImageContext = includeActiveImageContext && threadActiveImageContext(thread);
   const publicRecord = sanitizePublicIntegrationThread(
     {
       id: thread.id,
@@ -651,9 +981,10 @@ function ownedThread(thread, { includeMessages = true } = {}) {
       createdAt: thread.createdAt,
       updatedAt: thread.updatedAt,
       lastRunId: thread.lastRunId,
+      ...(activeImageContext ? { activeImageContext: true } : {}),
       authority: thread.authority,
       replay: thread.replay,
-      messages: includeMessages ? thread.messages : [],
+      messages: includeMessages ? thread.messages.map(publicMessageRecord) : [],
     },
     { publicContract: true }
   );
@@ -711,7 +1042,7 @@ function ownedArtifact(artifact) {
 function validateMessage(message, thread, runsById, previousDigest, index) {
   const item = exactState(
     message,
-    ["id", "role", "content", "runId", "createdAt", "digest"],
+    ["id", "role", "content", "runId", "createdAt", "attachments", "digest"],
     ["id", "role", "content", "runId", "createdAt", "digest"],
     `state thread message[${index}]`
   );
@@ -727,6 +1058,14 @@ function validateMessage(message, thread, runsById, previousDigest, index) {
   stateDigest(item.digest, `state thread message[${index}].digest`);
   const run = runsById.get(item.runId);
   if (!run || run.threadId !== thread.id) corrupt();
+  validateStateAttachments(
+    item.attachments,
+    Object.freeze({ principalId: thread.principalId, browserSessionId: thread.browserSessionId }),
+    thread.id,
+    item.runId,
+    item.role,
+    `state thread message[${index}].attachments`
+  );
   if (item.digest !== messageDigest(thread.id, item, previousDigest)) corrupt();
   return item.digest;
 }
@@ -786,7 +1125,7 @@ function validateThread(thread, scope, runsById) {
         lastRunId: thread.lastRunId,
         authority: thread.authority,
         replay: thread.replay,
-        messages: thread.messages,
+        messages: thread.messages.map(publicMessageRecord),
       },
       { publicContract: true }
     );
@@ -1915,11 +2254,12 @@ function assertR67CompatibleState(state) {
     state.documentCommitIntents.length !== 0 ||
     state.documentDeletionIntents.length !== 0 ||
     state.runs.some((run) => run.search !== undefined) ||
+    state.threads.some((thread) => thread.messages.some((message) => message.attachments !== undefined)) ||
     state.artifacts.some((artifact) => !new Set(["plot", "table", "markdown"]).has(artifact.kind))
   ) {
     fail(
       "ANALYSIS_STATE_PERSISTENCE_INCOMPATIBLE",
-      "r67-compatible-v2 persistence cannot store Search or document state.",
+      "r67-compatible-v2 persistence cannot store Search, image, or document state.",
       { status: 503 }
     );
   }
@@ -2147,7 +2487,450 @@ function stateFilePaths(stateRoot, scope) {
   const id = scopeDigest(scope);
   const scopesDirectory = path.join(stateRoot, "scopes");
   const scopeDirectory = path.join(scopesDirectory, id);
-  return Object.freeze({ scopesDirectory, scopeDirectory, stateFile: path.join(scopeDirectory, "state.json") });
+  return Object.freeze({
+    scopesDirectory,
+    scopeDirectory,
+    stateFile: path.join(scopeDirectory, "state.json"),
+    attachmentsDirectory: path.join(scopeDirectory, ATTACHMENT_BLOB_DIRECTORY),
+  });
+}
+
+function attachmentBlobPath(locations, referenceId) {
+  if (typeof referenceId !== "string" || !/^aimg_[a-f0-9]{64}$/u.test(referenceId)) corrupt();
+  const target = path.join(locations.attachmentsDirectory, `${referenceId}.bin`);
+  if (path.dirname(target) !== locations.attachmentsDirectory) corrupt();
+  return target;
+}
+
+async function verifyPrivateAttachmentFile(
+  target,
+  expected = null,
+  { transferBytes = false, bufferLifecycle } = {}
+) {
+  let handle;
+  let bytes = null;
+  let transferred = false;
+  try {
+    handle = await fs.open(target, openFlags(fsConstants.O_RDONLY));
+    const opened = await handle.stat();
+    const named = await fs.lstat(target);
+    if (
+      !opened.isFile() || !named.isFile() || opened.isSymbolicLink?.() || named.isSymbolicLink() ||
+      opened.nlink !== 1 || named.nlink !== 1 || opened.dev !== named.dev || opened.ino !== named.ino ||
+      !statOwnerIsTrusted(opened, { leaf: true }) || !safeMode(opened, 0o600) ||
+      opened.size < 16 || opened.size > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumAttachmentBytesEach ||
+      (expected !== null && opened.size !== expected.byteLength)
+    ) {
+      corrupt();
+    }
+    bytes = ownAttachmentBuffer(
+      await handle.readFile(),
+      bufferLifecycle,
+      transferBytes ? "retained-read" : "integrity-read"
+    );
+    if (bytes.length !== opened.size) corrupt();
+    if (expected !== null) {
+      const facts = inspectIntegrationAnalysisImageBytes(bytes, expected.mediaType);
+      if (
+        facts.byteLength !== expected.byteLength || facts.width !== expected.width ||
+        facts.height !== expected.height || facts.sha256 !== expected.sha256
+      ) {
+        corrupt();
+      }
+    }
+    if (transferBytes) {
+      transferred = true;
+      return Object.freeze({ stat: opened, bytes });
+    }
+    return Object.freeze({ stat: opened });
+  } catch (error) {
+    if (error instanceof IntegrationAnalysisSessionError) throw error;
+    if (error?.code === "ENOENT") corrupt(error);
+    unavailable(error);
+  } finally {
+    await handle?.close().catch(() => {});
+    if (bytes !== null && !transferred) {
+      wipeAttachmentBuffer(bytes, bufferLifecycle, "integrity-read-finally");
+    }
+  }
+}
+
+async function attachmentDirectoryEntries(locations, { optional = false, testOnly = false } = {}) {
+  const stat = await assertDirectory(locations.attachmentsDirectory, { leaf: true, testOnly });
+  if (!stat) {
+    if (optional) return Object.freeze([]);
+    await ensurePrivateDirectory(locations.attachmentsDirectory, locations.scopeDirectory, { testOnly });
+  }
+  let entries;
+  try {
+    entries = await fs.readdir(locations.attachmentsDirectory, { withFileTypes: true });
+  } catch (error) {
+    unavailable(error);
+  }
+  if (
+    entries.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumRetainedAttachmentBlobsPerScope * 2 ||
+    entries.some((entry) =>
+      entry.isSymbolicLink() || !entry.isFile() ||
+      (!ATTACHMENT_BLOB_FILE_PATTERN.test(entry.name) && !ATTACHMENT_BLOB_TEMP_PATTERN.test(entry.name))
+    )
+  ) {
+    corrupt();
+  }
+  return Object.freeze(entries);
+}
+
+async function retainedAttachmentGlobalUsage(stateRoot, { testOnly, storagePolicy }) {
+  const scopesDirectory = path.join(stateRoot, "scopes");
+  const scopesStat = await assertDirectory(scopesDirectory, { leaf: true, testOnly });
+  if (!scopesStat) corrupt();
+  let scopes;
+  try {
+    scopes = await fs.readdir(scopesDirectory, { withFileTypes: true });
+  } catch (error) {
+    unavailable(error);
+  }
+  if (
+    scopes.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumScopes ||
+    scopes.some((entry) =>
+      !entry.isDirectory() || entry.isSymbolicLink() || !/^[a-f0-9]{64}$/u.test(entry.name)
+    )
+  ) {
+    corrupt();
+  }
+  let blobs = 0;
+  let bytes = 0;
+  for (const entry of scopes.sort((left, right) => left.name.localeCompare(right.name))) {
+    const scopeDirectory = path.join(scopesDirectory, entry.name);
+    if (path.dirname(scopeDirectory) !== scopesDirectory) corrupt();
+    const scopeStat = await assertDirectory(scopeDirectory, { leaf: true, testOnly });
+    if (!scopeStat) corrupt();
+    const locations = Object.freeze({
+      scopeDirectory,
+      attachmentsDirectory: path.join(scopeDirectory, ATTACHMENT_BLOB_DIRECTORY),
+    });
+    const attachments = await attachmentDirectoryEntries(locations, { optional: true, testOnly });
+    let removedTemporary = false;
+    for (const attachment of attachments) {
+      const target = path.join(locations.attachmentsDirectory, attachment.name);
+      if (path.dirname(target) !== locations.attachmentsDirectory) corrupt();
+      const stat = await fs.lstat(target).catch((error) => unavailable(error));
+      const completed = ATTACHMENT_BLOB_FILE_PATTERN.test(attachment.name);
+      if (
+        !stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 ||
+        !statOwnerIsTrusted(stat, { leaf: true }) || !safeMode(stat, 0o600) ||
+        stat.size < (completed ? 16 : 0) ||
+        stat.size > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumAttachmentBytesEach
+      ) {
+        corrupt();
+      }
+      if (!completed) {
+        try {
+          await fs.unlink(target);
+          removedTemporary = true;
+        } catch (error) {
+          if (error?.code !== "ENOENT") unavailable(error);
+        }
+        continue;
+      }
+      blobs += 1;
+      bytes += stat.size;
+      if (
+        blobs > storagePolicy.maximumRetainedBlobsGlobal ||
+        bytes > storagePolicy.maximumRetainedBytesGlobal
+      ) {
+        conflict(
+          "ANALYSIS_ATTACHMENT_GLOBAL_CAPACITY_EXHAUSTED",
+          "Global retained Agent image capacity is exhausted; delete old image threads and retry."
+        );
+      }
+    }
+    if (removedTemporary) await syncDirectory(locations.attachmentsDirectory);
+  }
+  return Object.freeze({ blobs, bytes });
+}
+
+function statfsInteger(value, label) {
+  if (typeof value === "bigint" && value >= 0n) return value;
+  if (Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  fail("ANALYSIS_STORAGE_UNAVAILABLE", `${label} is invalid.`, { status: 503 });
+}
+
+async function attachmentFilesystemCapacity(target, statfsImpl, { testOnly }) {
+  const directory = await assertDirectory(target, { leaf: true, testOnly });
+  if (!directory) corrupt();
+  let facts;
+  try {
+    facts = await statfsImpl(target, { bigint: true });
+  } catch (error) {
+    unavailable(error);
+  }
+  const blockSize = statfsInteger(facts?.bsize, "Attachment filesystem block size");
+  const availableBlocks = statfsInteger(facts?.bavail, "Attachment filesystem available blocks");
+  if (blockSize < 1n) {
+    fail("ANALYSIS_STORAGE_UNAVAILABLE", "Attachment filesystem block size is invalid.", {
+      status: 503,
+    });
+  }
+  return Object.freeze({
+    blockSize,
+    availableBytes: blockSize * availableBlocks,
+    device: directory.dev,
+    inode: directory.ino,
+  });
+}
+
+function attachmentAllocationBytes(additions, blockSize) {
+  return additions.reduce((total, { descriptor }) => {
+    const bytes = BigInt(descriptor.byteLength);
+    return total + ((bytes + blockSize - 1n) / blockSize) * blockSize;
+  }, 0n);
+}
+
+async function rollbackAttachmentTargets(directory, targets) {
+  const failures = [];
+  let changed = false;
+  for (const target of targets) {
+    if (path.dirname(target) !== directory) corrupt();
+    try {
+      await fs.unlink(target);
+      changed = true;
+    } catch (error) {
+      if (error?.code !== "ENOENT") failures.push(error);
+    }
+  }
+  if (changed) {
+    try {
+      await syncDirectory(directory);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) unavailable(new AggregateError(failures, "Attachment rollback failed."));
+}
+
+function referencedAttachmentIds(state) {
+  const references = new Set();
+  for (const thread of state.threads) {
+    for (const message of thread.messages) {
+      for (const attachment of message.attachments || []) references.add(attachment.referenceId);
+    }
+  }
+  return references;
+}
+
+async function pruneUnreferencedAttachmentBlobs(scope, state, stateRoot, { testOnly }) {
+  const locations = stateFilePaths(stateRoot, scope);
+  const entries = await attachmentDirectoryEntries(locations, { optional: true, testOnly });
+  if (entries.length === 0) return;
+  const references = referencedAttachmentIds(state);
+  let changed = false;
+  for (const entry of entries) {
+    const target = path.join(locations.attachmentsDirectory, entry.name);
+    if (path.dirname(target) !== locations.attachmentsDirectory) corrupt();
+    const stat = await fs.lstat(target).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      unavailable(error);
+    });
+    if (!stat) continue;
+    if (
+      !stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 ||
+      !statOwnerIsTrusted(stat, { leaf: true }) || !safeMode(stat, 0o600)
+    ) {
+      corrupt();
+    }
+    const referenceId = ATTACHMENT_BLOB_FILE_PATTERN.test(entry.name)
+      ? entry.name.slice(0, -4)
+      : null;
+    if (referenceId !== null && references.has(referenceId)) continue;
+    try {
+      await fs.unlink(target);
+      changed = true;
+    } catch (error) {
+      if (error?.code !== "ENOENT") unavailable(error);
+    }
+  }
+  if (changed) await syncDirectory(locations.attachmentsDirectory);
+}
+
+async function writeAttachmentBlob(locations, attachment, bytes, bufferLifecycle) {
+  const target = attachmentBlobPath(locations, attachment.referenceId);
+  const existing = await lstatOrNull(target);
+  if (existing) {
+    await verifyPrivateAttachmentFile(target, attachment, { bufferLifecycle });
+    return false;
+  }
+  const temporaryPath = path.join(
+    locations.attachmentsDirectory,
+    `.${attachment.referenceId}.${process.pid}.${crypto.randomBytes(12).toString("hex")}.tmp`
+  );
+  let handle;
+  let createdTarget = false;
+  let temporaryIdentity = null;
+  try {
+    handle = await fs.open(
+      temporaryPath,
+      openFlags(fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL),
+      0o600
+    );
+    await handle.writeFile(bytes);
+    await handle.sync();
+    await handle.chmod(0o600);
+    await handle.close();
+    handle = null;
+    const prepared = await fs.lstat(temporaryPath);
+    temporaryIdentity = Object.freeze({ device: prepared.dev, inode: prepared.ino });
+    await verifyPrivateAttachmentFile(temporaryPath, attachment, { bufferLifecycle });
+    const raced = await lstatOrNull(target);
+    if (raced) {
+      await verifyPrivateAttachmentFile(target, attachment, { bufferLifecycle });
+      await fs.unlink(temporaryPath);
+    } else {
+      await fs.rename(temporaryPath, target);
+      createdTarget = true;
+      await verifyPrivateAttachmentFile(target, attachment, { bufferLifecycle });
+    }
+    await syncDirectory(locations.attachmentsDirectory);
+    return !raced;
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    const namedTarget = await lstatOrNull(target);
+    const targetIsPreparedFile = temporaryIdentity !== null && namedTarget !== null &&
+      namedTarget.dev === temporaryIdentity.device && namedTarget.ino === temporaryIdentity.inode;
+    await rollbackAttachmentTargets(
+      locations.attachmentsDirectory,
+      createdTarget || targetIsPreparedFile ? [temporaryPath, target] : [temporaryPath]
+    );
+    if (error instanceof IntegrationAnalysisSessionError) throw error;
+    unavailable(error);
+  }
+}
+
+async function stageAttachmentBlobs(
+  scope,
+  state,
+  stateRoot,
+  staged,
+  { testOnly, bufferLifecycle, storagePolicy, statfsImpl }
+) {
+  if (staged.length === 0) return Object.freeze([]);
+  const locations = stateFilePaths(stateRoot, scope);
+  await ensurePrivateDirectory(locations.attachmentsDirectory, locations.scopeDirectory, { testOnly });
+  const scopeDirectoryIdentity = await assertDirectory(locations.scopeDirectory, { leaf: true, testOnly });
+  const attachmentDirectoryIdentity = await assertDirectory(
+    locations.attachmentsDirectory,
+    { leaf: true, testOnly }
+  );
+  if (
+    !scopeDirectoryIdentity || !attachmentDirectoryIdentity ||
+    scopeDirectoryIdentity.dev !== attachmentDirectoryIdentity.dev
+  ) {
+    corrupt();
+  }
+  await pruneUnreferencedAttachmentBlobs(scope, state, stateRoot, { testOnly });
+  const entries = await attachmentDirectoryEntries(locations, { testOnly });
+  let retainedBytes = 0;
+  const retainedNames = new Set();
+  for (const entry of entries) {
+    if (!ATTACHMENT_BLOB_FILE_PATTERN.test(entry.name)) continue;
+    const target = path.join(locations.attachmentsDirectory, entry.name);
+    const stat = await fs.lstat(target).catch((error) => unavailable(error));
+    if (
+      !stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 ||
+      !statOwnerIsTrusted(stat, { leaf: true }) || !safeMode(stat, 0o600) ||
+      stat.size < 16 || stat.size > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumAttachmentBytesEach
+    ) {
+      corrupt();
+    }
+    retainedNames.add(entry.name);
+    retainedBytes += stat.size;
+  }
+  const additions = staged.filter(({ descriptor }) => !retainedNames.has(`${descriptor.referenceId}.bin`));
+  const addedBytes = additions.reduce((total, { descriptor }) => total + descriptor.byteLength, 0);
+  if (
+    retainedNames.size + additions.length >
+      INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumRetainedAttachmentBlobsPerScope ||
+    retainedBytes + addedBytes > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumRetainedAttachmentBytesPerScope
+  ) {
+    conflict("ANALYSIS_ATTACHMENT_CAPACITY_EXHAUSTED", "Retained Agent image capacity is exhausted; delete an old thread and retry.");
+  }
+  const globalUsage = await retainedAttachmentGlobalUsage(stateRoot, { testOnly, storagePolicy });
+  if (
+    globalUsage.blobs + additions.length > storagePolicy.maximumRetainedBlobsGlobal ||
+    globalUsage.bytes + addedBytes > storagePolicy.maximumRetainedBytesGlobal
+  ) {
+    conflict(
+      "ANALYSIS_ATTACHMENT_GLOBAL_CAPACITY_EXHAUSTED",
+      "Global retained Agent image capacity is exhausted; delete old image threads and retry."
+    );
+  }
+  const before = await attachmentFilesystemCapacity(
+    locations.attachmentsDirectory,
+    statfsImpl,
+    { testOnly }
+  );
+  const allocationBytes = attachmentAllocationBytes(additions, before.blockSize);
+  const stateHeadroom =
+    ((BigInt(INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumStateBytes) + before.blockSize - 1n) /
+      before.blockSize) * before.blockSize;
+  const reserve = BigInt(storagePolicy.minimumFreeBytesAfterWrite);
+  if (before.availableBytes < reserve + allocationBytes + stateHeadroom) {
+    conflict(
+      "ANALYSIS_ATTACHMENT_STORAGE_RESERVE",
+      "Retained Agent image storage must preserve its filesystem free-space reserve."
+    );
+  }
+  const createdTargets = [];
+  try {
+    for (const { descriptor, bytes } of staged) {
+      if (await writeAttachmentBlob(locations, descriptor, bytes, bufferLifecycle)) {
+        createdTargets.push(attachmentBlobPath(locations, descriptor.referenceId));
+      }
+    }
+    const after = await attachmentFilesystemCapacity(
+      locations.attachmentsDirectory,
+      statfsImpl,
+      { testOnly }
+    );
+    if (
+      after.device !== before.device || after.inode !== before.inode ||
+      after.blockSize !== before.blockSize ||
+      after.availableBytes < reserve + stateHeadroom
+    ) {
+      conflict(
+        "ANALYSIS_ATTACHMENT_STORAGE_RESERVE",
+        "Retained Agent image storage crossed its filesystem free-space reserve."
+      );
+    }
+  } catch (error) {
+    await rollbackAttachmentTargets(locations.attachmentsDirectory, createdTargets);
+    throw error;
+  }
+  return Object.freeze(staged.map(({ descriptor }) => Object.freeze({ ...descriptor })));
+}
+
+async function readAttachmentBlobs(scope, stateRoot, descriptors, bufferLifecycle) {
+  if (!descriptors || descriptors.length === 0) return Object.freeze([]);
+  const locations = stateFilePaths(stateRoot, scope);
+  const directory = await assertDirectory(locations.attachmentsDirectory, { leaf: true });
+  if (!directory) corrupt();
+  const attachments = [];
+  let totalBytes = 0;
+  try {
+    for (const descriptor of descriptors) {
+      const read = await verifyPrivateAttachmentFile(
+        attachmentBlobPath(locations, descriptor.referenceId),
+        descriptor,
+        { transferBytes: true, bufferLifecycle }
+      );
+      attachments.push(Object.freeze({ ...descriptor, bytes: read.bytes }));
+      totalBytes += read.bytes.length;
+      if (totalBytes > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumAttachmentBytesPerMessage) corrupt();
+    }
+    return Object.freeze(attachments);
+  } catch (error) {
+    wipeStagedAttachmentBuffers(attachments, bufferLifecycle, "retained-read-rollback");
+    throw error;
+  }
 }
 
 function validateActivationProof(value, { required }) {
@@ -2228,6 +3011,31 @@ function createService(options, { testOnly }) {
   const analysisRunner = options.analysisRunner;
   const plannerActivation = options.plannerActivation || null;
   const documentWorkerClient = options.documentWorkerClient;
+  const visionClient = options.visionClient;
+  const visionActivation = options.visionActivation;
+  const attachmentBufferLifecycle = testOnly ? options.attachmentBufferLifecycle : undefined;
+  const beforeAttachmentRetryCreate = testOnly ? options.beforeAttachmentRetryCreate : undefined;
+  const fixedAttachmentStoragePolicy = attachmentStoragePolicy(options.attachmentStoragePolicy, {
+    testOnly,
+  });
+  const attachmentStatfs = testOnly && options.attachmentStatfs !== undefined
+    ? options.attachmentStatfs
+    : fs.statfs;
+  if (attachmentBufferLifecycle !== undefined && typeof attachmentBufferLifecycle !== "function") {
+    fail("ANALYSIS_CONFIGURATION_INVALID", "Test attachment buffer lifecycle observer is invalid.", {
+      status: 500,
+    });
+  }
+  if (beforeAttachmentRetryCreate !== undefined && typeof beforeAttachmentRetryCreate !== "function") {
+    fail("ANALYSIS_CONFIGURATION_INVALID", "Test attachment retry barrier is invalid.", {
+      status: 500,
+    });
+  }
+  if (typeof attachmentStatfs !== "function") {
+    fail("ANALYSIS_CONFIGURATION_INVALID", "Test attachment filesystem probe is invalid.", {
+      status: 500,
+    });
+  }
   const statePersistenceMode =
     options.statePersistenceMode ??
     (testOnly ? INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3 : null);
@@ -2239,6 +3047,10 @@ function createService(options, { testOnly }) {
   } catch (error) {
     fail("ANALYSIS_CONFIGURATION_INVALID", "State persistence mode is invalid.", { status: 500, cause: error });
   }
+  const includeActiveImageContext =
+    statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3;
+  const serviceOwnedThread = (thread, { includeMessages = true } = {}) =>
+    ownedThread(thread, { includeMessages, includeActiveImageContext });
   if (!analysisRunner || typeof analysisRunner.run !== "function") {
     fail("ANALYSIS_CONFIGURATION_INVALID", "A trusted analysis runner is required.", { status: 500 });
   }
@@ -2270,6 +3082,25 @@ function createService(options, { testOnly }) {
   if (!testOnly && plannerActivation?.documentWorker !== undefined && documentWorkerClient === undefined) {
     fail("ANALYSIS_CONFIGURATION_INVALID", "Document worker activation has no bound client.", { status: 500 });
   }
+  if ((visionClient === undefined) !== (visionActivation === undefined)) {
+    fail("ANALYSIS_CONFIGURATION_INVALID", "Analysis vision client and activation must be bound together.", {
+      status: 500,
+    });
+  }
+  if (visionClient !== undefined) {
+    try {
+      assertIntegrationAnalysisVisionClient(visionClient, { allowTestOnly: testOnly });
+      assertIntegrationAnalysisVisionActivation(visionActivation, {
+        client: visionClient,
+        allowTestOnly: testOnly,
+      });
+    } catch (error) {
+      fail("ANALYSIS_CONFIGURATION_INVALID", "Analysis vision activation is invalid.", {
+        status: 500,
+        cause: error,
+      });
+    }
+  }
   const activationProof = validateActivationProof(
     testOnly ? options.activationProof : plannerActivation.readinessProof,
     { required: !testOnly }
@@ -2297,11 +3128,11 @@ function createService(options, { testOnly }) {
   }
   if (
     statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2 &&
-    (searchEnabled || documentCreationEnabled || documentWorkerClient !== undefined)
+    (searchEnabled || documentCreationEnabled || documentWorkerClient !== undefined || visionClient !== undefined)
   ) {
     fail(
       "ANALYSIS_CONFIGURATION_INVALID",
-      "r67-compatible-v2 persistence forbids Search and document worker activation.",
+      "r67-compatible-v2 persistence forbids Search, document worker, and image activation.",
       { status: 500 }
     );
   }
@@ -2309,12 +3140,14 @@ function createService(options, { testOnly }) {
     fail("ANALYSIS_CONFIGURATION_INVALID", "Enabled document creation requires its worker client.", { status: 500 });
   }
   const fixedMutationRecoveryAuthority = mutationRecoveryAuthority();
+  const fixedAttachmentAuthority = attachmentAuthority(visionActivation, stateRoot);
   const activeRuns = new Map();
   const pendingDocumentArtifacts = new Map();
   const runQueue = [];
   const ownershipLockPath = path.join(stateRoot, ".analysis-session-owner.lock");
   let plannerRunsInFlight = 0;
   let mutationTail = Promise.resolve();
+  let visionTail = Promise.resolve();
   let ownershipPromise = null;
   let ownershipTask = null;
   let ownershipRelease = null;
@@ -2335,6 +3168,21 @@ function createService(options, { testOnly }) {
   function serialized(task) {
     const operation = mutationTail.then(task, task);
     mutationTail = operation.catch(() => {});
+    return operation;
+  }
+
+  function serializedVision(task, signal) {
+    const run = async () => {
+      if (signal?.aborted) {
+        fail("ANALYSIS_CANCELLED", "Image inspection was cancelled before local vision execution.", {
+          status: 409,
+          cause: signal.reason,
+        });
+      }
+      return task();
+    };
+    const operation = visionTail.then(run, run);
+    visionTail = operation.catch(() => {});
     return operation;
   }
 
@@ -2468,6 +3316,7 @@ function createService(options, { testOnly }) {
     await atomicReplacePrivateIntegrationAnalysisStateFile(locations.stateFile, serializedState, {
       temporaryPath: temporary,
     });
+    await pruneUnreferencedAttachmentBlobs(scope, state, stateRoot, { testOnly });
   }
 
   function closeOpenTools(run, createdAt, summary, eventType = "tool.failed") {
@@ -2766,6 +3615,8 @@ function createService(options, { testOnly }) {
     if (recoveredRuns || reconciledDocuments || reconciledDeletions) {
       state.revision += 1;
       await writeState(scope, state);
+    } else {
+      await pruneUnreferencedAttachmentBlobs(scope, state, stateRoot, { testOnly });
     }
     return state;
   }
@@ -2819,11 +3670,23 @@ function createService(options, { testOnly }) {
     return run;
   }
 
+  function retainedAttachmentDescriptorsForRun(state, run) {
+    const thread = findThread(state, run.threadId);
+    const inputIndex = thread.messages.findIndex((message) => message.id === run.inputMessageId);
+    if (inputIndex < 0 || thread.messages[inputIndex].role !== "user") corrupt();
+    const sourceMessage = attachmentSourceMessageForInput(thread, inputIndex);
+    if (!sourceMessage) return Object.freeze([]);
+    return Object.freeze(
+      sourceMessage.attachments.map((attachment) => Object.freeze({ ...attachment }))
+    );
+  }
+
   function inputForRun(state, run) {
     const thread = findThread(state, run.threadId);
     const inputIndex = thread.messages.findIndex((message) => message.id === run.inputMessageId);
     if (inputIndex < 0 || thread.messages[inputIndex].role !== "user") corrupt();
-    const prompt = thread.messages[inputIndex].content;
+    const inputMessage = thread.messages[inputIndex];
+    const prompt = inputMessage.content;
     let excludedRetryRunId = null;
     if (run.previousRunId !== null) {
       const previous = findRun(state, run.previousRunId);
@@ -2855,10 +3718,14 @@ function createService(options, { testOnly }) {
       selected.unshift(Object.freeze({ role: message.role, content }));
       totalBytes += bytes;
     }
+    const retainedAttachments = retainedAttachmentDescriptorsForRun(state, run);
     return Object.freeze({
       prompt,
       conversation: Object.freeze(selected),
       priorArtifacts: priorArtifactContext.artifacts,
+      ...(retainedAttachments.length === 0
+        ? {}
+        : { retainedAttachments }),
       ...(run.search === undefined ? {} : { search: validateIntegrationSearch(run.search) }),
     });
   }
@@ -3717,6 +4584,31 @@ function createService(options, { testOnly }) {
       const { input, revisionLineage } = prepared;
       const active = activeRuns.get(runId);
       if (!active) fail("ANALYSIS_RUNNER_UNAVAILABLE", "Analysis run ownership was lost.", { status: 503 });
+      let visionEvidence;
+      if (input.retainedAttachments !== undefined) {
+        if (visionClient === undefined) {
+          fail("ANALYSIS_VISION_NOT_READY", "Retained image input has no bound local vision authority.", {
+            status: 503,
+          });
+        }
+        visionEvidence = await serializedVision(async () => {
+          const retained = await readAttachmentBlobs(
+            scope,
+            stateRoot,
+            input.retainedAttachments,
+            attachmentBufferLifecycle
+          );
+          try {
+            return await visionClient.describe(
+              scopeWithRun(scope, threadId, runId),
+              Object.freeze({ prompt: input.prompt, attachments: retained }),
+              Object.freeze({ signal: active.controller.signal })
+            );
+          } finally {
+            wipeStagedAttachmentBuffers(retained, attachmentBufferLifecycle, "vision-finally");
+          }
+        }, active.controller.signal);
+      }
       if (revisionLineage) {
         revisionMaterial = await fetchRevisionSource(
           scope,
@@ -3725,9 +4617,16 @@ function createService(options, { testOnly }) {
           active.controller.signal
         );
       }
+      const runnerInput = Object.freeze({
+        prompt: input.prompt,
+        conversation: input.conversation,
+        priorArtifacts: input.priorArtifacts,
+        ...(input.search === undefined ? {} : { search: input.search }),
+        ...(visionEvidence === undefined ? {} : { visionEvidence }),
+      });
       const runnerResult = await analysisRunner.run(
         scopeWithRun(scope, threadId, runId),
-        input,
+        runnerInput,
         Object.freeze({
           signal: active.controller.signal,
           ...(revisionMaterial === null ? {} : { priorDocument: revisionMaterial.priorDocument }),
@@ -3852,7 +4751,17 @@ function createService(options, { testOnly }) {
     }
   }
 
-  async function createRun(payload, context, previousRunId = null) {
+  async function createRun(
+    payload,
+    context,
+    previousRunId = null,
+    { requireHeadPrevious = false } = {}
+  ) {
+    if (typeof requireHeadPrevious !== "boolean") {
+      fail("ANALYSIS_CONFIGURATION_INVALID", "Analysis retry head requirement is invalid.", {
+        status: 500,
+      });
+    }
     if (draining || stateAccessClosed || closed) {
       fail("ANALYSIS_SERVICE_DRAINING", "Durable analysis service is draining and cannot accept a new run.", {
         status: 503,
@@ -3874,99 +4783,152 @@ function createService(options, { testOnly }) {
     const runId = newRunId();
     const controller = new AbortController();
     const entry = newScheduledEntry(scope, threadId, runId, controller);
-    activeRuns.set(runId, entry);
+    let stagedAttachments = Object.freeze([]);
     let run;
     try {
+      activeRuns.set(runId, entry);
       run = await mutate(
         scope,
-        (state) => {
-          const thread = findThread(state, threadId);
-          if (state.documentDeletionIntents.some((intent) => intent.threadId === thread.id)) {
-            conflict("ANALYSIS_THREAD_DELETE_PENDING", "Thread deletion must finish before another run can start.");
-          }
-          if (thread.status === "running") conflict("ANALYSIS_THREAD_BUSY", "Thread already has an active run.");
-          if (state.runs.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumRunsPerScope) {
-            conflict("ANALYSIS_RUN_CAPACITY_EXHAUSTED", "Run capacity is exhausted.");
-          }
-          if (thread.messages.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumMessagesPerThread - 2) {
-            conflict("ANALYSIS_THREAD_FULL", "Thread message capacity is exhausted.");
-          }
-          const retainedCharacters = thread.messages.reduce((total, message) => total + message.content.length, 0);
-          if (
-            retainedCharacters + prompt.length + 32_000 >
-            INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumMessageCharactersPerThread
-          ) {
-            conflict("ANALYSIS_THREAD_FULL", "Thread message capacity is exhausted.");
-          }
-          const lineagePreviousRunId = previousRunId ?? thread.lastRunId;
-          if (lineagePreviousRunId !== null) {
-            const previous = findRun(state, lineagePreviousRunId);
-            if (previous.threadId !== threadId || !TERMINAL_RUN_STATUSES.has(previous.status)) {
-              conflict("ANALYSIS_RUN_NOT_RESUMABLE", "Run cannot be resumed.");
+        async (state) => {
+          try {
+            stagedAttachments = decodeInlineAttachments(
+              payload.input?.attachments,
+              scope,
+              threadId,
+              runId,
+              attachmentBufferLifecycle
+            );
+            if (stagedAttachments.length > 0 && visionClient === undefined) {
+              conflict(
+                "ANALYSIS_VISION_NOT_READY",
+                "The downloaded local vision model is not enabled for this Agent runtime."
+              );
             }
-          }
-          const queued =
-            plannerRunsInFlight >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumConcurrentPlannerRuns ||
-            runQueue.length > 0;
-          if (queued) {
-            const queuedForScope = runQueue.filter((item) => item.scopeKey === entry.scopeKey).length;
-            if (runQueue.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumQueuedPlannerRuns) {
-              conflict("ANALYSIS_QUEUE_SATURATED", "The bounded analysis queue is full.");
+            const thread = findThread(state, threadId);
+            if (requireHeadPrevious && thread.lastRunId !== previousRunId) {
+              conflict(
+                "ANALYSIS_RUN_NOT_RESUMABLE",
+                "An input-less retry is only valid for the thread's latest run."
+              );
             }
-            if (queuedForScope >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumQueuedPlannerRunsPerScope) {
-              conflict("ANALYSIS_SCOPE_QUEUE_SATURATED", "This analysis scope has reached its queue limit.");
+            if (state.documentDeletionIntents.some((intent) => intent.threadId === thread.id)) {
+              conflict("ANALYSIS_THREAD_DELETE_PENDING", "Thread deletion must finish before another run can start.");
             }
-            entry.phase = "persisting-queued";
-            runQueue.push(entry);
-          } else {
-            entry.phase = "reserved-starting";
-            entry.slotReserved = true;
-            plannerRunsInFlight += 1;
-          }
-          const createdAt = timestamp();
-          const inputMessage = appendMessage(thread, {
-            role: "user",
-            content: prompt,
-            runId,
-            createdAt,
-          });
-          const record = {
-            id: runId,
-            threadId,
-            previousRunId,
-            lineagePreviousRunId,
-            principalId: scope.principalId,
-            browserSessionId: scope.browserSessionId,
-            browserSessionPolicy: "same-browser-session",
-            status: "starting",
-            schedulingState: queued ? "queued" : "starting",
-            createdAt,
-            startedAt: null,
-            completedAt: null,
-            cancelRequestedAt: null,
-            output: "",
-            error: null,
-            authority: {
-              kind: "aginti",
-              snapshotHash: contractDigest({
-                schemaVersion: INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION,
-                threadId,
-                runId,
+            if (thread.status === "running") conflict("ANALYSIS_THREAD_BUSY", "Thread already has an active run.");
+            if (state.runs.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumRunsPerScope) {
+              conflict("ANALYSIS_RUN_CAPACITY_EXHAUSTED", "Run capacity is exhausted.");
+            }
+            if (thread.messages.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumMessagesPerThread - 2) {
+              conflict("ANALYSIS_THREAD_FULL", "Thread message capacity is exhausted.");
+            }
+            const retainedCharacters = thread.messages.reduce((total, message) => total + message.content.length, 0);
+            if (
+              retainedCharacters + prompt.length + 32_000 >
+              INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumMessageCharactersPerThread
+            ) {
+              conflict("ANALYSIS_THREAD_FULL", "Thread message capacity is exhausted.");
+            }
+            const lineagePreviousRunId = previousRunId ?? thread.lastRunId;
+            if (lineagePreviousRunId !== null) {
+              const previous = findRun(state, lineagePreviousRunId);
+              if (previous.threadId !== threadId || !TERMINAL_RUN_STATUSES.has(previous.status)) {
+                conflict("ANALYSIS_RUN_NOT_RESUMABLE", "Run cannot be resumed.");
+              }
+            }
+            if (
+              stagedAttachments.length === 0 && visionClient === undefined &&
+              thread.messages.some(
+                (message) => message.role === "user" && (message.attachments?.length || 0) > 0
+              )
+            ) {
+              conflict(
+                "ANALYSIS_VISION_NOT_READY",
+                "The retained images require the downloaded local vision model."
+              );
+            }
+            const queued =
+              plannerRunsInFlight >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumConcurrentPlannerRuns ||
+              runQueue.length > 0;
+            if (queued) {
+              const queuedForScope = runQueue.filter((item) => item.scopeKey === entry.scopeKey).length;
+              if (runQueue.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumQueuedPlannerRuns) {
+                conflict("ANALYSIS_QUEUE_SATURATED", "The bounded analysis queue is full.");
+              }
+              if (queuedForScope >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumQueuedPlannerRunsPerScope) {
+                conflict("ANALYSIS_SCOPE_QUEUE_SATURATED", "This analysis scope has reached its queue limit.");
+              }
+              entry.phase = "persisting-queued";
+              runQueue.push(entry);
+            } else {
+              entry.phase = "reserved-starting";
+              entry.slotReserved = true;
+              plannerRunsInFlight += 1;
+            }
+            const createdAt = timestamp();
+            const retainedAttachments = await stageAttachmentBlobs(
+              scope,
+              state,
+              stateRoot,
+              stagedAttachments,
+              {
+                testOnly,
+                bufferLifecycle: attachmentBufferLifecycle,
+                storagePolicy: fixedAttachmentStoragePolicy,
+                statfsImpl: attachmentStatfs,
+              }
+            );
+            const inputMessage = appendMessage(thread, {
+              role: "user",
+              content: prompt,
+              runId,
+              createdAt,
+              ...(retainedAttachments.length === 0 ? {} : { attachments: retainedAttachments }),
+            });
+            const record = {
+              id: runId,
+              threadId,
+              previousRunId,
+              lineagePreviousRunId,
+              principalId: scope.principalId,
+              browserSessionId: scope.browserSessionId,
+              browserSessionPolicy: "same-browser-session",
+              status: "starting",
+              schedulingState: queued ? "queued" : "starting",
+              createdAt,
+              startedAt: null,
+              completedAt: null,
+              cancelRequestedAt: null,
+              output: "",
+              error: null,
+              authority: {
+                kind: "aginti",
+                snapshotHash: contractDigest({
+                  schemaVersion: INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION,
+                  threadId,
+                  runId,
+                  contextDigest: thread.authority.contextDigest,
+                  ...(search === undefined ? {} : { search }),
+                }),
+                runtimeRevision: thread.revision + 1,
                 contextDigest: thread.authority.contextDigest,
-                ...(search === undefined ? {} : { search }),
-              }),
-              runtimeRevision: thread.revision + 1,
-              contextDigest: thread.authority.contextDigest,
-            },
-            inputMessageId: inputMessage.id,
-            ...(search === undefined ? {} : { search }),
-            events: [],
-          };
-          appendEvent(record, "run.status", { status: "starting" }, createdAt);
-          state.runs.push(record);
-          touchThread(thread, createdAt, { status: "running", lastRunId: runId });
-          const result = ownedRun(record);
-          return { changed: true, result, receiptResult: Object.freeze({ run: result }) };
+              },
+              inputMessageId: inputMessage.id,
+              ...(search === undefined ? {} : { search }),
+              events: [],
+            };
+            appendEvent(record, "run.status", { status: "starting" }, createdAt);
+            state.runs.push(record);
+            touchThread(thread, createdAt, { status: "running", lastRunId: runId });
+            const result = ownedRun(record);
+            return { changed: true, result, receiptResult: Object.freeze({ run: result }) };
+          } finally {
+            wipeStagedAttachmentBuffers(
+              stagedAttachments,
+              attachmentBufferLifecycle,
+              "create-run-serialized-finally"
+            );
+            stagedAttachments = Object.freeze([]);
+          }
         },
         {
           create: false,
@@ -3987,6 +4949,8 @@ function createService(options, { testOnly }) {
       entry.resolveDone();
       pumpQueue();
       throw error;
+    } finally {
+      wipeStagedAttachmentBuffers(stagedAttachments, attachmentBufferLifecycle, "create-run-finally");
     }
     if (entry.phase === "reserved-starting") {
       entry.phase = "starting";
@@ -4159,6 +5123,20 @@ function createService(options, { testOnly }) {
         : {}),
       durableMutationReceipts: true,
       mutationRecoveryAuthorityDigest: fixedMutationRecoveryAuthority.digest,
+      ...(fixedAttachmentAuthority === null
+        ? {}
+        : {
+            attachmentsReady: true,
+            attachmentAuthorityDigest: fixedAttachmentAuthority.digest,
+            visionActivationDigest: visionActivation.digest,
+            attachmentBytesPersistedOutsideStateEnvelope: true,
+            attachmentDescriptorsDurableInMessageReplay: true,
+            attachmentContinuationUsesIndexBoundSource: true,
+            attachmentTextFollowupsDoNotDuplicateBlobs: true,
+            attachmentEmptyRetryRequiresHeadMarker: true,
+            attachmentBlobsRevalidatedBeforeInference: true,
+            attachmentTextTreatedAsUntrustedData: true,
+          }),
       rawExecutionSourcePersisted: false,
       rawExecutionStdoutPersisted: false,
       privateRuntimePathsPersisted: false,
@@ -4185,6 +5163,9 @@ function createService(options, { testOnly }) {
         mutationRecoveryAuthority: fixedMutationRecoveryAuthority,
         cancel: true,
         resume: true,
+        ...(fixedAttachmentAuthority === null
+          ? {}
+          : { attachments: true, attachmentAuthority: fixedAttachmentAuthority }),
         ...(searchEnabled ? { search: true } : {}),
         ...(documentCreationEnabled ? { files: true } : {}),
       });
@@ -4260,7 +5241,7 @@ function createService(options, { testOnly }) {
         const limit = integrationBoundedInteger(payload.limit ?? 50, "thread list limit", { minimum: 1, maximum: 100 });
         const page = threads.slice(start, start + limit);
         return Object.freeze({
-          threads: Object.freeze(page.map((thread) => ownedThread(thread, { includeMessages: false }))),
+          threads: Object.freeze(page.map((thread) => serviceOwnedThread(thread, { includeMessages: false }))),
           nextBefore: start + page.length < threads.length ? page.at(-1)?.id || null : null,
         });
       });
@@ -4299,7 +5280,7 @@ function createService(options, { testOnly }) {
             messages: [],
           };
           state.threads.push(thread);
-          return { changed: true, result: Object.freeze({ thread: ownedThread(thread) }) };
+          return { changed: true, result: Object.freeze({ thread: serviceOwnedThread(thread) }) };
         },
         {
           create: true,
@@ -4315,7 +5296,7 @@ function createService(options, { testOnly }) {
     async getThread(payload, context) {
       exact(payload, ["threadId"], ["threadId"], "get thread request");
       const scope = normalizeScopeFromContext(context);
-      return inspect(scope, (state) => Object.freeze({ thread: ownedThread(findThread(state, payload.threadId)) }));
+      return inspect(scope, (state) => Object.freeze({ thread: serviceOwnedThread(findThread(state, payload.threadId)) }));
     },
 
     async updateThread(payload, context) {
@@ -4329,10 +5310,10 @@ function createService(options, { testOnly }) {
           if (state.documentDeletionIntents.some((intent) => intent.threadId === thread.id)) {
             conflict("ANALYSIS_THREAD_DELETE_PENDING", "Thread deletion must finish before it can be changed.");
           }
-          if (thread.title === title) return { changed: false, result: Object.freeze({ thread: ownedThread(thread) }) };
+          if (thread.title === title) return { changed: false, result: Object.freeze({ thread: serviceOwnedThread(thread) }) };
           touchThread(thread, timestamp());
           thread.title = title;
-          return { changed: true, result: Object.freeze({ thread: ownedThread(thread) }) };
+          return { changed: true, result: Object.freeze({ thread: serviceOwnedThread(thread) }) };
         },
         { receipt: { pathname: INTEGRATION_RPC_PATHS.threadsUpdate, payload, context } }
       );
@@ -4349,7 +5330,7 @@ function createService(options, { testOnly }) {
         (state) => {
           const thread = findThread(state, payload.threadId);
           if (thread.status === "running") conflict("ANALYSIS_THREAD_BUSY", "An active thread cannot be deleted.");
-          const record = ownedThread(thread);
+          const record = serviceOwnedThread(thread);
           const runIds = new Set(state.runs.filter((run) => run.threadId === thread.id).map((run) => run.id));
           const objects = state.artifacts
             .filter((artifact) => runIds.has(artifact.runId) && artifact.kind === "file")
@@ -4459,7 +5440,7 @@ function createService(options, { testOnly }) {
           if (!intent || intent.threadId !== thread.id || !TERMINAL_DOCUMENT_DELETION_STATUSES.has(intent.status)) {
             corrupt();
           }
-          const record = ownedThread(thread);
+          const record = serviceOwnedThread(thread);
           const runIds = new Set(state.runs.filter((run) => run.threadId === thread.id).map((run) => run.id));
           state.threads = state.threads.filter((item) => item.id !== thread.id);
           state.runs = state.runs.filter((run) => !runIds.has(run.id));
@@ -4477,7 +5458,7 @@ function createService(options, { testOnly }) {
 
     async startRun(payload, context) {
       exact(payload, ["threadId", "input"], ["threadId", "input"], "start run request");
-      exact(payload.input, ["text", "search"], ["text"], "start run input");
+      exact(payload.input, ["text", "search", "attachments"], ["text"], "start run input");
       const run = await createRun(payload, context, null);
       return Object.freeze({ run });
     },
@@ -4671,22 +5652,63 @@ function createService(options, { testOnly }) {
     },
 
     async resumeRun(payload, context) {
-      exact(payload, ["runId", "input"], ["runId"], "resume run request");
-      if (payload.input !== undefined) exact(payload.input, ["text", "search"], ["text"], "resume run input");
+      exact(
+        payload,
+        ["runId", "input", "reuseAttachments"],
+        ["runId"],
+        "resume run request"
+      );
+      if (payload.reuseAttachments !== undefined && payload.reuseAttachments !== true) {
+        fail("INVALID_REQUEST", "reuseAttachments must be exactly true when present.", { status: 400 });
+      }
+      if (payload.input !== undefined && payload.reuseAttachments !== undefined) {
+        fail("INVALID_REQUEST", "reuseAttachments is only valid for a retry without input.", { status: 400 });
+      }
+      if (payload.input !== undefined) {
+        exact(payload.input, ["text", "search", "attachments"], ["text"], "resume run input");
+      }
       const scope = normalizeScopeFromContext(context);
-      const previous = await inspect(scope, (state) => findRun(state, payload.runId));
-      if (!TERMINAL_RUN_STATUSES.has(previous.status)) conflict("ANALYSIS_RUN_NOT_RESUMABLE", "Run cannot be resumed.");
+      const previousInput = await inspect(scope, (state) => {
+        const previous = findRun(state, payload.runId);
+        if (!TERMINAL_RUN_STATUSES.has(previous.status)) {
+          conflict("ANALYSIS_RUN_NOT_RESUMABLE", "Run cannot be resumed.");
+        }
+        const thread = findThread(state, previous.threadId);
+        const message = thread.messages.find((item) => item.id === previous.inputMessageId);
+        if (!message || message.role !== "user") corrupt();
+        return Object.freeze({
+          text: message.content,
+          ...(previous.search === undefined
+            ? {}
+            : { search: validateIntegrationSearch(previous.search) }),
+          usedAttachments: retainedAttachmentDescriptorsForRun(state, previous).length > 0,
+          isHead: thread.lastRunId === previous.id,
+        });
+      });
       let nextInput;
       if (payload.input === undefined) {
-        nextInput = await inspect(scope, (state) => {
-          const run = findRun(state, payload.runId);
-          const thread = findThread(state, run.threadId);
-          const message = thread.messages.find((item) => item.id === run.inputMessageId);
-          if (!message || message.role !== "user") corrupt();
-          return Object.freeze({
-            text: message.content,
-            ...(run.search === undefined ? {} : { search: validateIntegrationSearch(run.search) }),
-          });
+        if (!previousInput.isHead) {
+          conflict(
+            "ANALYSIS_RUN_NOT_RESUMABLE",
+            "An input-less retry is only valid for the thread's latest run."
+          );
+        }
+        if (previousInput.usedAttachments && payload.reuseAttachments !== true) {
+          conflict(
+            "ANALYSIS_ATTACHMENT_REUSE_MARKER_REQUIRED",
+            "Retrying an image run requires reuseAttachments: true."
+          );
+        }
+        if (!previousInput.usedAttachments && payload.reuseAttachments === true) {
+          fail(
+            "ANALYSIS_ATTACHMENT_REUSE_INVALID",
+            "The retried run has no retained images to reuse.",
+            { status: 400 }
+          );
+        }
+        nextInput = Object.freeze({
+          text: previousInput.text,
+          ...(previousInput.search === undefined ? {} : { search: previousInput.search }),
         });
       } else {
         nextInput = Object.freeze({
@@ -4694,9 +5716,20 @@ function createService(options, { testOnly }) {
           ...(payload.input.search === undefined
             ? {}
             : { search: validateIntegrationSearch(payload.input.search) }),
+          ...(payload.input.attachments === undefined
+            ? {}
+            : { attachments: validateIntegrationImageAttachments(payload.input.attachments) }),
         });
       }
-      const run = await createRun({ input: nextInput }, context, payload.runId);
+      if (payload.input === undefined) {
+        await beforeAttachmentRetryCreate?.(Object.freeze({ runId: payload.runId }));
+      }
+      const run = await createRun(
+        { input: nextInput },
+        context,
+        payload.runId,
+        { requireHeadPrevious: payload.input === undefined }
+      );
       return Object.freeze({ run });
     },
 
@@ -4858,7 +5891,10 @@ export function assertIntegrationAnalysisSessionService(value, { allowTestOnly =
 export function createIntegrationAnalysisSessionService(value = {}) {
   const options = exact(
     value,
-    ["analysisRunner", "plannerActivation", "stateRoot", "statePersistenceMode", "documentWorkerClient"],
+    [
+      "analysisRunner", "plannerActivation", "stateRoot", "statePersistenceMode", "documentWorkerClient",
+      "visionClient", "visionActivation",
+    ],
     ["analysisRunner", "plannerActivation", "statePersistenceMode"],
     "analysis session service configuration"
   );
@@ -4868,7 +5904,12 @@ export function createIntegrationAnalysisSessionService(value = {}) {
 export function createTestOnlyIntegrationAnalysisSessionService(value = {}) {
   const options = exact(
     value,
-    ["analysisRunner", "stateRoot", "statePersistenceMode", "now", "activationProof", "searchEnabled", "documentWorkerClient", "documentWorkerEnabled"],
+    [
+      "analysisRunner", "stateRoot", "statePersistenceMode", "now", "activationProof", "searchEnabled",
+      "documentWorkerClient", "documentWorkerEnabled", "visionClient", "visionActivation",
+      "attachmentBufferLifecycle", "beforeAttachmentRetryCreate", "attachmentStoragePolicy",
+      "attachmentStatfs",
+    ],
     ["analysisRunner", "stateRoot"],
     "test analysis session service configuration"
   );

@@ -319,7 +319,7 @@ function pendingError() {
   const error = new Error("Idempotent mutation is already pending.");
   error.code = "IDEMPOTENCY_PENDING";
   error.publicCode = "IDEMPOTENCY_PENDING";
-  error.status = 409;
+  error.status = 503;
   return error;
 }
 

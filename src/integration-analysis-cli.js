@@ -121,7 +121,7 @@ function writeJsonLine(stream, value) {
   stream.write(`${JSON.stringify(value)}\n`);
 }
 
-function summary(config, status) {
+export function integrationAnalysisCliSummary(config, status) {
   const publicConfig = publicIntegrationAnalysisServiceConfig(config);
   return Object.freeze({
     ok: true,
@@ -131,6 +131,7 @@ function summary(config, status) {
     listen: publicConfig.listen,
     stateRoot: publicConfig.stateRoot,
     idempotencyRoot: publicConfig.idempotencyRoot,
+    vision: Object.freeze({ enabled: publicConfig.vision?.enabled === true }),
     localModel: publicConfig.localModel,
     ...(publicConfig.groundedSearch === undefined ? {} : { groundedSearch: publicConfig.groundedSearch }),
     ...(publicConfig.documentWorker === undefined ? {} : { documentWorker: publicConfig.documentWorker }),
@@ -177,7 +178,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   const trustedPrincipalProxyClient = createIntegrationAnalysisTrustedProxyClient(config, proxyToken);
   const stdout = options.stdout || process.stdout;
   if (parsed.command === "check") {
-    const result = summary(config, "checked-analysis-ready-to-probe");
+    const result = integrationAnalysisCliSummary(config, "checked-analysis-ready-to-probe");
     writeJsonLine(stdout, result);
     return result;
   }
@@ -193,7 +194,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   let handedOff = false;
   let shutdown = null;
   try {
-    writeJsonLine(stdout, summary(config, "listening-analysis"));
+    writeJsonLine(stdout, integrationAnalysisCliSummary(config, "listening-analysis"));
     if (options.waitForSignal === false) {
       handedOff = true;
       return integrationServer;
@@ -201,7 +202,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     const processLike = options.processLike || process;
     shutdown = shutdownWaiter(processLike);
     await shutdown.promise;
-    return summary(config, "closed-analysis");
+    return integrationAnalysisCliSummary(config, "closed-analysis");
   } finally {
     shutdown?.dispose();
     if (!handedOff) await integrationServer.close();

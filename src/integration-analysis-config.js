@@ -57,13 +57,14 @@ const CONFIG_KEYS = Object.freeze([
   "stateRoot",
   "idempotencyRoot",
   "statePersistence",
+  "vision",
   "localModel",
   "groundedSearch",
   "documentWorker",
   "trustedPrincipalProxy",
 ]);
 const REQUIRED_CONFIG_KEYS = Object.freeze(
-  CONFIG_KEYS.filter((key) => key !== "groundedSearch" && key !== "documentWorker")
+  CONFIG_KEYS.filter((key) => !new Set(["vision", "groundedSearch", "documentWorker"]).has(key))
 );
 const CAPABILITY_KEYS = Object.freeze(["enabled", "mode"]);
 const LISTEN_KEYS = Object.freeze(["host", "port"]);
@@ -75,6 +76,7 @@ const MODEL_KEYS = Object.freeze([
   "modelTimeoutMs",
 ]);
 const STATE_PERSISTENCE_KEYS = Object.freeze(["mode"]);
+const VISION_KEYS = Object.freeze(["enabled"]);
 const SEARCH_KEYS = Object.freeze(["enabled", "endpoint", "timeoutMs", "maximumSources"]);
 const DOCUMENT_WORKER_KEYS = Object.freeze(["enabled", "endpoint", "timeoutMs"]);
 const TRUSTED_PROXY_KEYS = Object.freeze(["clientId", "label", "scopes"]);
@@ -168,6 +170,21 @@ export function validateIntegrationAnalysisServiceConfig(value) {
   );
   if (!Object.values(INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES).includes(statePersistence.mode)) {
     fail("ANALYSIS_CONFIG_INVALID", "statePersistence.mode is invalid.");
+  }
+
+  let vision;
+  if (config.vision !== undefined) {
+    const candidate = exactObject(config.vision, VISION_KEYS, VISION_KEYS, "vision");
+    if (typeof candidate.enabled !== "boolean") {
+      fail("ANALYSIS_CONFIG_INVALID", "vision.enabled must be a boolean.");
+    }
+    if (
+      candidate.enabled &&
+      statePersistence.mode !== INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3
+    ) {
+      fail("ANALYSIS_CONFIG_INVALID", "Enabled vision requires native-v3 state persistence.");
+    }
+    vision = Object.freeze({ enabled: candidate.enabled });
   }
 
   const localModel = exactObject(config.localModel, MODEL_KEYS, MODEL_KEYS, "localModel");
@@ -265,6 +282,7 @@ export function validateIntegrationAnalysisServiceConfig(value) {
     stateRoot: DEFAULT_INTEGRATION_ANALYSIS_SERVICE_STATE_ROOT,
     idempotencyRoot: DEFAULT_INTEGRATION_ANALYSIS_IDEMPOTENCY_ROOT,
     statePersistence: Object.freeze({ mode: statePersistence.mode }),
+    ...(vision === undefined ? {} : { vision }),
     localModel: Object.freeze({
       baseURL: INTEGRATION_ANALYSIS_LOCALLLM_BASE_URL,
       model: INTEGRATION_ANALYSIS_LOCALLLM_MODEL,
@@ -546,6 +564,7 @@ export function publicIntegrationAnalysisServiceConfig(configInput) {
     stateRoot: config.stateRoot,
     idempotencyRoot: config.idempotencyRoot,
     statePersistence: config.statePersistence,
+    ...(config.vision === undefined ? {} : { vision: config.vision }),
     localModel: config.localModel,
     ...(config.groundedSearch === undefined ? {} : { groundedSearch: config.groundedSearch }),
     ...(config.documentWorker === undefined ? {} : { documentWorker: config.documentWorker }),

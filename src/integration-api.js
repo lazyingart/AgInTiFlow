@@ -1,6 +1,7 @@
 import express from "express";
 import crypto from "node:crypto";
-import { TextDecoder, types as utilTypes } from "node:util";
+import { isUtf8 } from "node:buffer";
+import { types as utilTypes } from "node:util";
 import {
   INTEGRATION_IDEMPOTENCY_HEADER,
   createIntegrationAuthMiddleware,
@@ -11,6 +12,14 @@ import {
 } from "./integration-auth.js";
 import {
   AGENT_WORKER_SCHEMA_VERSION,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_BYTES_LIMIT,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_RECEIVE_TIMEOUT_MS,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BYTES_LIMIT,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_COUNT_LIMIT,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_MEDIA_TYPES,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_REQUEST_TIMEOUT_MS,
+  INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_TOTAL_BYTES_LIMIT,
+  INTEGRATION_ANALYSIS_ORDINARY_BODY_RECEIVE_TIMEOUT_MS,
   INTEGRATION_API_PREFIX,
   INTEGRATION_ARTIFACT_KINDS,
   INTEGRATION_MAXIMUM_SEARCH_SOURCES,
@@ -51,7 +60,10 @@ import {
   validatePublicIntegrationEvent,
   writeIntegrationEventStream,
 } from "./integration-events.js";
-import { assertIntegrationAnalysisSessionService } from "./integration-analysis-session-service.js";
+import {
+  INTEGRATION_ANALYSIS_ATTACHMENT_AUTHORITY_SCHEMA_VERSION,
+  assertIntegrationAnalysisSessionService,
+} from "./integration-analysis-session-service.js";
 import {
   INTEGRATION_ANALYSIS_PRIOR_ARTIFACT_AUTHORITY_KEYS,
   INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION,
@@ -87,15 +99,15 @@ export const INTEGRATION_IDEMPOTENCY_REQUEST_HASH_ALGORITHM = "canonical-json-v1
 const INTEGRATION_IDEMPOTENCY_RESPONSE_ENVELOPE = "aginti-agent-rpc-v1";
 export const INTEGRATION_IDEMPOTENCY_MAX_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const INTEGRATION_PUBLIC_JSON_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
+export const INTEGRATION_ANALYSIS_MAX_CONCURRENT_ATTACHMENT_REQUESTS = 1;
 export const INTEGRATION_ANALYSIS_ROUTER_ACTIVATION_SCHEMA_VERSION =
-  "aginti-integration-analysis-router-activation-v2";
+  "aginti-integration-analysis-router-activation-v3";
 export const INTEGRATION_ANALYSIS_MUTATION_RECOVERY_SCHEMA_VERSION =
   "aginti-analysis-mutation-recovery-v1";
 const INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION = "aginti-integration-analysis-coordinator-v1";
 const ANALYSIS_ROUTER_ACTIVATIONS = new WeakMap();
 const ABSOLUTE_PATH_PATTERN =
   /(?:^|[\s("'`])(?:\/(?:workspace|home|users|root|etc|usr|var|opt|srv|run|tmp|proc|sys|dev|mnt|media|aginti-(?:home|cache|env))(?:\/[^\s"'`<>)\]]*)?|[A-Za-z]:\\[^\s"'`<>)\]]*)/giu;
-const FATAL_UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
 class IntegrationApiError extends Error {
   constructor(code, message, { status = 500, details = {} } = {}) {
@@ -359,8 +371,60 @@ function publicLabel(value, label, maximum, { redact = true } = {}) {
   return text;
 }
 
+function publicMessageAttachments(value, messageIndex, role) {
+  if (value === undefined) return undefined;
+  if (
+    role !== "user" || !Array.isArray(value) || value.length < 1 ||
+    value.length > INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_COUNT_LIMIT ||
+    Object.keys(value).length !== value.length
+  ) {
+    integrationInvalid(`thread message[${messageIndex}].attachments is invalid`);
+  }
+  const identifiers = new Set();
+  let totalBytes = 0;
+  const attachments = value.map((candidate, attachmentIndex) => {
+    const label = `thread message[${messageIndex}].attachments[${attachmentIndex}]`;
+    const attachment = integrationExactKeys(
+      candidate,
+      ["attachmentId", "mediaType", "byteLength", "width", "height", "sha256"],
+      label,
+      ["attachmentId", "mediaType", "byteLength", "width", "height", "sha256"]
+    );
+    if (
+      typeof attachment.attachmentId !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/u.test(attachment.attachmentId) ||
+      identifiers.has(attachment.attachmentId) ||
+      !INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_MEDIA_TYPES.includes(attachment.mediaType)
+    ) {
+      integrationInvalid(`${label} identity or media type is invalid`);
+    }
+    const byteLength = integrationBoundedInteger(attachment.byteLength, `${label}.byteLength`, {
+      minimum: 16,
+      maximum: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BYTES_LIMIT,
+    });
+    const width = integrationBoundedInteger(attachment.width, `${label}.width`, { minimum: 1, maximum: 8192 });
+    const height = integrationBoundedInteger(attachment.height, `${label}.height`, { minimum: 1, maximum: 8192 });
+    if (width * height > 20_000_000) integrationInvalid(`${label} pixel count is invalid`);
+    const sha256 = safeDigest(attachment.sha256, `${label}.sha256`);
+    identifiers.add(attachment.attachmentId);
+    totalBytes += byteLength;
+    if (totalBytes > INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_TOTAL_BYTES_LIMIT) {
+      integrationInvalid(`thread message[${messageIndex}].attachments exceed their total byte bound`);
+    }
+    return Object.freeze({
+      attachmentId: attachment.attachmentId,
+      mediaType: attachment.mediaType,
+      byteLength,
+      width,
+      height,
+      sha256,
+    });
+  });
+  return Object.freeze(attachments);
+}
+
 function publicMessage(value = {}, index) {
-  const message = integrationExactKeys(value, ["id", "role", "content", "runId", "createdAt", "digest"], `thread message[${index}]`, [
+  const message = integrationExactKeys(value, ["id", "role", "content", "runId", "createdAt", "digest", "attachments"], `thread message[${index}]`, [
     "id",
     "role",
     "content",
@@ -370,6 +434,7 @@ function publicMessage(value = {}, index) {
   ]);
   if (typeof message.id !== "string" || !/^msg_[A-Za-z0-9_-]{16,96}$/u.test(message.id)) integrationInvalid(`thread message[${index}].id is invalid`);
   if (!new Set(["user", "assistant"]).has(message.role)) integrationInvalid(`thread message[${index}].role is invalid`);
+  const attachments = publicMessageAttachments(message.attachments, index, message.role);
   return Object.freeze({
     id: message.id,
     role: message.role,
@@ -377,6 +442,7 @@ function publicMessage(value = {}, index) {
     runId: validateIntegrationRunId(message.runId),
     createdAt: safeTimestamp(message.createdAt, `thread message[${index}].createdAt`),
     digest: safeDigest(message.digest, `thread message[${index}].digest`),
+    ...(attachments === undefined ? {} : { attachments }),
   });
 }
 
@@ -408,6 +474,13 @@ export function sanitizePublicIntegrationThread(value = {}, options = {}) {
   }
 
   if (authority.kind !== "aginti") integrationInvalid("thread authority is invalid");
+  if (value.activeImageContext !== undefined && typeof value.activeImageContext !== "boolean") {
+    integrationInvalid("thread activeImageContext must be a boolean");
+  }
+  const activeImageContext = value.activeImageContext === true;
+  if (activeImageContext && (value.lastRunId === null || value.lastRunId === "" || value.lastRunId === undefined)) {
+    integrationInvalid("thread activeImageContext requires lastRunId");
+  }
   return Object.freeze({
     id: validateIntegrationThreadId(value.id),
     title: publicLabel(value.title, "title", 120),
@@ -416,6 +489,7 @@ export function sanitizePublicIntegrationThread(value = {}, options = {}) {
     createdAt: safeTimestamp(value.createdAt, "thread createdAt"),
     updatedAt: safeTimestamp(value.updatedAt, "thread updatedAt"),
     lastRunId: value.lastRunId === null || value.lastRunId === "" || value.lastRunId === undefined ? null : validateIntegrationRunId(value.lastRunId),
+    ...(activeImageContext ? { activeImageContext: true } : {}),
     authority: Object.freeze({
       kind: "aginti",
       mapped: Boolean(authority.mapped),
@@ -815,11 +889,63 @@ function assertAnalysisMutationRecoveryAuthority(value) {
   return assertCanonicalProofDigest(proof, "analysis mutation recovery authority");
 }
 
+function assertAnalysisAttachmentAuthority(value) {
+  const keys = [
+    "schemaVersion", "owner", "ready", "transport", "acceptedMediaTypes", "maximumCount",
+    "maximumBytesEach", "maximumBytesTotal", "maximumRetainedBlobsGlobal",
+    "maximumRetainedBytesGlobal", "minimumFreeBytesAfterWrite", "requestTimeoutMs",
+    "maximumConcurrentVisionRuns", "model",
+    "persistence", "stateRootDigest",
+    "visionActivationSchemaVersion", "visionActivationDigest", "requestHashBound",
+    "idempotencyReplayBound", "principalBound", "browserSessionBound", "threadBound", "runBound",
+    "orderedReferences", "privateBinaryBlobs", "publicDescriptorsContainBytes",
+    "publicDescriptorsContainPaths", "atomicBlobFsyncRename", "directoryFsync",
+    "exactBlobIntegrityRevalidatedBeforeInference", "exclusiveServiceLifetimeLock", "crossProcessSafe",
+    "globalCapacitySerialized", "filesystemFreeSpaceCheckedBeforeAndAfterWrite",
+    "orphanCleanupUnderExclusiveLock", "deletionReclaimsUnreferencedBlobs", "hostedFallback", "digest",
+  ];
+  const proof = exactDataObject(value, keys, keys, "analysis attachment authority", { frozen: true });
+  if (
+    proof.schemaVersion !== INTEGRATION_ANALYSIS_ATTACHMENT_AUTHORITY_SCHEMA_VERSION ||
+    proof.owner !== "aginti" || proof.ready !== true ||
+    proof.transport !== "inline-base64" ||
+    canonicalJson(proof.acceptedMediaTypes) !== canonicalJson(INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_MEDIA_TYPES) ||
+    proof.maximumCount !== INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_COUNT_LIMIT ||
+    proof.maximumBytesEach !== INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BYTES_LIMIT ||
+    proof.maximumBytesTotal !== INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_TOTAL_BYTES_LIMIT ||
+    proof.maximumRetainedBlobsGlobal !== 2048 ||
+    proof.maximumRetainedBytesGlobal !== 512 * 1024 * 1024 ||
+    proof.minimumFreeBytesAfterWrite !== 512 * 1024 * 1024 ||
+    proof.requestTimeoutMs !== INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_REQUEST_TIMEOUT_MS ||
+    proof.maximumConcurrentVisionRuns !== 1 ||
+    proof.model !== "localllm-vision" || proof.persistence !== "retained-reference-v1" ||
+    proof.visionActivationSchemaVersion !== "aginti-integration-analysis-vision-activation-v1" ||
+    proof.requestHashBound !== true || proof.idempotencyReplayBound !== true ||
+    proof.principalBound !== true || proof.browserSessionBound !== true ||
+    proof.threadBound !== true || proof.runBound !== true || proof.orderedReferences !== true ||
+    proof.privateBinaryBlobs !== true || proof.publicDescriptorsContainBytes !== false ||
+    proof.publicDescriptorsContainPaths !== false || proof.atomicBlobFsyncRename !== true ||
+    proof.directoryFsync !== true || proof.exactBlobIntegrityRevalidatedBeforeInference !== true ||
+    proof.exclusiveServiceLifetimeLock !== true || proof.crossProcessSafe !== true ||
+    proof.globalCapacitySerialized !== true ||
+    proof.filesystemFreeSpaceCheckedBeforeAndAfterWrite !== true ||
+    proof.orphanCleanupUnderExclusiveLock !== true || proof.deletionReclaimsUnreferencedBlobs !== true ||
+    proof.hostedFallback !== false
+  ) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis attachment authority is unavailable.", {
+      status: 503,
+    });
+  }
+  digestField(proof.stateRootDigest, "analysis attachment state root digest");
+  digestField(proof.visionActivationDigest, "analysis attachment vision activation digest");
+  return assertCanonicalProofDigest(proof, "analysis attachment authority");
+}
+
 export function assertIntegrationAnalysisSessionAuthority(
   value,
   startupProof,
   mutationRecoveryAuthority,
-  { searchExpected = false } = {}
+  { searchExpected = false, attachmentsExpected = false } = {}
 ) {
   const baseKeys = [
     "schemaVersion",
@@ -897,7 +1023,23 @@ export function assertIntegrationAnalysisSessionAuthority(
     "groundedSearchIntentPersistedBeforeLaunch",
     "groundedSearchReplayIsReadOnly",
   ];
-  const keys = searchExpected ? [...baseKeys, ...searchKeys] : baseKeys;
+  const attachmentKeys = [
+    "attachmentsReady",
+    "attachmentAuthorityDigest",
+    "visionActivationDigest",
+    "attachmentBytesPersistedOutsideStateEnvelope",
+    "attachmentDescriptorsDurableInMessageReplay",
+    "attachmentContinuationUsesIndexBoundSource",
+    "attachmentTextFollowupsDoNotDuplicateBlobs",
+    "attachmentEmptyRetryRequiresHeadMarker",
+    "attachmentBlobsRevalidatedBeforeInference",
+    "attachmentTextTreatedAsUntrustedData",
+  ];
+  const keys = [
+    ...baseKeys,
+    ...(searchExpected ? searchKeys : []),
+    ...(attachmentsExpected ? attachmentKeys : []),
+  ];
   const proof = exactDataObject(value, keys, keys, "analysis session authority", { frozen: true });
   const r67CompatiblePersistence =
     proof.statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2 &&
@@ -925,6 +1067,7 @@ export function assertIntegrationAnalysisSessionAuthority(
     proof.activationReadinessReprobedPerRpc !== false ||
     (!r67CompatiblePersistence && !nativeV3Persistence) ||
     (searchExpected && r67CompatiblePersistence) ||
+    (attachmentsExpected && r67CompatiblePersistence) ||
     proof.oneFixedStateRoot !== true ||
     proof.principalBound !== true ||
     proof.browserSessionBound !== true ||
@@ -953,6 +1096,16 @@ export function assertIntegrationAnalysisSessionAuthority(
     proof.artifactBeforeTerminal !== true ||
     proof.exactCancellation !== true ||
     proof.interruptedRunRecovery !== true ||
+    (attachmentsExpected && (
+      proof.attachmentsReady !== true ||
+      proof.attachmentBytesPersistedOutsideStateEnvelope !== true ||
+      proof.attachmentDescriptorsDurableInMessageReplay !== true ||
+      proof.attachmentContinuationUsesIndexBoundSource !== true ||
+      proof.attachmentTextFollowupsDoNotDuplicateBlobs !== true ||
+      proof.attachmentEmptyRetryRequiresHeadMarker !== true ||
+      proof.attachmentBlobsRevalidatedBeforeInference !== true ||
+      proof.attachmentTextTreatedAsUntrustedData !== true
+    )) ||
     (searchExpected && (
       proof.groundedSearchReady !== true ||
       proof.groundedSearchActivationDigest === ZERO_DIGEST ||
@@ -985,6 +1138,7 @@ export function assertIntegrationAnalysisSessionAuthority(
     "limitsDigest",
     "mutationRecoveryAuthorityDigest",
     ...(searchExpected ? ["groundedSearchActivationDigest"] : []),
+    ...(attachmentsExpected ? ["attachmentAuthorityDigest", "visionActivationDigest"] : []),
   ]) {
     digestField(proof[key], `analysis session authority ${key}`);
   }
@@ -1078,7 +1232,10 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
   const serviceCapabilities = await sessionService.getIntegrationCapabilities({ policy });
   exactDataObject(
     serviceCapabilities,
-    ["analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume", "search", "files"],
+    [
+      "analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume", "search", "files",
+      "attachments", "attachmentAuthority",
+    ],
     ["analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume"],
     "analysis service capabilities",
     { frozen: true }
@@ -1092,6 +1249,18 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
   if (serviceCapabilities.files !== undefined && serviceCapabilities.files !== true) {
     throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis file capability is invalid.", { status: 503 });
   }
+  if (
+    (serviceCapabilities.attachments === undefined) !==
+      (serviceCapabilities.attachmentAuthority === undefined) ||
+    (serviceCapabilities.attachments !== undefined && serviceCapabilities.attachments !== true)
+  ) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis attachment capability is invalid.", {
+      status: 503,
+    });
+  }
+  const attachmentAuthority = serviceCapabilities.attachments === true
+    ? assertAnalysisAttachmentAuthority(serviceCapabilities.attachmentAuthority)
+    : null;
   const mutationRecoveryAuthority = assertAnalysisMutationRecoveryAuthority(
     serviceCapabilities.mutationRecoveryAuthority
   );
@@ -1099,7 +1268,10 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
     serviceCapabilities.analysisSessionAuthority,
     startupProof,
     mutationRecoveryAuthority,
-    { searchExpected: serviceCapabilities.search === true }
+    {
+      searchExpected: serviceCapabilities.search === true,
+      attachmentsExpected: serviceCapabilities.attachments === true,
+    }
   );
   const stateRootDigest = fixedStorageRootDigest(options.stateRoot, "stateRoot", "analysis state root");
   const idempotencyRootDigest = fixedStorageRootDigest(
@@ -1110,7 +1282,12 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
   if (
     sessionAuthority.stateRootDigest !== stateRootDigest ||
     sessionAuthority.statePersistenceMode !== options.statePersistenceMode ||
-    idempotencyStore.rootDirDigest !== idempotencyRootDigest
+    idempotencyStore.rootDirDigest !== idempotencyRootDigest ||
+    (attachmentAuthority !== null && (
+      attachmentAuthority.stateRootDigest !== stateRootDigest ||
+      sessionAuthority.attachmentAuthorityDigest !== attachmentAuthority.digest ||
+      sessionAuthority.visionActivationDigest !== attachmentAuthority.visionActivationDigest
+    ))
   ) {
     throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis dependency storage binding is unavailable.", {
       status: 503,
@@ -1118,6 +1295,9 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
   }
   const recoveryAuthority = idempotencyStore.recoveryAuthority;
   assertIntegrationTransactionalIdempotencyStore(idempotencyStore);
+  const attachmentTransportAware =
+    sessionAuthority.statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3 &&
+    sessionAuthority.stateStorageVersion === INTEGRATION_ANALYSIS_STATE_STORAGE_V3;
   const unsigned = Object.freeze({
     schemaVersion: INTEGRATION_ANALYSIS_ROUTER_ACTIVATION_SCHEMA_VERSION,
     owner: "aginti",
@@ -1139,6 +1319,13 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
     statePersistenceMode: sessionAuthority.statePersistenceMode,
     stateStorageVersion: sessionAuthority.stateStorageVersion,
     r67RollbackCompatible: sessionAuthority.r67RollbackCompatible,
+    attachmentTransportAware,
+    ...(attachmentAuthority === null
+      ? {}
+      : {
+          attachmentAuthorityDigest: attachmentAuthority.digest,
+          visionActivationDigest: attachmentAuthority.visionActivationDigest,
+        }),
   });
   const proof = Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
   const activation = Object.freeze({
@@ -1284,6 +1471,7 @@ function activatedCapabilitiesForService(options, activationMetadata) {
     resume: metadata.serviceCapabilities.resume,
     search: metadata.serviceCapabilities.search === true,
     files: metadata.serviceCapabilities.files === true,
+    attachments: metadata.serviceCapabilities.attachments === true,
   });
 }
 
@@ -1365,6 +1553,13 @@ async function handleRpc({ req, res, pathname, sessionService, idempotencyStore,
     await requireEnabled({ sessionService, idempotencyStore, policy });
   }
 
+  const gateOffAttachmentMutation =
+    activationMetadata?.proof?.attachmentTransportAware === true &&
+    activationMetadata?.serviceCapabilities?.attachments !== true &&
+    integrationRpcPathIsMutation(pathname) &&
+    (pathname === INTEGRATION_RPC_PATHS.runsStart || pathname === INTEGRATION_RPC_PATHS.runsResume) &&
+    requestBodyClaimsAttachmentWork(payload);
+
   if (integrationRpcPathIsMutation(pathname)) {
     const transactionalIdempotencyStore = assertIntegrationTransactionalIdempotencyStore(idempotencyStore);
     const response = await transactionalIdempotencyStore.runMutation(
@@ -1379,13 +1574,21 @@ async function handleRpc({ req, res, pathname, sessionService, idempotencyStore,
         idempotencyWindowMs: INTEGRATION_IDEMPOTENCY_MAX_WINDOW_MS,
         payload,
       },
-      async () =>
-        projectPublicIntegrationResponse(
+      async () => {
+        if (gateOffAttachmentMutation) {
+          throw new IntegrationApiError(
+            "ANALYSIS_VISION_NOT_READY",
+            "The downloaded local vision model is not enabled for new Agent image mutations.",
+            { status: 409 }
+          );
+        }
+        return projectPublicIntegrationResponse(
           pathname,
           await callSessionService(sessionService, pathname, payload, context),
           payload,
           context
-        )
+        );
+      }
     );
     sendJson(res, 200, response);
     return;
@@ -1470,16 +1673,193 @@ function originalPathIsAmbiguous(value = "") {
   );
 }
 
-function verifyFatalUtf8Json(_req, _res, buffer) {
-  try {
-    FATAL_UTF8_DECODER.decode(buffer);
-  } catch {
+function verifyFatalUtf8Json(req, _res, buffer) {
+  if (
+    Number.isSafeInteger(req.integrationBodyByteLimit) &&
+    buffer.length > req.integrationBodyByteLimit
+  ) {
+    const error = new Error("Request body exceeds its route-specific limit.");
+    error.status = 413;
+    error.statusCode = 413;
+    error.type = "entity.too.large";
+    throw error;
+  }
+  if (!isUtf8(buffer)) {
     const error = new Error("Request body is not valid UTF-8.");
     error.status = 400;
     error.statusCode = 400;
     error.type = "entity.invalid.utf8";
     throw error;
   }
+}
+
+export function integrationAnalysisBodyReceiveTimeoutMs(
+  pathname,
+  { attachmentsEnabled = false, declaredBodyBytes = null } = {}
+) {
+  if (
+    typeof pathname !== "string" || typeof attachmentsEnabled !== "boolean" ||
+    (declaredBodyBytes !== null && (!Number.isSafeInteger(declaredBodyBytes) || declaredBodyBytes < 0))
+  ) {
+    throw new TypeError("analysis body receive timeout input is invalid");
+  }
+  return attachmentsEnabled &&
+    (pathname === INTEGRATION_RPC_PATHS.runsStart || pathname === INTEGRATION_RPC_PATHS.runsResume) &&
+    (declaredBodyBytes === null || declaredBodyBytes > 128 * 1024)
+    ? INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_RECEIVE_TIMEOUT_MS
+    : INTEGRATION_ANALYSIS_ORDINARY_BODY_RECEIVE_TIMEOUT_MS;
+}
+
+function armBodyReceiveDeadline(req, milliseconds) {
+  let timer = setTimeout(() => {
+    timer = null;
+    if (!req.complete && !req.destroyed) {
+      req.destroy(new Error("Agent request body receive deadline exceeded."));
+    }
+  }, milliseconds);
+  timer.unref?.();
+  const cleanup = () => {
+    if (timer === null) return;
+    clearTimeout(timer);
+    timer = null;
+  };
+  req.once("end", cleanup);
+  req.once("aborted", cleanup);
+  req.once("close", cleanup);
+}
+
+function declaredContentLength(req) {
+  const contentLength = req.headers["content-length"];
+  if (contentLength === undefined || Array.isArray(contentLength)) return null;
+  const text = String(contentLength).trim();
+  if (!/^[0-9]+$/u.test(text)) return null;
+  const length = Number(text);
+  return Number.isSafeInteger(length) ? length : null;
+}
+
+function hasDeclaredOrdinaryBody(req, ordinaryBodyBytes) {
+  const length = declaredContentLength(req);
+  return length !== null && length <= ordinaryBodyBytes;
+}
+
+function requestBodyClaimsAttachmentWork(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+  const input = body.input;
+  return (
+    Object.prototype.hasOwnProperty.call(body, "reuseAttachments") ||
+    (input && typeof input === "object" && !Array.isArray(input) &&
+      Object.prototype.hasOwnProperty.call(input, "attachments"))
+  );
+}
+
+function createAttachmentAdmissionMiddlewares(
+  attachmentsEnabled,
+  attachmentMutationPaths,
+  ordinaryBodyBytes,
+  observeRequestsInFlight = () => {}
+) {
+  let requestsInFlight = 0;
+  const releases = new WeakMap();
+  const acquire = (req, res) => {
+    if (releases.has(req)) return true;
+    if (requestsInFlight >= INTEGRATION_ANALYSIS_MAX_CONCURRENT_ATTACHMENT_REQUESTS) {
+      req.resume();
+      res.set("Connection", "close");
+      writeIntegrationErrorJson(res, 429, "ANALYSIS_ATTACHMENT_ADMISSION_BUSY");
+      return false;
+    }
+    requestsInFlight += 1;
+    observeRequestsInFlight(requestsInFlight);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      releases.delete(req);
+      requestsInFlight -= 1;
+      observeRequestsInFlight(requestsInFlight);
+      req.off?.("aborted", release);
+      res.off?.("finish", release);
+      res.off?.("close", release);
+      res.off?.("error", release);
+    };
+    releases.set(req, release);
+    req.once("aborted", release);
+    res.once("finish", release);
+    res.once("close", release);
+    res.once("error", release);
+    return true;
+  };
+  const applies = (req) => attachmentsEnabled && attachmentMutationPaths.has(
+    String(req.originalUrl || req.url || "")
+  );
+  const beforeBody = (req, res, next) => {
+    if (!applies(req) || hasDeclaredOrdinaryBody(req, ordinaryBodyBytes)) {
+      next();
+      return;
+    }
+    if (acquire(req, res)) next();
+  };
+  const afterBody = (req, res, next) => {
+    if (!applies(req)) {
+      next();
+      return;
+    }
+    if (!requestBodyClaimsAttachmentWork(req.body)) {
+      releases.get(req)?.();
+      next();
+      return;
+    }
+    if (acquire(req, res)) next();
+  };
+  return Object.freeze({ beforeBody, afterBody });
+}
+
+function createRouteJsonParserMiddleware({ attachmentsEnabled, attachmentMutationPaths, maxBodyBytes, ordinaryBodyBytes }) {
+  const ordinaryJsonParser = express.json({
+    limit: ordinaryBodyBytes,
+    strict: true,
+    type: "application/json",
+    verify: verifyFatalUtf8Json,
+  });
+  const attachmentJsonParser = express.json({
+    limit: maxBodyBytes,
+    strict: true,
+    type: "application/json",
+    verify: verifyFatalUtf8Json,
+  });
+  return (req, res, next) => {
+    const pathname = String(req.originalUrl || req.url || "");
+    const parser = attachmentsEnabled && attachmentMutationPaths.has(pathname) &&
+      req.integrationBodyByteLimit > ordinaryBodyBytes
+      ? attachmentJsonParser
+      : ordinaryJsonParser;
+    parser(req, res, next);
+  };
+}
+
+export function createTestOnlyIntegrationAnalysisBodyMiddlewares() {
+  const attachmentMutationPaths = new Set([
+    INTEGRATION_RPC_PATHS.runsStart,
+    INTEGRATION_RPC_PATHS.runsResume,
+  ]);
+  let requestsInFlight = 0;
+  const admission = createAttachmentAdmissionMiddlewares(
+    true,
+    attachmentMutationPaths,
+    128 * 1024,
+    (value) => { requestsInFlight = value; }
+  );
+  return Object.freeze({
+    beforeBody: admission.beforeBody,
+    parse: createRouteJsonParserMiddleware({
+      attachmentsEnabled: true,
+      attachmentMutationPaths,
+      maxBodyBytes: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_BYTES_LIMIT,
+      ordinaryBodyBytes: 128 * 1024,
+    }),
+    afterBody: admission.afterBody,
+    requestsInFlight: () => requestsInFlight,
+  });
 }
 
 function createIntegrationRouterWithAuthority(options = {}, activationMetadata = null) {
@@ -1491,7 +1871,33 @@ function createIntegrationRouterWithAuthority(options = {}, activationMetadata =
   const router = express.Router({ strict: true });
   const prefix = options.prefix || INTEGRATION_API_PREFIX;
   const authMiddleware = createIntegrationAuthMiddleware(options.auth || {});
-  const maxBodyBytes = Number(options.maxBodyBytes || 128 * 1024);
+  const attachmentTransportAware = activationMetadata?.proof?.attachmentTransportAware === true;
+  const maxBodyBytes = Number(
+    options.maxBodyBytes ??
+      (attachmentTransportAware ? INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_BYTES_LIMIT : 128 * 1024)
+  );
+  if (
+    !Number.isSafeInteger(maxBodyBytes) || maxBodyBytes < 1 ||
+    maxBodyBytes > INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_BYTES_LIMIT ||
+    (attachmentTransportAware && maxBodyBytes < INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_BYTES_LIMIT)
+  ) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Agent request body limits are invalid.", { status: 503 });
+  }
+  const ordinaryBodyBytes = Math.min(maxBodyBytes, 128 * 1024);
+  const attachmentMutationPaths = new Set([
+    INTEGRATION_RPC_PATHS.runsStart,
+    INTEGRATION_RPC_PATHS.runsResume,
+  ]);
+  const bodyLimitForRequest = (pathname, req) =>
+    attachmentTransportAware && attachmentMutationPaths.has(pathname) &&
+      !hasDeclaredOrdinaryBody(req, ordinaryBodyBytes)
+      ? maxBodyBytes
+      : ordinaryBodyBytes;
+  const attachmentAdmission = createAttachmentAdmissionMiddlewares(
+    attachmentTransportAware,
+    attachmentMutationPaths,
+    ordinaryBodyBytes
+  );
 
   router.use(prefix, authMiddleware);
   router.use(prefix, (req, res, next) => {
@@ -1512,18 +1918,37 @@ function createIntegrationRouterWithAuthority(options = {}, activationMetadata =
       writeIntegrationErrorJson(res, 415, "INVALID_CONTENT_TYPE");
       return;
     }
+    const bodyByteLimit = bodyLimitForRequest(originalUrl, req);
+    const bodyReceiveTimeoutMs = integrationAnalysisBodyReceiveTimeoutMs(originalUrl, {
+      attachmentsEnabled: attachmentTransportAware,
+      declaredBodyBytes: declaredContentLength(req),
+    });
+    armBodyReceiveDeadline(req, bodyReceiveTimeoutMs);
+    Object.defineProperty(req, "integrationBodyByteLimit", {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: bodyByteLimit,
+    });
     const contentLength = req.headers["content-length"];
     if (contentLength !== undefined) {
       const text = Array.isArray(contentLength) ? "" : String(contentLength).trim();
       const length = Number(text);
-      if (!/^[0-9]+$/u.test(text) || !Number.isSafeInteger(length) || length > maxBodyBytes) {
-        writeIntegrationErrorJson(res, length > maxBodyBytes ? 413 : 400, length > maxBodyBytes ? "REQUEST_TOO_LARGE" : "INVALID_REQUEST");
+      if (!/^[0-9]+$/u.test(text) || !Number.isSafeInteger(length) || length > bodyByteLimit) {
+        writeIntegrationErrorJson(res, length > bodyByteLimit ? 413 : 400, length > bodyByteLimit ? "REQUEST_TOO_LARGE" : "INVALID_REQUEST");
         return;
       }
     }
     next();
   });
-  router.use(prefix, express.json({ limit: maxBodyBytes, strict: true, type: "application/json", verify: verifyFatalUtf8Json }));
+  router.use(prefix, attachmentAdmission.beforeBody);
+  router.use(prefix, createRouteJsonParserMiddleware({
+    attachmentsEnabled: attachmentTransportAware,
+    attachmentMutationPaths,
+    maxBodyBytes,
+    ordinaryBodyBytes,
+  }));
+  router.use(prefix, attachmentAdmission.afterBody);
   router.use(prefix, (req, res, next) => {
     const controller = new AbortController();
     req.integrationAbortSignal = controller.signal;
@@ -1618,7 +2043,16 @@ function assertPublicCapabilityResponse(value = {}) {
   const agent = integrationExactKeys(response.agent, ["kind", "label"], "agent capabilities agent", ["kind", "label"]);
   const model = integrationExactKeys(response.model, ["label"], "agent capabilities model", ["label"]);
   const actions = integrationExactKeys(response.actions, ["cancel", "resume", "retry"], "agent capabilities actions", ["cancel", "resume", "retry"]);
-  const attachments = integrationExactKeys(response.attachments, ["enabled"], "agent capabilities attachments", ["enabled"]);
+  const attachmentFields = [
+    "enabled", "transport", "acceptedMediaTypes", "maximumCount", "maximumBytesEach",
+    "maximumBytesTotal", "requestTimeoutMs", "model", "persistence",
+  ];
+  const attachments = integrationExactKeys(
+    response.attachments,
+    attachmentFields,
+    "agent capabilities attachments",
+    ["enabled"]
+  );
   const search = response.search === undefined
     ? { enabled: false, modes: [], maximumSources: 0 }
     : integrationExactKeys(
@@ -1633,7 +2067,43 @@ function assertPublicCapabilityResponse(value = {}) {
   if (![actions.cancel, actions.resume, actions.retry, attachments.enabled, search.enabled].every((flag) => typeof flag === "boolean")) {
     integrationInvalid("agent capability flags must be booleans");
   }
-  if (actions.retry !== false || attachments.enabled !== false) integrationInvalid("retry and attachments are not enabled in protocol v1");
+  if (actions.retry !== false) integrationInvalid("retry is not enabled in protocol v1");
+  let attachmentCapability = Object.freeze({ enabled: false });
+  if (attachments.enabled) {
+    integrationExactKeys(
+      attachments,
+      attachmentFields,
+      "agent capabilities attachments",
+      attachmentFields
+    );
+    if (
+      !response.enabled ||
+      attachments.transport !== "inline-base64" ||
+      canonicalJson(attachments.acceptedMediaTypes) !==
+        canonicalJson(INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_MEDIA_TYPES) ||
+      attachments.maximumCount !== INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_COUNT_LIMIT ||
+      attachments.maximumBytesEach !== INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BYTES_LIMIT ||
+      attachments.maximumBytesTotal !== INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_TOTAL_BYTES_LIMIT ||
+      attachments.requestTimeoutMs !== INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_REQUEST_TIMEOUT_MS ||
+      attachments.model !== "localllm-vision" ||
+      attachments.persistence !== "retained-reference-v1"
+    ) {
+      integrationInvalid("agent attachment capabilities are invalid");
+    }
+    attachmentCapability = Object.freeze({
+      enabled: true,
+      transport: "inline-base64",
+      acceptedMediaTypes: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_MEDIA_TYPES,
+      maximumCount: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_COUNT_LIMIT,
+      maximumBytesEach: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BYTES_LIMIT,
+      maximumBytesTotal: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_TOTAL_BYTES_LIMIT,
+      requestTimeoutMs: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_REQUEST_TIMEOUT_MS,
+      model: "localllm-vision",
+      persistence: "retained-reference-v1",
+    });
+  } else {
+    integrationExactKeys(attachments, ["enabled"], "agent capabilities attachments", ["enabled"]);
+  }
   const searchModes = search.enabled ? [...INTEGRATION_SEARCH_MODES] : [];
   if (
     !Array.isArray(search.modes) ||
@@ -1666,7 +2136,7 @@ function assertPublicCapabilityResponse(value = {}) {
     agent: Object.freeze({ kind: "aginti", label: "AgInTi Agent" }),
     model: Object.freeze({ label: "LocalLLM" }),
     actions: Object.freeze({ cancel: actions.cancel, resume: actions.resume, retry: false }),
-    attachments: Object.freeze({ enabled: false }),
+    attachments: attachmentCapability,
     ...(search.enabled
       ? {
           search: Object.freeze({
@@ -1686,7 +2156,7 @@ function assertPublicCapabilityResponse(value = {}) {
 function assertPublicThreadContract(value = {}) {
   const thread = integrationExactKeys(
     value,
-    ["id", "title", "status", "revision", "createdAt", "updatedAt", "lastRunId", "authority", "replay", "messages"],
+    ["id", "title", "status", "revision", "createdAt", "updatedAt", "lastRunId", "activeImageContext", "authority", "replay", "messages"],
     "thread",
     ["id", "title", "status", "revision", "createdAt", "updatedAt", "lastRunId", "authority", "replay"]
   );
@@ -1708,7 +2178,7 @@ function assertPublicThreadContract(value = {}) {
   if (thread.messages !== undefined) {
     if (!Array.isArray(thread.messages)) integrationInvalid("thread replay exceeds 256 messages");
     thread.messages.forEach((message, index) => {
-      integrationExactKeys(message, ["id", "role", "content", "runId", "createdAt", "digest"], `thread message[${index}]`, [
+      integrationExactKeys(message, ["id", "role", "content", "runId", "createdAt", "digest", "attachments"], `thread message[${index}]`, [
         "id",
         "role",
         "content",

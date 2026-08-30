@@ -3,11 +3,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const [api, { createTestOnlyIntegrationAnalysisSessionService }, contract, policy] = await Promise.all([
+const [api, { createTestOnlyIntegrationAnalysisSessionService }, contract, policy, vision] = await Promise.all([
   import("../src/integration-api.js"),
   import("../src/integration-analysis-session-service.js"),
   import("../src/integration-analysis-session-contract.js"),
   import("../src/integration-policy.js"),
+  import("../src/integration-analysis-vision.js"),
 ]);
 
 const { assertIntegrationAnalysisSessionAuthority } = api;
@@ -94,6 +95,7 @@ assert.deepEqual(INTEGRATION_ANALYSIS_PRIOR_ARTIFACT_AUTHORITY_POLICY, {
 
 const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-session-authority-contract-"));
 let service;
+let visionService;
 try {
   const activationProof = startupProof();
   const runner = Object.freeze({
@@ -156,8 +158,65 @@ try {
     ),
     "the actual API consumer accepted an extra authority key"
   );
+
+  const visionClient = vision.createTestOnlyIntegrationAnalysisVisionClient({
+    async describe() {
+      throw new Error("the authority contract smoke must not invoke vision");
+    },
+  });
+  const visionActivation = await visionClient.activate();
+  visionService = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: runner,
+    stateRoot: path.join(temporaryRoot, "vision-state"),
+    visionClient,
+    visionActivation,
+  });
+  const visionCapabilities = await visionService.getIntegrationCapabilities();
+  const acceptedVision = productionAuthority(
+    visionCapabilities.analysisSessionAuthority,
+    activationProof
+  );
+  assert.strictEqual(
+    assertIntegrationAnalysisSessionAuthority(
+      acceptedVision,
+      activationProof,
+      visionCapabilities.mutationRecoveryAuthority,
+      { attachmentsExpected: true }
+    ),
+    acceptedVision,
+    "the API consumer rejected the exact image-enabled session authority"
+  );
+  assertUnavailable(
+    () => assertIntegrationAnalysisSessionAuthority(
+      changedProof(acceptedVision, (unsigned) => { delete unsigned.attachmentAuthorityDigest; }),
+      activationProof,
+      visionCapabilities.mutationRecoveryAuthority,
+      { attachmentsExpected: true }
+    ),
+    "the API consumer accepted an image authority without its attachment digest"
+  );
+  assertUnavailable(
+    () => assertIntegrationAnalysisSessionAuthority(
+      changedProof(acceptedVision, (unsigned) => {
+        unsigned.attachmentBlobsRevalidatedBeforeInference = false;
+      }),
+      activationProof,
+      visionCapabilities.mutationRecoveryAuthority,
+      { attachmentsExpected: true }
+    ),
+    "the API consumer accepted image bytes that are not revalidated before inference"
+  );
+  assertUnavailable(
+    () => assertIntegrationAnalysisSessionAuthority(
+      acceptedVision,
+      activationProof,
+      visionCapabilities.mutationRecoveryAuthority
+    ),
+    "the API consumer accepted undeclared image authority fields"
+  );
 } finally {
   await service?.close({ mode: "abort" }).catch(() => {});
+  await visionService?.close({ mode: "abort" }).catch(() => {});
   await fs.rm(temporaryRoot, { recursive: true, force: true });
 }
 
