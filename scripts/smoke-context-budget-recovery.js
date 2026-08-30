@@ -8,6 +8,7 @@ import {
 } from "../src/context-budget-controller.js";
 import { createPlan } from "../src/model-client.js";
 import { deriveScsTaskContract } from "../src/scs-evidence.js";
+import { recordDurableResearchEvidence } from "../src/durable-research-evidence.js";
 
 const HEAD = "AUTHORITATIVE-HEAD exact current task";
 const TAIL = "AUTHORITATIVE-TAIL bounded task packet and latest interruption";
@@ -283,6 +284,27 @@ const compactionState = {
     { role: "user", content: "latest interruption: send the finished PDF to this exact chat" },
   ],
 };
+recordDurableResearchEvidence(compactionState, {
+  ok: true,
+  toolName: "web_search",
+  query: "closed-loop organoid imaging",
+  results: [{
+    title: "A modular platform for automated organoid culture and longitudinal imaging",
+    url: "https://example.org/organoid-platform",
+    snippet: "Automated media exchange, longitudinal imaging, and environmental feedback.",
+    publishedAt: "2026",
+  }],
+});
+recordDurableResearchEvidence(compactionState, {
+  ok: true,
+  toolName: "read_web_page",
+  query: "closed-loop organoid imaging",
+  title: "A modular platform for automated organoid culture and longitudinal imaging",
+  canonicalUrl: "https://example.org/organoid-platform",
+  passages: ["The verified source combines automated culture with longitudinal imaging."],
+  retrievedAt: "2026-08-30T01:00:00.000Z",
+  sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+});
 const runtimeMessages = buildContextBudgetCompactionMessages(
   compactionState,
   config,
@@ -333,6 +355,10 @@ assert.ok(runtimeText.includes('"version":14'));
 assert.ok(runtimeText.includes("RESEARCH-COMPACTION-SUMMARY"));
 assert.ok(runtimeText.includes("EVIDENCE-CHUNK-ONE"));
 assert.ok(runtimeText.includes("EVIDENCE-CHUNK-TWO"));
+assert.ok(runtimeText.includes("Durable inspected web evidence"));
+assert.ok(runtimeText.includes("A modular platform for automated organoid culture"));
+assert.ok(runtimeText.includes("https://example.org/organoid-platform"));
+assert.ok(runtimeText.includes("verified source combines automated culture"));
 assert.ok(runtimeText.includes("range=lines 1-50"));
 assert.ok(runtimeText.includes("range=lines 51-100"));
 assert.ok(!runtimeText.includes("OLD-COMPACTION-MUST-NOT-RECUR"));

@@ -643,7 +643,11 @@ export function inferRequestedArtifactRequirements(goal = "", taskProfile = "") 
     });
   }
 
-  if (/\b(?:answer key|answers?|worked solutions?|solutions? sheet)\b/i.test(source)) {
+  if (
+    /\b(?:answer\s+key|worked\s+solutions?|solutions?\s+(?:key|sheet|document|file|material)|answers?\s+(?:key|sheet|document|file|material))\b/i.test(
+      source
+    )
+  ) {
     add({
       id: "answer-material",
       kind: "answer-material",

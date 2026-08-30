@@ -26,6 +26,18 @@ const educationArtifactContract = deriveScsTaskContract({
   goal: educationArtifactGoal,
   taskProfile: "education",
 });
+const groupBriefingContract = deriveScsTaskContract({
+  goal: [
+    "Return a substantial Chinese group answer that members can understand without opening the attachment.",
+    "Create a polished PDF as a distinct full report with deeper evidence and references.",
+  ].join(" "),
+  taskProfile: "research",
+});
+assert.deepEqual(
+  groupBriefingContract.requiredArtifactKinds.map((item) => item.id),
+  ["format:.pdf"],
+  "an ordinary chat answer was incorrectly converted into a separate answer-key artifact"
+);
 assert.deepEqual(
   educationArtifactContract.requiredArtifactKinds.map((item) => item.id).sort(),
   [
