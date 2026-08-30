@@ -2440,11 +2440,10 @@ export function selectProgressiveTools(
 
   if (config.scopedArtifactTask === true && config.scopedArtifactRoot) {
     const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
-    return [
+    const scopedWorkspaceTools = [
       constrainScopedArtifactPath(
         available.get("list_files"),
-        config.scopedArtifactRoot,
-        { rootOnly: true }
+        config.scopedArtifactRoot
       ),
       constrainScopedArtifactPath(
         available.get("read_file"),
@@ -2452,8 +2451,7 @@ export function selectProgressiveTools(
       ),
       constrainScopedArtifactPath(
         available.get("search_files"),
-        config.scopedArtifactRoot,
-        { rootOnly: true }
+        config.scopedArtifactRoot
       ),
       constrainScopedArtifactPath(
         available.get("write_file"),
@@ -2464,8 +2462,40 @@ export function selectProgressiveTools(
         config.scopedArtifactRoot
       ),
       available.get("run_command"),
-      finish,
     ].filter(Boolean);
+
+    // Artifact isolation limits where the task may read or write; it must not
+    // erase the task's research, browser, or specialist capabilities. Keep
+    // inferred non-file tools while the workspace tools remain root-scoped.
+    const scopedWorkspaceToolNames = new Set(
+      scopedWorkspaceTools.map((tool) => openAiFunctionName(tool)).filter(Boolean)
+    );
+    const taskSpecificTools = compactToolNames({ config, goal, profile, messages })
+      .filter((name) => name !== "finish" && !FILE_TOOL_NAMES.has(name))
+      .filter((name) => !scopedWorkspaceToolNames.has(name))
+      .map((name) => available.get(name))
+      .filter(Boolean);
+    const requestedLimit = finitePositiveInteger(
+      config.toolSurfaceMaxTools ?? config.localToolMaxTools,
+      DEFAULT_LOCAL_TOOL_LIMIT
+    );
+    const toolLimit = Math.min(requestedLimit, LOCAL_TOOL_HARD_CAP);
+    const taskSpecificLimit = Math.max(
+      0,
+      toolLimit - scopedWorkspaceTools.length - 1
+    );
+    const selected = [];
+    const seen = new Set();
+    for (const tool of [
+      ...taskSpecificTools.slice(0, taskSpecificLimit),
+      ...scopedWorkspaceTools,
+    ]) {
+      const name = openAiFunctionName(tool);
+      if (!name || name === "finish" || seen.has(name) || selected.length + 1 >= toolLimit) continue;
+      seen.add(name);
+      selected.push(tool);
+    }
+    return [...selected, finish];
   }
 
   if (config.repositoryGroundingRequired === true) {

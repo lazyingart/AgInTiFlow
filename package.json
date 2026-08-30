@@ -180,6 +180,7 @@
     "smoke:localllm-model-tiers": "node scripts/smoke-localllm-model-tiers.js",
     "smoke:localllm-provider": "node scripts/smoke-localllm-provider.js",
     "smoke:progressive-tools": "node scripts/smoke-progressive-tool-selection.js",
+    "smoke:scoped-artifact-research": "node scripts/smoke-scoped-artifact-research.js",
     "smoke:truthful-completion": "node scripts/smoke-truthful-completion.js",
     "smoke:document-artifact-quality": "node scripts/smoke-document-artifact-quality.js",
     "smoke:writing-specialist-routing": "node scripts/smoke-writing-specialist-routing.js",
