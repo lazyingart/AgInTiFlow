@@ -367,7 +367,7 @@ function stripSafeCredentialReferences(content) {
   const codeKeyName = String.raw`(?:api[_-]?key|apiKey|token|secret|password|passwd|npmToken|authToken|grsai|veniceApiKey|venice_api_key)`;
   const codeExpression = String.raw`[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\([^"'\n]*\))?`;
   const envName = String.raw`[A-Z][A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PASSWD|GRSAI|VENICE)[A-Z0-9_]*`;
-  const safeStatus = String.raw`(?:false|true|null|none|unset|missing|not[-_ ]?set|\[REDACTED\])`;
+  const safeStatus = String.raw`(?:false|true|null|none|unset|missing|not[-_ ]?set|\[REDACTED\]|\*{3,})`;
 
   text = text.replace(
     new RegExp(String.raw`\b${keyName}\s*[:=]\s*${safeStatus}\b`, "gi"),

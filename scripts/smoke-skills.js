@@ -132,6 +132,12 @@ for (const unrelated of [
 }
 assert(selectedIds("debug Docker deployment logs and port config").includes("devops-deployment"), "devops prompt did not select devops-deployment");
 assert(selectedIds("review auth security and secrets handling").includes("security-review"), "security prompt did not select security-review");
+const securitySkill = skills.find((skill) => skill.id === "security-review");
+assert(
+  securitySkill?.body.includes("carriage-return, newline") &&
+    securitySkill?.body.includes("residual risks and non-goals"),
+  "security skill omitted audit-record injection or structured security-note guidance"
+);
 assert(selectedIds("make a PowerPoint pitch deck").includes("presentation-slides"), "slides prompt did not select presentation-slides");
 const presentationSkill = skills.find((skill) => skill.id === "presentation-slides");
 assert(presentationSkill?.body.includes("Render every slide"), "presentation skill does not require every slide to be rendered");

@@ -431,3 +431,42 @@ punctuation search literal, added regression coverage, passed four unit tests,
 and committed a clean tree at `b956470`. The independent migration-safety
 contract also passed. The complete npm suite passes, and the runtime fix is
 released in AgInTiFlow `0.20.291`.
+
+### Explicit test evidence and security-review completion
+
+`security-labshare-050` asked a fresh DeepSeek Pro session to harden a small
+standard-library laboratory service from an imperfect, outcome-level prompt.
+The agent removed a default credential, bounded artifact and dataset paths,
+kept export execution shell-free, redacted audit credentials, protected the
+public status response, added focused tests, and committed a clean repair. The
+hidden acceptance contract then exposed a remaining audit-log injection path:
+newlines in an actor or artifact field could forge additional physical records.
+
+During the retained-session repair, AgInTi fixed the production source but
+committed it before adding the explicitly requested regression test. This was a
+runtime contract defect, not a model-quality failure. The mutation parser did
+not recognize contextual requests such as "add a regression test," and the SCS
+evidence contract did not convert "run the tests" into a fresh test obligation.
+Consequently, source and Git evidence could satisfy the phase too early.
+
+AgInTiFlow now recognizes explicit English and Chinese test-file mutations,
+requires fresh test evidence for explicit run/rerun-test requests, and keeps
+task-owned commit completion closed until that evidence exists. The regression
+suite reproduces the stale persisted contract and proves no commit is offered
+after source mutation but before a fresh passing test. It avoids broad keyword
+matching, so phrases such as "create a canvas preview for this smoke test" do
+not invent a test-file mutation.
+
+The same release accepts genuinely observational Git evidence when no
+consequential Git action is required, permits only the exact bounded Python
+cache-cleanup forms used by project hygiene, and treats masked values such as
+`token=***` as safe status evidence without weakening detection of real
+credential assignments. The security-review skill now covers control-character
+log injection and requires a standalone note to distinguish deployment
+boundary, threat model, controls, residual risks, non-goals, and verification.
+
+The retained session completed `SECURITY.md` after a valid secret-content
+block, passed the exact hidden contract and all 13 visible tests, and left a
+clean target repository at `ef3c099`. Focused regressions and the complete npm
+suite pass. These runtime and skill fixes are released in AgInTiFlow
+`0.20.292`.

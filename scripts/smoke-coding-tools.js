@@ -1680,6 +1680,45 @@ try {
     mixedValidationCleanupAdvice.autoRecover === true,
     "unrequested cleanup should be skipped without pausing substantive work"
   );
+  const pythonCacheCleanupArgs = {
+    command:
+      "find . -type d -name __pycache__ -prune -exec rm -rf {} + ; find . -type f -name '*.pyc' -delete; git status --short",
+  };
+  assert(
+    isUnrequestedCleanupCommand(
+      "run_command",
+      pythonCacheCleanupArgs,
+      { goal: "Repair the service, run its tests, and commit the intentional work." },
+      {}
+    ),
+    "post-acceptance Python cache deletion was not recognized as optional housekeeping"
+  );
+  const pythonCacheCleanupAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: pythonCacheCleanupArgs,
+    guard: {
+      category: "destructive",
+      reason: "Destructive shell commands require Allow destructive actions.",
+    },
+    config: {
+      ...dockerWorkspacePolicy,
+      goal: "Repair the service, run its tests, and commit the intentional work.",
+    },
+    state: { sessionId: "coding-python-cache-cleanup-smoke" },
+  });
+  assert(
+    pythonCacheCleanupAdvice.autoRecover === true,
+    "ignored Python cache cleanup should be skipped without pausing a completed task"
+  );
+  assert(
+    !isUnrequestedCleanupCommand(
+      "run_command",
+      { command: "find . -type f -delete" },
+      { goal: "Repair the service and commit the result." },
+      {}
+    ),
+    "broad find deletion was incorrectly classified as optional Python cache cleanup"
+  );
   assert(
     !isUnrequestedCleanupCommand(
       "run_command",

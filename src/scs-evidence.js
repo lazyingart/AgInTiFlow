@@ -266,7 +266,11 @@ export function gitActionsSatisfyContract(contract = {}, actions = []) {
     ? contract.requiredGitActions.map((item) => String(item || "").toLowerCase()).filter(Boolean)
     : [];
   if (required.length) return missingRequiredGitActionSequence(required, observed).length === 0;
-  return observed.some((action) => !isObservationalGitAction(action));
+  // A Git evidence requirement can be purely observational, for example when
+  // a continuation asks to verify an existing commit while explicitly
+  // forbidding another commit. Consequential actions remain governed by the
+  // ordered requiredGitActions contract above.
+  return observed.length > 0;
 }
 
 const PROJECT_TEST_PROFILES = new Set([
@@ -1233,14 +1237,37 @@ function codeProfileRequiresCommand(goal = "") {
   return substantiveCodeWork && !simpleDocumentWrite;
 }
 
+function goalRequestsExplicitTestMutation(text = "") {
+  return (
+    /\b(?:add|create|implement|write)\b(?:\s+(?:a|an|the|focused|new|additional|specific|security|unit|integration|regression))*\s+(?:regression\s+)?(?:tests?|test cases?)\b/.test(
+      text
+    ) ||
+    /\b(?:edit|fix|modify|patch|repair|update)\b(?:\s+(?:a|an|the|focused|new|existing|current|failing|specific|security|unit|integration|regression))*\s+(?:regression\s+)?(?:tests?|test cases?)\b/.test(
+      text
+    ) ||
+    /(?:添加|新增|创建|编写|编辑|修复|修改|更新)(?:一个|新的|现有的|失败的|专门的|回归|单元|集成)*测试(?:用例)?/.test(
+      text
+    )
+  );
+}
+
 function goalRequestsWorkspaceMutation(goal = "", taskProfile = "") {
   const text = normalizedText(stripCompletedWorkNarration(stripForbiddenLanguage(goal)));
-  if (String(taskProfile || "").trim().toLowerCase() === "review") {
-    return /\b(?:append|copy|create|delete|edit|fix|implement|modify|move|patch|refactor|remove|rename|repair|replace|rewrite|save|update|write)\b/.test(
+  const explicitAddMutation =
+    goalRequestsExplicitTestMutation(text) ||
+    /\badd\b(?:\s+(?:a|an|the|new|additional|specific))*\s+(?:code|documents?|files?|notes?|readme|scripts?|source|workspace)\b/.test(
       text
+    ) || /(?:添加|新增)(?:一个|新的|额外的|特定的)*(?:文件|文档|代码|脚本|源码)/.test(text);
+  if (String(taskProfile || "").trim().toLowerCase() === "review") {
+    return (
+      explicitAddMutation ||
+      /\b(?:append|copy|create|delete|edit|fix|implement|modify|move|patch|refactor|remove|rename|repair|replace|rewrite|save|update|write)\b/.test(
+        text
+      )
     );
   }
   return (
+    explicitAddMutation ||
     /\b(?:append|build|convert|copy|create|delete|edit|fix|generate|implement|modify|move|patch|refactor|remove|rename|repair|replace|rewrite|save|update|write)\b/.test(
       text
     ) ||
@@ -1251,7 +1278,9 @@ function goalRequestsWorkspaceMutation(goal = "", taskProfile = "") {
 function goalRequestsFileMutation(goal = "", taskProfile = "") {
   const text = normalizedText(stripCompletedWorkNarration(stripForbiddenLanguage(goal)));
   if (!goalRequestsWorkspaceMutation(text, taskProfile)) return false;
+  const explicitTestMutation = goalRequestsExplicitTestMutation(text);
   return (
+    explicitTestMutation ||
     /\b(?:code|codebase|document(?:ation)?|files?|notes?|path|readme|repo(?:sitory)?|script|source|workspace)\b/.test(
       text
     ) ||
@@ -1260,6 +1289,17 @@ function goalRequestsFileMutation(goal = "", taskProfile = "") {
       text
     ) ||
     /文件|文档|代码|代码库|仓库|脚本|源码|路径|工作区|说明书|笔记/.test(text)
+  );
+}
+
+function goalRequestsTestExecution(goal = "") {
+  const text = normalizedText(stripCompletedWorkNarration(stripForbiddenLanguage(goal)));
+  return (
+    /\b(?:run|rerun|re-run|execute|invoke)\b[^.\n;]{0,140}\b(?:tests?|test suite)\b/.test(text) ||
+    /\b(?:tests?|test suite)\b[^.\n;]{0,120}\b(?:pass|passing|green|run|rerun|re-run|execute)\b/.test(text) ||
+    /(?:运行|执行|重跑|重新运行)[^。；\n]{0,100}(?:测试|测试套件)|(?:测试|测试套件)[^。；\n]{0,80}(?:通过|运行|执行)/.test(
+      text
+    )
   );
 }
 
@@ -1366,6 +1406,9 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   // create. Substantive code validation still requires command evidence.
   if (directCommandSignal || (validationSignal && codeProfileRequiresCommand(positiveGoal))) {
     categories.add("command");
+  }
+  if (goalRequestsTestExecution(positiveGoal)) {
+    categories.add("test");
   }
   if (textHas(mandatoryEvidenceText, /\b(artifact|canvas|pdf|image|video|screenshot|cover|plot|chart|figure|docx|archive|copy to|export|generated|generate|draft)\b/) || /输出|产物|图片|视频|截图|封面|生成/.test(mandatoryEvidenceText)) {
     categories.add("artifact");

@@ -930,6 +930,22 @@ const refreshedSecurityContract = deriveScsTaskContract({
   goal: "Fix the security issue and run the regression tests.",
   taskProfile: "security",
 });
+const correctiveSecurityContract = deriveScsTaskContract({
+  goal: [
+    "Independent acceptance failed: audit fields permit newline log injection.",
+    "Reopen the exact repair, add a focused regression test, fix the root cause,",
+    "run the full visible tests, review the diff, and commit only this corrective work.",
+  ].join(" "),
+  taskProfile: "security",
+});
+assert(
+  correctiveSecurityContract.requiresWorkspaceMutation === true &&
+    correctiveSecurityContract.requiresFileMutation === true &&
+    correctiveSecurityContract.requiredEvidence.some((item) => item.category === "file") &&
+    correctiveSecurityContract.requiredEvidence.some((item) => item.category === "test") &&
+    correctiveSecurityContract.requiredGitActions.includes("commit"),
+  "a requested regression-test repair could enter Git completion without fresh file and test evidence"
+);
 const staleContractFinish = await reviewScsFinish(
   { mock: true },
   { provider: "mock", model: "mock-agent", taskProfile: "security" },
@@ -964,6 +980,11 @@ const staleContractFinish = await reviewScsFinish(
           exitCode: 0,
           args: { command: "python -m unittest discover -s tests -v" },
           stdout: "Ran 10 tests\nOK",
+          projectTest: {
+            passed: true,
+            command: "python -m unittest discover -s tests -v",
+            mutationRevision: 0,
+          },
         }),
       },
     ],
@@ -1055,6 +1076,20 @@ assert(
 assert(
   evaluateScsEvidence(commitContract, gitStatusLedger).missingGitActions.includes("commit"),
   "the completion deficit did not identify the missing commit"
+);
+const readOnlyGitContract = {
+  requiresExternalEvidence: true,
+  requiredEvidence: [
+    { id: "command", category: "command", description: "read-only verification" },
+    { id: "git", category: "git", description: "existing commit verification" },
+  ],
+  requiredToolCalls: [],
+  requiredGitActions: [],
+  requiredProjectCommands: [],
+};
+assert(
+  evaluateScsEvidence(readOnlyGitContract, gitStatusLedger).ok,
+  "read-only Git evidence was rejected when the contract required no consequential Git action"
 );
 const committedEvaluation = evaluateScsEvidence(commitContract, gitCommitLedger);
 assert(
@@ -1231,7 +1266,14 @@ const checkedCodeEval = evaluateScsEvidence(
       messages: [
         {
           role: "tool",
-          content: JSON.stringify({ toolName: "run_command", ok: true, exitCode: 0, args: { command: "npm test" }, stdout: "ok" }),
+          content: JSON.stringify({
+            toolName: "run_command",
+            ok: true,
+            exitCode: 0,
+            args: { command: "npm test" },
+            stdout: "ok",
+            projectTest: { passed: true, command: "npm test", mutationRevision: 0 },
+          }),
         },
       ],
     },

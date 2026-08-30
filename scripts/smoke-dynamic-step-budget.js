@@ -13546,6 +13546,91 @@ Do not prefix, suffix, wrap, redirect, pipe, or combine that validator command.`
     "a partial multi-artifact task entered task-owned Git completion before its deliverables existed"
   );
 
+  const securityWorkspace = path.join(tempRoot, "security-test-before-commit");
+  await fs.mkdir(securityWorkspace, { recursive: true });
+  await fs.writeFile(path.join(securityWorkspace, "labshare.py"), "def record_access():\n    pass\n");
+  const securityGoal = [
+    "Independent acceptance failed: audit fields permit newline log injection.",
+    "Add a focused regression test, fix the root cause, run the full visible tests,",
+    "review the diff, and commit only this corrective work.",
+  ].join(" ");
+  const securityState = {
+    goal: securityGoal,
+    commandCwd: securityWorkspace,
+    plan: "Patch the source and regression test, run the full suite, then commit the verified work.",
+    messages: [
+      {
+        role: "tool",
+        content: JSON.stringify({
+          ok: true,
+          toolName: "apply_patch",
+          path: "labshare.py",
+          goalRevision: 1,
+          projectMutationRevision: 1,
+        }),
+      },
+      {
+        role: "tool",
+        content: JSON.stringify({
+          ok: true,
+          toolName: "run_command",
+          exitCode: 0,
+          args: { command: "git status --short" },
+          stdout: " M labshare.py\n",
+          goalRevision: 1,
+          projectMutationRevision: 1,
+        }),
+      },
+    ],
+    meta: {
+      taskProfile: "security",
+      goalContract: {
+        revision: 1,
+        currentRequest: securityGoal,
+        taskGoal: securityGoal,
+        activeGoal: securityGoal,
+        activeGoalRevision: 1,
+        history: [{ revision: 1, refreshExecutionContract: true }],
+        lifecycle: [{ at: new Date(Date.now() - 2000).toISOString() }],
+      },
+      // Reproduce the pre-fix persisted contract that recognized a mutation
+      // but failed to classify the requested regression test as file work.
+      activeExecutionContract: {
+        revision: 1,
+        startedMutationRevision: 0,
+        materialMutationRevision: 1,
+        requiresWorkspaceMutation: true,
+        requiresFileMutation: false,
+      },
+      projectVerification: {
+        mutationRevision: 1,
+        mutationHistory: [
+          {
+            revision: 1,
+            at: new Date().toISOString(),
+            toolName: "apply_patch",
+            paths: ["labshare.py"],
+            goalRevision: 1,
+          },
+        ],
+      },
+    },
+  };
+  const securityCompletionContract = completionTaskContract(
+    { goal: securityGoal, taskProfile: "security", commandCwd: securityWorkspace },
+    securityState
+  );
+  const preTestSecurityRuntime = nextStepRuntimeConfig(
+    { goal: securityGoal, taskProfile: "security", commandCwd: securityWorkspace },
+    securityState
+  );
+  assert(
+    securityCompletionContract.requiresFileMutation === true &&
+      securityCompletionContract.requiredEvidence.some((item) => item.category === "test") &&
+      preTestSecurityRuntime.taskOwnedCommitPending !== true,
+    "a regression-test repair entered task-owned Git completion before fresh test evidence"
+  );
+
   await fs.rm(tempRoot, { recursive: true, force: true });
   console.log("smoke-dynamic-step-budget ok");
 } catch (error) {

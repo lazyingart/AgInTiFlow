@@ -71,6 +71,26 @@ const patchResult = await executeWorkspaceTool(
 );
 assert(patchResult.ok, "legacy apply_patch replace content with safe credential-loading code context should not be blocked");
 
+const maskedAuditPatchResult = await executeWorkspaceTool(
+  "apply_patch",
+  {
+    patch: [
+      "*** Begin Patch",
+      "*** Add File: tests/test_audit_mask.py",
+      "+def test_audit_token_is_masked():",
+      "+    assert 'token=***' == 'token=' + ('*' * 3)",
+      "*** End Patch",
+    ].join("\n"),
+  },
+  config
+);
+assert(maskedAuditPatchResult.ok, "an all-asterisk credential mask in regression code must not be treated as a secret");
+assert.equal(
+  redactSensitiveText("token=***"),
+  "token=***",
+  "all-asterisk credential masks must remain visible as non-secret evidence"
+);
+
 const secretResult = await executeWorkspaceTool(
   "write_file",
   { path: "notes/leak-report.txt", content: "DEMO_SECRET_TOKEN=aginti_fake_do_not_use\n", mode: "create" },

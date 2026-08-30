@@ -175,7 +175,14 @@ export function isUnrequestedCleanupCommand(toolName = "", args = {}, config = {
   return command
     .split(/(?:&&|;|\n)/)
     .map((segment) => segment.trim())
-    .some((segment) => /^(?:command\s+)?rm\s+(?:-[A-Za-z]*[fr][A-Za-z]*\s+|--force\s+)/.test(segment));
+    .some(
+      (segment) =>
+        /^(?:command\s+)?rm\s+(?:-[A-Za-z]*[fr][A-Za-z]*\s+|--force\s+)/.test(segment) ||
+        /^find\s+\.\s+-type\s+d\s+-name\s+['"]?__pycache__['"]?\s+-prune\s+-exec\s+rm\s+-rf\s+\{\}\s+\+$/.test(
+          segment
+        ) ||
+        /^find\s+\.\s+-type\s+f\s+-name\s+(['"]?)\*\.pyc\1\s+-delete$/.test(segment)
+    );
 }
 
 function quoteShell(value = "") {

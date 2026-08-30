@@ -8,7 +8,7 @@ const SECRET_PATTERNS = [
 ];
 
 const SECRET_ASSIGNMENT_PATTERN = /(\b(?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|apiKey|auth[_-]?token|authToken|token|secret|password|passwd|npm[_-]?token|npmToken|_authToken|grsai|venice[_-]?api[_-]?key|veniceApiKey|openrouter[_-]?api[_-]?key)[^\S\r\n]*([:=])[^\S\r\n]*)([^\s\\"'`,;|(){}]+)/gi;
-const SAFE_ASSIGNMENT_VALUE_PATTERN = /^(?:false|true|null|none|unset|missing|not[-_ ]?set|\[REDACTED\])$/i;
+const SAFE_ASSIGNMENT_VALUE_PATTERN = /^(?:false|true|null|none|unset|missing|not[-_ ]?set|\[REDACTED\]|\*{3,})$/i;
 const SOURCE_TYPE_ANNOTATION_PATTERN = /^(?:str|string|bytes|bytearray|int|float|complex|bool|dict|list|tuple|set|frozenset|object|any|unknown|never|void|path|(?:typing\.)?(?:Any|Optional|Union|Literal|Annotated|Sequence|Mapping|MutableMapping|Callable|Type|ClassVar|Final|List|Dict|Tuple|Set|FrozenSet)\[[^\r\n]{1,120}\])$/i;
 const SOURCE_CALL_HEAD_PATTERN = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/;
 
