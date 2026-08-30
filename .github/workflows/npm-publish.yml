@@ -45,7 +45,7 @@ jobs:
           npm test
           pack_manifest="${RUNNER_TEMP}/agintiflow-pack-manifest.json"
           npm pack --dry-run --json > "${pack_manifest}"
-          node -e 'const fs=require("node:fs"); const manifest=JSON.parse(fs.readFileSync(process.argv[1], "utf8"))[0]; if (!manifest.files.some(({path}) => path === "scripts/github-hosted-release-environment.js")) throw new Error("release environment helper is missing from the npm package");' "${pack_manifest}"
+          node -e 'const fs=require("node:fs"); const manifest=JSON.parse(fs.readFileSync(process.argv[1], "utf8"))[0]; const paths=new Set(manifest.files.map(({path}) => path)); const required=["scripts/github-hosted-release-environment.js","scripts/smoke-integration-api.js","scripts/smoke-integration-authorities.js","scripts/smoke-integration-sandbox-profile.js"]; const missing=required.filter((path) => !paths.has(path)); if (missing.length) throw new Error(`release package is missing required self-test files: ${missing.join(", ")}`);' "${pack_manifest}"
 
       - name: Select npm dist-tag
         shell: bash
