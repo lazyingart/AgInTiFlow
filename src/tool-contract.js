@@ -30,6 +30,7 @@ const MAX_VALIDATION_ERRORS = 8;
 const MAX_VALIDATION_NODES = 50_000;
 const MAX_SAFE_SEQUENTIAL_READ_CALLS = 4;
 const MAX_REPORTED_SEQUENTIAL_CALLS = 12;
+const BENIGN_TOOL_CALL_ANNOTATION_KEYS = new Set(["description"]);
 
 function cloneValue(value) {
   return structuredClone(value);
@@ -457,6 +458,69 @@ function recoverBoundedCommitSubject(toolCalls, contract, validation) {
   };
 }
 
+function normalizeBenignToolCallAnnotations(toolCalls, contract) {
+  const calls = Array.isArray(toolCalls) ? toolCalls : [];
+  if (!calls.length || contract?.[contractMarker] !== true) return null;
+
+  const normalizedCalls = [];
+  const corrections = [];
+  for (let index = 0; index < calls.length; index += 1) {
+    const call = calls[index];
+    const toolName = String(call?.function?.name || "");
+    const descriptor = contract.tools.find(
+      (candidate) =>
+        candidate?.type === "function" && candidate.function?.name === toolName
+    );
+    if (!descriptor || typeof call?.function?.arguments !== "string") return null;
+
+    let args;
+    try {
+      args = JSON.parse(call.function.arguments);
+    } catch {
+      return null;
+    }
+    if (!isPlainObject(args)) return null;
+
+    const parameters = descriptor.function?.parameters;
+    const properties = isPlainObject(parameters?.properties)
+      ? parameters.properties
+      : {};
+    const correctedArgs = { ...args };
+    const removed = [];
+    for (const key of BENIGN_TOOL_CALL_ANNOTATION_KEYS) {
+      if (
+        parameters?.additionalProperties === false &&
+        !Object.hasOwn(properties, key) &&
+        Object.hasOwn(correctedArgs, key) &&
+        typeof correctedArgs[key] === "string" &&
+        correctedArgs[key].length <= 1_000
+      ) {
+        delete correctedArgs[key];
+        removed.push(key);
+        corrections.push({
+          callIndex: index,
+          property: key,
+          source: "non-executable-tool-annotation",
+        });
+      }
+    }
+
+    normalizedCalls.push(
+      removed.length
+        ? {
+            ...call,
+            function: {
+              ...call.function,
+              arguments: JSON.stringify(correctedArgs),
+            },
+          }
+        : call
+    );
+  }
+
+  return corrections.length ? { calls: normalizedCalls, corrections } : null;
+}
+
 export function validateToolCallBatch(toolCalls, contract, { maxToolCalls = 1 } = {}) {
   const errors = [];
   const addError = (code, callIndex, message) => {
@@ -611,6 +675,27 @@ export function resolveDispatchableToolCallBatch(toolCalls, contract) {
       deferredToolCalls: [],
       recoveredSequentially: false,
     };
+  }
+
+  const annotationNormalization = normalizeBenignToolCallAnnotations(calls, contract);
+  if (annotationNormalization) {
+    const recovered = resolveDispatchableToolCallBatch(
+      annotationNormalization.calls,
+      contract
+    );
+    if (recovered.ok) {
+      return {
+        ...recovered,
+        recoveredToolCallAnnotations: true,
+        argumentCorrections: [
+          ...(Array.isArray(recovered.argumentCorrections)
+            ? recovered.argumentCorrections
+            : []),
+          ...annotationNormalization.corrections,
+        ],
+        originalCode: validation.code,
+      };
+    }
   }
 
   const readRangeRecovery = recoverReadFileRangeAlias(calls, contract, validation);

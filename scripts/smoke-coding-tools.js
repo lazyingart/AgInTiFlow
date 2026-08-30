@@ -2482,6 +2482,93 @@ try {
       invalidFocusedRewrite.errors.some((error) => error.code === "ARGUMENT_PATTERN_MISMATCH"),
     "focused rewrite smoke input did not exercise the semantic pattern failure"
   );
+  const commandDescriptor = {
+    type: "function",
+    function: {
+      name: "run_command",
+      description: "Run one command.",
+      parameters: {
+        type: "object",
+        properties: { command: { type: "string", minLength: 1 } },
+        required: ["command"],
+        additionalProperties: false,
+      },
+    },
+  };
+  const annotatedCommandBatch = [
+    {
+      id: "annotated-command-one",
+      type: "function",
+      function: {
+        name: "run_command",
+        arguments: JSON.stringify({
+          command: "printf one",
+          description: "Inspect the first item",
+        }),
+      },
+    },
+    {
+      id: "annotated-command-two",
+      type: "function",
+      function: {
+        name: "run_command",
+        arguments: JSON.stringify({
+          command: "printf two",
+          description: "Inspect the second item",
+        }),
+      },
+    },
+  ];
+  const recoveredAnnotatedCommands = resolveDispatchableToolCallBatch(
+    annotatedCommandBatch,
+    createToolContract([commandDescriptor])
+  );
+  assert(recoveredAnnotatedCommands.ok, "benign command annotations were not normalized");
+  assert(
+    recoveredAnnotatedCommands.recoveredToolCallAnnotations,
+    "benign command annotation recovery was not recorded"
+  );
+  assert(
+    recoveredAnnotatedCommands.recoveredSequentially,
+    "annotated command batch did not retain bounded sequential dispatch"
+  );
+  assert(
+    recoveredAnnotatedCommands.acceptedToolCalls.length === 1 &&
+      recoveredAnnotatedCommands.deferredToolCalls.length === 1,
+    "annotated command batch did not dispatch one call and defer the suffix"
+  );
+  for (const call of [
+    ...recoveredAnnotatedCommands.acceptedToolCalls,
+    ...recoveredAnnotatedCommands.deferredToolCalls,
+  ]) {
+    assert(
+      !Object.hasOwn(JSON.parse(call.function.arguments), "description"),
+      "non-executable command description reached dispatch"
+    );
+  }
+  const unknownAnnotatedCommand = resolveDispatchableToolCallBatch(
+    [
+      {
+        id: "unknown-command-annotation",
+        type: "function",
+        function: {
+          name: "run_command",
+          arguments: JSON.stringify({
+            command: "printf blocked",
+            rationale: "This key is not an approved annotation",
+          }),
+        },
+      },
+    ],
+    createToolContract([commandDescriptor])
+  );
+  assert(
+    !unknownAnnotatedCommand.ok &&
+      unknownAnnotatedCommand.errors.some(
+        (error) => error.code === "ARGUMENT_ADDITIONAL_PROPERTY"
+      ),
+    "an unknown command annotation bypassed the exact tool schema"
+  );
   const focusedWriterCalls = [];
   const focusedRewriteState = {
     meta: {
